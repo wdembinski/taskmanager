@@ -1,0 +1,240 @@
+# Development roadmap
+
+This is the **build plan** for Claude Orchestrator itself — the phases we ship the
+app in. It is different from a *project* `plan.md` (the file a user points the app
+at so it can run *their* tasks). This one is our own task list.
+
+> **How to read this.** Each phase has a **Goal** (one sentence), the **Deliverables**
+> as checkboxes, and **Done when** — the acceptance criteria that let us call the
+> phase finished and tag a commit `feat: … (Phase N)`. Phases are ordered by
+> dependency: each builds on the process, IPC, and data types the previous one
+> introduced.
+
+The structure mirrors how the app parses a plan (see
+[`docs/03-how-orchestration-works.md`](../03-how-orchestration-works.md#where-plans-come-from)):
+`##` headings are phases, `- [ ]` items are tasks. So this file is itself a valid
+plan the orchestrator could one day run on its own repo.
+
+---
+
+## Status at a glance
+
+| Phase | Title | State |
+|------:|-------|-------|
+| 0 | Scaffold (3-process Electron, IPC contract, Claude status) | ✅ shipped (`8887127`) |
+| 1 | Session runner + live Session view | ✅ shipped (`af5e802`) |
+| 2 | Persistence & Projects | ⬜ next |
+| 3 | Task board & Scheduler | ⬜ |
+| 4 | Attention inbox (permissions & questions) | ⬜ |
+| 5 | Usage-limit gate (auto-respawn) | ⬜ |
+| 6 | History, resume-across-restart & polish | ⬜ |
+| 7 | Packaging & release | ⬜ |
+
+Phases 4 and 5 are already referenced by name in the docs
+([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
+`Phase 5 auto-respawn gate` note in [`src/shared/session.ts`](../../src/shared/session.ts));
+the numbering here is chosen to keep those references correct.
+
+---
+
+## Phase 2 — Persistence & Projects
+
+**Goal.** Give the app a memory: a local database of projects and their tasks,
+where tasks come from parsing each project's `plan.md`.
+
+Today everything is ephemeral — the Session view runs one prompt and forgets it.
+Before we can schedule work we need durable state. This phase adds the data layer
+and the first real screen (a projects list), but **does not run anything
+automatically** yet.
+
+### Deliverables
+
+- [ ] Wire the local store: **`better-sqlite3`** (decided), a real SQLite database
+      under `app.getPath('userData')` — matches the "SQLite database" already in the
+      `docs/02` diagram. Accept the native-module build step; add a rebuild/postinstall
+      step for Electron and confirm `pnpm package` bundles the native binary.
+- [ ] Define shared domain types in a new `src/shared/model.ts`: `Project`
+      (`id`, `name`, `path`, `planPath`, `defaultModel`, `defaultPermissionMode`)
+      and `Task` (`id`, `projectId`, `phase`, `title`, `status`, `sessionId?`,
+      `order`). Reuse `ClaudeModel`/`PermissionMode` from `session.ts`.
+- [ ] `TaskStatus` union: `pending | running | waiting-input | blocked-by-limit |
+      done | failed | stopped` (matches the state machine in `docs/03`).
+- [ ] A **plan parser** in `src/main/planParser.ts` (pure, unit-tested): markdown →
+      `{ phase, title }[]`. `##`/`###` headings become phases; `- [ ]` / `- [x]`
+      items become tasks (checked = `done`). This is the same grammar the app
+      documents in `docs/03`.
+- [ ] A `store` module in `src/main/store.ts`: load/save, plus
+      `addProject`, `listProjects`, `removeProject`, and `syncTasksFromPlan`
+      (re-parse a project's plan and reconcile tasks without losing live status).
+- [ ] New IPC channels in `src/shared/ipc.ts`: `project:add` (pick a folder +
+      plan path), `project:list`, `project:remove`, `project:syncPlan`. Add a
+      main-process folder picker (`dialog.showOpenDialog`) behind `project:add`.
+- [ ] Renderer: a **Projects** screen (left nav or top tabs) listing projects and,
+      per project, its parsed tasks grouped by phase with a status chip. Keep the
+      existing Session view reachable as a "Scratch run" tab.
+
+### Done when
+
+- Adding a project persists across an app restart.
+- A project's `plan.md` is parsed into phase-grouped tasks shown in the UI.
+- `pnpm typecheck` and `pnpm test` pass; the parser has unit tests covering
+  headings, checked/unchecked items, and nested lists.
+
+---
+
+## Phase 3 — Task board & Scheduler
+
+**Goal.** Turn the static task list into a running queue: a scheduler that picks
+the next task and runs it through the existing `SessionManager`, one task = one
+session, updating status live.
+
+### Deliverables
+
+- [ ] `src/main/scheduler.ts`: given a project (or all projects), select the next
+      `pending` task by **phase order, then task order**, honoring a **concurrency
+      limit** (default 1). Start it via `SessionManager.start`, mapping the task's
+      project `cwd`/model/permissionMode into the `StartSessionRequest`.
+- [ ] **Persist the session id** the instant the `started` event arrives (the rule
+      called out in `docs/03`), so a task can be resumed later.
+- [ ] Drive task status from the event stream: `started`→`running`,
+      `result.success`→`done` (and tick `- [x]` back into the plan file if the
+      project opts in), failure/`exited`≠0→`failed`; advance to the next task.
+- [ ] IPC: `scheduler:start`, `scheduler:pause`, `scheduler:stop`, and a
+      `task:run` (run one task ad-hoc). Event: `task:changed` so the board updates
+      live without polling.
+- [ ] Renderer: a **Board** view — tasks as cards/rows moving through
+      pending → running → done, with the live transcript from Phase 1 shown for the
+      currently-running task (reuse `SessionRunner`'s rendering, driven by `runId`).
+- [ ] Optional write-back: when a task completes, update the source `plan.md`
+      checkbox. Guard behind a per-project setting; never clobber unrelated edits.
+
+### Done when
+
+- Pressing **Run** on a project works through its pending tasks in order, one at a
+  time, updating each task's status live.
+- Session ids are persisted and visible; stopping the scheduler leaves no orphan
+  `claude` processes (verify via the existing `stopAll` path).
+- `pnpm typecheck`/`pnpm test` pass; scheduler selection logic is unit-tested.
+
+---
+
+## Phase 4 — Attention inbox (permissions & questions)
+
+**Goal.** Route the two things that pause a task — **permission requests** and
+**clarifying questions** — to a dashboard inbox, and send the human's answer back
+into the live session so it continues without a restart.
+
+> Prereq / notable rework: `claudeSession.ts` currently closes stdin immediately
+> (`child.stdin.end()`), so a session cannot be answered mid-flight. This phase
+> switches to the CLI's **streaming input** mode (`--input-format stream-json`,
+> keeping stdin open) so we can push messages into a running session.
+
+### Deliverables
+
+- [ ] Keep the input stream open; add `SessionHandle.send(message)` and thread it
+      through `SessionManager` (`session:answer` IPC by `runId`).
+- [ ] Detect permission prompts and clarifying questions from the event stream (or
+      via `--permission-mode` + a `canUseTool`-style hook if we adopt one), and
+      emit a new `attention:new` event: `{ runId, kind: 'permission' | 'question',
+      prompt, options? }`.
+- [ ] A **risk policy** (`src/main/permissionPolicy.ts`, pure + tested):
+      auto-approve safe reads/edits; **route to a human** anything touching git
+      push, deletions, or `.env`/secrets — exactly the policy described in
+      `docs/03`. Task goes `waiting-input` while parked.
+- [ ] Renderer: an **Attention** inbox listing pending items across all tasks;
+      answering (approve/deny, or free-text) calls `session:answer` and clears it;
+      the task returns to `running`.
+
+### Done when
+
+- A session that asks a question surfaces in the inbox; answering it resumes the
+  same session (same session id, no restart) and the task continues.
+- A risky tool use is held for approval; a safe one is auto-approved per policy.
+- Policy unit tests cover the git-push / delete / secrets cases.
+
+---
+
+## Phase 5 — Usage-limit gate (auto-respawn)
+
+**Goal.** The headline feature: when Claude hits a usage limit, park everything and
+**automatically resume** each session at reset time.
+
+The plumbing already exists at the edges — `mapRawEvent` emits `rate-limit` with a
+`resetsAt`, and the Session view renders it. This phase turns that signal into the
+account-wide gate described in `docs/03`.
+
+### Deliverables
+
+- [ ] A global **limit gate** in `src/main/limitGate.ts`: on a non-`allowed`
+      `rate-limit` event, mark the task `blocked-by-limit`, hold **all** scheduling
+      (it's account-wide), and record `resetsAt`.
+- [ ] Schedule a timer for `resetsAt` **plus random jitter**; on fire, **resume**
+      each parked session by its saved session id (`claude --resume <id>` /
+      `--session-id`) and release the gate.
+- [ ] Distinguish the **5-hour rolling** limit (auto-resumes) from the **weekly
+      cap** (waits out the weekly window) and label them differently in the UI.
+- [ ] IPC event `limit:changed` with the active reset time; renderer shows a
+      **global banner with a live countdown** and which tasks are parked.
+- [ ] Survive an app restart during a limit: persist the gate state so resume still
+      happens after a relaunch (ties into Phase 6).
+
+### Done when
+
+- A simulated/real limit parks all work behind one banner with a live countdown.
+- When the reset time passes, parked sessions resume automatically by session id.
+- Gate transition logic is unit-tested with a mock clock.
+
+---
+
+## Phase 6 — History, resume-across-restart & polish
+
+**Goal.** Make the app durable and legible over long runs: persist transcripts,
+resume in-flight work after a relaunch, and tidy the UX.
+
+### Deliverables
+
+- [ ] Persist per-task transcript/event history; reopening a task shows its past
+      output, not a blank pane.
+- [ ] On startup, reconcile: tasks left `running`/`waiting-input`/`blocked-by-limit`
+      are re-attached or safely re-queued (using saved session ids).
+- [ ] Settings screen: default model/permission mode, concurrency limit, jitter,
+      plan write-back toggle.
+- [ ] Empty states, error surfacing, and a footer showing Claude status + app info
+      (fold in the Phase 0 banner).
+
+### Done when
+
+- Killing and relaunching the app mid-run does not lose task state or transcripts.
+- Every task's history is viewable after the fact.
+
+---
+
+## Phase 7 — Packaging & release
+
+**Goal.** Ship an installable build.
+
+### Deliverables
+
+- [ ] Verify `pnpm build` + `pnpm package` produce a working Windows installer
+      (`electron-builder.yml` is already present) that launches and finds `claude`.
+- [ ] App icon, product metadata, and a first-run check (installed + logged in,
+      warn on `ANTHROPIC_API_KEY`) surfaced cleanly.
+- [ ] Confirm the bundled dependency tree stays permissive
+      ([`docs/06-licensing.md`](../06-licensing.md)); document the release steps.
+
+### Done when
+
+- A packaged build installs and runs a project end-to-end on a clean machine.
+
+---
+
+## Conventions for every phase
+
+- **Contract first.** New data crossing the UI↔engine boundary gets its types in
+  `src/shared/` before either side uses it (`docs/02`).
+- **Pure logic is unit-tested.** Parsers, policies, schedulers, and gates are pure
+  functions with `.test.ts` files, like `claudeSession.mapRawEvent` today.
+- **Green before commit.** `pnpm typecheck` and `pnpm test` pass; commit message
+  ends with `(Phase N)`.
+- **No paid API.** Everything runs the subscription `claude` CLI; never introduce a
+  path that uses `ANTHROPIC_API_KEY` (`docs/06`).
