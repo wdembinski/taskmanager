@@ -42,8 +42,12 @@ export type SessionEvent =
   | { kind: 'thinking'; text: string }
   /** A chunk of Claude's visible answer. */
   | { kind: 'assistant'; text: string }
-  /** Claude decided to use a tool (edit a file, run a command, …). */
-  | { kind: 'tool-use'; name: string; toolId: string }
+  /**
+   * Claude decided to use a tool (edit a file, run a command, …). `input` is the
+   * tool's arguments (e.g. `{ command }` for Bash, `{ file_path }` for Edit) —
+   * the Phase 4 risk policy inspects it to decide auto-approve vs. ask-a-human.
+   */
+  | { kind: 'tool-use'; name: string; toolId: string; input?: Record<string, unknown> }
   /** A tool finished. */
   | { kind: 'tool-result'; toolId: string; isError: boolean }
   /**

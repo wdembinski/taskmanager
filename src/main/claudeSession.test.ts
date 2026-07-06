@@ -5,7 +5,7 @@
  * so these tests pin our parser to the actual protocol.
  */
 import { describe, expect, it } from 'vitest';
-import { buildClaudeArgs, mapRawEvent } from './claudeSession';
+import { buildClaudeArgs, encodeUserMessage, mapRawEvent } from './claudeSession';
 
 describe('mapRawEvent', () => {
   it('maps the init system event to a started event with the session id', () => {
@@ -45,14 +45,15 @@ describe('mapRawEvent', () => {
         content: [
           { type: 'thinking', thinking: 'let me think' },
           { type: 'text', text: 'pong' },
-          { type: 'tool_use', id: 'toolu_1', name: 'Bash' },
+          { type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'ls' } },
         ],
       },
     });
     expect(events).toEqual([
       { kind: 'thinking', text: 'let me think' },
       { kind: 'assistant', text: 'pong' },
-      { kind: 'tool-use', name: 'Bash', toolId: 'toolu_1' },
+      // tool_use now carries its input so the Phase 4 risk policy can inspect it.
+      { kind: 'tool-use', name: 'Bash', toolId: 'toolu_1', input: { command: 'ls' } },
     ]);
   });
 
@@ -106,6 +107,8 @@ describe('buildClaudeArgs', () => {
       '-p',
       '--output-format',
       'stream-json',
+      '--input-format',
+      'stream-json',
       '--verbose',
       '--model',
       'haiku',
@@ -116,5 +119,31 @@ describe('buildClaudeArgs', () => {
     ]);
     // The prompt must travel over stdin, never the command line.
     expect(args).not.toContain('do the thing');
+  });
+
+  it('adds the permission gate flags and forces default mode when gated', () => {
+    const args = buildClaudeArgs(
+      { prompt: 'x', cwd: 'C:\\work', model: 'haiku', permissionMode: 'acceptEdits' },
+      'session-123',
+      { configPath: 'C:\\tmp\\mcp-1.json' },
+    );
+    // The gate makes our policy authoritative for every tool, so mode is 'default'.
+    const modeIndex = args.indexOf('--permission-mode');
+    expect(args[modeIndex + 1]).toBe('default');
+    expect(args).toContain('--mcp-config');
+    expect(args).toContain('C:\\tmp\\mcp-1.json');
+    expect(args).toContain('--permission-prompt-tool');
+    expect(args).toContain('mcp__orchestrator-permissions__approve');
+  });
+});
+
+describe('encodeUserMessage', () => {
+  it('wraps text as a newline-terminated stream-json user turn', () => {
+    const line = encodeUserMessage('hello');
+    expect(line.endsWith('\n')).toBe(true);
+    expect(JSON.parse(line.trim())).toEqual({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'text', text: 'hello' }] },
+    });
   });
 });

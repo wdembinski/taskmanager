@@ -11,6 +11,7 @@
 import { useEffect, useState } from 'react';
 import {
   Caption1,
+  CounterBadge,
   makeStyles,
   MessageBar,
   MessageBarBody,
@@ -21,6 +22,7 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import type { AppInfo, ClaudeStatus } from '@shared/ipc';
+import { Attention } from './Attention';
 import { Board } from './Board';
 import { Projects } from './Projects';
 import { SessionRunner } from './SessionRunner';
@@ -40,17 +42,29 @@ const useStyles = makeStyles({
   body: { display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1 },
 });
 
-type TabId = 'projects' | 'board' | 'scratch';
+type TabId = 'projects' | 'board' | 'attention' | 'scratch';
 
 export function App(): JSX.Element {
   const styles = useStyles();
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [claude, setClaude] = useState<ClaudeStatus | null>(null);
   const [tab, setTab] = useState<TabId>('projects');
+  // How many tasks are waiting on a human, shown as a badge on the Attention tab.
+  const [attentionCount, setAttentionCount] = useState(0);
 
   useEffect(() => {
     void window.api.invoke('app:getInfo').then(setInfo);
     void window.api.invoke('claude:getStatus').then(setClaude);
+    void window.api.invoke('attention:list').then((items) => setAttentionCount(items.length));
+
+    const offNew = window.api.on('attention:new', () => setAttentionCount((n) => n + 1));
+    const offResolved = window.api.on('attention:resolved', () =>
+      setAttentionCount((n) => Math.max(0, n - 1)),
+    );
+    return () => {
+      offNew();
+      offResolved();
+    };
   }, []);
 
   const claudeOk = claude?.installed && claude?.authenticated && !claude?.apiKeyDetected;
@@ -77,11 +91,25 @@ export function App(): JSX.Element {
       <TabList selectedValue={tab} onTabSelect={(_e, d) => setTab(d.value as TabId)}>
         <Tab value="projects">Projects</Tab>
         <Tab value="board">Board</Tab>
+        <Tab value="attention">
+          Attention
+          {attentionCount > 0 && (
+            <CounterBadge count={attentionCount} color="danger" size="small" appearance="filled" />
+          )}
+        </Tab>
         <Tab value="scratch">Scratch run</Tab>
       </TabList>
 
       <div className={styles.body}>
-        {tab === 'projects' ? <Projects /> : tab === 'board' ? <Board /> : <SessionRunner />}
+        {tab === 'projects' ? (
+          <Projects />
+        ) : tab === 'board' ? (
+          <Board />
+        ) : tab === 'attention' ? (
+          <Attention />
+        ) : (
+          <SessionRunner />
+        )}
       </div>
     </div>
   );

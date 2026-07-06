@@ -84,6 +84,7 @@ void app.whenReady().then(() => {
 app.on('before-quit', () => {
   engine?.scheduler.dispose();
   engine?.sessions.stopAll();
+  engine?.broker.close();
   engine?.store.close();
 });
 

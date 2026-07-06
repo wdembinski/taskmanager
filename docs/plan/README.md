@@ -25,8 +25,8 @@ plan the orchestrator could one day run on its own repo.
 | 1 | Session runner + live Session view | ✅ shipped (`af5e802`) |
 | 2 | Persistence & Projects | ✅ shipped |
 | 3 | Task board & Scheduler | ✅ shipped |
-| 4 | Attention inbox (permissions & questions) | ⬜ next |
-| 5 | Usage-limit gate (auto-respawn) | ⬜ |
+| 4 | Attention inbox (permissions & questions) | ✅ shipped |
+| 5 | Usage-limit gate (auto-respawn) | ⬜ next |
 | 6 | History, resume-across-restart & polish | ⬜ |
 | 7 | Packaging & release | ⬜ |
 
@@ -144,26 +144,52 @@ into the live session so it continues without a restart.
 
 ### Deliverables
 
-- [ ] Keep the input stream open; add `SessionHandle.send(message)` and thread it
-      through `SessionManager` (`session:answer` IPC by `runId`).
-- [ ] Detect permission prompts and clarifying questions from the event stream (or
-      via `--permission-mode` + a `canUseTool`-style hook if we adopt one), and
-      emit a new `attention:new` event: `{ runId, kind: 'permission' | 'question',
-      prompt, options? }`.
-- [ ] A **risk policy** (`src/main/permissionPolicy.ts`, pure + tested):
+- [x] Keep the input stream open; add `SessionHandle.send(message)` and thread it
+      through `SessionManager` (`session:answer` IPC by `runId`). `claudeSession`
+      now spawns with `--input-format stream-json`, sends the prompt as a
+      stream-json user turn, and leaves stdin open; the scheduler ends the process
+      explicitly on `result` (it no longer self-exits). Pure `encodeUserMessage`
+      is unit-tested.
+- [x] **True pre-execution veto** for permissions (not a monitor): task runs spawn
+      with `--permission-prompt-tool`, so the CLI calls our MCP approval tool and
+      **blocks** before running each tool. The relay (`permissionServerSource.ts`,
+      a self-contained `.cjs` the CLI spawns) forwards every tool use to the in-app
+      **`PermissionBroker`** (localhost HTTP, per-run bearer token); the scheduler
+      auto-approves safe ones per policy and parks risky ones as an `attention:new`
+      item until a human answers — the tool stays held the whole time. Gated runs
+      use `--permission-mode default` so the policy governs *every* tool (edits
+      included). Fails **safe** (deny) if the broker is unreachable.
+- [x] A **risk policy** (`src/main/permissionPolicy.ts`, pure + tested):
       auto-approve safe reads/edits; **route to a human** anything touching git
       push, deletions, or `.env`/secrets — exactly the policy described in
       `docs/03`. Task goes `waiting-input` while parked.
-- [ ] Renderer: an **Attention** inbox listing pending items across all tasks;
-      answering (approve/deny, or free-text) calls `session:answer` and clears it;
-      the task returns to `running`.
+- [x] **Reliable clarifying questions** via an explicit contract, not a heuristic:
+      the task prompt instructs Claude to prefix a line with `@@NEEDS_INPUT@@` when —
+      and only when — it needs a human decision; the pure `detectAttention`
+      (`src/main/attention.ts`, unit-tested) detects that sentinel deterministically.
+      A `result` for a parked run is held (no settle) until the human answers.
+- [x] Renderer: an **Attention** inbox listing pending items across all tasks;
+      permission items get **Approve/Deny** (releasing/vetoing the held tool) and
+      questions get a free-text reply, all via `attention:answer`; the task returns
+      to `running`. A live count badge sits on the Attention tab.
 
 ### Done when
 
-- A session that asks a question surfaces in the inbox; answering it resumes the
-  same session (same session id, no restart) and the task continues.
-- A risky tool use is held for approval; a safe one is auto-approved per policy.
-- Policy unit tests cover the git-push / delete / secrets cases.
+- [x] A session that asks a question surfaces in the inbox; answering it resumes the
+      same session (same session id, no restart) and the task continues. *(Claude
+      signals with `@@NEEDS_INPUT@@`; the answer is pushed into the still-open input
+      stream; the parked `result` is not settled until the item is cleared.)*
+- [x] A risky tool use is **held for approval** — genuinely blocked before it runs
+      via the MCP permission tool — and a safe one is auto-approved per policy.
+- [x] Policy unit tests cover the git-push / delete / secrets cases; the broker's
+      auth/decision/fail-safe contract and the MCP relay round-trip are tested by
+      spawning the real relay against a fake broker (no live Claude needed).
+      `pnpm typecheck` + `pnpm test` (59 tests) + `pnpm build` green; app boots
+      (10s smoke test; broker binds and materializes the relay under userData).
+
+> **Packaging note (Phase 7).** The relay is spawned as `process.execPath` under
+> `ELECTRON_RUN_AS_NODE=1`; re-confirm it resolves and runs from inside a packaged
+> build (asar) when we do Phase 7, alongside the `better-sqlite3` bundling check.
 
 ---
 

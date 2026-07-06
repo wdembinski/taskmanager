@@ -14,6 +14,8 @@ import type { IpcApi, IpcEvents } from '@shared/ipc';
 import type { Project, ProjectWithTasks } from '@shared/model';
 import { getClaudeStatus } from './claudeStatus';
 import { parsePlan } from './planParser';
+import { PermissionBroker } from './permissionBroker';
+import { writePermissionServer } from './permissionServerSource';
 import { Scheduler } from './scheduler';
 import { SessionManager } from './sessionManager';
 import { createStore, type Store } from './store';
@@ -50,6 +52,7 @@ export interface Engine {
   sessions: SessionManager;
   scheduler: Scheduler;
   store: Store;
+  broker: PermissionBroker;
 }
 
 /**
@@ -69,13 +72,38 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // One SQLite file per user, under Electron's managed userData directory.
   const store = createStore(join(app.getPath('userData'), 'orchestrator.db'));
 
-  // The scheduler drives tasks through sessions and reports progress to the Board.
+  // The scheduler drives tasks through sessions and reports progress to the Board,
+  // and raises Attention-inbox items when a task needs a human (Phase 4).
   const scheduler = new Scheduler(
     store,
     sessions,
     (change) => send('task:changed', change),
     (change) => send('scheduler:changed', change),
+    (item) => send('attention:new', item),
+    (id) => send('attention:resolved', { id }),
   );
+
+  // The permission broker gives the scheduler a TRUE pre-execution veto: the CLI
+  // asks it (via an MCP relay) before running each tool, and the scheduler either
+  // auto-approves per policy or parks the task until a human answers. Materialize
+  // the relay script now and bring the broker up in the background; task runs are
+  // ungated only in the brief window before it binds (or if binding fails).
+  const mcpDir = join(app.getPath('userData'), 'mcp');
+  const broker = new PermissionBroker((request) => scheduler.decidePermission(request));
+  void broker
+    .start()
+    .then((address) => {
+      const serverScriptPath = writePermissionServer(mcpDir);
+      scheduler.setPermissionGate({
+        brokerUrl: address.url,
+        token: address.token,
+        serverScriptPath,
+        configDir: mcpDir,
+      });
+    })
+    .catch((err) => {
+      console.error('Permission broker failed to start; task runs will be ungated:', err);
+    });
 
   handle('app:getInfo', async () => ({
     version: app.getVersion(),
@@ -89,6 +117,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
   handle('session:start', async (request) => sessions.start(request));
   handle('session:stop', async (runId) => sessions.stop(runId));
+  handle('session:answer', async (runId, message) => sessions.send(runId, message));
 
   handle('project:pickDirectory', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
@@ -127,5 +156,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     return started;
   });
 
-  return { sessions, scheduler, store };
+  handle('attention:list', async () => scheduler.listAttention());
+  handle('attention:answer', async (itemId, answer) => scheduler.answerAttention(itemId, answer));
+
+  return { sessions, scheduler, store, broker };
 }

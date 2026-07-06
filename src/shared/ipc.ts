@@ -25,6 +25,7 @@
 import type { SessionEventEnvelope, StartSessionRequest } from './session';
 import type { AddProjectInput, ProjectWithTasks, Task } from './model';
 import type { ActiveRun, SchedulerChange, TaskChange } from './scheduler';
+import type { AttentionAnswer, AttentionItem } from './attention';
 
 /** Result of checking whether the local `claude` CLI is installed and logged in. */
 export interface ClaudeStatus {
@@ -70,6 +71,12 @@ export interface IpcApi {
   'session:start': (request: StartSessionRequest) => Promise<{ runId: string }>;
   /** Stop a running session by its run id (kills the underlying process). */
   'session:stop': (runId: string) => Promise<void>;
+  /**
+   * Push a message into a running session's open input stream (Phase 4), so a
+   * human's answer to a question or approval continues the SAME session — no
+   * restart, no lost context. No-op if the run is unknown or already exited.
+   */
+  'session:answer': (runId: string, message: string) => Promise<void>;
 
   /** Open a native folder picker. Resolves to the chosen path, or null if cancelled. */
   'project:pickDirectory': () => Promise<string | null>;
@@ -97,6 +104,15 @@ export interface IpcApi {
   'scheduler:activeRuns': () => Promise<ActiveRun[]>;
   /** Run a single task ad-hoc (independent of its project's queue). Returns its run id. */
   'task:run': (taskId: string) => Promise<{ runId: string }>;
+
+  /** Snapshot of everything currently waiting on a human (seed the inbox on load). */
+  'attention:list': () => Promise<AttentionItem[]>;
+  /**
+   * Answer one inbox item. For a `permission` item this releases (or vetoes) the
+   * blocked tool; for a `question` it pushes the reply into the session. Either
+   * way the item clears and its task returns to `running`.
+   */
+  'attention:answer': (itemId: string, answer: AttentionAnswer) => Promise<void>;
 }
 
 /**
@@ -111,6 +127,10 @@ export interface IpcEvents {
   'task:changed': TaskChange;
   /** A project's queue moved between running/paused/idle. */
   'scheduler:changed': SchedulerChange;
+  /** A task needs a human: a permission request or a clarifying question. */
+  'attention:new': AttentionItem;
+  /** An inbox item was answered/cleared, so the UI can remove it. */
+  'attention:resolved': { id: string };
 }
 
 /** Convenience: the set of valid invoke channel names. */
