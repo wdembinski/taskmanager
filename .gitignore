@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Build output (electron-vite compiles here; electron-builder packages from here)
+out/
+dist/
+*.tsbuildinfo
+
+# Local application data (SQLite database, transcripts, logs) — never commit
+/data/
+*.sqlite
+*.sqlite-journal
+
+# Local environment files (NEVER commit real secrets)
+.env
+.env.local
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.log

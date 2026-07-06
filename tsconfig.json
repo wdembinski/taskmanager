@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "//": "Root config that ties the two project references together so editors and `tsc --build` understand the whole repo. There are two build targets because Node code and browser code need different libs/module settings.",
+  "files": [],
+  "references": [{ "path": "./tsconfig.node.json" }, { "path": "./tsconfig.web.json" }]
+}

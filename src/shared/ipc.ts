@@ -1,0 +1,81 @@
+/**
+ * Shared IPC contract — the "API" between the UI and the orchestration engine.
+ *
+ * WHY THIS FILE EXISTS
+ * --------------------
+ * In Electron the UI (renderer) and the engine (main process) are separate
+ * programs that cannot call each other's functions directly. They talk by
+ * sending messages over "channels" (think: named mailboxes). This file is the
+ * single source of truth for:
+ *   - the channel NAMES (so a typo can't silently break a call), and
+ *   - the TYPES of what each channel sends and returns.
+ *
+ * Both sides import these types, so if the engine changes a return shape, the
+ * UI stops type-checking until it's updated. That is exactly what we want.
+ *
+ * There are two directions of communication:
+ *   - INVOKE  : UI asks the engine to do something and awaits a reply
+ *               (request/response, like an HTTP call). See `IpcApi` below.
+ *   - EVENTS  : the engine pushes updates to the UI at any time
+ *               (e.g. "a new line of Claude output arrived"). See `IpcEvents`.
+ *
+ * Phase 0 only needs a couple of channels to prove the wiring works; later
+ * phases add project/task/session channels here.
+ */
+
+/** Result of checking whether the local `claude` CLI is installed and logged in. */
+export interface ClaudeStatus {
+  /** True if a `claude` binary was found and responded to `--version`. */
+  installed: boolean;
+  /** The reported CLI version, if installed (e.g. "2.1.200"). */
+  version?: string;
+  /**
+   * Whether the CLI appears to be authenticated with a subscription login
+   * (an `~/.claude/.credentials.json` exists). This is a best-effort hint —
+   * it does NOT prove the login is still valid.
+   */
+  authenticated: boolean;
+  /** Whether an ANTHROPIC_API_KEY is set. We warn if so, to avoid API billing. */
+  apiKeyDetected: boolean;
+  /** Human-readable explanation shown in the UI when something is off. */
+  message: string;
+}
+
+/** Basic facts about the running app, shown in the UI footer / About. */
+export interface AppInfo {
+  version: string;
+  electron: string;
+  node: string;
+  chrome: string;
+  platform: NodeJS.Platform;
+}
+
+/**
+ * INVOKE channels: request → response.
+ *
+ * Each key is a channel name; the function type documents its arguments and the
+ * value it resolves to. The preload bridge and the main-process handlers are
+ * both derived from this one interface (see src/preload/index.ts and
+ * src/main/ipc.ts), so they can never drift apart.
+ */
+export interface IpcApi {
+  /** Return version/runtime info about the desktop app itself. */
+  'app:getInfo': () => Promise<AppInfo>;
+  /** Check whether the Claude CLI is installed and logged in on this machine. */
+  'claude:getStatus': () => Promise<ClaudeStatus>;
+}
+
+/**
+ * EVENT channels: the engine → UI push notifications. Phase 0 has none yet;
+ * later phases add e.g. 'session:output', 'attention:new', 'limit:changed'.
+ * Declared as an (initially empty) map so the preload/renderer typings are ready.
+ */
+export interface IpcEvents {
+  // 'session:output': SessionOutputEvent;  // added in Phase 1
+}
+
+/** Convenience: the set of valid invoke channel names. */
+export type IpcInvokeChannel = keyof IpcApi;
+
+/** Convenience: the set of valid event channel names. */
+export type IpcEventChannel = keyof IpcEvents;

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "//": "Type-checks the Node.js side of the app: the main process, the preload bridge, and shared code. These run under Electron's bundled Node, so we use Node libs (no DOM).",
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "module": "ESNext",
+    "lib": ["ES2022"],
+    "types": ["node"]
+  },
+  "include": ["src/main", "src/preload", "src/shared", "electron.vite.config.ts"]
+}

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "//": "Type-checks the renderer (the React UI). It runs in a browser window, so it uses DOM libs and react-jsx. It may import shared types but NEVER Node APIs directly.",
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "module": "ESNext",
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"]
+  },
+  "include": ["src/renderer/src", "src/shared", "src/preload/index.d.ts"]
+}

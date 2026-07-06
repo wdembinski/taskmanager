@@ -1,0 +1,20 @@
+# electron-builder configuration — how the app is packaged into an installer.
+# We only target Windows for now (NSIS installer). Run `npm run package`.
+appId: network.vipper.claude-orchestrator
+productName: Claude Orchestrator
+directories:
+  # electron-builder packages the compiled output produced by electron-vite build.
+  output: dist
+  buildResources: build
+files:
+  - out/**/*
+  - package.json
+win:
+  target:
+    - nsis
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false
+# The Claude CLI/SDK is used from the user's own machine (their subscription login),
+# so we do NOT bundle it — the app shells out to the `claude` already on PATH.
