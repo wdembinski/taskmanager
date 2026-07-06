@@ -11,8 +11,7 @@
  */
 import { join } from 'node:path';
 import { app, BrowserWindow, shell } from 'electron';
-import { registerIpcHandlers } from './ipc';
-import type { SessionManager } from './sessionManager';
+import { registerIpcHandlers, type Engine } from './ipc';
 
 /**
  * Create the main window.
@@ -61,15 +60,15 @@ function createWindow(): BrowserWindow {
   return window;
 }
 
-// Holds the engine so we can shut its sessions down cleanly on quit.
-let sessions: SessionManager | undefined;
+// Holds the engine so we can shut its sessions and database down cleanly on quit.
+let engine: Engine | undefined;
 
 // app.whenReady() resolves once Electron has finished starting up; only then may
 // we create windows.
 void app.whenReady().then(() => {
   const window = createWindow();
   // The engine needs the window so it can push live session events to the UI.
-  sessions = registerIpcHandlers(window);
+  engine = registerIpcHandlers(window);
 
   // macOS convention: re-create a window when the dock icon is clicked and no
   // windows are open. Harmless on Windows/Linux.
@@ -78,8 +77,12 @@ void app.whenReady().then(() => {
   });
 });
 
-// Never leave orphaned `claude` processes running after the app closes.
-app.on('before-quit', () => sessions?.stopAll());
+// Never leave orphaned `claude` processes running after the app closes, and
+// close the database so its WAL is checkpointed cleanly.
+app.on('before-quit', () => {
+  engine?.sessions.stopAll();
+  engine?.store.close();
+});
 
 // Quit when all windows are closed, except on macOS where apps typically stay
 // alive until the user explicitly quits (Cmd+Q).

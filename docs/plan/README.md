@@ -23,8 +23,8 @@ plan the orchestrator could one day run on its own repo.
 |------:|-------|-------|
 | 0 | Scaffold (3-process Electron, IPC contract, Claude status) | ✅ shipped (`8887127`) |
 | 1 | Session runner + live Session view | ✅ shipped (`af5e802`) |
-| 2 | Persistence & Projects | ⬜ next |
-| 3 | Task board & Scheduler | ⬜ |
+| 2 | Persistence & Projects | ✅ shipped |
+| 3 | Task board & Scheduler | ⬜ next |
 | 4 | Attention inbox (permissions & questions) | ⬜ |
 | 5 | Usage-limit gate (auto-respawn) | ⬜ |
 | 6 | History, resume-across-restart & polish | ⬜ |
@@ -49,36 +49,40 @@ automatically** yet.
 
 ### Deliverables
 
-- [ ] Wire the local store: **`better-sqlite3`** (decided), a real SQLite database
+- [x] Wire the local store: **`better-sqlite3`** (decided), a real SQLite database
       under `app.getPath('userData')` — matches the "SQLite database" already in the
-      `docs/02` diagram. Accept the native-module build step; add a rebuild/postinstall
-      step for Electron and confirm `pnpm package` bundles the native binary.
-- [ ] Define shared domain types in a new `src/shared/model.ts`: `Project`
+      `docs/02` diagram. Native-module build handled via a `postinstall`
+      (`electron-builder install-app-deps`) that rebuilds it for Electron's ABI, and
+      a pnpm `onlyBuiltDependencies` allowlist. Verified loading + SQL under Electron's
+      Node (ABI 20.18); `pnpm package` bundling to be re-confirmed in Phase 7.
+- [x] Define shared domain types in a new `src/shared/model.ts`: `Project`
       (`id`, `name`, `path`, `planPath`, `defaultModel`, `defaultPermissionMode`)
-      and `Task` (`id`, `projectId`, `phase`, `title`, `status`, `sessionId?`,
+      and `Task` (`id`, `projectId`, `phase`, `title`, `status`, `sessionId`,
       `order`). Reuse `ClaudeModel`/`PermissionMode` from `session.ts`.
-- [ ] `TaskStatus` union: `pending | running | waiting-input | blocked-by-limit |
+- [x] `TaskStatus` union: `pending | running | waiting-input | blocked-by-limit |
       done | failed | stopped` (matches the state machine in `docs/03`).
-- [ ] A **plan parser** in `src/main/planParser.ts` (pure, unit-tested): markdown →
-      `{ phase, title }[]`. `##`/`###` headings become phases; `- [ ]` / `- [x]`
-      items become tasks (checked = `done`). This is the same grammar the app
-      documents in `docs/03`.
-- [ ] A `store` module in `src/main/store.ts`: load/save, plus
-      `addProject`, `listProjects`, `removeProject`, and `syncTasksFromPlan`
-      (re-parse a project's plan and reconcile tasks without losing live status).
-- [ ] New IPC channels in `src/shared/ipc.ts`: `project:add` (pick a folder +
-      plan path), `project:list`, `project:remove`, `project:syncPlan`. Add a
-      main-process folder picker (`dialog.showOpenDialog`) behind `project:add`.
-- [ ] Renderer: a **Projects** screen (left nav or top tabs) listing projects and,
-      per project, its parsed tasks grouped by phase with a status chip. Keep the
-      existing Session view reachable as a "Scratch run" tab.
+- [x] A **plan parser** in `src/main/planParser.ts` (pure, unit-tested): markdown →
+      `{ phase, title, done }[]`. Headings become phases; `- [ ]` / `- [x]` items
+      become tasks (checked = `done`); wrapped lines fold into their task. Same
+      grammar the app documents in `docs/03`.
+- [x] A `store` module in `src/main/store.ts`: `addProject`, `listProjects`,
+      `removeProject`, `getTasks`, and `syncTasksFromPlan`. The pure reconcile logic
+      (preserves live status/sessionId across re-parses) lives in
+      `src/main/taskReconcile.ts` so it is unit-tested without the native DB.
+- [x] New IPC channels in `src/shared/ipc.ts`: `project:pickDirectory`,
+      `project:add`, `project:list`, `project:remove`, `project:syncPlan`. Folder
+      picker via `dialog.showOpenDialog` behind `project:pickDirectory`.
+- [x] Renderer: a **Projects** screen (top tabs) listing projects and, per project,
+      its parsed tasks grouped by phase with a status chip, plus Sync/Remove. The
+      existing Session view is now the "Scratch run" tab.
 
 ### Done when
 
-- Adding a project persists across an app restart.
-- A project's `plan.md` is parsed into phase-grouped tasks shown in the UI.
-- `pnpm typecheck` and `pnpm test` pass; the parser has unit tests covering
-  headings, checked/unchecked items, and nested lists.
+- [x] Adding a project persists across an app restart. *(store writes to a real
+      SQLite file under userData; verified DDL/DML + cascade under Electron)*
+- [x] A project's `plan.md` is parsed into phase-grouped tasks shown in the UI.
+- [x] `pnpm typecheck` and `pnpm test` pass (26 tests); the parser has unit tests
+      covering headings, checked/unchecked items, wrapping, and nesting.
 
 ---
 

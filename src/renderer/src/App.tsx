@@ -15,10 +15,13 @@ import {
   MessageBar,
   MessageBarBody,
   Spinner,
+  Tab,
+  TabList,
   Title2,
   tokens,
 } from '@fluentui/react-components';
 import type { AppInfo, ClaudeStatus } from '@shared/ipc';
+import { Projects } from './Projects';
 import { SessionRunner } from './SessionRunner';
 
 const useStyles = makeStyles({
@@ -33,12 +36,16 @@ const useStyles = makeStyles({
   },
   header: { display: 'flex', alignItems: 'baseline', gap: '12px' },
   meta: { color: tokens.colorNeutralForeground3 },
+  body: { display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1 },
 });
+
+type TabId = 'projects' | 'scratch';
 
 export function App(): JSX.Element {
   const styles = useStyles();
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [claude, setClaude] = useState<ClaudeStatus | null>(null);
+  const [tab, setTab] = useState<TabId>('projects');
 
   useEffect(() => {
     void window.api.invoke('app:getInfo').then(setInfo);
@@ -66,7 +73,12 @@ export function App(): JSX.Element {
         <Spinner label="Checking Claude…" labelPosition="after" size="tiny" />
       )}
 
-      <SessionRunner />
+      <TabList selectedValue={tab} onTabSelect={(_e, d) => setTab(d.value as TabId)}>
+        <Tab value="projects">Projects</Tab>
+        <Tab value="scratch">Scratch run</Tab>
+      </TabList>
+
+      <div className={styles.body}>{tab === 'projects' ? <Projects /> : <SessionRunner />}</div>
     </div>
   );
 }

@@ -1,0 +1,123 @@
+/**
+ * Unit tests for the pure task reconciliation. No database — just proving that
+ * re-parsing a plan preserves live status and re-orders correctly.
+ */
+import { describe, expect, it } from 'vitest';
+import { reconcileTasks } from './taskReconcile';
+import type { Task } from '@shared/model';
+
+/** Build a stored task with sensible defaults for the fields under test. */
+function task(partial: Partial<Task> & Pick<Task, 'phase' | 'title'>): Task {
+  return {
+    id: `id-${partial.title}`,
+    projectId: 'proj',
+    status: 'pending',
+    sessionId: null,
+    order: 0,
+    ...partial,
+  };
+}
+
+// Deterministic id generator for newly created tasks.
+function idSeq(): () => string {
+  let n = 0;
+  return () => `new-${n++}`;
+}
+
+describe('reconcileTasks', () => {
+  it('creates tasks for a first-time sync, using done-state from the plan', () => {
+    const result = reconcileTasks(
+      'proj',
+      [],
+      [
+        { phase: 'P1', title: 'a', done: true },
+        { phase: 'P1', title: 'b', done: false },
+      ],
+      idSeq(),
+    );
+    expect(result).toEqual([
+      {
+        id: 'new-0',
+        projectId: 'proj',
+        phase: 'P1',
+        title: 'a',
+        status: 'done',
+        sessionId: null,
+        order: 0,
+      },
+      {
+        id: 'new-1',
+        projectId: 'proj',
+        phase: 'P1',
+        title: 'b',
+        status: 'pending',
+        sessionId: null,
+        order: 1,
+      },
+    ]);
+  });
+
+  it('preserves id, live status, and sessionId for matched tasks', () => {
+    const existing = [
+      task({
+        phase: 'P1',
+        title: 'a',
+        id: 'keep',
+        status: 'running',
+        sessionId: 'sess-1',
+        order: 0,
+      }),
+    ];
+    const result = reconcileTasks(
+      'proj',
+      existing,
+      [{ phase: 'P1', title: 'a', done: false }],
+      idSeq(),
+    );
+    expect(result[0]).toMatchObject({ id: 'keep', status: 'running', sessionId: 'sess-1' });
+  });
+
+  it('does NOT let a plan checkbox override live status of an existing task', () => {
+    // Task is running; plan marks it [x]. We keep 'running', not 'done'.
+    const existing = [task({ phase: 'P', title: 'x', status: 'running' })];
+    const result = reconcileTasks('proj', existing, [{ phase: 'P', title: 'x', done: true }]);
+    expect(result[0].status).toBe('running');
+  });
+
+  it('refreshes order to match the plan even when a task moves', () => {
+    const existing = [
+      task({ phase: 'P', title: 'a', order: 0 }),
+      task({ phase: 'P', title: 'b', order: 1 }),
+    ];
+    // Plan swaps their order.
+    const result = reconcileTasks('proj', existing, [
+      { phase: 'P', title: 'b', done: false },
+      { phase: 'P', title: 'a', done: false },
+    ]);
+    expect(result.map((t) => [t.title, t.order])).toEqual([
+      ['b', 0],
+      ['a', 1],
+    ]);
+  });
+
+  it('drops tasks that no longer appear in the plan', () => {
+    const existing = [task({ phase: 'P', title: 'stays' }), task({ phase: 'P', title: 'removed' })];
+    const result = reconcileTasks('proj', existing, [{ phase: 'P', title: 'stays', done: false }]);
+    expect(result.map((t) => t.title)).toEqual(['stays']);
+  });
+
+  it('treats same title under different phases as distinct tasks', () => {
+    const existing = [task({ phase: 'P1', title: 'a', id: 'p1a', sessionId: 's1' })];
+    const result = reconcileTasks(
+      'proj',
+      existing,
+      [
+        { phase: 'P1', title: 'a', done: false },
+        { phase: 'P2', title: 'a', done: false },
+      ],
+      idSeq(),
+    );
+    expect(result[0]).toMatchObject({ id: 'p1a', sessionId: 's1' });
+    expect(result[1]).toMatchObject({ id: 'new-0', phase: 'P2', sessionId: null });
+  });
+});

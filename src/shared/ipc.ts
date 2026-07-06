@@ -23,6 +23,7 @@
  * phases add project/task/session channels here.
  */
 import type { SessionEventEnvelope, StartSessionRequest } from './session';
+import type { AddProjectInput, ProjectWithTasks, Task } from './model';
 
 /** Result of checking whether the local `claude` CLI is installed and logged in. */
 export interface ClaudeStatus {
@@ -68,6 +69,17 @@ export interface IpcApi {
   'session:start': (request: StartSessionRequest) => Promise<{ runId: string }>;
   /** Stop a running session by its run id (kills the underlying process). */
   'session:stop': (runId: string) => Promise<void>;
+
+  /** Open a native folder picker. Resolves to the chosen path, or null if cancelled. */
+  'project:pickDirectory': () => Promise<string | null>;
+  /** Add a project, parse its plan into tasks, and return it with those tasks. */
+  'project:add': (input: AddProjectInput) => Promise<ProjectWithTasks>;
+  /** List every project, each bundled with its current tasks. */
+  'project:list': () => Promise<ProjectWithTasks[]>;
+  /** Remove a project and all its tasks. */
+  'project:remove': (id: string) => Promise<void>;
+  /** Re-read a project's plan file and reconcile it into the task list. */
+  'project:syncPlan': (id: string) => Promise<Task[]>;
 }
 
 /**
