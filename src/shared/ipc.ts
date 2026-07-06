@@ -26,6 +26,7 @@ import type { SessionEventEnvelope, StartSessionRequest } from './session';
 import type { AddProjectInput, ProjectWithTasks, Task } from './model';
 import type { ActiveRun, SchedulerChange, TaskChange } from './scheduler';
 import type { AttentionAnswer, AttentionItem } from './attention';
+import type { LimitState } from './limit';
 
 /** Result of checking whether the local `claude` CLI is installed and logged in. */
 export interface ClaudeStatus {
@@ -113,6 +114,13 @@ export interface IpcApi {
    * way the item clears and its task returns to `running`.
    */
   'attention:answer': (itemId: string, answer: AttentionAnswer) => Promise<void>;
+
+  /**
+   * The active usage-limit gate (Phase 5), or `null` if no limit is in force —
+   * used to seed the countdown banner when a view mounts. Live changes arrive on
+   * the `limit:changed` event.
+   */
+  'limit:current': () => Promise<LimitState | null>;
 }
 
 /**
@@ -131,6 +139,12 @@ export interface IpcEvents {
   'attention:new': AttentionItem;
   /** An inbox item was answered/cleared, so the UI can remove it. */
   'attention:resolved': { id: string };
+  /**
+   * The account-wide usage-limit gate changed (Phase 5): a `LimitState` when a
+   * limit engages (or its parked set/reset time changes), or `null` when it
+   * clears and work resumes. Drives the global countdown banner.
+   */
+  'limit:changed': LimitState | null;
 }
 
 /** Convenience: the set of valid invoke channel names. */

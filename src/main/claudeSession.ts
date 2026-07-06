@@ -63,6 +63,12 @@ export interface RunSessionOptions {
   runId?: string;
   /** When set, gate every tool use through the broker (a true veto). */
   permission?: PermissionGate;
+  /**
+   * Resume an existing conversation (Phase 5 auto-respawn) instead of starting a
+   * fresh one. When set, the CLI runs with `--resume <id>` on this exact session,
+   * preserving all prior context; the prompt becomes a nudge to continue.
+   */
+  resumeSessionId?: string;
 }
 
 /**
@@ -192,6 +198,7 @@ export function buildClaudeArgs(
   req: StartSessionRequest,
   sessionId: string,
   gate?: { configPath: string },
+  resume = false,
 ): string[] {
   const args = [
     '-p',
@@ -204,7 +211,9 @@ export function buildClaudeArgs(
     req.model,
     '--permission-mode',
     gate ? 'default' : req.permissionMode,
-    '--session-id',
+    // Resuming (Phase 5) continues THIS conversation with its full history;
+    // otherwise we claim a fresh id we can resume later. Both key off the same id.
+    resume ? '--resume' : '--session-id',
     sessionId,
   ];
   if (gate) {
@@ -248,14 +257,17 @@ export function runClaudeSession(
   onEvent: (event: SessionEvent) => void,
   options: RunSessionOptions = {},
 ): SessionHandle {
-  const sessionId = randomUUID();
+  // Resuming keeps the SAME session id (so the task's persisted id stays stable);
+  // a fresh run claims a new one we can resume later.
+  const resuming = options.resumeSessionId != null;
+  const sessionId = options.resumeSessionId ?? randomUUID();
 
   // If this run is gated, materialize its MCP config so the CLI spawns our relay.
   let configPath: string | null = null;
   if (options.permission && options.runId) {
     configPath = writeSessionMcpConfig(options.permission, options.runId);
   }
-  const args = buildClaudeArgs(req, sessionId, configPath ? { configPath } : undefined);
+  const args = buildClaudeArgs(req, sessionId, configPath ? { configPath } : undefined, resuming);
 
   // shell:true lets Windows resolve `claude.cmd` from PATH the way a terminal
   // does. windowsHide stops a console window flashing up for each run.

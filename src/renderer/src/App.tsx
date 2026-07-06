@@ -24,6 +24,7 @@ import {
 import type { AppInfo, ClaudeStatus } from '@shared/ipc';
 import { Attention } from './Attention';
 import { Board } from './Board';
+import { LimitBanner } from './LimitBanner';
 import { Projects } from './Projects';
 import { SessionRunner } from './SessionRunner';
 
@@ -87,6 +88,9 @@ export function App(): JSX.Element {
       ) : (
         <Spinner label="Checking Claude…" labelPosition="after" size="tiny" />
       )}
+
+      {/* Global usage-limit gate (Phase 5): a countdown banner while work is parked. */}
+      <LimitBanner />
 
       <TabList selectedValue={tab} onTabSelect={(_e, d) => setTab(d.value as TabId)}>
         <Tab value="projects">Projects</Tab>

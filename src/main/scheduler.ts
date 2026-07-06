@@ -30,8 +30,10 @@ import type { Project, Task, TaskStatus } from '@shared/model';
 import type { SchedulerState, TaskChange, SchedulerChange, ActiveRun } from '@shared/scheduler';
 import type { SessionEvent, StartSessionRequest } from '@shared/session';
 import type { AttentionAnswer, AttentionItem, AttentionKind } from '@shared/attention';
+import type { LimitState } from '@shared/limit';
 import { detectAttention, NEEDS_INPUT_SENTINEL } from './attention';
 import type { PermissionGate } from './claudeSession';
+import { LimitGate } from './limitGate';
 import type { PermissionRequest, PermissionDecisionResult } from './permissionBroker';
 import { evaluateToolUse } from './permissionPolicy';
 import { tickPlanCheckbox } from './planParser';
@@ -41,6 +43,13 @@ import type { Store } from './store';
 /** Sent to Claude when a permission is denied with no note of its own. */
 const DEFAULT_DENY_MESSAGE =
   'The human declined this action. Do not perform it — find a safer approach, or stop and explain.';
+
+/** The nudge sent to a session we resume after a usage limit clears (Phase 5). */
+const RESUME_NUDGE =
+  'A usage limit interrupted you and it has now reset. Continue the task where you left off.';
+
+/** Upper bound on the random resume jitter (ms) added to a limit's reset time. */
+const LIMIT_JITTER_MS = 60_000;
 
 /** Minimal shape the selection logic needs — kept tiny so tests don't build full tasks. */
 export interface Schedulable {
@@ -138,6 +147,11 @@ export class Scheduler {
   >();
   /** The permission gate handed to every task run (null until the broker is up). */
   private gate: PermissionGate | null = null;
+  /**
+   * The account-wide usage-limit gate (Phase 5). When active, ALL scheduling is
+   * held; when its timer fires, every parked task resumes by its saved session id.
+   */
+  private readonly limitGate: LimitGate;
   /** Once disposed (app quitting), ignore late session events so we never touch a closed DB. */
   private disposed = false;
 
@@ -150,9 +164,20 @@ export class Scheduler {
     private readonly emitAttention: (item: AttentionItem) => void,
     /** Tell the UI an inbox item was answered/cleared. */
     private readonly emitAttentionResolved: (id: string) => void,
+    /** Push the usage-limit gate's state (or null when it clears) to the UI. */
+    private readonly emitLimit: (state: LimitState | null) => void,
     /** Max tasks a single project runs at once. Default 1 = strictly sequential. */
     private readonly concurrency = 1,
-  ) {}
+  ) {
+    this.limitGate = new LimitGate({
+      now: () => Date.now(),
+      jitter: () => Math.floor(Math.random() * LIMIT_JITTER_MS),
+      setTimer: (ms, cb) => setTimeout(cb, ms),
+      clearTimer: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+      onResumeDue: (state) => this.resumeParked(state),
+      onChanged: (state) => this.onLimitChanged(state),
+    });
+  }
 
   /**
    * Wire the permission gate (once the broker is listening). After this, every
@@ -186,12 +211,23 @@ export class Scheduler {
       this.sessions.stop(run.runId); // triggers `exited`, which cleans up bookkeeping
       this.updateTask(run.taskId, { status: 'stopped' }, null);
     }
+    // If a usage limit has parked this project's tasks (Phase 5), stopping cancels
+    // them too, so they are NOT resumed when the gate reopens.
+    if (this.limitGate.active) {
+      const parked = this.store
+        .getTasks(projectId)
+        .filter((t) => t.status === 'blocked-by-limit');
+      for (const task of parked) this.updateTask(task.id, { status: 'stopped' }, null);
+      this.limitGate.unpark(parked.map((t) => t.id));
+    }
     this.setState(projectId, 'idle');
   }
 
   /** Run a single task ad-hoc, regardless of whether its project's queue is active. */
   runTask(taskId: string): { runId: string } | null {
     if (this.disposed) return null;
+    // A usage limit holds everything account-wide — don't start ad-hoc work either.
+    if (this.limitGate.active) return null;
     const task = this.store.getTask(taskId);
     if (!task) return null;
     const project = this.store.getProject(task.projectId);
@@ -207,6 +243,23 @@ export class Scheduler {
   /** Snapshot of everything waiting on a human, oldest first (seed the inbox on load). */
   listAttention(): AttentionItem[] {
     return [...this.attention.values()].sort((a, b) => a.createdAt - b.createdAt);
+  }
+
+  /** The active usage-limit gate, or null — seeds the countdown banner on load. */
+  currentLimit(): LimitState | null {
+    return this.limitGate.state;
+  }
+
+  /**
+   * Re-arm a usage-limit gate that was in force when the app last closed (Phase 5).
+   * Called once at startup after the permission broker is up (so resumed runs are
+   * still gated). If the reset already passed while the app was down, parked tasks
+   * resume right away.
+   */
+  restoreLimitGate(): void {
+    if (this.disposed) return;
+    const saved = this.store.loadLimitGate();
+    if (saved) this.limitGate.restore(saved);
   }
 
   /**
@@ -282,6 +335,9 @@ export class Scheduler {
   /** Stop scheduling and ignore further events. Called on app quit BEFORE the DB closes. */
   dispose(): void {
     this.disposed = true;
+    // Tear down the limit timer WITHOUT resuming, and leave its persisted state
+    // intact so the gate is restored (and the resume still happens) on next launch.
+    this.limitGate.dispose();
     // Release any tools the CLI is still blocked on so their relays don't hang.
     for (const pending of this.pendingDecisions.values()) {
       pending.resolve({ behavior: 'deny', message: 'orchestrator is shutting down' });
@@ -298,6 +354,8 @@ export class Scheduler {
   /** Fill this project's free concurrency slots with its next pending tasks. */
   private pump(projectId: string): void {
     if (this.disposed || !this.activeProjects.has(projectId)) return;
+    // A usage limit is account-wide: hold ALL scheduling until it resets (Phase 5).
+    if (this.limitGate.active) return;
     while (this.runningCount(projectId) < this.concurrency) {
       const next = selectNextPending(this.store.getTasks(projectId), this.inFlight);
       if (!next) break;
@@ -317,9 +375,14 @@ export class Scheduler {
     }
   }
 
-  private startTask(project: Project, task: Task): string {
+  /**
+   * Start a session for one task. When `resumeSessionId` is set (Phase 5, after a
+   * limit reset) the CLI resumes that exact conversation with a continue-nudge
+   * rather than the full task prompt, so no context is lost.
+   */
+  private startTask(project: Project, task: Task, resumeSessionId?: string): string {
     const request: StartSessionRequest = {
-      prompt: buildTaskPrompt(project.name, task),
+      prompt: resumeSessionId ? RESUME_NUDGE : buildTaskPrompt(project.name, task),
       cwd: project.path,
       model: project.defaultModel,
       permissionMode: project.defaultPermissionMode,
@@ -332,6 +395,7 @@ export class Scheduler {
       // Gate every task run through the broker so risky tools are vetoed
       // pre-execution (ungated only if the broker never came up).
       permission: this.gate ?? undefined,
+      resumeSessionId,
     });
     runId = started.runId;
     this.runs.set(runId, { taskId: task.id, projectId: project.id, runId, settled: false });
@@ -365,6 +429,12 @@ export class Scheduler {
         this.updateTask(run.taskId, { status: 'running', sessionId: event.sessionId }, runId);
         break;
 
+      case 'rate-limit':
+        // A usage limit hit (Phase 5). `allowed` just means "still under the cap" —
+        // only a non-allowed status engages the account-wide gate.
+        if (event.status !== 'allowed') this.engageLimit(event);
+        break;
+
       case 'result':
         // The turn ended. If the task is parked awaiting a human, stay alive and
         // keep the input stream open for their answer — do NOT settle or stop.
@@ -391,6 +461,52 @@ export class Scheduler {
       default:
         break;
     }
+  }
+
+  /**
+   * A usage limit hit — engage the account-wide gate (Phase 5). Every currently
+   * running task is parked (`blocked-by-limit`) and its process ended; the saved
+   * session id lets us resume it when the gate's timer fires at reset time.
+   */
+  private engageLimit(event: Extract<SessionEvent, { kind: 'rate-limit' }>): void {
+    // Account-wide: park EVERY in-flight run, not only the one that hit the wall.
+    const active = [...this.runs.values()];
+    this.limitGate.engage(
+      { status: event.status, rateLimitType: event.rateLimitType, resetsAt: event.resetsAt },
+      active.map((r) => r.taskId),
+    );
+    for (const run of active) {
+      run.settled = true; // its imminent exit is expected — don't settle it as failed
+      this.clearRunAttention(run.runId); // a parked run can't be answered mid-limit
+      this.updateTask(run.taskId, { status: 'blocked-by-limit' }, null);
+      // End the process now; we'll spawn a fresh `--resume` for it at reset time.
+      this.sessions.stop(run.runId);
+    }
+  }
+
+  /**
+   * The gate's timer fired: the limit has reset. Resume each parked task by its
+   * saved session id, skipping any the user has since stopped or removed.
+   */
+  private resumeParked(state: LimitState): void {
+    if (this.disposed) return;
+    for (const taskId of state.parkedTaskIds) {
+      const task = this.store.getTask(taskId);
+      // Only resume tasks still parked by the limit (not since stopped/deleted),
+      // and only if we captured a session id to resume from.
+      if (!task || task.status !== 'blocked-by-limit' || !task.sessionId) continue;
+      const project = this.store.getProject(task.projectId);
+      if (!project) continue;
+      this.startTask(project, task, task.sessionId);
+    }
+    // Slots may have freed without a parked task — nudge every active queue.
+    for (const projectId of this.activeProjects) this.pump(projectId);
+  }
+
+  /** Persist the gate (so a limit survives a restart) and mirror it to the UI. */
+  private onLimitChanged(state: LimitState | null): void {
+    this.store.saveLimitGate(state);
+    this.emitLimit(state);
   }
 
   /** Raise one Attention-inbox item for a run, park its task, and return the item. */

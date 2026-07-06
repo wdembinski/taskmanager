@@ -15,6 +15,7 @@ import { randomUUID } from 'node:crypto';
 import { basename, join } from 'node:path';
 import Database from 'better-sqlite3';
 import type { AddProjectInput, Project, Task } from '@shared/model';
+import type { LimitState } from '@shared/limit';
 import type { ParsedTask } from './planParser';
 import { reconcileTasks } from './taskReconcile';
 
@@ -55,6 +56,13 @@ export interface Store {
   updateTask(id: string, patch: Partial<Pick<Task, 'status' | 'sessionId'>>): Task | undefined;
   /** Re-parse a plan and reconcile it into the project's tasks; returns the result. */
   syncTasksFromPlan(projectId: string, parsed: ParsedTask[]): Task[];
+  /**
+   * Persist (or clear, with `null`) the account-wide usage-limit gate so a limit
+   * survives an app restart and the resume still happens after a relaunch (Phase 5).
+   */
+  saveLimitGate(state: LimitState | null): void;
+  /** Load a persisted usage-limit gate, or null if none is in force. */
+  loadLimitGate(): LimitState | null;
   close(): void;
 }
 
@@ -88,6 +96,10 @@ export function createStore(dbPath: string): Store {
       "order"    INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(projectId, "order");
+    CREATE TABLE IF NOT EXISTS app_state (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
   `);
 
   // Migrate databases created before Phase 3 added the write-back column.
@@ -111,6 +123,15 @@ export function createStore(dbPath: string): Store {
     `INSERT INTO tasks (id, projectId, phase, title, status, sessionId, "order")
      VALUES (@id, @projectId, @phase, @title, @status, @sessionId, @order)`,
   );
+  const upsertState = db.prepare(
+    `INSERT INTO app_state (key, value) VALUES (?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+  );
+  const deleteState = db.prepare(`DELETE FROM app_state WHERE key = ?`);
+  const selectState = db.prepare(`SELECT value FROM app_state WHERE key = ?`);
+
+  /** The single row key under which the usage-limit gate is persisted. */
+  const LIMIT_GATE_KEY = 'limitGate';
 
   /** SQLite stores writeBackPlan as 0/1; present it to the app as a real boolean. */
   function rowToProject(r: ProjectRow): Project {
@@ -210,6 +231,21 @@ export function createStore(dbPath: string): Store {
       });
       replace(desired);
       return desired;
+    },
+
+    saveLimitGate(state) {
+      if (state === null) deleteState.run(LIMIT_GATE_KEY);
+      else upsertState.run(LIMIT_GATE_KEY, JSON.stringify(state));
+    },
+
+    loadLimitGate() {
+      const row = selectState.get(LIMIT_GATE_KEY) as { value: string } | undefined;
+      if (!row) return null;
+      try {
+        return JSON.parse(row.value) as LimitState;
+      } catch {
+        return null; // corrupt/legacy value — treat as no gate
+      }
     },
 
     close() {

@@ -81,6 +81,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     (change) => send('scheduler:changed', change),
     (item) => send('attention:new', item),
     (id) => send('attention:resolved', { id }),
+    (state) => send('limit:changed', state),
   );
 
   // The permission broker gives the scheduler a TRUE pre-execution veto: the CLI
@@ -103,7 +104,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     })
     .catch((err) => {
       console.error('Permission broker failed to start; task runs will be ungated:', err);
-    });
+    })
+    // Restore any usage-limit gate left in force by a previous run AFTER the broker
+    // is wired (so tasks resumed at reset are still gated). Runs on both branches.
+    .then(() => scheduler.restoreLimitGate());
 
   handle('app:getInfo', async () => ({
     version: app.getVersion(),
@@ -158,6 +162,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
   handle('attention:list', async () => scheduler.listAttention());
   handle('attention:answer', async (itemId, answer) => scheduler.answerAttention(itemId, answer));
+
+  handle('limit:current', async () => scheduler.currentLimit());
 
   return { sessions, scheduler, store, broker };
 }

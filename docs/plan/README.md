@@ -26,8 +26,8 @@ plan the orchestrator could one day run on its own repo.
 | 2 | Persistence & Projects | ✅ shipped |
 | 3 | Task board & Scheduler | ✅ shipped |
 | 4 | Attention inbox (permissions & questions) | ✅ shipped |
-| 5 | Usage-limit gate (auto-respawn) | ⬜ next |
-| 6 | History, resume-across-restart & polish | ⬜ |
+| 5 | Usage-limit gate (auto-respawn) | ✅ shipped |
+| 6 | History, resume-across-restart & polish | ⬜ next |
 | 7 | Packaging & release | ⬜ |
 
 Phases 4 and 5 are already referenced by name in the docs
@@ -204,24 +204,41 @@ account-wide gate described in `docs/03`.
 
 ### Deliverables
 
-- [ ] A global **limit gate** in `src/main/limitGate.ts`: on a non-`allowed`
+- [x] A global **limit gate** in `src/main/limitGate.ts`: on a non-`allowed`
       `rate-limit` event, mark the task `blocked-by-limit`, hold **all** scheduling
-      (it's account-wide), and record `resetsAt`.
-- [ ] Schedule a timer for `resetsAt` **plus random jitter**; on fire, **resume**
-      each parked session by its saved session id (`claude --resume <id>` /
-      `--session-id`) and release the gate.
-- [ ] Distinguish the **5-hour rolling** limit (auto-resumes) from the **weekly
-      cap** (waits out the weekly window) and label them differently in the UI.
-- [ ] IPC event `limit:changed` with the active reset time; renderer shows a
-      **global banner with a live countdown** and which tasks are parked.
-- [ ] Survive an app restart during a limit: persist the gate state so resume still
-      happens after a relaunch (ties into Phase 6).
+      (it's account-wide), and record `resetsAt`. The gate is a small state machine
+      with an injected clock/timer; the scheduler feeds it every run's rate-limit
+      event and parks each in-flight session (ending the process, keeping the saved
+      session id) via `engageLimit`. `pump`/`runTask` are held while it's active.
+- [x] Schedule a timer for `resetsAt` **plus random jitter** (0–60s); on fire,
+      **resume** each parked session by its saved session id
+      (`claude --resume <id>`, new `resumeSessionId` path through
+      `SessionManager`/`claudeSession`, re-attaching the permission gate) with a
+      continue-nudge prompt, then release the gate. Merging a second limit waits
+      for the **later** reset.
+- [x] Distinguish the **5-hour rolling** limit (auto-resumes) from the **weekly
+      cap** (waits out the weekly window) via the pure `classifyLimit`, and label
+      them differently in the UI banner.
+- [x] IPC event `limit:changed` (+ `limit:current` to seed on load) carrying the
+      `LimitState` (reset/resume time, parked task ids); renderer shows a **global
+      banner with a live 1s countdown** and how many tasks are parked.
+- [x] Survive an app restart during a limit: the gate's state is persisted to a new
+      `app_state` table and re-armed on startup (`restoreLimitGate`, after the
+      broker is up) — resuming immediately if the reset already passed while the app
+      was down. (Fuller startup reconciliation is Phase 6.)
 
 ### Done when
 
-- A simulated/real limit parks all work behind one banner with a live countdown.
-- When the reset time passes, parked sessions resume automatically by session id.
-- Gate transition logic is unit-tested with a mock clock.
+- [x] A simulated/real limit parks all work behind one banner with a live countdown.
+      *(non-`allowed` `rate-limit` → account-wide gate + `LimitBanner` countdown to
+      `resumeAt`.)*
+- [x] When the reset time passes, parked sessions resume automatically by session id.
+      *(gate timer → `resumeParked` spawns `--resume <sessionId>` for each still-parked
+      task; user-stopped tasks are unparked and skipped.)*
+- [x] Gate transition logic is unit-tested with a mock clock. *(`limitGate.test.ts`
+      drives engage/resume/merge/restore/unpark/dispose against a fake timer;
+      `pnpm typecheck` + `pnpm test` (72 tests) + `pnpm build` green; app boots
+      (10s smoke) and the `app_state` persistence round-trips under the real DB ABI.)*
 
 ---
 

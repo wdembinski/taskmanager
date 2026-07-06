@@ -19,6 +19,8 @@ export interface StartOptions {
   onEvent?: (event: SessionEvent) => void;
   /** Gate the run's tool uses through the broker (a true pre-execution veto). */
   permission?: PermissionGate;
+  /** Resume an existing conversation by its session id (Phase 5 auto-respawn). */
+  resumeSessionId?: string;
 }
 
 export class SessionManager {
@@ -38,7 +40,7 @@ export class SessionManager {
    * emit. `options.permission`, when set, gates the run's tools through the broker.
    */
   start(request: StartSessionRequest, options: StartOptions = {}): { runId: string } {
-    const { onEvent, permission } = options;
+    const { onEvent, permission, resumeSessionId } = options;
     const runId = randomUUID();
     const handle = runClaudeSession(
       request,
@@ -54,7 +56,7 @@ export class SessionManager {
         // Once the process has exited, forget it so the map doesn't grow forever.
         if (event.kind === 'exited') this.runs.delete(runId);
       },
-      { runId, permission },
+      { runId, permission, resumeSessionId },
     );
     this.runs.set(runId, handle);
     return { runId };

@@ -121,6 +121,20 @@ describe('buildClaudeArgs', () => {
     expect(args).not.toContain('do the thing');
   });
 
+  it('resumes an existing conversation with --resume instead of --session-id', () => {
+    const args = buildClaudeArgs(
+      { prompt: 'continue', cwd: 'C:\\work', model: 'haiku', permissionMode: 'acceptEdits' },
+      'session-123',
+      undefined,
+      true,
+    );
+    // Phase 5 auto-respawn: same id, but as a resume so history is preserved.
+    expect(args).toContain('--resume');
+    expect(args).not.toContain('--session-id');
+    const resumeIndex = args.indexOf('--resume');
+    expect(args[resumeIndex + 1]).toBe('session-123');
+  });
+
   it('adds the permission gate flags and forces default mode when gated', () => {
     const args = buildClaudeArgs(
       { prompt: 'x', cwd: 'C:\\work', model: 'haiku', permissionMode: 'acceptEdits' },
