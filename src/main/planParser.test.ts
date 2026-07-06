@@ -3,7 +3,7 @@
  * tasks out. Covers the grammar documented in planParser.ts.
  */
 import { describe, expect, it } from 'vitest';
-import { parsePlan } from './planParser';
+import { parsePlan, tickPlanCheckbox } from './planParser';
 
 describe('parsePlan', () => {
   it('assigns each checkbox to the heading above it', () => {
@@ -73,5 +73,46 @@ describe('parsePlan', () => {
   it('returns [] for empty or checkbox-free input', () => {
     expect(parsePlan('')).toEqual([]);
     expect(parsePlan('# Title\n\nJust prose, no tasks.')).toEqual([]);
+  });
+});
+
+describe('tickPlanCheckbox', () => {
+  it('ticks the matching unchecked box and leaves other lines byte-identical', () => {
+    const md = ['## P', '- [ ] first', '- [ ] second'].join('\n');
+    expect(tickPlanCheckbox(md, 'P', 'second')).toBe(
+      ['## P', '- [ ] first', '- [x] second'].join('\n'),
+    );
+  });
+
+  it('matches a folded multi-line task and flips only its first line', () => {
+    const md = ['## P', '- [ ] a task that', '      wraps here'].join('\n');
+    expect(tickPlanCheckbox(md, 'P', 'a task that wraps here')).toBe(
+      ['## P', '- [x] a task that', '      wraps here'].join('\n'),
+    );
+  });
+
+  it('disambiguates same title under different phases', () => {
+    const md = ['## P1', '- [ ] a', '## P2', '- [ ] a'].join('\n');
+    expect(tickPlanCheckbox(md, 'P2', 'a')).toBe(
+      ['## P1', '- [ ] a', '## P2', '- [x] a'].join('\n'),
+    );
+  });
+
+  it('returns null when the task is missing or already checked', () => {
+    const md = ['## P', '- [x] done', '- [ ] other'].join('\n');
+    expect(tickPlanCheckbox(md, 'P', 'done')).toBeNull(); // already ticked
+    expect(tickPlanCheckbox(md, 'P', 'nope')).toBeNull(); // no such task
+  });
+
+  it('preserves CRLF line endings', () => {
+    const md = '## P\r\n- [ ] win\r\n';
+    expect(tickPlanCheckbox(md, 'P', 'win')).toBe('## P\r\n- [x] win\r\n');
+  });
+
+  it('keeps the list marker and indentation intact', () => {
+    const md = ['## P', '  * [ ] indented star'].join('\n');
+    expect(tickPlanCheckbox(md, 'P', 'indented star')).toBe(
+      ['## P', '  * [x] indented star'].join('\n'),
+    );
   });
 });

@@ -21,7 +21,8 @@ import {
   Text,
   tokens,
 } from '@fluentui/react-components';
-import type { ProjectWithTasks, Task, TaskStatus } from '@shared/model';
+import type { ProjectWithTasks, Task } from '@shared/model';
+import { STATUS_COLOR } from './taskStatus';
 
 const useStyles = makeStyles({
   root: { display: 'flex', flexDirection: 'column', gap: '16px', minHeight: 0, flex: 1 },
@@ -38,19 +39,6 @@ const useStyles = makeStyles({
   taskTitle: { flex: 1 },
   empty: { color: tokens.colorNeutralForeground3 },
 });
-
-const STATUS_COLOR: Record<
-  TaskStatus,
-  'brand' | 'danger' | 'important' | 'informative' | 'severe' | 'subtle' | 'success' | 'warning'
-> = {
-  pending: 'informative',
-  running: 'brand',
-  'waiting-input': 'warning',
-  'blocked-by-limit': 'severe',
-  done: 'success',
-  failed: 'danger',
-  stopped: 'subtle',
-};
 
 /** Group a project's tasks by phase, preserving first-seen (plan) order. */
 function groupByPhase(tasks: Task[]): Array<{ phase: string; tasks: Task[] }> {

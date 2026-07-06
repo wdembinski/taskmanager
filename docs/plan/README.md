@@ -24,8 +24,8 @@ plan the orchestrator could one day run on its own repo.
 | 0 | Scaffold (3-process Electron, IPC contract, Claude status) | ✅ shipped (`8887127`) |
 | 1 | Session runner + live Session view | ✅ shipped (`af5e802`) |
 | 2 | Persistence & Projects | ✅ shipped |
-| 3 | Task board & Scheduler | ⬜ next |
-| 4 | Attention inbox (permissions & questions) | ⬜ |
+| 3 | Task board & Scheduler | ✅ shipped |
+| 4 | Attention inbox (permissions & questions) | ⬜ next |
 | 5 | Usage-limit gate (auto-respawn) | ⬜ |
 | 6 | History, resume-across-restart & polish | ⬜ |
 | 7 | Packaging & release | ⬜ |
@@ -94,31 +94,40 @@ session, updating status live.
 
 ### Deliverables
 
-- [ ] `src/main/scheduler.ts`: given a project (or all projects), select the next
-      `pending` task by **phase order, then task order**, honoring a **concurrency
-      limit** (default 1). Start it via `SessionManager.start`, mapping the task's
-      project `cwd`/model/permissionMode into the `StartSessionRequest`.
-- [ ] **Persist the session id** the instant the `started` event arrives (the rule
+- [x] `src/main/scheduler.ts`: given a project, select the next `pending` task by
+      **phase order, then task order** (the pure, unit-tested `selectNextPending`),
+      honoring a **concurrency limit** (default 1). Starts it via
+      `SessionManager.start`, mapping the project `cwd`/model/permissionMode into the
+      `StartSessionRequest`.
+- [x] **Persist the session id** the instant the `started` event arrives (the rule
       called out in `docs/03`), so a task can be resumed later.
-- [ ] Drive task status from the event stream: `started`→`running`,
+- [x] Drive task status from the event stream: `started`→`running`,
       `result.success`→`done` (and tick `- [x]` back into the plan file if the
       project opts in), failure/`exited`≠0→`failed`; advance to the next task.
-- [ ] IPC: `scheduler:start`, `scheduler:pause`, `scheduler:stop`, and a
-      `task:run` (run one task ad-hoc). Event: `task:changed` so the board updates
-      live without polling.
-- [ ] Renderer: a **Board** view — tasks as cards/rows moving through
+- [x] IPC: `scheduler:start`, `scheduler:pause`, `scheduler:stop`, `task:run` (run
+      one task ad-hoc), and `scheduler:activeRuns` (seed the board on load). Events:
+      `task:changed` and `scheduler:changed` so the board updates live without polling.
+- [x] Renderer: a **Board** view — tasks as rows moving through
       pending → running → done, with the live transcript from Phase 1 shown for the
-      currently-running task (reuse `SessionRunner`'s rendering, driven by `runId`).
-- [ ] Optional write-back: when a task completes, update the source `plan.md`
-      checkbox. Guard behind a per-project setting; never clobber unrelated edits.
+      selected task. The transcript rendering is extracted into a shared
+      `Transcript` component (`runId`-driven), reused by both the Board and the
+      Scratch run.
+- [x] Optional write-back: when a task completes, `tickPlanCheckbox` flips the
+      matching `- [ ]` to `- [x]` in the source `plan.md`. Guarded behind a
+      per-project `writeBackPlan` toggle; only the single completed checkbox is
+      touched, so unrelated edits are never clobbered.
 
 ### Done when
 
-- Pressing **Run** on a project works through its pending tasks in order, one at a
-  time, updating each task's status live.
-- Session ids are persisted and visible; stopping the scheduler leaves no orphan
-  `claude` processes (verify via the existing `stopAll` path).
-- `pnpm typecheck`/`pnpm test` pass; scheduler selection logic is unit-tested.
+- [x] Pressing **Run** on a project works through its pending tasks in order, one at
+      a time, updating each task's status live. *(one-session-at-a-time enforced by
+      the concurrency=1 slot logic; live updates via `task:changed`)*
+- [x] Session ids are persisted and visible (shown on each task row); stopping the
+      scheduler leaves no orphan `claude` processes (`scheduler.stop` / `dispose`
+      route through the existing `SessionManager.stop`/`stopAll`).
+- [x] `pnpm typecheck`/`pnpm test` pass (39 tests); scheduler selection and plan
+      write-back logic are unit-tested. Migration of the Phase-2 DB to the new
+      `writeBackPlan` column verified against the real user database on boot.
 
 ---
 

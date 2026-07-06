@@ -43,6 +43,13 @@ export interface Project {
   defaultModel: ClaudeModel;
   /** Permission mode this project's tasks run with unless overridden. */
   defaultPermissionMode: PermissionMode;
+  /**
+   * When true, the scheduler ticks the matching `- [ ]` back to `- [x]` in the
+   * project's plan file as each task completes. Off by default so we never touch
+   * the user's file unless they opt in. Only the single completed checkbox is
+   * flipped — unrelated edits are left untouched.
+   */
+  writeBackPlan: boolean;
   /** Epoch ms when the project was added. */
   createdAt: number;
 }
@@ -57,6 +64,7 @@ export interface AddProjectInput {
   planPath?: string;
   defaultModel?: ClaudeModel;
   defaultPermissionMode?: PermissionMode;
+  writeBackPlan?: boolean;
 }
 
 /** One unit of work, parsed from a plan or added ad-hoc, owned by the app's DB. */

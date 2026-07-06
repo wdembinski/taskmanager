@@ -21,6 +21,7 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import type { AppInfo, ClaudeStatus } from '@shared/ipc';
+import { Board } from './Board';
 import { Projects } from './Projects';
 import { SessionRunner } from './SessionRunner';
 
@@ -39,7 +40,7 @@ const useStyles = makeStyles({
   body: { display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1 },
 });
 
-type TabId = 'projects' | 'scratch';
+type TabId = 'projects' | 'board' | 'scratch';
 
 export function App(): JSX.Element {
   const styles = useStyles();
@@ -75,10 +76,13 @@ export function App(): JSX.Element {
 
       <TabList selectedValue={tab} onTabSelect={(_e, d) => setTab(d.value as TabId)}>
         <Tab value="projects">Projects</Tab>
+        <Tab value="board">Board</Tab>
         <Tab value="scratch">Scratch run</Tab>
       </TabList>
 
-      <div className={styles.body}>{tab === 'projects' ? <Projects /> : <SessionRunner />}</div>
+      <div className={styles.body}>
+        {tab === 'projects' ? <Projects /> : tab === 'board' ? <Board /> : <SessionRunner />}
+      </div>
     </div>
   );
 }

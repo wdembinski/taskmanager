@@ -10,10 +10,11 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { app, dialog, ipcMain, type BrowserWindow } from 'electron';
-import type { IpcApi } from '@shared/ipc';
+import type { IpcApi, IpcEvents } from '@shared/ipc';
 import type { Project, ProjectWithTasks } from '@shared/model';
 import { getClaudeStatus } from './claudeStatus';
 import { parsePlan } from './planParser';
+import { Scheduler } from './scheduler';
 import { SessionManager } from './sessionManager';
 import { createStore, type Store } from './store';
 
@@ -47,6 +48,7 @@ function syncProjectPlan(store: Store, project: Project): ProjectWithTasks {
 /** What registerIpcHandlers hands back so the app can shut resources down cleanly. */
 export interface Engine {
   sessions: SessionManager;
+  scheduler: Scheduler;
   store: Store;
 }
 
@@ -56,13 +58,24 @@ export interface Engine {
  * the engine so the caller can stop sessions and close the DB on quit.
  */
 export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
+  // Small helper: push an event to the UI unless the window is gone.
+  const send = <K extends keyof IpcEvents>(channel: K, payload: IpcEvents[K]): void => {
+    if (!mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
+  };
+
   // The engine pushes normalized session events to the UI over 'session:event'.
-  const sessions = new SessionManager((envelope) => {
-    if (!mainWindow.isDestroyed()) mainWindow.webContents.send('session:event', envelope);
-  });
+  const sessions = new SessionManager((envelope) => send('session:event', envelope));
 
   // One SQLite file per user, under Electron's managed userData directory.
   const store = createStore(join(app.getPath('userData'), 'orchestrator.db'));
+
+  // The scheduler drives tasks through sessions and reports progress to the Board.
+  const scheduler = new Scheduler(
+    store,
+    sessions,
+    (change) => send('task:changed', change),
+    (change) => send('scheduler:changed', change),
+  );
 
   handle('app:getInfo', async () => ({
     version: app.getVersion(),
@@ -97,10 +110,22 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('project:remove', async (id) => store.removeProject(id));
 
   handle('project:syncPlan', async (id) => {
-    const project = store.listProjects().find((p) => p.id === id);
+    const project = store.getProject(id);
     if (!project) return [];
     return syncProjectPlan(store, project).tasks;
   });
 
-  return { sessions, store };
+  handle('project:setWriteBack', async (id, enabled) => store.setWriteBack(id, enabled));
+
+  handle('scheduler:start', async (projectId) => scheduler.start(projectId));
+  handle('scheduler:pause', async (projectId) => scheduler.pause(projectId));
+  handle('scheduler:stop', async (projectId) => scheduler.stop(projectId));
+  handle('scheduler:activeRuns', async () => scheduler.activeRuns());
+  handle('task:run', async (taskId) => {
+    const started = scheduler.runTask(taskId);
+    if (!started) throw new Error(`Cannot run task ${taskId}: not found`);
+    return started;
+  });
+
+  return { sessions, scheduler, store };
 }

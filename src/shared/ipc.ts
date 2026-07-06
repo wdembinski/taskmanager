@@ -24,6 +24,7 @@
  */
 import type { SessionEventEnvelope, StartSessionRequest } from './session';
 import type { AddProjectInput, ProjectWithTasks, Task } from './model';
+import type { ActiveRun, SchedulerChange, TaskChange } from './scheduler';
 
 /** Result of checking whether the local `claude` CLI is installed and logged in. */
 export interface ClaudeStatus {
@@ -80,6 +81,22 @@ export interface IpcApi {
   'project:remove': (id: string) => Promise<void>;
   /** Re-read a project's plan file and reconcile it into the task list. */
   'project:syncPlan': (id: string) => Promise<Task[]>;
+  /** Toggle whether completing a task ticks its checkbox back into the plan file. */
+  'project:setWriteBack': (id: string, enabled: boolean) => Promise<void>;
+
+  /**
+   * Start (or resume) a project's queue: the scheduler runs its `pending` tasks
+   * in order, one session at a time, until the queue drains or is paused/stopped.
+   */
+  'scheduler:start': (projectId: string) => Promise<void>;
+  /** Stop starting new tasks for a project, but let any in-flight task finish. */
+  'scheduler:pause': (projectId: string) => Promise<void>;
+  /** Stop a project's queue and terminate any of its running sessions. */
+  'scheduler:stop': (projectId: string) => Promise<void>;
+  /** Snapshot of tasks currently executing, so the Board can wire live transcripts on load. */
+  'scheduler:activeRuns': () => Promise<ActiveRun[]>;
+  /** Run a single task ad-hoc (independent of its project's queue). Returns its run id. */
+  'task:run': (taskId: string) => Promise<{ runId: string }>;
 }
 
 /**
@@ -90,6 +107,10 @@ export interface IpcApi {
 export interface IpcEvents {
   /** A normalized event from a running Claude session (see SessionEventEnvelope). */
   'session:event': SessionEventEnvelope;
+  /** A task's status/sessionId changed (with its live runId while executing). */
+  'task:changed': TaskChange;
+  /** A project's queue moved between running/paused/idle. */
+  'scheduler:changed': SchedulerChange;
 }
 
 /** Convenience: the set of valid invoke channel names. */

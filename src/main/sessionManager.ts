@@ -11,7 +11,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { runClaudeSession, type SessionHandle } from './claudeSession';
-import type { SessionEventEnvelope, StartSessionRequest } from '@shared/session';
+import type { SessionEvent, SessionEventEnvelope, StartSessionRequest } from '@shared/session';
 
 export class SessionManager {
   private readonly runs = new Map<string, SessionHandle>();
@@ -22,11 +22,17 @@ export class SessionManager {
    */
   constructor(private readonly emit: (envelope: SessionEventEnvelope) => void) {}
 
-  /** Launch a session and start streaming its events to the UI. */
-  start(request: StartSessionRequest): { runId: string } {
+  /**
+   * Launch a session and start streaming its events to the UI.
+   *
+   * `onEvent` is an optional per-run observer (the scheduler uses it to drive a
+   * task's status), called with each event *in addition to* the global UI emit.
+   */
+  start(request: StartSessionRequest, onEvent?: (event: SessionEvent) => void): { runId: string } {
     const runId = randomUUID();
     const handle = runClaudeSession(request, (event) => {
       this.emit({ runId, event });
+      onEvent?.(event);
       // Once the process has exited, forget it so the map doesn't grow forever.
       if (event.kind === 'exited') this.runs.delete(runId);
     });

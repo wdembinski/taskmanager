@@ -78,8 +78,11 @@ void app.whenReady().then(() => {
 });
 
 // Never leave orphaned `claude` processes running after the app closes, and
-// close the database so its WAL is checkpointed cleanly.
+// close the database so its WAL is checkpointed cleanly. Dispose the scheduler
+// FIRST so the `exited` events from killed sessions don't try to write to a
+// database we're about to close.
 app.on('before-quit', () => {
+  engine?.scheduler.dispose();
   engine?.sessions.stopAll();
   engine?.store.close();
 });

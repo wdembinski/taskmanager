@@ -27,23 +27,29 @@ export interface ParsedTask {
   done: boolean;
 }
 
+/** A parsed task plus the 0-based index of the line its checkbox started on. */
+interface LocatedTask extends ParsedTask {
+  line: number;
+}
+
 const HEADING = /^(#{1,6})\s+(.*\S)\s*$/;
 const CHECKBOX = /^(\s*)[-*+]\s+\[([ xX])\]\s+(.*\S)\s*$/;
 
 /**
- * Parse plan markdown into an ordered list of tasks.
- *
- * Order is document order, which is exactly the order the scheduler should run
- * them in (phase by phase, top to bottom).
+ * Core scan: parse the plan into tasks while remembering which source line each
+ * checkbox began on. Both `parsePlan` (which drops the line) and the write-back
+ * (which needs it) build on this so they share one grammar.
  */
-export function parsePlan(markdown: string): ParsedTask[] {
-  const tasks: ParsedTask[] = [];
+function locate(markdown: string): LocatedTask[] {
+  const tasks: LocatedTask[] = [];
   let phase = '';
   // The task most recently opened by a checkbox line; continuation lines append
   // to it until a blank line, heading, or new checkbox closes it.
-  let open: ParsedTask | null = null;
+  let open: LocatedTask | null = null;
 
-  for (const rawLine of markdown.split(/\r?\n/)) {
+  const lines = markdown.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i];
     const heading = HEADING.exec(rawLine);
     if (heading) {
       phase = heading[2].trim();
@@ -53,7 +59,7 @@ export function parsePlan(markdown: string): ParsedTask[] {
 
     const checkbox = CHECKBOX.exec(rawLine);
     if (checkbox) {
-      open = { phase, title: checkbox[3].trim(), done: checkbox[2].toLowerCase() === 'x' };
+      open = { phase, title: checkbox[3].trim(), done: checkbox[2].toLowerCase() === 'x', line: i };
       tasks.push(open);
       continue;
     }
@@ -69,4 +75,35 @@ export function parsePlan(markdown: string): ParsedTask[] {
   }
 
   return tasks;
+}
+
+/**
+ * Parse plan markdown into an ordered list of tasks.
+ *
+ * Order is document order, which is exactly the order the scheduler should run
+ * them in (phase by phase, top to bottom).
+ */
+export function parsePlan(markdown: string): ParsedTask[] {
+  return locate(markdown).map(({ line: _line, ...task }) => task);
+}
+
+/**
+ * Tick the `[ ]` checkbox for a specific (phase, title) task to `[x]`, returning
+ * the updated markdown — or `null` if no matching *unchecked* task was found (so
+ * the caller can skip writing the file).
+ *
+ * Only the single matching checkbox line is altered; every other byte is left as
+ * it was, so unrelated hand edits to the plan are never clobbered. The dominant
+ * line ending is preserved. Matching uses the same folded (phase, title) identity
+ * the reconciler keys on, so it lines up with the task the scheduler completed.
+ */
+export function tickPlanCheckbox(markdown: string, phase: string, title: string): string | null {
+  const target = locate(markdown).find((t) => t.phase === phase && t.title === title && !t.done);
+  if (!target) return null;
+
+  const eol = markdown.includes('\r\n') ? '\r\n' : '\n';
+  const lines = markdown.split(/\r?\n/);
+  // Flip only the checkbox marker on the target line; leave its label untouched.
+  lines[target.line] = lines[target.line].replace(/\[[ ]\]/, '[x]');
+  return lines.join(eol);
 }
