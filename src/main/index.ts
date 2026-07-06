@@ -12,6 +12,7 @@
 import { join } from 'node:path';
 import { app, BrowserWindow, shell } from 'electron';
 import { registerIpcHandlers } from './ipc';
+import type { SessionManager } from './sessionManager';
 
 /**
  * Create the main window.
@@ -23,7 +24,7 @@ import { registerIpcHandlers } from './ipc';
  * and Electron does not allow ESM preload scripts inside the OS sandbox. This is
  * the standard electron-vite configuration.
  */
-function createWindow(): void {
+function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -56,13 +57,19 @@ function createWindow(): void {
   } else {
     void window.loadFile(join(__dirname, '../renderer/index.html'));
   }
+
+  return window;
 }
+
+// Holds the engine so we can shut its sessions down cleanly on quit.
+let sessions: SessionManager | undefined;
 
 // app.whenReady() resolves once Electron has finished starting up; only then may
 // we create windows.
 void app.whenReady().then(() => {
-  registerIpcHandlers();
-  createWindow();
+  const window = createWindow();
+  // The engine needs the window so it can push live session events to the UI.
+  sessions = registerIpcHandlers(window);
 
   // macOS convention: re-create a window when the dock icon is clicked and no
   // windows are open. Harmless on Windows/Linux.
@@ -70,6 +77,9 @@ void app.whenReady().then(() => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
+
+// Never leave orphaned `claude` processes running after the app closes.
+app.on('before-quit', () => sessions?.stopAll());
 
 // Quit when all windows are closed, except on macOS where apps typically stay
 // alive until the user explicitly quits (Cmd+Q).

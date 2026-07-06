@@ -49,9 +49,16 @@ We run it in headless mode.
 
 ### Claude Agent SDK
 
-`@anthropic-ai/claude-agent-sdk` — the official Node library that drives the
-`claude` CLI programmatically (streaming events, permission callbacks, session
-resume). What our engine uses instead of parsing the CLI by hand.
+`@anthropic-ai/claude-agent-sdk` — Anthropic's official Node library for driving
+Claude. We deliberately **do not** use it: it is proprietary ("All rights
+reserved"), which conflicts with our MIT/Apache-only rule. Instead we drive the
+`claude` CLI as an external subprocess. See [licensing](06-licensing.md).
+
+### Subprocess
+
+A separate program our app launches and communicates with (here, `claude`). We
+read its output and write to its input, but it is not part of our codebase — like
+how a build script might call `git`.
 
 ### Headless / print mode
 
@@ -73,11 +80,6 @@ with its full history — how we pick back up after a limit reset or app restart
 A mode where Claude's input and output are sent as a live stream of small JSON
 **events** rather than one final blob. Lets us show live progress and inject
 answers mid-task.
-
-### `canUseTool`
-
-A callback the SDK calls **before** Claude uses a tool, asking our app to allow or
-deny it. Where our permission policy and the Attention inbox connect.
 
 ### Permission mode
 

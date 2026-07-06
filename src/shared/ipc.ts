@@ -22,6 +22,7 @@
  * Phase 0 only needs a couple of channels to prove the wiring works; later
  * phases add project/task/session channels here.
  */
+import type { SessionEventEnvelope, StartSessionRequest } from './session';
 
 /** Result of checking whether the local `claude` CLI is installed and logged in. */
 export interface ClaudeStatus {
@@ -63,6 +64,10 @@ export interface IpcApi {
   'app:getInfo': () => Promise<AppInfo>;
   /** Check whether the Claude CLI is installed and logged in on this machine. */
   'claude:getStatus': () => Promise<ClaudeStatus>;
+  /** Start one Claude session for a task. Resolves with a run id to track it. */
+  'session:start': (request: StartSessionRequest) => Promise<{ runId: string }>;
+  /** Stop a running session by its run id (kills the underlying process). */
+  'session:stop': (runId: string) => Promise<void>;
 }
 
 /**
@@ -71,7 +76,8 @@ export interface IpcApi {
  * Declared as an (initially empty) map so the preload/renderer typings are ready.
  */
 export interface IpcEvents {
-  // 'session:output': SessionOutputEvent;  // added in Phase 1
+  /** A normalized event from a running Claude session (see SessionEventEnvelope). */
+  'session:event': SessionEventEnvelope;
 }
 
 /** Convenience: the set of valid invoke channel names. */

@@ -64,6 +64,8 @@ Start at the top:
 4. [`docs/04-contributing-guide.md`](docs/04-contributing-guide.md) — how to make
    your first change, where code lives, and our conventions.
 5. [`docs/05-glossary.md`](docs/05-glossary.md) — every unfamiliar word, defined.
+6. [`docs/06-licensing.md`](docs/06-licensing.md) — the MIT/Apache-only rule and
+   how to keep the app commercially usable.
 
 ---
 
@@ -73,7 +75,11 @@ Start at the top:
 - **React 18 + Fluent UI v9** — the user interface (same UI toolkit as the
   `vipper-iam` and `ee.manager` projects).
 - **TypeScript** (strict) everywhere.
-- **[`@anthropic-ai/claude-agent-sdk`](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk)**
-  — the official library that drives the `claude` engine from Node.
+- The **`claude` CLI** — driven as an external subprocess over its stream-json
+  protocol (we do **not** bundle Anthropic's SDK; see
+  [`docs/06-licensing.md`](docs/06-licensing.md) for why).
 - **electron-vite** for fast builds/hot-reload, **Vitest** for tests,
   **electron-builder** for packaging.
+
+All bundled dependencies are permissive (MIT/Apache/BSD-style) so the app can be
+used commercially. See [`docs/06-licensing.md`](docs/06-licensing.md).

@@ -7,9 +7,10 @@
  * makes each registration type-safe against the shared `IpcApi` interface, so a
  * handler whose return type doesn't match the contract won't compile.
  */
-import { app, ipcMain } from 'electron';
+import { app, ipcMain, type BrowserWindow } from 'electron';
 import type { IpcApi } from '@shared/ipc';
 import { getClaudeStatus } from './claudeStatus';
+import { SessionManager } from './sessionManager';
 
 /**
  * Type-safe wrapper around ipcMain.handle. `K` is constrained to a real channel
@@ -22,8 +23,17 @@ function handle<K extends keyof IpcApi>(
   ipcMain.handle(channel, (_event, ...args) => handler(...(args as Parameters<IpcApi[K]>)));
 }
 
-/** Wire up all invoke handlers. Called once during app startup. */
-export function registerIpcHandlers(): void {
+/**
+ * Wire up all invoke handlers and the session engine. Called once during app
+ * startup with the main window (needed so the engine can push events to the UI).
+ * Returns the SessionManager so the caller can stop all sessions on quit.
+ */
+export function registerIpcHandlers(mainWindow: BrowserWindow): SessionManager {
+  // The engine pushes normalized session events to the UI over 'session:event'.
+  const sessions = new SessionManager((envelope) => {
+    if (!mainWindow.isDestroyed()) mainWindow.webContents.send('session:event', envelope);
+  });
+
   handle('app:getInfo', async () => ({
     version: app.getVersion(),
     electron: process.versions.electron,
@@ -33,4 +43,9 @@ export function registerIpcHandlers(): void {
   }));
 
   handle('claude:getStatus', () => getClaudeStatus());
+
+  handle('session:start', async (request) => sessions.start(request));
+  handle('session:stop', async (runId) => sessions.stop(runId));
+
+  return sessions;
 }

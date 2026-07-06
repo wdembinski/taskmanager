@@ -9,9 +9,15 @@ engine code. It explains the concepts first, then how we use them.
 
 We do **not** re-implement Claude. We start the same `claude` program you run in a
 terminal, but in a **headless** mode designed for automation, and we read its
-output as a stream of structured events instead of pretty text. We do this through
-the official **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`), which is a
-thin, friendly wrapper around that same CLI.
+output as a stream of structured events instead of pretty text.
+
+We drive it as an **external subprocess** — like calling `git` — rather than using
+Anthropic's SDK, because the SDK is proprietary and we keep our bundled
+dependencies permissive (see [licensing](06-licensing.md)). The mechanics live in
+[`src/main/claudeSession.ts`](../src/main/claudeSession.ts): we spawn
+`claude -p --output-format stream-json --verbose …` in the project's directory,
+feed the **prompt over stdin** (so no shell-quoting headaches), and parse the
+newline-delimited JSON it streams back into our small `SessionEvent` type.
 
 Because it's the same CLI with the same login, everything runs on your
 **subscription** — no paid API, no extra cost.
@@ -41,19 +47,14 @@ We run each session with streaming turned on **both ways**:
   a message mid-session** (for example, the answer to a question) and it continues
   right where it left off. No restart, no lost context.
 
-### Permissions and the `canUseTool` hook
+### Permissions
 
-Before Claude runs a tool (edit a file, run a shell command, etc.), the SDK can
-ask **us** whether to allow it, via a callback called `canUseTool`. This single
-hook is where our safety policy lives:
-
-- routine, safe actions (reading files, editing code) are **auto-approved** so the
-  app can run unattended;
-- risky actions (pushing to git, deleting, anything touching secrets/`.env`) are
-  **routed to the Attention inbox** for a human to approve or deny.
-
-The default posture is Claude Code's `acceptEdits`: edits happen automatically,
-but genuine decisions stop and wait for you.
+Before Claude runs a tool (edit a file, run a shell command, etc.) it consults a
+**permission mode** we pass on the command line (`--permission-mode`). Our default
+is `acceptEdits`: edits happen automatically, but genuinely risky operations stop
+and wait. In Phase 4 we add a finer policy on top — auto-approving safe actions
+while **routing risky ones** (pushing to git, deleting, anything touching
+secrets/`.env`) and clarifying questions to the **Attention inbox** for a human.
 
 ### Questions vs. permissions
 
