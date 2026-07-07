@@ -11,11 +11,12 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { app, dialog, ipcMain, type BrowserWindow } from 'electron';
 import type { IpcApi, IpcEvents } from '@shared/ipc';
-import type { Project, ProjectWithTasks } from '@shared/model';
+import { isManualStatus, type Project, type ProjectWithTasks } from '@shared/model';
 import { getClaudeStatus } from './claudeStatus';
 import { parsePlan } from './planParser';
 import { PermissionBroker } from './permissionBroker';
 import { writePermissionServer } from './permissionServerSource';
+import { PlanWatcher } from './planWatcher';
 import { Scheduler } from './scheduler';
 import { SessionManager } from './sessionManager';
 import { createStore, type Store } from './store';
@@ -53,6 +54,7 @@ export interface Engine {
   scheduler: Scheduler;
   store: Store;
   broker: PermissionBroker;
+  watcher: PlanWatcher;
 }
 
 /**
@@ -88,6 +90,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // pending, keeping their session id so a re-run resumes them). Runs before the
   // window paints; the UI re-queries project:list on mount and sees the fix.
   scheduler.reconcileInterruptedTasks();
+
+  // Phase 8: watch every project's plan file so edits — including the agent
+  // rewriting the plan mid-run — re-sync into the task list live.
+  const watcher = new PlanWatcher(store, (projectId, tasks) =>
+    send('project:tasksChanged', { projectId, tasks }),
+  );
+  watcher.watchAll();
 
   // The permission broker gives the scheduler a TRUE pre-execution veto: the CLI
   // asks it (via an MCP relay) before running each tool, and the scheduler either
@@ -136,16 +145,30 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0];
   });
 
+  handle('project:pickFile', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Choose a plan file',
+      properties: ['openFile'],
+      filters: [{ name: 'Plan / Markdown', extensions: ['md', 'markdown', 'txt'] }],
+    });
+    return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0];
+  });
+
   handle('project:add', async (input) => {
     const project = store.addProject(input);
-    return syncProjectPlan(store, project);
+    const result = syncProjectPlan(store, project);
+    watcher.watch(project); // pick up future edits to its plan file live
+    return result;
   });
 
   handle('project:list', async () =>
     store.listProjects().map((project) => ({ project, tasks: store.getTasks(project.id) })),
   );
 
-  handle('project:remove', async (id) => store.removeProject(id));
+  handle('project:remove', async (id) => {
+    watcher.unwatch(id);
+    store.removeProject(id);
+  });
 
   handle('project:syncPlan', async (id) => {
     const project = store.getProject(id);
@@ -154,6 +177,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   });
 
   handle('project:setWriteBack', async (id, enabled) => store.setWriteBack(id, enabled));
+  handle('project:update', async (id, patch) => {
+    const updated = store.updateProject(id, patch);
+    if (updated) watcher.watch(updated); // re-point the watcher if the plan path changed
+    return updated ?? null;
+  });
 
   handle('scheduler:start', async (projectId) => scheduler.start(projectId));
   handle('scheduler:pause', async (projectId) => scheduler.pause(projectId));
@@ -165,6 +193,56 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     return started;
   });
   handle('task:history', async (taskId) => store.getTaskHistory(taskId));
+  handle('task:create', async (projectId, input) => {
+    const task = store.createTask(projectId, input);
+    if (!task) throw new Error('A task needs a title.');
+    send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) });
+    return task;
+  });
+  handle('task:delete', async (taskId) => {
+    const task = store.getTask(taskId);
+    if (!task) return;
+    if (task.status === 'running' || task.status === 'waiting-input') {
+      throw new Error('Stop the task before deleting it.');
+    }
+    store.deleteTask(taskId);
+    send('project:tasksChanged', { projectId: task.projectId, tasks: store.getTasks(task.projectId) });
+  });
+  handle('task:setStatus', async (taskId, status) => {
+    const existing = store.getTask(taskId);
+    if (!existing) throw new Error('Task not found.');
+    if (!isManualStatus(status)) throw new Error(`"${status}" is not a hand-settable status.`);
+    // The scheduler owns a task while it runs; don't let a manual change desync it.
+    if (existing.status === 'running' || existing.status === 'waiting-input') {
+      throw new Error('Stop the running session before changing status.');
+    }
+    if (existing.status === status) return existing;
+    const task = store.updateTask(taskId, { status });
+    if (!task) throw new Error('Task not found.');
+    store.recordStatusChange(task.projectId, taskId, existing.status, status);
+    send('task:changed', { task, runId: null });
+    return task;
+  });
+  handle('task:activity', async (taskId) => store.getTaskActivity(taskId));
+  handle('task:addComment', async (taskId, body) => {
+    const task = store.getTask(taskId);
+    if (!task) throw new Error('Task not found.');
+    const entry = store.addComment(task.projectId, taskId, body);
+    if (!entry) throw new Error('A comment needs some text.');
+    return entry;
+  });
+  handle('task:deleteComment', async (commentId) => store.deleteComment(commentId));
+  handle('task:attachSession', async (taskId, sessionId) => {
+    const existing = store.getTask(taskId);
+    if (!existing) return null;
+    // Don't rewire a task the scheduler is actively running under a live session.
+    if (existing.status === 'running' || existing.status === 'waiting-input') {
+      throw new Error('Stop the task before attaching a session.');
+    }
+    const task = store.updateTask(taskId, { sessionId: sessionId.trim(), status: 'pending' });
+    if (task) send('task:changed', { task, runId: null }); // keep the Board in sync
+    return task ?? null;
+  });
 
   handle('attention:list', async () => scheduler.listAttention());
   handle('attention:answer', async (itemId, answer) => scheduler.answerAttention(itemId, answer));
@@ -186,5 +264,5 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   mainWindow.on('maximize', () => send('window:maximizedChanged', true));
   mainWindow.on('unmaximize', () => send('window:maximizedChanged', false));
 
-  return { sessions, scheduler, store, broker };
+  return { sessions, scheduler, store, broker, watcher };
 }

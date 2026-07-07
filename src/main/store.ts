@@ -14,10 +14,18 @@
 import { randomUUID } from 'node:crypto';
 import { basename, join } from 'node:path';
 import Database from 'better-sqlite3';
-import type { AddProjectInput, Project, Task } from '@shared/model';
+import type {
+  AddProjectInput,
+  Project,
+  ProjectPatch,
+  Task,
+  TaskActivityEntry,
+  TaskStatus,
+} from '@shared/model';
 import type { LimitState } from '@shared/limit';
 import type { SessionEvent } from '@shared/session';
 import { type AppSettings, DEFAULT_SETTINGS } from '@shared/settings';
+import { mergeActivity } from './activityMerge';
 import type { ParsedTask } from './planParser';
 import { reconcileTasks } from './taskReconcile';
 
@@ -30,6 +38,7 @@ interface TaskRow {
   status: string;
   sessionId: string | null;
   order: number;
+  source: string;
 }
 
 /** A project row as stored; `writeBackPlan` is a 0/1 INTEGER (SQLite has no boolean). */
@@ -52,10 +61,16 @@ export interface Store {
   removeProject(id: string): void;
   /** Toggle the plan write-back opt-in for a project. */
   setWriteBack(id: string, enabled: boolean): void;
+  /** Edit a project's name/plan/model/mode/write-back (Phase 8); returns the updated project. */
+  updateProject(id: string, patch: ProjectPatch): Project | undefined;
   getTasks(projectId: string): Task[];
   getTask(id: string): Task | undefined;
   /** Patch a task's live fields (status/sessionId); returns the updated task. */
   updateTask(id: string, patch: Partial<Pick<Task, 'status' | 'sessionId'>>): Task | undefined;
+  /** Create an ad-hoc task (Phase 8): appended after existing tasks, `source: 'adhoc'`. */
+  createTask(projectId: string, input: { title: string; phase?: string }): Task | undefined;
+  /** Delete one task (and its transcript history) by id. */
+  deleteTask(id: string): void;
   /** Re-parse a plan and reconcile it into the project's tasks; returns the result. */
   syncTasksFromPlan(projectId: string, parsed: ParsedTask[]): Task[];
   /**
@@ -65,6 +80,19 @@ export interface Store {
   appendTaskEvent(projectId: string, taskId: string, runId: string, event: SessionEvent): void;
   /** Load a task's full event history in order (all of its runs), for replay in the UI. */
   getTaskHistory(taskId: string): SessionEvent[];
+  /** Append a human progress comment to a task (Phase 9); returns the created entry. */
+  addComment(projectId: string, taskId: string, body: string): TaskActivityEntry | undefined;
+  /** Record a status change on a task's timeline (Phase 9). */
+  recordStatusChange(
+    projectId: string,
+    taskId: string,
+    from: TaskStatus | null,
+    to: TaskStatus,
+  ): void;
+  /** Delete one comment by id. */
+  deleteComment(commentId: number): void;
+  /** The task's unified activity timeline: comments + status changes + AI transcript. */
+  getTaskActivity(taskId: string): TaskActivityEntry[];
   /**
    * Persist (or clear, with `null`) the account-wide usage-limit gate so a limit
    * survives an app restart and the resume still happens after a relaunch (Phase 5).
@@ -106,7 +134,8 @@ export function createStore(dbPath: string): Store {
       title      TEXT NOT NULL,
       status     TEXT NOT NULL,
       sessionId  TEXT,
-      "order"    INTEGER NOT NULL
+      "order"    INTEGER NOT NULL,
+      source     TEXT NOT NULL DEFAULT 'plan'
     );
     CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(projectId, "order");
     CREATE TABLE IF NOT EXISTS app_state (
@@ -122,12 +151,30 @@ export function createStore(dbPath: string): Store {
       createdAt INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_task_events_task ON task_events(taskId, id);
+    CREATE TABLE IF NOT EXISTS task_activity (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      projectId  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      taskId     TEXT NOT NULL,
+      kind       TEXT NOT NULL,           -- 'comment' | 'status'
+      body       TEXT,                    -- comment text (kind = 'comment')
+      fromStatus TEXT,                    -- prior status (kind = 'status')
+      toStatus   TEXT,                    -- new status  (kind = 'status')
+      createdAt  INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_activity_task ON task_activity(taskId, id);
   `);
 
   // Migrate databases created before Phase 3 added the write-back column.
   const projectColumns = db.prepare(`PRAGMA table_info(projects)`).all() as Array<{ name: string }>;
   if (!projectColumns.some((c) => c.name === 'writeBackPlan')) {
     db.exec(`ALTER TABLE projects ADD COLUMN writeBackPlan INTEGER NOT NULL DEFAULT 0`);
+  }
+
+  // Migrate databases created before Phase 8 added the task source column. Existing
+  // tasks all came from plans, so the 'plan' default is correct for them.
+  const taskColumns = db.prepare(`PRAGMA table_info(tasks)`).all() as Array<{ name: string }>;
+  if (!taskColumns.some((c) => c.name === 'source')) {
+    db.exec(`ALTER TABLE tasks ADD COLUMN source TEXT NOT NULL DEFAULT 'plan'`);
   }
 
   const insertProject = db.prepare<[ProjectRow]>(
@@ -142,8 +189,12 @@ export function createStore(dbPath: string): Store {
   const selectTask = db.prepare(`SELECT * FROM tasks WHERE id = ?`);
   const deleteTasks = db.prepare(`DELETE FROM tasks WHERE projectId = ?`);
   const insertTask = db.prepare<[TaskRow]>(
-    `INSERT INTO tasks (id, projectId, phase, title, status, sessionId, "order")
-     VALUES (@id, @projectId, @phase, @title, @status, @sessionId, @order)`,
+    `INSERT INTO tasks (id, projectId, phase, title, status, sessionId, "order", source)
+     VALUES (@id, @projectId, @phase, @title, @status, @sessionId, @order, @source)`,
+  );
+  const deleteTask = db.prepare(`DELETE FROM tasks WHERE id = ?`);
+  const nextOrder = db.prepare(
+    `SELECT COALESCE(MAX("order"), -1) + 1 AS next FROM tasks WHERE projectId = ?`,
   );
   const upsertState = db.prepare(
     `INSERT INTO app_state (key, value) VALUES (?, ?)
@@ -158,6 +209,23 @@ export function createStore(dbPath: string): Store {
      VALUES (@projectId, @taskId, @runId, @event, @createdAt)`,
   );
   const selectEvents = db.prepare(`SELECT event FROM task_events WHERE taskId = ? ORDER BY id`);
+  // Timeline reads need id + createdAt (not just the event blob) to interleave with
+  // human activity; the task-scoped deletes clean up on an explicit ad-hoc delete.
+  const selectEventsFull = db.prepare(
+    `SELECT id, event, createdAt FROM task_events WHERE taskId = ? ORDER BY id`,
+  );
+  const deleteEventsForTask = db.prepare(`DELETE FROM task_events WHERE taskId = ?`);
+  const insertActivity = db.prepare(
+    `INSERT INTO task_activity (projectId, taskId, kind, body, fromStatus, toStatus, createdAt)
+     VALUES (@projectId, @taskId, @kind, @body, @fromStatus, @toStatus, @createdAt)`,
+  );
+  const selectActivity = db.prepare(
+    `SELECT id, kind, body, fromStatus, toStatus, createdAt FROM task_activity
+     WHERE taskId = ? ORDER BY id`,
+  );
+  const selectActivityRow = db.prepare(`SELECT * FROM task_activity WHERE id = ?`);
+  const deleteActivity = db.prepare(`DELETE FROM task_activity WHERE id = ?`);
+  const deleteActivityForTask = db.prepare(`DELETE FROM task_activity WHERE taskId = ?`);
 
   /** The single row key under which the usage-limit gate is persisted. */
   const LIMIT_GATE_KEY = 'limitGate';
@@ -198,6 +266,7 @@ export function createStore(dbPath: string): Store {
       status: r.status as Task['status'],
       sessionId: r.sessionId,
       order: r.order,
+      source: (r.source as Task['source']) ?? 'plan',
     };
   }
 
@@ -245,6 +314,37 @@ export function createStore(dbPath: string): Store {
       updateWriteBack.run(enabled ? 1 : 0, id);
     },
 
+    updateProject(id, patch) {
+      // Build a dynamic UPDATE from only the provided fields (like updateTask).
+      const sets: string[] = [];
+      const params: Record<string, unknown> = { id };
+      if (patch.name !== undefined) {
+        sets.push(`name = @name`);
+        params.name = patch.name;
+      }
+      if (patch.planPath !== undefined) {
+        sets.push(`planPath = @planPath`);
+        params.planPath = patch.planPath;
+      }
+      if (patch.defaultModel !== undefined) {
+        sets.push(`defaultModel = @defaultModel`);
+        params.defaultModel = patch.defaultModel;
+      }
+      if (patch.defaultPermissionMode !== undefined) {
+        sets.push(`defaultPermissionMode = @defaultPermissionMode`);
+        params.defaultPermissionMode = patch.defaultPermissionMode;
+      }
+      if (patch.writeBackPlan !== undefined) {
+        sets.push(`writeBackPlan = @writeBackPlan`);
+        params.writeBackPlan = patch.writeBackPlan ? 1 : 0;
+      }
+      if (sets.length > 0) {
+        db.prepare(`UPDATE projects SET ${sets.join(', ')} WHERE id = @id`).run(params);
+      }
+      const row = selectProject.get(id) as ProjectRow | undefined;
+      return row ? rowToProject(row) : undefined;
+    },
+
     getTasks,
 
     getTask,
@@ -264,6 +364,34 @@ export function createStore(dbPath: string): Store {
         db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = @id`).run(params);
       }
       return getTask(id);
+    },
+
+    createTask(projectId, input) {
+      const title = input.title.trim();
+      if (!title) return undefined;
+      const task: Task = {
+        id: randomUUID(),
+        projectId,
+        phase: input.phase?.trim() || '',
+        title,
+        status: 'pending',
+        sessionId: null,
+        order: (nextOrder.get(projectId) as { next: number }).next,
+        source: 'adhoc',
+      };
+      insertTask.run(task as unknown as TaskRow);
+      return task;
+    },
+
+    deleteTask(id) {
+      // Explicit delete (ad-hoc task): also drop its timeline + transcript. (The
+      // plan-sync path never calls this, so plan history is unaffected.)
+      const clear = db.transaction((taskId: string) => {
+        deleteActivityForTask.run(taskId);
+        deleteEventsForTask.run(taskId);
+        deleteTask.run(taskId);
+      });
+      clear(id);
     },
 
     syncTasksFromPlan(projectId, parsed) {
@@ -298,6 +426,83 @@ export function createStore(dbPath: string): Store {
         }
       }
       return events;
+    },
+
+    addComment(projectId, taskId, body) {
+      const text = body.trim();
+      if (!text) return undefined;
+      const createdAt = Date.now();
+      const { lastInsertRowid } = insertActivity.run({
+        projectId,
+        taskId,
+        kind: 'comment',
+        body: text,
+        fromStatus: null,
+        toStatus: null,
+        createdAt,
+      });
+      return { kind: 'comment', id: Number(lastInsertRowid), body: text, createdAt };
+    },
+
+    recordStatusChange(projectId, taskId, from, to) {
+      insertActivity.run({
+        projectId,
+        taskId,
+        kind: 'status',
+        body: null,
+        fromStatus: from,
+        toStatus: to,
+        createdAt: Date.now(),
+      });
+    },
+
+    deleteComment(commentId) {
+      const row = selectActivityRow.get(commentId) as { kind: string } | undefined;
+      // Only delete comments — status entries are an immutable audit trail.
+      if (row?.kind === 'comment') deleteActivity.run(commentId);
+    },
+
+    getTaskActivity(taskId) {
+      const entries: TaskActivityEntry[] = [];
+      const activity = selectActivity.all(taskId) as Array<{
+        id: number;
+        kind: string;
+        body: string | null;
+        fromStatus: string | null;
+        toStatus: string | null;
+        createdAt: number;
+      }>;
+      for (const r of activity) {
+        if (r.kind === 'comment' && r.body !== null) {
+          entries.push({ kind: 'comment', id: r.id, body: r.body, createdAt: r.createdAt });
+        } else if (r.kind === 'status' && r.toStatus !== null) {
+          entries.push({
+            kind: 'status',
+            id: r.id,
+            from: r.fromStatus as TaskStatus | null,
+            to: r.toStatus as TaskStatus,
+            createdAt: r.createdAt,
+          });
+        }
+      }
+      const events = selectEventsFull.all(taskId) as Array<{
+        id: number;
+        event: string;
+        createdAt: number;
+      }>;
+      for (const r of events) {
+        try {
+          entries.push({
+            kind: 'event',
+            id: r.id,
+            event: JSON.parse(r.event) as SessionEvent,
+            createdAt: r.createdAt,
+          });
+        } catch {
+          // Skip a corrupt row rather than break the whole timeline.
+        }
+      }
+      return mergeActivity(entries);
     },
 
     saveLimitGate(state) {

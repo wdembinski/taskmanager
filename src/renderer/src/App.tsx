@@ -28,6 +28,7 @@ import type { AppInfo, ClaudeStatus } from '@shared/ipc';
 import { Attention } from './Attention';
 import { Board } from './Board';
 import { LimitBanner } from './LimitBanner';
+import { MyTasks } from './MyTasks';
 import { Projects } from './Projects';
 import { Settings } from './Settings';
 import { SessionRunner } from './SessionRunner';
@@ -66,13 +67,13 @@ const useStyles = makeStyles({
   grow: { flex: 1 },
 });
 
-type TabId = 'projects' | 'board' | 'attention' | 'settings' | 'scratch';
+type TabId = 'mytasks' | 'projects' | 'board' | 'attention' | 'settings' | 'scratch';
 
 export function App(): JSX.Element {
   const styles = useStyles();
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [claude, setClaude] = useState<ClaudeStatus | null>(null);
-  const [tab, setTab] = useState<TabId>('projects');
+  const [tab, setTab] = useState<TabId>('mytasks');
   // How many tasks are waiting on a human, shown as a badge on the Attention tab.
   const [attentionCount, setAttentionCount] = useState(0);
 
@@ -109,6 +110,7 @@ export function App(): JSX.Element {
         <LimitBanner />
 
         <TabList selectedValue={tab} onTabSelect={(_e, d) => setTab(d.value as TabId)}>
+          <Tab value="mytasks">My Tasks</Tab>
           <Tab value="projects">Projects</Tab>
           <Tab value="board">Board</Tab>
           <Tab value="attention">
@@ -127,7 +129,9 @@ export function App(): JSX.Element {
         </TabList>
 
         <div className={styles.body}>
-          {tab === 'projects' ? (
+          {tab === 'mytasks' ? (
+            <MyTasks />
+          ) : tab === 'projects' ? (
             <Projects />
           ) : tab === 'board' ? (
             <Board />

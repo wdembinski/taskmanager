@@ -1,10 +1,11 @@
 /**
- * Projects screen (Phase 2).
+ * Projects screen (Phase 2; extended in Phase 8).
  *
- * Lists the projects the app is tracking and, for each, the tasks parsed from its
- * `plan.md` grouped by phase. This is the read side of the new persistence layer:
- * everything here is loaded over the `project:*` IPC channels and survives an app
- * restart. Running tasks is Phase 3 — for now this is add / view / sync / remove.
+ * Lists the projects the app tracks and, per project, the tasks parsed from its
+ * plan file grouped by phase. Everything loads over the `project:*` IPC channels
+ * and survives a restart. Phase 8 adds: an Add/Edit dialog (custom plan path +
+ * per-project model/mode/write-back) and, per task, "Attach session…" to adopt an
+ * existing Claude conversation so a run resumes it instead of starting fresh.
  */
 import { useCallback, useEffect, useState } from 'react';
 import {
@@ -24,8 +25,11 @@ import {
   Text,
   tokens,
 } from '@fluentui/react-components';
-import type { ProjectWithTasks, Task } from '@shared/model';
-import { STATUS_COLOR } from './taskStatus';
+import type { Project, ProjectWithTasks, Task } from '@shared/model';
+import { AddTaskDialog } from './AddTaskDialog';
+import { AttachSessionDialog } from './AttachSessionDialog';
+import { ProjectDialog } from './ProjectDialog';
+import { STATUS_COLOR, STATUS_LABEL } from './taskStatus';
 
 const useStyles = makeStyles({
   root: { display: 'flex', flexDirection: 'column', gap: '16px', minHeight: 0, flex: 1 },
@@ -39,7 +43,11 @@ const useStyles = makeStyles({
   phase: { display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '8px' },
   phaseTitle: { color: tokens.colorNeutralForeground2 },
   taskRow: { display: 'flex', alignItems: 'center', gap: '10px', padding: '2px 0' },
-  taskTitle: { flex: 1 },
+  taskTitle: { flex: 1, minWidth: 0 },
+  session: {
+    color: tokens.colorNeutralForeground3,
+    fontFamily: 'ui-monospace, Consolas, monospace',
+  },
   empty: { color: tokens.colorNeutralForeground3 },
 });
 
@@ -63,8 +71,19 @@ function groupByPhase(tasks: Task[]): Array<{ phase: string; tasks: Task[] }> {
 export function Projects(): JSX.Element {
   const styles = useStyles();
   const [projects, setProjects] = useState<ProjectWithTasks[] | null>(null);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The Add/Edit dialog (project is set only for edit) and the attach-session dialog.
+  const [dialog, setDialog] = useState<{ open: boolean; mode: 'add' | 'edit'; project?: Project }>({
+    open: false,
+    mode: 'add',
+  });
+  const [attach, setAttach] = useState<{ open: boolean; task: Task | null }>({
+    open: false,
+    task: null,
+  });
+  const [addTask, setAddTask] = useState<{ open: boolean; projectId: string | null; phases: string[] }>(
+    { open: false, projectId: null, phases: [] },
+  );
 
   const refresh = useCallback(async () => {
     setProjects(await window.api.invoke('project:list'));
@@ -73,6 +92,17 @@ export function Projects(): JSX.Element {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // Live task-list updates (Phase 8): the plan file was edited — by a human or the
+  // agent mid-run — and re-synced, or a task was created/deleted. Replace just that
+  // project's tasks in place so the screen updates without a full reload.
+  useEffect(() => {
+    return window.api.on('project:tasksChanged', ({ projectId, tasks }) => {
+      setProjects((prev) =>
+        prev ? prev.map((p) => (p.project.id === projectId ? { ...p, tasks } : p)) : prev,
+      );
+    });
+  }, []);
 
   /** Run an engine call, surfacing any failure instead of failing silently. */
   const guard = useCallback(async (label: string, fn: () => Promise<void>) => {
@@ -83,17 +113,6 @@ export function Projects(): JSX.Element {
       setError(`${label}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }, []);
-
-  const addProject = useCallback(async () => {
-    setBusy(true);
-    await guard('Could not add project', async () => {
-      const path = await window.api.invoke('project:pickDirectory');
-      if (!path) return;
-      await window.api.invoke('project:add', { path });
-      await refresh();
-    });
-    setBusy(false);
-  }, [guard, refresh]);
 
   const syncPlan = useCallback(
     (id: string) =>
@@ -113,11 +132,21 @@ export function Projects(): JSX.Element {
     [guard, refresh],
   );
 
+  // Delete one ad-hoc task. The engine emits project:tasksChanged, so the list
+  // updates via the live listener above (no explicit refresh needed).
+  const deleteTask = useCallback(
+    (taskId: string) =>
+      guard('Could not delete task', async () => {
+        await window.api.invoke('task:delete', taskId);
+      }),
+    [guard],
+  );
+
   return (
     <div className={styles.root}>
       <div className={styles.toolbar}>
         <Subtitle2 className={styles.grow}>Projects</Subtitle2>
-        <Button appearance="primary" onClick={addProject} disabled={busy}>
+        <Button appearance="primary" onClick={() => setDialog({ open: true, mode: 'add' })}>
           Add project…
         </Button>
       </div>
@@ -137,8 +166,8 @@ export function Projects(): JSX.Element {
         <Spinner label="Loading projects…" labelPosition="after" size="tiny" />
       ) : projects.length === 0 ? (
         <Body1 className={styles.empty}>
-          No projects yet. Click <strong>Add project…</strong>, choose a folder, and its{' '}
-          <code>plan.md</code> will be parsed into tasks.
+          No projects yet. Click <strong>Add project…</strong>, choose a folder (and optionally a
+          plan file), and its checkbox items are parsed into tasks.
         </Body1>
       ) : (
         <div className={styles.list}>
@@ -155,13 +184,32 @@ export function Projects(): JSX.Element {
                   }
                   description={
                     <Caption1 className={styles.path}>
-                      {tasks.length} task{tasks.length === 1 ? '' : 's'} · plan: {project.planPath}
+                      {tasks.length} task{tasks.length === 1 ? '' : 's'} · {project.defaultModel} ·{' '}
+                      {project.defaultPermissionMode} · plan: {project.planPath}
                     </Caption1>
                   }
                   action={
                     <div className={styles.cardActions}>
+                      <Button
+                        size="small"
+                        onClick={() => setDialog({ open: true, mode: 'edit', project })}
+                      >
+                        Edit
+                      </Button>
                       <Button size="small" onClick={() => syncPlan(project.id)}>
                         Sync plan
+                      </Button>
+                      <Button
+                        size="small"
+                        onClick={() =>
+                          setAddTask({
+                            open: true,
+                            projectId: project.id,
+                            phases: [...new Set(tasks.map((t) => t.phase).filter(Boolean))],
+                          })
+                        }
+                      >
+                        Add task…
                       </Button>
                       <Button
                         size="small"
@@ -176,22 +224,56 @@ export function Projects(): JSX.Element {
 
                 {tasks.length === 0 ? (
                   <Caption1 className={styles.empty}>
-                    No tasks parsed — add checkbox items (<code>- [ ] …</code>) to the plan, then
-                    Sync.
+                    No tasks yet — add checkbox items (<code>- [ ] …</code>) to the plan and Sync, or
+                    click <strong>Add task…</strong> to create one directly.
                   </Caption1>
                 ) : (
                   groups.map((group) => (
                     <div key={group.phase} className={styles.phase}>
                       <Divider />
                       <Caption1 className={styles.phaseTitle}>{group.phase}</Caption1>
-                      {group.tasks.map((task) => (
-                        <div key={task.id} className={styles.taskRow}>
-                          <Badge appearance="tint" color={STATUS_COLOR[task.status]}>
-                            {task.status}
-                          </Badge>
-                          <Text className={styles.taskTitle}>{task.title}</Text>
-                        </div>
-                      ))}
+                      {group.tasks.map((task) => {
+                        const attachable =
+                          task.status !== 'running' && task.status !== 'waiting-input';
+                        return (
+                          <div key={task.id} className={styles.taskRow}>
+                            <Badge appearance="tint" color={STATUS_COLOR[task.status]}>
+                              {STATUS_LABEL[task.status]}
+                            </Badge>
+                            <Text className={styles.taskTitle} truncate wrap={false}>
+                              {task.title}
+                            </Text>
+                            {task.source === 'adhoc' && (
+                              <Badge appearance="outline" color="informative" size="small">
+                                ad-hoc
+                              </Badge>
+                            )}
+                            {task.sessionId && (
+                              <Caption1 className={styles.session} title={task.sessionId}>
+                                {task.sessionId.slice(0, 8)}
+                              </Caption1>
+                            )}
+                            {attachable && (
+                              <Button
+                                size="small"
+                                appearance="subtle"
+                                onClick={() => setAttach({ open: true, task })}
+                              >
+                                Attach session…
+                              </Button>
+                            )}
+                            {task.source === 'adhoc' && attachable && (
+                              <Button
+                                size="small"
+                                appearance="subtle"
+                                onClick={() => deleteTask(task.id)}
+                              >
+                                Delete
+                              </Button>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   ))
                 )}
@@ -200,6 +282,27 @@ export function Projects(): JSX.Element {
           })}
         </div>
       )}
+
+      <ProjectDialog
+        open={dialog.open}
+        mode={dialog.mode}
+        project={dialog.project}
+        onClose={() => setDialog((d) => ({ ...d, open: false }))}
+        onSaved={() => void refresh()}
+      />
+      <AttachSessionDialog
+        open={attach.open}
+        task={attach.task}
+        onClose={() => setAttach((a) => ({ ...a, open: false }))}
+        onSaved={() => void refresh()}
+      />
+      <AddTaskDialog
+        open={addTask.open}
+        projectId={addTask.projectId}
+        phases={addTask.phases}
+        onClose={() => setAddTask((a) => ({ ...a, open: false }))}
+        onCreated={() => void refresh()}
+      />
     </div>
   );
 }

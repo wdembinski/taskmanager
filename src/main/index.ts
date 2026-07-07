@@ -94,6 +94,7 @@ void app.whenReady().then(() => {
 // FIRST so the `exited` events from killed sessions don't try to write to a
 // database we're about to close.
 app.on('before-quit', () => {
+  engine?.watcher.dispose();
   engine?.scheduler.dispose();
   engine?.sessions.stopAll();
   engine?.broker.close();

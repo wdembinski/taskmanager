@@ -27,7 +27,7 @@ import {
 } from '@fluentui/react-components';
 import type { ProjectWithTasks, Task } from '@shared/model';
 import type { SchedulerState } from '@shared/scheduler';
-import { STATUS_COLOR } from './taskStatus';
+import { STATUS_COLOR, STATUS_LABEL } from './taskStatus';
 import { Transcript } from './Transcript';
 
 const useStyles = makeStyles({
@@ -137,9 +137,19 @@ export function Board(): JSX.Element {
       setStates((prev) => ({ ...prev, [projectId]: state }));
     });
 
+    // Phase 8: the plan was edited (possibly by the agent mid-run) and re-synced, or
+    // a task was created/deleted. Replace that project's whole task list so new
+    // milestones/tasks appear on the board live.
+    const offTasks = window.api.on('project:tasksChanged', ({ projectId, tasks }) => {
+      setProjects((prev) =>
+        prev ? prev.map((pt) => (pt.project.id === projectId ? { ...pt, tasks } : pt)) : prev,
+      );
+    });
+
     return () => {
       offTask();
       offScheduler();
+      offTasks();
     };
   }, []);
 
@@ -237,7 +247,7 @@ export function Board(): JSX.Element {
                         onClick={() => setSelectedTaskId(task.id)}
                       >
                         <Badge appearance="tint" color={STATUS_COLOR[task.status]}>
-                          {task.status}
+                          {STATUS_LABEL[task.status]}
                         </Badge>
                         <Text className={styles.taskTitle} truncate wrap={false}>
                           {task.title}

@@ -26,6 +26,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { relative } from 'node:path';
 import type { Project, Task, TaskStatus } from '@shared/model';
 import type { SchedulerState, TaskChange, SchedulerChange, ActiveRun } from '@shared/scheduler';
 import type { SessionEvent, StartSessionRequest } from '@shared/session';
@@ -75,8 +76,13 @@ export function selectNextPending<T extends Schedulable>(
   return best;
 }
 
-/** The prompt handed to Claude for one task. Pure, so it reads clearly and is stable. */
-export function buildTaskPrompt(projectName: string, task: Task): string {
+/**
+ * The prompt handed to Claude for one task. Pure, so it reads clearly and is stable.
+ * When `planRelPath` is given, the agent is told it may evolve the plan file on the
+ * fly (Phase 8) — the orchestrator watches that file and re-syncs new milestones/
+ * tasks into the board live.
+ */
+export function buildTaskPrompt(projectName: string, task: Task, planRelPath?: string): string {
   return [
     `You are working through the plan for the project "${projectName}".`,
     '',
@@ -88,6 +94,16 @@ export function buildTaskPrompt(projectName: string, task: Task): string {
     '',
     'Make the necessary changes, then briefly summarize what you did.',
     '',
+    // The agent may refine the plan itself (Phase 8): edits to the plan file are
+    // watched and re-synced into the task board live.
+    ...(planRelPath
+      ? [
+          `If the work reveals new milestones or tasks, you may add them to the plan file`,
+          `"${planRelPath}" — "## Milestone" headings and "- [ ] task" checkbox items. The`,
+          `orchestrator picks up plan edits live. Only reshape the plan when it genuinely helps.`,
+          '',
+        ]
+      : []),
     // The explicit question contract (replaces guessing from prose). Detected by
     // `detectAttention`; the sentinel string is defined once in attention.ts.
     `If you need a decision or information from the human before you can continue — a`,
@@ -399,8 +415,10 @@ export class Scheduler {
    */
   private startTask(project: Project, task: Task): string {
     const resumeSessionId = task.sessionId ?? undefined;
+    // The plan file's path relative to the project dir, so the agent can edit it.
+    const planRel = relative(project.path, project.planPath) || project.planPath;
     const request: StartSessionRequest = {
-      prompt: resumeSessionId ? RESUME_NUDGE : buildTaskPrompt(project.name, task),
+      prompt: resumeSessionId ? RESUME_NUDGE : buildTaskPrompt(project.name, task, planRel),
       cwd: project.path,
       model: project.defaultModel,
       permissionMode: project.defaultPermissionMode,

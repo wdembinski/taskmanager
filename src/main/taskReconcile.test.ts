@@ -14,6 +14,7 @@ function task(partial: Partial<Task> & Pick<Task, 'phase' | 'title'>): Task {
     status: 'pending',
     sessionId: null,
     order: 0,
+    source: 'plan',
     ...partial,
   };
 }
@@ -44,6 +45,7 @@ describe('reconcileTasks', () => {
         status: 'done',
         sessionId: null,
         order: 0,
+        source: 'plan',
       },
       {
         id: 'new-1',
@@ -53,6 +55,7 @@ describe('reconcileTasks', () => {
         status: 'pending',
         sessionId: null,
         order: 1,
+        source: 'plan',
       },
     ]);
   });
@@ -100,10 +103,43 @@ describe('reconcileTasks', () => {
     ]);
   });
 
-  it('drops tasks that no longer appear in the plan', () => {
+  it('drops resting plan tasks that no longer appear in the plan', () => {
     const existing = [task({ phase: 'P', title: 'stays' }), task({ phase: 'P', title: 'removed' })];
     const result = reconcileTasks('proj', existing, [{ phase: 'P', title: 'stays', done: false }]);
     expect(result.map((t) => t.title)).toEqual(['stays']);
+  });
+
+  it('keeps a mid-flight plan task even if the agent removed its line from the plan', () => {
+    // The agent edited the plan during a run; the running task must not be dropped.
+    const existing = [
+      task({ phase: 'P', title: 'stays' }),
+      task({ phase: 'P', title: 'running-one', status: 'running', sessionId: 's1' }),
+    ];
+    const result = reconcileTasks('proj', existing, [{ phase: 'P', title: 'stays', done: false }]);
+    expect(result.map((t) => t.title)).toEqual(['stays', 'running-one']);
+    expect(result[1]).toMatchObject({ status: 'running', sessionId: 's1' });
+  });
+
+  it('keeps a plan task the user is working (in-progress/blocked) if its line is removed', () => {
+    const existing = [
+      task({ phase: 'P', title: 'stays' }),
+      task({ phase: 'P', title: 'in-flight', status: 'in-progress' }),
+      task({ phase: 'P', title: 'stuck', status: 'blocked' }),
+      task({ phase: 'P', title: 'gone', status: 'cancelled' }), // resting → dropped
+    ];
+    const result = reconcileTasks('proj', existing, [{ phase: 'P', title: 'stays', done: false }]);
+    expect(result.map((t) => t.title)).toEqual(['stays', 'in-flight', 'stuck']);
+  });
+
+  it('never drops ad-hoc tasks — they are outside the plan', () => {
+    const existing = [
+      task({ phase: 'P', title: 'planned' }),
+      task({ phase: 'Extra', title: 'added in app', source: 'adhoc', status: 'done' }),
+    ];
+    const result = reconcileTasks('proj', existing, [{ phase: 'P', title: 'planned', done: false }]);
+    // Ad-hoc task survives the sync and is appended after the plan tasks.
+    expect(result.map((t) => t.title)).toEqual(['planned', 'added in app']);
+    expect(result[1]).toMatchObject({ source: 'adhoc', status: 'done', order: 1 });
   });
 
   it('treats same title under different phases as distinct tasks', () => {

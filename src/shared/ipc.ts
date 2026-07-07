@@ -23,7 +23,15 @@
  * phases add project/task/session channels here.
  */
 import type { SessionEvent, SessionEventEnvelope, StartSessionRequest } from './session';
-import type { AddProjectInput, ProjectWithTasks, Task } from './model';
+import type {
+  AddProjectInput,
+  ManualStatus,
+  Project,
+  ProjectPatch,
+  ProjectWithTasks,
+  Task,
+  TaskActivityEntry,
+} from './model';
 import type { ActiveRun, SchedulerChange, TaskChange } from './scheduler';
 import type { AttentionAnswer, AttentionItem } from './attention';
 import type { LimitState } from './limit';
@@ -82,6 +90,8 @@ export interface IpcApi {
 
   /** Open a native folder picker. Resolves to the chosen path, or null if cancelled. */
   'project:pickDirectory': () => Promise<string | null>;
+  /** Open a native file picker (markdown), for choosing a custom plan file (Phase 8). */
+  'project:pickFile': () => Promise<string | null>;
   /** Add a project, parse its plan into tasks, and return it with those tasks. */
   'project:add': (input: AddProjectInput) => Promise<ProjectWithTasks>;
   /** List every project, each bundled with its current tasks. */
@@ -92,6 +102,12 @@ export interface IpcApi {
   'project:syncPlan': (id: string) => Promise<Task[]>;
   /** Toggle whether completing a task ticks its checkbox back into the plan file. */
   'project:setWriteBack': (id: string, enabled: boolean) => Promise<void>;
+  /**
+   * Edit an existing project's name / plan file / model / permission mode /
+   * write-back (Phase 8). Returns the updated project, or null if unknown. Model
+   * and mode changes take effect on the next task run.
+   */
+  'project:update': (id: string, patch: ProjectPatch) => Promise<Project | null>;
 
   /**
    * Start (or resume) a project's queue: the scheduler runs its `pending` tasks
@@ -106,6 +122,32 @@ export interface IpcApi {
   'scheduler:activeRuns': () => Promise<ActiveRun[]>;
   /** Run a single task ad-hoc (independent of its project's queue). Returns its run id. */
   'task:run': (taskId: string) => Promise<{ runId: string }>;
+  /**
+   * Create an ad-hoc task in a project (Phase 8) — no plan line required, so
+   * plan-less projects are usable and you can add work on the fly. Returns the task.
+   */
+  'task:create': (projectId: string, input: { title: string; phase?: string }) => Promise<Task>;
+  /** Delete a task (and its history). Rejects if it is currently running. */
+  'task:delete': (taskId: string) => Promise<void>;
+  /**
+   * Set a task's status by hand (Phase 9 to-do list). Only `MANUAL_STATUSES` are
+   * accepted, and only when the task isn't mid-run. Records the change on the task's
+   * activity timeline and returns the updated task.
+   */
+  'task:setStatus': (taskId: string, status: ManualStatus) => Promise<Task>;
+  /** The task's unified activity timeline (comments + status changes + AI transcript). */
+  'task:activity': (taskId: string) => Promise<TaskActivityEntry[]>;
+  /** Add a human progress comment to a task; returns the created timeline entry. */
+  'task:addComment': (taskId: string, body: string) => Promise<TaskActivityEntry>;
+  /** Delete one comment by its id. */
+  'task:deleteComment': (commentId: number) => Promise<void>;
+  /**
+   * Adopt an existing Claude conversation (Phase 8): set a task's `sessionId` to a
+   * session-id you already have, and re-queue it to `pending`, so the next run
+   * RESUMES that conversation (`claude --resume`) instead of starting fresh.
+   * Rejects if the task is currently running. Returns the updated task, or null.
+   */
+  'task:attachSession': (taskId: string, sessionId: string) => Promise<Task | null>;
   /**
    * A task's persisted transcript — every normalized event from all of its runs,
    * in order (Phase 6). Lets a view show past output instead of a blank pane.
@@ -167,6 +209,12 @@ export interface IpcEvents {
   'limit:changed': LimitState | null;
   /** The frameless window was maximized (true) or restored (false) — updates the title-bar icon. */
   'window:maximizedChanged': boolean;
+  /**
+   * A project's task list changed as a whole (Phase 8): the plan file was edited
+   * (by a human or the agent mid-run) and re-synced live, or a task was created/
+   * deleted. Carries the project's full, current task list so the UI can replace it.
+   */
+  'project:tasksChanged': { projectId: string; tasks: Task[] };
 }
 
 /** Convenience: the set of valid invoke channel names. */

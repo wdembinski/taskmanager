@@ -55,6 +55,7 @@ describe('buildTaskPrompt', () => {
     status: 'pending',
     sessionId: null,
     order: 0,
+    source: 'plan',
   };
 
   it('includes the project name, task title, and phase', () => {

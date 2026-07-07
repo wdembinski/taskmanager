@@ -29,6 +29,8 @@ plan the orchestrator could one day run on its own repo.
 | 5 | Usage-limit gate (auto-respawn) | ✅ shipped |
 | 6 | History, resume-across-restart & polish | ✅ shipped |
 | 7 | Packaging & release | ✅ shipped |
+| 8 | Import & project configuration | 🚧 in progress |
+| 9 | Personal task management (to-do list) | 🚧 in progress |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -311,6 +313,96 @@ resume in-flight work after a relaunch, and tidy the UX.
       from `app.asar.unpacked`, and runs as Node for the relay. End-to-end on a
       truly clean machine is the one manual step left to a human — it needs a
       machine with `claude` installed and logged in.)*
+
+---
+
+## Phase 8 — Import & project configuration
+
+**Goal.** Make it easy to bring an *existing* project into the tool: point at any
+plan file, edit a project's settings after adding it, and adopt a Claude
+conversation you already started in the terminal.
+
+Most of the engine already supports this — `store.addProject` accepts a custom
+`planPath`, and the scheduler already resumes a task by its `sessionId` via
+`claude --resume`. This phase mainly **surfaces** those in the UI, plus one new
+read (listing existing on-disk sessions).
+
+### Deliverables
+
+- [x] **A — Add/Edit project dialog.** Replace the one-click "Add project…" with a
+      form (folder Browse, **plan file** Browse defaulting to `<folder>/plan.md`,
+      display name, model, permission mode, write-back), reused for **editing** an
+      existing project. New IPC `project:pickFile` (native `.md` file picker) and
+      `project:update` (backed by a general `store.updateProject`, folding in
+      today's `setWriteBack`). Model/mode changes apply to the next run.
+- [x] **B1 — Manual session attach.** On a non-running task, "Attach session…" takes
+      a pasted session-id (UUID) and, via `task:attachSession` (reusing
+      `store.updateTask`), sets `task.sessionId` + status `pending`, so **Run**
+      resumes that conversation instead of starting fresh. No dependency on CLI
+      internals.
+- [ ] **B2 — Session discovery/picker.** `claude:listSessions(cwd)` enumerates
+      `~/.claude/projects/<encoded-cwd>/*.jsonl` (filename = resumable session id),
+      returning `{ sessionId, startedAt, lastAt, preview }` newest-first; the adopt
+      UI shows this as a pick-list with the manual-paste fallback. Pure helpers
+      `encodeProjectDir` + `parseSessionPreview` are unit-tested; the reader fails
+      soft (the `~/.claude/projects` layout is an **undocumented** CLI convention,
+      verified against the current install — never hard-depend on it).
+- [x] **C — Ad-hoc tasks + live plan re-sync.** Tasks now carry `source: 'plan' |
+      'adhoc'`. **C1:** `task:create` / `task:delete` + an "Add task…" dialog let you
+      add work directly to any project (no plan file needed — plan-less projects are
+      usable), tagged `adhoc`. `reconcileTasks` was reworked so ad-hoc tasks — and any
+      **mid-flight** task — are never dropped by a plan sync. **C2:** a `PlanWatcher`
+      (polling `fs.watchFile`) re-parses + reconciles a project's plan whenever the
+      file changes and pushes the new list over `project:tasksChanged`, so when the
+      **agent rewrites the plan while it works** (the task prompt now invites this),
+      the new milestones/tasks appear on the Board live.
+
+### Done when
+
+- [x] You can add a project pointing at an arbitrary plan file and edit its
+      model/mode/name/plan afterward.
+- [x] You can attach an existing Claude session to a task and have "Run" continue
+      that conversation.
+- [ ] B2: the adopt UI lists real on-disk sessions for a project's folder.
+- [x] C: you can add an ad-hoc task to any project, and edits to a plan file (by a
+      human or the agent mid-run) re-sync onto the Board without a manual "Sync",
+      without ever dropping an ad-hoc or running task.
+- [x] `pnpm typecheck` + `pnpm test` + `pnpm build` green; pure bits unit-tested.
+
+---
+
+## Phase 9 — Personal task management (to-do list)
+
+**Goal.** Make the tool double as a personal to-do list on top of the AI orchestrator:
+put your own tasks (Phase 8 ad-hoc), **set a task's status by hand**, and keep a
+**running thread of progress notes** so you can pick a task back up and see what happened.
+
+### Deliverables
+
+- [x] **A — Human statuses + manual control.** `TaskStatus` gains `in-progress` / `blocked`
+      / `cancelled` (labelled To Do / In Progress / Blocked / Done / Cancelled via
+      `STATUS_LABEL`), distinct from the AI-owned `running`/`waiting-input`/`blocked-by-limit`.
+      New `task:setStatus` (validates against `MANUAL_STATUSES`, refuses a task mid-run,
+      reuses `store.updateTask`, logs the change, emits `task:changed`). `reconcileTasks`
+      also keeps `in-progress`/`blocked` orphans so a plan re-sync can't discard active work.
+- [x] **B — Activity timeline + comments.** New `task_activity` table (comments + status
+      changes), referencing the *project* like `task_events` so plan re-syncs don't wipe it.
+      `getTaskActivity` **merges** it with the AI transcript into one time-ordered feed
+      (pure, unit-tested `mergeActivity`). IPC `task:activity` / `task:addComment` /
+      `task:deleteComment`. `deleteTask` now also clears a task's activity + events.
+- [x] **C — "My Tasks" screen.** New top-level tab (`MyTasks.tsx`): all tasks across
+      projects, grouped, with a status filter, a per-row "Set status" menu, and per-project
+      "Add task…" (reusing the Phase 8 dialog). A `TaskDetail.tsx` pane shows the status
+      dropdown + the unified activity timeline (AI events via the exported `eventToLines`) +
+      an add-comment composer. Board stays AI-focused.
+
+### Done when
+
+- [x] You can set a task's status by hand and it sticks across restarts + plan syncs.
+- [x] You can add progress comments and re-read them, interleaved with status changes and
+      the AI transcript, in one timeline.
+- [x] `pnpm typecheck` + `pnpm test` + `pnpm build` green; pure bits (`mergeActivity`,
+      reconcile) unit-tested.
 
 ---
 
