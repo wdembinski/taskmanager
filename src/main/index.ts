@@ -13,6 +13,13 @@ import { join } from 'node:path';
 import { app, BrowserWindow, shell } from 'electron';
 import { registerIpcHandlers, type Engine } from './ipc';
 
+// Windows white-flash-on-restore fix. Chromium's "native window occlusion"
+// detection marks a minimized window as occluded and discards its rendered frame;
+// restoring it from the taskbar then shows a blank WHITE client area for a moment
+// until the page repaints. Disabling this feature keeps the content painted across
+// minimize/restore. Must be set before the app is ready.
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
+
 /**
  * Create the main window.
  *
@@ -31,6 +38,11 @@ function createWindow(): BrowserWindow {
     minHeight: 600,
     show: false, // reveal only once the page is painted, to avoid a white flash
     title: 'Claude Orchestrator',
+    // Frameless: no OS title bar/border — the renderer draws its own title bar and
+    // window controls (see src/renderer/src/TitleBar.tsx). Resizing from the window
+    // edges still works. The dark backgroundColor avoids a white flash before paint.
+    frame: false,
+    backgroundColor: '#1f1f1f',
     webPreferences: {
       preload: join(__dirname, '../preload/index.mjs'),
       contextIsolation: true,

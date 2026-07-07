@@ -1,0 +1,41 @@
+/*
+ * Global shell styles for the frameless window.
+ *
+ * The app runs in a borderless Electron window (no OS title bar), so we (a) strip
+ * the default page margin that was showing as a white frame around the UI, and
+ * (b) declare the drag regions Chromium uses to let the user move the window by
+ * our custom title bar. Everything else is styled with Fluent's makeStyles.
+ */
+/*
+ * Tell the engine (and native scrollbars/form controls) this is a dark surface,
+ * and paint the document background dark. Without a background here the DOM's
+ * default is white, which flashes for a frame when the window is restored from the
+ * taskbar before Fluent's dark UI repaints. #1f1f1f matches both the Electron
+ * window `backgroundColor` and Fluent's colorNeutralBackground2, so restore is
+ * seamless.
+ */
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background-color: #1f1f1f;
+}
+
+/* The shell never scrolls; inner panes manage their own overflow. */
+body {
+  overflow: hidden;
+}
+
+/* Custom title bar: the bar itself is draggable; interactive bits opt out. */
+.app-drag {
+  -webkit-app-region: drag;
+}
+.app-no-drag {
+  -webkit-app-region: no-drag;
+}

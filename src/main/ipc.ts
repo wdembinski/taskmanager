@@ -174,5 +174,17 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('settings:get', async () => store.getSettings());
   handle('settings:save', async (settings) => store.saveSettings(settings));
 
+  // Frameless-window controls for the renderer's custom title bar, plus a push so
+  // the title bar's maximize/restore icon tracks OS-driven changes (snap, drag).
+  handle('window:minimize', async () => mainWindow.minimize());
+  handle('window:toggleMaximize', async () => {
+    if (mainWindow.isMaximized()) mainWindow.unmaximize();
+    else mainWindow.maximize();
+  });
+  handle('window:close', async () => mainWindow.close());
+  handle('window:isMaximized', async () => mainWindow.isMaximized());
+  mainWindow.on('maximize', () => send('window:maximizedChanged', true));
+  mainWindow.on('unmaximize', () => send('window:maximizedChanged', false));
+
   return { sessions, scheduler, store, broker };
 }

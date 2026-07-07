@@ -132,6 +132,15 @@ export interface IpcApi {
   'settings:get': () => Promise<AppSettings>;
   /** Persist the global app settings; scheduler knobs take effect on the next task. */
   'settings:save': (settings: AppSettings) => Promise<void>;
+
+  /** Frameless-window controls, driven by the renderer's custom title bar. */
+  'window:minimize': () => Promise<void>;
+  /** Toggle maximize/restore. */
+  'window:toggleMaximize': () => Promise<void>;
+  /** Close the window (quits the app). */
+  'window:close': () => Promise<void>;
+  /** Whether the window is currently maximized (seed the restore/maximize icon). */
+  'window:isMaximized': () => Promise<boolean>;
 }
 
 /**
@@ -156,6 +165,8 @@ export interface IpcEvents {
    * clears and work resumes. Drives the global countdown banner.
    */
   'limit:changed': LimitState | null;
+  /** The frameless window was maximized (true) or restored (false) — updates the title-bar icon. */
+  'window:maximizedChanged': boolean;
 }
 
 /** Convenience: the set of valid invoke channel names. */
