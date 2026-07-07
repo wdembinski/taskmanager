@@ -16,6 +16,8 @@ import { basename, join } from 'node:path';
 import Database from 'better-sqlite3';
 import type { AddProjectInput, Project, Task } from '@shared/model';
 import type { LimitState } from '@shared/limit';
+import type { SessionEvent } from '@shared/session';
+import { type AppSettings, DEFAULT_SETTINGS } from '@shared/settings';
 import type { ParsedTask } from './planParser';
 import { reconcileTasks } from './taskReconcile';
 
@@ -57,12 +59,23 @@ export interface Store {
   /** Re-parse a plan and reconcile it into the project's tasks; returns the result. */
   syncTasksFromPlan(projectId: string, parsed: ParsedTask[]): Task[];
   /**
+   * Append one normalized session event to a task's persisted history (Phase 6),
+   * so its transcript is viewable after the run ends or the app restarts.
+   */
+  appendTaskEvent(projectId: string, taskId: string, runId: string, event: SessionEvent): void;
+  /** Load a task's full event history in order (all of its runs), for replay in the UI. */
+  getTaskHistory(taskId: string): SessionEvent[];
+  /**
    * Persist (or clear, with `null`) the account-wide usage-limit gate so a limit
    * survives an app restart and the resume still happens after a relaunch (Phase 5).
    */
   saveLimitGate(state: LimitState | null): void;
   /** Load a persisted usage-limit gate, or null if none is in force. */
   loadLimitGate(): LimitState | null;
+  /** Current app settings, with any unset field filled from `DEFAULT_SETTINGS` (Phase 6). */
+  getSettings(): AppSettings;
+  /** Persist the full app settings object. */
+  saveSettings(settings: AppSettings): void;
   close(): void;
 }
 
@@ -100,6 +113,15 @@ export function createStore(dbPath: string): Store {
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS task_events (
+      id        INTEGER PRIMARY KEY AUTOINCREMENT,
+      projectId TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      taskId    TEXT NOT NULL,
+      runId     TEXT NOT NULL,
+      event     TEXT NOT NULL,
+      createdAt INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_events_task ON task_events(taskId, id);
   `);
 
   // Migrate databases created before Phase 3 added the write-back column.
@@ -129,9 +151,29 @@ export function createStore(dbPath: string): Store {
   );
   const deleteState = db.prepare(`DELETE FROM app_state WHERE key = ?`);
   const selectState = db.prepare(`SELECT value FROM app_state WHERE key = ?`);
+  // task_events references the PROJECT (not the task) so a plan re-sync — which
+  // deletes and re-inserts task rows — never cascades away a task's history.
+  const insertEvent = db.prepare(
+    `INSERT INTO task_events (projectId, taskId, runId, event, createdAt)
+     VALUES (@projectId, @taskId, @runId, @event, @createdAt)`,
+  );
+  const selectEvents = db.prepare(`SELECT event FROM task_events WHERE taskId = ? ORDER BY id`);
 
   /** The single row key under which the usage-limit gate is persisted. */
   const LIMIT_GATE_KEY = 'limitGate';
+  /** The single row key under which app settings are persisted. */
+  const SETTINGS_KEY = 'settings';
+
+  /** Read app settings, merging any stored fields over the built-in defaults. */
+  function getSettings(): AppSettings {
+    const row = selectState.get(SETTINGS_KEY) as { value: string } | undefined;
+    if (!row) return { ...DEFAULT_SETTINGS };
+    try {
+      return { ...DEFAULT_SETTINGS, ...(JSON.parse(row.value) as Partial<AppSettings>) };
+    } catch {
+      return { ...DEFAULT_SETTINGS };
+    }
+  }
 
   /** SQLite stores writeBackPlan as 0/1; present it to the app as a real boolean. */
   function rowToProject(r: ProjectRow): Project {
@@ -170,14 +212,16 @@ export function createStore(dbPath: string): Store {
 
   return {
     addProject(input) {
+      // Unspecified project fields inherit the user's global defaults (Phase 6).
+      const defaults = getSettings();
       const project: Project = {
         id: randomUUID(),
         name: input.name?.trim() || basename(input.path),
         path: input.path,
         planPath: input.planPath ?? join(input.path, 'plan.md'),
-        defaultModel: input.defaultModel ?? 'sonnet',
-        defaultPermissionMode: input.defaultPermissionMode ?? 'acceptEdits',
-        writeBackPlan: input.writeBackPlan ?? false,
+        defaultModel: input.defaultModel ?? defaults.defaultModel,
+        defaultPermissionMode: input.defaultPermissionMode ?? defaults.defaultPermissionMode,
+        writeBackPlan: input.writeBackPlan ?? defaults.writeBackPlan,
         createdAt: Date.now(),
       };
       insertProject.run({ ...project, writeBackPlan: project.writeBackPlan ? 1 : 0 });
@@ -233,6 +277,29 @@ export function createStore(dbPath: string): Store {
       return desired;
     },
 
+    appendTaskEvent(projectId, taskId, runId, event) {
+      insertEvent.run({
+        projectId,
+        taskId,
+        runId,
+        event: JSON.stringify(event),
+        createdAt: Date.now(),
+      });
+    },
+
+    getTaskHistory(taskId) {
+      const rows = selectEvents.all(taskId) as Array<{ event: string }>;
+      const events: SessionEvent[] = [];
+      for (const row of rows) {
+        try {
+          events.push(JSON.parse(row.event) as SessionEvent);
+        } catch {
+          // Skip a corrupt row rather than break the whole transcript.
+        }
+      }
+      return events;
+    },
+
     saveLimitGate(state) {
       if (state === null) deleteState.run(LIMIT_GATE_KEY);
       else upsertState.run(LIMIT_GATE_KEY, JSON.stringify(state));
@@ -246,6 +313,12 @@ export function createStore(dbPath: string): Store {
       } catch {
         return null; // corrupt/legacy value — treat as no gate
       }
+    },
+
+    getSettings,
+
+    saveSettings(settings) {
+      upsertState.run(SETTINGS_KEY, JSON.stringify(settings));
     },
 
     close() {

@@ -22,11 +22,12 @@
  * Phase 0 only needs a couple of channels to prove the wiring works; later
  * phases add project/task/session channels here.
  */
-import type { SessionEventEnvelope, StartSessionRequest } from './session';
+import type { SessionEvent, SessionEventEnvelope, StartSessionRequest } from './session';
 import type { AddProjectInput, ProjectWithTasks, Task } from './model';
 import type { ActiveRun, SchedulerChange, TaskChange } from './scheduler';
 import type { AttentionAnswer, AttentionItem } from './attention';
 import type { LimitState } from './limit';
+import type { AppSettings } from './settings';
 
 /** Result of checking whether the local `claude` CLI is installed and logged in. */
 export interface ClaudeStatus {
@@ -105,6 +106,11 @@ export interface IpcApi {
   'scheduler:activeRuns': () => Promise<ActiveRun[]>;
   /** Run a single task ad-hoc (independent of its project's queue). Returns its run id. */
   'task:run': (taskId: string) => Promise<{ runId: string }>;
+  /**
+   * A task's persisted transcript — every normalized event from all of its runs,
+   * in order (Phase 6). Lets a view show past output instead of a blank pane.
+   */
+  'task:history': (taskId: string) => Promise<SessionEvent[]>;
 
   /** Snapshot of everything currently waiting on a human (seed the inbox on load). */
   'attention:list': () => Promise<AttentionItem[]>;
@@ -121,6 +127,11 @@ export interface IpcApi {
    * the `limit:changed` event.
    */
   'limit:current': () => Promise<LimitState | null>;
+
+  /** The current global app settings (Phase 6). */
+  'settings:get': () => Promise<AppSettings>;
+  /** Persist the global app settings; scheduler knobs take effect on the next task. */
+  'settings:save': (settings: AppSettings) => Promise<void>;
 }
 
 /**

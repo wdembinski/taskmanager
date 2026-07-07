@@ -1,12 +1,14 @@
 /**
- * App shell (Phase 1).
+ * App shell.
  *
- * Shows a Claude-readiness banner at the top (from Phase 0) and, below it, the
- * live Session view where you can run one Claude session and watch it stream.
+ * A tabbed dashboard over the orchestration engine: Projects, the running Board,
+ * the Attention inbox, Settings, and a hands-on Scratch run. A global usage-limit
+ * banner (Phase 5) sits above the tabs; a footer (Phase 6) shows Claude readiness
+ * and app info, and the top only shows a Claude message bar when something is wrong.
  *
- * The pattern to notice: this component reads request/response data via
- * `window.api.invoke(...)`, while the Session view consumes pushed events via
- * `window.api.on(...)`. Those two are the whole UI↔engine vocabulary.
+ * The pattern to notice: components read request/response data via
+ * `window.api.invoke(...)` and consume pushed updates via `window.api.on(...)`.
+ * Those two are the whole UI↔engine vocabulary.
  */
 import { useEffect, useState } from 'react';
 import {
@@ -26,6 +28,7 @@ import { Attention } from './Attention';
 import { Board } from './Board';
 import { LimitBanner } from './LimitBanner';
 import { Projects } from './Projects';
+import { Settings } from './Settings';
 import { SessionRunner } from './SessionRunner';
 
 const useStyles = makeStyles({
@@ -41,9 +44,21 @@ const useStyles = makeStyles({
   header: { display: 'flex', alignItems: 'baseline', gap: '12px' },
   meta: { color: tokens.colorNeutralForeground3 },
   body: { display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1 },
+  footer: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    paddingTop: '8px',
+    borderTop: `1px solid ${tokens.colorNeutralStroke2}`,
+    color: tokens.colorNeutralForeground3,
+  },
+  dot: { width: '8px', height: '8px', borderRadius: '50%', flexShrink: 0 },
+  ok: { backgroundColor: tokens.colorPaletteGreenBackground3 },
+  bad: { backgroundColor: tokens.colorPaletteRedBackground3 },
+  grow: { flex: 1 },
 });
 
-type TabId = 'projects' | 'board' | 'attention' | 'scratch';
+type TabId = 'projects' | 'board' | 'attention' | 'settings' | 'scratch';
 
 export function App(): JSX.Element {
   const styles = useStyles();
@@ -74,19 +89,13 @@ export function App(): JSX.Element {
     <div className={styles.page}>
       <div className={styles.header}>
         <Title2>Claude Orchestrator</Title2>
-        {info && (
-          <Caption1 className={styles.meta}>
-            v{info.version} · electron {info.electron} · node {info.node}
-          </Caption1>
-        )}
       </div>
 
-      {claude ? (
-        <MessageBar intent={claudeOk ? 'success' : 'warning'}>
+      {/* Surface a Claude problem prominently; when all is well the footer suffices. */}
+      {claude && !claudeOk && (
+        <MessageBar intent="warning">
           <MessageBarBody>{claude.message}</MessageBarBody>
         </MessageBar>
-      ) : (
-        <Spinner label="Checking Claude…" labelPosition="after" size="tiny" />
       )}
 
       {/* Global usage-limit gate (Phase 5): a countdown banner while work is parked. */}
@@ -101,6 +110,7 @@ export function App(): JSX.Element {
             <CounterBadge count={attentionCount} color="danger" size="small" appearance="filled" />
           )}
         </Tab>
+        <Tab value="settings">Settings</Tab>
         <Tab value="scratch">Scratch run</Tab>
       </TabList>
 
@@ -111,8 +121,33 @@ export function App(): JSX.Element {
           <Board />
         ) : tab === 'attention' ? (
           <Attention />
+        ) : tab === 'settings' ? (
+          <Settings />
         ) : (
           <SessionRunner />
+        )}
+      </div>
+
+      {/* Footer: Claude readiness + app info (folds in the Phase 0 status banner). */}
+      <div className={styles.footer}>
+        {claude ? (
+          <>
+            <span className={`${styles.dot} ${claudeOk ? styles.ok : styles.bad}`} />
+            <Caption1>
+              {claude.installed
+                ? `Claude ${claude.version ?? '?'}${claude.authenticated ? ' · logged in' : ' · not logged in'}`
+                : 'Claude CLI not found'}
+              {claude.apiKeyDetected && ' · ANTHROPIC_API_KEY set'}
+            </Caption1>
+          </>
+        ) : (
+          <Spinner label="Checking Claude…" labelPosition="after" size="tiny" />
+        )}
+        <span className={styles.grow} />
+        {info && (
+          <Caption1 className={styles.meta}>
+            v{info.version} · electron {info.electron} · node {info.node}
+          </Caption1>
         )}
       </div>
     </div>

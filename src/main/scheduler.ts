@@ -48,9 +48,6 @@ const DEFAULT_DENY_MESSAGE =
 const RESUME_NUDGE =
   'A usage limit interrupted you and it has now reset. Continue the task where you left off.';
 
-/** Upper bound on the random resume jitter (ms) added to a limit's reset time. */
-const LIMIT_JITTER_MS = 60_000;
-
 /** Minimal shape the selection logic needs — kept tiny so tests don't build full tasks. */
 export interface Schedulable {
   id: string;
@@ -166,12 +163,11 @@ export class Scheduler {
     private readonly emitAttentionResolved: (id: string) => void,
     /** Push the usage-limit gate's state (or null when it clears) to the UI. */
     private readonly emitLimit: (state: LimitState | null) => void,
-    /** Max tasks a single project runs at once. Default 1 = strictly sequential. */
-    private readonly concurrency = 1,
   ) {
     this.limitGate = new LimitGate({
       now: () => Date.now(),
-      jitter: () => Math.floor(Math.random() * LIMIT_JITTER_MS),
+      // Jitter is bounded by the user's setting (Phase 6), read fresh each time.
+      jitter: () => Math.floor(Math.random() * Math.max(0, this.store.getSettings().limitJitterMs)),
       setTimer: (ms, cb) => setTimeout(cb, ms),
       clearTimer: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
       onResumeDue: (state) => this.resumeParked(state),
@@ -260,6 +256,24 @@ export class Scheduler {
     if (this.disposed) return;
     const saved = this.store.loadLimitGate();
     if (saved) this.limitGate.restore(saved);
+  }
+
+  /**
+   * On startup (Phase 6), heal tasks the DB left mid-flight: a `running` or
+   * `waiting-input` task's process died when the app closed, so there is nothing
+   * to re-attach to. Re-queue each to `pending` — its saved `sessionId` is kept,
+   * so when it runs again `startTask` RESUMES the conversation rather than losing
+   * context. `blocked-by-limit` tasks are left for the limit gate to resume.
+   */
+  reconcileInterruptedTasks(): void {
+    if (this.disposed) return;
+    for (const project of this.store.listProjects()) {
+      for (const task of this.store.getTasks(project.id)) {
+        if (task.status === 'running' || task.status === 'waiting-input') {
+          this.updateTask(task.id, { status: 'pending' }, null);
+        }
+      }
+    }
   }
 
   /**
@@ -356,7 +370,9 @@ export class Scheduler {
     if (this.disposed || !this.activeProjects.has(projectId)) return;
     // A usage limit is account-wide: hold ALL scheduling until it resets (Phase 5).
     if (this.limitGate.active) return;
-    while (this.runningCount(projectId) < this.concurrency) {
+    // Concurrency is a live setting (Phase 6): read it fresh so edits take effect.
+    const concurrency = Math.max(1, this.store.getSettings().concurrency);
+    while (this.runningCount(projectId) < concurrency) {
       const next = selectNextPending(this.store.getTasks(projectId), this.inFlight);
       if (!next) break;
       const project = this.store.getProject(projectId);
@@ -376,11 +392,13 @@ export class Scheduler {
   }
 
   /**
-   * Start a session for one task. When `resumeSessionId` is set (Phase 5, after a
-   * limit reset) the CLI resumes that exact conversation with a continue-nudge
-   * rather than the full task prompt, so no context is lost.
+   * Start a session for one task. If the task already has a `sessionId` — because
+   * a usage limit parked it (Phase 5) or it was interrupted by an app restart
+   * (Phase 6) — the CLI RESUMES that exact conversation with a continue-nudge, so
+   * no context is lost. A never-run task starts fresh from its full task prompt.
    */
-  private startTask(project: Project, task: Task, resumeSessionId?: string): string {
+  private startTask(project: Project, task: Task): string {
+    const resumeSessionId = task.sessionId ?? undefined;
     const request: StartSessionRequest = {
       prompt: resumeSessionId ? RESUME_NUDGE : buildTaskPrompt(project.name, task),
       cwd: project.path,
@@ -407,6 +425,10 @@ export class Scheduler {
     if (this.disposed) return;
     const run = this.runs.get(runId);
     if (!run) return;
+
+    // Phase 6: persist every event to the task's history so its transcript is
+    // viewable after the run ends or the app restarts.
+    this.store.appendTaskEvent(run.projectId, run.taskId, runId, event);
 
     // Phase 4: did Claude ask the human a question (via the sentinel)? If so,
     // park the task in the Attention inbox until someone answers. (Permissions
@@ -497,7 +519,7 @@ export class Scheduler {
       if (!task || task.status !== 'blocked-by-limit' || !task.sessionId) continue;
       const project = this.store.getProject(task.projectId);
       if (!project) continue;
-      this.startTask(project, task, task.sessionId);
+      this.startTask(project, task); // resumes by task.sessionId
     }
     // Slots may have freed without a parked task — nudge every active queue.
     for (const projectId of this.activeProjects) this.pump(projectId);

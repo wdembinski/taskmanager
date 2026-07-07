@@ -280,10 +280,11 @@ export function Board(): JSX.Element {
         </div>
         <Transcript
           runId={selectedRunId}
+          taskId={selectedTaskId}
           emptyHint={
             selectedTaskId
-              ? 'This task is not running right now — its live output appears here while it runs.'
-              : 'Select a task to see its live output.'
+              ? 'No output recorded for this task yet — it appears here once the task runs.'
+              : 'Select a task to see its transcript.'
           }
         />
       </div>

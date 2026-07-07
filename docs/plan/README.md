@@ -27,8 +27,8 @@ plan the orchestrator could one day run on its own repo.
 | 3 | Task board & Scheduler | ✅ shipped |
 | 4 | Attention inbox (permissions & questions) | ✅ shipped |
 | 5 | Usage-limit gate (auto-respawn) | ✅ shipped |
-| 6 | History, resume-across-restart & polish | ⬜ next |
-| 7 | Packaging & release | ⬜ |
+| 6 | History, resume-across-restart & polish | ✅ shipped |
+| 7 | Packaging & release | ⬜ next |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -249,19 +249,38 @@ resume in-flight work after a relaunch, and tidy the UX.
 
 ### Deliverables
 
-- [ ] Persist per-task transcript/event history; reopening a task shows its past
-      output, not a blank pane.
-- [ ] On startup, reconcile: tasks left `running`/`waiting-input`/`blocked-by-limit`
-      are re-attached or safely re-queued (using saved session ids).
-- [ ] Settings screen: default model/permission mode, concurrency limit, jitter,
-      plan write-back toggle.
-- [ ] Empty states, error surfacing, and a footer showing Claude status + app info
-      (fold in the Phase 0 banner).
+- [x] Persist per-task transcript/event history: a new `task_events` table (one row
+      per normalized event) written by the scheduler as each run streams; reopening
+      a task in the Board loads it via `task:history` and `<Transcript>` replays it,
+      so past output shows instead of a blank pane. The table references the
+      **project** (not the task), so a plan re-sync — which deletes/reinserts task
+      rows — never cascades history away; removing a project still cascades it.
+- [x] On startup, reconcile (`reconcileInterruptedTasks`): tasks left `running`/
+      `waiting-input` are re-queued to `pending` (their process died with the app),
+      **keeping their saved `sessionId`** so a re-run RESUMES the conversation
+      (`startTask` now resumes whenever a task already has a session id).
+      `blocked-by-limit` tasks are left for the Phase 5 limit gate to resume.
+- [x] Settings screen: default model / permission mode / plan write-back for **new**
+      projects, plus the two live scheduler knobs — **concurrency** and the usage-
+      limit **resume jitter** — read fresh from the store on each task/limit so edits
+      take effect without a restart. Persisted as one blob in `app_state`, merged
+      over `DEFAULT_SETTINGS` so older DBs gain new fields cleanly.
+- [x] Empty states, error surfacing (Projects add/sync/remove failures now show a
+      dismissible error bar), and a **footer** showing Claude readiness (status dot +
+      version/login) and app info — folding in the Phase 0 banner, which now only
+      appears at the top when something is actually wrong.
 
 ### Done when
 
-- Killing and relaunching the app mid-run does not lose task state or transcripts.
-- Every task's history is viewable after the fact.
+- [x] Killing and relaunching the app mid-run does not lose task state or transcripts.
+      *(events persist to `task_events` as they stream; startup reconciliation heals
+      stuck statuses; transcripts reload from the DB.)*
+- [x] Every task's history is viewable after the fact. *(`task:history` +
+      `<Transcript taskId=…>` replay.)*
+- [x] `pnpm typecheck` + `pnpm test` (72) + `pnpm build` green; app boots (10s smoke,
+      real-DB migration applied + reconciliation ran clean); the new schema's
+      survive-resync / cascade-on-project-delete / settings-merge behaviors are
+      verified under the real better-sqlite3 ABI.
 
 ---
 

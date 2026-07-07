@@ -16,6 +16,9 @@ import {
   CardHeader,
   Divider,
   makeStyles,
+  MessageBar,
+  MessageBarActions,
+  MessageBarBody,
   Spinner,
   Subtitle2,
   Text,
@@ -61,6 +64,7 @@ export function Projects(): JSX.Element {
   const styles = useStyles();
   const [projects, setProjects] = useState<ProjectWithTasks[] | null>(null);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setProjects(await window.api.invoke('project:list'));
@@ -70,32 +74,43 @@ export function Projects(): JSX.Element {
     void refresh();
   }, [refresh]);
 
+  /** Run an engine call, surfacing any failure instead of failing silently. */
+  const guard = useCallback(async (label: string, fn: () => Promise<void>) => {
+    setError(null);
+    try {
+      await fn();
+    } catch (e) {
+      setError(`${label}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, []);
+
   const addProject = useCallback(async () => {
     setBusy(true);
-    try {
+    await guard('Could not add project', async () => {
       const path = await window.api.invoke('project:pickDirectory');
       if (!path) return;
       await window.api.invoke('project:add', { path });
       await refresh();
-    } finally {
-      setBusy(false);
-    }
-  }, [refresh]);
+    });
+    setBusy(false);
+  }, [guard, refresh]);
 
   const syncPlan = useCallback(
-    async (id: string) => {
-      await window.api.invoke('project:syncPlan', id);
-      await refresh();
-    },
-    [refresh],
+    (id: string) =>
+      guard('Could not sync plan', async () => {
+        await window.api.invoke('project:syncPlan', id);
+        await refresh();
+      }),
+    [guard, refresh],
   );
 
   const removeProject = useCallback(
-    async (id: string) => {
-      await window.api.invoke('project:remove', id);
-      await refresh();
-    },
-    [refresh],
+    (id: string) =>
+      guard('Could not remove project', async () => {
+        await window.api.invoke('project:remove', id);
+        await refresh();
+      }),
+    [guard, refresh],
   );
 
   return (
@@ -106,6 +121,17 @@ export function Projects(): JSX.Element {
           Add project…
         </Button>
       </div>
+
+      {error && (
+        <MessageBar intent="error">
+          <MessageBarBody>{error}</MessageBarBody>
+          <MessageBarActions>
+            <Button size="small" appearance="transparent" onClick={() => setError(null)}>
+              Dismiss
+            </Button>
+          </MessageBarActions>
+        </MessageBar>
+      )}
 
       {projects === null ? (
         <Spinner label="Loading projects…" labelPosition="after" size="tiny" />

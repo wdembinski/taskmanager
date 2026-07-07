@@ -84,6 +84,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     (state) => send('limit:changed', state),
   );
 
+  // Phase 6: heal tasks the previous run left mid-flight (running/waiting-input →
+  // pending, keeping their session id so a re-run resumes them). Runs before the
+  // window paints; the UI re-queries project:list on mount and sees the fix.
+  scheduler.reconcileInterruptedTasks();
+
   // The permission broker gives the scheduler a TRUE pre-execution veto: the CLI
   // asks it (via an MCP relay) before running each tool, and the scheduler either
   // auto-approves per policy or parks the task until a human answers. Materialize
@@ -159,11 +164,15 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     if (!started) throw new Error(`Cannot run task ${taskId}: not found`);
     return started;
   });
+  handle('task:history', async (taskId) => store.getTaskHistory(taskId));
 
   handle('attention:list', async () => scheduler.listAttention());
   handle('attention:answer', async (itemId, answer) => scheduler.answerAttention(itemId, answer));
 
   handle('limit:current', async () => scheduler.currentLimit());
+
+  handle('settings:get', async () => store.getSettings());
+  handle('settings:save', async (settings) => store.saveSettings(settings));
 
   return { sessions, scheduler, store, broker };
 }
