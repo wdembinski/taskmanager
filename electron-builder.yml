@@ -1,20 +1,45 @@
 # electron-builder configuration — how the app is packaged into an installer.
-# We only target Windows for now (NSIS installer). Run `npm run package`.
+# We only target Windows for now (NSIS installer). Run `pnpm package`.
 appId: network.vipper.claude-orchestrator
 productName: Claude Orchestrator
+copyright: © ${author}
+
 directories:
   # electron-builder packages the compiled output produced by electron-vite build.
   output: dist
-  buildResources: build
+  buildResources: build # app icon lives at build/icon.ico
+
+# What goes INSIDE the app bundle. electron-builder always adds the production
+# dependency tree (so better-sqlite3 ships); these globs cover our own compiled code.
 files:
   - out/**/*
   - package.json
+
+# better-sqlite3 is a NATIVE module: its .node binary cannot be require()'d from
+# inside the asar archive, so it must be unpacked to app.asar.unpacked. (The
+# permission relay is materialized to userData at runtime, so it needs no unpack.)
+asarUnpack:
+  - '**/*.node'
+  - '**/node_modules/better-sqlite3/**'
+
 win:
   target:
     - nsis
+  icon: build/icon.ico
+  # Windows may flag an unsigned exe; code-signing is a release-time concern (see
+  # docs/07-packaging-and-release.md) and intentionally not configured here. The
+  # publisher name is kept under signtoolOptions so it is used once a cert is added.
+  signtoolOptions:
+    publisherName: ${author}
+  artifactName: ${productName}-${version}-setup.${ext}
+
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
   perMachine: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Claude Orchestrator
+
 # The Claude CLI/SDK is used from the user's own machine (their subscription login),
 # so we do NOT bundle it — the app shells out to the `claude` already on PATH.

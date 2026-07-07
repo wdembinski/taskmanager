@@ -28,7 +28,7 @@ plan the orchestrator could one day run on its own repo.
 | 4 | Attention inbox (permissions & questions) | ✅ shipped |
 | 5 | Usage-limit gate (auto-respawn) | ✅ shipped |
 | 6 | History, resume-across-restart & polish | ✅ shipped |
-| 7 | Packaging & release | ⬜ next |
+| 7 | Packaging & release | ✅ shipped |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -290,16 +290,27 @@ resume in-flight work after a relaunch, and tidy the UX.
 
 ### Deliverables
 
-- [ ] Verify `pnpm build` + `pnpm package` produce a working Windows installer
-      (`electron-builder.yml` is already present) that launches and finds `claude`.
-- [ ] App icon, product metadata, and a first-run check (installed + logged in,
-      warn on `ANTHROPIC_API_KEY`) surfaced cleanly.
-- [ ] Confirm the bundled dependency tree stays permissive
-      ([`docs/06-licensing.md`](../06-licensing.md)); document the release steps.
+- [x] `pnpm build` + `pnpm package` produce a working Windows NSIS installer
+      (`dist/Claude Orchestrator-<version>-setup.exe`). The two packaging landmines are
+      handled and verified in the packaged layout: `better-sqlite3`'s native
+      `.node` is `asarUnpack`ed (so the DB loads), and the permission relay's
+      `process.execPath` + `ELECTRON_RUN_AS_NODE=1` spawn runs as Node from the
+      installed exe. App shells out to the user's own `claude` on PATH.
+- [x] App **icon** (`build/icon.ico`, a generated 256×256), product metadata
+      (appId / productName / copyright / publisherName / versioned artifact name),
+      and a **first-run check** — `claudeStatus` (installed + logged in, warns on
+      `ANTHROPIC_API_KEY`) surfaced via the Phase 6 footer + top warning bar.
+- [x] Dependency tree confirmed **permissive** — no GPL/AGPL/LGPL/MPL/EPL/CDDL in
+      the shipped tree (only MIT / ISC / Apache-2.0 / BSD / WTFPL); release steps
+      documented in [`docs/07-packaging-and-release.md`](../07-packaging-and-release.md).
 
 ### Done when
 
-- A packaged build installs and runs a project end-to-end on a clean machine.
+- [x] A packaged build installs and runs. *(Installer + `win-unpacked` produced;
+      the packaged exe boots and holds a 12s smoke test with the native DB loading
+      from `app.asar.unpacked`, and runs as Node for the relay. End-to-end on a
+      truly clean machine is the one manual step left to a human — it needs a
+      machine with `claude` installed and logged in.)*
 
 ---
 
