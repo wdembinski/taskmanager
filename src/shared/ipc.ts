@@ -120,6 +120,8 @@ export interface IpcApi {
   'scheduler:stop': (projectId: string) => Promise<void>;
   /** Snapshot of tasks currently executing, so the Board can wire live transcripts on load. */
   'scheduler:activeRuns': () => Promise<ActiveRun[]>;
+  /** Snapshot of each project's run state, so the Board's buttons survive a remount. */
+  'scheduler:states': () => Promise<SchedulerChange[]>;
   /** Run a single task ad-hoc (independent of its project's queue). Returns its run id. */
   'task:run': (taskId: string) => Promise<{ runId: string }>;
   /**

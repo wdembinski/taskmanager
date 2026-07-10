@@ -23,6 +23,7 @@ import {
   Switch,
   tokens,
 } from '@fluentui/react-components';
+import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
 import type { AppSettings } from '@shared/settings';
 
@@ -83,7 +84,7 @@ export function Settings(): JSX.Element {
 
         <Field label="Default permission mode for new projects">
           <Dropdown
-            value={settings.defaultPermissionMode}
+            value={PERMISSION_MODE_LABELS[settings.defaultPermissionMode]}
             selectedOptions={[settings.defaultPermissionMode]}
             onOptionSelect={(_e, d) =>
               patch({ defaultPermissionMode: d.optionValue as PermissionMode })
@@ -91,7 +92,7 @@ export function Settings(): JSX.Element {
           >
             {MODES.map((m) => (
               <Option key={m} value={m}>
-                {m}
+                {PERMISSION_MODE_LABELS[m]}
               </Option>
             ))}
           </Dropdown>

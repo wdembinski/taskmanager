@@ -20,6 +20,19 @@ export type ClaudeModel = 'opus' | 'sonnet' | 'haiku';
  */
 export type PermissionMode = 'acceptEdits' | 'manual' | 'bypassPermissions' | 'plan';
 
+/**
+ * Friendly labels for the permission-mode dropdowns. `bypassPermissions` is
+ * annotated "full auto" so users can find the auto-approve-everything option —
+ * in that mode the scheduler auto-approves every tool (see
+ * `Scheduler.decidePermission`), so nothing lands in the Attention inbox.
+ */
+export const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
+  acceptEdits: 'acceptEdits',
+  plan: 'plan',
+  manual: 'manual',
+  bypassPermissions: 'bypassPermissions (full auto)',
+};
+
 /** Everything needed to start one session. */
 export interface StartSessionRequest {
   /** What we want Claude to do. Sent to the CLI via stdin (no shell quoting). */

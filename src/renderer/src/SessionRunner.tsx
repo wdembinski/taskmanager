@@ -22,6 +22,7 @@ import {
   Textarea,
   tokens,
 } from '@fluentui/react-components';
+import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode, SessionEvent, SessionStatus } from '@shared/session';
 import { Transcript } from './Transcript';
 
@@ -134,13 +135,13 @@ export function SessionRunner(): JSX.Element {
         </Field>
         <Field label="Permission mode" className={styles.narrow}>
           <Dropdown
-            value={mode}
+            value={PERMISSION_MODE_LABELS[mode]}
             selectedOptions={[mode]}
             onOptionSelect={(_e, d) => setMode(d.optionValue as PermissionMode)}
           >
             {MODES.map((m) => (
               <Option key={m} value={m}>
-                {m}
+                {PERMISSION_MODE_LABELS[m]}
               </Option>
             ))}
           </Dropdown>

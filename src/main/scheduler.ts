@@ -143,6 +143,12 @@ export class Scheduler {
   private readonly inFlight = new Set<string>();
   /** Projects the user has started and not paused/stopped. */
   private readonly activeProjects = new Set<string>();
+  /**
+   * Last announced run state per project, so a freshly (re)mounted Board can seed
+   * its buttons from reality instead of defaulting every project to idle. Kept in
+   * lockstep with the `scheduler:changed` events emitted by `setState`.
+   */
+  private readonly states = new Map<string, SchedulerState>();
   /** Open Attention-inbox items keyed by item id (Phase 4). */
   private readonly attention = new Map<string, AttentionItem>();
   /**
@@ -252,6 +258,11 @@ export class Scheduler {
     return [...this.runs.values()].map((r) => ({ taskId: r.taskId, runId: r.runId }));
   }
 
+  /** Snapshot of each project's current run state (seed the Board's buttons on mount). */
+  schedulerStates(): SchedulerChange[] {
+    return [...this.states.entries()].map(([projectId, state]) => ({ projectId, state }));
+  }
+
   /** Snapshot of everything waiting on a human, oldest first (seed the inbox on load). */
   listAttention(): AttentionItem[] {
     return [...this.attention.values()].sort((a, b) => a.createdAt - b.createdAt);
@@ -306,6 +317,14 @@ export class Scheduler {
     if (!run) {
       // Can't correlate the tool to a task — fail safe rather than allow blindly.
       return Promise.resolve({ behavior: 'deny', message: 'unknown session' });
+    }
+
+    // Full auto (bypassPermissions): the human opted out of the risk policy for
+    // this project — auto-approve every tool so nothing lands in the Attention
+    // inbox. Genuine questions Claude asks (detectAttention) still surface.
+    const project = this.store.getProject(run.projectId);
+    if (project?.defaultPermissionMode === 'bypassPermissions') {
+      return Promise.resolve({ behavior: 'allow', updatedInput: request.input });
     }
 
     const decision = evaluateToolUse(request.toolName, request.input);
@@ -644,6 +663,7 @@ export class Scheduler {
   }
 
   private setState(projectId: string, state: SchedulerState): void {
+    this.states.set(projectId, state);
     this.emitScheduler({ projectId, state });
   }
 }

@@ -26,6 +26,7 @@ import {
   Option,
   Switch,
 } from '@fluentui/react-components';
+import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
 import type { Project } from '@shared/model';
 
@@ -194,13 +195,13 @@ export function ProjectDialog({
                 </Field>
                 <Field label="Permission mode" className={styles.grow}>
                   <Dropdown
-                    value={permMode}
+                    value={PERMISSION_MODE_LABELS[permMode]}
                     selectedOptions={[permMode]}
                     onOptionSelect={(_e, d) => setPermMode(d.optionValue as PermissionMode)}
                   >
                     {MODES.map((m) => (
                       <Option key={m} value={m}>
-                        {m}
+                        {PERMISSION_MODE_LABELS[m]}
                       </Option>
                     ))}
                   </Dropdown>

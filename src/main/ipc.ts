@@ -187,6 +187,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('scheduler:pause', async (projectId) => scheduler.pause(projectId));
   handle('scheduler:stop', async (projectId) => scheduler.stop(projectId));
   handle('scheduler:activeRuns', async () => scheduler.activeRuns());
+  handle('scheduler:states', async () => scheduler.schedulerStates());
   handle('task:run', async (taskId) => {
     const started = scheduler.runTask(taskId);
     if (!started) throw new Error(`Cannot run task ${taskId}: not found`);

@@ -112,6 +112,11 @@ export function Board(): JSX.Element {
     void window.api.invoke('scheduler:activeRuns').then((runs) => {
       setRunIds(Object.fromEntries(runs.map((r) => [r.taskId, r.runId])));
     });
+    // Seed run state from the (long-lived) scheduler so the Run/Pause/Stop buttons
+    // reflect reality after a tab switch remounts this view — not a stale idle.
+    void window.api.invoke('scheduler:states').then((rows) => {
+      setStates(Object.fromEntries(rows.map((r) => [r.projectId, r.state])));
+    });
 
     const offTask = window.api.on('task:changed', ({ task, runId }) => {
       // Patch the task wherever it lives.

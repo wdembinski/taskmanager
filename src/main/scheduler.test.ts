@@ -3,9 +3,12 @@
  * The class that wires this to SQLite and the SessionManager is exercised by
  * hand / verify; here we prove the selection rule and prompt shape.
  */
-import { describe, expect, it } from 'vitest';
-import { buildTaskPrompt, selectNextPending, type Schedulable } from './scheduler';
-import type { Task } from '@shared/model';
+import { describe, expect, it, vi } from 'vitest';
+import { buildTaskPrompt, Scheduler, selectNextPending, type Schedulable } from './scheduler';
+import type { PermissionMode } from '@shared/session';
+import type { Project, Task } from '@shared/model';
+import type { SessionManager } from './sessionManager';
+import type { Store } from './store';
 
 const t = (id: string, status: Schedulable['status'], order: number): Schedulable => ({
   id,
@@ -69,5 +72,83 @@ describe('buildTaskPrompt', () => {
     const prompt = buildTaskPrompt('Orchestrator', { ...task, phase: '' });
     expect(prompt).not.toContain('This task is under');
     expect(prompt).not.toContain('\n\n\n'); // no triple blank from the dropped line
+  });
+});
+
+describe('Scheduler.decidePermission — full auto (bypassPermissions)', () => {
+  /**
+   * Build a Scheduler wired to fake store/emitters, with one run pre-registered
+   * (seeded directly into the private map — no process spawn). Enough to exercise
+   * the permission-decision branch in isolation.
+   */
+  function makeScheduler(mode: PermissionMode) {
+    const project = { id: 'p', defaultPermissionMode: mode } as Project;
+    const task = { id: 'task', projectId: 'p', title: 'x' } as Task;
+    const emitAttention = vi.fn();
+    const store = {
+      getProject: (id: string) => (id === 'p' ? project : undefined),
+      getTask: (id: string) => (id === 'task' ? task : undefined),
+      updateTask: (_id: string, patch: Partial<Task>) => ({ ...task, ...patch }),
+      getSettings: () => ({ limitJitterMs: 0 }),
+    } as unknown as Store;
+    const sessions = {} as unknown as SessionManager;
+    const scheduler = new Scheduler(
+      store,
+      sessions,
+      vi.fn(),
+      vi.fn(),
+      emitAttention,
+      vi.fn(),
+      vi.fn(),
+    );
+    (scheduler as unknown as { runs: Map<string, unknown> }).runs.set('run1', {
+      taskId: 'task',
+      projectId: 'p',
+      runId: 'run1',
+      settled: false,
+    });
+    return { scheduler, emitAttention };
+  }
+
+  const riskyPush = { runId: 'run1', toolName: 'Bash', input: { command: 'git push' } };
+
+  it('auto-approves a risky tool without raising an inbox item', async () => {
+    const { scheduler, emitAttention } = makeScheduler('bypassPermissions');
+    const result = await scheduler.decidePermission(riskyPush);
+    expect(result).toEqual({ behavior: 'allow', updatedInput: { command: 'git push' } });
+    expect(emitAttention).not.toHaveBeenCalled();
+  });
+
+  it('still parks the same risky tool for a non-bypass project', () => {
+    const { scheduler, emitAttention } = makeScheduler('acceptEdits');
+    // Held for a human: the returned promise stays pending, but an inbox item is
+    // raised synchronously. (We don't await — it never resolves without an answer.)
+    void scheduler.decidePermission(riskyPush);
+    expect(emitAttention).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Scheduler.schedulerStates', () => {
+  function bareScheduler() {
+    const emitScheduler = vi.fn();
+    const store = { getSettings: () => ({ limitJitterMs: 0 }) } as unknown as Store;
+    const scheduler = new Scheduler(
+      store,
+      {} as unknown as SessionManager,
+      vi.fn(),
+      emitScheduler,
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+    );
+    return scheduler;
+  }
+
+  it('starts empty and records the latest state per project', () => {
+    const scheduler = bareScheduler();
+    expect(scheduler.schedulerStates()).toEqual([]);
+    // stop() on an untracked project still announces idle via setState.
+    scheduler.stop('p');
+    expect(scheduler.schedulerStates()).toEqual([{ projectId: 'p', state: 'idle' }]);
   });
 });
