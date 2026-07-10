@@ -27,7 +27,7 @@ const t = (
   status: Schedulable['status'],
   order: number,
   dependsOn: string[] = [],
-  opts: { phase?: string; isContract?: boolean } = {},
+  opts: { phase?: string; isContract?: boolean; isScaffold?: boolean } = {},
 ): Schedulable => ({
   id,
   status,
@@ -36,6 +36,7 @@ const t = (
   dependsOn,
   phase: opts.phase ?? '',
   isContract: opts.isContract ?? false,
+  isScaffold: opts.isScaffold ?? false,
 });
 
 describe('selectNextPending', () => {
@@ -99,9 +100,9 @@ describe('selectNextPending', () => {
   it('requires ALL tasks sharing a needed title to be done', () => {
     // Two tasks titled 'a' (ids a1/a2); 'b' needs 'a'. Not satisfied until both done.
     const partial = [
-      { id: 'a1', status: 'done' as const, order: 0, title: 'a', dependsOn: [], phase: '', isContract: false },
-      { id: 'a2', status: 'pending' as const, order: 1, title: 'a', dependsOn: [], phase: '', isContract: false },
-      { id: 'b', status: 'pending' as const, order: 2, title: 'b', dependsOn: ['a'], phase: '', isContract: false },
+      { id: 'a1', status: 'done' as const, order: 0, title: 'a', dependsOn: [], phase: '', isContract: false, isScaffold: false },
+      { id: 'a2', status: 'pending' as const, order: 1, title: 'a', dependsOn: [], phase: '', isContract: false, isScaffold: false },
+      { id: 'b', status: 'pending' as const, order: 2, title: 'b', dependsOn: ['a'], phase: '', isContract: false, isScaffold: false },
     ];
     // a2 is eligible (independent), b is not.
     expect(selectNextPending(partial, new Set())?.id).toBe('a2');
@@ -137,6 +138,28 @@ describe('selectNextPending', () => {
     // phase is unaffected by the contract gate.
     expect(selectNextPending(tasks, new Set(['c']))?.id).toBe('other');
   });
+
+  it('runs a phase’s @scaffold task first and alone, before even its @contract task', () => {
+    // Order within a phase: scaffold → contract → siblings. 's' is scaffold, 'c' is the
+    // contract task, x is an ordinary sibling — all under M, with 's' NOT lowest-order to
+    // prove ordering comes from the gate, not just `order`.
+    const pending = [
+      t('c', 'pending', 0, [], { phase: 'M', isContract: true }),
+      t('x', 'pending', 1, [], { phase: 'M' }),
+      t('s', 'pending', 2, [], { phase: 'M', isScaffold: true }),
+    ];
+    // Scaffold wins despite its higher order; everything else in the phase is held.
+    expect(selectNextPending(pending, new Set())?.id).toBe('s');
+    expect(selectNextPending(pending, new Set(['s']))).toBeNull();
+
+    // Scaffold done → the contract task becomes eligible (still ahead of the sibling).
+    const scaffoldDone = [
+      t('c', 'pending', 0, [], { phase: 'M', isContract: true }),
+      t('x', 'pending', 1, [], { phase: 'M' }),
+      t('s', 'done', 2, [], { phase: 'M', isScaffold: true }),
+    ];
+    expect(selectNextPending(scaffoldDone, new Set())?.id).toBe('c');
+  });
 });
 
 describe('buildTaskPrompt', () => {
@@ -151,6 +174,7 @@ describe('buildTaskPrompt', () => {
     source: 'plan',
     dependsOn: [],
     isContract: false,
+    isScaffold: false,
   };
 
   it('includes the project name, task title, and phase', () => {
@@ -309,6 +333,7 @@ describe('Scheduler.start resumes stopped tasks', () => {
         source: 'plan',
         dependsOn: [],
         isContract: false,
+        isScaffold: false,
       } as Task,
     ];
     const store = {
@@ -435,6 +460,7 @@ describe('Scheduler run-failure handling', () => {
       source: 'plan',
       dependsOn: [],
       isContract: false,
+      isScaffold: false,
     } as Task;
     const store = {
       getTasks: () => [task],
@@ -532,6 +558,7 @@ describe('Scheduler cross-agent negotiation (Phase D)', () => {
       source: 'plan',
       dependsOn: [],
       isContract: false,
+      isScaffold: false,
     } as Task;
     const sibling: Task = {
       id: 'sib',
@@ -544,6 +571,7 @@ describe('Scheduler cross-agent negotiation (Phase D)', () => {
       source: 'plan',
       dependsOn: [],
       isContract: false,
+      isScaffold: false,
     } as Task;
     const tasks = [proposer, sibling];
     const store = {

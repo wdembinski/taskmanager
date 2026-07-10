@@ -91,6 +91,11 @@ export async function removeWorktree(repoDir: string, worktreePath: string): Pro
   return res;
 }
 
+/** Prune stale worktree admin records (dirs removed out of band). */
+export async function pruneWorktrees(repoDir: string): Promise<GitResult> {
+  return git(repoDir, ['worktree', 'prune']);
+}
+
 /** Delete a branch (force). Used only after a successful merge. */
 export async function deleteBranch(repoDir: string, branch: string): Promise<GitResult> {
   return git(repoDir, ['branch', '-D', branch]);
@@ -114,12 +119,23 @@ export async function hasConflicts(dir: string): Promise<boolean> {
   return res.code === 0 && res.stdout.trim() !== '';
 }
 
+/** Extra `-c` config to point git at an ephemeral attributes file (e.g. for `merge=union`). */
+function attributesConfig(attributesFile?: string): string[] {
+  return attributesFile ? ['-c', `core.attributesFile=${attributesFile}`] : [];
+}
+
 /**
  * Rebase the worktree's branch onto `baseRef`. `code === 0` means clean; a non-zero
- * code with conflicts means the caller must resolve (or `abortRebase`).
+ * code with conflicts means the caller must resolve (or `abortRebase`). When
+ * `attributesFile` is given, its merge attributes apply — e.g. `path merge=union` lets
+ * additive files (`.gitignore`, workspace lists) auto-resolve instead of conflicting.
  */
-export async function rebaseOnto(worktreePath: string, baseRef: string): Promise<GitResult> {
-  return git(worktreePath, ['rebase', baseRef]);
+export async function rebaseOnto(
+  worktreePath: string,
+  baseRef: string,
+  attributesFile?: string,
+): Promise<GitResult> {
+  return git(worktreePath, [...attributesConfig(attributesFile), 'rebase', baseRef]);
 }
 
 /** Abort an in-progress rebase, restoring the branch to its pre-rebase state. */
@@ -128,12 +144,105 @@ export async function abortRebase(worktreePath: string): Promise<GitResult> {
 }
 
 /** Continue a rebase after conflicts were resolved and staged. */
-export async function continueRebase(worktreePath: string): Promise<GitResult> {
+export async function continueRebase(
+  worktreePath: string,
+  attributesFile?: string,
+): Promise<GitResult> {
   // -c core.editor=true avoids opening an editor for the continue commit message.
-  return git(worktreePath, ['-c', 'core.editor=true', 'rebase', '--continue']);
+  return git(worktreePath, [
+    ...attributesConfig(attributesFile),
+    '-c',
+    'core.editor=true',
+    'rebase',
+    '--continue',
+  ]);
+}
+
+/** Work-tree paths left with merge conflicts (unmerged, `U`) — NUL-delimited. */
+export async function conflictedFiles(dir: string): Promise<string[]> {
+  const res = await git(dir, ['diff', '-z', '--name-only', '--diff-filter=U']);
+  return res.code === 0 ? splitZ(res.stdout) : [];
 }
 
 /** Fast-forward `branch` into the currently checked-out branch of `repoDir`. */
 export async function mergeFfOnly(repoDir: string, branch: string): Promise<GitResult> {
   return git(repoDir, ['merge', '--ff-only', branch]);
+}
+
+/** Split a NUL-delimited git output (`-z`) into paths, dropping the empty trailing entry. */
+function splitZ(stdout: string): string[] {
+  return stdout.split('\0').filter((p) => p !== '');
+}
+
+/**
+ * Paths that `branch` *adds* relative to `base` — i.e. files a fast-forward would newly
+ * create in the work tree. Modified-in-branch files are already tracked in base, so they
+ * can never collide with an untracked file; only additions can. NUL-delimited so paths
+ * with spaces/unicode (and `core.quotePath`) parse cleanly.
+ */
+export async function addedInBranch(dir: string, base: string, branch: string): Promise<string[]> {
+  const res = await git(dir, ['diff', '-z', '--name-only', '--diff-filter=A', `${base}..${branch}`]);
+  return res.code === 0 ? splitZ(res.stdout) : [];
+}
+
+/** Untracked, non-ignored files in the work tree (NUL-delimited). */
+export async function listUntracked(dir: string): Promise<string[]> {
+  const res = await git(dir, ['ls-files', '-z', '--others', '--exclude-standard']);
+  return res.code === 0 ? splitZ(res.stdout) : [];
+}
+
+/** Blob SHA of `path` at `ref` (e.g. a branch), or '' if it doesn't exist there. */
+export async function blobSha(dir: string, ref: string, path: string): Promise<string> {
+  const res = await git(dir, ['rev-parse', `${ref}:${path}`]);
+  return res.code === 0 ? res.stdout.trim() : '';
+}
+
+/**
+ * The blob SHA the work-tree file at `path` *would* have once git's clean filters run
+ * (`--path` applies `.gitattributes`/autocrlf), so a content comparison against a stored
+ * blob isn't fooled by line-ending normalization. '' if the file can't be hashed.
+ */
+export async function workingFileSha(dir: string, path: string): Promise<string> {
+  const res = await git(dir, ['hash-object', `--path=${path}`, '--', path]);
+  return res.code === 0 ? res.stdout.trim() : '';
+}
+
+/** Delete specific untracked files from the work tree (force). Paths only — never a whole tree. */
+export async function removeUntracked(dir: string, paths: string[]): Promise<GitResult> {
+  if (paths.length === 0) return { code: 0, stdout: '', stderr: '' };
+  return git(dir, ['clean', '-f', '-q', '--', ...paths]);
+}
+
+/** Outcome of stashing untracked files aside so a merge can proceed without losing them. */
+export interface StashResult {
+  ok: boolean;
+  /** The stash ref to restore from (`stash@{0}`) when `ok` and something was actually stashed. */
+  stashRef: string | null;
+  files: string[];
+}
+
+/**
+ * Stash the given untracked files aside (preserving them) so a fast-forward can overwrite
+ * their paths. Scoped to `paths` via a pathspec, so the rest of the work tree is untouched.
+ * `ok:false` means nothing was stashed (git error, or no matching untracked files) — the
+ * caller must then NOT force the merge.
+ */
+export async function preserveUntracked(
+  dir: string,
+  paths: string[],
+  label: string,
+): Promise<StashResult> {
+  if (paths.length === 0) return { ok: false, stashRef: null, files: [] };
+  const res = await git(dir, [
+    'stash',
+    'push',
+    '--include-untracked',
+    '-m',
+    label,
+    '--',
+    ...paths,
+  ]);
+  // "No local changes to save" exits 0 but stashes nothing; detect it so we don't claim success.
+  const stashed = res.code === 0 && !/No local changes to save/i.test(res.stdout + res.stderr);
+  return { ok: stashed, stashRef: stashed ? 'stash@{0}' : null, files: paths };
 }

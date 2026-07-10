@@ -39,6 +39,13 @@ export interface ParsedTask {
    * prerequisite of every other task under the same heading.
    */
   isContract: boolean;
+  /**
+   * True when the checkbox carried a trailing `@scaffold` marker (team orchestration,
+   * Phase D). A scaffold task creates and commits the shared monorepo root before its
+   * milestone's parallel siblings start, and — like a contract task — is an implicit
+   * prerequisite of every other task under the same heading.
+   */
+  isScaffold: boolean;
 }
 
 /** A parsed task plus the 0-based index of the line its checkbox started on. */
@@ -52,20 +59,22 @@ const CHECKBOX = /^(\s*)[-*+]\s+\[([ xX])\]\s+(.*\S)\s*$/;
 const NEEDS = /\s*@needs:\s*(.*)$/i;
 /** A bare `@contract` marker anywhere in a (folded) task title. */
 const CONTRACT = /\s*@contract\b/i;
+/** A bare `@scaffold` marker anywhere in a (folded) task title. */
+const SCAFFOLD = /\s*@scaffold\b/i;
 
 /**
- * Strip a bare `@contract` marker from a folded title, reporting whether one was
- * present. Removed *before* `splitNeeds` so the marker can sit on either side of a
- * `@needs:` clause (e.g. "Foo @needs: Bar @contract") without being swallowed into
- * the dependency list.
+ * Strip a bare marker (e.g. `@contract`, `@scaffold`) from a folded title, reporting
+ * whether one was present. Removed *before* `splitNeeds` so the marker can sit on either
+ * side of a `@needs:` clause (e.g. "Foo @needs: Bar @contract") without being swallowed
+ * into the dependency list.
  */
-function splitContract(title: string): { title: string; isContract: boolean } {
-  const m = CONTRACT.exec(title);
-  if (!m) return { title, isContract: false };
+function splitMarker(title: string, marker: RegExp): { title: string; present: boolean } {
+  const m = marker.exec(title);
+  if (!m) return { title, present: false };
   const stripped = (title.slice(0, m.index) + title.slice(m.index + m[0].length))
     .replace(/\s+/g, ' ')
     .trim();
-  return { title: stripped, isContract: true };
+  return { title: stripped, present: true };
 }
 
 /**
@@ -135,6 +144,7 @@ function locate(markdown: string): LocatedTask[] {
         done: checkbox[2].toLowerCase() === 'x',
         needs: [],
         isContract: false,
+        isScaffold: false,
         line: i,
       };
       tasks.push(open);
@@ -161,14 +171,18 @@ function locate(markdown: string): LocatedTask[] {
   // set of ALL task titles (titles contain commas, so a clause can't be split on
   // commas alone — see resolveNeeds).
   const rawNeeds: (string | null)[] = tasks.map((task) => {
-    const contract = splitContract(task.title);
-    task.isContract = contract.isContract;
-    const m = NEEDS.exec(contract.title);
+    // Peel the bare markers (`@contract`, `@scaffold`) before the `@needs:` clause so a
+    // marker on either side of the clause is honored and never enters the dependency list.
+    const contract = splitMarker(task.title, CONTRACT);
+    task.isContract = contract.present;
+    const scaffold = splitMarker(contract.title, SCAFFOLD);
+    task.isScaffold = scaffold.present;
+    const m = NEEDS.exec(scaffold.title);
     if (!m) {
-      task.title = contract.title;
+      task.title = scaffold.title;
       return null;
     }
-    task.title = contract.title.slice(0, m.index).trim();
+    task.title = scaffold.title.slice(0, m.index).trim();
     return m[1];
   });
   const titles = new Set(tasks.map((t) => t.title));

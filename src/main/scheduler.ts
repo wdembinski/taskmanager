@@ -54,7 +54,12 @@ import { evaluateToolUse } from './permissionPolicy';
 import { tickPlanCheckbox } from './planParser';
 import type { SessionManager } from './sessionManager';
 import type { Store } from './store';
-import type { IntegrationResult, WorktreeManager, WorktreePrep } from './worktreeManager';
+import type {
+  IntegrationResult,
+  LaunchTarget,
+  WorktreeManager,
+  WorktreePrep,
+} from './worktreeManager';
 
 /** Sent to Claude when a permission is denied with no note of its own. */
 const DEFAULT_DENY_MESSAGE =
@@ -63,6 +68,13 @@ const DEFAULT_DENY_MESSAGE =
 /** The nudge sent to a session we resume after a usage limit clears (Phase 5). */
 const RESUME_NUDGE =
   'A usage limit interrupted you and it has now reset. Continue the task where you left off.';
+
+/**
+ * How many times the orchestrator lets the AGENT try to resolve a branch's rebase
+ * conflicts (team-orchestrator conflict ladder, Rung 2) before parking it for a human
+ * (Rung 3). Mechanical union-merge (Rung 1) runs first, inside the integration itself.
+ */
+const MAX_CONFLICT_FIX_ATTEMPTS = 2;
 
 /**
  * The interactive actions offered when a failed task parks in the inbox (Phase A of
@@ -95,6 +107,12 @@ const INTEGRATION_FAILURE_OPTIONS = [
 /** The interactive resolution actions offered for a parked failure, by kind. Pure. */
 export function failureActionsFor(kind: 'run' | 'integration'): string[] {
   return kind === 'integration' ? [...INTEGRATION_FAILURE_OPTIONS] : [...RUN_FAILURE_OPTIONS];
+}
+
+/** Render a file list for a human-facing note: the first few paths, then "and N more". Pure. */
+export function summarizeFiles(files: string[], max = 8): string {
+  if (files.length <= max) return files.join(', ');
+  return `${files.slice(0, max).join(', ')}, and ${files.length - max} more`;
 }
 
 /**
@@ -136,6 +154,8 @@ export interface Schedulable {
   phase: string;
   /** True when this task authors the milestone's shared CONTRACT.md (`@contract`). */
   isContract: boolean;
+  /** True when this task lays down the milestone's shared scaffold/root (`@scaffold`). */
+  isScaffold: boolean;
 }
 
 /**
@@ -158,6 +178,11 @@ export interface Schedulable {
  * not yet `done`, its non-contract siblings are held — so the contract runs first,
  * and (being the only eligible task in its phase until it completes) alone. This is
  * on top of, not instead of, explicit `@needs:` gating.
+ *
+ * Scaffold-first (Phase D): a `@scaffold` task gates the whole phase the same way, but
+ * ahead of even the contract task — it lays down the shared repo root before anything
+ * else builds on it. So the order within a phase is: scaffold (alone) → contract (alone)
+ * → the parallel siblings.
  */
 export function selectNextPending<T extends Schedulable>(
   tasks: readonly T[],
@@ -177,9 +202,11 @@ export function selectNextPending<T extends Schedulable>(
     return entry !== undefined && entry.total > 0 && entry.done === entry.total;
   };
 
-  // Phases that still have an unfinished contract task gate their other tasks.
+  // Phases that still have an unfinished scaffold / contract task gate their other tasks.
+  const phasesAwaitingScaffold = new Set<string>();
   const phasesAwaitingContract = new Set<string>();
   for (const task of tasks) {
+    if (task.isScaffold && task.status !== 'done') phasesAwaitingScaffold.add(task.phase);
     if (task.isContract && task.status !== 'done') phasesAwaitingContract.add(task.phase);
   }
 
@@ -187,8 +214,11 @@ export function selectNextPending<T extends Schedulable>(
   for (const task of tasks) {
     if (task.status !== 'pending' || inFlight.has(task.id)) continue;
     if (!task.dependsOn.every(satisfied)) continue;
-    // Hold a non-contract task while its phase's contract task is still outstanding.
-    if (!task.isContract && phasesAwaitingContract.has(task.phase)) continue;
+    // Scaffold goes first: hold everything else in the phase (even the contract task)
+    // until the scaffold task is done.
+    if (!task.isScaffold && phasesAwaitingScaffold.has(task.phase)) continue;
+    // Then contract: hold the ordinary siblings while the phase's contract is outstanding.
+    if (!task.isContract && !task.isScaffold && phasesAwaitingContract.has(task.phase)) continue;
     if (best === null || task.order < best.order) best = task;
   }
   return best;
@@ -222,9 +252,12 @@ export function buildTaskPrompt(
     failureNote?: string;
     contractSiblings?: string[];
     hasContract?: boolean;
+    isScaffold?: boolean;
+    hasScaffold?: boolean;
   } = {},
 ): string {
   const { planRelPath, branch, failureNote, contractSiblings, hasContract } = options;
+  const { isScaffold, hasScaffold } = options;
   const isContract = contractSiblings !== undefined;
   return [
     `You are working through the plan for the project "${projectName}".`,
@@ -237,6 +270,30 @@ export function buildTaskPrompt(
     '',
     'Make the necessary changes, then briefly summarize what you did.',
     '',
+    // Scaffold task: it lays down the shared monorepo root that its milestone's parallel
+    // siblings build inside. Runs first and alone (see `selectNextPending`).
+    ...(isScaffold
+      ? [
+          `This is the SHARED SCAFFOLD task for its milestone. Create and commit ONLY the`,
+          `shared project root that the upcoming sibling tasks all depend on — e.g. the`,
+          `workspace file, the root manifest/package file, a base tsconfig/build config, a`,
+          `\`.gitignore\`, and the lockfile. Do NOT implement any feature-specific package or`,
+          `app here. Keep it minimal and commit it, so the orchestrator merges the root before`,
+          `the siblings start and they each only add their own subtree (no collisions on these`,
+          `shared files).`,
+          '',
+        ]
+      : []),
+    // Sibling of a scaffold task: the shared root already exists in the base branch.
+    ...(!isScaffold && hasScaffold
+      ? [
+          `The shared project root (workspace file, root manifest, base config, \`.gitignore\`,`,
+          `lockfile) has already been scaffolded and committed. Build ON it: add only your`,
+          `own package/app subtree and reference the shared root. Avoid rewriting those shared`,
+          `root files unless strictly necessary, so parallel tasks don't collide on them.`,
+          '',
+        ]
+      : []),
     // Contract task: it authors the shared CONTRACT.md that its milestone's parallel
     // siblings will build against. Runs first and alone (see `selectNextPending`).
     ...(isContract
@@ -470,6 +527,21 @@ export class Scheduler {
    */
   private readonly fixNotes = new Map<string, string>();
   /**
+   * Team-orchestrator conflict ladder (Rung 2 — AI). Per-task count of automatic
+   * agent-driven conflict-resolution attempts already spent on a branch integration.
+   * Once it hits {@link MAX_CONFLICT_FIX_ATTEMPTS} the conflict is handed to a human.
+   */
+  private readonly conflictFixAttempts = new Map<string, number>();
+  /**
+   * Tasks whose NEXT run is an agent conflict-fix run (Rung 2): the agent resolves the
+   * rebase markers in its worktree, and on completion the scheduler finishes the merge via
+   * `finishAfterConflict` instead of a fresh integrate. Keyed by task id → integration ctx.
+   */
+  private readonly pendingConflictFix = new Map<
+    string,
+    { projectId: string; taskId: string; runId: string; branch: string; base: string; worktree: string }
+  >();
+  /**
    * Non-task sessions started for a project — currently the AI "Align plan" run,
    * which is launched outside the task queue. Tracked as runId → projectId so
    * `stop(projectId)` can terminate it too; without this an Align agent keeps
@@ -578,6 +650,13 @@ export class Scheduler {
       this.clearProposalTimer(proposal);
       if (proposal.itemId) this.resolveAttention(proposal.itemId);
       this.pendingProposals.delete(id);
+    }
+    // Drop any pending conflict-fix bookkeeping for this project (team orchestrator, Rung 2):
+    // the fix run is in `runs` above (stopped), so just forget the routing + attempt counters.
+    for (const [taskId, fix] of [...this.pendingConflictFix.entries()]) {
+      if (fix.projectId !== projectId) continue;
+      this.pendingConflictFix.delete(taskId);
+      this.conflictFixAttempts.delete(taskId);
     }
     // Terminate any non-task sessions for this project (the AI "Align plan" run):
     // they live outside `runs`, so Stop must reach them explicitly or the agent
@@ -842,6 +921,8 @@ export class Scheduler {
     this.attempts.clear();
     this.retryQueue.clear();
     this.fixNotes.clear();
+    this.conflictFixAttempts.clear();
+    this.pendingConflictFix.clear();
     this.activeProjects.clear();
     this.runs.clear();
     this.auxRuns.clear(); // the caller's sessions.stopAll() kills the processes themselves
@@ -913,10 +994,12 @@ export class Scheduler {
     let prep: WorktreePrep;
     try {
       prep = await this.worktrees!.prepare(project, task);
-    } catch {
-      // Preparation blew up (odd git state) — fall back to the shared dir so the task
-      // still runs rather than being lost.
-      prep = { mode: 'shared', cwd: project.path };
+    } catch (err) {
+      // Preparation blew up (odd git state). For a worktree-enabled repo, never fall back
+      // to the base tree (that pollutes it) — fail the task; otherwise use the shared dir.
+      prep = project.useWorktrees
+        ? { mode: 'failed', reason: `Worktree preparation error: ${(err as Error).message ?? err}` }
+        : { mode: 'shared', cwd: project.path };
     }
     if (this.disposed) return;
     // Stopped / parked by a usage limit while we were preparing: don't start it, and
@@ -928,11 +1011,27 @@ export class Scheduler {
       this.pump(run.projectId);
       return;
     }
+    if (prep.mode === 'failed') {
+      // Couldn't isolate the task in its own worktree. Release the reserved slot and park
+      // it for the human (retry / cleanup) instead of running it in the base tree.
+      this.runs.delete(run.runId);
+      this.inFlight.delete(run.taskId);
+      this.attempts.delete(run.taskId);
+      this.raiseTaskFailed({
+        kind: 'run',
+        projectId: run.projectId,
+        taskId: run.taskId,
+        runId: run.runId,
+        reason: prep.reason,
+      });
+      this.pump(run.projectId);
+      return;
+    }
     this.launch(project, task, run, prep);
   }
 
   /** Spawn the session for a reserved run in the prepared working directory. */
-  private launch(project: Project, task: Task, run: Run, prep: WorktreePrep): void {
+  private launch(project: Project, task: Task, run: Run, prep: LaunchTarget): void {
     const resumeSessionId = task.sessionId ?? undefined;
     if (prep.mode === 'worktree') {
       run.branch = prep.branch;
@@ -972,20 +1071,31 @@ export class Scheduler {
   }
 
   /**
-   * Contract-first (Phase C) prompt shaping for a task, derived from its siblings
-   * (other plan tasks under the same phase). A `@contract` task is handed the titles
-   * of the non-contract siblings its CONTRACT.md serves; a non-contract task whose
-   * phase has a contract task is told to build against CONTRACT.md. Returns an empty
-   * object for phases with no contract task, so ordinary plans are unaffected.
+   * Contract-first (Phase C) and scaffold-first (Phase D) prompt shaping for a task,
+   * derived from its siblings (other plan tasks under the same phase). A `@contract` task
+   * is handed the titles of the non-contract siblings its CONTRACT.md serves; a `@scaffold`
+   * task is told to lay down the shared root; ordinary siblings are told a contract /
+   * scaffold already governs the milestone. Returns an empty object for phases with
+   * neither, so ordinary plans are unaffected.
    */
-  private contractPromptOptions(task: Task): { contractSiblings?: string[]; hasContract?: boolean } {
+  private contractPromptOptions(task: Task): {
+    contractSiblings?: string[];
+    hasContract?: boolean;
+    isScaffold?: boolean;
+    hasScaffold?: boolean;
+  } {
     const siblings = this.store
       .getTasks(task.projectId)
       .filter((t) => t.id !== task.id && t.phase === task.phase);
+    const hasScaffold = siblings.some((t) => t.isScaffold);
+    if (task.isScaffold) return { isScaffold: true };
     if (task.isContract) {
-      return { contractSiblings: siblings.filter((t) => !t.isContract).map((t) => t.title) };
+      return {
+        contractSiblings: siblings.filter((t) => !t.isContract && !t.isScaffold).map((t) => t.title),
+        hasScaffold,
+      };
     }
-    return { hasContract: siblings.some((t) => t.isContract) };
+    return { hasContract: siblings.some((t) => t.isContract), hasScaffold };
   }
 
   private onRunEvent(runId: string, event: SessionEvent): void {
@@ -1228,13 +1338,20 @@ export class Scheduler {
       // run from `runs`, and integration is async.
       const project = this.store.getProject(run.projectId);
       if (project) {
-        void this.integrateWorktree(project, {
+        const ctx = {
           taskId: run.taskId,
           runId: run.runId,
           branch: run.branch,
           base: run.base,
           worktree: run.worktree,
-        });
+        };
+        // If this run was an agent conflict-fix (Rung 2), finish the paused rebase rather
+        // than starting a fresh integrate — the worktree is mid-rebase with staged fixes.
+        if (this.pendingConflictFix.delete(run.taskId)) {
+          void this.finishConflict({ projectId: project.id, ...ctx });
+        } else {
+          void this.integrateWorktree(project, ctx);
+        }
         return;
       }
     }
@@ -1311,19 +1428,23 @@ export class Scheduler {
     result: IntegrationResult,
   ): void {
     switch (result.status) {
-      case 'merged':
+      case 'merged': {
         this.attempts.delete(ctx.taskId);
-        this.noteRun(
-          project.id,
-          ctx.taskId,
-          ctx.runId,
-          `Merged branch "${ctx.branch}" into ${ctx.base}.`,
-        );
+        this.conflictFixAttempts.delete(ctx.taskId);
+        const note =
+          result.preserved && result.preserved.files.length > 0
+            ? `Merged branch "${ctx.branch}" into ${ctx.base}. Note: ${result.preserved.files.length} ` +
+              `base-tree file(s) that differed from this branch were stashed as ` +
+              `"${result.preserved.stashRef}" before merging (${summarizeFiles(result.preserved.files)}). ` +
+              `Restore with \`git stash apply ${result.preserved.stashRef}\` in ${project.path} if needed.`
+            : `Merged branch "${ctx.branch}" into ${ctx.base}.`;
+        this.noteRun(project.id, ctx.taskId, ctx.runId, note);
         this.updateTask(ctx.taskId, { status: 'done' }, null);
         this.maybeWriteBackPlan(ctx.taskId);
         break;
+      }
       case 'conflict':
-        this.raiseMergeConflict(project, ctx);
+        this.escalateConflict(project, ctx);
         break;
       case 'dirty-base':
         // Integration failures are NOT auto-retried (the fix is human-side): park with
@@ -1334,6 +1455,18 @@ export class Scheduler {
           `Base branch "${result.base}" has uncommitted changes, so branch "${ctx.branch}" ` +
             `was not merged. Commit or stash your work in ${project.path}, then choose ` +
             `"Retry integration".`,
+        );
+        break;
+      case 'blocked-untracked':
+        // Untracked base-tree files collide with this branch and couldn't be preserved
+        // automatically, so we refused to overwrite them. Park for a human.
+        this.parkIntegrationFailure(
+          project,
+          ctx,
+          `Can't integrate branch "${ctx.branch}": the working tree in ${project.path} has ` +
+            `uncommitted changes to ${result.files.length} file(s) that this branch also adds, so ` +
+            `merging would overwrite them (${summarizeFiles(result.files)}). Commit, stash, or ` +
+            `delete them in ${project.path}, then choose "Retry integration".`,
         );
         break;
       case 'error':
@@ -1363,6 +1496,55 @@ export class Scheduler {
       base: ctx.base,
       worktree: ctx.worktree,
     });
+  }
+
+  /**
+   * Conflict ladder (Rung 2 → Rung 3). A rebase left conflicts that mechanical union-merge
+   * (Rung 1) couldn't resolve. Let the agent try to resolve them in its worktree up to
+   * {@link MAX_CONFLICT_FIX_ATTEMPTS} times; only then hand it to a human.
+   */
+  private escalateConflict(
+    project: Project,
+    ctx: { taskId: string; runId: string; branch: string; base: string; worktree: string },
+  ): void {
+    const spent = this.conflictFixAttempts.get(ctx.taskId) ?? 0;
+    if (this.worktrees && spent < MAX_CONFLICT_FIX_ATTEMPTS) {
+      this.conflictFixAttempts.set(ctx.taskId, spent + 1);
+      void this.dispatchConflictFix(project, ctx, spent + 1);
+      return;
+    }
+    // Out of AI attempts — a human resolves it. Reset so a later manual retry starts fresh.
+    this.conflictFixAttempts.delete(ctx.taskId);
+    this.raiseMergeConflict(project, ctx);
+  }
+
+  /**
+   * Rung 2: requeue the task's agent to resolve the rebase conflict markers in its own
+   * worktree (reusing the "AI fix" prompt channel), then finish the merge on completion.
+   */
+  private async dispatchConflictFix(
+    project: Project,
+    ctx: { taskId: string; runId: string; branch: string; base: string; worktree: string },
+    attempt: number,
+  ): Promise<void> {
+    const files = await this.worktrees!.listConflicts(ctx.worktree);
+    if (this.disposed) return;
+    const note =
+      `Rebasing your branch onto "${ctx.base}" left merge conflicts in this worktree` +
+      (files.length ? ` (${summarizeFiles(files)})` : '') +
+      `. Resolve the conflict markers, then \`git add\` each resolved file. Do NOT run ` +
+      `\`git rebase --continue\`, commit, push, or switch branches — the orchestrator finishes ` +
+      `the rebase once your resolutions are staged. If a lockfile (e.g. pnpm-lock.yaml) ` +
+      `conflicts, regenerate it (e.g. \`pnpm install\`) and stage it.`;
+    this.noteRun(
+      project.id,
+      ctx.taskId,
+      ctx.runId,
+      `Merge conflict — attempting AI resolution (${attempt}/${MAX_CONFLICT_FIX_ATTEMPTS}).`,
+    );
+    this.pendingConflictFix.set(ctx.taskId, { projectId: project.id, ...ctx });
+    this.fixNotes.set(ctx.taskId, note);
+    this.requeue(project, ctx.taskId);
   }
 
   /** Park a task whose branch hit a merge conflict, so a human can resolve it. */

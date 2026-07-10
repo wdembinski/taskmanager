@@ -189,6 +189,16 @@ export interface Task {
    * build against the merged contract. False for ordinary and ad-hoc tasks.
    */
   isContract: boolean;
+  /**
+   * True when this task lays down the milestone's shared **scaffold** (team orchestration,
+   * Phase D) — declared with a trailing `@scaffold` marker in the plan. Like a contract
+   * task it runs first and alone under its heading (an implicit prerequisite of every
+   * sibling), but instead of authoring `CONTRACT.md` it creates *and commits* the shared
+   * monorepo root (workspace file, root manifest, base tsconfig, `.gitignore`, lockfile) so
+   * fan-out siblings add only their own subtree and don't collide on those files at merge
+   * time. False for ordinary and ad-hoc tasks.
+   */
+  isScaffold: boolean;
 }
 
 /** A project bundled with its current tasks — the shape the Projects UI renders. */

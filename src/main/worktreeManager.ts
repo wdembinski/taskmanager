@@ -12,42 +12,97 @@
  * Non-git projects (or projects with worktrees disabled) transparently fall back to
  * the shared-directory behavior, which keeps existing setups working unchanged.
  */
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Project, Task } from '@shared/model';
 import {
   abortRebase,
+  addedInBranch,
   addWorktree,
+  blobSha,
   commitAll,
+  conflictedFiles,
   continueRebase,
   currentBranch,
   deleteBranch,
   hasConflicts,
   isClean,
   isRepo,
+  listUntracked,
   mergeFfOnly,
+  preserveUntracked,
+  pruneWorktrees,
   rebaseOnto,
+  removeUntracked,
   removeWorktree,
+  workingFileSha,
 } from './git';
 
-/** Where a task's agent should run, and (in worktree mode) how to integrate it. */
-export interface WorktreePrep {
-  mode: 'worktree' | 'shared';
-  /** The working directory to run the agent in. */
-  cwd: string;
-  /** The task's branch (worktree mode only). */
-  branch?: string;
-  /** The base branch to integrate the task's branch back into (worktree mode only). */
-  base?: string;
+/**
+ * Purely additive text files that are safe to auto-merge with git's `union` driver during a
+ * rebase (concatenate both sides instead of conflicting). Scoped to config/list files whose
+ * ordering doesn't matter — never source. Lockfiles and code go to the AI/human rungs instead.
+ */
+const UNION_MERGE_FILES = ['.gitignore', 'pnpm-workspace.yaml', '.npmrc'];
+
+/**
+ * Write an ephemeral gitattributes file declaring `merge=union` for {@link UNION_MERGE_FILES},
+ * so a rebase can auto-resolve those additive files without mutating the target repo's own
+ * `.gitattributes`. Returns the file path and a `cleanup` that removes its temp dir.
+ */
+function withUnionAttributes(): { file: string; cleanup: () => void } {
+  const dir = mkdtempSync(join(tmpdir(), 'orch-attrs-'));
+  const file = join(dir, 'attributes');
+  writeFileSync(file, UNION_MERGE_FILES.map((f) => `${f} merge=union`).join('\n') + '\n');
+  return {
+    file,
+    cleanup: () => {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // best effort
+      }
+    },
+  };
+}
+
+/**
+ * Where a task's agent should run, and (in worktree mode) how to integrate it.
+ *   - `worktree`: isolated branch/worktree the orchestrator integrates back into base.
+ *   - `shared`  : run in the project dir (non-repo or worktrees disabled).
+ *   - `failed`  : a worktree-enabled repo whose isolation couldn't be created — we refuse
+ *                 to fall back to the base tree (that would pollute it with uncommitted work).
+ */
+export type WorktreePrep =
+  | { mode: 'worktree'; cwd: string; branch: string; base: string }
+  | { mode: 'shared'; cwd: string }
+  | { mode: 'failed'; reason: string };
+
+/** A prep result the agent can actually launch in (everything except `failed`). */
+export type LaunchTarget = Exclude<WorktreePrep, { mode: 'failed' }>;
+
+/**
+ * Untracked base-tree files that differed from the incoming branch and were stashed aside
+ * (not lost) so the fast-forward could proceed. Surfaced to the human so they can restore them.
+ */
+export interface PreservedSnapshot {
+  stashRef: string;
+  files: string[];
 }
 
 /** The outcome of integrating a task's branch back into base. */
 export type IntegrationResult =
-  | { status: 'merged' }
+  | { status: 'merged'; preserved?: PreservedSnapshot }
   /** Rebase left conflicts; the worktree is paused mid-rebase for resolution. */
   | { status: 'conflict'; worktree: string; branch: string; base: string }
   /** The base working tree has uncommitted changes, so we won't fast-forward it. */
   | { status: 'dirty-base'; base: string }
+  /**
+   * The base work tree has untracked files that (a) collide with files this branch adds and
+   * (b) we couldn't safely preserve, so we refused to overwrite them. `files` names them.
+   */
+  | { status: 'blocked-untracked'; base: string; files: string[] }
   | { status: 'error'; message: string };
 
 /** The branch name for a task. Namespaced so orchestrator branches are recognizable. */
@@ -70,7 +125,11 @@ export class WorktreeManager {
   /**
    * Decide where a task should run. In worktree mode, ensure the task's worktree
    * exists (creating it off the current base branch on first run) and return it;
-   * otherwise fall back to the project directory.
+   * non-repo / worktrees-disabled projects run in the shared project directory.
+   *
+   * A worktree-*enabled* repo whose isolation can't be created is reported as `failed`
+   * rather than silently degraded to the shared dir: running an agent in the base tree is
+   * exactly how it accumulates uncommitted scaffold that later blocks every integration.
    */
   async prepare(project: Project, task: Task): Promise<WorktreePrep> {
     if (!project.useWorktrees || !(await isRepo(project.path))) {
@@ -79,13 +138,23 @@ export class WorktreeManager {
     const base = await currentBranch(project.path);
     const branch = taskBranch(task.id);
     const cwd = this.pathFor(project.id, task.id);
-    if (!existsSync(cwd)) {
-      const res = await addWorktree(project.path, cwd, branch, base);
-      if (res.code !== 0) {
-        // Couldn't create the worktree (e.g. odd git state) — degrade to shared so
-        // the task still runs rather than failing outright.
-        return { mode: 'shared', cwd: project.path };
-      }
+    if (existsSync(cwd)) return { mode: 'worktree', cwd, branch, base };
+
+    let res = await addWorktree(project.path, cwd, branch, base);
+    if (res.code !== 0) {
+      // One recovery attempt: a stale worktree admin record (e.g. a dir removed out of
+      // band) can block re-creation. Prune, then retry once.
+      await pruneWorktrees(project.path);
+      res = await addWorktree(project.path, cwd, branch, base);
+    }
+    if (res.code !== 0) {
+      return {
+        mode: 'failed',
+        reason:
+          `Couldn't create an isolated git worktree for this task at ${cwd}: ` +
+          `${res.stderr.trim() || 'git worktree add failed'}. The task was not run in the base ` +
+          `tree (${project.path}) to avoid polluting it. Fix the git state and retry.`,
+      };
     }
     return { mode: 'worktree', cwd, branch, base };
   }
@@ -104,13 +173,21 @@ export class WorktreeManager {
   ): Promise<IntegrationResult> {
     return this.enqueue(project.id, async () => {
       await commitAll(worktree, commitMessage);
-      const rebased = await rebaseOnto(worktree, base);
-      if (rebased.code !== 0) {
-        if (await hasConflicts(worktree)) return { status: 'conflict', worktree, branch, base };
-        await abortRebase(worktree);
-        return { status: 'error', message: rebased.stderr || 'rebase failed' };
+      // Rung 1 (mechanical): rebase with union merge for additive config files, so
+      // `.gitignore`/workspace-list churn auto-resolves instead of conflicting. Anything
+      // left conflicted is a real conflict → returned as `conflict` for the AI/human rungs.
+      const attrs = withUnionAttributes();
+      try {
+        const rebased = await rebaseOnto(worktree, base, attrs.file);
+        if (rebased.code !== 0) {
+          if (await hasConflicts(worktree)) return { status: 'conflict', worktree, branch, base };
+          await abortRebase(worktree);
+          return { status: 'error', message: rebased.stderr || 'rebase failed' };
+        }
+        return this.fastForward(project, branch, base, worktree);
+      } finally {
+        attrs.cleanup();
       }
-      return this.fastForward(project, branch, base, worktree);
     });
   }
 
@@ -126,9 +203,15 @@ export class WorktreeManager {
   ): Promise<IntegrationResult> {
     return this.enqueue(project.id, async () => {
       if (await hasConflicts(worktree)) return { status: 'conflict', worktree, branch, base };
-      // If a rebase is still open (conflicts were staged but not continued), continue
-      // it; a "no rebase in progress" error is fine — it means they finished already.
-      await continueRebase(worktree);
+      // If a rebase is still open (conflicts were staged but not continued), continue it
+      // (union attrs so later patches' additive files still auto-merge); a "no rebase in
+      // progress" error is fine — it means they finished already.
+      const attrs = withUnionAttributes();
+      try {
+        await continueRebase(worktree, attrs.file);
+      } finally {
+        attrs.cleanup();
+      }
       if (await hasConflicts(worktree)) return { status: 'conflict', worktree, branch, base };
       return this.fastForward(project, branch, base, worktree);
     });
@@ -140,6 +223,11 @@ export class WorktreeManager {
     if (existsSync(cwd)) await removeWorktree(project.path, cwd);
   }
 
+  /** The work-tree paths currently in conflict (for the human/AI conflict-fix prompt). */
+  listConflicts(worktree: string): Promise<string[]> {
+    return conflictedFiles(worktree);
+  }
+
   /** ff-merge the (already rebased) branch into base in the main tree, then clean up. */
   private async fastForward(
     project: Project,
@@ -147,14 +235,31 @@ export class WorktreeManager {
     base: string,
     worktree: string,
   ): Promise<IntegrationResult> {
-    // Never fast-forward a base tree that has uncommitted work — we'd risk the user's
-    // changes. Park instead; they can commit/stash and retry.
+    // Never fast-forward a base tree that has uncommitted *tracked* work — we'd risk the
+    // user's changes. Park instead; they can commit/stash and retry.
     if (!(await isClean(project.path))) return { status: 'dirty-base', base };
+
+    // A fast-forward checks out the branch's newly-added files; git refuses to clobber any
+    // that already exist *untracked* in the base tree. Clear that path safely: exact dupes
+    // are removed (the merge recreates identical bytes); files whose untracked content
+    // differs are stashed aside (preserved, not lost) so the branch's version can win.
+    const { identical, differing } = await classifyUntrackedCollisions(project.path, base, branch);
+    if (identical.length > 0) await removeUntracked(project.path, identical);
+    let preserved: PreservedSnapshot | undefined;
+    if (differing.length > 0) {
+      const stash = await preserveUntracked(project.path, differing, `orch-preserve ${branch}`);
+      if (!stash.ok || !stash.stashRef) {
+        // Couldn't preserve — do NOT force the merge over uncommitted content.
+        return { status: 'blocked-untracked', base, files: differing };
+      }
+      preserved = { stashRef: stash.stashRef, files: stash.files };
+    }
+
     const merged = await mergeFfOnly(project.path, branch);
     if (merged.code !== 0) return { status: 'error', message: merged.stderr || 'merge failed' };
     await removeWorktree(project.path, worktree);
     await deleteBranch(project.path, branch);
-    return { status: 'merged' };
+    return { status: 'merged', preserved };
   }
 
   /** Run `fn` after any pending work for `key`, keeping a single chain per project. */
@@ -167,4 +272,34 @@ export class WorktreeManager {
     );
     return next;
   }
+}
+
+/**
+ * Split the untracked files in `dir` that collide with files `branch` adds into those whose
+ * content is *identical* to the branch's version (safe to drop — the merge recreates them) and
+ * those that *differ* (must be preserved, never silently overwritten). Content is compared via
+ * filter-aware hashes so autocrlf/`.gitattributes` normalization isn't mistaken for a difference.
+ * On any uncertainty (a blob that can't be read/hashed) the file is treated as `differing`.
+ */
+export async function classifyUntrackedCollisions(
+  dir: string,
+  base: string,
+  branch: string,
+): Promise<{ identical: string[]; differing: string[] }> {
+  const added = new Set(await addedInBranch(dir, base, branch));
+  const collisions = (await listUntracked(dir)).filter((f) => added.has(f));
+  const identical: string[] = [];
+  const differing: string[] = [];
+  for (const path of collisions) {
+    const [branchBlob, workingBlob] = await Promise.all([
+      blobSha(dir, branch, path),
+      workingFileSha(dir, path),
+    ]);
+    if (branchBlob !== '' && workingBlob !== '' && branchBlob === workingBlob) {
+      identical.push(path);
+    } else {
+      differing.push(path);
+    }
+  }
+  return { identical, differing };
 }

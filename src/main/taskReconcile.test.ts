@@ -17,6 +17,7 @@ function task(partial: Partial<Task> & Pick<Task, 'phase' | 'title'>): Task {
     source: 'plan',
     dependsOn: [],
     isContract: false,
+    isScaffold: false,
     ...partial,
   };
 }
@@ -33,8 +34,8 @@ describe('reconcileTasks', () => {
       'proj',
       [],
       [
-        { phase: 'P1', title: 'a', done: true, needs: [], isContract: false },
-        { phase: 'P1', title: 'b', done: false, needs: [], isContract: false },
+        { phase: 'P1', title: 'a', done: true, needs: [], isContract: false, isScaffold: false },
+        { phase: 'P1', title: 'b', done: false, needs: [], isContract: false, isScaffold: false },
       ],
       idSeq(),
     );
@@ -50,6 +51,7 @@ describe('reconcileTasks', () => {
         source: 'plan',
         dependsOn: [],
         isContract: false,
+        isScaffold: false,
       },
       {
         id: 'new-1',
@@ -62,6 +64,7 @@ describe('reconcileTasks', () => {
         source: 'plan',
         dependsOn: [],
         isContract: false,
+        isScaffold: false,
       },
     ]);
   });
@@ -80,7 +83,7 @@ describe('reconcileTasks', () => {
     const result = reconcileTasks(
       'proj',
       existing,
-      [{ phase: 'P1', title: 'a', done: false, needs: [], isContract: false }],
+      [{ phase: 'P1', title: 'a', done: false, needs: [], isContract: false, isScaffold: false }],
       idSeq(),
     );
     expect(result[0]).toMatchObject({ id: 'keep', status: 'running', sessionId: 'sess-1' });
@@ -89,7 +92,7 @@ describe('reconcileTasks', () => {
   it('does NOT let a plan checkbox override live status of an existing task', () => {
     // Task is running; plan marks it [x]. We keep 'running', not 'done'.
     const existing = [task({ phase: 'P', title: 'x', status: 'running' })];
-    const result = reconcileTasks('proj', existing, [{ phase: 'P', title: 'x', done: true, needs: [], isContract: false }]);
+    const result = reconcileTasks('proj', existing, [{ phase: 'P', title: 'x', done: true, needs: [], isContract: false, isScaffold: false }]);
     expect(result[0].status).toBe('running');
   });
 
@@ -100,8 +103,8 @@ describe('reconcileTasks', () => {
     ];
     // Plan swaps their order.
     const result = reconcileTasks('proj', existing, [
-      { phase: 'P', title: 'b', done: false, needs: [], isContract: false },
-      { phase: 'P', title: 'a', done: false, needs: [], isContract: false },
+      { phase: 'P', title: 'b', done: false, needs: [], isContract: false, isScaffold: false },
+      { phase: 'P', title: 'a', done: false, needs: [], isContract: false, isScaffold: false },
     ]);
     expect(result.map((t) => [t.title, t.order])).toEqual([
       ['b', 0],
@@ -111,7 +114,7 @@ describe('reconcileTasks', () => {
 
   it('drops resting plan tasks that no longer appear in the plan', () => {
     const existing = [task({ phase: 'P', title: 'stays' }), task({ phase: 'P', title: 'removed' })];
-    const result = reconcileTasks('proj', existing, [{ phase: 'P', title: 'stays', done: false, needs: [], isContract: false }]);
+    const result = reconcileTasks('proj', existing, [{ phase: 'P', title: 'stays', done: false, needs: [], isContract: false, isScaffold: false }]);
     expect(result.map((t) => t.title)).toEqual(['stays']);
   });
 
@@ -121,7 +124,7 @@ describe('reconcileTasks', () => {
       task({ phase: 'P', title: 'stays' }),
       task({ phase: 'P', title: 'running-one', status: 'running', sessionId: 's1' }),
     ];
-    const result = reconcileTasks('proj', existing, [{ phase: 'P', title: 'stays', done: false, needs: [], isContract: false }]);
+    const result = reconcileTasks('proj', existing, [{ phase: 'P', title: 'stays', done: false, needs: [], isContract: false, isScaffold: false }]);
     expect(result.map((t) => t.title)).toEqual(['stays', 'running-one']);
     expect(result[1]).toMatchObject({ status: 'running', sessionId: 's1' });
   });
@@ -133,7 +136,7 @@ describe('reconcileTasks', () => {
       task({ phase: 'P', title: 'stuck', status: 'blocked' }),
       task({ phase: 'P', title: 'gone', status: 'cancelled' }), // resting → dropped
     ];
-    const result = reconcileTasks('proj', existing, [{ phase: 'P', title: 'stays', done: false, needs: [], isContract: false }]);
+    const result = reconcileTasks('proj', existing, [{ phase: 'P', title: 'stays', done: false, needs: [], isContract: false, isScaffold: false }]);
     expect(result.map((t) => t.title)).toEqual(['stays', 'in-flight', 'stuck']);
   });
 
@@ -142,7 +145,7 @@ describe('reconcileTasks', () => {
       task({ phase: 'P', title: 'planned' }),
       task({ phase: 'Extra', title: 'added in app', source: 'adhoc', status: 'done' }),
     ];
-    const result = reconcileTasks('proj', existing, [{ phase: 'P', title: 'planned', done: false, needs: [], isContract: false }]);
+    const result = reconcileTasks('proj', existing, [{ phase: 'P', title: 'planned', done: false, needs: [], isContract: false, isScaffold: false }]);
     // Ad-hoc task survives the sync and is appended after the plan tasks.
     expect(result.map((t) => t.title)).toEqual(['planned', 'added in app']);
     expect(result[1]).toMatchObject({ source: 'adhoc', status: 'done', order: 1 });
@@ -151,16 +154,16 @@ describe('reconcileTasks', () => {
   it('carries @needs dependencies onto tasks and refreshes them on re-sync', () => {
     // First sync: 'b' declares a dependency on 'a'.
     const first = reconcileTasks('proj', [], [
-      { phase: 'P', title: 'a', done: false, needs: [], isContract: false },
-      { phase: 'P', title: 'b', done: false, needs: ['a'], isContract: false },
+      { phase: 'P', title: 'a', done: false, needs: [], isContract: false, isScaffold: false },
+      { phase: 'P', title: 'b', done: false, needs: ['a'], isContract: false, isScaffold: false },
     ]);
     expect(first[0].dependsOn).toEqual([]);
     expect(first[1].dependsOn).toEqual(['a']);
 
     // Re-sync with an edited @needs clause: the matched task picks up the change.
     const second = reconcileTasks('proj', first, [
-      { phase: 'P', title: 'a', done: false, needs: [], isContract: false },
-      { phase: 'P', title: 'b', done: false, needs: ['a', 'c'], isContract: false },
+      { phase: 'P', title: 'a', done: false, needs: [], isContract: false, isScaffold: false },
+      { phase: 'P', title: 'b', done: false, needs: ['a', 'c'], isContract: false, isScaffold: false },
     ]);
     expect(second[1].id).toBe(first[1].id); // matched, not recreated
     expect(second[1].dependsOn).toEqual(['a', 'c']);
@@ -172,8 +175,8 @@ describe('reconcileTasks', () => {
       'proj',
       existing,
       [
-        { phase: 'P1', title: 'a', done: false, needs: [], isContract: false },
-        { phase: 'P2', title: 'a', done: false, needs: [], isContract: false },
+        { phase: 'P1', title: 'a', done: false, needs: [], isContract: false, isScaffold: false },
+        { phase: 'P2', title: 'a', done: false, needs: [], isContract: false, isScaffold: false },
       ],
       idSeq(),
     );

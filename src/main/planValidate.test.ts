@@ -8,13 +8,14 @@ import type { ParsedTask } from './planParser';
 const t = (
   title: string,
   needs: string[] = [],
-  opts: { phase?: string; done?: boolean; isContract?: boolean } = {},
+  opts: { phase?: string; done?: boolean; isContract?: boolean; isScaffold?: boolean } = {},
 ): ParsedTask => ({
   phase: opts.phase ?? 'P',
   title,
   done: opts.done ?? false,
   needs,
   isContract: opts.isContract ?? false,
+  isScaffold: opts.isScaffold ?? false,
 });
 
 describe('validatePlan', () => {

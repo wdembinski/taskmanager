@@ -446,6 +446,15 @@ export function Board(): JSX.Element {
                           <Badge appearance="tint" color={STATUS_COLOR[task.status]}>
                             {STATUS_LABEL[task.status]}
                           </Badge>
+                          {task.isScaffold && (
+                            <Badge
+                              appearance="tint"
+                              color="brand"
+                              title="Lays down the milestone's shared project root; runs first, before its sibling tasks"
+                            >
+                              scaffold
+                            </Badge>
+                          )}
                           {task.isContract && (
                             <Badge
                               appearance="tint"
