@@ -6,7 +6,13 @@
  * for.
  */
 import { describe, expect, it } from 'vitest';
-import { classifyLimit, computeResumeAt, LimitGate, type LimitGateDeps } from './limitGate';
+import {
+  classifyLimit,
+  computeResumeAt,
+  isBlockingLimitStatus,
+  LimitGate,
+  type LimitGateDeps,
+} from './limitGate';
 import type { LimitState } from '@shared/limit';
 
 describe('classifyLimit', () => {
@@ -20,6 +26,25 @@ describe('classifyLimit', () => {
     expect(classifyLimit('five_hour')).toBe('rolling');
     expect(classifyLimit('default')).toBe('rolling');
     expect(classifyLimit('')).toBe('rolling');
+  });
+});
+
+describe('isBlockingLimitStatus', () => {
+  it('does NOT park on allowed / approaching-cap warnings / empty status', () => {
+    // The false-weekly-park bug: a warning (or missing status) must not engage.
+    expect(isBlockingLimitStatus('allowed')).toBe(false);
+    expect(isBlockingLimitStatus('allowed_warning')).toBe(false);
+    expect(isBlockingLimitStatus('warning')).toBe(false);
+    expect(isBlockingLimitStatus('')).toBe(false);
+    expect(isBlockingLimitStatus('   ')).toBe(false);
+  });
+
+  it('parks only on a hard rejection', () => {
+    expect(isBlockingLimitStatus('rejected')).toBe(true);
+    expect(isBlockingLimitStatus('rejected_weekly')).toBe(true);
+    expect(isBlockingLimitStatus('rate_limited')).toBe(true);
+    expect(isBlockingLimitStatus('quota_exceeded')).toBe(true);
+    expect(isBlockingLimitStatus('BLOCKED')).toBe(true);
   });
 });
 
@@ -144,6 +169,26 @@ describe('LimitGate', () => {
     h.advanceTo(200_000);
     expect(h.resumed).toEqual([persisted]);
     expect(h.gate.active).toBe(false);
+  });
+
+  it('resumeNow() lifts the gate immediately — resumes parked tasks and clears', () => {
+    const h = harness(0);
+    h.gate.engage(rolling, ['t1', 't2']); // resumeAt is 100_000, far in the future
+    expect(h.resumed).toEqual([]);
+
+    h.gate.resumeNow(); // the "Resume now" button, well before the timer
+    expect(h.resumed).toHaveLength(1);
+    expect(h.resumed[0].parkedTaskIds).toEqual(['t1', 't2']);
+    expect(h.gate.active).toBe(false);
+    expect(h.hasTimer()).toBe(false);
+    expect(h.changes.at(-1)).toBeNull();
+  });
+
+  it('resumeNow() is a no-op when no limit is in force', () => {
+    const h = harness(0);
+    h.gate.resumeNow();
+    expect(h.resumed).toEqual([]);
+    expect(h.changes).toEqual([]);
   });
 
   it('unpark() drops tasks without lifting the gate', () => {

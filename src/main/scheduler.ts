@@ -48,7 +48,7 @@ import {
   type OwnershipEntry,
 } from './attention';
 import type { PermissionGate } from './claudeSession';
-import { LimitGate } from './limitGate';
+import { isBlockingLimitStatus, LimitGate } from './limitGate';
 import type { PermissionRequest, PermissionDecisionResult } from './permissionBroker';
 import { evaluateToolUse } from './permissionPolicy';
 import { tickPlanCheckbox } from './planParser';
@@ -650,6 +650,16 @@ export class Scheduler {
   }
 
   /**
+   * Lift the usage-limit gate immediately (the banner's "Resume now") — for a false
+   * trip or a limit that has already cleared. Resumes the parked tasks and clears
+   * the gate; no-op if no limit is in force.
+   */
+  resumeLimitNow(): void {
+    if (this.disposed) return;
+    this.limitGate.resumeNow();
+  }
+
+  /**
    * Re-arm a usage-limit gate that was in force when the app last closed (Phase 5).
    * Called once at startup after the permission broker is up (so resumed runs are
    * still gated). If the reset already passed while the app was down, parked tasks
@@ -1022,9 +1032,11 @@ export class Scheduler {
         break;
 
       case 'rate-limit':
-        // A usage limit hit (Phase 5). `allowed` just means "still under the cap" —
-        // only a non-allowed status engages the account-wide gate.
-        if (event.status !== 'allowed') this.engageLimit(event);
+        // A usage limit signal (Phase 5). Only a HARD rejection parks work — an
+        // `allowed`/`allowed_warning` (approaching the cap) or an empty status must
+        // NOT engage the gate, or a mere warning falsely parks everything for a full
+        // weekly window (see `isBlockingLimitStatus`).
+        if (isBlockingLimitStatus(event.status)) this.engageLimit(event);
         break;
 
       case 'result':

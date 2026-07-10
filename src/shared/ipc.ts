@@ -193,6 +193,13 @@ export interface IpcApi {
    */
   'limit:current': () => Promise<LimitState | null>;
 
+  /**
+   * Lift the usage-limit gate immediately (the banner's "Resume now") — for a false
+   * trip or a limit that has already cleared. Resumes parked tasks and clears the
+   * gate; the UI updates via the `limit:changed` → `null` event.
+   */
+  'limit:resumeNow': () => Promise<void>;
+
   /** The current global app settings (Phase 6). */
   'settings:get': () => Promise<AppSettings>;
   /** Persist the global app settings; scheduler knobs take effect on the next task. */

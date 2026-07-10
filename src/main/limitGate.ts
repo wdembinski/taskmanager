@@ -36,6 +36,22 @@ export function classifyLimit(rateLimitType: string): LimitType {
   return /week|seven|7\s*d/i.test(rateLimitType) ? 'weekly' : 'rolling';
 }
 
+/**
+ * Whether a `rate_limit_event` status means work is actually BLOCKED (park all
+ * sessions) versus merely a heads-up. Claude's `rate_limit_info.status` reports
+ * `allowed` while under the cap and an `allowed_warning`-style value as the cap
+ * approaches; the event can also arrive with no status at all. Only a hard
+ * rejection should engage the account-wide gate — treating a warning (or an empty
+ * status) as a block is what falsely parked everything for a full weekly window.
+ * Conservative on purpose: empty, `allowed`-prefixed, or "warn" statuses are all
+ * treated as NOT blocking.
+ */
+export function isBlockingLimitStatus(status: string): boolean {
+  const s = status.trim().toLowerCase();
+  if (s === '' || s.startsWith('allowed') || s.includes('warn')) return false;
+  return /reject|exceed|block|throttl|limit_reached|rate_limited|too_many/.test(s);
+}
+
 /** How long to wait when the CLI didn't give us a reset time — conservative per type. */
 const DEFAULT_WAIT_MS: Record<LimitType, number> = {
   rolling: 5 * 60 * 60 * 1000, // 5 hours
@@ -133,6 +149,17 @@ export class LimitGate {
   restore(state: LimitState): void {
     this.arm(state);
     this.deps.onChanged(this.current);
+  }
+
+  /**
+   * End the gate NOW instead of waiting for its timer — used to clear a false trip
+   * from the UI. Resumes the parked tasks (via `onResumeDue`) and clears the gate
+   * (`onChanged(null)`), exactly as the scheduled reset would. No-op if inactive.
+   */
+  resumeNow(): void {
+    if (this.current === null) return;
+    if (this.timer !== null) this.deps.clearTimer(this.timer);
+    this.fire();
   }
 
   /**

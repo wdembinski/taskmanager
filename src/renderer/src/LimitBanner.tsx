@@ -12,7 +12,14 @@
  * A 1s interval re-renders the countdown while a limit is in force.
  */
 import { useEffect, useState } from 'react';
-import { makeStyles, MessageBar, MessageBarBody, MessageBarTitle } from '@fluentui/react-components';
+import {
+  Button,
+  makeStyles,
+  MessageBar,
+  MessageBarActions,
+  MessageBarBody,
+  MessageBarTitle,
+} from '@fluentui/react-components';
 import type { LimitState } from '@shared/limit';
 
 const useStyles = makeStyles({
@@ -72,6 +79,13 @@ export function LimitBanner(): JSX.Element | null {
         All work is paused — <span className={styles.countdown}>{resumeText}</span>.{' '}
         {parked > 0 && `${parked} task${parked === 1 ? '' : 's'} parked, resuming automatically.`}
       </MessageBarBody>
+      <MessageBarActions>
+        {/* Escape hatch for a false trip / an already-cleared limit: lift the gate
+            now and resume parked tasks. The banner clears via `limit:changed`→null. */}
+        <Button size="small" onClick={() => void window.api.invoke('limit:resumeNow')}>
+          Resume now
+        </Button>
+      </MessageBarActions>
     </MessageBar>
   );
 }

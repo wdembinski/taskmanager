@@ -314,6 +314,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('attention:answer', async (itemId, answer) => scheduler.answerAttention(itemId, answer));
 
   handle('limit:current', async () => scheduler.currentLimit());
+  handle('limit:resumeNow', async () => scheduler.resumeLimitNow());
 
   handle('settings:get', async () => store.getSettings());
   handle('settings:save', async (settings) => store.saveSettings(settings));
