@@ -337,6 +337,49 @@ describe('Scheduler.start resumes stopped tasks', () => {
   });
 });
 
+describe('Scheduler.startAuxiliarySession (the AI "Align plan" run)', () => {
+  it('registers the run so stop(projectId) terminates it', () => {
+    const store = { getSettings: () => ({ limitJitterMs: 0 }) } as unknown as Store;
+    const start = vi.fn((_req: unknown, _opts: unknown) => ({ runId: 'align1' }));
+    const stop = vi.fn();
+    const sessions = { start, stop } as unknown as SessionManager;
+    const scheduler = new Scheduler(store, sessions, vi.fn(), vi.fn(), vi.fn(), vi.fn(), vi.fn());
+
+    const { runId } = scheduler.startAuxiliarySession('p', {
+      prompt: 'align',
+      cwd: 'C:/w',
+    } as never);
+    expect(runId).toBe('align1');
+
+    // Stopping the project must kill the standalone align session — the bug was that
+    // it lived outside `runs`, so Stop never reached it and the agent kept editing.
+    scheduler.stop('p');
+    expect(stop).toHaveBeenCalledWith('align1');
+  });
+
+  it('closes the one-shot run and prunes it from the registry on result', () => {
+    const store = { getSettings: () => ({ limitJitterMs: 0 }) } as unknown as Store;
+    let observer: ((event: { kind: string }) => void) | undefined;
+    const start = vi.fn((_req: unknown, opts: { onEvent?: (e: { kind: string }) => void }) => {
+      observer = opts.onEvent;
+      return { runId: 'align1' };
+    });
+    const stop = vi.fn();
+    const sessions = { start, stop } as unknown as SessionManager;
+    const scheduler = new Scheduler(store, sessions, vi.fn(), vi.fn(), vi.fn(), vi.fn(), vi.fn());
+
+    scheduler.startAuxiliarySession('p', { prompt: 'align', cwd: 'C:/w' } as never);
+    // The run finished on its own: the observer closes it (a one-shot with an
+    // observer won't auto-close) and drops it from the registry...
+    observer?.({ kind: 'result' });
+    expect(stop).toHaveBeenCalledWith('align1');
+    stop.mockClear();
+    // ...so a later stop(projectId) is a no-op for it (not double-stopped).
+    scheduler.stop('p');
+    expect(stop).not.toHaveBeenCalled();
+  });
+});
+
 describe('failure decision helpers (pure)', () => {
   it('auto-retries only while spent attempts are under the cap', () => {
     expect(shouldAutoRetry(0, 1)).toBe(true);

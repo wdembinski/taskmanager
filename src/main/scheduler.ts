@@ -469,6 +469,14 @@ export class Scheduler {
    * keyed by task id. Set by the "AI fix & retry" resolution; consumed in `launch`.
    */
   private readonly fixNotes = new Map<string, string>();
+  /**
+   * Non-task sessions started for a project — currently the AI "Align plan" run,
+   * which is launched outside the task queue. Tracked as runId → projectId so
+   * `stop(projectId)` can terminate it too; without this an Align agent keeps
+   * editing the plan after the user hits Stop (it lives in neither `runs` nor the
+   * pending-* maps). Auto-pruned when the run ends.
+   */
+  private readonly auxRuns = new Map<string, string>();
   /** The permission gate handed to every task run (null until the broker is up). */
   private gate: PermissionGate | null = null;
   /**
@@ -571,6 +579,14 @@ export class Scheduler {
       if (proposal.itemId) this.resolveAttention(proposal.itemId);
       this.pendingProposals.delete(id);
     }
+    // Terminate any non-task sessions for this project (the AI "Align plan" run):
+    // they live outside `runs`, so Stop must reach them explicitly or the agent
+    // keeps editing the plan after the user stops the project.
+    for (const [runId, pid] of [...this.auxRuns.entries()]) {
+      if (pid !== projectId) continue;
+      this.sessions.stop(runId);
+      this.auxRuns.delete(runId);
+    }
     // If a usage limit has parked this project's tasks (Phase 5), stopping cancels
     // them too, so they are NOT resumed when the gate reopens.
     if (this.limitGate.active) {
@@ -591,6 +607,26 @@ export class Scheduler {
     const project = this.store.getProject(task.projectId);
     if (!project) return null;
     return { runId: this.startTask(project, task) };
+  }
+
+  /**
+   * Start a one-shot session that isn't tied to a task — currently the AI "Align
+   * plan" run. Registered under its project so `stop(projectId)` and `dispose()`
+   * terminate it, closing the hole where an Align agent kept editing the plan after
+   * the user hit Stop. It's a one-shot: because we attach an observer the
+   * SessionManager won't auto-close it on `result` (that's reserved for unmanaged
+   * runs), so we close it here and prune the registry when it ends.
+   */
+  startAuxiliarySession(projectId: string, request: StartSessionRequest): { runId: string } {
+    if (this.disposed) return { runId: '' };
+    const { runId } = this.sessions.start(request, {
+      onEvent: (event) => {
+        if (event.kind === 'result') this.sessions.stop(runId);
+        if (event.kind === 'result' || event.kind === 'exited') this.auxRuns.delete(runId);
+      },
+    });
+    this.auxRuns.set(runId, projectId);
+    return { runId };
   }
 
   /** Snapshot of executing tasks, so the Board can attach live transcripts on load. */
@@ -798,6 +834,7 @@ export class Scheduler {
     this.fixNotes.clear();
     this.activeProjects.clear();
     this.runs.clear();
+    this.auxRuns.clear(); // the caller's sessions.stopAll() kills the processes themselves
     this.inFlight.clear();
     this.attention.clear();
   }

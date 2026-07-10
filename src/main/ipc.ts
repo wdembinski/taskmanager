@@ -225,9 +225,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('project:alignPlan', async (id) => {
     const project = store.getProject(id);
     if (!project) throw new Error(`Cannot align: project ${id} not found`);
-    // A one-shot, user-initiated run that edits the user's plan.md. Ungated and in
-    // acceptEdits so it can write the file; the plan watcher re-syncs on the change.
-    const { runId } = sessions.start({
+    // A one-shot, user-initiated run that edits the user's plan.md. Routed through the
+    // scheduler (not sessions.start directly) so it's registered under the project and
+    // Stop — scheduler:stop — actually terminates it. Ungated and in acceptEdits so it
+    // can write the file; the plan watcher re-syncs on the change.
+    const { runId } = scheduler.startAuxiliarySession(project.id, {
       prompt: buildAlignPrompt(project.planPath, project.path),
       cwd: project.path,
       model: project.defaultModel,

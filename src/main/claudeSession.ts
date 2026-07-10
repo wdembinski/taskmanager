@@ -327,7 +327,21 @@ export function runClaudeSession(
     },
     stop: () => {
       child.stdin.end(); // signal end-of-input first, then terminate
-      child.kill();
+      const { pid } = child;
+      if (pid !== undefined && process.platform === 'win32') {
+        // `shell:true` means `child` is the cmd.exe wrapper; the real `claude`
+        // (node) and any subprocesses it spawns (e.g. an agent's own PowerShell
+        // tool calls) are its DESCENDANTS. `child.kill()` signals only the shell
+        // and orphans that tree, so the agent keeps running after Stop. `taskkill`
+        // with /t kills the whole tree and /f forces it.
+        try {
+          spawn('taskkill', ['/pid', String(pid), '/t', '/f'], { windowsHide: true });
+        } catch {
+          child.kill();
+        }
+      } else {
+        child.kill();
+      }
     },
   };
 }

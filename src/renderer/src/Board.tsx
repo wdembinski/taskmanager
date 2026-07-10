@@ -160,6 +160,10 @@ export function Board(): JSX.Element {
   // The "align this plan first?" prompt shown when Run is pressed for a legacy
   // (unaligned) project. Null when no prompt is open.
   const [runNudge, setRunNudge] = useState<{ projectId: string; projectName: string } | null>(null);
+  // Projects with an AI "Align plan" run in flight (projectId → runId). Started from
+  // the Run nudge below; tracked so the Stop button is reachable while it runs (the
+  // scheduler otherwise stays idle during an align, leaving Stop disabled).
+  const [aligningRuns, setAligningRuns] = useState<Record<string, string>>({});
 
   // Load projects + any already-running tasks, and subscribe to live updates.
   useEffect(() => {
@@ -241,12 +245,26 @@ export function Board(): JSX.Element {
       );
     });
 
+    // Clear a project's "aligning" flag once its Align run ends (on its own or via
+    // Stop), so the Stop button returns to its normal disabled state.
+    const offSession = window.api.on('session:event', ({ runId, event }) => {
+      if (event.kind !== 'result' && event.kind !== 'exited') return;
+      setAligningRuns((prev) => {
+        const projectId = Object.keys(prev).find((id) => prev[id] === runId);
+        if (!projectId) return prev;
+        const next = { ...prev };
+        delete next[projectId];
+        return next;
+      });
+    });
+
     return () => {
       offTask();
       offScheduler();
       offTasks();
       offAttentionNew();
       offAttentionResolved();
+      offSession();
     };
   }, []);
 
@@ -307,7 +325,10 @@ export function Board(): JSX.Element {
     if (!runNudge) return;
     const { projectId } = runNudge;
     setRunNudge(null);
-    await window.api.invoke('project:alignPlan', projectId);
+    const { runId } = await window.api.invoke('project:alignPlan', projectId);
+    // Track the run so Stop is reachable while it edits the plan (Board otherwise
+    // stays scheduler-idle during an align).
+    setAligningRuns((prev) => ({ ...prev, [projectId]: runId }));
   }, [runNudge]);
 
   const selectedRunId = selectedTaskId ? (runIds[selectedTaskId] ?? null) : null;
@@ -347,6 +368,7 @@ export function Board(): JSX.Element {
           const state = states[project.id] ?? 'idle';
           const running = state === 'running';
           const paused = state === 'paused';
+          const aligning = project.id in aligningRuns;
           const anyRunnable = tasks.some((t) => t.status === 'pending');
           return (
             <div key={project.id} className={styles.project}>
@@ -356,6 +378,11 @@ export function Board(): JSX.Element {
                   <Badge appearance="tint" color={SCHEDULER_BADGE[state].color}>
                     {SCHEDULER_BADGE[state].label}
                   </Badge>
+                  {aligning && (
+                    <Badge appearance="tint" color="brand">
+                      aligning…
+                    </Badge>
+                  )}
                 </div>
                 <div className={styles.controls}>
                   <Switch
@@ -366,7 +393,7 @@ export function Board(): JSX.Element {
                   <Button
                     size="small"
                     appearance="primary"
-                    disabled={running || !anyRunnable}
+                    disabled={running || aligning || !anyRunnable}
                     onClick={() => runProject(project)}
                   >
                     {paused ? 'Resume' : 'Run'}
@@ -380,7 +407,7 @@ export function Board(): JSX.Element {
                   </Button>
                   <Button
                     size="small"
-                    disabled={!running && !paused}
+                    disabled={!running && !paused && !aligning}
                     onClick={() => void window.api.invoke('scheduler:stop', project.id)}
                   >
                     Stop
