@@ -200,6 +200,25 @@ export function Projects(): JSX.Element {
     [guard],
   );
 
+  // Dismiss the "align this plan" nudge for a legacy project: mark it aligned so the
+  // prompt doesn't return. Purely a UI hint — the project runs exactly as before.
+  const dismissAlignNudge = useCallback(
+    (id: string) =>
+      guard('Could not update project', async () => {
+        await window.api.invoke('project:setAligned', id, true);
+        setProjects((prev) =>
+          prev
+            ? prev.map((p) =>
+                p.project.id === id
+                  ? { ...p, project: { ...p.project, planAligned: true } }
+                  : p,
+              )
+            : prev,
+        );
+      }),
+    [guard],
+  );
+
   // Close the Align dialog. If its run is still going, STOP it (kill the agent) so
   // closing never leaves an invisible process editing the plan file.
   const closeAlign = useCallback(() => {
@@ -312,6 +331,33 @@ export function Projects(): JSX.Element {
                     </div>
                   }
                 />
+
+                {!project.planAligned && (
+                  <MessageBar intent="info">
+                    <MessageBarBody>
+                      <strong>Align this plan?</strong> This project predates the team-orchestration
+                      features (task dependencies and a shared contract). Aligning adds{' '}
+                      <code>@needs:</code> annotations so parallel agents don&apos;t collide — or
+                      dismiss to keep running it as-is.
+                    </MessageBarBody>
+                    <MessageBarActions>
+                      <Button
+                        size="small"
+                        disabled={aligningIds.has(project.id)}
+                        onClick={() => alignPlan(project)}
+                      >
+                        {aligningIds.has(project.id) ? 'Aligning…' : 'Align plan…'}
+                      </Button>
+                      <Button
+                        size="small"
+                        appearance="transparent"
+                        onClick={() => dismissAlignNudge(project.id)}
+                      >
+                        Dismiss
+                      </Button>
+                    </MessageBarActions>
+                  </MessageBar>
+                )}
 
                 {(() => {
                   const issues = validations[project.id]?.issues ?? [];

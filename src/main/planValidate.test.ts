@@ -2,7 +2,7 @@
  * Unit tests for the pure plan validator (Phase C).
  */
 import { describe, expect, it } from 'vitest';
-import { validatePlan } from './planValidate';
+import { planHasAlignmentMarkers, validatePlan } from './planValidate';
 import type { ParsedTask } from './planParser';
 
 const t = (title: string, needs: string[] = []): ParsedTask => ({
@@ -19,8 +19,22 @@ describe('validatePlan', () => {
     expect(result.issues).toEqual([]);
   });
 
-  it('treats a plan with no dependencies as clean', () => {
+  it('advises (does not error) when a multi-task plan declares no dependencies', () => {
     const result = validatePlan([t('a'), t('b'), t('c')]);
+    expect(result.ok).toBe(true); // advisory only — never blocks
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0].severity).toBe('warning');
+    expect(result.issues[0].message).toContain('parallel agents may collide');
+  });
+
+  it('does not advise about dependencies once any @needs: is declared', () => {
+    const result = validatePlan([t('a'), t('b', ['a']), t('c')]);
+    expect(result.ok).toBe(true);
+    expect(result.issues).toEqual([]);
+  });
+
+  it('does not advise about dependencies for a single-task plan', () => {
+    const result = validatePlan([t('only')]);
     expect(result.ok).toBe(true);
     expect(result.issues).toEqual([]);
   });
@@ -50,5 +64,19 @@ describe('validatePlan', () => {
     expect(result.ok).toBe(true); // warning only
     expect(result.issues).toHaveLength(1);
     expect(result.issues[0].severity).toBe('warning');
+  });
+});
+
+describe('planHasAlignmentMarkers', () => {
+  it('is false for a plan with no @needs: clauses', () => {
+    expect(planHasAlignmentMarkers([t('a'), t('b')])).toBe(false);
+  });
+
+  it('is true as soon as any task declares a dependency', () => {
+    expect(planHasAlignmentMarkers([t('a'), t('b', ['a'])])).toBe(true);
+  });
+
+  it('is false for an empty plan', () => {
+    expect(planHasAlignmentMarkers([])).toBe(false);
   });
 });

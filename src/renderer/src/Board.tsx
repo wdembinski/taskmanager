@@ -17,8 +17,16 @@ import {
   Body1,
   Button,
   Caption1,
+  Dialog,
+  DialogActions,
+  DialogBody,
+  DialogContent,
+  DialogSurface,
+  DialogTitle,
   Divider,
   makeStyles,
+  MessageBar,
+  MessageBarBody,
   Spinner,
   Subtitle2,
   Switch,
@@ -149,6 +157,9 @@ export function Board(): JSX.Element {
   const [parked, setParked] = useState<
     Record<string, { taskId: string; kind: 'merge-conflict' | 'task-failed' }>
   >({});
+  // The "align this plan first?" prompt shown when Run is pressed for a legacy
+  // (unaligned) project. Null when no prompt is open.
+  const [runNudge, setRunNudge] = useState<{ projectId: string; projectName: string } | null>(null);
 
   // Load projects + any already-running tasks, and subscribe to live updates.
   useEffect(() => {
@@ -244,6 +255,53 @@ export function Board(): JSX.Element {
     );
   }, []);
 
+  // Mark a project aligned locally (mirrors the engine) so its Run nudge doesn't
+  // return this session; the flag is a pure UI hint and never gates the run.
+  const markAlignedLocally = useCallback((projectId: string) => {
+    setProjects((prev) =>
+      prev
+        ? prev.map((pt) =>
+            pt.project.id === projectId
+              ? { ...pt, project: { ...pt.project, planAligned: true } }
+              : pt,
+          )
+        : prev,
+    );
+  }, []);
+
+  // Run a project. Legacy (unaligned) plans first raise the align nudge; everything
+  // else starts the scheduler immediately.
+  const runProject = useCallback(
+    (project: ProjectWithTasks['project']) => {
+      if (!project.planAligned) {
+        setRunNudge({ projectId: project.id, projectName: project.name });
+        return;
+      }
+      void window.api.invoke('scheduler:start', project.id);
+    },
+    [],
+  );
+
+  // "Run anyway" from the nudge: dismiss the prompt permanently (mark aligned) and
+  // start the scheduler as-is.
+  const runNudgeAnyway = useCallback(async () => {
+    if (!runNudge) return;
+    const { projectId } = runNudge;
+    setRunNudge(null);
+    await window.api.invoke('project:setAligned', projectId, true);
+    markAlignedLocally(projectId);
+    await window.api.invoke('scheduler:start', projectId);
+  }, [runNudge, markAlignedLocally]);
+
+  // "Align first" from the nudge: kick off the AI Align pass (its live transcript is
+  // on the Projects tab); the rewritten plan re-syncs and confirms alignment.
+  const runNudgeAlign = useCallback(async () => {
+    if (!runNudge) return;
+    const { projectId } = runNudge;
+    setRunNudge(null);
+    await window.api.invoke('project:alignPlan', projectId);
+  }, [runNudge]);
+
   const selectedRunId = selectedTaskId ? (runIds[selectedTaskId] ?? null) : null;
   const conflictTaskIds = new Set(
     Object.values(parked)
@@ -296,7 +354,7 @@ export function Board(): JSX.Element {
                     size="small"
                     appearance="primary"
                     disabled={running || !anyRunnable}
-                    onClick={() => void window.api.invoke('scheduler:start', project.id)}
+                    onClick={() => runProject(project)}
                   >
                     {paused ? 'Resume' : 'Run'}
                   </Button>
@@ -445,6 +503,40 @@ export function Board(): JSX.Element {
           }
         />
       </div>
+
+      <Dialog
+        open={runNudge !== null}
+        onOpenChange={(_e, d) => {
+          if (!d.open) setRunNudge(null);
+        }}
+      >
+        <DialogSurface>
+          <DialogBody>
+            <DialogTitle>Align this plan first?</DialogTitle>
+            <DialogContent>
+              <MessageBar intent="info">
+                <MessageBarBody>
+                  <strong>{runNudge?.projectName}</strong> predates the team-orchestration features.
+                  Its tasks declare no dependencies, so parallel agents may collide. Align adds{' '}
+                  <code>@needs:</code> annotations first (its transcript shows on the Projects tab),
+                  or run it as-is.
+                </MessageBarBody>
+              </MessageBar>
+            </DialogContent>
+            <DialogActions>
+              <Button appearance="secondary" onClick={() => setRunNudge(null)}>
+                Not now
+              </Button>
+              <Button appearance="secondary" onClick={() => void runNudgeAnyway()}>
+                Run anyway
+              </Button>
+              <Button appearance="primary" onClick={() => void runNudgeAlign()}>
+                Align plan…
+              </Button>
+            </DialogActions>
+          </DialogBody>
+        </DialogSurface>
+      </Dialog>
     </div>
   );
 }

@@ -100,6 +100,15 @@ export interface Project {
    * flipped — unrelated edits are left untouched.
    */
   writeBackPlan: boolean;
+  /**
+   * Whether the plan has been reviewed for the team-orchestration features
+   * (dependency `@needs:` clauses and, later, a shared contract). Projects that
+   * predate those features migrate in as `false` ("needs review") so the UI can
+   * offer a one-click AI "Align" upgrade; new projects, and any plan that already
+   * carries `@needs:`/`@contract` markers, are `true` and skip the nudge. Purely a
+   * UI hint — it never changes how a project runs.
+   */
+  planAligned: boolean;
   /** Epoch ms when the project was added. */
   createdAt: number;
 }
@@ -117,6 +126,7 @@ export interface AddProjectInput {
   concurrency?: number;
   useWorktrees?: boolean;
   writeBackPlan?: boolean;
+  planAligned?: boolean;
 }
 
 /**
@@ -134,6 +144,7 @@ export type ProjectPatch = Partial<
     | 'concurrency'
     | 'useWorktrees'
     | 'writeBackPlan'
+    | 'planAligned'
   >
 >;
 

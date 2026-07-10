@@ -104,6 +104,12 @@ export interface IpcApi {
   /** Toggle whether completing a task ticks its checkbox back into the plan file. */
   'project:setWriteBack': (id: string, enabled: boolean) => Promise<void>;
   /**
+   * Set a project's team-orchestration alignment flag (backward-compat nudge).
+   * Passing `true` dismisses the "align this plan" prompt for a legacy project; the
+   * flag is purely a UI hint and never changes how the project runs.
+   */
+  'project:setAligned': (id: string, aligned: boolean) => Promise<void>;
+  /**
    * Edit an existing project's name / plan file / model / permission mode /
    * write-back (Phase 8). Returns the updated project, or null if unknown. Model
    * and mode changes take effect on the next task run.

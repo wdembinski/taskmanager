@@ -54,6 +54,7 @@ interface ProjectRow {
   concurrency: number;
   useWorktrees: number;
   writeBackPlan: number;
+  planAligned: number;
   createdAt: number;
 }
 
@@ -65,6 +66,8 @@ export interface Store {
   removeProject(id: string): void;
   /** Toggle the plan write-back opt-in for a project. */
   setWriteBack(id: string, enabled: boolean): void;
+  /** Mark a project's plan as aligned/unaligned for the team-orchestration nudge. */
+  setPlanAligned(id: string, aligned: boolean): void;
   /** Edit a project's name/plan/model/mode/write-back (Phase 8); returns the updated project. */
   updateProject(id: string, patch: ProjectPatch): Project | undefined;
   getTasks(projectId: string): Task[];
@@ -131,6 +134,7 @@ export function createStore(dbPath: string): Store {
       concurrency           INTEGER NOT NULL DEFAULT 1,
       useWorktrees          INTEGER NOT NULL DEFAULT 1,
       writeBackPlan         INTEGER NOT NULL DEFAULT 0,
+      planAligned           INTEGER NOT NULL DEFAULT 0,
       createdAt             INTEGER NOT NULL
     );
     CREATE TABLE IF NOT EXISTS tasks (
@@ -196,6 +200,14 @@ export function createStore(dbPath: string): Store {
     db.exec(`ALTER TABLE projects ADD COLUMN useWorktrees INTEGER NOT NULL DEFAULT 1`);
   }
 
+  // Migrate databases created before the team-orchestration alignment flag. Existing
+  // projects predate `@needs:`/`@contract`, so they backfill to 0 ("needs review") —
+  // the UI offers a one-click Align upgrade. New projects are inserted with 1, and a
+  // plan already carrying alignment markers is bumped to 1 on its next sync.
+  if (!projectColumns.some((c) => c.name === 'planAligned')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN planAligned INTEGER NOT NULL DEFAULT 0`);
+  }
+
   // Migrate databases created before per-project concurrency existed. Concurrency
   // used to be a single global setting applied to every project, so seed each
   // existing project with the current global value — that preserves their exact
@@ -218,13 +230,14 @@ export function createStore(dbPath: string): Store {
   }
 
   const insertProject = db.prepare<[ProjectRow]>(
-    `INSERT INTO projects (id, name, path, planPath, defaultModel, defaultPermissionMode, concurrency, useWorktrees, writeBackPlan, createdAt)
-     VALUES (@id, @name, @path, @planPath, @defaultModel, @defaultPermissionMode, @concurrency, @useWorktrees, @writeBackPlan, @createdAt)`,
+    `INSERT INTO projects (id, name, path, planPath, defaultModel, defaultPermissionMode, concurrency, useWorktrees, writeBackPlan, planAligned, createdAt)
+     VALUES (@id, @name, @path, @planPath, @defaultModel, @defaultPermissionMode, @concurrency, @useWorktrees, @writeBackPlan, @planAligned, @createdAt)`,
   );
   const selectProjects = db.prepare(`SELECT * FROM projects ORDER BY createdAt`);
   const selectProject = db.prepare(`SELECT * FROM projects WHERE id = ?`);
   const deleteProject = db.prepare(`DELETE FROM projects WHERE id = ?`);
   const updateWriteBack = db.prepare(`UPDATE projects SET writeBackPlan = ? WHERE id = ?`);
+  const updatePlanAligned = db.prepare(`UPDATE projects SET planAligned = ? WHERE id = ?`);
   const selectTasks = db.prepare(`SELECT * FROM tasks WHERE projectId = ? ORDER BY "order"`);
   const selectTask = db.prepare(`SELECT * FROM tasks WHERE id = ?`);
   const deleteTasks = db.prepare(`DELETE FROM tasks WHERE projectId = ?`);
@@ -295,6 +308,7 @@ export function createStore(dbPath: string): Store {
       concurrency: r.concurrency,
       useWorktrees: r.useWorktrees !== 0,
       writeBackPlan: r.writeBackPlan !== 0,
+      planAligned: r.planAligned !== 0,
       createdAt: r.createdAt,
     };
   }
@@ -362,12 +376,17 @@ export function createStore(dbPath: string): Store {
         concurrency: Math.max(1, Math.round(input.concurrency ?? defaults.concurrency)),
         useWorktrees: input.useWorktrees ?? true,
         writeBackPlan: input.writeBackPlan ?? defaults.writeBackPlan,
+        // New projects are trusted as aligned; legacy projects backfill to false via
+        // the migration above. A plan carrying `@needs:`/`@contract` is also confirmed
+        // aligned on its next sync (see ipc `syncProjectPlan`).
+        planAligned: input.planAligned ?? true,
         createdAt: Date.now(),
       };
       insertProject.run({
         ...project,
         useWorktrees: project.useWorktrees ? 1 : 0,
         writeBackPlan: project.writeBackPlan ? 1 : 0,
+        planAligned: project.planAligned ? 1 : 0,
       });
       return project;
     },
@@ -387,6 +406,10 @@ export function createStore(dbPath: string): Store {
 
     setWriteBack(id, enabled) {
       updateWriteBack.run(enabled ? 1 : 0, id);
+    },
+
+    setPlanAligned(id, aligned) {
+      updatePlanAligned.run(aligned ? 1 : 0, id);
     },
 
     updateProject(id, patch) {
@@ -420,6 +443,10 @@ export function createStore(dbPath: string): Store {
       if (patch.writeBackPlan !== undefined) {
         sets.push(`writeBackPlan = @writeBackPlan`);
         params.writeBackPlan = patch.writeBackPlan ? 1 : 0;
+      }
+      if (patch.planAligned !== undefined) {
+        sets.push(`planAligned = @planAligned`);
+        params.planAligned = patch.planAligned ? 1 : 0;
       }
       if (sets.length > 0) {
         db.prepare(`UPDATE projects SET ${sets.join(', ')} WHERE id = @id`).run(params);

@@ -14,7 +14,7 @@ import type { IpcApi, IpcEvents } from '@shared/ipc';
 import { isManualStatus, type Project, type ProjectWithTasks } from '@shared/model';
 import { getClaudeStatus } from './claudeStatus';
 import { parsePlan } from './planParser';
-import { validatePlan } from './planValidate';
+import { planHasAlignmentMarkers, validatePlan } from './planValidate';
 import { buildAlignPrompt } from './alignPrompt';
 import { PermissionBroker } from './permissionBroker';
 import { writePermissionServer } from './permissionServerSource';
@@ -47,8 +47,20 @@ function syncProjectPlan(store: Store, project: Project): ProjectWithTasks {
   } catch {
     markdown = '';
   }
-  const tasks = store.syncTasksFromPlan(project.id, parsePlan(markdown));
-  return { project, tasks };
+  const parsed = parsePlan(markdown);
+  const tasks = store.syncTasksFromPlan(project.id, parsed);
+  return { project: ensureAligned(store, project, planHasAlignmentMarkers(parsed)), tasks };
+}
+
+/**
+ * Confirm a legacy project as "aligned" once its plan actually carries the
+ * team-orchestration markers, so it stops being nudged. Upgrade-only: it never
+ * flips an aligned project back to needs-review. Returns the effective project.
+ */
+function ensureAligned(store: Store, project: Project, hasMarkers: boolean): Project {
+  if (project.planAligned || !hasMarkers) return project;
+  store.setPlanAligned(project.id, true);
+  return { ...project, planAligned: true };
 }
 
 /** What registerIpcHandlers hands back so the app can shut resources down cleanly. */
@@ -170,7 +182,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   });
 
   handle('project:list', async () =>
-    store.listProjects().map((project) => ({ project, tasks: store.getTasks(project.id) })),
+    store.listProjects().map((project) => {
+      const tasks = store.getTasks(project.id);
+      // A stored `dependsOn` is the persisted form of a plan `@needs:` marker, so a
+      // legacy project whose plan already declared deps is confirmed aligned here too.
+      const hasMarkers = tasks.some((t) => t.dependsOn.length > 0);
+      return { project: ensureAligned(store, project, hasMarkers), tasks };
+    }),
   );
 
   handle('project:remove', async (id) => {
@@ -185,6 +203,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   });
 
   handle('project:setWriteBack', async (id, enabled) => store.setWriteBack(id, enabled));
+  handle('project:setAligned', async (id, aligned) => store.setPlanAligned(id, aligned));
   handle('project:update', async (id, patch) => {
     const updated = store.updateProject(id, patch);
     if (updated) watcher.watch(updated); // re-point the watcher if the plan path changed
