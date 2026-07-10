@@ -101,6 +101,20 @@ function unmetDeps(task: Task, all: Task[]): string[] {
   });
 }
 
+/**
+ * Of a task's unmet dependencies, the titles that will never resolve on their own
+ * because a prerequisite task ended in a non-recoverable state (`failed`/`stopped`/
+ * `cancelled`). Surfaced so the Board explains a permanent block instead of an
+ * open-ended "waiting on".
+ */
+const DEAD_STATUSES = new Set<Task['status']>(['failed', 'stopped', 'cancelled']);
+function failedDeps(unmet: string[], all: Task[]): string[] {
+  return unmet.filter((dep) => {
+    const withTitle = all.filter((t) => t.title === dep);
+    return withTitle.length > 0 && withTitle.some((t) => DEAD_STATUSES.has(t.status));
+  });
+}
+
 /** The orchestrator branch a worktree task runs on (mirrors `taskBranch` in the engine). */
 function taskBranch(taskId: string): string {
   return `orch/${taskId.slice(0, 8)}`;
@@ -129,10 +143,12 @@ export function Board(): JSX.Element {
   const [runIds, setRunIds] = useState<Record<string, string>>({});
   const [states, setStates] = useState<Record<string, SchedulerState>>({});
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
-  // Inbox item id → task id for tasks parked on a merge conflict, so the board can
-  // flag them. Keyed by item id so `attention:resolved` (which carries only the id)
-  // can clear the right one.
-  const [conflicts, setConflicts] = useState<Record<string, string>>({});
+  // Inbox item id → {task, kind} for tasks parked on a merge conflict or a failure,
+  // so the board can flag them. Keyed by item id so `attention:resolved` (which
+  // carries only the id) can clear the right one.
+  const [parked, setParked] = useState<
+    Record<string, { taskId: string; kind: 'merge-conflict' | 'task-failed' }>
+  >({});
 
   // Load projects + any already-running tasks, and subscribe to live updates.
   useEffect(() => {
@@ -145,11 +161,16 @@ export function Board(): JSX.Element {
     void window.api.invoke('scheduler:states').then((rows) => {
       setStates(Object.fromEntries(rows.map((r) => [r.projectId, r.state])));
     });
-    // Seed + track merge-conflict parks so the board can badge affected tasks.
+    // Seed + track merge-conflict / task-failed parks so the board can badge tasks.
     void window.api.invoke('attention:list').then((items) => {
-      setConflicts(
+      setParked(
         Object.fromEntries(
-          items.filter((i) => i.kind === 'merge-conflict').map((i) => [i.id, i.taskId]),
+          items
+            .filter((i) => i.kind === 'merge-conflict' || i.kind === 'task-failed')
+            .map((i) => [
+              i.id,
+              { taskId: i.taskId, kind: i.kind as 'merge-conflict' | 'task-failed' },
+            ]),
         ),
       );
     });
@@ -179,11 +200,12 @@ export function Board(): JSX.Element {
     });
 
     const offAttentionNew = window.api.on('attention:new', (item) => {
-      if (item.kind !== 'merge-conflict') return;
-      setConflicts((prev) => ({ ...prev, [item.id]: item.taskId }));
+      if (item.kind !== 'merge-conflict' && item.kind !== 'task-failed') return;
+      const kind = item.kind; // capture the narrowed kind for the setState closure
+      setParked((prev) => ({ ...prev, [item.id]: { taskId: item.taskId, kind } }));
     });
     const offAttentionResolved = window.api.on('attention:resolved', ({ id }) => {
-      setConflicts((prev) => {
+      setParked((prev) => {
         if (!(id in prev)) return prev;
         const next = { ...prev };
         delete next[id];
@@ -223,7 +245,16 @@ export function Board(): JSX.Element {
   }, []);
 
   const selectedRunId = selectedTaskId ? (runIds[selectedTaskId] ?? null) : null;
-  const conflictTaskIds = new Set(Object.values(conflicts));
+  const conflictTaskIds = new Set(
+    Object.values(parked)
+      .filter((p) => p.kind === 'merge-conflict')
+      .map((p) => p.taskId),
+  );
+  const failedTaskIds = new Set(
+    Object.values(parked)
+      .filter((p) => p.kind === 'task-failed')
+      .map((p) => p.taskId),
+  );
 
   if (projects === null) {
     return <Spinner label="Loading board…" labelPosition="after" size="tiny" />;
@@ -297,7 +328,10 @@ export function Board(): JSX.Element {
                     <Caption1 className={styles.phaseTitle}>{group.phase}</Caption1>
                     {group.tasks.map((task) => {
                       const unmet = task.status === 'pending' ? unmetDeps(task, tasks) : [];
+                      const blockedByFail = failedDeps(unmet, tasks);
+                      const waitingOn = unmet.filter((d) => !blockedByFail.includes(d));
                       const inConflict = conflictTaskIds.has(task.id);
+                      const parkedFailed = failedTaskIds.has(task.id);
                       // A worktree task shows its branch while it's live (or parked).
                       const showBranch =
                         project.useWorktrees &&
@@ -322,6 +356,15 @@ export function Board(): JSX.Element {
                               merge conflict
                             </Badge>
                           )}
+                          {parkedFailed && (
+                            <Badge
+                              appearance="tint"
+                              color="danger"
+                              title="Task failed — choose how to resolve it in the Attention inbox"
+                            >
+                              needs attention
+                            </Badge>
+                          )}
                           <Text className={styles.taskTitle} truncate wrap={false}>
                             {task.title}
                           </Text>
@@ -333,12 +376,20 @@ export function Board(): JSX.Element {
                               {taskBranch(task.id)}
                             </Caption1>
                           )}
-                          {unmet.length > 0 && (
+                          {blockedByFail.length > 0 && (
                             <Caption1
                               className={styles.waiting}
-                              title={`Waiting on: ${unmet.join(', ')}`}
+                              title={`Prerequisite failed: ${blockedByFail.join(', ')}`}
                             >
-                              waiting on: {unmet.join(', ')}
+                              blocked: prerequisite {blockedByFail.join(', ')} failed
+                            </Caption1>
+                          )}
+                          {waitingOn.length > 0 && (
+                            <Caption1
+                              className={styles.waiting}
+                              title={`Waiting on: ${waitingOn.join(', ')}`}
+                            >
+                              waiting on: {waitingOn.join(', ')}
                             </Caption1>
                           )}
                           {task.sessionId && (

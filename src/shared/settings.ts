@@ -24,6 +24,13 @@ export interface AppSettings {
   limitJitterMs: number;
   /** Whether newly added projects tick completed checkboxes back into their plan file. */
   writeBackPlan: boolean;
+  /**
+   * How many times the scheduler auto-retries a task whose agent run failed before
+   * parking it for the human to resolve (team orchestrator). 0 = never auto-retry
+   * (park on the first failure). Integration/merge failures are never auto-retried —
+   * they always park, since the fix is human-side (commit/stash the base, etc.).
+   */
+  maxAutoRetries: number;
 }
 
 /** The out-of-the-box settings, also used to fill any field missing from storage. */
@@ -33,4 +40,5 @@ export const DEFAULT_SETTINGS: AppSettings = {
   concurrency: 1,
   limitJitterMs: 60_000,
   writeBackPlan: false,
+  maxAutoRetries: 1,
 };

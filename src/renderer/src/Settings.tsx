@@ -114,6 +114,22 @@ export function Settings(): JSX.Element {
         </Field>
 
         <Field
+          label="Auto-retry failed tasks"
+          hint="How many times a failed task's agent run is retried automatically before it parks in the inbox for you to resolve. 0 = park on the first failure. Merge/integration failures always park."
+        >
+          <SpinButton
+            min={0}
+            max={5}
+            value={settings.maxAutoRetries}
+            onChange={(_e, d) => {
+              const n = d.value ?? Number(d.displayValue);
+              if (Number.isFinite(n))
+                patch({ maxAutoRetries: Math.max(0, Math.round(n as number)) });
+            }}
+          />
+        </Field>
+
+        <Field
           label="Resume jitter (seconds)"
           hint="Random delay added after a usage limit resets, before work resumes."
         >

@@ -77,6 +77,13 @@ function KindBadge({ kind }: { kind: AttentionItem['kind'] }): JSX.Element {
       </Badge>
     );
   }
+  if (kind === 'task-failed') {
+    return (
+      <Badge appearance="tint" color="danger">
+        task failed
+      </Badge>
+    );
+  }
   return (
     <Badge appearance="tint" color="warning">
       question
@@ -119,13 +126,38 @@ function InboxItem({
 
       <div className={styles.prompt}>{item.prompt}</div>
       {item.reason && <Caption1 className={styles.reason}>Held because it {item.reason}.</Caption1>}
-      {item.kind === 'merge-conflict' && item.worktreePath && (
+      {(item.kind === 'merge-conflict' || item.kind === 'task-failed') && item.worktreePath && (
         <Caption1 className={styles.path} title={item.worktreePath}>
           Worktree: {item.worktreePath}
         </Caption1>
       )}
 
-      {item.kind === 'merge-conflict' ? (
+      {item.kind === 'task-failed' ? (
+        <>
+          <div className={styles.choices}>
+            {item.options.map((option) => (
+              <Button
+                key={option}
+                appearance={option === item.options[0] ? 'primary' : 'secondary'}
+                disabled={busy}
+                onClick={() =>
+                  void answer({ decision: 'reply', text: option, note: note.trim() || undefined })
+                }
+              >
+                {option}
+              </Button>
+            ))}
+          </div>
+          <Field className={styles.note} label="Optional note (used by “AI fix & retry”)">
+            <Textarea
+              value={note}
+              resize="vertical"
+              onChange={(_e, d) => setNote(d.value)}
+              placeholder="Extra guidance for a retry…"
+            />
+          </Field>
+        </>
+      ) : item.kind === 'merge-conflict' ? (
         <div className={styles.actions}>
           <div className={styles.note} />
           <Button

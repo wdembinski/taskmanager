@@ -228,6 +228,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     return started;
   });
   handle('task:history', async (taskId) => store.getTaskHistory(taskId));
+  handle('task:cleanupWorktree', async (taskId) => {
+    const task = store.getTask(taskId);
+    if (task && (task.status === 'running' || task.status === 'waiting-input')) {
+      throw new Error('Stop the task before cleaning up its worktree.');
+    }
+    await scheduler.cleanupTaskWorktree(taskId);
+  });
   handle('task:create', async (projectId, input) => {
     const task = store.createTask(projectId, input);
     if (!task) throw new Error('A task needs a title.');

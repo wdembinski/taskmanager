@@ -15,9 +15,12 @@
 /**
  * Why a task is parked: awaiting approval for a tool, an answer to a question, or —
  * for the team-orchestrator feature — a human to resolve a git **merge conflict**
- * that arose while integrating the task's branch back into the base.
+ * that arose while integrating the task's branch back into the base, or to decide
+ * how to handle a **failed task** (after auto-retries were exhausted): retry, retry
+ * fresh, AI-assisted fix, clean up, or mark done. The `options` list carries the
+ * available actions and the human picks one (a `reply` answer with that text).
  */
-export type AttentionKind = 'permission' | 'question' | 'merge-conflict';
+export type AttentionKind = 'permission' | 'question' | 'merge-conflict' | 'task-failed';
 
 /** One thing waiting on a human, tied to the live run (and task) that raised it. */
 export interface AttentionItem {
@@ -69,4 +72,6 @@ export interface AttentionItem {
 export type AttentionAnswer =
   | { decision: 'approve'; note?: string }
   | { decision: 'deny'; note?: string }
-  | { decision: 'reply'; text: string };
+  // `text` is the reply (a question answer, or a chosen `task-failed` action). `note`
+  // is optional extra guidance (e.g. instructions for an "AI fix & retry").
+  | { decision: 'reply'; text: string; note?: string };

@@ -4,7 +4,15 @@
  * hand / verify; here we prove the selection rule and prompt shape.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { buildTaskPrompt, Scheduler, selectNextPending, type Schedulable } from './scheduler';
+import {
+  buildTaskPrompt,
+  failureActionsFor,
+  FAILURE_ACTION,
+  Scheduler,
+  selectNextPending,
+  shouldAutoRetry,
+  type Schedulable,
+} from './scheduler';
 import type { PermissionMode } from '@shared/session';
 import type { Project, Task } from '@shared/model';
 import type { SessionManager } from './sessionManager';
@@ -254,5 +262,131 @@ describe('Scheduler.start resumes stopped tasks', () => {
     expect(start).toHaveBeenCalledTimes(1);
     // It resumes the saved conversation rather than starting fresh.
     expect(start.mock.calls[0][1]).toMatchObject({ resumeSessionId: 's1' });
+  });
+});
+
+describe('failure decision helpers (pure)', () => {
+  it('auto-retries only while spent attempts are under the cap', () => {
+    expect(shouldAutoRetry(0, 1)).toBe(true);
+    expect(shouldAutoRetry(1, 1)).toBe(false);
+    expect(shouldAutoRetry(0, 0)).toBe(false); // cap 0 = park on first failure
+    expect(shouldAutoRetry(2, 5)).toBe(true);
+    expect(shouldAutoRetry(0, -3)).toBe(false); // negative cap clamps to 0
+  });
+
+  it('offers retry/fix/cleanup actions for a run failure', () => {
+    const actions = failureActionsFor('run');
+    expect(actions).toEqual([
+      FAILURE_ACTION.retry,
+      FAILURE_ACTION.retryFresh,
+      FAILURE_ACTION.aiFix,
+      FAILURE_ACTION.cleanup,
+      FAILURE_ACTION.markDone,
+    ]);
+  });
+
+  it('offers integration-specific actions for a merge/integration failure', () => {
+    const actions = failureActionsFor('integration');
+    expect(actions).toEqual([
+      FAILURE_ACTION.retryIntegration,
+      FAILURE_ACTION.cleanup,
+      FAILURE_ACTION.markDone,
+    ]);
+    // The agent-run-only actions must not appear here.
+    expect(actions).not.toContain(FAILURE_ACTION.aiFix);
+    expect(actions).not.toContain(FAILURE_ACTION.retryFresh);
+  });
+});
+
+describe('Scheduler run-failure handling', () => {
+  function setup(maxAutoRetries: number) {
+    const project = {
+      id: 'p',
+      path: 'C:/w',
+      planPath: 'C:/w/plan.md',
+      name: 'P',
+      concurrency: 1,
+      defaultModel: 'sonnet',
+      defaultPermissionMode: 'acceptEdits',
+    } as Project;
+    const task: Task = {
+      id: 't1',
+      projectId: 'p',
+      phase: '',
+      title: 'x',
+      status: 'running',
+      sessionId: 's1',
+      order: 0,
+      source: 'plan',
+      dependsOn: [],
+    } as Task;
+    const store = {
+      getTasks: () => [task],
+      getProject: () => project,
+      getTask: (id: string) => (id === 't1' ? task : undefined),
+      updateTask: (id: string, patch: Partial<Task>) => {
+        if (id === 't1') Object.assign(task, patch);
+        return task;
+      },
+      appendTaskEvent: vi.fn(),
+      getSettings: () => ({ maxAutoRetries, limitJitterMs: 0, concurrency: 1 }),
+    } as unknown as Store;
+    const start = vi.fn((_req: unknown, _opts: unknown) => ({ runId: 'r2' }));
+    const stop = vi.fn();
+    const sessions = { start, stop } as unknown as SessionManager;
+    const emitAttention = vi.fn();
+    const scheduler = new Scheduler(
+      store,
+      sessions,
+      vi.fn(),
+      vi.fn(),
+      emitAttention,
+      vi.fn(),
+      vi.fn(),
+    );
+    // Seed a live run for the task (as the scheduler would have on start).
+    (scheduler as unknown as { runs: Map<string, unknown> }).runs.set('r1', {
+      taskId: 't1',
+      projectId: 'p',
+      runId: 'r1',
+      settled: false,
+    });
+    (scheduler as unknown as { inFlight: Set<string> }).inFlight.add('t1');
+    const fire = (event: unknown): void =>
+      (scheduler as unknown as { onRunEvent: (r: string, e: unknown) => void }).onRunEvent(
+        'r1',
+        event,
+      );
+    return { scheduler, task, start, emitAttention, fire };
+  }
+
+  const failResult = {
+    kind: 'result',
+    success: false,
+    resultText: '',
+    costUsd: null,
+    durationMs: null,
+    stopReason: 'error',
+    terminalReason: null,
+  };
+  const exited = { kind: 'exited', code: 1 };
+
+  it('auto-retries under the cap and relaunches when the run exits (no park)', () => {
+    const { task, start, emitAttention, fire } = setup(1);
+    fire(failResult);
+    expect(task.status).toBe('pending'); // re-queued, not parked
+    expect(emitAttention).not.toHaveBeenCalled();
+    // The failed run exits; the idle-queue retry path relaunches it once.
+    fire(exited);
+    expect(start).toHaveBeenCalledTimes(1);
+  });
+
+  it('parks for the human once auto-retries are exhausted', () => {
+    const { emitAttention, fire } = setup(0);
+    fire(failResult);
+    expect(emitAttention).toHaveBeenCalledTimes(1);
+    const item = emitAttention.mock.calls[0][0] as { kind: string; options: string[] };
+    expect(item.kind).toBe('task-failed');
+    expect(item.options).toEqual(failureActionsFor('run'));
   });
 });

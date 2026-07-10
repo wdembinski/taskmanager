@@ -164,6 +164,12 @@ export interface IpcApi {
    * in order (Phase 6). Lets a view show past output instead of a blank pane.
    */
   'task:history': (taskId: string) => Promise<SessionEvent[]>;
+  /**
+   * Remove a task's leftover git worktree/branch (team orchestrator): a manual sweep
+   * for a failed/abandoned task whose worktree the orchestrator deliberately kept.
+   * No-op for non-worktree projects. Safe only when the task isn't mid-run.
+   */
+  'task:cleanupWorktree': (taskId: string) => Promise<void>;
 
   /** Snapshot of everything currently waiting on a human (seed the inbox on load). */
   'attention:list': () => Promise<AttentionItem[]>;

@@ -40,7 +40,7 @@ import { evaluateToolUse } from './permissionPolicy';
 import { tickPlanCheckbox } from './planParser';
 import type { SessionManager } from './sessionManager';
 import type { Store } from './store';
-import type { WorktreeManager, WorktreePrep } from './worktreeManager';
+import type { IntegrationResult, WorktreeManager, WorktreePrep } from './worktreeManager';
 
 /** Sent to Claude when a permission is denied with no note of its own. */
 const DEFAULT_DENY_MESSAGE =
@@ -49,6 +49,47 @@ const DEFAULT_DENY_MESSAGE =
 /** The nudge sent to a session we resume after a usage limit clears (Phase 5). */
 const RESUME_NUDGE =
   'A usage limit interrupted you and it has now reset. Continue the task where you left off.';
+
+/**
+ * The interactive actions offered when a failed task parks in the inbox (Phase A of
+ * team orchestrator). The human picks one; `answerAttention` matches on the text.
+ * Grouped so the option set can be built per failure kind.
+ */
+export const FAILURE_ACTION = {
+  retry: 'Retry',
+  retryFresh: 'Retry fresh (discard branch)',
+  aiFix: 'AI fix & retry',
+  retryIntegration: 'Retry integration',
+  cleanup: 'Clean up & abandon',
+  markDone: 'Mark done',
+} as const;
+
+/** Actions offered for a failed agent RUN vs. a failed branch INTEGRATION. */
+const RUN_FAILURE_OPTIONS = [
+  FAILURE_ACTION.retry,
+  FAILURE_ACTION.retryFresh,
+  FAILURE_ACTION.aiFix,
+  FAILURE_ACTION.cleanup,
+  FAILURE_ACTION.markDone,
+];
+const INTEGRATION_FAILURE_OPTIONS = [
+  FAILURE_ACTION.retryIntegration,
+  FAILURE_ACTION.cleanup,
+  FAILURE_ACTION.markDone,
+];
+
+/** The interactive resolution actions offered for a parked failure, by kind. Pure. */
+export function failureActionsFor(kind: 'run' | 'integration'): string[] {
+  return kind === 'integration' ? [...INTEGRATION_FAILURE_OPTIONS] : [...RUN_FAILURE_OPTIONS];
+}
+
+/**
+ * Whether a failed task should be auto-retried, given how many auto-retries have
+ * already been spent and the configured cap. Pure, so the decision is testable.
+ */
+export function shouldAutoRetry(attemptsSpent: number, maxAutoRetries: number): boolean {
+  return attemptsSpent < Math.max(0, maxAutoRetries);
+}
 
 /** Minimal shape the selection logic needs — kept tiny so tests don't build full tasks. */
 export interface Schedulable {
@@ -113,13 +154,15 @@ export function selectNextPending<T extends Schedulable>(
  *   - `branch` (worktree mode, team orchestrator): the agent works on an isolated git
  *     branch that the orchestrator integrates back into base; it must NOT touch the
  *     plan file (owned by the main tree) and should commit its work on the branch.
+ *   - `failureNote` (AI-assisted retry): a previous attempt failed; the agent is told
+ *     the reason and asked to diagnose and fix it. Combines with either mode above.
  */
 export function buildTaskPrompt(
   projectName: string,
   task: Task,
-  options: { planRelPath?: string; branch?: string } = {},
+  options: { planRelPath?: string; branch?: string; failureNote?: string } = {},
 ): string {
-  const { planRelPath, branch } = options;
+  const { planRelPath, branch, failureNote } = options;
   return [
     `You are working through the plan for the project "${projectName}".`,
     '',
@@ -131,6 +174,17 @@ export function buildTaskPrompt(
     '',
     'Make the necessary changes, then briefly summarize what you did.',
     '',
+    // AI-assisted retry: a prior attempt failed. Give the agent the reason and ask
+    // it to diagnose the cause before redoing the work (it may have left partial
+    // changes in this worktree).
+    ...(failureNote
+      ? [
+          `NOTE: a previous attempt at this task failed. The reported reason was:`,
+          `"${failureNote}"`,
+          `Diagnose why it failed and fix the underlying cause before completing the task.`,
+          '',
+        ]
+      : []),
     // Worktree mode: the agent is isolated on its own branch; the orchestrator
     // integrates it back and owns the plan file, so the agent must not edit it.
     ...(branch
@@ -199,6 +253,22 @@ interface PendingIntegration {
   worktree: string;
 }
 
+/**
+ * A parked failed task awaiting the human's chosen resolution (Phase A). `kind`
+ * distinguishes a failed agent RUN (retry the agent) from a failed branch
+ * INTEGRATION (re-attempt the merge). Worktree fields are present in worktree mode.
+ */
+interface PendingFailure {
+  kind: 'run' | 'integration';
+  projectId: string;
+  taskId: string;
+  runId: string;
+  reason: string;
+  branch?: string;
+  base?: string;
+  worktree?: string;
+}
+
 export class Scheduler {
   /** Live runs keyed by runId. Its size (per project) is the concurrency in use. */
   private readonly runs = new Map<string, Run>();
@@ -233,6 +303,28 @@ export class Scheduler {
    * the task's branch once the human has resolved the conflict in the worktree.
    */
   private readonly pendingIntegrations = new Map<string, PendingIntegration>();
+  /**
+   * Failed tasks parked for a human (Phase A), keyed by their inbox item id — holds
+   * what `answerAttention` needs to apply the chosen resolution.
+   */
+  private readonly pendingFailures = new Map<string, PendingFailure>();
+  /**
+   * Per-task count of consecutive auto-retries the scheduler has spent on a failing
+   * agent run. Reset when the task finally succeeds or the human resolves it. Kept
+   * in memory only (a restart starts the count over — acceptable).
+   */
+  private readonly attempts = new Map<string, number>();
+  /**
+   * Task ids queued for an auto-retry once their failed run finishes exiting. The
+   * `exited` handler relaunches them (directly, if the project's queue is idle, so
+   * ad-hoc runs still retry).
+   */
+  private readonly retryQueue = new Set<string>();
+  /**
+   * Failure context to inject into a task's NEXT run as an AI-assisted fix prompt,
+   * keyed by task id. Set by the "AI fix & retry" resolution; consumed in `launch`.
+   */
+  private readonly fixNotes = new Map<string, string>();
   /** The permission gate handed to every task run (null until the broker is up). */
   private gate: PermissionGate | null = null;
   /**
@@ -310,14 +402,21 @@ export class Scheduler {
       this.sessions.stop(run.runId); // triggers `exited`, which cleans up bookkeeping
       this.updateTask(run.taskId, { status: 'stopped' }, null);
     }
-    // Clear any merge conflicts parked for this project (team orchestrator): their
-    // run already ended, so they aren't in `runs` above. Drop the inbox item and
-    // mark the task stopped, keeping the branch/worktree for later.
+    // Clear any merge conflicts / failed tasks parked for this project (team
+    // orchestrator): their run already ended, so they aren't in `runs` above. Drop the
+    // inbox item and mark the task stopped, keeping the branch/worktree for later.
     for (const [itemId, pending] of [...this.pendingIntegrations.entries()]) {
       if (pending.projectId !== projectId) continue;
       this.pendingIntegrations.delete(itemId);
       this.resolveAttention(itemId);
       this.updateTask(pending.taskId, { status: 'stopped' }, null);
+    }
+    for (const [itemId, failure] of [...this.pendingFailures.entries()]) {
+      if (failure.projectId !== projectId) continue;
+      this.pendingFailures.delete(itemId);
+      this.attempts.delete(failure.taskId);
+      this.resolveAttention(itemId);
+      this.updateTask(failure.taskId, { status: 'stopped' }, null);
     }
     // If a usage limit has parked this project's tasks (Phase 5), stopping cancels
     // them too, so they are NOT resumed when the gate reopens.
@@ -443,6 +542,17 @@ export class Scheduler {
     const item = this.attention.get(itemId);
     if (!item) return;
 
+    if (item.kind === 'task-failed') {
+      const f = this.pendingFailures.get(itemId);
+      if (!f) return; // already handled
+      this.pendingFailures.delete(itemId);
+      this.resolveAttention(itemId);
+      const choice = answer.decision === 'reply' ? answer.text.trim() : '';
+      const note = 'note' in answer ? answer.note?.trim() : undefined;
+      void this.applyFailureChoice(f, choice, note);
+      return;
+    }
+
     if (item.kind === 'merge-conflict') {
       const pending = this.pendingIntegrations.get(itemId);
       if (!pending) return; // already handled
@@ -490,6 +600,21 @@ export class Scheduler {
     }
   }
 
+  /**
+   * Remove a task's leftover git worktree/branch (a manual sweep from the UI, for a
+   * failed/abandoned task whose worktree we deliberately kept). No-op without a
+   * worktree manager or for an unknown task.
+   */
+  async cleanupTaskWorktree(taskId: string): Promise<void> {
+    if (this.disposed || !this.worktrees) return;
+    const task = this.store.getTask(taskId);
+    if (!task) return;
+    const project = this.store.getProject(task.projectId);
+    if (!project) return;
+    await this.worktrees.cleanup(project, taskId);
+    this.attempts.delete(taskId);
+  }
+
   /** Stop scheduling and ignore further events. Called on app quit BEFORE the DB closes. */
   dispose(): void {
     this.disposed = true;
@@ -502,6 +627,10 @@ export class Scheduler {
     }
     this.pendingDecisions.clear();
     this.pendingIntegrations.clear();
+    this.pendingFailures.clear();
+    this.attempts.clear();
+    this.retryQueue.clear();
+    this.fixNotes.clear();
     this.activeProjects.clear();
     this.runs.clear();
     this.inFlight.clear();
@@ -601,13 +730,16 @@ export class Scheduler {
     // The plan file's path relative to the project dir, so a shared-dir agent can
     // edit it. Worktree agents get the isolated (no-plan-edit) prompt instead.
     const planRel = relative(project.path, project.planPath) || project.planPath;
-    const prompt = resumeSessionId
-      ? RESUME_NUDGE
-      : buildTaskPrompt(
-          project.name,
-          task,
-          prep.mode === 'worktree' ? { branch: prep.branch } : { planRelPath: planRel },
-        );
+    // An "AI fix & retry" resolution queued a failure note for this task's next run:
+    // build a full fix-prompt (even when resuming) so the agent gets the failure
+    // context, and consume it so it applies only once.
+    const failureNote = this.fixNotes.get(task.id);
+    this.fixNotes.delete(task.id);
+    const modeOpts = prep.mode === 'worktree' ? { branch: prep.branch } : { planRelPath: planRel };
+    const prompt =
+      resumeSessionId && !failureNote
+        ? RESUME_NUDGE
+        : buildTaskPrompt(project.name, task, { ...modeOpts, failureNote });
     const request: StartSessionRequest = {
       prompt,
       cwd: prep.cwd,
@@ -665,7 +797,11 @@ export class Scheduler {
         // keep the input stream open for their answer — do NOT settle or stop.
         if (this.hasPendingAttention(runId)) break;
         run.settled = true;
-        this.settle(run, event.success ? 'done' : 'failed');
+        this.settle(
+          run,
+          event.success ? 'done' : 'failed',
+          event.terminalReason || event.stopReason || 'the session ended without success',
+        );
         // stdin is held open in Phase 4, so the process won't exit by itself —
         // end it explicitly now that the task is done.
         this.sessions.stop(runId);
@@ -675,12 +811,24 @@ export class Scheduler {
         // A run that exited without ever producing a result ended abnormally.
         if (!run.settled) {
           run.settled = true;
-          this.settle(run, event.code === 0 ? 'done' : 'failed');
+          this.settle(
+            run,
+            event.code === 0 ? 'done' : 'failed',
+            `the process exited with code ${event.code ?? 'unknown'}`,
+          );
         }
         this.clearRunAttention(runId); // a dead run can't be answered — drop its items
         this.runs.delete(runId);
         this.inFlight.delete(run.taskId);
+        const retrying = this.retryQueue.delete(run.taskId);
         this.pump(run.projectId); // a slot freed up — advance the queue
+        // An auto-retry of a task whose project queue is idle (e.g. an ad-hoc run):
+        // `pump` won't touch an inactive project, so relaunch it directly.
+        if (retrying && !this.activeProjects.has(run.projectId)) {
+          const project = this.store.getProject(run.projectId);
+          const task = this.store.getTask(run.taskId);
+          if (project && task && task.status === 'pending') this.startTask(project, task);
+        }
         break;
 
       default:
@@ -790,6 +938,7 @@ export class Scheduler {
     for (const item of [...this.attention.values()]) {
       if (item.runId === runId) {
         this.pendingIntegrations.delete(item.id); // drop any parked conflict for this run
+        this.pendingFailures.delete(item.id); // …and any parked failure
         this.resolveAttention(item.id);
       }
     }
@@ -801,9 +950,10 @@ export class Scheduler {
    * A worktree run that finished successfully is NOT marked done here — its branch
    * must first integrate back into base (rebase → ff-merge). We kick that off async
    * and let its outcome set the final status (done / parked on conflict / failed).
-   * A failed worktree run keeps its worktree and branch for inspection.
+   * A failed run is routed through `handleRunFailure` (auto-retry, then park); a
+   * failed worktree run keeps its worktree and branch for inspection/retry.
    */
-  private settle(run: Run, status: 'done' | 'failed'): void {
+  private settle(run: Run, status: 'done' | 'failed', reason?: string): void {
     if (status === 'done' && run.branch && run.base && run.worktree && this.worktrees) {
       // Capture the integration inputs now — the imminent `exited` event deletes this
       // run from `runs`, and integration is async.
@@ -819,8 +969,48 @@ export class Scheduler {
         return;
       }
     }
-    this.updateTask(run.taskId, { status }, null);
-    if (status === 'done') this.maybeWriteBackPlan(run.taskId);
+    if (status === 'failed') {
+      this.handleRunFailure(run, reason ?? 'the task failed');
+      return;
+    }
+    this.attempts.delete(run.taskId); // a success clears the retry counter
+    this.updateTask(run.taskId, { status: 'done' }, null);
+    this.maybeWriteBackPlan(run.taskId);
+  }
+
+  /**
+   * A task's agent run failed. Auto-retry it up to `maxAutoRetries` (reusing its
+   * worktree/session so partial work and context are kept), then park it in the
+   * inbox for the human. The retry re-queues the task to `pending` and records it in
+   * `retryQueue`, so the `exited` handler relaunches it even for an idle/ad-hoc queue.
+   */
+  private handleRunFailure(run: Run, reason: string): void {
+    const attempted = this.attempts.get(run.taskId) ?? 0;
+    const max = Math.max(0, this.store.getSettings().maxAutoRetries);
+    if (shouldAutoRetry(attempted, max)) {
+      this.attempts.set(run.taskId, attempted + 1);
+      this.noteRun(
+        run.projectId,
+        run.taskId,
+        run.runId,
+        `Attempt failed (${reason}). Auto-retrying (${attempted + 1}/${max})…`,
+      );
+      this.retryQueue.add(run.taskId);
+      this.updateTask(run.taskId, { status: 'pending' }, null);
+      return;
+    }
+    // Out of auto-retries — park for the human with interactive options.
+    this.attempts.delete(run.taskId);
+    this.raiseTaskFailed({
+      kind: 'run',
+      projectId: run.projectId,
+      taskId: run.taskId,
+      runId: run.runId,
+      reason,
+      branch: run.branch,
+      base: run.base,
+      worktree: run.worktree,
+    });
   }
 
   /**
@@ -842,8 +1032,18 @@ export class Scheduler {
       message,
     );
     if (this.disposed) return;
+    this.applyIntegrationResult(project, ctx, result);
+  }
+
+  /** Apply the outcome of an integrate/finish-after-conflict attempt (shared path). */
+  private applyIntegrationResult(
+    project: Project,
+    ctx: { taskId: string; runId: string; branch: string; base: string; worktree: string },
+    result: IntegrationResult,
+  ): void {
     switch (result.status) {
       case 'merged':
+        this.attempts.delete(ctx.taskId);
         this.noteRun(
           project.id,
           ctx.taskId,
@@ -857,22 +1057,43 @@ export class Scheduler {
         this.raiseMergeConflict(project, ctx);
         break;
       case 'dirty-base':
-        this.failIntegration(
-          project.id,
+        // Integration failures are NOT auto-retried (the fix is human-side): park with
+        // a "Retry integration" option they can use after committing/stashing base.
+        this.parkIntegrationFailure(
+          project,
           ctx,
           `Base branch "${result.base}" has uncommitted changes, so branch "${ctx.branch}" ` +
-            `was not merged. Commit or stash your work in ${project.path}, then re-run this task.`,
+            `was not merged. Commit or stash your work in ${project.path}, then choose ` +
+            `"Retry integration".`,
         );
         break;
       case 'error':
-        this.failIntegration(
-          project.id,
+        this.parkIntegrationFailure(
+          project,
           ctx,
           `Could not integrate branch "${ctx.branch}": ${result.message} (the worktree at ` +
             `${ctx.worktree} was kept for inspection).`,
         );
         break;
     }
+  }
+
+  /** Park a failed branch integration for the human (keeps the worktree/branch). */
+  private parkIntegrationFailure(
+    project: Project,
+    ctx: { taskId: string; runId: string; branch: string; base: string; worktree: string },
+    reason: string,
+  ): void {
+    this.raiseTaskFailed({
+      kind: 'integration',
+      projectId: project.id,
+      taskId: ctx.taskId,
+      runId: ctx.runId,
+      reason,
+      branch: ctx.branch,
+      base: ctx.base,
+      worktree: ctx.worktree,
+    });
   }
 
   /** Park a task whose branch hit a merge conflict, so a human can resolve it. */
@@ -912,14 +1133,111 @@ export class Scheduler {
     this.emitAttention(item);
   }
 
-  /** Mark an integration attempt failed, surfacing the reason in the task transcript. */
-  private failIntegration(
-    projectId: string,
-    ctx: { taskId: string; runId: string },
-    reason: string,
-  ): void {
-    this.noteRun(projectId, ctx.taskId, ctx.runId, reason);
-    this.updateTask(ctx.taskId, { status: 'failed' }, null);
+  /**
+   * Park a failed task in the inbox with interactive resolution options (Phase A).
+   * Run failures offer retry / retry-fresh / AI-fix / cleanup / mark-done; integration
+   * failures offer retry-integration / cleanup / mark-done.
+   */
+  private raiseTaskFailed(f: PendingFailure): void {
+    const task = this.store.getTask(f.taskId);
+    const options = failureActionsFor(f.kind);
+    this.noteRun(f.projectId, f.taskId, f.runId, `Task parked after failure: ${f.reason}`);
+    const item: AttentionItem = {
+      id: randomUUID(),
+      runId: f.runId,
+      taskId: f.taskId,
+      projectId: f.projectId,
+      taskTitle: task?.title ?? '(unknown task)',
+      kind: 'task-failed',
+      prompt: f.reason,
+      options: [...options],
+      toolName: null,
+      reason: null,
+      worktreePath: f.worktree ?? null,
+      branch: f.branch ?? null,
+      createdAt: Date.now(),
+    };
+    this.attention.set(item.id, item);
+    this.pendingFailures.set(item.id, f);
+    this.updateTask(f.taskId, { status: 'waiting-input' }, f.runId);
+    this.emitAttention(item);
+  }
+
+  /** Apply the human's chosen resolution for a parked failed task. */
+  private async applyFailureChoice(
+    f: PendingFailure,
+    choice: string,
+    note?: string,
+  ): Promise<void> {
+    const project = this.store.getProject(f.projectId);
+    const task = this.store.getTask(f.taskId);
+    if (!project || !task) return;
+    switch (choice) {
+      case FAILURE_ACTION.retry:
+        // Reuse the worktree + session and try again.
+        this.requeue(project, f.taskId);
+        break;
+      case FAILURE_ACTION.retryFresh:
+        // Discard the branch/worktree and the saved session, then start clean.
+        await this.worktrees?.cleanup(project, f.taskId);
+        this.updateTask(f.taskId, { status: 'pending', sessionId: null }, null);
+        this.requeue(project, f.taskId);
+        break;
+      case FAILURE_ACTION.aiFix:
+        // Keep the worktree/session; the next run gets the failure as fix context.
+        this.fixNotes.set(f.taskId, note ? `${f.reason} — human note: ${note}` : f.reason);
+        this.requeue(project, f.taskId);
+        break;
+      case FAILURE_ACTION.retryIntegration:
+        if (f.branch && f.base && f.worktree) {
+          this.updateTask(f.taskId, { status: 'running' }, f.runId);
+          void this.integrateWorktree(project, {
+            taskId: f.taskId,
+            runId: f.runId,
+            branch: f.branch,
+            base: f.base,
+            worktree: f.worktree,
+          });
+        }
+        break;
+      case FAILURE_ACTION.cleanup:
+        await this.worktrees?.cleanup(project, f.taskId);
+        this.attempts.delete(f.taskId);
+        this.noteRun(
+          f.projectId,
+          f.taskId,
+          f.runId,
+          'Worktree cleaned up and task abandoned by the human.',
+        );
+        this.updateTask(f.taskId, { status: 'failed' }, null);
+        break;
+      case FAILURE_ACTION.markDone:
+        this.attempts.delete(f.taskId);
+        this.noteRun(
+          f.projectId,
+          f.taskId,
+          f.runId,
+          'Marked done by the human (branch left unmerged).',
+        );
+        this.updateTask(f.taskId, { status: 'done' }, null);
+        this.maybeWriteBackPlan(f.taskId);
+        break;
+      default:
+        // Unrecognized (free-text) answer — re-park so the decision isn't lost.
+        this.raiseTaskFailed(f);
+        break;
+    }
+  }
+
+  /** Re-queue a task to `pending` and start it (via the queue if active, else directly). */
+  private requeue(project: Project, taskId: string): void {
+    this.updateTask(taskId, { status: 'pending' }, null);
+    if (this.activeProjects.has(project.id)) {
+      this.pump(project.id);
+    } else {
+      const task = this.store.getTask(taskId);
+      if (task) this.startTask(project, task);
+    }
   }
 
   /** Append a synthetic assistant note to a task's transcript (integration outcomes). */
@@ -949,38 +1267,7 @@ export class Scheduler {
       pending.worktree,
     );
     if (this.disposed) return;
-    switch (result.status) {
-      case 'merged':
-        this.noteRun(
-          project.id,
-          ctx.taskId,
-          ctx.runId,
-          `Merged branch "${ctx.branch}" into ${ctx.base}.`,
-        );
-        this.updateTask(ctx.taskId, { status: 'done' }, null);
-        this.maybeWriteBackPlan(ctx.taskId);
-        break;
-      case 'conflict':
-        // Still unresolved — park again so the human can keep working on it.
-        this.raiseMergeConflict(project, ctx);
-        break;
-      case 'dirty-base':
-        this.failIntegration(
-          project.id,
-          ctx,
-          `Base branch "${result.base}" has uncommitted changes, so branch "${ctx.branch}" ` +
-            `was not merged. Commit or stash your work in ${project.path}, then re-run this task.`,
-        );
-        break;
-      case 'error':
-        this.failIntegration(
-          project.id,
-          ctx,
-          `Could not integrate branch "${ctx.branch}": ${result.message} (the worktree at ` +
-            `${ctx.worktree} was kept for inspection).`,
-        );
-        break;
-    }
+    this.applyIntegrationResult(project, ctx, result);
   }
 
   private maybeWriteBackPlan(taskId: string): void {
