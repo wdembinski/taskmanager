@@ -84,6 +84,13 @@ function KindBadge({ kind }: { kind: AttentionItem['kind'] }): JSX.Element {
       </Badge>
     );
   }
+  if (kind === 'proposal') {
+    return (
+      <Badge appearance="tint" color="brand">
+        proposal
+      </Badge>
+    );
+  }
   return (
     <Badge appearance="tint" color="warning">
       question
@@ -132,7 +139,7 @@ function InboxItem({
         </Caption1>
       )}
 
-      {item.kind === 'task-failed' ? (
+      {item.kind === 'task-failed' || item.kind === 'proposal' ? (
         <>
           <div className={styles.choices}>
             {item.options.map((option) => (
@@ -148,12 +155,21 @@ function InboxItem({
               </Button>
             ))}
           </div>
-          <Field className={styles.note} label="Optional note (used by “AI fix & retry”)">
+          <Field
+            className={styles.note}
+            label={
+              item.kind === 'proposal'
+                ? 'Optional note to the team'
+                : 'Optional note (used by “AI fix & retry”)'
+            }
+          >
             <Textarea
               value={note}
               resize="vertical"
               onChange={(_e, d) => setNote(d.value)}
-              placeholder="Extra guidance for a retry…"
+              placeholder={
+                item.kind === 'proposal' ? 'Extra guidance…' : 'Extra guidance for a retry…'
+              }
             />
           </Field>
         </>

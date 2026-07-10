@@ -8,11 +8,13 @@ import {
   buildTaskPrompt,
   failureActionsFor,
   FAILURE_ACTION,
+  PROPOSAL_ACTION,
   Scheduler,
   selectNextPending,
   shouldAutoRetry,
   type Schedulable,
 } from './scheduler';
+import { AGREE_SENTINEL, OBJECT_SENTINEL, PROPOSE_SENTINEL } from './attention';
 import type { PermissionMode } from '@shared/session';
 import type { Project, Task } from '@shared/model';
 import type { SessionManager } from './sessionManager';
@@ -205,6 +207,12 @@ describe('buildTaskPrompt', () => {
   it('says nothing about a contract when there is none in the milestone', () => {
     const prompt = buildTaskPrompt('Orchestrator', task, { branch: 'orch/abc123' });
     expect(prompt).not.toContain('CONTRACT.md');
+  });
+
+  it('tells a contract sibling to raise a proposal instead of editing the contract', () => {
+    const prompt = buildTaskPrompt('Orchestrator', task, { branch: 'orch/abc123', hasContract: true });
+    expect(prompt).toContain(PROPOSE_SENTINEL);
+    expect(prompt).toContain('NOT change');
   });
 });
 
@@ -453,5 +461,171 @@ describe('Scheduler run-failure handling', () => {
     const item = emitAttention.mock.calls[0][0] as { kind: string; options: string[] };
     expect(item.kind).toBe('task-failed');
     expect(item.options).toEqual(failureActionsFor('run'));
+  });
+});
+
+describe('Scheduler cross-agent negotiation (Phase D)', () => {
+  // Two in-flight tasks under the same milestone: a proposer and one sibling. There
+  // is no CONTRACT.md on disk, so ownership is unparseable and the sibling is treated
+  // as affected (fallback = all in-flight siblings).
+  function setupNegotiation() {
+    const project = {
+      id: 'p',
+      path: 'C:/does-not-exist',
+      planPath: 'C:/does-not-exist/plan.md',
+      name: 'P',
+      concurrency: 2,
+      defaultModel: 'sonnet',
+      defaultPermissionMode: 'acceptEdits',
+    } as Project;
+    const proposer: Task = {
+      id: 'prop',
+      projectId: 'p',
+      phase: 'M',
+      title: 'Build API',
+      status: 'running',
+      sessionId: 's1',
+      order: 0,
+      source: 'plan',
+      dependsOn: [],
+      isContract: false,
+    } as Task;
+    const sibling: Task = {
+      id: 'sib',
+      projectId: 'p',
+      phase: 'M',
+      title: 'Build UI',
+      status: 'running',
+      sessionId: 's2',
+      order: 1,
+      source: 'plan',
+      dependsOn: [],
+      isContract: false,
+    } as Task;
+    const tasks = [proposer, sibling];
+    const store = {
+      getTasks: () => tasks,
+      getProject: () => project,
+      getTask: (id: string) => tasks.find((t) => t.id === id),
+      updateTask: (id: string, patch: Partial<Task>) => {
+        const t = tasks.find((x) => x.id === id);
+        if (t) Object.assign(t, patch);
+        return t;
+      },
+      appendTaskEvent: vi.fn(),
+      getSettings: () => ({ maxAutoRetries: 0, limitJitterMs: 0, concurrency: 2 }),
+    } as unknown as Store;
+    const send = vi.fn();
+    const sessions = { send, stop: vi.fn() } as unknown as SessionManager;
+    const emitAttention = vi.fn();
+    const scheduler = new Scheduler(store, sessions, vi.fn(), vi.fn(), emitAttention, vi.fn(), vi.fn());
+    const runs = (scheduler as unknown as { runs: Map<string, unknown> }).runs;
+    runs.set('rprop', { taskId: 'prop', projectId: 'p', runId: 'rprop', settled: false });
+    runs.set('rsib', { taskId: 'sib', projectId: 'p', runId: 'rsib', settled: false });
+    const fire = (runId: string, event: unknown): void =>
+      (scheduler as unknown as { onRunEvent: (r: string, e: unknown) => void }).onRunEvent(
+        runId,
+        event,
+      );
+    return { scheduler, proposer, sibling, send, emitAttention, fire };
+  }
+
+  const propose = { kind: 'assistant', text: `${PROPOSE_SENTINEL} Rename the User type.` };
+  // The proposer stops and waits after `@@PROPOSE@@`, so its turn ends with a result.
+  const proposerDone = {
+    kind: 'result',
+    success: true,
+    resultText: '',
+    costUsd: null,
+    durationMs: null,
+    stopReason: null,
+    terminalReason: null,
+  };
+
+  it('opens a round: parks the proposer and messages the affected sibling', () => {
+    const { proposer, send, emitAttention, fire } = setupNegotiation();
+    fire('rprop', propose);
+    expect(proposer.status).toBe('waiting-input'); // proposer parked, not settled
+    expect(emitAttention).not.toHaveBeenCalled(); // no human item during the round
+    // The sibling was asked to vote.
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0][0]).toBe('rsib');
+    expect(send.mock.calls[0][1]).toContain(AGREE_SENTINEL);
+  });
+
+  it('does not settle the proposer when its @@PROPOSE@@ turn ends mid-round', () => {
+    const { proposer, fire } = setupNegotiation();
+    fire('rprop', propose);
+    fire('rprop', proposerDone); // the trailing result must NOT mark the task done
+    expect(proposer.status).toBe('waiting-input');
+  });
+
+  it('unanimous agreement resumes the proposer and notifies teammates (no human item)', () => {
+    const { proposer, send, emitAttention, fire } = setupNegotiation();
+    fire('rprop', propose);
+    fire('rprop', proposerDone); // proposer now idle, waiting on the vote
+    send.mockClear();
+    fire('rsib', { kind: 'assistant', text: `${AGREE_SENTINEL}` });
+    expect(proposer.status).toBe('running'); // proposer un-parked
+    expect(emitAttention).not.toHaveBeenCalled(); // consensus — never bothered the human
+    // Proposer told to update the contract; sibling told to re-read it.
+    const targets = send.mock.calls.map((c) => c[0]);
+    expect(targets).toContain('rprop');
+    expect(targets).toContain('rsib');
+    const toProposer = send.mock.calls.find((c) => c[0] === 'rprop')?.[1] as string;
+    expect(toProposer).toContain('CONTRACT.md');
+  });
+
+  it('a decision reached before the proposer stops is delivered when its turn ends', () => {
+    // Vote lands FIRST (proposer still mid-turn) — the resume must wait for the result.
+    const { proposer, send, fire } = setupNegotiation();
+    fire('rprop', propose);
+    send.mockClear();
+    fire('rsib', { kind: 'assistant', text: `${AGREE_SENTINEL}` });
+    expect(proposer.status).toBe('waiting-input'); // not resumed yet — proposer not idle
+    expect(send.mock.calls.find((c) => c[0] === 'rprop')).toBeUndefined();
+    fire('rprop', proposerDone); // NOW it's idle — the queued decision flushes
+    expect(proposer.status).toBe('running');
+    expect(send.mock.calls.find((c) => c[0] === 'rprop')?.[1]).toContain('CONTRACT.md');
+  });
+
+  it('an objection escalates a `proposal` item to the human, listing the reason', () => {
+    const { emitAttention, fire } = setupNegotiation();
+    fire('rprop', propose);
+    fire('rprop', proposerDone);
+    fire('rsib', { kind: 'assistant', text: `${OBJECT_SENTINEL} that breaks my migration` });
+    expect(emitAttention).toHaveBeenCalledTimes(1);
+    const item = emitAttention.mock.calls[0][0] as {
+      kind: string;
+      options: string[];
+      prompt: string;
+    };
+    expect(item.kind).toBe('proposal');
+    expect(item.options).toEqual([PROPOSAL_ACTION.accept, PROPOSAL_ACTION.keep]);
+    expect(item.prompt).toContain('that breaks my migration');
+  });
+
+  it('human "Accept proposal" applies it: proposer resumes and updates the contract', () => {
+    const { scheduler, proposer, send, emitAttention, fire } = setupNegotiation();
+    fire('rprop', propose);
+    fire('rprop', proposerDone);
+    fire('rsib', { kind: 'assistant', text: `${OBJECT_SENTINEL} no` });
+    const item = emitAttention.mock.calls[0][0] as { id: string };
+    send.mockClear();
+    scheduler.answerAttention(item.id, { decision: 'reply', text: PROPOSAL_ACTION.accept });
+    expect(proposer.status).toBe('running');
+    const toProposer = send.mock.calls.find((c) => c[0] === 'rprop')?.[1] as string;
+    expect(toProposer).toContain('CONTRACT.md');
+  });
+
+  it('a proposal with no affected teammate is vacuously agreed after the proposer stops', () => {
+    const { scheduler, proposer, send, fire } = setupNegotiation();
+    // Remove the sibling run so there is no one to consult.
+    (scheduler as unknown as { runs: Map<string, unknown> }).runs.delete('rsib');
+    fire('rprop', propose);
+    expect(proposer.status).toBe('waiting-input'); // parked awaiting its own turn-end
+    fire('rprop', proposerDone);
+    expect(proposer.status).toBe('running');
+    expect(send.mock.calls.find((c) => c[0] === 'rprop')?.[1]).toContain('CONTRACT.md');
   });
 });

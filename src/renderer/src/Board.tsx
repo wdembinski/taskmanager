@@ -151,11 +151,11 @@ export function Board(): JSX.Element {
   const [runIds, setRunIds] = useState<Record<string, string>>({});
   const [states, setStates] = useState<Record<string, SchedulerState>>({});
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
-  // Inbox item id → {task, kind} for tasks parked on a merge conflict or a failure,
-  // so the board can flag them. Keyed by item id so `attention:resolved` (which
-  // carries only the id) can clear the right one.
+  // Inbox item id → {task, kind} for tasks parked on a merge conflict, a failure, or
+  // a stalled cross-agent proposal, so the board can flag them. Keyed by item id so
+  // `attention:resolved` (which carries only the id) can clear the right one.
   const [parked, setParked] = useState<
-    Record<string, { taskId: string; kind: 'merge-conflict' | 'task-failed' }>
+    Record<string, { taskId: string; kind: 'merge-conflict' | 'task-failed' | 'proposal' }>
   >({});
   // The "align this plan first?" prompt shown when Run is pressed for a legacy
   // (unaligned) project. Null when no prompt is open.
@@ -172,15 +172,18 @@ export function Board(): JSX.Element {
     void window.api.invoke('scheduler:states').then((rows) => {
       setStates(Object.fromEntries(rows.map((r) => [r.projectId, r.state])));
     });
-    // Seed + track merge-conflict / task-failed parks so the board can badge tasks.
+    // Seed + track merge-conflict / task-failed / proposal parks so the board can badge tasks.
     void window.api.invoke('attention:list').then((items) => {
       setParked(
         Object.fromEntries(
           items
-            .filter((i) => i.kind === 'merge-conflict' || i.kind === 'task-failed')
+            .filter(
+              (i) =>
+                i.kind === 'merge-conflict' || i.kind === 'task-failed' || i.kind === 'proposal',
+            )
             .map((i) => [
               i.id,
-              { taskId: i.taskId, kind: i.kind as 'merge-conflict' | 'task-failed' },
+              { taskId: i.taskId, kind: i.kind as 'merge-conflict' | 'task-failed' | 'proposal' },
             ]),
         ),
       );
@@ -211,7 +214,12 @@ export function Board(): JSX.Element {
     });
 
     const offAttentionNew = window.api.on('attention:new', (item) => {
-      if (item.kind !== 'merge-conflict' && item.kind !== 'task-failed') return;
+      if (
+        item.kind !== 'merge-conflict' &&
+        item.kind !== 'task-failed' &&
+        item.kind !== 'proposal'
+      )
+        return;
       const kind = item.kind; // capture the narrowed kind for the setState closure
       setParked((prev) => ({ ...prev, [item.id]: { taskId: item.taskId, kind } }));
     });
@@ -313,6 +321,11 @@ export function Board(): JSX.Element {
       .filter((p) => p.kind === 'task-failed')
       .map((p) => p.taskId),
   );
+  const proposalTaskIds = new Set(
+    Object.values(parked)
+      .filter((p) => p.kind === 'proposal')
+      .map((p) => p.taskId),
+  );
 
   if (projects === null) {
     return <Spinner label="Loading board…" labelPosition="after" size="tiny" />;
@@ -390,6 +403,7 @@ export function Board(): JSX.Element {
                       const waitingOn = unmet.filter((d) => !blockedByFail.includes(d));
                       const inConflict = conflictTaskIds.has(task.id);
                       const parkedFailed = failedTaskIds.has(task.id);
+                      const inProposal = proposalTaskIds.has(task.id);
                       // A worktree task shows its branch while it's live (or parked).
                       const showBranch =
                         project.useWorktrees &&
@@ -430,6 +444,15 @@ export function Board(): JSX.Element {
                               title="Task failed — choose how to resolve it in the Attention inbox"
                             >
                               needs attention
+                            </Badge>
+                          )}
+                          {inProposal && (
+                            <Badge
+                              appearance="tint"
+                              color="brand"
+                              title="A contract proposal stalled — accept or keep the contract in the Attention inbox"
+                            >
+                              proposal
                             </Badge>
                           )}
                           <Text className={styles.taskTitle} truncate wrap={false}>

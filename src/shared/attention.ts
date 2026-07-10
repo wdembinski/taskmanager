@@ -15,12 +15,20 @@
 /**
  * Why a task is parked: awaiting approval for a tool, an answer to a question, or —
  * for the team-orchestrator feature — a human to resolve a git **merge conflict**
- * that arose while integrating the task's branch back into the base, or to decide
+ * that arose while integrating the task's branch back into the base, to decide
  * how to handle a **failed task** (after auto-retries were exhausted): retry, retry
- * fresh, AI-assisted fix, clean up, or mark done. The `options` list carries the
- * available actions and the human picks one (a `reply` answer with that text).
+ * fresh, AI-assisted fix, clean up, or mark done, or to break a tie on a
+ * **proposal** — one agent wanted to change the shared CONTRACT.md and its
+ * in-flight teammates did not unanimously agree, so the human picks accept-vs-keep.
+ * The `options` list carries the available actions and the human picks one (a
+ * `reply` answer with that text).
  */
-export type AttentionKind = 'permission' | 'question' | 'merge-conflict' | 'task-failed';
+export type AttentionKind =
+  | 'permission'
+  | 'question'
+  | 'merge-conflict'
+  | 'task-failed'
+  | 'proposal';
 
 /** One thing waiting on a human, tied to the live run (and task) that raised it. */
 export interface AttentionItem {
@@ -68,6 +76,8 @@ export interface AttentionItem {
  *   - `merge-conflict` items expect `approve` ("I resolved it — finish the merge",
  *     which continues the rebase and fast-forwards base) or `deny` ("abandon" —
  *     mark the task failed and keep the branch/worktree for later).
+ *   - `task-failed` and `proposal` items expect `reply` with the chosen action
+ *     text (one of the item's `options`), plus an optional free-text `note`.
  */
 export type AttentionAnswer =
   | { decision: 'approve'; note?: string }

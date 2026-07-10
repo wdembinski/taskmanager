@@ -26,13 +26,27 @@
  */
 import { randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { relative } from 'node:path';
+import { join, relative } from 'node:path';
 import type { Project, Task, TaskStatus } from '@shared/model';
 import type { SchedulerState, TaskChange, SchedulerChange, ActiveRun } from '@shared/scheduler';
 import type { SessionEvent, StartSessionRequest } from '@shared/session';
 import type { AttentionAnswer, AttentionItem, AttentionKind } from '@shared/attention';
 import type { LimitState } from '@shared/limit';
-import { detectAttention, NEEDS_INPUT_SENTINEL } from './attention';
+import {
+  AGREE_SENTINEL,
+  detectProposal,
+  detectQuestion,
+  detectResponse,
+  NEEDS_INPUT_SENTINEL,
+  OBJECT_SENTINEL,
+  parseFileOwnership,
+  PROPOSE_SENTINEL,
+  siblingsAffectedByProposal,
+  tallyConsensus,
+  type DetectedProposal,
+  type DetectedResponse,
+  type OwnershipEntry,
+} from './attention';
 import type { PermissionGate } from './claudeSession';
 import { LimitGate } from './limitGate';
 import type { PermissionRequest, PermissionDecisionResult } from './permissionBroker';
@@ -82,6 +96,24 @@ const INTEGRATION_FAILURE_OPTIONS = [
 export function failureActionsFor(kind: 'run' | 'integration'): string[] {
   return kind === 'integration' ? [...INTEGRATION_FAILURE_OPTIONS] : [...RUN_FAILURE_OPTIONS];
 }
+
+/**
+ * The two ways a human breaks a stalled cross-agent proposal (Phase D): accept it
+ * (the proposer updates CONTRACT.md and teammates re-read) or keep the current
+ * contract (the proposer proceeds without the change). Matched by text in
+ * `answerAttention`, same shape as the failure actions.
+ */
+export const PROPOSAL_ACTION = {
+  accept: 'Accept proposal',
+  keep: 'Keep current contract',
+} as const;
+
+/**
+ * How long a single consensus round waits for the affected teammates to weigh in
+ * before escalating to the human (Phase D). Agents mid-tool may answer slowly, so
+ * this is generous; non-responders are counted as objections when it fires.
+ */
+const NEGOTIATION_TIMEOUT_MS = 120_000;
 
 /**
  * Whether a failed task should be auto-retried, given how many auto-retries have
@@ -222,11 +254,16 @@ export function buildTaskPrompt(
         ]
       : []),
     // Sibling of a contract task: a shared CONTRACT.md already governs this milestone.
+    // It must not be edited unilaterally — instead the agent raises a proposal (Phase
+    // D) that its in-flight teammates vote on.
     ...(!isContract && hasContract
       ? [
           `A shared \`CONTRACT.md\` at the repository root defines the interfaces, types,`,
           `and file ownership for this milestone. Read it FIRST and build against it. Do`,
-          `NOT change \`CONTRACT.md\` unilaterally — honor what it specifies.`,
+          `NOT change \`CONTRACT.md\` unilaterally. If you believe it must change, write a`,
+          `line starting with "${PROPOSE_SENTINEL}" describing the change (list affected`,
+          `files as "- " bullets below it), then stop and wait: your in-flight teammates`,
+          `will weigh in and the orchestrator updates the contract if they agree.`,
           '',
         ]
       : []),
@@ -325,6 +362,50 @@ interface PendingFailure {
   worktree?: string;
 }
 
+/** One affected teammate's stance in an in-flight proposal round (Phase D). */
+interface ProposalSibling {
+  taskId: string;
+  runId: string;
+  title: string;
+  position: 'pending' | 'agree' | 'object';
+  /** For an objection, the reason the teammate gave (surfaced to the human). */
+  reason?: string;
+}
+
+/**
+ * A cross-agent proposal being negotiated (Phase D): the proposer is parked
+ * (session alive) while its affected in-flight siblings vote in one round. On
+ * unanimous agreement the proposer is told to update CONTRACT.md and resume; on
+ * any objection / timeout the round escalates to a human `proposal` inbox item
+ * (`itemId` is then set). Keyed in `pendingProposals` by its own `id`.
+ */
+interface PendingProposal {
+  id: string;
+  projectId: string;
+  /** The milestone/heading the proposal is scoped to (only same-phase siblings vote). */
+  phase: string;
+  proposerTaskId: string;
+  proposerRunId: string;
+  text: string;
+  files: string[];
+  siblings: ProposalSibling[];
+  /** The consensus-round deadline timer; cleared once the round concludes. */
+  timer?: ReturnType<typeof setTimeout>;
+  /** The human inbox item id, once the round escalated (undefined during the round). */
+  itemId?: string;
+  /**
+   * True once the proposer's `@@PROPOSE@@`-turn `result` has arrived (it has stopped
+   * and is idle). A decision reached before this must wait for it, so we never resume
+   * the proposer into a stale in-flight turn — see `resume`/`performResume`.
+   */
+  proposerReady: boolean;
+  /**
+   * A concluded decision awaiting delivery to the proposer. Set when the round
+   * resolves (agreed / human-accepted / kept); delivered as soon as `proposerReady`.
+   */
+  resume?: { kind: 'accept' | 'keep'; note?: string };
+}
+
 export class Scheduler {
   /** Live runs keyed by runId. Its size (per project) is the concurrency in use. */
   private readonly runs = new Map<string, Run>();
@@ -364,6 +445,13 @@ export class Scheduler {
    * what `answerAttention` needs to apply the chosen resolution.
    */
   private readonly pendingFailures = new Map<string, PendingFailure>();
+  /**
+   * In-flight cross-agent proposals (Phase D), keyed by proposal id. Holds the
+   * proposer, the affected siblings and their votes, and (once escalated) the human
+   * inbox item — the negotiation coordinator's whole state. Same lifecycle discipline
+   * as `pendingIntegrations`/`pendingFailures`: cleared on stop/dispose/run-end.
+   */
+  private readonly pendingProposals = new Map<string, PendingProposal>();
   /**
    * Per-task count of consecutive auto-retries the scheduler has spent on a failing
    * agent run. Reset when the task finally succeeds or the human resolves it. Kept
@@ -473,6 +561,15 @@ export class Scheduler {
       this.attempts.delete(failure.taskId);
       this.resolveAttention(itemId);
       this.updateTask(failure.taskId, { status: 'stopped' }, null);
+    }
+    // Abandon any in-flight proposal negotiations for this project (Phase D): cancel
+    // the round timer and drop its human item. The proposer/sibling runs are handled
+    // by the `runs` loop above (marked stopped), so no task status to set here.
+    for (const [id, proposal] of [...this.pendingProposals.entries()]) {
+      if (proposal.projectId !== projectId) continue;
+      this.clearProposalTimer(proposal);
+      if (proposal.itemId) this.resolveAttention(proposal.itemId);
+      this.pendingProposals.delete(id);
     }
     // If a usage limit has parked this project's tasks (Phase 5), stopping cancels
     // them too, so they are NOT resumed when the gate reopens.
@@ -609,6 +706,16 @@ export class Scheduler {
       return;
     }
 
+    if (item.kind === 'proposal') {
+      const proposal = [...this.pendingProposals.values()].find((p) => p.itemId === itemId);
+      if (!proposal) return; // already handled
+      this.resolveAttention(itemId);
+      const choice = answer.decision === 'reply' ? answer.text.trim() : '';
+      const note = 'note' in answer ? answer.note?.trim() : undefined;
+      this.applyProposalDecision(proposal, choice, note);
+      return;
+    }
+
     if (item.kind === 'merge-conflict') {
       const pending = this.pendingIntegrations.get(itemId);
       if (!pending) return; // already handled
@@ -684,6 +791,8 @@ export class Scheduler {
     this.pendingDecisions.clear();
     this.pendingIntegrations.clear();
     this.pendingFailures.clear();
+    for (const proposal of this.pendingProposals.values()) this.clearProposalTimer(proposal);
+    this.pendingProposals.clear();
     this.attempts.clear();
     this.retryQueue.clear();
     this.fixNotes.clear();
@@ -841,18 +950,31 @@ export class Scheduler {
     // viewable after the run ends or the app restarts.
     this.store.appendTaskEvent(run.projectId, run.taskId, runId, event);
 
-    // Phase 4: did Claude ask the human a question (via the sentinel)? If so,
-    // park the task in the Attention inbox until someone answers. (Permissions
-    // are handled separately, pre-execution, in decidePermission.)
-    const question = detectAttention(event);
-    if (question) {
-      this.raiseAttention(run, {
-        kind: 'question',
-        prompt: question.prompt,
-        options: question.options,
-        toolName: null,
-        reason: null,
-      });
+    // Inspect assistant messages for the three explicit markers, in priority order:
+    //   1. a cross-agent PROPOSAL (Phase D) — start a consensus round with siblings;
+    //   2. an AGREE/OBJECT RESPONSE (Phase D) — this run is a sibling voting on an
+    //      open proposal (consumed silently, the sibling keeps working);
+    //   3. a clarifying QUESTION (Phase 4) — park the task for the human.
+    // (Permissions are handled separately, pre-execution, in decidePermission.)
+    if (event.kind === 'assistant') {
+      const proposal = detectProposal(event.text);
+      const response = proposal ? null : detectResponse(event.text);
+      if (proposal) {
+        this.startProposal(run, proposal);
+      } else if (response && this.recordProposalResponse(run.runId, response)) {
+        // Consumed as a negotiation vote — not a question.
+      } else {
+        const question = detectQuestion(event.text);
+        if (question) {
+          this.raiseAttention(run, {
+            kind: 'question',
+            prompt: question.prompt,
+            options: question.options,
+            toolName: null,
+            reason: null,
+          });
+        }
+      }
     }
 
     switch (event.kind) {
@@ -869,8 +991,14 @@ export class Scheduler {
         break;
 
       case 'result':
-        // The turn ended. If the task is parked awaiting a human, stay alive and
-        // keep the input stream open for their answer — do NOT settle or stop.
+        // The turn ended. A proposer mid-negotiation (Phase D) stopped after its
+        // `@@PROPOSE@@` and is waiting on its teammates — record that it's now idle
+        // (so a concluded decision can be delivered) and keep it alive; do NOT settle.
+        if (this.isNegotiatingProposer(runId)) {
+          this.noteProposerResult(runId);
+          break;
+        }
+        // Parked awaiting a human (a question/permission): stay alive for the answer.
         if (this.hasPendingAttention(runId)) break;
         run.settled = true;
         this.settle(
@@ -1016,6 +1144,22 @@ export class Scheduler {
         this.pendingIntegrations.delete(item.id); // drop any parked conflict for this run
         this.pendingFailures.delete(item.id); // …and any parked failure
         this.resolveAttention(item.id);
+      }
+    }
+    // Negotiations touching this run (Phase D): if it was the PROPOSER, the round
+    // can't continue — cancel it. If it was a voting SIBLING that has now ended, drop
+    // its vote; that may complete the round, so re-evaluate the remaining votes.
+    for (const [id, proposal] of [...this.pendingProposals.entries()]) {
+      if (proposal.proposerRunId === runId) {
+        this.clearProposalTimer(proposal);
+        if (proposal.itemId) this.resolveAttention(proposal.itemId);
+        this.pendingProposals.delete(id);
+        continue;
+      }
+      const before = proposal.siblings.length;
+      proposal.siblings = proposal.siblings.filter((s) => s.runId !== runId);
+      if (proposal.siblings.length !== before && !proposal.itemId) {
+        this.maybeConcludeProposal(proposal);
       }
     }
   }
@@ -1313,6 +1457,308 @@ export class Scheduler {
     } else {
       const task = this.store.getTask(taskId);
       if (task) this.startTask(project, task);
+    }
+  }
+
+  // ---- Cross-agent negotiation coordinator (Phase D) ----------------------
+
+  /**
+   * True while a run has an unresolved proposal it raised — through the voting round,
+   * escalation, and a concluded-but-undelivered decision, right up until
+   * `performResume` deletes it. The proposer must never settle in that window.
+   */
+  private isNegotiatingProposer(runId: string): boolean {
+    for (const proposal of this.pendingProposals.values()) {
+      if (proposal.proposerRunId === runId) return true;
+    }
+    return false;
+  }
+
+  /**
+   * A running agent proposed a change to the shared contract (Phase D). Park it and
+   * open a single consensus round: find its affected in-flight teammates (same
+   * milestone; narrowed by CONTRACT.md file-ownership, else all of them), ask each to
+   * AGREE/OBJECT, and bound the wait. With no teammate to consult the change is
+   * vacuously agreed and the proposer is told to update CONTRACT.md right away.
+   */
+  private startProposal(run: Run, proposal: DetectedProposal): void {
+    // One active proposal per proposer run — ignore repeat markers in the same wait.
+    if ([...this.pendingProposals.values()].some((p) => p.proposerRunId === run.runId)) return;
+    const project = this.store.getProject(run.projectId);
+    const task = this.store.getTask(run.taskId);
+    if (!project || !task) return;
+
+    // Candidate voters: other in-flight runs in the same project + milestone (phase).
+    const candidates = [...this.runs.values()]
+      .filter((r) => r.runId !== run.runId && r.projectId === run.projectId && !r.settled)
+      .map((r) => ({ run: r, task: this.store.getTask(r.taskId) }))
+      .filter((c): c is { run: Run; task: Task } => !!c.task && c.task.phase === task.phase);
+
+    // Narrow to the teammates the proposed files touch (best-effort via CONTRACT.md
+    // ownership); the helper falls back to all siblings when it can't tell.
+    const affectedTitles = siblingsAffectedByProposal(
+      proposal.files,
+      this.readOwnership(project),
+      candidates.map((c) => c.task.title),
+    );
+    const affected = candidates.filter((c) => affectedTitles.includes(c.task.title));
+
+    this.noteRun(
+      run.projectId,
+      run.taskId,
+      run.runId,
+      `Proposed a shared-contract change: ${proposal.text}`,
+    );
+
+    const pending: PendingProposal = {
+      id: randomUUID(),
+      projectId: run.projectId,
+      phase: task.phase,
+      proposerTaskId: run.taskId,
+      proposerRunId: run.runId,
+      text: proposal.text,
+      files: proposal.files,
+      siblings: affected.map((c) => ({
+        taskId: c.task.id,
+        runId: c.run.runId,
+        title: c.task.title,
+        position: 'pending' as const,
+      })),
+      proposerReady: false,
+    };
+    this.pendingProposals.set(pending.id, pending);
+    // Park the proposer; its session stays alive (guarded in the result handler).
+    this.updateTask(run.taskId, { status: 'waiting-input' }, run.runId);
+
+    if (pending.siblings.length === 0) {
+      // No one to consult — vacuous consensus, apply immediately.
+      this.applyConsensus(pending);
+      return;
+    }
+    for (const sibling of pending.siblings) this.sendProposalToSibling(sibling, pending);
+    pending.timer = setTimeout(() => this.onProposalTimeout(pending.id), NEGOTIATION_TIMEOUT_MS);
+  }
+
+  /** Parse the base tree's CONTRACT.md ownership map (empty when absent/unparseable). */
+  private readOwnership(project: Project): OwnershipEntry[] {
+    try {
+      return parseFileOwnership(readFileSync(join(project.path, 'CONTRACT.md'), 'utf8'));
+    } catch {
+      return [];
+    }
+  }
+
+  /** Deliver a proposal to one affected teammate, asking it to vote. */
+  private sendProposalToSibling(sibling: ProposalSibling, proposal: PendingProposal): void {
+    this.sessions.send(
+      sibling.runId,
+      [
+        `A teammate working in parallel on this milestone proposes a change to the shared`,
+        `approach:`,
+        ``,
+        `"${proposal.text}"`,
+        ``,
+        `If you AGREE, reply with a line starting "${AGREE_SENTINEL}". If you OBJECT, reply`,
+        `with a line starting "${OBJECT_SENTINEL}" followed by a short reason. Then carry on`,
+        `with your current work.`,
+      ].join('\n'),
+    );
+  }
+
+  /**
+   * Record a teammate's AGREE/OBJECT vote against the proposal it belongs to, and
+   * conclude the round if that was the last outstanding vote. Returns whether the run
+   * was a voter at all (so the caller knows the message was a vote, not a question).
+   */
+  private recordProposalResponse(runId: string, response: DetectedResponse): boolean {
+    for (const proposal of this.pendingProposals.values()) {
+      const sibling = proposal.siblings.find((s) => s.runId === runId);
+      if (!sibling) continue;
+      // A late vote after escalation changes nothing (the human is deciding) but is
+      // still consumed as a vote, not surfaced as a question.
+      if (!proposal.itemId) {
+        sibling.position = response.position;
+        sibling.reason = response.reason || undefined;
+        this.maybeConcludeProposal(proposal);
+      }
+      return true;
+    }
+    return false;
+  }
+
+  /** Conclude a round once every affected teammate has voted. */
+  private maybeConcludeProposal(proposal: PendingProposal): void {
+    if (proposal.itemId) return; // already escalated to a human
+    if (proposal.siblings.some((s) => s.position === 'pending')) return; // still voting
+    this.concludeProposal(proposal, false);
+  }
+
+  /** The consensus round's deadline fired — decide with whatever votes arrived. */
+  private onProposalTimeout(id: string): void {
+    if (this.disposed) return;
+    const proposal = this.pendingProposals.get(id);
+    if (!proposal || proposal.itemId) return;
+    this.concludeProposal(proposal, true);
+  }
+
+  /**
+   * Tally the round: unanimous agreement auto-applies the proposal; any objection —
+   * or, on timeout, a non-responder counted as an objection — escalates to the human.
+   */
+  private concludeProposal(proposal: PendingProposal, timedOut: boolean): void {
+    this.clearProposalTimer(proposal);
+    if (!timedOut && proposal.siblings.some((s) => s.position === 'pending')) return; // safety
+    const positions = proposal.siblings.map((s) =>
+      s.position === 'pending' ? 'object' : s.position,
+    );
+    if (tallyConsensus(positions) === 'agree') this.applyConsensus(proposal);
+    else this.escalateProposal(proposal, timedOut);
+  }
+
+  /** An agreed (or human-accepted) proposal — queue the "update CONTRACT.md" resume. */
+  private applyConsensus(proposal: PendingProposal, note?: string): void {
+    this.queueResume(proposal, 'accept', note);
+  }
+
+  /**
+   * Record a concluded decision and deliver it as soon as the proposer is idle. If
+   * the proposer's `@@PROPOSE@@` turn has already ended (`proposerReady`), resume now;
+   * otherwise `noteProposerResult` picks it up when that turn's `result` lands — so we
+   * never inject into (and then prematurely settle over) a still-running turn.
+   */
+  private queueResume(proposal: PendingProposal, kind: 'accept' | 'keep', note?: string): void {
+    this.clearProposalTimer(proposal);
+    proposal.resume = { kind, note };
+    if (proposal.proposerReady) this.performResume(proposal);
+  }
+
+  /** The proposer's `@@PROPOSE@@`-turn ended: mark it idle and flush any queued decision. */
+  private noteProposerResult(runId: string): void {
+    for (const proposal of this.pendingProposals.values()) {
+      if (proposal.proposerRunId !== runId) continue;
+      proposal.proposerReady = true;
+      if (proposal.resume) this.performResume(proposal);
+      return;
+    }
+  }
+
+  /**
+   * Deliver a concluded decision to the (now-idle) proposer and end the negotiation:
+   * on `accept`, tell it to update CONTRACT.md and nudge each in-flight teammate to
+   * re-read; on `keep`, tell it to proceed without the change. Resumes the task and
+   * drops the proposal.
+   */
+  private performResume(proposal: PendingProposal): void {
+    const decision = proposal.resume;
+    if (!decision) return;
+    if (decision.kind === 'accept') {
+      this.sessions.send(
+        proposal.proposerRunId,
+        [
+          `Your teammates agreed to your proposal. Update CONTRACT.md at the repository`,
+          `root to reflect it and commit the change, then continue with your task.`,
+          ...(decision.note ? [`Human note: ${decision.note}`] : []),
+        ].join('\n'),
+      );
+      for (const sibling of proposal.siblings) {
+        this.sessions.send(
+          sibling.runId,
+          `The shared contract (CONTRACT.md) is being updated per an agreed proposal. Re-read it before continuing.`,
+        );
+      }
+      this.noteRun(
+        proposal.projectId,
+        proposal.proposerTaskId,
+        proposal.proposerRunId,
+        'Proposal accepted; contract update requested and teammates notified.',
+      );
+    } else {
+      this.sessions.send(
+        proposal.proposerRunId,
+        [
+          `The team kept the current contract. Proceed with your task WITHOUT the proposed`,
+          `change; honor CONTRACT.md as it stands.`,
+          ...(decision.note ? [`Human note: ${decision.note}`] : []),
+        ].join('\n'),
+      );
+      this.noteRun(
+        proposal.projectId,
+        proposal.proposerTaskId,
+        proposal.proposerRunId,
+        'Proposal declined; current contract kept.',
+      );
+    }
+    this.updateTask(proposal.proposerTaskId, { status: 'running' }, proposal.proposerRunId);
+    this.pendingProposals.delete(proposal.id);
+  }
+
+  /** Raise a `proposal` inbox item so the human breaks a stalled/contested round. */
+  private escalateProposal(proposal: PendingProposal, timedOut = false): void {
+    this.clearProposalTimer(proposal);
+    const positions = proposal.siblings
+      .map((s) => {
+        if (s.position === 'agree') return `- ${s.title}: agreed`;
+        if (s.position === 'object') {
+          return `- ${s.title}: objected${s.reason ? ` (${s.reason})` : ''}`;
+        }
+        return `- ${s.title}: no response`;
+      })
+      .join('\n');
+    const task = this.store.getTask(proposal.proposerTaskId);
+    const prompt = [
+      `A teammate proposed a change to the shared contract, but the team ${
+        timedOut ? 'did not all respond in time' : 'did not reach consensus'
+      }:`,
+      ``,
+      `Proposal: ${proposal.text}`,
+      ``,
+      `Teammates:`,
+      positions,
+      ``,
+      `Accept it (the proposer updates CONTRACT.md and everyone re-reads it) or keep the`,
+      `current contract (the proposer proceeds without the change).`,
+    ].join('\n');
+    const item: AttentionItem = {
+      id: randomUUID(),
+      runId: proposal.proposerRunId,
+      taskId: proposal.proposerTaskId,
+      projectId: proposal.projectId,
+      taskTitle: task?.title ?? '(unknown task)',
+      kind: 'proposal',
+      prompt,
+      options: [PROPOSAL_ACTION.accept, PROPOSAL_ACTION.keep],
+      toolName: null,
+      reason: null,
+      createdAt: Date.now(),
+    };
+    this.attention.set(item.id, item);
+    proposal.itemId = item.id;
+    this.updateTask(proposal.proposerTaskId, { status: 'waiting-input' }, proposal.proposerRunId);
+    this.emitAttention(item);
+  }
+
+  /** Apply the human's decision on an escalated proposal (the item is already cleared). */
+  private applyProposalDecision(proposal: PendingProposal, choice: string, note?: string): void {
+    switch (choice) {
+      case PROPOSAL_ACTION.accept:
+        this.queueResume(proposal, 'accept', note);
+        break;
+      case PROPOSAL_ACTION.keep:
+        this.queueResume(proposal, 'keep', note);
+        break;
+      default:
+        // Unrecognized (free-text) answer — re-escalate so the decision isn't lost.
+        proposal.itemId = undefined;
+        this.escalateProposal(proposal);
+        break;
+    }
+  }
+
+  /** Clear a proposal's consensus-round timer if one is armed. */
+  private clearProposalTimer(proposal: PendingProposal): void {
+    if (proposal.timer) {
+      clearTimeout(proposal.timer);
+      proposal.timer = undefined;
     }
   }
 
