@@ -26,6 +26,7 @@ import type { SessionEvent, SessionEventEnvelope, StartSessionRequest } from './
 import type {
   AddProjectInput,
   ManualStatus,
+  PlanValidation,
   Project,
   ProjectPatch,
   ProjectWithTasks,
@@ -108,6 +109,14 @@ export interface IpcApi {
    * and mode changes take effect on the next task run.
    */
   'project:update': (id: string, patch: ProjectPatch) => Promise<Project | null>;
+  /** Parse a project's plan file and check its `@needs:` dependencies (resolve + no cycles). */
+  'project:validatePlan': (id: string) => Promise<PlanValidation>;
+  /**
+   * Launch an AI pass that reads the plan and adds `@needs:` dependency annotations,
+   * writing the file back for the user to review. Returns the run id so the UI can
+   * show its live transcript; the plan watcher re-syncs once the file changes.
+   */
+  'project:alignPlan': (id: string) => Promise<{ runId: string }>;
 
   /**
    * Start (or resume) a project's queue: the scheduler runs its `pending` tasks

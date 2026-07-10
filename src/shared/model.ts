@@ -164,6 +164,22 @@ export interface ProjectWithTasks {
   tasks: Task[];
 }
 
+/** Severity of a plan-validation issue: `error` blocks (ok=false), `warning` is advisory. */
+export type PlanIssueSeverity = 'error' | 'warning';
+
+/** One problem found while validating a plan's `@needs:` dependencies. */
+export interface PlanIssue {
+  severity: PlanIssueSeverity;
+  message: string;
+}
+
+/** Result of validating a project's plan (see `planValidate.ts`). */
+export interface PlanValidation {
+  /** True when there are no `error`-severity issues (warnings don't block). */
+  ok: boolean;
+  issues: PlanIssue[];
+}
+
 /**
  * One entry in a task's unified **activity timeline** (Phase 9): the human's
  * comments and status changes merged with the AI transcript, in time order. The

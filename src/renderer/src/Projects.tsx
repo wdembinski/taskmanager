@@ -15,6 +15,12 @@ import {
   Caption1,
   Card,
   CardHeader,
+  Dialog,
+  DialogActions,
+  DialogBody,
+  DialogContent,
+  DialogSurface,
+  DialogTitle,
   Divider,
   makeStyles,
   MessageBar,
@@ -25,10 +31,11 @@ import {
   Text,
   tokens,
 } from '@fluentui/react-components';
-import type { Project, ProjectWithTasks, Task } from '@shared/model';
+import type { PlanValidation, Project, ProjectWithTasks, Task } from '@shared/model';
 import { AddTaskDialog } from './AddTaskDialog';
 import { AttachSessionDialog } from './AttachSessionDialog';
 import { ProjectDialog } from './ProjectDialog';
+import { Transcript } from './Transcript';
 import { STATUS_COLOR, STATUS_LABEL } from './taskStatus';
 
 const useStyles = makeStyles({
@@ -84,10 +91,26 @@ export function Projects(): JSX.Element {
   const [addTask, setAddTask] = useState<{ open: boolean; projectId: string | null; phases: string[] }>(
     { open: false, projectId: null, phases: [] },
   );
+  // Plan-validation results keyed by project id (dependency resolve + cycle checks).
+  const [validations, setValidations] = useState<Record<string, PlanValidation>>({});
+  // The AI-assisted "Align plan" run, shown live in a dialog.
+  const [align, setAlign] = useState<{ open: boolean; runId: string | null; project: string }>({
+    open: false,
+    runId: null,
+    project: '',
+  });
+
+  const validateProject = useCallback(async (id: string) => {
+    const result = await window.api.invoke('project:validatePlan', id);
+    setValidations((prev) => ({ ...prev, [id]: result }));
+  }, []);
 
   const refresh = useCallback(async () => {
-    setProjects(await window.api.invoke('project:list'));
-  }, []);
+    const list = await window.api.invoke('project:list');
+    setProjects(list);
+    // Validate each plan in the background so cards can flag dependency problems.
+    for (const { project } of list) void validateProject(project.id);
+  }, [validateProject]);
 
   useEffect(() => {
     void refresh();
@@ -101,8 +124,10 @@ export function Projects(): JSX.Element {
       setProjects((prev) =>
         prev ? prev.map((p) => (p.project.id === projectId ? { ...p, tasks } : p)) : prev,
       );
+      // The plan changed (possibly from an Align run) — re-check its dependencies.
+      void validateProject(projectId);
     });
-  }, []);
+  }, [validateProject]);
 
   /** Run an engine call, surfacing any failure instead of failing silently. */
   const guard = useCallback(async (label: string, fn: () => Promise<void>) => {
@@ -130,6 +155,15 @@ export function Projects(): JSX.Element {
         await refresh();
       }),
     [guard, refresh],
+  );
+
+  const alignPlan = useCallback(
+    (project: Project) =>
+      guard('Could not start Align plan', async () => {
+        const { runId } = await window.api.invoke('project:alignPlan', project.id);
+        setAlign({ open: true, runId, project: project.name });
+      }),
+    [guard],
   );
 
   // Delete one ad-hoc task. The engine emits project:tasksChanged, so the list
@@ -200,6 +234,9 @@ export function Projects(): JSX.Element {
                       <Button size="small" onClick={() => syncPlan(project.id)}>
                         Sync plan
                       </Button>
+                      <Button size="small" onClick={() => alignPlan(project)}>
+                        Align plan…
+                      </Button>
                       <Button
                         size="small"
                         onClick={() =>
@@ -222,6 +259,21 @@ export function Projects(): JSX.Element {
                     </div>
                   }
                 />
+
+                {(() => {
+                  const issues = validations[project.id]?.issues ?? [];
+                  if (issues.length === 0) return null;
+                  const hasError = issues.some((i) => i.severity === 'error');
+                  return (
+                    <MessageBar intent={hasError ? 'error' : 'warning'}>
+                      <MessageBarBody>
+                        <strong>Plan dependencies:</strong>{' '}
+                        {issues.map((i) => i.message).join(' ')}{' '}
+                        {hasError && 'Fix the plan or run "Align plan…" to repair it.'}
+                      </MessageBarBody>
+                    </MessageBar>
+                  );
+                })()}
 
                 {tasks.length === 0 ? (
                   <Caption1 className={styles.empty}>
@@ -304,6 +356,36 @@ export function Projects(): JSX.Element {
         onClose={() => setAddTask((a) => ({ ...a, open: false }))}
         onCreated={() => void refresh()}
       />
+
+      <Dialog
+        open={align.open}
+        onOpenChange={(_e, d) => {
+          if (!d.open) setAlign((a) => ({ ...a, open: false }));
+        }}
+      >
+        <DialogSurface>
+          <DialogBody>
+            <DialogTitle>Align plan — {align.project}</DialogTitle>
+            <DialogContent>
+              <Caption1 className={styles.empty}>
+                Claude is adding <code>@needs:</code> dependency annotations to this project&apos;s
+                plan file. When it finishes, review the changes in your <code>plan.md</code> (it&apos;s
+                under version control) — the task board re-syncs automatically.
+              </Caption1>
+              <Transcript
+                runId={align.runId}
+                taskId={null}
+                emptyHint="Starting the align session…"
+              />
+            </DialogContent>
+            <DialogActions>
+              <Button appearance="primary" onClick={() => setAlign((a) => ({ ...a, open: false }))}>
+                Close
+              </Button>
+            </DialogActions>
+          </DialogBody>
+        </DialogSurface>
+      </Dialog>
     </div>
   );
 }

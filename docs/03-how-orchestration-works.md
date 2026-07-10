@@ -105,6 +105,32 @@ The app then owns the live status of each task in its database, and can optional
 tick the checkbox (`- [x]`) back in the file when a task completes. You can also
 add ad-hoc tasks directly in the app.
 
+### Declaring dependencies (`@needs:`)
+
+By default a project runs up to **concurrency** tasks in parallel (set per project
+in its Edit dialog). To force ordering, append a `@needs:` clause naming the exact
+titles a task depends on — the scheduler won't start it until every named
+prerequisite is `done`:
+
+```markdown
+## Setup
+- [ ] Set up the database
+- [ ] Set up config
+
+## Build
+- [ ] Build the API @needs: Set up the database
+- [ ] Build the UI  @needs: Set up the database
+- [ ] Deploy        @needs: Build the API, Build the UI
+```
+
+Here the two setup tasks run in parallel; API and UI both wait for the database,
+then run in parallel; Deploy waits for both. Independent tasks (no `@needs:`) run
+in parallel up to the concurrency cap. References are matched by exact title; a
+misspelled or missing reference leaves the task waiting, and the **Projects** tab
+flags dangling references and dependency cycles. Don't have dependencies annotated
+yet? Use **Align plan…** on the Projects tab to have Claude add `@needs:` clauses
+to an existing plan for you to review.
+
 ---
 
 ## Putting it together: the life of a task

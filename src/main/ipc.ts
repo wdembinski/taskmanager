@@ -14,6 +14,8 @@ import type { IpcApi, IpcEvents } from '@shared/ipc';
 import { isManualStatus, type Project, type ProjectWithTasks } from '@shared/model';
 import { getClaudeStatus } from './claudeStatus';
 import { parsePlan } from './planParser';
+import { validatePlan } from './planValidate';
+import { buildAlignPrompt } from './alignPrompt';
 import { PermissionBroker } from './permissionBroker';
 import { writePermissionServer } from './permissionServerSource';
 import { PlanWatcher } from './planWatcher';
@@ -181,6 +183,32 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     const updated = store.updateProject(id, patch);
     if (updated) watcher.watch(updated); // re-point the watcher if the plan path changed
     return updated ?? null;
+  });
+
+  handle('project:validatePlan', async (id) => {
+    const project = store.getProject(id);
+    if (!project) return { ok: true, issues: [] };
+    let markdown = '';
+    try {
+      markdown = readFileSync(project.planPath, 'utf8');
+    } catch {
+      markdown = '';
+    }
+    return validatePlan(parsePlan(markdown));
+  });
+
+  handle('project:alignPlan', async (id) => {
+    const project = store.getProject(id);
+    if (!project) throw new Error(`Cannot align: project ${id} not found`);
+    // A one-shot, user-initiated run that edits the user's plan.md. Ungated and in
+    // acceptEdits so it can write the file; the plan watcher re-syncs on the change.
+    const { runId } = sessions.start({
+      prompt: buildAlignPrompt(project.planPath, project.path),
+      cwd: project.path,
+      model: project.defaultModel,
+      permissionMode: 'acceptEdits',
+    });
+    return { runId };
   });
 
   handle('scheduler:start', async (projectId) => scheduler.start(projectId));

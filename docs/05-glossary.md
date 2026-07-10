@@ -117,6 +117,19 @@ Where a task is in its life: `pending` → `running` → (`waiting-input` /
 The engine component that decides which task runs next, respecting phase order,
 dependencies, and how many sessions may run at once (concurrency).
 
+### Concurrency
+
+How many of a project's tasks the scheduler runs in parallel. Set **per project**
+(its Edit dialog); the global Settings value only seeds new projects. `1` = strictly
+one task at a time.
+
+### `@needs:` (task dependency)
+
+A clause appended to a plan checkbox — `- [ ] Build API @needs: Set up DB` — that
+holds the task until the named prerequisite task(s) are `done`. Referenced by exact
+title. Independent tasks (no `@needs:`) run in parallel up to the concurrency cap.
+**Align plan…** (Projects tab) uses Claude to add these to an existing plan.
+
 ### electron-vite
 
 Our build tool. Compiles the three parts (main/preload/renderer) from TypeScript
