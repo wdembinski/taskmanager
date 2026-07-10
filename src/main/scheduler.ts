@@ -100,6 +100,10 @@ export interface Schedulable {
   title: string;
   /** Titles this task depends on; it isn't eligible until all of them are `done`. */
   dependsOn: string[];
+  /** The heading this task lives under — the scope for a contract's implicit prereq. */
+  phase: string;
+  /** True when this task authors the milestone's shared CONTRACT.md (`@contract`). */
+  isContract: boolean;
 }
 
 /**
@@ -116,6 +120,12 @@ export interface Schedulable {
  * `inFlight` holds ids of tasks the scheduler has already handed to a session but
  * whose `started` event hasn't landed yet — without it, the same task could be
  * picked twice in the brief window before its status flips to `running`.
+ *
+ * Contract-first (Phase C): a `@contract` task is an **implicit prerequisite of
+ * every other task under the same phase/heading**. While such a contract task is
+ * not yet `done`, its non-contract siblings are held — so the contract runs first,
+ * and (being the only eligible task in its phase until it completes) alone. This is
+ * on top of, not instead of, explicit `@needs:` gating.
  */
 export function selectNextPending<T extends Schedulable>(
   tasks: readonly T[],
@@ -135,10 +145,18 @@ export function selectNextPending<T extends Schedulable>(
     return entry !== undefined && entry.total > 0 && entry.done === entry.total;
   };
 
+  // Phases that still have an unfinished contract task gate their other tasks.
+  const phasesAwaitingContract = new Set<string>();
+  for (const task of tasks) {
+    if (task.isContract && task.status !== 'done') phasesAwaitingContract.add(task.phase);
+  }
+
   let best: T | null = null;
   for (const task of tasks) {
     if (task.status !== 'pending' || inFlight.has(task.id)) continue;
     if (!task.dependsOn.every(satisfied)) continue;
+    // Hold a non-contract task while its phase's contract task is still outstanding.
+    if (!task.isContract && phasesAwaitingContract.has(task.phase)) continue;
     if (best === null || task.order < best.order) best = task;
   }
   return best;
@@ -156,13 +174,26 @@ export function selectNextPending<T extends Schedulable>(
  *     plan file (owned by the main tree) and should commit its work on the branch.
  *   - `failureNote` (AI-assisted retry): a previous attempt failed; the agent is told
  *     the reason and asked to diagnose and fix it. Combines with either mode above.
+ *
+ * Contract-first (Phase C), layered on top of the above:
+ *   - `contractSiblings` (this is a `@contract` task): the agent authors the shared
+ *     `CONTRACT.md` for the named upcoming sibling tasks before they start.
+ *   - `hasContract` (a sibling of a contract task): the agent is told to read and
+ *     build against `CONTRACT.md` rather than reinventing the shared interfaces.
  */
 export function buildTaskPrompt(
   projectName: string,
   task: Task,
-  options: { planRelPath?: string; branch?: string; failureNote?: string } = {},
+  options: {
+    planRelPath?: string;
+    branch?: string;
+    failureNote?: string;
+    contractSiblings?: string[];
+    hasContract?: boolean;
+  } = {},
 ): string {
-  const { planRelPath, branch, failureNote } = options;
+  const { planRelPath, branch, failureNote, contractSiblings, hasContract } = options;
+  const isContract = contractSiblings !== undefined;
   return [
     `You are working through the plan for the project "${projectName}".`,
     '',
@@ -174,6 +205,31 @@ export function buildTaskPrompt(
     '',
     'Make the necessary changes, then briefly summarize what you did.',
     '',
+    // Contract task: it authors the shared CONTRACT.md that its milestone's parallel
+    // siblings will build against. Runs first and alone (see `selectNextPending`).
+    ...(isContract
+      ? [
+          `This is the SHARED CONTRACT task for its milestone. Author or update`,
+          `\`CONTRACT.md\` at the repository root: the shared interfaces, types, and key`,
+          `decisions the following upcoming tasks must agree on, plus a "## File ownership"`,
+          `section mapping files or areas to those tasks so they don't collide:`,
+          ...(contractSiblings.length > 0
+            ? contractSiblings.map((t) => `  - ${t}`)
+            : ['  (no sibling tasks declared yet — keep the contract minimal)']),
+          `Keep it concise and concrete; commit it so the orchestrator merges it before`,
+          `the sibling tasks start.`,
+          '',
+        ]
+      : []),
+    // Sibling of a contract task: a shared CONTRACT.md already governs this milestone.
+    ...(!isContract && hasContract
+      ? [
+          `A shared \`CONTRACT.md\` at the repository root defines the interfaces, types,`,
+          `and file ownership for this milestone. Read it FIRST and build against it. Do`,
+          `NOT change \`CONTRACT.md\` unilaterally — honor what it specifies.`,
+          '',
+        ]
+      : []),
     // AI-assisted retry: a prior attempt failed. Give the agent the reason and ask
     // it to diagnose the cause before redoing the work (it may have left partial
     // changes in this worktree).
@@ -736,10 +792,13 @@ export class Scheduler {
     const failureNote = this.fixNotes.get(task.id);
     this.fixNotes.delete(task.id);
     const modeOpts = prep.mode === 'worktree' ? { branch: prep.branch } : { planRelPath: planRel };
+    // Contract-first (Phase C): a contract task is told which siblings its CONTRACT.md
+    // serves; a sibling of a contract task is told to build against CONTRACT.md.
+    const contractOpts = this.contractPromptOptions(task);
     const prompt =
       resumeSessionId && !failureNote
         ? RESUME_NUDGE
-        : buildTaskPrompt(project.name, task, { ...modeOpts, failureNote });
+        : buildTaskPrompt(project.name, task, { ...modeOpts, ...contractOpts, failureNote });
     const request: StartSessionRequest = {
       prompt,
       cwd: prep.cwd,
@@ -754,6 +813,23 @@ export class Scheduler {
       permission: this.gate ?? undefined,
       resumeSessionId,
     });
+  }
+
+  /**
+   * Contract-first (Phase C) prompt shaping for a task, derived from its siblings
+   * (other plan tasks under the same phase). A `@contract` task is handed the titles
+   * of the non-contract siblings its CONTRACT.md serves; a non-contract task whose
+   * phase has a contract task is told to build against CONTRACT.md. Returns an empty
+   * object for phases with no contract task, so ordinary plans are unaffected.
+   */
+  private contractPromptOptions(task: Task): { contractSiblings?: string[]; hasContract?: boolean } {
+    const siblings = this.store
+      .getTasks(task.projectId)
+      .filter((t) => t.id !== task.id && t.phase === task.phase);
+    if (task.isContract) {
+      return { contractSiblings: siblings.filter((t) => !t.isContract).map((t) => t.title) };
+    }
+    return { hasContract: siblings.some((t) => t.isContract) };
   }
 
   private onRunEvent(runId: string, event: SessionEvent): void {

@@ -405,6 +405,15 @@ export function Board(): JSX.Element {
                           <Badge appearance="tint" color={STATUS_COLOR[task.status]}>
                             {STATUS_LABEL[task.status]}
                           </Badge>
+                          {task.isContract && (
+                            <Badge
+                              appearance="tint"
+                              color="brand"
+                              title="Authors the milestone's shared CONTRACT.md; runs first, before its sibling tasks"
+                            >
+                              contract
+                            </Badge>
+                          )}
                           {inConflict && (
                             <Badge
                               appearance="tint"

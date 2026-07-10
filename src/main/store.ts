@@ -41,6 +41,8 @@ interface TaskRow {
   source: string;
   /** JSON array of prerequisite task titles (from a plan `@needs:` clause); null pre-migration. */
   dependsOn: string | null;
+  /** 1 when the task authors the milestone's shared CONTRACT.md (`@contract`); 0 otherwise. */
+  isContract: number;
 }
 
 /** A project row as stored; `writeBackPlan` is a 0/1 INTEGER (SQLite has no boolean). */
@@ -146,7 +148,8 @@ export function createStore(dbPath: string): Store {
       sessionId  TEXT,
       "order"    INTEGER NOT NULL,
       source     TEXT NOT NULL DEFAULT 'plan',
-      dependsOn  TEXT
+      dependsOn  TEXT,
+      isContract INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(projectId, "order");
     CREATE TABLE IF NOT EXISTS app_state (
@@ -192,6 +195,13 @@ export function createStore(dbPath: string): Store {
   // declared prerequisites, so a NULL (read as `[]`) is correct — no gating changes.
   if (!taskColumns.some((c) => c.name === 'dependsOn')) {
     db.exec(`ALTER TABLE tasks ADD COLUMN dependsOn TEXT`);
+  }
+
+  // Migrate databases created before contract-first execution (Phase C). Existing
+  // tasks predate the `@contract` marker, so 0 (not a contract task) is correct;
+  // a re-sync re-derives the flag from the plan for any that gain the marker.
+  if (!taskColumns.some((c) => c.name === 'isContract')) {
+    db.exec(`ALTER TABLE tasks ADD COLUMN isContract INTEGER NOT NULL DEFAULT 0`);
   }
 
   // Migrate databases created before per-task git worktrees. Default on (1); it only
@@ -242,8 +252,8 @@ export function createStore(dbPath: string): Store {
   const selectTask = db.prepare(`SELECT * FROM tasks WHERE id = ?`);
   const deleteTasks = db.prepare(`DELETE FROM tasks WHERE projectId = ?`);
   const insertTask = db.prepare<[TaskRow]>(
-    `INSERT INTO tasks (id, projectId, phase, title, status, sessionId, "order", source, dependsOn)
-     VALUES (@id, @projectId, @phase, @title, @status, @sessionId, @order, @source, @dependsOn)`,
+    `INSERT INTO tasks (id, projectId, phase, title, status, sessionId, "order", source, dependsOn, isContract)
+     VALUES (@id, @projectId, @phase, @title, @status, @sessionId, @order, @source, @dependsOn, @isContract)`,
   );
   const deleteTask = db.prepare(`DELETE FROM tasks WHERE id = ?`);
   const nextOrder = db.prepare(
@@ -336,6 +346,7 @@ export function createStore(dbPath: string): Store {
       order: task.order,
       source: task.source,
       dependsOn: JSON.stringify(task.dependsOn ?? []),
+      isContract: task.isContract ? 1 : 0,
     };
   }
 
@@ -350,6 +361,7 @@ export function createStore(dbPath: string): Store {
       order: r.order,
       source: (r.source as Task['source']) ?? 'plan',
       dependsOn: parseDependsOn(r.dependsOn),
+      isContract: r.isContract !== 0,
     };
   }
 
@@ -489,6 +501,7 @@ export function createStore(dbPath: string): Store {
         order: (nextOrder.get(projectId) as { next: number }).next,
         source: 'adhoc',
         dependsOn: [],
+        isContract: false,
       };
       insertTask.run(taskToRow(task));
       return task;

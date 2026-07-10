@@ -25,12 +25,15 @@ const t = (
   status: Schedulable['status'],
   order: number,
   dependsOn: string[] = [],
+  opts: { phase?: string; isContract?: boolean } = {},
 ): Schedulable => ({
   id,
   status,
   order,
   title: id,
   dependsOn,
+  phase: opts.phase ?? '',
+  isContract: opts.isContract ?? false,
 });
 
 describe('selectNextPending', () => {
@@ -94,13 +97,43 @@ describe('selectNextPending', () => {
   it('requires ALL tasks sharing a needed title to be done', () => {
     // Two tasks titled 'a' (ids a1/a2); 'b' needs 'a'. Not satisfied until both done.
     const partial = [
-      { id: 'a1', status: 'done' as const, order: 0, title: 'a', dependsOn: [] },
-      { id: 'a2', status: 'pending' as const, order: 1, title: 'a', dependsOn: [] },
-      { id: 'b', status: 'pending' as const, order: 2, title: 'b', dependsOn: ['a'] },
+      { id: 'a1', status: 'done' as const, order: 0, title: 'a', dependsOn: [], phase: '', isContract: false },
+      { id: 'a2', status: 'pending' as const, order: 1, title: 'a', dependsOn: [], phase: '', isContract: false },
+      { id: 'b', status: 'pending' as const, order: 2, title: 'b', dependsOn: ['a'], phase: '', isContract: false },
     ];
     // a2 is eligible (independent), b is not.
     expect(selectNextPending(partial, new Set())?.id).toBe('a2');
     expect(selectNextPending(partial, new Set(['a2']))).toBeNull();
+  });
+
+  it('holds a phase’s siblings until its @contract task is done', () => {
+    // 'c' is the contract task for phase M; x and y are siblings under M. While the
+    // contract is unfinished, only it is eligible; once done, the siblings unblock.
+    const running = [
+      t('c', 'pending', 0, [], { phase: 'M', isContract: true }),
+      t('x', 'pending', 1, [], { phase: 'M' }),
+      t('y', 'pending', 2, [], { phase: 'M' }),
+    ];
+    expect(selectNextPending(running, new Set())?.id).toBe('c');
+    // Contract in flight (not done) → siblings still held → nothing else eligible.
+    expect(selectNextPending(running, new Set(['c']))).toBeNull();
+
+    const done = [
+      t('c', 'done', 0, [], { phase: 'M', isContract: true }),
+      t('x', 'pending', 1, [], { phase: 'M' }),
+      t('y', 'pending', 2, [], { phase: 'M' }),
+    ];
+    expect(selectNextPending(done, new Set())?.id).toBe('x');
+  });
+
+  it('a @contract task only gates its own phase, not other phases', () => {
+    const tasks = [
+      t('c', 'pending', 0, [], { phase: 'M', isContract: true }),
+      t('other', 'pending', 1, [], { phase: 'N' }),
+    ];
+    // 'c' is lowest-order and eligible; with it in flight, a task in a different
+    // phase is unaffected by the contract gate.
+    expect(selectNextPending(tasks, new Set(['c']))?.id).toBe('other');
   });
 });
 
@@ -115,6 +148,7 @@ describe('buildTaskPrompt', () => {
     order: 0,
     source: 'plan',
     dependsOn: [],
+    isContract: false,
   };
 
   it('includes the project name, task title, and phase', () => {
@@ -142,6 +176,35 @@ describe('buildTaskPrompt', () => {
     expect(prompt).toContain('Do NOT edit the plan file');
     // The plan-editing invitation from shared-dir mode must be absent.
     expect(prompt).not.toContain('you may add them to the plan file');
+  });
+
+  it('tells a @contract task to author CONTRACT.md for its siblings', () => {
+    const prompt = buildTaskPrompt('Orchestrator', task, {
+      branch: 'orch/abc123',
+      contractSiblings: ['Build API', 'Build UI'],
+    });
+    expect(prompt).toContain('SHARED CONTRACT task');
+    expect(prompt).toContain('CONTRACT.md');
+    expect(prompt).toContain('File ownership');
+    expect(prompt).toContain('Build API');
+    expect(prompt).toContain('Build UI');
+    // A contract task is not itself told to read a pre-existing contract.
+    expect(prompt).not.toContain('Read it FIRST');
+  });
+
+  it('tells a sibling of a contract task to build against CONTRACT.md', () => {
+    const prompt = buildTaskPrompt('Orchestrator', task, {
+      branch: 'orch/abc123',
+      hasContract: true,
+    });
+    expect(prompt).toContain('CONTRACT.md');
+    expect(prompt).toContain('Read it FIRST');
+    expect(prompt).not.toContain('SHARED CONTRACT task');
+  });
+
+  it('says nothing about a contract when there is none in the milestone', () => {
+    const prompt = buildTaskPrompt('Orchestrator', task, { branch: 'orch/abc123' });
+    expect(prompt).not.toContain('CONTRACT.md');
   });
 });
 
@@ -237,6 +300,7 @@ describe('Scheduler.start resumes stopped tasks', () => {
         order: 0,
         source: 'plan',
         dependsOn: [],
+        isContract: false,
       } as Task,
     ];
     const store = {
@@ -319,6 +383,7 @@ describe('Scheduler run-failure handling', () => {
       order: 0,
       source: 'plan',
       dependsOn: [],
+      isContract: false,
     } as Task;
     const store = {
       getTasks: () => [task],

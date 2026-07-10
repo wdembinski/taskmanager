@@ -32,6 +32,13 @@ export interface ParsedTask {
    * The scheduler holds this task until every named prerequisite is `done`.
    */
   needs: string[];
+  /**
+   * True when the checkbox carried a trailing `@contract` marker (team
+   * orchestration, Phase C). A contract task authors the shared `CONTRACT.md`
+   * before its milestone's parallel siblings start, and becomes an implicit
+   * prerequisite of every other task under the same heading.
+   */
+  isContract: boolean;
 }
 
 /** A parsed task plus the 0-based index of the line its checkbox started on. */
@@ -43,6 +50,23 @@ const HEADING = /^(#{1,6})\s+(.*\S)\s*$/;
 const CHECKBOX = /^(\s*)[-*+]\s+\[([ xX])\]\s+(.*\S)\s*$/;
 /** A trailing `@needs: A, B` dependency clause on a (folded) task title. */
 const NEEDS = /\s*@needs:\s*(.*)$/i;
+/** A bare `@contract` marker anywhere in a (folded) task title. */
+const CONTRACT = /\s*@contract\b/i;
+
+/**
+ * Strip a bare `@contract` marker from a folded title, reporting whether one was
+ * present. Removed *before* `splitNeeds` so the marker can sit on either side of a
+ * `@needs:` clause (e.g. "Foo @needs: Bar @contract") without being swallowed into
+ * the dependency list.
+ */
+function splitContract(title: string): { title: string; isContract: boolean } {
+  const m = CONTRACT.exec(title);
+  if (!m) return { title, isContract: false };
+  const stripped = (title.slice(0, m.index) + title.slice(m.index + m[0].length))
+    .replace(/\s+/g, ' ')
+    .trim();
+  return { title: stripped, isContract: true };
+}
 
 /**
  * Split a folded task title into its display title and its declared dependency
@@ -90,6 +114,7 @@ function locate(markdown: string): LocatedTask[] {
         title: checkbox[3].trim(),
         done: checkbox[2].toLowerCase() === 'x',
         needs: [],
+        isContract: false,
         line: i,
       };
       tasks.push(open);
@@ -106,11 +131,15 @@ function locate(markdown: string): LocatedTask[] {
     if (open) open.title = `${open.title} ${rawLine.trim()}`.replace(/\s+/g, ' ');
   }
 
-  // Titles are now fully folded, so split off any trailing `@needs:` clause. Done
-  // here (not per-line) so `@needs:` on a wrapped continuation line is honored, and
-  // so `tickPlanCheckbox` and `parsePlan` share the exact same stripped identity.
+  // Titles are now fully folded, so peel off the trailing annotations. Done here
+  // (not per-line) so a marker on a wrapped continuation line is honored, and so
+  // `tickPlanCheckbox` and `parsePlan` share the exact same stripped identity. The
+  // `@contract` marker is removed first so it can precede or follow a `@needs:`
+  // clause without corrupting the parsed dependency list.
   for (const task of tasks) {
-    const { title, needs } = splitNeeds(task.title);
+    const contract = splitContract(task.title);
+    task.isContract = contract.isContract;
+    const { title, needs } = splitNeeds(contract.title);
     task.title = title;
     task.needs = needs;
   }

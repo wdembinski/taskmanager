@@ -181,6 +181,14 @@ export interface Task {
    *               plan-less projects and on-the-fly tasks survive re-parsing.
    */
   source: 'plan' | 'adhoc';
+  /**
+   * True when this task authors the milestone's shared `CONTRACT.md` (team
+   * orchestration, Phase C) — declared with a trailing `@contract` marker in the
+   * plan. A contract task becomes an implicit prerequisite of every other task
+   * under the same phase/heading, so it runs first and alone; its siblings then
+   * build against the merged contract. False for ordinary and ad-hoc tasks.
+   */
+  isContract: boolean;
 }
 
 /** A project bundled with its current tasks — the shape the Projects UI renders. */

@@ -58,9 +58,10 @@ export function reconcileTasks(
     const key = identity(p.phase, p.title);
     const prior = byKey.get(key);
     byKey.delete(key); // consume, so duplicate plan lines don't both match it
-    // Dependencies are re-derived from the plan on every sync, so a matched task
-    // picks up edits to its `@needs:` clause (identity is the stripped title).
-    if (prior) return { ...prior, source: 'plan', dependsOn: p.needs };
+    // Dependencies and the `@contract` flag are re-derived from the plan on every
+    // sync, so a matched task picks up edits to its `@needs:`/`@contract` markers
+    // (identity is the stripped title).
+    if (prior) return { ...prior, source: 'plan', dependsOn: p.needs, isContract: p.isContract };
     return {
       id: newId(),
       projectId,
@@ -71,6 +72,7 @@ export function reconcileTasks(
       order: 0, // renumbered below
       source: 'plan',
       dependsOn: p.needs,
+      isContract: p.isContract,
     };
   });
 
