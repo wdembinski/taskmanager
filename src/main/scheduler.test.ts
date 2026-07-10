@@ -152,3 +152,44 @@ describe('Scheduler.schedulerStates', () => {
     expect(scheduler.schedulerStates()).toEqual([{ projectId: 'p', state: 'idle' }]);
   });
 });
+
+describe('Scheduler.start resumes stopped tasks', () => {
+  it('re-queues a stopped task to pending and pumps it (resuming its session)', () => {
+    const project = { id: 'p', path: 'C:/w', planPath: 'C:/w/plan.md', concurrency: 1 } as Project;
+    const tasks: Task[] = [
+      {
+        id: 't1',
+        projectId: 'p',
+        phase: '',
+        title: 'x',
+        status: 'stopped',
+        sessionId: 's1',
+        order: 0,
+        source: 'plan',
+      } as Task,
+    ];
+    const store = {
+      getTasks: () => tasks,
+      getProject: () => project,
+      getTask: (id: string) => tasks.find((t) => t.id === id),
+      updateTask: (id: string, patch: Partial<Task>) => {
+        const t = tasks.find((x) => x.id === id);
+        if (t) Object.assign(t, patch);
+        return t;
+      },
+      getSettings: () => ({ limitJitterMs: 0, concurrency: 1 }),
+      appendTaskEvent: vi.fn(),
+    } as unknown as Store;
+    const start = vi.fn((_req: unknown, _opts: unknown) => ({ runId: 'r1' }));
+    const sessions = { start } as unknown as SessionManager;
+    const scheduler = new Scheduler(store, sessions, vi.fn(), vi.fn(), vi.fn(), vi.fn(), vi.fn());
+
+    scheduler.start('p');
+
+    // The stopped task was re-queued (no longer 'stopped') and handed to a session.
+    expect(tasks[0].status).not.toBe('stopped');
+    expect(start).toHaveBeenCalledTimes(1);
+    // It resumes the saved conversation rather than starting fresh.
+    expect(start.mock.calls[0][1]).toMatchObject({ resumeSessionId: 's1' });
+  });
+});

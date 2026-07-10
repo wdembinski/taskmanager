@@ -185,7 +185,8 @@ export function Projects(): JSX.Element {
                   description={
                     <Caption1 className={styles.path}>
                       {tasks.length} task{tasks.length === 1 ? '' : 's'} · {project.defaultModel} ·{' '}
-                      {project.defaultPermissionMode} · plan: {project.planPath}
+                      {project.defaultPermissionMode} · concurrency: {project.concurrency} · plan:{' '}
+                      {project.planPath}
                     </Caption1>
                   }
                   action={

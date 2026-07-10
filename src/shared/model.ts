@@ -81,6 +81,12 @@ export interface Project {
   /** Permission mode this project's tasks run with unless overridden. */
   defaultPermissionMode: PermissionMode;
   /**
+   * How many of this project's tasks the scheduler may run in parallel. 1 = strictly
+   * one at a time. Seeded from the global default when the project is created (and,
+   * for projects that predate this field, from the global value on migration).
+   */
+  concurrency: number;
+  /**
    * When true, the scheduler ticks the matching `- [ ]` back to `- [x]` in the
    * project's plan file as each task completes. Off by default so we never touch
    * the user's file unless they opt in. Only the single completed checkbox is
@@ -101,6 +107,7 @@ export interface AddProjectInput {
   planPath?: string;
   defaultModel?: ClaudeModel;
   defaultPermissionMode?: PermissionMode;
+  concurrency?: number;
   writeBackPlan?: boolean;
 }
 
@@ -110,7 +117,10 @@ export interface AddProjectInput {
  * if its plan file, name, model, or mode change.
  */
 export type ProjectPatch = Partial<
-  Pick<Project, 'name' | 'planPath' | 'defaultModel' | 'defaultPermissionMode' | 'writeBackPlan'>
+  Pick<
+    Project,
+    'name' | 'planPath' | 'defaultModel' | 'defaultPermissionMode' | 'concurrency' | 'writeBackPlan'
+  >
 >;
 
 /** One unit of work, parsed from a plan or added ad-hoc, owned by the app's DB. */

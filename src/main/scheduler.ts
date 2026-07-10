@@ -208,6 +208,12 @@ export class Scheduler {
   /** Start (or resume) a project's queue. */
   start(projectId: string): void {
     if (this.disposed) return;
+    // Resume anything a previous Stop halted: re-queue this project's `stopped`
+    // tasks to `pending` so the pump picks them up again. They keep their saved
+    // `sessionId`, so `startTask` RESUMES the conversation rather than restarting.
+    for (const task of this.store.getTasks(projectId)) {
+      if (task.status === 'stopped') this.updateTask(task.id, { status: 'pending' }, null);
+    }
     this.activeProjects.add(projectId);
     this.setState(projectId, 'running');
     this.pump(projectId);
@@ -405,13 +411,13 @@ export class Scheduler {
     if (this.disposed || !this.activeProjects.has(projectId)) return;
     // A usage limit is account-wide: hold ALL scheduling until it resets (Phase 5).
     if (this.limitGate.active) return;
-    // Concurrency is a live setting (Phase 6): read it fresh so edits take effect.
-    const concurrency = Math.max(1, this.store.getSettings().concurrency);
+    const project = this.store.getProject(projectId);
+    if (!project) return;
+    // Concurrency is a live, PER-PROJECT setting: read it fresh so edits take effect.
+    const concurrency = Math.max(1, project.concurrency);
     while (this.runningCount(projectId) < concurrency) {
       const next = selectNextPending(this.store.getTasks(projectId), this.inFlight);
       if (!next) break;
-      const project = this.store.getProject(projectId);
-      if (!project) break;
       this.startTask(project, next);
     }
     // If the queue has fully drained (nothing running, nothing left to start), the

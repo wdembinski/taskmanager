@@ -49,6 +49,7 @@ interface ProjectRow {
   planPath: string;
   defaultModel: string;
   defaultPermissionMode: string;
+  concurrency: number;
   writeBackPlan: number;
   createdAt: number;
 }
@@ -124,6 +125,7 @@ export function createStore(dbPath: string): Store {
       planPath              TEXT NOT NULL,
       defaultModel          TEXT NOT NULL,
       defaultPermissionMode TEXT NOT NULL,
+      concurrency           INTEGER NOT NULL DEFAULT 1,
       writeBackPlan         INTEGER NOT NULL DEFAULT 0,
       createdAt             INTEGER NOT NULL
     );
@@ -177,9 +179,30 @@ export function createStore(dbPath: string): Store {
     db.exec(`ALTER TABLE tasks ADD COLUMN source TEXT NOT NULL DEFAULT 'plan'`);
   }
 
+  // Migrate databases created before per-project concurrency existed. Concurrency
+  // used to be a single global setting applied to every project, so seed each
+  // existing project with the current global value — that preserves their exact
+  // prior behavior (the DEFAULT 1 above only covers the degenerate no-settings case).
+  if (!projectColumns.some((c) => c.name === 'concurrency')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN concurrency INTEGER NOT NULL DEFAULT 1`);
+    const settingsRow = db.prepare(`SELECT value FROM app_state WHERE key = 'settings'`).get() as
+      | { value: string }
+      | undefined;
+    let globalConcurrency = DEFAULT_SETTINGS.concurrency;
+    try {
+      if (settingsRow) {
+        const saved = JSON.parse(settingsRow.value) as Partial<AppSettings>;
+        if (typeof saved.concurrency === 'number') globalConcurrency = saved.concurrency;
+      }
+    } catch {
+      // Malformed settings row — fall back to the built-in default.
+    }
+    db.prepare(`UPDATE projects SET concurrency = ?`).run(Math.max(1, Math.round(globalConcurrency)));
+  }
+
   const insertProject = db.prepare<[ProjectRow]>(
-    `INSERT INTO projects (id, name, path, planPath, defaultModel, defaultPermissionMode, writeBackPlan, createdAt)
-     VALUES (@id, @name, @path, @planPath, @defaultModel, @defaultPermissionMode, @writeBackPlan, @createdAt)`,
+    `INSERT INTO projects (id, name, path, planPath, defaultModel, defaultPermissionMode, concurrency, writeBackPlan, createdAt)
+     VALUES (@id, @name, @path, @planPath, @defaultModel, @defaultPermissionMode, @concurrency, @writeBackPlan, @createdAt)`,
   );
   const selectProjects = db.prepare(`SELECT * FROM projects ORDER BY createdAt`);
   const selectProject = db.prepare(`SELECT * FROM projects WHERE id = ?`);
@@ -252,6 +275,7 @@ export function createStore(dbPath: string): Store {
       planPath: r.planPath,
       defaultModel: r.defaultModel as Project['defaultModel'],
       defaultPermissionMode: r.defaultPermissionMode as Project['defaultPermissionMode'],
+      concurrency: r.concurrency,
       writeBackPlan: r.writeBackPlan !== 0,
       createdAt: r.createdAt,
     };
@@ -290,6 +314,7 @@ export function createStore(dbPath: string): Store {
         planPath: input.planPath ?? join(input.path, 'plan.md'),
         defaultModel: input.defaultModel ?? defaults.defaultModel,
         defaultPermissionMode: input.defaultPermissionMode ?? defaults.defaultPermissionMode,
+        concurrency: Math.max(1, Math.round(input.concurrency ?? defaults.concurrency)),
         writeBackPlan: input.writeBackPlan ?? defaults.writeBackPlan,
         createdAt: Date.now(),
       };
@@ -333,6 +358,10 @@ export function createStore(dbPath: string): Store {
       if (patch.defaultPermissionMode !== undefined) {
         sets.push(`defaultPermissionMode = @defaultPermissionMode`);
         params.defaultPermissionMode = patch.defaultPermissionMode;
+      }
+      if (patch.concurrency !== undefined) {
+        sets.push(`concurrency = @concurrency`);
+        params.concurrency = Math.max(1, Math.round(patch.concurrency));
       }
       if (patch.writeBackPlan !== undefined) {
         sets.push(`writeBackPlan = @writeBackPlan`);

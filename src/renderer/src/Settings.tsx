@@ -99,8 +99,8 @@ export function Settings(): JSX.Element {
         </Field>
 
         <Field
-          label="Concurrency"
-          hint="How many tasks one project runs at once. 1 = strictly one at a time."
+          label="Default concurrency for new projects"
+          hint="Seeds each new project's concurrency. Existing projects keep their own value (edit it per project). 1 = strictly one at a time."
         >
           <SpinButton
             min={1}

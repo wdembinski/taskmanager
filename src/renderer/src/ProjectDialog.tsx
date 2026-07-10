@@ -24,6 +24,7 @@ import {
   MessageBar,
   MessageBarBody,
   Option,
+  SpinButton,
   Switch,
 } from '@fluentui/react-components';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
@@ -63,6 +64,7 @@ export function ProjectDialog({
   const [name, setName] = useState('');
   const [model, setModel] = useState<ClaudeModel>('sonnet');
   const [permMode, setPermMode] = useState<PermissionMode>('acceptEdits');
+  const [concurrency, setConcurrency] = useState(1);
   const [writeBack, setWriteBack] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -78,6 +80,7 @@ export function ProjectDialog({
       setName(project.name);
       setModel(project.defaultModel);
       setPermMode(project.defaultPermissionMode);
+      setConcurrency(project.concurrency);
       setWriteBack(project.writeBackPlan);
     } else {
       setPath('');
@@ -86,6 +89,7 @@ export function ProjectDialog({
       void window.api.invoke('settings:get').then((s) => {
         setModel(s.defaultModel);
         setPermMode(s.defaultPermissionMode);
+        setConcurrency(s.concurrency);
         setWriteBack(s.writeBackPlan);
       });
     }
@@ -116,6 +120,7 @@ export function ProjectDialog({
           planPath: planPath.trim() || undefined,
           defaultModel: model,
           defaultPermissionMode: permMode,
+          concurrency,
           writeBackPlan: writeBack,
         });
       } else if (project) {
@@ -124,6 +129,7 @@ export function ProjectDialog({
           planPath: planPath.trim() || undefined,
           defaultModel: model,
           defaultPermissionMode: permMode,
+          concurrency,
           writeBackPlan: writeBack,
         });
         // The plan file may have changed — reconcile tasks from the new source.
@@ -207,6 +213,21 @@ export function ProjectDialog({
                   </Dropdown>
                 </Field>
               </div>
+
+              <Field
+                label="Concurrency"
+                hint="How many of this project's tasks run at once. 1 = strictly one at a time. Tasks with @needs: dependencies still wait for their prerequisites."
+              >
+                <SpinButton
+                  min={1}
+                  max={8}
+                  value={concurrency}
+                  onChange={(_e, d) => {
+                    const n = d.value ?? Number(d.displayValue);
+                    if (Number.isFinite(n)) setConcurrency(Math.max(1, Math.round(n as number)));
+                  }}
+                />
+              </Field>
 
               <Switch
                 checked={writeBack}
