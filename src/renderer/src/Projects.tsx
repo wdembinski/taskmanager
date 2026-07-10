@@ -7,7 +7,7 @@
  * per-project model/mode/write-back) and, per task, "Attach session…" to adopt an
  * existing Claude conversation so a run resumes it instead of starting fresh.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Badge,
   Body1,
@@ -94,11 +94,17 @@ export function Projects(): JSX.Element {
   // Plan-validation results keyed by project id (dependency resolve + cycle checks).
   const [validations, setValidations] = useState<Record<string, PlanValidation>>({});
   // The AI-assisted "Align plan" run, shown live in a dialog.
-  const [align, setAlign] = useState<{ open: boolean; runId: string | null; project: string }>({
-    open: false,
-    runId: null,
-    project: '',
-  });
+  const [align, setAlign] = useState<{
+    open: boolean;
+    runId: string | null;
+    projectId: string;
+    project: string;
+    status: 'running' | 'done' | 'error';
+  }>({ open: false, runId: null, projectId: '', project: '', status: 'running' });
+  // Project ids with an Align run in flight — disables the button (single-flight).
+  const [aligningIds, setAligningIds] = useState<Set<string>>(new Set());
+  // Maps an align run id back to its project, so we can react to its completion.
+  const alignRunToProject = useRef<Map<string, string>>(new Map());
 
   const validateProject = useCallback(async (id: string) => {
     const result = await window.api.invoke('project:validatePlan', id);
@@ -126,6 +132,26 @@ export function Projects(): JSX.Element {
       );
       // The plan changed (possibly from an Align run) — re-check its dependencies.
       void validateProject(projectId);
+    });
+  }, [validateProject]);
+
+  // Watch our Align runs' events so the dialog can show Done and the button can
+  // re-enable when a run finishes on its own (result/exited).
+  useEffect(() => {
+    return window.api.on('session:event', ({ runId, event }) => {
+      const projectId = alignRunToProject.current.get(runId);
+      if (!projectId) return;
+      if (event.kind === 'result' || event.kind === 'exited') {
+        alignRunToProject.current.delete(runId);
+        setAligningIds((prev) => {
+          const next = new Set(prev);
+          next.delete(projectId);
+          return next;
+        });
+        const failed = event.kind === 'result' && !event.success;
+        setAlign((a) => (a.runId === runId ? { ...a, status: failed ? 'error' : 'done' } : a));
+        void validateProject(projectId);
+      }
     });
   }, [validateProject]);
 
@@ -161,10 +187,33 @@ export function Projects(): JSX.Element {
     (project: Project) =>
       guard('Could not start Align plan', async () => {
         const { runId } = await window.api.invoke('project:alignPlan', project.id);
-        setAlign({ open: true, runId, project: project.name });
+        alignRunToProject.current.set(runId, project.id);
+        setAligningIds((prev) => new Set(prev).add(project.id));
+        setAlign({
+          open: true,
+          runId,
+          projectId: project.id,
+          project: project.name,
+          status: 'running',
+        });
       }),
     [guard],
   );
+
+  // Close the Align dialog. If its run is still going, STOP it (kill the agent) so
+  // closing never leaves an invisible process editing the plan file.
+  const closeAlign = useCallback(() => {
+    if (align.runId && align.status === 'running') {
+      void window.api.invoke('session:stop', align.runId);
+      alignRunToProject.current.delete(align.runId);
+      setAligningIds((prev) => {
+        const next = new Set(prev);
+        next.delete(align.projectId);
+        return next;
+      });
+    }
+    setAlign((a) => ({ ...a, open: false }));
+  }, [align]);
 
   // Delete one ad-hoc task. The engine emits project:tasksChanged, so the list
   // updates via the live listener above (no explicit refresh needed).
@@ -234,8 +283,12 @@ export function Projects(): JSX.Element {
                       <Button size="small" onClick={() => syncPlan(project.id)}>
                         Sync plan
                       </Button>
-                      <Button size="small" onClick={() => alignPlan(project)}>
-                        Align plan…
+                      <Button
+                        size="small"
+                        disabled={aligningIds.has(project.id)}
+                        onClick={() => alignPlan(project)}
+                      >
+                        {aligningIds.has(project.id) ? 'Aligning…' : 'Align plan…'}
                       </Button>
                       <Button
                         size="small"
@@ -360,18 +413,40 @@ export function Projects(): JSX.Element {
       <Dialog
         open={align.open}
         onOpenChange={(_e, d) => {
-          if (!d.open) setAlign((a) => ({ ...a, open: false }));
+          if (!d.open) closeAlign();
         }}
       >
         <DialogSurface>
           <DialogBody>
-            <DialogTitle>Align plan — {align.project}</DialogTitle>
+            <DialogTitle>
+              Align plan — {align.project}
+              {align.status === 'running' && ' · running'}
+              {align.status === 'done' && ' · done'}
+              {align.status === 'error' && ' · error'}
+            </DialogTitle>
             <DialogContent>
-              <Caption1 className={styles.empty}>
-                Claude is adding <code>@needs:</code> dependency annotations to this project&apos;s
-                plan file. When it finishes, review the changes in your <code>plan.md</code> (it&apos;s
-                under version control) — the task board re-syncs automatically.
-              </Caption1>
+              {align.status === 'running' && (
+                <Spinner
+                  size="tiny"
+                  labelPosition="after"
+                  label="Claude is adding @needs: annotations to plan.md… Closing this dialog stops it."
+                />
+              )}
+              {align.status === 'done' && (
+                <MessageBar intent="success">
+                  <MessageBarBody>
+                    Done. Review the changes in your <code>plan.md</code> (it&apos;s under version
+                    control) — the task board has re-synced.
+                  </MessageBarBody>
+                </MessageBar>
+              )}
+              {align.status === 'error' && (
+                <MessageBar intent="error">
+                  <MessageBarBody>
+                    The align run ended with an error — see the transcript below.
+                  </MessageBarBody>
+                </MessageBar>
+              )}
               <Transcript
                 runId={align.runId}
                 taskId={null}
@@ -379,8 +454,8 @@ export function Projects(): JSX.Element {
               />
             </DialogContent>
             <DialogActions>
-              <Button appearance="primary" onClick={() => setAlign((a) => ({ ...a, open: false }))}>
-                Close
+              <Button appearance="primary" onClick={closeAlign}>
+                {align.status === 'running' ? 'Stop & close' : 'Close'}
               </Button>
             </DialogActions>
           </DialogBody>
