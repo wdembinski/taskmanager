@@ -69,18 +69,38 @@ function splitContract(title: string): { title: string; isContract: boolean } {
 }
 
 /**
- * Split a folded task title into its display title and its declared dependency
- * titles. `@needs:` is matched only as a trailing clause, so a title without it
- * is returned unchanged with no dependencies.
+ * Resolve a raw `@needs:` clause into dependency titles.
+ *
+ * The clause is comma-separated, but task titles themselves routinely contain
+ * commas (e.g. "Create packages (`apps/*`, `packages/*`, `tools/*`)"), so a naive
+ * comma-split shatters such a title into fragments that match no task and block the
+ * dependent FOREVER. Instead we resolve against the set of ACTUAL task titles,
+ * greedily consuming the LONGEST run of comma-fragments that reconstitutes a real
+ * title. A fragment that matches nothing is kept as-is (surfaced as an unmet dep,
+ * not silently dropped) — same as the old behavior for genuinely-unknown refs.
  */
-function splitNeeds(title: string): { title: string; needs: string[] } {
-  const m = NEEDS.exec(title);
-  if (!m) return { title, needs: [] };
-  const needs = m[1]
+function resolveNeeds(raw: string, titles: ReadonlySet<string>): string[] {
+  const parts = raw
     .split(',')
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
-  return { title: title.slice(0, m.index).trim(), needs };
+  const needs: string[] = [];
+  for (let i = 0; i < parts.length; ) {
+    let end = -1;
+    let candidate = '';
+    for (let j = i; j < parts.length; j++) {
+      candidate = j === i ? parts[j] : `${candidate}, ${parts[j]}`;
+      if (titles.has(candidate)) end = j; // keep scanning: prefer the longest match
+    }
+    if (end >= 0) {
+      needs.push(parts.slice(i, end + 1).join(', '));
+      i = end + 1;
+    } else {
+      needs.push(parts[i]);
+      i += 1;
+    }
+  }
+  return needs;
 }
 
 /**
@@ -136,13 +156,26 @@ function locate(markdown: string): LocatedTask[] {
   // `tickPlanCheckbox` and `parsePlan` share the exact same stripped identity. The
   // `@contract` marker is removed first so it can precede or follow a `@needs:`
   // clause without corrupting the parsed dependency list.
-  for (const task of tasks) {
+  // Peel the `@contract` marker and the trailing `@needs:` clause off each folded
+  // title. Dependency RESOLUTION is a SECOND pass because it must match against the
+  // set of ALL task titles (titles contain commas, so a clause can't be split on
+  // commas alone — see resolveNeeds).
+  const rawNeeds: (string | null)[] = tasks.map((task) => {
     const contract = splitContract(task.title);
     task.isContract = contract.isContract;
-    const { title, needs } = splitNeeds(contract.title);
-    task.title = title;
-    task.needs = needs;
-  }
+    const m = NEEDS.exec(contract.title);
+    if (!m) {
+      task.title = contract.title;
+      return null;
+    }
+    task.title = contract.title.slice(0, m.index).trim();
+    return m[1];
+  });
+  const titles = new Set(tasks.map((t) => t.title));
+  tasks.forEach((task, i) => {
+    const raw = rawNeeds[i];
+    task.needs = raw === null ? [] : resolveNeeds(raw, titles);
+  });
 
   return tasks;
 }

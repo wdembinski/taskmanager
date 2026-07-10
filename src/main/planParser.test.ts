@@ -96,6 +96,31 @@ describe('parsePlan', () => {
     });
   });
 
+  it('resolves a @needs dependency whose title contains commas (no comma-shatter)', () => {
+    // Regression: naive comma-split turned one real dep into 3 phantom fragments
+    // that never matched, blocking the dependent forever.
+    const tasks = parsePlan(
+      [
+        '## P',
+        '- [x] Create packages (`apps/*`, `packages/*`, `tools/*`) with stubs',
+        '- [ ] Vite app @needs: Create packages (`apps/*`, `packages/*`, `tools/*`) with stubs',
+      ].join('\n'),
+    );
+    expect(tasks[1].needs).toEqual(['Create packages (`apps/*`, `packages/*`, `tools/*`) with stubs']);
+  });
+
+  it('resolves a comma-in-title dep alongside a second plain dep', () => {
+    const tasks = parsePlan(
+      [
+        '## P',
+        '- [x] Define DTOs (a, b, c)',
+        '- [x] Set up DB',
+        '- [ ] Build API @needs: Define DTOs (a, b, c), Set up DB',
+      ].join('\n'),
+    );
+    expect(tasks[2].needs).toEqual(['Define DTOs (a, b, c)', 'Set up DB']);
+  });
+
   it('honors @needs on a wrapped continuation line (folded before extraction)', () => {
     const tasks = parsePlan(['## P', '- [ ] A big task', '      @needs: Prereq'].join('\n'));
     expect(tasks[0]).toEqual({
