@@ -12,8 +12,12 @@
  * lists and answers them — so they live in `shared`.
  */
 
-/** Why a task is parked: awaiting approval for a tool, or an answer to a question. */
-export type AttentionKind = 'permission' | 'question';
+/**
+ * Why a task is parked: awaiting approval for a tool, an answer to a question, or —
+ * for the team-orchestrator feature — a human to resolve a git **merge conflict**
+ * that arose while integrating the task's branch back into the base.
+ */
+export type AttentionKind = 'permission' | 'question' | 'merge-conflict';
 
 /** One thing waiting on a human, tied to the live run (and task) that raised it. */
 export interface AttentionItem {
@@ -40,6 +44,14 @@ export interface AttentionItem {
   toolName: string | null;
   /** For `permission` items, why the risk policy routed it to a human. */
   reason: string | null;
+  /**
+   * For `merge-conflict` items, the worktree the human resolves the conflict in
+   * (absolute path). Null for other kinds. The conflicted files live here — the
+   * user opens it, fixes the markers, and answers to finish integration.
+   */
+  worktreePath?: string | null;
+  /** For `merge-conflict` items, the task's branch being integrated. Null otherwise. */
+  branch?: string | null;
   /** Epoch ms when the item was raised (inbox sorts oldest-first). */
   createdAt: number;
 }
@@ -50,6 +62,9 @@ export interface AttentionItem {
  *     then); an optional `note` becomes guidance to Claude (the deny reason, or
  *     an extra instruction on approve).
  *   - `question` items expect `reply` with the answer text.
+ *   - `merge-conflict` items expect `approve` ("I resolved it — finish the merge",
+ *     which continues the rebase and fast-forwards base) or `deny` ("abandon" —
+ *     mark the task failed and keep the branch/worktree for later).
  */
 export type AttentionAnswer =
   | { decision: 'approve'; note?: string }

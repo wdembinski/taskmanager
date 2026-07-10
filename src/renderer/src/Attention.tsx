@@ -53,15 +53,31 @@ const useStyles = makeStyles({
   note: { flex: 1 },
   choices: { display: 'flex', flexWrap: 'wrap', gap: '6px' },
   orFreeText: { color: tokens.colorNeutralForeground3, marginTop: '2px' },
+  path: {
+    fontFamily: 'ui-monospace, Consolas, monospace',
+    fontSize: '12px',
+    wordBreak: 'break-all',
+    color: tokens.colorNeutralForeground2,
+  },
   empty: { color: tokens.colorNeutralForeground3 },
 });
 
 function KindBadge({ kind }: { kind: AttentionItem['kind'] }): JSX.Element {
-  return kind === 'permission' ? (
-    <Badge appearance="tint" color="severe">
-      permission
-    </Badge>
-  ) : (
+  if (kind === 'permission') {
+    return (
+      <Badge appearance="tint" color="severe">
+        permission
+      </Badge>
+    );
+  }
+  if (kind === 'merge-conflict') {
+    return (
+      <Badge appearance="tint" color="danger">
+        merge conflict
+      </Badge>
+    );
+  }
+  return (
     <Badge appearance="tint" color="warning">
       question
     </Badge>
@@ -103,8 +119,27 @@ function InboxItem({
 
       <div className={styles.prompt}>{item.prompt}</div>
       {item.reason && <Caption1 className={styles.reason}>Held because it {item.reason}.</Caption1>}
+      {item.kind === 'merge-conflict' && item.worktreePath && (
+        <Caption1 className={styles.path} title={item.worktreePath}>
+          Worktree: {item.worktreePath}
+        </Caption1>
+      )}
 
-      {item.kind === 'permission' ? (
+      {item.kind === 'merge-conflict' ? (
+        <div className={styles.actions}>
+          <div className={styles.note} />
+          <Button
+            appearance="primary"
+            disabled={busy}
+            onClick={() => void answer({ decision: 'approve' })}
+          >
+            Resolved — finish merge
+          </Button>
+          <Button disabled={busy} onClick={() => void answer({ decision: 'deny' })}>
+            Abandon
+          </Button>
+        </div>
+      ) : item.kind === 'permission' ? (
         <div className={styles.actions}>
           <Field className={styles.note} label="Optional note to Claude">
             <Textarea

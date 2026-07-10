@@ -65,6 +65,7 @@ export function ProjectDialog({
   const [model, setModel] = useState<ClaudeModel>('sonnet');
   const [permMode, setPermMode] = useState<PermissionMode>('acceptEdits');
   const [concurrency, setConcurrency] = useState(1);
+  const [useWorktrees, setUseWorktrees] = useState(true);
   const [writeBack, setWriteBack] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -81,11 +82,13 @@ export function ProjectDialog({
       setModel(project.defaultModel);
       setPermMode(project.defaultPermissionMode);
       setConcurrency(project.concurrency);
+      setUseWorktrees(project.useWorktrees);
       setWriteBack(project.writeBackPlan);
     } else {
       setPath('');
       setPlanPath('');
       setName('');
+      setUseWorktrees(true); // default on; only engages for git repos
       void window.api.invoke('settings:get').then((s) => {
         setModel(s.defaultModel);
         setPermMode(s.defaultPermissionMode);
@@ -121,6 +124,7 @@ export function ProjectDialog({
           defaultModel: model,
           defaultPermissionMode: permMode,
           concurrency,
+          useWorktrees,
           writeBackPlan: writeBack,
         });
       } else if (project) {
@@ -130,6 +134,7 @@ export function ProjectDialog({
           defaultModel: model,
           defaultPermissionMode: permMode,
           concurrency,
+          useWorktrees,
           writeBackPlan: writeBack,
         });
         // The plan file may have changed — reconcile tasks from the new source.
@@ -169,7 +174,10 @@ export function ProjectDialog({
                 </div>
               </Field>
 
-              <Field label="Plan file" hint="Defaults to plan.md in the folder. Point at any markdown file.">
+              <Field
+                label="Plan file"
+                hint="Defaults to plan.md in the folder. Point at any markdown file."
+              >
                 <div className={styles.row}>
                   <Input
                     className={`${styles.grow} ${styles.mono}`}
@@ -182,7 +190,11 @@ export function ProjectDialog({
               </Field>
 
               <Field label="Display name" hint="Defaults to the folder name.">
-                <Input value={name} onChange={(_e, d) => setName(d.value)} placeholder="(folder name)" />
+                <Input
+                  value={name}
+                  onChange={(_e, d) => setName(d.value)}
+                  placeholder="(folder name)"
+                />
               </Field>
 
               <div className={styles.row}>
@@ -226,6 +238,14 @@ export function ProjectDialog({
                     const n = d.value ?? Number(d.displayValue);
                     if (Number.isFinite(n)) setConcurrency(Math.max(1, Math.round(n as number)));
                   }}
+                />
+              </Field>
+
+              <Field hint="Each task runs on its own git branch in a separate worktree, auto-merged back into the base branch when it completes. Only applies to git repositories — other projects run in the shared folder.">
+                <Switch
+                  checked={useWorktrees}
+                  label="Isolated worktrees (git)"
+                  onChange={(_e, d) => setUseWorktrees(d.checked)}
                 />
               </Field>
 

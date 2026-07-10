@@ -87,6 +87,13 @@ export interface Project {
    */
   concurrency: number;
   /**
+   * When true (and the project is a git repo), each task runs in its own git
+   * worktree on its own branch, and the scheduler auto-integrates the branch back
+   * into the base when the task completes. Non-git projects ignore this and run in
+   * the shared project directory. Default on.
+   */
+  useWorktrees: boolean;
+  /**
    * When true, the scheduler ticks the matching `- [ ]` back to `- [x]` in the
    * project's plan file as each task completes. Off by default so we never touch
    * the user's file unless they opt in. Only the single completed checkbox is
@@ -108,6 +115,7 @@ export interface AddProjectInput {
   defaultModel?: ClaudeModel;
   defaultPermissionMode?: PermissionMode;
   concurrency?: number;
+  useWorktrees?: boolean;
   writeBackPlan?: boolean;
 }
 
@@ -119,7 +127,13 @@ export interface AddProjectInput {
 export type ProjectPatch = Partial<
   Pick<
     Project,
-    'name' | 'planPath' | 'defaultModel' | 'defaultPermissionMode' | 'concurrency' | 'writeBackPlan'
+    | 'name'
+    | 'planPath'
+    | 'defaultModel'
+    | 'defaultPermissionMode'
+    | 'concurrency'
+    | 'useWorktrees'
+    | 'writeBackPlan'
   >
 >;
 

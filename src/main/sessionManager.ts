@@ -21,6 +21,8 @@ export interface StartOptions {
   permission?: PermissionGate;
   /** Resume an existing conversation by its session id (Phase 5 auto-respawn). */
   resumeSessionId?: string;
+  /** Use this run id instead of generating one (lets a caller reserve it up front). */
+  runId?: string;
 }
 
 export class SessionManager {
@@ -41,7 +43,7 @@ export class SessionManager {
    */
   start(request: StartSessionRequest, options: StartOptions = {}): { runId: string } {
     const { onEvent, permission, resumeSessionId } = options;
-    const runId = randomUUID();
+    const runId = options.runId ?? randomUUID();
     const handle = runClaudeSession(
       request,
       (event) => {

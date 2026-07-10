@@ -52,6 +52,7 @@ interface ProjectRow {
   defaultModel: string;
   defaultPermissionMode: string;
   concurrency: number;
+  useWorktrees: number;
   writeBackPlan: number;
   createdAt: number;
 }
@@ -128,6 +129,7 @@ export function createStore(dbPath: string): Store {
       defaultModel          TEXT NOT NULL,
       defaultPermissionMode TEXT NOT NULL,
       concurrency           INTEGER NOT NULL DEFAULT 1,
+      useWorktrees          INTEGER NOT NULL DEFAULT 1,
       writeBackPlan         INTEGER NOT NULL DEFAULT 0,
       createdAt             INTEGER NOT NULL
     );
@@ -188,6 +190,12 @@ export function createStore(dbPath: string): Store {
     db.exec(`ALTER TABLE tasks ADD COLUMN dependsOn TEXT`);
   }
 
+  // Migrate databases created before per-task git worktrees. Default on (1); it only
+  // engages for git repos, so non-git projects keep running in the shared directory.
+  if (!projectColumns.some((c) => c.name === 'useWorktrees')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN useWorktrees INTEGER NOT NULL DEFAULT 1`);
+  }
+
   // Migrate databases created before per-project concurrency existed. Concurrency
   // used to be a single global setting applied to every project, so seed each
   // existing project with the current global value — that preserves their exact
@@ -210,8 +218,8 @@ export function createStore(dbPath: string): Store {
   }
 
   const insertProject = db.prepare<[ProjectRow]>(
-    `INSERT INTO projects (id, name, path, planPath, defaultModel, defaultPermissionMode, concurrency, writeBackPlan, createdAt)
-     VALUES (@id, @name, @path, @planPath, @defaultModel, @defaultPermissionMode, @concurrency, @writeBackPlan, @createdAt)`,
+    `INSERT INTO projects (id, name, path, planPath, defaultModel, defaultPermissionMode, concurrency, useWorktrees, writeBackPlan, createdAt)
+     VALUES (@id, @name, @path, @planPath, @defaultModel, @defaultPermissionMode, @concurrency, @useWorktrees, @writeBackPlan, @createdAt)`,
   );
   const selectProjects = db.prepare(`SELECT * FROM projects ORDER BY createdAt`);
   const selectProject = db.prepare(`SELECT * FROM projects WHERE id = ?`);
@@ -285,6 +293,7 @@ export function createStore(dbPath: string): Store {
       defaultModel: r.defaultModel as Project['defaultModel'],
       defaultPermissionMode: r.defaultPermissionMode as Project['defaultPermissionMode'],
       concurrency: r.concurrency,
+      useWorktrees: r.useWorktrees !== 0,
       writeBackPlan: r.writeBackPlan !== 0,
       createdAt: r.createdAt,
     };
@@ -351,10 +360,15 @@ export function createStore(dbPath: string): Store {
         defaultModel: input.defaultModel ?? defaults.defaultModel,
         defaultPermissionMode: input.defaultPermissionMode ?? defaults.defaultPermissionMode,
         concurrency: Math.max(1, Math.round(input.concurrency ?? defaults.concurrency)),
+        useWorktrees: input.useWorktrees ?? true,
         writeBackPlan: input.writeBackPlan ?? defaults.writeBackPlan,
         createdAt: Date.now(),
       };
-      insertProject.run({ ...project, writeBackPlan: project.writeBackPlan ? 1 : 0 });
+      insertProject.run({
+        ...project,
+        useWorktrees: project.useWorktrees ? 1 : 0,
+        writeBackPlan: project.writeBackPlan ? 1 : 0,
+      });
       return project;
     },
 
@@ -398,6 +412,10 @@ export function createStore(dbPath: string): Store {
       if (patch.concurrency !== undefined) {
         sets.push(`concurrency = @concurrency`);
         params.concurrency = Math.max(1, Math.round(patch.concurrency));
+      }
+      if (patch.useWorktrees !== undefined) {
+        sets.push(`useWorktrees = @useWorktrees`);
+        params.useWorktrees = patch.useWorktrees ? 1 : 0;
       }
       if (patch.writeBackPlan !== undefined) {
         sets.push(`writeBackPlan = @writeBackPlan`);

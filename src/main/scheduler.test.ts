@@ -121,6 +121,20 @@ describe('buildTaskPrompt', () => {
     expect(prompt).not.toContain('This task is under');
     expect(prompt).not.toContain('\n\n\n'); // no triple blank from the dropped line
   });
+
+  it('invites plan edits in shared-dir mode (planRelPath given)', () => {
+    const prompt = buildTaskPrompt('Orchestrator', task, { planRelPath: 'plan.md' });
+    expect(prompt).toContain('plan.md');
+    expect(prompt).toContain('you may add them to the plan file');
+  });
+
+  it('isolates the agent on its branch in worktree mode (branch given)', () => {
+    const prompt = buildTaskPrompt('Orchestrator', task, { branch: 'orch/abc123' });
+    expect(prompt).toContain('orch/abc123');
+    expect(prompt).toContain('Do NOT edit the plan file');
+    // The plan-editing invitation from shared-dir mode must be absent.
+    expect(prompt).not.toContain('you may add them to the plan file');
+  });
 });
 
 describe('Scheduler.decidePermission — full auto (bypassPermissions)', () => {

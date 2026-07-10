@@ -40,6 +40,7 @@ import { evaluateToolUse } from './permissionPolicy';
 import { tickPlanCheckbox } from './planParser';
 import type { SessionManager } from './sessionManager';
 import type { Store } from './store';
+import type { WorktreeManager, WorktreePrep } from './worktreeManager';
 
 /** Sent to Claude when a permission is denied with no note of its own. */
 const DEFAULT_DENY_MESSAGE =
@@ -104,11 +105,21 @@ export function selectNextPending<T extends Schedulable>(
 
 /**
  * The prompt handed to Claude for one task. Pure, so it reads clearly and is stable.
- * When `planRelPath` is given, the agent is told it may evolve the plan file on the
- * fly (Phase 8) — the orchestrator watches that file and re-syncs new milestones/
- * tasks into the board live.
+ *
+ * Two shaping options, mutually exclusive:
+ *   - `planRelPath` (shared-dir mode): the agent may evolve the plan file on the fly
+ *     (Phase 8) — the orchestrator watches that file and re-syncs new milestones/
+ *     tasks into the board live.
+ *   - `branch` (worktree mode, team orchestrator): the agent works on an isolated git
+ *     branch that the orchestrator integrates back into base; it must NOT touch the
+ *     plan file (owned by the main tree) and should commit its work on the branch.
  */
-export function buildTaskPrompt(projectName: string, task: Task, planRelPath?: string): string {
+export function buildTaskPrompt(
+  projectName: string,
+  task: Task,
+  options: { planRelPath?: string; branch?: string } = {},
+): string {
+  const { planRelPath, branch } = options;
   return [
     `You are working through the plan for the project "${projectName}".`,
     '',
@@ -120,9 +131,19 @@ export function buildTaskPrompt(projectName: string, task: Task, planRelPath?: s
     '',
     'Make the necessary changes, then briefly summarize what you did.',
     '',
-    // The agent may refine the plan itself (Phase 8): edits to the plan file are
-    // watched and re-synced into the task board live.
-    ...(planRelPath
+    // Worktree mode: the agent is isolated on its own branch; the orchestrator
+    // integrates it back and owns the plan file, so the agent must not edit it.
+    ...(branch
+      ? [
+          `You are on an isolated git branch "${branch}" — your own worktree. Commit your`,
+          `work on this branch when you are done (the orchestrator merges it back into the`,
+          `base branch automatically). Do NOT edit the plan file; the orchestrator manages it.`,
+          '',
+        ]
+      : []),
+    // Shared-dir mode: the agent may refine the plan itself (Phase 8): edits to the
+    // plan file are watched and re-synced into the task board live.
+    ...(planRelPath && !branch
       ? [
           `If the work reveals new milestones or tasks, you may add them to the plan file`,
           `"${planRelPath}" — "## Milestone" headings and "- [ ] task" checkbox items. The`,
@@ -160,6 +181,22 @@ interface Run {
   runId: string;
   /** Set once we've decided the task's outcome, so a trailing `exited` doesn't re-settle it. */
   settled: boolean;
+  /** (Worktree mode) the task's branch, set once the worktree is prepared. */
+  branch?: string;
+  /** (Worktree mode) the base branch this task integrates back into. */
+  base?: string;
+  /** (Worktree mode) the worktree directory the session ran in. */
+  worktree?: string;
+}
+
+/** A parked merge conflict awaiting a human, so `answerAttention` can finish integrating. */
+interface PendingIntegration {
+  projectId: string;
+  taskId: string;
+  runId: string;
+  branch: string;
+  base: string;
+  worktree: string;
 }
 
 export class Scheduler {
@@ -190,6 +227,12 @@ export class Scheduler {
       resolve: (result: PermissionDecisionResult) => void;
     }
   >();
+  /**
+   * Merge conflicts parked for a human (team orchestrator), keyed by their inbox
+   * item id. Holds what `answerAttention` needs to finish (or abandon) integrating
+   * the task's branch once the human has resolved the conflict in the worktree.
+   */
+  private readonly pendingIntegrations = new Map<string, PendingIntegration>();
   /** The permission gate handed to every task run (null until the broker is up). */
   private gate: PermissionGate | null = null;
   /**
@@ -211,6 +254,12 @@ export class Scheduler {
     private readonly emitAttentionResolved: (id: string) => void,
     /** Push the usage-limit gate's state (or null when it clears) to the UI. */
     private readonly emitLimit: (state: LimitState | null) => void,
+    /**
+     * Gives each task its own git worktree/branch and integrates it back into base
+     * (team orchestrator). Optional: when omitted (e.g. unit tests) every task runs
+     * in the shared project directory, exactly as before this feature.
+     */
+    private readonly worktrees?: WorktreeManager,
   ) {
     this.limitGate = new LimitGate({
       now: () => Date.now(),
@@ -261,12 +310,19 @@ export class Scheduler {
       this.sessions.stop(run.runId); // triggers `exited`, which cleans up bookkeeping
       this.updateTask(run.taskId, { status: 'stopped' }, null);
     }
+    // Clear any merge conflicts parked for this project (team orchestrator): their
+    // run already ended, so they aren't in `runs` above. Drop the inbox item and
+    // mark the task stopped, keeping the branch/worktree for later.
+    for (const [itemId, pending] of [...this.pendingIntegrations.entries()]) {
+      if (pending.projectId !== projectId) continue;
+      this.pendingIntegrations.delete(itemId);
+      this.resolveAttention(itemId);
+      this.updateTask(pending.taskId, { status: 'stopped' }, null);
+    }
     // If a usage limit has parked this project's tasks (Phase 5), stopping cancels
     // them too, so they are NOT resumed when the gate reopens.
     if (this.limitGate.active) {
-      const parked = this.store
-        .getTasks(projectId)
-        .filter((t) => t.status === 'blocked-by-limit');
+      const parked = this.store.getTasks(projectId).filter((t) => t.status === 'blocked-by-limit');
       for (const task of parked) this.updateTask(task.id, { status: 'stopped' }, null);
       this.limitGate.unpark(parked.map((t) => t.id));
     }
@@ -387,6 +443,27 @@ export class Scheduler {
     const item = this.attention.get(itemId);
     if (!item) return;
 
+    if (item.kind === 'merge-conflict') {
+      const pending = this.pendingIntegrations.get(itemId);
+      if (!pending) return; // already handled
+      this.pendingIntegrations.delete(itemId);
+      this.resolveAttention(itemId);
+      if (answer.decision === 'deny') {
+        // Abandon: fail the task but keep the branch/worktree so work isn't lost.
+        this.noteRun(
+          pending.projectId,
+          pending.taskId,
+          pending.runId,
+          `Integration abandoned by the human; branch "${pending.branch}" and its worktree were kept.`,
+        );
+        this.updateTask(pending.taskId, { status: 'failed' }, null);
+      } else {
+        // Resolved: continue the rebase and fast-forward base.
+        void this.finishConflict(pending);
+      }
+      return;
+    }
+
     if (item.kind === 'permission') {
       const pending = this.pendingDecisions.get(itemId);
       if (!pending) return; // its run already ended — nothing to release
@@ -424,6 +501,7 @@ export class Scheduler {
       pending.resolve({ behavior: 'deny', message: 'orchestrator is shutting down' });
     }
     this.pendingDecisions.clear();
+    this.pendingIntegrations.clear();
     this.activeProjects.clear();
     this.runs.clear();
     this.inFlight.clear();
@@ -463,31 +541,87 @@ export class Scheduler {
    * a usage limit parked it (Phase 5) or it was interrupted by an app restart
    * (Phase 6) — the CLI RESUMES that exact conversation with a continue-nudge, so
    * no context is lost. A never-run task starts fresh from its full task prompt.
+   *
+   * The run slot is **reserved synchronously** (its runId is generated and added to
+   * `runs`/`inFlight` before returning) so `pump` counts it immediately and never
+   * over-fills the project's concurrency. In worktree mode the actual session start
+   * is deferred until the git worktree is prepared; the shared-dir path (and unit
+   * tests without a WorktreeManager) starts the session synchronously as before.
    */
   private startTask(project: Project, task: Task): string {
+    const runId = randomUUID();
+    const run: Run = { taskId: task.id, projectId: project.id, runId, settled: false };
+    this.runs.set(runId, run);
+    this.inFlight.add(task.id);
+    if (this.worktrees) {
+      // Async: prepare (or reuse) the task's worktree, then start the session in it.
+      void this.prepareAndLaunch(project, task, run);
+    } else {
+      // No worktree manager (unit tests / degenerate setups): run in the shared dir.
+      this.launch(project, task, run, { mode: 'shared', cwd: project.path });
+    }
+    return runId;
+  }
+
+  /**
+   * Ask the worktree manager where this task should run, then start its session
+   * there — unless the run was stopped or usage-limited during preparation, in which
+   * case the reservation is released without ever spawning a process.
+   */
+  private async prepareAndLaunch(project: Project, task: Task, run: Run): Promise<void> {
+    let prep: WorktreePrep;
+    try {
+      prep = await this.worktrees!.prepare(project, task);
+    } catch {
+      // Preparation blew up (odd git state) — fall back to the shared dir so the task
+      // still runs rather than being lost.
+      prep = { mode: 'shared', cwd: project.path };
+    }
+    if (this.disposed) return;
+    // Stopped / parked by a usage limit while we were preparing: don't start it, and
+    // free the reserved slot so the queue isn't stuck (the imminent `exited` that
+    // normally cleans up never fires — the session never started).
+    if (run.settled || !this.runs.has(run.runId)) {
+      this.runs.delete(run.runId);
+      this.inFlight.delete(run.taskId);
+      this.pump(run.projectId);
+      return;
+    }
+    this.launch(project, task, run, prep);
+  }
+
+  /** Spawn the session for a reserved run in the prepared working directory. */
+  private launch(project: Project, task: Task, run: Run, prep: WorktreePrep): void {
     const resumeSessionId = task.sessionId ?? undefined;
-    // The plan file's path relative to the project dir, so the agent can edit it.
+    if (prep.mode === 'worktree') {
+      run.branch = prep.branch;
+      run.base = prep.base;
+      run.worktree = prep.cwd;
+    }
+    // The plan file's path relative to the project dir, so a shared-dir agent can
+    // edit it. Worktree agents get the isolated (no-plan-edit) prompt instead.
     const planRel = relative(project.path, project.planPath) || project.planPath;
+    const prompt = resumeSessionId
+      ? RESUME_NUDGE
+      : buildTaskPrompt(
+          project.name,
+          task,
+          prep.mode === 'worktree' ? { branch: prep.branch } : { planRelPath: planRel },
+        );
     const request: StartSessionRequest = {
-      prompt: resumeSessionId ? RESUME_NUDGE : buildTaskPrompt(project.name, task, planRel),
-      cwd: project.path,
+      prompt,
+      cwd: prep.cwd,
       model: project.defaultModel,
       permissionMode: project.defaultPermissionMode,
     };
-    // `runId` is assigned synchronously by start(); the callback only fires on
-    // later async events, so it is always defined by the time it is read.
-    let runId = '';
-    const started = this.sessions.start(request, {
-      onEvent: (event) => this.onRunEvent(runId, event),
+    this.sessions.start(request, {
+      runId: run.runId, // use the reserved id so events and bookkeeping line up
+      onEvent: (event) => this.onRunEvent(run.runId, event),
       // Gate every task run through the broker so risky tools are vetoed
       // pre-execution (ungated only if the broker never came up).
       permission: this.gate ?? undefined,
       resumeSessionId,
     });
-    runId = started.runId;
-    this.runs.set(runId, { taskId: task.id, projectId: project.id, runId, settled: false });
-    this.inFlight.add(task.id);
-    return runId;
   }
 
   private onRunEvent(runId: string, event: SessionEvent): void {
@@ -654,14 +788,199 @@ export class Scheduler {
       this.pendingDecisions.delete(itemId);
     }
     for (const item of [...this.attention.values()]) {
-      if (item.runId === runId) this.resolveAttention(item.id);
+      if (item.runId === runId) {
+        this.pendingIntegrations.delete(item.id); // drop any parked conflict for this run
+        this.resolveAttention(item.id);
+      }
     }
   }
 
-  /** Apply a terminal status to a task and, on success, optionally tick the plan. */
+  /**
+   * Apply a terminal status to a task and, on success, optionally tick the plan.
+   *
+   * A worktree run that finished successfully is NOT marked done here — its branch
+   * must first integrate back into base (rebase → ff-merge). We kick that off async
+   * and let its outcome set the final status (done / parked on conflict / failed).
+   * A failed worktree run keeps its worktree and branch for inspection.
+   */
   private settle(run: Run, status: 'done' | 'failed'): void {
+    if (status === 'done' && run.branch && run.base && run.worktree && this.worktrees) {
+      // Capture the integration inputs now — the imminent `exited` event deletes this
+      // run from `runs`, and integration is async.
+      const project = this.store.getProject(run.projectId);
+      if (project) {
+        void this.integrateWorktree(project, {
+          taskId: run.taskId,
+          runId: run.runId,
+          branch: run.branch,
+          base: run.base,
+          worktree: run.worktree,
+        });
+        return;
+      }
+    }
     this.updateTask(run.taskId, { status }, null);
     if (status === 'done') this.maybeWriteBackPlan(run.taskId);
+  }
+
+  /**
+   * Integrate a finished worktree task's branch back into base, then apply the
+   * outcome: merged → done (+ plan write-back); conflict → park for a human;
+   * dirty-base / error → failed (keeping the worktree so nothing is lost).
+   */
+  private async integrateWorktree(
+    project: Project,
+    ctx: { taskId: string; runId: string; branch: string; base: string; worktree: string },
+  ): Promise<void> {
+    const task = this.store.getTask(ctx.taskId);
+    const message = `orchestrator: ${task?.title ?? ctx.taskId}`;
+    const result = await this.worktrees!.integrate(
+      project,
+      ctx.branch,
+      ctx.base,
+      ctx.worktree,
+      message,
+    );
+    if (this.disposed) return;
+    switch (result.status) {
+      case 'merged':
+        this.noteRun(
+          project.id,
+          ctx.taskId,
+          ctx.runId,
+          `Merged branch "${ctx.branch}" into ${ctx.base}.`,
+        );
+        this.updateTask(ctx.taskId, { status: 'done' }, null);
+        this.maybeWriteBackPlan(ctx.taskId);
+        break;
+      case 'conflict':
+        this.raiseMergeConflict(project, ctx);
+        break;
+      case 'dirty-base':
+        this.failIntegration(
+          project.id,
+          ctx,
+          `Base branch "${result.base}" has uncommitted changes, so branch "${ctx.branch}" ` +
+            `was not merged. Commit or stash your work in ${project.path}, then re-run this task.`,
+        );
+        break;
+      case 'error':
+        this.failIntegration(
+          project.id,
+          ctx,
+          `Could not integrate branch "${ctx.branch}": ${result.message} (the worktree at ` +
+            `${ctx.worktree} was kept for inspection).`,
+        );
+        break;
+    }
+  }
+
+  /** Park a task whose branch hit a merge conflict, so a human can resolve it. */
+  private raiseMergeConflict(
+    project: Project,
+    ctx: { taskId: string; runId: string; branch: string; base: string; worktree: string },
+  ): void {
+    const task = this.store.getTask(ctx.taskId);
+    const item: AttentionItem = {
+      id: randomUUID(),
+      runId: ctx.runId,
+      taskId: ctx.taskId,
+      projectId: project.id,
+      taskTitle: task?.title ?? '(unknown task)',
+      kind: 'merge-conflict',
+      prompt:
+        `Integrating branch "${ctx.branch}" into ${ctx.base} hit a merge conflict. Resolve the ` +
+        `conflicts in the worktree below (edit the files, then \`git add\` them), then choose ` +
+        `Resolved to finish the merge — or Abandon to leave the branch for later.`,
+      options: [],
+      toolName: null,
+      reason: null,
+      worktreePath: ctx.worktree,
+      branch: ctx.branch,
+      createdAt: Date.now(),
+    };
+    this.attention.set(item.id, item);
+    this.pendingIntegrations.set(item.id, {
+      projectId: project.id,
+      taskId: ctx.taskId,
+      runId: ctx.runId,
+      branch: ctx.branch,
+      base: ctx.base,
+      worktree: ctx.worktree,
+    });
+    this.updateTask(ctx.taskId, { status: 'waiting-input' }, ctx.runId);
+    this.emitAttention(item);
+  }
+
+  /** Mark an integration attempt failed, surfacing the reason in the task transcript. */
+  private failIntegration(
+    projectId: string,
+    ctx: { taskId: string; runId: string },
+    reason: string,
+  ): void {
+    this.noteRun(projectId, ctx.taskId, ctx.runId, reason);
+    this.updateTask(ctx.taskId, { status: 'failed' }, null);
+  }
+
+  /** Append a synthetic assistant note to a task's transcript (integration outcomes). */
+  private noteRun(projectId: string, taskId: string, runId: string, text: string): void {
+    this.store.appendTaskEvent(projectId, taskId, runId, { kind: 'assistant', text });
+  }
+
+  /**
+   * Finish integrating after a human resolved a rebase conflict in the worktree:
+   * continue the rebase + fast-forward. Still conflicted → re-park; otherwise apply
+   * the same outcomes as the initial attempt.
+   */
+  private async finishConflict(pending: PendingIntegration): Promise<void> {
+    const project = this.store.getProject(pending.projectId);
+    if (!project) return;
+    const ctx = {
+      taskId: pending.taskId,
+      runId: pending.runId,
+      branch: pending.branch,
+      base: pending.base,
+      worktree: pending.worktree,
+    };
+    const result = await this.worktrees!.finishAfterConflict(
+      project,
+      pending.branch,
+      pending.base,
+      pending.worktree,
+    );
+    if (this.disposed) return;
+    switch (result.status) {
+      case 'merged':
+        this.noteRun(
+          project.id,
+          ctx.taskId,
+          ctx.runId,
+          `Merged branch "${ctx.branch}" into ${ctx.base}.`,
+        );
+        this.updateTask(ctx.taskId, { status: 'done' }, null);
+        this.maybeWriteBackPlan(ctx.taskId);
+        break;
+      case 'conflict':
+        // Still unresolved — park again so the human can keep working on it.
+        this.raiseMergeConflict(project, ctx);
+        break;
+      case 'dirty-base':
+        this.failIntegration(
+          project.id,
+          ctx,
+          `Base branch "${result.base}" has uncommitted changes, so branch "${ctx.branch}" ` +
+            `was not merged. Commit or stash your work in ${project.path}, then re-run this task.`,
+        );
+        break;
+      case 'error':
+        this.failIntegration(
+          project.id,
+          ctx,
+          `Could not integrate branch "${ctx.branch}": ${result.message} (the worktree at ` +
+            `${ctx.worktree} was kept for inspection).`,
+        );
+        break;
+    }
   }
 
   private maybeWriteBackPlan(taskId: string): void {

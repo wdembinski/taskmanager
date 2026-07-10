@@ -69,6 +69,11 @@ const useStyles = makeStyles({
     color: tokens.colorNeutralForeground3,
     fontFamily: 'ui-monospace, Consolas, monospace',
   },
+  branch: {
+    color: tokens.colorNeutralForeground3,
+    fontFamily: 'ui-monospace, Consolas, monospace',
+    whiteSpace: 'nowrap',
+  },
   empty: { color: tokens.colorNeutralForeground3 },
   waiting: { color: tokens.colorPaletteYellowForeground2, whiteSpace: 'nowrap' },
   rightHead: { display: 'flex', alignItems: 'center', gap: '10px' },
@@ -96,6 +101,11 @@ function unmetDeps(task: Task, all: Task[]): string[] {
   });
 }
 
+/** The orchestrator branch a worktree task runs on (mirrors `taskBranch` in the engine). */
+function taskBranch(taskId: string): string {
+  return `orch/${taskId.slice(0, 8)}`;
+}
+
 /** Group a project's tasks by phase, preserving plan order. */
 function groupByPhase(tasks: Task[]): Array<{ phase: string; tasks: Task[] }> {
   const groups: Array<{ phase: string; tasks: Task[] }> = [];
@@ -119,6 +129,10 @@ export function Board(): JSX.Element {
   const [runIds, setRunIds] = useState<Record<string, string>>({});
   const [states, setStates] = useState<Record<string, SchedulerState>>({});
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  // Inbox item id → task id for tasks parked on a merge conflict, so the board can
+  // flag them. Keyed by item id so `attention:resolved` (which carries only the id)
+  // can clear the right one.
+  const [conflicts, setConflicts] = useState<Record<string, string>>({});
 
   // Load projects + any already-running tasks, and subscribe to live updates.
   useEffect(() => {
@@ -130,6 +144,14 @@ export function Board(): JSX.Element {
     // reflect reality after a tab switch remounts this view — not a stale idle.
     void window.api.invoke('scheduler:states').then((rows) => {
       setStates(Object.fromEntries(rows.map((r) => [r.projectId, r.state])));
+    });
+    // Seed + track merge-conflict parks so the board can badge affected tasks.
+    void window.api.invoke('attention:list').then((items) => {
+      setConflicts(
+        Object.fromEntries(
+          items.filter((i) => i.kind === 'merge-conflict').map((i) => [i.id, i.taskId]),
+        ),
+      );
     });
 
     const offTask = window.api.on('task:changed', ({ task, runId }) => {
@@ -156,6 +178,19 @@ export function Board(): JSX.Element {
       setStates((prev) => ({ ...prev, [projectId]: state }));
     });
 
+    const offAttentionNew = window.api.on('attention:new', (item) => {
+      if (item.kind !== 'merge-conflict') return;
+      setConflicts((prev) => ({ ...prev, [item.id]: item.taskId }));
+    });
+    const offAttentionResolved = window.api.on('attention:resolved', ({ id }) => {
+      setConflicts((prev) => {
+        if (!(id in prev)) return prev;
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+    });
+
     // Phase 8: the plan was edited (possibly by the agent mid-run) and re-synced, or
     // a task was created/deleted. Replace that project's whole task list so new
     // milestones/tasks appear on the board live.
@@ -169,6 +204,8 @@ export function Board(): JSX.Element {
       offTask();
       offScheduler();
       offTasks();
+      offAttentionNew();
+      offAttentionResolved();
     };
   }, []);
 
@@ -186,6 +223,7 @@ export function Board(): JSX.Element {
   }, []);
 
   const selectedRunId = selectedTaskId ? (runIds[selectedTaskId] ?? null) : null;
+  const conflictTaskIds = new Set(Object.values(conflicts));
 
   if (projects === null) {
     return <Spinner label="Loading board…" labelPosition="after" size="tiny" />;
@@ -259,6 +297,11 @@ export function Board(): JSX.Element {
                     <Caption1 className={styles.phaseTitle}>{group.phase}</Caption1>
                     {group.tasks.map((task) => {
                       const unmet = task.status === 'pending' ? unmetDeps(task, tasks) : [];
+                      const inConflict = conflictTaskIds.has(task.id);
+                      // A worktree task shows its branch while it's live (or parked).
+                      const showBranch =
+                        project.useWorktrees &&
+                        (task.status === 'running' || task.status === 'waiting-input');
                       return (
                         <div
                           key={task.id}
@@ -270,11 +313,31 @@ export function Board(): JSX.Element {
                           <Badge appearance="tint" color={STATUS_COLOR[task.status]}>
                             {STATUS_LABEL[task.status]}
                           </Badge>
+                          {inConflict && (
+                            <Badge
+                              appearance="tint"
+                              color="danger"
+                              title="Branch integration hit a merge conflict — resolve it in the Attention inbox"
+                            >
+                              merge conflict
+                            </Badge>
+                          )}
                           <Text className={styles.taskTitle} truncate wrap={false}>
                             {task.title}
                           </Text>
+                          {showBranch && (
+                            <Caption1
+                              className={styles.branch}
+                              title={`Working on branch ${taskBranch(task.id)}`}
+                            >
+                              {taskBranch(task.id)}
+                            </Caption1>
+                          )}
                           {unmet.length > 0 && (
-                            <Caption1 className={styles.waiting} title={`Waiting on: ${unmet.join(', ')}`}>
+                            <Caption1
+                              className={styles.waiting}
+                              title={`Waiting on: ${unmet.join(', ')}`}
+                            >
                               waiting on: {unmet.join(', ')}
                             </Caption1>
                           )}

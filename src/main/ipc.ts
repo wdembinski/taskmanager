@@ -22,6 +22,7 @@ import { PlanWatcher } from './planWatcher';
 import { Scheduler } from './scheduler';
 import { SessionManager } from './sessionManager';
 import { createStore, type Store } from './store';
+import { WorktreeManager } from './worktreeManager';
 
 /**
  * Type-safe wrapper around ipcMain.handle. `K` is constrained to a real channel
@@ -76,6 +77,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // One SQLite file per user, under Electron's managed userData directory.
   const store = createStore(join(app.getPath('userData'), 'orchestrator.db'));
 
+  // Team orchestrator: each task can run in its own git worktree (under userData),
+  // which the scheduler integrates back into base when the task completes.
+  const worktrees = new WorktreeManager(join(app.getPath('userData'), 'worktrees'));
+
   // The scheduler drives tasks through sessions and reports progress to the Board,
   // and raises Attention-inbox items when a task needs a human (Phase 4).
   const scheduler = new Scheduler(
@@ -86,6 +91,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     (item) => send('attention:new', item),
     (id) => send('attention:resolved', { id }),
     (state) => send('limit:changed', state),
+    worktrees,
   );
 
   // Phase 6: heal tasks the previous run left mid-flight (running/waiting-input →
@@ -235,7 +241,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       throw new Error('Stop the task before deleting it.');
     }
     store.deleteTask(taskId);
-    send('project:tasksChanged', { projectId: task.projectId, tasks: store.getTasks(task.projectId) });
+    send('project:tasksChanged', {
+      projectId: task.projectId,
+      tasks: store.getTasks(task.projectId),
+    });
   });
   handle('task:setStatus', async (taskId, status) => {
     const existing = store.getTask(taskId);
