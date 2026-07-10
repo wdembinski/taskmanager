@@ -143,6 +143,12 @@ export interface Task {
   /** Ordering within the project (phase order, then position in the plan). */
   order: number;
   /**
+   * Titles of tasks this one depends on (from a `@needs:` clause in the plan). The
+   * scheduler won't start this task until every named prerequisite is `done`.
+   * Empty for tasks with no declared dependencies (incl. ad-hoc tasks).
+   */
+  dependsOn: string[];
+  /**
    * Where the task came from (Phase 8):
    *   - `plan`  : parsed from the project's plan file; owned by the plan, so a
    *               re-sync can add/remove/reorder it.

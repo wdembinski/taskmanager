@@ -164,6 +164,9 @@ export function TaskDetail({ task, onStatusChanged }: TaskDetailProps): JSX.Elem
       <div className={styles.head}>
         <Subtitle2>{task.title}</Subtitle2>
         {task.phase && <Caption1 className={styles.phase}>{task.phase}</Caption1>}
+        {task.dependsOn?.length > 0 && (
+          <Caption1 className={styles.phase}>Depends on: {task.dependsOn.join(', ')}</Caption1>
+        )}
       </div>
 
       <div className={styles.statusRow}>

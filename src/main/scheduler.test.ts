@@ -10,10 +10,19 @@ import type { Project, Task } from '@shared/model';
 import type { SessionManager } from './sessionManager';
 import type { Store } from './store';
 
-const t = (id: string, status: Schedulable['status'], order: number): Schedulable => ({
+// `title` defaults to `id` so dependencies (referenced by title) can name other
+// rows by their id in these tests.
+const t = (
+  id: string,
+  status: Schedulable['status'],
+  order: number,
+  dependsOn: string[] = [],
+): Schedulable => ({
   id,
   status,
   order,
+  title: id,
+  dependsOn,
 });
 
 describe('selectNextPending', () => {
@@ -47,6 +56,44 @@ describe('selectNextPending', () => {
     ];
     expect(selectNextPending(tasks, new Set())?.id).toBe('go');
   });
+
+  it('holds a task until its @needs dependency is done', () => {
+    // 'b' needs 'a'; while 'a' is pending, only 'a' is eligible.
+    const pending = [t('a', 'pending', 0), t('b', 'pending', 1, ['a'])];
+    expect(selectNextPending(pending, new Set())?.id).toBe('a');
+
+    // With 'a' in flight (not yet done), 'b' is still blocked → nothing eligible.
+    expect(selectNextPending(pending, new Set(['a']))).toBeNull();
+
+    // Once 'a' is done, 'b' becomes eligible.
+    const aDone = [t('a', 'done', 0), t('b', 'pending', 1, ['a'])];
+    expect(selectNextPending(aDone, new Set())?.id).toBe('b');
+  });
+
+  it('lets independent tasks run in parallel (both eligible; caller fills slots)', () => {
+    // Neither depends on the other, so the lowest-order one is picked first; with
+    // it in flight, the next is still eligible (concurrency is the caller's cap).
+    const tasks = [t('x', 'pending', 0), t('y', 'pending', 1)];
+    expect(selectNextPending(tasks, new Set())?.id).toBe('x');
+    expect(selectNextPending(tasks, new Set(['x']))?.id).toBe('y');
+  });
+
+  it('never satisfies an unknown/misspelled dependency (task waits)', () => {
+    const tasks = [t('a', 'done', 0), t('b', 'pending', 1, ['nope'])];
+    expect(selectNextPending(tasks, new Set())).toBeNull();
+  });
+
+  it('requires ALL tasks sharing a needed title to be done', () => {
+    // Two tasks titled 'a' (ids a1/a2); 'b' needs 'a'. Not satisfied until both done.
+    const partial = [
+      { id: 'a1', status: 'done' as const, order: 0, title: 'a', dependsOn: [] },
+      { id: 'a2', status: 'pending' as const, order: 1, title: 'a', dependsOn: [] },
+      { id: 'b', status: 'pending' as const, order: 2, title: 'b', dependsOn: ['a'] },
+    ];
+    // a2 is eligible (independent), b is not.
+    expect(selectNextPending(partial, new Set())?.id).toBe('a2');
+    expect(selectNextPending(partial, new Set(['a2']))).toBeNull();
+  });
 });
 
 describe('buildTaskPrompt', () => {
@@ -59,6 +106,7 @@ describe('buildTaskPrompt', () => {
     sessionId: null,
     order: 0,
     source: 'plan',
+    dependsOn: [],
   };
 
   it('includes the project name, task title, and phase', () => {
@@ -166,6 +214,7 @@ describe('Scheduler.start resumes stopped tasks', () => {
         sessionId: 's1',
         order: 0,
         source: 'plan',
+        dependsOn: [],
       } as Task,
     ];
     const store = {

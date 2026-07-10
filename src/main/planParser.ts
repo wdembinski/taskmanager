@@ -21,10 +21,17 @@
 export interface ParsedTask {
   /** The heading this task lives under, or '' if it appears before any heading. */
   phase: string;
-  /** The checkbox label, with wrapped continuation lines folded in. */
+  /** The checkbox label, with wrapped continuation lines folded in and any
+   *  trailing `@needs:` clause stripped off (that lives in `needs`). */
   title: string;
   /** True when the source checkbox was already ticked (`[x]`). */
   done: boolean;
+  /**
+   * Titles of tasks this one depends on, declared with a trailing
+   * `@needs: TitleA, TitleB` on the checkbox line. Empty when none are declared.
+   * The scheduler holds this task until every named prerequisite is `done`.
+   */
+  needs: string[];
 }
 
 /** A parsed task plus the 0-based index of the line its checkbox started on. */
@@ -34,6 +41,23 @@ interface LocatedTask extends ParsedTask {
 
 const HEADING = /^(#{1,6})\s+(.*\S)\s*$/;
 const CHECKBOX = /^(\s*)[-*+]\s+\[([ xX])\]\s+(.*\S)\s*$/;
+/** A trailing `@needs: A, B` dependency clause on a (folded) task title. */
+const NEEDS = /\s*@needs:\s*(.*)$/i;
+
+/**
+ * Split a folded task title into its display title and its declared dependency
+ * titles. `@needs:` is matched only as a trailing clause, so a title without it
+ * is returned unchanged with no dependencies.
+ */
+function splitNeeds(title: string): { title: string; needs: string[] } {
+  const m = NEEDS.exec(title);
+  if (!m) return { title, needs: [] };
+  const needs = m[1]
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  return { title: title.slice(0, m.index).trim(), needs };
+}
 
 /**
  * Core scan: parse the plan into tasks while remembering which source line each
@@ -59,7 +83,15 @@ function locate(markdown: string): LocatedTask[] {
 
     const checkbox = CHECKBOX.exec(rawLine);
     if (checkbox) {
-      open = { phase, title: checkbox[3].trim(), done: checkbox[2].toLowerCase() === 'x', line: i };
+      // `needs` is computed after folding (see below) so a `@needs:` clause on a
+      // wrapped continuation line is still recognized.
+      open = {
+        phase,
+        title: checkbox[3].trim(),
+        done: checkbox[2].toLowerCase() === 'x',
+        needs: [],
+        line: i,
+      };
       tasks.push(open);
       continue;
     }
@@ -72,6 +104,15 @@ function locate(markdown: string): LocatedTask[] {
       continue;
     }
     if (open) open.title = `${open.title} ${rawLine.trim()}`.replace(/\s+/g, ' ');
+  }
+
+  // Titles are now fully folded, so split off any trailing `@needs:` clause. Done
+  // here (not per-line) so `@needs:` on a wrapped continuation line is honored, and
+  // so `tickPlanCheckbox` and `parsePlan` share the exact same stripped identity.
+  for (const task of tasks) {
+    const { title, needs } = splitNeeds(task.title);
+    task.title = title;
+    task.needs = needs;
   }
 
   return tasks;

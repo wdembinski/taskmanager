@@ -54,11 +54,22 @@ export interface Schedulable {
   id: string;
   status: TaskStatus;
   order: number;
+  /** The task's title, so `@needs:` dependencies (referenced by title) can be resolved. */
+  title: string;
+  /** Titles this task depends on; it isn't eligible until all of them are `done`. */
+  dependsOn: string[];
 }
 
 /**
- * Pick the next task to run: the lowest-`order` `pending` task that isn't already
- * in flight. Returns `null` when nothing is runnable. Pure and side-effect free.
+ * Pick the next task to run: the lowest-`order` **eligible** task. A task is
+ * eligible when it is `pending`, not already in flight, and every one of its
+ * `@needs:` dependencies is satisfied. Returns `null` when nothing is runnable.
+ * Pure and side-effect free.
+ *
+ * A dependency (referenced by title) is *satisfied* only when at least one task
+ * bears that title and **every** task with that title is `done` — so duplicate
+ * titles must all complete, and an unknown/misspelled title is never satisfied
+ * (the task waits; the plan validator surfaces the dangling reference).
  *
  * `inFlight` holds ids of tasks the scheduler has already handed to a session but
  * whose `started` event hasn't landed yet — without it, the same task could be
@@ -68,9 +79,24 @@ export function selectNextPending<T extends Schedulable>(
   tasks: readonly T[],
   inFlight: ReadonlySet<string>,
 ): T | null {
+  // Tally completion per title so a dependency is satisfied only when all tasks
+  // sharing that title are done.
+  const byTitle = new Map<string, { total: number; done: number }>();
+  for (const task of tasks) {
+    const entry = byTitle.get(task.title) ?? { total: 0, done: 0 };
+    entry.total += 1;
+    if (task.status === 'done') entry.done += 1;
+    byTitle.set(task.title, entry);
+  }
+  const satisfied = (title: string): boolean => {
+    const entry = byTitle.get(title);
+    return entry !== undefined && entry.total > 0 && entry.done === entry.total;
+  };
+
   let best: T | null = null;
   for (const task of tasks) {
     if (task.status !== 'pending' || inFlight.has(task.id)) continue;
+    if (!task.dependsOn.every(satisfied)) continue;
     if (best === null || task.order < best.order) best = task;
   }
   return best;

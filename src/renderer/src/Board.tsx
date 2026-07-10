@@ -70,6 +70,7 @@ const useStyles = makeStyles({
     fontFamily: 'ui-monospace, Consolas, monospace',
   },
   empty: { color: tokens.colorNeutralForeground3 },
+  waiting: { color: tokens.colorPaletteYellowForeground2, whiteSpace: 'nowrap' },
   rightHead: { display: 'flex', alignItems: 'center', gap: '10px' },
 });
 
@@ -81,6 +82,19 @@ const SCHEDULER_BADGE: Record<
   paused: { color: 'warning', label: 'paused' },
   idle: { color: 'subtle', label: 'idle' },
 };
+
+/**
+ * Which of a task's `@needs:` prerequisites are not yet satisfied — i.e. titles
+ * with no matching task, or a matching task that isn't `done`. Mirrors the
+ * scheduler's eligibility rule (`selectNextPending`) so the UI explains a hold.
+ */
+function unmetDeps(task: Task, all: Task[]): string[] {
+  if (!task.dependsOn?.length) return [];
+  return task.dependsOn.filter((dep) => {
+    const withTitle = all.filter((t) => t.title === dep);
+    return withTitle.length === 0 || !withTitle.every((t) => t.status === 'done');
+  });
+}
 
 /** Group a project's tasks by phase, preserving plan order. */
 function groupByPhase(tasks: Task[]): Array<{ phase: string; tasks: Task[] }> {
@@ -243,41 +257,55 @@ export function Board(): JSX.Element {
                   <div key={group.phase}>
                     <Divider />
                     <Caption1 className={styles.phaseTitle}>{group.phase}</Caption1>
-                    {group.tasks.map((task) => (
-                      <div
-                        key={task.id}
-                        className={`${styles.taskRow} ${
-                          task.id === selectedTaskId ? styles.taskRowSelected : ''
-                        }`}
-                        onClick={() => setSelectedTaskId(task.id)}
-                      >
-                        <Badge appearance="tint" color={STATUS_COLOR[task.status]}>
-                          {STATUS_LABEL[task.status]}
-                        </Badge>
-                        <Text className={styles.taskTitle} truncate wrap={false}>
-                          {task.title}
-                        </Text>
-                        {task.sessionId && (
-                          <Caption1 className={styles.session} title={task.sessionId}>
-                            {task.sessionId.slice(0, 8)}
-                          </Caption1>
-                        )}
-                        {task.status === 'pending' && (
-                          <Button
-                            size="small"
-                            appearance="subtle"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              void window.api
-                                .invoke('task:run', task.id)
-                                .then(() => setSelectedTaskId(task.id));
-                            }}
-                          >
-                            Run
-                          </Button>
-                        )}
-                      </div>
-                    ))}
+                    {group.tasks.map((task) => {
+                      const unmet = task.status === 'pending' ? unmetDeps(task, tasks) : [];
+                      return (
+                        <div
+                          key={task.id}
+                          className={`${styles.taskRow} ${
+                            task.id === selectedTaskId ? styles.taskRowSelected : ''
+                          }`}
+                          onClick={() => setSelectedTaskId(task.id)}
+                        >
+                          <Badge appearance="tint" color={STATUS_COLOR[task.status]}>
+                            {STATUS_LABEL[task.status]}
+                          </Badge>
+                          <Text className={styles.taskTitle} truncate wrap={false}>
+                            {task.title}
+                          </Text>
+                          {unmet.length > 0 && (
+                            <Caption1 className={styles.waiting} title={`Waiting on: ${unmet.join(', ')}`}>
+                              waiting on: {unmet.join(', ')}
+                            </Caption1>
+                          )}
+                          {task.sessionId && (
+                            <Caption1 className={styles.session} title={task.sessionId}>
+                              {task.sessionId.slice(0, 8)}
+                            </Caption1>
+                          )}
+                          {task.status === 'pending' && (
+                            <Button
+                              size="small"
+                              appearance="subtle"
+                              disabled={unmet.length > 0}
+                              title={
+                                unmet.length > 0
+                                  ? `Blocked until prerequisites are done: ${unmet.join(', ')}`
+                                  : undefined
+                              }
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void window.api
+                                  .invoke('task:run', task.id)
+                                  .then(() => setSelectedTaskId(task.id));
+                              }}
+                            >
+                              Run
+                            </Button>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 ))
               )}

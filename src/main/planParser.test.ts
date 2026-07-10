@@ -13,8 +13,8 @@ describe('parsePlan', () => {
       ),
     );
     expect(tasks).toEqual([
-      { phase: 'Phase 1 — Setup', title: 'install deps', done: false },
-      { phase: 'Phase 1 — Setup', title: 'configure lint', done: false },
+      { phase: 'Phase 1 — Setup', title: 'install deps', done: false, needs: [] },
+      { phase: 'Phase 1 — Setup', title: 'configure lint', done: false, needs: [] },
     ]);
   });
 
@@ -36,7 +36,7 @@ describe('parsePlan', () => {
     const tasks = parsePlan(
       ['## P', 'Some explanation.', '- a plain bullet', '- [ ] a real task'].join('\n'),
     );
-    expect(tasks).toEqual([{ phase: 'P', title: 'a real task', done: false }]);
+    expect(tasks).toEqual([{ phase: 'P', title: 'a real task', done: false, needs: [] }]);
   });
 
   it('folds wrapped continuation lines into the task title', () => {
@@ -44,7 +44,7 @@ describe('parsePlan', () => {
       ['## P', '- [ ] a long task that', '      wraps across', '      three lines'].join('\n'),
     );
     expect(tasks).toEqual([
-      { phase: 'P', title: 'a long task that wraps across three lines', done: false },
+      { phase: 'P', title: 'a long task that wraps across three lines', done: false, needs: [] },
     ]);
   });
 
@@ -55,24 +55,56 @@ describe('parsePlan', () => {
       ),
     );
     expect(tasks).toEqual([
-      { phase: 'P', title: 'first continued', done: false },
-      { phase: 'P', title: 'second', done: false },
+      { phase: 'P', title: 'first continued', done: false, needs: [] },
+      { phase: 'P', title: 'second', done: false, needs: [] },
     ]);
   });
 
   it('assigns phase "" to tasks before any heading', () => {
     const tasks = parsePlan(['- [ ] orphan'].join('\n'));
-    expect(tasks).toEqual([{ phase: '', title: 'orphan', done: false }]);
+    expect(tasks).toEqual([{ phase: '', title: 'orphan', done: false, needs: [] }]);
   });
 
   it('handles CRLF line endings', () => {
     const tasks = parsePlan('## P\r\n- [ ] windows\r\n');
-    expect(tasks).toEqual([{ phase: 'P', title: 'windows', done: false }]);
+    expect(tasks).toEqual([{ phase: 'P', title: 'windows', done: false, needs: [] }]);
   });
 
   it('returns [] for empty or checkbox-free input', () => {
     expect(parsePlan('')).toEqual([]);
     expect(parsePlan('# Title\n\nJust prose, no tasks.')).toEqual([]);
+  });
+
+  it('extracts a trailing @needs clause into deps and strips it from the title', () => {
+    const tasks = parsePlan(
+      ['## P', '- [ ] Set up DB', '- [ ] Build API @needs: Set up DB'].join('\n'),
+    );
+    expect(tasks).toEqual([
+      { phase: 'P', title: 'Set up DB', done: false, needs: [] },
+      { phase: 'P', title: 'Build API', done: false, needs: ['Set up DB'] },
+    ]);
+  });
+
+  it('parses multiple comma-separated dependencies (trimmed, case-insensitive key)', () => {
+    const tasks = parsePlan(['## P', '- [ ] Deploy @NEEDS: Build API ,  Build UI'].join('\n'));
+    expect(tasks[0]).toEqual({
+      phase: 'P',
+      title: 'Deploy',
+      done: false,
+      needs: ['Build API', 'Build UI'],
+    });
+  });
+
+  it('honors @needs on a wrapped continuation line (folded before extraction)', () => {
+    const tasks = parsePlan(['## P', '- [ ] A big task', '      @needs: Prereq'].join('\n'));
+    expect(tasks[0]).toEqual({ phase: 'P', title: 'A big task', done: false, needs: ['Prereq'] });
+  });
+
+  it('write-back still ticks a task whose line carries a @needs clause', () => {
+    const md = ['## P', '- [ ] Build API @needs: Set up DB'].join('\n');
+    expect(tickPlanCheckbox(md, 'P', 'Build API')).toBe(
+      ['## P', '- [x] Build API @needs: Set up DB'].join('\n'),
+    );
   });
 });
 

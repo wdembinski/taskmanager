@@ -39,6 +39,8 @@ interface TaskRow {
   sessionId: string | null;
   order: number;
   source: string;
+  /** JSON array of prerequisite task titles (from a plan `@needs:` clause); null pre-migration. */
+  dependsOn: string | null;
 }
 
 /** A project row as stored; `writeBackPlan` is a 0/1 INTEGER (SQLite has no boolean). */
@@ -137,7 +139,8 @@ export function createStore(dbPath: string): Store {
       status     TEXT NOT NULL,
       sessionId  TEXT,
       "order"    INTEGER NOT NULL,
-      source     TEXT NOT NULL DEFAULT 'plan'
+      source     TEXT NOT NULL DEFAULT 'plan',
+      dependsOn  TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(projectId, "order");
     CREATE TABLE IF NOT EXISTS app_state (
@@ -179,6 +182,12 @@ export function createStore(dbPath: string): Store {
     db.exec(`ALTER TABLE tasks ADD COLUMN source TEXT NOT NULL DEFAULT 'plan'`);
   }
 
+  // Migrate databases created before `@needs:` dependencies. Existing tasks have no
+  // declared prerequisites, so a NULL (read as `[]`) is correct — no gating changes.
+  if (!taskColumns.some((c) => c.name === 'dependsOn')) {
+    db.exec(`ALTER TABLE tasks ADD COLUMN dependsOn TEXT`);
+  }
+
   // Migrate databases created before per-project concurrency existed. Concurrency
   // used to be a single global setting applied to every project, so seed each
   // existing project with the current global value — that preserves their exact
@@ -212,8 +221,8 @@ export function createStore(dbPath: string): Store {
   const selectTask = db.prepare(`SELECT * FROM tasks WHERE id = ?`);
   const deleteTasks = db.prepare(`DELETE FROM tasks WHERE projectId = ?`);
   const insertTask = db.prepare<[TaskRow]>(
-    `INSERT INTO tasks (id, projectId, phase, title, status, sessionId, "order", source)
-     VALUES (@id, @projectId, @phase, @title, @status, @sessionId, @order, @source)`,
+    `INSERT INTO tasks (id, projectId, phase, title, status, sessionId, "order", source, dependsOn)
+     VALUES (@id, @projectId, @phase, @title, @status, @sessionId, @order, @source, @dependsOn)`,
   );
   const deleteTask = db.prepare(`DELETE FROM tasks WHERE id = ?`);
   const nextOrder = db.prepare(
@@ -281,6 +290,32 @@ export function createStore(dbPath: string): Store {
     };
   }
 
+  /** Read the JSON `dependsOn` column back into a string[] (NULL/garbage → []). */
+  function parseDependsOn(raw: string | null): string[] {
+    if (!raw) return [];
+    try {
+      const value = JSON.parse(raw) as unknown;
+      return Array.isArray(value) ? value.filter((x): x is string => typeof x === 'string') : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Serialize a Task to its stored row shape (dependsOn → JSON text). */
+  function taskToRow(task: Task): TaskRow {
+    return {
+      id: task.id,
+      projectId: task.projectId,
+      phase: task.phase,
+      title: task.title,
+      status: task.status,
+      sessionId: task.sessionId,
+      order: task.order,
+      source: task.source,
+      dependsOn: JSON.stringify(task.dependsOn ?? []),
+    };
+  }
+
   function rowToTask(r: TaskRow): Task {
     return {
       id: r.id,
@@ -291,6 +326,7 @@ export function createStore(dbPath: string): Store {
       sessionId: r.sessionId,
       order: r.order,
       source: (r.source as Task['source']) ?? 'plan',
+      dependsOn: parseDependsOn(r.dependsOn),
     };
   }
 
@@ -407,8 +443,9 @@ export function createStore(dbPath: string): Store {
         sessionId: null,
         order: (nextOrder.get(projectId) as { next: number }).next,
         source: 'adhoc',
+        dependsOn: [],
       };
-      insertTask.run(task as unknown as TaskRow);
+      insertTask.run(taskToRow(task));
       return task;
     },
 
@@ -428,7 +465,7 @@ export function createStore(dbPath: string): Store {
       // Replace the project's task set with the reconciled list, in one transaction.
       const replace = db.transaction((tasks: Task[]) => {
         deleteTasks.run(projectId);
-        for (const t of tasks) insertTask.run(t as unknown as TaskRow);
+        for (const t of tasks) insertTask.run(taskToRow(t));
       });
       replace(desired);
       return desired;
