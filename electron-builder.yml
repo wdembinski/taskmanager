@@ -1,5 +1,7 @@
 # electron-builder configuration — how the app is packaged into an installer.
-# We only target Windows for now (NSIS installer). Run `pnpm package`.
+# Windows: NSIS installer (`pnpm package`). Linux/Ubuntu: AppImage + .deb
+# (`pnpm package:linux`, must run on Linux — e.g. WSL — so the native
+# better-sqlite3 binary is compiled for Linux).
 appId: network.vipper.claude-orchestrator
 productName: Claude Orchestrator
 copyright: © ${author}
@@ -40,6 +42,33 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: Claude Orchestrator
+
+linux:
+  # AppImage runs on any modern distro; deb is the native Ubuntu/Debian package.
+  target:
+    - AppImage
+    - deb
+  icon: build/icon.png
+  category: Development
+  synopsis: Orchestrate the Claude CLI across many projects and tasks
+  artifactName: ${productName}-${version}.${ext}
+
+deb:
+  # Debian requires a maintainer; electron-builder otherwise derives it from
+  # the package.json author email (which is kept as a bare name for Windows'
+  # ${author} interpolation), so it is set explicitly here.
+  maintainer: Wojciech Dembinski <w.dembinski@live.com>
+  # better-sqlite3 loads a native .node at runtime; libc/stdc++ are the only
+  # system libs it needs beyond what Electron already depends on.
+  depends:
+    - libgtk-3-0
+    - libnotify4
+    - libnss3
+    - libxss1
+    - libxtst6
+    - xdg-utils
+    - libatspi2.0-0
+    - libsecret-1-0
 
 # The Claude CLI/SDK is used from the user's own machine (their subscription login),
 # so we do NOT bundle it — the app shells out to the `claude` already on PATH.

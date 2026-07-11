@@ -4,6 +4,7 @@
   "description": "Desktop app that orchestrates the Claude CLI across many projects/tasks — runs one session per task, auto-respawns when usage limits reset, advances through a plan.md, and surfaces Claude's questions in a dashboard.",
   "private": true,
   "author": "Wojciech Dembinski",
+  "homepage": "https://github.com/wdembinski/taskmanager",
   "main": "./out/main/index.js",
   "type": "module",
   "scripts": {
@@ -17,6 +18,7 @@
     "test:watch": "vitest",
     "format": "prettier --write \"src/**/*.{ts,tsx}\" \"*.{json,md}\"",
     "package": "electron-vite build && electron-builder --win --publish never",
+    "package:linux": "electron-vite build && electron-builder --linux --publish never -c.buildDependenciesFromSource=true",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
@@ -46,5 +48,6 @@
       "electron",
       "esbuild"
     ]
-  }
+  },
+  "packageManager": "pnpm@11.11.0+sha512.4463f65fd80ed80d69bc1d4bf163ee94f605c7380fc318bb5b2ebe15f8cd12d49c51a4d59e951b401e764d3b6ca751cbf51bc50ed7001a6bcb4935e684c34882"
 }
