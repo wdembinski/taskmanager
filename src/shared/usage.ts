@@ -62,6 +62,25 @@ export interface BurnRate {
   trend: 'up' | 'down' | 'flat';
 }
 
+/**
+ * One project's usage, broken down for the drill-down tree: its own task spend and
+ * its orchestrator ("Align") spend kept separate, plus a per-task list. `tokens` is
+ * the project's grand total (tasks + orchestrator).
+ */
+export interface UsageProjectBreakdown {
+  projectId: string | null;
+  label: string;
+  tokens: number;
+  /** Percent of the range's grand total, 0–100. */
+  pct: number;
+  /** Tokens spent by this project's task agents. */
+  taskTokens: number;
+  /** Tokens spent by the orchestrator on this project's behalf (the Align run). */
+  orchestratorTokens: number;
+  /** Per-task rows within this project (task agent spend only), tokens desc. */
+  tasks: UsageSlice[];
+}
+
 /** How close the account is to running out, for the warning indicator. */
 export type RunningLow = 'ok' | 'warning' | 'critical';
 
@@ -78,6 +97,12 @@ export interface UsageSummary {
   byProject: UsageSlice[];
   byTask: UsageSlice[];
   bySource: UsageSlice[];
+  /** Hierarchical drill-down: each project with its task + orchestrator split. */
+  projects: UsageProjectBreakdown[];
+  /** Total tokens spent by task agents across all projects, in the range. */
+  taskTotal: number;
+  /** Total tokens the orchestrator itself spent across all projects, in the range. */
+  orchestratorTotal: number;
   burn: BurnRate;
   /** Last rate-limit status the CLI reported (e.g. 'allowed', 'allowed_warning'), or null. */
   limitStatus: string | null;

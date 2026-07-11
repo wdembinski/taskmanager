@@ -86,6 +86,49 @@ describe('rollupWindow', () => {
     expect(rollupWindow([], { now, limitStatus: 'allowed' }).runningLow).toBe('ok');
   });
 
+  it('builds a project → task drill-down with the orchestrator kept separate', () => {
+    const samples = [
+      sample({ projectId: 'p1', taskId: 'a', inputTokens: 40_000, createdAt: now - MIN }),
+      sample({ projectId: 'p1', taskId: 'b', inputTokens: 10_000, createdAt: now - MIN }),
+      // Orchestrator (Align) spend for p1 — no taskId.
+      sample({ projectId: 'p1', taskId: null, source: 'orchestrator', inputTokens: 20_000, createdAt: now - MIN }),
+      sample({ projectId: 'p2', taskId: 'c', inputTokens: 30_000, createdAt: now - MIN }),
+    ];
+    const summary = rollupWindow(samples, {
+      now,
+      projectNames: new Map([
+        ['p1', 'Alpha'],
+        ['p2', 'Beta'],
+      ]),
+      taskTitles: new Map([['a', 'Task A']]),
+    });
+
+    expect(summary.taskTotal).toBe(80_000);
+    expect(summary.orchestratorTotal).toBe(20_000);
+
+    const alpha = summary.projects.find((p) => p.projectId === 'p1');
+    expect(alpha).toMatchObject({ label: 'Alpha', tokens: 70_000, taskTokens: 50_000, orchestratorTokens: 20_000 });
+    // Tasks sorted desc; unknown title falls back to the id prefix.
+    expect(alpha?.tasks).toEqual([
+      { id: 'a', label: 'Task A', tokens: 40_000, pct: 40 },
+      { id: 'b', label: 'b', tokens: 10_000, pct: 10 },
+    ]);
+    // Projects sorted by total desc (Alpha 70k before Beta 30k).
+    expect(summary.projects.map((p) => p.projectId)).toEqual(['p1', 'p2']);
+  });
+
+  it('respects an explicit windowStart (e.g. all-time = 0)', () => {
+    const realNow = 1_700_000_000_000; // a real epoch so a 10h-old sample stays positive
+    const samples = [
+      sample({ inputTokens: 100, createdAt: realNow - MIN }),
+      sample({ inputTokens: 999, createdAt: realNow - 10 * 60 * MIN }), // ~10h ago
+    ];
+    // Default 5h window excludes the old one…
+    expect(rollupWindow(samples, { now: realNow }).windowTotal).toBe(100);
+    // …but windowStart: 0 (all-time) includes everything.
+    expect(rollupWindow(samples, { now: realNow, windowStart: 0 }).windowTotal).toBe(1099);
+  });
+
   it('handles an empty window without dividing by zero', () => {
     const summary = rollupWindow([], { now });
     expect(summary.windowTotal).toBe(0);

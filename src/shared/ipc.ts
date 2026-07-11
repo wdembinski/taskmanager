@@ -202,12 +202,13 @@ export interface IpcApi {
   'limit:resumeNow': () => Promise<void>;
 
   /**
-   * The rolled-up token usage for the current rolling 5-hour window (Performance
-   * dashboard): window total, per-project/per-task/per-source shares, breakdown,
-   * live burn rate, cost, and the running-low state. Computed by the app from the
-   * CLI's own token counts. Live changes arrive via the `usage:sample` event.
+   * The rolled-up token usage for a range (Performance dashboard): totals, the
+   * per-source (task vs orchestrator) split, the project → task drill-down, live
+   * burn rate, cost, and running-low state. `sinceMs` is the range start (epoch ms);
+   * pass 0 for all-time. Computed by the app from the CLI's own token counts. Live
+   * changes arrive via the `usage:sample` event.
    */
-  'usage:summary': () => Promise<UsageSummary>;
+  'usage:summary': (sinceMs: number) => Promise<UsageSummary>;
   /**
    * The token-over-time series behind the live area chart: totals bucketed into
    * `bucketMs` windows from `sinceMs` to now. Used to seed the chart on mount.

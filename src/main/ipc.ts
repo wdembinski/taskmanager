@@ -23,7 +23,6 @@ import { Scheduler } from './scheduler';
 import { SessionManager } from './sessionManager';
 import { createStore, type Store } from './store';
 import { bucketSeries, rollupWindow } from './usageRollup';
-import { USAGE_WINDOW_MS } from '@shared/usage';
 import { WorktreeManager } from './worktreeManager';
 
 /**
@@ -322,9 +321,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // Performance dashboard: roll the rolling-5h-window samples into a summary, and
   // serve the time-bucketed series for the live chart. All computed by the app from
   // the CLI's own token counts — no AI agent is involved in the math.
-  handle('usage:summary', async () => {
+  handle('usage:summary', async (sinceMs) => {
     const now = Date.now();
-    const windowStart = now - USAGE_WINDOW_MS;
+    // sinceMs is an absolute epoch start; 0 (or anything ≤ 0) means all-time.
+    const windowStart = sinceMs > 0 ? sinceMs : 0;
     const samples = store.getUsageSamples(windowStart);
     const pressure = scheduler.getUsagePressure();
     const projectNames = new Map<string, string>();
@@ -335,6 +335,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     }
     return rollupWindow(samples, {
       now,
+      windowStart,
       // The CLI reports resetsAt in Unix seconds; the UI counts down in ms.
       windowReset: pressure.resetsAt != null ? pressure.resetsAt * 1000 : null,
       projectNames,

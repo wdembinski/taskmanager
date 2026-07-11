@@ -3,18 +3,20 @@
  *
  * The app (not any AI agent) accounts for everything that consumes the account's
  * token quota: every task agent run and the orchestrator's own "Align plan" run.
- * This view shows, for the rolling 5-hour usage window:
- *   - a live filled area chart of tokens used over time (Task Manager aesthetic),
- *   - a burn-rate speedometer (tokens/min, right now) with a trend arrow,
- *   - the window total + input/output/cache breakdown + cost,
- *   - per-project and per-task tables with each one's share of the window, and
- *   - a running-low indicator driven by Claude's own rate-limit signals.
+ * This view shows, for a selectable range (5h / 24h / 7d / all-time):
+ *   - a live per-second area chart + burn-rate speedometer (always "now"),
+ *   - the range total + input/output/cache breakdown + cost,
+ *   - the Tasks-vs-Orchestrator split, and
+ *   - a project → task drill-down with each project's orchestrator (Align) spend
+ *     kept on its own line,
+ * plus a running-low indicator driven by Claude's own rate-limit signals.
  *
  * It follows the app's standard live-data idiom: seed via `invoke`, then stay live
  * off the `usage:sample` push plus a 1s tick (which also drives the reset countdown).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  Button,
   makeStyles,
   MessageBar,
   MessageBarBody,
@@ -23,7 +25,8 @@ import {
   Text,
   tokens,
 } from '@fluentui/react-components';
-import type { UsageSeriesPoint, UsageSlice, UsageSummary } from '@shared/usage';
+import { ChevronDownRegular, ChevronRightRegular } from '@fluentui/react-icons';
+import type { UsageProjectBreakdown, UsageSeriesPoint, UsageSlice, UsageSummary } from '@shared/usage';
 import { BurnRateGauge } from './BurnRateGauge';
 import { TokenChart } from './TokenChart';
 import { formatCountdown } from './LimitBanner';
@@ -32,28 +35,39 @@ import { formatCost, formatPct, formatTokens, niceCeil } from './usageFormat';
 /**
  * The live chart is a per-second, short rolling window (Windows Task Manager style):
  * one-second buckets across the last few minutes, so it visibly scrolls every second.
- * The tiles and breakdown below still summarize the whole rolling 5-hour window.
+ * The tiles and drill-down below summarize the selected range instead.
  */
 const BUCKET_MS = 1000;
 const CHART_WINDOW_MS = 120_000; // last 2 minutes, at 1-second resolution
 
-/** Palette used to color the per-project/source share bars, cycled by index. */
+/** Selectable ranges for the totals/breakdown. `ms: 0` means all-time. */
+type RangeId = '5h' | '24h' | '7d' | 'all';
+const RANGES: Array<{ id: RangeId; label: string; ms: number }> = [
+  { id: '5h', label: '5h', ms: 5 * 60 * 60 * 1000 },
+  { id: '24h', label: '24h', ms: 24 * 60 * 60 * 1000 },
+  { id: '7d', label: '7d', ms: 7 * 24 * 60 * 60 * 1000 },
+  { id: 'all', label: 'All time', ms: 0 },
+];
+
+/** Palette used to color the per-task/source share bars, cycled by index. */
 const BAR_COLORS = [
   tokens.colorPaletteBlueForeground2,
   tokens.colorPaletteBerryForeground2,
   tokens.colorPaletteTealForeground2,
-  tokens.colorPaletteMarigoldForeground2,
   tokens.colorPaletteLavenderForeground2,
   tokens.colorPalettePinkForeground2,
+  tokens.colorPaletteSeafoamForeground2,
 ];
+/** The orchestrator's own spend always uses this color so it's easy to spot. */
+const ORCH_COLOR = tokens.colorPaletteMarigoldForeground2;
 
 const useStyles = makeStyles({
   root: { display: 'flex', flexDirection: 'column', gap: '12px', minHeight: 0, overflowY: 'auto', paddingRight: '4px' },
-  header: { display: 'flex', alignItems: 'baseline', gap: '12px' },
-  reset: { marginLeft: 'auto', color: tokens.colorNeutralForeground3, fontVariantNumeric: 'tabular-nums' },
+  header: { display: 'flex', alignItems: 'center', gap: '10px' },
+  reset: { color: tokens.colorNeutralForeground3, fontVariantNumeric: 'tabular-nums' },
+  selector: { display: 'flex', gap: '4px', marginLeft: 'auto' },
   main: { display: 'grid', gridTemplateColumns: 'minmax(220px, 1fr) minmax(0, 3fr)', gap: '16px', alignItems: 'start' },
   rail: { display: 'flex', flexDirection: 'column', gap: '8px' },
-  railItem: { display: 'flex', flexDirection: 'column', gap: '4px' },
   panel: { display: 'flex', flexDirection: 'column', gap: '12px', minWidth: 0 },
   topRow: { display: 'flex', gap: '16px', alignItems: 'center', flexWrap: 'wrap' },
   tiles: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '10px', flex: 1 },
@@ -77,9 +91,16 @@ const useStyles = makeStyles({
   bar: { gridColumn: '1 / -1', height: '4px', borderRadius: '2px', backgroundColor: tokens.colorNeutralBackground4, overflow: 'hidden' },
   barFill: { height: '100%', borderRadius: '2px' },
   empty: { color: tokens.colorNeutralForeground3, padding: '24px 0', textAlign: 'center' },
+  // Drill-down tree
+  project: { display: 'flex', flexDirection: 'column', gap: '6px', paddingBottom: '8px', borderBottom: `1px solid ${tokens.colorNeutralStroke2}` },
+  projectHead: { display: 'grid', gridTemplateColumns: 'auto 1fr auto', gap: '4px 8px', alignItems: 'center', cursor: 'pointer', background: 'none', border: 'none', padding: 0, textAlign: 'left', color: 'inherit', width: '100%' },
+  chevron: { display: 'flex', alignItems: 'center', color: tokens.colorNeutralForeground3 },
+  projectName: { fontSize: '13px', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  children: { display: 'flex', flexDirection: 'column', gap: '6px', paddingLeft: '22px' },
+  childEmpty: { fontSize: '12px', color: tokens.colorNeutralForeground3, paddingLeft: '22px' },
 });
 
-/** A labelled share row with a colored progress bar (used by the rail and tables). */
+/** A labelled share row with a colored progress bar (used by the rail and tree). */
 function ShareRow({ slice, color }: { slice: UsageSlice; color: string }): JSX.Element {
   const styles = useStyles();
   return (
@@ -97,19 +118,78 @@ function ShareRow({ slice, color }: { slice: UsageSlice; color: string }): JSX.E
   );
 }
 
+/** One project in the drill-down: header (total + share) that expands to its tasks + orchestrator. */
+function ProjectBlock({
+  project,
+  color,
+  expanded,
+  onToggle,
+}: {
+  project: UsageProjectBreakdown;
+  color: string;
+  expanded: boolean;
+  onToggle: () => void;
+}): JSX.Element {
+  const styles = useStyles();
+  const hasChildren = project.tasks.length > 0 || project.orchestratorTokens > 0;
+  return (
+    <div className={styles.project}>
+      <button className={styles.projectHead} onClick={onToggle} aria-expanded={expanded}>
+        <span className={styles.chevron}>
+          {hasChildren ? (expanded ? <ChevronDownRegular /> : <ChevronRightRegular />) : <span style={{ width: 16 }} />}
+        </span>
+        <span className={styles.projectName} title={project.label}>
+          {project.label}
+        </span>
+        <span className={styles.rowNums}>
+          {formatTokens(project.tokens)} · {formatPct(project.pct)}
+        </span>
+        <div className={styles.bar}>
+          <div className={styles.barFill} style={{ width: `${Math.min(100, project.pct)}%`, backgroundColor: color }} />
+        </div>
+      </button>
+      {expanded &&
+        (hasChildren ? (
+          <div className={styles.children}>
+            {project.tasks.map((t, i) => (
+              <ShareRow key={t.id} slice={t} color={BAR_COLORS[i % BAR_COLORS.length]} />
+            ))}
+            {project.orchestratorTokens > 0 && (
+              <ShareRow
+                slice={{
+                  id: `${project.projectId ?? 'none'}-orch`,
+                  label: 'Orchestrator (Align)',
+                  tokens: project.orchestratorTokens,
+                  pct: project.tokens > 0 ? (project.orchestratorTokens / project.tokens) * 100 : 0,
+                }}
+                color={ORCH_COLOR}
+              />
+            )}
+          </div>
+        ) : (
+          <span className={styles.childEmpty}>No per-task detail.</span>
+        ))}
+    </div>
+  );
+}
+
 export function Performance(): JSX.Element {
   const styles = useStyles();
+  const [range, setRange] = useState<RangeId>('5h');
   const [summary, setSummary] = useState<UsageSummary | null>(null);
   const [series, setSeries] = useState<UsageSeriesPoint[]>([]);
   const [now, setNow] = useState(() => Date.now());
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   // Sticky peak burn so the gauge's full-scale doesn't jump around second to second.
   const peakBurn = useRef(0);
-  const [gaugeMax, setGaugeMax] = useState(1000);
+  const [gaugeMax, setGaugeMax] = useState(50);
 
   const refresh = useCallback(async () => {
     const at = Date.now();
+    const rangeMs = RANGES.find((r) => r.id === range)?.ms ?? 0;
+    const sinceMs = rangeMs > 0 ? at - rangeMs : 0; // 0 = all-time
     const [s, pts] = await Promise.all([
-      window.api.invoke('usage:summary'),
+      window.api.invoke('usage:summary', sinceMs),
       window.api.invoke('usage:series', at - CHART_WINDOW_MS, BUCKET_MS),
     ]);
     setSummary(s);
@@ -117,7 +197,7 @@ export function Performance(): JSX.Element {
     // Gauge scale tracks the per-second peak (sticky) so the needle stays comparable.
     peakBurn.current = Math.max(peakBurn.current, s.burn.perSecond);
     setGaugeMax(niceCeil(Math.max(peakBurn.current * 1.15, 50)));
-  }, []);
+  }, [range]);
 
   useEffect(() => {
     void refresh();
@@ -135,12 +215,22 @@ export function Performance(): JSX.Element {
     };
   }, [refresh]);
 
+  const toggle = useCallback((key: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
   if (!summary) {
     return <Spinner label="Loading usage…" labelPosition="after" size="tiny" />;
   }
 
   const resetMs = summary.windowReset != null ? summary.windowReset - now : null;
   const b = summary.breakdown;
+  const rangeLabel = RANGES.find((r) => r.id === range)?.label ?? '';
 
   return (
     <div className={styles.root}>
@@ -158,50 +248,67 @@ export function Performance(): JSX.Element {
 
       <div className={styles.header}>
         <Text size={500} weight="semibold">
-          Token usage — last 5 hours
+          Token usage
         </Text>
-        {resetMs != null && resetMs > 0 && (
-          <span className={styles.reset}>window resets in {formatCountdown(resetMs)}</span>
+        {range === '5h' && resetMs != null && resetMs > 0 && (
+          <span className={styles.reset}>· window resets in {formatCountdown(resetMs)}</span>
         )}
+        <div className={styles.selector}>
+          {RANGES.map((r) => (
+            <Button
+              key={r.id}
+              size="small"
+              appearance={range === r.id ? 'primary' : 'subtle'}
+              onClick={() => setRange(r.id)}
+            >
+              {r.label}
+            </Button>
+          ))}
+        </div>
       </div>
 
       <div className={styles.main}>
-        {/* Left rail: share of the window by source, then by project. */}
+        {/* Left rail: the Tasks-vs-Orchestrator split (orchestrator called out on its own). */}
         <div className={styles.rail}>
           <div className={styles.section}>
-            <span className={styles.sectionTitle}>By source</span>
+            <span className={styles.sectionTitle}>Tasks vs orchestrator</span>
             <div className={styles.rowList}>
               {summary.bySource.length === 0 ? (
                 <span className={styles.rowNums}>No usage yet</span>
               ) : (
-                summary.bySource.map((s, i) => <ShareRow key={s.id} slice={s} color={BAR_COLORS[i % BAR_COLORS.length]} />)
+                summary.bySource.map((s) => (
+                  <ShareRow key={s.id} slice={s} color={s.id === 'orchestrator' ? ORCH_COLOR : BAR_COLORS[0]} />
+                ))
               )}
             </div>
           </div>
           <div className={styles.section}>
-            <span className={styles.sectionTitle}>By project</span>
+            <span className={styles.sectionTitle}>Totals ({rangeLabel})</span>
             <div className={styles.rowList}>
-              {summary.byProject.length === 0 ? (
-                <span className={styles.rowNums}>No usage yet</span>
-              ) : (
-                summary.byProject.map((s, i) => <ShareRow key={s.id} slice={s} color={BAR_COLORS[i % BAR_COLORS.length]} />)
-              )}
+              <ShareRow
+                slice={{ id: 'tasks', label: 'Task agents', tokens: summary.taskTotal, pct: summary.windowTotal > 0 ? (summary.taskTotal / summary.windowTotal) * 100 : 0 }}
+                color={BAR_COLORS[0]}
+              />
+              <ShareRow
+                slice={{ id: 'orch', label: 'Orchestrator', tokens: summary.orchestratorTotal, pct: summary.windowTotal > 0 ? (summary.orchestratorTotal / summary.windowTotal) * 100 : 0 }}
+                color={ORCH_COLOR}
+              />
             </div>
           </div>
         </div>
 
-        {/* Main panel: gauge + tiles, then the live chart, then the per-task table. */}
+        {/* Main panel: gauge + tiles, then the live chart, then the project drill-down. */}
         <div className={styles.panel}>
           <div className={styles.topRow}>
             <BurnRateGauge burn={summary.burn} max={gaugeMax} />
             <div className={styles.tiles}>
               <div className={styles.tile}>
                 <span className={styles.tileValue}>{formatTokens(summary.windowTotal)}</span>
-                <span className={styles.tileLabel}>Tokens (5h)</span>
+                <span className={styles.tileLabel}>Tokens ({rangeLabel})</span>
               </div>
               <div className={styles.tile}>
                 <span className={styles.tileValue}>{formatCost(summary.costUsd)}</span>
-                <span className={styles.tileLabel}>Cost (5h)</span>
+                <span className={styles.tileLabel}>Cost ({rangeLabel})</span>
               </div>
               <div className={styles.tile}>
                 <span className={styles.tileValue}>{formatTokens(b.input)}</span>
@@ -228,14 +335,23 @@ export function Performance(): JSX.Element {
           </div>
 
           <div className={styles.section}>
-            <span className={styles.sectionTitle}>By task</span>
-            <div className={styles.rowList}>
-              {summary.byTask.length === 0 ? (
-                <div className={styles.empty}>No task usage recorded in this window yet.</div>
-              ) : (
-                summary.byTask.map((s, i) => <ShareRow key={s.id} slice={s} color={BAR_COLORS[i % BAR_COLORS.length]} />)
-              )}
-            </div>
+            <span className={styles.sectionTitle}>By project → task ({rangeLabel})</span>
+            {summary.projects.length === 0 ? (
+              <div className={styles.empty}>No usage recorded in this range yet.</div>
+            ) : (
+              summary.projects.map((p, i) => {
+                const key = p.projectId ?? 'none';
+                return (
+                  <ProjectBlock
+                    key={key}
+                    project={p}
+                    color={BAR_COLORS[i % BAR_COLORS.length]}
+                    expanded={!collapsed.has(key)}
+                    onToggle={() => toggle(key)}
+                  />
+                );
+              })
+            )}
           </div>
         </div>
       </div>
