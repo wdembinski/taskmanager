@@ -369,7 +369,14 @@ export function Board(): JSX.Element {
           const running = state === 'running';
           const paused = state === 'paused';
           const aligning = project.id in aligningRuns;
-          const anyRunnable = tasks.some((t) => t.status === 'pending');
+          // A project is runnable if it has work to pick up: `pending` tasks, or
+          // `stopped` ones — which `scheduler.start` re-queues to `pending` (that's how
+          // Stop → Run resumes). Without `stopped` here, a stopped project can never be
+          // resumed because the Run button stays disabled.
+          const anyRunnable = tasks.some((t) => t.status === 'pending' || t.status === 'stopped');
+          // Prefer the "Resume" label whenever we're picking work back up (paused, or a
+          // stopped project being restarted), not only for the paused case.
+          const resuming = paused || (!running && tasks.some((t) => t.status === 'stopped'));
           return (
             <div key={project.id} className={styles.project}>
               <div className={styles.projectHead}>
@@ -396,7 +403,7 @@ export function Board(): JSX.Element {
                     disabled={running || aligning || !anyRunnable}
                     onClick={() => runProject(project)}
                   >
-                    {paused ? 'Resume' : 'Run'}
+                    {resuming ? 'Resume' : 'Run'}
                   </Button>
                   <Button
                     size="small"
