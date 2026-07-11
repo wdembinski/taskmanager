@@ -24,6 +24,7 @@ import type {
 } from '@shared/model';
 import type { LimitState } from '@shared/limit';
 import type { SessionEvent } from '@shared/session';
+import type { UsageSample } from '@shared/usage';
 import { type AppSettings, DEFAULT_SETTINGS } from '@shared/settings';
 import { mergeActivity } from './activityMerge';
 import type { ParsedTask } from './planParser';
@@ -91,6 +92,16 @@ export interface Store {
   appendTaskEvent(projectId: string, taskId: string, runId: string, event: SessionEvent): void;
   /** Load a task's full event history in order (all of its runs), for replay in the UI. */
   getTaskHistory(taskId: string): SessionEvent[];
+  /**
+   * Record one model call's token consumption (Performance dashboard). `costUsd` is
+   * set only on the end-of-run reconciliation row so window cost can be summed without
+   * double-counting tokens. Attribution is by `source`/`projectId`/`taskId`/`runId`.
+   */
+  appendTokenUsage(sample: UsageSample & { costUsd?: number | null }): void;
+  /** Every usage sample with `createdAt >= sinceMs`, oldest first (for the rollup/series). */
+  getUsageSamples(sinceMs: number): UsageSample[];
+  /** Total cost (USD) recorded since `sinceMs`, from the runs' `result` rows. */
+  getWindowCost(sinceMs: number): number;
   /** Append a human progress comment to a task (Phase 9); returns the created entry. */
   addComment(projectId: string, taskId: string, body: string): TaskActivityEntry | undefined;
   /** Record a status change on a task's timeline (Phase 9). */
@@ -179,6 +190,27 @@ export function createStore(dbPath: string): Store {
       createdAt  INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_task_activity_task ON task_activity(taskId, id);
+    -- Token accounting (Performance dashboard). One row per recorded model call's
+    -- token cost. Deliberately has NO projectId foreign key / cascade (unlike
+    -- task_events): orchestrator rows carry a null taskId, and usage history should
+    -- survive a plan re-sync AND a project delete — it is a record of spend, not of
+    -- a task. projectId/taskId are plain nullable TEXT for that reason.
+    CREATE TABLE IF NOT EXISTS token_usage (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      source              TEXT NOT NULL,          -- 'task' | 'orchestrator'
+      projectId           TEXT,                   -- null only if the project is unknown
+      taskId              TEXT,                   -- null for orchestrator/aux runs
+      runId               TEXT NOT NULL,
+      inputTokens         INTEGER NOT NULL,
+      outputTokens        INTEGER NOT NULL,
+      cacheCreationTokens INTEGER NOT NULL,
+      cacheReadTokens     INTEGER NOT NULL,
+      totalTokens         INTEGER NOT NULL,
+      costUsd             REAL,                   -- set only on result-derived cost rows
+      createdAt           INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_token_usage_time ON token_usage(createdAt);
+    CREATE INDEX IF NOT EXISTS idx_token_usage_project ON token_usage(projectId, createdAt);
   `);
 
   // Migrate databases created before Phase 3 added the write-back column.
@@ -287,6 +319,22 @@ export function createStore(dbPath: string): Store {
     `SELECT id, event, createdAt FROM task_events WHERE taskId = ? ORDER BY id`,
   );
   const deleteEventsForTask = db.prepare(`DELETE FROM task_events WHERE taskId = ?`);
+  const insertUsage = db.prepare(
+    `INSERT INTO token_usage
+       (source, projectId, taskId, runId, inputTokens, outputTokens,
+        cacheCreationTokens, cacheReadTokens, totalTokens, costUsd, createdAt)
+     VALUES
+       (@source, @projectId, @taskId, @runId, @inputTokens, @outputTokens,
+        @cacheCreationTokens, @cacheReadTokens, @totalTokens, @costUsd, @createdAt)`,
+  );
+  const selectUsageSince = db.prepare(
+    `SELECT source, projectId, taskId, runId, inputTokens, outputTokens,
+            cacheCreationTokens, cacheReadTokens, totalTokens, createdAt
+     FROM token_usage WHERE createdAt >= ? AND totalTokens > 0 ORDER BY createdAt`,
+  );
+  const selectUsageCostSince = db.prepare(
+    `SELECT COALESCE(SUM(costUsd), 0) AS cost FROM token_usage WHERE createdAt >= ?`,
+  );
   const insertActivity = db.prepare(
     `INSERT INTO task_activity (projectId, taskId, kind, body, fromStatus, toStatus, createdAt)
      VALUES (@projectId, @taskId, @kind, @body, @fromStatus, @toStatus, @createdAt)`,
@@ -562,6 +610,31 @@ export function createStore(dbPath: string): Store {
         }
       }
       return events;
+    },
+
+    appendTokenUsage(sample) {
+      insertUsage.run({
+        source: sample.source,
+        projectId: sample.projectId,
+        taskId: sample.taskId,
+        runId: sample.runId,
+        inputTokens: sample.inputTokens,
+        outputTokens: sample.outputTokens,
+        cacheCreationTokens: sample.cacheCreationTokens,
+        cacheReadTokens: sample.cacheReadTokens,
+        totalTokens: sample.totalTokens,
+        costUsd: sample.costUsd ?? null,
+        createdAt: sample.createdAt,
+      });
+    },
+
+    getUsageSamples(sinceMs) {
+      return selectUsageSince.all(sinceMs) as UsageSample[];
+    },
+
+    getWindowCost(sinceMs) {
+      const row = selectUsageCostSince.get(sinceMs) as { cost: number } | undefined;
+      return row?.cost ?? 0;
     },
 
     addComment(projectId, taskId, body) {

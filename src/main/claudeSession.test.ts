@@ -65,7 +65,7 @@ describe('mapRawEvent', () => {
     expect(events).toEqual([{ kind: 'tool-result', toolId: 'toolu_1', isError: false }]);
   });
 
-  it('maps the final result event with cost and stop reason', () => {
+  it('maps the final result event with cost, stop reason, and cumulative usage', () => {
     const events = mapRawEvent({
       type: 'result',
       subtype: 'success',
@@ -75,6 +75,12 @@ describe('mapRawEvent', () => {
       duration_ms: 1494,
       stop_reason: 'end_turn',
       terminal_reason: 'completed',
+      usage: {
+        input_tokens: 12,
+        output_tokens: 34,
+        cache_creation_input_tokens: 100,
+        cache_read_input_tokens: 900,
+      },
     });
     expect(events).toEqual([
       {
@@ -85,8 +91,41 @@ describe('mapRawEvent', () => {
         durationMs: 1494,
         stopReason: 'end_turn',
         terminalReason: 'completed',
+        usage: { inputTokens: 12, outputTokens: 34, cacheCreationTokens: 100, cacheReadTokens: 900 },
       },
     ]);
+  });
+
+  it('carries usage: null on a result event that lacks a usage block', () => {
+    const [event] = mapRawEvent({ type: 'result', is_error: false, result: 'ok' });
+    expect(event).toMatchObject({ kind: 'result', usage: null });
+  });
+
+  it('emits a per-turn usage event from an assistant message that reports usage', () => {
+    const events = mapRawEvent({
+      type: 'assistant',
+      message: {
+        usage: {
+          input_tokens: 5,
+          output_tokens: 7,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 2048,
+        },
+        content: [{ type: 'text', text: 'hi' }],
+      },
+    });
+    expect(events).toEqual([
+      { kind: 'usage', inputTokens: 5, outputTokens: 7, cacheCreationTokens: 0, cacheReadTokens: 2048 },
+      { kind: 'assistant', text: 'hi' },
+    ]);
+  });
+
+  it('omits the usage event when an assistant message has no usage block', () => {
+    const events = mapRawEvent({
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: 'hi' }] },
+    });
+    expect(events).toEqual([{ kind: 'assistant', text: 'hi' }]);
   });
 
   it('ignores noise (progress events, unknown types, non-objects)', () => {

@@ -37,6 +37,7 @@ import type { ActiveRun, SchedulerChange, TaskChange } from './scheduler';
 import type { AttentionAnswer, AttentionItem } from './attention';
 import type { LimitState } from './limit';
 import type { AppSettings } from './settings';
+import type { UsageSample, UsageSeriesPoint, UsageSummary } from './usage';
 
 /** Result of checking whether the local `claude` CLI is installed and logged in. */
 export interface ClaudeStatus {
@@ -200,6 +201,19 @@ export interface IpcApi {
    */
   'limit:resumeNow': () => Promise<void>;
 
+  /**
+   * The rolled-up token usage for the current rolling 5-hour window (Performance
+   * dashboard): window total, per-project/per-task/per-source shares, breakdown,
+   * live burn rate, cost, and the running-low state. Computed by the app from the
+   * CLI's own token counts. Live changes arrive via the `usage:sample` event.
+   */
+  'usage:summary': () => Promise<UsageSummary>;
+  /**
+   * The token-over-time series behind the live area chart: totals bucketed into
+   * `bucketMs` windows from `sinceMs` to now. Used to seed the chart on mount.
+   */
+  'usage:series': (sinceMs: number, bucketMs: number) => Promise<UsageSeriesPoint[]>;
+
   /** The current global app settings (Phase 6). */
   'settings:get': () => Promise<AppSettings>;
   /** Persist the global app settings; scheduler knobs take effect on the next task. */
@@ -237,6 +251,12 @@ export interface IpcEvents {
    * clears and work resumes. Drives the global countdown banner.
    */
   'limit:changed': LimitState | null;
+  /**
+   * A token-usage sample was just recorded (Performance dashboard): one turn's spend
+   * from a task or the orchestrator. The dashboard appends it to its live buffer and
+   * recomputes the burn rate. Carries enough to update the chart without re-querying.
+   */
+  'usage:sample': UsageSample;
   /** The frameless window was maximized (true) or restored (false) — updates the title-bar icon. */
   'window:maximizedChanged': boolean;
   /**

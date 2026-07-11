@@ -32,6 +32,7 @@ import type { SchedulerState, TaskChange, SchedulerChange, ActiveRun } from '@sh
 import type { SessionEvent, StartSessionRequest } from '@shared/session';
 import type { AttentionAnswer, AttentionItem, AttentionKind } from '@shared/attention';
 import type { LimitState } from '@shared/limit';
+import type { UsageSample, UsageSource } from '@shared/usage';
 import {
   AGREE_SENTINEL,
   detectProposal,
@@ -558,6 +559,12 @@ export class Scheduler {
   private readonly limitGate: LimitGate;
   /** Once disposed (app quitting), ignore late session events so we never touch a closed DB. */
   private disposed = false;
+  /**
+   * The most recent rate-limit signal the CLI reported (any status, not just a
+   * blocking one), so the Performance dashboard can show whether the account is
+   * approaching a usage limit and when the window resets. Purely informational.
+   */
+  private lastRateLimit: { status: string; resetsAt: number | null } | null = null;
 
   constructor(
     private readonly store: Store,
@@ -576,6 +583,11 @@ export class Scheduler {
      * in the shared project directory, exactly as before this feature.
      */
     private readonly worktrees?: WorktreeManager,
+    /**
+     * Push a recorded token-usage sample to the UI (Performance dashboard), so the
+     * live chart/gauge update as each turn's cost lands. Optional (omitted in tests).
+     */
+    private readonly emitUsage?: (sample: UsageSample) => void,
   ) {
     this.limitGate = new LimitGate({
       now: () => Date.now(),
@@ -700,6 +712,13 @@ export class Scheduler {
     if (this.disposed) return { runId: '' };
     const { runId } = this.sessions.start(request, {
       onEvent: (event) => {
+        // The orchestrator's own token spend (the "Align plan" run) — attributed to the
+        // project but no task, so it shows as "Orchestrator" on the Performance dashboard.
+        if (event.kind === 'usage') {
+          this.recordUsage('orchestrator', projectId, null, runId, event);
+        } else if (event.kind === 'result') {
+          this.recordCost('orchestrator', projectId, null, runId, event.costUsd);
+        }
         if (event.kind === 'result') this.sessions.stop(runId);
         if (event.kind === 'result' || event.kind === 'exited') this.auxRuns.delete(runId);
       },
@@ -1098,6 +1117,76 @@ export class Scheduler {
     return { hasContract: siblings.some((t) => t.isContract), hasScaffold };
   }
 
+  /**
+   * Record one turn's token consumption for the Performance dashboard and push it to
+   * the UI. Called for every `usage` event, from both task runs and the orchestrator's
+   * own auxiliary runs — this is how the app accounts for everything that spends tokens.
+   */
+  private recordUsage(
+    source: UsageSource,
+    projectId: string | null,
+    taskId: string | null,
+    runId: string,
+    event: Extract<SessionEvent, { kind: 'usage' }>,
+  ): void {
+    if (this.disposed) return;
+    const sample: UsageSample = {
+      source,
+      projectId,
+      taskId,
+      runId,
+      inputTokens: event.inputTokens,
+      outputTokens: event.outputTokens,
+      cacheCreationTokens: event.cacheCreationTokens,
+      cacheReadTokens: event.cacheReadTokens,
+      totalTokens:
+        event.inputTokens + event.outputTokens + event.cacheCreationTokens + event.cacheReadTokens,
+      createdAt: Date.now(),
+    };
+    this.store.appendTokenUsage(sample);
+    this.emitUsage?.(sample);
+  }
+
+  /**
+   * Record a run's end-of-turn cost as a token-free reconciliation row, so window
+   * cost can be summed without double-counting the tokens the `usage` events already
+   * captured. No-op when the CLI didn't report a cost.
+   */
+  private recordCost(
+    source: UsageSource,
+    projectId: string | null,
+    taskId: string | null,
+    runId: string,
+    costUsd: number | null,
+  ): void {
+    if (this.disposed || costUsd == null) return;
+    this.store.appendTokenUsage({
+      source,
+      projectId,
+      taskId,
+      runId,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+      totalTokens: 0,
+      costUsd,
+      createdAt: Date.now(),
+    });
+  }
+
+  /**
+   * Current usage pressure for the Performance summary: the last rate-limit status the
+   * CLI reported, its reset time, and whether the account-wide gate is engaged.
+   */
+  getUsagePressure(): { status: string | null; resetsAt: number | null; limitActive: boolean } {
+    return {
+      status: this.lastRateLimit?.status ?? null,
+      resetsAt: this.lastRateLimit?.resetsAt ?? null,
+      limitActive: this.limitGate.active,
+    };
+  }
+
   private onRunEvent(runId: string, event: SessionEvent): void {
     if (this.disposed) return;
     const run = this.runs.get(runId);
@@ -1106,6 +1195,15 @@ export class Scheduler {
     // Phase 6: persist every event to the task's history so its transcript is
     // viewable after the run ends or the app restarts.
     this.store.appendTaskEvent(run.projectId, run.taskId, runId, event);
+
+    // Token accounting (Performance dashboard): a per-turn `usage` event is the task's
+    // incremental spend; the `result` event carries the run's total cost. Recorded here,
+    // before the negotiation/settlement branches below, so no early-return can skip it.
+    if (event.kind === 'usage') {
+      this.recordUsage('task', run.projectId, run.taskId, runId, event);
+    } else if (event.kind === 'result') {
+      this.recordCost('task', run.projectId, run.taskId, runId, event.costUsd);
+    }
 
     // Inspect assistant messages for the three explicit markers, in priority order:
     //   1. a cross-agent PROPOSAL (Phase D) — start a consensus round with siblings;
@@ -1142,6 +1240,9 @@ export class Scheduler {
         break;
 
       case 'rate-limit':
+        // Remember the latest signal (any status) so the Performance dashboard can show
+        // whether we're approaching a limit and when the window resets.
+        this.lastRateLimit = { status: event.status, resetsAt: event.resetsAt };
         // A usage limit signal (Phase 5). Only a HARD rejection parks work — an
         // `allowed`/`allowed_warning` (approaching the cap) or an empty status must
         // NOT engage the gate, or a mere warning falsely parks everything for a full

@@ -29,6 +29,7 @@ import { Attention } from './Attention';
 import { Board } from './Board';
 import { LimitBanner } from './LimitBanner';
 import { MyTasks } from './MyTasks';
+import { Performance } from './Performance';
 import { Projects } from './Projects';
 import { Settings } from './Settings';
 import { SessionRunner } from './SessionRunner';
@@ -67,7 +68,14 @@ const useStyles = makeStyles({
   grow: { flex: 1 },
 });
 
-type TabId = 'mytasks' | 'projects' | 'board' | 'attention' | 'settings' | 'scratch';
+type TabId =
+  | 'mytasks'
+  | 'projects'
+  | 'board'
+  | 'performance'
+  | 'attention'
+  | 'settings'
+  | 'scratch';
 
 export function App(): JSX.Element {
   const styles = useStyles();
@@ -113,6 +121,7 @@ export function App(): JSX.Element {
           <Tab value="mytasks">My Tasks</Tab>
           <Tab value="projects">Projects</Tab>
           <Tab value="board">Board</Tab>
+          <Tab value="performance">Performance</Tab>
           <Tab value="attention">
             Attention
             {attentionCount > 0 && (
@@ -135,6 +144,8 @@ export function App(): JSX.Element {
             <Projects />
           ) : tab === 'board' ? (
             <Board />
+          ) : tab === 'performance' ? (
+            <Performance />
           ) : tab === 'attention' ? (
             <Attention />
           ) : tab === 'settings' ? (

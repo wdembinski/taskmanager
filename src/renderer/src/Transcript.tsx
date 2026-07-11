@@ -70,6 +70,9 @@ export function eventToLines(event: SessionEvent): TranscriptLine[] {
       return [{ cls: 'tool', text: `  ⚙ ${event.name}` }];
     case 'tool-result':
       return [{ cls: 'tool', text: `  ⚙ result${event.isError ? ' (error)' : ''}` }];
+    case 'usage':
+      // Token accounting is surfaced on the Performance dashboard, not inline here.
+      return [];
     case 'rate-limit':
       if (event.status === 'allowed') return [];
       return [

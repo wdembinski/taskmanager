@@ -22,6 +22,8 @@ import { PlanWatcher } from './planWatcher';
 import { Scheduler } from './scheduler';
 import { SessionManager } from './sessionManager';
 import { createStore, type Store } from './store';
+import { bucketSeries, rollupWindow } from './usageRollup';
+import { USAGE_WINDOW_MS } from '@shared/usage';
 import { WorktreeManager } from './worktreeManager';
 
 /**
@@ -104,6 +106,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     (id) => send('attention:resolved', { id }),
     (state) => send('limit:changed', state),
     worktrees,
+    (sample) => send('usage:sample', sample),
   );
 
   // Phase 6: heal tasks the previous run left mid-flight (running/waiting-input →
@@ -315,6 +318,35 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
   handle('limit:current', async () => scheduler.currentLimit());
   handle('limit:resumeNow', async () => scheduler.resumeLimitNow());
+
+  // Performance dashboard: roll the rolling-5h-window samples into a summary, and
+  // serve the time-bucketed series for the live chart. All computed by the app from
+  // the CLI's own token counts — no AI agent is involved in the math.
+  handle('usage:summary', async () => {
+    const now = Date.now();
+    const windowStart = now - USAGE_WINDOW_MS;
+    const samples = store.getUsageSamples(windowStart);
+    const pressure = scheduler.getUsagePressure();
+    const projectNames = new Map<string, string>();
+    const taskTitles = new Map<string, string>();
+    for (const project of store.listProjects()) {
+      projectNames.set(project.id, project.name);
+      for (const task of store.getTasks(project.id)) taskTitles.set(task.id, task.title);
+    }
+    return rollupWindow(samples, {
+      now,
+      // The CLI reports resetsAt in Unix seconds; the UI counts down in ms.
+      windowReset: pressure.resetsAt != null ? pressure.resetsAt * 1000 : null,
+      projectNames,
+      taskTitles,
+      limitStatus: pressure.status,
+      limitActive: pressure.limitActive,
+      windowCost: store.getWindowCost(windowStart),
+    });
+  });
+  handle('usage:series', async (sinceMs, bucketMs) =>
+    bucketSeries(store.getUsageSamples(sinceMs), sinceMs, bucketMs, Date.now()),
+  );
 
   handle('settings:get', async () => store.getSettings());
   handle('settings:save', async (settings) => store.saveSettings(settings));

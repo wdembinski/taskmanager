@@ -130,6 +130,12 @@ export function mapRawEvent(raw: unknown): SessionEvent[] {
       const message = (e['message'] ?? {}) as Record<string, unknown>;
       const content = Array.isArray(message['content']) ? message['content'] : [];
       const out: SessionEvent[] = [];
+      // Each assistant turn carries a `usage` block — the incremental token cost of
+      // THIS model call. Emit it so the app can account for what every run burns.
+      const usage = readUsage(message['usage']);
+      if (usage) {
+        out.push({ kind: 'usage', ...usage });
+      }
       for (const block of content as Array<Record<string, unknown>>) {
         if (block['type'] === 'text' && typeof block['text'] === 'string') {
           out.push({ kind: 'assistant', text: block['text'] });
@@ -176,6 +182,7 @@ export function mapRawEvent(raw: unknown): SessionEvent[] {
           durationMs: typeof e['duration_ms'] === 'number' ? e['duration_ms'] : null,
           stopReason: typeof e['stop_reason'] === 'string' ? e['stop_reason'] : null,
           terminalReason: typeof e['terminal_reason'] === 'string' ? e['terminal_reason'] : null,
+          usage: readUsage(e['usage']),
         },
       ];
     }
@@ -183,6 +190,29 @@ export function mapRawEvent(raw: unknown): SessionEvent[] {
     default:
       return [];
   }
+}
+
+/**
+ * Safely pull the four token counts out of a raw CLI `usage` object, mapping the
+ * snake_case wire names to our camelCase fields. Returns `null` if the value isn't
+ * a usage object at all (so callers can skip emitting a usage event). Missing
+ * individual fields default to 0 — a turn may report only some kinds.
+ */
+export function readUsage(raw: unknown): {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+} | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const u = raw as Record<string, unknown>;
+  const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+  return {
+    inputTokens: num(u['input_tokens']),
+    outputTokens: num(u['output_tokens']),
+    cacheCreationTokens: num(u['cache_creation_input_tokens']),
+    cacheReadTokens: num(u['cache_read_input_tokens']),
+  };
 }
 
 /**

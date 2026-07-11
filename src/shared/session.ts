@@ -64,6 +64,20 @@ export type SessionEvent =
   /** A tool finished. */
   | { kind: 'tool-result'; toolId: string; isError: boolean }
   /**
+   * Per-turn token usage, emitted for each assistant message that carries a
+   * `usage` block. This is the incremental consumption of ONE model call — the
+   * app sums these to account for what a task/project/the orchestrator burns.
+   * Summing per-turn usage (including cache reads) is exactly what counts against
+   * the account's quota, so this is the authoritative signal, not the `result`.
+   */
+  | {
+      kind: 'usage';
+      inputTokens: number;
+      outputTokens: number;
+      cacheCreationTokens: number;
+      cacheReadTokens: number;
+    }
+  /**
    * A usage-limit signal. `resetsAt` is a Unix timestamp (seconds) telling us
    * when the limit clears — the Phase 5 auto-respawn gate keys off this.
    */
@@ -77,6 +91,18 @@ export type SessionEvent =
       durationMs: number | null;
       stopReason: string | null;
       terminalReason: string | null;
+      /**
+       * The run's cumulative token usage as reported on the final `result` event,
+       * or `null` if the CLI didn't include it. Kept for end-of-run reconciliation
+       * and cost display — token ACCOUNTING uses the per-turn `usage` events above
+       * (adding these totals too would double-count).
+       */
+      usage: {
+        inputTokens: number;
+        outputTokens: number;
+        cacheCreationTokens: number;
+        cacheReadTokens: number;
+      } | null;
     }
   /** Raw text Claude/CLI wrote to stderr (surfaced for debugging). */
   | { kind: 'stderr'; text: string }
