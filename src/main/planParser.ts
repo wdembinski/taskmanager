@@ -87,8 +87,19 @@ function splitMarker(title: string, marker: RegExp): { title: string; present: b
  * greedily consuming the LONGEST run of comma-fragments that reconstitutes a real
  * title. A fragment that matches nothing is kept as-is (surfaced as an unmet dep,
  * not silently dropped) — same as the old behavior for genuinely-unknown refs.
+ *
+ * Matching is whitespace-INSENSITIVE around commas: splitting on `,` and re-joining
+ * discards the original inter-comma spacing, so a title that used commas without a
+ * following space (e.g. "(`passwordHash?`,`emailVerified`)" or "{Unit,Module,Path}")
+ * would never string-equal a naive `", "`-joined candidate and would be shredded.
+ * We normalize `\s*,\s*` → `, ` on both sides to compare, and push the CANONICAL
+ * actual title so the scheduler's exact-title dependency check still matches.
  */
 function resolveNeeds(raw: string, titles: ReadonlySet<string>): string[] {
+  const norm = (s: string): string => s.replace(/\s*,\s*/g, ', ').trim();
+  const byNorm = new Map<string, string>(); // normalized title -> actual title
+  for (const t of titles) byNorm.set(norm(t), t);
+
   const parts = raw
     .split(',')
     .map((s) => s.trim())
@@ -96,13 +107,18 @@ function resolveNeeds(raw: string, titles: ReadonlySet<string>): string[] {
   const needs: string[] = [];
   for (let i = 0; i < parts.length; ) {
     let end = -1;
+    let matched: string | null = null;
     let candidate = '';
     for (let j = i; j < parts.length; j++) {
       candidate = j === i ? parts[j] : `${candidate}, ${parts[j]}`;
-      if (titles.has(candidate)) end = j; // keep scanning: prefer the longest match
+      const hit = byNorm.get(norm(candidate));
+      if (hit) {
+        end = j; // keep scanning: prefer the longest match
+        matched = hit;
+      }
     }
-    if (end >= 0) {
-      needs.push(parts.slice(i, end + 1).join(', '));
+    if (end >= 0 && matched) {
+      needs.push(matched);
       i = end + 1;
     } else {
       needs.push(parts[i]);

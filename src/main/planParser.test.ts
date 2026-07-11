@@ -122,6 +122,41 @@ describe('parsePlan', () => {
     expect(tasks[2].needs).toEqual(['Define DTOs (a, b, c)', 'Set up DB']);
   });
 
+  it('resolves a comma-in-title dep whose commas have NO following space', () => {
+    // Regression: the title packs commas with no space (`a?`,`b`,`c`), but @needs is
+    // split-and-rejoined with a normalized ", ", so a naive equality check never
+    // matched and shattered the dep into phantom fragments — blocking it forever.
+    const tasks = parsePlan(
+      [
+        '## P',
+        '- [x] Restore fields (`passwordHash?`,`emailVerified`,`roles` M2M)',
+        '- [ ] Fix typings @needs: Restore fields (`passwordHash?`,`emailVerified`,`roles` M2M)',
+      ].join('\n'),
+    );
+    // Stores the CANONICAL title (as authored), so the scheduler's exact match holds.
+    expect(tasks[1].needs).toEqual(['Restore fields (`passwordHash?`,`emailVerified`,`roles` M2M)']);
+  });
+
+  it('resolves a no-space comma-in-title dep alongside a second dep', () => {
+    const tasks = parsePlan(
+      [
+        '## P',
+        '- [x] Shim (`iam/{jwt-auth.guard,current-user.decorator,authenticated-user}`)',
+        '- [x] Set up DB',
+        '- [ ] Wire @needs: Shim (`iam/{jwt-auth.guard,current-user.decorator,authenticated-user}`), Set up DB',
+      ].join('\n'),
+    );
+    expect(tasks[2].needs).toEqual([
+      'Shim (`iam/{jwt-auth.guard,current-user.decorator,authenticated-user}`)',
+      'Set up DB',
+    ]);
+  });
+
+  it('surfaces a genuinely-unknown @needs ref verbatim as a single unmet dep', () => {
+    const tasks = parsePlan(['## P', '- [x] Set up DB', '- [ ] Build @needs: No Such Task'].join('\n'));
+    expect(tasks[1].needs).toEqual(['No Such Task']);
+  });
+
   it('honors @needs on a wrapped continuation line (folded before extraction)', () => {
     const tasks = parsePlan(['## P', '- [ ] A big task', '      @needs: Prereq'].join('\n'));
     expect(tasks[0]).toEqual({
