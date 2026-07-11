@@ -24,14 +24,18 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import type { UsageSeriesPoint, UsageSlice, UsageSummary } from '@shared/usage';
-import { USAGE_WINDOW_MS } from '@shared/usage';
 import { BurnRateGauge } from './BurnRateGauge';
 import { TokenChart } from './TokenChart';
 import { formatCountdown } from './LimitBanner';
 import { formatCost, formatPct, formatTokens, niceCeil } from './usageFormat';
 
-/** One-minute buckets across the 5-hour window (300 points) for the chart. */
-const BUCKET_MS = 60_000;
+/**
+ * The live chart is a per-second, short rolling window (Windows Task Manager style):
+ * one-second buckets across the last few minutes, so it visibly scrolls every second.
+ * The tiles and breakdown below still summarize the whole rolling 5-hour window.
+ */
+const BUCKET_MS = 1000;
+const CHART_WINDOW_MS = 120_000; // last 2 minutes, at 1-second resolution
 
 /** Palette used to color the per-project/source share bars, cycled by index. */
 const BAR_COLORS = [
@@ -106,12 +110,13 @@ export function Performance(): JSX.Element {
     const at = Date.now();
     const [s, pts] = await Promise.all([
       window.api.invoke('usage:summary'),
-      window.api.invoke('usage:series', at - USAGE_WINDOW_MS, BUCKET_MS),
+      window.api.invoke('usage:series', at - CHART_WINDOW_MS, BUCKET_MS),
     ]);
     setSummary(s);
     setSeries(pts);
-    peakBurn.current = Math.max(peakBurn.current, s.burn.perMinute);
-    setGaugeMax(niceCeil(Math.max(peakBurn.current * 1.15, 1000)));
+    // Gauge scale tracks the per-second peak (sticky) so the needle stays comparable.
+    peakBurn.current = Math.max(peakBurn.current, s.burn.perSecond);
+    setGaugeMax(niceCeil(Math.max(peakBurn.current * 1.15, 50)));
   }, []);
 
   useEffect(() => {
@@ -217,7 +222,10 @@ export function Performance(): JSX.Element {
             </div>
           </div>
 
-          <TokenChart points={series} bucketMs={BUCKET_MS} />
+          <div className={styles.section}>
+            <span className={styles.sectionTitle}>Live · last 2 min · tokens/sec</span>
+            <TokenChart points={series} bucketMs={BUCKET_MS} />
+          </div>
 
           <div className={styles.section}>
             <span className={styles.sectionTitle}>By task</span>

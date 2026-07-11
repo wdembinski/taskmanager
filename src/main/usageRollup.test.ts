@@ -106,6 +106,7 @@ describe('burnRate', () => {
     ];
     const burn = burnRate(samples, now, 60);
     expect(burn.perMinute).toBe(6000);
+    expect(burn.perSecond).toBe(100);
     expect(burn.trend).toBe('up');
   });
 

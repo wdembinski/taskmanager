@@ -45,13 +45,13 @@ function arc(r: number, f1: number, f2: number): string {
 
 export interface BurnRateGaugeProps {
   burn: BurnRate;
-  /** Full-scale value (tokens/min) the right end of the gauge represents. */
+  /** Full-scale value (tokens/sec) the right end of the gauge represents. */
   max: number;
 }
 
 export function BurnRateGauge({ burn, max }: BurnRateGaugeProps): JSX.Element {
   const styles = useStyles();
-  const f = max > 0 ? burn.perMinute / max : 0;
+  const f = max > 0 ? burn.perSecond / max : 0;
   const [nx, ny] = polar(R * 0.82, f);
   const TrendIcon =
     burn.trend === 'up' ? ArrowUpRegular : burn.trend === 'down' ? ArrowDownRegular : ArrowRightRegular;
@@ -77,9 +77,9 @@ export function BurnRateGauge({ burn, max }: BurnRateGaugeProps): JSX.Element {
       </svg>
       <div className={styles.value}>
         <TrendIcon />
-        {formatTokens(burn.perMinute)}
+        {formatTokens(burn.perSecond)}
       </div>
-      <span className={styles.unit}>tokens / min</span>
+      <span className={styles.unit}>tokens / sec</span>
     </div>
   );
 }

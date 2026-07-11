@@ -56,6 +56,8 @@ export interface UsageSlice {
 export interface BurnRate {
   /** Tokens per minute over the trailing burn window. */
   perMinute: number;
+  /** Tokens per second over the trailing burn window (the gauge's primary reading). */
+  perSecond: number;
   /** Direction vs. the immediately preceding window (for the gauge's trend arrow). */
   trend: 'up' | 'down' | 'flat';
 }

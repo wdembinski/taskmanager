@@ -92,12 +92,13 @@ export function burnRate(
   const windowMs = windowSec * 1000;
   const current = tokensBetween(samples, now - windowMs, now + 1);
   const previous = tokensBetween(samples, now - 2 * windowMs, now - windowMs);
-  const perMinute = (current / windowSec) * 60;
+  const perSecond = current / windowSec;
+  const perMinute = perSecond * 60;
   // A 5% band keeps the arrow from flickering on tiny fluctuations.
   const band = Math.max(previous * 0.05, 1);
   const trend: BurnRate['trend'] =
     current > previous + band ? 'up' : current < previous - band ? 'down' : 'flat';
-  return { perMinute, trend };
+  return { perMinute, perSecond, trend };
 }
 
 /**

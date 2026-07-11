@@ -44,9 +44,10 @@ export interface TokenChartProps {
   bucketMs?: number;
 }
 
-export function TokenChart({ points, color }: TokenChartProps): JSX.Element {
+export function TokenChart({ points, color, bucketMs }: TokenChartProps): JSX.Element {
   const styles = useStyles();
   const stroke = color ?? tokens.colorBrandStroke1;
+  const perUnit = bucketMs === 1000 ? 'tok/s' : 'tok/bucket';
   const plotH = VIEW_H - PAD_TOP - PAD_BOTTOM;
 
   const peak = points.reduce((m, p) => Math.max(m, p.tokens), 0);
@@ -69,7 +70,7 @@ export function TokenChart({ points, color }: TokenChartProps): JSX.Element {
 
   return (
     <div className={styles.root}>
-      <span className={styles.peak}>peak {formatTokens(peak)} tok / bucket</span>
+      <span className={styles.peak}>peak {formatTokens(peak)} {perUnit}</span>
       <svg
         className={styles.svg}
         viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
