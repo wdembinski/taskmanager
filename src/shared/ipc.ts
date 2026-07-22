@@ -33,6 +33,7 @@ import type {
   ProjectWithTasks,
   Task,
   TaskActivityEntry,
+  TaskType,
 } from './model';
 import type { ActiveRun, SchedulerChange, TaskChange } from './scheduler';
 import type { AttentionAnswer, AttentionItem } from './attention';
@@ -166,7 +167,10 @@ export interface IpcApi {
    * Create an ad-hoc task in a project (Phase 8) — no plan line required, so
    * plan-less projects are usable and you can add work on the fly. Returns the task.
    */
-  'task:create': (projectId: string, input: { title: string; phase?: string }) => Promise<Task>;
+  'task:create': (
+    projectId: string,
+    input: { title: string; phase?: string; type?: TaskType | null },
+  ) => Promise<Task>;
   /** Delete a task (and its history). Rejects if it is currently running. */
   'task:delete': (taskId: string) => Promise<void>;
   /**

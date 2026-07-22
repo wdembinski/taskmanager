@@ -178,6 +178,14 @@ export type ProjectPatch = Partial<
   >
 >;
 
+/**
+ * The kind of an internal (non-JIRA) task, chosen by the user when adding it and
+ * used to pick the card's type icon. JIRA-mirrored tasks don't use this — their
+ * icon comes from `externalType` (the JIRA issue type). Null for legacy ad-hoc
+ * tasks created before types existed (they fall back to a neutral icon).
+ */
+export type TaskType = 'bug' | 'feature';
+
 /** One unit of work, parsed from a plan or added ad-hoc, owned by the app's DB. */
 export interface Task {
   /** Stable app-assigned id (UUID). */
@@ -232,6 +240,12 @@ export interface Task {
    * time. False for ordinary and ad-hoc tasks.
    */
   isScaffold: boolean;
+  /**
+   * User-chosen kind for an internal task (bug/feature), driving its card icon.
+   * Null for JIRA-mirrored tasks (they use `externalType`) and for legacy ad-hoc
+   * tasks created before types existed.
+   */
+  type?: TaskType | null;
 
   // --- External tracker linkage (JIRA integration). All null for internal tasks. ---
   /** The external tracker this task mirrors, or null for an internal task. */

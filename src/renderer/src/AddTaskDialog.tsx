@@ -15,12 +15,21 @@ import {
   DialogContent,
   DialogSurface,
   DialogTitle,
+  Dropdown,
   Field,
   Input,
   makeStyles,
   MessageBar,
   MessageBarBody,
+  Option,
 } from '@fluentui/react-components';
+import type { TaskType } from '@shared/model';
+
+/** The task types offered in the picker, with their display labels. */
+const TASK_TYPES: Array<{ value: TaskType; label: string }> = [
+  { value: 'feature', label: 'Feature' },
+  { value: 'bug', label: 'Bug' },
+];
 
 const useStyles = makeStyles({
   body: { display: 'flex', flexDirection: 'column', gap: '12px', minWidth: '440px' },
@@ -45,6 +54,7 @@ export function AddTaskDialog({
   const styles = useStyles();
   const [title, setTitle] = useState('');
   const [phase, setPhase] = useState('');
+  const [type, setType] = useState<TaskType>('feature');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -52,6 +62,7 @@ export function AddTaskDialog({
     if (open) {
       setTitle('');
       setPhase('');
+      setType('feature');
       setError(null);
     }
   }, [open]);
@@ -64,6 +75,7 @@ export function AddTaskDialog({
       await window.api.invoke('task:create', projectId, {
         title: title.trim(),
         phase: phase.trim() || undefined,
+        type,
       });
       onCreated();
       onClose();
@@ -92,6 +104,19 @@ export function AddTaskDialog({
                   onChange={(_e, d) => setTitle(d.value)}
                   placeholder="What should Claude do?"
                 />
+              </Field>
+              <Field label="Type">
+                <Dropdown
+                  value={TASK_TYPES.find((t) => t.value === type)?.label ?? ''}
+                  selectedOptions={[type]}
+                  onOptionSelect={(_e, d) => setType(d.optionValue as TaskType)}
+                >
+                  {TASK_TYPES.map((t) => (
+                    <Option key={t.value} value={t.value}>
+                      {t.label}
+                    </Option>
+                  ))}
+                </Dropdown>
               </Field>
               <Field
                 label="Phase / milestone (optional)"

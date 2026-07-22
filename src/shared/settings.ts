@@ -34,6 +34,11 @@ export interface JiraSettings {
   jql: string;
   /** Whether the board shows the Done column. */
   showDoneColumn: boolean;
+  /**
+   * How often (in minutes) the app polls JIRA in the background to fetch new/changed
+   * issues onto the board. 0 = off (the manual "Sync JIRA" button still works).
+   */
+  pollIntervalMinutes: number;
   /** Optional per-raw-status-name overrides mapping a status to a board column. */
   statusCategoryOverrides?: Record<string, BoardColumn>;
   /** Optional exact transition name to use for To Do → In Progress (else auto-detected). */
@@ -51,6 +56,7 @@ export const DEFAULT_JIRA_SETTINGS: JiraSettings = {
   apiVersion: '2',
   jql: 'assignee = currentUser() AND resolution = Unresolved ORDER BY updated DESC',
   showDoneColumn: false,
+  pollIntervalMinutes: 5,
 };
 
 export interface AppSettings {

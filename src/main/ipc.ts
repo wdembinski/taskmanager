@@ -17,6 +17,7 @@ import {
   PERSONAL_PROJECT_ID,
   type Project,
   type ProjectWithTasks,
+  type Task,
 } from '@shared/model';
 import { categoryFromKey } from '@shared/board';
 import { createJiraClient } from './jira/jiraConfig';
@@ -30,6 +31,7 @@ import { buildAlignPrompt } from './alignPrompt';
 import { PermissionBroker } from './permissionBroker';
 import { writePermissionServer } from './permissionServerSource';
 import { PlanWatcher } from './planWatcher';
+import { JiraPoller } from './jiraPoller';
 import { Scheduler } from './scheduler';
 import { SessionManager } from './sessionManager';
 import { createStore, type Store } from './store';
@@ -82,6 +84,7 @@ export interface Engine {
   store: Store;
   broker: PermissionBroker;
   watcher: PlanWatcher;
+  jiraPoller: JiraPoller;
 }
 
 /**
@@ -366,7 +369,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   );
 
   handle('settings:get', async () => store.getSettings());
-  handle('settings:save', async (settings) => store.saveSettings(settings));
+  handle('settings:save', async (settings) => {
+    store.saveSettings(settings);
+    // Pick up a changed JIRA poll interval (or enable/disable) without a restart.
+    jiraPoller.reschedule();
+  });
 
   // Build a JIRA client from current settings + the decrypted token, or throw a
   // user-facing error explaining what's missing. The token never leaves the main
@@ -422,7 +429,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
   handle('board:tasks', async () => store.getPersonalTasks());
 
-  handle('jira:sync', async () => {
+  // One JIRA sync: fetch issues, reconcile into the store, push the fresh board.
+  // Shared by the manual `jira:sync` handler and the background poller below.
+  const syncJira = async (): Promise<Task[]> => {
     const { jira } = store.getSettings();
     if (!jira.enabled) return store.getPersonalTasks();
     const client = buildJiraClient();
@@ -436,7 +445,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     const tasks = store.getPersonalTasks();
     send('project:tasksChanged', { projectId: PERSONAL_PROJECT_ID, tasks });
     return tasks;
-  });
+  };
+
+  handle('jira:sync', async () => syncJira());
+
+  // Background poll: keep the Personal board fresh on the user's configured cadence
+  // (JIRA setting `pollIntervalMinutes`; 0 = off). Re-armed whenever settings change.
+  const jiraPoller = new JiraPoller(store, syncJira);
+  jiraPoller.reschedule();
 
   handle('task:move', async (taskId, toColumn) => {
     const existing = store.getTask(taskId);
@@ -515,7 +531,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     const task = store.getTask(taskId);
     if (!task) throw new Error('Task not found.');
     if (task.externalSource !== 'jira') return task;
-    const updated = store.updateTask(taskId, { lastReadCommentAt: task.latestCommentAt ?? Date.now() });
+    const updated = store.updateTask(taskId, {
+      lastReadCommentAt: task.latestCommentAt ?? Date.now(),
+    });
     if (updated) send('task:changed', { task: updated, runId: null });
     return updated ?? task;
   });
@@ -532,5 +550,5 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   mainWindow.on('maximize', () => send('window:maximizedChanged', true));
   mainWindow.on('unmaximize', () => send('window:maximizedChanged', false));
 
-  return { sessions, scheduler, store, broker, watcher };
+  return { sessions, scheduler, store, broker, watcher, jiraPoller };
 }

@@ -22,6 +22,7 @@ import {
   type Task,
   type TaskActivityEntry,
   type TaskStatus,
+  type TaskType,
 } from '@shared/model';
 import type { LimitState } from '@shared/limit';
 import type { SessionEvent } from '@shared/session';
@@ -47,6 +48,8 @@ interface TaskRow {
   isContract: number;
   /** 1 when the task lays down the milestone's shared scaffold (`@scaffold`); 0 otherwise. */
   isScaffold: number;
+  /** User-chosen internal task kind (bug/feature); NULL for JIRA and legacy tasks. */
+  type: string | null;
   // External tracker linkage (JIRA). NULL for internal tasks.
   externalSource: string | null;
   externalKey: string | null;
@@ -119,7 +122,10 @@ export interface Store {
   /** Insert a new JIRA-sourced task, or update the existing one with the same key. */
   upsertJiraTask(task: Task): Task;
   /** Create an ad-hoc task (Phase 8): appended after existing tasks, `source: 'adhoc'`. */
-  createTask(projectId: string, input: { title: string; phase?: string }): Task | undefined;
+  createTask(
+    projectId: string,
+    input: { title: string; phase?: string; type?: TaskType | null },
+  ): Task | undefined;
   /** Delete one task (and its transcript history) by id. */
   deleteTask(id: string): void;
   /** Re-parse a plan and reconcile it into the project's tasks; returns the result. */
@@ -209,6 +215,7 @@ export function createStore(dbPath: string): Store {
       dependsOn              TEXT,
       isContract             INTEGER NOT NULL DEFAULT 0,
       isScaffold             INTEGER NOT NULL DEFAULT 0,
+      type                   TEXT,
       externalSource         TEXT,
       externalKey            TEXT,
       externalId             TEXT,
@@ -306,6 +313,7 @@ export function createStore(dbPath: string): Store {
   // nullable with no default — existing (internal) tasks read them back as null,
   // which is exactly "not linked to any tracker".
   const jiraTaskColumns: Array<[string, string]> = [
+    ['type', 'TEXT'],
     ['externalSource', 'TEXT'],
     ['externalKey', 'TEXT'],
     ['externalId', 'TEXT'],
@@ -362,8 +370,7 @@ export function createStore(dbPath: string): Store {
   if (!projectColumns.some((c) => c.name === 'concurrency')) {
     db.exec(`ALTER TABLE projects ADD COLUMN concurrency INTEGER NOT NULL DEFAULT 1`);
     const settingsRow = db.prepare(`SELECT value FROM app_state WHERE key = 'settings'`).get() as
-      | { value: string }
-      | undefined;
+      { value: string } | undefined;
     let globalConcurrency = DEFAULT_SETTINGS.concurrency;
     try {
       if (settingsRow) {
@@ -373,7 +380,9 @@ export function createStore(dbPath: string): Store {
     } catch {
       // Malformed settings row — fall back to the built-in default.
     }
-    db.prepare(`UPDATE projects SET concurrency = ?`).run(Math.max(1, Math.round(globalConcurrency)));
+    db.prepare(`UPDATE projects SET concurrency = ?`).run(
+      Math.max(1, Math.round(globalConcurrency)),
+    );
   }
 
   const insertProject = db.prepare<[ProjectRow]>(
@@ -390,11 +399,11 @@ export function createStore(dbPath: string): Store {
   const deleteTasks = db.prepare(`DELETE FROM tasks WHERE projectId = ?`);
   const insertTask = db.prepare<[TaskRow]>(
     `INSERT INTO tasks
-       (id, projectId, phase, title, status, sessionId, "order", source, dependsOn, isContract, isScaffold,
+       (id, projectId, phase, title, status, sessionId, "order", source, dependsOn, isContract, isScaffold, type,
         externalSource, externalKey, externalId, externalUrl, externalStatus, externalStatusCategory,
         externalPriority, externalType, externalLabel, preBlockStatus, lastReadCommentAt, latestCommentAt)
      VALUES
-       (@id, @projectId, @phase, @title, @status, @sessionId, @order, @source, @dependsOn, @isContract, @isScaffold,
+       (@id, @projectId, @phase, @title, @status, @sessionId, @order, @source, @dependsOn, @isContract, @isScaffold, @type,
         @externalSource, @externalKey, @externalId, @externalUrl, @externalStatus, @externalStatusCategory,
         @externalPriority, @externalType, @externalLabel, @preBlockStatus, @lastReadCommentAt, @latestCommentAt)`,
   );
@@ -517,6 +526,7 @@ export function createStore(dbPath: string): Store {
       dependsOn: JSON.stringify(task.dependsOn ?? []),
       isContract: task.isContract ? 1 : 0,
       isScaffold: task.isScaffold ? 1 : 0,
+      type: task.type ?? null,
       // External linkage — coalesce undefined → null so named params are always bound.
       externalSource: task.externalSource ?? null,
       externalKey: task.externalKey ?? null,
@@ -546,6 +556,7 @@ export function createStore(dbPath: string): Store {
       dependsOn: parseDependsOn(r.dependsOn),
       isContract: r.isContract !== 0,
       isScaffold: r.isScaffold !== 0,
+      type: (r.type as Task['type']) ?? null,
       externalSource: (r.externalSource as Task['externalSource']) ?? null,
       externalKey: r.externalKey,
       externalId: r.externalId,
@@ -741,6 +752,7 @@ export function createStore(dbPath: string): Store {
         dependsOn: [],
         isContract: false,
         isScaffold: false,
+        type: input.type ?? null,
       };
       insertTask.run(taskToRow(task));
       return task;

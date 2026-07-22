@@ -7,15 +7,23 @@
  * column (an AI run, or a failed/stopped/cancelled task in Done). An orange border
  * flags unread JIRA comments.
  */
-import { Badge, Caption1, Text, makeStyles, mergeClasses, tokens } from '@fluentui/react-components';
 import {
-  BookmarkRegular,
-  BugRegular,
-  CircleRegular,
-  NoteRegular,
-  PersonRegular,
-  SparkleRegular,
-  TaskListSquareLtrRegular,
+  Badge,
+  Caption1,
+  Text,
+  makeStyles,
+  mergeClasses,
+  tokens,
+} from '@fluentui/react-components';
+import {
+  BeakerFilled,
+  BookmarkFilled,
+  BugFilled,
+  CircleFilled,
+  NoteFilled,
+  PersonFilled,
+  SparkleFilled,
+  TaskListSquareLtrFilled,
 } from '@fluentui/react-icons';
 import type { Task } from '@shared/model';
 import { hasUnreadJira } from '@shared/board';
@@ -71,18 +79,32 @@ function priorityColor(priority: string | null | undefined): string | null {
   return tokens.colorNeutralForeground4;
 }
 
-/** Pick a card icon from the JIRA issue type (or a note glyph for internal tasks). */
+// Type-icon colors (shared by internal and JIRA tasks).
+const BUG_RED = '#E5484D';
+const FEATURE_BLUE = '#0091FF';
+const STORY_GREEN = '#30A46C';
+const EPIC_PURPLE = '#8E4EC6';
+
+/**
+ * Pick a card icon for the task's type. Internal tasks use their user-chosen
+ * `type` (bug/feature); JIRA tasks map their issue-type name onto the same glyphs.
+ * A typeless internal task (legacy) falls back to a neutral note.
+ */
 function typeIcon(task: Task): JSX.Element {
-  if (task.externalSource !== 'jira') return <NoteRegular />;
+  if (task.externalSource !== 'jira') {
+    if (task.type === 'bug') return <BugFilled style={{ color: BUG_RED }} />;
+    if (task.type === 'feature') return <BeakerFilled style={{ color: FEATURE_BLUE }} />;
+    return <NoteFilled />;
+  }
   const t = (task.externalType ?? '').toLowerCase();
-  if (t.includes('bug')) return <BugRegular style={{ color: '#E5484D' }} />;
-  if (t.includes('story')) return <BookmarkRegular style={{ color: '#30A46C' }} />;
-  if (t.includes('epic')) return <SparkleRegular style={{ color: '#8E4EC6' }} />;
+  if (t.includes('bug')) return <BugFilled style={{ color: BUG_RED }} />;
+  if (t.includes('story')) return <BookmarkFilled style={{ color: STORY_GREEN }} />;
+  if (t.includes('epic')) return <SparkleFilled style={{ color: EPIC_PURPLE }} />;
   if (t.includes('feature') || t.includes('improvement'))
-    return <SparkleRegular style={{ color: '#0091FF' }} />;
-  if (t.includes('sub')) return <PersonRegular />;
-  if (t.includes('task')) return <TaskListSquareLtrRegular style={{ color: '#0091FF' }} />;
-  return <CircleRegular style={{ color: '#0091FF' }} />;
+    return <BeakerFilled style={{ color: FEATURE_BLUE }} />;
+  if (t.includes('sub')) return <PersonFilled />;
+  if (t.includes('task')) return <TaskListSquareLtrFilled style={{ color: FEATURE_BLUE }} />;
+  return <CircleFilled style={{ color: FEATURE_BLUE }} />;
 }
 
 export interface TaskCardProps {
