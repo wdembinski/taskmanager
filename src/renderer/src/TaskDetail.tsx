@@ -7,7 +7,7 @@
  * with the same `eventToLines` the Board's Transcript uses, so output looks the
  * same everywhere.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Badge,
   Body1,
@@ -54,6 +54,11 @@ const useStyles = makeStyles({
     paddingLeft: '8px',
     whiteSpace: 'pre-wrap',
   },
+  jiraCommentBody: {
+    borderLeft: '3px solid #F2A900',
+    paddingLeft: '8px',
+    whiteSpace: 'pre-wrap',
+  },
   eventLines: {
     fontFamily: 'ui-monospace, Consolas, monospace',
     fontSize: '12px',
@@ -89,25 +94,45 @@ export interface TaskDetailProps {
 export function TaskDetail({ task, onStatusChanged }: TaskDetailProps): JSX.Element {
   const styles = useStyles();
   const [activity, setActivity] = useState<TaskActivityEntry[]>([]);
+  const [jiraComments, setJiraComments] = useState<TaskActivityEntry[]>([]);
   const [comment, setComment] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const taskId = task?.id ?? null;
+  const isJira = task?.externalSource === 'jira';
 
   const loadActivity = useCallback(async () => {
     if (!taskId) {
       setActivity([]);
+      setJiraComments([]);
       return;
     }
     setActivity(await window.api.invoke('task:activity', taskId));
-  }, [taskId]);
+    if (isJira) {
+      // JIRA comments are fetched live and merged in; failures shouldn't blank the pane.
+      setJiraComments(await window.api.invoke('jira:fetchComments', taskId).catch(() => []));
+      // Opening the task clears its unread border.
+      await window.api
+        .invoke('jira:markRead', taskId)
+        .then((updated) => onStatusChanged?.(updated))
+        .catch(() => undefined);
+    } else {
+      setJiraComments([]);
+    }
+  }, [taskId, isJira, onStatusChanged]);
 
   useEffect(() => {
     setComment('');
     setError(null);
     void loadActivity();
   }, [loadActivity]);
+
+  // One chronological timeline: persisted activity + live JIRA comments.
+  const timeline = useMemo(
+    () => [...activity, ...jiraComments].sort((a, b) => a.createdAt - b.createdAt),
+    [activity, jiraComments],
+  );
 
   const lineClass: Record<string, string> = {
     meta: styles.meta,
@@ -145,6 +170,21 @@ export function TaskDetail({ task, onStatusChanged }: TaskDetailProps): JSX.Elem
     setError(null);
     try {
       await window.api.invoke('task:addComment', task.id, comment.trim());
+      setComment('');
+      await loadActivity();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function addJiraComment(): Promise<void> {
+    if (!task || !comment.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await window.api.invoke('jira:addComment', task.id, comment.trim());
       setComment('');
       await loadActivity();
     } catch (e) {
@@ -197,12 +237,24 @@ export function TaskDetail({ task, onStatusChanged }: TaskDetailProps): JSX.Elem
       )}
 
       <div className={styles.timeline}>
-        {activity.length === 0 ? (
+        {timeline.length === 0 ? (
           <Caption1 className={styles.empty}>
             No activity yet — change the status or add a comment to start the log.
           </Caption1>
         ) : (
-          activity.map((entry) => {
+          timeline.map((entry) => {
+            if (entry.kind === 'jira-comment') {
+              return (
+                <div key={`j${entry.id}`} className={styles.entry}>
+                  <div className={styles.entryHead}>
+                    <Text weight="semibold">💬 {entry.author} · Jira</Text>
+                    <span className={styles.grow} />
+                    <Caption1 className={styles.time}>{fmtTime(entry.createdAt)}</Caption1>
+                  </div>
+                  <div className={styles.jiraCommentBody}>{entry.body}</div>
+                </div>
+              );
+            }
             if (entry.kind === 'comment') {
               return (
                 <div key={`c${entry.id}`} className={styles.entry}>
@@ -256,12 +308,21 @@ export function TaskDetail({ task, onStatusChanged }: TaskDetailProps): JSX.Elem
           resize="vertical"
         />
         <div className={styles.composerRow}>
+          {isJira && (
+            <Button
+              appearance="primary"
+              disabled={busy || !comment.trim()}
+              onClick={() => void addJiraComment()}
+            >
+              Add JIRA comment
+            </Button>
+          )}
           <Button
-            appearance="primary"
+            appearance={isJira ? 'secondary' : 'primary'}
             disabled={busy || !comment.trim()}
             onClick={() => void addComment()}
           >
-            Add comment
+            Add note
           </Button>
         </div>
       </div>

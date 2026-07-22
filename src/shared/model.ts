@@ -65,6 +65,36 @@ export function isManualStatus(status: TaskStatus): status is ManualStatus {
   return (MANUAL_STATUSES as readonly TaskStatus[]).includes(status);
 }
 
+/**
+ * The columns of the My Tasks Kanban board. A board column is a *view* concept
+ * derived from a task's status (and, for JIRA tasks, its external status
+ * category) — it is not stored. `blocked` is an internal-only column that never
+ * touches an external tracker. Shared by main and renderer so the drag-to-move
+ * IPC (`task:move`) and the board UI agree on the vocabulary.
+ */
+export type BoardColumn = 'todo' | 'in-progress' | 'blocked' | 'done';
+
+/**
+ * JIRA groups every workflow status into one of three fixed *categories*. We map
+ * the category (not the raw status name, which varies per project) onto a board
+ * column, so any workflow lands sensibly without per-status configuration.
+ */
+export type JiraStatusCategory = 'To Do' | 'In Progress' | 'Done';
+
+/**
+ * The sentinel id of the built-in **Personal board** project — the home for the
+ * standalone My Tasks board (JIRA tickets + internal ad-hoc tasks), which is not
+ * tied to any code repo/plan. It reuses the whole task/activity machinery but is
+ * hidden from the Projects tab and skipped by the plan watcher/scheduler. A fixed
+ * id (not a UUID) so it's addressable and idempotently seeded.
+ */
+export const PERSONAL_PROJECT_ID = 'personal';
+
+/** True for the built-in Personal board project (see `PERSONAL_PROJECT_ID`). */
+export function isPersonalBoard(projectId: string): boolean {
+  return projectId === PERSONAL_PROJECT_ID;
+}
+
 /** A project the app orchestrates: a directory plus the plan that drives it. */
 export interface Project {
   /** Stable app-assigned id (UUID). Not derived from the path, so a project can
@@ -179,8 +209,11 @@ export interface Task {
    *               re-sync can add/remove/reorder it.
    *   - `adhoc` : created in the app (no plan line). Plan syncs never touch it, so
    *               plan-less projects and on-the-fly tasks survive re-parsing.
+   *   - `jira`  : mirrored from a JIRA issue on the Personal board. A JIRA re-sync
+   *               refreshes it, but its internal-only state (e.g. `blocked`) is
+   *               preserved (see `jiraSync`).
    */
-  source: 'plan' | 'adhoc';
+  source: 'plan' | 'adhoc' | 'jira';
   /**
    * True when this task authors the milestone's shared `CONTRACT.md` (team
    * orchestration, Phase C) — declared with a trailing `@contract` marker in the
@@ -199,6 +232,36 @@ export interface Task {
    * time. False for ordinary and ad-hoc tasks.
    */
   isScaffold: boolean;
+
+  // --- External tracker linkage (JIRA integration). All null for internal tasks. ---
+  /** The external tracker this task mirrors, or null for an internal task. */
+  externalSource?: 'jira' | null;
+  /** The issue key shown to the user, e.g. `PROJ-123`. */
+  externalKey?: string | null;
+  /** The tracker's internal issue id (stable across renames; used for API calls). */
+  externalId?: string | null;
+  /** Deep link to the issue in the tracker's web UI. */
+  externalUrl?: string | null;
+  /** The raw workflow status name in the tracker (e.g. "In Review"). */
+  externalStatus?: string | null;
+  /** The tracker status's category, mapped onto a board column. */
+  externalStatusCategory?: JiraStatusCategory | null;
+  /** The issue's priority name (e.g. "High"), for the card's priority dot. */
+  externalPriority?: string | null;
+  /** The issue type (e.g. "Bug", "Story", "Task"), used to pick the card's type icon. */
+  externalType?: string | null;
+  /** A short label/component shown as a chip on the card (the issue's first label). */
+  externalLabel?: string | null;
+  /**
+   * The board column this task occupied *before* it was moved to `blocked`, so
+   * un-blocking restores it. Null whenever the task is not blocked. `blocked` is an
+   * internal-only state — moving to/from it never touches the tracker.
+   */
+  preBlockStatus?: TaskStatus | null;
+  /** Epoch ms of the newest tracker comment the user has read (unread-badge marker). */
+  lastReadCommentAt?: number | null;
+  /** Epoch ms of the newest tracker comment seen at the last sync (drives unread). */
+  latestCommentAt?: number | null;
 }
 
 /** A project bundled with its current tasks — the shape the Projects UI renders. */
@@ -232,4 +295,9 @@ export interface PlanValidation {
 export type TaskActivityEntry =
   | { kind: 'comment'; id: number; body: string; createdAt: number }
   | { kind: 'status'; id: number; from: TaskStatus | null; to: TaskStatus; createdAt: number }
-  | { kind: 'event'; id: number; event: SessionEvent; createdAt: number };
+  | { kind: 'event'; id: number; event: SessionEvent; createdAt: number }
+  /**
+   * A comment fetched live from the linked JIRA issue (Phase D). Not persisted in the
+   * store — merged into the timeline at read time. `id` is JIRA's comment id (a string).
+   */
+  | { kind: 'jira-comment'; id: string; author: string; body: string; createdAt: number };

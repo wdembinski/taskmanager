@@ -10,13 +10,21 @@
 import type { TaskActivityEntry } from '@shared/model';
 
 // Deterministic tiebreak when two entries share a timestamp: status → comment →
-// event, then by id (ids are comparable within one source table).
-const KIND_ORDER: Record<TaskActivityEntry['kind'], number> = { status: 0, comment: 1, event: 2 };
+// jira-comment → event, then by id. JIRA ids are strings, the rest numbers, so we
+// compare stringified with numeric collation (only reached within one kind anyway).
+const KIND_ORDER: Record<TaskActivityEntry['kind'], number> = {
+  status: 0,
+  comment: 1,
+  'jira-comment': 2,
+  event: 3,
+};
 
 /** Sort mixed activity entries oldest-first, with a stable, deterministic tiebreak. */
 export function mergeActivity(entries: TaskActivityEntry[]): TaskActivityEntry[] {
   return [...entries].sort(
     (a, b) =>
-      a.createdAt - b.createdAt || KIND_ORDER[a.kind] - KIND_ORDER[b.kind] || a.id - b.id,
+      a.createdAt - b.createdAt ||
+      KIND_ORDER[a.kind] - KIND_ORDER[b.kind] ||
+      String(a.id).localeCompare(String(b.id), undefined, { numeric: true }),
   );
 }

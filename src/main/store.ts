@@ -14,18 +14,19 @@
 import { randomUUID } from 'node:crypto';
 import { basename, join } from 'node:path';
 import Database from 'better-sqlite3';
-import type {
-  AddProjectInput,
-  Project,
-  ProjectPatch,
-  Task,
-  TaskActivityEntry,
-  TaskStatus,
+import {
+  type AddProjectInput,
+  PERSONAL_PROJECT_ID,
+  type Project,
+  type ProjectPatch,
+  type Task,
+  type TaskActivityEntry,
+  type TaskStatus,
 } from '@shared/model';
 import type { LimitState } from '@shared/limit';
 import type { SessionEvent } from '@shared/session';
 import type { UsageSample } from '@shared/usage';
-import { type AppSettings, DEFAULT_SETTINGS } from '@shared/settings';
+import { type AppSettings, DEFAULT_JIRA_SETTINGS, DEFAULT_SETTINGS } from '@shared/settings';
 import { mergeActivity } from './activityMerge';
 import type { ParsedTask } from './planParser';
 import { reconcileTasks } from './taskReconcile';
@@ -46,6 +47,19 @@ interface TaskRow {
   isContract: number;
   /** 1 when the task lays down the milestone's shared scaffold (`@scaffold`); 0 otherwise. */
   isScaffold: number;
+  // External tracker linkage (JIRA). NULL for internal tasks.
+  externalSource: string | null;
+  externalKey: string | null;
+  externalId: string | null;
+  externalUrl: string | null;
+  externalStatus: string | null;
+  externalStatusCategory: string | null;
+  externalPriority: string | null;
+  externalType: string | null;
+  externalLabel: string | null;
+  preBlockStatus: string | null;
+  lastReadCommentAt: number | null;
+  latestCommentAt: number | null;
 }
 
 /** A project row as stored; `writeBackPlan` is a 0/1 INTEGER (SQLite has no boolean). */
@@ -77,8 +91,33 @@ export interface Store {
   updateProject(id: string, patch: ProjectPatch): Project | undefined;
   getTasks(projectId: string): Task[];
   getTask(id: string): Task | undefined;
-  /** Patch a task's live fields (status/sessionId); returns the updated task. */
-  updateTask(id: string, patch: Partial<Pick<Task, 'status' | 'sessionId'>>): Task | undefined;
+  /** Patch a task's live fields (status/sessionId/external linkage); returns the updated task. */
+  updateTask(
+    id: string,
+    patch: Partial<
+      Pick<
+        Task,
+        | 'status'
+        | 'sessionId'
+        | 'externalSource'
+        | 'externalKey'
+        | 'externalId'
+        | 'externalUrl'
+        | 'externalStatus'
+        | 'externalStatusCategory'
+        | 'externalPriority'
+        | 'externalType'
+        | 'externalLabel'
+        | 'preBlockStatus'
+        | 'lastReadCommentAt'
+        | 'latestCommentAt'
+      >
+    >,
+  ): Task | undefined;
+  /** All tasks on the built-in Personal board (JIRA + internal ad-hoc), ordered. */
+  getPersonalTasks(): Task[];
+  /** Insert a new JIRA-sourced task, or update the existing one with the same key. */
+  upsertJiraTask(task: Task): Task;
   /** Create an ad-hoc task (Phase 8): appended after existing tasks, `source: 'adhoc'`. */
   createTask(projectId: string, input: { title: string; phase?: string }): Task | undefined;
   /** Delete one task (and its transcript history) by id. */
@@ -126,6 +165,12 @@ export interface Store {
   getSettings(): AppSettings;
   /** Persist the full app settings object. */
   saveSettings(settings: AppSettings): void;
+  /** Persist the JIRA token (opaque, already encrypted by the caller). */
+  saveJiraToken(value: string): void;
+  /** Load the stored JIRA token ciphertext, or null if none is set. */
+  loadJiraToken(): string | null;
+  /** Remove the stored JIRA token. */
+  clearJiraToken(): void;
   close(): void;
 }
 
@@ -153,17 +198,29 @@ export function createStore(dbPath: string): Store {
       createdAt             INTEGER NOT NULL
     );
     CREATE TABLE IF NOT EXISTS tasks (
-      id         TEXT PRIMARY KEY,
-      projectId  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-      phase      TEXT NOT NULL,
-      title      TEXT NOT NULL,
-      status     TEXT NOT NULL,
-      sessionId  TEXT,
-      "order"    INTEGER NOT NULL,
-      source     TEXT NOT NULL DEFAULT 'plan',
-      dependsOn  TEXT,
-      isContract INTEGER NOT NULL DEFAULT 0,
-      isScaffold INTEGER NOT NULL DEFAULT 0
+      id                     TEXT PRIMARY KEY,
+      projectId              TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      phase                  TEXT NOT NULL,
+      title                  TEXT NOT NULL,
+      status                 TEXT NOT NULL,
+      sessionId              TEXT,
+      "order"                INTEGER NOT NULL,
+      source                 TEXT NOT NULL DEFAULT 'plan',
+      dependsOn              TEXT,
+      isContract             INTEGER NOT NULL DEFAULT 0,
+      isScaffold             INTEGER NOT NULL DEFAULT 0,
+      externalSource         TEXT,
+      externalKey            TEXT,
+      externalId             TEXT,
+      externalUrl            TEXT,
+      externalStatus         TEXT,
+      externalStatusCategory TEXT,
+      externalPriority       TEXT,
+      externalType           TEXT,
+      externalLabel          TEXT,
+      preBlockStatus         TEXT,
+      lastReadCommentAt      INTEGER,
+      latestCommentAt        INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(projectId, "order");
     CREATE TABLE IF NOT EXISTS app_state (
@@ -245,6 +302,45 @@ export function createStore(dbPath: string): Store {
     db.exec(`ALTER TABLE tasks ADD COLUMN isScaffold INTEGER NOT NULL DEFAULT 0`);
   }
 
+  // Migrate databases created before the JIRA integration. All new columns are
+  // nullable with no default — existing (internal) tasks read them back as null,
+  // which is exactly "not linked to any tracker".
+  const jiraTaskColumns: Array<[string, string]> = [
+    ['externalSource', 'TEXT'],
+    ['externalKey', 'TEXT'],
+    ['externalId', 'TEXT'],
+    ['externalUrl', 'TEXT'],
+    ['externalStatus', 'TEXT'],
+    ['externalStatusCategory', 'TEXT'],
+    ['externalPriority', 'TEXT'],
+    ['externalType', 'TEXT'],
+    ['externalLabel', 'TEXT'],
+    ['preBlockStatus', 'TEXT'],
+    ['lastReadCommentAt', 'INTEGER'],
+    ['latestCommentAt', 'INTEGER'],
+  ];
+  for (const [name, type] of jiraTaskColumns) {
+    if (!taskColumns.some((c) => c.name === name)) {
+      db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
+    }
+  }
+
+  // Seed the built-in Personal board project (idempotent). It hosts the standalone
+  // My Tasks board (JIRA tickets + internal ad-hoc tasks); it has no repo/plan, so
+  // it is hidden from the Projects tab and skipped by the plan watcher/scheduler.
+  // createdAt = 0 keeps the seed deterministic (no Date.now at open).
+  db.prepare(
+    `INSERT INTO projects
+       (id, name, path, planPath, defaultModel, defaultPermissionMode,
+        concurrency, useWorktrees, writeBackPlan, planAligned, createdAt)
+     VALUES (@id, 'Personal', '', '', @defaultModel, @defaultPermissionMode, 1, 0, 0, 1, 0)
+     ON CONFLICT(id) DO NOTHING`,
+  ).run({
+    id: PERSONAL_PROJECT_ID,
+    defaultModel: DEFAULT_SETTINGS.defaultModel,
+    defaultPermissionMode: DEFAULT_SETTINGS.defaultPermissionMode,
+  });
+
   // Migrate databases created before per-task git worktrees. Default on (1); it only
   // engages for git repos, so non-git projects keep running in the shared directory.
   if (!projectColumns.some((c) => c.name === 'useWorktrees')) {
@@ -293,8 +389,14 @@ export function createStore(dbPath: string): Store {
   const selectTask = db.prepare(`SELECT * FROM tasks WHERE id = ?`);
   const deleteTasks = db.prepare(`DELETE FROM tasks WHERE projectId = ?`);
   const insertTask = db.prepare<[TaskRow]>(
-    `INSERT INTO tasks (id, projectId, phase, title, status, sessionId, "order", source, dependsOn, isContract, isScaffold)
-     VALUES (@id, @projectId, @phase, @title, @status, @sessionId, @order, @source, @dependsOn, @isContract, @isScaffold)`,
+    `INSERT INTO tasks
+       (id, projectId, phase, title, status, sessionId, "order", source, dependsOn, isContract, isScaffold,
+        externalSource, externalKey, externalId, externalUrl, externalStatus, externalStatusCategory,
+        externalPriority, externalType, externalLabel, preBlockStatus, lastReadCommentAt, latestCommentAt)
+     VALUES
+       (@id, @projectId, @phase, @title, @status, @sessionId, @order, @source, @dependsOn, @isContract, @isScaffold,
+        @externalSource, @externalKey, @externalId, @externalUrl, @externalStatus, @externalStatusCategory,
+        @externalPriority, @externalType, @externalLabel, @preBlockStatus, @lastReadCommentAt, @latestCommentAt)`,
   );
   const deleteTask = db.prepare(`DELETE FROM tasks WHERE id = ?`);
   const nextOrder = db.prepare(
@@ -352,12 +454,22 @@ export function createStore(dbPath: string): Store {
   /** The single row key under which app settings are persisted. */
   const SETTINGS_KEY = 'settings';
 
+  /** The single row key under which the JIRA token ciphertext is persisted. */
+  const JIRA_TOKEN_KEY = 'jira.pat';
+
   /** Read app settings, merging any stored fields over the built-in defaults. */
   function getSettings(): AppSettings {
     const row = selectState.get(SETTINGS_KEY) as { value: string } | undefined;
     if (!row) return { ...DEFAULT_SETTINGS };
     try {
-      return { ...DEFAULT_SETTINGS, ...(JSON.parse(row.value) as Partial<AppSettings>) };
+      const parsed = JSON.parse(row.value) as Partial<AppSettings>;
+      // Deep-merge the nested jira block so a stored blob missing newer jira fields
+      // (or lacking jira entirely) still fills them from the defaults.
+      return {
+        ...DEFAULT_SETTINGS,
+        ...parsed,
+        jira: { ...DEFAULT_JIRA_SETTINGS, ...(parsed.jira ?? {}) },
+      };
     } catch {
       return { ...DEFAULT_SETTINGS };
     }
@@ -405,6 +517,19 @@ export function createStore(dbPath: string): Store {
       dependsOn: JSON.stringify(task.dependsOn ?? []),
       isContract: task.isContract ? 1 : 0,
       isScaffold: task.isScaffold ? 1 : 0,
+      // External linkage — coalesce undefined → null so named params are always bound.
+      externalSource: task.externalSource ?? null,
+      externalKey: task.externalKey ?? null,
+      externalId: task.externalId ?? null,
+      externalUrl: task.externalUrl ?? null,
+      externalStatus: task.externalStatus ?? null,
+      externalStatusCategory: task.externalStatusCategory ?? null,
+      externalPriority: task.externalPriority ?? null,
+      externalType: task.externalType ?? null,
+      externalLabel: task.externalLabel ?? null,
+      preBlockStatus: task.preBlockStatus ?? null,
+      lastReadCommentAt: task.lastReadCommentAt ?? null,
+      latestCommentAt: task.latestCommentAt ?? null,
     };
   }
 
@@ -421,6 +546,18 @@ export function createStore(dbPath: string): Store {
       dependsOn: parseDependsOn(r.dependsOn),
       isContract: r.isContract !== 0,
       isScaffold: r.isScaffold !== 0,
+      externalSource: (r.externalSource as Task['externalSource']) ?? null,
+      externalKey: r.externalKey,
+      externalId: r.externalId,
+      externalUrl: r.externalUrl,
+      externalStatus: r.externalStatus,
+      externalStatusCategory: (r.externalStatusCategory as Task['externalStatusCategory']) ?? null,
+      externalPriority: r.externalPriority,
+      externalType: r.externalType,
+      externalLabel: r.externalLabel,
+      preBlockStatus: (r.preBlockStatus as Task['preBlockStatus']) ?? null,
+      lastReadCommentAt: r.lastReadCommentAt,
+      latestCommentAt: r.latestCommentAt,
     };
   }
 
@@ -533,18 +670,60 @@ export function createStore(dbPath: string): Store {
     updateTask(id, patch) {
       const sets: string[] = [];
       const params: Record<string, unknown> = { id };
-      if (patch.status !== undefined) {
-        sets.push(`status = @status`);
-        params.status = patch.status;
-      }
-      if (patch.sessionId !== undefined) {
-        sets.push(`sessionId = @sessionId`);
-        params.sessionId = patch.sessionId;
+      // Columns patchable through this method. `"order"` needs quoting so it's kept
+      // out of this set; status/sessionId plus the external-linkage fields are all
+      // plain columns whose param name matches the column name.
+      const columns = [
+        'status',
+        'sessionId',
+        'externalSource',
+        'externalKey',
+        'externalId',
+        'externalUrl',
+        'externalStatus',
+        'externalStatusCategory',
+        'externalPriority',
+        'externalType',
+        'externalLabel',
+        'preBlockStatus',
+        'lastReadCommentAt',
+        'latestCommentAt',
+      ] as const;
+      for (const col of columns) {
+        const value = (patch as Record<string, unknown>)[col];
+        if (value !== undefined) {
+          sets.push(`${col} = @${col}`);
+          params[col] = value;
+        }
       }
       if (sets.length > 0) {
         db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = @id`).run(params);
       }
       return getTask(id);
+    },
+
+    getPersonalTasks() {
+      return getTasks(PERSONAL_PROJECT_ID);
+    },
+
+    upsertJiraTask(task) {
+      const existing = selectTask.get(task.id) as TaskRow | undefined;
+      if (existing) {
+        db.prepare(
+          `UPDATE tasks SET
+             phase = @phase, title = @title, status = @status, "order" = @order, source = @source,
+             externalSource = @externalSource, externalKey = @externalKey, externalId = @externalId,
+             externalUrl = @externalUrl, externalStatus = @externalStatus,
+             externalStatusCategory = @externalStatusCategory, externalPriority = @externalPriority,
+             externalType = @externalType, externalLabel = @externalLabel,
+             preBlockStatus = @preBlockStatus, lastReadCommentAt = @lastReadCommentAt,
+             latestCommentAt = @latestCommentAt
+           WHERE id = @id`,
+        ).run(taskToRow(task));
+      } else {
+        insertTask.run(taskToRow(task));
+      }
+      return getTask(task.id) as Task;
     },
 
     createTask(projectId, input) {
@@ -733,6 +912,19 @@ export function createStore(dbPath: string): Store {
 
     saveSettings(settings) {
       upsertState.run(SETTINGS_KEY, JSON.stringify(settings));
+    },
+
+    saveJiraToken(value) {
+      upsertState.run(JIRA_TOKEN_KEY, value);
+    },
+
+    loadJiraToken() {
+      const row = selectState.get(JIRA_TOKEN_KEY) as { value: string } | undefined;
+      return row?.value ?? null;
+    },
+
+    clearJiraToken() {
+      deleteState.run(JIRA_TOKEN_KEY);
     },
 
     close() {

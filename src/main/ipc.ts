@@ -9,9 +9,20 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { app, dialog, ipcMain, type BrowserWindow } from 'electron';
+import { app, dialog, ipcMain, safeStorage, type BrowserWindow } from 'electron';
 import type { IpcApi, IpcEvents } from '@shared/ipc';
-import { isManualStatus, type Project, type ProjectWithTasks } from '@shared/model';
+import {
+  isManualStatus,
+  isPersonalBoard,
+  PERSONAL_PROJECT_ID,
+  type Project,
+  type ProjectWithTasks,
+} from '@shared/model';
+import { categoryFromKey } from '@shared/board';
+import { createJiraClient } from './jira/jiraConfig';
+import { commentBodyToText, type JiraClient } from './jira/jiraClient';
+import { reconcileJiraTasks } from './jira/jiraSync';
+import { pickTransition, resolveMove } from './jira/jiraMove';
 import { getClaudeStatus } from './claudeStatus';
 import { parsePlan } from './planParser';
 import { planHasAlignmentMarkers, validatePlan } from './planValidate';
@@ -184,13 +195,18 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   });
 
   handle('project:list', async () =>
-    store.listProjects().map((project) => {
-      const tasks = store.getTasks(project.id);
-      // A stored `dependsOn` is the persisted form of a plan `@needs:` marker, so a
-      // legacy project whose plan already declared deps is confirmed aligned here too.
-      const hasMarkers = tasks.some((t) => t.dependsOn.length > 0);
-      return { project: ensureAligned(store, project, hasMarkers), tasks };
-    }),
+    store
+      .listProjects()
+      // Hide the built-in Personal board — it's the standalone My Tasks board, not a
+      // code project, so it must never appear on the Projects tab.
+      .filter((project) => !isPersonalBoard(project.id))
+      .map((project) => {
+        const tasks = store.getTasks(project.id);
+        // A stored `dependsOn` is the persisted form of a plan `@needs:` marker, so a
+        // legacy project whose plan already declared deps is confirmed aligned here too.
+        const hasMarkers = tasks.some((t) => t.dependsOn.length > 0);
+        return { project: ensureAligned(store, project, hasMarkers), tasks };
+      }),
   );
 
   handle('project:remove', async (id) => {
@@ -351,6 +367,158 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
   handle('settings:get', async () => store.getSettings());
   handle('settings:save', async (settings) => store.saveSettings(settings));
+
+  // Build a JIRA client from current settings + the decrypted token, or throw a
+  // user-facing error explaining what's missing. The token never leaves the main
+  // process: it's stored encrypted and decrypted here on demand.
+  const buildJiraClient = (): JiraClient => {
+    const { jira } = store.getSettings();
+    if (!jira.baseUrl.trim()) throw new Error('Set the JIRA base URL in Settings first.');
+    const cipher = store.loadJiraToken();
+    if (!cipher) throw new Error('No JIRA token saved — add one in Settings.');
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new Error('OS secure storage is unavailable, so the saved token cannot be read.');
+    }
+    const token = safeStorage.decryptString(Buffer.from(cipher, 'base64'));
+    return createJiraClient(jira, token);
+  };
+
+  handle('jira:getConfigStatus', async () => {
+    const { jira } = store.getSettings();
+    return {
+      enabled: jira.enabled,
+      hasToken: store.loadJiraToken() !== null,
+      encryptionAvailable: safeStorage.isEncryptionAvailable(),
+      deployment: jira.deployment,
+      baseUrl: jira.baseUrl,
+    };
+  });
+
+  handle('jira:setCredentials', async (pat) => {
+    if (!pat.trim()) {
+      store.clearJiraToken();
+      return { ok: true, message: 'Token cleared.' };
+    }
+    if (!safeStorage.isEncryptionAvailable()) {
+      return {
+        ok: false,
+        message: 'OS secure storage is unavailable, so the token was not saved.',
+      };
+    }
+    store.saveJiraToken(safeStorage.encryptString(pat).toString('base64'));
+    return { ok: true, message: 'Token saved.' };
+  });
+
+  handle('jira:clearCredentials', async () => store.clearJiraToken());
+
+  handle('jira:testConnection', async () => {
+    try {
+      const me = await buildJiraClient().testConnection();
+      return { ok: true, displayName: me.displayName, message: `Connected as ${me.displayName}.` };
+    } catch (e) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  handle('board:tasks', async () => store.getPersonalTasks());
+
+  handle('jira:sync', async () => {
+    const { jira } = store.getSettings();
+    if (!jira.enabled) return store.getPersonalTasks();
+    const client = buildJiraClient();
+    const issues = await client.search(jira.jql);
+    const { upserts, deleteIds } = reconcileJiraTasks(store.getPersonalTasks(), issues, {
+      baseUrl: jira.baseUrl,
+      overrides: jira.statusCategoryOverrides,
+    });
+    for (const t of upserts) store.upsertJiraTask(t);
+    for (const id of deleteIds) store.deleteTask(id);
+    const tasks = store.getPersonalTasks();
+    send('project:tasksChanged', { projectId: PERSONAL_PROJECT_ID, tasks });
+    return tasks;
+  });
+
+  handle('task:move', async (taskId, toColumn) => {
+    const existing = store.getTask(taskId);
+    if (!existing) throw new Error('Task not found.');
+    if (existing.status === 'running' || existing.status === 'waiting-input') {
+      throw new Error('Stop the running session before moving this task.');
+    }
+    const move = resolveMove(existing, toColumn);
+    if (move.noop) return existing;
+
+    const patch: Parameters<Store['updateTask']>[1] = {
+      status: move.localStatus,
+      preBlockStatus: move.preBlockStatus,
+    };
+
+    // Apply the JIRA transition FIRST. If it fails, throw without changing local state
+    // so the optimistic card move rolls back and JIRA/local stay consistent.
+    if (move.jiraTransition && existing.externalSource === 'jira' && existing.externalKey) {
+      const client = buildJiraClient();
+      const { jira } = store.getSettings();
+      const transitions = await client.getTransitions(existing.externalKey);
+      const picked = pickTransition(transitions, move.jiraTransition, jira);
+      if (!picked) {
+        const target = move.jiraTransition === 'toInProgress' ? 'In Progress' : 'Done';
+        throw new Error(
+          `No JIRA transition to ${target} is available for ${existing.externalKey}. ` +
+            `Set an exact transition name in Settings if your workflow uses a custom one.`,
+        );
+      }
+      await client.doTransition(existing.externalKey, picked.id);
+      // Reflect the new tracker status locally for display.
+      patch.externalStatus = picked.to.name;
+      patch.externalStatusCategory = categoryFromKey(picked.to.statusCategory.key);
+    }
+
+    const task = store.updateTask(taskId, patch);
+    if (!task) throw new Error('Task not found.');
+    store.recordStatusChange(task.projectId, taskId, existing.status, move.localStatus);
+    send('task:changed', { task, runId: null });
+    return task;
+  });
+
+  handle('jira:fetchComments', async (taskId) => {
+    const task = store.getTask(taskId);
+    if (!task || task.externalSource !== 'jira' || !task.externalKey) return [];
+    const comments = await buildJiraClient().getComments(task.externalKey);
+    const entries = comments.map((c) => ({
+      kind: 'jira-comment' as const,
+      id: c.id,
+      author: c.author?.displayName ?? 'JIRA',
+      body: commentBodyToText(c.body),
+      createdAt: Date.parse(c.created) || 0,
+    }));
+    // Keep the unread marker honest with freshly-fetched comments.
+    const latest = entries.reduce((m, e) => Math.max(m, e.createdAt), task.latestCommentAt ?? 0);
+    if (latest && latest !== task.latestCommentAt) {
+      store.updateTask(taskId, { latestCommentAt: latest });
+    }
+    return entries;
+  });
+
+  handle('jira:addComment', async (taskId, body) => {
+    const task = store.getTask(taskId);
+    if (!task || task.externalSource !== 'jira' || !task.externalKey) {
+      throw new Error('This task is not linked to a JIRA issue.');
+    }
+    if (!body.trim()) throw new Error('A comment needs some text.');
+    const created = await buildJiraClient().addComment(task.externalKey, body.trim());
+    // Bump both markers so our own comment never lights the unread border.
+    const at = Date.parse(created.created) || Date.now();
+    const updated = store.updateTask(taskId, { latestCommentAt: at, lastReadCommentAt: at });
+    if (updated) send('task:changed', { task: updated, runId: null });
+  });
+
+  handle('jira:markRead', async (taskId) => {
+    const task = store.getTask(taskId);
+    if (!task) throw new Error('Task not found.');
+    if (task.externalSource !== 'jira') return task;
+    const updated = store.updateTask(taskId, { lastReadCommentAt: task.latestCommentAt ?? Date.now() });
+    if (updated) send('task:changed', { task: updated, runId: null });
+    return updated ?? task;
+  });
 
   // Frameless-window controls for the renderer's custom title bar, plus a push so
   // the title bar's maximize/restore icon tracks OS-driven changes (snap, drag).

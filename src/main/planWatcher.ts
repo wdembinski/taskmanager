@@ -16,7 +16,7 @@
  * polling is robust across all of them, and a ~1s latency is fine for this.
  */
 import { readFileSync, unwatchFile, watchFile, type Stats } from 'node:fs';
-import type { Project, Task } from '@shared/model';
+import { isPersonalBoard, type Project, type Task } from '@shared/model';
 import { parsePlan } from './planParser';
 import type { Store } from './store';
 
@@ -42,6 +42,9 @@ export class PlanWatcher {
 
   /** Watch (or re-watch) a single project's plan file. Idempotent. */
   watch(project: Project): void {
+    // The built-in Personal board has no plan file (empty path); never watch it, or
+    // an empty-plan re-sync would wipe its JIRA/ad-hoc tasks.
+    if (isPersonalBoard(project.id)) return;
     this.unwatch(project.id);
     const planPath = project.planPath;
     const listener = (curr: Stats, prev: Stats): void => {

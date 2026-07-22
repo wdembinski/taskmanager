@@ -1,0 +1,84 @@
+/**
+ * Pure mapping between a task's status, its board column, and (for JIRA tasks) the
+ * tracker's status category. Lives in `shared` so the main process (JIRA sync &
+ * move resolution) and the renderer (the board UI) agree on the vocabulary without
+ * either importing the other. No React, no Electron, no DB — trivially testable.
+ */
+import type { BoardColumn, JiraStatusCategory, ManualStatus, Task, TaskStatus } from './model';
+
+/** Which board column a bare status maps to. Total over every `TaskStatus`. */
+export function columnForStatus(status: TaskStatus): BoardColumn {
+  switch (status) {
+    case 'pending':
+      return 'todo';
+    case 'in-progress':
+    case 'running':
+    case 'waiting-input':
+    case 'blocked-by-limit':
+      return 'in-progress';
+    case 'blocked':
+      return 'blocked';
+    case 'done':
+    case 'failed':
+    case 'stopped':
+    case 'cancelled':
+      return 'done';
+  }
+}
+
+/** The manual status a card takes when dropped into a column. */
+export function statusForColumn(column: BoardColumn): ManualStatus {
+  switch (column) {
+    case 'todo':
+      return 'pending';
+    case 'in-progress':
+      return 'in-progress';
+    case 'blocked':
+      return 'blocked';
+    case 'done':
+      return 'done';
+  }
+}
+
+/** Map a JIRA status category onto a board column. */
+export function categoryToColumn(category: JiraStatusCategory): BoardColumn {
+  switch (category) {
+    case 'To Do':
+      return 'todo';
+    case 'In Progress':
+      return 'in-progress';
+    case 'Done':
+      return 'done';
+  }
+}
+
+/**
+ * The JIRA status category behind a `statusCategory.key`. Keys are stable and not
+ * localized (unlike the display name): `indeterminate` = In Progress, `done` = Done,
+ * everything else (`new`, `undefined`) = To Do.
+ */
+export function categoryFromKey(key: string): JiraStatusCategory {
+  if (key === 'indeterminate') return 'In Progress';
+  if (key === 'done') return 'Done';
+  return 'To Do';
+}
+
+/**
+ * Which column a task lives in. JIRA sync keeps a task's local `status` in step with
+ * its tracker category (except when the task is internally `blocked`, which is
+ * preserved), so a single status-based mapping is correct for both internal and
+ * JIRA tasks.
+ */
+export function columnForTask(task: Task): BoardColumn {
+  return columnForStatus(task.status);
+}
+
+/**
+ * Whether a JIRA task has comments the user hasn't read yet — drives the card's
+ * orange border. True when the newest comment seen at sync is newer than the last
+ * one the user read (or none has been read). Internal tasks are never "unread".
+ */
+export function hasUnreadJira(task: Task): boolean {
+  if (task.externalSource !== 'jira' || task.latestCommentAt == null) return false;
+  return task.lastReadCommentAt == null || task.latestCommentAt > task.lastReadCommentAt;
+}

@@ -13,22 +13,39 @@ import {
   Body1,
   Button,
   Caption1,
+  Divider,
   Dropdown,
   Field,
+  Input,
   makeStyles,
+  MessageBar,
+  MessageBarBody,
   Option,
   Spinner,
   SpinButton,
   Subtitle2,
   Switch,
+  Textarea,
   tokens,
 } from '@fluentui/react-components';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
-import type { AppSettings } from '@shared/settings';
+import type { AppSettings, JiraSettings } from '@shared/settings';
+import type { JiraConfigStatus, JiraTestResult } from '@shared/ipc';
 
 const useStyles = makeStyles({
-  root: { display: 'flex', flexDirection: 'column', gap: '16px', maxWidth: '520px' },
+  root: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '16px',
+    maxWidth: '520px',
+    // Fill the tab body and scroll internally so the JIRA section never gets clipped.
+    flex: 1,
+    minHeight: 0,
+    overflowY: 'auto',
+    paddingRight: '8px',
+    paddingBottom: '8px',
+  },
   grid: { display: 'flex', flexDirection: 'column', gap: '16px' },
   actions: { display: 'flex', alignItems: 'center', gap: '12px', marginTop: '4px' },
   saved: { color: tokens.colorPaletteGreenForeground1 },
@@ -42,9 +59,15 @@ export function Settings(): JSX.Element {
   const styles = useStyles();
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [saved, setSaved] = useState(false);
+  const [jiraStatus, setJiraStatus] = useState<JiraConfigStatus | null>(null);
+  const [token, setToken] = useState('');
+  const [tokenMsg, setTokenMsg] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<JiraTestResult | null>(null);
+  const [testing, setTesting] = useState(false);
 
   useEffect(() => {
     void window.api.invoke('settings:get').then(setSettings);
+    void window.api.invoke('jira:getConfigStatus').then(setJiraStatus);
   }, []);
 
   // Any edit invalidates the "Saved" confirmation.
@@ -53,15 +76,46 @@ export function Settings(): JSX.Element {
     setSaved(false);
   }
 
+  function patchJira(change: Partial<JiraSettings>): void {
+    setSettings((prev) => (prev ? { ...prev, jira: { ...prev.jira, ...change } } : prev));
+    setSaved(false);
+  }
+
   async function save(): Promise<void> {
     if (!settings) return;
     await window.api.invoke('settings:save', settings);
     setSaved(true);
+    setJiraStatus(await window.api.invoke('jira:getConfigStatus'));
+  }
+
+  async function saveToken(): Promise<void> {
+    const res = await window.api.invoke('jira:setCredentials', token);
+    setTokenMsg(res.message);
+    setToken('');
+    setJiraStatus(await window.api.invoke('jira:getConfigStatus'));
+  }
+
+  async function clearToken(): Promise<void> {
+    await window.api.invoke('jira:clearCredentials');
+    setTokenMsg('Token cleared.');
+    setJiraStatus(await window.api.invoke('jira:getConfigStatus'));
+  }
+
+  async function testConnection(): Promise<void> {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      setTestResult(await window.api.invoke('jira:testConnection'));
+    } finally {
+      setTesting(false);
+    }
   }
 
   if (!settings) {
     return <Spinner label="Loading settings…" labelPosition="after" size="tiny" />;
   }
+
+  const jira = settings.jira;
 
   return (
     <div className={styles.root}>
@@ -165,6 +219,116 @@ export function Settings(): JSX.Element {
         These are defaults for <strong>new</strong> projects and global scheduler knobs — existing
         projects keep their own model, mode, and write-back settings.
       </Body1>
+
+      <Divider />
+
+      <Subtitle2>JIRA (My Tasks board)</Subtitle2>
+      <Body1 className={styles.hint}>
+        Connect JIRA to mirror your assigned issues onto the My Tasks board. Save these settings
+        first, then save your token and test the connection.
+      </Body1>
+
+      <div className={styles.grid}>
+        <Field label="Enable JIRA integration">
+          <Switch
+            checked={jira.enabled}
+            label="Fetch my issues onto the board"
+            onChange={(_e, d) => patchJira({ enabled: d.checked })}
+          />
+        </Field>
+
+        <Field label="Deployment" hint="Self-hosted Server/Data Center uses a PAT; Cloud uses your email + an API token.">
+          <Dropdown
+            value={jira.deployment === 'cloud' ? 'Cloud (email + API token)' : 'Server / Data Center (PAT)'}
+            selectedOptions={[jira.deployment]}
+            onOptionSelect={(_e, d) =>
+              patchJira({
+                deployment: d.optionValue as JiraSettings['deployment'],
+                apiVersion: d.optionValue === 'cloud' ? '3' : '2',
+              })
+            }
+          >
+            <Option value="server">Server / Data Center (PAT)</Option>
+            <Option value="cloud">Cloud (email + API token)</Option>
+          </Dropdown>
+        </Field>
+
+        <Field label="Base URL" hint="e.g. https://jira.company.com (no trailing slash)">
+          <Input
+            value={jira.baseUrl}
+            placeholder="https://jira.company.com"
+            onChange={(_e, d) => patchJira({ baseUrl: d.value.trim() })}
+          />
+        </Field>
+
+        {jira.deployment === 'cloud' && (
+          <Field label="Account email">
+            <Input
+              value={jira.cloudEmail}
+              placeholder="you@company.com"
+              onChange={(_e, d) => patchJira({ cloudEmail: d.value.trim() })}
+            />
+          </Field>
+        )}
+
+        <Field label="JQL" hint="Which issues to show. Default: your unresolved, assigned issues.">
+          <Textarea
+            value={jira.jql}
+            resize="vertical"
+            onChange={(_e, d) => patchJira({ jql: d.value })}
+          />
+        </Field>
+
+        <Field label="Done column">
+          <Switch
+            checked={jira.showDoneColumn}
+            label="Show the Done column on the board"
+            onChange={(_e, d) => patchJira({ showDoneColumn: d.checked })}
+          />
+        </Field>
+
+        <Field
+          label={jira.deployment === 'cloud' ? 'API token' : 'Personal Access Token'}
+          hint={
+            jiraStatus?.encryptionAvailable === false
+              ? 'OS secure storage is unavailable on this machine — the token cannot be stored securely.'
+              : jiraStatus?.hasToken
+                ? 'A token is stored (encrypted). Enter a new one to replace it.'
+                : 'Stored encrypted via your OS secure store; never written in plaintext.'
+          }
+        >
+          <Input
+            type="password"
+            value={token}
+            placeholder={jiraStatus?.hasToken ? '•••••••• (stored)' : 'Paste your token'}
+            onChange={(_e, d) => setToken(d.value)}
+          />
+        </Field>
+      </div>
+
+      <div className={styles.actions}>
+        <Button
+          appearance="secondary"
+          disabled={!token.trim() || jiraStatus?.encryptionAvailable === false}
+          onClick={saveToken}
+        >
+          Save token
+        </Button>
+        <Button appearance="secondary" disabled={!jiraStatus?.hasToken} onClick={clearToken}>
+          Clear token
+        </Button>
+        <Button appearance="primary" disabled={testing} onClick={testConnection}>
+          Test connection
+        </Button>
+        {testing && <Spinner size="tiny" />}
+        {tokenMsg && <Caption1 className={styles.saved}>{tokenMsg}</Caption1>}
+      </div>
+
+      {testResult && (
+        <MessageBar intent={testResult.ok ? 'success' : 'error'}>
+          <MessageBarBody>{testResult.message}</MessageBarBody>
+        </MessageBar>
+      )}
     </div>
   );
 }

@@ -25,6 +25,7 @@
 import type { SessionEvent, SessionEventEnvelope, StartSessionRequest } from './session';
 import type {
   AddProjectInput,
+  BoardColumn,
   ManualStatus,
   PlanValidation,
   Project,
@@ -54,6 +55,27 @@ export interface ClaudeStatus {
   /** Whether an ANTHROPIC_API_KEY is set. We warn if so, to avoid API billing. */
   apiKeyDetected: boolean;
   /** Human-readable explanation shown in the UI when something is off. */
+  message: string;
+}
+
+/** Snapshot of the JIRA connection's configuration state (for the Settings UI). */
+export interface JiraConfigStatus {
+  /** Whether the integration is switched on. */
+  enabled: boolean;
+  /** Whether a token has been stored (never the token itself). */
+  hasToken: boolean;
+  /** Whether the OS secure store is available to encrypt the token. */
+  encryptionAvailable: boolean;
+  deployment: 'server' | 'cloud';
+  baseUrl: string;
+}
+
+/** Result of a JIRA "Test connection" attempt. */
+export interface JiraTestResult {
+  ok: boolean;
+  /** The authenticated user's display name, on success. */
+  displayName?: string;
+  /** Human-readable detail (error text on failure, a greeting on success). */
   message: string;
 }
 
@@ -219,6 +241,37 @@ export interface IpcApi {
   'settings:get': () => Promise<AppSettings>;
   /** Persist the global app settings; scheduler knobs take effect on the next task. */
   'settings:save': (settings: AppSettings) => Promise<void>;
+
+  /** Whether JIRA is enabled, has a stored token, and can encrypt one (Settings UI). */
+  'jira:getConfigStatus': () => Promise<JiraConfigStatus>;
+  /**
+   * Store the JIRA Personal Access Token, encrypted via the OS secure store. Rejects
+   * (ok:false) if the OS secure store is unavailable — never persists it in plaintext.
+   */
+  'jira:setCredentials': (pat: string) => Promise<{ ok: boolean; message: string }>;
+  /** Remove the stored JIRA token. */
+  'jira:clearCredentials': () => Promise<void>;
+  /** Verify the base URL + token by calling `/myself`; returns the display name. */
+  'jira:testConnection': () => Promise<JiraTestResult>;
+  /** Every task on the standalone Personal board (JIRA tickets + internal ad-hoc). */
+  'board:tasks': () => Promise<Task[]>;
+  /**
+   * Fetch the user's JIRA issues (per the configured JQL) and reconcile them into the
+   * Personal board, preserving internal-only state. Returns the board's full task list.
+   */
+  'jira:sync': () => Promise<Task[]>;
+  /**
+   * Move a task to a board column via drag-and-drop. Applies the status/JIRA-transition
+   * rules (TO DO → IN PROGRESS transitions JIRA; to/from Blocked never does). If a
+   * required JIRA transition fails, the local status is left unchanged and this rejects.
+   */
+  'task:move': (taskId: string, toColumn: BoardColumn) => Promise<Task>;
+  /** Fetch the linked JIRA issue's comments as timeline entries (empty for non-JIRA tasks). */
+  'jira:fetchComments': (taskId: string) => Promise<TaskActivityEntry[]>;
+  /** Post a comment to the linked JIRA issue; also marks the task's comments as read. */
+  'jira:addComment': (taskId: string, body: string) => Promise<void>;
+  /** Mark a JIRA task's comments as read (clears the unread border); returns the task. */
+  'jira:markRead': (taskId: string) => Promise<Task>;
 
   /** Frameless-window controls, driven by the renderer's custom title bar. */
   'window:minimize': () => Promise<void>;
