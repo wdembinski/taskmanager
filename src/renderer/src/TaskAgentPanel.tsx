@@ -25,10 +25,11 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import { AgentsRegular } from '@fluentui/react-icons';
-import type { AttentionAnswer, AttentionItem } from '@shared/attention';
+import type { AttentionAnswer } from '@shared/attention';
 import type { Project, Task } from '@shared/model';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import { AssignAgentDialog } from './AssignAgentDialog';
+import { usePendingAttention } from './usePendingAttention';
 
 const ASK_ORANGE = '#F2A900';
 
@@ -97,7 +98,7 @@ export function TaskAgentPanel({
 }: TaskAgentPanelProps): JSX.Element {
   const styles = useStyles();
   const [assignOpen, setAssignOpen] = useState(false);
-  const [item, setItem] = useState<AttentionItem | null>(null);
+  const [item, setItem] = usePendingAttention(task.id);
   const [reply, setReply] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -110,28 +111,9 @@ export function TaskAgentPanel({
   const stoppable = live || task.status === 'blocked-by-limit';
   const assigned = agentProjects.find((p) => p.id === task.agentProjectId) ?? null;
 
-  // This task's pending ask, seeded from the inbox and kept live by its events.
+  // The pending ask itself is `usePendingAttention`; only the draft reply is local.
   useEffect(() => {
-    let cancelled = false;
     setReply('');
-    void window.api
-      .invoke('attention:list')
-      .then((items) => {
-        if (!cancelled) setItem(items.find((i) => i.taskId === taskId) ?? null);
-      })
-      .catch(() => undefined);
-
-    const offNew = window.api.on('attention:new', (incoming) => {
-      if (incoming.taskId === taskId) setItem(incoming);
-    });
-    const offResolved = window.api.on('attention:resolved', ({ id }) => {
-      setItem((prev) => (prev && prev.id === id ? null : prev));
-    });
-    return () => {
-      cancelled = true;
-      offNew();
-      offResolved();
-    };
   }, [taskId]);
 
   const answer = useCallback(

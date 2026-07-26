@@ -34,12 +34,15 @@ import {
 } from '@fluentui/react-components';
 import type { ManualStatus, Project, Task, TaskActivityEntry } from '@shared/model';
 import type { SessionEvent } from '@shared/session';
-import { ChevronLeftRegular } from '@fluentui/react-icons';
+import { chatTarget } from '@shared/board';
+import { AgentsRegular, ChevronLeftRegular } from '@fluentui/react-icons';
 import { isTranscriptNoise, runningSubAgents } from './agentActivity';
 import { stepPosition } from './board/boardColumns';
 import { MANUAL_STATUS_OPTIONS, STATUS_COLOR, STATUS_LABEL } from './taskStatus';
 import { StepBrief, TaskSteps } from './TaskSteps';
 import { TaskAgentPanel } from './TaskAgentPanel';
+import { chatAvailability, REFUSAL_HINT } from './taskChat';
+import { usePendingAttention } from './usePendingAttention';
 import { eventToLines } from './Transcript';
 
 const useStyles = makeStyles({
@@ -70,6 +73,16 @@ const useStyles = makeStyles({
     paddingLeft: '8px',
     whiteSpace: 'pre-wrap',
   },
+  /** A message the agent heard — tinted, so it never reads as a note to self. */
+  chatBody: {
+    borderLeft: `3px solid ${tokens.colorBrandStroke1}`,
+    padding: '6px 8px',
+    borderRadius: tokens.borderRadiusMedium,
+    backgroundColor: tokens.colorBrandBackground2,
+    color: tokens.colorNeutralForeground1,
+    whiteSpace: 'pre-wrap',
+  },
+  chatGlyph: { display: 'flex', color: tokens.colorBrandForeground1 },
   jiraCommentBody: {
     borderLeft: '3px solid #F2A900',
     paddingLeft: '8px',
@@ -103,6 +116,9 @@ const useStyles = makeStyles({
   subAgentLabel: { color: tokens.colorNeutralForeground3 },
   composer: { display: 'flex', flexDirection: 'column', gap: '6px' },
   composerRow: { display: 'flex', justifyContent: 'flex-end', gap: '8px' },
+  composerHint: { color: tokens.colorNeutralForeground3 },
+  /** Why the chat button is off — stated, not hidden in a tooltip on a dead button. */
+  composerBlocked: { color: tokens.colorPaletteYellowForeground1 },
   empty: { color: tokens.colorNeutralForeground3 },
 });
 
@@ -239,6 +255,14 @@ export function TaskDetail({
     return runningSubAgents(events);
   }, [activity, liveEvents]);
 
+  // Who a typed message would reach and whether it can be sent (Phase 12). The target
+  // may be a live STEP — a card executing an approved plan holds no session of its own —
+  // so the inbox item that decides "blocked on approve/deny" is the target's, not the
+  // card's.
+  const target = task ? chatTarget(task, subtasks) : null;
+  const [targetPending] = usePendingAttention(target?.id ?? null);
+  const chat = task ? chatAvailability(task, subtasks, targetPending) : null;
+
   // Keep the newest entry in view as output streams (same rule as the Transcript pane).
   const timelineRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -306,6 +330,31 @@ export function TaskDetail({
     }
   }
 
+  /**
+   * Say it to the agent (Phase 12). A live run hears it at once; an idle card with a
+   * session behind it is resumed, which starts a real run — hence no optimistic clear
+   * until the main process says it was delivered. A refusal is a normal answer, not an
+   * exception, so it becomes a message rather than a stack trace.
+   */
+  async function sendChat(): Promise<void> {
+    if (!task || !comment.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await window.api.invoke('task:chat', task.id, comment.trim());
+      if (result.status === 'refused') {
+        setError(REFUSAL_HINT[result.reason]);
+        return;
+      }
+      setComment('');
+      await loadActivity();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function deleteComment(id: number): Promise<void> {
     await window.api.invoke('task:deleteComment', id);
     await loadActivity();
@@ -313,6 +362,10 @@ export function TaskDetail({
 
   const isStep = Boolean(task.parentTaskId);
   const position = isStep ? stepPosition(subtasks, task.id) : null;
+  // Chatting with a card whose step is working talks to the step; say which one, since
+  // otherwise the message would seem to go to the card you are looking at.
+  const chatStepPosition =
+    chat && chat.target.id !== task.id ? stepPosition(subtasks, chat.target.id) : null;
 
   return (
     <div className={styles.root}>
@@ -438,16 +491,20 @@ export function TaskDetail({
             }
             // A message the human sent to the agent (Phase 12). No Delete: it was said
             // to the agent and shaped what it did — removing it would falsify the story.
-            // Phase 3 of the chat feature turns this into a bubble.
+            // The agent glyph is the one the board card and the agent panel use, so one
+            // symbol means "an agent" everywhere. Phase 5 turns this into a bubble.
             if (entry.kind === 'chat') {
               return (
                 <div key={`m${entry.id}`} className={styles.entry}>
                   <div className={styles.entryHead}>
+                    <span className={styles.chatGlyph}>
+                      <AgentsRegular />
+                    </span>
                     <Text weight="semibold">You → agent</Text>
                     <span className={styles.grow} />
                     <Caption1 className={styles.time}>{fmtTime(entry.createdAt)}</Caption1>
                   </div>
-                  <div className={styles.commentBody}>{entry.body}</div>
+                  <div className={styles.chatBody}>{entry.body}</div>
                 </div>
               );
             }
@@ -497,17 +554,43 @@ export function TaskDetail({
         )}
       </div>
 
+      {/* One composer, three destinations: the agent, the ticket, or just this card.
+          Chat only appears for a delegated card, and says where the message would go —
+          a card mid-plan is talking to the step that holds the session. */}
       <div className={styles.composer}>
+        {chat?.offered && chatStepPosition !== null && (
+          <Caption1 className={styles.composerHint}>
+            Talking to step {chatStepPosition} of {subtasks.length} — {chat.target.title}
+          </Caption1>
+        )}
+        {chat?.offered && !chat.can && (
+          <Caption1 className={styles.composerBlocked}>{chat.hint}</Caption1>
+        )}
         <Textarea
           value={comment}
           onChange={(_e, d) => setComment(d.value)}
-          placeholder="Add a progress note… (context for when you come back)"
+          placeholder={
+            chat?.offered
+              ? 'Message the agent, or add a note…'
+              : 'Add a progress note… (context for when you come back)'
+          }
           resize="vertical"
         />
         <div className={styles.composerRow}>
+          {chat?.offered && (
+            <Button
+              // While a run is live this is the likely intent, so it leads.
+              appearance={chat.live && chat.can ? 'primary' : 'secondary'}
+              disabled={busy || !comment.trim() || !chat.can}
+              title={chat.hint}
+              onClick={() => void sendChat()}
+            >
+              Chat with agent
+            </Button>
+          )}
           {isJira && (
             <Button
-              appearance="primary"
+              appearance={chat?.live && chat.can ? 'secondary' : 'primary'}
               disabled={busy || !comment.trim()}
               onClick={() => void addJiraComment()}
             >
@@ -515,7 +598,7 @@ export function TaskDetail({
             </Button>
           )}
           <Button
-            appearance={isJira ? 'secondary' : 'primary'}
+            appearance={isJira || (chat?.live && chat.can) ? 'secondary' : 'primary'}
             disabled={busy || !comment.trim()}
             onClick={() => void addComment()}
           >
