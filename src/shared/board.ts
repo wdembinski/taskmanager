@@ -99,6 +99,23 @@ export function isAgentAssigned(task: Task): boolean {
 }
 
 /**
+ * Which task a message typed on `task`'s card should be delivered to (Phase 12).
+ *
+ * A card executing an approved plan holds no session of its own — it sits `in-progress`
+ * while step N does the work — so "the agent on this card" IS the live step, and talking
+ * to the parent would be talking to nothing. Steps are sequential, so at most one can be
+ * live; ties are impossible by construction, and the first live step wins if one ever
+ * happened.
+ *
+ * A step selected directly is its own target, and a card with no live step is its own
+ * target too (there may still be a session to resume — that is the caller's problem).
+ */
+export function chatTarget(task: Task, subtasks: Task[]): Task {
+  if (task.parentTaskId) return task;
+  return subtasks.find((s) => s.status === 'running' || s.status === 'waiting-input') ?? task;
+}
+
+/**
  * Whether an agent is working this task **right now** — the card (or step row) shows a
  * spinner. Deliberately narrower than "in progress": `in-progress` is a status a human
  * sets by dragging a card, while `running` only ever comes from a live session. A card

@@ -1091,3 +1091,202 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
     expect(parent.status).toBe('running');
   });
 });
+
+describe('Scheduler.chatWithAgent (Phase 12)', () => {
+  /**
+   * A delegated card, optionally with steps, and optionally with a live run + a parked
+   * inbox item — the four situations a typed message can land in.
+   */
+  function setupChat(
+    opts: {
+      card?: Partial<Task>;
+      steps?: Array<Partial<Task>>;
+      /** Seed a live run for this task id. */
+      liveFor?: string;
+      /** Seed an inbox item on the live run. */
+      parked?: 'question' | 'permission' | 'plan-approval';
+    } = {},
+  ) {
+    const card = {
+      id: 'c1',
+      projectId: 'personal',
+      phase: 'JIRA',
+      title: 'Card',
+      status: 'running',
+      sessionId: 'sess-1',
+      order: 0,
+      source: 'jira',
+      dependsOn: [],
+      isContract: false,
+      isScaffold: false,
+      agentProjectId: 'agent-p',
+      ...opts.card,
+    } as Task;
+    const steps = (opts.steps ?? []).map(
+      (s, i) =>
+        ({
+          id: `s${i + 1}`,
+          projectId: 'personal',
+          phase: 'JIRA',
+          title: `Step ${i + 1}`,
+          status: 'pending',
+          sessionId: null,
+          order: i + 1,
+          source: 'adhoc',
+          dependsOn: [],
+          isContract: false,
+          isScaffold: false,
+          parentTaskId: 'c1',
+          agentProjectId: 'agent-p',
+          ...s,
+        }) as Task,
+    );
+    const all = [card, ...steps];
+    const chats: Array<{ taskId: string; body: string }> = [];
+    const store = {
+      getTask: (id: string) => all.find((t) => t.id === id),
+      getTasks: () => all,
+      getSubtasks: (parentId: string) => steps.filter((s) => s.parentTaskId === parentId),
+      updateTask: (id: string, patch: Partial<Task>) => {
+        const t = all.find((x) => x.id === id);
+        if (t) Object.assign(t, patch);
+        return t;
+      },
+      addChatMessage: (_projectId: string, taskId: string, body: string) => {
+        chats.push({ taskId, body });
+        return undefined;
+      },
+      getSettings: () => ({ limitJitterMs: 0, concurrency: 1, maxAutoRetries: 0 }),
+    } as unknown as Store;
+    const send = vi.fn();
+    const sessions = { start: vi.fn(), stop: vi.fn(), send } as unknown as SessionManager;
+    const resolved = vi.fn();
+    const scheduler = new Scheduler(
+      store,
+      sessions,
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      resolved,
+      vi.fn(),
+    );
+    if (opts.liveFor) {
+      (scheduler as unknown as { runs: Map<string, unknown> }).runs.set('r1', {
+        taskId: opts.liveFor,
+        projectId: 'agent-p',
+        runId: 'r1',
+        settled: false,
+      });
+    }
+    if (opts.parked) {
+      (scheduler as unknown as { attention: Map<string, unknown> }).attention.set('i1', {
+        id: 'i1',
+        runId: 'r1',
+        taskId: opts.liveFor,
+        projectId: 'agent-p',
+        kind: opts.parked,
+        title: 'parked',
+        detail: '',
+        createdAt: 0,
+      });
+    }
+    return { scheduler, card, steps, send, chats, resolved };
+  }
+
+  it('sends into the live session and records the message on the timeline', () => {
+    const { scheduler, send, chats } = setupChat({ liveFor: 'c1' });
+    const result = scheduler.chatWithAgent('c1', '  use the cache  ');
+    expect(result).toEqual({ status: 'sent', taskId: 'c1', runId: 'r1' });
+    expect(send).toHaveBeenCalledWith('r1', 'use the cache');
+    // Trimmed, and recorded against the task that received it.
+    expect(chats).toEqual([{ taskId: 'c1', body: 'use the cache' }]);
+  });
+
+  it('talks to the running STEP of a card, not the card itself', () => {
+    const { scheduler, send, chats } = setupChat({
+      card: { status: 'in-progress' },
+      steps: [{ status: 'done' }, { status: 'running', sessionId: 'sess-2' }],
+      liveFor: 's2',
+    });
+    const result = scheduler.chatWithAgent('c1', 'skip the migration');
+    expect(result).toEqual({ status: 'sent', taskId: 's2', runId: 'r1' });
+    expect(send).toHaveBeenCalledWith('r1', 'skip the migration');
+    // The step heard it, so the step's timeline is where it belongs.
+    expect(chats).toEqual([{ taskId: 's2', body: 'skip the migration' }]);
+  });
+
+  it('answers a parked question instead of stacking a second turn behind it', () => {
+    const { scheduler, card, send, resolved } = setupChat({
+      card: { status: 'waiting-input' },
+      liveFor: 'c1',
+      parked: 'question',
+    });
+    const result = scheduler.chatWithAgent('c1', 'use postgres');
+    expect(result.status).toBe('sent');
+    expect(send).toHaveBeenCalledWith('r1', 'use postgres');
+    // The inbox item cleared and the task is live again — not left parked on a
+    // question the human has in fact just answered.
+    expect(resolved).toHaveBeenCalledWith('i1');
+    expect(card.status).toBe('running');
+  });
+
+  it('refuses while a permission request or a plan approval holds a tool', () => {
+    for (const parked of ['permission', 'plan-approval'] as const) {
+      const { scheduler, send, chats } = setupChat({
+        card: { status: 'waiting-input' },
+        liveFor: 'c1',
+        parked,
+      });
+      expect(scheduler.chatWithAgent('c1', 'go ahead')).toEqual({
+        status: 'refused',
+        taskId: 'c1',
+        reason: 'awaiting-decision',
+      });
+      expect(send).not.toHaveBeenCalled();
+      expect(chats).toEqual([]); // nothing said, nothing recorded
+    }
+  });
+
+  it('refuses with not-running when there is a session but no live run (Phase 2 resumes)', () => {
+    const { scheduler, chats } = setupChat({ card: { status: 'in-progress' } });
+    expect(scheduler.chatWithAgent('c1', 'still there?')).toEqual({
+      status: 'refused',
+      taskId: 'c1',
+      reason: 'not-running',
+    });
+    expect(chats).toEqual([]);
+  });
+
+  it('refuses with never-ran when the card has no session at all', () => {
+    const { scheduler } = setupChat({ card: { status: 'pending', sessionId: null } });
+    expect(scheduler.chatWithAgent('c1', 'hello?')).toEqual({
+      status: 'refused',
+      taskId: 'c1',
+      reason: 'never-ran',
+    });
+  });
+
+  it('refuses a limit-parked card with the limit reason, not a resume', () => {
+    const { scheduler } = setupChat({ card: { status: 'blocked-by-limit' } });
+    expect(scheduler.chatWithAgent('c1', 'any progress?')).toEqual({
+      status: 'refused',
+      taskId: 'c1',
+      reason: 'limit',
+    });
+  });
+
+  it('refuses an empty message and an unknown task', () => {
+    const { scheduler, send } = setupChat({ liveFor: 'c1' });
+    expect(scheduler.chatWithAgent('c1', '   ')).toEqual({
+      status: 'refused',
+      taskId: 'c1',
+      reason: 'empty-message',
+    });
+    expect(scheduler.chatWithAgent('nope', 'hi')).toEqual({
+      status: 'refused',
+      taskId: 'nope',
+      reason: 'unknown-task',
+    });
+    expect(send).not.toHaveBeenCalled();
+  });
+});

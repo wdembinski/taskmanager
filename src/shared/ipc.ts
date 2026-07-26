@@ -27,6 +27,7 @@ import type {
   AddProjectInput,
   AssignAgentInput,
   BoardColumn,
+  ChatSendResult,
   ManualStatus,
   PlanValidation,
   Project,
@@ -258,6 +259,16 @@ export interface IpcApi {
    * later resume). No-op if nothing is running for that task. Returns the updated task.
    */
   'task:stopAgent': (taskId: string) => Promise<Task>;
+  /**
+   * Say something to the agent working this card (Phase 12) — the card's half of a
+   * conversation, not an answer to a question it asked. The message is recorded on the
+   * timeline as a `chat` entry and delivered to the live session's open input stream.
+   * A card whose STEP is running routes to that step (the result says which task got
+   * it). Never rejects for an expected condition: "nothing is running", "answer the
+   * pending permission first" and friends come back as `{ status: 'refused', reason }`
+   * so the UI can explain itself.
+   */
+  'task:chat': (taskId: string, message: string) => Promise<ChatSendResult>;
 
   /** Snapshot of everything currently waiting on a human (seed the inbox on load). */
   'attention:list': () => Promise<AttentionItem[]>;

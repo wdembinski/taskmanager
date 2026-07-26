@@ -9,14 +9,18 @@
  */
 import type { TaskActivityEntry } from '@shared/model';
 
-// Deterministic tiebreak when two entries share a timestamp: status → comment →
+// Deterministic tiebreak when two entries share a timestamp: status → comment → chat →
 // jira-comment → event, then by id. JIRA ids are strings, the rest numbers, so we
 // compare stringified with numeric collation (only reached within one kind anyway).
+// `chat` sits directly before `event`-once-removed on purpose: a message to the agent is
+// written just before the send, so on a same-millisecond tie it must precede the
+// transcript events that message caused.
 const KIND_ORDER: Record<TaskActivityEntry['kind'], number> = {
   status: 0,
   comment: 1,
-  'jira-comment': 2,
-  event: 3,
+  chat: 2,
+  'jira-comment': 3,
+  event: 4,
 };
 
 /** Sort mixed activity entries oldest-first, with a stable, deterministic tiebreak. */

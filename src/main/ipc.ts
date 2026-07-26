@@ -359,6 +359,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     scheduler.stopTask(taskId); // no-op (false) when nothing is running for it
     return store.getTask(taskId) ?? existing;
   });
+  handle('task:chat', async (taskId, message) => scheduler.chatWithAgent(taskId, message));
   handle('task:create', async (projectId, input) => {
     const task = store.createTask(projectId, input);
     if (!task) throw new Error('A task needs a title.');

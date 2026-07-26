@@ -436,6 +436,21 @@ export function TaskDetail({
                 </div>
               );
             }
+            // A message the human sent to the agent (Phase 12). No Delete: it was said
+            // to the agent and shaped what it did — removing it would falsify the story.
+            // Phase 3 of the chat feature turns this into a bubble.
+            if (entry.kind === 'chat') {
+              return (
+                <div key={`m${entry.id}`} className={styles.entry}>
+                  <div className={styles.entryHead}>
+                    <Text weight="semibold">You → agent</Text>
+                    <span className={styles.grow} />
+                    <Caption1 className={styles.time}>{fmtTime(entry.createdAt)}</Caption1>
+                  </div>
+                  <div className={styles.commentBody}>{entry.body}</div>
+                </div>
+              );
+            }
             if (entry.kind === 'status') {
               return (
                 <div key={`s${entry.id}`} className={`${styles.entry} ${styles.entryHead}`}>

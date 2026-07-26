@@ -3,6 +3,7 @@ import { PERSONAL_PROJECT_ID, type Task } from './model';
 import {
   categoryFromKey,
   categoryToColumn,
+  chatTarget,
   hasUnreadJira,
   isAgentAssigned,
   isAgentRunning,
@@ -96,5 +97,28 @@ describe('isAgentAssigned', () => {
   it('is false when unassigned', () => {
     expect(isAgentAssigned(task({}))).toBe(false);
     expect(isAgentAssigned(task({ agentProjectId: null }))).toBe(false);
+  });
+});
+
+describe('chatTarget', () => {
+  const parent = task({ id: 'c1', status: 'in-progress' });
+  const step = (id: string, status: Task['status']): Task =>
+    task({ id, status, parentTaskId: 'c1' });
+
+  it('is the card itself when no step is live', () => {
+    expect(chatTarget(parent, [step('s1', 'done'), step('s2', 'pending')]).id).toBe('c1');
+  });
+  it('is the running step — the card holds no session while a step works', () => {
+    expect(chatTarget(parent, [step('s1', 'done'), step('s2', 'running')]).id).toBe('s2');
+  });
+  it('is a step parked on a question, which is still the live session', () => {
+    expect(chatTarget(parent, [step('s1', 'waiting-input')]).id).toBe('s1');
+  });
+  it('is the step itself when a step is what you selected', () => {
+    const s = step('s2', 'running');
+    expect(chatTarget(s, []).id).toBe('s2');
+  });
+  it('is the card when it has no steps at all', () => {
+    expect(chatTarget(parent, []).id).toBe('c1');
   });
 });

@@ -27,7 +27,14 @@
 import { randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import type { Project, Task, TaskActivityEntry, TaskStatus } from '@shared/model';
+import type {
+  ChatSendResult,
+  Project,
+  Task,
+  TaskActivityEntry,
+  TaskStatus,
+} from '@shared/model';
+import { chatTarget } from '@shared/board';
 import type { SchedulerState, TaskChange, SchedulerChange, ActiveRun } from '@shared/scheduler';
 import type {
   ClaudeModel,
@@ -795,6 +802,70 @@ export class Scheduler {
    * is running too — the step is the card's work, so "Stop" on the card has to reach it
    * or the chain would keep going with the card marked stopped.
    */
+  /**
+   * Say something to the agent working this card (Phase 12) — the human opening a turn,
+   * rather than answering a question the agent asked.
+   *
+   * Where it goes: a card executing an approved plan holds no session of its own, so the
+   * message follows `chatTarget` to the live step. The result names the task that
+   * actually received it.
+   *
+   * What it does, in order:
+   *  - **Nothing live** → refuse, saying whether there is a session to resume at all.
+   *    (Phase 2 turns `not-running` into a `--resume` run carrying this message.)
+   *  - **A held tool call** (a permission request, or a plan awaiting approval) → refuse:
+   *    the CLI is blocked on an approve/deny for one specific call and prose cannot
+   *    answer it. Sending anyway would queue the text behind a decision that may never
+   *    come.
+   *  - **A parked question** → the message *is* the answer, so it goes through
+   *    `answerAttention`: the item clears and the task goes back to `running`. Anything
+   *    else would leave a stale item pointing at a question already answered.
+   *  - Otherwise → straight into the live session's open input stream.
+   *
+   * The timeline entry is written BEFORE the send, so a session that dies mid-delivery
+   * still leaves a record of what the human said.
+   */
+  chatWithAgent(taskId: string, message: string): ChatSendResult {
+    const text = message.trim();
+    const card = this.store.getTask(taskId);
+    if (!card) return { status: 'refused', taskId, reason: 'unknown-task' };
+    if (!text) return { status: 'refused', taskId, reason: 'empty-message' };
+
+    const target = chatTarget(card, this.store.getSubtasks(card.id));
+    const run = this.disposed
+      ? undefined
+      : [...this.runs.values()].find((r) => r.taskId === target.id);
+
+    if (!run) {
+      // A limit-parked task has a session and will resume on its own; say so rather than
+      // offering a resume that the gate would refuse anyway.
+      if (target.status === 'blocked-by-limit' || (this.limitGate.state && !target.sessionId)) {
+        return { status: 'refused', taskId: target.id, reason: 'limit' };
+      }
+      return {
+        status: 'refused',
+        taskId: target.id,
+        reason: target.sessionId ? 'not-running' : 'never-ran',
+      };
+    }
+
+    const held = [...this.attention.values()].find(
+      (item) =>
+        item.runId === run.runId && (item.kind === 'permission' || item.kind === 'plan-approval'),
+    );
+    if (held) return { status: 'refused', taskId: target.id, reason: 'awaiting-decision' };
+
+    this.store.addChatMessage(target.projectId, target.id, text);
+
+    const question = [...this.attention.values()].find(
+      (item) => item.runId === run.runId && item.kind === 'question',
+    );
+    if (question) this.answerAttention(question.id, { decision: 'reply', text });
+    else this.sessions.send(run.runId, text);
+
+    return { status: 'sent', taskId: target.id, runId: run.runId };
+  }
+
   stopTask(taskId: string): boolean {
     if (this.disposed) return false;
     let stopped = false;

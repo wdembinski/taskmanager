@@ -191,6 +191,12 @@ export interface Store {
   getWindowCost(sinceMs: number): number;
   /** Append a human progress comment to a task (Phase 9); returns the created entry. */
   addComment(projectId: string, taskId: string, body: string): TaskActivityEntry | undefined;
+  /**
+   * Append a message the human sent to the agent (Phase 12). Same row shape as a
+   * comment under a different `kind`, so the timeline can tell "I wrote this down" from
+   * "I said this to the agent" — and so a chat message is never deletable as a note.
+   */
+  addChatMessage(projectId: string, taskId: string, body: string): TaskActivityEntry | undefined;
   /** Record a status change on a task's timeline (Phase 9). */
   recordStatusChange(
     projectId: string,
@@ -1064,6 +1070,22 @@ export function createStore(dbPath: string): Store {
       return { kind: 'comment', id: Number(lastInsertRowid), body: text, createdAt };
     },
 
+    addChatMessage(projectId, taskId, body) {
+      const text = body.trim();
+      if (!text) return undefined;
+      const createdAt = Date.now();
+      const { lastInsertRowid } = insertActivity.run({
+        projectId,
+        taskId,
+        kind: 'chat',
+        body: text,
+        fromStatus: null,
+        toStatus: null,
+        createdAt,
+      });
+      return { kind: 'chat', id: Number(lastInsertRowid), body: text, createdAt };
+    },
+
     recordStatusChange(projectId, taskId, from, to) {
       insertActivity.run({
         projectId,
@@ -1095,6 +1117,8 @@ export function createStore(dbPath: string): Store {
       for (const r of activity) {
         if (r.kind === 'comment' && r.body !== null) {
           entries.push({ kind: 'comment', id: r.id, body: r.body, createdAt: r.createdAt });
+        } else if (r.kind === 'chat' && r.body !== null) {
+          entries.push({ kind: 'chat', id: r.id, body: r.body, createdAt: r.createdAt });
         } else if (r.kind === 'status' && r.toStatus !== null) {
           entries.push({
             kind: 'status',

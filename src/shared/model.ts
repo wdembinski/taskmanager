@@ -382,6 +382,36 @@ export interface AssignAgentInput {
   notes?: string;
 }
 
+/**
+ * Why a chat message could not be delivered (Phase 12). A refusal is a normal outcome,
+ * not an exception: the UI turns each of these into a specific hint under the composer,
+ * which a thrown `Error` string could not carry reliably.
+ */
+export type ChatRefusal =
+  /** The run is blocked on a permission request or a plan approval — free text cannot
+   *  answer either; the human has to approve/deny that item first. */
+  | 'awaiting-decision'
+  /** Nothing is running, but the task has a session to resume (Phase 2 does the resume). */
+  | 'not-running'
+  /** The task has never run, so there is no conversation to continue. */
+  | 'never-ran'
+  /** A usage limit is holding all work; the message would go nowhere. */
+  | 'limit'
+  | 'unknown-task'
+  | 'empty-message';
+
+/**
+ * What `task:chat` did with the message. `taskId` is the task that actually received
+ * it — chatting with a card whose step is running talks to **the step**, since that is
+ * where the live session is.
+ */
+export type ChatSendResult =
+  /** Pushed into a live session's open input stream. */
+  | { status: 'sent'; taskId: string; runId: string }
+  /** Started a run with `--resume` and the message as its prompt (Phase 2). */
+  | { status: 'resumed'; taskId: string; runId: string }
+  | { status: 'refused'; taskId: string; reason: ChatRefusal };
+
 /** A project bundled with its current tasks — the shape the Projects UI renders. */
 export interface ProjectWithTasks {
   project: Project;
@@ -412,6 +442,13 @@ export interface PlanValidation {
  */
 export type TaskActivityEntry =
   | { kind: 'comment'; id: number; body: string; createdAt: number }
+  /**
+   * A message you sent to the agent working this card (Phase 12). Distinct from a
+   * `comment`: a note is for you, this was *said to* the agent and changed what it did,
+   * so the card's story is wrong without it. The agent's replies need no kind of their
+   * own — they already arrive as `event` entries on the transcript.
+   */
+  | { kind: 'chat'; id: number; body: string; createdAt: number }
   | { kind: 'status'; id: number; from: TaskStatus | null; to: TaskStatus; createdAt: number }
   | { kind: 'event'; id: number; event: SessionEvent; createdAt: number }
   /**
