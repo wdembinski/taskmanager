@@ -22,13 +22,20 @@
  * in-flight teammates did not unanimously agree, so the human picks accept-vs-keep.
  * The `options` list carries the available actions and the human picks one (a
  * `reply` answer with that text).
+ *
+ * **plan-approval** (Phase 11) — a card delegated in `plan` mode finished researching
+ * and called `ExitPlanMode`. The tool is held (the agent cannot slide from planning
+ * into implementing) while the human reads the plan: approving turns each of its steps
+ * into a subtask and runs them one session at a time; rejecting hands a note back so
+ * the same session re-plans.
  */
 export type AttentionKind =
   | 'permission'
   | 'question'
   | 'merge-conflict'
   | 'task-failed'
-  | 'proposal';
+  | 'proposal'
+  | 'plan-approval';
 
 /** One thing waiting on a human, tied to the live run (and task) that raised it. */
 export interface AttentionItem {
@@ -63,6 +70,17 @@ export interface AttentionItem {
   worktreePath?: string | null;
   /** For `merge-conflict` items, the task's branch being integrated. Null otherwise. */
   branch?: string | null;
+  /**
+   * For `plan-approval` items, the plan markdown the agent produced — rendered for
+   * the human to read before approving. Null for other kinds.
+   */
+  plan?: string | null;
+  /**
+   * For `plan-approval` items, the titles of the subtasks approving would create (in
+   * order), so the human sees the breakdown they are signing off on rather than
+   * having to derive it from the prose. Empty for other kinds.
+   */
+  steps?: string[];
   /** Epoch ms when the item was raised (inbox sorts oldest-first). */
   createdAt: number;
 }
@@ -78,6 +96,10 @@ export interface AttentionItem {
  *     mark the task failed and keep the branch/worktree for later).
  *   - `task-failed` and `proposal` items expect `reply` with the chosen action
  *     text (one of the item's `options`), plus an optional free-text `note`.
+ *   - `plan-approval` items expect `approve` ("run this plan" — the steps become
+ *     subtasks and the first one starts; an optional `note` is filed on the card) or
+ *     `deny` ("re-plan", with the note handed back to the planning agent as the
+ *     reason). Approving never lets the planning session implement the plan itself.
  */
 export type AttentionAnswer =
   | { decision: 'approve'; note?: string }

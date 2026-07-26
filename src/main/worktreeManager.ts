@@ -130,14 +130,19 @@ export class WorktreeManager {
    * A worktree-*enabled* repo whose isolation can't be created is reported as `failed`
    * rather than silently degraded to the shared dir: running an agent in the base tree is
    * exactly how it accumulates uncommitted scaffold that later blocks every integration.
+   *
+   * `ownerTaskId` is the task the worktree BELONGS to, which is normally the task being
+   * run. The plan-driven subtasks feature (Phase 11) is the exception: every step of a
+   * plan runs in its parent's worktree on the parent's branch, so the whole chain
+   * accumulates on one branch and integrates once — the caller passes the parent's id.
    */
-  async prepare(project: Project, task: Task): Promise<WorktreePrep> {
+  async prepare(project: Project, task: Task, ownerTaskId = task.id): Promise<WorktreePrep> {
     if (!project.useWorktrees || !(await isRepo(project.path))) {
       return { mode: 'shared', cwd: project.path };
     }
     const base = await currentBranch(project.path);
-    const branch = taskBranch(task.id);
-    const cwd = this.pathFor(project.id, task.id);
+    const branch = taskBranch(ownerTaskId);
+    const cwd = this.pathFor(project.id, ownerTaskId);
     if (existsSync(cwd)) return { mode: 'worktree', cwd, branch, base };
 
     let res = await addWorktree(project.path, cwd, branch, base);

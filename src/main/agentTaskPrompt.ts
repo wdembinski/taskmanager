@@ -125,3 +125,108 @@ export function buildAgentTaskPrompt(
     .filter((line, i, all) => !(line === '' && all[i - 1] === '')) // collapse double blanks
     .join('\n');
 }
+
+/** What a subtask's prompt needs beyond the step's own row (Phase 11). */
+export interface AgentSubtaskPromptOptions {
+  /** 1-based position of this step in its parent's chain, and the chain's length. */
+  stepNumber: number;
+  stepCount: number;
+  /**
+   * Every step's title, in order — the shape of the whole approved plan as one-liners.
+   * Deliberately titles only: the point of running one session per step is that a step
+   * does NOT drag the full plan (or the earlier steps' output) through its context.
+   */
+  stepTitles?: string[];
+  /** The human's own notes on the parent card, oldest first (assign-dialog instructions). */
+  notes?: string[];
+  /** (Worktree mode) the branch this step commits on — the PARENT's shared branch. */
+  branch?: string;
+  /** (AI-assisted retry) why the previous attempt at this step failed. */
+  failureNote?: string;
+}
+
+/**
+ * Build the prompt for ONE step of an approved plan (Phase 11).
+ *
+ * The contrast with `buildAgentTaskPrompt` is the whole point of the feature: that
+ * prompt hands the agent an entire ticket (description + comment thread + notes) and
+ * lets one session carry it end to end. This one hands over a single step's brief plus
+ * just enough orientation to place it — the parent ticket's key/title, "step N of M",
+ * and the other steps' titles — so each session pays for its own context only.
+ *
+ * The shared-worktree rule is stated explicitly: the branch is the PARENT's and earlier
+ * steps have already committed to it, so the agent must not reset, rebase, or merge it.
+ */
+export function buildAgentSubtaskPrompt(
+  projectName: string,
+  parent: Task,
+  subtask: Task,
+  options: AgentSubtaskPromptOptions,
+): string {
+  const { stepNumber, stepCount, branch, failureNote } = options;
+  const stepTitles = (options.stepTitles ?? []).map(clean).filter(Boolean);
+  const notes = (options.notes ?? []).map(clean).filter(Boolean);
+  const key = clean(parent.externalKey);
+  const brief = clean(subtask.description);
+
+  return [
+    `You are working in the repository for the project "${projectName}".`,
+    '',
+    `This is **step ${stepNumber} of ${stepCount}** of a plan a human already approved.`,
+    `Do ONLY this step. Do not start the later steps, and do not re-plan the ticket —`,
+    `each remaining step runs as its own session after this one.`,
+    '',
+    key ? `Parent ticket: ${key} — ${parent.title}` : `Parent task: ${parent.title}`,
+    `Your step: ${subtask.title}`,
+    '',
+    ...(brief ? ['What this step covers:', brief, ''] : []),
+    ...(stepTitles.length > 1
+      ? [
+          `The full plan, for orientation only (you are on step ${stepNumber}):`,
+          ...stepTitles.map((t, i) => `${i + 1}. ${t}${i + 1 === stepNumber ? '  ← you' : ''}`),
+          '',
+        ]
+      : []),
+    ...(notes.length > 0
+      ? [`Notes from the human who assigned this (oldest first):`, ...notes.map((n) => `- ${n}`), '']
+      : []),
+    `Read whatever you need in the codebase first, then make this step's changes and`,
+    `briefly summarize what you did.`,
+    '',
+    // The shared branch: unlike a per-task worktree, earlier steps' commits are already
+    // here, so history rewriting would destroy work the orchestrator has not integrated.
+    ...(branch
+      ? [
+          `You are in a git worktree on branch "${branch}" — SHARED by every step of this`,
+          `plan. The earlier steps' commits are already on it. Commit your own work here when`,
+          `you are done, and do NOT reset, rebase, merge, or switch branches: the orchestrator`,
+          `integrates the branch into the base branch once the final step finishes.`,
+          '',
+        ]
+      : []),
+    ...(key
+      ? [
+          `Do NOT update ${key} in the tracker — no status transitions, no comments. The`,
+          `orchestrator never writes to JIRA; report back here instead.`,
+          '',
+        ]
+      : []),
+    ...(failureNote
+      ? [
+          `NOTE: a previous attempt at this step failed. The reported reason was:`,
+          `"${failureNote}"`,
+          `Diagnose why it failed and fix the underlying cause before completing the step.`,
+          '',
+        ]
+      : []),
+    // Same contract, same wording as every other prompt — `detectQuestion` must match.
+    `If you need a decision or information from the human before you can continue — a`,
+    `genuine clarifying question, or a choice that materially changes the outcome — do`,
+    `NOT guess. Write a line that starts with "${NEEDS_INPUT_SENTINEL}" followed by your`,
+    `question, then stop and wait. If there are specific choices, list each on its own`,
+    `line below as a "- " bullet; the human can then pick one in a single click. Their`,
+    `answer will be delivered so you can continue.`,
+  ]
+    .filter((line, i, all) => !(line === '' && all[i - 1] === '')) // collapse double blanks
+    .join('\n');
+}

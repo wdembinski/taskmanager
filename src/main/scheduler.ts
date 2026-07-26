@@ -53,13 +53,17 @@ import {
   type DetectedResponse,
   type OwnershipEntry,
 } from './attention';
-import { buildAgentTaskPrompt, type AgentPromptComment } from './agentTaskPrompt';
+import {
+  buildAgentSubtaskPrompt,
+  buildAgentTaskPrompt,
+  type AgentPromptComment,
+} from './agentTaskPrompt';
 import type { PermissionGate } from './claudeSession';
 import { isBlockingLimitStatus, LimitGate } from './limitGate';
 import type { PermissionRequest, PermissionDecisionResult } from './permissionBroker';
 import { EXIT_PLAN_MODE_TOOL, evaluateToolUse } from './permissionPolicy';
 import { tickPlanCheckbox } from './planParser';
-import { extractPlanMarkdown } from './planToSubtasks';
+import { extractPlanMarkdown, splitPlanIntoSteps } from './planToSubtasks';
 import type { SessionManager } from './sessionManager';
 import type { Store } from './store';
 import type {
@@ -72,6 +76,26 @@ import type {
 /** Sent to Claude when a permission is denied with no note of its own. */
 const DEFAULT_DENY_MESSAGE =
   'The human declined this action. Do not perform it — find a safer approach, or stop and explain.';
+
+/**
+ * Sent back to a planning session when the human APPROVES its plan (Phase 11). The
+ * held `ExitPlanMode` is denied on purpose: approval means the orchestrator takes the
+ * plan over and runs it as subtasks, one fresh session per step, so the session that
+ * wrote the plan must stop rather than implement it. Its process is ended right after.
+ */
+const PLAN_HANDOVER_MESSAGE =
+  'The human approved this plan. The orchestrator is now executing it as separate ' +
+  'subtasks, one session per step, so do NOT implement it here. Stop now.';
+
+/** Sent back when the human rejects a plan without giving a reason of their own. */
+const PLAN_REJECTED_MESSAGE =
+  'The human rejected this plan. Revise it — reconsider the approach and the breakdown ' +
+  'into steps — then call ExitPlanMode again with the new plan.';
+
+/** The comment filed on a parent card once the final step of its plan has merged. */
+const PLAN_REVIEW_NOTE =
+  'All steps of the approved plan are merged. Ready for review — move the card to Done ' +
+  'yourself once you are happy with it.';
 
 /** The nudge sent to a session we resume after a usage limit clears (Phase 5). */
 const RESUME_NUDGE =
@@ -570,8 +594,21 @@ export class Scheduler {
    * pending-* maps). Auto-pruned when the run ends.
    */
   private readonly auxRuns = new Map<string, string>();
+  /**
+   * Parent cards whose subtask chain should start as soon as their PLANNING run has
+   * exited (Phase 11). Approving a plan stops that run and launches step 1 — but both
+   * use the same worktree, so step 1 waits for the planning process to be gone rather
+   * than racing it in the same directory.
+   */
+  private readonly chainStarts = new Set<string>();
   /** The permission gate handed to every task run (null until the broker is up). */
   private gate: PermissionGate | null = null;
+  /**
+   * Tells the UI a project's task LIST changed (not just one task's status) — used
+   * when approving a plan creates a card's subtasks. Injected by the IPC layer, which
+   * owns the renderer channel; null in tests.
+   */
+  private tasksChanged: ((projectId: string) => void) | null = null;
   /**
    * Fetches the linked ticket's comments for a delegated card's prompt. Injected by the
    * IPC layer (which owns the JIRA client) so the scheduler stays tracker-agnostic and
@@ -641,6 +678,15 @@ export class Scheduler {
    */
   setTicketCommentProvider(provider: (task: Task) => Promise<AgentPromptComment[]>): void {
     this.ticketComments = provider;
+  }
+
+  /**
+   * Wire the "this project's task list changed" notifier. Only plan approval needs it
+   * (it creates subtask rows the Board has never seen); every other scheduler change is
+   * a status update on a task the UI already holds.
+   */
+  setTasksChangedNotifier(notify: (projectId: string) => void): void {
+    this.tasksChanged = notify;
   }
 
   /** Start (or resume) a project's queue. */
@@ -744,26 +790,34 @@ export class Scheduler {
    * Mirrors `stop(projectId)`, narrowed to a single task: any parked inbox item for it
    * (question, permission, failure, conflict) is cleared too, since a dead run can no
    * longer act on an answer.
+   *
+   * Stopping a card that is executing an approved plan (Phase 11) stops the STEP that
+   * is running too — the step is the card's work, so "Stop" on the card has to reach it
+   * or the chain would keep going with the card marked stopped.
    */
   stopTask(taskId: string): boolean {
     if (this.disposed) return false;
     let stopped = false;
+    // The card and, if it is executing a plan, its steps — one Stop covers the chain.
+    const steps = this.store.getSubtasks(taskId);
+    const owned = new Set<string>([taskId, ...steps.map((s) => s.id)]);
     for (const run of [...this.runs.values()]) {
-      if (run.taskId !== taskId) continue;
+      if (!owned.has(run.taskId)) continue;
       run.settled = true; // we're deciding the outcome here, not the exit code
       this.clearRunAttention(run.runId);
       this.sessions.stop(run.runId); // `exited` cleans up the bookkeeping
+      if (run.taskId !== taskId) this.updateTask(run.taskId, { status: 'stopped' }, null);
       stopped = true;
     }
     // Parked items whose run already ended (a failed task / conflict awaiting a human).
     for (const [itemId, pending] of [...this.pendingIntegrations.entries()]) {
-      if (pending.taskId !== taskId) continue;
+      if (!owned.has(pending.taskId)) continue;
       this.pendingIntegrations.delete(itemId);
       this.resolveAttention(itemId);
       stopped = true;
     }
     for (const [itemId, failure] of [...this.pendingFailures.entries()]) {
-      if (failure.taskId !== taskId) continue;
+      if (!owned.has(failure.taskId)) continue;
       this.pendingFailures.delete(itemId);
       this.resolveAttention(itemId);
       stopped = true;
@@ -772,12 +826,22 @@ export class Scheduler {
     // it IS pending work the user is entitled to cancel — otherwise it would come back
     // to life at reset time.
     if (this.store.getTask(taskId)?.status === 'blocked-by-limit') stopped = true;
+    // A card whose plan is approved but whose first step hasn't started yet is still
+    // stoppable: there is queued work even though nothing is running.
+    if (this.chainStarts.has(taskId) || steps.some((s) => s.status === 'pending')) stopped = true;
     if (!stopped) return false;
     this.attempts.delete(taskId);
     this.retryQueue.delete(taskId);
     this.fixNotes.delete(taskId);
     this.pendingConflictFix.delete(taskId);
     this.conflictFixAttempts.delete(taskId);
+    // Stopping a card cancels an approved plan's pending chain too: its queued first
+    // step must not spring to life when the planning run finally exits, and its
+    // remaining steps are stopped so nothing is left looking runnable (Phase 11).
+    this.chainStarts.delete(taskId);
+    for (const step of this.store.getSubtasks(taskId)) {
+      if (step.status === 'pending') this.updateTask(step.id, { status: 'stopped' }, null);
+    }
     // A limit-parked task counts as stoppable too: drop it from the gate so it is not
     // resurrected when the limit resets.
     this.limitGate.unpark([taskId]);
@@ -930,6 +994,16 @@ export class Scheduler {
       return Promise.resolve({ behavior: 'allow', updatedInput: request.input });
     }
 
+    // A finished plan gets its own inbox kind rather than a generic permission prompt:
+    // the human is approving a BREAKDOWN (which becomes subtasks), not a tool call. The
+    // tool stays blocked meanwhile, so the agent can't slide from planning to editing.
+    if (request.toolName === EXIT_PLAN_MODE_TOOL) {
+      const item = this.raisePlanApproval(run);
+      return new Promise<PermissionDecisionResult>((resolve) => {
+        this.pendingDecisions.set(item.id, { runId: request.runId, input: request.input, resolve });
+      });
+    }
+
     const decision = evaluateToolUse(request.toolName, request.input);
     if (decision.action === 'allow') {
       return Promise.resolve({ behavior: 'allow', updatedInput: request.input });
@@ -994,6 +1068,26 @@ export class Scheduler {
       return;
     }
 
+    if (item.kind === 'plan-approval') {
+      // The held ExitPlanMode, if the CLI routed it through the gate. It may legitimately
+      // be absent — the `tool-use` fallback raises the same item without holding a tool.
+      const pending = this.pendingDecisions.get(itemId);
+      this.pendingDecisions.delete(itemId);
+      this.resolveAttention(itemId);
+      const note = 'note' in answer ? answer.note?.trim() : undefined;
+      if (answer.decision === 'approve') {
+        this.approvePlan(item, pending?.resolve, note);
+      } else {
+        // Rejected: the session keeps its plan-mode context and re-plans with the note
+        // as the reason, which is far cheaper than starting the research over.
+        const message = note || PLAN_REJECTED_MESSAGE;
+        if (pending) pending.resolve({ behavior: 'deny', message });
+        else this.sessions.send(item.runId, message);
+        this.updateTask(item.taskId, { status: 'running' }, item.runId);
+      }
+      return;
+    }
+
     if (item.kind === 'merge-conflict') {
       const pending = this.pendingIntegrations.get(itemId);
       if (!pending) return; // already handled
@@ -1054,7 +1148,9 @@ export class Scheduler {
     // a delegated card, not the Personal board it is filed on.
     const project = this.runProjectFor(task);
     if (!project) return;
-    await this.worktrees.cleanup(project, taskId);
+    // For a step of a plan the worktree belongs to the parent — cleaning up one step
+    // discards the whole chain's branch, which is exactly what "clean up" means here.
+    await this.worktrees.cleanup(project, this.worktreeOwner(task));
     this.attempts.delete(taskId);
   }
 
@@ -1077,6 +1173,7 @@ export class Scheduler {
     this.retryQueue.clear();
     this.fixNotes.clear();
     this.conflictFixAttempts.clear();
+    this.chainStarts.clear();
     this.pendingConflictFix.clear();
     this.activeProjects.clear();
     this.runs.clear();
@@ -1162,7 +1259,9 @@ export class Scheduler {
     const comments = await this.collectTicketComments(task);
     let prep: WorktreePrep;
     try {
-      prep = await this.worktrees!.prepare(project, task);
+      // A step of an approved plan runs in its PARENT's worktree, on the parent's
+      // branch — one shared branch per card, integrated once after the last step.
+      prep = await this.worktrees!.prepare(project, task, this.worktreeOwner(task));
     } catch (err) {
       // Preparation blew up (odd git state). For a worktree-enabled repo, never fall back
       // to the base tree (that pollutes it) — fail the task; otherwise use the shared dir.
@@ -1207,6 +1306,9 @@ export class Scheduler {
    * down or misconfigured must never block a run, so failures degrade to no comments.
    */
   private async collectTicketComments(task: Task): Promise<AgentPromptComment[]> {
+    // A step of a plan is briefed on its step, not on the ticket thread — that omission
+    // IS the token saving (and a step carries no ticket key of its own anyway).
+    if (task.parentTaskId) return [];
     if (!this.ticketComments || !task.agentProjectId || task.sessionId) return [];
     try {
       return await this.ticketComments(task);
@@ -1277,6 +1379,11 @@ export class Scheduler {
     },
   ): string {
     const { branch, planRel, failureNote, comments } = opts;
+    // A step of an approved plan (Phase 11) — one step's brief, not the whole ticket.
+    if (task.parentTaskId) {
+      const subtaskPrompt = this.buildSubtaskPrompt(project, task, { branch, failureNote });
+      if (subtaskPrompt) return subtaskPrompt;
+    }
     if (task.agentProjectId) {
       return buildAgentTaskPrompt(project.name, task, {
         branch,
@@ -1292,6 +1399,32 @@ export class Scheduler {
       ...modeOpts,
       ...this.contractPromptOptions(task),
       failureNote,
+    });
+  }
+
+  /**
+   * The prompt for one step of an approved plan: its own brief plus its place in the
+   * chain. Returns null if the parent has vanished (a deleted card cascades to its
+   * steps, so this is only reachable in odd states) — the caller then falls back to the
+   * ordinary single-ticket prompt rather than running with no instructions.
+   */
+  private buildSubtaskPrompt(
+    project: Project,
+    task: Task,
+    opts: { branch?: string; failureNote?: string },
+  ): string | null {
+    const parent = this.store.getTask(task.parentTaskId!);
+    if (!parent) return null;
+    const siblings = this.store.getSubtasks(parent.id);
+    const index = siblings.findIndex((s) => s.id === task.id);
+    return buildAgentSubtaskPrompt(project.name, parent, task, {
+      stepNumber: index >= 0 ? index + 1 : 1,
+      stepCount: Math.max(siblings.length, 1),
+      stepTitles: siblings.map((s) => s.title),
+      // The human's instructions live on the CARD, so every step of the chain sees them.
+      notes: this.taskNotes(parent.id),
+      branch: opts.branch,
+      failureNote: opts.failureNote,
     });
   }
 
@@ -1512,6 +1645,9 @@ export class Scheduler {
         this.runs.delete(runId);
         this.inFlight.delete(run.taskId);
         const retrying = this.retryQueue.delete(run.taskId);
+        // An approved plan's chain waits for the planning process to release the shared
+        // worktree before its first step starts in the same directory (Phase 11).
+        if (this.chainStarts.delete(run.taskId)) this.advanceSubtasks(run.taskId);
         this.pump(run.projectId); // a slot freed up — advance the queue
         // An auto-retry of a task whose project queue is idle (e.g. an ad-hoc run):
         // `pump` won't touch an inactive project, so relaunch it directly.
@@ -1582,6 +1718,9 @@ export class Scheduler {
       options?: string[];
       toolName: string | null;
       reason: string | null;
+      /** `plan-approval` only: the plan markdown and the step titles it would create. */
+      plan?: string;
+      steps?: string[];
     },
   ): AttentionItem {
     const task = this.store.getTask(run.taskId);
@@ -1596,6 +1735,8 @@ export class Scheduler {
       options: detail.options ?? [],
       toolName: detail.toolName,
       reason: detail.reason,
+      plan: detail.plan ?? null,
+      steps: detail.steps ?? [],
       createdAt: Date.now(),
     };
     this.attention.set(item.id, item);
@@ -1661,6 +1802,20 @@ export class Scheduler {
    * failed worktree run keeps its worktree and branch for inspection/retry.
    */
   private settle(run: Run, status: 'done' | 'failed', reason?: string): void {
+    // A step of an approved plan that still has siblings to run: the chain's branch is
+    // not finished, so there is nothing to integrate yet — mark the step done and start
+    // the next one. Only the FINAL step falls through to the integration below, which
+    // then merges the whole plan's work in one go (the run's branch/base/worktree
+    // already point at the parent's — see `worktreeOwner`).
+    if (status === 'done') {
+      const finished = this.store.getTask(run.taskId);
+      if (finished?.parentTaskId && this.hasPendingSibling(finished.parentTaskId, finished.id)) {
+        this.attempts.delete(run.taskId);
+        this.updateTask(run.taskId, { status: 'done' }, null);
+        this.advanceSubtasks(finished.parentTaskId);
+        return;
+      }
+    }
     if (status === 'done' && run.branch && run.base && run.worktree && this.worktrees) {
       // Capture the integration inputs now — the imminent `exited` event deletes this
       // run from `runs`, and integration is async.
@@ -1769,6 +1924,9 @@ export class Scheduler {
         this.noteRun(project.id, ctx.taskId, ctx.runId, note);
         this.updateTask(ctx.taskId, { status: 'done' }, null);
         this.maybeWriteBackPlan(ctx.taskId);
+        // This was the final step of an approved plan (only the last one ever gets
+        // here): hand the card back to the human for review.
+        this.finishParentChain(ctx.taskId);
         break;
       }
       case 'conflict':
@@ -1957,8 +2115,9 @@ export class Scheduler {
         this.requeue(project, f.taskId);
         break;
       case FAILURE_ACTION.retryFresh:
-        // Discard the branch/worktree and the saved session, then start clean.
-        await this.worktrees?.cleanup(project, f.taskId);
+        // Discard the branch/worktree and the saved session, then start clean. For a
+        // step of a plan that is the chain's shared worktree (see `worktreeOwner`).
+        await this.worktrees?.cleanup(project, this.worktreeOwner(task));
         this.updateTask(f.taskId, { status: 'pending', sessionId: null }, null);
         this.requeue(project, f.taskId);
         break;
@@ -1980,7 +2139,7 @@ export class Scheduler {
         }
         break;
       case FAILURE_ACTION.cleanup:
-        await this.worktrees?.cleanup(project, f.taskId);
+        await this.worktrees?.cleanup(project, this.worktreeOwner(task));
         this.attempts.delete(f.taskId);
         this.noteRun(
           f.projectId,
@@ -2000,6 +2159,9 @@ export class Scheduler {
         );
         this.updateTask(f.taskId, { status: 'done' }, null);
         this.maybeWriteBackPlan(f.taskId);
+        // Waving a step through resumes its plan's chain — the human accepted this
+        // step's outcome, so the next one should run.
+        if (task.parentTaskId) this.advanceSubtasks(task.parentTaskId);
         break;
       default:
         // Unrecognized (free-text) answer — re-park so the decision isn't lost.
@@ -2017,6 +2179,133 @@ export class Scheduler {
       const task = this.store.getTask(taskId);
       if (task) this.startTask(project, task);
     }
+  }
+
+  // ---- Plan-driven subtasks (Phase 11) ------------------------------------
+
+  /**
+   * The task whose worktree/branch a run uses. Normally the task itself; for a step of
+   * an approved plan it is the PARENT, so every step of the chain works in one worktree
+   * on one branch and the whole plan integrates into base exactly once.
+   */
+  private worktreeOwner(task: Task): string {
+    return task.parentTaskId ?? task.id;
+  }
+
+  /**
+   * Park a finished plan for the human. The item carries the plan markdown and the
+   * titles of the subtasks approval would create, so the inbox shows the breakdown
+   * being signed off rather than just prose. Reuses the existing plan capture: the
+   * markdown is read from the task (persisted by `capturePlan`), so a plan survives
+   * an app restart between the agent producing it and the human reading it.
+   */
+  private raisePlanApproval(run: Run): AttentionItem {
+    const plan = this.store.getTask(run.taskId)?.agentPlan ?? '';
+    const steps = splitPlanIntoSteps(plan);
+    return this.raiseAttention(run, {
+      kind: 'plan-approval',
+      prompt:
+        steps.length > 0
+          ? `The agent finished planning and proposes ${steps.length} step(s). Approving runs ` +
+            `them one at a time, each in its own session, on this card's branch.`
+          : 'The agent finished planning. Review the plan below before it is executed.',
+      toolName: null,
+      reason: null,
+      plan,
+      steps: steps.map((s) => s.title),
+    });
+  }
+
+  /**
+   * The human approved a plan: turn it into subtasks, end the planning session, and
+   * start step 1.
+   *
+   * The planning session is deliberately NOT allowed to continue — its `ExitPlanMode`
+   * is denied with a hand-over message and its process is stopped — because the whole
+   * point is that each step runs in a fresh session carrying only its own context.
+   * The parent moves to `in-progress` and stays there: it is never auto-completed.
+   */
+  private approvePlan(
+    item: AttentionItem,
+    release?: (result: PermissionDecisionResult) => void,
+    note?: string,
+  ): void {
+    const parent = this.store.getTask(item.taskId);
+    if (!parent) return;
+    const steps = splitPlanIntoSteps(parent.agentPlan ?? item.plan ?? '');
+    // Existing steps win: a re-approval (or a hand-written breakdown) must not duplicate
+    // the chain. `splitPlanIntoSteps` never returns zero for a non-empty plan, so an
+    // empty result here means there was no plan to run at all.
+    const existing = this.store.getSubtasks(parent.id);
+    if (existing.length === 0) {
+      for (const step of steps) {
+        this.store.addSubtask(parent.id, { title: step.title, description: step.description });
+      }
+    }
+    // An approval note is the human's own guidance — filed on the card, where every
+    // step's prompt picks it up.
+    if (note) this.store.addComment(parent.projectId, parent.id, note);
+
+    // Hand over: stop the planner rather than let it implement what it just planned.
+    release?.({ behavior: 'deny', message: PLAN_HANDOVER_MESSAGE });
+    const run = this.runs.get(item.runId);
+    if (run) {
+      run.settled = true; // we are deciding this run's outcome, not its exit code
+      this.clearRunAttention(run.runId);
+      this.sessions.stop(run.runId);
+    }
+    this.updateTask(parent.id, { status: 'in-progress' }, null);
+    this.tasksChanged?.(parent.projectId);
+    // Step 1 shares the planner's worktree, so it waits for that process to be gone
+    // (`exited` drains `chainStarts`). With no live run there is nothing to wait for.
+    if (run) this.chainStarts.add(parent.id);
+    else this.advanceSubtasks(parent.id);
+  }
+
+  /**
+   * Start the next `pending` step of a card's chain, in order. Called when a step
+   * finishes and when an approved plan hands over. Strictly one at a time: a step that
+   * failed (and is parked in the inbox) leaves its siblings pending until the human
+   * resolves it, which is what stops a broken chain from running to the end.
+   */
+  private advanceSubtasks(parentId: string): void {
+    if (this.disposed) return;
+    // A usage limit holds ALL scheduling; the chain resumes when the human runs the
+    // card again (the parked step, not this one, is what the gate knows about).
+    if (this.limitGate.active) return;
+    const parent = this.store.getTask(parentId);
+    if (!parent || parent.status === 'stopped' || parent.status === 'cancelled') return;
+    const next = this.store
+      .getSubtasks(parentId)
+      .find((t) => t.status === 'pending' && !this.inFlight.has(t.id));
+    if (!next) return;
+    const project = this.runProjectFor(next);
+    if (!project) return;
+    this.startTask(project, next);
+  }
+
+  /** True when a step of this chain other than `exceptTaskId` is still waiting to run. */
+  private hasPendingSibling(parentId: string, exceptTaskId: string): boolean {
+    return this.store
+      .getSubtasks(parentId)
+      .some((t) => t.id !== exceptTaskId && t.status !== 'done' && t.status !== 'cancelled');
+  }
+
+  /**
+   * The final step of a plan merged: leave the parent **In Progress** with a
+   * ready-for-review note. The human moves it to Done — the orchestrator never closes
+   * a ticket it worked on, and never touches the tracker.
+   */
+  private finishParentChain(subtaskId: string): void {
+    const subtask = this.store.getTask(subtaskId);
+    if (!subtask?.parentTaskId) return;
+    const parent = this.store.getTask(subtask.parentTaskId);
+    if (!parent) return;
+    this.store.addComment(parent.projectId, parent.id, PLAN_REVIEW_NOTE);
+    if (parent.status !== 'in-progress') {
+      this.updateTask(parent.id, { status: 'in-progress' }, null);
+    }
+    this.tasksChanged?.(parent.projectId);
   }
 
   // ---- Cross-agent negotiation coordinator (Phase D) ----------------------

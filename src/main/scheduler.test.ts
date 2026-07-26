@@ -20,6 +20,7 @@ import type { Project, Task } from '@shared/model';
 import type { LimitState } from '@shared/limit';
 import type { SessionManager } from './sessionManager';
 import type { Store } from './store';
+import type { WorktreeManager } from './worktreeManager';
 
 // `title` defaults to `id` so dependencies (referenced by title) can name other
 // rows by their id in these tests.
@@ -368,6 +369,7 @@ describe('Scheduler — a card delegated to an agent project', () => {
       updateTask: (_id: string, patch: Partial<Task>) => Object.assign(task, patch),
       getSettings: () => ({ limitJitterMs: 0, concurrency: 1 }),
       appendTaskEvent: vi.fn(),
+      getSubtasks: () => [], // an ordinary card: no plan-driven steps
     } as unknown as Store;
     const start = vi.fn((_req: unknown, _opts: unknown) => ({ runId: 'r1' }));
     const stop = vi.fn();
@@ -812,5 +814,280 @@ describe('Scheduler cross-agent negotiation (Phase D)', () => {
     fire('rprop', proposerDone);
     expect(proposer.status).toBe('running');
     expect(send.mock.calls.find((c) => c[0] === 'rprop')?.[1]).toContain('CONTRACT.md');
+  });
+});
+
+describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
+  /**
+   * A delegated card with two steps, running in worktree mode. The fake worktree
+   * manager records what it was asked to prepare/integrate, which is where the two
+   * rules of the chain show up: every step prepares the PARENT's worktree, and only
+   * the LAST step integrates.
+   */
+  function setup(steps: Array<Partial<Task>> = [{ id: 's1' }, { id: 's2' }]) {
+    const agentProject = {
+      id: 'agent-1',
+      name: 'Checkout service',
+      path: 'C:/repos/checkout',
+      planPath: '',
+      kind: 'agent',
+      concurrency: 1,
+      useWorktrees: true,
+      defaultModel: 'sonnet',
+      defaultPermissionMode: 'acceptEdits',
+    } as unknown as Project;
+    const parent = {
+      id: 't1',
+      projectId: 'personal',
+      phase: '',
+      title: 'Fix the export dialog',
+      status: 'in-progress',
+      sessionId: null,
+      order: 0,
+      source: 'jira',
+      dependsOn: [],
+      isContract: false,
+      isScaffold: false,
+      externalKey: 'ABC-42',
+      agentProjectId: 'agent-1',
+      agentMode: 'plan',
+      agentPlan: '## Reproduce it\nfirst\n\n## Fix it\nsecond',
+      parentTaskId: null,
+    } as unknown as Task;
+    const children = steps.map(
+      (s, i) =>
+        ({
+          projectId: 'personal',
+          phase: '',
+          title: `Step ${i + 1}`,
+          status: 'pending',
+          sessionId: null,
+          order: i,
+          source: 'adhoc',
+          dependsOn: [],
+          isContract: false,
+          isScaffold: false,
+          parentTaskId: 't1',
+          agentProjectId: 'agent-1',
+          agentMode: 'bypassPermissions',
+          ...s,
+        }) as unknown as Task,
+    );
+    const byId = new Map<string, Task>([
+      [parent.id, parent],
+      ...children.map((c) => [c.id, c] as const),
+    ]);
+    const added: Array<{ title: string; description?: string | null }> = [];
+    const comments: string[] = [];
+    const store = {
+      getTask: (id: string) => byId.get(id),
+      getProject: (id: string) => (id === 'agent-1' ? agentProject : undefined),
+      getTasks: () => [parent, ...children],
+      getSubtasks: (parentId: string) => children.filter((c) => c.parentTaskId === parentId),
+      getTaskActivity: () => [],
+      addSubtask: (_p: string, input: { title: string; description?: string | null }) => {
+        added.push(input);
+        return undefined;
+      },
+      addComment: (_p: string, _t: string, body: string) => comments.push(body),
+      updateTask: (id: string, patch: Partial<Task>) => {
+        const task = byId.get(id);
+        if (task) Object.assign(task, patch);
+        return task;
+      },
+      appendTaskEvent: vi.fn(),
+      appendTokenUsage: vi.fn(),
+      getSettings: () => ({ maxAutoRetries: 0, limitJitterMs: 0, concurrency: 1 }),
+    } as unknown as Store;
+    const prepared: Array<{ taskId: string; owner: string }> = [];
+    const integrated: Array<{ branch: string; base: string }> = [];
+    const worktrees = {
+      prepare: (_p: Project, task: Task, owner: string = task.id) => {
+        prepared.push({ taskId: task.id, owner });
+        return Promise.resolve({
+          mode: 'worktree',
+          cwd: `C:/wt/${owner}`,
+          branch: `orch/${owner}`,
+          base: 'main',
+        });
+      },
+      integrate: (_p: Project, branch: string, base: string) => {
+        integrated.push({ branch, base });
+        return Promise.resolve({ status: 'merged' });
+      },
+      cleanup: vi.fn(),
+    } as unknown as WorktreeManager;
+    const start = vi.fn((_req: unknown, opts: { runId?: string }) => ({
+      runId: opts?.runId ?? 'r-new',
+    }));
+    const stop = vi.fn();
+    const send = vi.fn();
+    const sessions = { start, stop, send } as unknown as SessionManager;
+    const emitAttention = vi.fn();
+    const scheduler = new Scheduler(
+      store,
+      sessions,
+      vi.fn(),
+      vi.fn(),
+      emitAttention,
+      vi.fn(),
+      vi.fn(),
+      worktrees,
+    );
+    /** Seed a live run for one task, as the scheduler would have after launching it. */
+    const seedRun = (runId: string, taskId: string, owner = 't1'): void => {
+      (scheduler as unknown as { runs: Map<string, unknown> }).runs.set(runId, {
+        taskId,
+        projectId: 'agent-1',
+        runId,
+        settled: false,
+        branch: `orch/${owner}`,
+        base: 'main',
+        worktree: `C:/wt/${owner}`,
+      });
+      (scheduler as unknown as { inFlight: Set<string> }).inFlight.add(taskId);
+    };
+    const fire = (runId: string, event: unknown): void =>
+      (scheduler as unknown as { onRunEvent: (r: string, e: unknown) => void }).onRunEvent(
+        runId,
+        event,
+      );
+    return {
+      scheduler,
+      parent,
+      children,
+      start,
+      stop,
+      emitAttention,
+      prepared,
+      integrated,
+      added,
+      comments,
+      seedRun,
+      fire,
+    };
+  }
+
+  const okResult = {
+    kind: 'result',
+    success: true,
+    resultText: '',
+    costUsd: null,
+    durationMs: null,
+    stopReason: null,
+    terminalReason: null,
+  };
+
+  /** Let the async chains settle (prepare → launch, and integrate → apply outcome). */
+  const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it('runs every step in the PARENT’s worktree, on the parent’s branch', async () => {
+    const { scheduler, prepared } = setup();
+    scheduler.runTask('s2');
+    await flush();
+    expect(prepared).toEqual([{ taskId: 's2', owner: 't1' }]);
+  });
+
+  it('a non-final step settles WITHOUT integrating, and starts its sibling', async () => {
+    const { children, integrated, start, seedRun, fire } = setup();
+    seedRun('r1', 's1');
+    fire('r1', okResult);
+    await flush();
+    expect(children[0].status).toBe('done');
+    expect(integrated).toEqual([]); // the chain's branch is not finished yet
+    expect(start).toHaveBeenCalledTimes(1); // …step 2 is on its way instead
+  });
+
+  it('the FINAL step integrates the shared branch and hands the card back for review', async () => {
+    const { parent, children, integrated, comments, seedRun, fire } = setup();
+    children[0].status = 'done';
+    seedRun('r2', 's2');
+    fire('r2', okResult);
+    await flush();
+    expect(integrated).toEqual([{ branch: 'orch/t1', base: 'main' }]);
+    expect(children[1].status).toBe('done');
+    // The parent is NEVER auto-completed: it waits in progress for a human.
+    expect(parent.status).toBe('in-progress');
+    expect(comments.join(' ')).toContain('Ready for review');
+  });
+
+  it('a failed step stops the chain — its siblings stay pending', async () => {
+    const { children, start, emitAttention, seedRun, fire } = setup();
+    seedRun('r1', 's1');
+    fire('r1', { ...okResult, success: false, stopReason: 'error' });
+    await Promise.resolve();
+    expect(emitAttention).toHaveBeenCalledTimes(1);
+    expect((emitAttention.mock.calls[0][0] as { kind: string }).kind).toBe('task-failed');
+    expect(children[1].status).toBe('pending'); // never started
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('holds ExitPlanMode as a plan-approval item listing the steps it would create', async () => {
+    const { scheduler, emitAttention, seedRun } = setup([]);
+    seedRun('r0', 't1');
+    let released = false;
+    void scheduler
+      .decidePermission({
+        runId: 'r0',
+        toolName: 'ExitPlanMode',
+        input: { plan: '## Reproduce it\nfirst\n\n## Fix it\nsecond' },
+      } as never)
+      .then(() => {
+        released = true;
+      });
+    await Promise.resolve();
+    expect(released).toBe(false); // the tool is BLOCKED until a human answers
+    const item = emitAttention.mock.calls[0][0] as { kind: string; steps: string[]; plan: string };
+    expect(item.kind).toBe('plan-approval');
+    expect(item.steps).toEqual(['Reproduce it', 'Fix it']);
+    expect(item.plan).toContain('## Fix it');
+  });
+
+  it('approving creates the steps, stops the planner, and leaves the card in progress', async () => {
+    const { scheduler, parent, added, stop, emitAttention, seedRun } = setup([]);
+    seedRun('r0', 't1');
+    let decision: { behavior: string; message?: string } | undefined;
+    void scheduler
+      .decidePermission({
+        runId: 'r0',
+        toolName: 'ExitPlanMode',
+        input: { plan: parent.agentPlan },
+      } as never)
+      .then((d) => {
+        decision = d as { behavior: string; message?: string };
+      });
+    await Promise.resolve();
+    const item = emitAttention.mock.calls[0][0] as { id: string };
+    scheduler.answerAttention(item.id, { decision: 'approve' });
+    await Promise.resolve();
+    expect(added.map((s) => s.title)).toEqual(['Reproduce it', 'Fix it']);
+    // The planning session is denied and killed — it must not implement its own plan.
+    expect(decision?.behavior).toBe('deny');
+    expect(decision?.message).toContain('do NOT implement it here');
+    expect(stop).toHaveBeenCalledWith('r0');
+    expect(parent.status).toBe('in-progress');
+  });
+
+  it('rejecting hands the reason back and keeps the planning session alive', async () => {
+    const { scheduler, parent, added, stop, emitAttention, seedRun } = setup([]);
+    seedRun('r0', 't1');
+    let decision: { behavior: string; message?: string } | undefined;
+    void scheduler
+      .decidePermission({
+        runId: 'r0',
+        toolName: 'ExitPlanMode',
+        input: { plan: parent.agentPlan },
+      } as never)
+      .then((d) => {
+        decision = d as { behavior: string; message?: string };
+      });
+    await Promise.resolve();
+    const item = emitAttention.mock.calls[0][0] as { id: string };
+    scheduler.answerAttention(item.id, { decision: 'deny', note: 'Split the migration out.' });
+    await Promise.resolve();
+    expect(decision).toEqual({ behavior: 'deny', message: 'Split the migration out.' });
+    expect(added).toEqual([]);
+    expect(stop).not.toHaveBeenCalled();
+    expect(parent.status).toBe('running');
   });
 });

@@ -91,6 +91,13 @@ function KindBadge({ kind }: { kind: AttentionItem['kind'] }): JSX.Element {
       </Badge>
     );
   }
+  if (kind === 'plan-approval') {
+    return (
+      <Badge appearance="tint" color="brand">
+        plan
+      </Badge>
+    );
+  }
   return (
     <Badge appearance="tint" color="warning">
       question
@@ -133,6 +140,11 @@ function InboxItem({
 
       <div className={styles.prompt}>{item.prompt}</div>
       {item.reason && <Caption1 className={styles.reason}>Held because it {item.reason}.</Caption1>}
+      {item.kind === 'plan-approval' && (item.steps?.length ?? 0) > 0 && (
+        <Caption1 className={styles.reason}>
+          Steps: {item.steps!.map((s, i) => `${i + 1}. ${s}`).join(' · ')}
+        </Caption1>
+      )}
       {(item.kind === 'merge-conflict' || item.kind === 'task-failed') && item.worktreePath && (
         <Caption1 className={styles.path} title={item.worktreePath}>
           Worktree: {item.worktreePath}
@@ -187,14 +199,21 @@ function InboxItem({
             Abandon
           </Button>
         </div>
-      ) : item.kind === 'permission' ? (
+      ) : item.kind === 'permission' || item.kind === 'plan-approval' ? (
         <div className={styles.actions}>
-          <Field className={styles.note} label="Optional note to Claude">
+          <Field
+            className={styles.note}
+            label={item.kind === 'plan-approval' ? 'Optional note' : 'Optional note to Claude'}
+          >
             <Textarea
               value={note}
               resize="vertical"
               onChange={(_e, d) => setNote(d.value)}
-              placeholder="Add guidance (optional)…"
+              placeholder={
+                item.kind === 'plan-approval'
+                  ? 'Guidance to file on the card, or the reason to re-plan…'
+                  : 'Add guidance (optional)…'
+              }
             />
           </Field>
           <Button
@@ -202,13 +221,13 @@ function InboxItem({
             disabled={busy}
             onClick={() => void answer({ decision: 'approve', note: note.trim() || undefined })}
           >
-            Approve
+            {item.kind === 'plan-approval' ? 'Approve plan' : 'Approve'}
           </Button>
           <Button
             disabled={busy}
             onClick={() => void answer({ decision: 'deny', note: note.trim() || undefined })}
           >
-            Deny
+            {item.kind === 'plan-approval' ? 'Re-plan' : 'Deny'}
           </Button>
         </div>
       ) : (

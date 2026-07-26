@@ -205,7 +205,9 @@ export function TaskAgentPanel({
                 ? 'The agent needs permission'
                 : item.kind === 'merge-conflict'
                   ? 'Merge conflict — resolve it in the worktree'
-                  : 'The agent has a question'}
+                  : item.kind === 'plan-approval'
+                    ? 'The agent finished planning — approve to run it'
+                    : 'The agent has a question'}
             </Text>
           </div>
           <div className={styles.prompt}>{item.prompt}</div>
@@ -216,7 +218,15 @@ export function TaskAgentPanel({
             </Caption1>
           )}
 
-          {item.kind === 'permission' || item.kind === 'merge-conflict' ? (
+          {item.kind === 'plan-approval' && (item.steps?.length ?? 0) > 0 && (
+            <Caption1 className={styles.hint}>
+              {item.steps!.map((s, i) => `${i + 1}. ${s}`).join(' · ')}
+            </Caption1>
+          )}
+
+          {item.kind === 'permission' ||
+          item.kind === 'merge-conflict' ||
+          item.kind === 'plan-approval' ? (
             <div className={styles.answerRow}>
               <Field className={styles.grow} label="Optional note to the agent">
                 <Textarea
@@ -233,13 +243,21 @@ export function TaskAgentPanel({
                   void answer({ decision: 'approve', note: reply.trim() || undefined })
                 }
               >
-                {item.kind === 'merge-conflict' ? 'Resolved — finish merge' : 'Approve'}
+                {item.kind === 'merge-conflict'
+                  ? 'Resolved — finish merge'
+                  : item.kind === 'plan-approval'
+                    ? 'Approve plan'
+                    : 'Approve'}
               </Button>
               <Button
                 disabled={busy}
                 onClick={() => void answer({ decision: 'deny', note: reply.trim() || undefined })}
               >
-                {item.kind === 'merge-conflict' ? 'Abandon' : 'Deny'}
+                {item.kind === 'merge-conflict'
+                  ? 'Abandon'
+                  : item.kind === 'plan-approval'
+                    ? 'Re-plan'
+                    : 'Deny'}
               </Button>
             </div>
           ) : (

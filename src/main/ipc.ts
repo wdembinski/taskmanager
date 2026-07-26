@@ -123,6 +123,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     (sample) => send('usage:sample', sample),
   );
 
+  // Approving an agent's plan creates that card's subtasks (Phase 11) — a change to the
+  // task LIST, which `task:changed` can't express, so the scheduler gets a way to say so.
+  scheduler.setTasksChangedNotifier((projectId) =>
+    send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) }),
+  );
+
   // Phase 6: heal tasks the previous run left mid-flight (running/waiting-input →
   // pending, keeping their session id so a re-run resumes them). Runs before the
   // window paints; the UI re-queries project:list on mount and sees the fix.

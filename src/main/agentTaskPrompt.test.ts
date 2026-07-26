@@ -4,7 +4,7 @@
  * rule, and the question sentinel — is checkable without a process or a DB.
  */
 import { describe, expect, it } from 'vitest';
-import { buildAgentTaskPrompt } from './agentTaskPrompt';
+import { buildAgentSubtaskPrompt, buildAgentTaskPrompt } from './agentTaskPrompt';
 import { NEEDS_INPUT_SENTINEL } from './attention';
 import type { Task } from '@shared/model';
 
@@ -114,6 +114,96 @@ describe('buildAgentTaskPrompt', () => {
 
   it('never leaves a double blank line', () => {
     const prompt = buildAgentTaskPrompt('Checkout service', internalTask, { branch: 'orch/x' });
+    expect(prompt).not.toContain('\n\n\n');
+  });
+});
+
+describe('buildAgentSubtaskPrompt (one step of an approved plan)', () => {
+  const step = {
+    id: 's2',
+    projectId: 'personal',
+    phase: '',
+    title: 'Wire the save path',
+    status: 'pending',
+    sessionId: null,
+    order: 1,
+    source: 'adhoc',
+    dependsOn: [],
+    isContract: false,
+    isScaffold: false,
+    parentTaskId: 't1',
+    description: 'Write the chosen file to disk and surface errors in the dialog.',
+    agentProjectId: 'agent-1',
+    agentMode: 'bypassPermissions',
+  } as Task;
+
+  const base = {
+    stepNumber: 2,
+    stepCount: 3,
+    stepTitles: ['Reproduce the bug', 'Wire the save path', 'Add a regression test'],
+  };
+
+  it('scopes the agent to this step and names its place in the chain', () => {
+    const prompt = buildAgentSubtaskPrompt('Checkout service', jiraTask, step, base);
+    expect(prompt).toContain('step 2 of 3');
+    expect(prompt).toContain('Your step: Wire the save path');
+    expect(prompt).toContain('Write the chosen file to disk');
+    expect(prompt).toContain('Do ONLY this step');
+    expect(prompt).toContain('do not re-plan');
+  });
+
+  it('orients the step in the plan by title only — never the parent’s ticket brief', () => {
+    const prompt = buildAgentSubtaskPrompt('Checkout service', jiraTask, step, base);
+    expect(prompt).toContain('1. Reproduce the bug');
+    expect(prompt).toContain('2. Wire the save path  ← you');
+    expect(prompt).toContain('3. Add a regression test');
+    // The token saving: the ticket's own description and comment thread stay out.
+    expect(prompt).not.toContain('The export dialog closes without writing the file.');
+  });
+
+  it('names the parent ticket for context and still forbids tracker writes', () => {
+    const prompt = buildAgentSubtaskPrompt('Checkout service', jiraTask, step, base);
+    expect(prompt).toContain('Parent ticket: ABC-42 — Fix the export dialog');
+    expect(prompt).toContain('Do NOT update ABC-42');
+  });
+
+  it('protects the SHARED branch: commit, never reset/rebase/switch', () => {
+    const prompt = buildAgentSubtaskPrompt('Checkout service', jiraTask, step, {
+      ...base,
+      branch: 'orch/t1',
+    });
+    expect(prompt).toContain('orch/t1');
+    expect(prompt).toContain('SHARED by every step');
+    expect(prompt).toContain('do NOT reset, rebase, merge, or switch branches');
+  });
+
+  it('carries the human’s notes from the card and the question contract', () => {
+    const prompt = buildAgentSubtaskPrompt('Checkout service', jiraTask, step, {
+      ...base,
+      notes: ['Start with the file-picker path.'],
+    });
+    expect(prompt).toContain('Start with the file-picker path.');
+    expect(prompt).toContain(NEEDS_INPUT_SENTINEL);
+  });
+
+  it('hands over a previous failure on an AI-assisted retry of the step', () => {
+    const prompt = buildAgentSubtaskPrompt('Checkout service', jiraTask, step, {
+      ...base,
+      failureNote: 'the build broke',
+    });
+    expect(prompt).toContain('the build broke');
+    expect(prompt).toContain('Diagnose why it failed');
+  });
+
+  it('omits the plan listing for a single-step plan, and leaves no double blank line', () => {
+    const prompt = buildAgentSubtaskPrompt('Checkout service', internalTask, step, {
+      stepNumber: 1,
+      stepCount: 1,
+      stepTitles: ['Wire the save path'],
+      branch: 'orch/t2',
+    });
+    expect(prompt).not.toContain('for orientation only');
+    expect(prompt).toContain('Parent task: Tidy the release script');
     expect(prompt).not.toContain('\n\n\n');
   });
 });
