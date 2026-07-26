@@ -192,6 +192,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
   handle('project:add', async (input) => {
     const project = store.addProject(input);
+    // An agent project has no plan file: nothing to parse, nothing to watch.
+    if (project.kind === 'agent') return { project, tasks: [] };
     const result = syncProjectPlan(store, project);
     watcher.watch(project); // pick up future edits to its plan file live
     return result;
@@ -201,8 +203,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     store
       .listProjects()
       // Hide the built-in Personal board — it's the standalone My Tasks board, not a
-      // code project, so it must never appear on the Projects tab.
-      .filter((project) => !isPersonalBoard(project.id))
+      // code project, so it must never appear on the Projects tab. Agent projects are
+      // hidden too: they belong to My Tasks (managed in Settings), not to this tab.
+      .filter((project) => !isPersonalBoard(project.id) && project.kind !== 'agent')
       .map((project) => {
         const tasks = store.getTasks(project.id);
         // A stored `dependsOn` is the persisted form of a plan `@needs:` marker, so a
@@ -257,6 +260,32 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       permissionMode: 'acceptEdits',
     });
     return { runId };
+  });
+
+  // --- Agent projects -------------------------------------------------------
+  // A repo directory a My Tasks card can be delegated to. Stored in the same
+  // `projects` table (so worktrees, integration, usage attribution and the limit
+  // gate work unchanged) but never queued, watched, or listed on the Projects tab.
+
+  handle('agentProject:list', async () =>
+    store.listProjects().filter((project) => project.kind === 'agent'),
+  );
+
+  handle('agentProject:add', async (input) => store.addProject({ ...input, kind: 'agent' }));
+
+  handle('agentProject:update', async (id, patch) => {
+    const existing = store.getProject(id);
+    if (!existing || existing.kind !== 'agent') return null;
+    // Guard the plan-only fields: an agent project stays plan-less no matter what.
+    const { planPath: _planPath, writeBackPlan: _writeBackPlan, ...safe } = patch;
+    return store.updateProject(id, safe) ?? null;
+  });
+
+  handle('agentProject:remove', async (id) => {
+    if (scheduler.hasLiveRuns(id)) {
+      throw new Error('Stop the agent working in this project before removing it.');
+    }
+    store.removeProject(id);
   });
 
   handle('scheduler:start', async (projectId) => scheduler.start(projectId));

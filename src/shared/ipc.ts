@@ -149,6 +149,22 @@ export interface IpcApi {
   'project:alignPlan': (id: string) => Promise<{ runId: string }>;
 
   /**
+   * List the agent projects — repo directories a My Tasks card can be delegated to
+   * (`kind: 'agent'`). Deliberately separate from `project:list`, which returns only
+   * the legacy plan-driven projects shown on the Projects tab.
+   */
+  'agentProject:list': () => Promise<Project[]>;
+  /**
+   * Create an agent project from a folder (+ optional name, epic keys, defaults).
+   * No plan file is parsed or watched. Returns the created project.
+   */
+  'agentProject:add': (input: AddProjectInput) => Promise<Project>;
+  /** Edit an agent project (folder, name, epic keys, model, mode). Null if unknown. */
+  'agentProject:update': (id: string, patch: ProjectPatch) => Promise<Project | null>;
+  /** Remove an agent project. Rejects while one of its runs is still live. */
+  'agentProject:remove': (id: string) => Promise<void>;
+
+  /**
    * Start (or resume) a project's queue: the scheduler runs its `pending` tasks
    * in order, one session at a time, until the queue drains or is paused/stopped.
    */

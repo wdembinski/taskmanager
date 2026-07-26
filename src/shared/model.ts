@@ -95,6 +95,20 @@ export function isPersonalBoard(projectId: string): boolean {
   return projectId === PERSONAL_PROJECT_ID;
 }
 
+/**
+ * What kind of project a row describes.
+ *
+ * - `plan` — the legacy Projects tab: a directory plus a plan.md whose checkboxes
+ *   become a queue of tasks the scheduler drains.
+ * - `agent` — the lightweight "agent project": just a repo directory (plus the JIRA
+ *   epics it owns) that a single My Tasks card can be delegated to. It has no plan
+ *   file and no queue — work only ever starts because a human assigned one card to
+ *   an agent. Agent projects are hidden from the Projects tab and skipped by the
+ *   plan watcher; they exist as `projects` rows so worktrees, integration, usage
+ *   attribution and the usage-limit gate all work on them unchanged.
+ */
+export type ProjectKind = 'plan' | 'agent';
+
 /** A project the app orchestrates: a directory plus the plan that drives it. */
 export interface Project {
   /** Stable app-assigned id (UUID). Not derived from the path, so a project can
@@ -139,6 +153,18 @@ export interface Project {
    * UI hint — it never changes how a project runs.
    */
   planAligned: boolean;
+  /**
+   * Whether this is a legacy plan-driven project or an agent project (see
+   * {@link ProjectKind}). Rows that predate agent projects migrate in as `plan`.
+   */
+  kind: ProjectKind;
+  /**
+   * For an agent project: the JIRA epic/parent keys this repo owns (e.g.
+   * `['ABC-100']`). A My Tasks card whose ticket hangs off one of these epics
+   * resolves to this project automatically when it is assigned to an agent.
+   * Always empty for plan projects.
+   */
+  jiraEpicKeys: string[];
   /** Epoch ms when the project was added. */
   createdAt: number;
 }
@@ -157,17 +183,23 @@ export interface AddProjectInput {
   useWorktrees?: boolean;
   writeBackPlan?: boolean;
   planAligned?: boolean;
+  /** Defaults to `plan`. `agent` forces a plan-less, worktree-isolated project. */
+  kind?: ProjectKind;
+  jiraEpicKeys?: string[];
 }
 
 /**
  * The subset of a project the user may edit after it's created (Phase 8). The
- * folder `path` and `id` are immutable — a project keeps its identity/history even
- * if its plan file, name, model, or mode change.
+ * `id` and `kind` are immutable — a project keeps its identity/history even if its
+ * plan file, name, model, or mode change. The plan-project dialog never sends
+ * `path` (its folder is fixed once added); agent projects do allow re-pointing the
+ * folder, since they are nothing but a directory plus a few defaults.
  */
 export type ProjectPatch = Partial<
   Pick<
     Project,
     | 'name'
+    | 'path'
     | 'planPath'
     | 'defaultModel'
     | 'defaultPermissionMode'
@@ -175,6 +207,7 @@ export type ProjectPatch = Partial<
     | 'useWorktrees'
     | 'writeBackPlan'
     | 'planAligned'
+    | 'jiraEpicKeys'
   >
 >;
 

@@ -727,6 +727,15 @@ export class Scheduler {
     return { runId };
   }
 
+  /**
+   * Whether any task run is currently executing under a project. Used to refuse
+   * deleting a project out from under a live session — a run keys off its project's
+   * directory (and, for a worktree run, still has to be integrated back into it).
+   */
+  hasLiveRuns(projectId: string): boolean {
+    return [...this.runs.values()].some((r) => r.projectId === projectId);
+  }
+
   /** Snapshot of executing tasks, so the Board can attach live transcripts on load. */
   activeRuns(): ActiveRun[] {
     return [...this.runs.values()].map((r) => ({ taskId: r.taskId, runId: r.runId }));

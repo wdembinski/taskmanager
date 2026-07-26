@@ -42,9 +42,10 @@ export class PlanWatcher {
 
   /** Watch (or re-watch) a single project's plan file. Idempotent. */
   watch(project: Project): void {
-    // The built-in Personal board has no plan file (empty path); never watch it, or
-    // an empty-plan re-sync would wipe its JIRA/ad-hoc tasks.
-    if (isPersonalBoard(project.id)) return;
+    // Neither the built-in Personal board nor an agent project has a plan file (both
+    // carry an empty planPath); never watch them, or an empty-plan re-sync would wipe
+    // the Personal board's JIRA/ad-hoc tasks.
+    if (isPersonalBoard(project.id) || project.kind === 'agent') return;
     this.unwatch(project.id);
     const planPath = project.planPath;
     const listener = (curr: Stats, prev: Stats): void => {

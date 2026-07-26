@@ -7,6 +7,9 @@
  * before resuming after a usage limit resets. Loaded from and saved to the engine
  * over the `settings:*` IPC channels; the scheduler picks up concurrency/jitter on
  * the next task, so no restart is needed.
+ *
+ * The vertical nav also hosts the JIRA connection and the Agents pane (the
+ * repositories a My Tasks card can be delegated to), which manage their own state.
  */
 import { useEffect, useState } from 'react';
 import {
@@ -33,6 +36,7 @@ import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
 import type { AppSettings, JiraSettings } from '@shared/settings';
 import type { JiraConfigStatus, JiraTestResult } from '@shared/ipc';
+import { AgentProjects } from './AgentProjects';
 
 const useStyles = makeStyles({
   // Vertical nav on the left, scrollable content pane on the right.
@@ -63,7 +67,7 @@ const useStyles = makeStyles({
 const MODELS: ClaudeModel[] = ['haiku', 'sonnet', 'opus'];
 const MODES: PermissionMode[] = ['acceptEdits', 'plan', 'manual', 'bypassPermissions'];
 
-type SettingsSection = 'general' | 'jira';
+type SettingsSection = 'general' | 'jira' | 'agents';
 
 export function Settings(): JSX.Element {
   const styles = useStyles();
@@ -138,9 +142,12 @@ export function Settings(): JSX.Element {
       >
         <Tab value="general">General</Tab>
         <Tab value="jira">JIRA</Tab>
+        <Tab value="agents">Agents</Tab>
       </TabList>
 
-      {section === 'general' ? (
+      {section === 'agents' ? (
+        <AgentProjects />
+      ) : section === 'general' ? (
         <div className={styles.pane}>
           <Subtitle2>Settings</Subtitle2>
 

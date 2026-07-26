@@ -77,6 +77,10 @@ interface ProjectRow {
   useWorktrees: number;
   writeBackPlan: number;
   planAligned: number;
+  /** 'plan' | 'agent'; NULL is impossible (NOT NULL DEFAULT 'plan'), but old rows read back as 'plan'. */
+  kind: string;
+  /** JSON array of JIRA epic keys owned by an agent project; null for plan projects. */
+  jiraEpicKeys: string | null;
   createdAt: number;
 }
 
@@ -181,6 +185,21 @@ export interface Store {
 }
 
 /**
+ * Clean up a user-entered list of JIRA epic keys: trim, drop blanks, upper-case
+ * (JIRA keys are case-insensitive but canonically upper), and de-duplicate — so
+ * epic → agent-project matching later compares like with like.
+ */
+function normalizeEpicKeys(keys: string[] | undefined): string[] {
+  if (!keys) return [];
+  const seen = new Set<string>();
+  for (const key of keys) {
+    const trimmed = key.trim().toUpperCase();
+    if (trimmed) seen.add(trimmed);
+  }
+  return [...seen];
+}
+
+/**
  * Open (or create) the database at `dbPath` and return the store API.
  * `join(app.getPath('userData'), 'orchestrator.db')` is the production path.
  */
@@ -201,6 +220,8 @@ export function createStore(dbPath: string): Store {
       useWorktrees          INTEGER NOT NULL DEFAULT 1,
       writeBackPlan         INTEGER NOT NULL DEFAULT 0,
       planAligned           INTEGER NOT NULL DEFAULT 0,
+      kind                  TEXT NOT NULL DEFAULT 'plan',
+      jiraEpicKeys          TEXT,
       createdAt             INTEGER NOT NULL
     );
     CREATE TABLE IF NOT EXISTS tasks (
@@ -281,6 +302,16 @@ export function createStore(dbPath: string): Store {
   const projectColumns = db.prepare(`PRAGMA table_info(projects)`).all() as Array<{ name: string }>;
   if (!projectColumns.some((c) => c.name === 'writeBackPlan')) {
     db.exec(`ALTER TABLE projects ADD COLUMN writeBackPlan INTEGER NOT NULL DEFAULT 0`);
+  }
+
+  // Migrate databases created before agent projects. Every existing row is a legacy
+  // plan-driven project, so the 'plan' default is correct for them, and only agent
+  // projects ever carry epic keys (NULL reads back as []).
+  if (!projectColumns.some((c) => c.name === 'kind')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN kind TEXT NOT NULL DEFAULT 'plan'`);
+  }
+  if (!projectColumns.some((c) => c.name === 'jiraEpicKeys')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN jiraEpicKeys TEXT`);
   }
 
   // Migrate databases created before Phase 8 added the task source column. Existing
@@ -386,8 +417,8 @@ export function createStore(dbPath: string): Store {
   }
 
   const insertProject = db.prepare<[ProjectRow]>(
-    `INSERT INTO projects (id, name, path, planPath, defaultModel, defaultPermissionMode, concurrency, useWorktrees, writeBackPlan, planAligned, createdAt)
-     VALUES (@id, @name, @path, @planPath, @defaultModel, @defaultPermissionMode, @concurrency, @useWorktrees, @writeBackPlan, @planAligned, @createdAt)`,
+    `INSERT INTO projects (id, name, path, planPath, defaultModel, defaultPermissionMode, concurrency, useWorktrees, writeBackPlan, planAligned, kind, jiraEpicKeys, createdAt)
+     VALUES (@id, @name, @path, @planPath, @defaultModel, @defaultPermissionMode, @concurrency, @useWorktrees, @writeBackPlan, @planAligned, @kind, @jiraEpicKeys, @createdAt)`,
   );
   const selectProjects = db.prepare(`SELECT * FROM projects ORDER BY createdAt`);
   const selectProject = db.prepare(`SELECT * FROM projects WHERE id = ?`);
@@ -497,12 +528,14 @@ export function createStore(dbPath: string): Store {
       useWorktrees: r.useWorktrees !== 0,
       writeBackPlan: r.writeBackPlan !== 0,
       planAligned: r.planAligned !== 0,
+      kind: r.kind === 'agent' ? 'agent' : 'plan',
+      jiraEpicKeys: parseStringArray(r.jiraEpicKeys),
       createdAt: r.createdAt,
     };
   }
 
-  /** Read the JSON `dependsOn` column back into a string[] (NULL/garbage → []). */
-  function parseDependsOn(raw: string | null): string[] {
+  /** Read a JSON string-array column (`dependsOn`, `jiraEpicKeys`) back (NULL/garbage → []). */
+  function parseStringArray(raw: string | null): string[] {
     if (!raw) return [];
     try {
       const value = JSON.parse(raw) as unknown;
@@ -553,7 +586,7 @@ export function createStore(dbPath: string): Store {
       sessionId: r.sessionId,
       order: r.order,
       source: (r.source as Task['source']) ?? 'plan',
-      dependsOn: parseDependsOn(r.dependsOn),
+      dependsOn: parseStringArray(r.dependsOn),
       isContract: r.isContract !== 0,
       isScaffold: r.isScaffold !== 0,
       type: (r.type as Task['type']) ?? null,
@@ -585,20 +618,26 @@ export function createStore(dbPath: string): Store {
     addProject(input) {
       // Unspecified project fields inherit the user's global defaults (Phase 6).
       const defaults = getSettings();
+      // An agent project is a bare repo directory: there is no plan file to parse or
+      // tick checkboxes in, and each assigned card runs on its own branch, so those
+      // three fields are forced rather than taken from the caller/global defaults.
+      const isAgent = input.kind === 'agent';
       const project: Project = {
         id: randomUUID(),
         name: input.name?.trim() || basename(input.path),
         path: input.path,
-        planPath: input.planPath ?? join(input.path, 'plan.md'),
+        planPath: isAgent ? '' : (input.planPath ?? join(input.path, 'plan.md')),
         defaultModel: input.defaultModel ?? defaults.defaultModel,
         defaultPermissionMode: input.defaultPermissionMode ?? defaults.defaultPermissionMode,
         concurrency: Math.max(1, Math.round(input.concurrency ?? defaults.concurrency)),
-        useWorktrees: input.useWorktrees ?? true,
-        writeBackPlan: input.writeBackPlan ?? defaults.writeBackPlan,
+        useWorktrees: isAgent ? true : (input.useWorktrees ?? true),
+        writeBackPlan: isAgent ? false : (input.writeBackPlan ?? defaults.writeBackPlan),
         // New projects are trusted as aligned; legacy projects backfill to false via
         // the migration above. A plan carrying `@needs:`/`@contract` is also confirmed
         // aligned on its next sync (see ipc `syncProjectPlan`).
         planAligned: input.planAligned ?? true,
+        kind: isAgent ? 'agent' : 'plan',
+        jiraEpicKeys: normalizeEpicKeys(input.jiraEpicKeys),
         createdAt: Date.now(),
       };
       insertProject.run({
@@ -606,6 +645,7 @@ export function createStore(dbPath: string): Store {
         useWorktrees: project.useWorktrees ? 1 : 0,
         writeBackPlan: project.writeBackPlan ? 1 : 0,
         planAligned: project.planAligned ? 1 : 0,
+        jiraEpicKeys: JSON.stringify(project.jiraEpicKeys),
       });
       return project;
     },
@@ -639,6 +679,10 @@ export function createStore(dbPath: string): Store {
         sets.push(`name = @name`);
         params.name = patch.name;
       }
+      if (patch.path !== undefined) {
+        sets.push(`path = @path`);
+        params.path = patch.path;
+      }
       if (patch.planPath !== undefined) {
         sets.push(`planPath = @planPath`);
         params.planPath = patch.planPath;
@@ -666,6 +710,10 @@ export function createStore(dbPath: string): Store {
       if (patch.planAligned !== undefined) {
         sets.push(`planAligned = @planAligned`);
         params.planAligned = patch.planAligned ? 1 : 0;
+      }
+      if (patch.jiraEpicKeys !== undefined) {
+        sets.push(`jiraEpicKeys = @jiraEpicKeys`);
+        params.jiraEpicKeys = JSON.stringify(normalizeEpicKeys(patch.jiraEpicKeys));
       }
       if (sets.length > 0) {
         db.prepare(`UPDATE projects SET ${sets.join(', ')} WHERE id = @id`).run(params);
