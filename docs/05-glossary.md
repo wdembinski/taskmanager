@@ -151,6 +151,29 @@ card, one session, no queue and no auto-start; you answer its questions in the
 card's detail sidebar, and JIRA is never written to. See
 [doc 03](03-how-orchestration-works.md#delegating-one-task-to-an-agent).
 
+### Plan mode
+
+A permission mode in which Claude may **read and search but not change anything**:
+it researches the ticket and ends by proposing a plan (an `ExitPlanMode` call). We
+delegate a card this way when we want a human to see the approach before any code is
+written. See [doc 03](03-how-orchestration-works.md#plan-first-then-execute-in-steps).
+
+### Plan approval
+
+The Attention item a plan-mode run produces: the plan markdown plus the steps it
+would create. **Approve plan** turns them into subtasks and starts the first;
+**Re-plan** sends your note back to the same planning session, which keeps its
+research context and revises.
+
+### Subtask (step)
+
+One phase of an approved plan, stored as a normal task with `parentTaskId` pointing
+at the card and the plan section as its **brief** (`description`). Steps run
+**one at a time, each in its own session** — the point of the feature, since a step
+then pays only for its own context. All the steps of a card share one git worktree
+and one branch; only the last one merges it back, and the parent card is never
+auto-completed. You can also write steps by hand instead of planning.
+
 ### Epic Link field
 
 The JIRA field holding a ticket's epic. On Server/DC it is a per-instance custom

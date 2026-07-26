@@ -33,6 +33,7 @@ plan the orchestrator could one day run on its own repo.
 | 9 | Personal task management (to-do list) | ✅ shipped |
 | — | Interim releases v0.11–v0.21 (worktrees & auto-merge, team orchestration, JIRA sync, My Tasks Kanban) | ✅ shipped, not tracked here |
 | 10 | Delegate a task to an agent | ✅ shipped |
+| 11 | Plan-driven subtasks (plan → approve → steps) | ✅ shipped |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -475,6 +476,80 @@ as they do for plan tasks.
 - [ ] **Live E2E still owed:** epic discovery against the real JIRA (needs a real
       PAT in the running app), and one full assign → answer → auto-merge run on a
       scratch repo.
+
+---
+
+## Phase 11 — Plan-driven subtasks
+
+**Goal.** Let a delegated card be worked in **plan mode**: the agent researches and
+proposes a plan, a human approves it, and each phase of that plan becomes a
+**subtask** that runs in **its own Claude session**, one at a time. A step then pays
+only for its own context instead of one session dragging the whole plan — and every
+file it read — through every later step. Steps can also be written by hand.
+
+Ground rules taken with the user: **one shared worktree per ticket** (integration
+once, after the last step), steps run **full-auto** (`bypassPermissions`) once the
+plan is approved, the **parent is never auto-completed**, subtasks are internal-only
+(**never** written to JIRA), and rejecting a plan **re-plans in place** rather than
+un-assigning the card.
+
+### Deliverables
+
+- [x] **1 — Real plan mode + plan capture.** `buildClaudeArgs` forced
+      `--permission-mode default` whenever the permission gate was on (i.e. always),
+      so **plan mode never reached the CLI** — the assign dialog's "Plan" option did
+      nothing. Fixed, plus `evaluateToolUse('ExitPlanMode') → ask` so the call is held,
+      a `tool-use`-event fallback capture path, `task.agentPlan`, and a detail pane
+      that no longer prints `·thinking·`/tool chatter (one "Agent running" + a
+      `Spinner`). Icon fix: `AgentsRegular`, white, single size.
+- [x] **2 — Subtask model.** `tasks` gains `parentTaskId` and `description`, with
+      migrations in the `store.ts` open path; `getSubtasks` / `addSubtask`;
+      `task:subtasks` / `task:addSubtask` / `task:updateSubtask` IPC; the pure
+      `groupSubtasks` board helper; and JIRA re-sync protection so a resync never
+      orphans or clobbers steps.
+- [x] **3 — Approval → chain.** A `plan-approval` attention kind carrying the plan
+      markdown and the step titles. Approving creates the subtasks, **denies** the held
+      `ExitPlanMode` with a hand-over message (so the planning session stops instead of
+      implementing), sets the parent `in-progress` and starts step 1 once the planning
+      run has exited. The pure `planToSubtasks.ts` splits the plan (shallowest heading
+      level with ≥ 2 work sections → top-level list → the whole plan as one step; framing
+      headings skipped; capped at `MAX_PLAN_STEPS`). `WorktreeManager.prepare(…,
+      ownerTaskId)` + `Scheduler.worktreeOwner` give the chain **one** worktree;
+      `settle` defers integration to the last step and `advanceSubtasks` starts the
+      next; `finishParentChain` leaves a "ready for review" comment with the parent
+      still `in-progress`. `buildAgentSubtaskPrompt` gives a step *N of M*, its brief,
+      sibling titles, the card's notes, the shared-branch rule and the
+      `@@NEEDS_INPUT@@` contract — and **no** JIRA comment thread. `stopTask` covers
+      the whole chain.
+- [x] **4 — UI.** Step rows flush under the card body (no gap, clipped by the radius)
+      with a status dot and a `2/5` progress caption; the real plan-approval panel
+      (plan in its own scroll box, numbered steps, Approve plan / Re-plan + note); a
+      new `TaskSteps.tsx` = a **Steps** box on every card (add a step inline, toggle
+      the approved plan) plus the step brief editor; a breadcrumb back to the parent
+      and "Step N of M"; parent picker + Brief field in `AddTaskDialog`. A card whose
+      chain is live can't be dragged, and a step needing input turns the parent orange.
+- [x] **5 — Docs.** This phase entry, the *Plan first, then execute in steps* section
+      in [`docs/03`](../03-how-orchestration-works.md#plan-first-then-execute-in-steps),
+      the new glossary terms, and the version bump to **0.23.0**.
+
+### Done when
+
+- [x] A card delegated in plan mode actually plans (nothing edited) and stops at a
+      **plan approval**; approving turns the plan into ordered steps.
+- [x] Steps run strictly one at a time, each in its own session, all on the parent's
+      `orch/<parentId>` branch in one shared worktree; only the last step integrates,
+      and the parent stays *In Progress* with a review comment.
+- [x] Steps can be written by hand (title + brief) and run without a planning round.
+- [x] A failed step stops the chain without touching the base branch; **Stop** on the
+      parent stops the chain; limits park and resume a step like any other task.
+- [x] `pnpm typecheck` (node + web) + `pnpm test` + `pnpm build` green; the pure bits
+      (`splitPlanIntoSteps`, `buildClaudeArgs`, `evaluateToolUse`, `groupSubtasks`,
+      `buildAgentSubtaskPrompt`, `hasLiveSubtask`, `stepPosition`) and the scheduler
+      chain behaviour are unit-tested.
+- [ ] **Live E2E still owed:** one plan → approve → multi-step run on the demo
+      profile, confirming the CLI really routes `ExitPlanMode` through the permission
+      prompt tool under `--permission-mode plan`, and that the UI layout looks right
+      (Phase 4 was verified by boot smoke only, never screenshotted).
 
 ---
 

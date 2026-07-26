@@ -193,6 +193,73 @@ Usage limits behave exactly as they do for plan tasks: the task parks as
 
 ---
 
+## Plan first, then execute in steps
+
+A big ticket in one session is expensive: everything the agent read in hour one is
+still being dragged through the context in hour three. So a card can instead be
+delegated in **plan mode** — the agent researches, proposes a plan, you approve it,
+and each phase of that plan then runs as its **own task in its own session**. A step
+pays only for its own context.
+
+### Planning, and the hold at the end
+
+Assign the card with the permission mode **Plan**. The run starts with
+`--permission-mode plan`, so the agent may read and search but not edit. When it is
+done it calls `ExitPlanMode` with the plan attached — and we **hold** that call: the
+plan lands in the Attention inbox (and in the card's sidebar) as a **plan approval**,
+with the plan markdown and the list of steps approving it would create.
+
+Nothing has been written to the repo at this point. Your two answers:
+
+- **Approve plan** — the steps are created, the held `ExitPlanMode` is *denied* with a
+  hand-over message so the planning session stops instead of implementing, the card
+  goes *In Progress*, and step 1 starts.
+- **Re-plan** — your note goes back to the **same** planning session, which keeps its
+  research context and revises rather than starting over.
+
+### Plan → steps
+
+`src/main/planToSubtasks.ts` splits the approved markdown, forgivingly: the
+shallowest heading level that yields at least two real sections wins (so `# Title` /
+`## Phase 1` / `## Phase 2` splits at the phases, and deeper headings stay inside a
+step's brief); failing that, a top-level list; failing that, the whole plan becomes
+one step. Framing headings (*Context*, *Risks*, *Out of scope*, …) are skipped, and
+the count is capped at 20. It never produces zero steps — an approved plan always
+leaves something to run.
+
+Each step becomes a normal task row with `parentTaskId` set and the section's own
+text as its `description` (its **brief**).
+
+### Running the chain
+
+Steps run **strictly one at a time, in order**, in `bypassPermissions` — you approved
+the plan, so the steps are full-auto.
+
+- **One shared worktree per ticket.** Every step of a card runs on the parent's
+  `orch/<parentId>` branch in the same worktree, so step 3 sees what step 1 built.
+- **Integration happens once.** A finished step with a pending sibling marks itself
+  done and starts the next one; only the **last** step merges the branch back into the
+  base and removes the worktree.
+- **The parent is never auto-completed.** After the final merge the card stays *In
+  Progress* with a "ready for review" comment — moving it to Done is yours.
+- A **failed** step parks and the chain simply stops; fixing it and marking it done
+  resumes the chain. **Stop** on the parent stops the running step and marks the rest
+  `stopped`. Usage limits park and resume a step like any other task.
+- Each step's prompt is deliberately narrow: *step N of M*, its own brief, the sibling
+  titles as one-liners, your notes on the card, and the shared-branch rule (commit;
+  never reset/rebase/merge/switch). The JIRA comment thread is **not** included — it is
+  the context a step should not pay for. As always, nothing is written back to JIRA.
+
+### Writing the steps yourself
+
+You don't need a planning round. Every card's detail sidebar has a **Steps** box: add
+steps by hand with a title and a brief, then assign the parent — the chain runs your
+steps directly. On the board, a parent card shows its steps as rows under its body
+with a `2/5` progress caption; selecting a step gives it a breadcrumb back to the
+parent and "Step N of M".
+
+---
+
 ## Putting it together: the life of a task
 
 ```
