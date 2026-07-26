@@ -7,7 +7,9 @@ You give it your projects and a `plan.md` for each. It works through the plan on
 task at a time, running a **separate Claude session per task**. When Claude hits a
 usage limit, the app waits and **automatically resumes** when the limit resets.
 When Claude needs a decision (a permission or a question), it appears in a
-**dashboard inbox** for you to answer — and the session continues instantly.
+**dashboard inbox** for you to answer — and the session continues instantly. You can
+also start the conversation yourself: every card has a **chat** with the agent working
+it, live or resumed.
 
 > **Why this exists.** The `claude` CLI stops when it hits a usage limit and never
 > comes back on its own; it also treats each task as a one-off and won't move on

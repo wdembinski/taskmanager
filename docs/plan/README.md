@@ -34,6 +34,7 @@ plan the orchestrator could one day run on its own repo.
 | — | Interim releases v0.11–v0.21 (worktrees & auto-merge, team orchestration, JIRA sync, My Tasks Kanban) | ✅ shipped, not tracked here |
 | 10 | Delegate a task to an agent | ✅ shipped |
 | 11 | Plan-driven subtasks (plan → approve → steps) | ✅ shipped |
+| 12 | Chat with the agent from a card | ✅ shipped |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -550,6 +551,104 @@ un-assigning the card.
       profile, confirming the CLI really routes `ExitPlanMode` through the permission
       prompt tool under `--permission-mode plan`, and that the UI layout looks right
       (Phase 4 was verified by boot smoke only, never screenshotted).
+
+---
+
+## Phase 12 — Chat with the agent from a card
+
+**Goal.** Let a human open a turn. Until now you could only talk to an agent when *it*
+asked: a permission request or an `@@NEEDS_INPUT@@` question parked the run and you
+answered it. There was no way to say "actually, skip the cache" mid-run, and no way to
+ask a follow-up after one ended. The card's detail pane becomes the conversation.
+
+Ground rules taken with the user: chat is **resume-only** (a card that never ran gets a
+hint, not a new conversation — that is what *Assign* is for), it uses the **existing
+composer** rather than a second box, and every message is **recorded on the timeline**
+as its own activity kind. A chat that resumes is a **real run** — reserved slot, the
+chain's worktree, settled and integrated like any other — not a side channel.
+
+### Deliverables
+
+- [x] **1 — Store + send into a live run.** A `chat` variant of `TaskActivityEntry`
+      (`task_activity.kind` is free-form TEXT, so no migration) with
+      `Store.addChatMessage`; `activityMerge`'s `KIND_ORDER` puts `chat` before `event`
+      so a message sorts ahead of the transcript it caused. The pure
+      `chatTarget(task, subtasks)` answers "who am I talking to" — a card executing a
+      plan holds no session, so the message follows its live **step**.
+      `Scheduler.chatWithAgent` records the message, then either resolves a parked
+      question through `answerAttention` or writes into the open stdin stream; a run
+      held on a permission request or a plan approval is **refused** (prose cannot
+      answer approve/deny). `task:chat` IPC returns a typed `ChatSendResult` —
+      refusals are normal answers, never exceptions.
+- [x] **2 — Resume an idle card.** `Run.chatPrompt` carries the message onto a reserved
+      run and `launch` picks the prompt **chat → `RESUME_NUDGE` → full brief**, so a
+      resumed session is prompted with what you typed rather than the nudge; a queued
+      "AI fix" note is deliberately not consumed by a chat run. `resumeForChat` refuses
+      first: `never-ran`, `limit`, and the new `chain-busy` — a card mid-plan holds only
+      its *planner's* session, and resuming it would both re-open a finished
+      conversation and race the chain for the card's shared worktree (the pure
+      `chainInFlight`).
+- [x] **3 — The composer.** A **Chat with agent** action, offered only for a delegated
+      card, primary while a run is live, with the reason it is off stated above the box
+      (a `title` on a disabled button never renders). `taskChat.ts` mirrors the
+      scheduler's rules for the button and maps every `ChatRefusal` to a sentence, built
+      on `chatTarget`/`chainInFlight` so the two cannot drift.
+      `usePendingAttention` lifts the agent panel's inbox subscription into a hook.
+- [x] **4 — A parked chain says so.** `parkedStep` / `chainNeedsAttention`: a step that
+      is `failed` or `waiting-input` frames its **card** and the step count reads
+      `2/4 · stopped`. The agent panel resolves an item belonging to a step (labelled
+      "Step 2 of 4 — title") and its buttons still target that step's run, so *Mark
+      done* advances the chain and *retry* re-runs the step in the shared worktree.
+      Restart safety: `reconcileInterruptedTasks` parks an interrupted **step** as
+      `failed` rather than `pending` — nothing re-enters a chain on its own, so
+      `pending` left a card at `2/4` forever with nothing to click; the pane offers
+      *Run this step again*, which resumes its kept session.
+- [x] **5 — The chat-first pane.** Two tabs. **Chat**: turns instead of rows
+      (`chat/turns.ts`) — your messages, notes and ticket comments as bubbles on the
+      right (one bubble shape; side, fill and a `JIRA` tag carry the meaning), someone
+      else's comment left and grey, the agent left, **full width and unbubbled** under
+      the `AgentsRegular` glyph, markdown-rendered with fenced code in its own panel
+      (language label + copy). A run's tool work folds into one muted line that expands
+      to name the sub-agents it spawned; failures are never folded away. The live
+      "Agent running" rows sit above the composer, Enter sends / Shift+Enter is a
+      newline, and note / ticket-comment move into an overflow. **Details**: status
+      control, steps, description, status history. Telling *your* JIRA comments from
+      other people's needed an identity — `GET /myself` cached in `app_state` per
+      `baseUrl` (the `epicField` pattern); unknown identity means every comment renders
+      as someone else's.
+- [x] **6 — Docs.** This phase entry, the *Talking to the agent on a card* section in
+      [`docs/03`](../03-how-orchestration-works.md#talking-to-the-agent-on-a-card), the
+      new glossary terms, and the version bump to **0.24.0**.
+
+### Done when
+
+- [x] A message typed on a delegated card reaches the agent: into the open stream while
+      it runs, or via `claude --resume` with your text as the prompt when it is idle.
+- [x] Chatting with a card whose step is running talks to **that step**, and the
+      composer says so.
+- [x] Everything that cannot work says why before you press the button: never ran,
+      usage limit, a pending approve/deny, a chain still in flight.
+- [x] A failed step surfaces on its card — orange frame, `2/4 · stopped`, and its
+      resolutions reachable from the card's own pane — and survives a restart.
+- [x] `pnpm typecheck` (node + web) + `pnpm test` + `pnpm build` green; the pure bits
+      (`chatTarget`, `chainInFlight`, `parkedStep`, `chainNeedsAttention`,
+      `chatAvailability`, `foldTurns`, the markdown reader, `authorIsMe`) and the
+      scheduler's chat/chain behaviour are unit-tested (**402 tests**).
+- [ ] **Live E2E still owed:** on the demo profile, assign a card, chat into the live
+      run, let it finish and chat again (a `--resume` run answering with its context
+      intact), and force a step to fail to see the parent's frame and resolutions.
+      Every phase here was verified by unit tests + a boot smoke test, never
+      screenshotted.
+
+### Deliberate deviations from the plan of record
+
+- **No markdown dependency.** The plan allowed `react-markdown` + `remark-gfm` (MIT,
+  clearing `docs/06`). A card-scoped chat needs prose, lists, inline code and fenced
+  blocks — about a hundred lines in `chat/markdown.ts` — so the renderer still has
+  **no runtime dependency**, no highlighter and no bundle hit. Tables fall back to
+  their source text; swapping the module for `react-markdown` touches one component.
+- **Three transcript events stopped printing a line**: `started`, `usage`, and a clean
+  `exited`. They are bookkeeping; everything else the old timeline showed still shows.
 
 ---
 

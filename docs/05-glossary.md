@@ -174,6 +174,35 @@ then pays only for its own context. All the steps of a card share one git worktr
 and one branch; only the last one merges it back, and the parent card is never
 auto-completed. You can also write steps by hand instead of planning.
 
+### Chat (with an agent)
+
+Opening a turn yourself instead of answering one. Typed in the card's **Chat** tab and
+recorded on the timeline as its own activity kind, so the card still reads as one story.
+A live run hears it through its open input stream; an idle card is **resumed**. Chat
+never *starts* a conversation — a card that has never run is not chattable — and it
+cannot answer an approve/deny, which needs the pending request. See
+[doc 03](03-how-orchestration-works.md#talking-to-the-agent-on-a-card).
+
+### Chat resume
+
+The run a chat message starts on an idle card: `claude --resume <sessionId>` prompted
+with what you typed rather than the usual continue-nudge. It is an ordinary run in every
+other way — reserved slot, the card's worktree, settling and integration — so it costs a
+fresh process and is not instant.
+
+### Chat target
+
+The task that actually receives a message typed on a card. Normally the card itself; but
+a card executing an approved plan holds no session of its own, so the target is the
+**step** that is running (`chatTarget` in `src/shared/board.ts`). The composer names it.
+
+### Parked chain
+
+A card whose approved plan has stopped: some step is `failed` or waiting on a question,
+so its siblings stay pending. The card wears the orange frame and reads `2/4 · stopped`,
+and the step's resolutions are offered from the card's own pane. An app restart parks an
+interrupted step the same way — nothing re-enters a chain on its own.
+
 ### Epic Link field
 
 The JIRA field holding a ticket's epic. On Server/DC it is a per-instance custom

@@ -260,6 +260,76 @@ parent and "Step N of M".
 
 ---
 
+## Talking to the agent on a card
+
+Answering a question the agent asked is one half of a conversation. The other half is
+opening one yourself: *"actually, skip the cache"* while it works, or *"why did you drop
+the index?"* after it stopped. The card's detail pane is that conversation.
+
+### The Chat tab
+
+The pane has two tabs. **Chat** is the card's story as turns — what you said, what the
+agent answered, the ticket's comment thread, your own notes — and **Details** keeps the
+status control, the steps, the ticket description and the status history.
+
+Who wrote something decides where it sits. One bubble shape throughout; the side, the
+fill and a small tag carry all the meaning:
+
+| Entry | Side | Look |
+|---|---|---|
+| Your message to the agent | right | brand fill |
+| Your note | right | the same fill, a shade back — nobody else ever reads a note |
+| Your JIRA comment | right | brand fill with a `JIRA` tag: it left the app |
+| Someone else's JIRA comment | left | grey, with their name above it |
+| The agent | left | **full width, no bubble**, under the agent glyph |
+
+The agent's turn stays full width because tables and fenced code need the room; its
+markdown is rendered, and every code block gets a language label and a **Copy** button.
+A stretch of tool work folds into one muted line — *Worked with 12 tools* — that expands
+to name any sub-agents it spawned. Failures are never folded away.
+
+Knowing which ticket comment is *yours* needs to know who you are on JIRA, so the app
+caches `GET /myself` (the call *Test connection* makes) per site. If it has never
+connected, every comment renders as someone else's — better than putting words in your
+mouth on the wrong side of the pane.
+
+### Sending
+
+One composer at the bottom of the Chat tab. **Enter** sends to the agent, **Shift+Enter**
+starts a new line, and the overflow next to it still saves the same text as a note or
+posts it as a ticket comment. The live *Agent running* rows sit **above** the composer,
+not in the scroll, so the state of the run never scrolls out of sight.
+
+Where the message goes:
+
+- **A live run** hears it immediately — it is written into the session's open input
+  stream. If the agent had asked a question, your message *is* the answer, and the
+  inbox item clears.
+- **An idle card that has run before** is resumed: `claude --resume <sessionId>` with
+  your text as the prompt instead of the usual continue-nudge. That is a **real run** —
+  it reserves a slot, prepares the card's worktree and settles (and integrates) like any
+  other — so it is not instant, and it appears in the timeline as a run.
+- **A card that has never run** is not chattable. Chat continues a conversation; it does
+  not start one. *Assign to an agent* does that.
+
+Anything that cannot work says so above the box before you press anything: a run held on
+an **approve/deny** (free text cannot approve a tool call — answer the request first), a
+**usage limit** holding all work, or a card whose **plan is still running**. That last
+one matters: a card executing an approved plan holds only its *planner's* session, so
+the conversation lives on the step — chatting with such a card talks to the working
+step, and the composer says which one ("Talking to step 2 of 4 — …").
+
+### When a chain stops
+
+A step that fails, or one parked on a question, now shows on **its card**: the orange
+"wants you" frame, and a step count that reads `2/4 · stopped` rather than a bare `2/4`.
+Its resolutions — retry, retry fresh, AI fix & retry, clean up, mark done — are offered
+in the card's own pane, labelled with the step they belong to, and *Mark done* starts the
+next step. If the app was closed mid-step, the step comes back parked (its session is
+kept) with a **Run this step again** button, because nothing re-enters a chain on its own.
+
+---
+
 ## Putting it together: the life of a task
 
 ```
