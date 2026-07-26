@@ -102,9 +102,36 @@ describe('selectNextPending', () => {
   it('requires ALL tasks sharing a needed title to be done', () => {
     // Two tasks titled 'a' (ids a1/a2); 'b' needs 'a'. Not satisfied until both done.
     const partial = [
-      { id: 'a1', status: 'done' as const, order: 0, title: 'a', dependsOn: [], phase: '', isContract: false, isScaffold: false },
-      { id: 'a2', status: 'pending' as const, order: 1, title: 'a', dependsOn: [], phase: '', isContract: false, isScaffold: false },
-      { id: 'b', status: 'pending' as const, order: 2, title: 'b', dependsOn: ['a'], phase: '', isContract: false, isScaffold: false },
+      {
+        id: 'a1',
+        status: 'done' as const,
+        order: 0,
+        title: 'a',
+        dependsOn: [],
+        phase: '',
+        isContract: false,
+        isScaffold: false,
+      },
+      {
+        id: 'a2',
+        status: 'pending' as const,
+        order: 1,
+        title: 'a',
+        dependsOn: [],
+        phase: '',
+        isContract: false,
+        isScaffold: false,
+      },
+      {
+        id: 'b',
+        status: 'pending' as const,
+        order: 2,
+        title: 'b',
+        dependsOn: ['a'],
+        phase: '',
+        isContract: false,
+        isScaffold: false,
+      },
     ];
     // a2 is eligible (independent), b is not.
     expect(selectNextPending(partial, new Set())?.id).toBe('a2');
@@ -236,7 +263,10 @@ describe('buildTaskPrompt', () => {
   });
 
   it('tells a contract sibling to raise a proposal instead of editing the contract', () => {
-    const prompt = buildTaskPrompt('Orchestrator', task, { branch: 'orch/abc123', hasContract: true });
+    const prompt = buildTaskPrompt('Orchestrator', task, {
+      branch: 'orch/abc123',
+      hasContract: true,
+    });
     expect(prompt).toContain(PROPOSE_SENTINEL);
     expect(prompt).toContain('NOT change');
   });
@@ -401,7 +431,10 @@ describe('Scheduler — a card delegated to an agent project', () => {
   it('falls back to the project defaults when the assignment has no overrides', () => {
     const { scheduler, start } = makeAgentScheduler({ agentMode: null, agentModel: null });
     scheduler.runTask('t1');
-    expect(start.mock.calls[0][0]).toMatchObject({ model: 'sonnet', permissionMode: 'acceptEdits' });
+    expect(start.mock.calls[0][0]).toMatchObject({
+      model: 'sonnet',
+      permissionMode: 'acceptEdits',
+    });
   });
 
   it('resumes an agent task in the agent project after a usage limit clears', () => {
@@ -705,7 +738,15 @@ describe('Scheduler cross-agent negotiation (Phase D)', () => {
     const send = vi.fn();
     const sessions = { send, stop: vi.fn() } as unknown as SessionManager;
     const emitAttention = vi.fn();
-    const scheduler = new Scheduler(store, sessions, vi.fn(), vi.fn(), emitAttention, vi.fn(), vi.fn());
+    const scheduler = new Scheduler(
+      store,
+      sessions,
+      vi.fn(),
+      vi.fn(),
+      emitAttention,
+      vi.fn(),
+      vi.fn(),
+    );
     const runs = (scheduler as unknown as { runs: Map<string, unknown> }).runs;
     runs.set('rprop', { taskId: 'prop', projectId: 'p', runId: 'rprop', settled: false });
     runs.set('rsib', { taskId: 'sib', projectId: 'p', runId: 'rsib', settled: false });
@@ -882,6 +923,7 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
     const store = {
       getTask: (id: string) => byId.get(id),
       getProject: (id: string) => (id === 'agent-1' ? agentProject : undefined),
+      listProjects: () => [agentProject],
       getTasks: () => [parent, ...children],
       getSubtasks: (parentId: string) => children.filter((c) => c.parentTaskId === parentId),
       getTaskActivity: () => [],
@@ -1020,6 +1062,52 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
     expect((emitAttention.mock.calls[0][0] as { kind: string }).kind).toBe('task-failed');
     expect(children[1].status).toBe('pending'); // never started
     expect(start).not.toHaveBeenCalled();
+  });
+
+  // ---- Phase 12/4: resolving a parked step re-enters the chain ------------------
+
+  /** Fail step 1 and return the inbox item the human would be answering. */
+  async function park(h: ReturnType<typeof setup>): Promise<{ id: string }> {
+    h.seedRun('r1', 's1');
+    h.fire('r1', { ...okResult, success: false, stopReason: 'error' });
+    await Promise.resolve();
+    return h.emitAttention.mock.calls[0][0] as { id: string };
+  }
+
+  it('waving a parked step through with Mark done starts the NEXT step', async () => {
+    const h = setup();
+    const item = await park(h);
+    h.scheduler.answerAttention(item.id, { decision: 'reply', text: FAILURE_ACTION.markDone });
+    await flush();
+    expect(h.children[0].status).toBe('done');
+    // The chain moved on — the whole point of resolving from the parent's pane.
+    expect(h.prepared).toEqual([{ taskId: 's2', owner: 't1' }]);
+  });
+
+  it('retrying a parked step re-runs THAT step in the chain’s shared worktree', async () => {
+    const h = setup();
+    const item = await park(h);
+    h.scheduler.answerAttention(item.id, { decision: 'reply', text: FAILURE_ACTION.retry });
+    await flush();
+    expect(h.prepared).toEqual([{ taskId: 's1', owner: 't1' }]);
+    expect(h.children[1].status).toBe('pending'); // step 2 still waits its turn
+  });
+
+  it('parks an interrupted STEP as failed on restart, so the chain says it stopped', () => {
+    const h = setup([{ id: 's1', status: 'running' }, { id: 's2' }]);
+    h.scheduler.reconcileInterruptedTasks();
+    // `pending` would leave the card at 1/2 with nothing on screen and nothing to click:
+    // no queue re-enters a chain, so the step has to be visibly parked instead.
+    expect(h.children[0].status).toBe('failed');
+    expect(h.children[1].status).toBe('pending'); // untouched
+    expect(h.parent.status).toBe('in-progress');
+  });
+
+  it('still re-queues an interrupted CARD, which its project’s queue can pick up', () => {
+    const h = setup();
+    h.parent.status = 'running';
+    h.scheduler.reconcileInterruptedTasks();
+    expect(h.parent.status).toBe('pending');
   });
 
   it('holds ExitPlanMode as a plan-approval item listing the steps it would create', async () => {
@@ -1175,15 +1263,7 @@ describe('Scheduler.chatWithAgent (Phase 12)', () => {
     const start = vi.fn();
     const sessions = { start, stop: vi.fn(), send } as unknown as SessionManager;
     const resolved = vi.fn();
-    const scheduler = new Scheduler(
-      store,
-      sessions,
-      vi.fn(),
-      vi.fn(),
-      vi.fn(),
-      resolved,
-      vi.fn(),
-    );
+    const scheduler = new Scheduler(store, sessions, vi.fn(), vi.fn(), vi.fn(), resolved, vi.fn());
     if (opts.liveFor) {
       (scheduler as unknown as { runs: Map<string, unknown> }).runs.set('r1', {
         taskId: opts.liveFor,

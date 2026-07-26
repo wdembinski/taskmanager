@@ -302,7 +302,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('scheduler:states', async () => scheduler.schedulerStates());
   handle('task:run', async (taskId) => {
     const started = scheduler.runTask(taskId);
-    if (!started) throw new Error(`Cannot run task ${taskId}: not found`);
+    // `runTask` returns null for every "not now" as well as "not found", so say both:
+    // the commonest cause by far is the account-wide usage-limit gate.
+    if (!started) {
+      throw new Error(
+        'Cannot start this task now — it is already running, or a usage limit is holding all work.',
+      );
+    }
     return started;
   });
   handle('task:history', async (taskId) => store.getTaskHistory(taskId));
@@ -374,9 +380,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     }
     // Deleting a card takes its steps with it, so a live step blocks the delete too.
     if (
-      store
-        .getSubtasks(taskId)
-        .some((s) => s.status === 'running' || s.status === 'waiting-input')
+      store.getSubtasks(taskId).some((s) => s.status === 'running' || s.status === 'waiting-input')
     ) {
       throw new Error('Stop the running step before deleting this task.');
     }

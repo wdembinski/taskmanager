@@ -260,7 +260,7 @@ export function TaskDetail({
   // so the inbox item that decides "blocked on approve/deny" is the target's, not the
   // card's.
   const target = task ? chatTarget(task, subtasks) : null;
-  const [targetPending] = usePendingAttention(target?.id ?? null);
+  const [targetPending] = usePendingAttention([target?.id]);
   const chat = task ? chatAvailability(task, subtasks, targetPending) : null;
 
   // Keep the newest entry in view as output streams (same rule as the Transcript pane).
@@ -417,7 +417,9 @@ export function TaskDetail({
 
       <TaskAgentPanel
         task={task}
+        subtasks={subtasks}
         agentProjects={agentProjects}
+        onOpenTask={onOpenTask}
         onTaskChanged={(updated) => {
           onStatusChanged?.(updated);
           void loadActivity();

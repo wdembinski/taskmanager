@@ -26,9 +26,12 @@ import {
 } from '@fluentui/react-components';
 import { AgentsRegular } from '@fluentui/react-icons';
 import type { AttentionAnswer } from '@shared/attention';
+import { parkedStep } from '@shared/board';
 import type { Project, Task } from '@shared/model';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import { AssignAgentDialog } from './AssignAgentDialog';
+import { stepPosition } from './board/boardColumns';
+import { STATUS_LABEL } from './taskStatus';
 import { usePendingAttention } from './usePendingAttention';
 
 const ASK_ORANGE = '#F2A900';
@@ -80,30 +83,49 @@ const useStyles = makeStyles({
   step: { display: 'flex', gap: '6px' },
   stepIndex: { color: tokens.colorNeutralForeground4, minWidth: '18px' },
   choices: { display: 'flex', flexWrap: 'wrap', gap: '6px' },
+  /** Whose ask this is, when it belongs to a step rather than to the card. */
+  stepOwner: { color: ASK_ORANGE },
   answerRow: { display: 'flex', alignItems: 'flex-end', gap: '8px' },
 });
 
 export interface TaskAgentPanelProps {
   task: Task;
+  /** This card's steps, in order — the chain whose parked step the panel must surface. */
+  subtasks?: Task[];
   /** Every agent project (`agentProject:list`), owned by the board so it's fetched once. */
   agentProjects: Project[];
+  /** Open another task in the pane (used to jump to the step that stopped the chain). */
+  onOpenTask?: (taskId: string) => void;
   /** Called with the updated task after an assign/stop so the board can patch the card. */
   onTaskChanged: (task: Task) => void;
 }
 
 export function TaskAgentPanel({
   task,
+  subtasks = [],
   agentProjects,
+  onOpenTask,
   onTaskChanged,
 }: TaskAgentPanelProps): JSX.Element {
   const styles = useStyles();
   const [assignOpen, setAssignOpen] = useState(false);
-  const [item, setItem] = usePendingAttention(task.id);
+  // The card's own ask, or one belonging to a step: a card executing a plan stays
+  // `in-progress` while a STEP holds the run, so its inbox item is keyed to the step and
+  // was unreachable from here before Phase 12.
+  const [item, setItem] = usePendingAttention([task.id, ...subtasks.map((s) => s.id)]);
   const [reply, setReply] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const taskId = task.id;
+  // Which step (if any) the shown item belongs to, and which step has stopped the chain
+  // when there is no item at all — the case a restart leaves behind, since items live in
+  // the scheduler's memory and the step's status is all that survives.
+  const itemStep =
+    item && item.taskId !== taskId ? (subtasks.find((s) => s.id === item.taskId) ?? null) : null;
+  const itemStepPosition = itemStep ? stepPosition(subtasks, itemStep.id) : null;
+  const stuck = parkedStep(subtasks);
+  const stuckPosition = stuck ? stepPosition(subtasks, stuck.id) : null;
   const isStep = Boolean(task.parentTaskId);
   const live = task.status === 'running' || task.status === 'waiting-input';
   // A limit-parked card has no process to kill, but Stop still unparks it so it
@@ -133,6 +155,19 @@ export function TaskAgentPanel({
     },
     [item],
   );
+
+  /** Re-enter a chain that stopped: run the parked step again in the card's worktree. */
+  async function runStep(stepId: string): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      await window.api.invoke('task:run', stepId);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function stop(): Promise<void> {
     setBusy(true);
@@ -205,8 +240,41 @@ export function TaskAgentPanel({
         </MessageBar>
       )}
 
+      {/* The chain stopped and its inbox item is gone (items live in the scheduler, so a
+          restart loses them). Nothing here can resolve it, but the step can be re-run —
+          and saying so beats a card that silently never finishes. */}
+      {!item && stuck && (
+        <div className={styles.ask}>
+          <Text weight="semibold">
+            {stuckPosition !== null
+              ? `The plan stopped at step ${stuckPosition} of ${subtasks.length}`
+              : 'The plan has stopped'}
+          </Text>
+          <Caption1 className={styles.hint}>
+            {stuck.title} is {STATUS_LABEL[stuck.status].toLowerCase()}, so the remaining steps are
+            waiting. Open it to read what happened, or run it again — it picks up in this
+            card&apos;s worktree.
+          </Caption1>
+          <div className={styles.choices}>
+            <Button appearance="primary" disabled={busy} onClick={() => void runStep(stuck.id)}>
+              Run this step again
+            </Button>
+            <Button disabled={busy} onClick={() => onOpenTask?.(stuck.id)}>
+              Open step
+            </Button>
+          </div>
+        </div>
+      )}
+
       {item && (
         <div className={styles.ask}>
+          {itemStep && (
+            <Caption1 className={styles.stepOwner}>
+              {itemStepPosition !== null
+                ? `Step ${itemStepPosition} of ${subtasks.length} — ${itemStep.title}`
+                : itemStep.title}
+            </Caption1>
+          )}
           <div className={styles.head}>
             <Text weight="semibold">
               {item.kind === 'permission'
@@ -215,7 +283,11 @@ export function TaskAgentPanel({
                   ? 'Merge conflict — resolve it in the worktree'
                   : item.kind === 'plan-approval'
                     ? 'The agent finished planning — approve to run it'
-                    : 'The agent has a question'}
+                    : item.kind === 'task-failed'
+                      ? // A failure has resolutions, not answers — saying "question" here
+                        // (as this did before Phase 12) hid what the buttons below do.
+                        `The run failed — pick how to continue${itemStep ? ', and the chain resumes' : ''}`
+                      : 'The agent has a question'}
             </Text>
           </div>
           <div className={styles.prompt}>{item.prompt}</div>
@@ -317,7 +389,13 @@ export function TaskAgentPanel({
               <div className={styles.answerRow}>
                 <Field
                   className={styles.grow}
-                  label={item.options.length > 0 ? 'Or answer in your own words' : 'Your answer'}
+                  label={
+                    item.kind === 'task-failed'
+                      ? 'Optional note (sent with the resolution you pick)'
+                      : item.options.length > 0
+                        ? 'Or answer in your own words'
+                        : 'Your answer'
+                  }
                 >
                   <Textarea
                     value={reply}
@@ -326,13 +404,17 @@ export function TaskAgentPanel({
                     placeholder="Type your reply…"
                   />
                 </Field>
-                <Button
-                  appearance="primary"
-                  disabled={busy || reply.trim().length === 0}
-                  onClick={() => void answer({ decision: 'reply', text: reply.trim() })}
-                >
-                  Send
-                </Button>
+                {/* A failure is resolved by choosing one of the buttons above; free text
+                    would only re-park it, so there is no Send here. */}
+                {item.kind !== 'task-failed' && (
+                  <Button
+                    appearance="primary"
+                    disabled={busy || reply.trim().length === 0}
+                    onClick={() => void answer({ decision: 'reply', text: reply.trim() })}
+                  >
+                    Send
+                  </Button>
+                )}
               </div>
             </>
           )}

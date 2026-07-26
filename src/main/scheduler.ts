@@ -599,7 +599,14 @@ export class Scheduler {
    */
   private readonly pendingConflictFix = new Map<
     string,
-    { projectId: string; taskId: string; runId: string; branch: string; base: string; worktree: string }
+    {
+      projectId: string;
+      taskId: string;
+      runId: string;
+      branch: string;
+      base: string;
+      worktree: string;
+    }
   >();
   /**
    * Non-task sessions started for a project — currently the AI "Align plan" run,
@@ -789,6 +796,10 @@ export class Scheduler {
     if (this.disposed) return null;
     // A usage limit holds everything account-wide — don't start ad-hoc work either.
     if (this.limitGate.active) return null;
+    // Already reserved or running: starting a second session for one task would give it
+    // two agents in one worktree. (Reachable from the UI: a parked step offers "Run this
+    // step", and a stale card can be clicked twice.)
+    if (this.inFlight.has(taskId)) return null;
     const task = this.store.getTask(taskId);
     if (!task) return null;
     const project = this.runProjectFor(task);
@@ -1054,12 +1065,28 @@ export class Scheduler {
    * to re-attach to. Re-queue each to `pending` — its saved `sessionId` is kept,
    * so when it runs again `startTask` RESUMES the conversation rather than losing
    * context. `blocked-by-limit` tasks are left for the limit gate to resume.
+   *
+   * A **step** of an approved plan is parked `failed` instead (Phase 12). Nothing
+   * re-enters a chain on its own — `advanceSubtasks` runs when a step *finishes*, and a
+   * card is not a queue — so a step left `pending` here would leave the card sitting at
+   * `2/4` forever with nothing on screen saying why. `failed` is the state the board and
+   * the agent panel already read as "this chain stopped, here is how to restart it", and
+   * the note says what actually happened.
    */
   reconcileInterruptedTasks(): void {
     if (this.disposed) return;
     for (const project of this.store.listProjects()) {
       for (const task of this.store.getTasks(project.id)) {
-        if (task.status === 'running' || task.status === 'waiting-input') {
+        if (task.status !== 'running' && task.status !== 'waiting-input') continue;
+        if (task.parentTaskId) {
+          this.noteRun(
+            task.projectId,
+            task.id,
+            'restart',
+            'The app closed while this step was running, so it was parked for you. Its session is kept — running it again continues the same conversation.',
+          );
+          this.updateTask(task.id, { status: 'failed' }, null);
+        } else {
           this.updateTask(task.id, { status: 'pending' }, null);
         }
       }
@@ -1576,7 +1603,9 @@ export class Scheduler {
     if (task.isScaffold) return { isScaffold: true };
     if (task.isContract) {
       return {
-        contractSiblings: siblings.filter((t) => !t.isContract && !t.isScaffold).map((t) => t.title),
+        contractSiblings: siblings
+          .filter((t) => !t.isContract && !t.isScaffold)
+          .map((t) => t.title),
         hasScaffold,
       };
     }

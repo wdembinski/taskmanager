@@ -99,6 +99,27 @@ export function isAgentAssigned(task: Task): boolean {
 }
 
 /**
+ * The step that has stopped a card's chain, or null while it is healthy (Phase 12).
+ *
+ * Steps run strictly one at a time, so a step that is parked on a question or has
+ * `failed` is the whole chain: its siblings stay `pending` until a human resolves it.
+ * Both cases are "this card wants you" — a failed step is not a finished one, and until
+ * Phase 12 nothing on the board said so.
+ */
+export function parkedStep(subtasks: Task[]): Task | null {
+  return subtasks.find((s) => s.status === 'waiting-input' || s.status === 'failed') ?? null;
+}
+
+/**
+ * Whether a card should wear the orange "wants you" frame: an unread ticket comment,
+ * its own agent asking, **or a parked step**. One helper so the board card, the detail
+ * pane and any future surface can never disagree about which cards are shouting.
+ */
+export function chainNeedsAttention(task: Task, subtasks: Task[]): boolean {
+  return hasUnreadJira(task) || needsAgentInput(task) || parkedStep(subtasks) !== null;
+}
+
+/**
  * Which task a message typed on `task`'s card should be delivered to (Phase 12).
  *
  * A card executing an approved plan holds no session of its own — it sits `in-progress`

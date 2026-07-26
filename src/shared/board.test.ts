@@ -4,7 +4,9 @@ import {
   categoryFromKey,
   categoryToColumn,
   chainInFlight,
+  chainNeedsAttention,
   chatTarget,
+  parkedStep,
   hasUnreadJira,
   isAgentAssigned,
   isAgentRunning,
@@ -121,6 +123,34 @@ describe('chatTarget', () => {
   });
   it('is the card when it has no steps at all', () => {
     expect(chatTarget(parent, []).id).toBe('c1');
+  });
+});
+
+describe('parkedStep / chainNeedsAttention', () => {
+  const step = (id: string, status: Task['status']): Task =>
+    task({ id, status, parentTaskId: 'c1' });
+  const card = task({ id: 'c1', status: 'in-progress' });
+
+  it('finds the step that stopped the chain', () => {
+    expect(parkedStep([step('s1', 'done'), step('s2', 'failed')])?.id).toBe('s2');
+    expect(parkedStep([step('s1', 'waiting-input')])?.id).toBe('s1');
+  });
+
+  it('is null while the chain is healthy', () => {
+    expect(parkedStep([step('s1', 'done'), step('s2', 'running')])).toBeNull();
+    expect(parkedStep([])).toBeNull();
+  });
+
+  it('frames a card whose STEP is parked, not just one asking itself', () => {
+    // The regression this exists for: a failed step used to leave the board silent.
+    expect(chainNeedsAttention(card, [step('s1', 'failed')])).toBe(true);
+    expect(chainNeedsAttention(card, [step('s1', 'waiting-input')])).toBe(true);
+    expect(chainNeedsAttention(task({ status: 'waiting-input' }), [])).toBe(true);
+  });
+
+  it('leaves a healthy card alone', () => {
+    expect(chainNeedsAttention(card, [step('s1', 'done'), step('s2', 'running')])).toBe(false);
+    expect(chainNeedsAttention(card, [])).toBe(false);
   });
 });
 

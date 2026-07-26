@@ -34,7 +34,13 @@ import {
   TaskListSquareLtrFilled,
 } from '@fluentui/react-icons';
 import type { Task, TaskStatus } from '@shared/model';
-import { hasUnreadJira, isAgentAssigned, isAgentRunning, needsAgentInput } from '@shared/board';
+import {
+  chainNeedsAttention,
+  isAgentAssigned,
+  isAgentRunning,
+  needsAgentInput,
+  parkedStep,
+} from '@shared/board';
 import { STATUS_COLOR, STATUS_LABEL } from '../taskStatus';
 import { columnForStatus, statusForColumn, subtaskProgress } from './boardColumns';
 
@@ -97,6 +103,8 @@ const useStyles = makeStyles({
   },
   stepDone: { color: tokens.colorNeutralForeground4, textDecoration: 'line-through' },
   progress: { color: tokens.colorNeutralForeground3, flexShrink: 0 },
+  /** A stopped chain reads in the frame's colour, so the two say one thing. */
+  progressStopped: { color: UNREAD_ORANGE },
   cardUnread: { border: `2px solid ${UNREAD_ORANGE}` },
   agentIcon: { fontSize: AGENT_ICON_SIZE, flexShrink: 0, display: 'flex', color: '#ffffff' },
   cardSelected: { border: `1px solid ${tokens.colorBrandStroke1}` },
@@ -222,11 +230,13 @@ export function TaskCard({
   const badge = secondaryStatus(task);
   const isJira = task.externalSource === 'jira';
   const squareColor = priorityColor(task.externalPriority);
-  // Both mean "this card wants you", so they share the orange frame — for the card
-  // itself or for any of its steps, since a step has no frame of its own.
-  const wantsAttention =
-    hasUnreadJira(task) || needsAgentInput(task) || subtasks.some((s) => needsAgentInput(s));
+  // An unread comment, the card's own agent asking, or a step that has parked the
+  // chain (question or failure) — all mean "this card wants you", and a step has no
+  // frame of its own to say it with.
+  const wantsAttention = chainNeedsAttention(task, subtasks);
   const progress = subtaskProgress(subtasks);
+  // A parked chain looks exactly like one between steps unless the card says so.
+  const stopped = parkedStep(subtasks) !== null;
   // A live agent session gets a spinner rather than a static "Running" badge — the
   // motion is the point: it says work is happening now. The card itself runs when it
   // was delegated without steps; with steps it stays `in-progress` while one of them
@@ -255,10 +265,15 @@ export function TaskCard({
           </Text>
           {progress.total > 0 && (
             <Caption1
-              className={styles.progress}
-              title={`${progress.done} of ${progress.total} steps done`}
+              className={mergeClasses(styles.progress, stopped && styles.progressStopped)}
+              title={
+                stopped
+                  ? `${progress.done} of ${progress.total} steps done — the chain has stopped at a step that needs you`
+                  : `${progress.done} of ${progress.total} steps done`
+              }
             >
               {progress.done}/{progress.total}
+              {stopped && ' · stopped'}
             </Caption1>
           )}
           {isAgentAssigned(task) && (
