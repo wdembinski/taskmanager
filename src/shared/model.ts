@@ -300,6 +300,20 @@ export interface Task {
   /** A short label/component shown as a chip on the card (the issue's first label). */
   externalLabel?: string | null;
   /**
+   * The key of the issue's epic (JIRA Server's "Epic Link" custom field) or, failing
+   * that, its parent issue (Cloud/team-managed `parent`). Upper-cased so it compares
+   * directly against an agent project's `jiraEpicKeys` — this is what lets an assigned
+   * ticket resolve to the repo that owns its epic. Null when the issue has no epic or
+   * the epic field could not be discovered.
+   */
+  externalParentKey?: string | null;
+  /**
+   * The issue's description, flattened to plain text (v2 returns a string, v3 an
+   * Atlassian Document Format tree). Shown in the task detail pane and handed to the
+   * agent as the ticket's brief. Null for internal tasks and for empty descriptions.
+   */
+  externalDescription?: string | null;
+  /**
    * The board column this task occupied *before* it was moved to `blocked`, so
    * un-blocking restores it. Null whenever the task is not blocked. `blocked` is an
    * internal-only state — moving to/from it never touches the tracker.
@@ -309,6 +323,15 @@ export interface Task {
   lastReadCommentAt?: number | null;
   /** Epoch ms of the newest tracker comment seen at the last sync (drives unread). */
   latestCommentAt?: number | null;
+
+  // --- Agent delegation (My Tasks → an agent project). Null until assigned. ---
+  /**
+   * The **agent project** (see {@link ProjectKind}) this card has been delegated to —
+   * the repo the run happens in. The task's own `projectId` stays on the Personal
+   * board, so the card never leaves My Tasks while its run is attributed to the real
+   * repo. Null for a card nobody assigned to an agent.
+   */
+  agentProjectId?: string | null;
 }
 
 /** A project bundled with its current tasks — the shape the Projects UI renders. */

@@ -90,6 +90,36 @@ describe('JiraClient.search', () => {
     expect(url).toContain('fields=summary');
     expect(url).toContain('status');
     expect(url).toContain('comment');
+    // Needed for agent delegation: the ticket brief and the team-managed epic.
+    expect(url).toContain('description');
+    expect(url).toContain('parent');
+  });
+
+  it('appends runtime-discovered extra fields (the Epic Link custom field)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ issues: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await serverClient().search('assignee = currentUser()', 50, ['customfield_10008', '  ']);
+
+    const url = new URL(String(fetchMock.mock.calls[0][0]));
+    expect(url.searchParams.get('maxResults')).toBe('50');
+    const fields = (url.searchParams.get('fields') ?? '').split(',');
+    expect(fields).toContain('customfield_10008');
+    // Blank entries are dropped rather than sent as an empty field name.
+    expect(fields).not.toContain('');
+  });
+});
+
+describe('JiraClient.listFields', () => {
+  it('GETs /field and returns the array', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse([{ id: 'customfield_1', name: 'Epic Link' }]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const fields = await serverClient().listFields();
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/rest/api/2/field');
+    expect(fields).toEqual([{ id: 'customfield_1', name: 'Epic Link' }]);
   });
 });
 

@@ -10,13 +10,19 @@
  */
 import { PERSONAL_PROJECT_ID, type BoardColumn, type Task } from '@shared/model';
 import { categoryFromKey, categoryToColumn, statusForColumn } from '@shared/board';
-import type { JiraIssue } from './jiraClient';
+import { commentBodyToText, type JiraIssue } from './jiraClient';
+import { epicKeyFromIssue } from './epicField';
 
 export interface JiraSyncOptions {
   /** Base URL, used to build each issue's deep link. */
   baseUrl: string;
   /** Optional raw-status-name → column overrides. */
   overrides?: Record<string, BoardColumn>;
+  /**
+   * The discovered "Epic Link" custom field id, or null when the instance has none
+   * (Cloud team-managed) or discovery failed — the epic then comes from `parent`.
+   */
+  epicFieldId?: string | null;
 }
 
 export interface JiraSyncResult {
@@ -52,6 +58,12 @@ function issueToTask(
   // `blocked` is an internal-only state — keep it (and its restore target) across syncs.
   const blocked = existing?.status === 'blocked';
 
+  // Epic/parent key and description drive agent delegation (which repo owns the
+  // ticket, and the brief handed to the agent). Both fall back to the previously
+  // stored value, so a sync that didn't return the field can't wipe what we knew.
+  const parentKey = epicKeyFromIssue(issue, opts.epicFieldId ?? null);
+  const description = commentBodyToText(issue.fields.description) || null;
+
   const latestCommentAt = latestCommentTime(issue);
   // A brand-new task starts "read" (lastRead = latest) so the first sync doesn't turn
   // every card orange; existing tasks keep the user's read marker.
@@ -79,11 +91,16 @@ function issueToTask(
     externalPriority: issue.fields.priority?.name ?? null,
     externalType: issue.fields.issuetype?.name ?? null,
     externalLabel: issue.fields.labels?.[0] ?? null,
+    externalParentKey: parentKey ?? existing?.externalParentKey ?? null,
+    externalDescription: description ?? existing?.externalDescription ?? null,
     preBlockStatus: blocked ? (existing?.preBlockStatus ?? null) : null,
     lastReadCommentAt,
     // Keep the newest known comment time: fall back to the prior value if this sync
     // didn't return comments for the issue.
     latestCommentAt: latestCommentAt ?? existing?.latestCommentAt ?? null,
+    // Agent delegation is internal-only state, like `blocked` — JIRA knows nothing
+    // about it, so a re-sync carries the existing assignment through untouched.
+    agentProjectId: existing?.agentProjectId ?? null,
   };
 }
 

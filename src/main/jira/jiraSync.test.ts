@@ -91,6 +91,48 @@ describe('reconcileJiraTasks', () => {
     expect(deleteIds).toEqual([]);
   });
 
+  it('maps the epic custom field and description onto the task', () => {
+    const withEpic = issue('1', 'PROJ-1', 'new');
+    (withEpic.fields as Record<string, unknown>).customfield_7 = 'abc-100';
+    withEpic.fields.description = 'Reproduce, then fix.';
+
+    const { upserts } = reconcileJiraTasks([], [withEpic], { ...opts, epicFieldId: 'customfield_7' });
+    expect(upserts[0]).toMatchObject({
+      externalParentKey: 'ABC-100',
+      externalDescription: 'Reproduce, then fix.',
+    });
+  });
+
+  it('falls back to `parent` and flattens a v3 ADF description', () => {
+    const cloudIssue = issue('1', 'PROJ-1', 'new');
+    cloudIssue.fields.parent = { key: 'ABC-9' };
+    cloudIssue.fields.description = {
+      type: 'doc',
+      version: 1,
+      content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Ship it.' }] }],
+    };
+
+    const { upserts } = reconcileJiraTasks([], [cloudIssue], opts);
+    expect(upserts[0].externalParentKey).toBe('ABC-9');
+    expect(upserts[0].externalDescription).toBe('Ship it.');
+  });
+
+  it('keeps a known epic key/description when a sync returns neither', () => {
+    const existing = jiraTask({
+      externalParentKey: 'ABC-100',
+      externalDescription: 'Old brief.',
+    });
+    const { upserts } = reconcileJiraTasks([existing], [issue('1', 'PROJ-1', 'new')], opts);
+    expect(upserts[0].externalParentKey).toBe('ABC-100');
+    expect(upserts[0].externalDescription).toBe('Old brief.');
+  });
+
+  it('carries an agent assignment through a re-sync (JIRA knows nothing about it)', () => {
+    const existing = jiraTask({ agentProjectId: 'agent-1' });
+    const { upserts } = reconcileJiraTasks([existing], [issue('1', 'PROJ-1', 'indeterminate')], opts);
+    expect(upserts[0].agentProjectId).toBe('agent-1');
+  });
+
   it('never touches ad-hoc internal tasks', () => {
     const adhoc: Task = jiraTask({
       id: 'adhoc-1',

@@ -23,6 +23,7 @@ import { categoryFromKey } from '@shared/board';
 import { createJiraClient } from './jira/jiraConfig';
 import { commentBodyToText, type JiraClient } from './jira/jiraClient';
 import { reconcileJiraTasks } from './jira/jiraSync';
+import { discoverEpicFieldId } from './jira/epicField';
 import { pickTransition, resolveMove } from './jira/jiraMove';
 import { getClaudeStatus } from './claudeStatus';
 import { parsePlan } from './planParser';
@@ -458,16 +459,35 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
   handle('board:tasks', async () => store.getPersonalTasks());
 
+  /**
+   * The instance's "Epic Link" custom field id, discovered once and cached in
+   * `app_state`. Re-discovered when the configured base URL changes (the field id is
+   * per-site). A null `fieldId` is a cached *negative* result — Cloud team-managed
+   * sites have no such field and expose the epic as `parent` instead — so the lookup
+   * is not repeated on every sync.
+   */
+  const epicFieldId = async (baseUrl: string, client: JiraClient): Promise<string | null> => {
+    const cached = store.loadJiraEpicField();
+    if (cached && cached.baseUrl === baseUrl) return cached.fieldId;
+    const fieldId = await discoverEpicFieldId(client);
+    store.saveJiraEpicField({ fieldId, baseUrl });
+    return fieldId;
+  };
+
   // One JIRA sync: fetch issues, reconcile into the store, push the fresh board.
   // Shared by the manual `jira:sync` handler and the background poller below.
   const syncJira = async (): Promise<Task[]> => {
     const { jira } = store.getSettings();
     if (!jira.enabled) return store.getPersonalTasks();
     const client = buildJiraClient();
-    const issues = await client.search(jira.jql);
+    // The epic field is requested by its discovered id, so tickets carry the epic key
+    // that resolves a card to the agent project owning it.
+    const epicField = await epicFieldId(jira.baseUrl, client);
+    const issues = await client.search(jira.jql, 100, epicField ? [epicField] : []);
     const { upserts, deleteIds } = reconcileJiraTasks(store.getPersonalTasks(), issues, {
       baseUrl: jira.baseUrl,
       overrides: jira.statusCategoryOverrides,
+      epicFieldId: epicField,
     });
     for (const t of upserts) store.upsertJiraTask(t);
     for (const id of deleteIds) store.deleteTask(id);

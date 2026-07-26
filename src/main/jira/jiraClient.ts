@@ -48,7 +48,26 @@ export interface JiraIssue {
     updated?: string;
     /** Present when the search requests the `comment` field (used for unread detection). */
     comment?: { comments: JiraComment[] } | null;
+    /** Plain string on v2; Atlassian Document Format (object) on v3. Null when empty. */
+    description?: unknown;
+    /**
+     * The parent issue — the epic on Cloud team-managed projects. Server/DC and
+     * company-managed Cloud instead use the "Epic Link" custom field, read off
+     * `fields` by its discovered id (see `epicField.ts`).
+     */
+    parent?: { key?: string } | null;
   };
+}
+
+/**
+ * One entry of `GET /field` — the instance's field metadata. Used only to discover
+ * the per-instance "Epic Link" custom field id (see `epicField.ts`).
+ */
+export interface JiraField {
+  id: string;
+  name?: string;
+  /** `schema.custom` is the field *type* URI, e.g. `…greenhopper…:gh-epic-link`. */
+  schema?: { custom?: string };
 }
 
 export interface JiraTransition {
@@ -72,7 +91,10 @@ export function authHeader(auth: JiraAuth): string {
   return `Basic ${basic}`;
 }
 
-/** Flatten a comment body (v2 plain string or v3 ADF) to display text. */
+/**
+ * Flatten a rich-text field (v2 plain string or v3 ADF) to display text. Used for
+ * comment bodies and for issue descriptions, which have the same v2/v3 shapes.
+ */
 export function commentBodyToText(body: unknown): string {
   if (typeof body === 'string') return body;
   // Atlassian Document Format: walk the node tree collecting `text` leaves.
@@ -132,15 +154,24 @@ export class JiraClient {
     return this.request<JiraMyself>('/myself');
   }
 
-  /** Search issues by JQL, returning the fields the board needs. */
-  async search(jql: string, maxResults = 100): Promise<JiraIssue[]> {
-    const params = new URLSearchParams({
-      jql,
-      maxResults: String(maxResults),
-      fields: 'summary,status,priority,project,issuetype,labels,updated,comment',
-    });
+  /**
+   * Search issues by JQL, returning the fields the board needs. `extraFields` carries
+   * per-instance fields the caller discovered at runtime — currently the "Epic Link"
+   * custom field id (`customfield_NNNNN`), which cannot be named up front.
+   */
+  async search(jql: string, maxResults = 100, extraFields: string[] = []): Promise<JiraIssue[]> {
+    const fields = [
+      'summary,status,priority,project,issuetype,labels,updated,comment,description,parent',
+      ...extraFields.filter((f) => f.trim()),
+    ].join(',');
+    const params = new URLSearchParams({ jql, maxResults: String(maxResults), fields });
     const data = await this.request<{ issues: JiraIssue[] }>(`/search?${params.toString()}`);
     return data.issues ?? [];
+  }
+
+  /** GET /field — the instance's field metadata (used to discover the Epic Link field). */
+  async listFields(): Promise<JiraField[]> {
+    return (await this.request<JiraField[]>('/field')) ?? [];
   }
 
   /** Available workflow transitions for an issue (needed to resolve a status move). */

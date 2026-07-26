@@ -29,6 +29,7 @@ import type { SessionEvent } from '@shared/session';
 import type { UsageSample } from '@shared/usage';
 import { type AppSettings, DEFAULT_JIRA_SETTINGS, DEFAULT_SETTINGS } from '@shared/settings';
 import { mergeActivity } from './activityMerge';
+import type { JiraEpicFieldCache } from './jira/epicField';
 import type { ParsedTask } from './planParser';
 import { reconcileTasks } from './taskReconcile';
 
@@ -60,9 +61,15 @@ interface TaskRow {
   externalPriority: string | null;
   externalType: string | null;
   externalLabel: string | null;
+  /** Key of the issue's epic/parent (upper-cased), for agent-project resolution. */
+  externalParentKey: string | null;
+  /** The issue description flattened to plain text (v2 string / v3 ADF). */
+  externalDescription: string | null;
   preBlockStatus: string | null;
   lastReadCommentAt: number | null;
   latestCommentAt: number | null;
+  /** The agent project this card is delegated to; NULL when unassigned. */
+  agentProjectId: string | null;
 }
 
 /** A project row as stored; `writeBackPlan` is a 0/1 INTEGER (SQLite has no boolean). */
@@ -115,9 +122,12 @@ export interface Store {
         | 'externalPriority'
         | 'externalType'
         | 'externalLabel'
+        | 'externalParentKey'
+        | 'externalDescription'
         | 'preBlockStatus'
         | 'lastReadCommentAt'
         | 'latestCommentAt'
+        | 'agentProjectId'
       >
     >,
   ): Task | undefined;
@@ -181,6 +191,13 @@ export interface Store {
   loadJiraToken(): string | null;
   /** Remove the stored JIRA token. */
   clearJiraToken(): void;
+  /**
+   * Cache the result of JIRA "Epic Link" field discovery so `/field` is queried once
+   * per site rather than on every sync (see `jira/epicField.ts`).
+   */
+  saveJiraEpicField(cache: JiraEpicFieldCache): void;
+  /** The cached epic-field discovery, or null if it has never run. */
+  loadJiraEpicField(): JiraEpicFieldCache | null;
   close(): void;
 }
 
@@ -246,9 +263,12 @@ export function createStore(dbPath: string): Store {
       externalPriority       TEXT,
       externalType           TEXT,
       externalLabel          TEXT,
+      externalParentKey      TEXT,
+      externalDescription    TEXT,
       preBlockStatus         TEXT,
       lastReadCommentAt      INTEGER,
-      latestCommentAt        INTEGER
+      latestCommentAt        INTEGER,
+      agentProjectId         TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(projectId, "order");
     CREATE TABLE IF NOT EXISTS app_state (
@@ -357,6 +377,11 @@ export function createStore(dbPath: string): Store {
     ['preBlockStatus', 'TEXT'],
     ['lastReadCommentAt', 'INTEGER'],
     ['latestCommentAt', 'INTEGER'],
+    // Agent delegation: the epic/parent key and description come from JIRA (a re-sync
+    // fills them in), `agentProjectId` is set only when a human assigns the card.
+    ['externalParentKey', 'TEXT'],
+    ['externalDescription', 'TEXT'],
+    ['agentProjectId', 'TEXT'],
   ];
   for (const [name, type] of jiraTaskColumns) {
     if (!taskColumns.some((c) => c.name === name)) {
@@ -432,11 +457,13 @@ export function createStore(dbPath: string): Store {
     `INSERT INTO tasks
        (id, projectId, phase, title, status, sessionId, "order", source, dependsOn, isContract, isScaffold, type,
         externalSource, externalKey, externalId, externalUrl, externalStatus, externalStatusCategory,
-        externalPriority, externalType, externalLabel, preBlockStatus, lastReadCommentAt, latestCommentAt)
+        externalPriority, externalType, externalLabel, externalParentKey, externalDescription,
+        preBlockStatus, lastReadCommentAt, latestCommentAt, agentProjectId)
      VALUES
        (@id, @projectId, @phase, @title, @status, @sessionId, @order, @source, @dependsOn, @isContract, @isScaffold, @type,
         @externalSource, @externalKey, @externalId, @externalUrl, @externalStatus, @externalStatusCategory,
-        @externalPriority, @externalType, @externalLabel, @preBlockStatus, @lastReadCommentAt, @latestCommentAt)`,
+        @externalPriority, @externalType, @externalLabel, @externalParentKey, @externalDescription,
+        @preBlockStatus, @lastReadCommentAt, @latestCommentAt, @agentProjectId)`,
   );
   const deleteTask = db.prepare(`DELETE FROM tasks WHERE id = ?`);
   const nextOrder = db.prepare(
@@ -496,6 +523,9 @@ export function createStore(dbPath: string): Store {
 
   /** The single row key under which the JIRA token ciphertext is persisted. */
   const JIRA_TOKEN_KEY = 'jira.pat';
+
+  /** The single row key caching JIRA's per-instance "Epic Link" field discovery. */
+  const JIRA_EPIC_FIELD_KEY = 'jira.epicField';
 
   /** Read app settings, merging any stored fields over the built-in defaults. */
   function getSettings(): AppSettings {
@@ -570,9 +600,12 @@ export function createStore(dbPath: string): Store {
       externalPriority: task.externalPriority ?? null,
       externalType: task.externalType ?? null,
       externalLabel: task.externalLabel ?? null,
+      externalParentKey: task.externalParentKey ?? null,
+      externalDescription: task.externalDescription ?? null,
       preBlockStatus: task.preBlockStatus ?? null,
       lastReadCommentAt: task.lastReadCommentAt ?? null,
       latestCommentAt: task.latestCommentAt ?? null,
+      agentProjectId: task.agentProjectId ?? null,
     };
   }
 
@@ -599,9 +632,12 @@ export function createStore(dbPath: string): Store {
       externalPriority: r.externalPriority,
       externalType: r.externalType,
       externalLabel: r.externalLabel,
+      externalParentKey: r.externalParentKey,
+      externalDescription: r.externalDescription,
       preBlockStatus: (r.preBlockStatus as Task['preBlockStatus']) ?? null,
       lastReadCommentAt: r.lastReadCommentAt,
       latestCommentAt: r.latestCommentAt,
+      agentProjectId: r.agentProjectId,
     };
   }
 
@@ -744,9 +780,12 @@ export function createStore(dbPath: string): Store {
         'externalPriority',
         'externalType',
         'externalLabel',
+        'externalParentKey',
+        'externalDescription',
         'preBlockStatus',
         'lastReadCommentAt',
         'latestCommentAt',
+        'agentProjectId',
       ] as const;
       for (const col of columns) {
         const value = (patch as Record<string, unknown>)[col];
@@ -768,6 +807,8 @@ export function createStore(dbPath: string): Store {
     upsertJiraTask(task) {
       const existing = selectTask.get(task.id) as TaskRow | undefined;
       if (existing) {
+        // Note `agentProjectId` is deliberately absent from the UPDATE: a JIRA re-sync
+        // refreshes tracker fields only and must never clear a human's agent assignment.
         db.prepare(
           `UPDATE tasks SET
              phase = @phase, title = @title, status = @status, "order" = @order, source = @source,
@@ -775,6 +816,7 @@ export function createStore(dbPath: string): Store {
              externalUrl = @externalUrl, externalStatus = @externalStatus,
              externalStatusCategory = @externalStatusCategory, externalPriority = @externalPriority,
              externalType = @externalType, externalLabel = @externalLabel,
+             externalParentKey = @externalParentKey, externalDescription = @externalDescription,
              preBlockStatus = @preBlockStatus, lastReadCommentAt = @lastReadCommentAt,
              latestCommentAt = @latestCommentAt
            WHERE id = @id`,
@@ -985,6 +1027,21 @@ export function createStore(dbPath: string): Store {
 
     clearJiraToken() {
       deleteState.run(JIRA_TOKEN_KEY);
+    },
+
+    saveJiraEpicField(cache) {
+      upsertState.run(JIRA_EPIC_FIELD_KEY, JSON.stringify(cache));
+    },
+
+    loadJiraEpicField() {
+      const row = selectState.get(JIRA_EPIC_FIELD_KEY) as { value: string } | undefined;
+      if (!row) return null;
+      try {
+        const parsed = JSON.parse(row.value) as JiraEpicFieldCache;
+        return typeof parsed?.baseUrl === 'string' ? parsed : null;
+      } catch {
+        return null; // corrupt value — re-discover
+      }
     },
 
     close() {
