@@ -22,7 +22,13 @@
  * Phase 0 only needs a couple of channels to prove the wiring works; later
  * phases add project/task/session channels here.
  */
-import type { SessionEvent, SessionEventEnvelope, StartSessionRequest } from './session';
+import type {
+  ClaudeModel,
+  PermissionMode,
+  SessionEvent,
+  SessionEventEnvelope,
+  StartSessionRequest,
+} from './session';
 import type {
   AddProjectInput,
   AssignAgentInput,
@@ -220,6 +226,22 @@ export interface IpcApi {
    * activity timeline and returns the updated task.
    */
   'task:setStatus': (taskId: string, status: ManualStatus) => Promise<Task>;
+  /**
+   * Rewrite the card's description — the text the agent's prompt quotes as the ticket
+   * body. For a JIRA card this edits the app's copy only: nothing is written back to
+   * the tracker, and the next sync replaces it with whatever the issue says (the pane
+   * says so). Empty clears it. Returns the updated task.
+   */
+  'task:setDescription': (taskId: string, description: string) => Promise<Task>;
+  /**
+   * Change the model / permission mode a delegated card runs with, WITHOUT restarting
+   * it (unlike `task:assignAgent`). A live run keeps what it started with — these are
+   * captured on the run — so the change applies to the next one.
+   */
+  'task:setAgentOptions': (
+    taskId: string,
+    options: { model?: ClaudeModel | null; mode?: PermissionMode | null },
+  ) => Promise<Task>;
   /** The task's unified activity timeline (comments + status changes + AI transcript). */
   'task:activity': (taskId: string) => Promise<TaskActivityEntry[]>;
   /** Add a human progress comment to a task; returns the created timeline entry. */

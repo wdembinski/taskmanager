@@ -426,6 +426,32 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     });
     return task;
   });
+  handle('task:setDescription', async (taskId, description) => {
+    const existing = store.getTask(taskId);
+    if (!existing) throw new Error('Task not found.');
+    // The app's copy only — `jiraSync` will overwrite it from the issue on the next
+    // sync, and nothing here writes back to the tracker. The pane says as much.
+    const task = store.updateTask(taskId, { externalDescription: description.trim() || null });
+    if (!task) throw new Error('Task not found.');
+    send('task:changed', { task, runId: null });
+    return task;
+  });
+
+  handle('task:setAgentOptions', async (taskId, options) => {
+    const existing = store.getTask(taskId);
+    if (!existing) throw new Error('Task not found.');
+    // Deliberately allowed mid-run: the live run captured its own model/mode when it
+    // started (see `Run`), so this only decides what the NEXT run uses. Reassigning is
+    // still what you want if you mean "start over with these settings".
+    const task = store.updateTask(taskId, {
+      ...(options.model !== undefined ? { agentModel: options.model } : {}),
+      ...(options.mode !== undefined ? { agentMode: options.mode } : {}),
+    });
+    if (!task) throw new Error('Task not found.');
+    send('task:changed', { task, runId: null });
+    return task;
+  });
+
   handle('task:setStatus', async (taskId, status) => {
     const existing = store.getTask(taskId);
     if (!existing) throw new Error('Task not found.');
