@@ -43,8 +43,8 @@ const useStyles = makeStyles({
     border: `1px solid ${tokens.colorNeutralStroke2}`,
   },
   head: { display: 'flex', alignItems: 'center', gap: '8px' },
-  // Double-size and white, matching the board card's delegation glyph.
-  icon: { fontSize: '36px', display: 'flex', color: '#ffffff' },
+  // White, matching the board card's delegation glyph.
+  icon: { fontSize: '18px', display: 'flex', color: '#ffffff' },
   grow: { flex: 1, minWidth: 0 },
   hint: { color: tokens.colorNeutralForeground3 },
   ask: {

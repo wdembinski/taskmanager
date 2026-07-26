@@ -188,8 +188,31 @@ export interface IpcApi {
     projectId: string,
     input: { title: string; phase?: string; type?: TaskType | null },
   ) => Promise<Task>;
-  /** Delete a task (and its history). Rejects if it is currently running. */
+  /** Delete a task (and its history, and any steps under it). Rejects if it is running. */
   'task:delete': (taskId: string) => Promise<void>;
+  /**
+   * A card's steps, in execution order (Phase 11). Empty for a card that has none.
+   */
+  'task:subtasks': (parentTaskId: string) => Promise<Task[]>;
+  /**
+   * Append a step to a card — either from an approved plan or written by hand. The
+   * step inherits the parent's agent project and model and runs in
+   * `bypassPermissions`. Rejects if the parent is unknown or is itself a step.
+   * Returns the created step.
+   */
+  'task:addSubtask': (
+    parentTaskId: string,
+    input: { title: string; description?: string | null },
+  ) => Promise<Task>;
+  /**
+   * Edit a step's title and/or brief. Rejects while the step is mid-run (its prompt
+   * is built from the brief, so changing it under a live session is meaningless).
+   * Returns the updated step.
+   */
+  'task:updateSubtask': (
+    taskId: string,
+    patch: { title?: string; description?: string | null },
+  ) => Promise<Task>;
   /**
    * Set a task's status by hand (Phase 9 to-do list). Only `MANUAL_STATUSES` are
    * accepted, and only when the task isn't mid-run. Records the change on the task's

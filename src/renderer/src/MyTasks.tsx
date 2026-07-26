@@ -24,7 +24,13 @@ import type { AppSettings } from '@shared/settings';
 import { AddTaskDialog } from './AddTaskDialog';
 import { TaskDetail } from './TaskDetail';
 import { KanbanColumn } from './board/KanbanColumn';
-import { COLUMN_META, columnForTask, statusForColumn, visibleColumns } from './board/boardColumns';
+import {
+  COLUMN_META,
+  columnForTask,
+  groupSubtasks,
+  statusForColumn,
+  visibleColumns,
+} from './board/boardColumns';
 import type { BoardColumn } from './board/boardColumns';
 
 const useStyles = makeStyles({
@@ -108,7 +114,9 @@ export function MyTasks(): JSX.Element {
 
   const tasksByColumn = useMemo(() => {
     const map: Record<BoardColumn, Task[]> = { todo: [], 'in-progress': [], blocked: [], done: [] };
-    for (const task of tasks ?? []) map[columnForTask(task)].push(task);
+    // A card's steps are not cards of their own — they render inside the parent
+    // (Phase 4) and travel with it, whatever their own status.
+    for (const { task } of groupSubtasks(tasks ?? [])) map[columnForTask(task)].push(task);
     for (const col of Object.keys(map) as BoardColumn[]) map[col].sort((a, b) => a.order - b.order);
     return map;
   }, [tasks]);

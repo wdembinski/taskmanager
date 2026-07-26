@@ -280,6 +280,23 @@ export interface Task {
    */
   type?: TaskType | null;
 
+  // --- Plan-driven subtasks (Phase 11). ---
+  /**
+   * The parent card this task is a **step of**, or null for an ordinary card. Set on
+   * subtasks created from an approved plan (or added by hand); a subtask lives on the
+   * same board as its parent but never appears as its own column entry — the board
+   * attaches it under the parent card instead. Steps run strictly in `order`, one at
+   * a time, each in its own session, sharing the parent's worktree.
+   */
+  parentTaskId?: string | null;
+  /**
+   * The step's brief: one phase of the approved plan, or whatever the human typed when
+   * writing the step by hand. This is what the runner hands the agent as the work to do
+   * — deliberately distinct from `externalDescription`, which stays JIRA's own text.
+   * Null for cards that carry no brief of their own.
+   */
+  description?: string | null;
+
   // --- External tracker linkage (JIRA integration). All null for internal tasks. ---
   /** The external tracker this task mirrors, or null for an internal task. */
   externalSource?: 'jira' | null;

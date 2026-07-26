@@ -36,10 +36,10 @@ import { columnForStatus, statusForColumn } from './boardColumns';
 const UNREAD_ORANGE = '#F2A900';
 
 /**
- * The delegation glyph is deliberately double the type icon (16px → 32px) and white,
- * so a card an agent owns reads at a glance across the board.
+ * The delegation glyph, white so a card an agent owns reads at a glance. Sized to sit
+ * with the card's type icon rather than tower over it.
  */
-const AGENT_ICON_SIZE = '32px';
+const AGENT_ICON_SIZE = '16px';
 
 const useStyles = makeStyles({
   card: {

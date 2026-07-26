@@ -51,6 +51,10 @@ interface TaskRow {
   isScaffold: number;
   /** User-chosen internal task kind (bug/feature); NULL for JIRA and legacy tasks. */
   type: string | null;
+  /** The parent card this row is a step of; NULL for ordinary cards. */
+  parentTaskId: string | null;
+  /** The step's brief (a phase of the approved plan, or hand-written); NULL if none. */
+  description: string | null;
   // External tracker linkage (JIRA). NULL for internal tasks.
   externalSource: string | null;
   externalKey: string | null;
@@ -119,6 +123,8 @@ export interface Store {
         Task,
         | 'status'
         | 'sessionId'
+        | 'title'
+        | 'description'
         | 'externalSource'
         | 'externalKey'
         | 'externalId'
@@ -149,6 +155,16 @@ export interface Store {
     projectId: string,
     input: { title: string; phase?: string; type?: TaskType | null },
   ): Task | undefined;
+  /** A card's steps, in execution order (empty for a card with no subtasks). */
+  getSubtasks(parentId: string): Task[];
+  /**
+   * Append one step to a card (Phase 11). The step lives on the parent's board and
+   * inherits its delegation (agent project + model) so the chain runs in the parent's
+   * repo, but always in `bypassPermissions` — the human approved the plan, so the
+   * steps run unattended. Returns the created step, or undefined if the parent is
+   * unknown, is itself a step, or the title is blank.
+   */
+  addSubtask(parentId: string, input: { title: string; description?: string | null }): Task | undefined;
   /** Delete one task (and its transcript history) by id. */
   deleteTask(id: string): void;
   /** Re-parse a plan and reconcile it into the project's tasks; returns the result. */
@@ -263,6 +279,8 @@ export function createStore(dbPath: string): Store {
       isContract             INTEGER NOT NULL DEFAULT 0,
       isScaffold             INTEGER NOT NULL DEFAULT 0,
       type                   TEXT,
+      parentTaskId           TEXT,
+      description            TEXT,
       externalSource         TEXT,
       externalKey            TEXT,
       externalId             TEXT,
@@ -408,6 +426,21 @@ export function createStore(dbPath: string): Store {
     }
   }
 
+  // Migrate databases created before plan-driven subtasks (Phase 11). Every existing
+  // row is an ordinary top-level card with no brief of its own, which is exactly what
+  // NULL means for both columns — no behavior changes for them.
+  for (const [name, type] of [
+    ['parentTaskId', 'TEXT'],
+    ['description', 'TEXT'],
+  ] as Array<[string, string]>) {
+    if (!taskColumns.some((c) => c.name === name)) {
+      db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
+    }
+  }
+  // Created after the migration above, not in the schema block: on a pre-Phase-11 database
+  // the column does not exist until the ALTER has run.
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parentTaskId, "order")`);
+
   // Seed the built-in Personal board project (idempotent). It hosts the standalone
   // My Tasks board (JIRA tickets + internal ad-hoc tasks); it has no repo/plan, so
   // it is hidden from the Projects tab and skipped by the plan watcher/scheduler.
@@ -475,20 +508,29 @@ export function createStore(dbPath: string): Store {
   const insertTask = db.prepare<[TaskRow]>(
     `INSERT INTO tasks
        (id, projectId, phase, title, status, sessionId, "order", source, dependsOn, isContract, isScaffold, type,
+        parentTaskId, description,
         externalSource, externalKey, externalId, externalUrl, externalStatus, externalStatusCategory,
         externalPriority, externalType, externalLabel, externalParentKey, externalDescription,
         preBlockStatus, lastReadCommentAt, latestCommentAt, agentProjectId, agentMode, agentModel,
         agentPlan)
      VALUES
        (@id, @projectId, @phase, @title, @status, @sessionId, @order, @source, @dependsOn, @isContract, @isScaffold, @type,
+        @parentTaskId, @description,
         @externalSource, @externalKey, @externalId, @externalUrl, @externalStatus, @externalStatusCategory,
         @externalPriority, @externalType, @externalLabel, @externalParentKey, @externalDescription,
         @preBlockStatus, @lastReadCommentAt, @latestCommentAt, @agentProjectId, @agentMode, @agentModel,
         @agentPlan)`,
   );
   const deleteTask = db.prepare(`DELETE FROM tasks WHERE id = ?`);
+  const selectSubtasks = db.prepare(
+    `SELECT * FROM tasks WHERE parentTaskId = ? ORDER BY "order", rowid`,
+  );
+  const selectSubtaskIds = db.prepare(`SELECT id FROM tasks WHERE parentTaskId = ?`);
   const nextOrder = db.prepare(
     `SELECT COALESCE(MAX("order"), -1) + 1 AS next FROM tasks WHERE projectId = ?`,
+  );
+  const nextSubtaskOrder = db.prepare(
+    `SELECT COALESCE(MAX("order"), -1) + 1 AS next FROM tasks WHERE parentTaskId = ?`,
   );
   const upsertState = db.prepare(
     `INSERT INTO app_state (key, value) VALUES (?, ?)
@@ -611,6 +653,8 @@ export function createStore(dbPath: string): Store {
       isContract: task.isContract ? 1 : 0,
       isScaffold: task.isScaffold ? 1 : 0,
       type: task.type ?? null,
+      parentTaskId: task.parentTaskId ?? null,
+      description: task.description ?? null,
       // External linkage — coalesce undefined → null so named params are always bound.
       externalSource: task.externalSource ?? null,
       externalKey: task.externalKey ?? null,
@@ -647,6 +691,8 @@ export function createStore(dbPath: string): Store {
       isContract: r.isContract !== 0,
       isScaffold: r.isScaffold !== 0,
       type: (r.type as Task['type']) ?? null,
+      parentTaskId: r.parentTaskId,
+      description: r.description,
       externalSource: (r.externalSource as Task['externalSource']) ?? null,
       externalKey: r.externalKey,
       externalId: r.externalId,
@@ -794,10 +840,14 @@ export function createStore(dbPath: string): Store {
       const params: Record<string, unknown> = { id };
       // Columns patchable through this method. `"order"` needs quoting so it's kept
       // out of this set; status/sessionId plus the external-linkage fields are all
-      // plain columns whose param name matches the column name.
+      // plain columns whose param name matches the column name. `parentTaskId` is
+      // deliberately absent — a step belongs to the card it was created under, and
+      // re-parenting would silently move it between worktrees.
       const columns = [
         'status',
         'sessionId',
+        'title',
+        'description',
         'externalSource',
         'externalKey',
         'externalId',
@@ -838,9 +888,10 @@ export function createStore(dbPath: string): Store {
       const existing = selectTask.get(task.id) as TaskRow | undefined;
       if (existing) {
         // Note the agent-delegation columns (`agentProjectId`, `agentMode`, `agentModel`,
-        // `agentPlan`) are deliberately absent from the UPDATE: a JIRA re-sync refreshes
-        // tracker fields only and must never clear a human's agent assignment — or the
-        // plan that assignment produced.
+        // `agentPlan`) and the subtask columns (`parentTaskId`, `description`) are
+        // deliberately absent from the UPDATE: a JIRA re-sync refreshes tracker fields
+        // only and must never clear a human's agent assignment, the plan that assignment
+        // produced, or the steps derived from it.
         db.prepare(
           `UPDATE tasks SET
              phase = @phase, title = @title, status = @status, "order" = @order, source = @source,
@@ -880,13 +931,57 @@ export function createStore(dbPath: string): Store {
       return task;
     },
 
+    getSubtasks(parentId) {
+      return (selectSubtasks.all(parentId) as TaskRow[]).map(rowToTask);
+    },
+
+    addSubtask(parentId, input) {
+      const title = input.title.trim();
+      if (!title) return undefined;
+      const parent = getTask(parentId);
+      // Steps are one level deep by design: a step of a step has no meaning for the
+      // sequential runner (and would make "the parent's worktree" ambiguous).
+      if (!parent || parent.parentTaskId) return undefined;
+      const description = input.description?.trim() || null;
+      const task: Task = {
+        id: randomUUID(),
+        // The step lives on the parent's board, so it travels with the card and is
+        // never picked up by a project queue's `selectNextPending`.
+        projectId: parent.projectId,
+        phase: parent.phase,
+        title,
+        status: 'pending',
+        sessionId: null,
+        // Ordered among its siblings, not among the board's cards.
+        order: (nextSubtaskOrder.get(parentId) as { next: number }).next,
+        source: 'adhoc',
+        dependsOn: [],
+        isContract: false,
+        isScaffold: false,
+        type: parent.type ?? null,
+        parentTaskId: parentId,
+        description,
+        // Inherit where and how the parent runs; the mode is forced, see the interface.
+        agentProjectId: parent.agentProjectId ?? null,
+        agentModel: parent.agentModel ?? null,
+        agentMode: 'bypassPermissions',
+      };
+      insertTask.run(taskToRow(task));
+      return task;
+    },
+
     deleteTask(id) {
       // Explicit delete (ad-hoc task): also drop its timeline + transcript. (The
       // plan-sync path never calls this, so plan history is unaffected.)
+      // Deleting a card takes its steps with it — an orphaned step has no board
+      // column of its own and would otherwise be unreachable in the UI.
       const clear = db.transaction((taskId: string) => {
-        deleteActivityForTask.run(taskId);
-        deleteEventsForTask.run(taskId);
-        deleteTask.run(taskId);
+        const children = (selectSubtaskIds.all(taskId) as Array<{ id: string }>).map((r) => r.id);
+        for (const childId of [...children, taskId]) {
+          deleteActivityForTask.run(childId);
+          deleteEventsForTask.run(childId);
+          deleteTask.run(childId);
+        }
       });
       clear(id);
     },

@@ -365,11 +365,54 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     if (task.status === 'running' || task.status === 'waiting-input') {
       throw new Error('Stop the task before deleting it.');
     }
+    // Deleting a card takes its steps with it, so a live step blocks the delete too.
+    if (
+      store
+        .getSubtasks(taskId)
+        .some((s) => s.status === 'running' || s.status === 'waiting-input')
+    ) {
+      throw new Error('Stop the running step before deleting this task.');
+    }
     store.deleteTask(taskId);
     send('project:tasksChanged', {
       projectId: task.projectId,
       tasks: store.getTasks(task.projectId),
     });
+  });
+  handle('task:subtasks', async (parentTaskId) => store.getSubtasks(parentTaskId));
+  handle('task:addSubtask', async (parentTaskId, input) => {
+    const parent = store.getTask(parentTaskId);
+    if (!parent) throw new Error('Task not found.');
+    if (parent.parentTaskId) throw new Error('A step cannot have steps of its own.');
+    const task = store.addSubtask(parentTaskId, input);
+    if (!task) throw new Error('A step needs a title.');
+    send('project:tasksChanged', {
+      projectId: parent.projectId,
+      tasks: store.getTasks(parent.projectId),
+    });
+    return task;
+  });
+  handle('task:updateSubtask', async (taskId, patch) => {
+    const existing = store.getTask(taskId);
+    if (!existing) throw new Error('Task not found.');
+    if (!existing.parentTaskId) throw new Error('That task is not a step.');
+    if (existing.status === 'running' || existing.status === 'waiting-input') {
+      throw new Error('Stop the step before editing it.');
+    }
+    const title = patch.title?.trim();
+    if (patch.title !== undefined && !title) throw new Error('A step needs a title.');
+    const task = store.updateTask(taskId, {
+      ...(title ? { title } : {}),
+      ...(patch.description !== undefined
+        ? { description: patch.description?.trim() || null }
+        : {}),
+    });
+    if (!task) throw new Error('Task not found.');
+    send('project:tasksChanged', {
+      projectId: task.projectId,
+      tasks: store.getTasks(task.projectId),
+    });
+    return task;
   });
   handle('task:setStatus', async (taskId, status) => {
     const existing = store.getTask(taskId);

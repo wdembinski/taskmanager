@@ -4,7 +4,9 @@ import {
   COLUMN_META,
   columnForStatus,
   columnForTask,
+  groupSubtasks,
   statusForColumn,
+  subtaskProgress,
   visibleColumns,
 } from './boardColumns';
 
@@ -21,6 +23,12 @@ const task = (status: TaskStatus): Task => ({
   isContract: false,
   isScaffold: false,
 });
+
+/** A card/step with an explicit id, order, parent and status, for the grouping tests. */
+const card = (
+  id: string,
+  overrides: Partial<Task> = {},
+): Task => ({ ...task('pending'), id, title: id, ...overrides });
 
 describe('columnForStatus', () => {
   const cases: Array<[TaskStatus, BoardColumn]> = [
@@ -72,5 +80,67 @@ describe('visibleColumns', () => {
   });
   it('column order matches COLUMN_META', () => {
     expect(COLUMN_META.map((c) => c.column)).toEqual(['todo', 'in-progress', 'blocked', 'done']);
+  });
+});
+
+describe('groupSubtasks', () => {
+  it('leaves an ordinary board untouched, each card with no steps', () => {
+    const cards = groupSubtasks([card('a'), card('b')]);
+    expect(cards.map((c) => c.task.id)).toEqual(['a', 'b']);
+    expect(cards.every((c) => c.subtasks.length === 0)).toBe(true);
+  });
+
+  it('attaches steps to their parent and drops them from the top level', () => {
+    const cards = groupSubtasks([
+      card('parent'),
+      card('s2', { parentTaskId: 'parent', order: 1 }),
+      card('other'),
+      card('s1', { parentTaskId: 'parent', order: 0 }),
+    ]);
+    expect(cards.map((c) => c.task.id)).toEqual(['parent', 'other']);
+    expect(cards[0].subtasks.map((s) => s.id)).toEqual(['s1', 's2']);
+    expect(cards[1].subtasks).toEqual([]);
+  });
+
+  it('keeps a step with its parent whatever its own status', () => {
+    const cards = groupSubtasks([
+      card('parent', { status: 'in-progress' }),
+      card('s1', { parentTaskId: 'parent', order: 0, status: 'done' }),
+      card('s2', { parentTaskId: 'parent', order: 1, status: 'failed' }),
+    ]);
+    expect(cards).toHaveLength(1);
+    expect(cards[0].subtasks.map((s) => s.status)).toEqual(['done', 'failed']);
+  });
+
+  it('preserves the input order of the top-level cards', () => {
+    const cards = groupSubtasks([card('b'), card('a'), card('c')]);
+    expect(cards.map((c) => c.task.id)).toEqual(['b', 'a', 'c']);
+  });
+
+  it('promotes an orphaned step rather than hiding it', () => {
+    // The parent is on another board (or was deleted): the step still needs to be
+    // reachable, so it renders as a card of its own.
+    const cards = groupSubtasks([card('orphan', { parentTaskId: 'gone' })]);
+    expect(cards.map((c) => c.task.id)).toEqual(['orphan']);
+  });
+
+  it('handles an empty board', () => {
+    expect(groupSubtasks([])).toEqual([]);
+  });
+});
+
+describe('subtaskProgress', () => {
+  it('counts only steps that actually landed', () => {
+    const steps = [
+      card('s1', { status: 'done' }),
+      card('s2', { status: 'failed' }),
+      card('s3', { status: 'running' }),
+      card('s4', { status: 'pending' }),
+    ];
+    expect(subtaskProgress(steps)).toEqual({ done: 1, total: 4 });
+  });
+
+  it('is 0/0 for a card with no steps', () => {
+    expect(subtaskProgress([])).toEqual({ done: 0, total: 0 });
   });
 });
