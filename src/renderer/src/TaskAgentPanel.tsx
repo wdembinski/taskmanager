@@ -37,15 +37,12 @@ import { usePendingAttention } from './usePendingAttention';
 const ASK_ORANGE = '#F2A900';
 
 const useStyles = makeStyles({
-  box: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '8px',
-    padding: '10px 12px',
-    borderRadius: tokens.borderRadiusMedium,
-    backgroundColor: tokens.colorNeutralBackground1,
-    border: `1px solid ${tokens.colorNeutralStroke2}`,
-  },
+  /**
+   * A **section** of the pane's details cell, not a card of its own — the cell owns the
+   * shade and the border. The parked-ask block below keeps its orange frame: that one is
+   * an alert, and it is meant to interrupt.
+   */
+  box: { display: 'flex', flexDirection: 'column', gap: '8px' },
   head: { display: 'flex', alignItems: 'center', gap: '8px' },
   // White, matching the board card's delegation glyph.
   icon: { fontSize: '18px', display: 'flex', color: '#ffffff' },

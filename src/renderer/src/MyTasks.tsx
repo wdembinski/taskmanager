@@ -35,9 +35,14 @@ import {
 import type { BoardCard, BoardColumn } from './board/boardColumns';
 
 const useStyles = makeStyles({
-  root: { display: 'flex', gap: '16px', minHeight: 0, flex: 1 },
+  // No gap: the detail pane's own surface runs to the board's edge, and the change of
+  // shade is the seam.
+  root: { display: 'flex', minHeight: 0, flex: 1 },
   board: {
     flex: '1 1 60%',
+    // The screen owns its insets now that the shell adds none, and only the board side
+    // needs them — the detail pane runs to the window's edges on purpose.
+    padding: '12px 16px 12px 12px',
     display: 'flex',
     flexDirection: 'column',
     gap: '12px',
@@ -64,8 +69,11 @@ const useStyles = makeStyles({
     flex: '1 1 40%',
     display: 'flex',
     minHeight: 0,
-    paddingLeft: '16px',
-    borderLeft: `1px solid ${tokens.colorNeutralStroke2}`,
+    // No inset: the detail pane's top band is full-bleed (it is a section of the pane,
+    // not a card in it), so each of the pane's other rows carries its own padding.
+    // One surface for the whole pane, a step LIGHTER than the board — that contrast is
+    // what separates the two halves of the screen, so no dividing line is needed.
+    backgroundColor: tokens.colorNeutralBackground1,
   },
 });
 

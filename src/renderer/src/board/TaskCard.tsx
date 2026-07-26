@@ -58,7 +58,9 @@ const useStyles = makeStyles({
     display: 'flex',
     flexDirection: 'column',
     borderRadius: tokens.borderRadiusMedium,
-    backgroundColor: tokens.colorNeutralBackground3,
+    // Brighter than the board it sits on: a card is the object, the column is the space
+    // between objects, and the old darker fill had that backwards.
+    backgroundColor: tokens.colorNeutralBackground1,
     border: `1px solid ${tokens.colorNeutralStroke2}`,
     // Step rows sit flush against the frame, so they must be clipped by its radius.
     overflow: 'hidden',
@@ -169,7 +171,7 @@ const EPIC_PURPLE = '#8E4EC6';
  * `type` (bug/feature); JIRA tasks map their issue-type name onto the same glyphs.
  * A typeless internal task (legacy) falls back to a neutral note.
  */
-function typeIcon(task: Task): JSX.Element {
+export function typeIcon(task: Task): JSX.Element {
   if (task.externalSource !== 'jira') {
     if (task.type === 'bug') return <BugFilled style={{ color: BUG_RED }} />;
     if (task.type === 'feature') return <BeakerFilled style={{ color: FEATURE_BLUE }} />;

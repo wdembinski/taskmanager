@@ -31,15 +31,12 @@ import { subtaskProgress } from './board/boardColumns';
 import { STATUS_COLOR, STATUS_LABEL } from './taskStatus';
 
 const useStyles = makeStyles({
-  box: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '8px',
-    padding: '10px 12px',
-    borderRadius: tokens.borderRadiusMedium,
-    backgroundColor: tokens.colorNeutralBackground1,
-    border: `1px solid ${tokens.colorNeutralStroke2}`,
-  },
+  /**
+   * A **section**, not a card: the detail pane wraps the agent controls, the details
+   * and the steps in one shaded cell, so each of them owning a border would draw three
+   * boxes inside a box.
+   */
+  box: { display: 'flex', flexDirection: 'column', gap: '8px' },
   head: { display: 'flex', alignItems: 'center', gap: '8px' },
   grow: { flex: 1, minWidth: 0 },
   hint: { color: tokens.colorNeutralForeground3 },
@@ -66,8 +63,8 @@ const useStyles = makeStyles({
     overflowY: 'auto',
     padding: '8px 10px',
     borderRadius: tokens.borderRadiusMedium,
+    // Recessed against the pane it sits in.
     backgroundColor: tokens.colorNeutralBackground2,
-    border: `1px solid ${tokens.colorNeutralStroke2}`,
   },
   brief: { whiteSpace: 'pre-wrap', color: tokens.colorNeutralForeground2, fontSize: '12px' },
 });

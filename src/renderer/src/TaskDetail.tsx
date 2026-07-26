@@ -1,20 +1,22 @@
 /**
  * TaskDetail — the right-hand pane of the My Tasks screen.
  *
- * Since Phase 12 the pane is a **conversation**, not a log. Two tabs:
+ * **One pane in two halves** (the user's call, and the right one): what a card *is* is
+ * context you read *while* talking to the agent working it, not an alternative tab.
  *
- *  - **Chat** — the card's story as turns (`chat/turns.ts`): what you said to the agent,
- *    what it answered (markdown, with code in its own panel), the ticket's comment
- *    thread, and your own notes. A run's tool work folds into one muted line; the live
- *    "Agent running" rows sit **above** the composer rather than in the scroll, so the
- *    state of the run is always visible. One composer, pinned at the bottom: Enter
- *    sends to the agent, and the note / ticket-comment actions live in its overflow so
- *    Chat has one obvious action.
- *  - **Details** — the status control, the card's steps, its ticket description and the
- *    status-change history. Everything the conversation is not.
+ *  - **The band** (top, fixed): the ticket's identity — type glyph, title, key, priority
+ *    — then the agent controls, the details (status + a foldable, editable description)
+ *    and the steps. A shade lighter than the pane and nothing else — no box, no radius,
+ *    no rules. Capped at 50% height with its own scroll, so a long chain can never
+ *    crowd out the conversation.
+ *  - **The conversation** (below): the only thing that scrolls, unframed — a box around
+ *    a chat is a box around the whole pane, which says nothing. The live-run rows and
+ *    the composer sit under it, also fixed.
  *
- * The agent controls (assign / stop / answer a parked run) stay in `TaskAgentPanel` at
- * the top of Chat: answering a question the agent asked is part of the conversation.
+ * The pane's surface is a step LIGHTER than the board beside it, which is what separates
+ * the two halves of the screen — there is no divider between them. The composer is the
+ * one thing that breaks the single shade (`chat/Composer.tsx`), because the only
+ * editable control on screen has to look like one.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -22,69 +24,72 @@ import {
   Body1,
   Button,
   Caption1,
-  Dropdown,
-  Menu,
-  MenuItem,
-  MenuList,
-  MenuPopover,
-  MenuTrigger,
   MessageBar,
   MessageBarBody,
-  Option,
   Spinner,
   Subtitle2,
-  Tab,
-  TabList,
-  Text,
-  Textarea,
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
-import type { ManualStatus, Project, Task, TaskActivityEntry } from '@shared/model';
+import type { ClaudeModel, PermissionMode } from '@shared/session';
+import type { Project, Task, TaskActivityEntry } from '@shared/model';
 import type { SessionEvent } from '@shared/session';
 import { chatTarget } from '@shared/board';
-import { ChevronLeftRegular, MoreHorizontalRegular, SendRegular } from '@fluentui/react-icons';
+import { ChevronLeftRegular } from '@fluentui/react-icons';
 import { runningSubAgents } from './agentActivity';
 import { stepPosition } from './board/boardColumns';
+import { typeIcon } from './board/TaskCard';
 import { ChatTurns } from './chat/ChatTurns';
+import { Composer } from './chat/Composer';
 import { foldTurns } from './chat/turns';
-import { MANUAL_STATUS_OPTIONS, STATUS_COLOR, STATUS_LABEL } from './taskStatus';
 import { StepBrief, TaskSteps } from './TaskSteps';
 import { TaskAgentPanel } from './TaskAgentPanel';
+import { TaskDetailsCell } from './TaskDetailsCell';
 import { chatAvailability, REFUSAL_HINT } from './taskChat';
 import { usePendingAttention } from './usePendingAttention';
 
 const useStyles = makeStyles({
-  root: { display: 'flex', flexDirection: 'column', gap: '10px', minHeight: 0, flex: 1 },
-  head: { display: 'flex', flexDirection: 'column', gap: '4px' },
+  // No gap: the top band is full-bleed, so spacing belongs to the rows themselves.
+  root: { display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1 },
+  head: { display: 'flex', flexDirection: 'column', gap: '2px' },
   crumbRow: { display: 'flex', alignItems: 'center', gap: '6px', marginLeft: '-8px' },
+  titleRow: { display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 },
+  icon: { fontSize: '16px', display: 'flex', flexShrink: 0 },
+  title: { flex: 1, minWidth: 0 },
+  key: { textDecoration: 'none' },
   phase: { color: tokens.colorNeutralForeground3 },
-  statusRow: { display: 'flex', alignItems: 'center', gap: '10px' },
-  grow: { flex: 1 },
-  /** The tab's body: scrolls as one, so the composer stays put. */
-  pane: { display: 'flex', flexDirection: 'column', gap: '10px', minHeight: 0, flex: 1 },
+  /** Everything below the band keeps the pane's own inset. */
+  inset: { padding: '0 12px' },
+  composerRow: { padding: '0 12px 4px' },
+  /**
+   * Everything the card *is* — its identity, the agent controls, the details, the
+   * steps — in ONE band. No borders, no radius, no rules between the sections: shade
+   * and spacing carry the grouping, which is all a sidebar this narrow can afford.
+   */
+  cell: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '12px',
+    padding: '12px',
+    // A shade lighter than the pane, and nothing else: no box, no radius, no rule under
+    // it and none between its own sections. The change of surface is the whole seam.
+    backgroundColor: tokens.colorNeutralBackground6,
+    // Fixed while the conversation scrolls: this half never moves, and only overflows
+    // into its own scroll when a card really has that much to say.
+    flexShrink: 0,
+    maxHeight: '50%',
+    overflowY: 'auto',
+  },
+  /**
+   * The conversation: unframed, on the pane's own surface, and the ONLY thing that
+   * scrolls — the details band above and the composer below stay put however long the
+   * chat gets.
+   */
   scroll: {
     flex: 1,
     minHeight: 0,
     overflowY: 'auto',
-    padding: '12px',
-    borderRadius: tokens.borderRadiusMedium,
-    backgroundColor: tokens.colorNeutralBackground1,
-    border: `1px solid ${tokens.colorNeutralStroke2}`,
-  },
-  entry: { display: 'flex', alignItems: 'center', gap: '8px' },
-  time: { color: tokens.colorNeutralForeground3, fontSize: '11px' },
-  meta: { color: tokens.colorNeutralForeground3 },
-  description: {
-    whiteSpace: 'pre-wrap',
-    maxHeight: '220px',
-    overflowY: 'auto',
-    padding: '8px 10px',
-    borderRadius: tokens.borderRadiusMedium,
-    backgroundColor: tokens.colorNeutralBackground1,
-    border: `1px solid ${tokens.colorNeutralStroke2}`,
-    color: tokens.colorNeutralForeground2,
-    fontSize: '12px',
+    padding: '10px 12px',
   },
   /** The live run, pinned between the conversation and the composer. */
   runState: { display: 'flex', flexDirection: 'column', gap: '4px' },
@@ -92,23 +97,8 @@ const useStyles = makeStyles({
   runningLabel: { color: tokens.colorNeutralForeground2 },
   subAgent: { paddingLeft: '18px' },
   subAgentLabel: { color: tokens.colorNeutralForeground3 },
-  composer: { display: 'flex', flexDirection: 'column', gap: '6px' },
-  composerRow: { display: 'flex', alignItems: 'flex-end', gap: '8px' },
-  composerHint: { color: tokens.colorNeutralForeground3 },
-  /** Why the chat button is off — stated, not hidden in a tooltip on a dead button. */
-  composerBlocked: { color: tokens.colorPaletteYellowForeground1 },
   empty: { color: tokens.colorNeutralForeground3 },
 });
-
-/** Format an epoch-ms timestamp compactly (e.g. "Jul 7, 14:05"). */
-function fmtTime(ts: number): string {
-  return new Date(ts).toLocaleString([], {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
 
 export interface TaskDetailProps {
   task: Task | null;
@@ -139,7 +129,6 @@ export function TaskDetail({
   onSubtasksChanged,
 }: TaskDetailProps): JSX.Element {
   const styles = useStyles();
-  const [tab, setTab] = useState<'chat' | 'details'>('chat');
   const [activity, setActivity] = useState<TaskActivityEntry[]>([]);
   const [jiraComments, setJiraComments] = useState<TaskActivityEntry[]>([]);
   const [liveEvents, setLiveEvents] = useState<TaskActivityEntry[]>([]);
@@ -216,19 +205,12 @@ export function TaskDetail({
 
   // One chronological story: persisted activity + live JIRA comments + live output.
   // Nothing is filtered here — `foldTurns` decides what the conversation shows and what
-  // collapses, and the Details tab reads the status changes out of the same list.
+  // collapses into a single "worked with N tools" line.
   const timeline = useMemo(
     () => [...activity, ...jiraComments, ...liveEvents].sort((a, b) => a.createdAt - b.createdAt),
     [activity, jiraComments, liveEvents],
   );
   const turns = useMemo(() => foldTurns(timeline), [timeline]);
-  const statusEntries = useMemo(
-    () =>
-      timeline.filter(
-        (e): e is Extract<TaskActivityEntry, { kind: 'status' }> => e.kind === 'status',
-      ),
-    [timeline],
-  );
 
   // Sub-agents the main agent spawned and is still waiting on, derived from the
   // UNFILTERED stream (the tool calls the conversation folds are exactly the evidence).
@@ -252,7 +234,7 @@ export function TaskDetail({
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [turns, subAgents, tab]);
+  }, [turns, subAgents]);
 
   if (!task) {
     return (
@@ -263,18 +245,6 @@ export function TaskDetail({
   }
 
   const managedByAI = task.status === 'running' || task.status === 'waiting-input';
-
-  async function setStatus(next: ManualStatus): Promise<void> {
-    if (!task || next === task.status) return;
-    setError(null);
-    try {
-      const updated = await window.api.invoke('task:setStatus', task.id, next);
-      onStatusChanged?.(updated);
-      await loadActivity();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }
 
   async function addComment(): Promise<void> {
     if (!task || !comment.trim()) return;
@@ -331,13 +301,24 @@ export function TaskDetail({
     }
   }
 
+  /** Model / permission mode for the NEXT run (a live run keeps what it started with). */
+  async function setAgentOptions(options: {
+    model?: ClaudeModel;
+    mode?: PermissionMode;
+  }): Promise<void> {
+    if (!task) return;
+    setError(null);
+    try {
+      onStatusChanged?.(await window.api.invoke('task:setAgentOptions', task.id, options));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   async function deleteComment(id: number): Promise<void> {
     await window.api.invoke('task:deleteComment', id);
     await loadActivity();
   }
-
-  /** The composer's primary action: talk to the agent when there is one to talk to. */
-  const primary = chat?.offered && chat.can ? sendChat : addComment;
 
   const isStep = Boolean(task.parentTaskId);
   const position = isStep ? stepPosition(subtasks, task.id) : null;
@@ -345,219 +326,154 @@ export function TaskDetail({
   // otherwise the message would seem to go to the card you are looking at.
   const chatStepPosition =
     chat && chat.target.id !== task.id ? stepPosition(subtasks, chat.target.id) : null;
+  const agentProject = agentProjects.find((p) => p.id === task.agentProjectId) ?? null;
 
   return (
     <div className={styles.root}>
-      <div className={styles.head}>
-        {parentTask && (
-          <div className={styles.crumbRow}>
-            <Button
-              size="small"
-              appearance="transparent"
-              icon={<ChevronLeftRegular />}
-              onClick={() => onOpenTask?.(parentTask.id)}
-            >
-              {parentTask.title}
-            </Button>
-            {position !== null && (
-              <Caption1 className={styles.phase}>
-                Step {position} of {subtasks.length}
-              </Caption1>
-            )}
+      <div className={styles.cell}>
+        {/* The ticket's own identity heads the band: what this card IS, before what is
+            being done about it. The type glyph is the board card's, so one symbol
+            means one kind of work everywhere. */}
+        <div className={styles.head}>
+          {parentTask && (
+            <div className={styles.crumbRow}>
+              <Button
+                size="small"
+                appearance="transparent"
+                icon={<ChevronLeftRegular />}
+                onClick={() => onOpenTask?.(parentTask.id)}
+              >
+                {parentTask.title}
+              </Button>
+              {position !== null && (
+                <Caption1 className={styles.phase}>
+                  Step {position} of {subtasks.length}
+                </Caption1>
+              )}
+            </div>
+          )}
+          <div className={styles.titleRow}>
+            <span className={styles.icon}>{typeIcon(task)}</span>
+            <Subtitle2 className={styles.title}>{task.title}</Subtitle2>
+            {task.externalKey &&
+              (task.externalUrl ? (
+                <a
+                  className={styles.key}
+                  href={task.externalUrl}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  title="Open the ticket in JIRA"
+                >
+                  <Badge appearance="outline" color="informative">
+                    {task.externalKey}
+                  </Badge>
+                </a>
+              ) : (
+                <Badge appearance="outline" color="informative">
+                  {task.externalKey}
+                </Badge>
+              ))}
           </div>
-        )}
-        <Subtitle2>{task.title}</Subtitle2>
-        {task.phase && !isStep && <Caption1 className={styles.phase}>{task.phase}</Caption1>}
-      </div>
+          <Caption1 className={styles.phase}>
+            {[task.externalType ?? task.type, task.externalPriority, !isStep ? task.phase : null]
+              .filter(Boolean)
+              .join(' · ')}
+          </Caption1>
+        </div>
 
-      <TabList
-        selectedValue={tab}
-        onTabSelect={(_e, d) => setTab(d.value as 'chat' | 'details')}
-        size="small"
-      >
-        <Tab value="chat">Chat</Tab>
-        <Tab value="details">Details</Tab>
-      </TabList>
-
-      {error && (
-        <MessageBar intent="error">
-          <MessageBarBody>{error}</MessageBarBody>
-        </MessageBar>
-      )}
-
-      {tab === 'chat' ? (
-        <div className={styles.pane}>
-          <TaskAgentPanel
+        <TaskAgentPanel
+          task={task}
+          subtasks={subtasks}
+          agentProjects={agentProjects}
+          onOpenTask={onOpenTask}
+          onTaskChanged={(updated) => {
+            onStatusChanged?.(updated);
+            void loadActivity();
+          }}
+        />
+        {/* A step's brief replaces the card's details + steps — it is the whole spec. */}
+        {isStep ? (
+          <StepBrief
             task={task}
-            subtasks={subtasks}
-            agentProjects={agentProjects}
-            onOpenTask={onOpenTask}
-            onTaskChanged={(updated) => {
+            onChanged={(updated) => {
               onStatusChanged?.(updated);
-              void loadActivity();
+              onSubtasksChanged?.();
             }}
           />
-
-          <div className={styles.scroll} ref={scrollRef}>
-            {turns.length === 0 && !managedByAI ? (
-              <Caption1 className={styles.empty}>
-                Nothing said yet — write a note, or send the agent a message.
-              </Caption1>
-            ) : (
-              <ChatTurns turns={turns} onDeleteNote={(id) => void deleteComment(id)} />
-            )}
-          </div>
-
-          {/* The live state sits ABOVE the composer, so it never scrolls out of sight:
-              the agent itself, then a row per sub-agent it is still waiting on. */}
-          {managedByAI && (
-            <div className={styles.runState}>
-              <div className={styles.running}>
-                <Spinner size="tiny" />
-                <Caption1 className={styles.runningLabel}>Agent running</Caption1>
-              </div>
-              {subAgents.map((agent) => (
-                <div key={agent.toolId} className={`${styles.running} ${styles.subAgent}`}>
-                  <Spinner size="tiny" />
-                  <Caption1 className={styles.runningLabel}>Agent running</Caption1>
-                  {agent.label && (
-                    <Caption1 className={styles.subAgentLabel}>· {agent.label}</Caption1>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div className={styles.composer}>
-            {chat?.offered && chatStepPosition !== null && (
-              <Caption1 className={styles.composerHint}>
-                Talking to step {chatStepPosition} of {subtasks.length} — {chat.target.title}
-              </Caption1>
-            )}
-            {chat?.offered && !chat.can && (
-              <Caption1 className={styles.composerBlocked}>{chat.hint}</Caption1>
-            )}
-            <div className={styles.composerRow}>
-              <Textarea
-                className={styles.grow}
-                value={comment}
-                onChange={(_e, d) => setComment(d.value)}
-                onKeyDown={(e) => {
-                  // Enter sends, Shift+Enter is a newline — the CLI's own contract.
-                  if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                    e.preventDefault();
-                    if (!busy && comment.trim()) void primary();
-                  }
-                }}
-                placeholder={
-                  chat?.offered
-                    ? 'Message the agent…  (Enter sends, Shift+Enter for a new line)'
-                    : 'Add a progress note…  (context for when you come back)'
-                }
-                resize="vertical"
-              />
-              <Button
-                appearance="primary"
-                icon={<SendRegular />}
-                title={chat?.offered ? chat.hint : 'Save a note on this card'}
-                disabled={busy || !comment.trim() || (chat?.offered === true && !chat.can)}
-                onClick={() => void primary()}
-              >
-                {chat?.offered && chat.can ? 'Send' : 'Add note'}
-              </Button>
-              <Menu>
-                <MenuTrigger disableButtonEnhancement>
-                  <Button
-                    appearance="subtle"
-                    icon={<MoreHorizontalRegular />}
-                    title="Other places this text can go"
-                  />
-                </MenuTrigger>
-                <MenuPopover>
-                  <MenuList>
-                    <MenuItem disabled={busy || !comment.trim()} onClick={() => void addComment()}>
-                      Save as a note
-                    </MenuItem>
-                    {isJira && (
-                      <MenuItem
-                        disabled={busy || !comment.trim()}
-                        onClick={() => void addJiraComment()}
-                      >
-                        Comment on the ticket
-                      </MenuItem>
-                    )}
-                  </MenuList>
-                </MenuPopover>
-              </Menu>
-            </div>
-          </div>
-        </div>
-      ) : (
-        <div className={styles.pane}>
-          <div className={styles.statusRow}>
-            <Text>Status</Text>
-            <Dropdown
-              value={STATUS_LABEL[task.status]}
-              selectedOptions={[task.status]}
-              disabled={managedByAI}
-              onOptionSelect={(_e, d) => {
-                if (d.optionValue) void setStatus(d.optionValue as ManualStatus);
-              }}
-            >
-              {MANUAL_STATUS_OPTIONS.map((o) => (
-                <Option key={o.value} value={o.value}>
-                  {o.label}
-                </Option>
-              ))}
-            </Dropdown>
-            {managedByAI && (
-              <Caption1 className={styles.meta}>Stop the session to change status.</Caption1>
-            )}
-          </div>
-
-          {task.dependsOn?.length > 0 && (
-            <Caption1 className={styles.phase}>Depends on: {task.dependsOn.join(', ')}</Caption1>
-          )}
-
-          {isStep ? (
-            <StepBrief
+        ) : (
+          <>
+            <TaskDetailsCell
               task={task}
-              onChanged={(updated) => {
-                onStatusChanged?.(updated);
-                onSubtasksChanged?.();
-              }}
+              managedByAI={managedByAI}
+              onTaskChanged={(updated) => onStatusChanged?.(updated)}
+              onEdited={() => void loadActivity()}
             />
-          ) : (
             <TaskSteps
               task={task}
               subtasks={subtasks}
               onOpen={(id) => onOpenTask?.(id)}
               onChanged={() => onSubtasksChanged?.()}
             />
-          )}
+          </>
+        )}
+      </div>
 
-          {task.externalDescription && (
-            <div className={styles.description}>{task.externalDescription}</div>
-          )}
-
-          <div className={styles.scroll}>
-            {statusEntries.length === 0 ? (
-              <Caption1 className={styles.empty}>No status changes yet.</Caption1>
-            ) : (
-              statusEntries.map((entry) => (
-                <div key={`s${entry.id}`} className={styles.entry}>
-                  <Text className={styles.meta}>Status →</Text>
-                  <Badge appearance="tint" color={STATUS_COLOR[entry.to]}>
-                    {STATUS_LABEL[entry.to]}
-                  </Badge>
-                  <span className={styles.grow} />
-                  <Caption1 className={styles.time}>{fmtTime(entry.createdAt)}</Caption1>
-                </div>
-              ))
-            )}
-          </div>
+      {error && (
+        <div className={styles.inset}>
+          <MessageBar intent="error">
+            <MessageBarBody>{error}</MessageBarBody>
+          </MessageBar>
         </div>
       )}
+
+      <div className={styles.scroll} ref={scrollRef}>
+        {turns.length === 0 && !managedByAI ? (
+          <Caption1 className={styles.empty}>
+            Nothing said yet — write a note, or send the agent a message.
+          </Caption1>
+        ) : (
+          <ChatTurns turns={turns} onDeleteNote={(id) => void deleteComment(id)} />
+        )}
+      </div>
+
+      {/* The live state sits ABOVE the composer, so it never scrolls out of sight:
+          the agent itself, then a row per sub-agent it is still waiting on. */}
+      {managedByAI && (
+        <div className={`${styles.runState} ${styles.inset}`}>
+          <div className={styles.running}>
+            <Spinner size="tiny" />
+            <Caption1 className={styles.runningLabel}>Agent running</Caption1>
+          </div>
+          {subAgents.map((agent) => (
+            <div key={agent.toolId} className={`${styles.running} ${styles.subAgent}`}>
+              <Spinner size="tiny" />
+              <Caption1 className={styles.runningLabel}>Agent running</Caption1>
+              {agent.label && <Caption1 className={styles.subAgentLabel}>· {agent.label}</Caption1>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className={styles.composerRow}>
+        <Composer
+          task={task}
+          agentProject={agentProject}
+          chat={chat}
+          stepCaption={
+            chat?.offered && chatStepPosition !== null
+              ? `Talking to step ${chatStepPosition} of ${subtasks.length} — ${chat.target.title}`
+              : null
+          }
+          value={comment}
+          onChange={setComment}
+          busy={busy}
+          isJira={isJira}
+          onSendChat={() => void sendChat()}
+          onAddNote={() => void addComment()}
+          onAddJiraComment={() => void addJiraComment()}
+          onAgentOptions={(options) => void setAgentOptions(options)}
+        />
+      </div>
     </div>
   );
 }
