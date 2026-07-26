@@ -116,6 +116,27 @@ export function chatTarget(task: Task, subtasks: Task[]): Task {
 }
 
 /**
+ * Whether a card's approved plan is still in flight (Phase 12) — some step can still
+ * start, is working, or is parked waiting for a resolution that will start the next one.
+ *
+ * This is what stops a chat message from **resuming the parent** mid-chain: a card that
+ * has handed over to a plan holds only its planner's session, and a run started from it
+ * would both re-open a conversation that is over and race the chain for the card's shared
+ * worktree. `done`/`cancelled`/`stopped` steps are inert — nothing will move them — so a
+ * finished or abandoned chain leaves the card free to talk again.
+ */
+export function chainInFlight(subtasks: Task[]): boolean {
+  return subtasks.some(
+    (s) =>
+      s.status === 'pending' ||
+      s.status === 'running' ||
+      s.status === 'waiting-input' ||
+      s.status === 'blocked-by-limit' ||
+      s.status === 'failed',
+  );
+}
+
+/**
  * Whether an agent is working this task **right now** — the card (or step row) shows a
  * spinner. Deliberately narrower than "in progress": `in-progress` is a status a human
  * sets by dragging a card, while `running` only ever comes from a live session. A card

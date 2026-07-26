@@ -28,13 +28,14 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import type {
+  ChatRefusal,
   ChatSendResult,
   Project,
   Task,
   TaskActivityEntry,
   TaskStatus,
 } from '@shared/model';
-import { chatTarget } from '@shared/board';
+import { chainInFlight, chatTarget } from '@shared/board';
 import type { SchedulerState, TaskChange, SchedulerChange, ActiveRun } from '@shared/scheduler';
 import type {
   ClaudeModel,
@@ -435,6 +436,13 @@ interface Run {
    */
   permissionMode?: PermissionMode;
   model?: ClaudeModel;
+  /**
+   * (Phase 12) The human's chat message, when this run exists only to carry it into a
+   * resumed conversation. It becomes the session's prompt in place of the resume nudge
+   * or a rebuilt brief — the point of the run is that the agent hears exactly what was
+   * typed. Absent on every ordinary run.
+   */
+  chatPrompt?: string;
   /** Set once we've decided the task's outcome, so a trailing `exited` doesn't re-settle it. */
   settled: boolean;
   /** (Worktree mode) the task's branch, set once the worktree is prepared. */
@@ -811,8 +819,8 @@ export class Scheduler {
    * actually received it.
    *
    * What it does, in order:
-   *  - **Nothing live** → refuse, saying whether there is a session to resume at all.
-   *    (Phase 2 turns `not-running` into a `--resume` run carrying this message.)
+   *  - **Nothing live** → `resumeForChat`: continue the last conversation with `--resume`,
+   *    or refuse with the reason there is nothing to continue.
    *  - **A held tool call** (a permission request, or a plan awaiting approval) → refuse:
    *    the CLI is blocked on an approve/deny for one specific call and prose cannot
    *    answer it. Sending anyway would queue the text behind a decision that may never
@@ -836,18 +844,7 @@ export class Scheduler {
       ? undefined
       : [...this.runs.values()].find((r) => r.taskId === target.id);
 
-    if (!run) {
-      // A limit-parked task has a session and will resume on its own; say so rather than
-      // offering a resume that the gate would refuse anyway.
-      if (target.status === 'blocked-by-limit' || (this.limitGate.state && !target.sessionId)) {
-        return { status: 'refused', taskId: target.id, reason: 'limit' };
-      }
-      return {
-        status: 'refused',
-        taskId: target.id,
-        reason: target.sessionId ? 'not-running' : 'never-ran',
-      };
-    }
+    if (!run) return this.resumeForChat(target, text);
 
     const held = [...this.attention.values()].find(
       (item) =>
@@ -864,6 +861,43 @@ export class Scheduler {
     else this.sessions.send(run.runId, text);
 
     return { status: 'sent', taskId: target.id, runId: run.runId };
+  }
+
+  /**
+   * Nobody is listening: continue the target's last conversation with `claude --resume`,
+   * prompted with what the human typed (Phase 12, phase 2).
+   *
+   * This is a **real run** — reserved slot, worktree prepared with the chain's owner,
+   * settled and integrated like any other — not a side channel, which is why every reason
+   * it must not start is checked here first:
+   *
+   *  - `never-ran`: no session id, so there is nothing to continue. Chat deliberately does
+   *    not start a conversation from nothing — that is what *Assign to an agent* is for.
+   *  - `limit`: a usage limit holds all work account-wide. A parked task resumes by itself
+   *    when the gate reopens, so starting a run now would only be killed again.
+   *  - `chain-busy`: the card handed over to an approved plan; see `chainInFlight`.
+   *
+   * The message is recorded before the run starts, so the timeline reads in the order it
+   * happened even if the session dies on spawn.
+   */
+  private resumeForChat(target: Task, text: string): ChatSendResult {
+    const refused = (reason: ChatRefusal): ChatSendResult => ({
+      status: 'refused',
+      taskId: target.id,
+      reason,
+    });
+    if (this.disposed) return refused('not-running');
+    if (!target.sessionId) return refused(this.limitGate.active ? 'limit' : 'never-ran');
+    if (this.limitGate.active || target.status === 'blocked-by-limit') return refused('limit');
+    if (!target.parentTaskId && chainInFlight(this.store.getSubtasks(target.id))) {
+      return refused('chain-busy');
+    }
+    const project = this.runProjectFor(target);
+    if (!project) return refused('never-ran');
+
+    this.store.addChatMessage(target.projectId, target.id, text);
+    const runId = this.startTask(project, target, { chatPrompt: text });
+    return { status: 'resumed', taskId: target.id, runId };
   }
 
   stopTask(taskId: string): boolean {
@@ -1292,14 +1326,19 @@ export class Scheduler {
    * over-fills the project's concurrency. In worktree mode the actual session start
    * is deferred until the git worktree is prepared; the shared-dir path (and unit
    * tests without a WorktreeManager) starts the session synchronously as before.
+   *
+   * `opts.chatPrompt` (Phase 12) makes this a chat resume: the run is identical in every
+   * other respect — same reservation, worktree, settling and integration — but the
+   * session is prompted with what the human typed.
    */
-  private startTask(project: Project, task: Task): string {
+  private startTask(project: Project, task: Task, opts: { chatPrompt?: string } = {}): string {
     const runId = randomUUID();
     const run: Run = {
       taskId: task.id,
       projectId: project.id,
       runId,
       settled: false,
+      chatPrompt: opts.chatPrompt,
       // A per-assignment override (chosen in the assign dialog) beats the project
       // default, and is captured on the run so every later decision — permissions
       // above all — judges the run the human actually authorized.
@@ -1407,14 +1446,19 @@ export class Scheduler {
     const planRel = relative(project.path, project.planPath) || project.planPath;
     // An "AI fix & retry" resolution queued a failure note for this task's next run:
     // build a full fix-prompt (even when resuming) so the agent gets the failure
-    // context, and consume it so it applies only once.
-    const failureNote = this.fixNotes.get(task.id);
-    this.fixNotes.delete(task.id);
+    // context, and consume it so it applies only once. A chat run deliberately leaves
+    // it queued: the human asking a question is not the retry that note was written for.
+    const failureNote = run.chatPrompt ? undefined : this.fixNotes.get(task.id);
+    if (!run.chatPrompt) this.fixNotes.delete(task.id);
     const branch = prep.mode === 'worktree' ? prep.branch : undefined;
+    // What the session is told to do, in order of specificity: the human's own words
+    // (Phase 12 chat), else a nudge to carry on an existing conversation, else the full
+    // brief for a fresh run.
     const prompt =
-      resumeSessionId && !failureNote
+      run.chatPrompt ??
+      (resumeSessionId && !failureNote
         ? RESUME_NUDGE
-        : this.buildPrompt(project, task, { branch, planRel, failureNote, comments });
+        : this.buildPrompt(project, task, { branch, planRel, failureNote, comments }));
     const request: StartSessionRequest = {
       prompt,
       cwd: prep.cwd,

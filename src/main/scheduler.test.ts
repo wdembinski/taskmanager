@@ -1143,9 +1143,21 @@ describe('Scheduler.chatWithAgent (Phase 12)', () => {
     );
     const all = [card, ...steps];
     const chats: Array<{ taskId: string; body: string }> = [];
+    const agentProject = {
+      id: 'agent-p',
+      name: 'Agent repo',
+      path: '/repo',
+      planPath: '/repo/PLAN.md',
+      kind: 'agent',
+      concurrency: 1,
+      useWorktrees: false,
+      defaultModel: 'sonnet',
+      defaultPermissionMode: 'default',
+    } as unknown as Project;
     const store = {
       getTask: (id: string) => all.find((t) => t.id === id),
       getTasks: () => all,
+      getProject: (id: string) => (id === 'agent-p' ? agentProject : undefined),
       getSubtasks: (parentId: string) => steps.filter((s) => s.parentTaskId === parentId),
       updateTask: (id: string, patch: Partial<Task>) => {
         const t = all.find((x) => x.id === id);
@@ -1157,9 +1169,11 @@ describe('Scheduler.chatWithAgent (Phase 12)', () => {
         return undefined;
       },
       getSettings: () => ({ limitJitterMs: 0, concurrency: 1, maxAutoRetries: 0 }),
+      saveLimitGate: () => undefined,
     } as unknown as Store;
     const send = vi.fn();
-    const sessions = { start: vi.fn(), stop: vi.fn(), send } as unknown as SessionManager;
+    const start = vi.fn();
+    const sessions = { start, stop: vi.fn(), send } as unknown as SessionManager;
     const resolved = vi.fn();
     const scheduler = new Scheduler(
       store,
@@ -1190,7 +1204,7 @@ describe('Scheduler.chatWithAgent (Phase 12)', () => {
         createdAt: 0,
       });
     }
-    return { scheduler, card, steps, send, chats, resolved };
+    return { scheduler, card, steps, send, start, chats, resolved };
   }
 
   it('sends into the live session and records the message on the timeline', () => {
@@ -1247,14 +1261,72 @@ describe('Scheduler.chatWithAgent (Phase 12)', () => {
     }
   });
 
-  it('refuses with not-running when there is a session but no live run (Phase 2 resumes)', () => {
-    const { scheduler, chats } = setupChat({ card: { status: 'in-progress' } });
-    expect(scheduler.chatWithAgent('c1', 'still there?')).toEqual({
-      status: 'refused',
-      taskId: 'c1',
-      reason: 'not-running',
+  it('resumes an idle card by session id, with the message as the prompt', () => {
+    const { scheduler, start, chats } = setupChat({ card: { status: 'in-progress' } });
+    const result = scheduler.chatWithAgent('c1', '  still there?  ');
+    expect(result.status).toBe('resumed');
+    expect(result).toMatchObject({ taskId: 'c1' });
+    expect(chats).toEqual([{ taskId: 'c1', body: 'still there?' }]);
+    // The user's words are the prompt — NOT the resume nudge — and the conversation is
+    // continued rather than started over.
+    const [request, opts] = start.mock.calls[0];
+    expect(request.prompt).toBe('still there?');
+    expect(opts.resumeSessionId).toBe('sess-1');
+    // A real run: reserved, counted, and reported to the Board like any other.
+    expect(scheduler.activeRuns()).toEqual([
+      { taskId: 'c1', runId: (result as { runId: string }).runId },
+    ]);
+  });
+
+  it('resumes the step you selected, not its parent', () => {
+    const { scheduler, start, chats } = setupChat({
+      card: { status: 'in-progress' },
+      steps: [
+        { status: 'done', sessionId: 'sess-a' },
+        { status: 'done', sessionId: 'sess-b' },
+      ],
     });
-    expect(chats).toEqual([]);
+    expect(scheduler.chatWithAgent('s2', 'why did you drop the index?')).toMatchObject({
+      status: 'resumed',
+      taskId: 's2',
+    });
+    expect(start.mock.calls[0][1].resumeSessionId).toBe('sess-b');
+    expect(chats).toEqual([{ taskId: 's2', body: 'why did you drop the index?' }]);
+  });
+
+  it('resumes the card once its chain has finished', () => {
+    const { scheduler, start } = setupChat({
+      card: { status: 'in-progress' },
+      steps: [{ status: 'done' }, { status: 'cancelled' }],
+    });
+    expect(scheduler.chatWithAgent('c1', 'how did that go?')).toMatchObject({ status: 'resumed' });
+    expect(start.mock.calls[0][1].resumeSessionId).toBe('sess-1');
+  });
+
+  it('refuses to resume a card mid-chain — its steps hold the conversation', () => {
+    for (const status of ['pending', 'failed', 'blocked-by-limit'] as const) {
+      const { scheduler, start, chats } = setupChat({
+        card: { status: 'in-progress' },
+        steps: [{ status: 'done' }, { status }],
+      });
+      expect(scheduler.chatWithAgent('c1', 'what now?')).toEqual({
+        status: 'refused',
+        taskId: 'c1',
+        reason: 'chain-busy',
+      });
+      expect(start).not.toHaveBeenCalled();
+      expect(chats).toEqual([]);
+    }
+  });
+
+  it('leaves a queued fix note for the retry it was written for', () => {
+    const { scheduler, start } = setupChat({ card: { status: 'failed' } });
+    const fixNotes = (scheduler as unknown as { fixNotes: Map<string, string> }).fixNotes;
+    fixNotes.set('c1', 'the build broke');
+    scheduler.chatWithAgent('c1', 'what failed?');
+    // The chat prompt wins, and the note is still there for the real retry.
+    expect(start.mock.calls[0][0].prompt).toBe('what failed?');
+    expect(fixNotes.get('c1')).toBe('the build broke');
   });
 
   it('refuses with never-ran when the card has no session at all', () => {
@@ -1267,12 +1339,30 @@ describe('Scheduler.chatWithAgent (Phase 12)', () => {
   });
 
   it('refuses a limit-parked card with the limit reason, not a resume', () => {
-    const { scheduler } = setupChat({ card: { status: 'blocked-by-limit' } });
+    const { scheduler, start } = setupChat({ card: { status: 'blocked-by-limit' } });
     expect(scheduler.chatWithAgent('c1', 'any progress?')).toEqual({
       status: 'refused',
       taskId: 'c1',
       reason: 'limit',
     });
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('refuses while the usage-limit gate is up — a resume would be killed at once', () => {
+    const { scheduler, start } = setupChat({ card: { status: 'in-progress' } });
+    const gate = (
+      scheduler as unknown as {
+        limitGate: { engage: (s: unknown, ids: string[]) => void; dispose: () => void };
+      }
+    ).limitGate;
+    gate.engage({ status: 'rejected', rateLimitType: 'rolling', resetsAt: null }, []);
+    expect(scheduler.chatWithAgent('c1', 'are you back?')).toEqual({
+      status: 'refused',
+      taskId: 'c1',
+      reason: 'limit',
+    });
+    expect(start).not.toHaveBeenCalled();
+    gate.dispose(); // don't leave the reset timer armed for the rest of the suite
   });
 
   it('refuses an empty message and an unknown task', () => {

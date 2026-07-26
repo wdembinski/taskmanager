@@ -391,10 +391,15 @@ export type ChatRefusal =
   /** The run is blocked on a permission request or a plan approval — free text cannot
    *  answer either; the human has to approve/deny that item first. */
   | 'awaiting-decision'
-  /** Nothing is running, but the task has a session to resume (Phase 2 does the resume). */
+  /** Nothing is running and nothing can be started (the scheduler is shutting down). */
   | 'not-running'
   /** The task has never run, so there is no conversation to continue. */
   | 'never-ran'
+  /**
+   * The card handed over to an approved plan and that chain has not finished: its steps
+   * hold the conversation, so talk to the live step — or resolve the parked one first.
+   */
+  | 'chain-busy'
   /** A usage limit is holding all work; the message would go nowhere. */
   | 'limit'
   | 'unknown-task'
@@ -408,7 +413,7 @@ export type ChatRefusal =
 export type ChatSendResult =
   /** Pushed into a live session's open input stream. */
   | { status: 'sent'; taskId: string; runId: string }
-  /** Started a run with `--resume` and the message as its prompt (Phase 2). */
+  /** Started a run with `--resume` and the message as its prompt. */
   | { status: 'resumed'; taskId: string; runId: string }
   | { status: 'refused'; taskId: string; reason: ChatRefusal };
 

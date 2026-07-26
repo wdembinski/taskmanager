@@ -3,6 +3,7 @@ import { PERSONAL_PROJECT_ID, type Task } from './model';
 import {
   categoryFromKey,
   categoryToColumn,
+  chainInFlight,
   chatTarget,
   hasUnreadJira,
   isAgentAssigned,
@@ -121,4 +122,23 @@ describe('chatTarget', () => {
   it('is the card when it has no steps at all', () => {
     expect(chatTarget(parent, []).id).toBe('c1');
   });
+});
+
+describe('chainInFlight', () => {
+  const step = (status: Task['status']): Task => task({ id: status, status, parentTaskId: 'c1' });
+
+  it('is false for a card with no plan', () => {
+    expect(chainInFlight([])).toBe(false);
+  });
+
+  it('is false once every step is inert', () => {
+    expect(chainInFlight([step('done'), step('cancelled'), step('stopped')])).toBe(false);
+  });
+
+  it.each(['pending', 'running', 'waiting-input', 'blocked-by-limit', 'failed'] as const)(
+    'is true while a step is %s — it can still move',
+    (status) => {
+      expect(chainInFlight([step('done'), step(status)])).toBe(true);
+    },
+  );
 });
