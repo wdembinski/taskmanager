@@ -10,13 +10,14 @@ import { TaskCard } from './TaskCard';
 import type { BoardCard, BoardColumn } from './boardColumns';
 
 const useStyles = makeStyles({
+  // A grid item of the board's scroll container (`MyTasks.columns`): it stretches to
+  // the tallest column, so the drop zone always reaches the bottom of the board.
   column: {
     display: 'flex',
     flexDirection: 'column',
-    gap: '10px',
-    flex: '1 1 0',
+    // No gap here: the sticky header carries the space below it as padding, so a card
+    // scrolling under it disappears at the header's edge instead of through a gap.
     minWidth: 0,
-    minHeight: 0,
     padding: '4px',
     borderRadius: tokens.borderRadiusMedium,
     border: '1px solid transparent',
@@ -25,14 +26,26 @@ const useStyles = makeStyles({
     border: `1px dashed ${tokens.colorBrandStroke1}`,
     backgroundColor: tokens.colorNeutralBackground2,
   },
-  header: { display: 'flex', alignItems: 'baseline', gap: '8px', padding: '0 4px' },
+  // Sticky: the board scrolls as a whole, so without this every column's label would
+  // scroll away and you'd lose track of which column you are looking at.
+  header: {
+    display: 'flex',
+    alignItems: 'baseline',
+    gap: '8px',
+    padding: '2px 4px 10px',
+    position: 'sticky',
+    top: 0,
+    zIndex: 1,
+    backgroundColor: tokens.colorNeutralBackground2,
+  },
   headerLabel: { color: tokens.colorNeutralForeground2, letterSpacing: '0.04em' },
   count: { color: tokens.colorNeutralForeground3 },
+  // No scroll of its own — the board's column container owns that. `flex: 1` keeps the
+  // empty space below the last card inside the drop zone.
   list: {
     display: 'flex',
     flexDirection: 'column',
     gap: '10px',
-    overflowY: 'auto',
     minHeight: '40px',
     flex: 1,
   },

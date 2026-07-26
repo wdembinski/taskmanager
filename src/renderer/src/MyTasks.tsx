@@ -46,7 +46,20 @@ const useStyles = makeStyles({
   },
   toolbar: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' },
   grow: { flex: 1 },
-  columns: { display: 'flex', gap: '12px', flex: 1, minHeight: 0 },
+  // The whole board scrolls as one — not each column on its own — so the columns stay
+  // aligned with each other while you scroll. A grid (rather than a flex row) is what
+  // makes that work: the single auto row sizes to the *tallest* column, every column
+  // stretches to it (so a short column is still a full-height drop target), and this
+  // container is the only thing that scrolls.
+  columns: {
+    display: 'grid',
+    gridAutoFlow: 'column',
+    gridAutoColumns: 'minmax(0, 1fr)',
+    gap: '12px',
+    flex: 1,
+    minHeight: 0,
+    overflowY: 'auto',
+  },
   right: {
     flex: '1 1 40%',
     display: 'flex',

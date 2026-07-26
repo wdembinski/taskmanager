@@ -97,3 +97,14 @@ export function needsAgentInput(task: Task): boolean {
 export function isAgentAssigned(task: Task): boolean {
   return Boolean(task.agentProjectId);
 }
+
+/**
+ * Whether an agent is working this task **right now** — the card (or step row) shows a
+ * spinner. Deliberately narrower than "in progress": `in-progress` is a status a human
+ * sets by dragging a card, while `running` only ever comes from a live session. A card
+ * parked on a question or behind the usage-limit gate is *not* running: nothing is
+ * moving, and a spinner would claim otherwise.
+ */
+export function isAgentRunning(task: Task): boolean {
+  return isAgentAssigned(task) && task.status === 'running';
+}

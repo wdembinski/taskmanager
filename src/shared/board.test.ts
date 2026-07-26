@@ -5,6 +5,7 @@ import {
   categoryToColumn,
   hasUnreadJira,
   isAgentAssigned,
+  isAgentRunning,
   needsAgentInput,
 } from './board';
 
@@ -69,6 +70,22 @@ describe('needsAgentInput', () => {
   it('is false for an idle card', () => {
     expect(needsAgentInput(task({ status: 'pending' }))).toBe(false);
     expect(needsAgentInput(task({ status: 'blocked-by-limit' }))).toBe(false);
+  });
+});
+
+describe('isAgentRunning', () => {
+  it('is true only for a delegated card with a live session', () => {
+    expect(isAgentRunning(task({ agentProjectId: 'p1', status: 'running' }))).toBe(true);
+  });
+  it('is false for a card a human merely moved to In Progress', () => {
+    expect(isAgentRunning(task({ agentProjectId: 'p1', status: 'in-progress' }))).toBe(false);
+  });
+  it('is false while parked — nothing is moving to spin about', () => {
+    expect(isAgentRunning(task({ agentProjectId: 'p1', status: 'waiting-input' }))).toBe(false);
+    expect(isAgentRunning(task({ agentProjectId: 'p1', status: 'blocked-by-limit' }))).toBe(false);
+  });
+  it('is false when the task was never delegated', () => {
+    expect(isAgentRunning(task({ status: 'running' }))).toBe(false);
   });
 });
 

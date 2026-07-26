@@ -18,6 +18,7 @@ import {
   Input,
   MessageBar,
   MessageBarBody,
+  Spinner,
   Text,
   Textarea,
   makeStyles,
@@ -25,6 +26,7 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import type { Task } from '@shared/model';
+import { isAgentRunning } from '@shared/board';
 import { subtaskProgress } from './board/boardColumns';
 import { STATUS_COLOR, STATUS_LABEL } from './taskStatus';
 
@@ -171,9 +173,15 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
             >
               <Caption1 className={styles.index}>{i + 1}.</Caption1>
               <Text className={styles.title}>{step.title}</Text>
-              <Badge appearance="tint" color={STATUS_COLOR[step.status]}>
-                {STATUS_LABEL[step.status]}
-              </Badge>
+              {/* A running step spins instead of wearing a static badge; the highlight
+                  says which row, the spinner says it is actually moving. */}
+              {isAgentRunning(step) ? (
+                <Spinner size="extra-tiny" label="Running" labelPosition="after" />
+              ) : (
+                <Badge appearance="tint" color={STATUS_COLOR[step.status]}>
+                  {STATUS_LABEL[step.status]}
+                </Badge>
+              )}
             </div>
           ))}
         </div>

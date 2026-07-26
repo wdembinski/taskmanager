@@ -15,6 +15,7 @@
 import {
   Badge,
   Caption1,
+  Spinner,
   Text,
   Tooltip,
   makeStyles,
@@ -33,7 +34,7 @@ import {
   TaskListSquareLtrFilled,
 } from '@fluentui/react-icons';
 import type { Task, TaskStatus } from '@shared/model';
-import { hasUnreadJira, isAgentAssigned, needsAgentInput } from '@shared/board';
+import { hasUnreadJira, isAgentAssigned, isAgentRunning, needsAgentInput } from '@shared/board';
 import { STATUS_COLOR, STATUS_LABEL } from '../taskStatus';
 import { columnForStatus, statusForColumn, subtaskProgress } from './boardColumns';
 
@@ -55,6 +56,10 @@ const useStyles = makeStyles({
     border: `1px solid ${tokens.colorNeutralStroke2}`,
     // Step rows sit flush against the frame, so they must be clipped by its radius.
     overflow: 'hidden',
+    // ...but `overflow: hidden` also drops this flex item's automatic minimum size to
+    // zero, so inside the column's scrolling list the card would shrink and clip its
+    // own step rows instead of making the column scroll. Never shrink a card.
+    flexShrink: 0,
     cursor: 'pointer',
     userSelect: 'none',
   },
@@ -70,7 +75,18 @@ const useStyles = makeStyles({
     backgroundColor: tokens.colorNeutralBackground2,
   },
   stepSelected: { backgroundColor: tokens.colorNeutralBackground1Selected },
+  // The spinner (16px) and the dot (8px) share this slot so every row's title starts
+  // at the same x, whichever glyph the row is showing.
+  stepSlot: {
+    width: '16px',
+    height: '16px',
+    flexShrink: 0,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   stepDot: { width: '8px', height: '8px', borderRadius: '50%', flexShrink: 0 },
+  spinner: { display: 'flex', alignItems: 'center', flexShrink: 0 },
   stepTitle: {
     flex: 1,
     minWidth: 0,
@@ -211,6 +227,12 @@ export function TaskCard({
   const wantsAttention =
     hasUnreadJira(task) || needsAgentInput(task) || subtasks.some((s) => needsAgentInput(s));
   const progress = subtaskProgress(subtasks);
+  // A live agent session gets a spinner rather than a static "Running" badge — the
+  // motion is the point: it says work is happening now. The card itself runs when it
+  // was delegated without steps; with steps it stays `in-progress` while one of them
+  // runs, so a live step also makes the card read as live.
+  const running = isAgentRunning(task);
+  const runningStep = subtasks.some(isAgentRunning);
 
   return (
     <div
@@ -253,7 +275,20 @@ export function TaskCard({
               </span>
             </Tooltip>
           )}
-          {badge && (
+          {/* Bare on purpose, and identical whether the card itself runs or one of its
+              steps does: on a board those look like the same thing, so labelling one
+              "Running" and not the other reads as an inconsistency rather than as the
+              distinction it is. The word lives in the tooltip and the detail pane. */}
+          {(running || runningStep) && (
+            <span
+              className={styles.spinner}
+              title={running ? 'The agent is working on this card' : 'A step is running'}
+            >
+              <Spinner size="extra-tiny" />
+            </span>
+          )}
+          {/* A running card's badge would only repeat the spinner. */}
+          {badge && !running && (
             <Badge appearance="tint" color={STATUS_COLOR[badge]}>
               {STATUS_LABEL[badge]}
             </Badge>
@@ -307,10 +342,18 @@ export function TaskCard({
             onSelectSubtask?.(step.id);
           }}
         >
-          <span
-            className={styles.stepDot}
-            style={{ backgroundColor: STEP_DOT_COLOR[step.status] }}
-          />
+          {/* One fixed-width slot for the status glyph, so the running row's spinner
+              doesn't shove its title out of line with its siblings' dots. */}
+          <span className={styles.stepSlot}>
+            {isAgentRunning(step) ? (
+              <Spinner size="extra-tiny" />
+            ) : (
+              <span
+                className={styles.stepDot}
+                style={{ backgroundColor: STEP_DOT_COLOR[step.status] }}
+              />
+            )}
+          </span>
           <Caption1
             className={mergeClasses(styles.stepTitle, step.status === 'done' && styles.stepDone)}
           >
