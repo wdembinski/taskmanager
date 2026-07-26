@@ -12,13 +12,32 @@
  */
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { FluentProvider, webDarkTheme } from '@fluentui/react-components';
+import { FluentProvider, webDarkTheme, type Theme } from '@fluentui/react-components';
 import { App } from './App';
 import './index.css';
 
+/**
+ * The dark theme with **softer body text**.
+ *
+ * Fluent's dark theme sets `colorNeutralForeground1` to pure white, which is what a
+ * code editor deliberately avoids: at this text density white-on-near-black glares and
+ * every word reads as emphasis. The editor grey (#CCCCCC) is the reference the user
+ * asked for — headings and semibold text still read as brighter because they gain
+ * weight, not luminance. Everything else stays stock Fluent, so contrast ratios for
+ * brand/danger/success surfaces are untouched.
+ */
+const EDITOR_FOREGROUND = '#CCCCCC';
+const appTheme: Theme = {
+  ...webDarkTheme,
+  colorNeutralForeground1: EDITOR_FOREGROUND,
+  colorNeutralForeground1Hover: EDITOR_FOREGROUND,
+  colorNeutralForeground1Pressed: EDITOR_FOREGROUND,
+  colorNeutralForeground1Selected: EDITOR_FOREGROUND,
+};
+
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
-    <FluentProvider theme={webDarkTheme} style={{ height: '100vh' }}>
+    <FluentProvider theme={appTheme} style={{ height: '100vh' }}>
       <App />
     </FluentProvider>
   </React.StrictMode>,
