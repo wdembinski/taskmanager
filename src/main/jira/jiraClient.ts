@@ -78,7 +78,8 @@ export interface JiraTransition {
 
 export interface JiraComment {
   id: string;
-  author?: { displayName?: string };
+  /** `accountId` is Cloud-only; Server/DC identifies people by display name alone. */
+  author?: { displayName?: string; accountId?: string };
   /** Plain string on v2; Atlassian Document Format (object) on v3. */
   body: unknown;
   created: string;

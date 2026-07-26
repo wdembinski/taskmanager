@@ -1,19 +1,20 @@
 /**
- * TaskDetail — the right-hand pane of the My Tasks screen (Phase 9).
+ * TaskDetail — the right-hand pane of the My Tasks screen.
  *
- * Shows one task's status control and its **unified activity timeline**: your
- * comments and status changes interleaved with the AI transcript (loaded from
- * `task:activity`), plus an input to add a progress note. AI events are rendered
- * with the same `eventToLines` the Board's Transcript uses, so output looks the
- * same everywhere. While a delegated run is live its events are appended as they
- * arrive, so the transcript streams instead of waiting for a reselect.
+ * Since Phase 12 the pane is a **conversation**, not a log. Two tabs:
  *
- * The agent controls (assign / stop / answer a parked run) live in `TaskAgentPanel`
- * above the timeline; the ticket's own description sits between the two.
+ *  - **Chat** — the card's story as turns (`chat/turns.ts`): what you said to the agent,
+ *    what it answered (markdown, with code in its own panel), the ticket's comment
+ *    thread, and your own notes. A run's tool work folds into one muted line; the live
+ *    "Agent running" rows sit **above** the composer rather than in the scroll, so the
+ *    state of the run is always visible. One composer, pinned at the bottom: Enter
+ *    sends to the agent, and the note / ticket-comment actions live in its overflow so
+ *    Chat has one obvious action.
+ *  - **Details** — the status control, the card's steps, its ticket description and the
+ *    status-change history. Everything the conversation is not.
  *
- * A card's **steps** (Phase 11) live below the agent panel: the chain an approved plan
- * produced, or one written by hand. Selecting a step shows that step's own pane — its
- * brief and its transcript — with a breadcrumb back to the card it belongs to.
+ * The agent controls (assign / stop / answer a parked run) stay in `TaskAgentPanel` at
+ * the top of Chat: answering a question the agent asked is part of the conversation.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -22,11 +23,18 @@ import {
   Button,
   Caption1,
   Dropdown,
+  Menu,
+  MenuItem,
+  MenuList,
+  MenuPopover,
+  MenuTrigger,
   MessageBar,
   MessageBarBody,
   Option,
   Spinner,
   Subtitle2,
+  Tab,
+  TabList,
   Text,
   Textarea,
   makeStyles,
@@ -35,73 +43,41 @@ import {
 import type { ManualStatus, Project, Task, TaskActivityEntry } from '@shared/model';
 import type { SessionEvent } from '@shared/session';
 import { chatTarget } from '@shared/board';
-import { AgentsRegular, ChevronLeftRegular } from '@fluentui/react-icons';
-import { isTranscriptNoise, runningSubAgents } from './agentActivity';
+import { ChevronLeftRegular, MoreHorizontalRegular, SendRegular } from '@fluentui/react-icons';
+import { runningSubAgents } from './agentActivity';
 import { stepPosition } from './board/boardColumns';
+import { ChatTurns } from './chat/ChatTurns';
+import { foldTurns } from './chat/turns';
 import { MANUAL_STATUS_OPTIONS, STATUS_COLOR, STATUS_LABEL } from './taskStatus';
 import { StepBrief, TaskSteps } from './TaskSteps';
 import { TaskAgentPanel } from './TaskAgentPanel';
 import { chatAvailability, REFUSAL_HINT } from './taskChat';
 import { usePendingAttention } from './usePendingAttention';
-import { eventToLines } from './Transcript';
 
 const useStyles = makeStyles({
-  root: { display: 'flex', flexDirection: 'column', gap: '12px', minHeight: 0, flex: 1 },
+  root: { display: 'flex', flexDirection: 'column', gap: '10px', minHeight: 0, flex: 1 },
   head: { display: 'flex', flexDirection: 'column', gap: '4px' },
   crumbRow: { display: 'flex', alignItems: 'center', gap: '6px', marginLeft: '-8px' },
   phase: { color: tokens.colorNeutralForeground3 },
   statusRow: { display: 'flex', alignItems: 'center', gap: '10px' },
   grow: { flex: 1 },
-  timeline: {
+  /** The tab's body: scrolls as one, so the composer stays put. */
+  pane: { display: 'flex', flexDirection: 'column', gap: '10px', minHeight: 0, flex: 1 },
+  scroll: {
     flex: 1,
     minHeight: 0,
     overflowY: 'auto',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '10px',
     padding: '12px',
     borderRadius: tokens.borderRadiusMedium,
     backgroundColor: tokens.colorNeutralBackground1,
     border: `1px solid ${tokens.colorNeutralStroke2}`,
   },
-  entry: { display: 'flex', flexDirection: 'column', gap: '2px' },
-  entryHead: { display: 'flex', alignItems: 'center', gap: '8px' },
+  entry: { display: 'flex', alignItems: 'center', gap: '8px' },
   time: { color: tokens.colorNeutralForeground3, fontSize: '11px' },
-  comment: { whiteSpace: 'pre-wrap' },
-  commentBody: {
-    borderLeft: `3px solid ${tokens.colorBrandStroke1}`,
-    paddingLeft: '8px',
-    whiteSpace: 'pre-wrap',
-  },
-  /** A message the agent heard — tinted, so it never reads as a note to self. */
-  chatBody: {
-    borderLeft: `3px solid ${tokens.colorBrandStroke1}`,
-    padding: '6px 8px',
-    borderRadius: tokens.borderRadiusMedium,
-    backgroundColor: tokens.colorBrandBackground2,
-    color: tokens.colorNeutralForeground1,
-    whiteSpace: 'pre-wrap',
-  },
-  chatGlyph: { display: 'flex', color: tokens.colorBrandForeground1 },
-  jiraCommentBody: {
-    borderLeft: '3px solid #F2A900',
-    paddingLeft: '8px',
-    whiteSpace: 'pre-wrap',
-  },
-  eventLines: {
-    fontFamily: 'ui-monospace, Consolas, monospace',
-    fontSize: '12px',
-    whiteSpace: 'pre-wrap',
-    lineHeight: '1.5',
-  },
   meta: { color: tokens.colorNeutralForeground3 },
-  assistant: { color: tokens.colorNeutralForeground1 },
-  tool: { color: tokens.colorPaletteBlueForeground2 },
-  warn: { color: tokens.colorPaletteYellowForeground1 },
-  err: { color: tokens.colorPaletteRedForeground1 },
   description: {
     whiteSpace: 'pre-wrap',
-    maxHeight: '160px',
+    maxHeight: '220px',
     overflowY: 'auto',
     padding: '8px 10px',
     borderRadius: tokens.borderRadiusMedium,
@@ -110,12 +86,14 @@ const useStyles = makeStyles({
     color: tokens.colorNeutralForeground2,
     fontSize: '12px',
   },
+  /** The live run, pinned between the conversation and the composer. */
+  runState: { display: 'flex', flexDirection: 'column', gap: '4px' },
   running: { display: 'flex', alignItems: 'center', gap: '8px' },
   runningLabel: { color: tokens.colorNeutralForeground2 },
   subAgent: { paddingLeft: '18px' },
   subAgentLabel: { color: tokens.colorNeutralForeground3 },
   composer: { display: 'flex', flexDirection: 'column', gap: '6px' },
-  composerRow: { display: 'flex', justifyContent: 'flex-end', gap: '8px' },
+  composerRow: { display: 'flex', alignItems: 'flex-end', gap: '8px' },
   composerHint: { color: tokens.colorNeutralForeground3 },
   /** Why the chat button is off — stated, not hidden in a tooltip on a dead button. */
   composerBlocked: { color: tokens.colorPaletteYellowForeground1 },
@@ -161,6 +139,7 @@ export function TaskDetail({
   onSubtasksChanged,
 }: TaskDetailProps): JSX.Element {
   const styles = useStyles();
+  const [tab, setTab] = useState<'chat' | 'details'>('chat');
   const [activity, setActivity] = useState<TaskActivityEntry[]>([]);
   const [jiraComments, setJiraComments] = useState<TaskActivityEntry[]>([]);
   const [liveEvents, setLiveEvents] = useState<TaskActivityEntry[]>([]);
@@ -235,19 +214,24 @@ export function TaskDetail({
     });
   }, []);
 
-  // One chronological timeline: persisted activity + live JIRA comments + live output.
-  // Debug chatter (thinking, tool calls, successful tool results) is dropped — the
-  // "Agent running" indicator below stands in for all of it. See `agentActivity.ts`.
+  // One chronological story: persisted activity + live JIRA comments + live output.
+  // Nothing is filtered here — `foldTurns` decides what the conversation shows and what
+  // collapses, and the Details tab reads the status changes out of the same list.
   const timeline = useMemo(
-    () =>
-      [...activity, ...jiraComments, ...liveEvents]
-        .filter((e) => e.kind !== 'event' || !isTranscriptNoise(e.event))
-        .sort((a, b) => a.createdAt - b.createdAt),
+    () => [...activity, ...jiraComments, ...liveEvents].sort((a, b) => a.createdAt - b.createdAt),
     [activity, jiraComments, liveEvents],
+  );
+  const turns = useMemo(() => foldTurns(timeline), [timeline]);
+  const statusEntries = useMemo(
+    () =>
+      timeline.filter(
+        (e): e is Extract<TaskActivityEntry, { kind: 'status' }> => e.kind === 'status',
+      ),
+    [timeline],
   );
 
   // Sub-agents the main agent spawned and is still waiting on, derived from the
-  // UNFILTERED stream (the tool calls the timeline hides are exactly the evidence).
+  // UNFILTERED stream (the tool calls the conversation folds are exactly the evidence).
   const subAgents = useMemo(() => {
     const events = [...activity, ...liveEvents]
       .sort((a, b) => a.createdAt - b.createdAt)
@@ -263,20 +247,12 @@ export function TaskDetail({
   const [targetPending] = usePendingAttention([target?.id]);
   const chat = task ? chatAvailability(task, subtasks, targetPending) : null;
 
-  // Keep the newest entry in view as output streams (same rule as the Transcript pane).
-  const timelineRef = useRef<HTMLDivElement>(null);
+  // Keep the newest turn in view as output streams (same rule as the Transcript pane).
+  const scrollRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const el = timelineRef.current;
+    const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [timeline, subAgents]);
-
-  const lineClass: Record<string, string> = {
-    meta: styles.meta,
-    assistant: styles.assistant,
-    tool: styles.tool,
-    warn: styles.warn,
-    err: styles.err,
-  };
+  }, [turns, subAgents, tab]);
 
   if (!task) {
     return (
@@ -360,6 +336,9 @@ export function TaskDetail({
     await loadActivity();
   }
 
+  /** The composer's primary action: talk to the agent when there is one to talk to. */
+  const primary = chat?.offered && chat.can ? sendChat : addComment;
+
   const isStep = Boolean(task.parentTaskId);
   const position = isStep ? stepPosition(subtasks, task.id) : null;
   // Chatting with a card whose step is working talks to the step; say which one, since
@@ -389,63 +368,16 @@ export function TaskDetail({
         )}
         <Subtitle2>{task.title}</Subtitle2>
         {task.phase && !isStep && <Caption1 className={styles.phase}>{task.phase}</Caption1>}
-        {task.dependsOn?.length > 0 && (
-          <Caption1 className={styles.phase}>Depends on: {task.dependsOn.join(', ')}</Caption1>
-        )}
       </div>
 
-      <div className={styles.statusRow}>
-        <Text>Status</Text>
-        <Dropdown
-          value={STATUS_LABEL[task.status]}
-          selectedOptions={[task.status]}
-          disabled={managedByAI}
-          onOptionSelect={(_e, d) => {
-            if (d.optionValue) void setStatus(d.optionValue as ManualStatus);
-          }}
-        >
-          {MANUAL_STATUS_OPTIONS.map((o) => (
-            <Option key={o.value} value={o.value}>
-              {o.label}
-            </Option>
-          ))}
-        </Dropdown>
-        {managedByAI && (
-          <Caption1 className={styles.meta}>Stop the session to change status.</Caption1>
-        )}
-      </div>
-
-      <TaskAgentPanel
-        task={task}
-        subtasks={subtasks}
-        agentProjects={agentProjects}
-        onOpenTask={onOpenTask}
-        onTaskChanged={(updated) => {
-          onStatusChanged?.(updated);
-          void loadActivity();
-        }}
-      />
-
-      {isStep ? (
-        <StepBrief
-          task={task}
-          onChanged={(updated) => {
-            onStatusChanged?.(updated);
-            onSubtasksChanged?.();
-          }}
-        />
-      ) : (
-        <TaskSteps
-          task={task}
-          subtasks={subtasks}
-          onOpen={(id) => onOpenTask?.(id)}
-          onChanged={() => onSubtasksChanged?.()}
-        />
-      )}
-
-      {task.externalDescription && (
-        <div className={styles.description}>{task.externalDescription}</div>
-      )}
+      <TabList
+        selectedValue={tab}
+        onTabSelect={(_e, d) => setTab(d.value as 'chat' | 'details')}
+        size="small"
+      >
+        <Tab value="chat">Chat</Tab>
+        <Tab value="details">Details</Tab>
+      </TabList>
 
       {error && (
         <MessageBar intent="error">
@@ -453,66 +385,167 @@ export function TaskDetail({
         </MessageBar>
       )}
 
-      <div className={styles.timeline} ref={timelineRef}>
-        {timeline.length === 0 && !managedByAI ? (
-          <Caption1 className={styles.empty}>
-            No activity yet — change the status or add a comment to start the log.
-          </Caption1>
-        ) : (
-          timeline.map((entry) => {
-            if (entry.kind === 'jira-comment') {
-              return (
-                <div key={`j${entry.id}`} className={styles.entry}>
-                  <div className={styles.entryHead}>
-                    <Text weight="semibold">💬 {entry.author} · Jira</Text>
-                    <span className={styles.grow} />
-                    <Caption1 className={styles.time}>{fmtTime(entry.createdAt)}</Caption1>
-                  </div>
-                  <div className={styles.jiraCommentBody}>{entry.body}</div>
+      {tab === 'chat' ? (
+        <div className={styles.pane}>
+          <TaskAgentPanel
+            task={task}
+            subtasks={subtasks}
+            agentProjects={agentProjects}
+            onOpenTask={onOpenTask}
+            onTaskChanged={(updated) => {
+              onStatusChanged?.(updated);
+              void loadActivity();
+            }}
+          />
+
+          <div className={styles.scroll} ref={scrollRef}>
+            {turns.length === 0 && !managedByAI ? (
+              <Caption1 className={styles.empty}>
+                Nothing said yet — write a note, or send the agent a message.
+              </Caption1>
+            ) : (
+              <ChatTurns turns={turns} onDeleteNote={(id) => void deleteComment(id)} />
+            )}
+          </div>
+
+          {/* The live state sits ABOVE the composer, so it never scrolls out of sight:
+              the agent itself, then a row per sub-agent it is still waiting on. */}
+          {managedByAI && (
+            <div className={styles.runState}>
+              <div className={styles.running}>
+                <Spinner size="tiny" />
+                <Caption1 className={styles.runningLabel}>Agent running</Caption1>
+              </div>
+              {subAgents.map((agent) => (
+                <div key={agent.toolId} className={`${styles.running} ${styles.subAgent}`}>
+                  <Spinner size="tiny" />
+                  <Caption1 className={styles.runningLabel}>Agent running</Caption1>
+                  {agent.label && (
+                    <Caption1 className={styles.subAgentLabel}>· {agent.label}</Caption1>
+                  )}
                 </div>
-              );
-            }
-            if (entry.kind === 'comment') {
-              return (
-                <div key={`c${entry.id}`} className={styles.entry}>
-                  <div className={styles.entryHead}>
-                    <Text weight="semibold">💬 You</Text>
-                    <span className={styles.grow} />
-                    <Caption1 className={styles.time}>{fmtTime(entry.createdAt)}</Caption1>
-                    <Button
-                      size="small"
-                      appearance="transparent"
-                      onClick={() => void deleteComment(entry.id)}
-                    >
-                      Delete
-                    </Button>
-                  </div>
-                  <div className={styles.commentBody}>{entry.body}</div>
-                </div>
-              );
-            }
-            // A message the human sent to the agent (Phase 12). No Delete: it was said
-            // to the agent and shaped what it did — removing it would falsify the story.
-            // The agent glyph is the one the board card and the agent panel use, so one
-            // symbol means "an agent" everywhere. Phase 5 turns this into a bubble.
-            if (entry.kind === 'chat') {
-              return (
-                <div key={`m${entry.id}`} className={styles.entry}>
-                  <div className={styles.entryHead}>
-                    <span className={styles.chatGlyph}>
-                      <AgentsRegular />
-                    </span>
-                    <Text weight="semibold">You → agent</Text>
-                    <span className={styles.grow} />
-                    <Caption1 className={styles.time}>{fmtTime(entry.createdAt)}</Caption1>
-                  </div>
-                  <div className={styles.chatBody}>{entry.body}</div>
-                </div>
-              );
-            }
-            if (entry.kind === 'status') {
-              return (
-                <div key={`s${entry.id}`} className={`${styles.entry} ${styles.entryHead}`}>
+              ))}
+            </div>
+          )}
+
+          <div className={styles.composer}>
+            {chat?.offered && chatStepPosition !== null && (
+              <Caption1 className={styles.composerHint}>
+                Talking to step {chatStepPosition} of {subtasks.length} — {chat.target.title}
+              </Caption1>
+            )}
+            {chat?.offered && !chat.can && (
+              <Caption1 className={styles.composerBlocked}>{chat.hint}</Caption1>
+            )}
+            <div className={styles.composerRow}>
+              <Textarea
+                className={styles.grow}
+                value={comment}
+                onChange={(_e, d) => setComment(d.value)}
+                onKeyDown={(e) => {
+                  // Enter sends, Shift+Enter is a newline — the CLI's own contract.
+                  if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                    e.preventDefault();
+                    if (!busy && comment.trim()) void primary();
+                  }
+                }}
+                placeholder={
+                  chat?.offered
+                    ? 'Message the agent…  (Enter sends, Shift+Enter for a new line)'
+                    : 'Add a progress note…  (context for when you come back)'
+                }
+                resize="vertical"
+              />
+              <Button
+                appearance="primary"
+                icon={<SendRegular />}
+                title={chat?.offered ? chat.hint : 'Save a note on this card'}
+                disabled={busy || !comment.trim() || (chat?.offered === true && !chat.can)}
+                onClick={() => void primary()}
+              >
+                {chat?.offered && chat.can ? 'Send' : 'Add note'}
+              </Button>
+              <Menu>
+                <MenuTrigger disableButtonEnhancement>
+                  <Button
+                    appearance="subtle"
+                    icon={<MoreHorizontalRegular />}
+                    title="Other places this text can go"
+                  />
+                </MenuTrigger>
+                <MenuPopover>
+                  <MenuList>
+                    <MenuItem disabled={busy || !comment.trim()} onClick={() => void addComment()}>
+                      Save as a note
+                    </MenuItem>
+                    {isJira && (
+                      <MenuItem
+                        disabled={busy || !comment.trim()}
+                        onClick={() => void addJiraComment()}
+                      >
+                        Comment on the ticket
+                      </MenuItem>
+                    )}
+                  </MenuList>
+                </MenuPopover>
+              </Menu>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className={styles.pane}>
+          <div className={styles.statusRow}>
+            <Text>Status</Text>
+            <Dropdown
+              value={STATUS_LABEL[task.status]}
+              selectedOptions={[task.status]}
+              disabled={managedByAI}
+              onOptionSelect={(_e, d) => {
+                if (d.optionValue) void setStatus(d.optionValue as ManualStatus);
+              }}
+            >
+              {MANUAL_STATUS_OPTIONS.map((o) => (
+                <Option key={o.value} value={o.value}>
+                  {o.label}
+                </Option>
+              ))}
+            </Dropdown>
+            {managedByAI && (
+              <Caption1 className={styles.meta}>Stop the session to change status.</Caption1>
+            )}
+          </div>
+
+          {task.dependsOn?.length > 0 && (
+            <Caption1 className={styles.phase}>Depends on: {task.dependsOn.join(', ')}</Caption1>
+          )}
+
+          {isStep ? (
+            <StepBrief
+              task={task}
+              onChanged={(updated) => {
+                onStatusChanged?.(updated);
+                onSubtasksChanged?.();
+              }}
+            />
+          ) : (
+            <TaskSteps
+              task={task}
+              subtasks={subtasks}
+              onOpen={(id) => onOpenTask?.(id)}
+              onChanged={() => onSubtasksChanged?.()}
+            />
+          )}
+
+          {task.externalDescription && (
+            <div className={styles.description}>{task.externalDescription}</div>
+          )}
+
+          <div className={styles.scroll}>
+            {statusEntries.length === 0 ? (
+              <Caption1 className={styles.empty}>No status changes yet.</Caption1>
+            ) : (
+              statusEntries.map((entry) => (
+                <div key={`s${entry.id}`} className={styles.entry}>
                   <Text className={styles.meta}>Status →</Text>
                   <Badge appearance="tint" color={STATUS_COLOR[entry.to]}>
                     {STATUS_LABEL[entry.to]}
@@ -520,94 +553,11 @@ export function TaskDetail({
                   <span className={styles.grow} />
                   <Caption1 className={styles.time}>{fmtTime(entry.createdAt)}</Caption1>
                 </div>
-              );
-            }
-            // AI transcript event
-            return (
-              <div key={`e${entry.id}`} className={styles.eventLines}>
-                {eventToLines(entry.event).map((line, i) => (
-                  <div key={i} className={lineClass[line.cls]}>
-                    {line.text}
-                  </div>
-                ))}
-              </div>
-            );
-          })
-        )}
-
-        {/* One live indicator in place of the tool-by-tool chatter: the agent itself,
-            then a row per sub-agent it has spawned and is still waiting on. */}
-        {managedByAI && (
-          <>
-            <div className={styles.running}>
-              <Spinner size="tiny" />
-              <Caption1 className={styles.runningLabel}>Agent running</Caption1>
-            </div>
-            {subAgents.map((agent) => (
-              <div key={agent.toolId} className={`${styles.running} ${styles.subAgent}`}>
-                <Spinner size="tiny" />
-                <Caption1 className={styles.runningLabel}>Agent running</Caption1>
-                {agent.label && (
-                  <Caption1 className={styles.subAgentLabel}>· {agent.label}</Caption1>
-                )}
-              </div>
-            ))}
-          </>
-        )}
-      </div>
-
-      {/* One composer, three destinations: the agent, the ticket, or just this card.
-          Chat only appears for a delegated card, and says where the message would go —
-          a card mid-plan is talking to the step that holds the session. */}
-      <div className={styles.composer}>
-        {chat?.offered && chatStepPosition !== null && (
-          <Caption1 className={styles.composerHint}>
-            Talking to step {chatStepPosition} of {subtasks.length} — {chat.target.title}
-          </Caption1>
-        )}
-        {chat?.offered && !chat.can && (
-          <Caption1 className={styles.composerBlocked}>{chat.hint}</Caption1>
-        )}
-        <Textarea
-          value={comment}
-          onChange={(_e, d) => setComment(d.value)}
-          placeholder={
-            chat?.offered
-              ? 'Message the agent, or add a note…'
-              : 'Add a progress note… (context for when you come back)'
-          }
-          resize="vertical"
-        />
-        <div className={styles.composerRow}>
-          {chat?.offered && (
-            <Button
-              // While a run is live this is the likely intent, so it leads.
-              appearance={chat.live && chat.can ? 'primary' : 'secondary'}
-              disabled={busy || !comment.trim() || !chat.can}
-              title={chat.hint}
-              onClick={() => void sendChat()}
-            >
-              Chat with agent
-            </Button>
-          )}
-          {isJira && (
-            <Button
-              appearance={chat?.live && chat.can ? 'secondary' : 'primary'}
-              disabled={busy || !comment.trim()}
-              onClick={() => void addJiraComment()}
-            >
-              Add JIRA comment
-            </Button>
-          )}
-          <Button
-            appearance={isJira || (chat?.live && chat.can) ? 'secondary' : 'primary'}
-            disabled={busy || !comment.trim()}
-            onClick={() => void addComment()}
-          >
-            Add note
-          </Button>
+              ))
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

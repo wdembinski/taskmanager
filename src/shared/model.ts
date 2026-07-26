@@ -460,4 +460,17 @@ export type TaskActivityEntry =
    * A comment fetched live from the linked JIRA issue (Phase D). Not persisted in the
    * store — merged into the timeline at read time. `id` is JIRA's comment id (a string).
    */
-  | { kind: 'jira-comment'; id: string; author: string; body: string; createdAt: number };
+  | {
+      kind: 'jira-comment';
+      id: string;
+      author: string;
+      body: string;
+      createdAt: number;
+      /**
+       * Whether *you* wrote it (Phase 12) — decided in the main process against the
+       * cached `GET /myself`, since only it knows the account behind the PAT. False
+       * whenever the identity is unknown: the chat pane puts your words on the right,
+       * and guessing would put someone else's there.
+       */
+      mine: boolean;
+    };

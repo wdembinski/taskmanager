@@ -30,6 +30,7 @@ import type { UsageSample } from '@shared/usage';
 import { type AppSettings, DEFAULT_JIRA_SETTINGS, DEFAULT_SETTINGS } from '@shared/settings';
 import { mergeActivity } from './activityMerge';
 import type { JiraEpicFieldCache } from './jira/epicField';
+import type { JiraIdentityCache } from './jira/identity';
 import type { ParsedTask } from './planParser';
 import { reconcileTasks } from './taskReconcile';
 
@@ -232,6 +233,14 @@ export interface Store {
   saveJiraEpicField(cache: JiraEpicFieldCache): void;
   /** The cached epic-field discovery, or null if it has never run. */
   loadJiraEpicField(): JiraEpicFieldCache | null;
+  /**
+   * Cache `GET /myself` so the chat pane can tell your ticket comments from other
+   * people's without a request per read (see `jira/identity.ts`). Keyed by site, like
+   * the epic field above.
+   */
+  saveJiraIdentity(cache: JiraIdentityCache): void;
+  /** The cached JIRA identity, or null if it has never been fetched. */
+  loadJiraIdentity(): JiraIdentityCache | null;
   close(): void;
 }
 
@@ -598,6 +607,9 @@ export function createStore(dbPath: string): Store {
 
   /** The single row key caching JIRA's per-instance "Epic Link" field discovery. */
   const JIRA_EPIC_FIELD_KEY = 'jira.epicField';
+
+  /** The single row key caching `GET /myself` for the configured site. */
+  const JIRA_IDENTITY_KEY = 'jira.identity';
 
   /** Read app settings, merging any stored fields over the built-in defaults. */
   function getSettings(): AppSettings {
@@ -1195,6 +1207,23 @@ export function createStore(dbPath: string): Store {
         return typeof parsed?.baseUrl === 'string' ? parsed : null;
       } catch {
         return null; // corrupt value — re-discover
+      }
+    },
+
+    saveJiraIdentity(cache) {
+      upsertState.run(JIRA_IDENTITY_KEY, JSON.stringify(cache));
+    },
+
+    loadJiraIdentity() {
+      const row = selectState.get(JIRA_IDENTITY_KEY) as { value: string } | undefined;
+      if (!row) return null;
+      try {
+        const parsed = JSON.parse(row.value) as JiraIdentityCache;
+        return typeof parsed?.baseUrl === 'string' && typeof parsed?.displayName === 'string'
+          ? parsed
+          : null;
+      } catch {
+        return null; // corrupt value — re-fetch
       }
     },
 

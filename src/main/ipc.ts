@@ -24,6 +24,7 @@ import { createJiraClient } from './jira/jiraConfig';
 import { commentBodyToText, type JiraClient } from './jira/jiraClient';
 import { reconcileJiraTasks } from './jira/jiraSync';
 import { discoverEpicFieldId } from './jira/epicField';
+import { authorIsMe, identityFrom, type JiraIdentityCache } from './jira/identity';
 import { pickTransition, resolveMove } from './jira/jiraMove';
 import { getClaudeStatus } from './claudeStatus';
 import { parsePlan } from './planParser';
@@ -574,6 +575,26 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     return fieldId;
   };
 
+  /**
+   * The account behind the configured PAT, fetched once per site and cached in
+   * `app_state` (see `jira/identity.ts`). Fails soft to null: not knowing who you are
+   * costs a bubble's alignment, while a thrown error would cost the comment thread.
+   */
+  const jiraIdentity = async (
+    baseUrl: string,
+    client: JiraClient,
+  ): Promise<JiraIdentityCache | null> => {
+    const cached = store.loadJiraIdentity();
+    if (cached && cached.baseUrl === baseUrl) return cached;
+    try {
+      const identity = identityFrom(await client.testConnection(), baseUrl);
+      store.saveJiraIdentity(identity);
+      return identity;
+    } catch {
+      return null;
+    }
+  };
+
   // One JIRA sync: fetch issues, reconcile into the store, push the fresh board.
   // Shared by the manual `jira:sync` handler and the background poller below.
   const syncJira = async (): Promise<Task[]> => {
@@ -664,13 +685,18 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('jira:fetchComments', async (taskId) => {
     const task = store.getTask(taskId);
     if (!task || task.externalSource !== 'jira' || !task.externalKey) return [];
-    const comments = await buildJiraClient().getComments(task.externalKey);
+    const client = buildJiraClient();
+    const comments = await client.getComments(task.externalKey);
+    // Who the PAT belongs to, so the pane can put your own comments on your side.
+    // Unknown identity → every comment reads as someone else's, deliberately.
+    const identity = await jiraIdentity(store.getSettings().jira.baseUrl, client);
     const entries = comments.map((c) => ({
       kind: 'jira-comment' as const,
       id: c.id,
       author: c.author?.displayName ?? 'JIRA',
       body: commentBodyToText(c.body),
       createdAt: Date.parse(c.created) || 0,
+      mine: authorIsMe(c.author, identity),
     }));
     // Keep the unread marker honest with freshly-fetched comments.
     const latest = entries.reduce((m, e) => Math.max(m, e.createdAt), task.latestCommentAt ?? 0);
