@@ -29,8 +29,10 @@ plan the orchestrator could one day run on its own repo.
 | 5 | Usage-limit gate (auto-respawn) | ✅ shipped |
 | 6 | History, resume-across-restart & polish | ✅ shipped |
 | 7 | Packaging & release | ✅ shipped |
-| 8 | Import & project configuration | 🚧 in progress |
-| 9 | Personal task management (to-do list) | 🚧 in progress |
+| 8 | Import & project configuration | 🚧 in progress (B2 session picker open) |
+| 9 | Personal task management (to-do list) | ✅ shipped |
+| — | Interim releases v0.11–v0.21 (worktrees & auto-merge, team orchestration, JIRA sync, My Tasks Kanban) | ✅ shipped, not tracked here |
+| 10 | Delegate a task to an agent | ✅ shipped |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -403,6 +405,76 @@ put your own tasks (Phase 8 ad-hoc), **set a task's status by hand**, and keep a
       the AI transcript, in one timeline.
 - [x] `pnpm typecheck` + `pnpm test` + `pnpm build` green; pure bits (`mergeActivity`,
       reconcile) unit-tested.
+
+---
+
+## Phase 10 — Delegate a task to an agent
+
+**Goal.** Let a single **My Tasks** card — a JIRA ticket or an in-app task — be
+handed to Claude: pick the repo, pick the mode, and the agent works that one
+ticket in an isolated worktree, answering to you in the task's detail sidebar.
+
+This is also the seed of the **new projects concept**: an *agent project* is just
+a directory plus the JIRA epics it owns, deliberately separate from the legacy
+`plan.md`/queue Projects feature it is meant to replace. Ground rules taken with
+the user: **per-task only** (no queue, no auto-start), **JIRA is never written
+to**, isolated **git worktree + auto-merge**, and usage limits park/resume exactly
+as they do for plan tasks.
+
+### Deliverables
+
+- [x] **1 — Agent projects.** `projects` gains `kind` (`'plan' | 'agent'`) and
+      `jiraEpicKeys` (JSON array), with migrations in the `store.ts` open path, so
+      an agent project **is** a `Project` — worktrees, integration, usage
+      attribution and the limit gate keep working untouched. Agent rows force
+      `planPath: ''`, `useWorktrees: true`, `writeBackPlan: false`; they are hidden
+      from the legacy Projects tab and skipped by `PlanWatcher`.
+      `agentProject:list|add|update|remove` IPC behind a new Settings → **Agents**
+      pane (`AgentProjects.tsx`).
+- [x] **2 — JIRA epic & description plumbing.** `JiraClient.listFields()` plus
+      `src/main/jira/epicField.ts` discover the per-instance **Epic Link** custom
+      field once and cache it in `app_state` (the cache carries the `baseUrl` it
+      was found on and self-invalidates; a negative result is cached too), failing
+      soft to `parent` and then to manual assignment. `issueToTask` maps
+      `externalParentKey` / `externalDescription`; the pure
+      `resolveAgentProject` (`src/shared/agentProjects.ts`) picks a repo:
+      explicit assignment → epic-key match → `null` (ask in the dialog).
+- [x] **3 — Assignment & run path.** New `Task` columns `agentProjectId`,
+      `agentMode`, `agentModel`, `externalParentKey`, `externalDescription` (a
+      JIRA re-sync deliberately never clears `agentProjectId`). New pure
+      `src/main/agentTaskPrompt.ts` builds a single-ticket brief — key/URL/title,
+      description, JIRA comments oldest→newest, your notes, the worktree commit
+      rule, and the `@@NEEDS_INPUT@@` contract reused verbatim from
+      `attention.ts`. `Scheduler.runProjectFor(task)` resolves the run's project
+      from `agentProjectId`, wired into `runTask`, `resumeParked`, auto-retry and
+      worktree cleanup, so limit-park → auto-resume works identically. `Run` gains
+      `permissionMode`/`model` (preferred by `decidePermission`). IPC
+      `task:assignAgent` / `task:stopAgent`.
+- [x] **4 — Board & detail UI.** `AssignAgentDialog.tsx` (repo picker pre-filled by
+      `resolveAgentProject`, model, all four permission modes, optional notes);
+      `TaskCard` shows an agent glyph and reuses the unread-JIRA **orange frame**
+      when the agent needs input (`needsAgentInput` in `src/shared/board.ts`);
+      `TaskAgentPanel.tsx` in the detail sidebar assigns/reassigns/stops and
+      answers the agent's pending question or permission inline; `TaskDetail`
+      streams the live run's transcript into the timeline.
+- [x] **5 — Docs.** This phase entry, the *Delegating one task to an agent*
+      section in [`docs/03`](../03-how-orchestration-works.md#delegating-one-task-to-an-agent),
+      and the new glossary terms.
+
+### Done when
+
+- [x] A card can be assigned to an agent project and runs there, while the card
+      itself stays on the Personal board (`task.projectId` never changes, so the
+      queue scheduler never picks it up).
+- [x] The agent's question or permission request turns the card orange and can be
+      answered from the task's detail sidebar without leaving My Tasks.
+- [x] Usage limits park and auto-resume a delegated task exactly like a plan task.
+- [x] `pnpm typecheck` (node + web) + `pnpm test` + `pnpm build` green; the pure
+      bits (`resolveAgentProject`, `buildAgentTaskPrompt`, `needsAgentInput`,
+      epic-field discovery) are unit-tested.
+- [ ] **Live E2E still owed:** epic discovery against the real JIRA (needs a real
+      PAT in the running app), and one full assign → answer → auto-merge run on a
+      scratch repo.
 
 ---
 

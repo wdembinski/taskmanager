@@ -85,7 +85,7 @@ answers mid-task.
 
 How autonomous Claude is. `acceptEdits` (our default) auto-runs edits but stops
 for real decisions; `manual` asks about everything; `bypassPermissions` asks about
-nothing. Set per project.
+nothing. Set per project — and per assignment for a **delegated task**.
 
 ### Attention inbox
 
@@ -129,6 +129,40 @@ A clause appended to a plan checkbox — `- [ ] Build API @needs: Set up DB` —
 holds the task until the named prerequisite task(s) are `done`. Referenced by exact
 title. Independent tasks (no `@needs:`) run in parallel up to the concurrency cap.
 **Align plan…** (Projects tab) uses Claude to add these to an existing plan.
+
+### My Tasks
+
+The personal Kanban board: your own tasks and your synced JIRA tickets as cards,
+independent of the plan-driven **Board**. Its cards live on the built-in
+*Personal* project.
+
+### Agent project
+
+A **repo folder plus the JIRA epics it owns** — the target you delegate a My Tasks
+card to (managed in **Settings → Agents**). It has no `plan.md` and is never
+queued; it is stored as a project with `kind: 'agent'` so worktrees, auto-merge and
+the usage-limit gate work on it unchanged. The seed of the projects concept meant
+to replace the legacy plan.md/queue **Projects** tab.
+
+### Delegated task ("Assign to an agent")
+
+A single My Tasks card handed to Claude to work on in an agent project's repo. One
+card, one session, no queue and no auto-start; you answer its questions in the
+card's detail sidebar, and JIRA is never written to. See
+[doc 03](03-how-orchestration-works.md#delegating-one-task-to-an-agent).
+
+### Epic Link field
+
+The JIRA field holding a ticket's epic. On Server/DC it is a per-instance custom
+field (`customfield_NNNNN`), so the app discovers its id once, caches it, and falls
+back to the issue's `parent`. Used to guess which **agent project** a ticket
+belongs to.
+
+### Git worktree
+
+A second working directory checked out from the same repository, on its own
+branch. Delegated (and plan) runs work in one so the agent never touches your
+files; a clean finish merges the branch back and removes the worktree.
 
 ### electron-vite
 

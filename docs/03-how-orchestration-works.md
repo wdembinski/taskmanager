@@ -133,6 +133,66 @@ to an existing plan for you to review.
 
 ---
 
+## Delegating one task to an agent
+
+Plans are the batch mode: a queue of tasks the scheduler works through. There is
+also a **single-ticket mode** for the **My Tasks** board — pick one card (a JIRA
+ticket or an in-app task), hand it to Claude, and it works that one thing.
+
+### Agent projects
+
+A card on My Tasks belongs to the built-in *Personal* board, which has no folder,
+so there is nowhere to run. You give it one by creating an **agent project** in
+**Settings → Agents**: a name, a **repo folder**, optional **JIRA epic keys**, and
+a default model and permission mode.
+
+An agent project is stored as a normal project row with `kind: 'agent'`, so
+worktrees, auto-merge, usage attribution and the limit gate all treat it like any
+other project. It has no `plan.md`, it never appears on the legacy **Projects**
+tab, and nothing is ever queued from it.
+
+### Assigning
+
+Select a card, then **Assign to an agent…** in its detail sidebar. The dialog
+pre-selects a repo when it can: an explicit earlier assignment wins, otherwise the
+ticket's **epic** is matched against each agent project's epic keys. (The Epic
+Link field is a per-instance custom field on JIRA Server/DC, so the app discovers
+its id once, caches it, and falls back to the issue's `parent` — and then to you
+picking manually.) You also choose the model, the permission mode, and optional
+extra instructions, which are recorded as a comment on the task so they survive a
+re-run and show up in the timeline.
+
+The card keeps its place on the Personal board — only the **run** happens in the
+agent project. That is what keeps this per-card: the queue scheduler never sees
+the task at all.
+
+### What the agent is told, and what it may do
+
+The prompt is a single-ticket brief: key, URL and title, the ticket description,
+its JIRA comments oldest→newest, your own notes, and your extra instructions. No
+plan, no queue, no phases. It may read the repo's docs and memory files, and it
+commits on its own branch in an isolated **git worktree**, which is auto-merged
+back into the base branch when the run finishes cleanly (a merge conflict comes
+back to you as an Attention item).
+
+> **JIRA is read-only, always.** Assigning, starting, or finishing a delegated
+> task never transitions a ticket or writes a comment back to JIRA.
+
+### Answering it
+
+A delegated task uses the same machinery as everything else: permission requests
+and `@@NEEDS_INPUT@@` questions park the run and appear in the **Attention**
+inbox. On My Tasks you don't have to go there — the card gets an **orange frame**
+(the same treatment as an unread JIRA comment) and the question, with its
+one-click options or a free-text reply, renders in the card's detail sidebar. The
+live transcript streams into the same timeline as your comments and status
+changes. **Stop** ends the run and keeps the worktree.
+
+Usage limits behave exactly as they do for plan tasks: the task parks as
+`blocked-by-limit` behind the global gate and resumes by session id at reset.
+
+---
+
 ## Putting it together: the life of a task
 
 ```
