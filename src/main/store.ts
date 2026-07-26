@@ -164,7 +164,10 @@ export interface Store {
    * steps run unattended. Returns the created step, or undefined if the parent is
    * unknown, is itself a step, or the title is blank.
    */
-  addSubtask(parentId: string, input: { title: string; description?: string | null }): Task | undefined;
+  addSubtask(
+    parentId: string,
+    input: { title: string; description?: string | null },
+  ): Task | undefined;
   /** Delete one task (and its transcript history) by id. */
   deleteTask(id: string): void;
   /** Re-parse a plan and reconcile it into the project's tasks; returns the result. */

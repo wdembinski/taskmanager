@@ -28,10 +28,11 @@ import {
   COLUMN_META,
   columnForTask,
   groupSubtasks,
+  hasLiveSubtask,
   statusForColumn,
   visibleColumns,
 } from './board/boardColumns';
-import type { BoardColumn } from './board/boardColumns';
+import type { BoardCard, BoardColumn } from './board/boardColumns';
 
 const useStyles = makeStyles({
   root: { display: 'flex', gap: '16px', minHeight: 0, flex: 1 },
@@ -112,26 +113,53 @@ export function MyTasks(): JSX.Element {
     [tasks, selectedTaskId],
   );
 
-  const tasksByColumn = useMemo(() => {
-    const map: Record<BoardColumn, Task[]> = { todo: [], 'in-progress': [], blocked: [], done: [] };
-    // A card's steps are not cards of their own — they render inside the parent
-    // (Phase 4) and travel with it, whatever their own status.
-    for (const { task } of groupSubtasks(tasks ?? [])) map[columnForTask(task)].push(task);
-    for (const col of Object.keys(map) as BoardColumn[]) map[col].sort((a, b) => a.order - b.order);
+  const cardsByColumn = useMemo(() => {
+    const map: Record<BoardColumn, BoardCard[]> = {
+      todo: [],
+      'in-progress': [],
+      blocked: [],
+      done: [],
+    };
+    // A card's steps are not cards of their own — they render inside the parent and
+    // travel with it, whatever their own status.
+    for (const card of groupSubtasks(tasks ?? [])) map[columnForTask(card.task)].push(card);
+    for (const col of Object.keys(map) as BoardColumn[])
+      map[col].sort((a, b) => a.task.order - b.task.order);
     return map;
   }, [tasks]);
 
-  const setShowDone = useCallback(
-    (value: boolean) => {
-      setSettings((prev) => {
-        if (!prev) return prev;
-        const next = { ...prev, jira: { ...prev.jira, showDoneColumn: value } };
-        void window.api.invoke('settings:save', next);
-        return next;
-      });
-    },
-    [],
+  /**
+   * The chain the selected task belongs to: a card's own steps, or — when a step is
+   * selected — its siblings, so the detail pane can say "step 2 of 5" and offer the
+   * way back to the parent.
+   */
+  const chain = useMemo(() => {
+    if (!selectedTask) return [];
+    const parentId = selectedTask.parentTaskId ?? selectedTask.id;
+    return (tasks ?? [])
+      .filter((t) => t.parentTaskId === parentId)
+      .sort((a, b) => a.order - b.order);
+  }, [tasks, selectedTask]);
+
+  const parentOfSelected = useMemo(
+    () =>
+      selectedTask?.parentTaskId
+        ? (tasks?.find((t) => t.id === selectedTask.parentTaskId) ?? null)
+        : null,
+    [tasks, selectedTask],
   );
+
+  /** Cards a hand-written step can be added under: every top-level card on this board. */
+  const parentCandidates = useMemo(() => (tasks ?? []).filter((t) => !t.parentTaskId), [tasks]);
+
+  const setShowDone = useCallback((value: boolean) => {
+    setSettings((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, jira: { ...prev.jira, showDoneColumn: value } };
+      void window.api.invoke('settings:save', next);
+      return next;
+    });
+  }, []);
 
   const sync = useCallback(async () => {
     setSyncing(true);
@@ -207,10 +235,13 @@ export function MyTasks(): JSX.Element {
               key={col}
               column={col}
               label={COLUMN_LABEL[col]}
-              tasks={tasksByColumn[col]}
-              projectNameOf={(t) => (t.externalSource === 'jira' ? t.phase || undefined : undefined)}
+              cards={cardsByColumn[col]}
+              projectNameOf={(t) =>
+                t.externalSource === 'jira' ? t.phase || undefined : undefined
+              }
               agentNameOf={(t) => agentProjects.find((p) => p.id === t.agentProjectId)?.name}
-              canDrag={(t) => !managedByAI(t)}
+              // A card with a live step is the runner's until the chain stops.
+              canDrag={(c) => !managedByAI(c.task) && !hasLiveSubtask(c.subtasks)}
               selectedTaskId={selectedTaskId}
               draggingId={draggingId}
               onSelectTask={setSelectedTaskId}
@@ -226,7 +257,11 @@ export function MyTasks(): JSX.Element {
         <TaskDetail
           task={selectedTask}
           agentProjects={agentProjects}
+          subtasks={chain}
+          parentTask={parentOfSelected}
+          onOpenTask={setSelectedTaskId}
           onStatusChanged={patchTask}
+          onSubtasksChanged={() => void refresh()}
         />
       </div>
 
@@ -234,6 +269,7 @@ export function MyTasks(): JSX.Element {
         open={addOpen}
         projectId={PERSONAL_PROJECT_ID}
         phases={[]}
+        parents={parentCandidates}
         onClose={() => setAddOpen(false)}
         onCreated={() => void refresh()}
       />

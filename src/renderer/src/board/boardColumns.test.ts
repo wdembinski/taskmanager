@@ -5,7 +5,9 @@ import {
   columnForStatus,
   columnForTask,
   groupSubtasks,
+  hasLiveSubtask,
   statusForColumn,
+  stepPosition,
   subtaskProgress,
   visibleColumns,
 } from './boardColumns';
@@ -25,10 +27,12 @@ const task = (status: TaskStatus): Task => ({
 });
 
 /** A card/step with an explicit id, order, parent and status, for the grouping tests. */
-const card = (
-  id: string,
-  overrides: Partial<Task> = {},
-): Task => ({ ...task('pending'), id, title: id, ...overrides });
+const card = (id: string, overrides: Partial<Task> = {}): Task => ({
+  ...task('pending'),
+  id,
+  title: id,
+  ...overrides,
+});
 
 describe('columnForStatus', () => {
   const cases: Array<[TaskStatus, BoardColumn]> = [
@@ -142,5 +146,36 @@ describe('subtaskProgress', () => {
 
   it('is 0/0 for a card with no steps', () => {
     expect(subtaskProgress([])).toEqual({ done: 0, total: 0 });
+  });
+});
+
+describe('hasLiveSubtask', () => {
+  it('is true while a step runs or waits on the human', () => {
+    expect(
+      hasLiveSubtask([card('s1', { status: 'done' }), card('s2', { status: 'running' })]),
+    ).toBe(true);
+    expect(hasLiveSubtask([card('s1', { status: 'waiting-input' })])).toBe(true);
+  });
+
+  it('is false for a finished, failed or not-yet-started chain', () => {
+    expect(hasLiveSubtask([])).toBe(false);
+    expect(
+      hasLiveSubtask([card('s1', { status: 'done' }), card('s2', { status: 'pending' })]),
+    ).toBe(false);
+    expect(hasLiveSubtask([card('s1', { status: 'failed' })])).toBe(false);
+  });
+});
+
+describe('stepPosition', () => {
+  const steps = [card('s1'), card('s2'), card('s3')];
+
+  it('numbers a step from 1 among its siblings', () => {
+    expect(stepPosition(steps, 's1')).toBe(1);
+    expect(stepPosition(steps, 's3')).toBe(3);
+  });
+
+  it('is null for a task that is not one of the steps', () => {
+    expect(stepPosition(steps, 'parent')).toBeNull();
+    expect(stepPosition([], 's1')).toBeNull();
   });
 });

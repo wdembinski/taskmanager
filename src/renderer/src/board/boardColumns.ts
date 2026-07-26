@@ -70,3 +70,22 @@ export function subtaskProgress(subtasks: readonly Task[]): { done: number; tota
     total: subtasks.length,
   };
 }
+
+/**
+ * Is a step of this card mid-run? A card whose chain is live must not be dragged to
+ * another column: the steps travel with it, and the runner owns their statuses until
+ * the chain stops. (The parent's own status is checked separately — it reads
+ * `in-progress` while a step runs, which on its own says nothing.)
+ */
+export function hasLiveSubtask(subtasks: readonly Task[]): boolean {
+  return subtasks.some((s) => s.status === 'running' || s.status === 'waiting-input');
+}
+
+/**
+ * A step's 1-based position among its siblings ("step 2 of 5"), or null when the
+ * task isn't in the list — an orphan, or an ordinary card.
+ */
+export function stepPosition(subtasks: readonly Task[], taskId: string): number | null {
+  const index = subtasks.findIndex((s) => s.id === taskId);
+  return index < 0 ? null : index + 1;
+}

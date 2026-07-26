@@ -10,6 +10,10 @@
  *
  * The agent controls (assign / stop / answer a parked run) live in `TaskAgentPanel`
  * above the timeline; the ticket's own description sits between the two.
+ *
+ * A card's **steps** (Phase 11) live below the agent panel: the chain an approved plan
+ * produced, or one written by hand. Selecting a step shows that step's own pane — its
+ * brief and its transcript — with a breadcrumb back to the card it belongs to.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -30,14 +34,18 @@ import {
 } from '@fluentui/react-components';
 import type { ManualStatus, Project, Task, TaskActivityEntry } from '@shared/model';
 import type { SessionEvent } from '@shared/session';
+import { ChevronLeftRegular } from '@fluentui/react-icons';
 import { isTranscriptNoise, runningSubAgents } from './agentActivity';
+import { stepPosition } from './board/boardColumns';
 import { MANUAL_STATUS_OPTIONS, STATUS_COLOR, STATUS_LABEL } from './taskStatus';
+import { StepBrief, TaskSteps } from './TaskSteps';
 import { TaskAgentPanel } from './TaskAgentPanel';
 import { eventToLines } from './Transcript';
 
 const useStyles = makeStyles({
   root: { display: 'flex', flexDirection: 'column', gap: '12px', minHeight: 0, flex: 1 },
   head: { display: 'flex', flexDirection: 'column', gap: '4px' },
+  crumbRow: { display: 'flex', alignItems: 'center', gap: '6px', marginLeft: '-8px' },
   phase: { color: tokens.colorNeutralForeground3 },
   statusRow: { display: 'flex', alignItems: 'center', gap: '10px' },
   grow: { flex: 1 },
@@ -112,14 +120,29 @@ export interface TaskDetailProps {
   task: Task | null;
   /** The agent projects a card can be delegated to (owned by the board, fetched once). */
   agentProjects?: Project[];
+  /**
+   * The chain this task belongs to, in execution order: a card's own steps, or — when
+   * a step is shown — its siblings, which is what makes "step 2 of 5" possible.
+   */
+  subtasks?: Task[];
+  /** The card a shown step belongs to (null for an ordinary card). */
+  parentTask?: Task | null;
+  /** Show another task in this pane (the breadcrumb, and opening a step). */
+  onOpenTask?: (taskId: string) => void;
   /** Called after a successful manual status change so the parent list can patch. */
   onStatusChanged?: (task: Task) => void;
+  /** Called after a step is added or edited, so the board can reload its cards. */
+  onSubtasksChanged?: () => void;
 }
 
 export function TaskDetail({
   task,
   agentProjects = [],
+  subtasks = [],
+  parentTask = null,
+  onOpenTask,
   onStatusChanged,
+  onSubtasksChanged,
 }: TaskDetailProps): JSX.Element {
   const styles = useStyles();
   const [activity, setActivity] = useState<TaskActivityEntry[]>([]);
@@ -288,11 +311,31 @@ export function TaskDetail({
     await loadActivity();
   }
 
+  const isStep = Boolean(task.parentTaskId);
+  const position = isStep ? stepPosition(subtasks, task.id) : null;
+
   return (
     <div className={styles.root}>
       <div className={styles.head}>
+        {parentTask && (
+          <div className={styles.crumbRow}>
+            <Button
+              size="small"
+              appearance="transparent"
+              icon={<ChevronLeftRegular />}
+              onClick={() => onOpenTask?.(parentTask.id)}
+            >
+              {parentTask.title}
+            </Button>
+            {position !== null && (
+              <Caption1 className={styles.phase}>
+                Step {position} of {subtasks.length}
+              </Caption1>
+            )}
+          </div>
+        )}
         <Subtitle2>{task.title}</Subtitle2>
-        {task.phase && <Caption1 className={styles.phase}>{task.phase}</Caption1>}
+        {task.phase && !isStep && <Caption1 className={styles.phase}>{task.phase}</Caption1>}
         {task.dependsOn?.length > 0 && (
           <Caption1 className={styles.phase}>Depends on: {task.dependsOn.join(', ')}</Caption1>
         )}
@@ -327,6 +370,23 @@ export function TaskDetail({
           void loadActivity();
         }}
       />
+
+      {isStep ? (
+        <StepBrief
+          task={task}
+          onChanged={(updated) => {
+            onStatusChanged?.(updated);
+            onSubtasksChanged?.();
+          }}
+        />
+      ) : (
+        <TaskSteps
+          task={task}
+          subtasks={subtasks}
+          onOpen={(id) => onOpenTask?.(id)}
+          onChanged={() => onSubtasksChanged?.()}
+        />
+      )}
 
       {task.externalDescription && (
         <div className={styles.description}>{task.externalDescription}</div>

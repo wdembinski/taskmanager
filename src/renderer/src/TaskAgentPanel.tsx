@@ -63,6 +63,21 @@ const useStyles = makeStyles({
     maxHeight: '160px',
     overflowY: 'auto',
   },
+  /** The plan itself: longer than a prompt, so it gets its own scroll box. */
+  plan: {
+    fontFamily: 'ui-monospace, Consolas, monospace',
+    fontSize: '12px',
+    whiteSpace: 'pre-wrap',
+    maxHeight: '260px',
+    overflowY: 'auto',
+    padding: '8px 10px',
+    borderRadius: tokens.borderRadiusMedium,
+    backgroundColor: tokens.colorNeutralBackground1,
+    border: `1px solid ${tokens.colorNeutralStroke2}`,
+  },
+  steps: { display: 'flex', flexDirection: 'column', gap: '2px' },
+  step: { display: 'flex', gap: '6px' },
+  stepIndex: { color: tokens.colorNeutralForeground4, minWidth: '18px' },
   choices: { display: 'flex', flexWrap: 'wrap', gap: '6px' },
   answerRow: { display: 'flex', alignItems: 'flex-end', gap: '8px' },
 });
@@ -88,6 +103,7 @@ export function TaskAgentPanel({
   const [error, setError] = useState<string | null>(null);
 
   const taskId = task.id;
+  const isStep = Boolean(task.parentTaskId);
   const live = task.status === 'running' || task.status === 'waiting-input';
   // A limit-parked card has no process to kill, but Stop still unparks it so it
   // doesn't silently resume when the limit lifts.
@@ -172,21 +188,31 @@ export function TaskAgentPanel({
             Stop
           </Button>
         )}
-        <Button
-          size="small"
-          appearance={task.agentProjectId ? 'secondary' : 'primary'}
-          disabled={live}
-          title={live ? 'Stop the agent before reassigning this card.' : undefined}
-          onClick={() => setAssignOpen(true)}
-        >
-          {task.agentProjectId ? 'Reassign…' : 'Assign to an agent…'}
-        </Button>
+        {/* A step is never delegated on its own: it inherits the card's agent project
+            and runs in the card's worktree, in its turn. Stop is still offered. */}
+        {isStep ? (
+          <Caption1 className={styles.hint}>Runs with its card</Caption1>
+        ) : (
+          <Button
+            size="small"
+            appearance={task.agentProjectId ? 'secondary' : 'primary'}
+            disabled={live}
+            title={live ? 'Stop the agent before reassigning this card.' : undefined}
+            onClick={() => setAssignOpen(true)}
+          >
+            {task.agentProjectId ? 'Reassign…' : 'Assign to an agent…'}
+          </Button>
+        )}
       </div>
 
       {task.agentProjectId && (
         <Caption1 className={styles.hint}>
           {task.agentModel ?? assigned?.defaultModel ?? 'project default'} ·{' '}
-          {PERMISSION_MODE_LABELS[task.agentMode ?? assigned?.defaultPermissionMode ?? 'acceptEdits']}
+          {
+            PERMISSION_MODE_LABELS[
+              task.agentMode ?? assigned?.defaultPermissionMode ?? 'acceptEdits'
+            ]
+          }
           {assigned ? ` · ${assigned.path}` : ''}
         </Caption1>
       )}
@@ -211,17 +237,41 @@ export function TaskAgentPanel({
             </Text>
           </div>
           <div className={styles.prompt}>{item.prompt}</div>
-          {item.reason && <Caption1 className={styles.hint}>Held because it {item.reason}.</Caption1>}
+          {item.reason && (
+            <Caption1 className={styles.hint}>Held because it {item.reason}.</Caption1>
+          )}
           {item.worktreePath && (
             <Caption1 className={styles.hint} title={item.worktreePath}>
               Worktree: {item.worktreePath}
             </Caption1>
           )}
 
-          {item.kind === 'plan-approval' && (item.steps?.length ?? 0) > 0 && (
-            <Caption1 className={styles.hint}>
-              {item.steps!.map((s, i) => `${i + 1}. ${s}`).join(' · ')}
-            </Caption1>
+          {item.kind === 'plan-approval' && (
+            <>
+              {item.plan && <div className={styles.plan}>{item.plan}</div>}
+              {(item.steps?.length ?? 0) > 0 ? (
+                <>
+                  <Caption1 className={styles.hint}>
+                    Approving creates {item.steps!.length} step
+                    {item.steps!.length === 1 ? '' : 's'}, run one at a time in their own sessions
+                    on this card&apos;s branch:
+                  </Caption1>
+                  <div className={styles.steps}>
+                    {item.steps!.map((step, i) => (
+                      <div key={`${i}-${step}`} className={styles.step}>
+                        <Caption1 className={styles.stepIndex}>{i + 1}.</Caption1>
+                        <Caption1>{step}</Caption1>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <Caption1 className={styles.hint}>
+                  No plan text was captured, so approving would leave this card with nothing to run
+                  — re-plan instead.
+                </Caption1>
+              )}
+            </>
           )}
 
           {item.kind === 'permission' ||

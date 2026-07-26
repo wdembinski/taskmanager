@@ -7,7 +7,7 @@ import { useState } from 'react';
 import { Caption1, Text, makeStyles, mergeClasses, tokens } from '@fluentui/react-components';
 import type { Task } from '@shared/model';
 import { TaskCard } from './TaskCard';
-import type { BoardColumn } from './boardColumns';
+import type { BoardCard, BoardColumn } from './boardColumns';
 
 const useStyles = makeStyles({
   column: {
@@ -42,11 +42,12 @@ const useStyles = makeStyles({
 export interface KanbanColumnProps {
   column: BoardColumn;
   label: string;
-  tasks: Task[];
+  /** The column's cards, each carrying the steps that render inside it. */
+  cards: BoardCard[];
   projectNameOf: (task: Task) => string | undefined;
   /** Name of the agent project a delegated card runs in (tooltip on the agent glyph). */
   agentNameOf: (task: Task) => string | undefined;
-  canDrag: (task: Task) => boolean;
+  canDrag: (card: BoardCard) => boolean;
   selectedTaskId: string | null;
   draggingId: string | null;
   onSelectTask: (id: string) => void;
@@ -82,22 +83,25 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
         <Text weight="semibold" size={200} className={styles.headerLabel}>
           {props.label}
         </Text>
-        <Caption1 className={styles.count}>({props.tasks.length})</Caption1>
+        <Caption1 className={styles.count}>({props.cards.length})</Caption1>
       </div>
       <div className={styles.list}>
-        {props.tasks.length === 0 ? (
+        {props.cards.length === 0 ? (
           <Caption1 className={styles.empty}>—</Caption1>
         ) : (
-          props.tasks.map((task) => (
+          props.cards.map(({ task, subtasks }) => (
             <TaskCard
               key={task.id}
               task={task}
               projectName={props.projectNameOf(task)}
               agentName={props.agentNameOf(task)}
+              subtasks={subtasks}
               selected={task.id === props.selectedTaskId}
-              draggable={props.canDrag(task)}
+              selectedTaskId={props.selectedTaskId}
+              draggable={props.canDrag({ task, subtasks })}
               dragging={task.id === props.draggingId}
               onSelect={() => props.onSelectTask(task.id)}
+              onSelectSubtask={props.onSelectTask}
               onDragStart={(e) => {
                 e.dataTransfer.setData('text/plain', task.id);
                 e.dataTransfer.effectAllowed = 'move';
