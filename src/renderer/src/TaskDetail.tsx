@@ -21,6 +21,7 @@ import {
   MessageBar,
   MessageBarBody,
   Option,
+  Spinner,
   Subtitle2,
   Text,
   Textarea,
@@ -28,6 +29,8 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import type { ManualStatus, Project, Task, TaskActivityEntry } from '@shared/model';
+import type { SessionEvent } from '@shared/session';
+import { isTranscriptNoise, runningSubAgents } from './agentActivity';
 import { MANUAL_STATUS_OPTIONS, STATUS_COLOR, STATUS_LABEL } from './taskStatus';
 import { TaskAgentPanel } from './TaskAgentPanel';
 import { eventToLines } from './Transcript';
@@ -86,6 +89,10 @@ const useStyles = makeStyles({
     color: tokens.colorNeutralForeground2,
     fontSize: '12px',
   },
+  running: { display: 'flex', alignItems: 'center', gap: '8px' },
+  runningLabel: { color: tokens.colorNeutralForeground2 },
+  subAgent: { paddingLeft: '18px' },
+  subAgentLabel: { color: tokens.colorNeutralForeground3 },
   composer: { display: 'flex', flexDirection: 'column', gap: '6px' },
   composerRow: { display: 'flex', justifyContent: 'flex-end', gap: '8px' },
   empty: { color: tokens.colorNeutralForeground3 },
@@ -190,18 +197,31 @@ export function TaskDetail({
   }, []);
 
   // One chronological timeline: persisted activity + live JIRA comments + live output.
+  // Debug chatter (thinking, tool calls, successful tool results) is dropped — the
+  // "Agent running" indicator below stands in for all of it. See `agentActivity.ts`.
   const timeline = useMemo(
     () =>
-      [...activity, ...jiraComments, ...liveEvents].sort((a, b) => a.createdAt - b.createdAt),
+      [...activity, ...jiraComments, ...liveEvents]
+        .filter((e) => e.kind !== 'event' || !isTranscriptNoise(e.event))
+        .sort((a, b) => a.createdAt - b.createdAt),
     [activity, jiraComments, liveEvents],
   );
+
+  // Sub-agents the main agent spawned and is still waiting on, derived from the
+  // UNFILTERED stream (the tool calls the timeline hides are exactly the evidence).
+  const subAgents = useMemo(() => {
+    const events = [...activity, ...liveEvents]
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .flatMap((e) => (e.kind === 'event' ? [e.event as SessionEvent] : []));
+    return runningSubAgents(events);
+  }, [activity, liveEvents]);
 
   // Keep the newest entry in view as output streams (same rule as the Transcript pane).
   const timelineRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = timelineRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [timeline]);
+  }, [timeline, subAgents]);
 
   const lineClass: Record<string, string> = {
     meta: styles.meta,
@@ -319,7 +339,7 @@ export function TaskDetail({
       )}
 
       <div className={styles.timeline} ref={timelineRef}>
-        {timeline.length === 0 ? (
+        {timeline.length === 0 && !managedByAI ? (
           <Caption1 className={styles.empty}>
             No activity yet — change the status or add a comment to start the log.
           </Caption1>
@@ -379,6 +399,26 @@ export function TaskDetail({
               </div>
             );
           })
+        )}
+
+        {/* One live indicator in place of the tool-by-tool chatter: the agent itself,
+            then a row per sub-agent it has spawned and is still waiting on. */}
+        {managedByAI && (
+          <>
+            <div className={styles.running}>
+              <Spinner size="tiny" />
+              <Caption1 className={styles.runningLabel}>Agent running</Caption1>
+            </div>
+            {subAgents.map((agent) => (
+              <div key={agent.toolId} className={`${styles.running} ${styles.subAgent}`}>
+                <Spinner size="tiny" />
+                <Caption1 className={styles.runningLabel}>Agent running</Caption1>
+                {agent.label && (
+                  <Caption1 className={styles.subAgentLabel}>· {agent.label}</Caption1>
+                )}
+              </div>
+            ))}
+          </>
         )}
       </div>
 

@@ -54,3 +54,14 @@ describe('evaluateToolUse — auto-approves safe work', () => {
     expect(evaluateToolUse('SomeFutureTool', { whatever: true })).toEqual({ action: 'allow' });
   });
 });
+
+describe('evaluateToolUse — plan approval (Phase 11)', () => {
+  it('holds ExitPlanMode so a plan cannot take effect unapproved', () => {
+    expect(evaluateToolUse('ExitPlanMode', { plan: '## Phase 1\nDo it' })).toEqual({
+      action: 'ask',
+      reason: 'presents a plan for approval',
+    });
+    // Name matching is case-insensitive like every other rule here.
+    expect(evaluateToolUse('exitplanmode', {}).action).toBe('ask');
+  });
+});

@@ -223,6 +223,13 @@ export function readUsage(raw: unknown): {
  * risk policy governs EVERY tool use (edits included), forces `--permission-mode
  * default` — the mode under which the CLI consults the permission tool — rather
  * than the project's own mode. Ungated runs keep the requested mode.
+ *
+ * `plan` is the one mode that survives the gate (Phase 11). It is not a risk setting
+ * but a different job: research and propose, change nothing. Rewriting it to `default`
+ * would let a "plan this" run start editing, and it would never produce the
+ * `ExitPlanMode` call the orchestrator turns into an approvable plan. The gate still
+ * applies on top — the CLI consults the permission tool in plan mode too — so keeping
+ * it loosens nothing.
  */
 export function buildClaudeArgs(
   req: StartSessionRequest,
@@ -240,7 +247,7 @@ export function buildClaudeArgs(
     '--model',
     req.model,
     '--permission-mode',
-    gate ? 'default' : req.permissionMode,
+    gate && req.permissionMode !== 'plan' ? 'default' : req.permissionMode,
     // Resuming (Phase 5) continues THIS conversation with its full history;
     // otherwise we claim a fresh id we can resume later. Both key off the same id.
     resume ? '--resume' : '--session-id',

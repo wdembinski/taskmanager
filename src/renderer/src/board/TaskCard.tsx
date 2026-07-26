@@ -17,9 +17,9 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import {
+  AgentsRegular,
   BeakerFilled,
   BookmarkFilled,
-  BotSparkleFilled,
   BugFilled,
   CircleFilled,
   NoteFilled,
@@ -35,8 +35,11 @@ import { columnForStatus, statusForColumn } from './boardColumns';
 /** "Wants you" accent — unread JIRA comments and agents parked on a question. */
 const UNREAD_ORANGE = '#F2A900';
 
-/** Agent-delegation glyph tint (matches the Attention inbox's "an agent is on it" feel). */
-const AGENT_PURPLE = '#8E4EC6';
+/**
+ * The delegation glyph is deliberately double the type icon (16px → 32px) and white,
+ * so a card an agent owns reads at a glance across the board.
+ */
+const AGENT_ICON_SIZE = '32px';
 
 const useStyles = makeStyles({
   card: {
@@ -51,7 +54,7 @@ const useStyles = makeStyles({
     userSelect: 'none',
   },
   cardUnread: { border: `2px solid ${UNREAD_ORANGE}` },
-  agentIcon: { fontSize: '16px', flexShrink: 0, display: 'flex', color: AGENT_PURPLE },
+  agentIcon: { fontSize: AGENT_ICON_SIZE, flexShrink: 0, display: 'flex', color: '#ffffff' },
   cardSelected: { border: `1px solid ${tokens.colorBrandStroke1}` },
   dragging: { opacity: 0.5 },
   titleRow: { display: 'flex', alignItems: 'center', gap: '8px' },
@@ -179,7 +182,7 @@ export function TaskCard({
             }
           >
             <span className={styles.agentIcon}>
-              <BotSparkleFilled />
+              <AgentsRegular />
             </span>
           </Tooltip>
         )}

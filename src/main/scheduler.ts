@@ -57,8 +57,9 @@ import { buildAgentTaskPrompt, type AgentPromptComment } from './agentTaskPrompt
 import type { PermissionGate } from './claudeSession';
 import { isBlockingLimitStatus, LimitGate } from './limitGate';
 import type { PermissionRequest, PermissionDecisionResult } from './permissionBroker';
-import { evaluateToolUse } from './permissionPolicy';
+import { EXIT_PLAN_MODE_TOOL, evaluateToolUse } from './permissionPolicy';
 import { tickPlanCheckbox } from './planParser';
+import { extractPlanMarkdown } from './planToSubtasks';
 import type { SessionManager } from './sessionManager';
 import type { Store } from './store';
 import type {
@@ -916,6 +917,13 @@ export class Scheduler {
     // this run — auto-approve every tool so nothing lands in the Attention inbox.
     // Genuine questions Claude asks (detectAttention) still surface. The RUN's mode
     // wins (a per-assignment override), falling back to the project default.
+    // A finished plan (Phase 11): capture the markdown before deciding anything, so the
+    // plan survives whatever the human chooses — and a restart. Done ahead of the
+    // bypass shortcut below, since a full-auto run still produces a plan worth keeping.
+    if (request.toolName === EXIT_PLAN_MODE_TOOL) {
+      this.capturePlan(run.taskId, request.input);
+    }
+
     const project = this.store.getProject(run.projectId);
     const mode = run.permissionMode ?? project?.defaultPermissionMode;
     if (mode === 'bypassPermissions') {
@@ -937,6 +945,21 @@ export class Scheduler {
     return new Promise<PermissionDecisionResult>((resolve) => {
       this.pendingDecisions.set(item.id, { runId: request.runId, input: request.input, resolve });
     });
+  }
+
+  /**
+   * Persist the plan a `plan`-mode run just produced (Phase 11). Called from both
+   * capture points — the broker request and the `tool-use` event — so it must be
+   * safe to run twice for one plan; writing the same markdown again is a no-op in
+   * effect. A call carrying no usable plan text leaves any previously stored plan
+   * alone rather than blanking it.
+   */
+  private capturePlan(taskId: string, input: unknown): void {
+    const plan = extractPlanMarkdown(input);
+    if (!plan) return;
+    const task = this.store.getTask(taskId);
+    if (!task || task.agentPlan === plan) return;
+    this.updateTask(taskId, { agentPlan: plan }, null);
   }
 
   /**
@@ -1398,6 +1421,15 @@ export class Scheduler {
       this.recordUsage('task', run.projectId, run.taskId, runId, event);
     } else if (event.kind === 'result') {
       this.recordCost('task', run.projectId, run.taskId, runId, event.costUsd);
+    }
+
+    // Plan capture, fallback path (Phase 11). `decidePermission` normally sees the
+    // `ExitPlanMode` call first, but that depends on the CLI routing the tool through
+    // the permission gate. The event stream always carries it, so capture here too —
+    // `capturePlan` is idempotent, and losing a plan the agent spent a whole session
+    // producing is far worse than writing the same markdown twice.
+    if (event.kind === 'tool-use' && event.name === EXIT_PLAN_MODE_TOOL) {
+      this.capturePlan(run.taskId, event.input);
     }
 
     // Inspect assistant messages for the three explicit markers, in priority order:
@@ -2336,7 +2368,7 @@ export class Scheduler {
 
   private updateTask(
     taskId: string,
-    patch: Partial<Pick<Task, 'status' | 'sessionId'>>,
+    patch: Partial<Pick<Task, 'status' | 'sessionId' | 'agentPlan'>>,
     runId: string | null,
   ): void {
     const task = this.store.updateTask(taskId, patch);

@@ -188,6 +188,19 @@ describe('buildClaudeArgs', () => {
     expect(args).toContain('--permission-prompt-tool');
     expect(args).toContain('mcp__orchestrator-permissions__approve');
   });
+
+  it('keeps plan mode even when gated, and still gates it (Phase 11)', () => {
+    const args = buildClaudeArgs(
+      { prompt: 'x', cwd: 'C:\\work', model: 'haiku', permissionMode: 'plan' },
+      'session-123',
+      { configPath: 'C:\\tmp\\mcp-1.json' },
+    );
+    // Rewriting plan → default would let a "plan this" run start editing, and would
+    // never produce the ExitPlanMode call the orchestrator turns into subtasks.
+    const modeIndex = args.indexOf('--permission-mode');
+    expect(args[modeIndex + 1]).toBe('plan');
+    expect(args).toContain('--permission-prompt-tool');
+  });
 });
 
 describe('encodeUserMessage', () => {

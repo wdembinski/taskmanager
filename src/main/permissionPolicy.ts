@@ -25,6 +25,14 @@ export type PermissionDecision = { action: 'allow' } | { action: 'ask'; reason: 
 /** Tools whose whole purpose is to delete — always routed to a human. */
 const DELETE_TOOLS = new Set(['delete', 'deletefile', 'remove', 'rm', 'trash']);
 
+/**
+ * The tool a plan-mode session calls to hand over its finished plan and ask to start
+ * implementing (Phase 11). Always routed to a human: it is both the approval gate for
+ * the plan itself and the only signal that a plan is complete — and it carries the
+ * plan text as its input, which the orchestrator splits into subtasks.
+ */
+export const EXIT_PLAN_MODE_TOOL = 'ExitPlanMode';
+
 /** Substrings that mark a path/command as touching secrets. Matched case-insensitively. */
 const SECRET_HINTS = ['.env', 'secret', 'credential', 'id_rsa', '.pem', '.key', '.pfx', 'token'];
 
@@ -66,6 +74,12 @@ export function evaluateToolUse(
   input: Record<string, unknown>,
 ): PermissionDecision {
   const name = toolName.toLowerCase();
+
+  // A finished plan awaiting a human (Phase 11). Held before it takes effect, so the
+  // agent cannot leave plan mode — and start editing — without approval.
+  if (name === EXIT_PLAN_MODE_TOOL.toLowerCase()) {
+    return { action: 'ask', reason: 'presents a plan for approval' };
+  }
 
   // Shell commands: inspect the actual command string for risky fragments.
   if (name === 'bash' || name === 'shell' || name === 'powershell') {

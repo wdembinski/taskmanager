@@ -24,13 +24,12 @@ import {
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
-import { BotSparkleFilled } from '@fluentui/react-icons';
+import { AgentsRegular } from '@fluentui/react-icons';
 import type { AttentionAnswer, AttentionItem } from '@shared/attention';
 import type { Project, Task } from '@shared/model';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import { AssignAgentDialog } from './AssignAgentDialog';
 
-const AGENT_PURPLE = '#8E4EC6';
 const ASK_ORANGE = '#F2A900';
 
 const useStyles = makeStyles({
@@ -44,7 +43,8 @@ const useStyles = makeStyles({
     border: `1px solid ${tokens.colorNeutralStroke2}`,
   },
   head: { display: 'flex', alignItems: 'center', gap: '8px' },
-  icon: { fontSize: '18px', display: 'flex', color: AGENT_PURPLE },
+  // Double-size and white, matching the board card's delegation glyph.
+  icon: { fontSize: '36px', display: 'flex', color: '#ffffff' },
   grow: { flex: 1, minWidth: 0 },
   hint: { color: tokens.colorNeutralForeground3 },
   ask: {
@@ -152,7 +152,7 @@ export function TaskAgentPanel({
     <div className={styles.box}>
       <div className={styles.head}>
         <span className={styles.icon}>
-          <BotSparkleFilled />
+          <AgentsRegular />
         </span>
         <Text weight="semibold">Agent</Text>
         {assigned ? (

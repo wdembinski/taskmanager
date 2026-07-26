@@ -340,6 +340,13 @@ export interface Task {
   agentMode?: PermissionMode | null;
   /** Model chosen for this assignment, overriding the project default. Null = project default. */
   agentModel?: ClaudeModel | null;
+  /**
+   * The plan a `plan`-mode delegated run produced, as markdown (Phase 11) — captured
+   * from the agent's `ExitPlanMode` call and kept so it survives a restart, can be
+   * re-read in the detail pane, and can be split into subtasks on approval. Null until
+   * the card has been planned.
+   */
+  agentPlan?: string | null;
 }
 
 /** What the assign-to-an-agent action sends: where to run, how, and an optional brief. */
