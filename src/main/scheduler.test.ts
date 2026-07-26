@@ -17,6 +17,7 @@ import {
 import { AGREE_SENTINEL, OBJECT_SENTINEL, PROPOSE_SENTINEL } from './attention';
 import type { PermissionMode } from '@shared/session';
 import type { Project, Task } from '@shared/model';
+import type { LimitState } from '@shared/limit';
 import type { SessionManager } from './sessionManager';
 import type { Store } from './store';
 
@@ -315,6 +316,119 @@ describe('Scheduler.schedulerStates', () => {
     // stop() on an untracked project still announces idle via setState.
     scheduler.stop('p');
     expect(scheduler.schedulerStates()).toEqual([{ projectId: 'p', state: 'idle' }]);
+  });
+});
+
+describe('Scheduler — a card delegated to an agent project', () => {
+  /**
+   * A My Tasks card assigned to an agent: it stays on the Personal board
+   * (`projectId: 'personal'`) but every run must execute in the AGENT project's repo,
+   * with the per-assignment model/mode. No worktree manager here, so the run launches
+   * synchronously in the shared directory.
+   */
+  function makeAgentScheduler(overrides: Partial<Task> = {}) {
+    const personal = { id: 'personal', name: 'Personal', path: '', planPath: '', kind: 'plan' };
+    const agentProject = {
+      id: 'agent-1',
+      name: 'Checkout service',
+      path: 'C:/repos/checkout',
+      planPath: '',
+      kind: 'agent',
+      defaultModel: 'sonnet',
+      defaultPermissionMode: 'acceptEdits',
+      concurrency: 1,
+    };
+    const task = {
+      id: 't1',
+      projectId: 'personal',
+      phase: '',
+      title: 'Fix the export dialog',
+      status: 'pending',
+      sessionId: null,
+      order: 0,
+      source: 'jira',
+      dependsOn: [],
+      isContract: false,
+      isScaffold: false,
+      externalSource: 'jira',
+      externalKey: 'ABC-42',
+      agentProjectId: 'agent-1',
+      agentMode: 'plan',
+      agentModel: 'opus',
+      ...overrides,
+    } as Task;
+    const store = {
+      getTask: (id: string) => (id === 't1' ? task : undefined),
+      getProject: (id: string) =>
+        id === 'agent-1' ? agentProject : id === 'personal' ? personal : undefined,
+      getTasks: () => [task],
+      getTaskActivity: () => [
+        { kind: 'comment', id: 1, body: 'Start with the file-picker path.', createdAt: 1 },
+      ],
+      updateTask: (_id: string, patch: Partial<Task>) => Object.assign(task, patch),
+      getSettings: () => ({ limitJitterMs: 0, concurrency: 1 }),
+      appendTaskEvent: vi.fn(),
+    } as unknown as Store;
+    const start = vi.fn((_req: unknown, _opts: unknown) => ({ runId: 'r1' }));
+    const stop = vi.fn();
+    const sessions = { start, stop } as unknown as SessionManager;
+    const scheduler = new Scheduler(store, sessions, vi.fn(), vi.fn(), vi.fn(), vi.fn(), vi.fn());
+    return { scheduler, start, stop, task };
+  }
+
+  it('runs in the agent project’s repo with the assignment’s model and mode', () => {
+    const { scheduler, start } = makeAgentScheduler();
+    scheduler.runTask('t1');
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(start.mock.calls[0][0]).toMatchObject({
+      cwd: 'C:/repos/checkout',
+      model: 'opus', // the assignment's override, not the project default (sonnet)
+      permissionMode: 'plan',
+    });
+  });
+
+  it('uses the single-ticket agent prompt, with the human’s notes', () => {
+    const { scheduler, start } = makeAgentScheduler();
+    scheduler.runTask('t1');
+    const { prompt } = start.mock.calls[0][0] as { prompt: string };
+    expect(prompt).toContain('ABC-42');
+    expect(prompt).toContain('ONE ticket');
+    expect(prompt).toContain('Start with the file-picker path.');
+  });
+
+  it('falls back to the project defaults when the assignment has no overrides', () => {
+    const { scheduler, start } = makeAgentScheduler({ agentMode: null, agentModel: null });
+    scheduler.runTask('t1');
+    expect(start.mock.calls[0][0]).toMatchObject({ model: 'sonnet', permissionMode: 'acceptEdits' });
+  });
+
+  it('resumes an agent task in the agent project after a usage limit clears', () => {
+    // The limit-park → auto-resume path can't be forced live, and it is the one that
+    // would silently run the task in the wrong (Personal, path-less) project.
+    const { scheduler, start, task } = makeAgentScheduler({
+      status: 'blocked-by-limit',
+      sessionId: 's1',
+    });
+    (scheduler as unknown as { resumeParked: (s: LimitState) => void }).resumeParked({
+      limitType: 'rolling',
+      resetsAt: null,
+      resumeAt: 0,
+      parkedTaskIds: [task.id],
+    });
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(start.mock.calls[0][0]).toMatchObject({ cwd: 'C:/repos/checkout' });
+    // A resume continues the saved conversation rather than re-briefing the agent.
+    expect(start.mock.calls[0][1]).toMatchObject({ resumeSessionId: 's1' });
+  });
+
+  it('stopTask ends that task’s run and marks it stopped', () => {
+    const { scheduler, stop, task } = makeAgentScheduler();
+    scheduler.runTask('t1');
+    expect(scheduler.stopTask('t1')).toBe(true);
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(task.status).toBe('stopped');
+    // A task with nothing running is a no-op, not an error (and never re-marked).
+    expect(scheduler.stopTask('unknown')).toBe(false);
   });
 });
 

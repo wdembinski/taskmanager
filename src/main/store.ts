@@ -70,6 +70,10 @@ interface TaskRow {
   latestCommentAt: number | null;
   /** The agent project this card is delegated to; NULL when unassigned. */
   agentProjectId: string | null;
+  /** Per-assignment permission mode override; NULL = the agent project's default. */
+  agentMode: string | null;
+  /** Per-assignment model override; NULL = the agent project's default. */
+  agentModel: string | null;
 }
 
 /** A project row as stored; `writeBackPlan` is a 0/1 INTEGER (SQLite has no boolean). */
@@ -128,6 +132,8 @@ export interface Store {
         | 'lastReadCommentAt'
         | 'latestCommentAt'
         | 'agentProjectId'
+        | 'agentMode'
+        | 'agentModel'
       >
     >,
   ): Task | undefined;
@@ -268,7 +274,9 @@ export function createStore(dbPath: string): Store {
       preBlockStatus         TEXT,
       lastReadCommentAt      INTEGER,
       latestCommentAt        INTEGER,
-      agentProjectId         TEXT
+      agentProjectId         TEXT,
+      agentMode              TEXT,
+      agentModel             TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(projectId, "order");
     CREATE TABLE IF NOT EXISTS app_state (
@@ -382,6 +390,10 @@ export function createStore(dbPath: string): Store {
     ['externalParentKey', 'TEXT'],
     ['externalDescription', 'TEXT'],
     ['agentProjectId', 'TEXT'],
+    // Per-assignment overrides of the agent project's model / permission mode. NULL
+    // means "use the project default", which is what every pre-existing row wants.
+    ['agentMode', 'TEXT'],
+    ['agentModel', 'TEXT'],
   ];
   for (const [name, type] of jiraTaskColumns) {
     if (!taskColumns.some((c) => c.name === name)) {
@@ -458,12 +470,12 @@ export function createStore(dbPath: string): Store {
        (id, projectId, phase, title, status, sessionId, "order", source, dependsOn, isContract, isScaffold, type,
         externalSource, externalKey, externalId, externalUrl, externalStatus, externalStatusCategory,
         externalPriority, externalType, externalLabel, externalParentKey, externalDescription,
-        preBlockStatus, lastReadCommentAt, latestCommentAt, agentProjectId)
+        preBlockStatus, lastReadCommentAt, latestCommentAt, agentProjectId, agentMode, agentModel)
      VALUES
        (@id, @projectId, @phase, @title, @status, @sessionId, @order, @source, @dependsOn, @isContract, @isScaffold, @type,
         @externalSource, @externalKey, @externalId, @externalUrl, @externalStatus, @externalStatusCategory,
         @externalPriority, @externalType, @externalLabel, @externalParentKey, @externalDescription,
-        @preBlockStatus, @lastReadCommentAt, @latestCommentAt, @agentProjectId)`,
+        @preBlockStatus, @lastReadCommentAt, @latestCommentAt, @agentProjectId, @agentMode, @agentModel)`,
   );
   const deleteTask = db.prepare(`DELETE FROM tasks WHERE id = ?`);
   const nextOrder = db.prepare(
@@ -606,6 +618,8 @@ export function createStore(dbPath: string): Store {
       lastReadCommentAt: task.lastReadCommentAt ?? null,
       latestCommentAt: task.latestCommentAt ?? null,
       agentProjectId: task.agentProjectId ?? null,
+      agentMode: task.agentMode ?? null,
+      agentModel: task.agentModel ?? null,
     };
   }
 
@@ -638,6 +652,8 @@ export function createStore(dbPath: string): Store {
       lastReadCommentAt: r.lastReadCommentAt,
       latestCommentAt: r.latestCommentAt,
       agentProjectId: r.agentProjectId,
+      agentMode: (r.agentMode as Task['agentMode']) ?? null,
+      agentModel: (r.agentModel as Task['agentModel']) ?? null,
     };
   }
 
@@ -786,6 +802,8 @@ export function createStore(dbPath: string): Store {
         'lastReadCommentAt',
         'latestCommentAt',
         'agentProjectId',
+        'agentMode',
+        'agentModel',
       ] as const;
       for (const col of columns) {
         const value = (patch as Record<string, unknown>)[col];
@@ -807,8 +825,9 @@ export function createStore(dbPath: string): Store {
     upsertJiraTask(task) {
       const existing = selectTask.get(task.id) as TaskRow | undefined;
       if (existing) {
-        // Note `agentProjectId` is deliberately absent from the UPDATE: a JIRA re-sync
-        // refreshes tracker fields only and must never clear a human's agent assignment.
+        // Note the agent-delegation columns (`agentProjectId`, `agentMode`, `agentModel`)
+        // are deliberately absent from the UPDATE: a JIRA re-sync refreshes tracker fields
+        // only and must never clear a human's agent assignment.
         db.prepare(
           `UPDATE tasks SET
              phase = @phase, title = @title, status = @status, "order" = @order, source = @source,

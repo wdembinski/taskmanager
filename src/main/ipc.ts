@@ -307,6 +307,52 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     }
     await scheduler.cleanupTaskWorktree(taskId);
   });
+
+  // --- Agent delegation (a My Tasks card → an agent project) ------------------
+
+  handle('task:assignAgent', async (taskId, input) => {
+    const existing = store.getTask(taskId);
+    if (!existing) throw new Error('Task not found.');
+    if (existing.status === 'running' || existing.status === 'waiting-input') {
+      throw new Error('This task already has an agent working on it.');
+    }
+    const target = store.getProject(input.agentProjectId);
+    if (!target || target.kind !== 'agent') {
+      throw new Error('Pick an agent project to delegate this task to.');
+    }
+    // The instructions become a timeline comment BEFORE the run starts, so they are
+    // visible to the human and are picked up when the prompt is built — including on
+    // an auto-retry, which rebuilds the prompt from the timeline.
+    const notes = input.notes?.trim();
+    if (notes) store.addComment(existing.projectId, taskId, notes);
+
+    const task = store.updateTask(taskId, {
+      agentProjectId: target.id,
+      agentMode: input.mode ?? null,
+      agentModel: input.model ?? null,
+      // A previous attempt's session is not this assignment's; start a fresh
+      // conversation so the agent gets the full single-ticket brief.
+      sessionId: null,
+      status: 'pending',
+    });
+    if (!task) throw new Error('Task not found.');
+
+    const started = scheduler.runTask(taskId);
+    if (!started) {
+      throw new Error(
+        'Could not start the agent — a usage limit may be holding all work. Try again after it resets.',
+      );
+    }
+    send('task:changed', { task, runId: started.runId });
+    return task;
+  });
+
+  handle('task:stopAgent', async (taskId) => {
+    const existing = store.getTask(taskId);
+    if (!existing) throw new Error('Task not found.');
+    scheduler.stopTask(taskId); // no-op (false) when nothing is running for it
+    return store.getTask(taskId) ?? existing;
+  });
   handle('task:create', async (projectId, input) => {
     const task = store.createTask(projectId, input);
     if (!task) throw new Error('A task needs a title.');
@@ -542,6 +588,23 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     store.recordStatusChange(task.projectId, taskId, existing.status, move.localStatus);
     send('task:changed', { task, runId: null });
     return task;
+  });
+
+  // Brief a delegated card's agent with the ticket's comment thread (oldest first).
+  // The scheduler has no JIRA client of its own, so it calls back in here on each fresh
+  // agent run; anything unlinked or unconfigured yields no comments rather than an error.
+  scheduler.setTicketCommentProvider(async (task) => {
+    const { jira } = store.getSettings();
+    if (!jira.enabled || task.externalSource !== 'jira' || !task.externalKey) return [];
+    const comments = await buildJiraClient().getComments(task.externalKey);
+    return comments
+      .map((c) => ({
+        author: c.author?.displayName ?? 'JIRA',
+        body: commentBodyToText(c.body),
+        createdAt: Date.parse(c.created) || 0,
+      }))
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .map(({ author, body }) => ({ author, body }));
   });
 
   handle('jira:fetchComments', async (taskId) => {

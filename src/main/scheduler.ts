@@ -27,9 +27,14 @@
 import { randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import type { Project, Task, TaskStatus } from '@shared/model';
+import type { Project, Task, TaskActivityEntry, TaskStatus } from '@shared/model';
 import type { SchedulerState, TaskChange, SchedulerChange, ActiveRun } from '@shared/scheduler';
-import type { SessionEvent, StartSessionRequest } from '@shared/session';
+import type {
+  ClaudeModel,
+  PermissionMode,
+  SessionEvent,
+  StartSessionRequest,
+} from '@shared/session';
 import type { AttentionAnswer, AttentionItem, AttentionKind } from '@shared/attention';
 import type { LimitState } from '@shared/limit';
 import type { UsageSample, UsageSource } from '@shared/usage';
@@ -48,6 +53,7 @@ import {
   type DetectedResponse,
   type OwnershipEntry,
 } from './attention';
+import { buildAgentTaskPrompt, type AgentPromptComment } from './agentTaskPrompt';
 import type { PermissionGate } from './claudeSession';
 import { isBlockingLimitStatus, LimitGate } from './limitGate';
 import type { PermissionRequest, PermissionDecisionResult } from './permissionBroker';
@@ -382,8 +388,21 @@ function describeToolUse(name: string, input: Record<string, unknown>): string {
 /** Bookkeeping for one task the scheduler currently has a session running for. */
 interface Run {
   taskId: string;
+  /**
+   * The project the run EXECUTES in. For a plan task that is the task's own project;
+   * for a My Tasks card delegated to an agent it is the agent project (the card itself
+   * stays on the Personal board) — see `runProjectFor`. Worktrees, integration, usage
+   * attribution and `stop(projectId)` all key off this.
+   */
   projectId: string;
   runId: string;
+  /**
+   * Permission mode / model this run was started with. Set from the task's
+   * per-assignment override when it has one, else the project default; kept on the run
+   * so `decidePermission` judges the run the human actually authorized.
+   */
+  permissionMode?: PermissionMode;
+  model?: ClaudeModel;
   /** Set once we've decided the task's outcome, so a trailing `exited` doesn't re-settle it. */
   settled: boolean;
   /** (Worktree mode) the task's branch, set once the worktree is prepared. */
@@ -553,6 +572,12 @@ export class Scheduler {
   /** The permission gate handed to every task run (null until the broker is up). */
   private gate: PermissionGate | null = null;
   /**
+   * Fetches the linked ticket's comments for a delegated card's prompt. Injected by the
+   * IPC layer (which owns the JIRA client) so the scheduler stays tracker-agnostic and
+   * unit-testable; null in tests and when no tracker is configured.
+   */
+  private ticketComments: ((task: Task) => Promise<AgentPromptComment[]>) | null = null;
+  /**
    * The account-wide usage-limit gate (Phase 5). When active, ALL scheduling is
    * held; when its timer fires, every parked task resumes by its saved session id.
    */
@@ -606,6 +631,15 @@ export class Scheduler {
    */
   setPermissionGate(gate: PermissionGate): void {
     this.gate = gate;
+  }
+
+  /**
+   * Wire the tracker-comment lookup used to brief an agent on a delegated card (see
+   * `collectTicketComments`). Optional: without it the prompt simply carries the
+   * ticket's description and the human's notes.
+   */
+  setTicketCommentProvider(provider: (task: Task) => Promise<AgentPromptComment[]>): void {
+    this.ticketComments = provider;
   }
 
   /** Start (or resume) a project's queue. */
@@ -695,9 +729,75 @@ export class Scheduler {
     if (this.limitGate.active) return null;
     const task = this.store.getTask(taskId);
     if (!task) return null;
-    const project = this.store.getProject(task.projectId);
+    const project = this.runProjectFor(task);
     if (!project) return null;
     return { runId: this.startTask(project, task) };
+  }
+
+  /**
+   * Stop the live run of ONE task (the My Tasks "Stop" action for a delegated card),
+   * without touching anything else in its project. The task is marked `stopped`; a
+   * worktree/branch is deliberately left in place so the work can be resumed or
+   * inspected. Returns false when the task has no run to stop.
+   *
+   * Mirrors `stop(projectId)`, narrowed to a single task: any parked inbox item for it
+   * (question, permission, failure, conflict) is cleared too, since a dead run can no
+   * longer act on an answer.
+   */
+  stopTask(taskId: string): boolean {
+    if (this.disposed) return false;
+    let stopped = false;
+    for (const run of [...this.runs.values()]) {
+      if (run.taskId !== taskId) continue;
+      run.settled = true; // we're deciding the outcome here, not the exit code
+      this.clearRunAttention(run.runId);
+      this.sessions.stop(run.runId); // `exited` cleans up the bookkeeping
+      stopped = true;
+    }
+    // Parked items whose run already ended (a failed task / conflict awaiting a human).
+    for (const [itemId, pending] of [...this.pendingIntegrations.entries()]) {
+      if (pending.taskId !== taskId) continue;
+      this.pendingIntegrations.delete(itemId);
+      this.resolveAttention(itemId);
+      stopped = true;
+    }
+    for (const [itemId, failure] of [...this.pendingFailures.entries()]) {
+      if (failure.taskId !== taskId) continue;
+      this.pendingFailures.delete(itemId);
+      this.resolveAttention(itemId);
+      stopped = true;
+    }
+    // A task parked behind the usage-limit gate has no live run and no inbox item, but
+    // it IS pending work the user is entitled to cancel — otherwise it would come back
+    // to life at reset time.
+    if (this.store.getTask(taskId)?.status === 'blocked-by-limit') stopped = true;
+    if (!stopped) return false;
+    this.attempts.delete(taskId);
+    this.retryQueue.delete(taskId);
+    this.fixNotes.delete(taskId);
+    this.pendingConflictFix.delete(taskId);
+    this.conflictFixAttempts.delete(taskId);
+    // A limit-parked task counts as stoppable too: drop it from the gate so it is not
+    // resurrected when the limit resets.
+    this.limitGate.unpark([taskId]);
+    this.updateTask(taskId, { status: 'stopped' }, null);
+    return true;
+  }
+
+  /**
+   * Which project a task's run EXECUTES in. A card delegated to an agent runs in that
+   * agent project's repo while the card itself stays on the Personal board, so every
+   * launch site resolves through here rather than reading `task.projectId` directly —
+   * that is what makes limit-park → auto-resume, auto-retry and restart reconciliation
+   * behave identically for agent tasks and plan tasks. A stale/plan-kind
+   * `agentProjectId` falls back to the task's own project rather than refusing to run.
+   */
+  private runProjectFor(task: Task): Project | undefined {
+    if (task.agentProjectId) {
+      const agentProject = this.store.getProject(task.agentProjectId);
+      if (agentProject?.kind === 'agent') return agentProject;
+    }
+    return this.store.getProject(task.projectId);
   }
 
   /**
@@ -813,10 +913,12 @@ export class Scheduler {
     }
 
     // Full auto (bypassPermissions): the human opted out of the risk policy for
-    // this project — auto-approve every tool so nothing lands in the Attention
-    // inbox. Genuine questions Claude asks (detectAttention) still surface.
+    // this run — auto-approve every tool so nothing lands in the Attention inbox.
+    // Genuine questions Claude asks (detectAttention) still surface. The RUN's mode
+    // wins (a per-assignment override), falling back to the project default.
     const project = this.store.getProject(run.projectId);
-    if (project?.defaultPermissionMode === 'bypassPermissions') {
+    const mode = run.permissionMode ?? project?.defaultPermissionMode;
+    if (mode === 'bypassPermissions') {
       return Promise.resolve({ behavior: 'allow', updatedInput: request.input });
     }
 
@@ -925,7 +1027,9 @@ export class Scheduler {
     if (this.disposed || !this.worktrees) return;
     const task = this.store.getTask(taskId);
     if (!task) return;
-    const project = this.store.getProject(task.projectId);
+    // The worktree lives under the project the run happened in — the agent project for
+    // a delegated card, not the Personal board it is filed on.
+    const project = this.runProjectFor(task);
     if (!project) return;
     await this.worktrees.cleanup(project, taskId);
     this.attempts.delete(taskId);
@@ -1000,7 +1104,17 @@ export class Scheduler {
    */
   private startTask(project: Project, task: Task): string {
     const runId = randomUUID();
-    const run: Run = { taskId: task.id, projectId: project.id, runId, settled: false };
+    const run: Run = {
+      taskId: task.id,
+      projectId: project.id,
+      runId,
+      settled: false,
+      // A per-assignment override (chosen in the assign dialog) beats the project
+      // default, and is captured on the run so every later decision — permissions
+      // above all — judges the run the human actually authorized.
+      permissionMode: task.agentMode ?? project.defaultPermissionMode,
+      model: task.agentModel ?? project.defaultModel,
+    };
     this.runs.set(runId, run);
     this.inFlight.add(task.id);
     if (this.worktrees) {
@@ -1019,6 +1133,10 @@ export class Scheduler {
    * case the reservation is released without ever spawning a process.
    */
   private async prepareAndLaunch(project: Project, task: Task, run: Run): Promise<void> {
+    // A delegated card's prompt carries its ticket's comment thread, which only the
+    // tracker has. Fetched BEFORE the worktree so the stopped/parked checks below still
+    // cover the whole wait; it fails soft to no comments.
+    const comments = await this.collectTicketComments(task);
     let prep: WorktreePrep;
     try {
       prep = await this.worktrees!.prepare(project, task);
@@ -1055,11 +1173,33 @@ export class Scheduler {
       this.pump(run.projectId);
       return;
     }
-    this.launch(project, task, run, prep);
+    this.launch(project, task, run, prep, comments);
+  }
+
+  /**
+   * The linked ticket's comments, for an agent-assigned card's prompt. Empty unless a
+   * comment provider is wired (`setTicketCommentProvider`, from the IPC layer, which
+   * owns the JIRA client), the card is delegated, and this is a FRESH run — a resume
+   * continues an existing conversation that already has the context. A tracker that is
+   * down or misconfigured must never block a run, so failures degrade to no comments.
+   */
+  private async collectTicketComments(task: Task): Promise<AgentPromptComment[]> {
+    if (!this.ticketComments || !task.agentProjectId || task.sessionId) return [];
+    try {
+      return await this.ticketComments(task);
+    } catch {
+      return [];
+    }
   }
 
   /** Spawn the session for a reserved run in the prepared working directory. */
-  private launch(project: Project, task: Task, run: Run, prep: LaunchTarget): void {
+  private launch(
+    project: Project,
+    task: Task,
+    run: Run,
+    prep: LaunchTarget,
+    comments: AgentPromptComment[] = [],
+  ): void {
     const resumeSessionId = task.sessionId ?? undefined;
     if (prep.mode === 'worktree') {
       run.branch = prep.branch;
@@ -1074,19 +1214,18 @@ export class Scheduler {
     // context, and consume it so it applies only once.
     const failureNote = this.fixNotes.get(task.id);
     this.fixNotes.delete(task.id);
-    const modeOpts = prep.mode === 'worktree' ? { branch: prep.branch } : { planRelPath: planRel };
-    // Contract-first (Phase C): a contract task is told which siblings its CONTRACT.md
-    // serves; a sibling of a contract task is told to build against CONTRACT.md.
-    const contractOpts = this.contractPromptOptions(task);
+    const branch = prep.mode === 'worktree' ? prep.branch : undefined;
     const prompt =
       resumeSessionId && !failureNote
         ? RESUME_NUDGE
-        : buildTaskPrompt(project.name, task, { ...modeOpts, ...contractOpts, failureNote });
+        : this.buildPrompt(project, task, { branch, planRel, failureNote, comments });
     const request: StartSessionRequest = {
       prompt,
       cwd: prep.cwd,
-      model: project.defaultModel,
-      permissionMode: project.defaultPermissionMode,
+      // The run carries the per-assignment overrides (falling back to the project
+      // defaults when the task has none); older runs without them use the project's.
+      model: run.model ?? project.defaultModel,
+      permissionMode: run.permissionMode ?? project.defaultPermissionMode,
     };
     this.sessions.start(request, {
       runId: run.runId, // use the reserved id so events and bookkeeping line up
@@ -1096,6 +1235,53 @@ export class Scheduler {
       permission: this.gate ?? undefined,
       resumeSessionId,
     });
+  }
+
+  /**
+   * The starting prompt for a fresh run. A card delegated to an agent gets the
+   * single-ticket prompt (`agentTaskPrompt.ts`) — no plan, no queue, no
+   * contract/scaffold shaping, and never a `planRelPath` (an agent project has no plan
+   * file to evolve). Everything else keeps the plan-task prompt exactly as before.
+   */
+  private buildPrompt(
+    project: Project,
+    task: Task,
+    opts: {
+      branch?: string;
+      planRel: string;
+      failureNote?: string;
+      comments: AgentPromptComment[];
+    },
+  ): string {
+    const { branch, planRel, failureNote, comments } = opts;
+    if (task.agentProjectId) {
+      return buildAgentTaskPrompt(project.name, task, {
+        branch,
+        failureNote,
+        comments,
+        notes: this.taskNotes(task.id),
+      });
+    }
+    const modeOpts = branch ? { branch } : { planRelPath: planRel };
+    // Contract-first (Phase C): a contract task is told which siblings its CONTRACT.md
+    // serves; a sibling of a contract task is told to build against CONTRACT.md.
+    return buildTaskPrompt(project.name, task, {
+      ...modeOpts,
+      ...this.contractPromptOptions(task),
+      failureNote,
+    });
+  }
+
+  /**
+   * The human's own notes on a card, oldest first — the timeline's comments, which
+   * include the instructions typed in the assign dialog. Read fresh on every launch so
+   * a retry (and anything the human added since) reaches the agent.
+   */
+  private taskNotes(taskId: string): string[] {
+    return this.store
+      .getTaskActivity(taskId)
+      .filter((e): e is Extract<TaskActivityEntry, { kind: 'comment' }> => e.kind === 'comment')
+      .map((entry) => entry.body);
   }
 
   /**
@@ -1298,8 +1484,8 @@ export class Scheduler {
         // An auto-retry of a task whose project queue is idle (e.g. an ad-hoc run):
         // `pump` won't touch an inactive project, so relaunch it directly.
         if (retrying && !this.activeProjects.has(run.projectId)) {
-          const project = this.store.getProject(run.projectId);
           const task = this.store.getTask(run.taskId);
+          const project = task ? this.runProjectFor(task) : undefined;
           if (project && task && task.status === 'pending') this.startTask(project, task);
         }
         break;
@@ -1341,7 +1527,7 @@ export class Scheduler {
       // Only resume tasks still parked by the limit (not since stopped/deleted),
       // and only if we captured a session id to resume from.
       if (!task || task.status !== 'blocked-by-limit' || !task.sessionId) continue;
-      const project = this.store.getProject(task.projectId);
+      const project = this.runProjectFor(task);
       if (!project) continue;
       this.startTask(project, task); // resumes by task.sessionId
     }

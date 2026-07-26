@@ -25,6 +25,7 @@
 import type { SessionEvent, SessionEventEnvelope, StartSessionRequest } from './session';
 import type {
   AddProjectInput,
+  AssignAgentInput,
   BoardColumn,
   ManualStatus,
   PlanValidation,
@@ -219,6 +220,21 @@ export interface IpcApi {
    * No-op for non-worktree projects. Safe only when the task isn't mid-run.
    */
   'task:cleanupWorktree': (taskId: string) => Promise<void>;
+
+  /**
+   * Delegate a My Tasks card to an agent: persist the assignment (agent project +
+   * optional per-assignment model/mode), record the human's instructions as a comment
+   * on the task's timeline, and start the run in the agent project's repo. The card
+   * stays on the Personal board; only the RUN happens in the other project. Rejects if
+   * the task is already mid-run, the target isn't an agent project, or a usage limit is
+   * holding all work. Returns the updated task.
+   */
+  'task:assignAgent': (taskId: string, input: AssignAgentInput) => Promise<Task>;
+  /**
+   * Stop the agent working on one card (leaving its branch/worktree in place for a
+   * later resume). No-op if nothing is running for that task. Returns the updated task.
+   */
+  'task:stopAgent': (taskId: string) => Promise<Task>;
 
   /** Snapshot of everything currently waiting on a human (seed the inbox on load). */
   'attention:list': () => Promise<AttentionItem[]>;

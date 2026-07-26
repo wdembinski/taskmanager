@@ -332,6 +332,30 @@ export interface Task {
    * repo. Null for a card nobody assigned to an agent.
    */
   agentProjectId?: string | null;
+  /**
+   * Permission mode chosen for THIS assignment, overriding the agent project's
+   * default for every run of this card (including a limit-resume or an auto-retry).
+   * Null falls back to the project default.
+   */
+  agentMode?: PermissionMode | null;
+  /** Model chosen for this assignment, overriding the project default. Null = project default. */
+  agentModel?: ClaudeModel | null;
+}
+
+/** What the assign-to-an-agent action sends: where to run, how, and an optional brief. */
+export interface AssignAgentInput {
+  /** The agent project (repo) the card is delegated to. */
+  agentProjectId: string;
+  /** Permission mode for this assignment; omitted = the project's default. */
+  mode?: PermissionMode;
+  /** Model for this assignment; omitted = the project's default. */
+  model?: ClaudeModel;
+  /**
+   * Free-text instructions for the agent. Recorded as a comment on the task's
+   * timeline (not just passed to the process), so it is visible to the human and
+   * survives a retry — the prompt is rebuilt from the timeline on every fresh run.
+   */
+  notes?: string;
 }
 
 /** A project bundled with its current tasks — the shape the Projects UI renders. */
