@@ -5,12 +5,13 @@
  * card's "Project:" line, and a footer with the JIRA source badge and a priority
  * square. A small status badge appears only for the "unusual" states bucketed into a
  * column (an AI run, or a failed/stopped/cancelled task in Done). An orange border
- * flags unread JIRA comments.
+ * flags unread JIRA comments — or an agent waiting on an answer.
  */
 import {
   Badge,
   Caption1,
   Text,
+  Tooltip,
   makeStyles,
   mergeClasses,
   tokens,
@@ -18,6 +19,7 @@ import {
 import {
   BeakerFilled,
   BookmarkFilled,
+  BotSparkleFilled,
   BugFilled,
   CircleFilled,
   NoteFilled,
@@ -26,12 +28,15 @@ import {
   TaskListSquareLtrFilled,
 } from '@fluentui/react-icons';
 import type { Task } from '@shared/model';
-import { hasUnreadJira } from '@shared/board';
+import { hasUnreadJira, isAgentAssigned, needsAgentInput } from '@shared/board';
 import { STATUS_COLOR, STATUS_LABEL } from '../taskStatus';
 import { columnForStatus, statusForColumn } from './boardColumns';
 
-/** Unread-JIRA-comment accent (brand tokens skew teal, so use an explicit orange). */
+/** "Wants you" accent — unread JIRA comments and agents parked on a question. */
 const UNREAD_ORANGE = '#F2A900';
+
+/** Agent-delegation glyph tint (matches the Attention inbox's "an agent is on it" feel). */
+const AGENT_PURPLE = '#8E4EC6';
 
 const useStyles = makeStyles({
   card: {
@@ -46,6 +51,7 @@ const useStyles = makeStyles({
     userSelect: 'none',
   },
   cardUnread: { border: `2px solid ${UNREAD_ORANGE}` },
+  agentIcon: { fontSize: '16px', flexShrink: 0, display: 'flex', color: AGENT_PURPLE },
   cardSelected: { border: `1px solid ${tokens.colorBrandStroke1}` },
   dragging: { opacity: 0.5 },
   titleRow: { display: 'flex', alignItems: 'center', gap: '8px' },
@@ -111,6 +117,8 @@ export interface TaskCardProps {
   task: Task;
   /** The card's "Project:" label (the JIRA project name for JIRA tasks). */
   projectName?: string;
+  /** Name of the agent project this card is delegated to, for the glyph's tooltip. */
+  agentName?: string;
   selected: boolean;
   draggable: boolean;
   onSelect: () => void;
@@ -128,6 +136,7 @@ function secondaryStatus(task: Task): Task['status'] | null {
 export function TaskCard({
   task,
   projectName,
+  agentName,
   selected,
   draggable,
   onSelect,
@@ -139,13 +148,14 @@ export function TaskCard({
   const badge = secondaryStatus(task);
   const isJira = task.externalSource === 'jira';
   const squareColor = priorityColor(task.externalPriority);
-  const unread = hasUnreadJira(task);
+  // Both mean "this card wants you", so they share the orange frame.
+  const wantsAttention = hasUnreadJira(task) || needsAgentInput(task);
 
   return (
     <div
       className={mergeClasses(
         styles.card,
-        unread && styles.cardUnread,
+        wantsAttention && styles.cardUnread,
         selected && styles.cardSelected,
         dragging && styles.dragging,
       )}
@@ -159,6 +169,20 @@ export function TaskCard({
         <Text weight="semibold" className={styles.title}>
           {task.title}
         </Text>
+        {isAgentAssigned(task) && (
+          <Tooltip
+            relationship="label"
+            content={
+              needsAgentInput(task)
+                ? `Agent needs your input${agentName ? ` · ${agentName}` : ''}`
+                : `Assigned to an agent${agentName ? ` · ${agentName}` : ''}`
+            }
+          >
+            <span className={styles.agentIcon}>
+              <BotSparkleFilled />
+            </span>
+          </Tooltip>
+        )}
         {badge && (
           <Badge appearance="tint" color={STATUS_COLOR[badge]}>
             {STATUS_LABEL[badge]}

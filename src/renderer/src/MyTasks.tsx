@@ -19,7 +19,7 @@ import {
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
-import { PERSONAL_PROJECT_ID, type Task } from '@shared/model';
+import { PERSONAL_PROJECT_ID, type Project, type Task } from '@shared/model';
 import type { AppSettings } from '@shared/settings';
 import { AddTaskDialog } from './AddTaskDialog';
 import { TaskDetail } from './TaskDetail';
@@ -62,6 +62,9 @@ export function MyTasks(): JSX.Element {
   const styles = useStyles();
   const [tasks, setTasks] = useState<Task[] | null>(null);
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  // The repos a card can be delegated to — fetched once and shared by the cards
+  // (glyph tooltip) and the detail pane (assign dialog).
+  const [agentProjects, setAgentProjects] = useState<Project[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -78,6 +81,7 @@ export function MyTasks(): JSX.Element {
   useEffect(() => {
     void refresh();
     void window.api.invoke('settings:get').then(setSettings);
+    void window.api.invoke('agentProject:list').then(setAgentProjects);
   }, [refresh]);
 
   const patchTask = useCallback((task: Task) => {
@@ -197,6 +201,7 @@ export function MyTasks(): JSX.Element {
               label={COLUMN_LABEL[col]}
               tasks={tasksByColumn[col]}
               projectNameOf={(t) => (t.externalSource === 'jira' ? t.phase || undefined : undefined)}
+              agentNameOf={(t) => agentProjects.find((p) => p.id === t.agentProjectId)?.name}
               canDrag={(t) => !managedByAI(t)}
               selectedTaskId={selectedTaskId}
               draggingId={draggingId}
@@ -210,7 +215,11 @@ export function MyTasks(): JSX.Element {
       </div>
 
       <div className={styles.right}>
-        <TaskDetail task={selectedTask} onStatusChanged={patchTask} />
+        <TaskDetail
+          task={selectedTask}
+          agentProjects={agentProjects}
+          onStatusChanged={patchTask}
+        />
       </div>
 
       <AddTaskDialog

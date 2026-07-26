@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { PERSONAL_PROJECT_ID, type Task } from './model';
-import { categoryFromKey, categoryToColumn, hasUnreadJira } from './board';
+import {
+  categoryFromKey,
+  categoryToColumn,
+  hasUnreadJira,
+  isAgentAssigned,
+  needsAgentInput,
+} from './board';
 
 const task = (over: Partial<Task>): Task => ({
   id: 't',
@@ -50,5 +56,28 @@ describe('hasUnreadJira', () => {
   });
   it('is false when the latest comment has already been read', () => {
     expect(hasUnreadJira(task({ latestCommentAt: 200, lastReadCommentAt: 200 }))).toBe(false);
+  });
+});
+
+describe('needsAgentInput', () => {
+  it('is true only while the run is parked on a question/permission', () => {
+    expect(needsAgentInput(task({ status: 'waiting-input' }))).toBe(true);
+  });
+  it('is false for a run that is merely executing', () => {
+    expect(needsAgentInput(task({ status: 'running' }))).toBe(false);
+  });
+  it('is false for an idle card', () => {
+    expect(needsAgentInput(task({ status: 'pending' }))).toBe(false);
+    expect(needsAgentInput(task({ status: 'blocked-by-limit' }))).toBe(false);
+  });
+});
+
+describe('isAgentAssigned', () => {
+  it('is true once a card names an agent project', () => {
+    expect(isAgentAssigned(task({ agentProjectId: 'p1' }))).toBe(true);
+  });
+  it('is false when unassigned', () => {
+    expect(isAgentAssigned(task({}))).toBe(false);
+    expect(isAgentAssigned(task({ agentProjectId: null }))).toBe(false);
   });
 });

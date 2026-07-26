@@ -5,9 +5,13 @@
  * comments and status changes interleaved with the AI transcript (loaded from
  * `task:activity`), plus an input to add a progress note. AI events are rendered
  * with the same `eventToLines` the Board's Transcript uses, so output looks the
- * same everywhere.
+ * same everywhere. While a delegated run is live its events are appended as they
+ * arrive, so the transcript streams instead of waiting for a reselect.
+ *
+ * The agent controls (assign / stop / answer a parked run) live in `TaskAgentPanel`
+ * above the timeline; the ticket's own description sits between the two.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Badge,
   Body1,
@@ -23,8 +27,9 @@ import {
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
-import type { ManualStatus, Task, TaskActivityEntry } from '@shared/model';
+import type { ManualStatus, Project, Task, TaskActivityEntry } from '@shared/model';
 import { MANUAL_STATUS_OPTIONS, STATUS_COLOR, STATUS_LABEL } from './taskStatus';
+import { TaskAgentPanel } from './TaskAgentPanel';
 import { eventToLines } from './Transcript';
 
 const useStyles = makeStyles({
@@ -70,6 +75,17 @@ const useStyles = makeStyles({
   tool: { color: tokens.colorPaletteBlueForeground2 },
   warn: { color: tokens.colorPaletteYellowForeground1 },
   err: { color: tokens.colorPaletteRedForeground1 },
+  description: {
+    whiteSpace: 'pre-wrap',
+    maxHeight: '160px',
+    overflowY: 'auto',
+    padding: '8px 10px',
+    borderRadius: tokens.borderRadiusMedium,
+    backgroundColor: tokens.colorNeutralBackground1,
+    border: `1px solid ${tokens.colorNeutralStroke2}`,
+    color: tokens.colorNeutralForeground2,
+    fontSize: '12px',
+  },
   composer: { display: 'flex', flexDirection: 'column', gap: '6px' },
   composerRow: { display: 'flex', justifyContent: 'flex-end', gap: '8px' },
   empty: { color: tokens.colorNeutralForeground3 },
@@ -87,14 +103,21 @@ function fmtTime(ts: number): string {
 
 export interface TaskDetailProps {
   task: Task | null;
+  /** The agent projects a card can be delegated to (owned by the board, fetched once). */
+  agentProjects?: Project[];
   /** Called after a successful manual status change so the parent list can patch. */
   onStatusChanged?: (task: Task) => void;
 }
 
-export function TaskDetail({ task, onStatusChanged }: TaskDetailProps): JSX.Element {
+export function TaskDetail({
+  task,
+  agentProjects = [],
+  onStatusChanged,
+}: TaskDetailProps): JSX.Element {
   const styles = useStyles();
   const [activity, setActivity] = useState<TaskActivityEntry[]>([]);
   const [jiraComments, setJiraComments] = useState<TaskActivityEntry[]>([]);
+  const [liveEvents, setLiveEvents] = useState<TaskActivityEntry[]>([]);
   const [comment, setComment] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -106,8 +129,12 @@ export function TaskDetail({ task, onStatusChanged }: TaskDetailProps): JSX.Elem
     if (!taskId) {
       setActivity([]);
       setJiraComments([]);
+      setLiveEvents([]);
       return;
     }
+    // The reload already contains everything streamed so far (events are persisted as
+    // they arrive), so drop the live buffer to avoid showing each line twice.
+    setLiveEvents([]);
     setActivity(await window.api.invoke('task:activity', taskId));
     if (isJira) {
       // JIRA comments are fetched live and merged in; failures shouldn't blank the pane.
@@ -128,11 +155,53 @@ export function TaskDetail({ task, onStatusChanged }: TaskDetailProps): JSX.Elem
     void loadActivity();
   }, [loadActivity]);
 
-  // One chronological timeline: persisted activity + live JIRA comments.
+  // Follow this task's live run so its transcript streams in. `session:event` only
+  // carries a runId, so track which run belongs to this card: the active-runs snapshot
+  // seeds it, and `task:changed` keeps it current as runs start and end.
+  const runIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    runIdRef.current = null;
+    if (!taskId) return;
+    let cancelled = false;
+    void window.api
+      .invoke('scheduler:activeRuns')
+      .then((runs) => {
+        if (!cancelled) runIdRef.current = runs.find((r) => r.taskId === taskId)?.runId ?? null;
+      })
+      .catch(() => undefined);
+    const offTask = window.api.on('task:changed', ({ task: changed, runId }) => {
+      if (changed.id === taskId) runIdRef.current = runId;
+    });
+    return () => {
+      cancelled = true;
+      offTask();
+    };
+  }, [taskId]);
+
+  useEffect(() => {
+    return window.api.on('session:event', ({ runId, event }) => {
+      if (!runIdRef.current || runId !== runIdRef.current) return;
+      // Negative ids can't collide with the persisted rows' keys.
+      setLiveEvents((prev) => [
+        ...prev,
+        { kind: 'event', id: -(prev.length + 1), event, createdAt: Date.now() },
+      ]);
+    });
+  }, []);
+
+  // One chronological timeline: persisted activity + live JIRA comments + live output.
   const timeline = useMemo(
-    () => [...activity, ...jiraComments].sort((a, b) => a.createdAt - b.createdAt),
-    [activity, jiraComments],
+    () =>
+      [...activity, ...jiraComments, ...liveEvents].sort((a, b) => a.createdAt - b.createdAt),
+    [activity, jiraComments, liveEvents],
   );
+
+  // Keep the newest entry in view as output streams (same rule as the Transcript pane).
+  const timelineRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = timelineRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [timeline]);
 
   const lineClass: Record<string, string> = {
     meta: styles.meta,
@@ -230,13 +299,26 @@ export function TaskDetail({ task, onStatusChanged }: TaskDetailProps): JSX.Elem
         )}
       </div>
 
+      <TaskAgentPanel
+        task={task}
+        agentProjects={agentProjects}
+        onTaskChanged={(updated) => {
+          onStatusChanged?.(updated);
+          void loadActivity();
+        }}
+      />
+
+      {task.externalDescription && (
+        <div className={styles.description}>{task.externalDescription}</div>
+      )}
+
       {error && (
         <MessageBar intent="error">
           <MessageBarBody>{error}</MessageBarBody>
         </MessageBar>
       )}
 
-      <div className={styles.timeline}>
+      <div className={styles.timeline} ref={timelineRef}>
         {timeline.length === 0 ? (
           <Caption1 className={styles.empty}>
             No activity yet — change the status or add a comment to start the log.

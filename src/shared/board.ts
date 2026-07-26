@@ -82,3 +82,18 @@ export function hasUnreadJira(task: Task): boolean {
   if (task.externalSource !== 'jira' || task.latestCommentAt == null) return false;
   return task.lastReadCommentAt == null || task.latestCommentAt > task.lastReadCommentAt;
 }
+
+/**
+ * Whether the agent working this card is parked on a question or a permission
+ * request — the card gets the same orange frame as an unread JIRA comment, since
+ * both mean "this one wants you". A personal card only ever reaches
+ * `waiting-input` through a delegated run, so the status alone is the signal.
+ */
+export function needsAgentInput(task: Task): boolean {
+  return task.status === 'waiting-input';
+}
+
+/** Whether a card has been delegated to an agent project (drives the card's agent glyph). */
+export function isAgentAssigned(task: Task): boolean {
+  return Boolean(task.agentProjectId);
+}

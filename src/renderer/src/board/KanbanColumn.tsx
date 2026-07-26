@@ -44,6 +44,8 @@ export interface KanbanColumnProps {
   label: string;
   tasks: Task[];
   projectNameOf: (task: Task) => string | undefined;
+  /** Name of the agent project a delegated card runs in (tooltip on the agent glyph). */
+  agentNameOf: (task: Task) => string | undefined;
   canDrag: (task: Task) => boolean;
   selectedTaskId: string | null;
   draggingId: string | null;
@@ -91,6 +93,7 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               key={task.id}
               task={task}
               projectName={props.projectNameOf(task)}
+              agentName={props.agentNameOf(task)}
               selected={task.id === props.selectedTaskId}
               draggable={props.canDrag(task)}
               dragging={task.id === props.draggingId}
