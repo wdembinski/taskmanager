@@ -35,6 +35,7 @@ plan the orchestrator could one day run on its own repo.
 | 10 | Delegate a task to an agent | ✅ shipped |
 | 11 | Plan-driven subtasks (plan → approve → steps) | ✅ shipped |
 | 12 | Chat with the agent from a card | ✅ shipped |
+| 13 | The workspace refresh (nav rail, status bar, one-pane detail) | ✅ shipped |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -649,6 +650,94 @@ chain's worktree, settled and integrated like any other — not a side channel.
   their source text; swapping the module for `react-markdown` touches one component.
 - **Three transcript events stopped printing a line**: `started`, `usage`, and a clean
   `exited`. They are bookkeeping; everything else the old timeline showed still shows.
+
+---
+
+## Phase 13 — The workspace refresh
+
+**Goal.** Make the two screens you actually live in — the board and the card's
+conversation — feel like a workspace rather than a form. Phase 12 shipped the chat but
+put it behind a tab, gave the shell a horizontal tab strip that taxed every screen's
+height, and left the detail pane as a stack of bordered boxes. This phase is a design
+pass with two real capabilities folded in.
+
+Ground rules taken with the user: the editor is the reference (a nav rail, a coloured
+status bar, grey body text rather than white), **shade carries grouping** rather than
+borders and rules, and nothing that changes settings may restart a running card.
+
+### Deliverables
+
+- [x] **1 — Two new channels.** `task:setDescription` rewrites the app's copy of the
+      ticket body — the text the agent's prompt quotes, so it is real work, but
+      deliberately one-way: no write-back, and the next `jiraSync` overwrites it.
+      `task:setAgentOptions` changes model / permission mode **without** restarting the
+      card (unlike `task:assignAgent`); a live run keeps what it captured at start, so
+      the change decides what the next run uses. Both emit `task:changed` with a null
+      `runId`, since neither belongs to a run.
+- [x] **2 — The shell.** The horizontal `TabList` became a **vertical icon rail** (seven
+      destinations, glyph-only, each label a tooltip and its accessible name; the
+      Attention badge is the one label left). The footer became a **status bar**: full
+      window width, one line, coloured rather than bordered — the editor's blue at rest,
+      the app's orange with a *"N waiting on you"* count the moment anything is parked.
+      The shell stopped padding its content region: every screen but My Tasks re-adds it
+      locally, so the detail pane can run to the window's edge. Body text is the editor
+      grey `#CCCCCC`, not Fluent dark's pure white — at this density white glares and
+      every word reads as emphasis; headings still stand out by weight. Brand / danger /
+      success surfaces are untouched, so their contrast ratios stay stock Fluent's.
+- [x] **3 — One pane in two halves.** The Chat / Details tabs are gone. A fixed band
+      carries the card's identity (type glyph — the board card's own, exported —, title,
+      ticket key as a link, type · priority · phase), the agent controls, the new
+      `TaskDetailsCell` and the steps; capped at 50% height with its own scroll so a long
+      chain cannot crowd out the chat. The conversation below is the only thing that
+      scrolls, and it is **unframed** — a box around a chat is a box around the pane.
+      `TaskAgentPanel` and `TaskSteps` dropped their frames to become sections of the
+      band; the parked-ask block kept its orange one, because that is an alert.
+- [x] **4 — A composer you can set up in.** One surface holding the text area and all
+      three actions — chat / note / ticket comment — which were in an overflow menu that
+      made a two-click job of a one-click one. Under it, a muted strip naming who runs
+      the card, with **model** and **permission mode** editable in place (deliverable 1),
+      titled to say the change applies to the next run.
+- [x] **5 — Editing the description.** `TaskDetailsCell`: status, dependencies, and a
+      **foldable, editable** description — folded by default, because on a JIRA card it
+      is twenty lines you have already read. The one-way caveat is stated where you type,
+      not in the docs only.
+- [x] **6 — Shade, not borders.** The detail pane is one surface a step **lighter** than
+      the board, and the gap between them is gone: the change of shade is the seam.
+      Board cards flipped the same way — a card is the object, the column is the space
+      between objects, and the darker fill had that backwards.
+- [x] **7 — A demo profile to design against.** `pnpm dev` opens the **real** database,
+      so there was no way to fill every screen with content for a design pass without
+      polluting it. `seed-demo.cjs` seeds a separate user-data profile instead.
+
+### Done when
+
+- [x] The board and the chat pane both gain the height the tab strip was taking, and no
+      screen lost its margins.
+- [x] Something waiting on a human is visible from the status bar on **every** screen,
+      not only the Attention tab.
+- [x] A card's description is editable from the card, and the JIRA caveat is stated at
+      the point of the edit.
+- [x] Model and permission mode are changeable from the composer, and doing so during a
+      live run neither restarts nor perturbs it.
+- [x] `pnpm typecheck` (node + web) + `pnpm test` green (**402 tests**), Prettier clean
+      on every touched file.
+- [ ] **Live E2E still owed** (carried over from Phase 12 and extended): on the demo
+      profile, walk the rail, watch the status bar turn orange on a parked ask, edit a
+      description and see the next run's prompt quote it, and switch model mid-run to
+      confirm the live run is untouched and the next one obeys.
+
+### Deliberate deviations from the plan of record
+
+- **No new tests.** This phase is presentation plus two thin store-backed channels; the
+  pure logic it touches (`chatTarget`, `foldTurns`, `stepPosition`, `chatAvailability`)
+  was already covered, and neither new handler has behaviour beyond a trim and a write.
+  What is owed here is the live E2E above, not unit tests.
+- **Docs are part of the phase, as always** — this entry, the rewritten *One pane, two
+  halves* and *Sending* sections in [`docs/03`](../03-how-orchestration-works.md#talking-to-the-agent-on-a-card),
+  four new glossary terms, and the version bump to **0.25.0**.
+- **The repo is not Prettier-clean.** 27 files predating this work still fail
+  `prettier --check`; reformatting them would have buried a design pass in whitespace.
+  Every file this phase touched passes.
 
 ---
 

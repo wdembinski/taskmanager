@@ -266,13 +266,27 @@ Answering a question the agent asked is one half of a conversation. The other ha
 opening one yourself: *"actually, skip the cache"* while it works, or *"why did you drop
 the index?"* after it stopped. The card's detail pane is that conversation.
 
-### The Chat tab
+### One pane, two halves
 
-The pane has two tabs. **Chat** is the card's story as turns — what you said, what the
-agent answered, the ticket's comment thread, your own notes — and **Details** keeps the
-status control, the steps, the ticket description and the status history.
+The pane is not tabbed. What a card *is* is context you read *while* talking to the agent
+working it, not an alternative to it — so both are on screen at once:
 
-Who wrote something decides where it sits. One bubble shape throughout; the side, the
+- **A fixed band at the top** — the card's identity (type glyph, title, ticket key as a
+  link to JIRA, type · priority · phase), then the agent controls, the **Details** cell
+  (status, dependencies, a foldable description) and the **Steps**. One shaded slab, no
+  boxes inside it, capped at half the pane's height with its own scroll so a long step
+  chain can never crowd out the conversation. On a *step*, the brief replaces the details
+  and the steps — for a step the brief is the whole spec.
+- **The conversation below**, which is the only thing that scrolls. The live-run rows and
+  the composer stay pinned beneath it.
+
+The description folds away by default, because on a JIRA card it is usually twenty lines
+of reproduction steps you have already read. **Edit** rewrites it in place — and that is
+real work, since the agent's prompt quotes this text. It is deliberately one-way: nothing
+is written back to the tracker, and the next JIRA sync replaces your text with the
+issue's. The pane says so where you type.
+
+Who wrote something decides where it sits in the conversation. One bubble shape throughout; the side, the
 fill and a small tag carry all the meaning:
 
 | Entry | Side | Look |
@@ -295,10 +309,18 @@ mouth on the wrong side of the pane.
 
 ### Sending
 
-One composer at the bottom of the Chat tab. **Enter** sends to the agent, **Shift+Enter**
-starts a new line, and the overflow next to it still saves the same text as a note or
-posts it as a ticket comment. The live *Agent running* rows sit **above** the composer,
-not in the scroll, so the state of the run never scrolls out of sight.
+One composer at the bottom of the pane, with the text area and its actions inside a single
+surface. **Enter** sends to the agent, **Shift+Enter** starts a new line, and all three
+destinations for the same text stay visible: **Chat with agent**, **Add note** (only you
+ever read it) and **Add JIRA comment** on a linked card. The live *Agent running* rows sit
+**above** the composer, not in the scroll, so the state of the run never scrolls out of
+sight.
+
+Under the box, a muted strip names who runs this card — *"Run by Claude in Demo Agent
+Repo"* — with the **model** and **permission mode** editable right there. They are what
+you most want to change just before you say something. Changing either restarts nothing: a
+live run captured its model and mode when it started, so the choice applies to the **next**
+run. (Reassigning the card is still what you want if you mean "start over with these.")
 
 Where the message goes:
 

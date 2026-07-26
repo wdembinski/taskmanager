@@ -203,6 +203,33 @@ so its siblings stay pending. The card wears the orange frame and reads `2/4 · 
 and the step's resolutions are offered from the card's own pane. An app restart parks an
 interrupted step the same way — nothing re-enters a chain on its own.
 
+### Nav rail
+
+The vertical strip of icons down the left of the window — My Tasks, Projects, Board,
+Performance, Attention, Settings, Scratch run. It replaced a horizontal tab strip, which
+cost every screen a band of height at the top. Glyph-only: each destination's label is its
+tooltip and its accessible name.
+
+### Status bar
+
+The coloured line across the bottom of the window: Claude readiness on the left, app
+version on the right. The editor's blue at rest, and the app's **orange** with a count the
+moment anything is waiting on a human — so that signal is visible from every screen, not
+only the **attention inbox**.
+
+### Details cell
+
+The fixed band at the top of a card's detail pane: identity, agent controls, status,
+dependencies, a foldable description and the steps. One shaded slab a step *lighter* than
+the board beside it, capped at half the pane's height. The **chat** below it is the only
+part that scrolls.
+
+### Description (the app's copy)
+
+The ticket body the agent's prompt quotes, editable from the details cell. For a JIRA card
+it is a **copy**: nothing is written back to the tracker, and the next sync replaces it
+with the issue's text. Editing it still changes what the next run is told to do.
+
 ### Epic Link field
 
 The JIRA field holding a ticket's epic. On Server/DC it is a per-instance custom
