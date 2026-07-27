@@ -389,8 +389,10 @@ export function Settings(): JSX.Element {
                 jiraStatus?.encryptionAvailable === false
                   ? 'OS secure storage is unavailable on this machine — the token cannot be stored securely.'
                   : jiraStatus?.hasToken
-                    ? 'A token is stored (encrypted). Enter a new one to replace it.'
-                    : 'Stored encrypted via your OS secure store; never written in plaintext.'
+                    ? 'A token is stored. Enter a new one to replace it.'
+                    : jiraStatus?.plainTextStorage
+                      ? 'No OS keyring on this machine — see the note below before saving.'
+                      : 'Stored encrypted via your OS secure store; never written in plaintext.'
               }
             >
               <Input
@@ -401,6 +403,18 @@ export function Settings(): JSX.Element {
               />
             </Field>
           </div>
+
+          {jiraStatus?.plainTextStorage && (
+            <MessageBar intent="warning">
+              <MessageBarBody>
+                This machine has no OS keyring (typical on WSL, a headless session, or a minimal
+                desktop), so the token is stored with a fixed built-in key — obfuscated on disk, but
+                readable by anyone who can read your app data. Prefer a token scoped to the minimum
+                you need. To get real encryption instead, install a keyring (e.g.{' '}
+                <code>gnome-keyring</code> / <code>libsecret</code>) and restart the app.
+              </MessageBarBody>
+            </MessageBar>
+          )}
 
           <div className={styles.actions}>
             <Button appearance="primary" onClick={save}>

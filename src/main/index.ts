@@ -10,7 +10,7 @@
  * usage-limit gate) from here too.
  */
 import { join } from 'node:path';
-import { app, BrowserWindow, dialog, shell } from 'electron';
+import { app, BrowserWindow, dialog, safeStorage, shell } from 'electron';
 import { registerIpcHandlers, type Engine } from './ipc';
 import { formatError, getLogPath, logMain } from './log';
 
@@ -27,6 +27,21 @@ process.on('unhandledRejection', (reason) => reportFatal('Unexpected error', rea
 // until the page repaints. Disabling this feature keeps the content painted across
 // minimize/restore. Must be set before the app is ready.
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
+
+// A Linux box without a keyring — WSL, a headless session, a minimal desktop — has no
+// OS secret store, so `safeStorage.isEncryptionAvailable()` is false and the JIRA token
+// could never be saved at all: Settings just disabled "Save token" with a one-line hint
+// and the whole integration was unreachable. Opting into Electron's own fallback makes
+// storage possible there, at a cost the UI states plainly (`plainTextStorage` in
+// `jira:getConfigStatus`): the key comes from a fixed built-in password instead of the
+// keyring, so the token is obfuscated on disk rather than secret from anyone with
+// access to the machine.
+//
+// This does NOT weaken machines that have a real backend — Electron only falls back
+// when it cannot determine a password manager (gnome-libsecret, kwallet, … still win)
+// — and it is a no-op on Windows/macOS. It MUST run before the app is ready, because
+// Electron fixes the encryption config as it starts up.
+if (process.platform === 'linux') safeStorage.setUsePlainTextEncryption(true);
 
 /**
  * Create the main window.

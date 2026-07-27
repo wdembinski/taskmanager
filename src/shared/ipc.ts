@@ -75,6 +75,12 @@ export interface JiraConfigStatus {
   hasToken: boolean;
   /** Whether the OS secure store is available to encrypt the token. */
   encryptionAvailable: boolean;
+  /**
+   * Linux only: no keyring was found (WSL, headless, a minimal desktop), so the token
+   * is encrypted with Electron's built-in fixed password instead — obfuscated on disk,
+   * not protected from anyone with access to the machine. The Settings pane says so.
+   */
+  plainTextStorage: boolean;
   deployment: 'server' | 'cloud';
   baseUrl: string;
 }

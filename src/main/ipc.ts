@@ -9,7 +9,15 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { app, dialog, ipcMain, safeStorage, type BrowserWindow } from 'electron';
+import {
+  app,
+  dialog,
+  ipcMain,
+  safeStorage,
+  screen,
+  type BrowserWindow,
+  type Rectangle,
+} from 'electron';
 import type { IpcApi, IpcEvents } from '@shared/ipc';
 import {
   isManualStatus,
@@ -545,6 +553,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     jiraPoller.reschedule();
   });
 
+  // Whether the token is being protected by the weak built-in password rather than an
+  // OS keyring. `setUsePlainTextEncryption(true)` in main/index.ts makes storage WORK on
+  // a keyring-less Linux box; this is what lets the UI be honest about what it bought.
+  // `getSelectedStorageBackend` only exists on Linux, hence the platform guard.
+  const usesPlainTextStorage = (): boolean =>
+    process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text';
+
   // Build a JIRA client from current settings + the decrypted token, or throw a
   // user-facing error explaining what's missing. The token never leaves the main
   // process: it's stored encrypted and decrypted here on demand.
@@ -575,6 +590,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       enabled: jira.enabled,
       hasToken: store.loadJiraToken() !== null,
       encryptionAvailable: safeStorage.isEncryptionAvailable(),
+      plainTextStorage: usesPlainTextStorage(),
       deployment: jira.deployment,
       baseUrl: jira.baseUrl,
     };
@@ -592,7 +608,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       };
     }
     store.saveJiraToken(safeStorage.encryptString(pat).toString('base64'));
-    return { ok: true, message: 'Token saved.' };
+    return {
+      ok: true,
+      message: usesPlainTextStorage()
+        ? 'Token saved — but this machine has no keyring, so it is only obfuscated on disk.'
+        : 'Token saved.',
+    };
   });
 
   handle('jira:clearCredentials', async () => store.clearJiraToken());
@@ -786,15 +807,51 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
   // Frameless-window controls for the renderer's custom title bar, plus a push so
   // the title bar's maximize/restore icon tracks OS-driven changes (snap, drag).
+  //
+  // Some Linux window managers — WSLg's rootless compositor is the one that bit us —
+  // quietly ignore a maximize request for an UNDECORATED window: `maximize()` returns,
+  // nothing moves, `isMaximized()` stays false, and the button looks dead. So when the
+  // WM hasn't acted shortly after being asked, we maximize by hand: resize to the work
+  // area of the display the window sits on, remembering the old bounds so Restore can
+  // put them back. `manualBounds` non-null IS the "we maximized it ourselves" flag.
+  let manualBounds: Rectangle | null = null;
+  const isMaximized = (): boolean => mainWindow.isMaximized() || manualBounds !== null;
+  const pushMaximized = (): void => send('window:maximizedChanged', isMaximized());
+
   handle('window:minimize', async () => mainWindow.minimize());
   handle('window:toggleMaximize', async () => {
-    if (mainWindow.isMaximized()) mainWindow.unmaximize();
-    else mainWindow.maximize();
+    if (isMaximized()) {
+      const restoreTo = manualBounds;
+      manualBounds = null;
+      if (restoreTo) mainWindow.setBounds(restoreTo);
+      if (mainWindow.isMaximized()) mainWindow.unmaximize();
+      pushMaximized();
+      return;
+    }
+    const before = mainWindow.getBounds();
+    mainWindow.maximize();
+    // The WM answers asynchronously, so an immediate isMaximized() would read false even
+    // where maximizing works — give it a beat before deciding it was ignored.
+    setTimeout(() => {
+      if (mainWindow.isDestroyed() || mainWindow.isMaximized()) return;
+      manualBounds = before;
+      mainWindow.setBounds(screen.getDisplayMatching(before).workArea);
+      pushMaximized();
+    }, 300);
+    // No push here: on the path where the WM does its job, its `maximize` event is what
+    // reports the new state, and isMaximized() is still false this instant on Linux.
   });
   handle('window:close', async () => mainWindow.close());
-  handle('window:isMaximized', async () => mainWindow.isMaximized());
-  mainWindow.on('maximize', () => send('window:maximizedChanged', true));
-  mainWindow.on('unmaximize', () => send('window:maximizedChanged', false));
+  handle('window:isMaximized', async () => isMaximized());
+  // A real WM maximize supersedes our stand-in, and unmaximize clears it either way.
+  mainWindow.on('maximize', () => {
+    manualBounds = null;
+    pushMaximized();
+  });
+  mainWindow.on('unmaximize', () => {
+    manualBounds = null;
+    pushMaximized();
+  });
 
   // Background poll: keep the Personal board fresh on the user's configured cadence
   // (JIRA setting `pollIntervalMinutes`; 0 = off). Re-armed whenever settings change.
