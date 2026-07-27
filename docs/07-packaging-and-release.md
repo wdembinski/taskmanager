@@ -50,10 +50,15 @@ Re-check these if the dependency or spawn model changes.
 
    `pnpm check:abi` (`scripts/check-native-abi.mjs`) compares the addon's
    `node_register_module_v*` symbol against `process.versions.modules` read from the
-   installed Electron, and both `package` scripts run it before electron-builder. If it
-   fails, run `pnpm exec electron-builder install-app-deps`; pnpm's symlinked layout
-   sometimes makes that a no-op, in which case force a source rebuild against Electron's
-   headers. **Never bypass this gate to get a release out.**
+   installed Electron. `pnpm ensure:abi` does the same check and, on a mismatch, forces
+   a from-source rebuild against Electron's headers — both `package` scripts run it
+   before electron-builder, and it fails the build if the rebuild doesn't take.
+   **Never bypass this gate to get a release out.**
+
+   The self-heal is not belt-and-braces: on Linux under pnpm, `electron-builder
+   install-app-deps` logs `finished moduleName=better-sqlite3` and leaves the Node-ABI
+   binary in place. Verified while cutting v0.25.1 — the gate caught it, and only the
+   explicit `npm_config_runtime=electron` source build fixed it.
 
 3. **The permission relay is spawned as the app's own binary running as Node.** The
    pre-execution permission veto (Phase 4) materializes a `.cjs` relay to `userData`
