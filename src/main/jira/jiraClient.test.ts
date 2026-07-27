@@ -20,6 +20,13 @@ const serverClient = () =>
     auth: { mode: 'bearer', token: 'pat-123' },
   });
 
+const cloudClient = () =>
+  new JiraClient({
+    baseUrl: 'https://acme.atlassian.net',
+    apiVersion: '3',
+    auth: { mode: 'basic', token: 'tok', email: 'me@x.com' },
+  });
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -135,6 +142,65 @@ describe('JiraClient.search', () => {
     expect(fields).toContain('customfield_10008');
     // Blank entries are dropped rather than sent as an empty field name.
     expect(fields).not.toContain('');
+  });
+
+  // Atlassian removed /rest/api/3/search from Cloud; it answers with a "migrate to
+  // /rest/api/3/search/jql" error, which is what a Cloud user actually saw.
+  it('uses the enhanced /search/jql endpoint on cloud', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ issues: [{ id: '1', key: 'AB-1', fields: {} }] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const issues = await cloudClient().search('assignee = currentUser()');
+    expect(issues).toHaveLength(1);
+
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(url).toContain('/rest/api/3/search/jql?');
+    expect(url).toContain('fields=summary');
+  });
+
+  it('follows nextPageToken on cloud, because a page can come back short', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({ issues: [{ id: '1', key: 'AB-1', fields: {} }], nextPageToken: 'tok-2' }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ issues: [{ id: '2', key: 'AB-2', fields: {} }], isLast: true }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const issues = await cloudClient().search('assignee = currentUser()');
+    expect(issues.map((i) => i.key)).toEqual(['AB-1', 'AB-2']);
+    expect(new URL(String(fetchMock.mock.calls[1][0])).searchParams.get('nextPageToken')).toBe(
+      'tok-2',
+    );
+  });
+
+  it('stops at maxResults rather than paging the whole backlog', async () => {
+    const page = (key: string): Response =>
+      jsonResponse({ issues: [{ id: key, key, fields: {} }], nextPageToken: `after-${key}` });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(page('AB-1'))
+      .mockResolvedValueOnce(page('AB-2'))
+      .mockResolvedValue(page('AB-3'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const issues = await cloudClient().search('assignee = currentUser()', 2);
+    expect(issues.map((i) => i.key)).toEqual(['AB-1', 'AB-2']);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  // An empty page that still carries a token is a documented quirk of this endpoint,
+  // so "no issues" can't be the stop condition — only the page cap ends this.
+  it('gives up after the page cap when the server keeps handing out tokens', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ issues: [], nextPageToken: 'tok' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(cloudClient().search('assignee = currentUser()')).resolves.toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(20);
   });
 });
 

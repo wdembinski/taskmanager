@@ -169,15 +169,48 @@ export class JiraClient {
    * Search issues by JQL, returning the fields the board needs. `extraFields` carries
    * per-instance fields the caller discovered at runtime — currently the "Epic Link"
    * custom field id (`customfield_NNNNN`), which cannot be named up front.
+   *
+   * Two different endpoints, because Atlassian removed the Cloud one. `/search` still
+   * serves Server/DC, but on Cloud it now answers with a "migrate to
+   * /rest/api/3/search/jql" error — so Cloud goes to the enhanced search instead. That
+   * endpoint pages by opaque cursor rather than `startAt`, drops `total` entirely, and
+   * hands back short pages whenever it feels like it, so a single request is NOT the
+   * whole answer: we follow `nextPageToken` until the board's cap is filled.
    */
   async search(jql: string, maxResults = 100, extraFields: string[] = []): Promise<JiraIssue[]> {
     const fields = [
       'summary,status,priority,project,issuetype,labels,updated,comment,description,parent',
       ...extraFields.filter((f) => f.trim()),
     ].join(',');
-    const params = new URLSearchParams({ jql, maxResults: String(maxResults), fields });
-    const data = await this.request<{ issues: JiraIssue[] }>(`/search?${params.toString()}`);
-    return data.issues ?? [];
+
+    if (this.config.apiVersion !== '3') {
+      const params = new URLSearchParams({ jql, maxResults: String(maxResults), fields });
+      const data = await this.request<{ issues: JiraIssue[] }>(`/search?${params.toString()}`);
+      return data.issues ?? [];
+    }
+
+    const issues: JiraIssue[] = [];
+    let nextPageToken: string | undefined;
+    // A page cap, because an empty page WITH a token is a documented quirk of this
+    // endpoint — "no issues" alone can't be the stop condition, and nothing else here
+    // would stop a server that keeps handing out tokens forever.
+    for (let page = 0; page < 20; page++) {
+      const params = new URLSearchParams({
+        jql,
+        maxResults: String(Math.min(100, maxResults - issues.length)),
+        fields,
+      });
+      if (nextPageToken) params.set('nextPageToken', nextPageToken);
+      const data = await this.request<{
+        issues?: JiraIssue[];
+        nextPageToken?: string;
+        isLast?: boolean;
+      }>(`/search/jql?${params.toString()}`);
+      issues.push(...(data.issues ?? []));
+      nextPageToken = data.isLast ? undefined : data.nextPageToken;
+      if (!nextPageToken || issues.length >= maxResults) break;
+    }
+    return issues.slice(0, maxResults);
   }
 
   /** GET /field — the instance's field metadata (used to discover the Epic Link field). */
