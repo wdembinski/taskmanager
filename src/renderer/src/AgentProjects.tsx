@@ -33,7 +33,6 @@ import {
   MessageBar,
   MessageBarBody,
   Option,
-  Spinner,
   Subtitle2,
   Text,
   tokens,
@@ -41,6 +40,8 @@ import {
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
 import type { Project } from '@shared/model';
+import { PaneLoading } from './PaneLoading';
+import { useInitialLoad } from './useInitialLoad';
 
 const useStyles = makeStyles({
   pane: {
@@ -88,9 +89,7 @@ export function AgentProjects(): JSX.Element {
     setProjects(await window.api.invoke('agentProject:list'));
   }, []);
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  const initial = useInitialLoad(refresh);
 
   async function remove(project: Project): Promise<void> {
     setError(null);
@@ -103,7 +102,9 @@ export function AgentProjects(): JSX.Element {
   }
 
   if (!projects) {
-    return <Spinner label="Loading agent projects…" labelPosition="after" size="tiny" />;
+    return (
+      <PaneLoading label="Loading agent projects…" error={initial.error} onRetry={initial.retry} />
+    );
   }
 
   return (

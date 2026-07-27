@@ -34,6 +34,8 @@ import {
 import type { PlanValidation, Project, ProjectWithTasks, Task } from '@shared/model';
 import { AddTaskDialog } from './AddTaskDialog';
 import { AttachSessionDialog } from './AttachSessionDialog';
+import { PaneLoading } from './PaneLoading';
+import { useInitialLoad } from './useInitialLoad';
 import { ProjectDialog } from './ProjectDialog';
 import { Transcript } from './Transcript';
 import { STATUS_COLOR, STATUS_LABEL } from './taskStatus';
@@ -118,9 +120,7 @@ export function Projects(): JSX.Element {
     for (const { project } of list) void validateProject(project.id);
   }, [validateProject]);
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  const initial = useInitialLoad(refresh);
 
   // Live task-list updates (Phase 8): the plan file was edited — by a human or the
   // agent mid-run — and re-synced, or a task was created/deleted. Replace just that
@@ -265,7 +265,7 @@ export function Projects(): JSX.Element {
       )}
 
       {projects === null ? (
-        <Spinner label="Loading projects…" labelPosition="after" size="tiny" />
+        <PaneLoading label="Loading projects…" error={initial.error} onRetry={initial.retry} />
       ) : projects.length === 0 ? (
         <Body1 className={styles.empty}>
           No projects yet. Click <strong>Add project…</strong>, choose a folder (and optionally a

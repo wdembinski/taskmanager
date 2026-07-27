@@ -12,7 +12,7 @@
  * session (no restart) and returns the task to `running`. Items arrive/leave live
  * over `attention:new` / `attention:resolved`, so the inbox never polls.
  */
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   Badge,
   Body1,
@@ -20,12 +20,13 @@ import {
   Caption1,
   Field,
   makeStyles,
-  Spinner,
   Text,
   Textarea,
   tokens,
 } from '@fluentui/react-components';
 import type { AttentionAnswer, AttentionItem } from '@shared/attention';
+import { PaneLoading } from './PaneLoading';
+import { useInitialLoad } from './useInitialLoad';
 
 const useStyles = makeStyles({
   root: { display: 'flex', flexDirection: 'column', gap: '12px', overflowY: 'auto', minHeight: 0 },
@@ -275,9 +276,10 @@ export function Attention(): JSX.Element {
   const styles = useStyles();
   const [items, setItems] = useState<AttentionItem[] | null>(null);
 
-  useEffect(() => {
-    void window.api.invoke('attention:list').then(setItems);
+  const seed = useCallback(async () => setItems(await window.api.invoke('attention:list')), []);
+  const initial = useInitialLoad(seed);
 
+  useEffect(() => {
     const offNew = window.api.on('attention:new', (item) => {
       setItems((prev) => {
         const rest = (prev ?? []).filter((i) => i.id !== item.id);
@@ -301,7 +303,7 @@ export function Attention(): JSX.Element {
   };
 
   if (items === null) {
-    return <Spinner label="Loading inbox…" labelPosition="after" size="tiny" />;
+    return <PaneLoading label="Loading inbox…" error={initial.error} onRetry={initial.retry} />;
   }
 
   if (items.length === 0) {

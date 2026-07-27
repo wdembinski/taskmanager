@@ -21,13 +21,14 @@ import {
   MessageBar,
   MessageBarBody,
   MessageBarTitle,
-  Spinner,
   Text,
   tokens,
 } from '@fluentui/react-components';
 import { ChevronDownRegular, ChevronRightRegular } from '@fluentui/react-icons';
 import type { UsageProjectBreakdown, UsageSeriesPoint, UsageSlice, UsageSummary } from '@shared/usage';
 import { BurnRateGauge } from './BurnRateGauge';
+import { PaneLoading } from './PaneLoading';
+import { useInitialLoad } from './useInitialLoad';
 import { TokenChart } from './TokenChart';
 import { formatCountdown } from './LimitBanner';
 import { formatCost, formatPct, formatTokens, niceCeil } from './usageFormat';
@@ -199,15 +200,20 @@ export function Performance(): JSX.Element {
     setGaugeMax(niceCeil(Math.max(peakBurn.current * 1.15, 50)));
   }, [range]);
 
+  const initial = useInitialLoad(refresh);
+
   useEffect(() => {
-    void refresh();
+    // Follow-up refreshes only — `useInitialLoad` owns the seed so its failure is
+    // reported. These swallow errors: once a second, a backend that is down would
+    // otherwise raise an unhandled rejection per tick, and the seed already said so.
+    const again = (): void => void refresh().catch(() => undefined);
     // A new sample landed — refresh right away so the chart/gauge feel live.
-    const off = window.api.on('usage:sample', () => void refresh());
+    const off = window.api.on('usage:sample', again);
     // A steady tick keeps the burn rate, the scrolling chart, and the reset
     // countdown current even while nothing is running.
     const id = setInterval(() => {
       setNow(Date.now());
-      void refresh();
+      again();
     }, 1000);
     return () => {
       off();
@@ -225,7 +231,7 @@ export function Performance(): JSX.Element {
   }, []);
 
   if (!summary) {
-    return <Spinner label="Loading usage…" labelPosition="after" size="tiny" />;
+    return <PaneLoading label="Loading usage…" error={initial.error} onRetry={initial.retry} />;
   }
 
   const resetMs = summary.windowReset != null ? summary.windowReset - now : null;

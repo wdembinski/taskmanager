@@ -28,7 +28,13 @@ export interface JiraSettings {
   baseUrl: string;
   /** Account email — required only for `cloud` (Basic auth); ignored for `server`. */
   cloudEmail: string;
-  /** REST API version: `2` for server, `3` for cloud. Derived from `deployment`. */
+  /**
+   * REST API version: `2` for server, `3` for cloud.
+   *
+   * DERIVED, not authoritative — `jira/jiraConfig.ts` computes it from `deployment` on
+   * every request and never reads this. Kept only so older persisted settings blobs
+   * still parse; nothing should write it.
+   */
   apiVersion: '2' | '3';
   /** JQL selecting the user's issues to mirror onto the board. */
   jql: string;

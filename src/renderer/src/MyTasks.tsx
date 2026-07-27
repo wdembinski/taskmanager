@@ -14,7 +14,6 @@ import {
   MessageBar,
   MessageBarActions,
   MessageBarBody,
-  Spinner,
   Switch,
   makeStyles,
   tokens,
@@ -22,7 +21,9 @@ import {
 import { PERSONAL_PROJECT_ID, type Project, type Task } from '@shared/model';
 import type { AppSettings } from '@shared/settings';
 import { AddTaskDialog } from './AddTaskDialog';
+import { PaneLoading } from './PaneLoading';
 import { TaskDetail } from './TaskDetail';
+import { useInitialLoad } from './useInitialLoad';
 import { KanbanColumn } from './board/KanbanColumn';
 import {
   COLUMN_META,
@@ -106,11 +107,20 @@ export function MyTasks(): JSX.Element {
     setTasks(await window.api.invoke('board:tasks'));
   }, []);
 
-  useEffect(() => {
-    void refresh();
-    void window.api.invoke('settings:get').then(setSettings);
-    void window.api.invoke('agentProject:list').then(setAgentProjects);
-  }, [refresh]);
+  // One seed load for all three channels, so a failure in any of them is reported
+  // rather than leaving the board on its spinner.
+  const seed = useCallback(async () => {
+    const [board, appSettings, repos] = await Promise.all([
+      window.api.invoke('board:tasks'),
+      window.api.invoke('settings:get'),
+      window.api.invoke('agentProject:list'),
+    ]);
+    setTasks(board);
+    setSettings(appSettings);
+    setAgentProjects(repos);
+  }, []);
+
+  const initial = useInitialLoad(seed);
 
   const patchTask = useCallback((task: Task) => {
     if (task.projectId !== PERSONAL_PROJECT_ID) return; // board shows only personal tasks
@@ -216,7 +226,7 @@ export function MyTasks(): JSX.Element {
   );
 
   if (tasks === null) {
-    return <Spinner label="Loading tasks…" labelPosition="after" size="tiny" />;
+    return <PaneLoading label="Loading tasks…" error={initial.error} onRetry={initial.retry} />;
   }
 
   return (

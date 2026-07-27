@@ -108,13 +108,22 @@ export function commentBodyToText(body: unknown): string {
     if (Array.isArray(n.content)) for (const child of n.content) walk(child);
   };
   walk(body);
-  return out.join('').replace(/\n{3,}/g, '\n\n').trim();
+  return out
+    .join('')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 export class JiraError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    /**
+     * JIRA Server/DC's `X-Authentication-Denied-Reason` header. It carries the only
+     * explanation for some 403s (most usefully `AUTHENTICATION_DENIED ... CAPTCHA_CHALLENGE`,
+     * raised after repeated failed logins) — the response body is empty in that case.
+     */
+    readonly deniedReason?: string,
   ) {
     super(message);
     this.name = 'JiraError';
@@ -144,6 +153,7 @@ export class JiraClient {
       throw new JiraError(
         `JIRA ${res.status} ${res.statusText}${text ? `: ${text.slice(0, 300)}` : ''}`,
         res.status,
+        res.headers?.get('x-authentication-denied-reason') ?? undefined,
       );
     }
     if (res.status === 204) return undefined as T;

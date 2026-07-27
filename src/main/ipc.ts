@@ -20,13 +20,16 @@ import {
   type Task,
 } from '@shared/model';
 import { categoryFromKey } from '@shared/board';
+import { normalizeBaseUrl } from '@shared/jiraUrl';
 import { createJiraClient } from './jira/jiraConfig';
+import { explainJiraFailure } from './jira/jiraDiagnostics';
 import { commentBodyToText, type JiraClient } from './jira/jiraClient';
 import { reconcileJiraTasks } from './jira/jiraSync';
 import { discoverEpicFieldId } from './jira/epicField';
 import { authorIsMe, identityFrom, type JiraIdentityCache } from './jira/identity';
 import { pickTransition, resolveMove } from './jira/jiraMove';
 import { getClaudeStatus } from './claudeStatus';
+import { logMain } from './log';
 import { parsePlan } from './planParser';
 import { planHasAlignmentMarkers, validatePlan } from './planValidate';
 import { buildAlignPrompt } from './alignPrompt';
@@ -161,7 +164,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       });
     })
     .catch((err) => {
-      console.error('Permission broker failed to start; task runs will be ungated:', err);
+      logMain('Permission broker failed to start; task runs will be ungated', err);
     })
     // Restore any usage-limit gate left in force by a previous run AFTER the broker
     // is wired (so tasks resumed at reset are still gated). Runs on both branches.
@@ -527,7 +530,17 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
   handle('settings:get', async () => store.getSettings());
   handle('settings:save', async (settings) => {
-    store.saveSettings(settings);
+    // Normalize the JIRA URL once, on the way in, so every consumer sees the same
+    // origin — the client, the epic-field and identity caches (both keyed by baseUrl),
+    // and the issue links written onto cards.
+    store.saveSettings({
+      ...settings,
+      jira: {
+        ...settings.jira,
+        baseUrl: normalizeBaseUrl(settings.jira.baseUrl),
+        cloudEmail: settings.jira.cloudEmail.trim(),
+      },
+    });
     // Pick up a changed JIRA poll interval (or enable/disable) without a restart.
     jiraPoller.reschedule();
   });
@@ -538,6 +551,15 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   const buildJiraClient = (): JiraClient => {
     const { jira } = store.getSettings();
     if (!jira.baseUrl.trim()) throw new Error('Set the JIRA base URL in Settings first.');
+    // Cloud authenticates as email + API token. Without the email we'd send
+    // `Basic base64(":token")`, which JIRA rejects as a plain 401 — indistinguishable
+    // from a bad token, and the reason this was so hard to diagnose.
+    if (jira.deployment === 'cloud' && !jira.cloudEmail.trim()) {
+      throw new Error(
+        'Atlassian Cloud signs in with your account email plus an API token — ' +
+          'add the email in Settings.',
+      );
+    }
     const cipher = store.loadJiraToken();
     if (!cipher) throw new Error('No JIRA token saved — add one in Settings.');
     if (!safeStorage.isEncryptionAvailable()) {
@@ -580,7 +602,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       const me = await buildJiraClient().testConnection();
       return { ok: true, displayName: me.displayName, message: `Connected as ${me.displayName}.` };
     } catch (e) {
-      return { ok: false, message: e instanceof Error ? e.message : String(e) };
+      // Keep the full error (including `cause`) in the log; show the diagnosis on screen.
+      logMain('JIRA test connection failed', e);
+      return { ok: false, message: explainJiraFailure(e, store.getSettings().jira) };
     }
   });
 
@@ -643,12 +667,16 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     return tasks;
   };
 
-  handle('jira:sync', async () => syncJira());
-
-  // Background poll: keep the Personal board fresh on the user's configured cadence
-  // (JIRA setting `pollIntervalMinutes`; 0 = off). Re-armed whenever settings change.
-  const jiraPoller = new JiraPoller(store, syncJira);
-  jiraPoller.reschedule();
+  // Rethrow with the diagnosis attached, so the board's error bar explains a bad
+  // deployment/credential the same way the Settings "Test connection" button does.
+  handle('jira:sync', async () => {
+    try {
+      return await syncJira();
+    } catch (e) {
+      logMain('JIRA sync failed', e);
+      throw new Error(explainJiraFailure(e, store.getSettings().jira));
+    }
+  });
 
   handle('task:move', async (taskId, toColumn) => {
     const existing = store.getTask(taskId);
@@ -767,6 +795,15 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('window:isMaximized', async () => mainWindow.isMaximized());
   mainWindow.on('maximize', () => send('window:maximizedChanged', true));
   mainWindow.on('unmaximize', () => send('window:maximizedChanged', false));
+
+  // Background poll: keep the Personal board fresh on the user's configured cadence
+  // (JIRA setting `pollIntervalMinutes`; 0 = off). Re-armed whenever settings change.
+  // Constructed AFTER every handle() call on purpose: anything that can throw while
+  // registering would otherwise leave the API half-wired — some channels live, the
+  // ones below it missing — which is the same failure mode as a dead engine, only
+  // harder to spot.
+  const jiraPoller = new JiraPoller(store, syncJira);
+  jiraPoller.reschedule();
 
   return { sessions, scheduler, store, broker, watcher, jiraPoller };
 }

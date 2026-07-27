@@ -11,6 +11,7 @@
  * `settings:save` handler calling `reschedule()`. Mirrors `PlanWatcher`'s lifecycle
  * (constructed at engine boot, `dispose()`d on quit).
  */
+import { logMain } from './log';
 import type { Store } from './store';
 
 export class JiraPoller {
@@ -46,7 +47,8 @@ export class JiraPoller {
     } catch (err) {
       // A background poll must never crash the app — a bad token/network just
       // means this tick is skipped; the next one (or a manual Sync) retries.
-      console.error('JIRA background sync failed:', err);
+      // Logged to file because nobody is watching a console when this fires.
+      logMain('JIRA background sync failed', err);
     } finally {
       this.running = false;
     }

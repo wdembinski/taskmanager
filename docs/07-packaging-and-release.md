@@ -1,7 +1,7 @@
 # 7. Packaging & release
 
-How to turn the source into an installable Windows build, what the packaging has
-to get right, and the steps to cut a versioned release. Packaging config lives in
+How to turn the source into an installable Windows or Linux build, what the packaging
+has to get right, and the steps to cut a versioned release. Packaging config lives in
 [`electron-builder.yml`](../electron-builder.yml); the build itself is driven by
 electron-vite (see [`docs/02`](02-architecture.md) for the three-bundle layout).
 
@@ -12,7 +12,9 @@ electron-vite (see [`docs/02`](02-architecture.md) for the three-bundle layout).
 ```bash
 pnpm install          # postinstall rebuilds better-sqlite3 for Electron's ABI
 pnpm build            # electron-vite build -> ./out (main / preload / renderer)
-pnpm package          # build + electron-builder --win  ->  ./dist
+pnpm package          # build + install-app-deps + ABI gate + electron-builder --win
+pnpm package:linux    # same, --linux (AppImage + deb) — MUST run on Linux
+pnpm check:abi        # the ABI gate on its own
 ```
 
 `pnpm package` produces, in `dist/`:
@@ -28,10 +30,9 @@ produces only `dist/win-unpacked/`.
 
 ---
 
-## Two things packaging must get right
+## Three things packaging must get right
 
-Both are verified as part of finishing Phase 7 — re-check them if the dependency or
-spawn model changes.
+Re-check these if the dependency or spawn model changes.
 
 1. **The native SQLite binary must be unpacked from the asar.** `better-sqlite3`
    ships a compiled `better_sqlite3.node`, and native `.node` files cannot be
@@ -40,7 +41,21 @@ spawn model changes.
    *Verify:* the packaged exe boots and reads/writes its DB (it lives at
    `%APPDATA%/claude-orchestrator/orchestrator.db`).
 
-2. **The permission relay is spawned as the app's own binary running as Node.** The
+2. **That binary must be compiled for Electron's ABI, not the host Node's.** Electron
+   embeds its own Node: Electron 33 needs `NODE_MODULE_VERSION` **130**, while Node 22
+   builds addons for **127**. Because `better-sqlite3` loads its addon lazily inside
+   `new Database()`, a mismatch does *not* fail the build or crash on launch — the app
+   opens, `createStore()` throws before the first `ipcMain.handle()`, and every screen
+   sits on "Loading…" forever. v0.25.0 shipped exactly that on Linux.
+
+   `pnpm check:abi` (`scripts/check-native-abi.mjs`) compares the addon's
+   `node_register_module_v*` symbol against `process.versions.modules` read from the
+   installed Electron, and both `package` scripts run it before electron-builder. If it
+   fails, run `pnpm exec electron-builder install-app-deps`; pnpm's symlinked layout
+   sometimes makes that a no-op, in which case force a source rebuild against Electron's
+   headers. **Never bypass this gate to get a release out.**
+
+3. **The permission relay is spawned as the app's own binary running as Node.** The
    pre-execution permission veto (Phase 4) materializes a `.cjs` relay to `userData`
    at runtime and has the Claude CLI spawn it via `process.execPath` with
    `ELECTRON_RUN_AS_NODE=1`. In a packaged build `process.execPath` is the installed
@@ -92,6 +107,42 @@ accrues to the right name once signed.
 
 ---
 
+## Building for Linux
+
+`pnpm package:linux` **must run on Linux** so `better-sqlite3` compiles for Linux —
+WSL is the usual path. Build from a clone in the WSL-native home, never from `/mnt/c`:
+the Windows `node_modules` holds win32 prebuilds. Ubuntu's system `node` may be far too
+old for electron-builder, so source nvm and select Node 22 first, and rebuild `PATH` from
+nvm's bin directory so `which pnpm` doesn't resolve to the Windows shim.
+
+Verify the artifacts before uploading anything:
+
+```bash
+file dist/linux-unpacked/claude-orchestrator          # must say: ELF 64-bit
+readelf -Ws dist/linux-unpacked/resources/app.asar.unpacked/node_modules/\
+better-sqlite3/build/Release/better_sqlite3.node | grep node_register_module_v
+                                                      # must say: v130 (Electron 33)
+```
+
+Then actually run it **from a terminal** — a `.desktop` launcher discards stderr, and
+that is how a startup failure stayed invisible in v0.25.0:
+
+```bash
+/opt/Claude\ Orchestrator/claude-orchestrator          # .deb install
+./Claude\ Orchestrator-<version>.AppImage              # AppImage (add --no-sandbox if
+                                                      # Ubuntu 24.04+ blocks user namespaces)
+```
+
+`Failed to connect to the bus: … dbus` messages are cosmetic and expected on a machine
+without a session bus; ignore them. What matters is that no `No handler registered for
+'…'` lines appear and every tab shows data. Since v0.25.1 a startup failure also raises
+an error dialog and writes `~/.config/Claude Orchestrator/logs/main.log`.
+
+Note `gh release create` replaces spaces in asset filenames with dots, so any download
+table in the release notes must use the dotted name.
+
+---
+
 ## Release checklist
 
 1. Green gate: `pnpm typecheck` && `pnpm test` && `pnpm build`.
@@ -105,4 +156,7 @@ accrues to the right name once signed.
 3. Bump `package.json` `version` if the release commit hasn't; commit.
 4. `pnpm package`; smoke-test `dist/win-unpacked/Claude Orchestrator.exe` (and,
    ideally, run the installer on a clean machine and take one project end-to-end).
-5. Tag `vX.Y.Z` (annotated) and push with `--follow-tags`.
+5. For a Linux release, `pnpm package:linux` on Linux and run the artifact checks
+   above. The ABI gate is not optional — a bundle that fails it is broken in a way
+   that only shows up after install.
+6. Tag `vX.Y.Z` (annotated) and push with `--follow-tags`.

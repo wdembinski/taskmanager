@@ -158,10 +158,16 @@ export function App(): JSX.Element {
   // How many tasks are waiting on a human, shown as a badge on the Attention tab.
   const [attentionCount, setAttentionCount] = useState(0);
 
+  // Set when the app shell itself can't reach the engine — the clearest possible signal
+  // that nothing else on screen will load either.
+  const [bootError, setBootError] = useState<string | null>(null);
+
   useEffect(() => {
-    void window.api.invoke('app:getInfo').then(setInfo);
-    void window.api.invoke('claude:getStatus').then(setClaude);
-    void window.api.invoke('attention:list').then((items) => setAttentionCount(items.length));
+    void Promise.all([
+      window.api.invoke('app:getInfo').then(setInfo),
+      window.api.invoke('claude:getStatus').then(setClaude),
+      window.api.invoke('attention:list').then((items) => setAttentionCount(items.length)),
+    ]).catch((e: unknown) => setBootError(e instanceof Error ? e.message : String(e)));
 
     const offNew = window.api.on('attention:new', () => setAttentionCount((n) => n + 1));
     const offResolved = window.api.on('attention:resolved', () =>
@@ -206,6 +212,16 @@ export function App(): JSX.Element {
 
         <div className={styles.content}>
           <div className={styles.banners}>
+            {/* The engine is unreachable — every tab below will be empty, so say why once,
+                at the top, rather than leaving the user to guess from seven spinners. */}
+            {bootError && (
+              <MessageBar intent="error">
+                <MessageBarBody>
+                  Can&apos;t reach the app&apos;s backend, so nothing will load: {bootError}
+                </MessageBarBody>
+              </MessageBar>
+            )}
+
             {/* Surface a Claude problem prominently; when all is well the footer suffices. */}
             {claude && !claudeOk && (
               <MessageBar intent="warning">
@@ -252,6 +268,11 @@ export function App(): JSX.Element {
                 : 'Claude CLI not found'}
               {claude.apiKeyDetected && ' · ANTHROPIC_API_KEY set'}
             </Caption1>
+          </>
+        ) : bootError ? (
+          <>
+            <span className={`${styles.dot} ${styles.bad}`} />
+            <Caption1>Backend unavailable</Caption1>
           </>
         ) : (
           <Spinner label="Checking Claude…" labelPosition="after" size="tiny" />

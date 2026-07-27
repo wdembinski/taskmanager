@@ -11,7 +11,7 @@
  * The vertical nav also hosts the JIRA connection and the Agents pane (the
  * repositories a My Tasks card can be delegated to), which manage their own state.
  */
-import { useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import {
   Body1,
   Button,
@@ -36,7 +36,10 @@ import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
 import type { AppSettings, JiraSettings } from '@shared/settings';
 import type { JiraConfigStatus, JiraTestResult } from '@shared/ipc';
+import { isCloudHost } from '@shared/jiraUrl';
 import { AgentProjects } from './AgentProjects';
+import { PaneLoading } from './PaneLoading';
+import { useInitialLoad } from './useInitialLoad';
 
 const useStyles = makeStyles({
   // Vertical nav on the left, scrollable content pane on the right.
@@ -80,10 +83,15 @@ export function Settings(): JSX.Element {
   const [testResult, setTestResult] = useState<JiraTestResult | null>(null);
   const [testing, setTesting] = useState(false);
 
-  useEffect(() => {
-    void window.api.invoke('settings:get').then(setSettings);
-    void window.api.invoke('jira:getConfigStatus').then(setJiraStatus);
+  const seed = useCallback(async () => {
+    const [appSettings, status] = await Promise.all([
+      window.api.invoke('settings:get'),
+      window.api.invoke('jira:getConfigStatus'),
+    ]);
+    setSettings(appSettings);
+    setJiraStatus(status);
   }, []);
+  const initial = useInitialLoad(seed);
 
   // Any edit invalidates the "Saved" confirmation.
   function patch(change: Partial<AppSettings>): void {
@@ -100,10 +108,16 @@ export function Settings(): JSX.Element {
     if (!settings) return;
     await window.api.invoke('settings:save', settings);
     setSaved(true);
+    // The main process normalizes the JIRA URL on save; re-read so the field shows
+    // what was actually stored rather than what was typed.
+    setSettings(await window.api.invoke('settings:get'));
     setJiraStatus(await window.api.invoke('jira:getConfigStatus'));
   }
 
   async function saveToken(): Promise<void> {
+    // Persist the form first: the main process reads the STORED settings, so saving a
+    // token against an unsaved URL/deployment used to silently pair it with stale config.
+    await save();
     const res = await window.api.invoke('jira:setCredentials', token);
     setTokenMsg(res.message);
     setToken('');
@@ -120,6 +134,9 @@ export function Settings(): JSX.Element {
     setTesting(true);
     setTestResult(null);
     try {
+      // Same reason as saveToken: the test runs against stored settings, so testing an
+      // edited-but-unsaved form would report on the previous configuration.
+      await save();
       setTestResult(await window.api.invoke('jira:testConnection'));
     } finally {
       setTesting(false);
@@ -127,10 +144,15 @@ export function Settings(): JSX.Element {
   }
 
   if (!settings) {
-    return <Spinner label="Loading settings…" labelPosition="after" size="tiny" />;
+    return <PaneLoading label="Loading settings…" error={initial.error} onRetry={initial.retry} />;
   }
 
   const jira = settings.jira;
+  // An *.atlassian.net site configured as Server/DC is the one misconfiguration we can
+  // spot for certain, and it fails as a bare 401 that reads like a bad token. Warn on
+  // the field rather than silently overriding the dropdown — a vanity-domain Cloud site
+  // is indistinguishable from a self-hosted one, so the user stays in charge.
+  const cloudMismatch = jira.deployment === 'server' && isCloudHost(jira.baseUrl);
 
   return (
     <div className={styles.row}>
@@ -280,10 +302,9 @@ export function Settings(): JSX.Element {
                 }
                 selectedOptions={[jira.deployment]}
                 onOptionSelect={(_e, d) =>
-                  patchJira({
-                    deployment: d.optionValue as JiraSettings['deployment'],
-                    apiVersion: d.optionValue === 'cloud' ? '3' : '2',
-                  })
+                  // `apiVersion` is derived from this on the main side (jiraConfig), so
+                  // it is not set here — writing it too would invite the two to disagree.
+                  patchJira({ deployment: d.optionValue as JiraSettings['deployment'] })
                 }
               >
                 <Option value="server">Server / Data Center (PAT)</Option>
@@ -291,16 +312,34 @@ export function Settings(): JSX.Element {
               </Dropdown>
             </Field>
 
-            <Field label="Base URL" hint="e.g. https://jira.company.com (no trailing slash)">
+            <Field
+              label="Base URL"
+              hint="The site root — e.g. https://acme.atlassian.net or https://jira.company.com"
+              validationState={cloudMismatch ? 'warning' : 'none'}
+              validationMessage={
+                cloudMismatch
+                  ? 'This is an Atlassian Cloud site. Cloud rejects Server/DC tokens — set Deployment to Cloud and add your account email.'
+                  : undefined
+              }
+            >
               <Input
                 value={jira.baseUrl}
-                placeholder="https://jira.company.com"
+                placeholder="https://acme.atlassian.net"
                 onChange={(_e, d) => patchJira({ baseUrl: d.value.trim() })}
               />
             </Field>
 
             {jira.deployment === 'cloud' && (
-              <Field label="Account email">
+              <Field
+                label="Account email"
+                hint="The Atlassian account the API token belongs to — Cloud needs both."
+                validationState={jira.cloudEmail.trim() ? 'none' : 'warning'}
+                validationMessage={
+                  jira.cloudEmail.trim()
+                    ? undefined
+                    : 'Required for Cloud; without it JIRA returns 401.'
+                }
+              >
                 <Input
                   value={jira.cloudEmail}
                   placeholder="you@company.com"

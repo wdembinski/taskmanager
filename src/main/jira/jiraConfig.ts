@@ -4,16 +4,17 @@
  * by the IPC layer via `safeStorage`), so it and the client stay unit-testable.
  */
 import type { JiraSettings } from '@shared/settings';
+import { normalizeBaseUrl } from '@shared/jiraUrl';
 import { JiraClient, type JiraClientConfig } from './jiraClient';
 
 /** Derive the wire config from user settings + token. Cloud → Basic/v3, server → Bearer/v2. */
 export function buildClientConfig(jira: JiraSettings, token: string): JiraClientConfig {
   return {
-    baseUrl: jira.baseUrl,
+    baseUrl: normalizeBaseUrl(jira.baseUrl),
     apiVersion: jira.deployment === 'cloud' ? '3' : '2',
     auth:
       jira.deployment === 'cloud'
-        ? { mode: 'basic', token, email: jira.cloudEmail }
+        ? { mode: 'basic', token, email: jira.cloudEmail.trim() }
         : { mode: 'bearer', token },
   };
 }

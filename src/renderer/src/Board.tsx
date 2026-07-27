@@ -27,7 +27,6 @@ import {
   makeStyles,
   MessageBar,
   MessageBarBody,
-  Spinner,
   Subtitle2,
   Switch,
   Text,
@@ -35,7 +34,9 @@ import {
 } from '@fluentui/react-components';
 import type { ProjectWithTasks, Task } from '@shared/model';
 import type { SchedulerState } from '@shared/scheduler';
+import { PaneLoading } from './PaneLoading';
 import { STATUS_COLOR, STATUS_LABEL } from './taskStatus';
+import { useInitialLoad } from './useInitialLoad';
 import { Transcript } from './Transcript';
 
 const useStyles = makeStyles({
@@ -165,34 +166,39 @@ export function Board(): JSX.Element {
   // scheduler otherwise stays idle during an align, leaving Stop disabled).
   const [aligningRuns, setAligningRuns] = useState<Record<string, string>>({});
 
-  // Load projects + any already-running tasks, and subscribe to live updates.
-  useEffect(() => {
-    void window.api.invoke('project:list').then(setProjects);
-    void window.api.invoke('scheduler:activeRuns').then((runs) => {
-      setRunIds(Object.fromEntries(runs.map((r) => [r.taskId, r.runId])));
-    });
-    // Seed run state from the (long-lived) scheduler so the Run/Pause/Stop buttons
-    // reflect reality after a tab switch remounts this view — not a stale idle.
-    void window.api.invoke('scheduler:states').then((rows) => {
-      setStates(Object.fromEntries(rows.map((r) => [r.projectId, r.state])));
-    });
-    // Seed + track merge-conflict / task-failed / proposal parks so the board can badge tasks.
-    void window.api.invoke('attention:list').then((items) => {
-      setParked(
-        Object.fromEntries(
-          items
-            .filter(
-              (i) =>
-                i.kind === 'merge-conflict' || i.kind === 'task-failed' || i.kind === 'proposal',
-            )
-            .map((i) => [
-              i.id,
-              { taskId: i.taskId, kind: i.kind as 'merge-conflict' | 'task-failed' | 'proposal' },
-            ]),
-        ),
-      );
-    });
+  // Load projects + any already-running tasks. One awaited batch, so a failure in any
+  // of the four surfaces as an error on the board instead of a permanent spinner.
+  const seed = useCallback(async () => {
+    const [list, runs, rows, items] = await Promise.all([
+      window.api.invoke('project:list'),
+      window.api.invoke('scheduler:activeRuns'),
+      // Seed run state from the (long-lived) scheduler so the Run/Pause/Stop buttons
+      // reflect reality after a tab switch remounts this view — not a stale idle.
+      window.api.invoke('scheduler:states'),
+      // Merge-conflict / task-failed / proposal parks, so the board can badge tasks.
+      window.api.invoke('attention:list'),
+    ]);
+    setProjects(list);
+    setRunIds(Object.fromEntries(runs.map((r) => [r.taskId, r.runId])));
+    setStates(Object.fromEntries(rows.map((r) => [r.projectId, r.state])));
+    setParked(
+      Object.fromEntries(
+        items
+          .filter(
+            (i) => i.kind === 'merge-conflict' || i.kind === 'task-failed' || i.kind === 'proposal',
+          )
+          .map((i) => [
+            i.id,
+            { taskId: i.taskId, kind: i.kind as 'merge-conflict' | 'task-failed' | 'proposal' },
+          ]),
+      ),
+    );
+  }, []);
 
+  const initial = useInitialLoad(seed);
+
+  // Subscribe to live updates.
+  useEffect(() => {
     const offTask = window.api.on('task:changed', ({ task, runId }) => {
       // Patch the task wherever it lives.
       setProjects((prev) =>
@@ -218,11 +224,7 @@ export function Board(): JSX.Element {
     });
 
     const offAttentionNew = window.api.on('attention:new', (item) => {
-      if (
-        item.kind !== 'merge-conflict' &&
-        item.kind !== 'task-failed' &&
-        item.kind !== 'proposal'
-      )
+      if (item.kind !== 'merge-conflict' && item.kind !== 'task-failed' && item.kind !== 'proposal')
         return;
       const kind = item.kind; // capture the narrowed kind for the setState closure
       setParked((prev) => ({ ...prev, [item.id]: { taskId: item.taskId, kind } }));
@@ -297,16 +299,13 @@ export function Board(): JSX.Element {
 
   // Run a project. Legacy (unaligned) plans first raise the align nudge; everything
   // else starts the scheduler immediately.
-  const runProject = useCallback(
-    (project: ProjectWithTasks['project']) => {
-      if (!project.planAligned) {
-        setRunNudge({ projectId: project.id, projectName: project.name });
-        return;
-      }
-      void window.api.invoke('scheduler:start', project.id);
-    },
-    [],
-  );
+  const runProject = useCallback((project: ProjectWithTasks['project']) => {
+    if (!project.planAligned) {
+      setRunNudge({ projectId: project.id, projectName: project.name });
+      return;
+    }
+    void window.api.invoke('scheduler:start', project.id);
+  }, []);
 
   // "Run anyway" from the nudge: dismiss the prompt permanently (mark aligned) and
   // start the scheduler as-is.
@@ -349,7 +348,7 @@ export function Board(): JSX.Element {
   );
 
   if (projects === null) {
-    return <Spinner label="Loading board…" labelPosition="after" size="tiny" />;
+    return <PaneLoading label="Loading board…" error={initial.error} onRetry={initial.retry} />;
   }
 
   if (projects.length === 0) {

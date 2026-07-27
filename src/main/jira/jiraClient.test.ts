@@ -52,6 +52,21 @@ describe('buildClientConfig', () => {
       auth: { mode: 'basic', token: 'tok', email: 'a@b' },
     });
   });
+
+  it('normalizes the base URL, so a scheme-less paste still builds valid request URLs', () => {
+    const cfg = buildClientConfig(
+      {
+        ...DEFAULT_JIRA_SETTINGS,
+        deployment: 'cloud',
+        baseUrl: 'acme.atlassian.net/jira/your-work',
+        cloudEmail: ' a@b ',
+      },
+      'tok',
+    );
+    expect(cfg.baseUrl).toBe('https://acme.atlassian.net');
+    // A stray space around the email would corrupt the base64 Basic credential.
+    expect(cfg.auth).toMatchObject({ email: 'a@b' });
+  });
 });
 
 describe('JiraClient.testConnection', () => {
@@ -70,6 +85,19 @@ describe('JiraClient.testConnection', () => {
   it('throws a JiraError with the status on a non-2xx response', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ error: 'nope' }, 401)));
     await expect(serverClient().testConnection()).rejects.toBeInstanceOf(JiraError);
+  });
+
+  it("captures JIRA DC's X-Authentication-Denied-Reason, the only clue a 403 CAPTCHA gives", async () => {
+    const res = {
+      ...jsonResponse({}, 403),
+      headers: { get: (n: string) => (n === 'x-authentication-denied-reason' ? 'CAPTCHA' : null) },
+    } as unknown as Response;
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(res));
+
+    await expect(serverClient().testConnection()).rejects.toMatchObject({
+      status: 403,
+      deniedReason: 'CAPTCHA',
+    });
   });
 });
 

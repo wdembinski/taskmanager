@@ -10,8 +10,16 @@
  * usage-limit gate) from here too.
  */
 import { join } from 'node:path';
-import { app, BrowserWindow, shell } from 'electron';
+import { app, BrowserWindow, dialog, shell } from 'electron';
 import { registerIpcHandlers, type Engine } from './ipc';
+import { formatError, getLogPath, logMain } from './log';
+
+// Nothing in main used to report a failure anywhere the user could see it. A throw
+// during startup (v0.25.0 on Linux: a wrong-ABI better_sqlite3.node) left the window
+// open with ZERO ipcMain handlers registered, so every screen sat on its spinner
+// forever with no clue why. These two handlers make any such failure loud.
+process.on('uncaughtException', (err) => reportFatal('Unexpected error', err));
+process.on('unhandledRejection', (reason) => reportFatal('Unexpected error', reason));
 
 // Windows white-flash-on-restore fix. Chromium's "native window occlusion"
 // detection marks a minimized window as occluded and discards its rendered frame;
@@ -75,12 +83,49 @@ function createWindow(): BrowserWindow {
 // Holds the engine so we can shut its sessions and database down cleanly on quit.
 let engine: Engine | undefined;
 
+/** Guard so a cascade of rejections can't stack a dozen modal dialogs. */
+let reportedFatal = false;
+
+/**
+ * Log a fatal error to file and show it to the user, because in a packaged app there
+ * is no console to print it to. `fatal: true` means the app cannot usefully continue
+ * (the engine never came up), so we quit rather than leave dead windows on screen.
+ */
+function reportFatal(title: string, err: unknown, fatal = false): void {
+  logMain(title, err);
+  if (reportedFatal) return;
+  reportedFatal = true;
+  // Resolving the log path touches app.getPath, which can itself fail very early.
+  let logHint = 'the app log';
+  try {
+    logHint = getLogPath();
+  } catch {
+    /* keep the generic wording */
+  }
+  const detail =
+    `${formatError(err)}\n\n` +
+    `A full log was written to:\n${logHint}\n\n` +
+    `If this says NODE_MODULE_VERSION, the installed build is packaged against the ` +
+    `wrong Electron ABI — please report it with the version number.`;
+  // showErrorBox works before the app is ready, unlike the other dialog APIs.
+  dialog.showErrorBox(`Claude Orchestrator — ${title}`, detail);
+  if (fatal) app.exit(1);
+}
+
 // app.whenReady() resolves once Electron has finished starting up; only then may
 // we create windows.
 void app.whenReady().then(() => {
   const window = createWindow();
-  // The engine needs the window so it can push live session events to the UI.
-  engine = registerIpcHandlers(window);
+  try {
+    // The engine needs the window so it can push live session events to the UI.
+    // Everything here — opening the database, migrations, the scheduler — happens
+    // BEFORE the first ipcMain.handle(), so a throw leaves the UI with no backend
+    // at all. Catch it and say so instead of failing silently.
+    engine = registerIpcHandlers(window);
+  } catch (err) {
+    reportFatal('failed to start', err, true);
+    return;
+  }
 
   // macOS convention: re-create a window when the dock icon is clicked and no
   // windows are open. Harmless on Windows/Linux.

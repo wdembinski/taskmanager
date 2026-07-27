@@ -14,6 +14,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { FluentProvider, webDarkTheme, type Theme } from '@fluentui/react-components';
 import { App } from './App';
+import { RootErrorBoundary } from './RootErrorBoundary';
 import './index.css';
 
 /**
@@ -38,7 +39,11 @@ const appTheme: Theme = {
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
     <FluentProvider theme={appTheme} style={{ height: '100vh' }}>
-      <App />
+      {/* A render crash used to blank the window with no explanation. Inside the provider
+          so the fallback still gets the theme's tokens. */}
+      <RootErrorBoundary>
+        <App />
+      </RootErrorBoundary>
     </FluentProvider>
   </React.StrictMode>,
 );
