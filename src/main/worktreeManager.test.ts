@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Project, Task } from '@shared/model';
+import { LOCAL_TARGET } from '@shared/execTarget';
 import { git } from './git';
 import { classifyUntrackedCollisions, taskBranch, WorktreeManager } from './worktreeManager';
 
@@ -25,7 +26,9 @@ async function initRepo(dir: string) {
 
 /** A Project stub — only `id` and `path` are read by the integration code under test. */
 function project(): Project {
-  return { id: 'p1', path: repo } as unknown as Project;
+  // `target` decides which machine git runs on, so it is part of a valid project
+  // even in a fixture — these tests exercise the local host.
+  return { id: 'p1', path: repo, target: LOCAL_TARGET } as unknown as Project;
 }
 
 /** Prepare a branch worktree that adds `file` with `branchContent`, ready to integrate. */
@@ -157,7 +160,9 @@ describe('WorktreeManager.integrate — conflict ladder Rung 1 (mechanical)', ()
 
     const res = await wtm.integrate(project(), 'orch/u2', base, wt, 'integrate u2');
     expect(res.status).toBe('conflict');
-    expect(res.status === 'conflict' && (await wtm.listConflicts(wt))).toContain('src.txt');
+    expect(res.status === 'conflict' && (await wtm.listConflicts(project(), wt))).toContain(
+      'src.txt',
+    );
   });
 });
 
@@ -171,7 +176,12 @@ describe('WorktreeManager.prepare — worktree-enabled repo that cannot isolate'
     await git(repo, ['checkout', branch]);
 
     const wtm = new WorktreeManager(join(root, 'wtroot'));
-    const proj = { id: 'p1', path: repo, useWorktrees: true } as unknown as Project;
+    const proj = {
+      id: 'p1',
+      path: repo,
+      useWorktrees: true,
+      target: LOCAL_TARGET,
+    } as unknown as Project;
     const prep = await wtm.prepare(proj, task);
 
     expect(prep.mode).toBe('failed');

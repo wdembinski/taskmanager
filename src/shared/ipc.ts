@@ -43,6 +43,7 @@ import type {
   TaskActivityEntry,
   TaskType,
 } from './model';
+import type { ExecTarget, TargetReadiness } from './execTarget';
 import type { ActiveRun, SchedulerChange, TaskChange } from './scheduler';
 import type { AttentionAnswer, AttentionItem } from './attention';
 import type { LimitState } from './limit';
@@ -116,6 +117,15 @@ export interface IpcApi {
   'app:getInfo': () => Promise<AppInfo>;
   /** Check whether the Claude CLI is installed and logged in on this machine. */
   'claude:getStatus': () => Promise<ClaudeStatus>;
+
+  /** Installed WSL distros, for the execution-target picker. Empty when WSL is absent. */
+  'exec:listDistros': () => Promise<string[]>;
+  /**
+   * Whether an execution target can actually run tasks, and what is missing if not.
+   * The target may be a machine the app has never touched, so this is reported in the
+   * UI rather than discovered when a task fails.
+   */
+  'exec:readiness': (target: ExecTarget) => Promise<TargetReadiness>;
   /** Start one Claude session for a task. Resolves with a run id to track it. */
   'session:start': (request: StartSessionRequest) => Promise<{ runId: string }>;
   /** Stop a running session by its run id (kills the underlying process). */

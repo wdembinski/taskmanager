@@ -13,32 +13,24 @@
  * This runs in the main (Node) process, which is allowed to touch the filesystem
  * and spawn processes. The renderer asks for the result via IPC.
  */
-import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
-import { promisify } from 'node:util';
 import type { ClaudeStatus } from '@shared/ipc';
-
-const execFileAsync = promisify(execFile);
+import { hostJoin, localHost, type ExecHost } from './exec';
 
 /**
  * Run `claude --version` and return the version string, or null if the binary
- * is missing / not runnable. `shell: true` lets Windows resolve `claude.cmd`
+ * is missing / not runnable. `resolveViaShell` lets Windows resolve `claude.cmd`
  * from PATH the same way a terminal would.
  */
-async function readClaudeVersion(): Promise<string | null> {
-  try {
-    const { stdout } = await execFileAsync('claude', ['--version'], {
-      shell: true,
-      timeout: 10_000,
-    });
-    // Output looks like: "2.1.200 (Claude Code)" — grab the leading semver.
-    const match = stdout.match(/\d+\.\d+\.\d+/);
-    return match ? match[0] : stdout.trim();
-  } catch {
-    return null;
-  }
+async function readClaudeVersion(host: ExecHost): Promise<string | null> {
+  const { code, stdout } = await host.exec(process.cwd(), 'claude', ['--version'], {
+    resolveViaShell: true,
+    timeoutMs: 10_000,
+  });
+  if (code !== 0) return null;
+  // Output looks like: "2.1.200 (Claude Code)" — grab the leading semver.
+  const match = stdout.match(/\d+\.\d+\.\d+/);
+  return match ? match[0] : stdout.trim();
 }
 
 /** The raw facts gathered from the machine, before we phrase them for the UI. */
@@ -82,10 +74,13 @@ export function summarizeClaudeStatus(inputs: ClaudeStatusInputs): ClaudeStatus 
  * Produce a full status report for the UI. Never throws — any failure is folded
  * into the returned object so the dashboard can always render something useful.
  */
-export async function getClaudeStatus(): Promise<ClaudeStatus> {
-  const version = await readClaudeVersion();
-  // The subscription login is stored here by `claude` after you log in.
-  const credentialsPath = join(homedir(), '.claude', '.credentials.json');
+export async function getClaudeStatus(host: ExecHost = localHost()): Promise<ClaudeStatus> {
+  const version = await readClaudeVersion(host);
+  // The subscription login is stored here by `claude` after you log in — on the host
+  // that runs it, which is not necessarily the machine showing this window.
+  const credentialsPath = host.toApp(
+    hostJoin(await host.homeDir(), '.claude', '.credentials.json'),
+  );
 
   return summarizeClaudeStatus({
     version,

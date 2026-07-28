@@ -11,10 +11,7 @@
  * non-zero git exit is surfaced as `GitResult.code` rather than throwing, so the
  * caller decides what a failure means (e.g. a non-zero `rebase` = conflicts).
  */
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-
-const run = promisify(execFile);
+import { localHost, type ExecHost } from './exec';
 
 export interface GitResult {
   code: number;
@@ -22,46 +19,46 @@ export interface GitResult {
   stderr: string;
 }
 
-/** Run one `git` invocation in `cwd`, capturing output and the exit code. */
-export async function git(cwd: string, args: string[]): Promise<GitResult> {
-  try {
-    const { stdout, stderr } = await run('git', args, {
-      cwd,
-      windowsHide: true,
-      maxBuffer: 32 * 1024 * 1024,
-    });
-    return { code: 0, stdout, stderr };
-  } catch (err) {
-    const e = err as { code?: number; stdout?: string; stderr?: string; message?: string };
-    return {
-      code: typeof e.code === 'number' ? e.code : 1,
-      stdout: e.stdout ?? '',
-      stderr: e.stderr ?? e.message ?? '',
-    };
-  }
+/**
+ * Run one `git` invocation in `cwd`, capturing output and the exit code.
+ *
+ * `host` decides WHICH machine runs it — the default is the machine the GUI runs on,
+ * so every existing caller behaves exactly as before. A project targeting WSL passes
+ * its own host and the identical argv runs inside the distro instead.
+ */
+export async function git(
+  cwd: string,
+  args: string[],
+  host: ExecHost = localHost(),
+): Promise<GitResult> {
+  return host.exec(cwd, 'git', args, { maxBuffer: 32 * 1024 * 1024 });
 }
 
 /** True if `dir` is inside a git work tree. */
-export async function isRepo(dir: string): Promise<boolean> {
-  const res = await git(dir, ['rev-parse', '--is-inside-work-tree']);
+export async function isRepo(dir: string, host?: ExecHost): Promise<boolean> {
+  const res = await git(dir, ['rev-parse', '--is-inside-work-tree'], host);
   return res.code === 0 && res.stdout.trim() === 'true';
 }
 
 /** The current branch name (or 'HEAD' when detached). Empty on error. */
-export async function currentBranch(dir: string): Promise<string> {
-  const res = await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']);
+export async function currentBranch(dir: string, host?: ExecHost): Promise<string> {
+  const res = await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD'], host);
   return res.code === 0 ? res.stdout.trim() : '';
 }
 
 /** True when the work tree has no staged or unstaged changes (untracked ignored). */
-export async function isClean(dir: string): Promise<boolean> {
-  const res = await git(dir, ['status', '--porcelain', '--untracked-files=no']);
+export async function isClean(dir: string, host?: ExecHost): Promise<boolean> {
+  const res = await git(dir, ['status', '--porcelain', '--untracked-files=no'], host);
   return res.code === 0 && res.stdout.trim() === '';
 }
 
 /** True if the given branch name already exists. */
-export async function branchExists(dir: string, branch: string): Promise<boolean> {
-  const res = await git(dir, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]);
+export async function branchExists(
+  dir: string,
+  branch: string,
+  host?: ExecHost,
+): Promise<boolean> {
+  const res = await git(dir, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], host);
   return res.code === 0;
 }
 
@@ -75,47 +72,60 @@ export async function addWorktree(
   worktreePath: string,
   branch: string,
   baseRef: string,
+  host?: ExecHost,
 ): Promise<GitResult> {
-  const exists = await branchExists(repoDir, branch);
+  const exists = await branchExists(repoDir, branch, host);
   const args = exists
     ? ['worktree', 'add', worktreePath, branch]
     : ['worktree', 'add', '-b', branch, worktreePath, baseRef];
-  return git(repoDir, args);
+  return git(repoDir, args, host);
 }
 
 /** Remove a worktree (force, so a dirty/locked one still detaches). Prunes admin files. */
-export async function removeWorktree(repoDir: string, worktreePath: string): Promise<GitResult> {
-  const res = await git(repoDir, ['worktree', 'remove', '--force', worktreePath]);
+export async function removeWorktree(
+  repoDir: string,
+  worktreePath: string,
+  host?: ExecHost,
+): Promise<GitResult> {
+  const res = await git(repoDir, ['worktree', 'remove', '--force', worktreePath], host);
   // Best-effort prune so a manually-deleted dir doesn't linger in git's records.
-  await git(repoDir, ['worktree', 'prune']);
+  await git(repoDir, ['worktree', 'prune'], host);
   return res;
 }
 
 /** Prune stale worktree admin records (dirs removed out of band). */
-export async function pruneWorktrees(repoDir: string): Promise<GitResult> {
-  return git(repoDir, ['worktree', 'prune']);
+export async function pruneWorktrees(repoDir: string, host?: ExecHost): Promise<GitResult> {
+  return git(repoDir, ['worktree', 'prune'], host);
 }
 
 /** Delete a branch (force). Used only after a successful merge. */
-export async function deleteBranch(repoDir: string, branch: string): Promise<GitResult> {
-  return git(repoDir, ['branch', '-D', branch]);
+export async function deleteBranch(
+  repoDir: string,
+  branch: string,
+  host?: ExecHost,
+): Promise<GitResult> {
+  return git(repoDir, ['branch', '-D', branch], host);
 }
 
 /**
  * Stage everything and commit. Returns whether a commit was actually made (false
  * when the tree was already clean — nothing to commit).
  */
-export async function commitAll(worktreePath: string, message: string): Promise<boolean> {
-  await git(worktreePath, ['add', '-A']);
-  const staged = await git(worktreePath, ['diff', '--cached', '--quiet']);
+export async function commitAll(
+  worktreePath: string,
+  message: string,
+  host?: ExecHost,
+): Promise<boolean> {
+  await git(worktreePath, ['add', '-A'], host);
+  const staged = await git(worktreePath, ['diff', '--cached', '--quiet'], host);
   if (staged.code === 0) return false; // exit 0 = no staged changes
-  const res = await git(worktreePath, ['commit', '--no-verify', '-m', message]);
+  const res = await git(worktreePath, ['commit', '--no-verify', '-m', message], host);
   return res.code === 0;
 }
 
 /** True when a rebase/merge left unmerged (conflicted) paths. */
-export async function hasConflicts(dir: string): Promise<boolean> {
-  const res = await git(dir, ['diff', '--name-only', '--diff-filter=U']);
+export async function hasConflicts(dir: string, host?: ExecHost): Promise<boolean> {
+  const res = await git(dir, ['diff', '--name-only', '--diff-filter=U'], host);
   return res.code === 0 && res.stdout.trim() !== '';
 }
 
@@ -134,39 +144,43 @@ export async function rebaseOnto(
   worktreePath: string,
   baseRef: string,
   attributesFile?: string,
+  host?: ExecHost,
 ): Promise<GitResult> {
-  return git(worktreePath, [...attributesConfig(attributesFile), 'rebase', baseRef]);
+  return git(worktreePath, [...attributesConfig(attributesFile), 'rebase', baseRef], host);
 }
 
 /** Abort an in-progress rebase, restoring the branch to its pre-rebase state. */
-export async function abortRebase(worktreePath: string): Promise<GitResult> {
-  return git(worktreePath, ['rebase', '--abort']);
+export async function abortRebase(worktreePath: string, host?: ExecHost): Promise<GitResult> {
+  return git(worktreePath, ['rebase', '--abort'], host);
 }
 
 /** Continue a rebase after conflicts were resolved and staged. */
 export async function continueRebase(
   worktreePath: string,
   attributesFile?: string,
+  host?: ExecHost,
 ): Promise<GitResult> {
   // -c core.editor=true avoids opening an editor for the continue commit message.
-  return git(worktreePath, [
-    ...attributesConfig(attributesFile),
-    '-c',
-    'core.editor=true',
-    'rebase',
-    '--continue',
-  ]);
+  return git(
+    worktreePath,
+    [...attributesConfig(attributesFile), '-c', 'core.editor=true', 'rebase', '--continue'],
+    host,
+  );
 }
 
 /** Work-tree paths left with merge conflicts (unmerged, `U`) — NUL-delimited. */
-export async function conflictedFiles(dir: string): Promise<string[]> {
-  const res = await git(dir, ['diff', '-z', '--name-only', '--diff-filter=U']);
+export async function conflictedFiles(dir: string, host?: ExecHost): Promise<string[]> {
+  const res = await git(dir, ['diff', '-z', '--name-only', '--diff-filter=U'], host);
   return res.code === 0 ? splitZ(res.stdout) : [];
 }
 
 /** Fast-forward `branch` into the currently checked-out branch of `repoDir`. */
-export async function mergeFfOnly(repoDir: string, branch: string): Promise<GitResult> {
-  return git(repoDir, ['merge', '--ff-only', branch]);
+export async function mergeFfOnly(
+  repoDir: string,
+  branch: string,
+  host?: ExecHost,
+): Promise<GitResult> {
+  return git(repoDir, ['merge', '--ff-only', branch], host);
 }
 
 /** Split a NUL-delimited git output (`-z`) into paths, dropping the empty trailing entry. */
@@ -180,20 +194,34 @@ function splitZ(stdout: string): string[] {
  * can never collide with an untracked file; only additions can. NUL-delimited so paths
  * with spaces/unicode (and `core.quotePath`) parse cleanly.
  */
-export async function addedInBranch(dir: string, base: string, branch: string): Promise<string[]> {
-  const res = await git(dir, ['diff', '-z', '--name-only', '--diff-filter=A', `${base}..${branch}`]);
+export async function addedInBranch(
+  dir: string,
+  base: string,
+  branch: string,
+  host?: ExecHost,
+): Promise<string[]> {
+  const res = await git(
+    dir,
+    ['diff', '-z', '--name-only', '--diff-filter=A', `${base}..${branch}`],
+    host,
+  );
   return res.code === 0 ? splitZ(res.stdout) : [];
 }
 
 /** Untracked, non-ignored files in the work tree (NUL-delimited). */
-export async function listUntracked(dir: string): Promise<string[]> {
-  const res = await git(dir, ['ls-files', '-z', '--others', '--exclude-standard']);
+export async function listUntracked(dir: string, host?: ExecHost): Promise<string[]> {
+  const res = await git(dir, ['ls-files', '-z', '--others', '--exclude-standard'], host);
   return res.code === 0 ? splitZ(res.stdout) : [];
 }
 
 /** Blob SHA of `path` at `ref` (e.g. a branch), or '' if it doesn't exist there. */
-export async function blobSha(dir: string, ref: string, path: string): Promise<string> {
-  const res = await git(dir, ['rev-parse', `${ref}:${path}`]);
+export async function blobSha(
+  dir: string,
+  ref: string,
+  path: string,
+  host?: ExecHost,
+): Promise<string> {
+  const res = await git(dir, ['rev-parse', `${ref}:${path}`], host);
   return res.code === 0 ? res.stdout.trim() : '';
 }
 
@@ -202,15 +230,23 @@ export async function blobSha(dir: string, ref: string, path: string): Promise<s
  * (`--path` applies `.gitattributes`/autocrlf), so a content comparison against a stored
  * blob isn't fooled by line-ending normalization. '' if the file can't be hashed.
  */
-export async function workingFileSha(dir: string, path: string): Promise<string> {
-  const res = await git(dir, ['hash-object', `--path=${path}`, '--', path]);
+export async function workingFileSha(
+  dir: string,
+  path: string,
+  host?: ExecHost,
+): Promise<string> {
+  const res = await git(dir, ['hash-object', `--path=${path}`, '--', path], host);
   return res.code === 0 ? res.stdout.trim() : '';
 }
 
 /** Delete specific untracked files from the work tree (force). Paths only — never a whole tree. */
-export async function removeUntracked(dir: string, paths: string[]): Promise<GitResult> {
+export async function removeUntracked(
+  dir: string,
+  paths: string[],
+  host?: ExecHost,
+): Promise<GitResult> {
   if (paths.length === 0) return { code: 0, stdout: '', stderr: '' };
-  return git(dir, ['clean', '-f', '-q', '--', ...paths]);
+  return git(dir, ['clean', '-f', '-q', '--', ...paths], host);
 }
 
 /** Outcome of stashing untracked files aside so a merge can proceed without losing them. */
@@ -231,17 +267,14 @@ export async function preserveUntracked(
   dir: string,
   paths: string[],
   label: string,
+  host?: ExecHost,
 ): Promise<StashResult> {
   if (paths.length === 0) return { ok: false, stashRef: null, files: [] };
-  const res = await git(dir, [
-    'stash',
-    'push',
-    '--include-untracked',
-    '-m',
-    label,
-    '--',
-    ...paths,
-  ]);
+  const res = await git(
+    dir,
+    ['stash', 'push', '--include-untracked', '-m', label, '--', ...paths],
+    host,
+  );
   // "No local changes to save" exits 0 but stashes nothing; detect it so we don't claim success.
   const stashed = res.code === 0 && !/No local changes to save/i.test(res.stdout + res.stderr);
   return { ok: stashed, stashRef: stashed ? 'stash@{0}' : null, files: paths };

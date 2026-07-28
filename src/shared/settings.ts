@@ -8,6 +8,7 @@
  * in the store's `app_state` table; it crosses the UI↔engine boundary, so it lives
  * in `shared`.
  */
+import { LOCAL_TARGET, type ExecTarget } from './execTarget';
 import type { ClaudeModel, PermissionMode } from './session';
 import type { BoardColumn } from './model';
 
@@ -93,6 +94,12 @@ export interface AppSettings {
    * they always park, since the fix is human-side (commit/stash the base, etc.).
    */
   maxAutoRetries: number;
+  /**
+   * Which machine a NEWLY ADDED project runs on. Purely a seed, like `defaultModel`:
+   * changing it never moves an existing project, because a project's path only makes
+   * sense on the machine it was picked from.
+   */
+  defaultExecTarget: ExecTarget;
   /** JIRA integration config for the Personal board (Phase B). */
   jira: JiraSettings;
 }
@@ -105,5 +112,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   limitJitterMs: 60_000,
   writeBackPlan: false,
   maxAutoRetries: 1,
+  defaultExecTarget: LOCAL_TARGET,
   jira: DEFAULT_JIRA_SETTINGS,
 };

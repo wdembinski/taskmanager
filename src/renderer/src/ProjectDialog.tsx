@@ -26,10 +26,19 @@ import {
   Option,
   SpinButton,
   Switch,
+  Textarea,
 } from '@fluentui/react-components';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
 import type { Project } from '@shared/model';
+import {
+  execTargetLabel,
+  formatExecTarget,
+  LOCAL_TARGET,
+  parseExecTarget,
+  type ExecTarget,
+} from '@shared/execTarget';
+import { distroFromWindowsPath, windowsToLinux } from '@shared/wslPath';
 
 const useStyles = makeStyles({
   form: { display: 'flex', flexDirection: 'column', gap: '12px', minWidth: '420px' },
@@ -67,8 +76,18 @@ export function ProjectDialog({
   const [concurrency, setConcurrency] = useState(1);
   const [useWorktrees, setUseWorktrees] = useState(true);
   const [writeBack, setWriteBack] = useState(false);
+  const [target, setTarget] = useState<ExecTarget>(LOCAL_TARGET);
+  const [distros, setDistros] = useState<string[]>([]);
+  const [instructions, setInstructions] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // The picker only offers distros that actually exist on this machine; when WSL
+  // isn't installed the control collapses to "This computer" and never appears.
+  useEffect(() => {
+    if (!open) return;
+    void window.api.invoke('exec:listDistros').then(setDistros);
+  }, [open]);
 
   // Seed the form whenever the dialog opens (from the project in edit mode, or
   // from the global defaults in add mode).
@@ -84,23 +103,43 @@ export function ProjectDialog({
       setConcurrency(project.concurrency);
       setUseWorktrees(project.useWorktrees);
       setWriteBack(project.writeBackPlan);
+      setTarget(project.target);
+      setInstructions(project.instructions);
     } else {
       setPath('');
       setPlanPath('');
       setName('');
+      setInstructions('');
       setUseWorktrees(true); // default on; only engages for git repos
       void window.api.invoke('settings:get').then((s) => {
         setModel(s.defaultModel);
         setPermMode(s.defaultPermissionMode);
         setConcurrency(s.concurrency);
         setWriteBack(s.writeBackPlan);
+        setTarget(s.defaultExecTarget);
       });
     }
   }, [open, mode, project]);
 
+  /**
+   * Browse for the project folder.
+   *
+   * The Windows picker can walk into a distro, where it returns a
+   * `\\wsl.localhost\<distro>\…` path. That single path says both WHERE the project
+   * is and WHICH machine it belongs to, so picking it selects the target too, and the
+   * path is stored in the Linux form the agent and git will actually use.
+   */
   async function browseFolder(): Promise<void> {
     const picked = await window.api.invoke('project:pickDirectory');
-    if (picked) setPath(picked);
+    if (!picked) return;
+    const distro = distroFromWindowsPath(picked);
+    if (distro) {
+      setTarget({ kind: 'wsl', distro });
+      setPath(windowsToLinux(picked));
+    } else {
+      setTarget(LOCAL_TARGET);
+      setPath(picked);
+    }
   }
 
   async function browsePlan(): Promise<void> {
@@ -126,6 +165,8 @@ export function ProjectDialog({
           concurrency,
           useWorktrees,
           writeBackPlan: writeBack,
+          target,
+          instructions,
         });
       } else if (project) {
         await window.api.invoke('project:update', project.id, {
@@ -136,6 +177,8 @@ export function ProjectDialog({
           concurrency,
           useWorktrees,
           writeBackPlan: writeBack,
+          target,
+          instructions,
         });
         // The plan file may have changed — reconcile tasks from the new source.
         await window.api.invoke('project:syncPlan', project.id);
@@ -188,6 +231,30 @@ export function ProjectDialog({
                   <Button onClick={() => void browsePlan()}>Browse…</Button>
                 </div>
               </Field>
+
+              {distros.length > 0 && (
+                <Field
+                  label="Runs on"
+                  hint={
+                    mode === 'edit'
+                      ? 'Changing this clears each task’s saved session and worktrees — they only exist on the machine that created them.'
+                      : 'Where this project’s Claude sessions, git and worktrees execute. Browsing into a distro selects it automatically.'
+                  }
+                >
+                  <Dropdown
+                    value={execTargetLabel(target)}
+                    selectedOptions={[formatExecTarget(target)]}
+                    onOptionSelect={(_e, d) => setTarget(parseExecTarget(d.optionValue))}
+                  >
+                    <Option value="local">{execTargetLabel(LOCAL_TARGET)}</Option>
+                    {distros.map((distro) => (
+                      <Option key={distro} value={`wsl:${distro}`}>
+                        {execTargetLabel({ kind: 'wsl', distro })}
+                      </Option>
+                    ))}
+                  </Dropdown>
+                </Field>
+              )}
 
               <Field label="Display name" hint="Defaults to the folder name.">
                 <Input
@@ -254,6 +321,18 @@ export function ProjectDialog({
                 label="Tick completed checkboxes back into the plan file"
                 onChange={(_e, d) => setWriteBack(d.checked)}
               />
+
+              <Field
+                label="Standing instructions"
+                hint="Added to every run's prompt. For setup knowledge that belongs to your orchestrator — where a build tree lives, an environment to source first, a wrapper a command must run through. Knowledge about the code itself belongs in the repo's CLAUDE.md, which Claude reads on its own."
+              >
+                <Textarea
+                  value={instructions}
+                  resize="vertical"
+                  onChange={(_e, d) => setInstructions(d.value)}
+                  placeholder="e.g. The Yocto tree is at /opt/yocto; source oe-init-build-env before any bitbake command."
+                />
+              </Field>
             </div>
           </DialogContent>
           <DialogActions>

@@ -24,10 +24,12 @@ import {
   isPersonalBoard,
   PERSONAL_PROJECT_ID,
   type Project,
+  type ProjectPatch,
   type ProjectWithTasks,
   type Task,
 } from '@shared/model';
 import { categoryFromKey } from '@shared/board';
+import { sameExecTarget } from '@shared/execTarget';
 import { normalizeBaseUrl } from '@shared/jiraUrl';
 import { createJiraClient } from './jira/jiraConfig';
 import { explainJiraFailure } from './jira/jiraDiagnostics';
@@ -38,6 +40,8 @@ import { discoverSprintFieldId, withCurrentSprint } from './jira/jiraSprint';
 import { authorIsMe, identityFrom, type JiraIdentityCache } from './jira/identity';
 import { pickTransition, resolveMove } from './jira/jiraMove';
 import { getClaudeStatus } from './claudeStatus';
+import { listWslDistros, localReadiness, probeWslTarget } from './exec';
+import { appPlanPath } from './projectPaths';
 import { logMain } from './log';
 import { parsePlan } from './planParser';
 import { planHasAlignmentMarkers, validatePlan } from './planValidate';
@@ -71,7 +75,7 @@ function handle<K extends keyof IpcApi>(
 function syncProjectPlan(store: Store, project: Project): ProjectWithTasks {
   let markdown = '';
   try {
-    markdown = readFileSync(project.planPath, 'utf8');
+    markdown = readFileSync(appPlanPath(project), 'utf8');
   } catch {
     markdown = '';
   }
@@ -179,6 +183,33 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // is wired (so tasks resumed at reset are still gated). Runs on both branches.
     .then(() => scheduler.restoreLimitGate());
 
+  /**
+   * Moving a project to another machine retires its per-task run state.
+   *
+   * A session id names a conversation in the CLI's OWN history on the machine that
+   * created it, and a worktree is a directory on that machine's filesystem — neither
+   * survives the move. Left in place, the next run would issue `--resume <id>` against
+   * a CLI that has never heard of it. Cleanup runs against the OLD project row, so the
+   * worktrees are removed from where they actually are, before the new target is stored.
+   */
+  async function retireRunStateIfTargetChanged(id: string, patch: ProjectPatch): Promise<void> {
+    const existing = store.getProject(id);
+    if (!existing || !patch.target || sameExecTarget(existing.target, patch.target)) return;
+    if (scheduler.hasLiveRuns(id)) {
+      throw new Error('Stop this project’s running tasks before changing where it executes.');
+    }
+    for (const task of store.getTasks(id)) {
+      try {
+        await worktrees.cleanup(existing, task.id);
+      } catch (err) {
+        // Best effort: the old machine may already be gone. Losing a stale worktree
+        // directory is not worth blocking the change the user asked for.
+        logMain(`Could not remove worktree for task ${task.id} while changing target`, err);
+      }
+      if (task.sessionId) store.updateTask(task.id, { sessionId: null });
+    }
+  }
+
   handle('app:getInfo', async () => ({
     version: app.getVersion(),
     electron: process.versions.electron,
@@ -188,6 +219,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   }));
 
   handle('claude:getStatus', () => getClaudeStatus());
+
+  handle('exec:listDistros', () => listWslDistros());
+  handle('exec:readiness', async (target) =>
+    target.kind === 'wsl' ? probeWslTarget(target.distro) : localReadiness(),
+  );
 
   handle('session:start', async (request) => sessions.start(request));
   handle('session:stop', async (runId) => sessions.stop(runId));
@@ -249,6 +285,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('project:setWriteBack', async (id, enabled) => store.setWriteBack(id, enabled));
   handle('project:setAligned', async (id, aligned) => store.setPlanAligned(id, aligned));
   handle('project:update', async (id, patch) => {
+    await retireRunStateIfTargetChanged(id, patch);
     const updated = store.updateProject(id, patch);
     if (updated) watcher.watch(updated); // re-point the watcher if the plan path changed
     return updated ?? null;
@@ -259,7 +296,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     if (!project) return { ok: true, issues: [] };
     let markdown = '';
     try {
-      markdown = readFileSync(project.planPath, 'utf8');
+      markdown = readFileSync(appPlanPath(project), 'utf8');
     } catch {
       markdown = '';
     }
@@ -298,6 +335,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     if (!existing || existing.kind !== 'agent') return null;
     // Guard the plan-only fields: an agent project stays plan-less no matter what.
     const { planPath: _planPath, writeBackPlan: _writeBackPlan, ...safe } = patch;
+    await retireRunStateIfTargetChanged(id, safe);
     return store.updateProject(id, safe) ?? null;
   });
 

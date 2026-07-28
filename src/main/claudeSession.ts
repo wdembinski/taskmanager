@@ -24,11 +24,11 @@
  * same conversation without a restart. Because stdin stays open the process no
  * longer exits on its own after a `result`; the caller ends it with `stop()`.
  */
-import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { SessionEvent, StartSessionRequest } from '@shared/session';
+import { localHost, type ExecHost } from './exec';
 import { PERMISSION_MCP_SERVER_KEY, PERMISSION_PROMPT_TOOL } from './permissionServerSource';
 
 /** A live handle to a running session so callers can send to / stop it. */
@@ -69,6 +69,12 @@ export interface RunSessionOptions {
    * preserving all prior context; the prompt becomes a nudge to continue.
    */
   resumeSessionId?: string;
+  /**
+   * Which machine runs the CLI. Defaults to the machine the GUI runs on, so an
+   * unconfigured project behaves exactly as it always has; a project targeting WSL
+   * passes its own host and the session runs inside the distro instead.
+   */
+  host?: ExecHost;
 }
 
 /**
@@ -261,27 +267,32 @@ export function buildClaudeArgs(
 
 /**
  * Write the throwaway MCP config that tells the CLI how to spawn our relay for
- * one session, and return its path. The relay runs under Electron-as-Node, and
- * carries the broker URL/token/runId in its env so it can phone home.
+ * one session. The host decides how the relay is launched — locally that is
+ * Electron-as-Node; on a WSL target it is still the Windows binary, reached through
+ * interop, so the relay can keep talking to the broker over loopback.
+ *
+ * Two paths come back because they name the same file to different machines: the
+ * config is written (and later deleted) by this process, but the CLI reads it from
+ * wherever IT runs.
  */
-function writeSessionMcpConfig(gate: PermissionGate, runId: string): string {
+function writeSessionMcpConfig(
+  gate: PermissionGate,
+  runId: string,
+  host: ExecHost,
+): { appPath: string; hostPath: string } {
   const config = {
     mcpServers: {
-      [PERMISSION_MCP_SERVER_KEY]: {
-        command: process.execPath,
-        args: [gate.serverScriptPath],
-        env: {
-          ELECTRON_RUN_AS_NODE: '1',
-          ORCH_BROKER_URL: gate.brokerUrl,
-          ORCH_TOKEN: gate.token,
-          ORCH_RUN_ID: runId,
-        },
-      },
+      [PERMISSION_MCP_SERVER_KEY]: host.relaySpec({
+        brokerUrl: gate.brokerUrl,
+        token: gate.token,
+        runId,
+        serverScriptPath: gate.serverScriptPath,
+      }),
     },
   };
-  const path = join(gate.configDir, `mcp-${runId}.json`);
-  writeFileSync(path, JSON.stringify(config), 'utf8');
-  return path;
+  const appPath = join(gate.configDir, `mcp-${runId}.json`);
+  writeFileSync(appPath, JSON.stringify(config), 'utf8');
+  return { appPath, hostPath: host.toNative(appPath) };
 }
 
 /**
@@ -298,17 +309,23 @@ export function runClaudeSession(
   // a fresh run claims a new one we can resume later.
   const resuming = options.resumeSessionId != null;
   const sessionId = options.resumeSessionId ?? randomUUID();
+  const host = options.host ?? localHost();
 
   // If this run is gated, materialize its MCP config so the CLI spawns our relay.
-  let configPath: string | null = null;
+  let config: { appPath: string; hostPath: string } | null = null;
   if (options.permission && options.runId) {
-    configPath = writeSessionMcpConfig(options.permission, options.runId);
+    config = writeSessionMcpConfig(options.permission, options.runId, host);
   }
-  const args = buildClaudeArgs(req, sessionId, configPath ? { configPath } : undefined, resuming);
+  const args = buildClaudeArgs(
+    req,
+    sessionId,
+    config ? { configPath: config.hostPath } : undefined,
+    resuming,
+  );
 
-  // shell:true lets Windows resolve `claude.cmd` from PATH the way a terminal
-  // does. windowsHide stops a console window flashing up for each run.
-  const child = spawn('claude', args, { cwd: req.cwd, shell: true, windowsHide: true });
+  // resolveViaShell lets Windows resolve `claude.cmd` from PATH the way a terminal
+  // does; the host also hides the console window that would otherwise flash up.
+  const { child, terminate } = host.spawn(req.cwd, 'claude', args, { resolveViaShell: true });
 
   // Feed the prompt as the first stream-json message and LEAVE stdin open, so we
   // can push follow-up answers into the running session (see send() below).
@@ -345,9 +362,9 @@ export function runClaudeSession(
 
   child.on('close', (code) => {
     // Clean up the throwaway MCP config once the session is gone.
-    if (configPath) {
+    if (config) {
       try {
-        unlinkSync(configPath);
+        unlinkSync(config.appPath);
       } catch {
         // Already gone / never written — nothing to do.
       }
@@ -364,21 +381,10 @@ export function runClaudeSession(
     },
     stop: () => {
       child.stdin.end(); // signal end-of-input first, then terminate
-      const { pid } = child;
-      if (pid !== undefined && process.platform === 'win32') {
-        // `shell:true` means `child` is the cmd.exe wrapper; the real `claude`
-        // (node) and any subprocesses it spawns (e.g. an agent's own PowerShell
-        // tool calls) are its DESCENDANTS. `child.kill()` signals only the shell
-        // and orphans that tree, so the agent keeps running after Stop. `taskkill`
-        // with /t kills the whole tree and /f forces it.
-        try {
-          spawn('taskkill', ['/pid', String(pid), '/t', '/f'], { windowsHide: true });
-        } catch {
-          child.kill();
-        }
-      } else {
-        child.kill();
-      }
+      // The host owns tree termination: the real `claude` and anything an agent's
+      // own tool calls spawned are DESCENDANTS of what we hold, and signalling only
+      // the immediate child orphans that tree — the agent keeps running after Stop.
+      terminate();
     },
   };
 }

@@ -12,7 +12,7 @@
  * Electron's ABI, not the Node that runs Vitest.
  */
 import { randomUUID } from 'node:crypto';
-import { basename, join } from 'node:path';
+import { basename } from 'node:path';
 import Database from 'better-sqlite3';
 import {
   type AddProjectInput,
@@ -24,6 +24,8 @@ import {
   type TaskStatus,
   type TaskType,
 } from '@shared/model';
+import { formatExecTarget, parseExecTarget } from '@shared/execTarget';
+import { hostJoin } from '@shared/wslPath';
 import type { LimitState } from '@shared/limit';
 import type { SessionEvent } from '@shared/session';
 import type { UsageSample } from '@shared/usage';
@@ -102,6 +104,10 @@ interface ProjectRow {
   kind: string;
   /** JSON array of JIRA epic keys owned by an agent project; null for plan projects. */
   jiraEpicKeys: string | null;
+  /** Serialized ExecTarget: 'local' or 'wsl:<distro>'. */
+  target: string;
+  /** Standing per-project instructions; null for projects that predate the field. */
+  instructions: string | null;
   createdAt: number;
 }
 
@@ -294,6 +300,8 @@ export function createStore(dbPath: string): Store {
       planAligned           INTEGER NOT NULL DEFAULT 0,
       kind                  TEXT NOT NULL DEFAULT 'plan',
       jiraEpicKeys          TEXT,
+      target                TEXT NOT NULL DEFAULT 'local',
+      instructions          TEXT,
       createdAt             INTEGER NOT NULL
     );
     CREATE TABLE IF NOT EXISTS tasks (
@@ -393,6 +401,16 @@ export function createStore(dbPath: string): Store {
   }
   if (!projectColumns.some((c) => c.name === 'jiraEpicKeys')) {
     db.exec(`ALTER TABLE projects ADD COLUMN jiraEpicKeys TEXT`);
+  }
+
+  // Migrate databases created before the WSL execution target. Every existing project
+  // ran on the machine showing the window, so 'local' is exactly right for them and
+  // nothing about how they run changes. Standing instructions start empty (NULL → '').
+  if (!projectColumns.some((c) => c.name === 'target')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN target TEXT NOT NULL DEFAULT 'local'`);
+  }
+  if (!projectColumns.some((c) => c.name === 'instructions')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN instructions TEXT`);
   }
 
   // Migrate databases created before Phase 8 added the task source column. Existing
@@ -528,8 +546,8 @@ export function createStore(dbPath: string): Store {
   }
 
   const insertProject = db.prepare<[ProjectRow]>(
-    `INSERT INTO projects (id, name, path, planPath, defaultModel, defaultPermissionMode, concurrency, useWorktrees, writeBackPlan, planAligned, kind, jiraEpicKeys, createdAt)
-     VALUES (@id, @name, @path, @planPath, @defaultModel, @defaultPermissionMode, @concurrency, @useWorktrees, @writeBackPlan, @planAligned, @kind, @jiraEpicKeys, @createdAt)`,
+    `INSERT INTO projects (id, name, path, planPath, defaultModel, defaultPermissionMode, concurrency, useWorktrees, writeBackPlan, planAligned, kind, jiraEpicKeys, target, instructions, createdAt)
+     VALUES (@id, @name, @path, @planPath, @defaultModel, @defaultPermissionMode, @concurrency, @useWorktrees, @writeBackPlan, @planAligned, @kind, @jiraEpicKeys, @target, @instructions, @createdAt)`,
   );
   const selectProjects = db.prepare(`SELECT * FROM projects ORDER BY createdAt`);
   const selectProject = db.prepare(`SELECT * FROM projects WHERE id = ?`);
@@ -665,6 +683,8 @@ export function createStore(dbPath: string): Store {
       planAligned: r.planAligned !== 0,
       kind: r.kind === 'agent' ? 'agent' : 'plan',
       jiraEpicKeys: parseStringArray(r.jiraEpicKeys),
+      target: parseExecTarget(r.target),
+      instructions: r.instructions ?? '',
       createdAt: r.createdAt,
     };
   }
@@ -779,7 +799,9 @@ export function createStore(dbPath: string): Store {
         id: randomUUID(),
         name: input.name?.trim() || basename(input.path),
         path: input.path,
-        planPath: isAgent ? '' : (input.planPath ?? join(input.path, 'plan.md')),
+        // `hostJoin`, not `path.join`: for a WSL project the path is a Linux one, and
+        // joining it on Windows would produce `/home/you/repo\plan.md`.
+        planPath: isAgent ? '' : (input.planPath ?? hostJoin(input.path, 'plan.md')),
         defaultModel: input.defaultModel ?? defaults.defaultModel,
         defaultPermissionMode: input.defaultPermissionMode ?? defaults.defaultPermissionMode,
         concurrency: Math.max(1, Math.round(input.concurrency ?? defaults.concurrency)),
@@ -791,6 +813,8 @@ export function createStore(dbPath: string): Store {
         planAligned: input.planAligned ?? true,
         kind: isAgent ? 'agent' : 'plan',
         jiraEpicKeys: normalizeEpicKeys(input.jiraEpicKeys),
+        target: input.target ?? defaults.defaultExecTarget,
+        instructions: input.instructions?.trim() ?? '',
         createdAt: Date.now(),
       };
       insertProject.run({
@@ -799,6 +823,7 @@ export function createStore(dbPath: string): Store {
         writeBackPlan: project.writeBackPlan ? 1 : 0,
         planAligned: project.planAligned ? 1 : 0,
         jiraEpicKeys: JSON.stringify(project.jiraEpicKeys),
+        target: formatExecTarget(project.target),
       });
       return project;
     },
@@ -867,6 +892,14 @@ export function createStore(dbPath: string): Store {
       if (patch.jiraEpicKeys !== undefined) {
         sets.push(`jiraEpicKeys = @jiraEpicKeys`);
         params.jiraEpicKeys = JSON.stringify(normalizeEpicKeys(patch.jiraEpicKeys));
+      }
+      if (patch.target !== undefined) {
+        sets.push(`target = @target`);
+        params.target = formatExecTarget(patch.target);
+      }
+      if (patch.instructions !== undefined) {
+        sets.push(`instructions = @instructions`);
+        params.instructions = patch.instructions.trim();
       }
       if (sets.length > 0) {
         db.prepare(`UPDATE projects SET ${sets.join(', ')} WHERE id = @id`).run(params);

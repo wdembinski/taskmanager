@@ -328,7 +328,12 @@ describe('Scheduler.decidePermission — full auto (bypassPermissions)', () => {
 describe('Scheduler.schedulerStates', () => {
   function bareScheduler() {
     const emitScheduler = vi.fn();
-    const store = { getSettings: () => ({ limitJitterMs: 0 }) } as unknown as Store;
+    // `getProject` is consulted so the run executes on the project's configured
+    // machine; undefined (as here) means the local one, which is the old behavior.
+    const store = {
+      getSettings: () => ({ limitJitterMs: 0 }),
+      getProject: () => undefined,
+    } as unknown as Store;
     const scheduler = new Scheduler(
       store,
       {} as unknown as SessionManager,
@@ -513,7 +518,12 @@ describe('Scheduler.start resumes stopped tasks', () => {
 
 describe('Scheduler.startAuxiliarySession (the AI "Align plan" run)', () => {
   it('registers the run so stop(projectId) terminates it', () => {
-    const store = { getSettings: () => ({ limitJitterMs: 0 }) } as unknown as Store;
+    // `getProject` is consulted so the run executes on the project's configured
+    // machine; undefined (as here) means the local one, which is the old behavior.
+    const store = {
+      getSettings: () => ({ limitJitterMs: 0 }),
+      getProject: () => undefined,
+    } as unknown as Store;
     const start = vi.fn((_req: unknown, _opts: unknown) => ({ runId: 'align1' }));
     const stop = vi.fn();
     const sessions = { start, stop } as unknown as SessionManager;
@@ -532,7 +542,12 @@ describe('Scheduler.startAuxiliarySession (the AI "Align plan" run)', () => {
   });
 
   it('closes the one-shot run and prunes it from the registry on result', () => {
-    const store = { getSettings: () => ({ limitJitterMs: 0 }) } as unknown as Store;
+    // `getProject` is consulted so the run executes on the project's configured
+    // machine; undefined (as here) means the local one, which is the old behavior.
+    const store = {
+      getSettings: () => ({ limitJitterMs: 0 }),
+      getProject: () => undefined,
+    } as unknown as Store;
     let observer: ((event: { kind: string }) => void) | undefined;
     const start = vi.fn((_req: unknown, opts: { onEvent?: (e: { kind: string }) => void }) => {
       observer = opts.onEvent;

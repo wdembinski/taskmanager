@@ -26,7 +26,6 @@
  */
 import { randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { join, relative } from 'node:path';
 import type {
   ChatRefusal,
   ChatSendResult,
@@ -73,6 +72,8 @@ import { EXIT_PLAN_MODE_TOOL, evaluateToolUse } from './permissionPolicy';
 import { tickPlanCheckbox } from './planParser';
 import { extractPlanMarkdown, splitPlanIntoSteps } from './planToSubtasks';
 import type { SessionManager } from './sessionManager';
+import { hostFor } from './exec';
+import { appPlanPath, appProjectFile, planRelPath } from './projectPaths';
 import type { Store } from './store';
 import type {
   IntegrationResult,
@@ -294,14 +295,23 @@ export function buildTaskPrompt(
     hasContract?: boolean;
     isScaffold?: boolean;
     hasScaffold?: boolean;
+    /** The project's standing setup instructions, injected into every run. */
+    instructions?: string;
+    /** (Worktree mode) the absolute working directory this run is isolated in. */
+    worktreePath?: string;
+    /** The project's canonical directory, which the worktree was branched from. */
+    projectPath?: string;
   } = {},
 ): string {
   const { planRelPath, branch, failureNote, contractSiblings, hasContract } = options;
-  const { isScaffold, hasScaffold } = options;
+  const { isScaffold, hasScaffold, worktreePath, projectPath } = options;
   const isContract = contractSiblings !== undefined;
+  const instructions = (options.instructions ?? '').trim();
   return [
     `You are working through the plan for the project "${projectName}".`,
     '',
+    // Standing setup knowledge first: it often decides HOW every later command runs.
+    ...(instructions ? [`Project setup notes you must follow:`, instructions, ''] : []),
     'Complete the following task:',
     '',
     task.title,
@@ -382,6 +392,18 @@ export function buildTaskPrompt(
           `You are on an isolated git branch "${branch}" — your own worktree. Commit your`,
           `work on this branch when you are done (the orchestrator merges it back into the`,
           `base branch automatically). Do NOT edit the plan file; the orchestrator manages it.`,
+          // Naming the directory prevents a whole class of silent failure: pointing an
+          // external build at the project's main checkout would compile unmodified
+          // source and SUCCEED, hiding the fact that none of this work was included.
+          ...(worktreePath
+            ? [
+                '',
+                `Your working directory is "${worktreePath}". THIS is the source of truth for`,
+                `this task — not${projectPath ? ` "${projectPath}",` : ''} the project's main`,
+                `checkout. If you point an external build or tool at this project's sources,`,
+                `point it HERE, or it will build code that does not include your changes.`,
+              ]
+            : []),
           '',
         ]
       : []),
@@ -1003,6 +1025,9 @@ export class Scheduler {
         if (event.kind === 'result') this.sessions.stop(runId);
         if (event.kind === 'result' || event.kind === 'exited') this.auxRuns.delete(runId);
       },
+      // An auxiliary run (e.g. "Align plan") edits files in the project directory,
+      // so it has to run on the same machine those files live on.
+      host: hostFor(this.store.getProject(projectId)?.target),
     });
     this.auxRuns.set(runId, projectId);
     return { runId };
@@ -1470,7 +1495,7 @@ export class Scheduler {
     }
     // The plan file's path relative to the project dir, so a shared-dir agent can
     // edit it. Worktree agents get the isolated (no-plan-edit) prompt instead.
-    const planRel = relative(project.path, project.planPath) || project.planPath;
+    const planRel = planRelPath(project);
     // An "AI fix & retry" resolution queued a failure note for this task's next run:
     // build a full fix-prompt (even when resuming) so the agent gets the failure
     // context, and consume it so it applies only once. A chat run deliberately leaves
@@ -1478,6 +1503,9 @@ export class Scheduler {
     const failureNote = run.chatPrompt ? undefined : this.fixNotes.get(task.id);
     if (!run.chatPrompt) this.fixNotes.delete(task.id);
     const branch = prep.mode === 'worktree' ? prep.branch : undefined;
+    // Told to the agent so an external build is pointed at THIS tree, not the
+    // project's main checkout (which would compile unmodified source and succeed).
+    const worktreePath = prep.mode === 'worktree' ? prep.cwd : undefined;
     // What the session is told to do, in order of specificity: the human's own words
     // (Phase 12 chat), else a nudge to carry on an existing conversation, else the full
     // brief for a fresh run.
@@ -1485,7 +1513,13 @@ export class Scheduler {
       run.chatPrompt ??
       (resumeSessionId && !failureNote
         ? RESUME_NUDGE
-        : this.buildPrompt(project, task, { branch, planRel, failureNote, comments }));
+        : this.buildPrompt(project, task, {
+            branch,
+            planRel,
+            failureNote,
+            comments,
+            worktreePath,
+          }));
     const request: StartSessionRequest = {
       prompt,
       cwd: prep.cwd,
@@ -1501,6 +1535,8 @@ export class Scheduler {
       // pre-execution (ungated only if the broker never came up).
       permission: this.gate ?? undefined,
       resumeSessionId,
+      // Run where the project says to — the local machine unless it targets WSL.
+      host: hostFor(project.target),
     });
   }
 
@@ -1518,12 +1554,24 @@ export class Scheduler {
       planRel: string;
       failureNote?: string;
       comments: AgentPromptComment[];
+      worktreePath?: string;
     },
   ): string {
-    const { branch, planRel, failureNote, comments } = opts;
+    const { branch, planRel, failureNote, comments, worktreePath } = opts;
+    // Standing setup knowledge and the two directory names travel with every shape of
+    // prompt, so an agent is never left guessing which tree its work is in.
+    const context = {
+      instructions: project.instructions,
+      worktreePath,
+      projectPath: project.path,
+    };
     // A step of an approved plan (Phase 11) — one step's brief, not the whole ticket.
     if (task.parentTaskId) {
-      const subtaskPrompt = this.buildSubtaskPrompt(project, task, { branch, failureNote });
+      const subtaskPrompt = this.buildSubtaskPrompt(project, task, {
+        branch,
+        failureNote,
+        ...context,
+      });
       if (subtaskPrompt) return subtaskPrompt;
     }
     if (task.agentProjectId) {
@@ -1532,6 +1580,7 @@ export class Scheduler {
         failureNote,
         comments,
         notes: this.taskNotes(task.id),
+        ...context,
       });
     }
     const modeOpts = branch ? { branch } : { planRelPath: planRel };
@@ -1541,6 +1590,7 @@ export class Scheduler {
       ...modeOpts,
       ...this.contractPromptOptions(task),
       failureNote,
+      ...context,
     });
   }
 
@@ -1553,7 +1603,13 @@ export class Scheduler {
   private buildSubtaskPrompt(
     project: Project,
     task: Task,
-    opts: { branch?: string; failureNote?: string },
+    opts: {
+      branch?: string;
+      failureNote?: string;
+      instructions?: string;
+      worktreePath?: string;
+      projectPath?: string;
+    },
   ): string | null {
     const parent = this.store.getTask(task.parentTaskId!);
     if (!parent) return null;
@@ -1567,6 +1623,9 @@ export class Scheduler {
       notes: this.taskNotes(parent.id),
       branch: opts.branch,
       failureNote: opts.failureNote,
+      instructions: opts.instructions,
+      worktreePath: opts.worktreePath,
+      projectPath: opts.projectPath,
     });
   }
 
@@ -2157,7 +2216,7 @@ export class Scheduler {
     ctx: { taskId: string; runId: string; branch: string; base: string; worktree: string },
     attempt: number,
   ): Promise<void> {
-    const files = await this.worktrees!.listConflicts(ctx.worktree);
+    const files = await this.worktrees!.listConflicts(project, ctx.worktree);
     if (this.disposed) return;
     const note =
       `Rebasing your branch onto "${ctx.base}" left merge conflicts in this worktree` +
@@ -2534,7 +2593,7 @@ export class Scheduler {
   /** Parse the base tree's CONTRACT.md ownership map (empty when absent/unparseable). */
   private readOwnership(project: Project): OwnershipEntry[] {
     try {
-      return parseFileOwnership(readFileSync(join(project.path, 'CONTRACT.md'), 'utf8'));
+      return parseFileOwnership(readFileSync(appProjectFile(project, 'CONTRACT.md'), 'utf8'));
     } catch {
       return [];
     }
@@ -2791,9 +2850,10 @@ export class Scheduler {
     if (!project || !project.writeBackPlan) return;
 
     try {
-      const markdown = readFileSync(project.planPath, 'utf8');
+      const planPath = appPlanPath(project);
+      const markdown = readFileSync(planPath, 'utf8');
       const updated = tickPlanCheckbox(markdown, task.phase, task.title);
-      if (updated !== null) writeFileSync(project.planPath, updated);
+      if (updated !== null) writeFileSync(planPath, updated);
     } catch {
       // A missing/unwritable plan file is non-fatal — the task still counts as done.
     }

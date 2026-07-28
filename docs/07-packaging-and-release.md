@@ -85,6 +85,52 @@ See `summarizeClaudeStatus` in `src/main/claudeStatus.ts`.
 
 ---
 
+## Running the work in WSL (Windows GUI, Linux execution)
+
+A project can execute on a **WSL distro** while the app stays a native Windows window
+— for Linux-only work (Yocto/bitbake, services built for a Linux image) without
+running the GUI itself under WSLg. Set it per project in the Add/Edit dialog ("Runs
+on"), with the default for new projects in **Settings → General**. Browsing to a
+folder inside a distro selects that distro automatically.
+
+Existing projects are unaffected: the target defaults to `local`, which is the exact
+behavior the app always had.
+
+**What a WSL project needs on the target machine** — reported in Settings rather than
+discovered when a task fails (`probeWslTarget` in `src/main/exec/wsl.ts`):
+
+- the distro responds,
+- `claude` is installed **and findable from a login shell** — commands run via
+  `bash -lc`, because `~/.local/bin` (where `claude` usually lands) is absent from a
+  non-login `PATH`, and because your own environment should be in place,
+- that `claude` is logged in, and
+- **Windows interop is enabled**, which is how tool approval works: the CLI runs in
+  Linux but spawns our permission relay as the *Windows* binary, so it reaches the
+  in-app broker over ordinary loopback. WSL's default NAT networking gives Linux no
+  route to Windows `127.0.0.1`, so without interop a gated run has no transport.
+
+**Notes and limitations**
+
+- Changing a project's target clears each task's saved session id and removes its
+  worktrees — both only exist on the machine that created them.
+- Worktrees for a WSL project live inside the distro
+  (`~/.local/share/claude-orchestrator/worktrees`), never on the Windows side.
+- Nothing serializes two tasks that build in the same **shared** external tree (e.g.
+  one Yocto build directory used by two projects); bitbake's own lock will reject the
+  second. Project concurrency defaults to 1, so this only bites if you raise it.
+- Per-project **standing instructions** (Add/Edit dialog) are injected into every
+  run's prompt — the place for "source this environment first" or "run bitbake through
+  this wrapper". Knowledge about the *codebase* belongs in its own `CLAUDE.md`, which
+  the CLI reads by itself.
+
+Verify a real session end to end (costs tokens, needs a logged-in CLI in the distro):
+
+```bash
+ORCH_E2E=1 pnpm vitest run src/main/exec/wslSession.e2e.test.ts
+```
+
+---
+
 ## Versioning & tags (Conventional Commits → SemVer)
 
 Each shipped phase is a `feat:` commit; while pre-1.0 (`0.x`) a `feat` bumps **MINOR**,

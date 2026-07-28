@@ -10,6 +10,7 @@
  * They intentionally reuse `ClaudeModel` and `PermissionMode` from `session.ts`
  * (a project's defaults become a task's `StartSessionRequest` when it runs).
  */
+import type { ExecTarget } from './execTarget';
 import type { ClaudeModel, PermissionMode, SessionEvent } from './session';
 
 /**
@@ -165,6 +166,24 @@ export interface Project {
    * Always empty for plan projects.
    */
   jiraEpicKeys: string[];
+  /**
+   * Which machine this project's work runs on: the Claude session, `git`, its
+   * worktrees and its plan file. Defaults to `local` — the machine showing the
+   * window — so a project that predates this field behaves exactly as before.
+   *
+   * A target belongs to the PROJECT rather than to the app because `path` is
+   * meaningless without it: `C:\Repositories\app` and `/home/you/bsp` cannot run on
+   * the same machine, and both may be open at once.
+   */
+  target: ExecTarget;
+  /**
+   * Standing instructions injected into every run's prompt — setup knowledge that
+   * belongs to your orchestrator rather than to the codebase (where the build tree
+   * lives, an environment to source first, a wrapper a tool must run through).
+   * Codebase knowledge belongs in the repo's own CLAUDE.md, which the CLI reads by
+   * itself. Empty by default.
+   */
+  instructions: string;
   /** Epoch ms when the project was added. */
   createdAt: number;
 }
@@ -186,6 +205,9 @@ export interface AddProjectInput {
   /** Defaults to `plan`. `agent` forces a plan-less, worktree-isolated project. */
   kind?: ProjectKind;
   jiraEpicKeys?: string[];
+  /** Defaults to the global `defaultExecTarget`. */
+  target?: ExecTarget;
+  instructions?: string;
 }
 
 /**
@@ -208,6 +230,8 @@ export type ProjectPatch = Partial<
     | 'writeBackPlan'
     | 'planAligned'
     | 'jiraEpicKeys'
+    | 'target'
+    | 'instructions'
   >
 >;
 

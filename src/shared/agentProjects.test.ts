@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { agentProjectsOf, normalizeEpicKey, resolveAgentProject } from './agentProjects';
+import { LOCAL_TARGET } from './execTarget';
 import { PERSONAL_PROJECT_ID, type Project, type Task } from './model';
 
 const project = (over: Partial<Project>): Project => ({
@@ -15,6 +16,8 @@ const project = (over: Partial<Project>): Project => ({
   planAligned: true,
   kind: 'agent',
   jiraEpicKeys: [],
+  target: LOCAL_TARGET,
+  instructions: '',
   createdAt: 0,
   ...over,
 });

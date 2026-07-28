@@ -11,6 +11,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { runClaudeSession, type PermissionGate, type SessionHandle } from './claudeSession';
+import type { ExecHost } from './exec';
 import type { SessionEvent, SessionEventEnvelope, StartSessionRequest } from '@shared/session';
 
 /** Optional per-run knobs for `SessionManager.start`. */
@@ -23,6 +24,11 @@ export interface StartOptions {
   resumeSessionId?: string;
   /** Use this run id instead of generating one (lets a caller reserve it up front). */
   runId?: string;
+  /**
+   * Which machine runs the CLI. Defaults to the machine the GUI runs on; the
+   * scheduler passes the host matching the project's configured target.
+   */
+  host?: ExecHost;
 }
 
 export class SessionManager {
@@ -42,7 +48,7 @@ export class SessionManager {
    * emit. `options.permission`, when set, gates the run's tools through the broker.
    */
   start(request: StartSessionRequest, options: StartOptions = {}): { runId: string } {
-    const { onEvent, permission, resumeSessionId } = options;
+    const { onEvent, permission, resumeSessionId, host } = options;
     const runId = options.runId ?? randomUUID();
     const handle = runClaudeSession(
       request,
@@ -58,7 +64,7 @@ export class SessionManager {
         // Once the process has exited, forget it so the map doesn't grow forever.
         if (event.kind === 'exited') this.runs.delete(runId);
       },
-      { runId, permission, resumeSessionId },
+      { runId, permission, resumeSessionId, host },
     );
     this.runs.set(runId, handle);
     return { runId };

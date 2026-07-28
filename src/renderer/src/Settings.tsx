@@ -11,7 +11,7 @@
  * The vertical nav also hosts the JIRA connection and the Agents pane (the
  * repositories a My Tasks card can be delegated to), which manage their own state.
  */
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   Body1,
   Button,
@@ -37,8 +37,15 @@ import type { ClaudeModel, PermissionMode } from '@shared/session';
 import type { AppSettings, JiraSettings } from '@shared/settings';
 import type { JiraConfigStatus, JiraTestResult } from '@shared/ipc';
 import { isCloudHost } from '@shared/jiraUrl';
+import {
+  execTargetLabel,
+  formatExecTarget,
+  LOCAL_TARGET,
+  parseExecTarget,
+} from '@shared/execTarget';
 import { AgentProjects } from './AgentProjects';
 import { PaneLoading } from './PaneLoading';
+import { ReadinessPanel } from './ReadinessPanel';
 import { useInitialLoad } from './useInitialLoad';
 
 const useStyles = makeStyles({
@@ -82,6 +89,13 @@ export function Settings(): JSX.Element {
   const [tokenMsg, setTokenMsg] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<JiraTestResult | null>(null);
   const [testing, setTesting] = useState(false);
+  const [distros, setDistros] = useState<string[]>([]);
+
+  // Only offer targets that exist here: with no WSL installed the control never
+  // appears, so the screen stays exactly as it was.
+  useEffect(() => {
+    void window.api.invoke('exec:listDistros').then(setDistros);
+  }, []);
 
   const seed = useCallback(async () => {
     const [appSettings, status] = await Promise.all([
@@ -259,6 +273,30 @@ export function Settings(): JSX.Element {
                 onChange={(_e, d) => patch({ writeBackPlan: d.checked })}
               />
             </Field>
+
+            {distros.length > 0 && (
+              <Field
+                label="Runs on, for new projects"
+                hint="Where a newly added project executes its Claude sessions, git and worktrees. Existing projects keep their own setting — a project's folder only makes sense on the machine it was picked from."
+              >
+                <Dropdown
+                  value={execTargetLabel(settings.defaultExecTarget)}
+                  selectedOptions={[formatExecTarget(settings.defaultExecTarget)]}
+                  onOptionSelect={(_e, d) =>
+                    patch({ defaultExecTarget: parseExecTarget(d.optionValue) })
+                  }
+                >
+                  <Option value="local">{execTargetLabel(LOCAL_TARGET)}</Option>
+                  {distros.map((distro) => (
+                    <Option key={distro} value={`wsl:${distro}`}>
+                      {execTargetLabel({ kind: 'wsl', distro })}
+                    </Option>
+                  ))}
+                </Dropdown>
+              </Field>
+            )}
+
+            <ReadinessPanel target={settings.defaultExecTarget} />
           </div>
 
           <div className={styles.actions}>

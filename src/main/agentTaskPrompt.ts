@@ -40,6 +40,43 @@ export interface AgentTaskPromptOptions {
   branch?: string;
   /** (AI-assisted retry) why the previous attempt failed. */
   failureNote?: string;
+  /**
+   * The project's standing instructions — setup knowledge that belongs to the
+   * orchestrator rather than the codebase (where a build tree lives, an environment
+   * to source first, a wrapper a command must run through).
+   */
+  instructions?: string;
+  /** (Worktree mode) the absolute working directory this run is isolated in. */
+  worktreePath?: string;
+  /** The project's canonical directory, which the worktree was branched from. */
+  projectPath?: string;
+}
+
+/**
+ * The worktree paragraph.
+ *
+ * Naming the working directory explicitly is not decoration. When a task's changes
+ * live in a worktree but the agent points an EXTERNAL build (a Yocto recipe's
+ * `externalsrc`, a devtool workspace) at the project's canonical checkout, the build
+ * succeeds against unmodified source — a green build of the wrong code, which is
+ * worse than a failure because nothing looks wrong.
+ */
+function worktreeLines(branch: string, worktreePath?: string, projectPath?: string): string[] {
+  return [
+    `You are on an isolated git branch "${branch}" — your own worktree. Commit your`,
+    `work on this branch when you are done (the orchestrator merges it back into the`,
+    `base branch automatically).`,
+    ...(worktreePath
+      ? [
+          '',
+          `Your working directory is "${worktreePath}". THIS is the source of truth for`,
+          `this task — not${projectPath ? ` "${projectPath}",` : ''} the project's main`,
+          `checkout. If you point an external build or tool at this project's sources,`,
+          `point it HERE, or it will build code that does not include your changes.`,
+        ]
+      : []),
+    '',
+  ];
 }
 
 /** Trim a block of user/tracker text and drop it if it carries nothing. */
@@ -56,16 +93,20 @@ export function buildAgentTaskPrompt(
   task: Task,
   options: AgentTaskPromptOptions = {},
 ): string {
-  const { branch, failureNote } = options;
+  const { branch, failureNote, worktreePath, projectPath } = options;
   const comments = (options.comments ?? []).filter((c) => clean(c.body));
   const notes = (options.notes ?? []).map(clean).filter(Boolean);
   const key = clean(task.externalKey);
   const url = clean(task.externalUrl);
   const description = clean(task.externalDescription);
+  const instructions = clean(options.instructions);
 
   return [
     `You are working in the repository for the project "${projectName}".`,
     '',
+    // Standing setup knowledge, before anything task-specific: it often decides HOW
+    // every later command has to be run.
+    ...(instructions ? [`Project setup notes you must follow:`, instructions, ''] : []),
     `Your job is ONE ticket — the one below. Do not pick up any other work, and do not`,
     `look for a plan or a task queue: there is none.`,
     '',
@@ -88,14 +129,7 @@ export function buildAgentTaskPrompt(
     `changes and briefly summarize what you did.`,
     '',
     // Worktree mode: the same rule plan tasks get — the orchestrator owns integration.
-    ...(branch
-      ? [
-          `You are on an isolated git branch "${branch}" — your own worktree. Commit your`,
-          `work on this branch when you are done (the orchestrator merges it back into the`,
-          `base branch automatically).`,
-          '',
-        ]
-      : []),
+    ...(branch ? worktreeLines(branch, worktreePath, projectPath) : []),
     // Never write to the tracker: that is a hard product decision, not a preference.
     ...(key
       ? [
@@ -143,6 +177,12 @@ export interface AgentSubtaskPromptOptions {
   branch?: string;
   /** (AI-assisted retry) why the previous attempt at this step failed. */
   failureNote?: string;
+  /** The project's standing setup instructions (see {@link AgentTaskPromptOptions}). */
+  instructions?: string;
+  /** (Worktree mode) the absolute working directory this step runs in. */
+  worktreePath?: string;
+  /** The project's canonical directory, which the worktree was branched from. */
+  projectPath?: string;
 }
 
 /**
@@ -163,15 +203,17 @@ export function buildAgentSubtaskPrompt(
   subtask: Task,
   options: AgentSubtaskPromptOptions,
 ): string {
-  const { stepNumber, stepCount, branch, failureNote } = options;
+  const { stepNumber, stepCount, branch, failureNote, worktreePath, projectPath } = options;
   const stepTitles = (options.stepTitles ?? []).map(clean).filter(Boolean);
   const notes = (options.notes ?? []).map(clean).filter(Boolean);
   const key = clean(parent.externalKey);
   const brief = clean(subtask.description);
+  const instructions = clean(options.instructions);
 
   return [
     `You are working in the repository for the project "${projectName}".`,
     '',
+    ...(instructions ? [`Project setup notes you must follow:`, instructions, ''] : []),
     `This is **step ${stepNumber} of ${stepCount}** of a plan a human already approved.`,
     `Do ONLY this step. Do not start the later steps, and do not re-plan the ticket —`,
     `each remaining step runs as its own session after this one.`,
@@ -201,6 +243,15 @@ export function buildAgentSubtaskPrompt(
           `plan. The earlier steps' commits are already on it. Commit your own work here when`,
           `you are done, and do NOT reset, rebase, merge, or switch branches: the orchestrator`,
           `integrates the branch into the base branch once the final step finishes.`,
+          ...(worktreePath
+            ? [
+                '',
+                `Your working directory is "${worktreePath}". THIS is the source of truth for`,
+                `this plan — not${projectPath ? ` "${projectPath}",` : ''} the project's main`,
+                `checkout. If you point an external build or tool at this project's sources,`,
+                `point it HERE, or it will build code that does not include your changes.`,
+              ]
+            : []),
           '',
         ]
       : []),

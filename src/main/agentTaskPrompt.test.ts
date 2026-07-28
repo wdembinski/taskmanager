@@ -207,3 +207,54 @@ describe('buildAgentSubtaskPrompt (one step of an approved plan)', () => {
     expect(prompt).not.toContain('\n\n\n');
   });
 });
+
+/**
+ * Standing project instructions and the worktree's identity. Both exist to stop the
+ * agent operating on the wrong thing: instructions carry setup knowledge the agent
+ * cannot infer (an environment to source, a wrapper to use), and naming the working
+ * directory stops an external build being pointed at the project's main checkout —
+ * which would compile unmodified source and *succeed*.
+ */
+describe('project setup notes and worktree identity', () => {
+  const base = { stepNumber: 1, stepCount: 2, stepTitles: ['a', 'b'] };
+
+  it('injects standing instructions into a delegated-card prompt', () => {
+    const prompt = buildAgentTaskPrompt('Checkout service', jiraTask, {
+      instructions: 'Source /opt/poky/oe-init-build-env before any bitbake command.',
+    });
+    expect(prompt).toContain('Project setup notes you must follow:');
+    expect(prompt).toContain('Source /opt/poky/oe-init-build-env');
+  });
+
+  it('injects standing instructions into a subtask prompt', () => {
+    const prompt = buildAgentSubtaskPrompt('Checkout service', jiraTask, internalTask, {
+      ...base,
+      instructions: 'Run bitbake through ./scripts/bb-wrapper.sh.',
+    });
+    expect(prompt).toContain('./scripts/bb-wrapper.sh');
+  });
+
+  it('omits the setup-notes block entirely when there are none', () => {
+    const prompt = buildAgentTaskPrompt('Checkout service', jiraTask, { instructions: '   ' });
+    expect(prompt).not.toContain('Project setup notes');
+    expect(prompt).not.toContain('\n\n\n');
+  });
+
+  it('names the worktree as the source of truth, against the main checkout', () => {
+    const prompt = buildAgentTaskPrompt('Checkout service', jiraTask, {
+      branch: 'orch/t1',
+      worktreePath: '/home/you/.local/share/claude-orchestrator/worktrees/p/t1',
+      projectPath: '/home/you/src/checkout',
+    });
+    expect(prompt).toContain('/home/you/.local/share/claude-orchestrator/worktrees/p/t1');
+    expect(prompt).toContain('/home/you/src/checkout');
+    expect(prompt).toContain('point it HERE');
+  });
+
+  it('says nothing about directories when the run is not in a worktree', () => {
+    const prompt = buildAgentTaskPrompt('Checkout service', jiraTask, {
+      worktreePath: '/should/not/appear',
+    });
+    expect(prompt).not.toContain('/should/not/appear');
+  });
+});

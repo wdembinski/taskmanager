@@ -18,6 +18,7 @@
 import { readFileSync, unwatchFile, watchFile, type Stats } from 'node:fs';
 import { isPersonalBoard, type Project, type Task } from '@shared/model';
 import { parsePlan } from './planParser';
+import { appPlanPath } from './projectPaths';
 import type { Store } from './store';
 
 const POLL_INTERVAL_MS = 1000;
@@ -47,7 +48,9 @@ export class PlanWatcher {
     // the Personal board's JIRA/ad-hoc tasks.
     if (isPersonalBoard(project.id) || project.kind === 'agent') return;
     this.unwatch(project.id);
-    const planPath = project.planPath;
+    // Named the way THIS process can open it: a WSL project's plan is on the distro's
+    // filesystem, reachable from Windows only through the UNC share.
+    const planPath = appPlanPath(project);
     const listener = (curr: Stats, prev: Stats): void => {
       // Ignore the initial poll (prev zeroed) and no-op ticks; act only on a real
       // mtime change. A deleted/missing file (mtimeMs 0) is left alone.

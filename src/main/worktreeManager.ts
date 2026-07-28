@@ -16,6 +16,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Project, Task } from '@shared/model';
+import { hostFor, hostJoin, type ExecHost } from './exec';
 import {
   abortRebase,
   addedInBranch,
@@ -114,12 +115,38 @@ export class WorktreeManager {
   /** Per-project promise chain, so integrations run one at a time per project. */
   private readonly chains = new Map<string, Promise<unknown>>();
 
-  /** @param root Base directory to place worktrees under (e.g. userData/worktrees). */
-  constructor(private readonly root: string) {}
+  /** Resolved worktree roots inside each distro, so `$HOME` is probed once. */
+  private readonly wslRoots = new Map<string, string>();
 
-  /** Deterministic worktree path for a task, so a resumed run reuses it. */
-  private pathFor(projectId: string, taskId: string): string {
-    return join(this.root, projectId, taskId);
+  /** @param localRoot Where worktrees go for local projects (e.g. userData/worktrees). */
+  constructor(private readonly localRoot: string) {}
+
+  /**
+   * The host a project's git runs on, and where its worktrees live.
+   *
+   * A WSL project's worktrees must live INSIDE the distro: a Linux `git` cannot
+   * sanely own a worktree of an ext4 repo that sits on the Windows side of a 9p
+   * share, and the path it records would be meaningless to the other machine.
+   */
+  private async workspaceFor(project: Project): Promise<{ host: ExecHost; root: string }> {
+    const host = hostFor(project.target);
+    if (project.target.kind !== 'wsl') return { host, root: this.localRoot };
+
+    const { distro } = project.target;
+    let root = this.wslRoots.get(distro);
+    if (!root) {
+      root = hostJoin(await host.homeDir(), '.local', 'share', 'claude-orchestrator', 'worktrees');
+      this.wslRoots.set(distro, root);
+    }
+    return { host, root };
+  }
+
+  /**
+   * Deterministic worktree path for a task, so a resumed run reuses it. Joined in
+   * the HOST's shape — `node:path.join` would build `\` separators for a Linux path.
+   */
+  private pathIn(root: string, projectId: string, taskId: string): string {
+    return hostJoin(root, projectId, taskId);
   }
 
   /**
@@ -137,20 +164,23 @@ export class WorktreeManager {
    * accumulates on one branch and integrates once — the caller passes the parent's id.
    */
   async prepare(project: Project, task: Task, ownerTaskId = task.id): Promise<WorktreePrep> {
-    if (!project.useWorktrees || !(await isRepo(project.path))) {
+    const { host, root } = await this.workspaceFor(project);
+    if (!project.useWorktrees || !(await isRepo(project.path, host))) {
       return { mode: 'shared', cwd: project.path };
     }
-    const base = await currentBranch(project.path);
+    const base = await currentBranch(project.path, host);
     const branch = taskBranch(ownerTaskId);
-    const cwd = this.pathFor(project.id, ownerTaskId);
-    if (existsSync(cwd)) return { mode: 'worktree', cwd, branch, base };
+    const cwd = this.pathIn(root, project.id, ownerTaskId);
+    // `existsSync` runs on the APP's filesystem, so a distro path has to be named the
+    // way Windows can see it (`\\wsl.localhost\…`) before it can be checked.
+    if (existsSync(host.toApp(cwd))) return { mode: 'worktree', cwd, branch, base };
 
-    let res = await addWorktree(project.path, cwd, branch, base);
+    let res = await addWorktree(project.path, cwd, branch, base, host);
     if (res.code !== 0) {
       // One recovery attempt: a stale worktree admin record (e.g. a dir removed out of
       // band) can block re-creation. Prune, then retry once.
-      await pruneWorktrees(project.path);
-      res = await addWorktree(project.path, cwd, branch, base);
+      await pruneWorktrees(project.path, host);
+      res = await addWorktree(project.path, cwd, branch, base, host);
     }
     if (res.code !== 0) {
       return {
@@ -177,16 +207,22 @@ export class WorktreeManager {
     commitMessage: string,
   ): Promise<IntegrationResult> {
     return this.enqueue(project.id, async () => {
-      await commitAll(worktree, commitMessage);
+      const { host } = await this.workspaceFor(project);
+      await commitAll(worktree, commitMessage, host);
       // Rung 1 (mechanical): rebase with union merge for additive config files, so
       // `.gitignore`/workspace-list churn auto-resolves instead of conflicting. Anything
       // left conflicted is a real conflict → returned as `conflict` for the AI/human rungs.
       const attrs = withUnionAttributes();
+      // The attributes file is written on the app's filesystem, so git must be told
+      // the name its OWN machine knows it by.
+      const attrsPath = host.toNative(attrs.file);
       try {
-        const rebased = await rebaseOnto(worktree, base, attrs.file);
+        const rebased = await rebaseOnto(worktree, base, attrsPath, host);
         if (rebased.code !== 0) {
-          if (await hasConflicts(worktree)) return { status: 'conflict', worktree, branch, base };
-          await abortRebase(worktree);
+          if (await hasConflicts(worktree, host)) {
+            return { status: 'conflict', worktree, branch, base };
+          }
+          await abortRebase(worktree, host);
           return { status: 'error', message: rebased.stderr || 'rebase failed' };
         }
         return this.fastForward(project, branch, base, worktree);
@@ -207,30 +243,33 @@ export class WorktreeManager {
     worktree: string,
   ): Promise<IntegrationResult> {
     return this.enqueue(project.id, async () => {
-      if (await hasConflicts(worktree)) return { status: 'conflict', worktree, branch, base };
+      const { host } = await this.workspaceFor(project);
+      if (await hasConflicts(worktree, host)) return { status: 'conflict', worktree, branch, base };
       // If a rebase is still open (conflicts were staged but not continued), continue it
       // (union attrs so later patches' additive files still auto-merge); a "no rebase in
       // progress" error is fine — it means they finished already.
       const attrs = withUnionAttributes();
       try {
-        await continueRebase(worktree, attrs.file);
+        await continueRebase(worktree, host.toNative(attrs.file), host);
       } finally {
         attrs.cleanup();
       }
-      if (await hasConflicts(worktree)) return { status: 'conflict', worktree, branch, base };
+      if (await hasConflicts(worktree, host)) return { status: 'conflict', worktree, branch, base };
       return this.fastForward(project, branch, base, worktree);
     });
   }
 
   /** Remove a task's worktree (best effort) — used when cleaning up a failed task. */
   async cleanup(project: Project, taskId: string): Promise<void> {
-    const cwd = this.pathFor(project.id, taskId);
-    if (existsSync(cwd)) await removeWorktree(project.path, cwd);
+    const { host, root } = await this.workspaceFor(project);
+    const cwd = this.pathIn(root, project.id, taskId);
+    if (existsSync(host.toApp(cwd))) await removeWorktree(project.path, cwd, host);
   }
 
   /** The work-tree paths currently in conflict (for the human/AI conflict-fix prompt). */
-  listConflicts(worktree: string): Promise<string[]> {
-    return conflictedFiles(worktree);
+  async listConflicts(project: Project, worktree: string): Promise<string[]> {
+    const { host } = await this.workspaceFor(project);
+    return conflictedFiles(worktree, host);
   }
 
   /** ff-merge the (already rebased) branch into base in the main tree, then clean up. */
@@ -240,19 +279,31 @@ export class WorktreeManager {
     base: string,
     worktree: string,
   ): Promise<IntegrationResult> {
+    const { host } = await this.workspaceFor(project);
+
     // Never fast-forward a base tree that has uncommitted *tracked* work — we'd risk the
     // user's changes. Park instead; they can commit/stash and retry.
-    if (!(await isClean(project.path))) return { status: 'dirty-base', base };
+    if (!(await isClean(project.path, host))) return { status: 'dirty-base', base };
 
     // A fast-forward checks out the branch's newly-added files; git refuses to clobber any
     // that already exist *untracked* in the base tree. Clear that path safely: exact dupes
     // are removed (the merge recreates identical bytes); files whose untracked content
     // differs are stashed aside (preserved, not lost) so the branch's version can win.
-    const { identical, differing } = await classifyUntrackedCollisions(project.path, base, branch);
-    if (identical.length > 0) await removeUntracked(project.path, identical);
+    const { identical, differing } = await classifyUntrackedCollisions(
+      project.path,
+      base,
+      branch,
+      host,
+    );
+    if (identical.length > 0) await removeUntracked(project.path, identical, host);
     let preserved: PreservedSnapshot | undefined;
     if (differing.length > 0) {
-      const stash = await preserveUntracked(project.path, differing, `orch-preserve ${branch}`);
+      const stash = await preserveUntracked(
+        project.path,
+        differing,
+        `orch-preserve ${branch}`,
+        host,
+      );
       if (!stash.ok || !stash.stashRef) {
         // Couldn't preserve — do NOT force the merge over uncommitted content.
         return { status: 'blocked-untracked', base, files: differing };
@@ -260,10 +311,10 @@ export class WorktreeManager {
       preserved = { stashRef: stash.stashRef, files: stash.files };
     }
 
-    const merged = await mergeFfOnly(project.path, branch);
+    const merged = await mergeFfOnly(project.path, branch, host);
     if (merged.code !== 0) return { status: 'error', message: merged.stderr || 'merge failed' };
-    await removeWorktree(project.path, worktree);
-    await deleteBranch(project.path, branch);
+    await removeWorktree(project.path, worktree, host);
+    await deleteBranch(project.path, branch, host);
     return { status: 'merged', preserved };
   }
 
@@ -290,15 +341,16 @@ export async function classifyUntrackedCollisions(
   dir: string,
   base: string,
   branch: string,
+  host?: ExecHost,
 ): Promise<{ identical: string[]; differing: string[] }> {
-  const added = new Set(await addedInBranch(dir, base, branch));
-  const collisions = (await listUntracked(dir)).filter((f) => added.has(f));
+  const added = new Set(await addedInBranch(dir, base, branch, host));
+  const collisions = (await listUntracked(dir, host)).filter((f) => added.has(f));
   const identical: string[] = [];
   const differing: string[] = [];
   for (const path of collisions) {
     const [branchBlob, workingBlob] = await Promise.all([
-      blobSha(dir, branch, path),
-      workingFileSha(dir, path),
+      blobSha(dir, branch, path, host),
+      workingFileSha(dir, path, host),
     ]);
     if (branchBlob !== '' && workingBlob !== '' && branchBlob === workingBlob) {
       identical.push(path);

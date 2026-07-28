@@ -5,7 +5,14 @@
  * so these tests pin our parser to the actual protocol.
  */
 import { describe, expect, it } from 'vitest';
-import { buildClaudeArgs, encodeUserMessage, mapRawEvent } from './claudeSession';
+import { PassThrough } from 'node:stream';
+import {
+  buildClaudeArgs,
+  encodeUserMessage,
+  mapRawEvent,
+  runClaudeSession,
+} from './claudeSession';
+import type { ExecHost } from './exec';
 
 describe('mapRawEvent', () => {
   it('maps the init system event to a started event with the session id', () => {
@@ -211,5 +218,74 @@ describe('encodeUserMessage', () => {
       type: 'user',
       message: { role: 'user', content: [{ type: 'text', text: 'hello' }] },
     });
+  });
+});
+
+/**
+ * One task = one session, and one SUBTASK = one session too. This is what keeps a
+ * plan's context (and its token cost) from accumulating across steps, so it is
+ * pinned rather than left as an implicit consequence of how ids are generated.
+ *
+ * A fake host makes this checkable without spawning anything — the same seam the
+ * WSL target uses.
+ */
+describe('session isolation', () => {
+  function fakeHost(): { host: ExecHost; argvs: string[][] } {
+    const argvs: string[][] = [];
+    const host = {
+      target: { kind: 'local' } as const,
+      exec: async () => ({ code: 0, stdout: '', stderr: '' }),
+      spawn: (_cwd: string, _file: string, args: string[]) => {
+        argvs.push(args);
+        const child = {
+          stdin: Object.assign(new PassThrough(), { writable: true }),
+          stdout: new PassThrough(),
+          stderr: new PassThrough(),
+          on: () => undefined,
+          kill: () => undefined,
+        };
+        return { child: child as never, terminate: () => undefined };
+      },
+      toNative: (p: string) => p,
+      toApp: (p: string) => p,
+      relaySpec: () => ({ command: '', args: [], env: {} }),
+      homeDir: async () => '/home/test',
+    } as unknown as ExecHost;
+    return { host, argvs };
+  }
+
+  const request = {
+    prompt: 'do the thing',
+    cwd: '/tmp',
+    model: 'haiku',
+    permissionMode: 'acceptEdits',
+  } as never;
+
+  it('gives every fresh run its own session id, claimed with --session-id', () => {
+    const { host, argvs } = fakeHost();
+    const first = runClaudeSession(request, () => undefined, { host });
+    const second = runClaudeSession(request, () => undefined, { host });
+
+    // Two steps of one plan must never share a conversation.
+    expect(first.sessionId).not.toBe(second.sessionId);
+    for (const args of argvs) {
+      expect(args).toContain('--session-id');
+      expect(args).not.toContain('--resume');
+    }
+    expect(argvs[0]).toContain(first.sessionId);
+    expect(argvs[1]).toContain(second.sessionId);
+  });
+
+  it('resumes only when explicitly asked, keeping the SAME id', () => {
+    const { host, argvs } = fakeHost();
+    const existing = '11111111-2222-3333-4444-555555555555';
+    const handle = runClaudeSession(request, () => undefined, {
+      host,
+      resumeSessionId: existing,
+    });
+
+    expect(handle.sessionId).toBe(existing);
+    expect(argvs[0]).toContain('--resume');
+    expect(argvs[0]).not.toContain('--session-id');
   });
 });
