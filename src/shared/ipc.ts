@@ -111,6 +111,30 @@ export interface JiraStatusList {
   error: string | null;
 }
 
+/** One person the @mention picker can offer. `id` is a Cloud accountId or a DC username. */
+export interface JiraUserOption {
+  id: string | null;
+  displayName: string;
+  email: string | null;
+  avatarUrl: string | null;
+}
+
+/** A person named in a comment, as a range into its text. */
+export interface JiraCommentMention {
+  start: number;
+  end: number;
+  id: string | null;
+  displayName: string;
+}
+
+/** Everything a composed JIRA comment carries. */
+export interface JiraCommentDraft {
+  text: string;
+  mentions?: JiraCommentMention[];
+  /** Absolute paths, read and uploaded by main. */
+  attachmentPaths?: string[];
+}
+
 /** Result of a JIRA "Test connection" attempt. */
 export interface JiraTestResult {
   ok: boolean;
@@ -451,8 +475,27 @@ export interface IpcApi {
   'task:move': (taskId: string, toColumn: BoardColumn) => Promise<Task>;
   /** Fetch the linked JIRA issue's comments as timeline entries (empty for non-JIRA tasks). */
   'jira:fetchComments': (taskId: string) => Promise<TaskActivityEntry[]>;
-  /** Post a comment to the linked JIRA issue; also marks the task's comments as read. */
-  'jira:addComment': (taskId: string, body: string) => Promise<void>;
+  /**
+   * Post a comment to the linked JIRA issue; also marks the task's comments as read.
+   *
+   * `mentions` are ranges into `text` (see `renderer/chat/mentions.ts`), not an inline
+   * syntax. `attachmentPaths` are file paths on the machine the app runs on — the
+   * renderer never ships bytes over IPC; main reads them and uploads. Files are attached
+   * to the ISSUE and then cited from the comment, because a true inline media node needs
+   * an Atlassian media-services token exchange a REST client cannot perform.
+   */
+  'jira:addComment': (taskId: string, body: JiraCommentDraft) => Promise<void>;
+  /**
+   * People matching a partial name, for the @mention picker. Scoped to the task's issue
+   * when there is one, because global user search is permission-restricted on many Cloud
+   * sites. Fails soft to `[]` — an empty picker still lets you type a plain name.
+   */
+  'jira:searchUsers': (taskId: string, query: string) => Promise<JiraUserOption[]>;
+  /**
+   * Open the OS file picker and return the chosen absolute paths. In main because the
+   * renderer has no filesystem access and no business having any.
+   */
+  'jira:pickAttachments': () => Promise<string[]>;
   /** Mark a JIRA task's comments as read (clears the unread border); returns the task. */
   'jira:markRead': (taskId: string) => Promise<Task>;
 

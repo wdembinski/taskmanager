@@ -5,6 +5,14 @@
  * client serves self-hosted Server/Data Center (PAT `Bearer`, REST v2) and Atlassian
  * Cloud (email + API token `Basic`, REST v3).
  */
+import {
+  blocksToText,
+  buildAdf,
+  buildWikiBody,
+  parseAdf,
+  type AdfAttachmentRef,
+  type AdfMention,
+} from './adf';
 
 export interface JiraAuth {
   /** `bearer` = PAT (server/DC); `basic` = email + API token (cloud). */
@@ -76,6 +84,25 @@ export interface JiraTransition {
   to: JiraStatusRef;
 }
 
+/** A person the @mention picker can offer. `accountId` is Cloud, `name` is Server/DC. */
+export interface JiraUser {
+  accountId: string | null;
+  name: string | null;
+  displayName: string;
+  emailAddress: string | null;
+  avatarUrl: string | null;
+}
+
+/** A file attached to an issue. */
+export interface JiraAttachment {
+  id: string;
+  filename: string;
+  mimeType: string | null;
+  size: number | null;
+  /** Authenticated download URL, or null. Opened in the browser, never fetched here. */
+  url: string | null;
+}
+
 export interface JiraComment {
   id: string;
   /** `accountId` is Cloud-only; Server/DC identifies people by display name alone. */
@@ -95,23 +122,13 @@ export function authHeader(auth: JiraAuth): string {
 /**
  * Flatten a rich-text field (v2 plain string or v3 ADF) to display text. Used for
  * comment bodies and for issue descriptions, which have the same v2/v3 shapes.
+ *
+ * Now a thin wrapper over `adf.ts`, so the issue description and the agent briefing get
+ * the mention fix for free: the old implementation collected `text` leaves only, and a
+ * mention's label lives in `attrs.text`, so every @name was silently deleted.
  */
 export function commentBodyToText(body: unknown): string {
-  if (typeof body === 'string') return body;
-  // Atlassian Document Format: walk the node tree collecting `text` leaves.
-  const out: string[] = [];
-  const walk = (node: unknown): void => {
-    if (!node || typeof node !== 'object') return;
-    const n = node as { text?: unknown; content?: unknown; type?: unknown };
-    if (typeof n.text === 'string') out.push(n.text);
-    if (n.type === 'paragraph' || n.type === 'hardBreak') out.push('\n');
-    if (Array.isArray(n.content)) for (const child of n.content) walk(child);
-  };
-  walk(body);
-  return out
-    .join('')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+  return blocksToText(parseAdf(body));
 }
 
 export class JiraError extends Error {
@@ -325,21 +342,128 @@ export class JiraClient {
     });
   }
 
-  /** Post a comment. v2 takes a plain string body; v3 wraps it in a minimal ADF doc. */
-  addComment(issueKey: string, text: string): Promise<JiraComment> {
+  /**
+   * Post a comment, optionally naming people and citing files already attached.
+   *
+   * v3 takes an ADF document, v2 takes wiki markup — two dialects of the same comment,
+   * both built by `adf.ts`. Mentions carry real offsets into `text` rather than an
+   * inline syntax; see that module for why.
+   */
+  addComment(
+    issueKey: string,
+    text: string,
+    mentions: readonly AdfMention[] = [],
+    attachments: readonly AdfAttachmentRef[] = [],
+  ): Promise<JiraComment> {
     const body =
       this.config.apiVersion === '3'
-        ? {
-            body: {
-              type: 'doc',
-              version: 1,
-              content: [{ type: 'paragraph', content: [{ type: 'text', text }] }],
-            },
-          }
-        : { body: text };
+        ? { body: buildAdf(text, mentions, attachments) }
+        : { body: buildWikiBody(text, mentions, attachments) };
     return this.request<JiraComment>(`/issue/${encodeURIComponent(issueKey)}/comment`, {
       method: 'POST',
       body: JSON.stringify(body),
     });
   }
+
+  /**
+   * People matching a partial name, for the composer's @mention picker.
+   *
+   * Three wrinkles. The query PARAM differs by version (`query` on v3, `username` on
+   * v2). Global user search is permission-restricted on a lot of Cloud sites, so when we
+   * know the issue we ask `/user/assignable/search` instead, which any commenter can
+   * normally use. And `accountId` is Cloud-only — a Server result is identified by its
+   * `name`, which is what a `[~…]` mention needs there.
+   */
+  async searchUsers(query: string, issueKey?: string): Promise<JiraUser[]> {
+    const q = query.trim();
+    if (!q) return [];
+    const v3 = this.config.apiVersion === '3';
+    const params = new URLSearchParams({ [v3 ? 'query' : 'username']: q, maxResults: '10' });
+    if (issueKey) params.set('issueKey', issueKey);
+    const path = issueKey ? '/user/assignable/search' : '/user/search';
+    const raw = await this.request<unknown>(`${path}?${params.toString()}`);
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .map((entry) => entry as Record<string, unknown>)
+      .map((u) => ({
+        accountId: typeof u.accountId === 'string' ? u.accountId : null,
+        name: typeof u.name === 'string' ? u.name : null,
+        displayName:
+          typeof u.displayName === 'string' && u.displayName ? u.displayName : String(u.name ?? ''),
+        emailAddress: typeof u.emailAddress === 'string' ? u.emailAddress : null,
+        avatarUrl:
+          typeof u.avatarUrls === 'object' && u.avatarUrls
+            ? ((u.avatarUrls as Record<string, unknown>)['24x24'] as string) || null
+            : null,
+      }))
+      .filter((u) => u.displayName.length > 0);
+  }
+
+  /**
+   * Attach files to an issue. Returns what JIRA stored, so a comment can cite them.
+   *
+   * Not routed through `request`: that helper is JSON-only, and multipart has two rules
+   * that trip people up. `Content-Type` must NOT be set by hand — `fetch` writes it
+   * itself, including the boundary, and a hand-written one has no boundary so JIRA
+   * rejects the body. And `X-Atlassian-Token: no-check` is mandatory, or the XSRF guard
+   * refuses the upload with a 403 that says nothing useful.
+   */
+  async uploadAttachments(
+    issueKey: string,
+    files: ReadonlyArray<{ filename: string; data: Uint8Array; mimeType?: string }>,
+  ): Promise<JiraAttachment[]> {
+    if (!files.length) return [];
+    const form = new FormData();
+    for (const file of files) {
+      // Copy into a fresh ArrayBuffer: a Uint8Array over a pooled Node Buffer can be a
+      // VIEW of a much larger block, and Blob would take the whole thing.
+      const bytes = new Uint8Array(file.data);
+      form.append(
+        'file',
+        new Blob([bytes], { type: file.mimeType || 'application/octet-stream' }),
+        file.filename,
+      );
+    }
+    const res = await fetch(this.url(`/issue/${encodeURIComponent(issueKey)}/attachments`), {
+      method: 'POST',
+      headers: {
+        Authorization: authHeader(this.config.auth),
+        Accept: 'application/json',
+        'X-Atlassian-Token': 'no-check',
+      },
+      body: form,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new JiraError(
+        `JIRA ${res.status} ${res.statusText}${text ? `: ${text.slice(0, 300)}` : ''}`,
+        res.status,
+        res.headers?.get('x-authentication-denied-reason') ?? undefined,
+      );
+    }
+    const raw = (await res.json()) as unknown;
+    return Array.isArray(raw) ? raw.map(normalizeAttachment) : [];
+  }
+
+  /** An issue's attachments — metadata is per-ISSUE, so comments are matched by filename. */
+  async getAttachments(issueKey: string): Promise<JiraAttachment[]> {
+    const data = await this.request<{ fields?: { attachment?: unknown } }>(
+      `/issue/${encodeURIComponent(issueKey)}?fields=attachment`,
+    );
+    const raw = data?.fields?.attachment;
+    return Array.isArray(raw) ? raw.map(normalizeAttachment) : [];
+  }
+}
+
+/** Both endpoints answer with the same attachment shape; narrow it once. */
+function normalizeAttachment(entry: unknown): JiraAttachment {
+  const a = (entry ?? {}) as Record<string, unknown>;
+  return {
+    id: String(a.id ?? ''),
+    filename: typeof a.filename === 'string' ? a.filename : '',
+    mimeType: typeof a.mimeType === 'string' ? a.mimeType : null,
+    size: typeof a.size === 'number' ? a.size : null,
+    /** The human-facing page. `content` is the raw bytes and needs the same auth. */
+    url: typeof a.content === 'string' ? a.content : null,
+  };
 }

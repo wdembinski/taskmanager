@@ -8,7 +8,7 @@
  * handler whose return type doesn't match the contract won't compile.
  */
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import {
   app,
   dialog,
@@ -18,7 +18,7 @@ import {
   type BrowserWindow,
   type Rectangle,
 } from 'electron';
-import type { IpcApi, IpcEvents, JiraStatusOption } from '@shared/ipc';
+import type { IpcApi, IpcEvents, JiraStatusOption, JiraUserOption } from '@shared/ipc';
 import {
   isManualStatus,
   isPersonalBoard,
@@ -1118,13 +1118,82 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     return entries;
   });
 
-  handle('jira:addComment', async (taskId, body) => {
+  /**
+   * Who this instance calls people, for the @mention picker. Cached per site+query so
+   * typing a name doesn't hammer the API, and fail-soft: an empty picker still lets the
+   * user type a plain name, which posts as ordinary text.
+   */
+  const userCache = new Map<string, JiraUserOption[]>();
+
+  handle('jira:searchUsers', async (taskId, query) => {
+    const { jira } = store.getSettings();
+    if (!jira.enabled || !query.trim()) return [];
+    const task = store.getTask(taskId);
+    const issueKey = task?.externalSource === 'jira' ? (task.externalKey ?? undefined) : undefined;
+    const cacheKey = `${jira.baseUrl}|${issueKey ?? ''}|${query.trim().toLowerCase()}`;
+    const cached = userCache.get(cacheKey);
+    if (cached) return cached;
+    try {
+      const users = await buildJiraClient().searchUsers(query, issueKey);
+      const options: JiraUserOption[] = users.map((u) => ({
+        // Cloud names people by accountId; Server/DC by username. Either is what a
+        // mention node needs — they are just never both present.
+        id: u.accountId ?? u.name,
+        displayName: u.displayName,
+        email: u.emailAddress,
+        avatarUrl: u.avatarUrl,
+      }));
+      userCache.set(cacheKey, options);
+      return options;
+    } catch (e) {
+      logMain('JIRA user search failed', e);
+      return [];
+    }
+  });
+
+  handle('jira:pickAttachments', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Attach files to the JIRA issue',
+      properties: ['openFile', 'multiSelections'],
+    });
+    return result.canceled ? [] : result.filePaths;
+  });
+
+  handle('jira:addComment', async (taskId, draft) => {
     const task = store.getTask(taskId);
     if (!task || task.externalSource !== 'jira' || !task.externalKey) {
       throw new Error('This task is not linked to a JIRA issue.');
     }
-    if (!body.trim()) throw new Error('A comment needs some text.');
-    const created = await buildJiraClient().addComment(task.externalKey, body.trim());
+    // Trailing whitespace only. Leading whitespace has to stay: the mention ranges are
+    // offsets into this exact string, and trimming the front would move all of them.
+    // A mention left dangling past the cut is dropped by `buildAdf`.
+    const text = draft.text.replace(/\s+$/, '');
+    const paths = draft.attachmentPaths ?? [];
+    if (!text && !paths.length) throw new Error('A comment needs some text.');
+    const client = buildJiraClient();
+
+    // Upload first, so the comment can cite what actually landed. A failed upload is a
+    // failed comment — posting the words without the file the user attached would be a
+    // quietly wrong result rather than an error they can act on.
+    const uploaded = paths.length
+      ? await client.uploadAttachments(
+          task.externalKey,
+          paths.map((p) => ({ filename: basename(p), data: readFileSync(p) })),
+        )
+      : [];
+
+    const mentions = (draft.mentions ?? []).map((m) => ({
+      start: m.start,
+      end: m.end,
+      accountId: m.id,
+      displayName: m.displayName,
+    }));
+    const created = await client.addComment(
+      task.externalKey,
+      text,
+      mentions,
+      uploaded.map((a) => ({ filename: a.filename, url: a.url ?? undefined })),
+    );
     // Bump both markers so our own comment never lights the unread border.
     const at = Date.parse(created.created) || Date.now();
     const updated = store.updateTask(taskId, { latestCommentAt: at, lastReadCommentAt: at });

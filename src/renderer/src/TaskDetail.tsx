@@ -43,6 +43,7 @@ import { typeIcon } from './board/TaskCard';
 import { ChatTurns } from './chat/ChatTurns';
 import { Composer } from './chat/Composer';
 import { foldTurns } from './chat/turns';
+import { EMPTY_COMPOSER, type ComposerValue } from './chat/mentions';
 import { StepBrief, TaskSteps } from './TaskSteps';
 import { TaskAgentPanel } from './TaskAgentPanel';
 import { TaskDetailsCell } from './TaskDetailsCell';
@@ -166,7 +167,9 @@ export function TaskDetail({
   const [activity, setActivity] = useState<TaskActivityEntry[]>([]);
   const [jiraComments, setJiraComments] = useState<TaskActivityEntry[]>([]);
   const [liveEvents, setLiveEvents] = useState<TaskActivityEntry[]>([]);
-  const [comment, setComment] = useState('');
+  // The composer's whole value: what was typed, who is named in it, and what is
+  // attached. Only the JIRA path uses the last two; the other three actions read `.text`.
+  const [comment, setComment] = useState<ComposerValue>(EMPTY_COMPOSER);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -198,7 +201,7 @@ export function TaskDetail({
   }, [taskId, isJira, onStatusChanged]);
 
   useEffect(() => {
-    setComment('');
+    setComment(EMPTY_COMPOSER);
     setError(null);
     void loadActivity();
   }, [loadActivity]);
@@ -288,12 +291,12 @@ export function TaskDetail({
   const managedByAI = task.status === 'running' || task.status === 'waiting-input';
 
   async function addComment(): Promise<void> {
-    if (!task || !comment.trim()) return;
+    if (!task || !comment.text.trim()) return;
     setBusy(true);
     setError(null);
     try {
-      await window.api.invoke('task:addComment', task.id, comment.trim());
-      setComment('');
+      await window.api.invoke('task:addComment', task.id, comment.text.trim());
+      setComment(EMPTY_COMPOSER);
       await loadActivity();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -304,12 +307,12 @@ export function TaskDetail({
 
   /** File the text as the card's headline. `onStatusChanged` puts it on the board. */
   async function postStatus(): Promise<void> {
-    if (!task || !comment.trim()) return;
+    if (!task || !comment.text.trim()) return;
     setBusy(true);
     setError(null);
     try {
-      onStatusChanged?.(await window.api.invoke('task:setStatusNote', task.id, comment.trim()));
-      setComment('');
+      onStatusChanged?.(await window.api.invoke('task:setStatusNote', task.id, comment.text.trim()));
+      setComment(EMPTY_COMPOSER);
       await loadActivity();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -319,12 +322,24 @@ export function TaskDetail({
   }
 
   async function addJiraComment(): Promise<void> {
-    if (!task || !comment.trim()) return;
+    // A comment that is only files is still a comment worth posting.
+    if (!task || (!comment.text.trim() && !comment.attachments.length)) return;
     setBusy(true);
     setError(null);
     try {
-      await window.api.invoke('jira:addComment', task.id, comment.trim());
-      setComment('');
+      await window.api.invoke('jira:addComment', task.id, {
+        // Untrimmed: the mention ranges are offsets into THIS string, so trimming here
+        // would silently move every one of them. Main trims the tail only.
+        text: comment.text,
+        mentions: comment.mentions.map((m) => ({
+          start: m.start,
+          end: m.end,
+          id: m.accountId,
+          displayName: m.displayName,
+        })),
+        attachmentPaths: comment.attachments,
+      });
+      setComment(EMPTY_COMPOSER);
       await loadActivity();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -340,16 +355,16 @@ export function TaskDetail({
    * exception, so it becomes a message rather than a stack trace.
    */
   async function sendChat(): Promise<void> {
-    if (!task || !comment.trim()) return;
+    if (!task || !comment.text.trim()) return;
     setBusy(true);
     setError(null);
     try {
-      const result = await window.api.invoke('task:chat', task.id, comment.trim());
+      const result = await window.api.invoke('task:chat', task.id, comment.text.trim());
       if (result.status === 'refused') {
         setError(REFUSAL_HINT[result.reason]);
         return;
       }
-      setComment('');
+      setComment(EMPTY_COMPOSER);
       await loadActivity();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -533,6 +548,8 @@ export function TaskDetail({
           onChange={setComment}
           busy={busy}
           isJira={isJira}
+          onSearchPeople={(q) => window.api.invoke('jira:searchUsers', task.id, q)}
+          onPickAttachments={() => window.api.invoke('jira:pickAttachments')}
           onSendChat={() => void sendChat()}
           onAddNote={() => void addComment()}
           onPostStatus={() => void postStatus()}

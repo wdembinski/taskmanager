@@ -348,3 +348,92 @@ describe('listStatuses', () => {
     expect(await serverClient().listStatuses()).toEqual([{ name: 'Odd', categoryKey: 'new' }]);
   });
 });
+
+describe('JiraClient.addComment — mentions and attachments', () => {
+  it('sends a mention node on v3 and wiki markup on v2', async () => {
+    const mentions = [{ start: 0, end: 6, accountId: 'acc-a', displayName: 'Alice' }];
+
+    const cloudFetch = vi.fn().mockResolvedValue(jsonResponse({ id: '10' }));
+    vi.stubGlobal('fetch', cloudFetch);
+    await cloudClient().addComment('AB-1', '@Alice look', mentions);
+    const cloudBody = JSON.parse((cloudFetch.mock.calls[0][1] as RequestInit).body as string);
+    expect(cloudBody.body.content[0].content[0]).toEqual({
+      type: 'mention',
+      attrs: { id: 'acc-a', text: '@Alice' },
+    });
+
+    const serverFetch = vi.fn().mockResolvedValue(jsonResponse({ id: '10' }));
+    vi.stubGlobal('fetch', serverFetch);
+    await serverClient().addComment('AB-1', '@Alice look', mentions);
+    const serverBody = JSON.parse((serverFetch.mock.calls[0][1] as RequestInit).body as string);
+    expect(serverBody).toEqual({ body: '[~acc-a] look' });
+  });
+});
+
+describe('JiraClient.searchUsers', () => {
+  it('uses `query` on v3 and `username` on v2, and normalizes both shapes', async () => {
+    const cloudFetch = vi.fn().mockResolvedValue(
+      jsonResponse([{ accountId: 'acc-a', displayName: 'Alice', emailAddress: 'a@x.com' }]),
+    );
+    vi.stubGlobal('fetch', cloudFetch);
+    const cloud = await cloudClient().searchUsers('ali');
+    expect(String(cloudFetch.mock.calls[0][0])).toContain('query=ali');
+    expect(cloud[0]).toMatchObject({ accountId: 'acc-a', name: null, displayName: 'Alice' });
+
+    const serverFetch = vi
+      .fn()
+      .mockResolvedValue(jsonResponse([{ name: 'alice', displayName: 'Alice' }]));
+    vi.stubGlobal('fetch', serverFetch);
+    const server = await serverClient().searchUsers('ali');
+    expect(String(serverFetch.mock.calls[0][0])).toContain('username=ali');
+    expect(server[0]).toMatchObject({ accountId: null, name: 'alice' });
+  });
+
+  it('asks the assignable endpoint when an issue key is known', async () => {
+    // Global user search is permission-restricted on many Cloud sites; the per-issue
+    // endpoint is the one an ordinary commenter can actually use.
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([]));
+    vi.stubGlobal('fetch', fetchMock);
+    await cloudClient().searchUsers('ali', 'AB-1');
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(url).toContain('/user/assignable/search');
+    expect(url).toContain('issueKey=AB-1');
+  });
+
+  it('returns nothing for a blank query without calling out', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    expect(await cloudClient().searchUsers('   ')).toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('JiraClient.uploadAttachments', () => {
+  it('sends multipart with the XSRF header and NO hand-written Content-Type', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse([{ id: '5', filename: 'log.txt', size: 3 }]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const out = await cloudClient().uploadAttachments('AB-1', [
+      { filename: 'log.txt', data: new Uint8Array([104, 105, 33]) },
+    ]);
+
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    const headers = init.headers as Record<string, string>;
+    // fetch writes Content-Type itself, including the boundary; a hand-written one has
+    // no boundary and JIRA rejects the body.
+    expect(headers['Content-Type']).toBeUndefined();
+    expect(headers['X-Atlassian-Token']).toBe('no-check');
+    expect(init.body).toBeInstanceOf(FormData);
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/issue/AB-1/attachments');
+    expect(out[0]).toMatchObject({ id: '5', filename: 'log.txt', size: 3 });
+  });
+
+  it('does not call out at all when there is nothing to upload', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    expect(await cloudClient().uploadAttachments('AB-1', [])).toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});

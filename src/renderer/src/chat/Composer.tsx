@@ -15,7 +15,9 @@
  * on the board, or a comment on the ticket — and hiding them in an overflow made a
  * two-click job out of a one-click one.
  */
+import { useEffect, useRef, useState } from 'react';
 import {
+  Badge,
   Button,
   Caption1,
   Dropdown,
@@ -24,11 +26,20 @@ import {
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
-import { AgentsRegular, FlagRegular, SendRegular } from '@fluentui/react-icons';
+import { AgentsRegular, AttachRegular, FlagRegular, SendRegular } from '@fluentui/react-icons';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { Project, Task } from '@shared/model';
+import type { JiraUserOption } from '@shared/ipc';
 import type { ChatAvailability } from '../taskChat';
+import { MentionPicker } from './MentionPicker';
+import {
+  findMentionQuery,
+  insertMention,
+  reconcileMentions,
+  type ComposerValue,
+  type MentionQuery,
+} from './mentions';
 
 const MODELS: ClaudeModel[] = ['haiku', 'sonnet', 'opus'];
 const MODES: PermissionMode[] = ['acceptEdits', 'plan', 'manual', 'bypassPermissions'];
@@ -68,6 +79,16 @@ const useStyles = makeStyles({
   muted: { color: tokens.colorNeutralForeground3 },
   picker: { minWidth: '108px' },
   blocked: { color: tokens.colorPaletteYellowForeground1 },
+  chips: { display: 'flex', flexWrap: 'wrap', gap: '4px' },
+  chipX: {
+    border: 'none',
+    background: 'none',
+    cursor: 'pointer',
+    color: 'inherit',
+    padding: '0 0 0 4px',
+    fontSize: tokens.fontSizeBase300,
+    lineHeight: 1,
+  },
 });
 
 export interface ComposerProps {
@@ -78,11 +99,16 @@ export interface ComposerProps {
   chat: ChatAvailability | null;
   /** "Talking to step 2 of 4" — set when the target is a step of this card. */
   stepCaption: string | null;
-  value: string;
-  onChange: (value: string) => void;
+  /** Text, the people named in it, and the files to attach. */
+  value: ComposerValue;
+  onChange: (value: ComposerValue) => void;
   busy: boolean;
   /** True when this card is linked to a ticket, so the third action makes sense. */
   isJira: boolean;
+  /** Look people up for the @mention picker (JIRA cards only). */
+  onSearchPeople?: (query: string) => Promise<JiraUserOption[]>;
+  /** Open the OS file picker; returns the chosen absolute paths. */
+  onPickAttachments?: () => Promise<string[]>;
   onSendChat: () => void;
   onAddNote: () => void;
   /** File the text as the card's progress note — the one line the board shows. */
@@ -101,6 +127,8 @@ export function Composer({
   onChange,
   busy,
   isJira,
+  onSearchPeople,
+  onPickAttachments,
   onSendChat,
   onAddNote,
   onPostStatus,
@@ -109,11 +137,81 @@ export function Composer({
 }: ComposerProps): JSX.Element {
   const styles = useStyles();
   const canChat = chat?.offered === true && chat.can;
-  const empty = !value.trim();
+  const empty = !value.text.trim();
   // The effective settings: this card's override, else the agent project's default.
   const model = task.agentModel ?? agentProject?.defaultModel ?? 'sonnet';
   const mode = task.agentMode ?? agentProject?.defaultPermissionMode ?? 'acceptEdits';
   const live = task.status === 'running' || task.status === 'waiting-input';
+
+  // ---- @mentions -----------------------------------------------------------
+  // Only offered on a JIRA card: the other three destinations are plain text, and a
+  // picker that inserts a name nothing will resolve is a picker that lies.
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [query, setQuery] = useState<MentionQuery | null>(null);
+  const [people, setPeople] = useState<JiraUserOption[]>([]);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [searching, setSearching] = useState(false);
+  const mentionsOn = isJira && Boolean(onSearchPeople);
+  const pickerOpen = mentionsOn && query !== null;
+
+  // Debounced lookup. The generation counter is what keeps a slow response for "al"
+  // from landing after a fast one for "alice" and replacing the better list.
+  const generation = useRef(0);
+  useEffect(() => {
+    if (!pickerOpen || !onSearchPeople || !query) {
+      setPeople([]);
+      setSearching(false);
+      return;
+    }
+    const mine = ++generation.current;
+    setSearching(true);
+    const timer = setTimeout(() => {
+      void onSearchPeople(query.query).then((found) => {
+        if (generation.current !== mine) return;
+        setPeople(found);
+        setActiveIndex(0);
+        setSearching(false);
+      });
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [pickerOpen, query?.query, onSearchPeople]);
+
+  /** Recompute the value and the open query after any edit to the textarea. */
+  function editText(next: string, caret: number): void {
+    onChange({
+      ...value,
+      text: next,
+      mentions: reconcileMentions(value.mentions, value.text, next),
+    });
+    setQuery(mentionsOn ? findMentionQuery(next, caret) : null);
+  }
+
+  function acceptMention(person: JiraUserOption): void {
+    if (!query) return;
+    const next = insertMention(value, query, {
+      accountId: person.id,
+      displayName: person.displayName,
+    });
+    onChange(next.value);
+    setQuery(null);
+    // Put the caret back where the user was, after React has written the new value.
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(next.caret, next.caret);
+      }
+    });
+  }
+
+  async function attach(): Promise<void> {
+    if (!onPickAttachments) return;
+    const picked = await onPickAttachments();
+    if (!picked.length) return;
+    // De-duplicated: picking the same file twice would upload it twice.
+    const merged = [...new Set([...value.attachments, ...picked])];
+    onChange({ ...value, attachments: merged });
+  }
 
   return (
     <div className={styles.root}>
@@ -121,12 +219,55 @@ export function Composer({
       {chat?.offered && !chat.can && <Caption1 className={styles.blocked}>{chat.hint}</Caption1>}
 
       <div className={styles.box}>
+        {pickerOpen && (
+          <MentionPicker
+            people={people}
+            activeIndex={activeIndex}
+            loading={searching}
+            onPick={acceptMention}
+            onHover={setActiveIndex}
+          />
+        )}
         <Textarea
           className={styles.input}
           appearance="filled-lighter"
-          value={value}
-          onChange={(_e, d) => onChange(d.value)}
+          textarea={{ ref: textareaRef }}
+          value={value.text}
+          onChange={(e, d) => editText(d.value, (e.target as HTMLTextAreaElement).selectionStart)}
+          // The caret can move without the text changing (arrows, a click), and that
+          // alone opens or closes the picker.
+          onSelect={(e) => {
+            if (!mentionsOn) return;
+            const el = e.target as HTMLTextAreaElement;
+            setQuery(findMentionQuery(el.value, el.selectionStart));
+          }}
+          onBlur={() => setQuery(null)}
           onKeyDown={(e) => {
+            // While the picker is open it owns the navigation keys — otherwise Enter
+            // would send the half-typed comment instead of accepting the highlighted
+            // name, which is the classic way these controls go wrong.
+            if (pickerOpen && people.length) {
+              if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                setActiveIndex((i) => (i + 1) % people.length);
+                return;
+              }
+              if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                setActiveIndex((i) => (i - 1 + people.length) % people.length);
+                return;
+              }
+              if (e.key === 'Enter' || e.key === 'Tab') {
+                e.preventDefault();
+                acceptMention(people[activeIndex]);
+                return;
+              }
+            }
+            if (pickerOpen && e.key === 'Escape') {
+              e.preventDefault();
+              setQuery(null);
+              return;
+            }
             // Enter sends, Shift+Enter is a newline — the CLI's own contract.
             if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
@@ -178,14 +319,57 @@ export function Composer({
             <Button
               size="small"
               title="Post this text on the linked JIRA issue"
-              disabled={busy || empty}
+              disabled={busy || (empty && !value.attachments.length)}
               onClick={onAddJiraComment}
             >
               Add JIRA comment
             </Button>
           )}
+          {isJira && onPickAttachments && (
+            <Button
+              size="small"
+              appearance="subtle"
+              icon={<AttachRegular />}
+              title="Attach files to the JIRA issue and cite them in the comment"
+              aria-label="Attach files"
+              disabled={busy}
+              onClick={() => void attach()}
+            />
+          )}
           <span className={styles.grow} />
         </div>
+
+        {/* What will be uploaded with the comment. Files go onto the ISSUE and are
+            referenced from the comment — a true inline attachment needs a media-services
+            token exchange a plain REST client cannot do. */}
+        {value.attachments.length > 0 && (
+          <div className={styles.chips}>
+            {value.attachments.map((path) => (
+              <Badge
+                key={path}
+                appearance="tint"
+                color="informative"
+                title={path}
+                icon={<AttachRegular />}
+              >
+                {path.split(/[\\/]/).pop()}
+                <button
+                  type="button"
+                  className={styles.chipX}
+                  aria-label={`Remove ${path}`}
+                  onClick={() =>
+                    onChange({
+                      ...value,
+                      attachments: value.attachments.filter((p) => p !== path),
+                    })
+                  }
+                >
+                  ×
+                </button>
+              </Badge>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Who runs this card, and how. Changing either applies to the NEXT run. */}
