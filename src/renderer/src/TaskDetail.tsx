@@ -22,7 +22,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Badge,
-  Body1,
   Button,
   Caption1,
   MessageBar,
@@ -37,7 +36,7 @@ import type { Project, Task, TaskActivityEntry } from '@shared/model';
 import type { SessionEvent } from '@shared/session';
 import { chatTarget } from '@shared/board';
 import type { StatusKeyword } from '@shared/statusKeywords';
-import { ChevronLeftRegular } from '@fluentui/react-icons';
+import { ChevronLeftRegular, CollectionsEmptyRegular } from '@fluentui/react-icons';
 import { runningSubAgents } from './agentActivity';
 import { stepPosition } from './board/boardColumns';
 import { typeIcon } from './board/TaskCard';
@@ -114,6 +113,22 @@ const useStyles = makeStyles({
   subAgent: { paddingLeft: '18px' },
   subAgentLabel: { color: tokens.colorNeutralForeground3 },
   empty: { color: tokens.colorNeutralForeground3 },
+  /**
+   * Nothing selected. A sentence in the corner of an empty pane reads like a bug —
+   * a large, quiet glyph in the middle reads like a state. The sentence survives as
+   * the wrapper's `aria-label`/`title`, so a screen reader still gets the words.
+   */
+  emptyWrap: {
+    flex: 1,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  emptyIcon: {
+    fontSize: '100px',
+    color: tokens.colorNeutralStroke2,
+    opacity: 0.6,
+  },
 });
 
 export interface TaskDetailProps {
@@ -258,7 +273,14 @@ export function TaskDetail({
   if (!task) {
     return (
       <div className={styles.root}>
-        <Body1 className={styles.empty}>Select a task to see its status and activity.</Body1>
+        <div
+          className={styles.emptyWrap}
+          role="note"
+          aria-label="Select a task to see its status and activity."
+          title="Select a task to see its status and activity."
+        >
+          <CollectionsEmptyRegular className={styles.emptyIcon} />
+        </div>
       </div>
     );
   }
