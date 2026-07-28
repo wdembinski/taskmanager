@@ -237,6 +237,28 @@ field (`customfield_NNNNN`), so the app discovers its id once, caches it, and fa
 back to the issue's `parent`. Used to guess which **agent project** a ticket
 belongs to.
 
+### Merge request (MR)
+
+GitLab's name for a pull request. The app fetches the ones you created that are still
+open and files each under the board card whose **JIRA key** appears in its branch, title
+or description — so the ticket and the code review sit in one place. A red pipeline, an
+unread review comment or a request for changes raises the same orange **attention** ring
+an unread ticket comment does.
+
+### Read markers
+
+The pair of timestamps that decide whether something is shouting: what happened, and
+when you last looked. A ticket has one pair for comments; an MR has **two** — comments
+and pipeline/approval events — kept separate so acknowledging a red pipeline never
+silences a comment that arrives a second later.
+
+### Project tag vs agent project
+
+Two different things a card can point at, and for a long time one column. The **project
+tag** (`projectTagId`) is what a card is *about* — it draws the colour stripe. The
+**agent project** (`agentProjectId`) is the repo a delegated run happens in — it draws
+the agent glyph. Filing a card is not delegating it.
+
 ### Git worktree
 
 A second working directory checked out from the same repository, on its own

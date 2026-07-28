@@ -175,8 +175,29 @@ commits on its own branch in an isolated **git worktree**, which is auto-merged
 back into the base branch when the run finishes cleanly (a merge conflict comes
 back to you as an Attention item).
 
-> **JIRA is read-only, always.** Assigning, starting, or finishing a delegated
-> task never transitions a ticket or writes a comment back to JIRA.
+> **A delegated run never writes to JIRA.** Assigning, starting or finishing one
+> never transitions a ticket or posts a comment. You can write to JIRA yourself —
+> drag a card between columns, post a comment, create a card as a real issue — but
+> the agent never does it on your behalf.
+
+### Merge requests on the card
+
+With **Settings → GitLab** configured, your open merge requests are fetched on their
+own timer and each is filed under the card whose JIRA key it names — in the branch, the
+title or the description. A key nothing on the board carries is ignored, which is what
+keeps `UTF-8` and `ISO-8601` from being read as tickets.
+
+The MR shows as a row on the card (pipeline dot, `!123`, source branch) and as a fuller
+block in the detail pane: pipeline, approvals, reviewer state, and two separate "seen"
+actions. Two, because a review comment and a red pipeline are separate reasons for the
+card to be shouting and are tracked separately — acknowledging the pipeline must not
+silence a comment that lands a second later.
+
+Only MRs you **created** are fetched. Ones where you are merely a reviewer are someone
+else's to land, and folding them in would double the board's noise.
+
+> **Approvals may read "unknown".** GitLab's `/approvals` endpoint is tier-gated and
+> refuses on some instances; the pane says so rather than showing a confident `0/0`.
 
 ### Answering it
 

@@ -38,7 +38,7 @@ plan the orchestrator could one day run on its own repo.
 | 13 | The workspace refresh (nav rail, status bar, one-pane detail) | ✅ shipped |
 | 14 | Sprints on the board | ✅ shipped |
 | 15 | The board grows up (IN REVIEW, status map, priority, notes, colours) | ✅ shipped |
-| 16 | Seventeen fixes and two integrations (bugs, workspace, JIRA depth, auto-update, GitLab) | 🚧 in progress (1–2 done) |
+| 16 | Seventeen fixes and two integrations (bugs, workspace, JIRA depth, auto-update, GitLab) | ✅ shipped (v0.30.0) |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -909,46 +909,58 @@ sprint chip stays on cards while the sprint filter is off.
       dialog. Settings → General → Updates carries the state, the progress and *Check
       now* — or, on a `manual` install, a link to the releases page. `pnpm package` now
       publishes `onTagOrDraft`; `pnpm package:local` is the upload-nothing build.
-- [ ] **4 — An empty detail pane says so with a glyph**, not a sentence.
-- [ ] **5 — The detail pane can be hidden** (`showTaskDetail`, on by default).
-- [ ] **6 — The window remembers its size and whether it was maximized**, cooperating
+- [x] **4 — An empty detail pane says so with a glyph**, not a sentence.
+- [x] **5 — The detail pane can be hidden** (`showTaskDetail`, on by default).
+- [x] **6 — The window remembers its size and whether it was maximized**, cooperating
       with the frameless title bar and the WSLg manual-maximize fallback.
-- [ ] **7 — A viewer for the status map**: every status the instance reports, the column
+- [x] **7 — A viewer for the status map**: every status the instance reports, the column
       it resolves to, and *which tier decided* — the surface that would have made item 2
       obvious.
-- [ ] **8 — Create a card as a JIRA issue**, reading the created issue back through
+- [x] **8 — Create a card as a JIRA issue**, reading the created issue back through
       `issueToTask` so it is identical to a synced one.
-- [ ] **9 — Your own comment must not shout.** `latestCommentAt` ignores authorship, so
+- [x] **9 — Your own comment must not shout.** `latestCommentAt` ignores authorship, so
       a comment you post in the JIRA web UI lights your own card orange.
-- [ ] **10 — @mentions and attachments when commenting** (a real ADF builder, user
+- [x] **10 — @mentions and attachments when commenting** (a real ADF builder, user
       search, and a multipart upload path).
-- [ ] **11 — Mentions and attachments on incoming comments.** The ADF flattener collects
+- [x] **11 — Mentions and attachments on incoming comments.** The ADF flattener collects
       only `text` leaves, so a mention's label is dropped entirely today.
-- [ ] **12 — GitLab.** A `merge_requests` table, a client/sync/poller mirroring the JIRA
+- [x] **12 — GitLab.** A `merge_requests` table, a client/sync/poller mirroring the JIRA
       ones, MR rows on the card and a rich list in the pane, and MR attention folded into
       `chainNeedsAttention` so the ring and the card ordering cannot disagree.
-- [ ] **13 — Any colour for a project.** The fixed eight-swatch palette stays as the fast
+- [x] **13 — Any colour for a project.** The fixed eight-swatch palette stays as the fast
       path; a custom chip beside it opens Fluent's own `ColorPicker` plus a hex field.
       `onChange` keeps its signature, so the status-keyword editor gets it for free.
-- [ ] **14 — Filing a card is not delegating it.** `task:setProject` and
+- [x] **14 — Filing a card is not delegating it.** `task:setProject` and
       `task:assignAgent` write the same `agentProjectId` column, so merely tagging a card
       as "a Billing card" gives it the agent glyph and makes `resolveAgentProject` treat
       it as an explicit human assignment. Split into `projectTagId` (what the card is
       about) and `agentProjectId` (where a delegated run happens), with a **one-shot**
       guarded back-fill that keeps a card delegated only where there is evidence of a
       real run — a session id, an agent mode/model, or a saved plan.
-- [ ] **15 — The project stripe is clipped at the top of the board.** Two candidate
+- [x] **15 — The project stripe is clipped at the top of the board.** Two candidate
       causes (no breathing room under the sticky column header at rest; a card sliding
       *under* that header on scroll, where the 3px stripe is the first thing lost).
       Reproduce before choosing between padding and `scroll-margin-top`.
-- [ ] **16 — A heavier attention ring.** Already 2px, but it is a shadow painted outside
+- [x] **16 — A heavier attention ring.** Already 2px, but it is a shadow painted outside
       the card against a dark column, so it reads thin. 3px, with the selected+unread
       stack widened to match so the brand ring still sits outside the orange one.
-- [ ] **17 — The sprint name belongs in the status bar.** With the sprint filter on every
+- [x] **17 — The sprint name belongs in the status bar.** With the sprint filter on every
       card carries the same chip; move the name to the blue footer and keep the chip only
       while the filter is off, which is when it distinguishes anything. Derived by a pure
       `currentSprintName(tasks)` that returns null when the cards disagree, so the bar
       can never claim a sprint the board is not showing.
+
+**Worked in one run** rather than one item per session, at the user's request. The
+order was the user's, with two swaps: item 9 was pulled ahead of item 8 (both JIRA, and
+9 is a one-line bug), and items 10–11 ahead of item 8 so the ADF module existed before
+the issue-creation path that reuses it for a description.
+
+- [ ] **Live E2E still owed** for the whole phase — see the per-item checks in the plan
+      file's Verification section. The biggest are item 3's updater feed (a local
+      `http-server` against an installed build, then a draft GitHub release), item 12's
+      GitLab round trip (open an MR with the ticket key in the branch, break the
+      pipeline, comment as someone else, mark read), item 14's one-shot back-fill on a
+      real database, and items 15–16, which are the only two decided by eye.
 
 ---
 
