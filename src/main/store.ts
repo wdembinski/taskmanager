@@ -29,11 +29,18 @@ import { hostJoin } from '@shared/wslPath';
 import type { LimitState } from '@shared/limit';
 import type { SessionEvent } from '@shared/session';
 import type { UsageSample } from '@shared/usage';
-import { type AppSettings, DEFAULT_JIRA_SETTINGS, DEFAULT_SETTINGS } from '@shared/settings';
+import {
+  type AppSettings,
+  DEFAULT_GITLAB_SETTINGS,
+  DEFAULT_JIRA_SETTINGS,
+  DEFAULT_SETTINGS,
+} from '@shared/settings';
 import { mergeActivity } from './activityMerge';
 import type { JiraEpicFieldCache } from './jira/epicField';
 import type { JiraSprintFieldCache } from './jira/jiraSprint';
 import type { JiraIdentityCache } from './jira/identity';
+import type { GitLabIdentityCache } from './gitlab/identity';
+import type { MergeRequest, MergeRequestState, PipelineStatus } from '@shared/mergeRequest';
 import type { ParsedTask } from './planParser';
 import { splitProjectTag } from './projectTagMigration';
 import type { SavedWindowState } from './windowState';
@@ -250,6 +257,22 @@ export interface Store {
   /** Persist the full app settings object. */
   saveSettings(settings: AppSettings): void;
   /** Persist the JIRA token (opaque, already encrypted by the caller). */
+  /** Every stored merge request, newest activity first. */
+  listMergeRequests(): MergeRequest[];
+  /** Insert or update one merge request (by its stable `gl-{project}-{iid}` id). */
+  upsertMergeRequest(mr: MergeRequest): void;
+  /** Drop merge requests GitLab no longer lists. */
+  deleteMergeRequests(ids: readonly string[]): void;
+  /** Mark an MR's discussion read, or its pipeline/approval events seen. Returns it. */
+  markMergeRequestRead(id: string, at: number): MergeRequest | undefined;
+  markMergeRequestEventsSeen(id: string, at: number): MergeRequest | undefined;
+  /** The GitLab token ciphertext, beside the JIRA trio. */
+  saveGitLabToken(value: string): void;
+  loadGitLabToken(): string | null;
+  clearGitLabToken(): void;
+  /** Cache `GET /user` per instance, so notes can be attributed without a request each. */
+  saveGitLabIdentity(cache: GitLabIdentityCache): void;
+  loadGitLabIdentity(): GitLabIdentityCache | null;
   saveJiraToken(value: string): void;
   /** Load the stored JIRA token ciphertext, or null if none is set. */
   loadJiraToken(): string | null;
@@ -418,6 +441,44 @@ export function createStore(dbPath: string): Store {
     );
     CREATE INDEX IF NOT EXISTS idx_token_usage_time ON token_usage(createdAt);
     CREATE INDEX IF NOT EXISTS idx_token_usage_project ON token_usage(projectId, createdAt);
+    -- GitLab merge requests, matched to board cards by the JIRA key in their branch,
+    -- title or description. A NEW table, so nothing to migrate.
+    --
+    -- taskId is nullable and NOT unique: an MR whose ticket is not on the board keeps
+    -- its row (and therefore its read markers) as an orphan and is re-matched on every
+    -- sync, and one ticket can perfectly well have several MRs.
+    --
+    -- Two independent read markers on purpose. lastReadAt clears an unread comment;
+    -- lastEventSeenAt clears a red pipeline or a dropped approval. One marker would
+    -- mean that opening an MR after a failed pipeline also silenced a comment landing a
+    -- second later — the same pairing the JIRA side uses.
+    CREATE TABLE IF NOT EXISTS merge_requests (
+      id                TEXT PRIMARY KEY,   -- gl-{projectId}-{iid}
+      taskId            TEXT,               -- NULL = no board card claims it
+      provider          TEXT NOT NULL,
+      gitlabProjectId   INTEGER NOT NULL,
+      projectPath       TEXT NOT NULL,
+      iid               INTEGER NOT NULL,
+      title             TEXT NOT NULL,
+      webUrl            TEXT NOT NULL,
+      sourceBranch      TEXT NOT NULL,
+      targetBranch      TEXT NOT NULL,
+      state             TEXT NOT NULL,
+      draft             INTEGER NOT NULL,
+      pipelineStatus    TEXT NOT NULL,
+      pipelineUrl       TEXT,
+      approvalsRequired INTEGER,            -- NULL = the instance would not say
+      approvalsGiven    INTEGER NOT NULL,
+      changesRequested  INTEGER NOT NULL,
+      issueKeys         TEXT NOT NULL,      -- JSON array
+      latestNoteAt      INTEGER,
+      lastReadAt        INTEGER,
+      lastEventAt       INTEGER,
+      lastEventSeenAt   INTEGER,
+      updatedAt         INTEGER NOT NULL,
+      syncedAt          INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_mr_task ON merge_requests(taskId);
   `);
 
   // Migrate databases created before Phase 3 added the write-back column.
@@ -702,6 +763,106 @@ export function createStore(dbPath: string): Store {
   /** Guard for the one-shot `agentProjectId` → `projectTagId` back-fill below. */
   const PROJECT_TAG_SPLIT_KEY = 'migration.projectTagSplit';
 
+  /** The GitLab PAT ciphertext, and the cached `GET /user` for the configured instance. */
+  const GITLAB_TOKEN_KEY = 'gitlab.pat';
+  const GITLAB_IDENTITY_KEY = 'gitlab.identity';
+
+  /** A merge_requests row: SQLite has no boolean, and `issueKeys` is JSON. */
+  interface MergeRequestRow {
+    id: string;
+    taskId: string | null;
+    provider: string;
+    gitlabProjectId: number;
+    projectPath: string;
+    iid: number;
+    title: string;
+    webUrl: string;
+    sourceBranch: string;
+    targetBranch: string;
+    state: string;
+    draft: number;
+    pipelineStatus: string;
+    pipelineUrl: string | null;
+    approvalsRequired: number | null;
+    approvalsGiven: number;
+    changesRequested: number;
+    issueKeys: string;
+    latestNoteAt: number | null;
+    lastReadAt: number | null;
+    lastEventAt: number | null;
+    lastEventSeenAt: number | null;
+    updatedAt: number;
+    syncedAt: number;
+  }
+
+  function rowToMergeRequest(r: MergeRequestRow): MergeRequest {
+    let issueKeys: string[] = [];
+    try {
+      const parsed: unknown = JSON.parse(r.issueKeys);
+      if (Array.isArray(parsed)) issueKeys = parsed.filter((k): k is string => typeof k === 'string');
+    } catch {
+      issueKeys = []; // corrupt JSON — the next sync rediscovers them
+    }
+    return {
+      id: r.id,
+      taskId: r.taskId,
+      provider: 'gitlab',
+      gitlabProjectId: r.gitlabProjectId,
+      projectPath: r.projectPath,
+      iid: r.iid,
+      title: r.title,
+      webUrl: r.webUrl,
+      sourceBranch: r.sourceBranch,
+      targetBranch: r.targetBranch,
+      state: r.state as MergeRequestState,
+      draft: r.draft === 1,
+      pipelineStatus: r.pipelineStatus as PipelineStatus,
+      pipelineUrl: r.pipelineUrl,
+      approvalsRequired: r.approvalsRequired,
+      approvalsGiven: r.approvalsGiven,
+      changesRequested: r.changesRequested === 1,
+      issueKeys,
+      latestNoteAt: r.latestNoteAt,
+      lastReadAt: r.lastReadAt,
+      lastEventAt: r.lastEventAt,
+      lastEventSeenAt: r.lastEventSeenAt,
+      updatedAt: r.updatedAt,
+      syncedAt: r.syncedAt,
+    };
+  }
+
+  const selectMergeRequests = db.prepare(
+    `SELECT * FROM merge_requests ORDER BY updatedAt DESC`,
+  );
+  const selectMergeRequest = db.prepare(`SELECT * FROM merge_requests WHERE id = ?`);
+  const upsertMergeRequestStmt = db.prepare(
+    `INSERT INTO merge_requests
+       (id, taskId, provider, gitlabProjectId, projectPath, iid, title, webUrl,
+        sourceBranch, targetBranch, state, draft, pipelineStatus, pipelineUrl,
+        approvalsRequired, approvalsGiven, changesRequested, issueKeys,
+        latestNoteAt, lastReadAt, lastEventAt, lastEventSeenAt, updatedAt, syncedAt)
+     VALUES
+       (@id, @taskId, @provider, @gitlabProjectId, @projectPath, @iid, @title, @webUrl,
+        @sourceBranch, @targetBranch, @state, @draft, @pipelineStatus, @pipelineUrl,
+        @approvalsRequired, @approvalsGiven, @changesRequested, @issueKeys,
+        @latestNoteAt, @lastReadAt, @lastEventAt, @lastEventSeenAt, @updatedAt, @syncedAt)
+     ON CONFLICT(id) DO UPDATE SET
+       taskId = excluded.taskId, projectPath = excluded.projectPath,
+       title = excluded.title, webUrl = excluded.webUrl,
+       sourceBranch = excluded.sourceBranch, targetBranch = excluded.targetBranch,
+       state = excluded.state, draft = excluded.draft,
+       pipelineStatus = excluded.pipelineStatus, pipelineUrl = excluded.pipelineUrl,
+       approvalsRequired = excluded.approvalsRequired,
+       approvalsGiven = excluded.approvalsGiven,
+       changesRequested = excluded.changesRequested, issueKeys = excluded.issueKeys,
+       latestNoteAt = excluded.latestNoteAt, lastReadAt = excluded.lastReadAt,
+       lastEventAt = excluded.lastEventAt, lastEventSeenAt = excluded.lastEventSeenAt,
+       updatedAt = excluded.updatedAt, syncedAt = excluded.syncedAt`,
+  );
+  const deleteMergeRequestStmt = db.prepare(`DELETE FROM merge_requests WHERE id = ?`);
+  const markMrRead = db.prepare(`UPDATE merge_requests SET lastReadAt = ? WHERE id = ?`);
+  const markMrEventsSeen = db.prepare(`UPDATE merge_requests SET lastEventSeenAt = ? WHERE id = ?`);
+
   // ---------------------------------------------------------------------------
   // One-shot: split "what this card is about" out of "where it runs".
   //
@@ -735,12 +896,15 @@ export function createStore(dbPath: string): Store {
     if (!row) return { ...DEFAULT_SETTINGS };
     try {
       const parsed = JSON.parse(row.value) as Partial<AppSettings>;
-      // Deep-merge the nested jira block so a stored blob missing newer jira fields
-      // (or lacking jira entirely) still fills them from the defaults.
+      // Deep-merge EVERY nested block so a stored blob missing newer fields (or lacking
+      // the block entirely) still fills them from the defaults. `gitlab` matters as much
+      // as `jira` here: without it every existing user would load `gitlab: undefined`
+      // and the poller would throw on `.enabled` at startup.
       return {
         ...DEFAULT_SETTINGS,
         ...parsed,
         jira: { ...DEFAULT_JIRA_SETTINGS, ...(parsed.jira ?? {}) },
+        gitlab: { ...DEFAULT_GITLAB_SETTINGS, ...(parsed.gitlab ?? {}) },
       };
     } catch {
       return { ...DEFAULT_SETTINGS };
@@ -1352,6 +1516,65 @@ export function createStore(dbPath: string): Store {
 
     saveSettings(settings) {
       upsertState.run(SETTINGS_KEY, JSON.stringify(settings));
+    },
+
+    listMergeRequests() {
+      return (selectMergeRequests.all() as MergeRequestRow[]).map(rowToMergeRequest);
+    },
+
+    upsertMergeRequest(mr) {
+      upsertMergeRequestStmt.run({
+        ...mr,
+        draft: mr.draft ? 1 : 0,
+        changesRequested: mr.changesRequested ? 1 : 0,
+        issueKeys: JSON.stringify(mr.issueKeys),
+      });
+    },
+
+    deleteMergeRequests(ids) {
+      for (const id of ids) deleteMergeRequestStmt.run(id);
+    },
+
+    markMergeRequestRead(id, at) {
+      markMrRead.run(at, id);
+      const row = selectMergeRequest.get(id) as MergeRequestRow | undefined;
+      return row ? rowToMergeRequest(row) : undefined;
+    },
+
+    markMergeRequestEventsSeen(id, at) {
+      markMrEventsSeen.run(at, id);
+      const row = selectMergeRequest.get(id) as MergeRequestRow | undefined;
+      return row ? rowToMergeRequest(row) : undefined;
+    },
+
+    saveGitLabToken(value) {
+      upsertState.run(GITLAB_TOKEN_KEY, value);
+    },
+
+    loadGitLabToken() {
+      const row = selectState.get(GITLAB_TOKEN_KEY) as { value: string } | undefined;
+      return row?.value ?? null;
+    },
+
+    clearGitLabToken() {
+      deleteState.run(GITLAB_TOKEN_KEY);
+    },
+
+    saveGitLabIdentity(cache) {
+      upsertState.run(GITLAB_IDENTITY_KEY, JSON.stringify(cache));
+    },
+
+    loadGitLabIdentity() {
+      const row = selectState.get(GITLAB_IDENTITY_KEY) as { value: string } | undefined;
+      if (!row) return null;
+      try {
+        const parsed = JSON.parse(row.value) as GitLabIdentityCache;
+        return typeof parsed?.baseUrl === 'string' && typeof parsed?.username === 'string'
+          ? parsed
+          : null;
+      } catch {
+        return null; // corrupt value — re-fetch
+      }
     },
 
     saveJiraToken(value) {

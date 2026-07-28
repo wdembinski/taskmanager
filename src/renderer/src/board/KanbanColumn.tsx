@@ -114,7 +114,7 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
         {props.cards.length === 0 ? (
           <Caption1 className={styles.empty}>—</Caption1>
         ) : (
-          props.cards.map(({ task, subtasks }) => (
+          props.cards.map(({ task, subtasks, mergeRequests }) => (
             <TaskCard
               key={task.id}
               task={task}
@@ -123,10 +123,11 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               projectColor={props.projectColorOf(task)}
               showSprint={props.showSprint}
               subtasks={subtasks}
+              mergeRequests={mergeRequests}
               statusKeywords={props.statusKeywords}
               selected={task.id === props.selectedTaskId}
               selectedTaskId={props.selectedTaskId}
-              draggable={props.canDrag({ task, subtasks })}
+              draggable={props.canDrag({ task, subtasks, mergeRequests })}
               dragging={task.id === props.draggingId}
               onSelect={() => props.onSelectTask(task.id)}
               onSelectSubtask={props.onSelectTask}

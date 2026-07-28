@@ -33,8 +33,7 @@ import { AssignAgentDialog } from './AssignAgentDialog';
 import { stepPosition } from './board/boardColumns';
 import { STATUS_LABEL } from './taskStatus';
 import { usePendingAttention } from './usePendingAttention';
-
-const ASK_ORANGE = '#F2A900';
+import { UNREAD_ORANGE as ASK_ORANGE } from '@shared/accent';
 
 const useStyles = makeStyles({
   /**

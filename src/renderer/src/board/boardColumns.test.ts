@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardColumn, Task, TaskStatus } from '@shared/model';
+import type { MergeRequest } from '@shared/mergeRequest';
 import {
   COLUMN_META,
   columnForStatus,
@@ -194,6 +195,7 @@ describe('sortCards', () => {
   const c = (id: string, order: number, priority: string | null, over: Partial<Task> = {}) => ({
     task: card(id, { order, externalPriority: priority, ...over }),
     subtasks: [] as Task[],
+    mergeRequests: [] as MergeRequest[],
   });
 
   const ids = (cards: ReturnType<typeof sortCards>): string[] => cards.map((x) => x.task.id);
@@ -244,8 +246,53 @@ describe('sortCards', () => {
     const parked = {
       task: card('parent', { order: 9, externalPriority: 'Lowest' }),
       subtasks: [card('s1', { parentTaskId: 'parent', status: 'failed' })],
+      mergeRequests: [] as MergeRequest[],
     };
     expect(ids(sortCards([c('high', 0, 'Highest'), parked]))).toEqual(['parent', 'high']);
+  });
+
+  // The ring and the ordering are the same predicate on purpose: a board where the
+  // loudest card is not the top one is a board that is lying.
+  it('lifts a card whose MERGE REQUEST wants you, above even the top priority', () => {
+    const loudMr: MergeRequest = {
+      id: 'gl-9-1',
+      taskId: 'mr-card',
+      provider: 'gitlab',
+      gitlabProjectId: 9,
+      projectPath: 'acme/web',
+      iid: 1,
+      title: 'ENG-1',
+      webUrl: 'https://gitlab/1',
+      sourceBranch: 'feature/ENG-1',
+      targetBranch: 'main',
+      state: 'opened',
+      draft: false,
+      pipelineStatus: 'failed',
+      pipelineUrl: null,
+      approvalsRequired: 1,
+      approvalsGiven: 0,
+      changesRequested: false,
+      issueKeys: ['ENG-1'],
+      latestNoteAt: null,
+      lastReadAt: null,
+      lastEventAt: 200,
+      lastEventSeenAt: null,
+      updatedAt: 100,
+      syncedAt: 100,
+    };
+    const withMr = {
+      task: card('mr-card', { order: 9, externalPriority: 'Lowest' }),
+      subtasks: [] as Task[],
+      mergeRequests: [loudMr],
+    };
+    expect(ids(sortCards([c('high', 0, 'Highest'), withMr]))).toEqual(['mr-card', 'high']);
+
+    // Acknowledge the pipeline and the card falls back to its priority position.
+    const quiet = {
+      ...withMr,
+      mergeRequests: [{ ...loudMr, lastEventSeenAt: 200 }],
+    };
+    expect(ids(sortCards([c('high', 0, 'Highest'), quiet]))).toEqual(['high', 'mr-card']);
   });
 
   it('falls back to `order` so equal cards never shuffle', () => {

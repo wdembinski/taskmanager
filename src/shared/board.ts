@@ -5,6 +5,7 @@
  * either importing the other. No React, no Electron, no DB — trivially testable.
  */
 import type { BoardColumn, JiraStatusCategory, ManualStatus, Task, TaskStatus } from './model';
+import { mrNeedsAttention, type MergeRequest } from './mergeRequest';
 
 /** Which board column a bare status maps to. Total over every `TaskStatus`. */
 export function columnForStatus(status: TaskStatus): BoardColumn {
@@ -144,11 +145,25 @@ export function parkedStep(subtasks: Task[]): Task | null {
 
 /**
  * Whether a card should wear the orange "wants you" frame: an unread ticket comment,
- * its own agent asking, **or a parked step**. One helper so the board card, the detail
- * pane and any future surface can never disagree about which cards are shouting.
+ * its own agent asking, a parked step, **or a merge request that wants you** — a red
+ * pipeline, a review comment, changes requested. One helper so the board card, the
+ * detail pane and any future surface can never disagree about which cards are shouting.
+ *
+ * `mergeRequests` is DEFAULTED, so every existing call site compiles unchanged. But
+ * `sortCards` must pass it: the ordering and the ring are the same predicate on purpose,
+ * and a board where the loudest card is not the top one is a board that is lying.
  */
-export function chainNeedsAttention(task: Task, subtasks: Task[]): boolean {
-  return hasUnreadJira(task) || needsAgentInput(task) || parkedStep(subtasks) !== null;
+export function chainNeedsAttention(
+  task: Task,
+  subtasks: Task[],
+  mergeRequests: readonly MergeRequest[] = [],
+): boolean {
+  return (
+    hasUnreadJira(task) ||
+    needsAgentInput(task) ||
+    parkedStep(subtasks) !== null ||
+    mergeRequests.some(mrNeedsAttention)
+  );
 }
 
 /**

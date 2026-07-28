@@ -6,6 +6,7 @@
 import type { BoardColumn, Task } from '@shared/model';
 import { chainNeedsAttention } from '@shared/board';
 import { priorityRank } from '@shared/priority';
+import type { MergeRequest } from '@shared/mergeRequest';
 
 export type { BoardColumn } from '@shared/model';
 export {
@@ -35,6 +36,12 @@ export interface BoardCard {
   task: Task;
   /** This card's subtasks in execution order; empty for an ordinary card. */
   subtasks: Task[];
+  /**
+   * The merge requests filed under this card. Carried on the CARD rather than the task
+   * because `issueToTask` rebuilds the whole task literal on every JIRA sync, so an
+   * array hung there would be clobbered on every poll.
+   */
+  mergeRequests: MergeRequest[];
 }
 
 /**
@@ -46,7 +53,10 @@ export interface BoardCard {
  * runner executes them in). A step whose parent isn't on this board is orphaned — it is
  * promoted to a top-level card rather than dropped, so it can never become invisible.
  */
-export function groupSubtasks(tasks: readonly Task[]): BoardCard[] {
+export function groupSubtasks(
+  tasks: readonly Task[],
+  mrsByTask: ReadonlyMap<string, MergeRequest[]> = new Map(),
+): BoardCard[] {
   const ids = new Set(tasks.map((t) => t.id));
   const children = new Map<string, Task[]>();
   for (const task of tasks) {
@@ -59,7 +69,11 @@ export function groupSubtasks(tasks: readonly Task[]): BoardCard[] {
   for (const list of children.values()) list.sort((a, b) => a.order - b.order);
   return tasks
     .filter((t) => !t.parentTaskId || !ids.has(t.parentTaskId))
-    .map((task) => ({ task, subtasks: children.get(task.id) ?? [] }));
+    .map((task) => ({
+      task,
+      subtasks: children.get(task.id) ?? [],
+      mergeRequests: mrsByTask.get(task.id) ?? [],
+    }));
 }
 
 /**
@@ -80,8 +94,8 @@ export function groupSubtasks(tasks: readonly Task[]): BoardCard[] {
 export function sortCards(cards: readonly BoardCard[]): BoardCard[] {
   return [...cards].sort((a, b) => {
     const attention =
-      Number(chainNeedsAttention(b.task, b.subtasks)) -
-      Number(chainNeedsAttention(a.task, a.subtasks));
+      Number(chainNeedsAttention(b.task, b.subtasks, b.mergeRequests)) -
+      Number(chainNeedsAttention(a.task, a.subtasks, a.mergeRequests));
     if (attention !== 0) return attention;
     const priority = priorityRank(b.task.externalPriority) - priorityRank(a.task.externalPriority);
     if (priority !== 0) return priority;

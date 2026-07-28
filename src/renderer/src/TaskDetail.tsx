@@ -33,6 +33,7 @@ import {
 } from '@fluentui/react-components';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
 import type { Project, Task, TaskActivityEntry } from '@shared/model';
+import type { MergeRequest } from '@shared/mergeRequest';
 import type { SessionEvent } from '@shared/session';
 import { chatTarget } from '@shared/board';
 import type { StatusKeyword } from '@shared/statusKeywords';
@@ -44,6 +45,7 @@ import { ChatTurns } from './chat/ChatTurns';
 import { Composer } from './chat/Composer';
 import { foldTurns } from './chat/turns';
 import { EMPTY_COMPOSER, type ComposerValue } from './chat/mentions';
+import { MergeRequests } from './MergeRequests';
 import { StepBrief, TaskSteps } from './TaskSteps';
 import { TaskAgentPanel } from './TaskAgentPanel';
 import { TaskDetailsCell } from './TaskDetailsCell';
@@ -143,6 +145,8 @@ export interface TaskDetailProps {
   subtasks?: Task[];
   /** The card a shown step belongs to (null for an ordinary card). */
   parentTask?: Task | null;
+  /** The merge requests filed under this card (empty when GitLab is off). */
+  mergeRequests?: MergeRequest[];
   /** The status-note vocabulary, so a past update reads in the colour the board gave it. */
   statusKeywords?: readonly StatusKeyword[];
   /** Show another task in this pane (the breadcrumb, and opening a step). */
@@ -158,6 +162,7 @@ export function TaskDetail({
   agentProjects = [],
   subtasks = [],
   parentTask = null,
+  mergeRequests = [],
   statusKeywords,
   onOpenTask,
   onStatusChanged,
@@ -486,6 +491,11 @@ export function TaskDetail({
               subtasks={subtasks}
               onOpen={(id) => onOpenTask?.(id)}
               onChanged={() => onSubtasksChanged?.()}
+            />
+            <MergeRequests
+              mergeRequests={mergeRequests}
+              onMarkRead={(id) => void window.api.invoke('gitlab:markRead', id)}
+              onMarkEventsSeen={(id) => void window.api.invoke('gitlab:markEventsSeen', id)}
             />
           </>
         )}

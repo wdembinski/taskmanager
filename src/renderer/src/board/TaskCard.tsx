@@ -50,9 +50,14 @@ import { priorityColor } from '@shared/priority';
 import { statusNoteColor, type StatusKeyword } from '@shared/statusKeywords';
 import { STATUS_COLOR, STATUS_LABEL } from '../taskStatus';
 import { columnForStatus, statusForColumn, subtaskProgress } from './boardColumns';
+import { UNREAD_ORANGE } from '@shared/accent';
+import {
+  approvalSummary,
+  mrAttentionReason,
+  type MergeRequest,
+  type PipelineStatus,
+} from '@shared/mergeRequest';
 
-/** "Wants you" accent — unread JIRA comments and agents parked on a question. */
-const UNREAD_ORANGE = '#F2A900';
 
 /**
  * The delegation glyph, white so a card an agent owns reads at a glance. Sized to sit
@@ -103,6 +108,17 @@ const useStyles = makeStyles({
     backgroundColor: tokens.colorNeutralBackground2,
   },
   stepSelected: { backgroundColor: tokens.colorNeutralBackground1Selected },
+  /**
+   * An MR row that wants you. A left rule plus a tint, NOT a fourth card boxShadow
+   * variant — the card is already shouting via `chainNeedsAttention`, and adding a
+   * variant would have Griffel replace the orange ring on exactly the card that needs it.
+   */
+  stepLoud: {
+    borderLeft: `3px solid ${UNREAD_ORANGE}`,
+    backgroundColor: tokens.colorNeutralBackground3,
+  },
+  /** An MR row is a link, but it must look exactly like the step rows above it. */
+  mrRow: { textDecoration: 'none', color: 'inherit' },
   // The spinner (16px) and the dot (8px) share this slot so every row's title starts
   // at the same x, whichever glyph the row is showing.
   stepSlot: {
@@ -209,6 +225,19 @@ const EPIC_PURPLE = '#8E4EC6';
  * `in-review` borrows the epic violet: it is the one column that is neither work in
  * flight nor work finished.
  */
+/** A pipeline's dot, in the same vocabulary the step dots use. */
+const PIPELINE_DOT_COLOR: Record<PipelineStatus, string> = {
+  unknown: tokens.colorNeutralForeground4,
+  created: tokens.colorNeutralForeground4,
+  pending: tokens.colorNeutralForeground4,
+  manual: tokens.colorNeutralForeground4,
+  skipped: tokens.colorNeutralForeground4,
+  running: tokens.colorBrandBackground,
+  success: tokens.colorPaletteGreenBackground3,
+  failed: tokens.colorPaletteRedBackground3,
+  canceled: UNREAD_ORANGE,
+};
+
 const STEP_DOT_COLOR: Record<TaskStatus, string> = {
   pending: tokens.colorNeutralForeground4,
   'in-progress': tokens.colorBrandBackground,
@@ -262,6 +291,11 @@ export interface TaskCardProps {
   showSprint?: boolean;
   /** This card's steps in execution order — rendered inside the card. */
   subtasks?: Task[];
+  /**
+   * The merge requests filed under this card. Rendered as rows beneath the steps, and
+   * folded into `chainNeedsAttention` — so the ring and the card ordering agree.
+   */
+  mergeRequests?: MergeRequest[];
   /** The user's status-note vocabulary, which colours the card's progress line. */
   statusKeywords?: readonly StatusKeyword[];
   selected: boolean;
@@ -289,6 +323,7 @@ export function TaskCard({
   projectColor,
   showSprint = true,
   subtasks = [],
+  mergeRequests = [],
   statusKeywords,
   selected,
   selectedTaskId,
@@ -310,7 +345,7 @@ export function TaskCard({
   // An unread comment, the card's own agent asking, or a step that has parked the
   // chain (question or failure) — all mean "this card wants you", and a step has no
   // frame of its own to say it with.
-  const wantsAttention = chainNeedsAttention(task, subtasks);
+  const wantsAttention = chainNeedsAttention(task, subtasks, mergeRequests);
   const progress = subtaskProgress(subtasks);
   // A parked chain looks exactly like one between steps unless the card says so.
   const stopped = parkedStep(subtasks) !== null;
@@ -481,6 +516,44 @@ export function TaskCard({
           </Caption1>
         </div>
       ))}
+
+      {/* Merge requests, in the same row vocabulary as the steps — a dot in the same
+          slot, a title, the same drag cancel and click isolation. An MR that wants you
+          gets a ROW treatment (a left rule and a tint) rather than a fourth card
+          boxShadow variant: the card already goes orange through `chainNeedsAttention`,
+          and a fourth variant is exactly the Griffel replacement trap the comment above
+          `cardUnread` warns about. */}
+      {mergeRequests.map((mr) => {
+        const reason = mrAttentionReason(mr);
+        return (
+          <a
+            key={mr.id}
+            href={mr.webUrl}
+            target="_blank"
+            rel="noreferrer"
+            className={mergeClasses(styles.step, styles.mrRow, reason !== null && styles.stepLoud)}
+            title={reason ?? `!${mr.iid} ${mr.title} · ${approvalSummary(mr)}`}
+            onDragStart={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+            }}
+            // The shell's window-open handler sends target=_blank to the real browser;
+            // stopPropagation keeps the click from also selecting the card behind it.
+            onClick={(e) => e.stopPropagation()}
+          >
+            <span className={styles.stepSlot}>
+              <span
+                className={styles.stepDot}
+                style={{ backgroundColor: PIPELINE_DOT_COLOR[mr.pipelineStatus] }}
+              />
+            </span>
+            <Caption1 className={styles.stepTitle}>
+              {`!${mr.iid} ${mr.sourceBranch}`}
+            </Caption1>
+            {mr.draft && <Caption1 className={styles.progress}>draft</Caption1>}
+          </a>
+        );
+      })}
     </div>
   );
 }

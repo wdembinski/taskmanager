@@ -21,6 +21,7 @@ import {
 import { PanelRightContractRegular, PanelRightExpandRegular } from '@fluentui/react-icons';
 import { PERSONAL_PROJECT_ID, type Project, type Task } from '@shared/model';
 import type { AppSettings } from '@shared/settings';
+import type { MergeRequest } from '@shared/mergeRequest';
 import { AddTaskDialog } from './AddTaskDialog';
 import { PaneLoading } from './PaneLoading';
 import { TaskDetail } from './TaskDetail';
@@ -105,6 +106,10 @@ export function MyTasks(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+  // Merge requests for the WHOLE board in one array, not hung off each Task: a JIRA
+  // sync rebuilds every task literal, so an array living there would be clobbered on
+  // every poll. See the `gitlab:mergeRequests` contract.
+  const [mergeRequests, setMergeRequests] = useState<MergeRequest[]>([]);
 
   const showDone = settings?.jira.showDoneColumn ?? false;
   const jiraEnabled = settings?.jira.enabled ?? false;
@@ -118,14 +123,16 @@ export function MyTasks(): JSX.Element {
   // One seed load for all three channels, so a failure in any of them is reported
   // rather than leaving the board on its spinner.
   const seed = useCallback(async () => {
-    const [board, appSettings, repos] = await Promise.all([
+    const [board, appSettings, repos, mrs] = await Promise.all([
       window.api.invoke('board:tasks'),
       window.api.invoke('settings:get'),
       window.api.invoke('agentProject:list'),
+      window.api.invoke('gitlab:mergeRequests'),
     ]);
     setTasks(board);
     setSettings(appSettings);
     setAgentProjects(repos);
+    setMergeRequests(mrs);
   }, []);
 
   const initial = useInitialLoad(seed);
@@ -159,10 +166,12 @@ export function MyTasks(): JSX.Element {
           : prev,
       );
     });
+    const offMrs = window.api.on('gitlab:mergeRequestsChanged', setMergeRequests);
     return () => {
       offTask();
       offTasks();
       offSettings();
+      offMrs();
     };
   }, [patchTask]);
 
@@ -170,6 +179,18 @@ export function MyTasks(): JSX.Element {
     () => tasks?.find((t) => t.id === selectedTaskId) ?? null,
     [tasks, selectedTaskId],
   );
+
+  /** taskId → its merge requests, so a card can be built in one pass. */
+  const mrsByTask = useMemo(() => {
+    const map = new Map<string, MergeRequest[]>();
+    for (const mr of mergeRequests) {
+      if (!mr.taskId) continue; // an orphan: its ticket is not on this board
+      const list = map.get(mr.taskId);
+      if (list) list.push(mr);
+      else map.set(mr.taskId, [mr]);
+    }
+    return map;
+  }, [mergeRequests]);
 
   const cardsByColumn = useMemo(() => {
     const map: Record<BoardColumn, BoardCard[]> = {
@@ -181,11 +202,13 @@ export function MyTasks(): JSX.Element {
     };
     // A card's steps are not cards of their own — they render inside the parent and
     // travel with it, whatever their own status.
-    for (const card of groupSubtasks(tasks ?? [])) map[columnForTask(card.task)].push(card);
+    for (const card of groupSubtasks(tasks ?? [], mrsByTask)) {
+      map[columnForTask(card.task)].push(card);
+    }
     // Cards that want you first, then by priority — see `sortCards`.
     for (const col of Object.keys(map) as BoardColumn[]) map[col] = sortCards(map[col]);
     return map;
-  }, [tasks]);
+  }, [tasks, mrsByTask]);
 
   /**
    * The chain the selected task belongs to: a card's own steps, or — when a step is
@@ -386,6 +409,7 @@ export function MyTasks(): JSX.Element {
             agentProjects={agentProjects}
             subtasks={chain}
             parentTask={parentOfSelected}
+            mergeRequests={selectedTask ? (mrsByTask.get(selectedTask.id) ?? []) : []}
             statusKeywords={settings?.statusKeywords}
             onOpenTask={setSelectedTaskId}
             onStatusChanged={patchTask}

@@ -48,6 +48,7 @@ import type { ExecTarget, TargetReadiness } from './execTarget';
 import type { ActiveRun, SchedulerChange, TaskChange } from './scheduler';
 import type { AttentionAnswer, AttentionItem } from './attention';
 import type { LimitState } from './limit';
+import type { MergeRequest } from './mergeRequest';
 import type { AppSettings } from './settings';
 import type { UpdateState } from './update';
 import type { UsageSample, UsageSeriesPoint, UsageSummary } from './usage';
@@ -455,6 +456,31 @@ export interface IpcApi {
   'jira:clearCredentials': () => Promise<void>;
   /** Verify the base URL + token by calling `/myself`; returns the display name. */
   'jira:testConnection': () => Promise<JiraTestResult>;
+
+  // --- GitLab. Mirrors the JIRA channels above, one auth mode simpler. ---
+  /** Whether GitLab is enabled, has a stored token, and can encrypt one. */
+  'gitlab:getConfigStatus': () => Promise<JiraConfigStatus>;
+  /** Store the GitLab personal access token, encrypted via the OS secure store. */
+  'gitlab:setCredentials': (token: string) => Promise<{ ok: boolean; message: string }>;
+  /** Remove the stored GitLab token. */
+  'gitlab:clearCredentials': () => Promise<void>;
+  /** Verify base URL + token by calling `/user`; returns the username. */
+  'gitlab:testConnection': () => Promise<JiraTestResult>;
+  /** Fetch merge requests and reconcile them onto the board. Returns the full list. */
+  'gitlab:sync': () => Promise<MergeRequest[]>;
+  /**
+   * Every stored merge request, for the whole board in one call.
+   *
+   * Deliberately NOT hung off `Task`: `issueToTask` rebuilds the whole task literal on
+   * every JIRA sync and `upsertJiraTask` writes the whole row, so an MR array living
+   * there would be clobbered every poll. The board holds the array and derives its own
+   * `Map<taskId, MergeRequest[]>`, exactly as it does for `board:tasks`.
+   */
+  'gitlab:mergeRequests': () => Promise<MergeRequest[]>;
+  /** Mark an MR's discussion read (clears the comment half of its attention). */
+  'gitlab:markRead': (mrId: string) => Promise<MergeRequest[]>;
+  /** Acknowledge an MR's pipeline/approval events (the other half, tracked separately). */
+  'gitlab:markEventsSeen': (mrId: string) => Promise<MergeRequest[]>;
   /**
    * The connected instance's priority names, most urgent first — what the detail
    * pane's priority dropdown offers for a JIRA card, since only names this instance
@@ -597,6 +623,12 @@ export interface IpcEvents {
    * deleted. Carries the project's full, current task list so the UI can replace it.
    */
   'project:tasksChanged': { projectId: string; tasks: Task[] };
+  /**
+   * The merge-request list changed — a GitLab sync landed, or a read marker moved.
+   * Mirrors `project:tasksChanged`: the whole list, so the board replaces rather than
+   * patches.
+   */
+  'gitlab:mergeRequestsChanged': MergeRequest[];
   /**
    * Settings changed in the MAIN process rather than on the Settings screen — the
    * engine learning a JIRA status→column mapping from a successful drag, for one.

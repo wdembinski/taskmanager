@@ -49,10 +49,10 @@ import { Projects } from './Projects';
 import { Settings } from './Settings';
 import { SessionRunner } from './SessionRunner';
 import { TitleBar } from './TitleBar';
+import { UNREAD_ORANGE } from '@shared/accent';
 
 /** The editor's status-bar blue, and the app's own "this one wants you" orange. */
 const STATUS_BLUE = '#007ACC';
-const UNREAD_ORANGE = '#F2A900';
 
 const useStyles = makeStyles({
   shell: {

@@ -52,6 +52,17 @@ import { discoverEpicFieldId } from './jira/epicField';
 import { discoverSprintFieldId, withCurrentSprint } from './jira/jiraSprint';
 import { authorIsMe, identityFrom, type JiraIdentityCache } from './jira/identity';
 import { pickTransition, resolveMove } from './jira/jiraMove';
+import { GitLabClient } from './gitlab/gitlabClient';
+import { gitlabIdentityFrom, type GitLabIdentityCache } from './gitlab/identity';
+import { describeMergeRequest } from './gitlab/describeMergeRequest';
+import {
+  mergeRequestId,
+  reconcileMergeRequests,
+  rematchMergeRequests,
+  type FetchedMergeRequest,
+} from './gitlab/gitlabSync';
+import { GitLabPoller } from './gitlabPoller';
+import type { MergeRequest } from '@shared/mergeRequest';
 import { listWslDistros, readinessFor, statusForTargets } from './exec';
 import { sanitizeWindowState } from './windowState';
 import { appPlanPath } from './projectPaths';
@@ -117,6 +128,7 @@ export interface Engine {
   broker: PermissionBroker;
   watcher: PlanWatcher;
   jiraPoller: JiraPoller;
+  gitlabPoller: GitLabPoller;
   updater: Updater;
   /** Flushes the window geometry — must be disposed BEFORE the store closes. */
   windowTracker: { dispose(): void };
@@ -772,8 +784,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
         cloudEmail: settings.jira.cloudEmail.trim(),
       },
     });
-    // Pick up a changed JIRA poll interval (or enable/disable) without a restart.
+    // Pick up a changed poll interval (or enable/disable) without a restart.
     jiraPoller.reschedule();
+    gitlabPoller.reschedule();
   });
 
   // Whether the token is being protected by the weak built-in password rather than an
@@ -851,6 +864,172 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       return { ok: false, message: explainJiraFailure(e, store.getSettings().jira) };
     }
   });
+
+  // -------------------------------------------------------------------------
+  // GitLab. Mirrors the JIRA block above; the token is encrypted the same way and
+  // never leaves this process.
+  const buildGitLabClient = (): GitLabClient => {
+    const { gitlab } = store.getSettings();
+    if (!gitlab.baseUrl.trim()) throw new Error('Set the GitLab URL in Settings first.');
+    const cipher = store.loadGitLabToken();
+    if (!cipher) throw new Error('No GitLab token saved — add one in Settings.');
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new Error('OS secure storage is unavailable, so the saved token cannot be read.');
+    }
+    const token = safeStorage.decryptString(Buffer.from(cipher, 'base64'));
+    return new GitLabClient({ baseUrl: gitlab.baseUrl, token });
+  };
+
+  handle('gitlab:getConfigStatus', async () => {
+    const { gitlab } = store.getSettings();
+    return {
+      enabled: gitlab.enabled,
+      hasToken: store.loadGitLabToken() !== null,
+      encryptionAvailable: safeStorage.isEncryptionAvailable(),
+      plainTextStorage: usesPlainTextStorage(),
+      // GitLab has one auth mode, but the shared status shape carries a deployment;
+      // 'server' is the honest answer for both gitlab.com and a self-hosted instance.
+      deployment: 'server' as const,
+      baseUrl: gitlab.baseUrl,
+    };
+  });
+
+  handle('gitlab:setCredentials', async (token) => {
+    if (!token.trim()) {
+      store.clearGitLabToken();
+      return { ok: true, message: 'Token cleared.' };
+    }
+    if (!safeStorage.isEncryptionAvailable()) {
+      return { ok: false, message: 'OS secure storage is unavailable, so the token was not saved.' };
+    }
+    store.saveGitLabToken(safeStorage.encryptString(token).toString('base64'));
+    return {
+      ok: true,
+      message: usesPlainTextStorage()
+        ? 'Token saved — but this machine has no keyring, so it is only obfuscated on disk.'
+        : 'Token saved.',
+    };
+  });
+
+  handle('gitlab:clearCredentials', async () => store.clearGitLabToken());
+
+  handle('gitlab:testConnection', async () => {
+    try {
+      const me = await buildGitLabClient().getMe();
+      return { ok: true, displayName: me.username, message: `Connected as ${me.username}.` };
+    } catch (e) {
+      logMain('GitLab test connection failed', e);
+      return { ok: false, message: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** The account behind the GitLab token, cached per instance. Fails soft to null. */
+  const gitlabIdentity = async (
+    baseUrl: string,
+    client: GitLabClient,
+  ): Promise<GitLabIdentityCache | null> => {
+    const cached = store.loadGitLabIdentity();
+    if (cached && cached.baseUrl === baseUrl) return cached;
+    try {
+      const identity = gitlabIdentityFrom(await client.getMe(), baseUrl);
+      store.saveGitLabIdentity(identity);
+      return identity;
+    } catch {
+      return null;
+    }
+  };
+
+  /** The board's keys and the cards behind them, for matching MRs to tasks. */
+  const boardKeyIndex = (): { knownKeys: string[]; taskIdByKey: Map<string, string> } => {
+    const taskIdByKey = new Map<string, string>();
+    for (const task of store.getPersonalTasks()) {
+      if (task.externalSource === 'jira' && task.externalKey) {
+        taskIdByKey.set(task.externalKey.toUpperCase(), task.id);
+      }
+    }
+    return { knownKeys: [...taskIdByKey.keys()], taskIdByKey };
+  };
+
+  /**
+   * One GitLab sync: list your open MRs, re-read detail only for the ones that moved,
+   * reconcile, push.
+   *
+   * The N+1 is deliberate and bounded. The global list does not reliably carry
+   * `head_pipeline`, approvals or reviewers — the very fields attention depends on — so
+   * they need a call per MR; we make those calls only for MRs whose `updated_at` moved
+   * since we last looked, and at a concurrency of 4.
+   */
+  const syncGitLab = async (): Promise<MergeRequest[]> => {
+    const { gitlab } = store.getSettings();
+    if (!gitlab.enabled) return store.listMergeRequests();
+    const client = buildGitLabClient();
+    const identity = await gitlabIdentity(gitlab.baseUrl, client);
+    const stored = store.listMergeRequests();
+    const priorById = new Map(stored.map((mr) => [mr.id, mr]));
+    const list = await client.listMyMergeRequests();
+
+    const detailed: FetchedMergeRequest[] = [];
+    const queue = [...list];
+    const worker = async (): Promise<void> => {
+      for (let mr = queue.shift(); mr; mr = queue.shift()) {
+        const id = mergeRequestId(mr.project_id, mr.iid);
+        const prior = priorById.get(id);
+        const updatedAt = Date.parse(mr.updated_at) || 0;
+        const stale = !prior || updatedAt > prior.updatedAt;
+        detailed.push(await describeMergeRequest(client, mr, { stale, prior }));
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(4, queue.length) }, worker));
+
+    const { knownKeys, taskIdByKey } = boardKeyIndex();
+    const { upserts, deleteIds } = reconcileMergeRequests(stored, detailed, {
+      knownKeys,
+      taskIdByKey,
+      identity,
+      now: Date.now(),
+    });
+    for (const mr of upserts) store.upsertMergeRequest(mr);
+    store.deleteMergeRequests(deleteIds);
+    const all = store.listMergeRequests();
+    send('gitlab:mergeRequestsChanged', all);
+    return all;
+  };
+
+  handle('gitlab:sync', async () => {
+    try {
+      return await syncGitLab();
+    } catch (e) {
+      logMain('GitLab sync failed', e);
+      throw new Error(e instanceof Error ? e.message : String(e));
+    }
+  });
+
+  /** Re-file stored MRs against the board as it is now. Cheap, and no network. */
+  function rematchStoredMergeRequests(): void {
+    const stored = store.listMergeRequests();
+    if (!stored.length) return;
+    const changed = rematchMergeRequests(stored, boardKeyIndex());
+    if (!changed.length) return;
+    for (const mr of changed) store.upsertMergeRequest(mr);
+    send('gitlab:mergeRequestsChanged', store.listMergeRequests());
+  }
+
+  handle('gitlab:mergeRequests', async () => store.listMergeRequests());
+
+  handle('gitlab:markRead', async (mrId) => {
+    store.markMergeRequestRead(mrId, Date.now());
+    const all = store.listMergeRequests();
+    send('gitlab:mergeRequestsChanged', all);
+    return all;
+  });
+
+  handle('gitlab:markEventsSeen', async (mrId) => {
+    store.markMergeRequestEventsSeen(mrId, Date.now());
+    const all = store.listMergeRequests();
+    send('gitlab:mergeRequestsChanged', all);
+    return all;
+  });
+  // -------------------------------------------------------------------------
 
   /**
    * The instance's priority names, fetched once per site per app run.
@@ -1073,6 +1252,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     for (const id of deleteIds) store.deleteTask(id);
     const tasks = store.getPersonalTasks();
     send('project:tasksChanged', { projectId: PERSONAL_PROJECT_ID, tasks });
+    // The board just changed shape, so an MR whose ticket has appeared should attach
+    // itself and one whose ticket has left should let go rather than point at a card
+    // that no longer exists. No GitLab call — this is re-filing what we already hold.
+    rematchStoredMergeRequests();
     return tasks;
   };
 
@@ -1371,9 +1554,24 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   const jiraPoller = new JiraPoller(store, syncJira);
   jiraPoller.reschedule();
 
+  // Its own timer on its own setting: a pipeline turns red on a machine's timescale,
+  // not a human's, so 2 minutes is the default rather than JIRA's 5.
+  const gitlabPoller = new GitLabPoller(store, syncGitLab);
+  gitlabPoller.reschedule();
+
   // Same reasoning: the updater's first feed request is scheduled here, once every
   // channel is live, so a network stall can never delay handler registration.
   updater.start();
 
-  return { sessions, scheduler, store, broker, watcher, jiraPoller, updater, windowTracker };
+  return {
+    sessions,
+    scheduler,
+    store,
+    broker,
+    watcher,
+    jiraPoller,
+    gitlabPoller,
+    updater,
+    windowTracker,
+  };
 }

@@ -40,7 +40,7 @@ import {
 import { AddRegular, DismissRegular } from '@fluentui/react-icons';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
-import type { AppSettings, JiraSettings } from '@shared/settings';
+import type { AppSettings, GitLabSettings, JiraSettings } from '@shared/settings';
 import type { BoardColumn } from '@shared/model';
 import type { AppInfo, JiraConfigStatus, JiraStatusOption, JiraTestResult } from '@shared/ipc';
 import { describeUpdate, type UpdateState } from '@shared/update';
@@ -122,7 +122,7 @@ const COLUMN_LABEL: Record<BoardColumn, string> = Object.fromEntries(
   COLUMN_META.map((c) => [c.column, STATUS_LABEL[statusForColumn(c.column)]]),
 ) as Record<BoardColumn, string>;
 
-type SettingsSection = 'general' | 'board' | 'jira' | 'agents';
+type SettingsSection = 'general' | 'board' | 'jira' | 'gitlab' | 'agents';
 
 export function Settings(): JSX.Element {
   const styles = useStyles();
@@ -151,6 +151,12 @@ export function Settings(): JSX.Element {
   // engine's live state, seeded once and then pushed.
   const [update, setUpdate] = useState<UpdateState | null>(null);
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
+  // GitLab: the same three pieces the JIRA pane keeps — config status, a write-only
+  // token field, and the last test result.
+  const [gitlabStatus, setGitlabStatus] = useState<JiraConfigStatus | null>(null);
+  const [gitlabToken, setGitlabToken] = useState('');
+  const [gitlabMsg, setGitlabMsg] = useState<string | null>(null);
+  const [gitlabTest, setGitlabTest] = useState<JiraTestResult | null>(null);
 
   // Only offer targets that exist here: with no WSL installed the control never
   // appears, so the screen stays exactly as it was.
@@ -173,8 +179,36 @@ export function Settings(): JSX.Element {
     setSettings(appSettings);
     setStatusRows(statusMapToRows(appSettings.jira.statusCategoryOverrides));
     setJiraStatus(status);
+    setGitlabStatus(await window.api.invoke('gitlab:getConfigStatus'));
     void loadJiraStatuses();
   }, []);
+
+  function patchGitLab(change: Partial<GitLabSettings>): void {
+    setSettings((prev) => (prev ? { ...prev, gitlab: { ...prev.gitlab, ...change } } : prev));
+    setSaved(false);
+  }
+
+  async function saveGitLabToken(): Promise<void> {
+    // Save the form first, exactly as the JIRA path does: main reads the STORED
+    // settings, so a token saved against an unsaved URL would be paired with stale
+    // config and fail in a way that looks like a bad token.
+    await save();
+    const res = await window.api.invoke('gitlab:setCredentials', gitlabToken);
+    setGitlabMsg(res.message);
+    setGitlabToken('');
+    setGitlabStatus(await window.api.invoke('gitlab:getConfigStatus'));
+  }
+
+  async function clearGitLabToken(): Promise<void> {
+    await window.api.invoke('gitlab:clearCredentials');
+    setGitlabMsg('Token cleared.');
+    setGitlabStatus(await window.api.invoke('gitlab:getConfigStatus'));
+  }
+
+  async function testGitLab(): Promise<void> {
+    setGitlabTest(null);
+    setGitlabTest(await window.api.invoke('gitlab:testConnection'));
+  }
 
   /** Fetch the instance's statuses. Fails soft — the field stays typeable regardless. */
   async function loadJiraStatuses(): Promise<void> {
@@ -303,6 +337,7 @@ export function Settings(): JSX.Element {
   }
 
   const jira = settings.jira;
+  const gitlab = settings.gitlab;
   // An *.atlassian.net site configured as Server/DC is the one misconfiguration we can
   // spot for certain, and it fails as a bare 401 that reads like a bad token. Warn on
   // the field rather than silently overriding the dropdown — a vanity-domain Cloud site
@@ -320,6 +355,7 @@ export function Settings(): JSX.Element {
         <Tab value="general">General</Tab>
         <Tab value="board">Board</Tab>
         <Tab value="jira">JIRA</Tab>
+        <Tab value="gitlab">GitLab</Tab>
         <Tab value="agents">Agents</Tab>
       </TabList>
 
@@ -595,6 +631,102 @@ export function Settings(): JSX.Element {
               </div>
             </Field>
           </div>
+        </div>
+      ) : section === 'gitlab' ? (
+        <div className={styles.pane}>
+          <Subtitle2>GitLab</Subtitle2>
+          <Body1 className={styles.hint}>
+            Puts your open merge requests on the card whose ticket key they name — in the
+            branch, the title or the description. A red pipeline, a review comment or a
+            request for changes then raises the same orange ring an unread ticket comment
+            does, so one board answers “is this actually done?”.
+          </Body1>
+
+          <div className={styles.grid}>
+            <Field label="Enable GitLab">
+              <Switch
+                checked={gitlab.enabled}
+                onChange={(_e, d) => patchGitLab({ enabled: d.checked })}
+              />
+            </Field>
+
+            <Field
+              label="GitLab URL"
+              hint="gitlab.com or your own instance — e.g. https://gitlab.example.com"
+            >
+              <Input
+                value={gitlab.baseUrl}
+                placeholder="https://gitlab.com"
+                onChange={(_e, d) => patchGitLab({ baseUrl: d.value })}
+              />
+            </Field>
+
+            <Field
+              label="Poll every (minutes)"
+              hint="0 = off. Faster than the JIRA poll on purpose: a pipeline turns red on a machine's timescale, not a person's."
+            >
+              <SpinButton
+                min={0}
+                max={120}
+                value={gitlab.pollIntervalMinutes}
+                onChange={(_e, d) =>
+                  patchGitLab({ pollIntervalMinutes: Number(d.value ?? d.displayValue ?? 0) })
+                }
+              />
+            </Field>
+
+            <Field
+              label="Personal access token"
+              hint={
+                gitlabStatus?.encryptionAvailable === false
+                  ? 'The OS secure store is unavailable, so a token cannot be saved on this machine.'
+                  : gitlabStatus?.plainTextStorage
+                    ? 'No keyring on this machine, so the token is obfuscated on disk rather than kept secret. Needs the read_api scope.'
+                    : `Needs the read_api scope.${gitlabStatus?.hasToken ? ' A token is stored.' : ''}`
+              }
+            >
+              <Input
+                type="password"
+                value={gitlabToken}
+                placeholder={gitlabStatus?.hasToken ? '•••••••• (stored)' : 'glpat-…'}
+                onChange={(_e, d) => setGitlabToken(d.value)}
+              />
+            </Field>
+          </div>
+
+          <div className={styles.actions}>
+            <Button appearance="primary" onClick={() => void save()}>
+              Save
+            </Button>
+            {saved && <Caption1 className={styles.saved}>Saved.</Caption1>}
+          </div>
+
+          <div className={styles.actions}>
+            <Button
+              appearance="secondary"
+              disabled={!gitlabToken.trim() || gitlabStatus?.encryptionAvailable === false}
+              onClick={() => void saveGitLabToken()}
+            >
+              Save token
+            </Button>
+            <Button
+              appearance="secondary"
+              disabled={!gitlabStatus?.hasToken}
+              onClick={() => void clearGitLabToken()}
+            >
+              Clear token
+            </Button>
+            <Button appearance="primary" onClick={() => void testGitLab()}>
+              Test connection
+            </Button>
+            {gitlabMsg && <Caption1 className={styles.saved}>{gitlabMsg}</Caption1>}
+          </div>
+
+          {gitlabTest && (
+            <MessageBar intent={gitlabTest.ok ? 'success' : 'error'}>
+              <MessageBarBody>{gitlabTest.message}</MessageBarBody>
+            </MessageBar>
+          )}
         </div>
       ) : (
         <div className={styles.pane}>

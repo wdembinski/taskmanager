@@ -103,6 +103,31 @@ export const DEFAULT_JIRA_SETTINGS: JiraSettings = {
   pollIntervalMinutes: 5,
 };
 
+/**
+ * GitLab integration config. Deliberately smaller than {@link JiraSettings}: there is
+ * one auth mode (`PRIVATE-TOKEN`, which works on gitlab.com and self-hosted alike) and
+ * one scope (`created_by_me`), so there is nothing else to configure.
+ */
+export interface GitLabSettings {
+  /** Master switch — when off, nothing is fetched and no MR appears on any card. */
+  enabled: boolean;
+  /** Instance root, e.g. `https://gitlab.com` or `https://gitlab.acme.internal`. */
+  baseUrl: string;
+  /**
+   * Minutes between background syncs; 0 = off. Faster than JIRA's default because a
+   * pipeline turns red on a timescale of minutes, and a red pipeline you learn about
+   * ten minutes later has already cost you the context you needed to fix it.
+   */
+  pollIntervalMinutes: number;
+}
+
+/** The out-of-the-box GitLab config: off, pointed at gitlab.com. */
+export const DEFAULT_GITLAB_SETTINGS: GitLabSettings = {
+  enabled: false,
+  baseUrl: 'https://gitlab.com',
+  pollIntervalMinutes: 2,
+};
+
 export interface AppSettings {
   /** Model applied to a newly added project (its tasks run with this unless changed). */
   defaultModel: ClaudeModel;
@@ -146,6 +171,8 @@ export interface AppSettings {
   showTaskDetail: boolean;
   /** JIRA integration config for the Personal board (Phase B). */
   jira: JiraSettings;
+  /** GitLab integration config — merge requests on the cards their ticket lives on. */
+  gitlab: GitLabSettings;
 }
 
 /** The out-of-the-box settings, also used to fill any field missing from storage. */
@@ -160,4 +187,5 @@ export const DEFAULT_SETTINGS: AppSettings = {
   statusKeywords: [],
   showTaskDetail: true,
   jira: DEFAULT_JIRA_SETTINGS,
+  gitlab: DEFAULT_GITLAB_SETTINGS,
 };
