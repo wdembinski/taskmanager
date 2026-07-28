@@ -18,7 +18,14 @@ import {
   type BrowserWindow,
   type Rectangle,
 } from 'electron';
-import type { IpcApi, IpcEvents, JiraStatusOption, JiraUserOption } from '@shared/ipc';
+import type {
+  IpcApi,
+  IpcEvents,
+  JiraIssueTypeOption,
+  JiraProjectOption,
+  JiraStatusOption,
+  JiraUserOption,
+} from '@shared/ipc';
 import {
   isManualStatus,
   isPersonalBoard,
@@ -39,6 +46,7 @@ import { createJiraClient } from './jira/jiraConfig';
 import { explainJiraFailure } from './jira/jiraDiagnostics';
 import { commentBodyToText, type JiraClient } from './jira/jiraClient';
 import { blocksToText, parseAdf } from './jira/adf';
+import { normalizeIssueTypes, normalizeProjects } from './jira/createMeta';
 import { reconcileJiraTasks } from './jira/jiraSync';
 import { discoverEpicFieldId } from './jira/epicField';
 import { discoverSprintFieldId, withCurrentSprint } from './jira/jiraSprint';
@@ -893,6 +901,95 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       logMain('JIRA status list failed', e);
       return { statuses: [], error: e instanceof Error ? e.message : String(e) };
     }
+  });
+
+  /**
+   * What the Add-task dialog can create. Both lists are permission-filtered by JIRA, so
+   * an empty one is a real answer — the dialog says so rather than looking broken — and
+   * both fail soft, since a dead create path must not take the local Add-task path with
+   * it. Cached per site (and per project for types), like priorities and statuses.
+   */
+  let projectCache: { baseUrl: string; projects: JiraProjectOption[] } | null = null;
+  const issueTypeCache = new Map<string, JiraIssueTypeOption[]>();
+
+  handle('jira:projects', async () => {
+    const { jira } = store.getSettings();
+    if (!jira.enabled || !jira.baseUrl) return [];
+    if (projectCache?.baseUrl === jira.baseUrl) return projectCache.projects;
+    try {
+      const projects = normalizeProjects(await buildJiraClient().listProjects());
+      projectCache = { baseUrl: jira.baseUrl, projects };
+      return projects;
+    } catch (e) {
+      logMain('JIRA project list failed', e);
+      return [];
+    }
+  });
+
+  handle('jira:issueTypes', async (projectKey) => {
+    const { jira } = store.getSettings();
+    if (!jira.enabled || !jira.baseUrl || !projectKey) return [];
+    const cacheKey = `${jira.baseUrl}|${projectKey}`;
+    const cached = issueTypeCache.get(cacheKey);
+    if (cached) return cached;
+    try {
+      const raw = await buildJiraClient().listIssueTypes(projectKey);
+      const types = normalizeIssueTypes(raw, projectKey);
+      issueTypeCache.set(cacheKey, types);
+      return types;
+    } catch (e) {
+      logMain('JIRA issue-type list failed', e);
+      return [];
+    }
+  });
+
+  handle('jira:createTask', async (input) => {
+    const settings = store.getSettings();
+    const { jira } = settings;
+    if (!jira.enabled) throw new Error('JIRA is switched off.');
+    if (!input.summary.trim()) throw new Error('A JIRA issue needs a summary.');
+    const client = buildJiraClient();
+    const created = await client.createIssue({ ...input, summary: input.summary.trim() });
+
+    // Read the issue back and run it through the SAME reconciler a sync uses, rather
+    // than hand-building a Task. A hand-built one would differ from what the next poll
+    // produces — a different status, a missing field — and appear to mutate on its own.
+    const epicField = await epicFieldId(jira.baseUrl, client);
+    const sprintField = await sprintFieldId(jira.baseUrl, client);
+    const extraFields = [epicField, sprintField].filter((f): f is string => f !== null);
+    const issue = await client.getIssue(created.key, extraFields);
+    const { upserts } = reconcileJiraTasks([], [issue], {
+      baseUrl: jira.baseUrl,
+      overrides: jira.statusCategoryOverrides,
+      learned: jira.learnedStatusColumns,
+      epicFieldId: epicField,
+      sprintFieldId: sprintField,
+      identity: await jiraIdentity(jira.baseUrl, client),
+    });
+    const task = upserts[0];
+    if (!task) throw new Error(`JIRA created ${created.key} but it could not be read back.`);
+    store.upsertJiraTask(task);
+
+    // Remember the choice for next time. Behind the UI's back, so it goes out on
+    // `settings:changed` — a screen that saves the whole blob would otherwise clobber it.
+    if (jira.lastCreateProjectKey !== input.projectKey || jira.lastCreateIssueTypeId !== input.issueTypeId) {
+      const next: AppSettings = {
+        ...settings,
+        jira: {
+          ...jira,
+          lastCreateProjectKey: input.projectKey,
+          lastCreateIssueTypeId: input.issueTypeId,
+        },
+      };
+      store.saveSettings(next);
+      send('settings:changed', next);
+    }
+
+    send('project:tasksChanged', {
+      projectId: PERSONAL_PROJECT_ID,
+      tasks: store.getPersonalTasks(),
+    });
+    return task;
   });
 
   handle('board:tasks', async () => store.getPersonalTasks());

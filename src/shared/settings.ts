@@ -81,6 +81,13 @@ export interface JiraSettings {
   inReviewTransitionName?: string;
   /** Optional exact transition name to use when moving into Done (else auto-detected). */
   doneTransitionName?: string;
+  /**
+   * What the Add-task dialog last created a JIRA issue as, so the next one opens on the
+   * same project and type. Written by the engine after a successful create and pushed on
+   * `settings:changed`; a screen that saves the whole blob must not write over it.
+   */
+  lastCreateProjectKey?: string;
+  lastCreateIssueTypeId?: string;
 }
 
 /** The out-of-the-box JIRA config: disabled, self-hosted defaults. */

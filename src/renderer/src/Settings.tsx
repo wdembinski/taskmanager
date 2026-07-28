@@ -227,7 +227,12 @@ export function Settings(): JSX.Element {
         prev
           ? {
               ...prev,
-              jira: { ...prev.jira, learnedStatusColumns: next.jira.learnedStatusColumns },
+              jira: {
+                ...prev.jira,
+                learnedStatusColumns: next.jira.learnedStatusColumns,
+                lastCreateProjectKey: next.jira.lastCreateProjectKey,
+                lastCreateIssueTypeId: next.jira.lastCreateIssueTypeId,
+              },
             }
           : prev,
       );

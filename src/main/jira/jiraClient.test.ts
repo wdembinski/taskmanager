@@ -437,3 +437,74 @@ describe('JiraClient.uploadAttachments', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe('JiraClient — creating an issue', () => {
+  it('lists projects from the paged Cloud endpoint and the flat Server one', async () => {
+    const cloudFetch = vi.fn().mockResolvedValue(jsonResponse({ values: [] }));
+    vi.stubGlobal('fetch', cloudFetch);
+    await cloudClient().listProjects('eng');
+    const cloudUrl = String(cloudFetch.mock.calls[0][0]);
+    expect(cloudUrl).toContain('/project/search');
+    expect(cloudUrl).toContain('query=eng');
+
+    const serverFetch = vi.fn().mockResolvedValue(jsonResponse([]));
+    vi.stubGlobal('fetch', serverFetch);
+    await serverClient().listProjects('eng');
+    expect(String(serverFetch.mock.calls[0][0])).toMatch(/\/project$/);
+  });
+
+  it('falls back to the legacy createmeta when the Cloud one 404s', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ message: 'gone' }, 404))
+      .mockResolvedValueOnce(jsonResponse({ projects: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+    await cloudClient().listIssueTypes('ENG');
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/issue/createmeta/ENG/issuetypes');
+    expect(String(fetchMock.mock.calls[1][0])).toContain('expand=projects.issuetypes');
+  });
+
+  it('posts ADF for the description on v3 and plain text on v2', async () => {
+    const input = {
+      projectKey: 'ENG',
+      issueTypeId: '1',
+      summary: 'Fix it',
+      description: 'Reproduce first.',
+    };
+
+    const cloudFetch = vi.fn().mockResolvedValue(jsonResponse({ id: '1', key: 'ENG-1' }));
+    vi.stubGlobal('fetch', cloudFetch);
+    await cloudClient().createIssue(input);
+    const cloudBody = JSON.parse((cloudFetch.mock.calls[0][1] as RequestInit).body as string);
+    expect(cloudBody.fields.description.type).toBe('doc');
+    expect(cloudBody.fields).toMatchObject({
+      project: { key: 'ENG' },
+      issuetype: { id: '1' },
+      summary: 'Fix it',
+    });
+
+    const serverFetch = vi.fn().mockResolvedValue(jsonResponse({ id: '1', key: 'ENG-1' }));
+    vi.stubGlobal('fetch', serverFetch);
+    await serverClient().createIssue(input);
+    const serverBody = JSON.parse((serverFetch.mock.calls[0][1] as RequestInit).body as string);
+    expect(serverBody.fields.description).toBe('Reproduce first.');
+  });
+
+  it('omits the description field entirely when there is none', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ id: '1', key: 'ENG-1' }));
+    vi.stubGlobal('fetch', fetchMock);
+    await cloudClient().createIssue({ projectKey: 'ENG', issueTypeId: '1', summary: 'x' });
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect('description' in body.fields).toBe(false);
+  });
+
+  it('reads an issue back with the same field list search uses', async () => {
+    // This is what makes a created card indistinguishable from a synced one.
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ id: '1', key: 'ENG-1' }));
+    vi.stubGlobal('fetch', fetchMock);
+    await cloudClient().getIssue('ENG-1', ['customfield_7']);
+    const url = decodeURIComponent(String(fetchMock.mock.calls[0][0]));
+    expect(url).toContain('summary,status,priority,project,issuetype');
+    expect(url).toContain('customfield_7');
+  });
+});

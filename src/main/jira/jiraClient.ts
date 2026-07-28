@@ -131,6 +131,14 @@ export function commentBodyToText(body: unknown): string {
   return blocksToText(parseAdf(body));
 }
 
+/**
+ * The fields a board card is built from. Shared by `search` and `getIssue` on purpose:
+ * an issue we just created is read back through the SAME list, so `issueToTask` turns it
+ * into a card identical to a synced one and the next poll changes nothing.
+ */
+const ISSUE_FIELDS =
+  'summary,status,priority,project,issuetype,labels,updated,comment,description,parent';
+
 export class JiraError extends Error {
   constructor(
     message: string,
@@ -195,10 +203,7 @@ export class JiraClient {
    * whole answer: we follow `nextPageToken` until the board's cap is filled.
    */
   async search(jql: string, maxResults = 100, extraFields: string[] = []): Promise<JiraIssue[]> {
-    const fields = [
-      'summary,status,priority,project,issuetype,labels,updated,comment,description,parent',
-      ...extraFields.filter((f) => f.trim()),
-    ].join(',');
+    const fields = [ISSUE_FIELDS, ...extraFields.filter((f) => f.trim())].join(',');
 
     if (this.config.apiVersion !== '3') {
       const params = new URLSearchParams({ jql, maxResults: String(maxResults), fields });
@@ -443,6 +448,73 @@ export class JiraClient {
     }
     const raw = (await res.json()) as unknown;
     return Array.isArray(raw) ? raw.map(normalizeAttachment) : [];
+  }
+
+  /**
+   * Projects the user can see. Cloud pages `/project/search`; Server/DC serves a flat
+   * `/project`. Both shapes are flattened by `createMeta.normalizeProjects`.
+   */
+  async listProjects(query?: string): Promise<unknown> {
+    if (this.config.apiVersion !== '3') return this.request<unknown>('/project');
+    const params = new URLSearchParams({ maxResults: '100', orderBy: 'name' });
+    if (query?.trim()) params.set('query', query.trim());
+    return this.request<unknown>(`/project/search?${params.toString()}`);
+  }
+
+  /**
+   * Issue types the user can create in a project.
+   *
+   * Cloud has a dedicated endpoint; older instances answer the same question through the
+   * broad create-meta with an `expand`. We try the dedicated one first on v3 and fall
+   * back, because a 404 there is a deployment fact rather than an error worth surfacing.
+   */
+  async listIssueTypes(projectKey: string): Promise<unknown> {
+    const key = encodeURIComponent(projectKey);
+    if (this.config.apiVersion === '3') {
+      try {
+        return await this.request<unknown>(`/issue/createmeta/${key}/issuetypes?maxResults=100`);
+      } catch (e) {
+        if (!(e instanceof JiraError) || e.status !== 404) throw e;
+      }
+    }
+    return this.request<unknown>(
+      `/issue/createmeta?projectKeys=${key}&expand=projects.issuetypes`,
+    );
+  }
+
+  /** Create an issue. Returns the key JIRA assigned, which is then read back in full. */
+  async createIssue(input: {
+    projectKey: string;
+    issueTypeId: string;
+    summary: string;
+    description?: string;
+  }): Promise<{ id: string; key: string }> {
+    const description = input.description?.trim();
+    return this.request<{ id: string; key: string }>('/issue', {
+      method: 'POST',
+      body: JSON.stringify({
+        fields: {
+          project: { key: input.projectKey },
+          issuetype: { id: input.issueTypeId },
+          summary: input.summary,
+          // Same v2/v3 fork as a comment body: ADF on Cloud, plain text on Server/DC.
+          ...(description
+            ? { description: this.config.apiVersion === '3' ? buildAdf(description) : description }
+            : {}),
+        },
+      }),
+    });
+  }
+
+  /**
+   * One issue by key, with the same field list `search` asks for — so the result can go
+   * straight through `issueToTask` and be indistinguishable from a synced card.
+   */
+  async getIssue(issueKey: string, extraFields: string[] = []): Promise<JiraIssue> {
+    const fields = [ISSUE_FIELDS, ...extraFields.filter((f) => f.trim())].join(',');
+    return this.request<JiraIssue>(
+      `/issue/${encodeURIComponent(issueKey)}?fields=${encodeURIComponent(fields)}`,
+    );
   }
 
   /** An issue's attachments — metadata is per-ISSUE, so comments are matched by filename. */

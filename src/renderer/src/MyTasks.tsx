@@ -145,7 +145,12 @@ export function MyTasks(): JSX.Element {
         prev
           ? {
               ...prev,
-              jira: { ...prev.jira, learnedStatusColumns: next.jira.learnedStatusColumns },
+              jira: {
+                ...prev.jira,
+                learnedStatusColumns: next.jira.learnedStatusColumns,
+                lastCreateProjectKey: next.jira.lastCreateProjectKey,
+                lastCreateIssueTypeId: next.jira.lastCreateIssueTypeId,
+              },
             }
           : prev,
       );
@@ -385,6 +390,7 @@ export function MyTasks(): JSX.Element {
         projectId={PERSONAL_PROJECT_ID}
         phases={[]}
         parents={parentCandidates}
+        jiraEnabled={jiraEnabled}
         onClose={() => setAddOpen(false)}
         onCreated={() => void refresh()}
       />

@@ -111,6 +111,19 @@ export interface JiraStatusList {
   error: string | null;
 }
 
+/** A JIRA project the Add-task dialog can create an issue in. */
+export interface JiraProjectOption {
+  key: string;
+  name: string;
+}
+
+/** An issue type within a project. Subtask types are never offered. */
+export interface JiraIssueTypeOption {
+  id: string;
+  name: string;
+  iconUrl: string | null;
+}
+
 /** One person the @mention picker can offer. `id` is a Cloud accountId or a DC username. */
 export interface JiraUserOption {
   id: string | null;
@@ -496,6 +509,27 @@ export interface IpcApi {
    * renderer has no filesystem access and no business having any.
    */
   'jira:pickAttachments': () => Promise<string[]>;
+  /**
+   * Projects you may create an issue in. Cached per site; fails soft to `[]` — and an
+   * empty list is a real answer (create-meta is permission-filtered), not a bug.
+   */
+  'jira:projects': () => Promise<JiraProjectOption[]>;
+  /** Issue types available in one project. Cached per site+project; fails soft. */
+  'jira:issueTypes': (projectKey: string) => Promise<JiraIssueTypeOption[]>;
+  /**
+   * Create a JIRA issue and put it on the Personal board.
+   *
+   * A separate channel from `task:create`, which is a purely local write that hardcodes
+   * `source: 'adhoc'` and is used by other screens. The created issue is read back and
+   * run through the same `issueToTask` a sync uses, so the new card is identical to a
+   * synced one — hand-building the Task would make it mutate on the first poll.
+   */
+  'jira:createTask': (input: {
+    projectKey: string;
+    issueTypeId: string;
+    summary: string;
+    description?: string;
+  }) => Promise<Task>;
   /** Mark a JIRA task's comments as read (clears the unread border); returns the task. */
   'jira:markRead': (taskId: string) => Promise<Task>;
 
