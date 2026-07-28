@@ -300,3 +300,51 @@ describe('listPriorities', () => {
     expect(await serverClient().listPriorities()).toEqual([]);
   });
 });
+
+describe('listStatuses', () => {
+  it('reads the classic flat array, whose category is an object', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      jsonResponse([
+        { name: 'To Do', statusCategory: { key: 'new' } },
+        { name: 'Code Review', statusCategory: { key: 'indeterminate' } },
+        { name: 'Closed', statusCategory: { key: 'done' } },
+      ]),
+    );
+    expect(await serverClient().listStatuses()).toEqual([
+      { name: 'To Do', categoryKey: 'new' },
+      { name: 'Code Review', categoryKey: 'indeterminate' },
+      { name: 'Closed', categoryKey: 'done' },
+    ]);
+    expect(fetchMock.mock.calls[0][0]).toBe('https://jira.company.com/rest/api/2/status');
+  });
+
+  // Cloud's newer endpoint pages its results and flattens the category to a string
+  // enum; both shapes have to normalise to the same key or the map would mis-bucket.
+  it('falls back to the paged endpoint, whose category is a string enum', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ message: 'gone' }, 410))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          values: [
+            { name: 'Backlog', statusCategory: 'TODO' },
+            { name: 'In Review', statusCategory: 'IN_PROGRESS' },
+            { name: 'Done', statusCategory: 'DONE' },
+          ],
+        }),
+      );
+    expect(await cloudClient().listStatuses()).toEqual([
+      { name: 'Backlog', categoryKey: 'new' },
+      { name: 'In Review', categoryKey: 'indeterminate' },
+      { name: 'Done', categoryKey: 'done' },
+    ]);
+    expect(String(fetchMock.mock.calls[1][0])).toContain('/statuses/search');
+  });
+
+  it('drops entries with no usable name, and defaults an unknown category to To Do', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      jsonResponse([{ name: '' }, { id: '9' }, { name: 'Odd', statusCategory: { key: 42 } }]),
+    );
+    expect(await serverClient().listStatuses()).toEqual([{ name: 'Odd', categoryKey: 'new' }]);
+  });
+});

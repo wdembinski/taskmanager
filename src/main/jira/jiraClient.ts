@@ -218,6 +218,49 @@ export class JiraClient {
     return (await this.request<JiraField[]>('/field')) ?? [];
   }
 
+  /**
+   * Every workflow status this instance defines, so the status map can be picked from
+   * a list rather than typed from memory.
+   *
+   * Two endpoints with two different shapes for the same thing. The classic `/status`
+   * (v2 and v3 alike) returns a flat array whose `statusCategory` is an OBJECT with the
+   * stable `key` we map on. Cloud's newer `/statuses/search` is paged (`{values}`) and
+   * flattens `statusCategory` to a STRING enum (`TODO`/`IN_PROGRESS`/`DONE`). We ask the
+   * classic one first because it works on both and needs no paging, and fall back only
+   * if the instance has retired it — normalising either shape to the same category key,
+   * so nothing downstream has to know which answered.
+   */
+  async listStatuses(): Promise<Array<{ name: string; categoryKey: string }>> {
+    /** `statusCategory` as an object (classic) or a string enum (Cloud's newer API). */
+    const keyOf = (raw: unknown): string => {
+      if (typeof raw === 'string') {
+        const upper = raw.toUpperCase();
+        if (upper === 'IN_PROGRESS') return 'indeterminate';
+        if (upper === 'DONE') return 'done';
+        return 'new';
+      }
+      const key = (raw as { key?: unknown } | null)?.key;
+      return typeof key === 'string' ? key : 'new';
+    };
+    const normalize = (list: unknown): Array<{ name: string; categoryKey: string }> =>
+      Array.isArray(list)
+        ? list
+            .map((s) => s as { name?: unknown; statusCategory?: unknown })
+            .filter(
+              (s): s is { name: string; statusCategory?: unknown } =>
+                typeof s.name === 'string' && s.name.length > 0,
+            )
+            .map((s) => ({ name: s.name, categoryKey: keyOf(s.statusCategory) }))
+        : [];
+
+    try {
+      return normalize(await this.request<unknown>('/status'));
+    } catch {
+      const data = await this.request<{ values?: unknown }>('/statuses/search?maxResults=200');
+      return normalize(data?.values);
+    }
+  }
+
   /** Available workflow transitions for an issue (needed to resolve a status move). */
   async getTransitions(issueKey: string): Promise<JiraTransition[]> {
     const data = await this.request<{ transitions: JiraTransition[] }>(

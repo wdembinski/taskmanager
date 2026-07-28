@@ -34,6 +34,7 @@ import type {
   AssignAgentInput,
   BoardColumn,
   ChatSendResult,
+  JiraStatusCategory,
   ManualStatus,
   PlanValidation,
   Project,
@@ -84,6 +85,19 @@ export interface JiraConfigStatus {
   plainTextStorage: boolean;
   deployment: 'server' | 'cloud';
   baseUrl: string;
+}
+
+/**
+ * One workflow status the connected JIRA instance defines — what the Settings status
+ * map offers instead of making you type names from memory.
+ *
+ * `category` is what the status would map to WITHOUT an override, so the form can show
+ * you that "Code Review" lands in In Progress by default and is therefore exactly the
+ * kind of status worth mapping.
+ */
+export interface JiraStatusOption {
+  name: string;
+  category: JiraStatusCategory;
 }
 
 /** Result of a JIRA "Test connection" attempt. */
@@ -399,6 +413,14 @@ export interface IpcApi {
    * failed; the caller falls back to `DEFAULT_PRIORITIES` rather than showing nothing.
    */
   'jira:priorities': () => Promise<string[]>;
+  /**
+   * Every workflow status the connected instance defines, with the column each would
+   * fall into on its own — what the Settings status map offers so the names don't have
+   * to be typed from memory. Cached per base URL. Empty when JIRA is off, no token is
+   * stored, or the call failed; the field stays free-text either way, so a status the
+   * instance won't tell us about can still be mapped by hand.
+   */
+  'jira:statuses': () => Promise<JiraStatusOption[]>;
   /** Every task on the standalone Personal board (JIRA tickets + internal ad-hoc). */
   'board:tasks': () => Promise<Task[]>;
   /**

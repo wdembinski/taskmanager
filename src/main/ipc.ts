@@ -18,7 +18,7 @@ import {
   type BrowserWindow,
   type Rectangle,
 } from 'electron';
-import type { IpcApi, IpcEvents } from '@shared/ipc';
+import type { IpcApi, IpcEvents, JiraStatusOption } from '@shared/ipc';
 import {
   isManualStatus,
   isPersonalBoard,
@@ -753,6 +753,34 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       return names;
     } catch (e) {
       logMain('JIRA priority list failed', e);
+      return [];
+    }
+  });
+
+  /** The instance's workflow statuses — same cache-per-site, fail-soft rule as priorities. */
+  let statusCache: { baseUrl: string; statuses: JiraStatusOption[] } | null = null;
+
+  handle('jira:statuses', async () => {
+    const { jira } = store.getSettings();
+    if (!jira.enabled || !jira.baseUrl) return [];
+    if (statusCache?.baseUrl === jira.baseUrl) return statusCache.statuses;
+    try {
+      const raw = await buildJiraClient().listStatuses();
+      // De-duplicated by name: an instance with several workflows repeats "In Progress"
+      // once per workflow scheme, and the map is keyed by name, so one entry is all the
+      // form can act on. Sorted so the list reads the same on every instance.
+      const byName = new Map<string, JiraStatusOption>();
+      for (const s of raw) {
+        const name = s.name.trim();
+        if (name && !byName.has(name.toLowerCase())) {
+          byName.set(name.toLowerCase(), { name, category: categoryFromKey(s.categoryKey) });
+        }
+      }
+      const statuses = [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+      statusCache = { baseUrl: jira.baseUrl, statuses };
+      return statuses;
+    } catch (e) {
+      logMain('JIRA status list failed', e);
       return [];
     }
   });

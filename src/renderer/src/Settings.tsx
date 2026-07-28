@@ -18,6 +18,7 @@ import {
   Body1,
   Button,
   Caption1,
+  Combobox,
   Dropdown,
   Field,
   Input,
@@ -39,7 +40,7 @@ import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
 import type { AppSettings, JiraSettings } from '@shared/settings';
 import type { BoardColumn } from '@shared/model';
-import type { JiraConfigStatus, JiraTestResult } from '@shared/ipc';
+import type { JiraConfigStatus, JiraStatusOption, JiraTestResult } from '@shared/ipc';
 import { isCloudHost } from '@shared/jiraUrl';
 import { COLUMN_META, statusForColumn } from './board/boardColumns';
 import { STATUS_LABEL } from './taskStatus';
@@ -131,6 +132,10 @@ export function Settings(): JSX.Element {
   // other field. Seeded once from storage; never re-seeded from a save's re-read,
   // which would drop the blank row the user is part-way through filling in.
   const [statusRows, setStatusRows] = useState<StatusMapRow[]>([]);
+  // The instance's own workflow statuses, so the map is picked rather than typed. Read
+  // from the SAVED settings (main talks to the stored config), so it arrives once the
+  // connection works and is re-read after every Save.
+  const [jiraStatuses, setJiraStatuses] = useState<JiraStatusOption[]>([]);
 
   // Only offer targets that exist here: with no WSL installed the control never
   // appears, so the screen stays exactly as it was.
@@ -147,7 +152,35 @@ export function Settings(): JSX.Element {
     setSettings(appSettings);
     setStatusRows(statusMapToRows(appSettings.jira.statusCategoryOverrides));
     setJiraStatus(status);
+    void loadJiraStatuses();
   }, []);
+
+  /** Fetch the instance's statuses. Fails soft — the field stays typeable regardless. */
+  async function loadJiraStatuses(): Promise<void> {
+    try {
+      setJiraStatuses(await window.api.invoke('jira:statuses'));
+    } catch {
+      setJiraStatuses([]);
+    }
+  }
+
+  /**
+   * What to offer under a half-typed status name: the instance's statuses, minus the
+   * ones already mapped on another row (mapping the same name twice does nothing — the
+   * later row wins), narrowed by what has been typed so far. The row's OWN current
+   * value is kept, so the box doesn't empty itself the moment it matches.
+   */
+  function suggestionsFor(current: string): JiraStatusOption[] {
+    const taken = new Set(
+      statusRows
+        .map((r) => r.name.trim().toLowerCase())
+        .filter((n) => n && n !== current.trim().toLowerCase()),
+    );
+    const typed = current.trim().toLowerCase();
+    return jiraStatuses.filter(
+      (s) => !taken.has(s.name.toLowerCase()) && (!typed || s.name.toLowerCase().includes(typed)),
+    );
+  }
   const initial = useInitialLoad(seed);
 
   // Any edit invalidates the "Saved" confirmation.
@@ -175,6 +208,9 @@ export function Settings(): JSX.Element {
     // what was actually stored rather than what was typed.
     setSettings(await window.api.invoke('settings:get'));
     setJiraStatus(await window.api.invoke('jira:getConfigStatus'));
+    // A save may be the moment the connection first works (or points somewhere new),
+    // so this is when an empty status list is worth retrying.
+    await loadJiraStatuses();
   }
 
   async function saveToken(): Promise<void> {
@@ -537,21 +573,47 @@ export function Settings(): JSX.Element {
 
             <Field
               label="Status mapping"
-              hint='Which board column each JIRA workflow status means. Matched on the status name, ignoring case — so a project with "Review" and one with "Code Review" can both land in In Review. Anything unmapped falls back to the issue&apos;s JIRA category. Blocked is internal-only and never comes from JIRA.'
+              hint={
+                jiraStatuses.length
+                  ? `Which board column each JIRA workflow status means — ${jiraStatuses.length} statuses read from your instance, so pick rather than type. Matched on the name, ignoring case, so "Review" and "Code Review" can both land in In Review. Anything unmapped falls back to the issue's JIRA category; Blocked is internal-only and never comes from JIRA.`
+                  : 'Which board column each JIRA workflow status means. Save a working connection and this offers your instance\'s own statuses; until then, type the name. Matched ignoring case, so "Review" and "Code Review" can both land in In Review. Anything unmapped falls back to the issue\'s JIRA category; Blocked is internal-only and never comes from JIRA.'
+              }
             >
               <div className={styles.mapList}>
                 {statusRows.map((row, i) => (
                   <div key={i} className={styles.mapRow}>
-                    <Input
+                    {/* Freeform, not a plain Dropdown: the list is a convenience, and a
+                        status must stay mappable when JIRA is unreachable, no token is
+                        stored yet, or the instance simply didn't return it. */}
+                    <Combobox
                       className={styles.mapName}
+                      freeform
                       value={row.name}
-                      placeholder="JIRA status name, e.g. Code Review"
-                      onChange={(_e, d) =>
+                      placeholder={
+                        jiraStatuses.length
+                          ? 'Pick a status, or type one'
+                          : 'JIRA status name, e.g. Code Review'
+                      }
+                      onChange={(e) =>
                         patchStatusRows(
-                          statusRows.map((r, j) => (j === i ? { ...r, name: d.value } : r)),
+                          statusRows.map((r, j) => (j === i ? { ...r, name: e.target.value } : r)),
                         )
                       }
-                    />
+                      onOptionSelect={(_e, d) =>
+                        d.optionValue &&
+                        patchStatusRows(
+                          statusRows.map((r, j) =>
+                            j === i ? { ...r, name: d.optionValue as string } : r,
+                          ),
+                        )
+                      }
+                    >
+                      {suggestionsFor(row.name).map((s) => (
+                        <Option key={s.name} value={s.name} text={s.name}>
+                          {`${s.name} — ${s.category} by default`}
+                        </Option>
+                      ))}
+                    </Combobox>
                     <Dropdown
                       className={styles.mapColumn}
                       value={COLUMN_LABEL[row.column]}
