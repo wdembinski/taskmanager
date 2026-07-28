@@ -59,6 +59,7 @@ import { AgentProjects } from './AgentProjects';
 import { ColorSwatches, PALETTE } from './ColorSwatches';
 import { PaneLoading } from './PaneLoading';
 import { ReadinessPanel } from './ReadinessPanel';
+import { StatusMapViewer } from './StatusMapViewer';
 import { useInitialLoad } from './useInitialLoad';
 
 const useStyles = makeStyles({
@@ -144,6 +145,8 @@ export function Settings(): JSX.Element {
   // from the SAVED settings (main talks to the stored config), so it arrives once the
   // connection works and is re-read after every Save.
   const [jiraStatuses, setJiraStatuses] = useState<JiraStatusOption[]>([]);
+  // Why that list is empty, when it is. An empty table with no reason is a shrug.
+  const [jiraStatusError, setJiraStatusError] = useState<string | null>(null);
   // Auto-update. Kept out of `settings` on purpose: none of it is saved — it is the
   // engine's live state, seeded once and then pushed.
   const [update, setUpdate] = useState<UpdateState | null>(null);
@@ -176,10 +179,23 @@ export function Settings(): JSX.Element {
   /** Fetch the instance's statuses. Fails soft — the field stays typeable regardless. */
   async function loadJiraStatuses(): Promise<void> {
     try {
-      setJiraStatuses(await window.api.invoke('jira:statuses'));
-    } catch {
+      const list = await window.api.invoke('jira:statuses');
+      setJiraStatuses(list.statuses);
+      setJiraStatusError(list.error);
+    } catch (e) {
       setJiraStatuses([]);
+      setJiraStatusError(e instanceof Error ? e.message : String(e));
     }
+  }
+
+  /**
+   * Promote a resolved row into the explicit map. Replaces any row for the same name
+   * (mapping a name twice does nothing — the later row would win anyway) rather than
+   * appending a duplicate the user then has to clean up.
+   */
+  function pinStatus(name: string, column: BoardColumn): void {
+    const others = statusRows.filter((r) => r.name.trim().toLowerCase() !== name.toLowerCase());
+    patchStatusRows([...others, { name, column }]);
   }
 
   /**
@@ -748,6 +764,23 @@ export function Settings(): JSX.Element {
                   </Button>
                 </div>
               </div>
+            </Field>
+
+            {/* What the engine will actually do with the map above — including the
+                statuses nothing in it mentions. Shares the already-fetched status list
+                and the same resolver the sync runs, so it cannot drift from reality. */}
+            <Field
+              label="How your statuses resolve"
+              hint="Every status your instance defines, the column it lands in, and which rule decided. A row that says “Name says review” is a guess the app made for you — pin it to make it yours."
+            >
+              <StatusMapViewer
+                statuses={jiraStatuses}
+                error={jiraStatusError}
+                map={jira.statusCategoryOverrides}
+                learned={jira.learnedStatusColumns}
+                columnLabel={COLUMN_LABEL}
+                onPin={pinStatus}
+              />
             </Field>
 
             <Field

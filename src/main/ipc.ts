@@ -868,8 +868,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
   handle('jira:statuses', async () => {
     const { jira } = store.getSettings();
-    if (!jira.enabled || !jira.baseUrl) return [];
-    if (statusCache?.baseUrl === jira.baseUrl) return statusCache.statuses;
+    if (!jira.enabled) return { statuses: [], error: 'JIRA is switched off.' };
+    if (!jira.baseUrl) return { statuses: [], error: 'No JIRA site URL is configured.' };
+    if (statusCache?.baseUrl === jira.baseUrl) {
+      return { statuses: statusCache.statuses, error: null };
+    }
     try {
       const raw = await buildJiraClient().listStatuses();
       // De-duplicated by name: an instance with several workflows repeats "In Progress"
@@ -884,10 +887,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       }
       const statuses = [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
       statusCache = { baseUrl: jira.baseUrl, statuses };
-      return statuses;
+      return { statuses, error: null };
     } catch (e) {
       logMain('JIRA status list failed', e);
-      return [];
+      return { statuses: [], error: e instanceof Error ? e.message : String(e) };
     }
   });
 

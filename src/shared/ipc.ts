@@ -101,6 +101,16 @@ export interface JiraStatusOption {
   category: JiraStatusCategory;
 }
 
+/**
+ * The status list plus why it might be empty. `error` is null on success — including a
+ * genuine success that returned nothing — and carries the reason otherwise ("JIRA is
+ * off", "no token stored", or the instance's own message).
+ */
+export interface JiraStatusList {
+  statuses: JiraStatusOption[];
+  error: string | null;
+}
+
 /** Result of a JIRA "Test connection" attempt. */
 export interface JiraTestResult {
   ok: boolean;
@@ -420,8 +430,12 @@ export interface IpcApi {
    * to be typed from memory. Cached per base URL. Empty when JIRA is off, no token is
    * stored, or the call failed; the field stays free-text either way, so a status the
    * instance won't tell us about can still be mapped by hand.
+   *
+   * Returns the failure alongside the list rather than throwing: an empty table is a
+   * shrug unless it can say WHY it is empty, and the status-map viewer is exactly the
+   * screen where a silent empty state hides a misconfiguration.
    */
-  'jira:statuses': () => Promise<JiraStatusOption[]>;
+  'jira:statuses': () => Promise<JiraStatusList>;
   /** Every task on the standalone Personal board (JIRA tickets + internal ad-hoc). */
   'board:tasks': () => Promise<Task[]>;
   /**
