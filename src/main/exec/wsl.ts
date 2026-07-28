@@ -16,6 +16,7 @@
  */
 import { execFile } from 'node:child_process';
 import type { ReadinessCheck, TargetReadiness } from '@shared/execTarget';
+import { WSL_PATH_PRELUDE } from './wslHost';
 
 /**
  * Decode `wsl.exe`'s OWN output (`-l -q`), which is UTF-16LE — decoded as UTF-8 it
@@ -76,9 +77,15 @@ export async function listWslDistros(): Promise<string[]> {
   return code === 0 ? parseDistroList(stdout) : [];
 }
 
-/** Run one command inside a distro through a login shell, capturing its output. */
+/**
+ * Run one command inside a distro through a login shell, capturing its output.
+ *
+ * Uses the SAME PATH prelude a real run uses, so the check can never disagree with
+ * what a task would actually find — a readiness panel that says "installed" while
+ * sessions fail to launch is worse than no panel at all.
+ */
 async function inDistro(distro: string, script: string): Promise<{ code: number; stdout: string }> {
-  return runWsl(['-d', distro, '-e', 'bash', '-lc', script]);
+  return runWsl(['-d', distro, '-e', 'bash', '-lc', `${WSL_PATH_PRELUDE}\n${script}`]);
 }
 
 /**
@@ -101,16 +108,22 @@ export async function probeWslTarget(distro: string): Promise<TargetReadiness> {
 
   if (reachable.code !== 0) return { target, ok: false, checks };
 
-  const version = await inDistro(distro, 'claude --version');
+  // Report WHERE it was found, not just that it was: when this fails on a machine we
+  // cannot inspect, "not on PATH" alone gives nobody anything to act on.
+  const version = await inDistro(distro, 'command -v claude && claude --version');
   const versionOk = version.code === 0;
+  const foundAt = version.stdout.split(/\r?\n/)[0]?.trim() ?? '';
+  const versionText = version.stdout.match(/\d+\.\d+\.\d+/)?.[0] ?? '';
   checks.push({
     id: 'claude',
     label: 'Claude CLI found',
     ok: versionOk,
-    detail: versionOk ? (version.stdout.match(/\d+\.\d+\.\d+/)?.[0] ?? version.stdout.trim()) : 'not on PATH',
+    detail: versionOk
+      ? `${versionText || 'installed'} at ${foundAt}`
+      : `not found. Searched PATH plus ~/.local/bin, ~/bin and ~/.nvm/versions/node/*/bin`,
     fix: versionOk
       ? undefined
-      : `Install Claude Code inside ${distro} and make sure a login shell finds it on PATH.`,
+      : `Install Claude Code inside ${distro}, or run \`command -v claude\` there and tell us where it lives.`,
   });
 
   const auth = await inDistro(distro, 'test -f "$HOME/.claude/.credentials.json" && echo yes');

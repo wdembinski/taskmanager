@@ -29,7 +29,7 @@ import {
   type Task,
 } from '@shared/model';
 import { categoryFromKey } from '@shared/board';
-import { sameExecTarget } from '@shared/execTarget';
+import { sameExecTarget, type ExecTarget } from '@shared/execTarget';
 import { normalizeBaseUrl } from '@shared/jiraUrl';
 import { createJiraClient } from './jira/jiraConfig';
 import { explainJiraFailure } from './jira/jiraDiagnostics';
@@ -39,8 +39,7 @@ import { discoverEpicFieldId } from './jira/epicField';
 import { discoverSprintFieldId, withCurrentSprint } from './jira/jiraSprint';
 import { authorIsMe, identityFrom, type JiraIdentityCache } from './jira/identity';
 import { pickTransition, resolveMove } from './jira/jiraMove';
-import { getClaudeStatus } from './claudeStatus';
-import { listWslDistros, localReadiness, probeWslTarget } from './exec';
+import { listWslDistros, readinessFor, statusForTargets } from './exec';
 import { appPlanPath } from './projectPaths';
 import { logMain } from './log';
 import { parsePlan } from './planParser';
@@ -218,12 +217,27 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     platform: process.platform,
   }));
 
-  handle('claude:getStatus', () => getClaudeStatus());
+  /**
+   * The machines the user's work actually runs on.
+   *
+   * The built-in Personal board is excluded: it is a card list, not a codebase, and
+   * counting its (default, local) target would resurrect the very warning this fixes
+   * for someone whose `claude` lives only inside a distro. With no projects yet, the
+   * default for new ones is the only meaningful answer.
+   */
+  const targetsInUse = (): ExecTarget[] => {
+    const targets = store
+      .listProjects()
+      .filter((project) => !isPersonalBoard(project.id))
+      .map((project) => project.target);
+    return targets.length > 0 ? targets : [store.getSettings().defaultExecTarget];
+  };
+
+  handle('claude:getStatus', () => statusForTargets(targetsInUse()));
 
   handle('exec:listDistros', () => listWslDistros());
-  handle('exec:readiness', async (target) =>
-    target.kind === 'wsl' ? probeWslTarget(target.distro) : localReadiness(),
-  );
+  handle('exec:readiness', (target) => readinessFor(target));
+  handle('exec:targetsInUse', async () => targetsInUse());
 
   handle('session:start', async (request) => sessions.start(request));
   handle('session:stop', async (runId) => sessions.stop(runId));

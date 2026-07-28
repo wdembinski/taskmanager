@@ -115,7 +115,11 @@ export interface AppInfo {
 export interface IpcApi {
   /** Return version/runtime info about the desktop app itself. */
   'app:getInfo': () => Promise<AppInfo>;
-  /** Check whether the Claude CLI is installed and logged in on this machine. */
+  /**
+   * Whether the Claude CLI is ready on the machines the user's projects actually run
+   * on — not merely on this one, which would warn forever for someone whose CLI lives
+   * only inside a WSL distro.
+   */
   'claude:getStatus': () => Promise<ClaudeStatus>;
 
   /** Installed WSL distros, for the execution-target picker. Empty when WSL is absent. */
@@ -126,6 +130,11 @@ export interface IpcApi {
    * UI rather than discovered when a task fails.
    */
   'exec:readiness': (target: ExecTarget) => Promise<TargetReadiness>;
+  /**
+   * The machines the user's projects actually run on, so Settings can report each of
+   * them rather than only the default for new projects.
+   */
+  'exec:targetsInUse': () => Promise<ExecTarget[]>;
   /** Start one Claude session for a task. Resolves with a run id to track it. */
   'session:start': (request: StartSessionRequest) => Promise<{ runId: string }>;
   /** Stop a running session by its run id (kills the underlying process). */

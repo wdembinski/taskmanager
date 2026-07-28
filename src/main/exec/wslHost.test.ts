@@ -11,7 +11,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { listWslDistros } from './wsl';
-import { WslExecHost } from './wslHost';
+import { WslExecHost, WSL_PATH_PRELUDE } from './wslHost';
 
 let distro = '';
 
@@ -66,6 +66,17 @@ describe.runIf(process.platform === 'win32')('WslExecHost', () => {
     expect(stdout.trim().length).toBeGreaterThan(0);
   }, 30_000);
 
+  it('puts user-level tool directories on PATH, where npm/nvm installs land', async ({ skip }) => {
+    if (!hasWsl()) return skip();
+    const host = new WslExecHost(distro);
+    // A login shell does not source `.bashrc` (it returns early when non-interactive),
+    // which is where nvm installs itself — so a `claude` installed that way is
+    // invisible without this, and both the readiness check AND real runs fail.
+    const { code, stdout } = await host.exec('/', 'sh', ['-c', 'echo "$PATH"']);
+    expect(code).toBe(0);
+    expect(stdout).toContain('/.local/bin');
+  }, 30_000);
+
   it('resolves the distro home directory', async ({ skip }) => {
     if (!hasWsl()) return skip();
     const host = new WslExecHost(distro);
@@ -107,6 +118,17 @@ describe.runIf(process.platform === 'win32')('WslExecHost', () => {
     }
     expect(gone).toBe(true);
   }, 60_000);
+});
+
+describe('the shell prelude', () => {
+  it('is valid bash — multi-line, never `;`-joined', () => {
+    // Joining these lines with `; ` yields `do;`, a syntax error that breaks EVERY
+    // command rather than just the PATH augmentation. Cheap canary for a mistake
+    // whose real symptom is "nothing runs at all".
+    expect(WSL_PATH_PRELUDE).not.toMatch(/\bdo\s*;/);
+    expect(WSL_PATH_PRELUDE).not.toMatch(/;\s*done\b/);
+    expect(WSL_PATH_PRELUDE.split('\n').length).toBeGreaterThan(1);
+  });
 });
 
 describe('WslExecHost path and relay wiring', () => {

@@ -41,11 +41,35 @@ import type {
 } from './types';
 
 /**
+ * Put the directories user-level tools install into on PATH.
+ *
+ * A LOGIN shell has the user's profile, but not `.bashrc` — which returns early when
+ * non-interactive, and is exactly where nvm (and friends) install themselves. So a
+ * `claude` installed through npm/nvm works perfectly in the user's terminal and is
+ * invisible to us, which looks like "the CLI isn't installed" and also makes sessions
+ * fail to launch, not just the readiness check.
+ *
+ * Appended rather than prepended, so a system tool of the same name still wins.
+ */
+const AUGMENT_PATH = [
+  'for d in "$HOME/.local/bin" "$HOME/bin"; do',
+  '  [ -d "$d" ] && PATH="$PATH:$d"',
+  'done',
+  // Newest nvm-installed Node last, so it takes precedence over older ones.
+  'for d in "$HOME"/.nvm/versions/node/*/bin; do',
+  '  [ -d "$d" ] && PATH="$PATH:$d"',
+  'done',
+  'export PATH',
+  // Joined with NEWLINES, not `;` — a semicolon after `do` is a bash syntax error,
+  // which would break every command rather than just the PATH augmentation.
+].join('\n');
+
+/**
  * `cd` into the working directory, then replace the shell with the real command.
  * `exec` matters: it keeps the process id we printed, so the id we use to kill the
  * tree later is the command's own, not a wrapper's that has already exited.
  */
-const RUN_SCRIPT = 'cd "$1" || exit 1; shift; exec "$@"';
+const RUN_SCRIPT = `${AUGMENT_PATH}\ncd "$1" || exit 1; shift; exec "$@"`;
 
 /**
  * The same, but announcing the pid first. Stopping a run has to kill the whole
@@ -53,6 +77,9 @@ const RUN_SCRIPT = 'cd "$1" || exit 1; shift; exec "$@"';
  * only what we hold orphans them to keep running after Stop.
  */
 const RUN_SCRIPT_ANNOUNCE_PID = `echo "${'ORCH_PID'}:$$" 1>&2; ${RUN_SCRIPT}`;
+
+/** Shared with the readiness probe so a check and a real run resolve tools identically. */
+export const WSL_PATH_PRELUDE = AUGMENT_PATH;
 
 /** Marker the spawn wrapper prints on stderr so we can learn the Linux-side pid. */
 const PID_MARKER = /^ORCH_PID:(\d+)$/m;

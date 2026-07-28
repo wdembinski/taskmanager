@@ -42,6 +42,7 @@ import {
   formatExecTarget,
   LOCAL_TARGET,
   parseExecTarget,
+  type ExecTarget,
 } from '@shared/execTarget';
 import { AgentProjects } from './AgentProjects';
 import { PaneLoading } from './PaneLoading';
@@ -74,6 +75,17 @@ const useStyles = makeStyles({
   hint: { color: tokens.colorNeutralForeground3 },
 });
 
+/**
+ * Which machines to report readiness for: every one a project runs on, plus the
+ * default for new projects (so a target you are about to use can be checked before
+ * you commit to it). De-duplicated, default first.
+ */
+function readinessTargets(defaultTarget: ExecTarget, inUse: ExecTarget[]): ExecTarget[] {
+  const byKey = new Map<string, ExecTarget>();
+  for (const target of [defaultTarget, ...inUse]) byKey.set(formatExecTarget(target), target);
+  return [...byKey.values()];
+}
+
 const MODELS: ClaudeModel[] = ['haiku', 'sonnet', 'opus'];
 const MODES: PermissionMode[] = ['acceptEdits', 'plan', 'manual', 'bypassPermissions'];
 
@@ -90,11 +102,13 @@ export function Settings(): JSX.Element {
   const [testResult, setTestResult] = useState<JiraTestResult | null>(null);
   const [testing, setTesting] = useState(false);
   const [distros, setDistros] = useState<string[]>([]);
+  const [targetsInUse, setTargetsInUse] = useState<ExecTarget[]>([]);
 
   // Only offer targets that exist here: with no WSL installed the control never
   // appears, so the screen stays exactly as it was.
   useEffect(() => {
     void window.api.invoke('exec:listDistros').then(setDistros);
+    void window.api.invoke('exec:targetsInUse').then(setTargetsInUse);
   }, []);
 
   const seed = useCallback(async () => {
@@ -296,7 +310,12 @@ export function Settings(): JSX.Element {
               </Field>
             )}
 
-            <ReadinessPanel target={settings.defaultExecTarget} />
+            {/* One panel per machine actually in use, plus the default for new
+                projects. Showing only the default hid the very target the user had
+                configured, so a WSL distro was never actually checked. */}
+            {readinessTargets(settings.defaultExecTarget, targetsInUse).map((target) => (
+              <ReadinessPanel key={formatExecTarget(target)} target={target} />
+            ))}
           </div>
 
           <div className={styles.actions}>
