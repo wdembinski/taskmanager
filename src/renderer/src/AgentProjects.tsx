@@ -40,6 +40,14 @@ import {
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
 import type { Project } from '@shared/model';
+import {
+  execTargetLabel,
+  formatExecTarget,
+  LOCAL_TARGET,
+  parseExecTarget,
+  type ExecTarget,
+} from '@shared/execTarget';
+import { distroFromWindowsPath, pathSuitsHost, windowsToLinux } from '@shared/wslPath';
 import { ColorSwatches } from './ColorSwatches';
 import { PaneLoading } from './PaneLoading';
 import { useInitialLoad } from './useInitialLoad';
@@ -116,7 +124,8 @@ export function AgentProjects(): JSX.Element {
       <Subtitle2>Agent projects</Subtitle2>
       <Body1 className={styles.hint}>
         Repositories an agent can work in when you assign a My Tasks card to it. Link the JIRA epics
-        a repo owns and a ticket under one of them picks its project automatically.
+        a repo owns and a ticket under one of them picks its project automatically. A repo can live
+        inside WSL — browse into the distro and the project runs there.
       </Body1>
 
       {error && (
@@ -214,8 +223,16 @@ function AgentProjectDialog({
   const [color, setColor] = useState('');
   const [model, setModel] = useState<ClaudeModel>('sonnet');
   const [permMode, setPermMode] = useState<PermissionMode>('acceptEdits');
+  const [target, setTarget] = useState<ExecTarget>(LOCAL_TARGET);
+  const [distros, setDistros] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Only offer targets that exist here: with no WSL installed the control never
+  // appears, and the pane looks exactly as it did before.
+  useEffect(() => {
+    void window.api.invoke('exec:listDistros').then(setDistros);
+  }, []);
 
   // Seed the form each time it opens — from the project when editing, from the
   // user's global defaults when adding.
@@ -229,6 +246,7 @@ function AgentProjectDialog({
       setColor(project.color);
       setModel(project.defaultModel);
       setPermMode(project.defaultPermissionMode);
+      setTarget(project.target);
     } else {
       setPath('');
       setName('');
@@ -237,13 +255,34 @@ function AgentProjectDialog({
       void window.api.invoke('settings:get').then((s) => {
         setModel(s.defaultModel);
         setPermMode(s.defaultPermissionMode);
+        setTarget(s.defaultExecTarget);
       });
     }
   }, [open, project]);
 
+  /**
+   * Browse for the repo folder.
+   *
+   * The Windows picker can walk into a distro, where it hands back a
+   * `\\wsl.localhost\<distro>\…` path. That one path says both WHERE the repo is and
+   * WHICH machine it belongs to, so picking it selects the target too, and the path is
+   * stored in the Linux form the agent, git and the worktrees will actually use —
+   * handing a UNC path to a Linux shell would fail at the first `cd`.
+   *
+   * Same rule as the plan-project dialog: an agent project is a working directory like
+   * any other, and the two must not disagree about what picking a WSL folder means.
+   */
   async function browseFolder(): Promise<void> {
     const picked = await window.api.invoke('project:pickDirectory');
-    if (picked) setPath(picked);
+    if (!picked) return;
+    const distro = distroFromWindowsPath(picked);
+    if (distro) {
+      setTarget({ kind: 'wsl', distro });
+      setPath(windowsToLinux(picked));
+    } else {
+      setTarget(LOCAL_TARGET);
+      setPath(picked);
+    }
   }
 
   async function save(): Promise<void> {
@@ -262,6 +301,7 @@ function AgentProjectDialog({
           defaultPermissionMode: permMode,
           jiraEpicKeys: parseEpicKeys(epics),
           color,
+          target,
         });
       } else {
         await window.api.invoke('agentProject:add', {
@@ -271,6 +311,7 @@ function AgentProjectDialog({
           defaultPermissionMode: permMode,
           jiraEpicKeys: parseEpicKeys(epics),
           color,
+          target,
         });
       }
       onSaved();
@@ -281,6 +322,10 @@ function AgentProjectDialog({
       setSaving(false);
     }
   }
+
+  // A typed path and a chosen machine can disagree; say so on the form rather than
+  // letting the first run die on a `cd` into a path that machine cannot see.
+  const targetMismatch = !pathSuitsHost(path, target.kind === 'wsl' ? 'linux' : 'windows');
 
   return (
     <Dialog open={open} onOpenChange={(_e, d) => !d.open && onClose()}>
@@ -295,17 +340,61 @@ function AgentProjectDialog({
                 </MessageBar>
               )}
 
-              <Field label="Repository folder" required>
+              <Field
+                label="Repository folder"
+                required
+                hint={
+                  distros.length > 0
+                    ? 'Browse into a distro (\\\\wsl.localhost\\…) and both the path and "Runs on" follow — or type a Linux path such as /home/you/repo directly.'
+                    : undefined
+                }
+              >
                 <div className={styles.row}>
+                  {/* Typeable, unlike the plan dialog's: a distro folder the Windows
+                      picker cannot reach (a path outside \\wsl.localhost, or a headless
+                      distro) would otherwise be unreachable, and an agent project is
+                      nothing but this folder. */}
                   <Input
                     className={`${styles.grow} ${styles.mono}`}
                     value={path}
-                    readOnly
-                    placeholder="Choose a folder…"
+                    onChange={(_e, d) => setPath(d.value)}
+                    placeholder="Choose a folder, or type /home/you/repo…"
                   />
                   <Button onClick={() => void browseFolder()}>Browse…</Button>
                 </div>
               </Field>
+
+              {distros.length > 0 && (
+                <Field
+                  label="Runs on"
+                  hint={
+                    project
+                      ? 'Changing this clears this project’s saved sessions and worktrees — they only exist on the machine that created them.'
+                      : 'Where this project’s Claude sessions, git and worktrees execute. Browsing into a distro selects it automatically.'
+                  }
+                  validationState={targetMismatch ? 'warning' : 'none'}
+                  validationMessage={
+                    targetMismatch
+                      ? target.kind === 'wsl'
+                        ? 'That looks like a Windows path. A WSL target needs a Linux one, e.g. /home/you/repo or /mnt/c/…'
+                        : 'That looks like a Linux path. Pick the distro it lives on, or choose a Windows folder.'
+                      : undefined
+                  }
+                >
+                  <Dropdown
+                    value={execTargetLabel(target)}
+                    selectedOptions={[formatExecTarget(target)]}
+                    onOptionSelect={(_e, d) => setTarget(parseExecTarget(d.optionValue))}
+                  >
+                    <Option value="local">{execTargetLabel(LOCAL_TARGET)}</Option>
+                    {distros.map((distro) => (
+                      <Option key={distro} value={`wsl:${distro}`}>
+                        {execTargetLabel({ kind: 'wsl', distro })}
+                      </Option>
+                    ))}
+                  </Dropdown>
+                </Field>
+              )}
 
               <Field label="Display name" hint="Defaults to the folder name.">
                 <Input

@@ -4,7 +4,13 @@
  * the legacy `\\wsl$` prefix, and round-tripping.
  */
 import { describe, expect, it } from 'vitest';
-import { distroFromWindowsPath, isDistroPath, linuxToWindows, windowsToLinux } from './wslPath';
+import {
+  distroFromWindowsPath,
+  isDistroPath,
+  linuxToWindows,
+  pathSuitsHost,
+  windowsToLinux,
+} from './wslPath';
 
 const DISTRO = 'Ubuntu-20.04';
 
@@ -91,5 +97,35 @@ describe('isDistroPath', () => {
     expect(isDistroPath('/home/you/repo')).toBe(true);
     expect(isDistroPath('/mnt/c/Repositories/foo')).toBe(false);
     expect(isDistroPath('C:\\Repositories\\foo')).toBe(false);
+  });
+});
+
+describe('pathSuitsHost', () => {
+  it('accepts a Windows path only on Windows', () => {
+    expect(pathSuitsHost('C:\\Repositories\\app', 'windows')).toBe(true);
+    expect(pathSuitsHost('C:/Repositories/app', 'windows')).toBe(true);
+    expect(pathSuitsHost('C:\\Repositories\\app', 'linux')).toBe(false);
+  });
+
+  it('accepts an absolute Linux path only on Linux', () => {
+    expect(pathSuitsHost('/home/you/repo', 'linux')).toBe(true);
+    expect(pathSuitsHost('/mnt/c/repos/app', 'linux')).toBe(true);
+    expect(pathSuitsHost('/home/you/repo', 'windows')).toBe(false);
+  });
+
+  // A UNC path is a Windows spelling of a Linux location: neither machine runs it, and
+  // `windowsToLinux` is what turns it into something that does.
+  it('rejects a \\\\wsl.localhost path for both hosts', () => {
+    expect(pathSuitsHost('\\\\wsl.localhost\\Ubuntu\\home\\you', 'linux')).toBe(false);
+    expect(pathSuitsHost('\\\\wsl.localhost\\Ubuntu\\home\\you', 'windows')).toBe(false);
+    expect(pathSuitsHost('\\\\wsl$\\Ubuntu\\home\\you', 'linux')).toBe(false);
+  });
+
+  it('stays quiet about what it cannot know', () => {
+    for (const host of ['windows', 'linux'] as const) {
+      expect(pathSuitsHost('', host)).toBe(true);
+      expect(pathSuitsHost('   ', host)).toBe(true);
+      expect(pathSuitsHost('repo', host)).toBe(true);
+    }
   });
 });

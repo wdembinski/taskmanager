@@ -92,6 +92,29 @@ export function isDistroPath(linuxPath: string): boolean {
 }
 
 /**
+ * Whether a path is written in the shape the given machine can open — used to warn on
+ * a form BEFORE the mismatch becomes a run that dies at its first `cd`.
+ *
+ * The two failure modes are equally easy to type and equally confusing to debug: a
+ * `C:\repo` handed to a Linux shell, and a `/home/you/repo` handed to Windows `fs`.
+ * A UNC path counts as wrong for BOTH — it is a Windows spelling of a Linux location,
+ * so nothing executes it; `windowsToLinux` exists to convert it, and the pickers do.
+ *
+ * Deliberately permissive about what it cannot know: an empty path, or anything that is
+ * neither clearly Windows nor clearly absolute-Linux (a relative path, a typo in
+ * progress), is not called a mismatch — a form that scolds you mid-keystroke is worse
+ * than one that stays quiet until it is sure.
+ */
+export function pathSuitsHost(path: string, host: 'windows' | 'linux'): boolean {
+  const trimmed = path.trim();
+  if (!trimmed) return true;
+  if (WSL_UNC.test(trimmed)) return false;
+  if (WINDOWS_DRIVE.test(trimmed)) return host === 'windows';
+  if (trimmed.startsWith('/')) return host === 'linux';
+  return true; // relative or unrecognised — not ours to judge
+}
+
+/**
  * Join path segments in the HOST's own shape.
  *
  * `node:path.join` builds whatever the *app's* platform uses, which is wrong the
