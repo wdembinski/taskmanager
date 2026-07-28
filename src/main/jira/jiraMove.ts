@@ -13,7 +13,8 @@
  *   - Internal (non-JIRA) tasks never transition anything.
  */
 import type { BoardColumn, Task, TaskStatus } from '@shared/model';
-import { columnForTask, lookupStatusColumn, statusForColumn } from '@shared/board';
+import { categoryFromKey, columnForTask, statusForColumn } from '@shared/board';
+import { STATUS_REASONS, resolveStatusColumn } from '@shared/statusResolve';
 import type { JiraTransition } from './jiraClient';
 import type { JiraSettings } from '@shared/settings';
 
@@ -66,13 +67,14 @@ export function resolveMove(task: Task, toColumn: BoardColumn): MoveResolution {
   return { localStatus, preBlockStatus: null, jiraTransition, noop: false };
 }
 
-/** The settings `pickTransition` consults — the three name overrides plus the status map. */
+/** The settings `pickTransition` consults — the three name overrides plus both status maps. */
 export type TransitionSettings = Pick<
   JiraSettings,
   | 'inProgressTransitionName'
   | 'inReviewTransitionName'
   | 'doneTransitionName'
   | 'statusCategoryOverrides'
+  | 'learnedStatusColumns'
 >;
 
 const NAME_OVERRIDE: Record<JiraTransitionTarget, keyof TransitionSettings> = {
@@ -81,21 +83,36 @@ const NAME_OVERRIDE: Record<JiraTransitionTarget, keyof TransitionSettings> = {
   toDone: 'doneTransitionName',
 };
 
+/** The board column each transition target is trying to reach. */
+const TARGET_COLUMN: Record<JiraTransitionTarget, BoardColumn> = {
+  toInProgress: 'in-progress',
+  toInReview: 'in-review',
+  toDone: 'done',
+};
+
 /**
- * Choose which JIRA transition to apply for a target, in order of how much the user
- * told us:
+ * Choose which JIRA transition to apply for a target, in order of how much we know:
  *
- *   1. an exact transition name they configured for this target;
- *   2. a transition whose destination status they mapped to this target's column;
- *   3. a category match (`indeterminate` = In Progress, `done` = Done) — for IN
- *      REVIEW, a category match plus "review" in the name, since JIRA files review
- *      statuses under `indeterminate` with everything else.
+ *   1. an exact transition name the user configured for this target;
+ *   2. otherwise the first transition whose DESTINATION STATUS resolves to this
+ *      target's column — tried tier by tier, so an explicitly-mapped status is taken
+ *      before a learned one, a learned one before the name heuristic, and the plain
+ *      category last.
  *
- * IN PROGRESS deliberately *rejects* any transition whose destination the user
- * mapped to IN REVIEW: both live in the `indeterminate` category, so a bare category
- * match would happily drop a card into "Code Review" because it happened to come
- * first in the workflow's transition list. Returns null when nothing fits — the
- * caller turns that into a readable error rather than moving the card silently.
+ * The destination is resolved with the very same `resolveStatusColumn` the sync uses
+ * (`shared/statusResolve.ts`), which is the point: a transition is only picked for IN
+ * REVIEW if the sync would also read that status as IN REVIEW, so a drag can no longer
+ * move a ticket somewhere the next sync disagrees with. It also subsumes the old
+ * hand-written guard against IN PROGRESS grabbing a review status — "Code Review"
+ * resolves to `in-review`, so it can never equal `in-progress`.
+ *
+ * Tier-by-tier rather than first-match-wins over the transition list, because a
+ * workflow's transitions come back in the order the workflow declares them: a bare
+ * scan would take a category-guess that happened to be listed first over the status
+ * the user explicitly mapped.
+ *
+ * Returns null when nothing fits — the caller turns that into a readable error rather
+ * than moving the card silently.
  */
 export function pickTransition(
   transitions: JiraTransition[],
@@ -108,20 +125,18 @@ export function pickTransition(
     if (byName) return byName;
   }
 
-  const map = settings.statusCategoryOverrides;
-  const wantColumn: BoardColumn =
-    target === 'toInProgress' ? 'in-progress' : target === 'toInReview' ? 'in-review' : 'done';
-  const byMap = transitions.find((t) => lookupStatusColumn(t.to.name, map) === wantColumn);
-  if (byMap) return byMap;
-
-  const wantKey = target === 'toDone' ? 'done' : 'indeterminate';
-  return (
-    transitions.find((t) => {
-      if (t.to.statusCategory.key !== wantKey) return false;
-      const mapped = lookupStatusColumn(t.to.name, map);
-      if (target === 'toInReview') return /review/i.test(t.to.name);
-      // Never let IN PROGRESS grab a status the user said means IN REVIEW.
-      return mapped !== 'in-review';
-    }) ?? null
-  );
+  const wantColumn = TARGET_COLUMN[target];
+  for (const tier of STATUS_REASONS) {
+    const hit = transitions.find((t) => {
+      const resolved = resolveStatusColumn(
+        t.to.name,
+        categoryFromKey(t.to.statusCategory.key),
+        settings.statusCategoryOverrides,
+        settings.learnedStatusColumns,
+      );
+      return resolved.reason === tier && resolved.column === wantColumn;
+    });
+    if (hit) return hit;
+  }
+  return null;
 }

@@ -157,5 +157,35 @@ describe('pickTransition', () => {
     it('In Progress still matches by category when nothing is mapped', () => {
       expect(pickTransition(workflow, 'toInProgress', {})?.id).toBe('11');
     });
+
+    it('picks a transition whose destination we learned from an earlier drag', () => {
+      const qaWorkflow = [
+        T('11', 'Start Progress', 'indeterminate'),
+        T('41', 'QA', 'indeterminate'),
+      ];
+      expect(
+        pickTransition(qaWorkflow, 'toInReview', { learnedStatusColumns: { QA: 'in-review' } })?.id,
+      ).toBe('41');
+    });
+
+    it('prefers the user map over what was learned', () => {
+      const both = [T('21', 'Code Review', 'indeterminate'), T('41', 'QA', 'indeterminate')];
+      expect(
+        pickTransition(both, 'toInReview', {
+          statusCategoryOverrides: { QA: 'in-review' },
+          learnedStatusColumns: { 'Code Review': 'in-review' },
+        })?.id,
+      ).toBe('41');
+    });
+  });
+
+  // Tier by tier, not first-match-wins down the transition list: a workflow returns its
+  // transitions in whatever order it declares them, so scanning once would let a
+  // category guess listed first beat the status the user explicitly mapped.
+  it('takes an explicitly mapped destination over one that only matches by category', () => {
+    const workflow = [T('11', 'Ship It', 'done'), T('12', 'Sign Off', 'done')];
+    expect(
+      pickTransition(workflow, 'toDone', { statusCategoryOverrides: { 'Sign Off': 'done' } })?.id,
+    ).toBe('12');
   });
 });

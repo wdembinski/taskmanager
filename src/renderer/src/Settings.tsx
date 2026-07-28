@@ -183,6 +183,23 @@ export function Settings(): JSX.Element {
   }
   const initial = useInitialLoad(seed);
 
+  // The engine writes one field of its own — the status→column map it learns from a
+  // successful drag — and this screen saves the WHOLE settings blob, so without taking
+  // that field back the next Save would write a stale copy over it. Only that field is
+  // merged: replacing the blob outright would throw away whatever is half-typed here.
+  useEffect(() => {
+    return window.api.on('settings:changed', (next) => {
+      setSettings((prev) =>
+        prev
+          ? {
+              ...prev,
+              jira: { ...prev.jira, learnedStatusColumns: next.jira.learnedStatusColumns },
+            }
+          : prev,
+      );
+    });
+  }, []);
+
   // Any edit invalidates the "Saved" confirmation.
   function patch(change: Partial<AppSettings>): void {
     setSettings((prev) => (prev ? { ...prev, ...change } : prev));

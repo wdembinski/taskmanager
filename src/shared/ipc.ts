@@ -487,6 +487,15 @@ export interface IpcEvents {
    * deleted. Carries the project's full, current task list so the UI can replace it.
    */
   'project:tasksChanged': { projectId: string; tasks: Task[] };
+  /**
+   * Settings changed in the MAIN process rather than on the Settings screen — the
+   * engine learning a JIRA status→column mapping from a successful drag, for one.
+   *
+   * Both `Settings` and `MyTasks` load the whole `AppSettings` blob at mount and save
+   * it back whole, so without this push the next save from either screen would write
+   * a stale copy back over anything the engine had learned since.
+   */
+  'settings:changed': AppSettings;
 }
 
 /** Convenience: the set of valid invoke channel names. */

@@ -3,7 +3,6 @@ import { PERSONAL_PROJECT_ID, type Task } from './model';
 import {
   categoryFromKey,
   categoryToColumn,
-  columnForJiraStatus,
   columnForStatus,
   lookupStatusColumn,
   statusForColumn,
@@ -75,28 +74,6 @@ describe('lookupStatusColumn', () => {
   it('matches ignoring case and surrounding space', () => {
     expect(lookupStatusColumn('code review', map)).toBe('in-review');
     expect(lookupStatusColumn('  CODE REVIEW  ', map)).toBe('in-review');
-  });
-});
-
-describe('columnForJiraStatus', () => {
-  const map = { 'Code Review': 'in-review' as const };
-
-  it('reaches In Review, which no category can express', () => {
-    expect(columnForJiraStatus('Code Review', 'In Progress', map)).toBe('in-review');
-  });
-
-  it('falls back to the category when the status is unmapped', () => {
-    expect(columnForJiraStatus('In Progress', 'In Progress', map)).toBe('in-progress');
-    expect(columnForJiraStatus('Anything', 'Done', map)).toBe('done');
-  });
-
-  it('behaves exactly like the category alone when there is no map', () => {
-    expect(columnForJiraStatus('Code Review', 'In Progress', undefined)).toBe('in-progress');
-    expect(columnForJiraStatus('Backlog', 'To Do', undefined)).toBe('todo');
-  });
-
-  it('lets the map override the category outright', () => {
-    expect(columnForJiraStatus('Backlog', 'In Progress', { Backlog: 'todo' })).toBe('todo');
   });
 });
 

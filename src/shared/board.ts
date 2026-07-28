@@ -68,33 +68,13 @@ export function categoryFromKey(key: string): JiraStatusCategory {
 }
 
 /**
- * Which board column a JIRA status lands in: the user's per-status-name map first,
- * the issue's category as the fallback.
+ * The column a status name is mapped to by the given map, or null when it is not in
+ * it. The building block of `resolveStatusColumn` (`shared/statusResolve.ts`), which
+ * is what both the sync and the move path actually call — this only answers "did
+ * somebody say what this name means", not "where does it go".
  *
- * The map exists because a category cannot express IN REVIEW — JIRA has only three
- * of them, and "Review", "In Review" and "Code Review" all sit in `In Progress`
- * alongside the status that actually means "being written". Names, unlike
- * categories, differ per project, so the map is keyed by name and matched
- * **case-insensitively**; anything unmapped still lands by category, which is
- * exactly how every board behaved before the map existed.
- *
- * Shared by the sync (which column an incoming issue lands in) and the move path
- * (which transition a drag should pick), so the two can never disagree about what
- * "Code Review" means.
- */
-export function columnForJiraStatus(
-  rawStatus: string,
-  category: JiraStatusCategory,
-  map: Record<string, BoardColumn> | undefined,
-): BoardColumn {
-  return lookupStatusColumn(rawStatus, map) ?? categoryToColumn(category);
-}
-
-/**
- * The column a status name is explicitly mapped to, or null when the user has not
- * mapped it. Separate from {@link columnForJiraStatus} because the move path needs
- * to tell "mapped to In Review" from "fell back to In Progress" — a transition must
- * only be *rejected* for a target when the user said it means something else.
+ * Matched **case-insensitively** and on the trimmed name: the map is keyed by a
+ * status NAME, and names are typed by hand in Settings.
  */
 export function lookupStatusColumn(
   rawStatus: string,

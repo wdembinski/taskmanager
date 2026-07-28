@@ -36,6 +36,9 @@ plan the orchestrator could one day run on its own repo.
 | 11 | Plan-driven subtasks (plan → approve → steps) | ✅ shipped |
 | 12 | Chat with the agent from a card | ✅ shipped |
 | 13 | The workspace refresh (nav rail, status bar, one-pane detail) | ✅ shipped |
+| 14 | Sprints on the board | ✅ shipped |
+| 15 | The board grows up (IN REVIEW, status map, priority, notes, colours) | ✅ shipped |
+| 16 | Twelve fixes and two integrations (bugs, workspace, JIRA depth, auto-update, GitLab) | 🚧 in progress (1–2 done) |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -857,6 +860,66 @@ never moves its own text.
 - A JIRA re-sync must not clear what the human wrote, so `statusNote`/`statusNoteAt`
   join the agent-delegation and subtask columns that `upsertJiraTask` deliberately omits.
 - Shipped as **0.28.0** — a minor bump: this adds capability rather than fixing it.
+
+---
+
+## Phase 16 — Twelve fixes and two integrations
+
+**Goal.** A week of using the board in anger produced one list: two bugs that made the
+IN REVIEW column unusable, five gaps in the workspace, three in the JIRA comment thread,
+auto-update, and a GitLab integration that puts your merge requests on the card their
+ticket lives on.
+
+Worked **one item per session**, in the order the user listed them, each its own commit
+and each green (`pnpm typecheck`, `pnpm test`, `pnpm build`) before it lands. Decisions
+taken with the user: full `electron-updater` against GitHub Releases; merge requests
+discovered from `scope=created_by_me` and matched to a card by the JIRA key in the branch,
+title or description; MR attention raised by comments **and** red pipelines **and**
+changes-requested; a GitLab poller with its own interval (default 2 min); and JIRA issue
+creation driven by live project/issue-type pickers rather than a configured default.
+
+### Deliverables
+
+- [x] **1 — The card that stayed half-transparent.** Dropping a card in another column
+      re-parents it (the optimistic patch moves it between `KanbanColumn`s), so the node
+      the drag started on unmounts and its `dragend` never reaches React's root — the
+      remounted card kept `opacity: 0.5` until the next drag. `draggingId` is now cleared
+      on the drop itself and on the columns container, which never unmounts, so an
+      ESC-cancelled drag and a refused move are covered too.
+- [x] **2 — IN REVIEW survives a sync** (`src/shared/statusResolve.ts`, pure). The two
+      halves of a move disagreed: the outgoing transition could be picked by the status
+      NAME (any `indeterminate` transition called something-review), while the incoming
+      sync read the same status by its CATEGORY — and JIRA files review statuses under
+      `In Progress` with the one that means "being written". So the drag worked, the
+      ticket really moved, and the next sync put the card back. Both paths now call one
+      `resolveStatusColumn` with four tiers — `explicit` (the Settings map), `learned`,
+      `heuristic` (a review-named indeterminate status), `category` — which also
+      subsumes the hand-written guard against IN PROGRESS grabbing a review transition.
+      A successful drag now *teaches* the map (`jira.learnedStatusColumns`), pushed to
+      the UI on a new `settings:changed` event so a screen that saves the whole settings
+      blob cannot write over what the engine learned.
+- [ ] **3 — Auto-update.** `electron-updater` + `publish: github`; space-free artifact
+      names (`gh` rewrites spaces to dots, which breaks the `latest.yml` feed); a pure
+      `updateMode()` so a `.deb` install degrades to "manual" instead of erroring every
+      launch.
+- [ ] **4 — An empty detail pane says so with a glyph**, not a sentence.
+- [ ] **5 — The detail pane can be hidden** (`showTaskDetail`, on by default).
+- [ ] **6 — The window remembers its size and whether it was maximized**, cooperating
+      with the frameless title bar and the WSLg manual-maximize fallback.
+- [ ] **7 — A viewer for the status map**: every status the instance reports, the column
+      it resolves to, and *which tier decided* — the surface that would have made item 2
+      obvious.
+- [ ] **8 — Create a card as a JIRA issue**, reading the created issue back through
+      `issueToTask` so it is identical to a synced one.
+- [ ] **9 — Your own comment must not shout.** `latestCommentAt` ignores authorship, so
+      a comment you post in the JIRA web UI lights your own card orange.
+- [ ] **10 — @mentions and attachments when commenting** (a real ADF builder, user
+      search, and a multipart upload path).
+- [ ] **11 — Mentions and attachments on incoming comments.** The ADF flattener collects
+      only `text` leaves, so a mention's label is dropped entirely today.
+- [ ] **12 — GitLab.** A `merge_requests` table, a client/sync/poller mirroring the JIRA
+      ones, MR rows on the card and a rich list in the pane, and MR attention folded into
+      `chainNeedsAttention` so the ring and the card ordering cannot disagree.
 
 ---
 

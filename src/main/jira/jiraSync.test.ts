@@ -193,10 +193,40 @@ describe('reconcileJiraTasks', () => {
     expect(upserts[0].externalStatus).toBe('Code Review');
   });
 
-  it('leaves an unmapped review-ish status on the category, as before', () => {
+  // The regression that made a drag into IN REVIEW pointless: the outgoing transition
+  // was picked by the status NAME while the incoming sync read the same status by its
+  // CATEGORY, so the card came straight back to IN PROGRESS. Both sides now resolve
+  // through `resolveStatusColumn`, so no configuration is needed for this to hold.
+  it('lands an unmapped review-ish status in In Review', () => {
     const review = issue('1', 'PROJ-1', 'indeterminate');
     review.fields.status.name = 'Code Review';
     const { upserts } = reconcileJiraTasks([], [review], opts);
+    expect(upserts[0].status).toBe('in-review');
+  });
+
+  it('lands a learned status in the column the user dragged it to', () => {
+    const qa = issue('1', 'PROJ-1', 'indeterminate');
+    qa.fields.status.name = 'QA';
+    const { upserts } = reconcileJiraTasks([], [qa], {
+      ...opts,
+      learned: { QA: 'in-review' },
+    });
+    expect(upserts[0].status).toBe('in-review');
+  });
+
+  it('lets the user map beat what was learned', () => {
+    const qa = issue('1', 'PROJ-1', 'indeterminate');
+    qa.fields.status.name = 'QA';
+    const { upserts } = reconcileJiraTasks([], [qa], {
+      ...opts,
+      overrides: { QA: 'in-progress' },
+      learned: { QA: 'in-review' },
+    });
+    expect(upserts[0].status).toBe('in-progress');
+  });
+
+  it('still lands a plain in-progress status by category', () => {
+    const { upserts } = reconcileJiraTasks([], [issue('1', 'PROJ-1', 'indeterminate')], opts);
     expect(upserts[0].status).toBe('in-progress');
   });
 

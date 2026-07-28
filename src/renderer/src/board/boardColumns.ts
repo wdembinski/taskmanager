@@ -11,7 +11,6 @@ export type { BoardColumn } from '@shared/model';
 export {
   categoryFromKey,
   categoryToColumn,
-  columnForJiraStatus,
   columnForStatus,
   columnForTask,
   statusForColumn,

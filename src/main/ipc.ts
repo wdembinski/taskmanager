@@ -23,12 +23,16 @@ import {
   isManualStatus,
   isPersonalBoard,
   PERSONAL_PROJECT_ID,
+  type BoardColumn,
+  type JiraStatusCategory,
   type Project,
   type ProjectPatch,
   type ProjectWithTasks,
   type Task,
 } from '@shared/model';
 import { categoryFromKey } from '@shared/board';
+import { resolveStatusColumn } from '@shared/statusResolve';
+import type { AppSettings } from '@shared/settings';
 import { sameExecTarget, type ExecTarget } from '@shared/execTarget';
 import { normalizeBaseUrl } from '@shared/jiraUrl';
 import { createJiraClient } from './jira/jiraConfig';
@@ -850,6 +854,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     const { upserts, deleteIds } = reconcileJiraTasks(store.getPersonalTasks(), issues, {
       baseUrl: jira.baseUrl,
       overrides: jira.statusCategoryOverrides,
+      learned: jira.learnedStatusColumns,
       epicFieldId: epicField,
       sprintFieldId: sprintField,
     });
@@ -870,6 +875,47 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       throw new Error(explainJiraFailure(e, store.getSettings().jira));
     }
   });
+
+  /**
+   * Remember that a JIRA status means the column the user just dropped a card into.
+   *
+   * A drag that transitions a ticket is the strongest possible statement about what a
+   * workflow's status means — you looked at the board, picked the column, and JIRA
+   * accepted the move. Before this, that knowledge was thrown away: the outgoing
+   * transition could be chosen by the name heuristic while the incoming sync read the
+   * same status by its category, so the very next sync moved the card back.
+   *
+   * Only ever *adds* — a name the user mapped in Settings is left alone, since an
+   * explicit answer outranks an inferred one. A status already resolving to this
+   * column needs no entry either, which keeps the learned map small and the Settings
+   * viewer readable.
+   */
+  const learnStatusColumn = (
+    statusName: string,
+    category: JiraStatusCategory,
+    column: BoardColumn,
+  ): void => {
+    const name = statusName.trim();
+    if (!name) return;
+    const settings = store.getSettings();
+    const { jira } = settings;
+    const current = resolveStatusColumn(
+      name,
+      category,
+      jira.statusCategoryOverrides,
+      jira.learnedStatusColumns,
+    );
+    if (current.reason === 'explicit' || current.column === column) return;
+    const next: AppSettings = {
+      ...settings,
+      jira: {
+        ...jira,
+        learnedStatusColumns: { ...jira.learnedStatusColumns, [name]: column },
+      },
+    };
+    store.saveSettings(next);
+    send('settings:changed', next);
+  };
 
   handle('task:move', async (taskId, toColumn) => {
     const existing = store.getTask(taskId);
@@ -908,6 +954,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       // Reflect the new tracker status locally for display.
       patch.externalStatus = picked.to.name;
       patch.externalStatusCategory = categoryFromKey(picked.to.statusCategory.key);
+      learnStatusColumn(picked.to.name, categoryFromKey(picked.to.statusCategory.key), toColumn);
     }
 
     const task = store.updateTask(taskId, patch);

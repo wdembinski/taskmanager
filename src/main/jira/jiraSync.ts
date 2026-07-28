@@ -9,7 +9,8 @@
  * result are NOT deleted, so a blocked ticket never silently vanishes.
  */
 import { PERSONAL_PROJECT_ID, type BoardColumn, type Task } from '@shared/model';
-import { categoryFromKey, columnForJiraStatus, statusForColumn } from '@shared/board';
+import { categoryFromKey, statusForColumn } from '@shared/board';
+import { resolveStatusColumn } from '@shared/statusResolve';
 import { commentBodyToText, type JiraIssue } from './jiraClient';
 import { epicKeyFromIssue } from './epicField';
 import { sprintNameFromIssue } from './jiraSprint';
@@ -18,11 +19,15 @@ export interface JiraSyncOptions {
   /** Base URL, used to build each issue's deep link. */
   baseUrl: string;
   /**
-   * The user's raw-status-name → column map (matched case-insensitively). This is
-   * the only way an issue reaches the IN REVIEW column, since JIRA's three status
-   * categories cannot express it. Unmapped statuses land by category as before.
+   * The user's raw-status-name → column map (matched case-insensitively) — the top
+   * tier of `resolveStatusColumn`, which is what actually decides the column.
    */
   overrides?: Record<string, BoardColumn>;
+  /**
+   * The map the app taught itself from successful drags. Loses to `overrides`, beats
+   * the name heuristic and the category. See `shared/statusResolve.ts`.
+   */
+  learned?: Record<string, BoardColumn>;
   /**
    * The discovered "Epic Link" custom field id, or null when the instance has none
    * (Cloud team-managed) or discovery failed — the epic then comes from `parent`.
@@ -62,7 +67,7 @@ function issueToTask(
 ): Task {
   const rawStatus = issue.fields.status.name;
   const category = categoryFromKey(issue.fields.status.statusCategory.key);
-  const column = columnForJiraStatus(rawStatus, category, opts.overrides);
+  const column = resolveStatusColumn(rawStatus, category, opts.overrides, opts.learned).column;
   const derivedStatus = statusForColumn(column);
 
   // `blocked` is an internal-only state — keep it (and its restore target) across syncs.

@@ -64,6 +64,17 @@ export interface JiraSettings {
    * internal-only and is never a valid target.
    */
   statusCategoryOverrides?: Record<string, BoardColumn>;
+  /**
+   * The map the app taught ITSELF, from status name to column — same shape and same
+   * case-insensitive matching as `statusCategoryOverrides`, but written by the engine
+   * rather than the user, and always losing to it.
+   *
+   * Filled when a drag successfully transitions an issue: the destination status is
+   * now known to mean the column you dropped the card into, on the authority of your
+   * own drag. Without it a workflow's review status resolved by name on the way out
+   * and by category on the way back in, so the next sync undid the move.
+   */
+  learnedStatusColumns?: Record<string, BoardColumn>;
   /** Optional exact transition name to use for To Do → In Progress (else auto-detected). */
   inProgressTransitionName?: string;
   /** Optional exact transition name to use when moving into In Review (else auto-detected). */

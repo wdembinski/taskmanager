@@ -130,14 +130,28 @@ export function MyTasks(): JSX.Element {
   }, []);
 
   // Live updates: single-task changes, and whole-board replacement after a sync/add.
+  // Plus the settings the ENGINE writes: dragging a card teaches it what a JIRA status
+  // means, and this screen saves the whole settings blob (the two switches above), so
+  // the learned map has to come back or the next toggle would write over it.
   useEffect(() => {
     const offTask = window.api.on('task:changed', ({ task }) => patchTask(task));
     const offTasks = window.api.on('project:tasksChanged', ({ projectId, tasks: next }) => {
       if (projectId === PERSONAL_PROJECT_ID) setTasks(next);
     });
+    const offSettings = window.api.on('settings:changed', (next) => {
+      setSettings((prev) =>
+        prev
+          ? {
+              ...prev,
+              jira: { ...prev.jira, learnedStatusColumns: next.jira.learnedStatusColumns },
+            }
+          : prev,
+      );
+    });
     return () => {
       offTask();
       offTasks();
+      offSettings();
     };
   }, [patchTask]);
 
