@@ -43,6 +43,59 @@ describe('foldTurns', () => {
     expect(turn).toMatchObject({ kind: 'them', author: 'Ada', body: 'ping' });
   });
 
+  // The pane renders `rich` when it is there and falls back to `body` otherwise, so
+  // both have to survive the fold — on YOUR comments as well as other people's.
+  it('carries a comment’s structure and files onto the turn, either side', () => {
+    const rich = [
+      {
+        kind: 'paragraph' as const,
+        spans: [
+          { kind: 'mention' as const, text: '@Ada', id: 'acc-a' },
+          { kind: 'text' as const, text: ' look' },
+        ],
+      },
+    ];
+    const attachments = [
+      { filename: 'log.txt', url: 'https://j/1', mimeType: 'text/plain', size: 12 },
+    ];
+
+    const [theirs] = foldTurns([
+      {
+        kind: 'jira-comment',
+        id: 'j3',
+        author: 'Ada',
+        body: '@Ada look',
+        createdAt: 1,
+        mine: false,
+        rich,
+        attachments,
+      },
+    ]);
+    expect(theirs).toMatchObject({ kind: 'them', rich, attachments });
+
+    const [mine] = foldTurns([
+      {
+        kind: 'jira-comment',
+        id: 'j4',
+        author: 'Me',
+        body: '@Ada look',
+        createdAt: 1,
+        mine: true,
+        rich,
+        attachments,
+      },
+    ]);
+    expect(mine).toMatchObject({ kind: 'you', variant: 'jira', rich, attachments });
+  });
+
+  it('leaves rich undefined for a comment that carried no structure', () => {
+    const [turn] = foldTurns([
+      { kind: 'jira-comment', id: 'j5', author: 'Ada', body: 'plain', createdAt: 1, mine: false },
+    ]);
+    expect(turn).toMatchObject({ kind: 'them', body: 'plain' });
+    expect((turn as { rich?: unknown }).rich).toBeUndefined();
+  });
+
   it('merges the agent’s streamed chunks into one turn', () => {
     const turns = foldTurns([
       event({ kind: 'assistant', text: 'I looked at the parser' }),

@@ -38,6 +38,7 @@ import { normalizeBaseUrl } from '@shared/jiraUrl';
 import { createJiraClient } from './jira/jiraConfig';
 import { explainJiraFailure } from './jira/jiraDiagnostics';
 import { commentBodyToText, type JiraClient } from './jira/jiraClient';
+import { blocksToText, parseAdf } from './jira/adf';
 import { reconcileJiraTasks } from './jira/jiraSync';
 import { discoverEpicFieldId } from './jira/epicField';
 import { discoverSprintFieldId, withCurrentSprint } from './jira/jiraSprint';
@@ -1098,14 +1099,36 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // Who the PAT belongs to, so the pane can put your own comments on your side.
     // Unknown identity → every comment reads as someone else's, deliberately.
     const identity = await jiraIdentity(store.getSettings().jira.baseUrl, client);
-    const entries = comments.map((c) => ({
-      kind: 'jira-comment' as const,
-      id: c.id,
-      author: c.author?.displayName ?? 'JIRA',
-      body: commentBodyToText(c.body),
-      createdAt: Date.parse(c.created) || 0,
-      mine: authorIsMe(c.author, identity),
-    }));
+    // Attachment metadata is per-ISSUE, so one extra call serves every comment; each
+    // comment then claims the files it names. Fail-soft — a comment without its
+    // attachment links is still worth reading.
+    const attachments = await client.getAttachments(task.externalKey).catch((e: unknown) => {
+      logMain('JIRA attachment list failed', e);
+      return [];
+    });
+    const entries = comments.map((c) => {
+      const rich = parseAdf(c.body);
+      const body = blocksToText(rich);
+      return {
+        kind: 'jira-comment' as const,
+        id: c.id,
+        author: c.author?.displayName ?? 'JIRA',
+        body,
+        createdAt: Date.parse(c.created) || 0,
+        mine: authorIsMe(c.author, identity),
+        rich,
+        // Matched by filename appearing in the comment: JIRA gives no comment→file
+        // link, and citing the name is exactly how our own composer references one.
+        attachments: attachments
+          .filter((a) => a.filename && body.includes(a.filename))
+          .map((a) => ({
+            filename: a.filename,
+            url: a.url,
+            mimeType: a.mimeType,
+            size: a.size,
+          })),
+      };
+    });
     // Keep the unread marker honest with freshly-fetched comments — but only OTHER
     // people's. Folding your own back in here would undo `markRead` the instant the
     // pane opened, re-lighting a card over a comment you wrote yourself.

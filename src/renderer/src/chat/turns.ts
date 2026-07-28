@@ -21,6 +21,7 @@
  */
 import type { SessionEvent } from '@shared/session';
 import type { TaskActivityEntry } from '@shared/model';
+import type { AdfBlock, CommentAttachment } from '@shared/adf';
 
 /** Tool names the CLI uses to spawn a sub-agent — worth naming in a folded row. */
 const SUBAGENT_TOOLS = new Set(['task', 'agent']);
@@ -35,9 +36,20 @@ export type Turn =
       createdAt: number;
       /** Only a note can be deleted — the other two were read by someone else. */
       commentId: number | null;
+      /** A ticket comment's structure, when it had any (mentions, links, code). */
+      rich?: AdfBlock[];
+      attachments?: CommentAttachment[];
     }
   /** Someone else's ticket comment. */
-  | { key: string; kind: 'them'; author: string; body: string; createdAt: number }
+  | {
+      key: string;
+      kind: 'them';
+      author: string;
+      body: string;
+      createdAt: number;
+      rich?: AdfBlock[];
+      attachments?: CommentAttachment[];
+    }
   /** The agent's prose, markdown as written. */
   | { key: string; kind: 'agent'; text: string; createdAt: number }
   /** A run of tool work, collapsed to one line ("Worked with 12 tools"). */
@@ -144,6 +156,8 @@ export function foldTurns(entries: readonly TaskActivityEntry[]): Turn[] {
                 body: entry.body,
                 createdAt: entry.createdAt,
                 commentId: null,
+                rich: entry.rich,
+                attachments: entry.attachments,
               }
             : {
                 key: `jira-${entry.id}`,
@@ -151,6 +165,8 @@ export function foldTurns(entries: readonly TaskActivityEntry[]): Turn[] {
                 author: entry.author,
                 body: entry.body,
                 createdAt: entry.createdAt,
+                rich: entry.rich,
+                attachments: entry.attachments,
               },
         );
         continue;

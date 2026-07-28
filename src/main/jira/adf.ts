@@ -22,6 +22,7 @@
  *
  * Pure: no fetch, no Electron, no DB.
  */
+import type { AdfBlock, AdfSpan } from '@shared/adf';
 
 /** A person the composer resolved, with the range of `text` their name occupies. */
 export interface AdfMention {
@@ -41,21 +42,9 @@ export interface AdfAttachmentRef {
   url?: string;
 }
 
-/** An inline run within a block. */
-export type AdfSpan =
-  | { kind: 'text'; text: string }
-  | { kind: 'code'; text: string }
-  | { kind: 'mention'; text: string; id: string | null }
-  | { kind: 'link'; text: string; href: string };
-
-/** A block-level element. Deliberately a small vocabulary — this renders in a chat pane. */
-export type AdfBlock =
-  | { kind: 'paragraph'; spans: AdfSpan[] }
-  | { kind: 'heading'; level: number; spans: AdfSpan[] }
-  | { kind: 'quote'; spans: AdfSpan[] }
-  | { kind: 'codeBlock'; text: string }
-  | { kind: 'list'; ordered: boolean; items: AdfSpan[][] }
-  | { kind: 'media'; filename: string | null };
+// The parsed shapes live in `@shared/adf`: they cross the IPC boundary, so per
+// `docs/02` their types belong to the contract rather than to this module.
+export type { AdfBlock, AdfSpan } from '@shared/adf';
 
 // ---------------------------------------------------------------------------
 // Writing

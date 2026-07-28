@@ -19,6 +19,7 @@ import {
 import { AgentsRegular, ChevronDownRegular, ChevronRightRegular } from '@fluentui/react-icons';
 import { statusNoteColor, type StatusKeyword } from '@shared/statusKeywords';
 import { Markdown } from './MarkdownView';
+import { RichComment } from './RichComment';
 import type { Turn } from './turns';
 
 const useStyles = makeStyles({
@@ -171,7 +172,11 @@ export function ChatTurns({ turns, onDeleteNote, statusKeywords }: ChatTurnsProp
                     Status
                   </Caption1>
                 )}
-                {turn.body}
+                {turn.rich?.length ? (
+                  <RichComment blocks={turn.rich} attachments={turn.attachments} />
+                ) : (
+                  turn.body
+                )}
               </div>
               <Caption1 className={styles.time}>{fmtTime(turn.createdAt)}</Caption1>
             </div>
@@ -181,7 +186,13 @@ export function ChatTurns({ turns, onDeleteNote, statusKeywords }: ChatTurnsProp
           return (
             <div key={turn.key} className={mergeClasses(styles.row, styles.theirs)}>
               <Caption1 className={styles.meta}>{turn.author} · Jira</Caption1>
-              <div className={mergeClasses(styles.bubble, styles.them)}>{turn.body}</div>
+              <div className={mergeClasses(styles.bubble, styles.them)}>
+                {turn.rich?.length ? (
+                  <RichComment blocks={turn.rich} attachments={turn.attachments} />
+                ) : (
+                  turn.body
+                )}
+              </div>
               <Caption1 className={styles.time}>{fmtTime(turn.createdAt)}</Caption1>
             </div>
           );

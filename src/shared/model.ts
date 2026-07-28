@@ -10,6 +10,7 @@
  * They intentionally reuse `ClaudeModel` and `PermissionMode` from `session.ts`
  * (a project's defaults become a task's `StartSessionRequest` when it runs).
  */
+import type { AdfBlock, CommentAttachment } from './adf';
 import type { ExecTarget } from './execTarget';
 import type { ClaudeModel, PermissionMode, SessionEvent } from './session';
 
@@ -545,4 +546,16 @@ export type TaskActivityEntry =
        * and guessing would put someone else's there.
        */
       mine: boolean;
+      /**
+       * The comment's structure — mentions, links, code, lists — when it could be
+       * parsed. OPTIONAL, so `body` stays the contract and every existing consumer
+       * (the fold into turns, the tests, the plain-text fallback) keeps working; the
+       * pane renders this when present and falls back to markdown on `body` otherwise.
+       */
+      rich?: AdfBlock[];
+      /**
+       * Files on the issue, matched to this comment by filename. Attachment metadata is
+       * per-ISSUE in JIRA, not per-comment, so this is a best-effort association.
+       */
+      attachments?: CommentAttachment[];
     };
