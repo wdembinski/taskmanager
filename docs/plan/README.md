@@ -782,6 +782,8 @@ no new endpoint on an instance that may not expose Agile at all.
   it off restores their own query untouched.
 - The sprint field is requested whether or not the filter is on: the name is worth
   showing either way, and `openSprints()` can span several concurrent sprints.
+- Shipped as **0.26.0** — a minor bump, since this adds a capability rather than
+  fixing one (0.25.1–0.25.3 were the Linux and JIRA Cloud patches before it).
 
 ---
 
