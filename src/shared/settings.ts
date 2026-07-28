@@ -130,6 +130,13 @@ export interface AppSettings {
    * colour, which is a working board rather than a degraded one.
    */
   statusKeywords: StatusKeyword[];
+  /**
+   * Whether the My Tasks screen shows its right-hand detail pane. On by default — the
+   * pane is the point of the screen — but on a narrow window the board wants the whole
+   * width, so it can be folded away from the toolbar. Top-level rather than under
+   * `jira` because the pane exists whether or not JIRA does.
+   */
+  showTaskDetail: boolean;
   /** JIRA integration config for the Personal board (Phase B). */
   jira: JiraSettings;
 }
@@ -144,5 +151,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   maxAutoRetries: 1,
   defaultExecTarget: LOCAL_TARGET,
   statusKeywords: [],
+  showTaskDetail: true,
   jira: DEFAULT_JIRA_SETTINGS,
 };

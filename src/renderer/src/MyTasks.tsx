@@ -18,6 +18,7 @@ import {
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
+import { PanelRightContractRegular, PanelRightExpandRegular } from '@fluentui/react-icons';
 import { PERSONAL_PROJECT_ID, type Project, type Task } from '@shared/model';
 import type { AppSettings } from '@shared/settings';
 import { AddTaskDialog } from './AddTaskDialog';
@@ -104,6 +105,7 @@ export function MyTasks(): JSX.Element {
   const showDone = settings?.jira.showDoneColumn ?? false;
   const jiraEnabled = settings?.jira.enabled ?? false;
   const currentSprintOnly = settings?.jira.currentSprintOnly ?? false;
+  const showDetail = settings?.showTaskDetail ?? true;
 
   const refresh = useCallback(async () => {
     setTasks(await window.api.invoke('board:tasks'));
@@ -209,6 +211,15 @@ export function MyTasks(): JSX.Element {
     });
   }, []);
 
+  const setShowDetail = useCallback((value: boolean) => {
+    setSettings((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, showTaskDetail: value };
+      void window.api.invoke('settings:save', next);
+      return next;
+    });
+  }, []);
+
   const sync = useCallback(async () => {
     setSyncing(true);
     setError(null);
@@ -278,6 +289,17 @@ export function MyTasks(): JSX.Element {
             />
           )}
           <span className={styles.grow} />
+          {/* Fold the detail pane away. An icon button rather than a third switch: this
+              one is a view control, not a filter on what the board contains. */}
+          <Button
+            size="small"
+            appearance="subtle"
+            icon={showDetail ? <PanelRightContractRegular /> : <PanelRightExpandRegular />}
+            title={showDetail ? 'Hide the detail pane' : 'Show the detail pane'}
+            aria-label={showDetail ? 'Hide the detail pane' : 'Show the detail pane'}
+            aria-pressed={showDetail}
+            onClick={() => setShowDetail(!showDetail)}
+          />
           {jiraEnabled && (
             <Button size="small" disabled={syncing} onClick={() => void sync()}>
               {syncing ? 'Syncing…' : 'Sync JIRA'}
@@ -340,18 +362,23 @@ export function MyTasks(): JSX.Element {
         </div>
       </div>
 
-      <div className={styles.right}>
-        <TaskDetail
-          task={selectedTask}
-          agentProjects={agentProjects}
-          subtasks={chain}
-          parentTask={parentOfSelected}
-          statusKeywords={settings?.statusKeywords}
-          onOpenTask={setSelectedTaskId}
-          onStatusChanged={patchTask}
-          onSubtasksChanged={() => void refresh()}
-        />
-      </div>
+      {/* Unmounted rather than hidden when folded away: remounting re-runs loadActivity,
+          which is cheap, and re-marks the selected card read — which is what you want
+          the moment the pane comes back anyway. */}
+      {showDetail && (
+        <div className={styles.right}>
+          <TaskDetail
+            task={selectedTask}
+            agentProjects={agentProjects}
+            subtasks={chain}
+            parentTask={parentOfSelected}
+            statusKeywords={settings?.statusKeywords}
+            onOpenTask={setSelectedTaskId}
+            onStatusChanged={patchTask}
+            onSubtasksChanged={() => void refresh()}
+          />
+        </div>
+      )}
 
       <AddTaskDialog
         open={addOpen}
