@@ -68,6 +68,8 @@ export interface KanbanColumnProps {
   agentNameOf: (task: Task) => string | undefined;
   /** The card's project colour, for the stripe along its top edge. */
   projectColorOf: (task: Task) => string | undefined;
+  /** Whether cards show their sprint chip (false while the sprint filter is on). */
+  showSprint?: boolean;
   /** The user's status-note vocabulary, which colours each card's progress line. */
   statusKeywords?: readonly StatusKeyword[];
   canDrag: (card: BoardCard) => boolean;
@@ -119,6 +121,7 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               projectName={props.projectNameOf(task)}
               agentName={props.agentNameOf(task)}
               projectColor={props.projectColorOf(task)}
+              showSprint={props.showSprint}
               subtasks={subtasks}
               statusKeywords={props.statusKeywords}
               selected={task.id === props.selectedTaskId}

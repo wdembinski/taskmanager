@@ -354,6 +354,9 @@ export function MyTasks(): JSX.Element {
               projectColorOf={(t) =>
                 agentProjects.find((p) => p.id === t.projectTagId)?.color || undefined
               }
+              // With the sprint filter on every card carries the same chip, so the name
+              // moves to the status bar and is said once. Off, the chip earns its place.
+              showSprint={!currentSprintOnly}
               statusKeywords={settings?.statusKeywords}
               // A card with a live step is the runner's until the chain stops.
               canDrag={(c) => !managedByAI(c.task) && !hasLiveSubtask(c.subtasks)}

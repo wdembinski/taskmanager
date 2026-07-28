@@ -43,6 +43,7 @@ import { Attention } from './Attention';
 import { Board } from './Board';
 import { LimitBanner } from './LimitBanner';
 import { MyTasks } from './MyTasks';
+import { currentSprintName } from './board/currentSprint';
 import { Performance } from './Performance';
 import { Projects } from './Projects';
 import { Settings } from './Settings';
@@ -175,6 +176,14 @@ export function App(): JSX.Element {
   // Auto-update: only its final state earns a place in the status bar (a downloaded
   // build waiting for a restart). Progress lives in Settings, where it was asked for.
   const [update, setUpdate] = useState<UpdateState | null>(null);
+  /**
+   * The sprint the board is filtered to, said once here instead of on every card.
+   *
+   * The shell reads it rather than the board pushing it up: this way the bar is right
+   * even while another tab is open, and the board keeps knowing nothing about the shell.
+   * Null whenever the filter is off or the cards disagree — see `currentSprintName`.
+   */
+  const [sprint, setSprint] = useState<string | null>(null);
 
   // Set when the app shell itself can't reach the engine — the clearest possible signal
   // that nothing else on screen will load either.
@@ -188,15 +197,31 @@ export function App(): JSX.Element {
       window.api.invoke('update:get').then(setUpdate),
     ]).catch((e: unknown) => setBootError(e instanceof Error ? e.message : String(e)));
 
+    /** Recompute the footer's sprint from the settings flag and the board's cards. */
+    const readSprint = async (): Promise<void> => {
+      const [settings, tasks] = await Promise.all([
+        window.api.invoke('settings:get'),
+        window.api.invoke('board:tasks'),
+      ]);
+      setSprint(settings.jira.currentSprintOnly ? currentSprintName(tasks) : null);
+    };
+    void readSprint().catch(() => setSprint(null));
+
     const offNew = window.api.on('attention:new', () => setAttentionCount((n) => n + 1));
     const offResolved = window.api.on('attention:resolved', () =>
       setAttentionCount((n) => Math.max(0, n - 1)),
     );
     const offUpdate = window.api.on('update:changed', setUpdate);
+    // Both signals matter: a sync replaces the board (the sprint's cards may change),
+    // and the engine can rewrite settings behind the UI's back.
+    const offTasks = window.api.on('project:tasksChanged', () => void readSprint());
+    const offSettings = window.api.on('settings:changed', () => void readSprint());
     return () => {
       offNew();
       offResolved();
       offUpdate();
+      offTasks();
+      offSettings();
     };
   }, []);
 
@@ -299,6 +324,9 @@ export function App(): JSX.Element {
           <Spinner label="Checking Claude…" labelPosition="after" size="tiny" />
         )}
         {attentionCount > 0 && <Caption1>· {attentionCount} waiting on you</Caption1>}
+        {/* No colour of its own: the bar turns orange under attention, and a fixed
+            white would go unreadable exactly then. */}
+        {sprint && <Caption1>· {sprint}</Caption1>}
         <span className={styles.grow} />
         {/* A downloaded update installs itself on the next quit either way; this is
             simply the offer to have it now, and the only notice the user ever gets. */}

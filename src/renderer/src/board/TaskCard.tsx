@@ -253,6 +253,13 @@ export interface TaskCardProps {
   agentName?: string;
   /** The card's project colour (`''`/undefined = no stripe). */
   projectColor?: string;
+  /**
+   * Whether to show the sprint chip. False while the board is filtered to the current
+   * sprint: every card would carry the same word, so the name moves to the status bar
+   * and is said once. With the filter off the chip is back, because that is when it
+   * actually tells one card from another.
+   */
+  showSprint?: boolean;
   /** This card's steps in execution order — rendered inside the card. */
   subtasks?: Task[];
   /** The user's status-note vocabulary, which colours the card's progress line. */
@@ -280,6 +287,7 @@ export function TaskCard({
   projectName,
   agentName,
   projectColor,
+  showSprint = true,
   subtasks = [],
   statusKeywords,
   selected,
@@ -293,6 +301,7 @@ export function TaskCard({
 }: TaskCardProps): JSX.Element {
   const styles = useStyles();
   const badge = secondaryStatus(task);
+  const sprintShown = showSprint;
   const isJira = task.externalSource === 'jira';
   const squareColor = priorityColor(task.externalPriority);
   // Null when the note matched no keyword — the line then keeps the card's ordinary
@@ -385,10 +394,10 @@ export function TaskCard({
           )}
         </div>
 
-        {(task.externalLabel || task.externalSprint) && (
+        {(task.externalLabel || (sprintShown && task.externalSprint)) && (
           <div className={styles.chipRow}>
             {task.externalLabel && <span className={styles.chip}>{task.externalLabel}</span>}
-            {task.externalSprint && (
+            {sprintShown && task.externalSprint && (
               <span className={styles.sprintChip} title={`Sprint: ${task.externalSprint}`}>
                 {task.externalSprint}
               </span>
