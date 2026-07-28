@@ -137,10 +137,14 @@ const useStyles = makeStyles({
    * `boxShadow`, and the orange would vanish the moment you clicked the card that was
    * shouting for you — exactly the card you most need to keep flagged.
    */
-  cardUnread: { boxShadow: `0 0 0 2px ${UNREAD_ORANGE}` },
+  // 3px for the alarm, 2px for mere selection. The orange is painted OUTSIDE the card
+  // against a dark column, so a good half of its apparent weight is lost to the
+  // contrast — at 2px it read as a hairline. Selection stays 2px: only the alarm is
+  // worth more ink, and widening both would flatten the difference between them.
+  cardUnread: { boxShadow: `0 0 0 3px ${UNREAD_ORANGE}` },
   cardSelected: { boxShadow: `0 0 0 2px ${tokens.colorBrandStroke1}` },
   cardUnreadSelected: {
-    boxShadow: `0 0 0 2px ${UNREAD_ORANGE}, 0 0 0 4px ${tokens.colorBrandStroke1}`,
+    boxShadow: `0 0 0 3px ${UNREAD_ORANGE}, 0 0 0 5px ${tokens.colorBrandStroke1}`,
   },
   agentIcon: { fontSize: AGENT_ICON_SIZE, flexShrink: 0, display: 'flex', color: '#ffffff' },
   dragging: { opacity: 0.5 },

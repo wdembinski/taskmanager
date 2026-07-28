@@ -49,7 +49,9 @@ const useStyles = makeStyles({
   list: {
     display: 'flex',
     flexDirection: 'column',
-    gap: '10px',
+    // 12px, not 10: the attention ring is 3px on each card, so two adjacent shouting
+    // cards leave only `gap - 6` between their rings. At 10 that read as one thick band.
+    gap: '12px',
     minHeight: '40px',
     flex: 1,
   },
