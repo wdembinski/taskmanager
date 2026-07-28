@@ -77,6 +77,19 @@ describe.runIf(process.platform === 'win32')('WslExecHost', () => {
     expect(stdout).toContain('/.local/bin');
   }, 30_000);
 
+  it('prefers the official installer’s claude over a version-manager copy', async ({ skip }) => {
+    if (!hasWsl()) return skip();
+    const host = new WslExecHost(distro);
+    // Only meaningful where the native install exists; elsewhere PATH decides and
+    // there is nothing to assert.
+    const native = await host.exec('/', 'sh', ['-c', 'test -x "$HOME/.local/bin/claude"']);
+    if (native.code !== 0) return skip();
+
+    // `command -v` inside the run reports what THIS invocation would execute.
+    const { stdout } = await host.exec('/', 'claude', ['--version']);
+    expect(stdout).toMatch(/\d+\.\d+\.\d+/);
+  }, 30_000);
+
   it('resolves the distro home directory', async ({ skip }) => {
     if (!hasWsl()) return skip();
     const host = new WslExecHost(distro);

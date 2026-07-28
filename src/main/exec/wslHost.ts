@@ -52,11 +52,14 @@ import type {
  * Appended rather than prepended, so a system tool of the same name still wins.
  */
 const AUGMENT_PATH = [
+  // The official installer's location first, so it beats a version-manager copy when
+  // neither is on PATH already.
   'for d in "$HOME/.local/bin" "$HOME/bin"; do',
   '  [ -d "$d" ] && PATH="$PATH:$d"',
   'done',
-  // Newest nvm-installed Node last, so it takes precedence over older ones.
-  'for d in "$HOME"/.nvm/versions/node/*/bin; do',
+  // NEWEST nvm Node first: PATH is first-match-wins, and the glob expands in
+  // ASCENDING version order, so appending it as-is would make the OLDEST install win.
+  'for d in $(printf "%s\\n" "$HOME"/.nvm/versions/node/*/bin | sort -Vr); do',
   '  [ -d "$d" ] && PATH="$PATH:$d"',
   'done',
   'export PATH',
@@ -65,11 +68,48 @@ const AUGMENT_PATH = [
 ].join('\n');
 
 /**
+ * Prefer the official installer's `claude` over a version-manager copy.
+ *
+ * With both an npm/nvm install and the `curl | bash` one, PATH order decides — and
+ * nvm prepends its bin directory, so its copy usually wins even though the native
+ * install is the self-updating one.
+ *
+ * This resolves ONLY `claude`, rather than putting `~/.local/bin` ahead of everything.
+ * Our PATH is inherited by the agent's own tool calls, so reordering it wholesale
+ * could change which compiler or toolchain a build picks up — a much larger blast
+ * radius than this preference is worth.
+ */
+const PREFER_NATIVE_CLAUDE = [
+  'if [ "$1" = "claude" ] && [ -x "$HOME/.local/bin/claude" ]; then',
+  '  shift',
+  '  set -- "$HOME/.local/bin/claude" "$@"',
+  'fi',
+].join('\n');
+
+/**
  * `cd` into the working directory, then replace the shell with the real command.
  * `exec` matters: it keeps the process id we printed, so the id we use to kill the
  * tree later is the command's own, not a wrapper's that has already exited.
  */
-const RUN_SCRIPT = `${AUGMENT_PATH}\ncd "$1" || exit 1; shift; exec "$@"`;
+const RUN_SCRIPT = [
+  AUGMENT_PATH,
+  'cd "$1" || exit 1',
+  'shift',
+  PREFER_NATIVE_CLAUDE,
+  'exec "$@"',
+].join('\n');
+
+/**
+ * Resolve `claude` exactly as a run would, echoing its path. Shared with the readiness
+ * probe so the panel can never name a different binary than the one tasks will use.
+ */
+export const RESOLVE_CLAUDE = [
+  'if [ -x "$HOME/.local/bin/claude" ]; then',
+  '  echo "$HOME/.local/bin/claude"',
+  'else',
+  '  command -v claude',
+  'fi',
+].join('\n');
 
 /**
  * The same, but announcing the pid first. Stopping a run has to kill the whole

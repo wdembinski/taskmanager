@@ -16,7 +16,7 @@
  */
 import { execFile } from 'node:child_process';
 import type { ReadinessCheck, TargetReadiness } from '@shared/execTarget';
-import { WSL_PATH_PRELUDE } from './wslHost';
+import { RESOLVE_CLAUDE, WSL_PATH_PRELUDE } from './wslHost';
 
 /**
  * Decode `wsl.exe`'s OWN output (`-l -q`), which is UTF-16LE — decoded as UTF-8 it
@@ -110,7 +110,12 @@ export async function probeWslTarget(distro: string): Promise<TargetReadiness> {
 
   // Report WHERE it was found, not just that it was: when this fails on a machine we
   // cannot inspect, "not on PATH" alone gives nobody anything to act on.
-  const version = await inDistro(distro, 'command -v claude && claude --version');
+  // Resolved the same way a real run resolves it, so the panel can never name a
+  // different binary than the one tasks will actually launch.
+  const version = await inDistro(
+    distro,
+    `CLAUDE=$(${RESOLVE_CLAUDE}); [ -n "$CLAUDE" ] || exit 1; echo "$CLAUDE"; "$CLAUDE" --version`,
+  );
   const versionOk = version.code === 0;
   const foundAt = version.stdout.split(/\r?\n/)[0]?.trim() ?? '';
   const versionText = version.stdout.match(/\d+\.\d+\.\d+/)?.[0] ?? '';
