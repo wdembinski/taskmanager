@@ -154,6 +154,7 @@ void app.whenReady().then(() => {
 // FIRST so the `exited` events from killed sessions don't try to write to a
 // database we're about to close.
 app.on('before-quit', () => {
+  engine?.updater.dispose();
   engine?.jiraPoller.dispose();
   engine?.watcher.dispose();
   engine?.scheduler.dispose();

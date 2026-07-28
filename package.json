@@ -19,12 +19,14 @@
     "format": "prettier --write \"src/**/*.{ts,tsx}\" \"*.{json,md}\"",
     "check:abi": "node scripts/check-native-abi.mjs",
     "ensure:abi": "node scripts/ensure-native-abi.mjs",
-    "package": "electron-vite build && electron-builder install-app-deps && npm run ensure:abi && electron-builder --win --publish never",
-    "package:linux": "electron-vite build && electron-builder install-app-deps && npm run ensure:abi && electron-builder --linux --publish never",
+    "package": "electron-vite build && electron-builder install-app-deps && npm run ensure:abi && electron-builder --win --publish onTagOrDraft",
+    "package:linux": "electron-vite build && electron-builder install-app-deps && npm run ensure:abi && electron-builder --linux --publish onTagOrDraft",
+    "package:local": "electron-vite build && electron-builder install-app-deps && npm run ensure:abi && electron-builder --win --publish never",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
-    "better-sqlite3": "^11.8.1"
+    "better-sqlite3": "^11.8.1",
+    "electron-updater": "^6.8.9"
   },
   "devDependencies": {
     "@fluentui/react-components": "^9.54.0",

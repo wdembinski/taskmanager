@@ -900,10 +900,15 @@ sprint chip stays on cards while the sprint filter is off.
       A successful drag now *teaches* the map (`jira.learnedStatusColumns`), pushed to
       the UI on a new `settings:changed` event so a screen that saves the whole settings
       blob cannot write over what the engine learned.
-- [ ] **3 — Auto-update.** `electron-updater` + `publish: github`; space-free artifact
+- [x] **3 — Auto-update.** `electron-updater` + `publish: github`; space-free artifact
       names (`gh` rewrites spaces to dots, which breaks the `latest.yml` feed); a pure
       `updateMode()` so a `.deb` install degrades to "manual" instead of erroring every
-      launch.
+      launch. `src/main/updater.ts` folds the updater's events into one `UpdateState`
+      pushed on `update:changed`; a downloaded build offers a restart from the status bar
+      and installs on quit either way, and every failure goes to the log rather than a
+      dialog. Settings → General → Updates carries the state, the progress and *Check
+      now* — or, on a `manual` install, a link to the releases page. `pnpm package` now
+      publishes `onTagOrDraft`; `pnpm package:local` is the upload-nothing build.
 - [ ] **4 — An empty detail pane says so with a glyph**, not a sentence.
 - [ ] **5 — The detail pane can be hidden** (`showTaskDetail`, on by default).
 - [ ] **6 — The window remembers its size and whether it was maximized**, cooperating

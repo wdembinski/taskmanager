@@ -12,16 +12,22 @@ electron-vite (see [`docs/02`](02-architecture.md) for the three-bundle layout).
 ```bash
 pnpm install          # postinstall rebuilds better-sqlite3 for Electron's ABI
 pnpm build            # electron-vite build -> ./out (main / preload / renderer)
-pnpm package          # build + install-app-deps + ABI gate + electron-builder --win
+pnpm package          # build + install-app-deps + ABI gate + electron-builder --win,
+                      #   publishing to GitHub on a tag or draft release (needs GH_TOKEN)
 pnpm package:linux    # same, --linux (AppImage + deb) — MUST run on Linux
+pnpm package:local    # --win, --publish never: build the installer, upload nothing
 pnpm check:abi        # the ABI gate on its own
 ```
 
 `pnpm package` produces, in `dist/`:
 
-- **`Claude Orchestrator-<version>-setup.exe`** — the NSIS installer (per-user, lets
+- **`claude-orchestrator-<version>-setup.exe`** — the NSIS installer (per-user, lets
   the user choose the install directory), plus its `.blockmap`.
+- **`latest.yml`** — the update feed the in-app updater reads (see *Auto-update* below).
 - `win-unpacked/` — the unpacked app (handy for inspection / a quick smoke test).
+
+> Artifact names are deliberately space-free (`${name}`, not `${productName}`) — see
+> *Auto-update*. Releases up to v0.29.0 used `Claude Orchestrator-…`.
 
 For a fast check without building the installer, `npx electron-builder --win --dir`
 produces only `dist/win-unpacked/`.
@@ -67,6 +73,68 @@ Re-check these if the dependency or spawn model changes.
    `Claude Orchestrator.exe`. *Verify:*
    `ELECTRON_RUN_AS_NODE=1 "…/Claude Orchestrator.exe" -e "require('http')"` runs as
    Node. (The relay script lives outside the asar, so it needs no unpack.)
+
+---
+
+## Auto-update
+
+The app updates itself from its own GitHub Releases. `electron-builder` publishes the
+installers **and** a `latest.yml` / `latest-linux.yml` feed to the release;
+`src/main/updater.ts` (wrapping `electron-updater`) reads that feed, downloads a newer
+build in the background, and applies it when the app quits. The status bar offers a
+"restart" shortcut once a build is ready; **Settings → General → Updates** shows the
+state, a *Check now* button and the download progress.
+
+**Not every install can update itself** (`src/main/updateSupport.ts`):
+
+| Install | Mode | Why |
+| --- | --- | --- |
+| Windows NSIS | `auto` | Applies unsigned; SmartScreen prompts each time. |
+| Linux AppImage | `auto` | Only when actually run as the AppImage (`$APPIMAGE` is set). |
+| Linux `.deb` | `manual` | apt owns those files. Pointing the updater at them errors on **every** launch, so it is never armed; Settings links to the releases page instead. |
+| macOS | `manual` | macOS refuses an update that isn't signed and notarized. |
+| `pnpm dev` | `off` | Nothing to update. |
+
+**Publishing.** `pnpm package` runs `electron-builder --publish onTagOrDraft`, which
+uploads to a **draft** release when one exists (or when HEAD is a tag). Set a token
+first — a classic PAT with `repo` scope:
+
+```bash
+export GH_TOKEN=ghp_…            # PowerShell: $env:GH_TOKEN = 'ghp_…'
+gh release create v0.30.0 --draft --title "v0.30.0 — …" --notes-file notes.md
+pnpm package                     # uploads the exe, blockmap and latest.yml to the draft
+pnpm package:linux               # same, from WSL, for the AppImage/deb + latest-linux.yml
+gh release edit v0.30.0 --draft=false
+```
+
+Nothing is served to users until the draft is promoted, and un-publishing it rolls the
+release back. `pnpm package:local` is the escape hatch that uploads nothing.
+
+**Why builder publishes instead of `gh release create`.** `gh` rewrites spaces in
+uploaded asset names to dots, while `latest.yml` records the filename electron-builder
+wrote — so a hand-uploaded `Claude Orchestrator-x.y.z-setup.exe` arrived as
+`Claude.Orchestrator-…` and the updater 404'd on the exact file the feed named. The
+artifact names are now space-free as well, so the two can't diverge again.
+
+**Testing the feed without cutting a release.** Build two versions and serve `dist/`
+locally:
+
+```bash
+pnpm package:local                       # with version bumped to e.g. 0.29.1
+npx http-server dist -p 8080
+```
+
+Then point an *installed* 0.29.0 at it. The updater honours `UPDATE_CONFIG_PATH`, so
+write a `local-feed.yml`:
+
+```yaml
+provider: generic
+url: http://localhost:8080
+```
+
+and launch the installed build with `UPDATE_CONFIG_PATH` set to that file. That
+exercises feed → download → install-on-quit end to end. Do this, then one throwaway-repo
+publish, before a real draft release.
 
 ---
 
@@ -180,8 +248,8 @@ that is how a startup failure stayed invisible in v0.25.0:
 
 ```bash
 /opt/Claude\ Orchestrator/claude-orchestrator          # .deb install
-./Claude\ Orchestrator-<version>.AppImage              # AppImage (add --no-sandbox if
-                                                      # Ubuntu 24.04+ blocks user namespaces)
+./claude-orchestrator-<version>.AppImage               # AppImage (add --no-sandbox if
+                                                       # Ubuntu 24.04+ blocks user namespaces)
 ```
 
 `Failed to connect to the bus: … dbus` messages are cosmetic and expected on a machine
@@ -189,8 +257,9 @@ without a session bus; ignore them. What matters is that no `No handler register
 '…'` lines appear and every tab shows data. Since v0.25.1 a startup failure also raises
 an error dialog and writes `~/.config/Claude Orchestrator/logs/main.log`.
 
-Note `gh release create` replaces spaces in asset filenames with dots, so any download
-table in the release notes must use the dotted name.
+Since v0.30.0 electron-builder uploads the Linux artifacts too (`--publish onTagOrDraft`,
+same `GH_TOKEN`), which is also what writes `latest-linux.yml` — an AppImage cannot
+self-update without it.
 
 ---
 
@@ -205,9 +274,14 @@ table in the release notes must use the dotted name.
    (As of v0.8.0: only MIT / ISC / Apache-2.0 / BSD / WTFPL in the shipped tree — no
    GPL/AGPL/LGPL/MPL/EPL/CDDL.)
 3. Bump `package.json` `version` if the release commit hasn't; commit.
-4. `pnpm package`; smoke-test `dist/win-unpacked/Claude Orchestrator.exe` (and,
+4. Create the **draft** release (`gh release create vX.Y.Z --draft …`) and export
+   `GH_TOKEN`, so the packaging steps have somewhere to upload to.
+5. `pnpm package`; smoke-test `dist/win-unpacked/Claude Orchestrator.exe` (and,
    ideally, run the installer on a clean machine and take one project end-to-end).
-5. For a Linux release, `pnpm package:linux` on Linux and run the artifact checks
+6. For a Linux release, `pnpm package:linux` on Linux and run the artifact checks
    above. The ABI gate is not optional — a bundle that fails it is broken in a way
    that only shows up after install.
-6. Tag `vX.Y.Z` (annotated) and push with `--follow-tags`.
+7. Confirm the draft carries `latest.yml` (and `latest-linux.yml`) beside the
+   installers — without them nobody's app will ever see this release.
+8. Promote the draft (`gh release edit vX.Y.Z --draft=false`).
+9. Tag `vX.Y.Z` (annotated) and push with `--follow-tags`.

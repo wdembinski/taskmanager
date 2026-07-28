@@ -49,6 +49,7 @@ import type { ActiveRun, SchedulerChange, TaskChange } from './scheduler';
 import type { AttentionAnswer, AttentionItem } from './attention';
 import type { LimitState } from './limit';
 import type { AppSettings } from './settings';
+import type { UpdateState } from './update';
 import type { UsageSample, UsageSeriesPoint, UsageSummary } from './usage';
 
 /** Result of checking whether the local `claude` CLI is installed and logged in. */
@@ -449,6 +450,23 @@ export interface IpcApi {
   'window:close': () => Promise<void>;
   /** Whether the window is currently maximized (seed the restore/maximize icon). */
   'window:isMaximized': () => Promise<boolean>;
+
+  /**
+   * The auto-updater's current state, for seeding the status bar and the Settings block
+   * on mount. Live changes arrive on `update:changed`.
+   */
+  'update:get': () => Promise<UpdateState>;
+  /**
+   * Check the release feed now (Settings' "Check now"). Resolves with the state after
+   * the check was *started* — the result arrives over `update:changed`, since a download
+   * outlives the call. No-op on an install that can't update itself.
+   */
+  'update:check': () => Promise<UpdateState>;
+  /**
+   * Quit and apply the downloaded update. Does nothing until a download has finished,
+   * so the button can be shown optimistically.
+   */
+  'update:install': () => Promise<void>;
 }
 
 /**
@@ -496,6 +514,12 @@ export interface IpcEvents {
    * a stale copy back over anything the engine had learned since.
    */
   'settings:changed': AppSettings;
+  /**
+   * The auto-updater moved: a check started, a version was found, a download progressed,
+   * or a build is ready to install on quit. Carries the whole state, so the UI replaces
+   * rather than merges.
+   */
+  'update:changed': UpdateState;
 }
 
 /** Convenience: the set of valid invoke channel names. */

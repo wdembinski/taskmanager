@@ -56,6 +56,7 @@ import { JiraPoller } from './jiraPoller';
 import { Scheduler } from './scheduler';
 import { SessionManager } from './sessionManager';
 import { createStore, type Store } from './store';
+import { Updater } from './updater';
 import { bucketSeries, rollupWindow } from './usageRollup';
 import { WorktreeManager } from './worktreeManager';
 
@@ -106,6 +107,7 @@ export interface Engine {
   broker: PermissionBroker;
   watcher: PlanWatcher;
   jiraPoller: JiraPoller;
+  updater: Updater;
 }
 
 /**
@@ -212,6 +214,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       if (task.sessionId) store.updateTask(task.id, { sessionId: null });
     }
   }
+
+  // Auto-update. Constructed here rather than with the poller below because it is inert
+  // until `start()` — the constructor only reads the platform and `app.isPackaged` — and
+  // the handlers below need something to talk to. Everything that touches the network
+  // happens in `start()`, which is called last, with the poller.
+  const updater = new Updater((state) => send('update:changed', state));
 
   handle('app:getInfo', async () => ({
     version: app.getVersion(),
@@ -1077,6 +1085,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     pushMaximized();
   });
 
+  // Auto-update. The updater is constructed near the top (it is inert until `start()`);
+  // these three are the whole surface the UI gets — the rest arrives on `update:changed`.
+  handle('update:get', async () => updater.current());
+  handle('update:check', () => updater.checkNow());
+  handle('update:install', async () => updater.install());
+
   // Background poll: keep the Personal board fresh on the user's configured cadence
   // (JIRA setting `pollIntervalMinutes`; 0 = off). Re-armed whenever settings change.
   // Constructed AFTER every handle() call on purpose: anything that can throw while
@@ -1086,5 +1100,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   const jiraPoller = new JiraPoller(store, syncJira);
   jiraPoller.reschedule();
 
-  return { sessions, scheduler, store, broker, watcher, jiraPoller };
+  // Same reasoning: the updater's first feed request is scheduled here, once every
+  // channel is live, so a network stall can never delay handler registration.
+  updater.start();
+
+  return { sessions, scheduler, store, broker, watcher, jiraPoller, updater };
 }

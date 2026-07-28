@@ -38,6 +38,7 @@ import {
   TaskListSquareLtrRegular,
 } from '@fluentui/react-icons';
 import type { AppInfo, ClaudeStatus } from '@shared/ipc';
+import type { UpdateState } from '@shared/update';
 import { Attention } from './Attention';
 import { Board } from './Board';
 import { LimitBanner } from './LimitBanner';
@@ -134,6 +135,20 @@ const useStyles = makeStyles({
   ok: { backgroundColor: tokens.colorPaletteGreenBackground3 },
   bad: { backgroundColor: tokens.colorPaletteRedBackground3 },
   grow: { flex: 1 },
+  /**
+   * The "a new version is waiting" item. It inherits the bar's own colour rather than
+   * naming one, because the bar turns orange under attention and a fixed white would
+   * vanish against it. Underlined so it reads as the one clickable thing down here.
+   */
+  update: {
+    background: 'none',
+    border: 'none',
+    padding: 0,
+    font: 'inherit',
+    color: 'inherit',
+    cursor: 'pointer',
+    textDecoration: 'underline',
+  },
 });
 
 type TabId =
@@ -157,6 +172,9 @@ export function App(): JSX.Element {
   const [tab, setTab] = useState<TabId>('mytasks');
   // How many tasks are waiting on a human, shown as a badge on the Attention tab.
   const [attentionCount, setAttentionCount] = useState(0);
+  // Auto-update: only its final state earns a place in the status bar (a downloaded
+  // build waiting for a restart). Progress lives in Settings, where it was asked for.
+  const [update, setUpdate] = useState<UpdateState | null>(null);
 
   // Set when the app shell itself can't reach the engine — the clearest possible signal
   // that nothing else on screen will load either.
@@ -167,15 +185,18 @@ export function App(): JSX.Element {
       window.api.invoke('app:getInfo').then(setInfo),
       window.api.invoke('claude:getStatus').then(setClaude),
       window.api.invoke('attention:list').then((items) => setAttentionCount(items.length)),
+      window.api.invoke('update:get').then(setUpdate),
     ]).catch((e: unknown) => setBootError(e instanceof Error ? e.message : String(e)));
 
     const offNew = window.api.on('attention:new', () => setAttentionCount((n) => n + 1));
     const offResolved = window.api.on('attention:resolved', () =>
       setAttentionCount((n) => Math.max(0, n - 1)),
     );
+    const offUpdate = window.api.on('update:changed', setUpdate);
     return () => {
       offNew();
       offResolved();
+      offUpdate();
     };
   }, []);
 
@@ -279,6 +300,20 @@ export function App(): JSX.Element {
         )}
         {attentionCount > 0 && <Caption1>· {attentionCount} waiting on you</Caption1>}
         <span className={styles.grow} />
+        {/* A downloaded update installs itself on the next quit either way; this is
+            simply the offer to have it now, and the only notice the user ever gets. */}
+        {update?.status === 'downloaded' && (
+          <Caption1>
+            <button
+              type="button"
+              className={styles.update}
+              title="Restart now to finish installing. Otherwise it applies the next time you quit."
+              onClick={() => void window.api.invoke('update:install')}
+            >
+              Update {update.version ?? ''} ready — restart
+            </button>
+          </Caption1>
+        )}
         {info && (
           <Caption1>
             v{info.version} · electron {info.electron} · node {info.node}

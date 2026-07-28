@@ -22,10 +22,12 @@ import {
   Dropdown,
   Field,
   Input,
+  Link,
   makeStyles,
   MessageBar,
   MessageBarBody,
   Option,
+  ProgressBar,
   Spinner,
   SpinButton,
   Subtitle2,
@@ -40,7 +42,8 @@ import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
 import type { AppSettings, JiraSettings } from '@shared/settings';
 import type { BoardColumn } from '@shared/model';
-import type { JiraConfigStatus, JiraStatusOption, JiraTestResult } from '@shared/ipc';
+import type { AppInfo, JiraConfigStatus, JiraStatusOption, JiraTestResult } from '@shared/ipc';
+import { describeUpdate, type UpdateState } from '@shared/update';
 import { isCloudHost } from '@shared/jiraUrl';
 import { COLUMN_META, statusForColumn } from './board/boardColumns';
 import { STATUS_LABEL } from './taskStatus';
@@ -86,6 +89,8 @@ const useStyles = makeStyles({
   mapName: { flex: 1, minWidth: 0 },
   mapColumn: { minWidth: '132px' },
   actions: { display: 'flex', alignItems: 'center', gap: '12px', marginTop: '4px' },
+  // The update state, its progress bar and its button, stacked as one block.
+  updateBlock: { display: 'flex', flexDirection: 'column', gap: '8px' },
   saved: { color: tokens.colorPaletteGreenForeground1 },
   hint: { color: tokens.colorNeutralForeground3 },
 });
@@ -100,6 +105,9 @@ function readinessTargets(defaultTarget: ExecTarget, inUse: ExecTarget[]): ExecT
   for (const target of [defaultTarget, ...inUse]) byKey.set(formatExecTarget(target), target);
   return [...byKey.values()];
 }
+
+/** Where an install that can't update itself goes to fetch a new build by hand. */
+const RELEASES_URL = 'https://github.com/wdembinski/taskmanager/releases';
 
 const MODELS: ClaudeModel[] = ['haiku', 'sonnet', 'opus'];
 const MODES: PermissionMode[] = ['acceptEdits', 'plan', 'manual', 'bypassPermissions'];
@@ -136,12 +144,22 @@ export function Settings(): JSX.Element {
   // from the SAVED settings (main talks to the stored config), so it arrives once the
   // connection works and is re-read after every Save.
   const [jiraStatuses, setJiraStatuses] = useState<JiraStatusOption[]>([]);
+  // Auto-update. Kept out of `settings` on purpose: none of it is saved — it is the
+  // engine's live state, seeded once and then pushed.
+  const [update, setUpdate] = useState<UpdateState | null>(null);
+  const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
 
   // Only offer targets that exist here: with no WSL installed the control never
   // appears, so the screen stays exactly as it was.
   useEffect(() => {
     void window.api.invoke('exec:listDistros').then(setDistros);
     void window.api.invoke('exec:targetsInUse').then(setTargetsInUse);
+    void window.api.invoke('app:getInfo').then(setAppInfo);
+  }, []);
+
+  useEffect(() => {
+    void window.api.invoke('update:get').then(setUpdate);
+    return window.api.on('update:changed', setUpdate);
   }, []);
 
   const seed = useCallback(async () => {
@@ -497,6 +515,65 @@ export function Settings(): JSX.Element {
             These are defaults for <strong>new</strong> projects and global scheduler knobs —
             existing projects keep their own model, mode, and write-back settings.
           </Body1>
+
+          {/* Updates. Nothing here is a saved setting, so it sits below the Save row
+              rather than inside it — the buttons act immediately. */}
+          <Subtitle2>Updates</Subtitle2>
+          <div className={styles.grid}>
+            <Field label={appInfo ? `You are running v${appInfo.version}` : 'Version'}>
+              <div className={styles.updateBlock}>
+                <Caption1>{update ? describeUpdate(update) : 'Checking…'}</Caption1>
+                {update?.status === 'downloading' && (
+                  <ProgressBar
+                    // An indeterminate bar is the honest rendering when the feed sends
+                    // no percentage, rather than a bar frozen at zero.
+                    value={typeof update.percent === 'number' ? update.percent / 100 : undefined}
+                  />
+                )}
+                {/* A `manual` install gets a link, never a button that could not work.
+                    A development run (`off`) gets neither — there is nothing to update. */}
+                {update?.mode === 'auto' && (
+                  <div className={styles.actions}>
+                    {update.status === 'downloaded' ? (
+                      <Button
+                        appearance="primary"
+                        onClick={() => void window.api.invoke('update:install')}
+                      >
+                        Restart and install
+                      </Button>
+                    ) : (
+                      <Button
+                        disabled={update.status === 'checking' || update.status === 'downloading'}
+                        onClick={() => void window.api.invoke('update:check')}
+                      >
+                        Check now
+                      </Button>
+                    )}
+                  </div>
+                )}
+                {update?.mode === 'manual' && (
+                  <div className={styles.actions}>
+                    <Link href={RELEASES_URL} target="_blank" rel="noreferrer">
+                      Open the releases page
+                    </Link>
+                  </div>
+                )}
+                {update?.mode === 'auto' && (
+                  <Caption1 className={styles.hint}>
+                    New versions download in the background and install when you quit. The installer
+                    is not code-signed, so Windows SmartScreen will ask you to confirm it.
+                  </Caption1>
+                )}
+                {update?.mode === 'manual' && (
+                  <Caption1 className={styles.hint}>
+                    This build is installed by something else — a package manager on Linux, or an
+                    unsigned macOS bundle — so it will not replace itself. Download the new one and
+                    install it the way you installed this one.
+                  </Caption1>
+                )}
+              </div>
+            </Field>
+          </div>
         </div>
       ) : (
         <div className={styles.pane}>

@@ -6,6 +6,20 @@ appId: network.vipper.claude-orchestrator
 productName: Claude Orchestrator
 copyright: © ${author}
 
+# Where the app looks for updates, and where `--publish` uploads them. electron-builder
+# writes a `latest.yml` (Windows) / `latest-linux.yml` feed next to the installers; the
+# in-app updater (src/main/updater.ts) reads it from the same GitHub release.
+#
+# Publishing from builder rather than by hand is not a convenience here, it is the fix:
+# `gh release create` rewrites spaces in uploaded asset names to dots, while `latest.yml`
+# records the name builder wrote — so a hand-uploaded "Claude Orchestrator-x.y.z-setup.exe"
+# became "Claude.Orchestrator-…" and the updater 404'd on the very file it was told to
+# fetch. The artifact names below are space-free for the same reason.
+publish:
+  provider: github
+  owner: wdembinski
+  repo: taskmanager
+
 directories:
   # electron-builder packages the compiled output produced by electron-vite build.
   output: dist
@@ -33,7 +47,9 @@ win:
   # publisher name is kept under signtoolOptions so it is used once a cert is added.
   signtoolOptions:
     publisherName: ${author}
-  artifactName: ${productName}-${version}-setup.${ext}
+  # `${name}` (claude-orchestrator), not `${productName}` (Claude Orchestrator): see the
+  # publish block above — a space in the filename breaks the update feed.
+  artifactName: ${name}-${version}-setup.${ext}
 
 nsis:
   oneClick: false
@@ -51,7 +67,7 @@ linux:
   icon: build/icon.png
   category: Development
   synopsis: Orchestrate the Claude CLI across many projects and tasks
-  artifactName: ${productName}-${version}.${ext}
+  artifactName: ${name}-${version}.${ext}
 
 deb:
   # Debian requires a maintainer; electron-builder otherwise derives it from
