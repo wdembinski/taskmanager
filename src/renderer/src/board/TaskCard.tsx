@@ -1,11 +1,16 @@
 /**
  * TaskCard — one draggable card on the My Tasks Kanban board.
  *
- * Mirrors the product mockup: a type icon + title, an optional label chip, the
- * card's "Project:" line, and a footer with the JIRA source badge and a priority
- * square. A small status badge appears only for the "unusual" states bucketed into a
- * column (an AI run, or a failed/stopped/cancelled task in Done). An orange border
- * flags unread JIRA comments — or an agent waiting on an answer.
+ * Mirrors the product mockup: a stripe of its project's colour along the top, a type
+ * icon + title, an optional label chip, its progress note, the card's "Project:" line,
+ * and a footer with the JIRA source badge and a priority square. A small status badge
+ * appears only for the "unusual" states bucketed into a column (an AI run, or a
+ * failed/stopped/cancelled task in Done).
+ *
+ * The card itself has NO frame — the fill is brighter than the column, which is edge
+ * enough. The only frames are rings painted outside the box: orange for unread JIRA
+ * comments or an agent waiting on an answer, brand for the selected card, both when
+ * both. Outside, so clicking a card never moves its own text.
  *
  * A card that has **steps** (Phase 11) renders them as rows flush inside its own
  * frame, separated by hairlines, with a "2/5" progress caption in the header. A step
@@ -41,6 +46,8 @@ import {
   needsAgentInput,
   parkedStep,
 } from '@shared/board';
+import { priorityColor } from '@shared/priority';
+import { statusNoteColor, type StatusKeyword } from '@shared/statusKeywords';
 import { STATUS_COLOR, STATUS_LABEL } from '../taskStatus';
 import { columnForStatus, statusForColumn, subtaskProgress } from './boardColumns';
 
@@ -59,9 +66,10 @@ const useStyles = makeStyles({
     flexDirection: 'column',
     borderRadius: tokens.borderRadiusMedium,
     // Brighter than the board it sits on: a card is the object, the column is the space
-    // between objects, and the old darker fill had that backwards.
+    // between objects, and the old darker fill had that backwards. That contrast is the
+    // whole edge — there is no frame, because a frame was saying a second time what the
+    // fill already said, and it fought the rings below for the same pixels.
     backgroundColor: tokens.colorNeutralBackground1,
-    border: `1px solid ${tokens.colorNeutralStroke2}`,
     // Step rows sit flush against the frame, so they must be clipped by its radius.
     overflow: 'hidden',
     // ...but `overflow: hidden` also drops this flex item's automatic minimum size to
@@ -72,6 +80,13 @@ const useStyles = makeStyles({
     userSelect: 'none',
   },
   body: { display: 'flex', flexDirection: 'column', gap: '8px', padding: '12px' },
+  /**
+   * The card's project, as a stripe along the top edge. Top rather than left so it can
+   * never be confused with — or crowd — the ring that says a card wants you, and so it
+   * stays put however tall the card's step rows make it. Clipped into the corners by
+   * the card's own `overflow: hidden` + radius.
+   */
+  projectBar: { height: '3px', flexShrink: 0 },
   // No container border: each row carries the hairline above it, so the first row's
   // divider is what separates the steps from the card body — no gap between them.
   step: {
@@ -107,14 +122,38 @@ const useStyles = makeStyles({
   progress: { color: tokens.colorNeutralForeground3, flexShrink: 0 },
   /** A stopped chain reads in the frame's colour, so the two say one thing. */
   progressStopped: { color: UNREAD_ORANGE },
-  cardUnread: { border: `2px solid ${UNREAD_ORANGE}` },
+  /**
+   * "Wants you" and "is selected", as rings PAINTED OUTSIDE the card.
+   *
+   * `box-shadow`, not `border`: a border is part of the box, so adding one on click
+   * reflowed the card's own text by a pixel — a visible twitch on every selection.
+   * A shadow costs no layout at all. It is also stackable, which is why the third
+   * class exists: with two separate classes Griffel would have the later one REPLACE
+   * `boxShadow`, and the orange would vanish the moment you clicked the card that was
+   * shouting for you — exactly the card you most need to keep flagged.
+   */
+  cardUnread: { boxShadow: `0 0 0 2px ${UNREAD_ORANGE}` },
+  cardSelected: { boxShadow: `0 0 0 2px ${tokens.colorBrandStroke1}` },
+  cardUnreadSelected: {
+    boxShadow: `0 0 0 2px ${UNREAD_ORANGE}, 0 0 0 4px ${tokens.colorBrandStroke1}`,
+  },
   agentIcon: { fontSize: AGENT_ICON_SIZE, flexShrink: 0, display: 'flex', color: '#ffffff' },
-  cardSelected: { border: `1px solid ${tokens.colorBrandStroke1}` },
   dragging: { opacity: 0.5 },
   titleRow: { display: 'flex', alignItems: 'center', gap: '8px' },
   icon: { fontSize: '18px', flexShrink: 0, display: 'flex' },
   title: { lineHeight: '18px', flex: 1, minWidth: 0 },
   project: { color: tokens.colorNeutralForeground3 },
+  /**
+   * The card's progress note: one line, clipped. One line on purpose — the point is
+   * that a column of cards can be read at a glance, and a card that grew to fit a
+   * paragraph would defeat that. The full text is in the tooltip and the pane.
+   */
+  statusNote: {
+    color: tokens.colorNeutralForeground2,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
   chipRow: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' },
   chip: {
     backgroundColor: '#12836b',
@@ -147,25 +186,24 @@ const useStyles = makeStyles({
   prioritySquare: { width: '14px', height: '14px', borderRadius: '3px', flexShrink: 0 },
 });
 
-/** Priority-name → square color. Unknown/none → neutral. */
-function priorityColor(priority: string | null | undefined): string | null {
-  if (!priority) return null;
-  const p = priority.toLowerCase();
-  if (p.includes('highest') || p.includes('high') || p.includes('critical') || p.includes('block'))
-    return '#E5484D';
-  if (p.includes('medium') || p.includes('major')) return '#F5A623';
-  if (p.includes('low') || p.includes('minor') || p.includes('trivial')) return '#30A46C';
-  return tokens.colorNeutralForeground4;
-}
+// Type-icon colors (shared by internal and JIRA tasks). Declared above the maps
+// below, which read them at module load.
+const BUG_RED = '#E5484D';
+const FEATURE_BLUE = '#0091FF';
+const STORY_GREEN = '#30A46C';
+const EPIC_PURPLE = '#8E4EC6';
 
 /**
  * Step-row dot color per status — the row's whole status display, since a badge per
  * row would drown the card. Deliberately the same vocabulary as `STATUS_COLOR`'s
  * badges: green done, red failed, brand while running, orange while it wants you.
+ * `in-review` borrows the epic violet: it is the one column that is neither work in
+ * flight nor work finished.
  */
 const STEP_DOT_COLOR: Record<TaskStatus, string> = {
   pending: tokens.colorNeutralForeground4,
   'in-progress': tokens.colorBrandBackground,
+  'in-review': EPIC_PURPLE,
   running: tokens.colorBrandBackground,
   'waiting-input': UNREAD_ORANGE,
   'blocked-by-limit': UNREAD_ORANGE,
@@ -175,12 +213,6 @@ const STEP_DOT_COLOR: Record<TaskStatus, string> = {
   stopped: tokens.colorNeutralForeground4,
   cancelled: tokens.colorNeutralForeground4,
 };
-
-// Type-icon colors (shared by internal and JIRA tasks).
-const BUG_RED = '#E5484D';
-const FEATURE_BLUE = '#0091FF';
-const STORY_GREEN = '#30A46C';
-const EPIC_PURPLE = '#8E4EC6';
 
 /**
  * Pick a card icon for the task's type. Internal tasks use their user-chosen
@@ -210,8 +242,12 @@ export interface TaskCardProps {
   projectName?: string;
   /** Name of the agent project this card is delegated to, for the glyph's tooltip. */
   agentName?: string;
+  /** The card's project colour (`''`/undefined = no stripe). */
+  projectColor?: string;
   /** This card's steps in execution order — rendered inside the card. */
   subtasks?: Task[];
+  /** The user's status-note vocabulary, which colours the card's progress line. */
+  statusKeywords?: readonly StatusKeyword[];
   selected: boolean;
   /** Id of the selected task, so a selected *step* row can highlight itself. */
   selectedTaskId?: string | null;
@@ -234,7 +270,9 @@ export function TaskCard({
   task,
   projectName,
   agentName,
+  projectColor,
   subtasks = [],
+  statusKeywords,
   selected,
   selectedTaskId,
   draggable,
@@ -248,6 +286,9 @@ export function TaskCard({
   const badge = secondaryStatus(task);
   const isJira = task.externalSource === 'jira';
   const squareColor = priorityColor(task.externalPriority);
+  // Null when the note matched no keyword — the line then keeps the card's ordinary
+  // secondary text colour, so an uncoloured note reads as text rather than as a state.
+  const noteColor = statusNoteColor(task.statusNote, statusKeywords);
   // An unread comment, the card's own agent asking, or a step that has parked the
   // chain (question or failure) — all mean "this card wants you", and a step has no
   // frame of its own to say it with.
@@ -266,8 +307,12 @@ export function TaskCard({
     <div
       className={mergeClasses(
         styles.card,
-        wantsAttention && styles.cardUnread,
-        selected && styles.cardSelected,
+        // One of three, never two: see `cardUnreadSelected`.
+        wantsAttention && selected
+          ? styles.cardUnreadSelected
+          : wantsAttention
+            ? styles.cardUnread
+            : selected && styles.cardSelected,
         dragging && styles.dragging,
       )}
       draggable={draggable}
@@ -275,6 +320,9 @@ export function TaskCard({
       onDragEnd={onDragEnd}
       onClick={onSelect}
     >
+      {projectColor && (
+        <div className={styles.projectBar} style={{ backgroundColor: projectColor }} />
+      )}
       <div className={styles.body}>
         <div className={styles.titleRow}>
           <span className={styles.icon}>{typeIcon(task)}</span>
@@ -337,6 +385,18 @@ export function TaskCard({
               </span>
             )}
           </div>
+        )}
+
+        {/* Where the card actually is, in your words. Above the "Project:" line
+            because it is the thing that changes, and the thing you scan for. */}
+        {task.statusNote && (
+          <Caption1
+            className={styles.statusNote}
+            style={noteColor ? { color: noteColor } : undefined}
+            title={task.statusNote}
+          >
+            {task.statusNote}
+          </Caption1>
         )}
 
         {projectName && <Caption1 className={styles.project}>Project: {projectName}</Caption1>}

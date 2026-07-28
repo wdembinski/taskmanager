@@ -11,6 +11,7 @@
 import { LOCAL_TARGET, type ExecTarget } from './execTarget';
 import type { ClaudeModel, PermissionMode } from './session';
 import type { BoardColumn } from './model';
+import type { StatusKeyword } from './statusKeywords';
 
 /**
  * Non-secret JIRA connection config (the PAT itself is stored separately, encrypted
@@ -52,10 +53,21 @@ export interface JiraSettings {
    * issues onto the board. 0 = off (the manual "Sync JIRA" button still works).
    */
   pollIntervalMinutes: number;
-  /** Optional per-raw-status-name overrides mapping a status to a board column. */
+  /**
+   * The user's map from a JIRA workflow status NAME to a board column, matched
+   * case-insensitively (`{ "Code Review": "in-review" }`).
+   *
+   * Names rather than categories, because JIRA has only three categories and every
+   * review-ish status ("Review", "In Review", "Code Review") shares `In Progress`
+   * with the status that means "being written" — so IN REVIEW is unreachable without
+   * this. Unmapped statuses still land by category, exactly as before. `blocked` is
+   * internal-only and is never a valid target.
+   */
   statusCategoryOverrides?: Record<string, BoardColumn>;
   /** Optional exact transition name to use for To Do → In Progress (else auto-detected). */
   inProgressTransitionName?: string;
+  /** Optional exact transition name to use when moving into In Review (else auto-detected). */
+  inReviewTransitionName?: string;
   /** Optional exact transition name to use when moving into Done (else auto-detected). */
   doneTransitionName?: string;
 }
@@ -100,6 +112,13 @@ export interface AppSettings {
    * sense on the machine it was picked from.
    */
   defaultExecTarget: ExecTarget;
+  /**
+   * The vocabulary that colours a card's status note: a keyword and the colour a note
+   * containing it takes. Order is the priority — the first match wins. Empty by
+   * default, in which case every status note reads in the card's ordinary muted
+   * colour, which is a working board rather than a degraded one.
+   */
+  statusKeywords: StatusKeyword[];
   /** JIRA integration config for the Personal board (Phase B). */
   jira: JiraSettings;
 }
@@ -113,5 +132,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   writeBackPlan: false,
   maxAutoRetries: 1,
   defaultExecTarget: LOCAL_TARGET,
+  statusKeywords: [],
   jira: DEFAULT_JIRA_SETTINGS,
 };

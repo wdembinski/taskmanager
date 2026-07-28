@@ -30,6 +30,7 @@ import {
   columnForTask,
   groupSubtasks,
   hasLiveSubtask,
+  sortCards,
   statusForColumn,
   visibleColumns,
 } from './board/boardColumns';
@@ -149,14 +150,15 @@ export function MyTasks(): JSX.Element {
     const map: Record<BoardColumn, BoardCard[]> = {
       todo: [],
       'in-progress': [],
+      'in-review': [],
       blocked: [],
       done: [],
     };
     // A card's steps are not cards of their own — they render inside the parent and
     // travel with it, whatever their own status.
     for (const card of groupSubtasks(tasks ?? [])) map[columnForTask(card.task)].push(card);
-    for (const col of Object.keys(map) as BoardColumn[])
-      map[col].sort((a, b) => a.task.order - b.task.order);
+    // Cards that want you first, then by priority — see `sortCards`.
+    for (const col of Object.keys(map) as BoardColumn[]) map[col] = sortCards(map[col]);
     return map;
   }, [tasks]);
 
@@ -294,6 +296,10 @@ export function MyTasks(): JSX.Element {
                 t.externalSource === 'jira' ? t.phase || undefined : undefined
               }
               agentNameOf={(t) => agentProjects.find((p) => p.id === t.agentProjectId)?.name}
+              projectColorOf={(t) =>
+                agentProjects.find((p) => p.id === t.agentProjectId)?.color || undefined
+              }
+              statusKeywords={settings?.statusKeywords}
               // A card with a live step is the runner's until the chain stops.
               canDrag={(c) => !managedByAI(c.task) && !hasLiveSubtask(c.subtasks)}
               selectedTaskId={selectedTaskId}
@@ -313,6 +319,7 @@ export function MyTasks(): JSX.Element {
           agentProjects={agentProjects}
           subtasks={chain}
           parentTask={parentOfSelected}
+          statusKeywords={settings?.statusKeywords}
           onOpenTask={setSelectedTaskId}
           onStatusChanged={patchTask}
           onSubtasksChanged={() => void refresh()}

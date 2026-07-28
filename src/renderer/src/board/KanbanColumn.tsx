@@ -6,6 +6,7 @@
 import { useState } from 'react';
 import { Caption1, Text, makeStyles, mergeClasses, tokens } from '@fluentui/react-components';
 import type { Task } from '@shared/model';
+import type { StatusKeyword } from '@shared/statusKeywords';
 import { TaskCard } from './TaskCard';
 import type { BoardCard, BoardColumn } from './boardColumns';
 
@@ -60,6 +61,10 @@ export interface KanbanColumnProps {
   projectNameOf: (task: Task) => string | undefined;
   /** Name of the agent project a delegated card runs in (tooltip on the agent glyph). */
   agentNameOf: (task: Task) => string | undefined;
+  /** The card's project colour, for the stripe along its top edge. */
+  projectColorOf: (task: Task) => string | undefined;
+  /** The user's status-note vocabulary, which colours each card's progress line. */
+  statusKeywords?: readonly StatusKeyword[];
   canDrag: (card: BoardCard) => boolean;
   selectedTaskId: string | null;
   draggingId: string | null;
@@ -108,7 +113,9 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               task={task}
               projectName={props.projectNameOf(task)}
               agentName={props.agentNameOf(task)}
+              projectColor={props.projectColorOf(task)}
               subtasks={subtasks}
+              statusKeywords={props.statusKeywords}
               selected={task.id === props.selectedTaskId}
               selectedTaskId={props.selectedTaskId}
               draggable={props.canDrag({ task, subtasks })}

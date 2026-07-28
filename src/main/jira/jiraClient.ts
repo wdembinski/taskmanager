@@ -242,6 +242,46 @@ export class JiraClient {
     return data.comments ?? [];
   }
 
+  /**
+   * The instance's priority scale, most urgent first (JIRA returns it in rank order).
+   *
+   * Two endpoints again: Server/DC serves a plain array from `/priority`, while Cloud
+   * has moved to the paged `/priority/search` (`{ values: [...] }`) and answers the
+   * old path with a deprecation error on some sites. We ask by API version and fall
+   * back to the other shape rather than guessing, since a wrong guess would leave the
+   * priority dropdown empty with no explanation.
+   */
+  async listPriorities(): Promise<string[]> {
+    const names = (list: unknown): string[] =>
+      Array.isArray(list)
+        ? list
+            .map((p) => (p as { name?: unknown }).name)
+            .filter((n): n is string => typeof n === 'string' && n.length > 0)
+        : [];
+
+    if (this.config.apiVersion === '3') {
+      const data = await this.request<{ values?: unknown }>('/priority/search');
+      return names(data?.values);
+    }
+    return names(await this.request<unknown>('/priority'));
+  }
+
+  /**
+   * Set an issue's priority by name. `PUT /issue/{key}` answers 204 with no body.
+   *
+   * By name rather than id because the name is what we store on the task and show on
+   * the card; the names come from {@link listPriorities}, i.e. from this same
+   * instance, so they are ones the workflow actually has. JIRA rejects the edit (400)
+   * if the field is not on the issue's screen — which is a real answer worth showing
+   * the user, not something to paper over.
+   */
+  setPriority(issueKey: string, name: string): Promise<void> {
+    return this.request<void>(`/issue/${encodeURIComponent(issueKey)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ fields: { priority: { name } } }),
+    });
+  }
+
   /** Post a comment. v2 takes a plain string body; v3 wraps it in a minimal ADF doc. */
   addComment(issueKey: string, text: string): Promise<JiraComment> {
     const body =

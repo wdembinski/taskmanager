@@ -16,6 +16,8 @@ export function columnForStatus(status: TaskStatus): BoardColumn {
     case 'waiting-input':
     case 'blocked-by-limit':
       return 'in-progress';
+    case 'in-review':
+      return 'in-review';
     case 'blocked':
       return 'blocked';
     case 'done':
@@ -33,6 +35,8 @@ export function statusForColumn(column: BoardColumn): ManualStatus {
       return 'pending';
     case 'in-progress':
       return 'in-progress';
+    case 'in-review':
+      return 'in-review';
     case 'blocked':
       return 'blocked';
     case 'done':
@@ -61,6 +65,48 @@ export function categoryFromKey(key: string): JiraStatusCategory {
   if (key === 'indeterminate') return 'In Progress';
   if (key === 'done') return 'Done';
   return 'To Do';
+}
+
+/**
+ * Which board column a JIRA status lands in: the user's per-status-name map first,
+ * the issue's category as the fallback.
+ *
+ * The map exists because a category cannot express IN REVIEW — JIRA has only three
+ * of them, and "Review", "In Review" and "Code Review" all sit in `In Progress`
+ * alongside the status that actually means "being written". Names, unlike
+ * categories, differ per project, so the map is keyed by name and matched
+ * **case-insensitively**; anything unmapped still lands by category, which is
+ * exactly how every board behaved before the map existed.
+ *
+ * Shared by the sync (which column an incoming issue lands in) and the move path
+ * (which transition a drag should pick), so the two can never disagree about what
+ * "Code Review" means.
+ */
+export function columnForJiraStatus(
+  rawStatus: string,
+  category: JiraStatusCategory,
+  map: Record<string, BoardColumn> | undefined,
+): BoardColumn {
+  return lookupStatusColumn(rawStatus, map) ?? categoryToColumn(category);
+}
+
+/**
+ * The column a status name is explicitly mapped to, or null when the user has not
+ * mapped it. Separate from {@link columnForJiraStatus} because the move path needs
+ * to tell "mapped to In Review" from "fell back to In Progress" — a transition must
+ * only be *rejected* for a target when the user said it means something else.
+ */
+export function lookupStatusColumn(
+  rawStatus: string,
+  map: Record<string, BoardColumn> | undefined,
+): BoardColumn | null {
+  if (!map) return null;
+  const wanted = rawStatus.trim().toLowerCase();
+  if (!wanted) return null;
+  for (const [name, column] of Object.entries(map)) {
+    if (name.trim().toLowerCase() === wanted) return column;
+  }
+  return null;
 }
 
 /**

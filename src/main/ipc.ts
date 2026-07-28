@@ -501,6 +501,57 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     return task;
   });
 
+  handle('task:setProject', async (taskId, agentProjectId) => {
+    const existing = store.getTask(taskId);
+    if (!existing) throw new Error('Task not found.');
+    if (agentProjectId !== null) {
+      const target = store.getProject(agentProjectId);
+      if (!target || target.kind !== 'agent') throw new Error('Unknown project.');
+    }
+    // Only the association. No session reset, no worktree, no run — see `task:setProject`
+    // in the contract for why this is not `task:assignAgent`.
+    const task = store.updateTask(taskId, { agentProjectId });
+    if (!task) throw new Error('Task not found.');
+    send('task:changed', { task, runId: null });
+    return task;
+  });
+
+  handle('task:setStatusNote', async (taskId, note) => {
+    const existing = store.getTask(taskId);
+    if (!existing) throw new Error('Task not found.');
+    const text = note.trim();
+    // File it first, so the timestamp on the card and the one on the timeline agree.
+    const entry = text ? store.addStatusNote(existing.projectId, taskId, text) : null;
+    const task = store.updateTask(taskId, {
+      statusNote: text || null,
+      statusNoteAt: entry?.createdAt ?? null,
+    });
+    if (!task) throw new Error('Task not found.');
+    send('task:changed', { task, runId: null });
+    return task;
+  });
+
+  handle('task:setPriority', async (taskId, priority) => {
+    const existing = store.getTask(taskId);
+    if (!existing) throw new Error('Task not found.');
+    const name = priority?.trim() || null;
+    if (name === (existing.externalPriority ?? null)) return existing;
+
+    // JIRA FIRST, exactly like `task:move`: if the tracker rejects the edit (the field
+    // isn't on the issue's screen, the name isn't in this workflow, the token lacks
+    // permission) we must not end up showing a priority the ticket doesn't have.
+    // Clearing is local-only — JIRA priority is usually a required field, and a PUT of
+    // `null` would fail on most workflows for no gain.
+    if (existing.externalSource === 'jira' && existing.externalKey && name) {
+      await buildJiraClient().setPriority(existing.externalKey, name);
+    }
+
+    const task = store.updateTask(taskId, { externalPriority: name });
+    if (!task) throw new Error('Task not found.');
+    send('task:changed', { task, runId: null });
+    return task;
+  });
+
   handle('task:setAgentOptions', async (taskId, options) => {
     const existing = store.getTask(taskId);
     if (!existing) throw new Error('Task not found.');
@@ -682,6 +733,30 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     }
   });
 
+  /**
+   * The instance's priority names, fetched once per site per app run.
+   *
+   * In memory rather than in `app_state` (unlike the epic/sprint field ids): the list
+   * is cheap to fetch, and a restart re-reading it is better than a persisted cache
+   * going stale after an admin edits the scale. Fails soft to `[]` — the pane then
+   * offers the built-in scale, which is a working dropdown rather than an empty one.
+   */
+  let priorityCache: { baseUrl: string; names: string[] } | null = null;
+
+  handle('jira:priorities', async () => {
+    const { jira } = store.getSettings();
+    if (!jira.enabled || !jira.baseUrl) return [];
+    if (priorityCache?.baseUrl === jira.baseUrl) return priorityCache.names;
+    try {
+      const names = await buildJiraClient().listPriorities();
+      priorityCache = { baseUrl: jira.baseUrl, names };
+      return names;
+    } catch (e) {
+      logMain('JIRA priority list failed', e);
+      return [];
+    }
+  });
+
   handle('board:tasks', async () => store.getPersonalTasks());
 
   /**
@@ -790,7 +865,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       const transitions = await client.getTransitions(existing.externalKey);
       const picked = pickTransition(transitions, move.jiraTransition, jira);
       if (!picked) {
-        const target = move.jiraTransition === 'toInProgress' ? 'In Progress' : 'Done';
+        const target =
+          move.jiraTransition === 'toInProgress'
+            ? 'In Progress'
+            : move.jiraTransition === 'toInReview'
+              ? 'In Review'
+              : 'Done';
         throw new Error(
           `No JIRA transition to ${target} is available for ${existing.externalKey}. ` +
             `Set an exact transition name in Settings if your workflow uses a custom one.`,

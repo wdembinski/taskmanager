@@ -26,16 +26,18 @@ import type { ClaudeModel, PermissionMode, SessionEvent } from './session';
  *
  * Human to-do states (Phase 9, set by hand — see `MANUAL_STATUSES`):
  *   `pending` doubles as "To Do"; `in-progress` = a human is working it (distinct
- *   from the AI's `running`); `blocked` = the human is stuck/waiting; `done`;
+ *   from the AI's `running`); `in-review` = the work is written and is waiting on
+ *   someone else to look at it; `blocked` = the human is stuck/waiting; `done`;
  *   `cancelled` = won't do.
  *
- * Only `pending`/`done`/`failed`/`stopped`/`in-progress`/`blocked`/`cancelled` are
- * resting states; `running`/`waiting-input`/`blocked-by-limit` mean a session is
- * mid-flight.
+ * Only `pending`/`done`/`failed`/`stopped`/`in-progress`/`in-review`/`blocked`/
+ * `cancelled` are resting states; `running`/`waiting-input`/`blocked-by-limit` mean
+ * a session is mid-flight.
  */
 export type TaskStatus =
   | 'pending'
   | 'in-progress'
+  | 'in-review'
   | 'blocked'
   | 'running'
   | 'waiting-input'
@@ -54,6 +56,7 @@ export type TaskStatus =
 export const MANUAL_STATUSES = [
   'pending',
   'in-progress',
+  'in-review',
   'blocked',
   'done',
   'cancelled',
@@ -72,8 +75,12 @@ export function isManualStatus(status: TaskStatus): status is ManualStatus {
  * category) — it is not stored. `blocked` is an internal-only column that never
  * touches an external tracker. Shared by main and renderer so the drag-to-move
  * IPC (`task:move`) and the board UI agree on the vocabulary.
+ *
+ * `in-review` cannot be derived from a JIRA *category* (JIRA has only three, and
+ * every review-ish status sits in `In Progress`), so it is reachable only through
+ * the user's status-name map — see `JiraSettings.statusCategoryOverrides`.
  */
-export type BoardColumn = 'todo' | 'in-progress' | 'blocked' | 'done';
+export type BoardColumn = 'todo' | 'in-progress' | 'in-review' | 'blocked' | 'done';
 
 /**
  * JIRA groups every workflow status into one of three fixed *categories*. We map
@@ -184,6 +191,14 @@ export interface Project {
    * itself. Empty by default.
    */
   instructions: string;
+  /**
+   * The project's colour as a hex string (`#0091FF`), or `''` for none.
+   *
+   * Purely a board signal: a card tagged with this project wears a stripe of it along
+   * its top edge, so a mixed column tells you at a glance which repo each card is
+   * about. Nothing about how the project runs depends on it.
+   */
+  color: string;
   /** Epoch ms when the project was added. */
   createdAt: number;
 }
@@ -208,6 +223,8 @@ export interface AddProjectInput {
   /** Defaults to the global `defaultExecTarget`. */
   target?: ExecTarget;
   instructions?: string;
+  /** Hex colour for the board stripe; defaults to none. */
+  color?: string;
 }
 
 /**
@@ -232,6 +249,7 @@ export type ProjectPatch = Partial<
     | 'jiraEpicKeys'
     | 'target'
     | 'instructions'
+    | 'color'
   >
 >;
 
@@ -320,6 +338,21 @@ export interface Task {
    * Null for cards that carry no brief of their own.
    */
   description?: string | null;
+
+  // --- The card's own progress note (free text, yours alone). ---
+  /**
+   * Where you actually are on this card, in your words — "waiting on infra for the
+   * cert", "reproduced, fixing now". Distinct from `status` (a fixed vocabulary the
+   * board and the tracker both understand) and from a timeline comment (which scrolls
+   * away): this is the ONE line the board shows, so a column of cards says what is
+   * happening without opening any of them.
+   *
+   * Only the latest survives here — every one ever posted stays on the timeline as a
+   * `status-note` entry. Null until the card has one. Never sent to JIRA.
+   */
+  statusNote?: string | null;
+  /** Epoch ms the current `statusNote` was posted; null when there is none. */
+  statusNoteAt?: number | null;
 
   // --- External tracker linkage (JIRA integration). All null for internal tasks. ---
   /** The external tracker this task mirrors, or null for an internal task. */
@@ -485,6 +518,14 @@ export type TaskActivityEntry =
    * own — they already arrive as `event` entries on the transcript.
    */
   | { kind: 'chat'; id: number; body: string; createdAt: number }
+  /**
+   * A progress update you posted on the card — the one that is currently on the board
+   * as `Task.statusNote`, plus every one it replaced. A kind of its own rather than a
+   * `comment` because the two answer different questions ("what should I remember"
+   * versus "where is this"), and because only the latest of these is the card's
+   * headline. Deliberately not deletable: it is the card's history of itself.
+   */
+  | { kind: 'status-note'; id: number; body: string; createdAt: number }
   | { kind: 'status'; id: number; from: TaskStatus | null; to: TaskStatus; createdAt: number }
   | { kind: 'event'; id: number; event: SessionEvent; createdAt: number }
   /**

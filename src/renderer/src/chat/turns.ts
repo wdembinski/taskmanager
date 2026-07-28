@@ -10,6 +10,7 @@
  *
  *   your chat message  → right, blue
  *   your note          → right, blue (lighter — nobody but you ever reads it)
+ *   your status update → right, blue (lighter), tagged with the keyword's colour
  *   your JIRA comment  → right, blue, tagged `JIRA` (it left the app)
  *   someone else's     → left, grey, with their name
  *   the agent          → left, FULL WIDTH, unbubbled (tables and code need the width)
@@ -29,7 +30,7 @@ export type Turn =
   | {
       key: string;
       kind: 'you';
-      variant: 'chat' | 'note' | 'jira';
+      variant: 'chat' | 'note' | 'jira' | 'status';
       body: string;
       createdAt: number;
       /** Only a note can be deleted — the other two were read by someone else. */
@@ -105,6 +106,19 @@ export function foldTurns(entries: readonly TaskActivityEntry[]): Turn[] {
           key: `chat-${entry.id}`,
           kind: 'you',
           variant: 'chat',
+          body: entry.body,
+          createdAt: entry.createdAt,
+          commentId: null,
+        });
+        continue;
+      case 'status-note':
+        // Not dropped like a `status` change: a status change is a fact the Details
+        // cell already shows, while this is something you *said* about the card, and
+        // the ones a newer note replaced are only readable here.
+        turns.push({
+          key: `progress-${entry.id}`,
+          kind: 'you',
+          variant: 'status',
           body: entry.body,
           createdAt: entry.createdAt,
           commentId: null,

@@ -8,8 +8,10 @@
  * over the `settings:*` IPC channels; the scheduler picks up concurrency/jitter on
  * the next task, so no restart is needed.
  *
- * The vertical nav also hosts the JIRA connection and the Agents pane (the
- * repositories a My Tasks card can be delegated to), which manage their own state.
+ * The vertical nav also hosts the Board pane (the status keywords that colour a card's
+ * progress line), the JIRA connection — including the status-name → column map, the
+ * only route to the IN REVIEW column — and the Agents pane (the repositories a My Tasks
+ * card can be filed under or delegated to), which manages its own state.
  */
 import { useCallback, useEffect, useState } from 'react';
 import {
@@ -32,11 +34,16 @@ import {
   Textarea,
   tokens,
 } from '@fluentui/react-components';
+import { AddRegular, DismissRegular } from '@fluentui/react-icons';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
 import type { AppSettings, JiraSettings } from '@shared/settings';
+import type { BoardColumn } from '@shared/model';
 import type { JiraConfigStatus, JiraTestResult } from '@shared/ipc';
 import { isCloudHost } from '@shared/jiraUrl';
+import { COLUMN_META, statusForColumn } from './board/boardColumns';
+import { STATUS_LABEL } from './taskStatus';
+import { MAPPABLE_COLUMNS, rowsToStatusMap, statusMapToRows, type StatusMapRow } from './statusMap';
 import {
   execTargetLabel,
   formatExecTarget,
@@ -45,6 +52,7 @@ import {
   type ExecTarget,
 } from '@shared/execTarget';
 import { AgentProjects } from './AgentProjects';
+import { ColorSwatches, PALETTE } from './ColorSwatches';
 import { PaneLoading } from './PaneLoading';
 import { ReadinessPanel } from './ReadinessPanel';
 import { useInitialLoad } from './useInitialLoad';
@@ -70,6 +78,12 @@ const useStyles = makeStyles({
     paddingBottom: '8px',
   },
   grid: { display: 'flex', flexDirection: 'column', gap: '16px' },
+  // The status-map editor: one row per mapping, the name growing to fill the width so
+  // long workflow names ("Waiting for code review") stay readable.
+  mapList: { display: 'flex', flexDirection: 'column', gap: '6px' },
+  mapRow: { display: 'flex', alignItems: 'center', gap: '6px' },
+  mapName: { flex: 1, minWidth: 0 },
+  mapColumn: { minWidth: '132px' },
   actions: { display: 'flex', alignItems: 'center', gap: '12px', marginTop: '4px' },
   saved: { color: tokens.colorPaletteGreenForeground1 },
   hint: { color: tokens.colorNeutralForeground3 },
@@ -89,7 +103,16 @@ function readinessTargets(defaultTarget: ExecTarget, inUse: ExecTarget[]): ExecT
 const MODELS: ClaudeModel[] = ['haiku', 'sonnet', 'opus'];
 const MODES: PermissionMode[] = ['acceptEdits', 'plan', 'manual', 'bypassPermissions'];
 
-type SettingsSection = 'general' | 'jira' | 'agents';
+/**
+ * Column labels for the status-mapping dropdown. The board's own `COLUMN_META`
+ * labels are shouted ("IN PROGRESS") because they head a column; in a dropdown they
+ * should read as prose, and `STATUS_LABEL` already spells each one that way.
+ */
+const COLUMN_LABEL: Record<BoardColumn, string> = Object.fromEntries(
+  COLUMN_META.map((c) => [c.column, STATUS_LABEL[statusForColumn(c.column)]]),
+) as Record<BoardColumn, string>;
+
+type SettingsSection = 'general' | 'board' | 'jira' | 'agents';
 
 export function Settings(): JSX.Element {
   const styles = useStyles();
@@ -103,6 +126,11 @@ export function Settings(): JSX.Element {
   const [testing, setTesting] = useState(false);
   const [distros, setDistros] = useState<string[]>([]);
   const [targetsInUse, setTargetsInUse] = useState<ExecTarget[]>([]);
+  // The status map is edited as an ordered list (see `statusMap.ts`) and serialised
+  // into `jira.statusCategoryOverrides` on every change, so Save carries it like any
+  // other field. Seeded once from storage; never re-seeded from a save's re-read,
+  // which would drop the blank row the user is part-way through filling in.
+  const [statusRows, setStatusRows] = useState<StatusMapRow[]>([]);
 
   // Only offer targets that exist here: with no WSL installed the control never
   // appears, so the screen stays exactly as it was.
@@ -117,6 +145,7 @@ export function Settings(): JSX.Element {
       window.api.invoke('jira:getConfigStatus'),
     ]);
     setSettings(appSettings);
+    setStatusRows(statusMapToRows(appSettings.jira.statusCategoryOverrides));
     setJiraStatus(status);
   }, []);
   const initial = useInitialLoad(seed);
@@ -130,6 +159,12 @@ export function Settings(): JSX.Element {
   function patchJira(change: Partial<JiraSettings>): void {
     setSettings((prev) => (prev ? { ...prev, jira: { ...prev.jira, ...change } } : prev));
     setSaved(false);
+  }
+
+  /** Edit the status-map rows and mirror them into the settings blob in one step. */
+  function patchStatusRows(next: StatusMapRow[]): void {
+    setStatusRows(next);
+    patchJira({ statusCategoryOverrides: rowsToStatusMap(next) });
   }
 
   async function save(): Promise<void> {
@@ -191,12 +226,92 @@ export function Settings(): JSX.Element {
         className={styles.nav}
       >
         <Tab value="general">General</Tab>
+        <Tab value="board">Board</Tab>
         <Tab value="jira">JIRA</Tab>
         <Tab value="agents">Agents</Tab>
       </TabList>
 
       {section === 'agents' ? (
         <AgentProjects />
+      ) : section === 'board' ? (
+        <div className={styles.pane}>
+          <Subtitle2>Board</Subtitle2>
+          <Body1 className={styles.hint}>
+            How the My Tasks board reads. Status updates you post on a card show as one line on it —
+            give the words you use most a colour, and a column tells you where everything stands
+            without opening anything.
+          </Body1>
+
+          <div className={styles.grid}>
+            <Field
+              label="Status keywords"
+              hint="A status update containing one of these takes its colour. The first match in this list wins, so put the one that matters most at the top. An update matching nothing reads in the card's ordinary colour."
+            >
+              <div className={styles.mapList}>
+                {settings.statusKeywords.map((k, i) => (
+                  <div key={i} className={styles.mapRow}>
+                    <Input
+                      className={styles.mapName}
+                      value={k.keyword}
+                      placeholder="Word to look for, e.g. blocked"
+                      onChange={(_e, d) =>
+                        patch({
+                          statusKeywords: settings.statusKeywords.map((x, j) =>
+                            j === i ? { ...x, keyword: d.value } : x,
+                          ),
+                        })
+                      }
+                    />
+                    <ColorSwatches
+                      value={k.color}
+                      onChange={(color) =>
+                        patch({
+                          statusKeywords: settings.statusKeywords.map((x, j) =>
+                            j === i ? { ...x, color } : x,
+                          ),
+                        })
+                      }
+                    />
+                    <Button
+                      size="small"
+                      appearance="subtle"
+                      icon={<DismissRegular />}
+                      title="Remove this keyword"
+                      onClick={() =>
+                        patch({
+                          statusKeywords: settings.statusKeywords.filter((_x, j) => j !== i),
+                        })
+                      }
+                    />
+                  </div>
+                ))}
+                <div>
+                  <Button
+                    size="small"
+                    icon={<AddRegular />}
+                    onClick={() =>
+                      patch({
+                        statusKeywords: [
+                          ...settings.statusKeywords,
+                          { keyword: '', color: PALETTE[0] },
+                        ],
+                      })
+                    }
+                  >
+                    Add keyword
+                  </Button>
+                </div>
+              </div>
+            </Field>
+          </div>
+
+          <div className={styles.actions}>
+            <Button appearance="primary" onClick={save}>
+              Save
+            </Button>
+            {saved && <Caption1 className={styles.saved}>Saved.</Caption1>}
+          </div>
+        </div>
       ) : section === 'general' ? (
         <div className={styles.pane}>
           <Subtitle2>Settings</Subtitle2>
@@ -418,6 +533,88 @@ export function Settings(): JSX.Element {
                 resize="vertical"
                 onChange={(_e, d) => patchJira({ jql: d.value })}
               />
+            </Field>
+
+            <Field
+              label="Status mapping"
+              hint='Which board column each JIRA workflow status means. Matched on the status name, ignoring case — so a project with "Review" and one with "Code Review" can both land in In Review. Anything unmapped falls back to the issue&apos;s JIRA category. Blocked is internal-only and never comes from JIRA.'
+            >
+              <div className={styles.mapList}>
+                {statusRows.map((row, i) => (
+                  <div key={i} className={styles.mapRow}>
+                    <Input
+                      className={styles.mapName}
+                      value={row.name}
+                      placeholder="JIRA status name, e.g. Code Review"
+                      onChange={(_e, d) =>
+                        patchStatusRows(
+                          statusRows.map((r, j) => (j === i ? { ...r, name: d.value } : r)),
+                        )
+                      }
+                    />
+                    <Dropdown
+                      className={styles.mapColumn}
+                      value={COLUMN_LABEL[row.column]}
+                      selectedOptions={[row.column]}
+                      onOptionSelect={(_e, d) =>
+                        d.optionValue &&
+                        patchStatusRows(
+                          statusRows.map((r, j) =>
+                            j === i ? { ...r, column: d.optionValue as BoardColumn } : r,
+                          ),
+                        )
+                      }
+                    >
+                      {MAPPABLE_COLUMNS.map((c) => (
+                        <Option key={c} value={c}>
+                          {COLUMN_LABEL[c]}
+                        </Option>
+                      ))}
+                    </Dropdown>
+                    <Button
+                      size="small"
+                      appearance="subtle"
+                      icon={<DismissRegular />}
+                      title="Remove this mapping"
+                      onClick={() => patchStatusRows(statusRows.filter((_r, j) => j !== i))}
+                    />
+                  </div>
+                ))}
+                <div>
+                  <Button
+                    size="small"
+                    icon={<AddRegular />}
+                    onClick={() =>
+                      patchStatusRows([...statusRows, { name: '', column: 'in-review' }])
+                    }
+                  >
+                    Add mapping
+                  </Button>
+                </div>
+              </div>
+            </Field>
+
+            <Field
+              label="Transition names (optional)"
+              hint="Only needed when your workflow's transition names can't be worked out from the status they lead to. Leave blank to auto-detect."
+            >
+              <div className={styles.mapList}>
+                <Input
+                  value={jira.inProgressTransitionName ?? ''}
+                  placeholder="Move to In Progress — e.g. Start work"
+                  onChange={(_e, d) => patchJira({ inProgressTransitionName: d.value })}
+                />
+                <Input
+                  value={jira.inReviewTransitionName ?? ''}
+                  placeholder="Move to In Review — e.g. Submit for review"
+                  onChange={(_e, d) => patchJira({ inReviewTransitionName: d.value })}
+                />
+                <Input
+                  value={jira.doneTransitionName ?? ''}
+                  placeholder="Move to Done — e.g. Resolve"
+                  onChange={(_e, d) => patchJira({ doneTransitionName: d.value })}
+                />
+              </div>
             </Field>
 
             <Field label="Done column">

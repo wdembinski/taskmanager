@@ -11,6 +11,7 @@ export type BadgeColor =
 export const STATUS_COLOR: Record<TaskStatus, BadgeColor> = {
   pending: 'informative',
   'in-progress': 'brand',
+  'in-review': 'severe',
   blocked: 'important',
   running: 'brand',
   'waiting-input': 'warning',
@@ -25,6 +26,7 @@ export const STATUS_COLOR: Record<TaskStatus, BadgeColor> = {
 export const STATUS_LABEL: Record<TaskStatus, string> = {
   pending: 'To Do',
   'in-progress': 'In Progress',
+  'in-review': 'In Review',
   blocked: 'Blocked',
   running: 'Running',
   'waiting-input': 'Waiting',

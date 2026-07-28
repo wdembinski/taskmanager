@@ -787,6 +787,79 @@ no new endpoint on an instance that may not expose Agile at all.
 
 ---
 
+## Phase 15 — The board grows up
+
+**Goal.** Eight changes the board needed before it could carry a real week's work: it
+could not express "waiting on a reviewer", it could not be told what your project calls
+that status, priority was something to look at rather than something to set, cards sat in
+whatever order JIRA first returned them in, and there was nowhere to write down where you
+actually are on a card.
+
+Decisions taken with the user: the status map is keyed by **status name, globally** (one
+table covers "Review"/"In Review"/"Code Review" across every project); priority **writes
+back to JIRA**, tracker first so a rejection leaves the card alone; a status update is
+**free text** with a keyword vocabulary supplying the colour; "project" is the existing
+**agent project**, which gains a colour and can now be set without starting a run; and
+the attention/selection frames became **rings outside the box**, so clicking a card
+never moves its own text.
+
+### Deliverables
+
+- [x] **1 — The IN REVIEW column.** `TaskStatus` and `BoardColumn` gain `in-review`;
+      both mapping switches are exhaustive, so the compiler found every other surface.
+      Five columns need no layout change — the board is a `gridAutoFlow: column` grid.
+- [x] **2 — The JIRA status map** (`columnForJiraStatus`/`lookupStatusColumn` in
+      `src/shared/board.ts`, pure). JIRA's three status *categories* cannot express IN
+      REVIEW — every review-ish status shares `In Progress` with the one that means
+      "being written" — so the column is reachable only through a per-status-name map,
+      matched case-insensitively, with the category as the fallback. The setting
+      (`statusCategoryOverrides`) already existed and had never had a UI; it now has one,
+      edited as an ordered list (`statusMap.ts`) because renaming a record key under the
+      cursor reorders the rows. The same map picks the *outgoing* transition, which also
+      fixed a live bug: `toInProgress` took the first `indeterminate` transition, so a
+      workflow listing "Code Review" first would take an IN PROGRESS drag to review.
+- [x] **3 — Status notes.** A free-text line per card (`Task.statusNote`), posted from
+      the composer, filed on the timeline as a `status-note` entry so the ones it
+      replaced stay readable. Settings holds a keyword→colour vocabulary
+      (`src/shared/statusKeywords.ts`, first match wins in the user's order); a note
+      matching nothing keeps the card's ordinary colour, so the vocabulary is an accent
+      rather than a requirement.
+- [x] **4 — Editable priority.** `JiraClient` had no issue-update method at all; it gains
+      `setPriority` (`PUT /issue/{key}`) and `listPriorities` (both the v2 array and the
+      Cloud v3 `{values}` shape). `task:setPriority` writes JIRA **first**, so a rejected
+      edit never leaves the card claiming a priority the ticket does not have. Fixed
+      alongside: `jiraSync` set `externalPriority` with no fall-back, so a search that
+      omitted the field silently wiped it.
+- [x] **5 — Sorting that means something** (`sortCards`). Cards that want you first —
+      the same `chainNeedsAttention` that draws the orange ring, so the loudest card is
+      always the top one — then priority, then `order` as a stable tiebreak. Priority
+      colour and priority rank now come from one bucketing function
+      (`src/shared/priority.ts`), which also fixes `"Highest"` falling into the `high`
+      bucket because it contains it.
+- [x] **6 — No card frames.** The grey border is gone: the card's brighter fill against
+      the column is edge enough, and the frame fought the state rings for the same
+      pixels. Attention and selection became `box-shadow` rings — outside the box, so
+      no reflow — including an explicit both-states class, since two Griffel classes
+      would have the later one *replace* `boxShadow` and drop the orange from exactly
+      the card that was shouting.
+- [x] **7 — One shape, top to bottom.** The composer and the live-run rows moved into a
+      full-bleed bottom band matching the details band at the top. The pane now reads as
+      two fixed bands with the conversation scrolling between them.
+- [x] **8 — Project colours.** `Project.color` (a fixed palette, `ColorSwatches`) paints
+      a stripe along a card's top edge. Filing a card under a project needed a channel of
+      its own: `task:assignAgent` sets the same field but also clears the session and
+      launches a run, and saying "this is a Billing card" is filing, not delegating.
+
+**Notes.**
+
+- `blocked` stays internal-only throughout: it is never a valid map target, and moving
+  to or from it still never touches the tracker (the ticket stays In Progress).
+- A JIRA re-sync must not clear what the human wrote, so `statusNote`/`statusNoteAt`
+  join the agent-delegation and subtask columns that `upsertJiraTask` deliberately omits.
+- Shipped as **0.28.0** — a minor bump: this adds capability rather than fixing it.
+
+---
+
 ## Conventions for every phase
 
 - **Contract first.** New data crossing the UI↔engine boundary gets its types in

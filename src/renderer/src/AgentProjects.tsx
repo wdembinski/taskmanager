@@ -40,6 +40,7 @@ import {
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
 import type { Project } from '@shared/model';
+import { ColorSwatches } from './ColorSwatches';
 import { PaneLoading } from './PaneLoading';
 import { useInitialLoad } from './useInitialLoad';
 
@@ -58,6 +59,9 @@ const useStyles = makeStyles({
   list: { display: 'flex', flexDirection: 'column', gap: '12px' },
   card: { padding: '4px' },
   headerText: { display: 'flex', flexDirection: 'column', gap: '2px' },
+  nameRow: { display: 'flex', alignItems: 'center', gap: '6px' },
+  /** The project's board colour, so the list reads the way the board does. */
+  colorDot: { width: '10px', height: '10px', borderRadius: '3px', flexShrink: 0 },
   path: { color: tokens.colorNeutralForeground3, fontFamily: 'ui-monospace, Consolas, monospace' },
   epics: { display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '6px' },
   cardActions: { display: 'flex', gap: '8px' },
@@ -136,10 +140,20 @@ export function AgentProjects(): JSX.Element {
               <CardHeader
                 header={
                   <div className={styles.headerText}>
-                    <Text weight="semibold">{project.name}</Text>
+                    <div className={styles.nameRow}>
+                      {project.color && (
+                        <span
+                          className={styles.colorDot}
+                          style={{ backgroundColor: project.color }}
+                          title={`Board colour ${project.color}`}
+                        />
+                      )}
+                      <Text weight="semibold">{project.name}</Text>
+                    </div>
                     <Caption1 className={styles.path}>{project.path}</Caption1>
                     <Caption1 className={styles.hint}>
-                      {project.defaultModel} · {PERMISSION_MODE_LABELS[project.defaultPermissionMode]}
+                      {project.defaultModel} ·{' '}
+                      {PERMISSION_MODE_LABELS[project.defaultPermissionMode]}
                     </Caption1>
                   </div>
                 }
@@ -197,6 +211,7 @@ function AgentProjectDialog({
   const [path, setPath] = useState('');
   const [name, setName] = useState('');
   const [epics, setEpics] = useState('');
+  const [color, setColor] = useState('');
   const [model, setModel] = useState<ClaudeModel>('sonnet');
   const [permMode, setPermMode] = useState<PermissionMode>('acceptEdits');
   const [saving, setSaving] = useState(false);
@@ -211,12 +226,14 @@ function AgentProjectDialog({
       setPath(project.path);
       setName(project.name);
       setEpics(project.jiraEpicKeys.join(', '));
+      setColor(project.color);
       setModel(project.defaultModel);
       setPermMode(project.defaultPermissionMode);
     } else {
       setPath('');
       setName('');
       setEpics('');
+      setColor('');
       void window.api.invoke('settings:get').then((s) => {
         setModel(s.defaultModel);
         setPermMode(s.defaultPermissionMode);
@@ -244,6 +261,7 @@ function AgentProjectDialog({
           defaultModel: model,
           defaultPermissionMode: permMode,
           jiraEpicKeys: parseEpicKeys(epics),
+          color,
         });
       } else {
         await window.api.invoke('agentProject:add', {
@@ -252,6 +270,7 @@ function AgentProjectDialog({
           defaultModel: model,
           defaultPermissionMode: permMode,
           jiraEpicKeys: parseEpicKeys(epics),
+          color,
         });
       }
       onSaved();
@@ -294,6 +313,13 @@ function AgentProjectDialog({
                   onChange={(_e, d) => setName(d.value)}
                   placeholder="(folder name)"
                 />
+              </Field>
+
+              <Field
+                label="Colour"
+                hint="A card tagged with this project wears a stripe of this colour, so a mixed column says which repo each card is about."
+              >
+                <ColorSwatches value={color} onChange={setColor} allowNone />
               </Field>
 
               <Field

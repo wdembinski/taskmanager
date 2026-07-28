@@ -259,6 +259,28 @@ export interface IpcApi {
    */
   'task:setDescription': (taskId: string, description: string) => Promise<Task>;
   /**
+   * Set a task's priority by name (`null` clears it). Unlike the description, this
+   * one DOES write back: for a JIRA card the issue is updated first and the local row
+   * only follows if JIRA accepted, so the two can never disagree. Allowed mid-run —
+   * priority is not scheduler state.
+   */
+  'task:setPriority': (taskId: string, priority: string | null) => Promise<Task>;
+  /**
+   * Post a free-text progress note on a card: it becomes the card's headline
+   * (`Task.statusNote`, shown on the board) and is filed on the timeline, so the ones
+   * it replaced are still readable. Empty text clears the headline without filing
+   * anything. Never leaves the app — this is a note to yourself, not a JIRA comment.
+   */
+  'task:setStatusNote': (taskId: string, note: string) => Promise<Task>;
+  /**
+   * Tag a card with the project it belongs to (`null` untags it) — WITHOUT starting
+   * anything. Deliberately separate from `task:assignAgent`, which sets the same field
+   * but also clears the session and launches a run: saying "this is a Billing card" is
+   * filing, not delegating, and the two must not be the same click. The card's board
+   * (`projectId`) never changes; this is the repo the card is *about*.
+   */
+  'task:setProject': (taskId: string, agentProjectId: string | null) => Promise<Task>;
+  /**
    * Change the model / permission mode a delegated card runs with, WITHOUT restarting
    * it (unlike `task:assignAgent`). A live run keeps what it started with — these are
    * captured on the run — so the change applies to the next one.
@@ -370,6 +392,13 @@ export interface IpcApi {
   'jira:clearCredentials': () => Promise<void>;
   /** Verify the base URL + token by calling `/myself`; returns the display name. */
   'jira:testConnection': () => Promise<JiraTestResult>;
+  /**
+   * The connected instance's priority names, most urgent first — what the detail
+   * pane's priority dropdown offers for a JIRA card, since only names this instance
+   * has can be written back. Cached per base URL. Empty when JIRA is off or the call
+   * failed; the caller falls back to `DEFAULT_PRIORITIES` rather than showing nothing.
+   */
+  'jira:priorities': () => Promise<string[]>;
   /** Every task on the standalone Personal board (JIRA tickets + internal ad-hoc). */
   'board:tasks': () => Promise<Task[]>;
   /**

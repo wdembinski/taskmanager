@@ -9,14 +9,15 @@
  *    and the steps. A shade lighter than the pane and nothing else — no box, no radius,
  *    no rules. Capped at 50% height with its own scroll, so a long chain can never
  *    crowd out the conversation.
- *  - **The conversation** (below): the only thing that scrolls, unframed — a box around
- *    a chat is a box around the whole pane, which says nothing. The live-run rows and
- *    the composer sit under it, also fixed.
+ *  - **The conversation** (middle): the only thing that scrolls, unframed — a box around
+ *    a chat is a box around the whole pane, which says nothing.
+ *  - **The bottom band** (fixed): the live-run rows and the composer, on the same shade
+ *    and the same inset as the top band. Two bands with the conversation running between
+ *    them — the pane is one shape read top to bottom, and the composer floating on the
+ *    pane's own colour used to break that for nothing.
  *
  * The pane's surface is a step LIGHTER than the board beside it, which is what separates
- * the two halves of the screen — there is no divider between them. The composer is the
- * one thing that breaks the single shade (`chat/Composer.tsx`), because the only
- * editable control on screen has to look like one.
+ * the two halves of the screen — there is no divider between them.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -35,6 +36,7 @@ import type { ClaudeModel, PermissionMode } from '@shared/session';
 import type { Project, Task, TaskActivityEntry } from '@shared/model';
 import type { SessionEvent } from '@shared/session';
 import { chatTarget } from '@shared/board';
+import type { StatusKeyword } from '@shared/statusKeywords';
 import { ChevronLeftRegular } from '@fluentui/react-icons';
 import { runningSubAgents } from './agentActivity';
 import { stepPosition } from './board/boardColumns';
@@ -60,7 +62,21 @@ const useStyles = makeStyles({
   phase: { color: tokens.colorNeutralForeground3 },
   /** Everything below the band keeps the pane's own inset. */
   inset: { padding: '0 12px' },
-  composerRow: { padding: '0 12px 4px' },
+  /**
+   * The bottom band: the live-run rows and the composer, on the SAME surface and with
+   * the same 12px inset as the details band at the top. The pane is one shape read
+   * top-to-bottom — two fixed bands with the conversation scrolling between them — and
+   * an inset composer floating on the pane's own colour broke that symmetry for no
+   * gain. Full-bleed, so the two bands' edges line up.
+   */
+  footBand: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '8px',
+    padding: '12px',
+    backgroundColor: tokens.colorNeutralBackground6,
+    flexShrink: 0,
+  },
   /**
    * Everything the card *is* — its identity, the agent controls, the details, the
    * steps — in ONE band. No borders, no radius, no rules between the sections: shade
@@ -111,6 +127,8 @@ export interface TaskDetailProps {
   subtasks?: Task[];
   /** The card a shown step belongs to (null for an ordinary card). */
   parentTask?: Task | null;
+  /** The status-note vocabulary, so a past update reads in the colour the board gave it. */
+  statusKeywords?: readonly StatusKeyword[];
   /** Show another task in this pane (the breadcrumb, and opening a step). */
   onOpenTask?: (taskId: string) => void;
   /** Called after a successful manual status change so the parent list can patch. */
@@ -124,6 +142,7 @@ export function TaskDetail({
   agentProjects = [],
   subtasks = [],
   parentTask = null,
+  statusKeywords,
   onOpenTask,
   onStatusChanged,
   onSubtasksChanged,
@@ -252,6 +271,22 @@ export function TaskDetail({
     setError(null);
     try {
       await window.api.invoke('task:addComment', task.id, comment.trim());
+      setComment('');
+      await loadActivity();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** File the text as the card's headline. `onStatusChanged` puts it on the board. */
+  async function postStatus(): Promise<void> {
+    if (!task || !comment.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      onStatusChanged?.(await window.api.invoke('task:setStatusNote', task.id, comment.trim()));
       setComment('');
       await loadActivity();
     } catch (e) {
@@ -404,6 +439,7 @@ export function TaskDetail({
           <>
             <TaskDetailsCell
               task={task}
+              agentProjects={agentProjects}
               managedByAI={managedByAI}
               onTaskChanged={(updated) => onStatusChanged?.(updated)}
               onEdited={() => void loadActivity()}
@@ -432,29 +468,36 @@ export function TaskDetail({
             Nothing said yet — write a note, or send the agent a message.
           </Caption1>
         ) : (
-          <ChatTurns turns={turns} onDeleteNote={(id) => void deleteComment(id)} />
+          <ChatTurns
+            turns={turns}
+            statusKeywords={statusKeywords}
+            onDeleteNote={(id) => void deleteComment(id)}
+          />
         )}
       </div>
 
-      {/* The live state sits ABOVE the composer, so it never scrolls out of sight:
-          the agent itself, then a row per sub-agent it is still waiting on. */}
-      {managedByAI && (
-        <div className={`${styles.runState} ${styles.inset}`}>
-          <div className={styles.running}>
-            <Spinner size="tiny" />
-            <Caption1 className={styles.runningLabel}>Agent running</Caption1>
-          </div>
-          {subAgents.map((agent) => (
-            <div key={agent.toolId} className={`${styles.running} ${styles.subAgent}`}>
+      {/* The bottom band. The live state sits ABOVE the composer inside it, so it never
+          scrolls out of sight: the agent itself, then a row per sub-agent it is still
+          waiting on. */}
+      <div className={styles.footBand}>
+        {managedByAI && (
+          <div className={styles.runState}>
+            <div className={styles.running}>
               <Spinner size="tiny" />
               <Caption1 className={styles.runningLabel}>Agent running</Caption1>
-              {agent.label && <Caption1 className={styles.subAgentLabel}>· {agent.label}</Caption1>}
             </div>
-          ))}
-        </div>
-      )}
+            {subAgents.map((agent) => (
+              <div key={agent.toolId} className={`${styles.running} ${styles.subAgent}`}>
+                <Spinner size="tiny" />
+                <Caption1 className={styles.runningLabel}>Agent running</Caption1>
+                {agent.label && (
+                  <Caption1 className={styles.subAgentLabel}>· {agent.label}</Caption1>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
 
-      <div className={styles.composerRow}>
         <Composer
           task={task}
           agentProject={agentProject}
@@ -470,6 +513,7 @@ export function TaskDetail({
           isJira={isJira}
           onSendChat={() => void sendChat()}
           onAddNote={() => void addComment()}
+          onPostStatus={() => void postStatus()}
           onAddJiraComment={() => void addJiraComment()}
           onAgentOptions={(options) => void setAgentOptions(options)}
         />

@@ -180,6 +180,26 @@ describe('reconcileJiraTasks', () => {
     expect(upserts[0].agentProjectId).toBe('agent-1');
   });
 
+  // JIRA files every review-ish status under `indeterminate` alongside the one that
+  // means "being written", so the status-name map is the only route to IN REVIEW.
+  it('lands a mapped status in In Review', () => {
+    const review = issue('1', 'PROJ-1', 'indeterminate');
+    review.fields.status.name = 'Code Review';
+    const { upserts } = reconcileJiraTasks([], [review], {
+      ...opts,
+      overrides: { 'code review': 'in-review' },
+    });
+    expect(upserts[0].status).toBe('in-review');
+    expect(upserts[0].externalStatus).toBe('Code Review');
+  });
+
+  it('leaves an unmapped review-ish status on the category, as before', () => {
+    const review = issue('1', 'PROJ-1', 'indeterminate');
+    review.fields.status.name = 'Code Review';
+    const { upserts } = reconcileJiraTasks([], [review], opts);
+    expect(upserts[0].status).toBe('in-progress');
+  });
+
   it('never touches ad-hoc internal tasks', () => {
     const adhoc: Task = jiraTask({
       id: 'adhoc-1',

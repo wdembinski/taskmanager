@@ -17,6 +17,7 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import { AgentsRegular, ChevronDownRegular, ChevronRightRegular } from '@fluentui/react-icons';
+import { statusNoteColor, type StatusKeyword } from '@shared/statusKeywords';
 import { Markdown } from './MarkdownView';
 import type { Turn } from './turns';
 
@@ -40,6 +41,24 @@ const useStyles = makeStyles({
   },
   /** A note nobody but you will ever read — the same blue, a shade back. */
   note: { backgroundColor: tokens.colorBrandBackground2, color: tokens.colorNeutralForeground1 },
+  /**
+   * A status update: a note with a rule down its edge in the keyword's colour. The
+   * rule is always there (in the bubble's own fill when no keyword matched) so an
+   * uncoloured update still lines up with a coloured one.
+   */
+  statusBubble: {
+    borderLeft: `3px solid ${tokens.colorNeutralStroke2}`,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '2px',
+  },
+  statusTag: {
+    color: tokens.colorNeutralForeground3,
+    textTransform: 'uppercase',
+    letterSpacing: '0.06em',
+    fontSize: '10px',
+    fontWeight: 600,
+  },
   them: { backgroundColor: tokens.colorNeutralBackground4, color: tokens.colorNeutralForeground1 },
   meta: { color: tokens.colorNeutralForeground3 },
   err: { color: tokens.colorPaletteRedForeground1 },
@@ -108,21 +127,30 @@ export interface ChatTurnsProps {
   turns: Turn[];
   /** Remove a note (the only turn kind that is yours alone to unsay). */
   onDeleteNote?: (commentId: number) => void;
+  /** The user's status-note vocabulary, so a past update reads in the colour it did. */
+  statusKeywords?: readonly StatusKeyword[];
 }
 
-export function ChatTurns({ turns, onDeleteNote }: ChatTurnsProps): JSX.Element {
+export function ChatTurns({ turns, onDeleteNote, statusKeywords }: ChatTurnsProps): JSX.Element {
   const styles = useStyles();
   return (
     <div className={styles.root}>
       {turns.map((turn) => {
         if (turn.kind === 'you') {
+          // A status update wears the keyword's colour as a left rule — the same signal
+          // the board card shows, so scrolling back through the card's story reads the
+          // way the board did at the time.
+          const accent =
+            turn.variant === 'status' ? statusNoteColor(turn.body, statusKeywords) : null;
           return (
             <div key={turn.key} className={mergeClasses(styles.row, styles.mine)}>
               <div
                 className={mergeClasses(
                   styles.bubble,
-                  turn.variant === 'note' ? styles.note : styles.chat,
+                  turn.variant === 'note' || turn.variant === 'status' ? styles.note : styles.chat,
+                  turn.variant === 'status' && styles.statusBubble,
                 )}
+                style={accent ? { borderLeftColor: accent } : undefined}
                 onDoubleClick={
                   turn.commentId !== null && onDeleteNote
                     ? () => onDeleteNote(turn.commentId!)
@@ -134,6 +162,14 @@ export function ChatTurns({ turns, onDeleteNote }: ChatTurnsProps): JSX.Element 
                   <Badge className={styles.tag} appearance="tint" color="warning" size="small">
                     JIRA
                   </Badge>
+                )}
+                {turn.variant === 'status' && (
+                  <Caption1
+                    className={styles.statusTag}
+                    style={accent ? { color: accent } : undefined}
+                  >
+                    Status
+                  </Caption1>
                 )}
                 {turn.body}
               </div>

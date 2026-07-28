@@ -4,11 +4,14 @@
  * the renderer-only concerns: display metadata and the "Show Done" toggle.
  */
 import type { BoardColumn, Task } from '@shared/model';
+import { chainNeedsAttention } from '@shared/board';
+import { priorityRank } from '@shared/priority';
 
 export type { BoardColumn } from '@shared/model';
 export {
   categoryFromKey,
   categoryToColumn,
+  columnForJiraStatus,
   columnForStatus,
   columnForTask,
   statusForColumn,
@@ -18,8 +21,9 @@ export {
 export const COLUMN_META: ReadonlyArray<{ column: BoardColumn; label: string; order: number }> = [
   { column: 'todo', label: 'TO DO', order: 0 },
   { column: 'in-progress', label: 'IN PROGRESS', order: 1 },
-  { column: 'blocked', label: 'BLOCKED', order: 2 },
-  { column: 'done', label: 'DONE', order: 3 },
+  { column: 'in-review', label: 'IN REVIEW', order: 2 },
+  { column: 'blocked', label: 'BLOCKED', order: 3 },
+  { column: 'done', label: 'DONE', order: 4 },
 ];
 
 /** The columns to render, honoring the "Show Done" toggle. */
@@ -57,6 +61,33 @@ export function groupSubtasks(tasks: readonly Task[]): BoardCard[] {
   return tasks
     .filter((t) => !t.parentTaskId || !ids.has(t.parentTaskId))
     .map((task) => ({ task, subtasks: children.get(task.id) ?? [] }));
+}
+
+/**
+ * The order cards sit in within a column:
+ *
+ *   1. **cards that want you** — an unread ticket comment, this card's agent parked on
+ *      a question, or a step that has failed/stopped the chain. These outrank even the
+ *      top-priority card, because a card that is waiting on you is costing time right
+ *      now while a high-priority card is only *going* to;
+ *   2. then **priority**, most urgent first (unprioritised sinks to the bottom);
+ *   3. then `order`, which is where the card sat before any of this existed — a stable
+ *      tiebreak, so cards of equal rank never shuffle between renders.
+ *
+ * "Wants you" is deliberately `chainNeedsAttention`, the same predicate that draws the
+ * card's orange ring, so the loudest card is always the top one — the board would be
+ * lying if the two disagreed.
+ */
+export function sortCards(cards: readonly BoardCard[]): BoardCard[] {
+  return [...cards].sort((a, b) => {
+    const attention =
+      Number(chainNeedsAttention(b.task, b.subtasks)) -
+      Number(chainNeedsAttention(a.task, a.subtasks));
+    if (attention !== 0) return attention;
+    const priority = priorityRank(b.task.externalPriority) - priorityRank(a.task.externalPriority);
+    if (priority !== 0) return priority;
+    return a.task.order - b.task.order;
+  });
 }
 
 /**

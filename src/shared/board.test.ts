@@ -3,6 +3,10 @@ import { PERSONAL_PROJECT_ID, type Task } from './model';
 import {
   categoryFromKey,
   categoryToColumn,
+  columnForJiraStatus,
+  columnForStatus,
+  lookupStatusColumn,
+  statusForColumn,
   chainInFlight,
   chainNeedsAttention,
   chatTarget,
@@ -43,6 +47,56 @@ describe('categoryToColumn', () => {
     expect(categoryToColumn('To Do')).toBe('todo');
     expect(categoryToColumn('In Progress')).toBe('in-progress');
     expect(categoryToColumn('Done')).toBe('done');
+  });
+});
+
+describe('in-review', () => {
+  it('is its own column, round-tripping through status and back', () => {
+    expect(columnForStatus('in-review')).toBe('in-review');
+    expect(statusForColumn('in-review')).toBe('in-review');
+  });
+
+  it('does not disturb the neighbouring columns', () => {
+    expect(columnForStatus('in-progress')).toBe('in-progress');
+    expect(columnForStatus('running')).toBe('in-progress');
+    expect(columnForStatus('blocked')).toBe('blocked');
+  });
+});
+
+describe('lookupStatusColumn', () => {
+  const map = { 'Code Review': 'in-review' as const, Backlog: 'todo' as const };
+
+  it('is null with no map, an empty name, or an unmapped one', () => {
+    expect(lookupStatusColumn('Code Review', undefined)).toBeNull();
+    expect(lookupStatusColumn('   ', map)).toBeNull();
+    expect(lookupStatusColumn('In Progress', map)).toBeNull();
+  });
+
+  it('matches ignoring case and surrounding space', () => {
+    expect(lookupStatusColumn('code review', map)).toBe('in-review');
+    expect(lookupStatusColumn('  CODE REVIEW  ', map)).toBe('in-review');
+  });
+});
+
+describe('columnForJiraStatus', () => {
+  const map = { 'Code Review': 'in-review' as const };
+
+  it('reaches In Review, which no category can express', () => {
+    expect(columnForJiraStatus('Code Review', 'In Progress', map)).toBe('in-review');
+  });
+
+  it('falls back to the category when the status is unmapped', () => {
+    expect(columnForJiraStatus('In Progress', 'In Progress', map)).toBe('in-progress');
+    expect(columnForJiraStatus('Anything', 'Done', map)).toBe('done');
+  });
+
+  it('behaves exactly like the category alone when there is no map', () => {
+    expect(columnForJiraStatus('Code Review', 'In Progress', undefined)).toBe('in-progress');
+    expect(columnForJiraStatus('Backlog', 'To Do', undefined)).toBe('todo');
+  });
+
+  it('lets the map override the category outright', () => {
+    expect(columnForJiraStatus('Backlog', 'In Progress', { Backlog: 'todo' })).toBe('todo');
   });
 });
 

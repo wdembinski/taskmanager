@@ -111,3 +111,29 @@ describe('foldTurns', () => {
     expect(foldTurns([event({ kind: 'thinking', text: 'hmm' })])).toEqual([]);
   });
 });
+
+describe('foldTurns — status updates', () => {
+  it('keeps a status update as one of your turns, tagged `status`', () => {
+    const turns = foldTurns([
+      { kind: 'status-note', id: 1, body: 'waiting on infra', createdAt: 1 },
+    ]);
+    expect(turns).toHaveLength(1);
+    expect(turns[0]).toMatchObject({ kind: 'you', variant: 'status', body: 'waiting on infra' });
+  });
+
+  // A status CHANGE belongs to the Details cell; a status UPDATE is something you said,
+  // and the ones a newer update replaced are only readable here.
+  it('keeps every update, unlike a status change which is dropped', () => {
+    const turns = foldTurns([
+      { kind: 'status-note', id: 1, body: 'first', createdAt: 1 },
+      { kind: 'status', id: 2, from: 'pending', to: 'in-progress', createdAt: 2 },
+      { kind: 'status-note', id: 3, body: 'second', createdAt: 3 },
+    ]);
+    expect(turns.map((t) => (t.kind === 'you' ? t.body : t.kind))).toEqual(['first', 'second']);
+  });
+
+  it('is not deletable — only a note is yours to unsay', () => {
+    const [turn] = foldTurns([{ kind: 'status-note', id: 1, body: 'x', createdAt: 1 }]);
+    expect(turn.kind === 'you' && turn.commentId).toBeNull();
+  });
+});

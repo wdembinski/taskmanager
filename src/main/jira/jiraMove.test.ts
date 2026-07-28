@@ -29,22 +29,46 @@ describe('resolveMove', () => {
 
   it('TO DO → IN PROGRESS transitions the JIRA issue', () => {
     const r = resolveMove(task({ status: 'pending' }), 'in-progress');
-    expect(r).toMatchObject({ localStatus: 'in-progress', jiraTransition: 'toInProgress', preBlockStatus: null });
+    expect(r).toMatchObject({
+      localStatus: 'in-progress',
+      jiraTransition: 'toInProgress',
+      preBlockStatus: null,
+    });
   });
 
   it('moving into Blocked never touches JIRA and remembers the pre-block status', () => {
     const r = resolveMove(task({ status: 'in-progress' }), 'blocked');
-    expect(r).toMatchObject({ localStatus: 'blocked', jiraTransition: null, preBlockStatus: 'in-progress' });
+    expect(r).toMatchObject({
+      localStatus: 'blocked',
+      jiraTransition: null,
+      preBlockStatus: 'in-progress',
+    });
   });
 
   it('un-blocking into In Progress re-transitions JIRA and clears preBlockStatus', () => {
-    const r = resolveMove(task({ status: 'blocked', preBlockStatus: 'in-progress' }), 'in-progress');
-    expect(r).toMatchObject({ localStatus: 'in-progress', jiraTransition: 'toInProgress', preBlockStatus: null });
+    const r = resolveMove(
+      task({ status: 'blocked', preBlockStatus: 'in-progress' }),
+      'in-progress',
+    );
+    expect(r).toMatchObject({
+      localStatus: 'in-progress',
+      jiraTransition: 'toInProgress',
+      preBlockStatus: null,
+    });
   });
 
   it('moving back to TO DO does not transition JIRA', () => {
     const r = resolveMove(task({ status: 'blocked', preBlockStatus: 'pending' }), 'todo');
     expect(r).toMatchObject({ localStatus: 'pending', jiraTransition: null });
+  });
+
+  it('moving into In Review transitions JIRA to In Review', () => {
+    const r = resolveMove(task({ status: 'in-progress' }), 'in-review');
+    expect(r).toMatchObject({
+      localStatus: 'in-review',
+      jiraTransition: 'toInReview',
+      preBlockStatus: null,
+    });
   });
 
   it('moving into Done transitions JIRA to Done', () => {
@@ -76,9 +100,62 @@ describe('pickTransition', () => {
   });
   it('honors an exact-name override', () => {
     const withExtra = [...transitions, T('99', 'Kickoff', 'indeterminate')];
-    expect(pickTransition(withExtra, 'toInProgress', { inProgressTransitionName: 'Kickoff' })?.id).toBe('99');
+    expect(
+      pickTransition(withExtra, 'toInProgress', { inProgressTransitionName: 'Kickoff' })?.id,
+    ).toBe('99');
   });
   it('returns null when no transition fits', () => {
     expect(pickTransition([T('5', 'Close', 'done')], 'toInProgress', {})).toBeNull();
+  });
+
+  // In Review lives in the same `indeterminate` category as In Progress, so the map
+  // (or the name) is the only thing that can tell the two apart.
+  describe('In Review', () => {
+    const workflow = [
+      T('11', 'Start Progress', 'indeterminate'),
+      T('21', 'Code Review', 'indeterminate'),
+      T('31', 'Resolve', 'done'),
+    ];
+    const map = { statusCategoryOverrides: { 'code review': 'in-review' as const } };
+
+    it('picks the transition whose destination the user mapped to In Review', () => {
+      expect(pickTransition(workflow, 'toInReview', map)?.id).toBe('21');
+    });
+
+    it('matches the map case-insensitively', () => {
+      const upper = { statusCategoryOverrides: { 'CODE REVIEW': 'in-review' as const } };
+      expect(pickTransition(workflow, 'toInReview', upper)?.id).toBe('21');
+    });
+
+    it('falls back to an indeterminate transition named "…review…" with no map', () => {
+      expect(pickTransition(workflow, 'toInReview', {})?.id).toBe('21');
+    });
+
+    it('prefers an exact-name override over the map', () => {
+      const withExtra = [...workflow, T('99', 'Hand off', 'indeterminate')];
+      expect(
+        pickTransition(withExtra, 'toInReview', { ...map, inReviewTransitionName: 'Hand off' })?.id,
+      ).toBe('99');
+    });
+
+    it('returns null when the workflow has no review step', () => {
+      expect(
+        pickTransition([T('11', 'Start Progress', 'indeterminate')], 'toInReview', {}),
+      ).toBeNull();
+    });
+
+    // The regression that motivated the map: "Code Review" comes first in this
+    // workflow, so a bare category match would send an IN PROGRESS drag to review.
+    it('In Progress never grabs a transition mapped to In Review', () => {
+      const reviewFirst = [
+        T('21', 'Code Review', 'indeterminate'),
+        T('11', 'Start Progress', 'indeterminate'),
+      ];
+      expect(pickTransition(reviewFirst, 'toInProgress', map)?.id).toBe('11');
+    });
+
+    it('In Progress still matches by category when nothing is mapped', () => {
+      expect(pickTransition(workflow, 'toInProgress', {})?.id).toBe('11');
+    });
   });
 });

@@ -9,7 +9,7 @@
  * result are NOT deleted, so a blocked ticket never silently vanishes.
  */
 import { PERSONAL_PROJECT_ID, type BoardColumn, type Task } from '@shared/model';
-import { categoryFromKey, categoryToColumn, statusForColumn } from '@shared/board';
+import { categoryFromKey, columnForJiraStatus, statusForColumn } from '@shared/board';
 import { commentBodyToText, type JiraIssue } from './jiraClient';
 import { epicKeyFromIssue } from './epicField';
 import { sprintNameFromIssue } from './jiraSprint';
@@ -17,7 +17,11 @@ import { sprintNameFromIssue } from './jiraSprint';
 export interface JiraSyncOptions {
   /** Base URL, used to build each issue's deep link. */
   baseUrl: string;
-  /** Optional raw-status-name → column overrides. */
+  /**
+   * The user's raw-status-name → column map (matched case-insensitively). This is
+   * the only way an issue reaches the IN REVIEW column, since JIRA's three status
+   * categories cannot express it. Unmapped statuses land by category as before.
+   */
   overrides?: Record<string, BoardColumn>;
   /**
    * The discovered "Epic Link" custom field id, or null when the instance has none
@@ -58,7 +62,7 @@ function issueToTask(
 ): Task {
   const rawStatus = issue.fields.status.name;
   const category = categoryFromKey(issue.fields.status.statusCategory.key);
-  const column = opts.overrides?.[rawStatus] ?? categoryToColumn(category);
+  const column = columnForJiraStatus(rawStatus, category, opts.overrides);
   const derivedStatus = statusForColumn(column);
 
   // `blocked` is an internal-only state — keep it (and its restore target) across syncs.
@@ -95,7 +99,10 @@ function issueToTask(
     externalUrl: `${opts.baseUrl.replace(/\/+$/, '')}/browse/${issue.key}`,
     externalStatus: rawStatus,
     externalStatusCategory: category,
-    externalPriority: issue.fields.priority?.name ?? null,
+    // Same fall-back rule as the fields below: a search that didn't return `priority`
+    // must not wipe the one we already knew — which now matters more than it did, since
+    // the user can set this themselves (`task:setPriority`).
+    externalPriority: issue.fields.priority?.name ?? existing?.externalPriority ?? null,
     externalType: issue.fields.issuetype?.name ?? null,
     externalLabel: issue.fields.labels?.[0] ?? null,
     externalParentKey: parentKey ?? existing?.externalParentKey ?? null,

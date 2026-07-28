@@ -3,16 +3,17 @@
  * about to run and how.
  *
  * Shaped after the Claude Code chat input the user asked for: the text area and its
- * actions live **inside one bordered surface** (so it reads as a single control rather
- * than a field with buttons floating under it), and a muted strip under it names the
+ * actions live **inside one group** (so it reads as a single control rather than a
+ * field with buttons floating under it), and a muted strip under it names the
  * session's model and permission mode. Those two are editable here because they are the
  * settings you most want to change right before you say something — and changing them
  * does not restart anything: a live run keeps what it started with, so the choice
  * applies to the next run (`task:setAgentOptions`).
  *
- * All three actions stay visible. Chat is the primary one when there is an agent to talk
- * to; the other two are how the same text becomes a note to yourself or a comment on the
- * ticket, and hiding them in an overflow made a two-click job out of a one-click one.
+ * All four actions stay visible. Chat is the primary one when there is an agent to talk
+ * to; the others are how the same text becomes a note to yourself, the card's headline
+ * on the board, or a comment on the ticket — and hiding them in an overflow made a
+ * two-click job out of a one-click one.
  */
 import {
   Button,
@@ -23,7 +24,7 @@ import {
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
-import { AgentsRegular, SendRegular } from '@fluentui/react-icons';
+import { AgentsRegular, FlagRegular, SendRegular } from '@fluentui/react-icons';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { Project, Task } from '@shared/model';
@@ -35,16 +36,16 @@ const MODES: PermissionMode[] = ['acceptEdits', 'plan', 'manual', 'bypassPermiss
 const useStyles = makeStyles({
   root: { display: 'flex', flexDirection: 'column', gap: '4px' },
   /**
-   * The composer sits ON the pane, in the pane's own colour and without a border — the
-   * placeholder and the action row are the affordance, exactly as in the editor's chat
-   * input. It is still one group: the textarea and its buttons share this box's padding.
+   * The composer has no surface of its own — it sits on the pane's bottom band, in the
+   * band's colour and without a border or an inset. The placeholder and the action row
+   * are the affordance, exactly as in the editor's chat input; the band owns the 12px
+   * gutter, so adding one here would double it against the details band at the top.
    */
   box: {
     display: 'flex',
     flexDirection: 'column',
     gap: '6px',
-    padding: '8px',
-    borderRadius: tokens.borderRadiusLarge,
+    padding: 0,
     backgroundColor: 'transparent',
   },
   /** The textarea carries no border of its own — the box is the border. */
@@ -61,8 +62,8 @@ const useStyles = makeStyles({
   },
   actions: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' },
   grow: { flex: 1, minWidth: 0 },
-  /** Model / mode / who is running it — muted, under the box. */
-  footer: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', padding: '0 4px' },
+  /** Model / mode / who is running it — muted, under the box, on the band's gutter. */
+  footer: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', padding: 0 },
   glyph: { color: tokens.colorBrandForeground1, display: 'flex' },
   muted: { color: tokens.colorNeutralForeground3 },
   picker: { minWidth: '108px' },
@@ -84,6 +85,8 @@ export interface ComposerProps {
   isJira: boolean;
   onSendChat: () => void;
   onAddNote: () => void;
+  /** File the text as the card's progress note — the one line the board shows. */
+  onPostStatus: () => void;
   onAddJiraComment: () => void;
   /** Persist a model / permission-mode change for the next run. */
   onAgentOptions: (options: { model?: ClaudeModel; mode?: PermissionMode }) => void;
@@ -100,6 +103,7 @@ export function Composer({
   isJira,
   onSendChat,
   onAddNote,
+  onPostStatus,
   onAddJiraComment,
   onAgentOptions,
 }: ComposerProps): JSX.Element {
@@ -157,6 +161,18 @@ export function Composer({
             onClick={onAddNote}
           >
             Add note
+          </Button>
+          {/* A note you also want to see from the board. Separate from "Add note"
+              because only one line can be the card's headline, and replacing it is a
+              deliberate act — the ones it replaces stay in this conversation. */}
+          <Button
+            size="small"
+            icon={<FlagRegular />}
+            title="Show this on the card as where you are — it replaces the current status line"
+            disabled={busy || empty}
+            onClick={onPostStatus}
+          >
+            Post status
           </Button>
           {isJira && (
             <Button

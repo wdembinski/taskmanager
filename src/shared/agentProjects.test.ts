@@ -18,6 +18,7 @@ const project = (over: Partial<Project>): Project => ({
   jiraEpicKeys: [],
   target: LOCAL_TARGET,
   instructions: '',
+  color: '',
   createdAt: 0,
   ...over,
 });
@@ -59,7 +60,7 @@ describe('resolveAgentProject', () => {
     expect(resolveAgentProject(t, [alpha, beta])?.id).toBe('beta');
   });
 
-  it('matches the ticket epic against a project\'s epic keys', () => {
+  it("matches the ticket epic against a project's epic keys", () => {
     const t = task({ externalParentKey: 'XYZ-1' });
     expect(resolveAgentProject(t, [alpha, beta])?.id).toBe('beta');
   });

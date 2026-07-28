@@ -257,3 +257,46 @@ describe('commentBodyToText', () => {
     expect(commentBodyToText(adf)).toContain('line two');
   });
 });
+
+describe('setPriority', () => {
+  it('PUTs the issue with the priority name', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({}, 204));
+    await serverClient().setPriority('AB-1', 'Highest');
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('https://jira.company.com/rest/api/2/issue/AB-1');
+    expect((init as RequestInit).method).toBe('PUT');
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      fields: { priority: { name: 'Highest' } },
+    });
+  });
+
+  it('surfaces a rejection, so the caller can leave the card alone', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ errors: {} }, 400));
+    await expect(serverClient().setPriority('AB-1', 'Nope')).rejects.toBeInstanceOf(JiraError);
+  });
+});
+
+describe('listPriorities', () => {
+  it('reads the plain array Server/DC returns', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(jsonResponse([{ name: 'Highest' }, { name: 'Low' }]));
+    expect(await serverClient().listPriorities()).toEqual(['Highest', 'Low']);
+    expect(fetchMock.mock.calls[0][0]).toBe('https://jira.company.com/rest/api/2/priority');
+  });
+
+  it('reads the paged shape Cloud returns', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(jsonResponse({ values: [{ name: 'High' }] }));
+    expect(await cloudClient().listPriorities()).toEqual(['High']);
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://acme.atlassian.net/rest/api/3/priority/search',
+    );
+  });
+
+  it('is empty rather than broken when the payload is not what we expect', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ nope: true }));
+    expect(await serverClient().listPriorities()).toEqual([]);
+  });
+});

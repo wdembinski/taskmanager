@@ -59,6 +59,10 @@ interface TaskRow {
   parentTaskId: string | null;
   /** The step's brief (a phase of the approved plan, or hand-written); NULL if none. */
   description: string | null;
+  /** The latest free-text progress note shown on the card; NULL until one is posted. */
+  statusNote: string | null;
+  /** Epoch ms the current `statusNote` was posted; NULL when there is none. */
+  statusNoteAt: number | null;
   // External tracker linkage (JIRA). NULL for internal tasks.
   externalSource: string | null;
   externalKey: string | null;
@@ -108,6 +112,8 @@ interface ProjectRow {
   target: string;
   /** Standing per-project instructions; null for projects that predate the field. */
   instructions: string | null;
+  /** Hex colour for the board stripe; null for projects that predate the field. */
+  color: string | null;
   createdAt: number;
 }
 
@@ -135,6 +141,8 @@ export interface Store {
         | 'sessionId'
         | 'title'
         | 'description'
+        | 'statusNote'
+        | 'statusNoteAt'
         | 'externalSource'
         | 'externalKey'
         | 'externalId'
@@ -208,6 +216,12 @@ export interface Store {
    * "I said this to the agent" — and so a chat message is never deletable as a note.
    */
   addChatMessage(projectId: string, taskId: string, body: string): TaskActivityEntry | undefined;
+  /**
+   * File a progress note on a task's timeline. The caller also writes it onto the task
+   * itself (`statusNote`/`statusNoteAt`) — the timeline keeps every one ever posted,
+   * the task keeps only the latest, which is the one the board shows.
+   */
+  addStatusNote(projectId: string, taskId: string, body: string): TaskActivityEntry | undefined;
   /** Record a status change on a task's timeline (Phase 9). */
   recordStatusChange(
     projectId: string,
@@ -302,6 +316,7 @@ export function createStore(dbPath: string): Store {
       jiraEpicKeys          TEXT,
       target                TEXT NOT NULL DEFAULT 'local',
       instructions          TEXT,
+      color                 TEXT,
       createdAt             INTEGER NOT NULL
     );
     CREATE TABLE IF NOT EXISTS tasks (
@@ -319,6 +334,8 @@ export function createStore(dbPath: string): Store {
       type                   TEXT,
       parentTaskId           TEXT,
       description            TEXT,
+      statusNote             TEXT,
+      statusNoteAt           INTEGER,
       externalSource         TEXT,
       externalKey            TEXT,
       externalId             TEXT,
@@ -413,6 +430,12 @@ export function createStore(dbPath: string): Store {
     db.exec(`ALTER TABLE projects ADD COLUMN instructions TEXT`);
   }
 
+  // Migrate databases created before per-project colours. NULL reads back as '' — no
+  // colour, hence no stripe — which is exactly how every board looked before.
+  if (!projectColumns.some((c) => c.name === 'color')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN color TEXT`);
+  }
+
   // Migrate databases created before Phase 8 added the task source column. Existing
   // tasks all came from plans, so the 'plan' default is correct for them.
   const taskColumns = db.prepare(`PRAGMA table_info(tasks)`).all() as Array<{ name: string }>;
@@ -484,6 +507,10 @@ export function createStore(dbPath: string): Store {
   for (const [name, type] of [
     ['parentTaskId', 'TEXT'],
     ['description', 'TEXT'],
+    // The card's own progress note. NULL on every pre-existing row, which is exactly
+    // "nobody has said where this is yet" — nothing about those cards changes.
+    ['statusNote', 'TEXT'],
+    ['statusNoteAt', 'INTEGER'],
   ] as Array<[string, string]>) {
     if (!taskColumns.some((c) => c.name === name)) {
       db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
@@ -546,8 +573,8 @@ export function createStore(dbPath: string): Store {
   }
 
   const insertProject = db.prepare<[ProjectRow]>(
-    `INSERT INTO projects (id, name, path, planPath, defaultModel, defaultPermissionMode, concurrency, useWorktrees, writeBackPlan, planAligned, kind, jiraEpicKeys, target, instructions, createdAt)
-     VALUES (@id, @name, @path, @planPath, @defaultModel, @defaultPermissionMode, @concurrency, @useWorktrees, @writeBackPlan, @planAligned, @kind, @jiraEpicKeys, @target, @instructions, @createdAt)`,
+    `INSERT INTO projects (id, name, path, planPath, defaultModel, defaultPermissionMode, concurrency, useWorktrees, writeBackPlan, planAligned, kind, jiraEpicKeys, target, instructions, color, createdAt)
+     VALUES (@id, @name, @path, @planPath, @defaultModel, @defaultPermissionMode, @concurrency, @useWorktrees, @writeBackPlan, @planAligned, @kind, @jiraEpicKeys, @target, @instructions, @color, @createdAt)`,
   );
   const selectProjects = db.prepare(`SELECT * FROM projects ORDER BY createdAt`);
   const selectProject = db.prepare(`SELECT * FROM projects WHERE id = ?`);
@@ -560,7 +587,7 @@ export function createStore(dbPath: string): Store {
   const insertTask = db.prepare<[TaskRow]>(
     `INSERT INTO tasks
        (id, projectId, phase, title, status, sessionId, "order", source, dependsOn, isContract, isScaffold, type,
-        parentTaskId, description,
+        parentTaskId, description, statusNote, statusNoteAt,
         externalSource, externalKey, externalId, externalUrl, externalStatus, externalStatusCategory,
         externalPriority, externalType, externalLabel, externalParentKey, externalSprint,
         externalDescription,
@@ -568,7 +595,7 @@ export function createStore(dbPath: string): Store {
         agentPlan)
      VALUES
        (@id, @projectId, @phase, @title, @status, @sessionId, @order, @source, @dependsOn, @isContract, @isScaffold, @type,
-        @parentTaskId, @description,
+        @parentTaskId, @description, @statusNote, @statusNoteAt,
         @externalSource, @externalKey, @externalId, @externalUrl, @externalStatus, @externalStatusCategory,
         @externalPriority, @externalType, @externalLabel, @externalParentKey, @externalSprint,
         @externalDescription,
@@ -685,6 +712,7 @@ export function createStore(dbPath: string): Store {
       jiraEpicKeys: parseStringArray(r.jiraEpicKeys),
       target: parseExecTarget(r.target),
       instructions: r.instructions ?? '',
+      color: r.color ?? '',
       createdAt: r.createdAt,
     };
   }
@@ -717,6 +745,8 @@ export function createStore(dbPath: string): Store {
       type: task.type ?? null,
       parentTaskId: task.parentTaskId ?? null,
       description: task.description ?? null,
+      statusNote: task.statusNote ?? null,
+      statusNoteAt: task.statusNoteAt ?? null,
       // External linkage — coalesce undefined → null so named params are always bound.
       externalSource: task.externalSource ?? null,
       externalKey: task.externalKey ?? null,
@@ -756,6 +786,8 @@ export function createStore(dbPath: string): Store {
       type: (r.type as Task['type']) ?? null,
       parentTaskId: r.parentTaskId,
       description: r.description,
+      statusNote: r.statusNote,
+      statusNoteAt: r.statusNoteAt,
       externalSource: (r.externalSource as Task['externalSource']) ?? null,
       externalKey: r.externalKey,
       externalId: r.externalId,
@@ -815,6 +847,7 @@ export function createStore(dbPath: string): Store {
         jiraEpicKeys: normalizeEpicKeys(input.jiraEpicKeys),
         target: input.target ?? defaults.defaultExecTarget,
         instructions: input.instructions?.trim() ?? '',
+        color: input.color?.trim() ?? '',
         createdAt: Date.now(),
       };
       insertProject.run({
@@ -901,6 +934,10 @@ export function createStore(dbPath: string): Store {
         sets.push(`instructions = @instructions`);
         params.instructions = patch.instructions.trim();
       }
+      if (patch.color !== undefined) {
+        sets.push(`color = @color`);
+        params.color = patch.color.trim();
+      }
       if (sets.length > 0) {
         db.prepare(`UPDATE projects SET ${sets.join(', ')} WHERE id = @id`).run(params);
       }
@@ -925,6 +962,8 @@ export function createStore(dbPath: string): Store {
         'sessionId',
         'title',
         'description',
+        'statusNote',
+        'statusNoteAt',
         'externalSource',
         'externalKey',
         'externalId',
@@ -966,10 +1005,11 @@ export function createStore(dbPath: string): Store {
       const existing = selectTask.get(task.id) as TaskRow | undefined;
       if (existing) {
         // Note the agent-delegation columns (`agentProjectId`, `agentMode`, `agentModel`,
-        // `agentPlan`) and the subtask columns (`parentTaskId`, `description`) are
-        // deliberately absent from the UPDATE: a JIRA re-sync refreshes tracker fields
-        // only and must never clear a human's agent assignment, the plan that assignment
-        // produced, or the steps derived from it.
+        // `agentPlan`), the subtask columns (`parentTaskId`, `description`) and the card's
+        // own progress note (`statusNote`, `statusNoteAt`) are deliberately absent from
+        // the UPDATE: a JIRA re-sync refreshes tracker fields only and must never clear a
+        // human's agent assignment, the plan that assignment produced, the steps derived
+        // from it, or what they last said about where the card is.
         db.prepare(
           `UPDATE tasks SET
              phase = @phase, title = @title, status = @status, "order" = @order, source = @source,
@@ -1156,6 +1196,22 @@ export function createStore(dbPath: string): Store {
       return { kind: 'chat', id: Number(lastInsertRowid), body: text, createdAt };
     },
 
+    addStatusNote(projectId, taskId, body) {
+      const text = body.trim();
+      if (!text) return undefined;
+      const createdAt = Date.now();
+      const { lastInsertRowid } = insertActivity.run({
+        projectId,
+        taskId,
+        kind: 'status-note',
+        body: text,
+        fromStatus: null,
+        toStatus: null,
+        createdAt,
+      });
+      return { kind: 'status-note', id: Number(lastInsertRowid), body: text, createdAt };
+    },
+
     recordStatusChange(projectId, taskId, from, to) {
       insertActivity.run({
         projectId,
@@ -1189,6 +1245,8 @@ export function createStore(dbPath: string): Store {
           entries.push({ kind: 'comment', id: r.id, body: r.body, createdAt: r.createdAt });
         } else if (r.kind === 'chat' && r.body !== null) {
           entries.push({ kind: 'chat', id: r.id, body: r.body, createdAt: r.createdAt });
+        } else if (r.kind === 'status-note' && r.body !== null) {
+          entries.push({ kind: 'status-note', id: r.id, body: r.body, createdAt: r.createdAt });
         } else if (r.kind === 'status' && r.toStatus !== null) {
           entries.push({
             kind: 'status',

@@ -6,6 +6,7 @@ import {
   columnForTask,
   groupSubtasks,
   hasLiveSubtask,
+  sortCards,
   statusForColumn,
   stepPosition,
   subtaskProgress,
@@ -41,6 +42,7 @@ describe('columnForStatus', () => {
     ['running', 'in-progress'],
     ['waiting-input', 'in-progress'],
     ['blocked-by-limit', 'in-progress'],
+    ['in-review', 'in-review'],
     ['blocked', 'blocked'],
     ['done', 'done'],
     ['failed', 'done'],
@@ -56,7 +58,7 @@ describe('columnForStatus', () => {
     for (const [status] of cases) {
       expect(columnForStatus(status)).toBeDefined();
     }
-    expect(cases).toHaveLength(10);
+    expect(cases).toHaveLength(11);
   });
 });
 
@@ -67,9 +69,10 @@ describe('columnForTask', () => {
 });
 
 describe('statusForColumn', () => {
-  it('round-trips the four columns to a manual status', () => {
+  it('round-trips every column to a manual status', () => {
     expect(statusForColumn('todo')).toBe('pending');
     expect(statusForColumn('in-progress')).toBe('in-progress');
+    expect(statusForColumn('in-review')).toBe('in-review');
     expect(statusForColumn('blocked')).toBe('blocked');
     expect(statusForColumn('done')).toBe('done');
   });
@@ -77,13 +80,19 @@ describe('statusForColumn', () => {
 
 describe('visibleColumns', () => {
   it('hides Done when the toggle is off', () => {
-    expect(visibleColumns(false)).toEqual(['todo', 'in-progress', 'blocked']);
+    expect(visibleColumns(false)).toEqual(['todo', 'in-progress', 'in-review', 'blocked']);
   });
-  it('shows all four when on', () => {
-    expect(visibleColumns(true)).toEqual(['todo', 'in-progress', 'blocked', 'done']);
+  it('shows all five when on', () => {
+    expect(visibleColumns(true)).toEqual(['todo', 'in-progress', 'in-review', 'blocked', 'done']);
   });
   it('column order matches COLUMN_META', () => {
-    expect(COLUMN_META.map((c) => c.column)).toEqual(['todo', 'in-progress', 'blocked', 'done']);
+    expect(COLUMN_META.map((c) => c.column)).toEqual([
+      'todo',
+      'in-progress',
+      'in-review',
+      'blocked',
+      'done',
+    ]);
   });
 });
 
@@ -177,5 +186,75 @@ describe('stepPosition', () => {
   it('is null for a task that is not one of the steps', () => {
     expect(stepPosition(steps, 'parent')).toBeNull();
     expect(stepPosition([], 's1')).toBeNull();
+  });
+});
+
+describe('sortCards', () => {
+  /** A plain card (no steps) with an id, order and priority. */
+  const c = (id: string, order: number, priority: string | null, over: Partial<Task> = {}) => ({
+    task: card(id, { order, externalPriority: priority, ...over }),
+    subtasks: [] as Task[],
+  });
+
+  const ids = (cards: ReturnType<typeof sortCards>): string[] => cards.map((x) => x.task.id);
+
+  it('puts the most urgent first', () => {
+    const sorted = sortCards([
+      c('low', 0, 'Low'),
+      c('highest', 1, 'Highest'),
+      c('med', 2, 'Medium'),
+    ]);
+    expect(ids(sorted)).toEqual(['highest', 'med', 'low']);
+  });
+
+  it('sinks an unprioritised card below every prioritised one', () => {
+    expect(ids(sortCards([c('none', 0, null), c('lowest', 1, 'Lowest')]))).toEqual([
+      'lowest',
+      'none',
+    ]);
+  });
+
+  // The whole point of the rule: a card waiting on you costs time NOW.
+  it('lifts a card that wants you above the top-priority card', () => {
+    const waiting = c('waiting', 9, 'Lowest', { status: 'waiting-input' });
+    const sorted = sortCards([c('highest', 0, 'Highest'), waiting]);
+    expect(ids(sorted)).toEqual(['waiting', 'highest']);
+  });
+
+  it('orders several attention cards among themselves by priority', () => {
+    const a = c('askLow', 0, 'Low', { status: 'waiting-input' });
+    const b = c('askHigh', 1, 'Highest', { status: 'waiting-input' });
+    expect(ids(sortCards([a, b, c('quiet', 2, 'Highest')]))).toEqual([
+      'askHigh',
+      'askLow',
+      'quiet',
+    ]);
+  });
+
+  it('treats an unread JIRA comment as wanting you', () => {
+    const unread = c('unread', 9, null, {
+      externalSource: 'jira',
+      latestCommentAt: 200,
+      lastReadCommentAt: 100,
+    });
+    expect(ids(sortCards([c('high', 0, 'High'), unread]))).toEqual(['unread', 'high']);
+  });
+
+  it('lifts a card whose STEP has parked the chain', () => {
+    const parked = {
+      task: card('parent', { order: 9, externalPriority: 'Lowest' }),
+      subtasks: [card('s1', { parentTaskId: 'parent', status: 'failed' })],
+    };
+    expect(ids(sortCards([c('high', 0, 'Highest'), parked]))).toEqual(['parent', 'high']);
+  });
+
+  it('falls back to `order` so equal cards never shuffle', () => {
+    expect(ids(sortCards([c('b', 2, 'High'), c('a', 1, 'High')]))).toEqual(['a', 'b']);
+  });
+
+  it('does not mutate its input', () => {
+    const input = [c('b', 2, 'Low'), c('a', 1, 'Highest')];
+    sortCards(input);
+    expect(ids(input)).toEqual(['b', 'a']);
   });
 });
