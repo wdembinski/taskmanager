@@ -243,3 +243,69 @@ describe('reconcileJiraTasks', () => {
     expect(deleteIds).toEqual([]);
   });
 });
+
+describe('reconcileJiraTasks — whose comment raises the unread border', () => {
+  const ME = { accountId: 'acc-me', displayName: 'Wojciech', baseUrl: 'https://jira.co' };
+
+  /** An issue carrying comments, newest last. */
+  const withComments = (
+    comments: Array<{ created: string; accountId?: string; displayName?: string }>,
+  ): JiraIssue => {
+    const i = issue('1', 'PROJ-1', 'indeterminate');
+    i.fields.comment = {
+      comments: comments.map((c, n) => ({
+        id: String(n),
+        created: c.created,
+        author: { accountId: c.accountId, displayName: c.displayName },
+        body: 'hi',
+      })),
+    };
+    return i;
+  };
+
+  /**
+   * An existing card with nothing unread on it. `latestCommentAt` is null because no
+   * foreign comment has ever landed — which is the state the fix has to preserve.
+   */
+  const read = (): Task => jiraTask({ lastReadCommentAt: 1, latestCommentAt: null });
+
+  it('ignores my own comment — answering in the JIRA web UI must not light my card', () => {
+    const issues = [withComments([{ created: '2026-07-20T10:00:00.000Z', accountId: 'acc-me' }])];
+    const { upserts } = reconcileJiraTasks([read()], issues, { ...opts, identity: ME });
+    expect(upserts[0].latestCommentAt).toBeNull();
+  });
+
+  it('raises it for someone else, even with a newer comment of mine on top', () => {
+    const issues = [
+      withComments([
+        { created: '2026-07-20T10:00:00.000Z', accountId: 'acc-them', displayName: 'Ada' },
+        { created: '2026-07-20T11:00:00.000Z', accountId: 'acc-me' },
+      ]),
+    ];
+    const { upserts } = reconcileJiraTasks([read()], issues, { ...opts, identity: ME });
+    expect(upserts[0].latestCommentAt).toBe(Date.parse('2026-07-20T10:00:00.000Z'));
+  });
+
+  it('matches on display name when the instance has no accountIds (Server/DC)', () => {
+    const server = { accountId: null, displayName: 'Wojciech', baseUrl: 'https://jira.co' };
+    const issues = [
+      withComments([{ created: '2026-07-20T10:00:00.000Z', displayName: 'Wojciech' }]),
+    ];
+    const { upserts } = reconcileJiraTasks([read()], issues, { ...opts, identity: server });
+    expect(upserts[0].latestCommentAt).toBeNull();
+  });
+
+  it('counts every comment when the identity is unknown (legacy behaviour)', () => {
+    const issues = [withComments([{ created: '2026-07-20T10:00:00.000Z', accountId: 'acc-me' }])];
+    const { upserts } = reconcileJiraTasks([read()], issues, opts);
+    expect(upserts[0].latestCommentAt).toBe(Date.parse('2026-07-20T10:00:00.000Z'));
+  });
+
+  it('starts a brand-new card read, however many comments it arrives with', () => {
+    const issues = [
+      withComments([{ created: '2026-07-20T10:00:00.000Z', accountId: 'acc-them' }]),
+    ];
+    const { upserts } = reconcileJiraTasks([], issues, { ...opts, identity: ME });
+    expect(upserts[0].lastReadCommentAt).toBe(upserts[0].latestCommentAt);
+  });
+});

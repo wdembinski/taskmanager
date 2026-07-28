@@ -953,6 +953,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // sprint: the name is worth showing either way, and it is what tells you which
     // sprint a card belongs to once several are running at once.
     const sprintField = await sprintFieldId(jira.baseUrl, client);
+    // Who the PAT belongs to, so a comment the user wrote in the JIRA web UI does not
+    // light their own card orange on the way back in. Cached per site; null is fine.
+    const identity = await jiraIdentity(jira.baseUrl, client);
     const jql = jira.currentSprintOnly ? withCurrentSprint(jira.jql) : jira.jql;
     const extraFields = [epicField, sprintField].filter((f): f is string => f !== null);
     const issues = await client.search(jql, 100, extraFields);
@@ -962,6 +965,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       learned: jira.learnedStatusColumns,
       epicFieldId: epicField,
       sprintFieldId: sprintField,
+      identity,
     });
     for (const t of upserts) store.upsertJiraTask(t);
     for (const id of deleteIds) store.deleteTask(id);
@@ -1102,8 +1106,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       createdAt: Date.parse(c.created) || 0,
       mine: authorIsMe(c.author, identity),
     }));
-    // Keep the unread marker honest with freshly-fetched comments.
-    const latest = entries.reduce((m, e) => Math.max(m, e.createdAt), task.latestCommentAt ?? 0);
+    // Keep the unread marker honest with freshly-fetched comments — but only OTHER
+    // people's. Folding your own back in here would undo `markRead` the instant the
+    // pane opened, re-lighting a card over a comment you wrote yourself.
+    const latest = entries
+      .filter((e) => !e.mine)
+      .reduce((m, e) => Math.max(m, e.createdAt), task.latestCommentAt ?? 0);
     if (latest && latest !== task.latestCommentAt) {
       store.updateTask(taskId, { latestCommentAt: latest });
     }

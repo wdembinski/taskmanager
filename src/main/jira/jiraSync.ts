@@ -12,6 +12,7 @@ import { PERSONAL_PROJECT_ID, type BoardColumn, type Task } from '@shared/model'
 import { categoryFromKey, statusForColumn } from '@shared/board';
 import { resolveStatusColumn } from '@shared/statusResolve';
 import { commentBodyToText, type JiraIssue } from './jiraClient';
+import { authorIsMe, type JiraIdentityCache } from './identity';
 import { epicKeyFromIssue } from './epicField';
 import { sprintNameFromIssue } from './jiraSprint';
 
@@ -38,6 +39,12 @@ export interface JiraSyncOptions {
    * JIRA Software) or discovery failed — cards then simply carry no sprint name.
    */
   sprintFieldId?: string | null;
+  /**
+   * Who the stored PAT belongs to, so a comment you wrote yourself does not raise the
+   * unread border on your own card. Absent/null keeps the old behaviour: every comment
+   * counts. See `latestForeignCommentTime`.
+   */
+  identity?: JiraIdentityCache | null;
 }
 
 export interface JiraSyncResult {
@@ -47,11 +54,26 @@ export interface JiraSyncResult {
   deleteIds: string[];
 }
 
-/** Newest comment time (epoch ms) from an issue's inline comments, or null. */
-function latestCommentTime(issue: JiraIssue): number | null {
+/**
+ * Newest comment time (epoch ms) from an issue's inline comments, **ignoring your own**,
+ * or null.
+ *
+ * `latestCommentAt` drives the unread border. Counting your own comments meant that
+ * answering a ticket in the JIRA web UI lit your own card orange on the next sync, and
+ * the only way to clear it was to open the card and read the thing you had just written.
+ *
+ * When the identity is unknown, every comment counts — the pre-existing behaviour. That
+ * is the safe direction: a card that shouts when it needn't is a nuisance, a card that
+ * stays quiet when someone is waiting on you is a missed reply.
+ */
+function latestForeignCommentTime(
+  issue: JiraIssue,
+  identity: JiraIdentityCache | null,
+): number | null {
   const comments = issue.fields.comment?.comments ?? [];
   let latest: number | null = null;
   for (const c of comments) {
+    if (authorIsMe(c.author, identity)) continue;
     const t = Date.parse(c.created);
     if (!Number.isNaN(t) && (latest == null || t > latest)) latest = t;
   }
@@ -80,7 +102,7 @@ function issueToTask(
   const sprint = sprintNameFromIssue(issue, opts.sprintFieldId ?? null);
   const description = commentBodyToText(issue.fields.description) || null;
 
-  const latestCommentAt = latestCommentTime(issue);
+  const latestCommentAt = latestForeignCommentTime(issue, opts.identity ?? null);
   // A brand-new task starts "read" (lastRead = latest) so the first sync doesn't turn
   // every card orange; existing tasks keep the user's read marker.
   const lastReadCommentAt = existing ? (existing.lastReadCommentAt ?? null) : latestCommentAt;
