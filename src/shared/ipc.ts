@@ -336,12 +336,13 @@ export interface IpcApi {
   'task:setStatusNote': (taskId: string, note: string) => Promise<Task>;
   /**
    * Tag a card with the project it belongs to (`null` untags it) — WITHOUT starting
-   * anything. Deliberately separate from `task:assignAgent`, which sets the same field
-   * but also clears the session and launches a run: saying "this is a Billing card" is
-   * filing, not delegating, and the two must not be the same click. The card's board
-   * (`projectId`) never changes; this is the repo the card is *about*.
+   * anything. Writes `Task.projectTagId`, which is the whole point: this used to set
+   * the same `agentProjectId` that `task:assignAgent` sets, so filing a card gave it
+   * the agent glyph and made the pane offer to *reassign* something nobody had
+   * assigned. Saying "this is a Billing card" is filing, not delegating, and the two
+   * are not the same click. The card's board (`projectId`) never changes.
    */
-  'task:setProject': (taskId: string, agentProjectId: string | null) => Promise<Task>;
+  'task:setProject': (taskId: string, projectTagId: string | null) => Promise<Task>;
   /**
    * Change the model / permission mode a delegated card runs with, WITHOUT restarting
    * it (unlike `task:assignAgent`). A live run keeps what it started with — these are

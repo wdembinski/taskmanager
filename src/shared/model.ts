@@ -406,12 +406,27 @@ export interface Task {
   /** Epoch ms of the newest tracker comment seen at the last sync (drives unread). */
   latestCommentAt?: number | null;
 
+  /**
+   * The project this card is **about** — the filing, not the delegation.
+   *
+   * Its counterpart is `agentProjectId` below, and the two used to be the same column,
+   * which is why tagging a card as "a Billing card" gave it the agent glyph and made
+   * the pane offer to *reassign* something nobody had assigned. Filing a card says
+   * where it belongs; delegating it says a run should happen. They are different
+   * clicks and now different fields.
+   *
+   * Drives the card's colour stripe and the Project dropdown. Null for an unfiled card.
+   */
+  projectTagId?: string | null;
+
   // --- Agent delegation (My Tasks → an agent project). Null until assigned. ---
   /**
    * The **agent project** (see {@link ProjectKind}) this card has been delegated to —
-   * the repo the run happens in. The task's own `projectId` stays on the Personal
-   * board, so the card never leaves My Tasks while its run is attributed to the real
-   * repo. Null for a card nobody assigned to an agent.
+   * the repo a delegated run happens in. The task's own `projectId` stays on the
+   * Personal board, so the card never leaves My Tasks while its run is attributed to
+   * the real repo. Null for a card nobody assigned to an agent.
+   *
+   * Written ONLY by delegation. Filing a card under a project writes `projectTagId`.
    */
   agentProjectId?: string | null;
   /**

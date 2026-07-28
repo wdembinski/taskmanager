@@ -345,8 +345,10 @@ export function MyTasks(): JSX.Element {
                 t.externalSource === 'jira' ? t.phase || undefined : undefined
               }
               agentNameOf={(t) => agentProjects.find((p) => p.id === t.agentProjectId)?.name}
+              // The stripe is the PROJECT the card is filed under, not the agent it may
+              // or may not be delegated to.
               projectColorOf={(t) =>
-                agentProjects.find((p) => p.id === t.agentProjectId)?.color || undefined
+                agentProjects.find((p) => p.id === t.projectTagId)?.color || undefined
               }
               statusKeywords={settings?.statusKeywords}
               // A card with a live step is the runner's until the chain stops.

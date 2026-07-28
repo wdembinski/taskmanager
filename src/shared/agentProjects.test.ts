@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { agentProjectsOf, normalizeEpicKey, resolveAgentProject } from './agentProjects';
+import { isAgentAssigned } from './board';
 import { LOCAL_TARGET } from './execTarget';
 import { PERSONAL_PROJECT_ID, type Project, type Task } from './model';
 
@@ -92,5 +93,35 @@ describe('resolveAgentProject', () => {
     expect(resolveAgentProject(task({ externalParentKey: 'ABC-100' }), [alpha, dup])?.id).toBe(
       'alpha',
     );
+  });
+});
+
+describe('resolveAgentProject — filing vs delegating', () => {
+  const billing = project({ id: 'p-billing', name: 'Billing' });
+  const web = project({ id: 'p-web', name: 'Web', jiraEpicKeys: ['ABC-1'] });
+
+  it('resolves a merely-FILED card to the project it is filed under', () => {
+    const filed = task({ projectTagId: 'p-billing' });
+    expect(resolveAgentProject(filed, [billing, web])?.id).toBe('p-billing');
+  });
+
+  it('but a filed card is not agent-assigned — no glyph, no “Reassign…”', () => {
+    expect(isAgentAssigned(task({ projectTagId: 'p-billing' }))).toBe(false);
+    expect(isAgentAssigned(task({ agentProjectId: 'p-billing' }))).toBe(true);
+  });
+
+  it('lets an explicit delegation outrank the filing', () => {
+    const both = task({ projectTagId: 'p-web', agentProjectId: 'p-billing' });
+    expect(resolveAgentProject(both, [billing, web])?.id).toBe('p-billing');
+  });
+
+  it('lets the filing outrank an epic match', () => {
+    const filed = task({ projectTagId: 'p-billing', externalParentKey: 'ABC-1' });
+    expect(resolveAgentProject(filed, [billing, web])?.id).toBe('p-billing');
+  });
+
+  it('falls through to the epic when the filed project is gone', () => {
+    const filed = task({ projectTagId: 'p-deleted', externalParentKey: 'ABC-1' });
+    expect(resolveAgentProject(filed, [billing, web])?.id).toBe('p-web');
   });
 });

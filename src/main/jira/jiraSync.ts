@@ -142,8 +142,9 @@ function issueToTask(
     // Keep the newest known comment time: fall back to the prior value if this sync
     // didn't return comments for the issue.
     latestCommentAt: latestCommentAt ?? existing?.latestCommentAt ?? null,
-    // Agent delegation is internal-only state, like `blocked` — JIRA knows nothing
-    // about it, so a re-sync carries the existing assignment through untouched.
+    // The filing and the delegation are both internal-only state, like `blocked` —
+    // JIRA knows nothing about either, so a re-sync carries them through untouched.
+    projectTagId: existing?.projectTagId ?? null,
     agentProjectId: existing?.agentProjectId ?? null,
   };
 }

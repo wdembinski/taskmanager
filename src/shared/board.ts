@@ -119,7 +119,13 @@ export function needsAgentInput(task: Task): boolean {
   return task.status === 'waiting-input';
 }
 
-/** Whether a card has been delegated to an agent project (drives the card's agent glyph). */
+/**
+ * Whether a card has been DELEGATED to an agent project (drives the card's agent glyph).
+ *
+ * Deliberately `agentProjectId` and not `projectTagId`: filing a card under a project
+ * says what it is about, not that anyone is working it. Conflating the two is what gave
+ * every merely-filed card an agent glyph.
+ */
 export function isAgentAssigned(task: Task): boolean {
   return Boolean(task.agentProjectId);
 }

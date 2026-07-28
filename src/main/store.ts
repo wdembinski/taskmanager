@@ -35,6 +35,7 @@ import type { JiraEpicFieldCache } from './jira/epicField';
 import type { JiraSprintFieldCache } from './jira/jiraSprint';
 import type { JiraIdentityCache } from './jira/identity';
 import type { ParsedTask } from './planParser';
+import { splitProjectTag } from './projectTagMigration';
 import type { SavedWindowState } from './windowState';
 import { reconcileTasks } from './taskReconcile';
 
@@ -83,6 +84,8 @@ interface TaskRow {
   preBlockStatus: string | null;
   lastReadCommentAt: number | null;
   latestCommentAt: number | null;
+  /** The project this card is filed under — what it is ABOUT. NULL when unfiled. */
+  projectTagId: string | null;
   /** The agent project this card is delegated to; NULL when unassigned. */
   agentProjectId: string | null;
   /** Per-assignment permission mode override; NULL = the agent project's default. */
@@ -159,6 +162,7 @@ export interface Store {
         | 'preBlockStatus'
         | 'lastReadCommentAt'
         | 'latestCommentAt'
+        | 'projectTagId'
         | 'agentProjectId'
         | 'agentMode'
         | 'agentModel'
@@ -362,6 +366,7 @@ export function createStore(dbPath: string): Store {
       preBlockStatus         TEXT,
       lastReadCommentAt      INTEGER,
       latestCommentAt        INTEGER,
+      projectTagId           TEXT,
       agentProjectId         TEXT,
       agentMode              TEXT,
       agentModel             TEXT,
@@ -498,6 +503,9 @@ export function createStore(dbPath: string): Store {
     ['externalSprint', 'TEXT'],
     ['externalDescription', 'TEXT'],
     ['agentProjectId', 'TEXT'],
+    // Split out of `agentProjectId` (which used to mean both "about" and "runs in"):
+    // NULL on every pre-existing row until the one-shot back-fill below fills it.
+    ['projectTagId', 'TEXT'],
     // Per-assignment overrides of the agent project's model / permission mode. NULL
     // means "use the project default", which is what every pre-existing row wants.
     ['agentMode', 'TEXT'],
@@ -691,6 +699,36 @@ export function createStore(dbPath: string): Store {
   /** Where the main window was, and whether it was maximized, when we last looked. */
   const WINDOW_STATE_KEY = 'window.state';
 
+  /** Guard for the one-shot `agentProjectId` → `projectTagId` back-fill below. */
+  const PROJECT_TAG_SPLIT_KEY = 'migration.projectTagSplit';
+
+  // ---------------------------------------------------------------------------
+  // One-shot: split "what this card is about" out of "where it runs".
+  //
+  // Both meanings lived in `agentProjectId`, so every card the user merely FILED under
+  // a project reads as delegated to an agent. Each existing value becomes a project tag
+  // (always true — you cannot delegate a card without also saying what it is about) and
+  // the delegation is kept only where the card carries evidence of a real run.
+  //
+  // Guarded, and the guard is load-bearing: a second pass would examine a card the user
+  // delegated AFTER the first, find no run on it yet, and silently clear the assignment.
+  if (!selectState.get(PROJECT_TAG_SPLIT_KEY)) {
+    const rows = db
+      .prepare(`SELECT * FROM tasks WHERE agentProjectId IS NOT NULL`)
+      .all() as TaskRow[];
+    const write = db.prepare(
+      `UPDATE tasks SET projectTagId = @projectTagId, agentProjectId = @agentProjectId WHERE id = @id`,
+    );
+    db.transaction(() => {
+      for (const row of rows) {
+        const split = splitProjectTag(rowToTask(row));
+        write.run({ id: row.id, ...split });
+      }
+      upsertState.run(PROJECT_TAG_SPLIT_KEY, JSON.stringify({ tasks: rows.length }));
+    })();
+  }
+  // ---------------------------------------------------------------------------
+
   /** Read app settings, merging any stored fields over the built-in defaults. */
   function getSettings(): AppSettings {
     const row = selectState.get(SETTINGS_KEY) as { value: string } | undefined;
@@ -777,6 +815,7 @@ export function createStore(dbPath: string): Store {
       preBlockStatus: task.preBlockStatus ?? null,
       lastReadCommentAt: task.lastReadCommentAt ?? null,
       latestCommentAt: task.latestCommentAt ?? null,
+      projectTagId: task.projectTagId ?? null,
       agentProjectId: task.agentProjectId ?? null,
       agentMode: task.agentMode ?? null,
       agentModel: task.agentModel ?? null,
@@ -817,6 +856,7 @@ export function createStore(dbPath: string): Store {
       preBlockStatus: (r.preBlockStatus as Task['preBlockStatus']) ?? null,
       lastReadCommentAt: r.lastReadCommentAt,
       latestCommentAt: r.latestCommentAt,
+      projectTagId: r.projectTagId,
       agentProjectId: r.agentProjectId,
       agentMode: (r.agentMode as Task['agentMode']) ?? null,
       agentModel: (r.agentModel as Task['agentModel']) ?? null,
@@ -993,6 +1033,7 @@ export function createStore(dbPath: string): Store {
         'preBlockStatus',
         'lastReadCommentAt',
         'latestCommentAt',
+        'projectTagId',
         'agentProjectId',
         'agentMode',
         'agentModel',
@@ -1018,7 +1059,8 @@ export function createStore(dbPath: string): Store {
     upsertJiraTask(task) {
       const existing = selectTask.get(task.id) as TaskRow | undefined;
       if (existing) {
-        // Note the agent-delegation columns (`agentProjectId`, `agentMode`, `agentModel`,
+        // Note the filing column (`projectTagId`), the agent-delegation columns
+        // (`agentProjectId`, `agentMode`, `agentModel`,
         // `agentPlan`), the subtask columns (`parentTaskId`, `description`) and the card's
         // own progress note (`statusNote`, `statusNoteAt`) are deliberately absent from
         // the UPDATE: a JIRA re-sync refreshes tracker fields only and must never clear a

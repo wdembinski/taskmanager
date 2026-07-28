@@ -520,6 +520,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
     const task = store.updateTask(taskId, {
       agentProjectId: target.id,
+      // Delegating a card to the Billing repo does also say the card is about Billing —
+      // but only when nothing else has said otherwise, so an explicit filing wins.
+      ...(existing.projectTagId ? {} : { projectTagId: target.id }),
       agentMode: input.mode ?? null,
       agentModel: input.model ?? null,
       // A previous attempt's session is not this assignment's; start a fresh
@@ -616,16 +619,17 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     return task;
   });
 
-  handle('task:setProject', async (taskId, agentProjectId) => {
+  handle('task:setProject', async (taskId, projectTagId) => {
     const existing = store.getTask(taskId);
     if (!existing) throw new Error('Task not found.');
-    if (agentProjectId !== null) {
-      const target = store.getProject(agentProjectId);
+    if (projectTagId !== null) {
+      const target = store.getProject(projectTagId);
       if (!target || target.kind !== 'agent') throw new Error('Unknown project.');
     }
-    // Only the association. No session reset, no worktree, no run — see `task:setProject`
-    // in the contract for why this is not `task:assignAgent`.
-    const task = store.updateTask(taskId, { agentProjectId });
+    // Filing only, and now to its OWN column. This used to write `agentProjectId`, the
+    // same field delegation writes, so tagging a card as "a Billing card" gave it the
+    // agent glyph and made the pane offer to reassign something nobody had assigned.
+    const task = store.updateTask(taskId, { projectTagId });
     if (!task) throw new Error('Task not found.');
     send('task:changed', { task, runId: null });
     return task;

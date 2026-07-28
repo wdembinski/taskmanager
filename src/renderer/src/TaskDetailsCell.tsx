@@ -124,7 +124,8 @@ export function TaskDetailsCell({
   ).slice();
   const priority = task.externalPriority ?? null;
   const squareColor = priorityColor(priority);
-  const project = agentProjects.find((p) => p.id === task.agentProjectId) ?? null;
+  // The FILING, not the delegation — this dropdown says what the card is about.
+  const project = agentProjects.find((p) => p.id === task.projectTagId) ?? null;
 
   async function setStatus(next: ManualStatus): Promise<void> {
     if (next === task.status) return;
@@ -154,7 +155,7 @@ export function TaskDetailsCell({
 
   /** File the card under a project. Tagging only — this never starts an agent. */
   async function setProject(next: string | null): Promise<void> {
-    if (next === (task.agentProjectId ?? null)) return;
+    if (next === (task.projectTagId ?? null)) return;
     setError(null);
     setBusy(true);
     try {
@@ -247,7 +248,7 @@ export function TaskDetailsCell({
             className={styles.picker}
             size="small"
             value={project?.name ?? 'None'}
-            selectedOptions={[task.agentProjectId ?? NO_PROJECT]}
+            selectedOptions={[task.projectTagId ?? NO_PROJECT]}
             disabled={busy}
             title="The repo this card is about — filing it here does not start an agent"
             onOptionSelect={(_e, d) => {

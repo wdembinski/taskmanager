@@ -22,10 +22,14 @@ export function agentProjectsOf(projects: Project[]): Project[] {
 /**
  * Resolve the agent project for a task, in precedence order:
  *
- * 1. An explicit `task.agentProjectId` — a human already assigned it, and that always
+ * 1. An explicit `task.agentProjectId` — a human already delegated it, and that always
  *    wins (even if the ticket's epic later moves to another project's list).
- * 2. The agent project whose `jiraEpicKeys` contain the ticket's epic/parent key.
- * 3. `null` — nothing owns it, so the assign dialog has to ask.
+ * 2. `task.projectTagId` — the card was FILED under a project. That is not a delegation
+ *    (see `isAgentAssigned`, which stays on `agentProjectId`), but it is a perfectly
+ *    good answer to "which repo would this run in", so a filed card resolves sensibly
+ *    the moment you do delegate it.
+ * 3. The agent project whose `jiraEpicKeys` contain the ticket's epic/parent key.
+ * 4. `null` — nothing owns it, so the assign dialog has to ask.
  *
  * `projects` may be the full project list; plan projects are ignored. When two agent
  * projects claim the same epic the first in list order wins (creation order), which is
@@ -39,6 +43,11 @@ export function resolveAgentProject(task: Task, projects: Project[]): Project | 
     // resolving to nothing, so an assigned card stays workable.
     const explicit = candidates.find((p) => p.id === task.agentProjectId);
     if (explicit) return explicit;
+  }
+
+  if (task.projectTagId) {
+    const filed = candidates.find((p) => p.id === task.projectTagId);
+    if (filed) return filed;
   }
 
   const epicKey = task.externalParentKey ? normalizeEpicKey(task.externalParentKey) : null;
