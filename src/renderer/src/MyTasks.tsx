@@ -67,6 +67,10 @@ const useStyles = makeStyles({
     flex: 1,
     minHeight: 0,
     overflowY: 'auto',
+    // Breathing room above the first card. Its 3px project stripe and its 3px attention
+    // ring both live ON the card's top edge, and with the sticky header sitting directly
+    // on top of the list they had nothing to breathe into.
+    paddingTop: '4px',
   },
   right: {
     flex: '1 1 40%',

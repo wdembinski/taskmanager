@@ -78,6 +78,11 @@ const useStyles = makeStyles({
     flexShrink: 0,
     cursor: 'pointer',
     userSelect: 'none',
+    // The column header is opaque and pinned (`KanbanColumn.header`), so a card scrolled
+    // into view would stop UNDER it and lose its top edge — which is exactly where the
+    // project stripe and the attention ring live. Stop below the header instead.
+    // Un-pinning the header would cost the column labels on every scroll: a worse trade.
+    scrollMarginTop: '36px',
   },
   body: { display: 'flex', flexDirection: 'column', gap: '8px', padding: '12px' },
   /**

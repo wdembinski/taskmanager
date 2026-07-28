@@ -33,7 +33,10 @@ const useStyles = makeStyles({
     display: 'flex',
     alignItems: 'baseline',
     gap: '8px',
-    padding: '2px 4px 10px',
+    // A deeper bottom inset than it looks like it needs: the header is OPAQUE and
+    // pinned, so a card sliding under it loses its top edge first — and the top edge is
+    // exactly where the project stripe and the attention ring live.
+    padding: '2px 4px 12px',
     position: 'sticky',
     top: 0,
     zIndex: 1,
