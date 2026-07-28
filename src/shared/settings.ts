@@ -38,6 +38,12 @@ export interface JiraSettings {
   apiVersion: '2' | '3';
   /** JQL selecting the user's issues to mirror onto the board. */
   jql: string;
+  /**
+   * Narrow the board to issues in a running sprint. Composed onto `jql` at sync time
+   * (`sprint in openSprints()`) rather than written into it, so toggling this off
+   * restores the user's own query untouched.
+   */
+  currentSprintOnly: boolean;
   /** Whether the board shows the Done column. */
   showDoneColumn: boolean;
   /**
@@ -61,6 +67,7 @@ export const DEFAULT_JIRA_SETTINGS: JiraSettings = {
   cloudEmail: '',
   apiVersion: '2',
   jql: 'assignee = currentUser() AND resolution = Unresolved ORDER BY updated DESC',
+  currentSprintOnly: false,
   showDoneColumn: false,
   pollIntervalMinutes: 5,
 };

@@ -13,7 +13,10 @@ const issue = (
   key,
   fields: {
     summary,
-    status: { name: categoryKey === 'indeterminate' ? 'In Progress' : 'To Do', statusCategory: { key: categoryKey, name: 'X' } },
+    status: {
+      name: categoryKey === 'indeterminate' ? 'In Progress' : 'To Do',
+      statusCategory: { key: categoryKey, name: 'X' },
+    },
     priority: { name: 'High' },
     project: { key: 'PROJ', name: 'proj-name' },
   },
@@ -38,6 +41,39 @@ const jiraTask = (over: Partial<Task>): Task => ({
 });
 
 const opts = { baseUrl: 'https://jira.co' };
+
+describe('reconcileJiraTasks — sprint', () => {
+  const withSprint = (sprint: unknown): JiraIssue => {
+    const i = issue('1', 'PROJ-1', 'new');
+    (i.fields as Record<string, unknown>).customfield_7 = sprint;
+    return i;
+  };
+
+  it('carries the running sprint name onto the card', () => {
+    const { upserts } = reconcileJiraTasks(
+      [],
+      [withSprint([{ name: 'Sprint 5', state: 'active' }])],
+      {
+        ...opts,
+        sprintFieldId: 'customfield_7',
+      },
+    );
+    expect(upserts[0].externalSprint).toBe('Sprint 5');
+  });
+
+  it('leaves the sprint null when the instance has no such field', () => {
+    const { upserts } = reconcileJiraTasks([], [issue('1', 'PROJ-1', 'new')], opts);
+    expect(upserts[0].externalSprint ?? null).toBeNull();
+  });
+
+  // Same rule as the epic and description: a sync that didn't ask for the field must
+  // not wipe a name we already knew.
+  it('keeps a previously known sprint when this sync did not return one', () => {
+    const existing = jiraTask({ externalSprint: 'Sprint 5' });
+    const { upserts } = reconcileJiraTasks([existing], [issue('1', 'PROJ-1', 'new')], opts);
+    expect(upserts[0].externalSprint).toBe('Sprint 5');
+  });
+});
 
 describe('reconcileJiraTasks', () => {
   it('creates a new task for a fetched issue with a stable id and deep link', () => {
@@ -64,7 +100,11 @@ describe('reconcileJiraTasks', () => {
   it('preserves the blocked state and preBlockStatus across a re-sync', () => {
     const existing = jiraTask({ status: 'blocked', preBlockStatus: 'in-progress' });
     // JIRA now reports the issue as In Progress, but the user blocked it locally.
-    const { upserts } = reconcileJiraTasks(existing ? [existing] : [], [issue('1', 'PROJ-1', 'indeterminate')], opts);
+    const { upserts } = reconcileJiraTasks(
+      existing ? [existing] : [],
+      [issue('1', 'PROJ-1', 'indeterminate')],
+      opts,
+    );
     expect(upserts[0].status).toBe('blocked');
     expect(upserts[0].preBlockStatus).toBe('in-progress');
     // The raw external status is still refreshed for display.
@@ -96,7 +136,10 @@ describe('reconcileJiraTasks', () => {
     (withEpic.fields as Record<string, unknown>).customfield_7 = 'abc-100';
     withEpic.fields.description = 'Reproduce, then fix.';
 
-    const { upserts } = reconcileJiraTasks([], [withEpic], { ...opts, epicFieldId: 'customfield_7' });
+    const { upserts } = reconcileJiraTasks([], [withEpic], {
+      ...opts,
+      epicFieldId: 'customfield_7',
+    });
     expect(upserts[0]).toMatchObject({
       externalParentKey: 'ABC-100',
       externalDescription: 'Reproduce, then fix.',
@@ -129,7 +172,11 @@ describe('reconcileJiraTasks', () => {
 
   it('carries an agent assignment through a re-sync (JIRA knows nothing about it)', () => {
     const existing = jiraTask({ agentProjectId: 'agent-1' });
-    const { upserts } = reconcileJiraTasks([existing], [issue('1', 'PROJ-1', 'indeterminate')], opts);
+    const { upserts } = reconcileJiraTasks(
+      [existing],
+      [issue('1', 'PROJ-1', 'indeterminate')],
+      opts,
+    );
     expect(upserts[0].agentProjectId).toBe('agent-1');
   });
 

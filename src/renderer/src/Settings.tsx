@@ -350,7 +350,11 @@ export function Settings(): JSX.Element {
 
             <Field
               label="JQL"
-              hint="Which issues to show. Default: your unresolved, assigned issues."
+              hint={
+                jira.currentSprintOnly
+                  ? 'Which issues to show. The board\'s "Current sprint" switch is on, so `AND sprint in openSprints()` is added to this query at sync time.'
+                  : 'Which issues to show. Default: your unresolved, assigned issues.'
+              }
             >
               <Textarea
                 value={jira.jql}

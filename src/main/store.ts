@@ -30,6 +30,7 @@ import type { UsageSample } from '@shared/usage';
 import { type AppSettings, DEFAULT_JIRA_SETTINGS, DEFAULT_SETTINGS } from '@shared/settings';
 import { mergeActivity } from './activityMerge';
 import type { JiraEpicFieldCache } from './jira/epicField';
+import type { JiraSprintFieldCache } from './jira/jiraSprint';
 import type { JiraIdentityCache } from './jira/identity';
 import type { ParsedTask } from './planParser';
 import { reconcileTasks } from './taskReconcile';
@@ -68,6 +69,8 @@ interface TaskRow {
   externalLabel: string | null;
   /** Key of the issue's epic/parent (upper-cased), for agent-project resolution. */
   externalParentKey: string | null;
+  /** The name of the sprint the issue is in; NULL when it is in none. */
+  externalSprint: string | null;
   /** The issue description flattened to plain text (v2 string / v3 ADF). */
   externalDescription: string | null;
   preBlockStatus: string | null;
@@ -136,6 +139,7 @@ export interface Store {
         | 'externalType'
         | 'externalLabel'
         | 'externalParentKey'
+        | 'externalSprint'
         | 'externalDescription'
         | 'preBlockStatus'
         | 'lastReadCommentAt'
@@ -234,6 +238,14 @@ export interface Store {
   /** The cached epic-field discovery, or null if it has never run. */
   loadJiraEpicField(): JiraEpicFieldCache | null;
   /**
+   * The same, for the per-instance "Sprint" custom field (see `jira/jiraSprint.ts`).
+   * Cached separately so an instance with one field but not the other still resolves
+   * whichever it has.
+   */
+  saveJiraSprintField(cache: JiraSprintFieldCache): void;
+  /** The cached sprint-field discovery, or null if it has never run. */
+  loadJiraSprintField(): JiraSprintFieldCache | null;
+  /**
    * Cache `GET /myself` so the chat pane can tell your ticket comments from other
    * people's without a request per read (see `jira/identity.ts`). Keyed by site, like
    * the epic field above.
@@ -309,6 +321,7 @@ export function createStore(dbPath: string): Store {
       externalType           TEXT,
       externalLabel          TEXT,
       externalParentKey      TEXT,
+      externalSprint         TEXT,
       externalDescription    TEXT,
       preBlockStatus         TEXT,
       lastReadCommentAt      INTEGER,
@@ -428,6 +441,9 @@ export function createStore(dbPath: string): Store {
     // Agent delegation: the epic/parent key and description come from JIRA (a re-sync
     // fills them in), `agentProjectId` is set only when a human assigns the card.
     ['externalParentKey', 'TEXT'],
+    // The sprint name, added with sprint support — NULL on every pre-existing row
+    // until the next JIRA sync fills it in, which is exactly "no sprint known".
+    ['externalSprint', 'TEXT'],
     ['externalDescription', 'TEXT'],
     ['agentProjectId', 'TEXT'],
     // Per-assignment overrides of the agent project's model / permission mode. NULL
@@ -528,14 +544,16 @@ export function createStore(dbPath: string): Store {
        (id, projectId, phase, title, status, sessionId, "order", source, dependsOn, isContract, isScaffold, type,
         parentTaskId, description,
         externalSource, externalKey, externalId, externalUrl, externalStatus, externalStatusCategory,
-        externalPriority, externalType, externalLabel, externalParentKey, externalDescription,
+        externalPriority, externalType, externalLabel, externalParentKey, externalSprint,
+        externalDescription,
         preBlockStatus, lastReadCommentAt, latestCommentAt, agentProjectId, agentMode, agentModel,
         agentPlan)
      VALUES
        (@id, @projectId, @phase, @title, @status, @sessionId, @order, @source, @dependsOn, @isContract, @isScaffold, @type,
         @parentTaskId, @description,
         @externalSource, @externalKey, @externalId, @externalUrl, @externalStatus, @externalStatusCategory,
-        @externalPriority, @externalType, @externalLabel, @externalParentKey, @externalDescription,
+        @externalPriority, @externalType, @externalLabel, @externalParentKey, @externalSprint,
+        @externalDescription,
         @preBlockStatus, @lastReadCommentAt, @latestCommentAt, @agentProjectId, @agentMode, @agentModel,
         @agentPlan)`,
   );
@@ -607,6 +625,9 @@ export function createStore(dbPath: string): Store {
 
   /** The single row key caching JIRA's per-instance "Epic Link" field discovery. */
   const JIRA_EPIC_FIELD_KEY = 'jira.epicField';
+
+  /** The single row key caching JIRA's per-instance "Sprint" field discovery. */
+  const JIRA_SPRINT_FIELD_KEY = 'jira.sprintField';
 
   /** The single row key caching `GET /myself` for the configured site. */
   const JIRA_IDENTITY_KEY = 'jira.identity';
@@ -687,6 +708,7 @@ export function createStore(dbPath: string): Store {
       externalType: task.externalType ?? null,
       externalLabel: task.externalLabel ?? null,
       externalParentKey: task.externalParentKey ?? null,
+      externalSprint: task.externalSprint ?? null,
       externalDescription: task.externalDescription ?? null,
       preBlockStatus: task.preBlockStatus ?? null,
       lastReadCommentAt: task.lastReadCommentAt ?? null,
@@ -724,6 +746,7 @@ export function createStore(dbPath: string): Store {
       externalType: r.externalType,
       externalLabel: r.externalLabel,
       externalParentKey: r.externalParentKey,
+      externalSprint: r.externalSprint,
       externalDescription: r.externalDescription,
       preBlockStatus: (r.preBlockStatus as Task['preBlockStatus']) ?? null,
       lastReadCommentAt: r.lastReadCommentAt,
@@ -879,6 +902,7 @@ export function createStore(dbPath: string): Store {
         'externalType',
         'externalLabel',
         'externalParentKey',
+        'externalSprint',
         'externalDescription',
         'preBlockStatus',
         'lastReadCommentAt',
@@ -920,7 +944,8 @@ export function createStore(dbPath: string): Store {
              externalUrl = @externalUrl, externalStatus = @externalStatus,
              externalStatusCategory = @externalStatusCategory, externalPriority = @externalPriority,
              externalType = @externalType, externalLabel = @externalLabel,
-             externalParentKey = @externalParentKey, externalDescription = @externalDescription,
+             externalParentKey = @externalParentKey, externalSprint = @externalSprint,
+             externalDescription = @externalDescription,
              preBlockStatus = @preBlockStatus, lastReadCommentAt = @lastReadCommentAt,
              latestCommentAt = @latestCommentAt
            WHERE id = @id`,
@@ -1204,6 +1229,21 @@ export function createStore(dbPath: string): Store {
       if (!row) return null;
       try {
         const parsed = JSON.parse(row.value) as JiraEpicFieldCache;
+        return typeof parsed?.baseUrl === 'string' ? parsed : null;
+      } catch {
+        return null; // corrupt value — re-discover
+      }
+    },
+
+    saveJiraSprintField(cache) {
+      upsertState.run(JIRA_SPRINT_FIELD_KEY, JSON.stringify(cache));
+    },
+
+    loadJiraSprintField() {
+      const row = selectState.get(JIRA_SPRINT_FIELD_KEY) as { value: string } | undefined;
+      if (!row) return null;
+      try {
+        const parsed = JSON.parse(row.value) as JiraSprintFieldCache;
         return typeof parsed?.baseUrl === 'string' ? parsed : null;
       } catch {
         return null; // corrupt value — re-discover

@@ -102,6 +102,7 @@ export function MyTasks(): JSX.Element {
 
   const showDone = settings?.jira.showDoneColumn ?? false;
   const jiraEnabled = settings?.jira.enabled ?? false;
+  const currentSprintOnly = settings?.jira.currentSprintOnly ?? false;
 
   const refresh = useCallback(async () => {
     setTasks(await window.api.invoke('board:tasks'));
@@ -204,6 +205,20 @@ export function MyTasks(): JSX.Element {
     }
   }, []);
 
+  // Unlike "Show Done", which only hides a column that is already loaded, this one
+  // changes the JQL the next fetch runs — so the board is re-synced immediately,
+  // otherwise the switch would appear to do nothing until the next poll.
+  const setCurrentSprintOnly = useCallback(
+    async (value: boolean) => {
+      if (!settings) return;
+      const next = { ...settings, jira: { ...settings.jira, currentSprintOnly: value } };
+      setSettings(next);
+      await window.api.invoke('settings:save', next);
+      if (next.jira.enabled) await sync();
+    },
+    [settings, sync],
+  );
+
   const moveTask = useCallback(
     async (taskId: string, column: BoardColumn) => {
       const task = tasks?.find((t) => t.id === taskId);
@@ -238,6 +253,14 @@ export function MyTasks(): JSX.Element {
             checked={showDone}
             onChange={(_e, d) => setShowDone(d.checked)}
           />
+          {jiraEnabled && (
+            <Switch
+              label="Current sprint"
+              checked={currentSprintOnly}
+              disabled={syncing}
+              onChange={(_e, d) => void setCurrentSprintOnly(d.checked)}
+            />
+          )}
           <span className={styles.grow} />
           {jiraEnabled && (
             <Button size="small" disabled={syncing} onClick={() => void sync()}>

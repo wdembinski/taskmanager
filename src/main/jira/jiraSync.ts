@@ -12,6 +12,7 @@ import { PERSONAL_PROJECT_ID, type BoardColumn, type Task } from '@shared/model'
 import { categoryFromKey, categoryToColumn, statusForColumn } from '@shared/board';
 import { commentBodyToText, type JiraIssue } from './jiraClient';
 import { epicKeyFromIssue } from './epicField';
+import { sprintNameFromIssue } from './jiraSprint';
 
 export interface JiraSyncOptions {
   /** Base URL, used to build each issue's deep link. */
@@ -23,6 +24,11 @@ export interface JiraSyncOptions {
    * (Cloud team-managed) or discovery failed — the epic then comes from `parent`.
    */
   epicFieldId?: string | null;
+  /**
+   * The discovered "Sprint" custom field id, or null when the instance has none (no
+   * JIRA Software) or discovery failed — cards then simply carry no sprint name.
+   */
+  sprintFieldId?: string | null;
 }
 
 export interface JiraSyncResult {
@@ -62,6 +68,7 @@ function issueToTask(
   // ticket, and the brief handed to the agent). Both fall back to the previously
   // stored value, so a sync that didn't return the field can't wipe what we knew.
   const parentKey = epicKeyFromIssue(issue, opts.epicFieldId ?? null);
+  const sprint = sprintNameFromIssue(issue, opts.sprintFieldId ?? null);
   const description = commentBodyToText(issue.fields.description) || null;
 
   const latestCommentAt = latestCommentTime(issue);
@@ -92,6 +99,9 @@ function issueToTask(
     externalType: issue.fields.issuetype?.name ?? null,
     externalLabel: issue.fields.labels?.[0] ?? null,
     externalParentKey: parentKey ?? existing?.externalParentKey ?? null,
+    // Same fall-back rule as the epic and description above: a sync that didn't ask
+    // for the sprint field must not wipe a name we already knew.
+    externalSprint: sprint ?? existing?.externalSprint ?? null,
     externalDescription: description ?? existing?.externalDescription ?? null,
     preBlockStatus: blocked ? (existing?.preBlockStatus ?? null) : null,
     lastReadCommentAt,

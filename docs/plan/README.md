@@ -741,6 +741,50 @@ borders and rules, and nothing that changes settings may restart a running card.
 
 ---
 
+## Phase 14 — Sprints on the board
+
+**Goal.** Let the board answer "what am I meant to be doing *this* sprint?" — the JIRA
+question the Personal board could not express, since its JQL was a fixed query with no
+notion of what is currently in flight.
+
+Decisions taken with the user: the board stays a **personal** view (the sprint filter
+narrows the existing `assignee = currentUser()` query rather than replacing it with a
+team view), and "current" is resolved through **JQL `openSprints()`** rather than the
+Agile API — no board to configure, it works on Cloud and Server/DC alike, and it needs
+no new endpoint on an instance that may not expose Agile at all.
+
+### Deliverables
+
+- [x] **1 — JQL composition** (`src/main/jira/jiraSprint.ts`, pure). `withCurrentSprint`
+      inserts `AND sprint in openSprints()` *before* any `ORDER BY` — JIRA rejects it
+      after — and parenthesises the existing filter, so a query ending in a top-level
+      `OR` is narrowed rather than quietly widened. `splitOrderBy` scans for the keyword
+      outside quotes, so `summary ~ "order by tuesday"` is not cut in half.
+- [x] **2 — The sprint field.** The sprint an issue is in lives in a per-instance
+      Greenhopper custom field, exactly like "Epic Link" — discovered once via
+      `GET /field`, cached in `app_state` by base URL, and failing soft to "no sprint".
+      `sprintNameFromIssue` reads both the modern object shape and the legacy
+      `Sprint@1a2b[name=…,state=ACTIVE]` string older Server/DC still emits, preferring
+      the running sprint over the closed ones an issue also carries.
+- [x] **3 — The card.** New `Task.externalSprint` (additive `TEXT` column, NULL on every
+      existing row) is filled by `jiraSync` with the same don't-wipe-what-we-knew
+      fallback the epic and description use, and shown as a quiet chip beside the label
+      chip, so the board says *which* sprint you are looking at when several run at once.
+- [x] **4 — The switch.** `JiraSettings.currentSprintOnly` (default off) drives a
+      **Current sprint** toggle in the board toolbar, shown only when JIRA is enabled.
+      Unlike "Show Done" it changes the query the next fetch runs, so toggling it
+      re-syncs immediately rather than appearing to do nothing; the Settings JQL hint
+      says so while it is on.
+
+**Notes.**
+
+- The filter is composed at sync time and never written into the user's JQL, so turning
+  it off restores their own query untouched.
+- The sprint field is requested whether or not the filter is on: the name is worth
+  showing either way, and `openSprints()` can span several concurrent sprints.
+
+---
+
 ## Conventions for every phase
 
 - **Contract first.** New data crossing the UI↔engine boundary gets its types in

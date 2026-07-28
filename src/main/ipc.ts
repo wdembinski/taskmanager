@@ -34,6 +34,7 @@ import { explainJiraFailure } from './jira/jiraDiagnostics';
 import { commentBodyToText, type JiraClient } from './jira/jiraClient';
 import { reconcileJiraTasks } from './jira/jiraSync';
 import { discoverEpicFieldId } from './jira/epicField';
+import { discoverSprintFieldId, withCurrentSprint } from './jira/jiraSprint';
 import { authorIsMe, identityFrom, type JiraIdentityCache } from './jira/identity';
 import { pickTransition, resolveMove } from './jira/jiraMove';
 import { getClaudeStatus } from './claudeStatus';
@@ -646,6 +647,15 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     return fieldId;
   };
 
+  /** The instance's "Sprint" custom field id — same cache-by-site rule as the epic. */
+  const sprintFieldId = async (baseUrl: string, client: JiraClient): Promise<string | null> => {
+    const cached = store.loadJiraSprintField();
+    if (cached && cached.baseUrl === baseUrl) return cached.fieldId;
+    const fieldId = await discoverSprintFieldId(client);
+    store.saveJiraSprintField({ fieldId, baseUrl });
+    return fieldId;
+  };
+
   /**
    * The account behind the configured PAT, fetched once per site and cached in
    * `app_state` (see `jira/identity.ts`). Fails soft to null: not knowing who you are
@@ -675,11 +685,18 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // The epic field is requested by its discovered id, so tickets carry the epic key
     // that resolves a card to the agent project owning it.
     const epicField = await epicFieldId(jira.baseUrl, client);
-    const issues = await client.search(jira.jql, 100, epicField ? [epicField] : []);
+    // The sprint field is fetched whether or not the board is filtered to the current
+    // sprint: the name is worth showing either way, and it is what tells you which
+    // sprint a card belongs to once several are running at once.
+    const sprintField = await sprintFieldId(jira.baseUrl, client);
+    const jql = jira.currentSprintOnly ? withCurrentSprint(jira.jql) : jira.jql;
+    const extraFields = [epicField, sprintField].filter((f): f is string => f !== null);
+    const issues = await client.search(jql, 100, extraFields);
     const { upserts, deleteIds } = reconcileJiraTasks(store.getPersonalTasks(), issues, {
       baseUrl: jira.baseUrl,
       overrides: jira.statusCategoryOverrides,
       epicFieldId: epicField,
+      sprintFieldId: sprintField,
     });
     for (const t of upserts) store.upsertJiraTask(t);
     for (const id of deleteIds) store.deleteTask(id);

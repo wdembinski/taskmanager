@@ -115,8 +115,8 @@ const useStyles = makeStyles({
   icon: { fontSize: '18px', flexShrink: 0, display: 'flex' },
   title: { lineHeight: '18px', flex: 1, minWidth: 0 },
   project: { color: tokens.colorNeutralForeground3 },
+  chipRow: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' },
   chip: {
-    alignSelf: 'flex-start',
     backgroundColor: '#12836b',
     color: '#ffffff',
     fontSize: '11px',
@@ -124,6 +124,22 @@ const useStyles = makeStyles({
     letterSpacing: '0.03em',
     padding: '2px 8px',
     borderRadius: '4px',
+  },
+  // Quieter than the label chip on purpose: the sprint is context, not the headline.
+  // The 1px padding offsets the border so both chips sit at the same height.
+  sprintChip: {
+    backgroundColor: tokens.colorNeutralBackground4,
+    color: tokens.colorNeutralForeground2,
+    border: `1px solid ${tokens.colorNeutralStroke2}`,
+    fontSize: '11px',
+    fontWeight: 600,
+    letterSpacing: '0.03em',
+    padding: '1px 7px',
+    borderRadius: '4px',
+    maxWidth: '100%',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
   },
   footer: { display: 'flex', alignItems: 'center', gap: '8px' },
   grow: { flex: 1, minWidth: 0 },
@@ -312,7 +328,16 @@ export function TaskCard({
           )}
         </div>
 
-        {task.externalLabel && <span className={styles.chip}>{task.externalLabel}</span>}
+        {(task.externalLabel || task.externalSprint) && (
+          <div className={styles.chipRow}>
+            {task.externalLabel && <span className={styles.chip}>{task.externalLabel}</span>}
+            {task.externalSprint && (
+              <span className={styles.sprintChip} title={`Sprint: ${task.externalSprint}`}>
+                {task.externalSprint}
+              </span>
+            )}
+          </div>
+        )}
 
         {projectName && <Caption1 className={styles.project}>Project: {projectName}</Caption1>}
 

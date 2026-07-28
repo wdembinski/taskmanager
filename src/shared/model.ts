@@ -317,6 +317,13 @@ export interface Task {
   /** A short label/component shown as a chip on the card (the issue's first label). */
   externalLabel?: string | null;
   /**
+   * The sprint the issue is in, by name (e.g. "Sprint 5"), shown on the card so the
+   * board says *which* sprint you're looking at. Read from the per-instance Greenhopper
+   * "Sprint" custom field (see `jira/jiraSprint.ts`); null when the instance has no
+   * such field, the field could not be discovered, or the issue is in no sprint.
+   */
+  externalSprint?: string | null;
+  /**
    * The key of the issue's epic (JIRA Server's "Epic Link" custom field) or, failing
    * that, its parent issue (Cloud/team-managed `parent`). Upper-cased so it compares
    * directly against an agent project's `jiraEpicKeys` — this is what lets an assigned
