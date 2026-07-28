@@ -44,6 +44,7 @@ import { discoverSprintFieldId, withCurrentSprint } from './jira/jiraSprint';
 import { authorIsMe, identityFrom, type JiraIdentityCache } from './jira/identity';
 import { pickTransition, resolveMove } from './jira/jiraMove';
 import { listWslDistros, readinessFor, statusForTargets } from './exec';
+import { sanitizeWindowState } from './windowState';
 import { appPlanPath } from './projectPaths';
 import { logMain } from './log';
 import { parsePlan } from './planParser';
@@ -108,6 +109,8 @@ export interface Engine {
   watcher: PlanWatcher;
   jiraPoller: JiraPoller;
   updater: Updater;
+  /** Flushes the window geometry — must be disposed BEFORE the store closes. */
+  windowTracker: { dispose(): void };
 }
 
 /**
@@ -126,6 +129,97 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
   // One SQLite file per user, under Electron's managed userData directory.
   const store = createStore(join(app.getPath('userData'), 'orchestrator.db'));
+
+  // ---------------------------------------------------------------------------
+  // Window geometry.
+  //
+  // Some Linux window managers — WSLg's rootless compositor is the one that bit us —
+  // quietly ignore a maximize request for an UNDECORATED window: `maximize()` returns,
+  // nothing moves, `isMaximized()` stays false, and the button looks dead. So when the
+  // WM hasn't acted shortly after being asked, we maximize by hand: resize to the work
+  // area of the display the window sits on, remembering the old bounds so Restore can
+  // put them back. `manualBounds` non-null IS the "we maximized it ourselves" flag.
+  //
+  // This lives up here, before the handlers, because RESTORING a saved `maximized: true`
+  // has to go through exactly the same fallback — otherwise a restore would silently do
+  // nothing on WSLg, exactly as a click did before the fallback existed.
+  let manualBounds: Rectangle | null = null;
+  const isMaximized = (): boolean => mainWindow.isMaximized() || manualBounds !== null;
+  const pushMaximized = (): void => send('window:maximizedChanged', isMaximized());
+  const requestMaximize = (from: Rectangle): void => {
+    mainWindow.maximize();
+    // The WM answers asynchronously, so an immediate isMaximized() would read false even
+    // where maximizing works — give it a beat before deciding it was ignored.
+    setTimeout(() => {
+      if (mainWindow.isDestroyed() || mainWindow.isMaximized()) return;
+      manualBounds = from;
+      mainWindow.setBounds(screen.getDisplayMatching(from).workArea);
+      pushMaximized();
+    }, 300);
+  };
+  // A real WM maximize supersedes our stand-in, and unmaximize clears it either way.
+  mainWindow.on('maximize', () => {
+    manualBounds = null;
+    pushMaximized();
+  });
+  mainWindow.on('unmaximize', () => {
+    manualBounds = null;
+    pushMaximized();
+  });
+
+  // Reopen where the last run closed. `createWindow()` runs before the store exists, so
+  // this is the first moment the saved value is readable — but the window is still
+  // `show: false` until `ready-to-show`, so the correction is never seen. The saved
+  // rectangle is only a suggestion: `sanitizeWindowState` reconciles it against the
+  // displays that exist NOW, so an unplugged monitor costs you the position but not
+  // the size.
+  const [minWidth, minHeight] = mainWindow.getMinimumSize();
+  const restored = sanitizeWindowState(
+    store.loadWindowState(),
+    screen.getAllDisplays().map((d) => d.workArea),
+    { minWidth, minHeight },
+  );
+  if (restored.bounds) mainWindow.setBounds(restored.bounds);
+  else if (restored.size) mainWindow.setSize(restored.size.width, restored.size.height);
+  if (restored.maximized) requestMaximize(mainWindow.getBounds());
+
+  // Track it from here on. Debounced, because a drag emits `move` per frame; flushed
+  // synchronously on close and on dispose, which is where the value that matters — the
+  // one the next launch reads — is actually written. `getNormalBounds()` is the
+  // un-maximized rectangle, and `manualBounds` is our stand-in for the same thing on a
+  // WM that wouldn't maximize, so the pair always records the RESTORED size.
+  let windowSaveTimer: NodeJS.Timeout | null = null;
+  const persistWindowState = (): void => {
+    if (mainWindow.isDestroyed()) return;
+    store.saveWindowState({
+      bounds: manualBounds ?? mainWindow.getNormalBounds(),
+      maximized: isMaximized(),
+    });
+  };
+  const scheduleWindowSave = (): void => {
+    if (windowSaveTimer) clearTimeout(windowSaveTimer);
+    windowSaveTimer = setTimeout(() => {
+      windowSaveTimer = null;
+      persistWindowState();
+    }, 400);
+  };
+  // Spelled out rather than looped: BrowserWindow's `on` is a set of per-event
+  // overloads, so a union of event names has no single overload to match.
+  mainWindow.on('resize', scheduleWindowSave);
+  mainWindow.on('move', scheduleWindowSave);
+  mainWindow.on('maximize', scheduleWindowSave);
+  mainWindow.on('unmaximize', scheduleWindowSave);
+  const windowTracker = {
+    dispose(): void {
+      if (windowSaveTimer) {
+        clearTimeout(windowSaveTimer);
+        windowSaveTimer = null;
+      }
+      persistWindowState();
+    },
+  };
+  mainWindow.on('close', () => windowTracker.dispose());
+  // ---------------------------------------------------------------------------
 
   // Team orchestrator: each task can run in its own git worktree (under userData),
   // which the scheduler integrates back into base when the task completes.
@@ -1039,17 +1133,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
   // Frameless-window controls for the renderer's custom title bar, plus a push so
   // the title bar's maximize/restore icon tracks OS-driven changes (snap, drag).
-  //
-  // Some Linux window managers — WSLg's rootless compositor is the one that bit us —
-  // quietly ignore a maximize request for an UNDECORATED window: `maximize()` returns,
-  // nothing moves, `isMaximized()` stays false, and the button looks dead. So when the
-  // WM hasn't acted shortly after being asked, we maximize by hand: resize to the work
-  // area of the display the window sits on, remembering the old bounds so Restore can
-  // put them back. `manualBounds` non-null IS the "we maximized it ourselves" flag.
-  let manualBounds: Rectangle | null = null;
-  const isMaximized = (): boolean => mainWindow.isMaximized() || manualBounds !== null;
-  const pushMaximized = (): void => send('window:maximizedChanged', isMaximized());
-
+  // The state behind them (`manualBounds`, `requestMaximize`) is set up near the top,
+  // because restoring the saved geometry has to happen before the window is shown.
   handle('window:minimize', async () => mainWindow.minimize());
   handle('window:toggleMaximize', async () => {
     if (isMaximized()) {
@@ -1060,30 +1145,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       pushMaximized();
       return;
     }
-    const before = mainWindow.getBounds();
-    mainWindow.maximize();
-    // The WM answers asynchronously, so an immediate isMaximized() would read false even
-    // where maximizing works — give it a beat before deciding it was ignored.
-    setTimeout(() => {
-      if (mainWindow.isDestroyed() || mainWindow.isMaximized()) return;
-      manualBounds = before;
-      mainWindow.setBounds(screen.getDisplayMatching(before).workArea);
-      pushMaximized();
-    }, 300);
+    requestMaximize(mainWindow.getBounds());
     // No push here: on the path where the WM does its job, its `maximize` event is what
     // reports the new state, and isMaximized() is still false this instant on Linux.
   });
   handle('window:close', async () => mainWindow.close());
   handle('window:isMaximized', async () => isMaximized());
-  // A real WM maximize supersedes our stand-in, and unmaximize clears it either way.
-  mainWindow.on('maximize', () => {
-    manualBounds = null;
-    pushMaximized();
-  });
-  mainWindow.on('unmaximize', () => {
-    manualBounds = null;
-    pushMaximized();
-  });
 
   // Auto-update. The updater is constructed near the top (it is inert until `start()`);
   // these three are the whole surface the UI gets — the rest arrives on `update:changed`.
@@ -1104,5 +1171,5 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // channel is live, so a network stall can never delay handler registration.
   updater.start();
 
-  return { sessions, scheduler, store, broker, watcher, jiraPoller, updater };
+  return { sessions, scheduler, store, broker, watcher, jiraPoller, updater, windowTracker };
 }

@@ -35,6 +35,7 @@ import type { JiraEpicFieldCache } from './jira/epicField';
 import type { JiraSprintFieldCache } from './jira/jiraSprint';
 import type { JiraIdentityCache } from './jira/identity';
 import type { ParsedTask } from './planParser';
+import type { SavedWindowState } from './windowState';
 import { reconcileTasks } from './taskReconcile';
 
 /** A row as stored; SQLite has no boolean, so we keep types explicit here. */
@@ -273,6 +274,16 @@ export interface Store {
   saveJiraIdentity(cache: JiraIdentityCache): void;
   /** The cached JIRA identity, or null if it has never been fetched. */
   loadJiraIdentity(): JiraIdentityCache | null;
+  /**
+   * Remember the main window's geometry so the next launch opens where the last one
+   * closed. Written on a debounce while the window moves, so it stays cheap.
+   */
+  saveWindowState(state: SavedWindowState): void;
+  /**
+   * The raw saved geometry, unvalidated — the displays it refers to may not exist any
+   * more, so `sanitizeWindowState` is what turns this into something to apply.
+   */
+  loadWindowState(): unknown;
   close(): void;
 }
 
@@ -676,6 +687,9 @@ export function createStore(dbPath: string): Store {
 
   /** The single row key caching `GET /myself` for the configured site. */
   const JIRA_IDENTITY_KEY = 'jira.identity';
+
+  /** Where the main window was, and whether it was maximized, when we last looked. */
+  const WINDOW_STATE_KEY = 'window.state';
 
   /** Read app settings, merging any stored fields over the built-in defaults. */
   function getSettings(): AppSettings {
@@ -1355,6 +1369,20 @@ export function createStore(dbPath: string): Store {
           : null;
       } catch {
         return null; // corrupt value — re-fetch
+      }
+    },
+
+    saveWindowState(state) {
+      upsertState.run(WINDOW_STATE_KEY, JSON.stringify(state));
+    },
+
+    loadWindowState() {
+      const row = selectState.get(WINDOW_STATE_KEY) as { value: string } | undefined;
+      if (!row) return null;
+      try {
+        return JSON.parse(row.value) as unknown;
+      } catch {
+        return null; // corrupt value — sanitizeWindowState would reject it anyway
       }
     },
 
