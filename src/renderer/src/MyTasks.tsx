@@ -285,7 +285,15 @@ export function MyTasks(): JSX.Element {
           </MessageBar>
         )}
 
-        <div className={styles.columns}>
+        {/*
+          The drag state is cleared HERE, not only on the card. A card dropped into
+          another column is re-parented by the optimistic patch below, so React unmounts
+          the node the drag started on and its `dragend` never reaches the root — the
+          card would keep `styles.dragging` (half opacity) until the next drag. This
+          container never unmounts, so it also catches an ESC-cancelled drag and the
+          `managedByAI` early-return, both of which leaked the same state.
+        */}
+        <div className={styles.columns} onDragEnd={() => setDraggingId(null)}>
           {visibleColumns(showDone).map((col) => (
             <KanbanColumn
               key={col}
@@ -307,7 +315,12 @@ export function MyTasks(): JSX.Element {
               onSelectTask={setSelectedTaskId}
               onDragStartTask={setDraggingId}
               onDragEndTask={() => setDraggingId(null)}
-              onDropInColumn={(taskId, column) => void moveTask(taskId, column)}
+              onDropInColumn={(taskId, column) => {
+                // Before the move, not after: `moveTask` patches optimistically and the
+                // dragged card is gone from this column by the time the promise settles.
+                setDraggingId(null);
+                void moveTask(taskId, column);
+              }}
             />
           ))}
         </div>
