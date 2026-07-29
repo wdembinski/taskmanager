@@ -6,6 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { PassThrough } from 'node:stream';
+import { MAX_TOOL_ERROR_CHARS } from './eventNoise';
 import {
   buildClaudeArgs,
   encodeUserMessage,
@@ -70,6 +71,72 @@ describe('mapRawEvent', () => {
       message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', is_error: false }] },
     });
     expect(events).toEqual([{ kind: 'tool-result', toolId: 'toolu_1', isError: false }]);
+  });
+
+  it('carries a FAILED tool result’s reason, so the UI can say more than "a tool call failed"', () => {
+    const events = mapRawEvent({
+      type: 'user',
+      message: {
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'toolu_2',
+            is_error: true,
+            content: [{ type: 'text', text: 'error TS2322: Type string is not assignable' }],
+          },
+        ],
+      },
+    });
+    expect(events).toEqual([
+      {
+        kind: 'tool-result',
+        toolId: 'toolu_2',
+        isError: true,
+        errorText: 'error TS2322: Type string is not assignable',
+        benign: false,
+      },
+    ]);
+  });
+
+  it('flags a failure the agent fixes on its own next turn', () => {
+    const [event] = mapRawEvent({
+      type: 'user',
+      message: {
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'toolu_3',
+            is_error: true,
+            content: 'String to replace not found in file.',
+          },
+        ],
+      },
+    });
+    expect(event).toMatchObject({ isError: true, benign: true });
+  });
+
+  it('caps a runaway error so one tool cannot bloat the transcript', () => {
+    const [event] = mapRawEvent({
+      type: 'user',
+      message: {
+        content: [
+          { type: 'tool_result', tool_use_id: 't', is_error: true, content: 'x'.repeat(50_000) },
+        ],
+      },
+    });
+    expect((event as { errorText: string }).errorText).toHaveLength(MAX_TOOL_ERROR_CHARS);
+  });
+
+  it('carries nothing extra on SUCCESS — the content there is the tool’s output, not ours', () => {
+    const events = mapRawEvent({
+      type: 'user',
+      message: {
+        content: [
+          { type: 'tool_result', tool_use_id: 't', is_error: false, content: 'a whole file' },
+        ],
+      },
+    });
+    expect(events).toEqual([{ kind: 'tool-result', toolId: 't', isError: false }]);
   });
 
   it('maps the final result event with cost, stop reason, and cumulative usage', () => {

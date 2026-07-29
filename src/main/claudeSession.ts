@@ -29,6 +29,7 @@ import { unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { SessionEvent, StartSessionRequest } from '@shared/session';
 import { localHost, type ExecHost } from './exec';
+import { isBenignToolFailure, MAX_TOOL_ERROR_CHARS, toolResultText } from './eventNoise';
 import { PERMISSION_MCP_SERVER_KEY, PERMISSION_PROMPT_TOOL } from './permissionServerSource';
 
 /** A live handle to a running session so callers can send to / stop it. */
@@ -168,10 +169,18 @@ export function mapRawEvent(raw: unknown): SessionEvent[] {
       const out: SessionEvent[] = [];
       for (const block of content as Array<Record<string, unknown>>) {
         if (block['type'] === 'tool_result') {
+          const isError = block['is_error'] === true;
+          // Only carried for a failure: on success the content is the tool's OUTPUT,
+          // which can be a whole file and is already the agent's business, not ours.
+          const errorText = isError
+            ? toolResultText(block['content']).slice(0, MAX_TOOL_ERROR_CHARS)
+            : '';
           out.push({
             kind: 'tool-result',
             toolId: String(block['tool_use_id'] ?? ''),
-            isError: block['is_error'] === true,
+            isError,
+            ...(errorText ? { errorText } : {}),
+            ...(isError ? { benign: isBenignToolFailure(errorText) } : {}),
           });
         }
       }

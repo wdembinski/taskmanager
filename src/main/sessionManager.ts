@@ -11,6 +11,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { runClaudeSession, type PermissionGate, type SessionHandle } from './claudeSession';
+import { shouldSurfaceEvent } from './eventNoise';
 import type { ExecHost } from './exec';
 import type { SessionEvent, SessionEventEnvelope, StartSessionRequest } from '@shared/session';
 
@@ -53,7 +54,11 @@ export class SessionManager {
     const handle = runClaudeSession(
       request,
       (event) => {
-        this.emit({ runId, event });
+        // The UI sees only what means something; OBSERVERS see everything. The order and
+        // the asymmetry both matter: `Scheduler.onRunEvent` needs the healthy rate-limit
+        // events the UI must never show, because they are what `getUsagePressure()` reads
+        // to report how close the account is to its cap.
+        if (shouldSurfaceEvent(event)) this.emit({ runId, event });
         onEvent?.(event);
         // Phase 4 keeps stdin open, so a session no longer exits by itself after a
         // `result`. A MANAGED run (the scheduler passes an observer) drives its own
