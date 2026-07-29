@@ -50,7 +50,8 @@ import { StepBrief, TaskSteps } from './TaskSteps';
 import { TaskAgentPanel } from './TaskAgentPanel';
 import { TaskDetailsCell } from './TaskDetailsCell';
 import { chatAvailability, REFUSAL_HINT } from './taskChat';
-import { usePendingAttention } from './usePendingAttention';
+import { runPhase } from '@shared/board';
+import type { AttentionIndex } from './useAttentionIndex';
 
 const useStyles = makeStyles({
   // No gap: the top band is full-bleed, so spacing belongs to the rows themselves.
@@ -149,6 +150,14 @@ export interface TaskDetailProps {
   mergeRequests?: MergeRequest[];
   /** The status-note vocabulary, so a past update reads in the colour the board gave it. */
   statusKeywords?: readonly StatusKeyword[];
+  /**
+   * The board's single attention index. Passed in rather than subscribed to here: this
+   * pane and the agent panel inside it were each mounting their own subscription, holding
+   * two copies of the same state that could disagree.
+   */
+  attention?: AttentionIndex;
+  /** Task ids the engine has a live run for, so the pane can show a spawning run. */
+  liveRunTaskIds?: ReadonlySet<string>;
   /** Show another task in this pane (the breadcrumb, and opening a step). */
   onOpenTask?: (taskId: string) => void;
   /** Called after a successful manual status change so the parent list can patch. */
@@ -164,6 +173,8 @@ export function TaskDetail({
   parentTask = null,
   mergeRequests = [],
   statusKeywords,
+  attention,
+  liveRunTaskIds,
   onOpenTask,
   onStatusChanged,
   onSubtasksChanged,
@@ -268,8 +279,14 @@ export function TaskDetail({
   // so the inbox item that decides "blocked on approve/deny" is the target's, not the
   // card's.
   const target = task ? chatTarget(task, subtasks) : null;
-  const [targetPending] = usePendingAttention([target?.id]);
+  const targetPending = attention?.itemsFor([target?.id])[0] ?? null;
   const chat = task ? chatAvailability(task, subtasks, targetPending) : null;
+  // Everything parked on this card AND its steps — the card's own ask first, so it
+  // outranks a step's.
+  const panelItems = useMemo(
+    () => attention?.itemsFor([task?.id, ...subtasks.map((s) => s.id)]) ?? [],
+    [attention, task?.id, subtasks],
+  );
 
   // Keep the newest turn in view as output streams (same rule as the Transcript pane).
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -293,7 +310,14 @@ export function TaskDetail({
     );
   }
 
-  const managedByAI = task.status === 'running' || task.status === 'waiting-input';
+  /**
+   * What this card is doing, from the one shared answer — not from `status` alone, which
+   * could not see a run that had spawned but was not yet persisted as `running` (the
+   * "no spinner though it is clearly working" complaint) and which called a card that is
+   * WAITING FOR YOU "Agent running", spinner and all.
+   */
+  const run = runPhase(task, subtasks, liveRunTaskIds);
+  const managedByAI = run.phase === 'running' || run.phase === 'starting' || run.phase === 'waiting';
 
   async function addComment(): Promise<void> {
     if (!task || !comment.text.trim()) return;
@@ -462,6 +486,7 @@ export function TaskDetail({
           task={task}
           subtasks={subtasks}
           agentProjects={agentProjects}
+          items={panelItems}
           onOpenTask={onOpenTask}
           onTaskChanged={(updated) => {
             onStatusChanged?.(updated);
@@ -530,8 +555,11 @@ export function TaskDetail({
         {managedByAI && (
           <div className={styles.runState}>
             <div className={styles.running}>
-              <Spinner size="tiny" />
-              <Caption1 className={styles.runningLabel}>Agent running</Caption1>
+              {/* The spinner turns only while something MOVES; a card waiting on you gets
+                  the words without the motion, because a spinner over "Waiting for you"
+                  says the opposite of what is true. */}
+              {run.spinner && <Spinner size="tiny" />}
+              <Caption1 className={styles.runningLabel}>{run.label || 'Agent running'}</Caption1>
             </div>
             {subAgents.map((agent) => (
               <div key={agent.toolId} className={`${styles.running} ${styles.subAgent}`}>

@@ -25,6 +25,7 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import type { AttentionAnswer, AttentionItem } from '@shared/attention';
+import { AgentQuestionForm } from './AgentQuestionForm';
 import { PaneLoading } from './PaneLoading';
 import { useInitialLoad } from './useInitialLoad';
 
@@ -99,6 +100,13 @@ function KindBadge({ kind }: { kind: AttentionItem['kind'] }): JSX.Element {
       </Badge>
     );
   }
+  if (kind === 'agent-question') {
+    return (
+      <Badge appearance="tint" color="warning">
+        choose
+      </Badge>
+    );
+  }
   return (
     <Badge appearance="tint" color="warning">
       question
@@ -152,7 +160,16 @@ function InboxItem({
         </Caption1>
       )}
 
-      {item.kind === 'task-failed' || item.kind === 'proposal' ? (
+      {/* The structured form, so the inbox and the card's pane offer the same thing —
+          answering in one place and getting a different form in the other would make it
+          look like they were two different asks. */}
+      {item.kind === 'agent-question' && (item.questions?.length ?? 0) > 0 ? (
+        <AgentQuestionForm
+          questions={item.questions!}
+          busy={busy}
+          onAnswer={(a) => void answer(a)}
+        />
+      ) : item.kind === 'task-failed' || item.kind === 'proposal' ? (
         <>
           <div className={styles.choices}>
             {item.options.map((option) => (

@@ -25,14 +25,14 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import { AgentsRegular } from '@fluentui/react-icons';
-import type { AttentionAnswer } from '@shared/attention';
+import type { AttentionAnswer, AttentionItem } from '@shared/attention';
 import { parkedStep } from '@shared/board';
 import type { Project, Task } from '@shared/model';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import { AssignAgentDialog } from './AssignAgentDialog';
 import { stepPosition } from './board/boardColumns';
 import { STATUS_LABEL } from './taskStatus';
-import { usePendingAttention } from './usePendingAttention';
+import { AgentQuestionForm } from './AgentQuestionForm';
 import { UNREAD_ORANGE as ASK_ORANGE } from '@shared/accent';
 
 const useStyles = makeStyles({
@@ -90,6 +90,17 @@ export interface TaskAgentPanelProps {
   subtasks?: Task[];
   /** Every agent project (`agentProject:list`), owned by the board so it's fetched once. */
   agentProjects: Project[];
+  /**
+   * Everything the inbox is holding for this card and its steps, newest last, from the
+   * board's single `useAttentionIndex`.
+   *
+   * A prop rather than a hook of its own: this panel and the detail pane around it were
+   * each mounting `usePendingAttention`, which surfaced only the FIRST item and, on
+   * `attention:resolved`, set null without re-querying — so answering one of two pending
+   * asks silently swallowed the other, and a question raised while you were reading the
+   * card could fail to appear at all.
+   */
+  items?: readonly AttentionItem[];
   /** Open another task in the pane (used to jump to the step that stopped the chain). */
   onOpenTask?: (taskId: string) => void;
   /** Called with the updated task after an assign/stop so the board can patch the card. */
@@ -100,6 +111,7 @@ export function TaskAgentPanel({
   task,
   subtasks = [],
   agentProjects,
+  items = [],
   onOpenTask,
   onTaskChanged,
 }: TaskAgentPanelProps): JSX.Element {
@@ -108,7 +120,11 @@ export function TaskAgentPanel({
   // The card's own ask, or one belonging to a step: a card executing a plan stays
   // `in-progress` while a STEP holds the run, so its inbox item is keyed to the step and
   // was unreachable from here before Phase 12.
-  const [item, setItem] = usePendingAttention([task.id, ...subtasks.map((s) => s.id)]);
+  //
+  // One at a time, oldest first — answering it reveals the next, because the index drops
+  // only the item that was resolved rather than blanking the whole slot.
+  const item = items[0] ?? null;
+  const queued = Math.max(0, items.length - 1);
   const [reply, setReply] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -141,7 +157,8 @@ export function TaskAgentPanel({
       setError(null);
       try {
         await window.api.invoke('attention:answer', item.id, a);
-        setItem(null); // the engine also emits `attention:resolved`; clear now for snappiness
+        // No local clear: the engine emits `attention:resolved` and the board's index
+        // drops exactly this item, leaving any sibling ask standing.
         setReply('');
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
@@ -283,10 +300,19 @@ export function TaskAgentPanel({
                       ? // A failure has resolutions, not answers — saying "question" here
                         // (as this did before Phase 12) hid what the buttons below do.
                         `The run failed — pick how to continue${itemStep ? ', and the chain resumes' : ''}`
-                      : 'The agent has a question'}
+                      : item.kind === 'agent-question'
+                        ? 'The agent is asking you to choose'
+                        : 'The agent has a question'}
             </Text>
           </div>
           <div className={styles.prompt}>{item.prompt}</div>
+          {/* Say that more is waiting. Silence here is what made answering one ask feel
+              like it had swallowed the others. */}
+          {queued > 0 && (
+            <Caption1 className={styles.hint}>
+              {queued} more {queued === 1 ? 'ask' : 'asks'} waiting after this one.
+            </Caption1>
+          )}
           {item.reason && (
             <Caption1 className={styles.hint}>Held because it {item.reason}.</Caption1>
           )}
@@ -324,9 +350,19 @@ export function TaskAgentPanel({
             </>
           )}
 
-          {item.kind === 'permission' ||
-          item.kind === 'merge-conflict' ||
-          item.kind === 'plan-approval' ? (
+          {/* A structured question gets the real form: several questions, multi-select,
+              and the per-option descriptions that are the whole reason the CLI asks this
+              way rather than in prose. The flat `options` path below cannot carry any of
+              that, which is what made these unreadable. */}
+          {item.kind === 'agent-question' && (item.questions?.length ?? 0) > 0 ? (
+            <AgentQuestionForm
+              questions={item.questions!}
+              busy={busy}
+              onAnswer={(a) => void answer(a)}
+            />
+          ) : item.kind === 'permission' ||
+            item.kind === 'merge-conflict' ||
+            item.kind === 'plan-approval' ? (
             <div className={styles.answerRow}>
               <Field className={styles.grow} label="Optional note to the agent">
                 <Textarea

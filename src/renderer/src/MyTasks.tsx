@@ -428,6 +428,8 @@ export function MyTasks(): JSX.Element {
             parentTask={parentOfSelected}
             mergeRequests={selectedTask ? (mrsByTask.get(selectedTask.id) ?? []) : []}
             statusKeywords={settings?.statusKeywords}
+            attention={attention}
+            liveRunTaskIds={liveRuns}
             onOpenTask={setSelectedTaskId}
             onStatusChanged={patchTask}
             onSubtasksChanged={() => void refresh()}
