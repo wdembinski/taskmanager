@@ -210,6 +210,18 @@ export interface AppSettings {
   fontSizePx: number;
   /** Whether transient toasts are shown at all. Everything they say is also on screen. */
   toastsEnabled: boolean;
+  /**
+   * Whether a finished run merges its own branch back into base (Phase 17).
+   *
+   * **Off by default**, which reverses the original behaviour. Auto-integration merges at
+   * the moment the agent stops — the moment you have reviewed the work least — and when
+   * the merge fails it parks an inbox item offering "Retry integration", which fails the
+   * same way, parks again, and asks again. There was no way to say "leave it".
+   *
+   * With this off, a finished branch waits and the card offers a Merge button. Nothing is
+   * lost either way: the branch and its worktree survive both paths.
+   */
+  autoIntegrate: boolean;
   /** Which optional context lines the board's cards draw. */
   board: BoardDisplaySettings;
   /** JIRA integration config for the Personal board (Phase B). */
@@ -232,6 +244,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   branchPrefix: '',
   fontSizePx: 14,
   toastsEnabled: true,
+  autoIntegrate: false,
   board: DEFAULT_BOARD_DISPLAY,
   jira: DEFAULT_JIRA_SETTINGS,
   gitlab: DEFAULT_GITLAB_SETTINGS,

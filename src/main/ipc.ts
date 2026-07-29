@@ -510,6 +510,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     }
     return started;
   });
+  handle('task:integrate', async (taskId) => {
+    const refusal = await scheduler.integrateNow(taskId);
+    if (refusal) throw new Error(refusal);
+  });
   handle('task:history', async (taskId) => store.getTaskHistory(taskId));
   handle('task:cleanupWorktree', async (taskId) => {
     const task = store.getTask(taskId);

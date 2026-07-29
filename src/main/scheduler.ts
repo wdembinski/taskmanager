@@ -139,6 +139,16 @@ export const FAILURE_ACTION = {
   retryIntegration: 'Retry integration',
   cleanup: 'Clean up & abandon',
   markDone: 'Mark done',
+  /**
+   * Stop asking. The branch and its worktree are kept exactly as they are; the card
+   * simply stops holding an inbox item about them.
+   *
+   * This exists because "Retry integration" was the only real option on a failure whose
+   * cause is usually outside the app (a dirty base tree, a conflict a human must settle),
+   * so retrying failed the same way and parked the same ask again — a loop with no exit
+   * that did not involve abandoning the work.
+   */
+  leaveBranch: 'Leave the branch (stop asking)',
 } as const;
 
 /** Actions offered for a failed agent RUN vs. a failed branch INTEGRATION. */
@@ -151,6 +161,7 @@ const RUN_FAILURE_OPTIONS = [
 ];
 const INTEGRATION_FAILURE_OPTIONS = [
   FAILURE_ACTION.retryIntegration,
+  FAILURE_ACTION.leaveBranch,
   FAILURE_ACTION.cleanup,
   FAILURE_ACTION.markDone,
 ];
@@ -638,6 +649,26 @@ export class Scheduler {
    * `finishAfterConflict` instead of a fresh integrate. Keyed by task id → integration ctx.
    */
   private readonly pendingConflictFix = new Map<
+    string,
+    {
+      projectId: string;
+      taskId: string;
+      runId: string;
+      branch: string;
+      base: string;
+      worktree: string;
+    }
+  >();
+  /**
+   * Branches that are finished and waiting for a human to merge them (Phase 17), keyed by
+   * task id. Populated when a worktree run settles with `autoIntegrate` off, and consumed
+   * by {@link Scheduler.integrateNow}.
+   *
+   * In memory rather than persisted: the durable facts are the branch and the worktree,
+   * both of which survive on disk. A restart forgets the offer, not the work — and
+   * `integrateNow` can rebuild the context from the task, so the button keeps working.
+   */
+  private readonly readyToIntegrate = new Map<
     string,
     {
       projectId: string;
@@ -2293,11 +2324,43 @@ export class Scheduler {
         };
         // If this run was an agent conflict-fix (Rung 2), finish the paused rebase rather
         // than starting a fresh integrate — the worktree is mid-rebase with staged fixes.
+        // A conflict fix always finishes: the human already asked for that merge, and
+        // leaving a worktree mid-rebase is not a state to park in.
         if (this.pendingConflictFix.delete(run.taskId)) {
           void this.finishConflict({ projectId: project.id, ...ctx });
-        } else {
-          void this.integrateWorktree(project, ctx);
+          return;
         }
+        // Phase 17: merging is the human's call unless they asked for it to be automatic.
+        // Auto-merge happens at the moment the work has been reviewed least, and when it
+        // failed it parked an ask whose only real option retried the same failure.
+        if (this.store.getSettings().autoIntegrate) {
+          void this.integrateWorktree(project, ctx);
+          return;
+        }
+        this.attempts.delete(run.taskId);
+        this.readyToIntegrate.set(run.taskId, { projectId: project.id, ...ctx });
+        this.noteRun(
+          project.id,
+          run.taskId,
+          run.runId,
+          `Finished on branch "${ctx.branch}". It has NOT been merged into ${ctx.base} — ` +
+            `review it, then choose Merge on the card. The worktree is kept at ${ctx.worktree}.`,
+        );
+        // Same split as the merged path: a STEP must reach `done` or the chain machinery
+        // breaks (`hasPendingSibling`, `advanceSubtasks` and `chainInFlight` all read it
+        // as "this step is over"), while a CARD must not — only the human moves a card.
+        const settled = this.store.getTask(run.taskId);
+        this.updateTask(
+          run.taskId,
+          { status: settled?.parentTaskId ? 'done' : 'in-progress' },
+          null,
+        );
+        this.maybeWriteBackPlan(run.taskId);
+        void this.finishParentChain(run.taskId, {
+          branch: ctx.branch,
+          base: ctx.base,
+          merged: false,
+        });
         return;
       }
     }
@@ -2444,6 +2507,73 @@ export class Scheduler {
   }
 
   /** Park a failed branch integration for the human (keeps the worktree/branch). */
+  /**
+   * Merge a finished branch on the human's say-so (Phase 17).
+   *
+   * The offer is rebuilt from the TASK when the in-memory one is gone, so the button
+   * survives a restart: a worktree and a branch are facts on disk, and refusing to merge
+   * them because a Map was emptied would be an accident of process lifetime.
+   *
+   * Returns why it could not start, or null once an integration is under way.
+   */
+  async integrateNow(taskId: string): Promise<string | null> {
+    if (!this.worktrees) return 'Worktrees are not enabled for this install.';
+    const task = this.store.getTask(taskId);
+    if (!task) return 'That task no longer exists.';
+    if (task.status === 'running') return 'The agent is still working — stop it first.';
+
+    let ctx = this.readyToIntegrate.get(taskId);
+    if (!ctx) {
+      // The offer is gone but the branch is not: `readyToIntegrate` lives in memory and a
+      // restart empties it, while the worktree and the branch are facts on disk. `prepare`
+      // is how those facts are read — it reuses the existing worktree and reports the
+      // branch it is ACTUALLY on, which is the same call the launcher makes.
+      const project = this.store.getProject(task.agentProjectId ?? '');
+      if (!project) return 'The agent project for this card has been removed.';
+      const owner = task.parentTaskId ?? task.id;
+      const prep = await this.worktrees.prepare(project, task, owner, task.agentBranch ?? undefined);
+      if (prep.mode !== 'worktree' || !prep.branch || !prep.base) {
+        return 'This card did not run in a worktree, so there is nothing to merge.';
+      }
+      ctx = {
+        projectId: project.id,
+        taskId,
+        runId: task.sessionId ?? taskId,
+        branch: prep.branch,
+        base: prep.base,
+        worktree: prep.cwd,
+      };
+    }
+    const project = this.store.getProject(ctx.projectId);
+    if (!project) return 'The agent project for this card has been removed.';
+
+    this.readyToIntegrate.delete(taskId);
+    void this.integrateWorktree(project, {
+      taskId: ctx.taskId,
+      runId: ctx.runId,
+      branch: ctx.branch,
+      base: ctx.base,
+      worktree: ctx.worktree,
+    });
+    return null;
+  }
+
+  /**
+   * Whether a card has a finished branch waiting to be merged, for the UI's button.
+   *
+   * Deliberately optimistic after a restart: a delegated card that is not running and
+   * whose project uses worktrees probably has a branch, and offering a Merge that then
+   * reports "nothing to merge" is kinder than hiding the only button that can finish the
+   * job. Checking properly would mean an async git call per card on every board render.
+   */
+  hasBranchToIntegrate(taskId: string): boolean {
+    if (this.readyToIntegrate.has(taskId)) return true;
+    const task = this.store.getTask(taskId);
+    if (!task || !task.agentProjectId || task.status === 'running') return false;
+    const project = this.store.getProject(task.agentProjectId);
+    return Boolean(project?.useWorktrees) && Boolean(task.sessionId);
+  }
+
   private parkIntegrationFailure(
     project: Project,
     ctx: { taskId: string; runId: string; branch: string; base: string; worktree: string },
@@ -2635,6 +2765,27 @@ export class Scheduler {
         );
         this.updateTask(f.taskId, { status: 'failed' }, null);
         break;
+      case FAILURE_ACTION.leaveBranch:
+        // Nothing to undo and nothing to retry: the branch stays, the worktree stays, the
+        // card goes back to being an ordinary card. The point is that the ask ENDS.
+        this.attempts.delete(f.taskId);
+        this.readyToIntegrate.set(f.taskId, {
+          projectId: f.projectId,
+          taskId: f.taskId,
+          runId: f.runId,
+          branch: f.branch ?? '',
+          base: f.base ?? '',
+          worktree: f.worktree ?? '',
+        });
+        this.noteRun(
+          f.projectId,
+          f.taskId,
+          f.runId,
+          `Left branch "${f.branch ?? 'unknown'}" unmerged at your request. ` +
+            `Nothing was discarded — merge it from the card when you are ready.`,
+        );
+        this.updateTask(f.taskId, { status: 'in-progress' }, null);
+        break;
       case FAILURE_ACTION.markDone:
         this.attempts.delete(f.taskId);
         this.noteRun(
@@ -2806,7 +2957,12 @@ export class Scheduler {
    */
   private async finishParentChain(
     subtaskId: string,
-    merged?: { branch: string; base: string },
+    /**
+     * The chain's branch and base, and whether they were actually merged. Since Phase 17
+     * a finished chain normally has a branch that has NOT been merged — merging is the
+     * human's call — so the flag is carried rather than inferred from the names existing.
+     */
+    branchInfo?: { branch: string; base: string; merged?: boolean },
   ): Promise<void> {
     const subtask = this.store.getTask(subtaskId);
     if (!subtask?.parentTaskId) return;
@@ -2822,8 +2978,9 @@ export class Scheduler {
         status: step.status,
         outcome: this.lastResultText(step.id),
       })),
-      merged?.branch ?? null,
-      merged?.base ?? null,
+      branchInfo?.branch ?? null,
+      branchInfo?.base ?? null,
+      branchInfo?.merged ?? true,
     );
     this.store.addComment(parent.projectId, parent.id, summary);
     if (parent.status !== 'in-progress') {

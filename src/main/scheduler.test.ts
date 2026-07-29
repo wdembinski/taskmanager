@@ -698,6 +698,9 @@ describe('failure decision helpers (pure)', () => {
     const actions = failureActionsFor('integration');
     expect(actions).toEqual([
       FAILURE_ACTION.retryIntegration,
+      // Phase 17: the way out of a retry loop. An integration failure usually has a cause
+      // outside the app, so "Retry integration" alone meant failing and re-asking forever.
+      FAILURE_ACTION.leaveBranch,
       FAILURE_ACTION.cleanup,
       FAILURE_ACTION.markDone,
     ]);
@@ -987,7 +990,10 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
    * rules of the chain show up: every step prepares the PARENT's worktree, and only
    * the LAST step integrates.
    */
-  function setup(steps: Array<Partial<Task>> = [{ id: 's1' }, { id: 's2' }]) {
+  function setup(
+    steps: Array<Partial<Task>> = [{ id: 's1' }, { id: 's2' }],
+    opts?: { autoIntegrate?: boolean },
+  ) {
     const agentProject = {
       id: 'agent-1',
       name: 'Checkout service',
@@ -1061,7 +1067,14 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       },
       appendTaskEvent: vi.fn(),
       appendTokenUsage: vi.fn(),
-      getSettings: () => ({ maxAutoRetries: 0, limitJitterMs: 0, concurrency: 1 }),
+      // `autoIntegrate` on: these cases are ABOUT the integration path, and Phase 17 made
+      // merging manual by default. The manual case has its own test below.
+      getSettings: () => ({
+        maxAutoRetries: 0,
+        limitJitterMs: 0,
+        concurrency: 1,
+        autoIntegrate: opts?.autoIntegrate ?? true,
+      }),
       ...INERT_ATTENTION_STORE,
     } as unknown as Store;
     const prepared: Array<{ taskId: string; owner: string }> = [];
@@ -1184,6 +1197,26 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
     expect(filed).toContain('2. Step 2');
     expect(filed).toContain('Merged `orch/t1` into `main`');
     expect(filed).toContain('move it to Done yourself');
+  });
+
+  it('holds the finished branch for a human when autoIntegrate is off (Phase 17)', async () => {
+    const { parent, children, integrated, comments, seedRun, fire } = setup(undefined, {
+      autoIntegrate: false,
+    });
+    children[0].status = 'done';
+    seedRun('r2', 's2');
+    fire('r2', okResult);
+    await flush();
+    // The whole point: nothing was merged. Merging at the instant the agent stops is
+    // merging at the moment the work has been reviewed least.
+    expect(integrated).toEqual([]);
+    // Everything else still happens — the step is over, the card waits for a human, and
+    // the branch is named so it can be found and reviewed.
+    expect(children[1].status).toBe('done');
+    expect(parent.status).toBe('in-progress');
+    const filed = comments.join(' ');
+    expect(filed).toContain('orch/t1');
+    expect(filed).toContain('NOT been merged');
   });
 
   it('a failed step stops the chain — its siblings stay pending', async () => {

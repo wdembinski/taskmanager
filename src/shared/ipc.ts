@@ -303,6 +303,15 @@ export interface IpcApi {
   /** Run a single task ad-hoc (independent of its project's queue). Returns its run id. */
   'task:run': (taskId: string) => Promise<{ runId: string }>;
   /**
+   * Merge a finished card's branch back into its base, on the human's say-so (Phase 17).
+   *
+   * Integration is manual unless `AppSettings.autoIntegrate` is on, because merging at the
+   * moment the agent stops is merging at the moment the work has been reviewed least.
+   * Resolves once the merge has been STARTED; its outcome arrives as a task note, or as an
+   * inbox item when it conflicts.
+   */
+  'task:integrate': (taskId: string) => Promise<void>;
+  /**
    * Create an ad-hoc task in a project (Phase 8) — no plan line required, so
    * plan-less projects are usable and you can add work on the fly. Returns the task.
    */

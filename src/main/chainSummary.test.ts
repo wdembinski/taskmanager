@@ -99,7 +99,10 @@ describe('buildChainHandbackPrompt', () => {
   it('says the work is already done and this turn is a review', () => {
     // Without this a fresh agent handed a plan summary reads it as a BRIEF and starts
     // building the thing that was just built.
-    expect(prompt).toContain('already merged');
+    // "already written", not "already merged": since Phase 17 the branch usually has NOT
+    // been merged when the chain ends, and a prompt that says otherwise would have the
+    // review agent looking for the work on the base branch.
+    expect(prompt).toContain('already written');
     expect(prompt).toContain('not to implement anything');
     expect(prompt).toContain('Do not start new work unless they ask');
   });

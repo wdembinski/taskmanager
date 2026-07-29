@@ -62,6 +62,15 @@ export function buildChainSummary(
   steps: ChainStepSummary[],
   branch: string | null,
   base: string | null,
+  /**
+   * Whether the branch was actually merged into base.
+   *
+   * A separate flag rather than inferred from `branch && base` being present, because
+   * since Phase 17 a finished chain usually has both AND has not been merged — merging
+   * is the human's call. Claiming a merge that did not happen is the one thing this
+   * summary must never do: it is the record the card is read from later.
+   */
+  merged = true,
 ): string {
   const lines: string[] = [];
   const finished = steps.filter((s) => s.status === 'done').length;
@@ -83,7 +92,12 @@ export function buildChainSummary(
 
   if (branch && base) {
     lines.push('');
-    lines.push(`Merged \`${branch}\` into \`${base}\`.`);
+    lines.push(
+      merged
+        ? `Merged \`${branch}\` into \`${base}\`.`
+        : `The work is on \`${branch}\` and has **NOT been merged** into \`${base}\` — ` +
+            `review it, then choose Merge on this card.`,
+    );
   }
 
   lines.push('');
@@ -101,7 +115,7 @@ export function buildChainSummary(
 export function buildChainHandbackPrompt(cardTitle: string, summary: string): string {
   return [
     `The approved plan for “${cardTitle}” has finished running. Every step was executed in`,
-    'its own session and the work is already merged — here is what was done:',
+    'its own session and the work is already written — here is what was done:',
     '',
     summary,
     '',

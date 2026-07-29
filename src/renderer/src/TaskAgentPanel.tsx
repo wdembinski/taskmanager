@@ -152,6 +152,16 @@ export function TaskAgentPanel({
   // without being started. `sessionId` is the test rather than the status, because a
   // staged card and a queued one are both `pending`.
   const staged = Boolean(task.agentProjectId) && !task.sessionId && task.status === 'pending';
+  /**
+   * Whether to offer Merge: a delegated card that has actually run, in a repo that uses
+   * worktrees. Derived here rather than asked of the engine, which would mean an async
+   * round trip on every selection to answer a question the card already implies.
+   *
+   * Optimistic on purpose — if the branch turns out to be gone, `task:integrate` says so
+   * in one line, which beats hiding the only button that can finish the job.
+   */
+  const canIntegrate =
+    Boolean(task.agentProjectId) && Boolean(task.sessionId) && Boolean(assigned?.useWorktrees);
 
   // The asks arrive as a prop; only the draft reply is local.
   useEffect(() => {
@@ -176,6 +186,19 @@ export function TaskAgentPanel({
     },
     [item],
   );
+
+  /** Merge this card's branch into base, on the human's say-so. */
+  async function integrate(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      await window.api.invoke('task:integrate', taskId);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   /** Re-enter a chain that stopped: run the parked step again in the card's worktree. */
   async function runStep(stepId: string): Promise<void> {
@@ -229,6 +252,18 @@ export function TaskAgentPanel({
         {/* Assigned but never started (Phase 17). The affordance for a staged card —
             sending it a message starts it too, but a card you have nothing to say to yet
             still needs a way to begin. */}
+        {/* Merging is the human's call: a branch is merged when it has been reviewed,
+            not at the instant the agent happened to stop. */}
+        {canIntegrate && !isStep && !live && (
+          <Button
+            size="small"
+            disabled={busy}
+            title="Merge this card's branch into its base branch."
+            onClick={() => void integrate()}
+          >
+            Merge branch
+          </Button>
+        )}
         {staged && (
           <Button
             size="small"
