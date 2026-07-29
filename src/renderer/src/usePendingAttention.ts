@@ -11,6 +11,15 @@
  * Shared by the agent panel (which answers the item) and the detail pane's composer
  * (which must know a run is blocked on approve/deny before offering to chat at it), so
  * both read one subscription's worth of truth rather than two that can drift.
+ *
+ * SUPERSEDED by `useAttentionIndex` (Phase 17), which subscribes once for the whole board
+ * and returns a LIST. Two things are wrong here and are fixed there: it surfaces only the
+ * first item of a chain, and `attention:resolved` sets `null` without re-querying — so
+ * answering one of two pending items silently swallows the other. It also ends up mounted
+ * twice per selected card, holding two independent copies of the same state.
+ *
+ * Kept until its two callers (`TaskDetail`, `TaskAgentPanel`) are rewritten together in
+ * the detail-pane phase; changing the signature now would mean touching them twice.
  */
 import { useEffect, useState, type Dispatch, type SetStateAction } from 'react';
 import type { AttentionItem } from '@shared/attention';
