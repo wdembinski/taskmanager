@@ -10,11 +10,12 @@
  * TanStack Query): this app's "server" is the local engine, reached through
  * `window.api` over IPC, not HTTP.
  */
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom/client';
-import { FluentProvider, webDarkTheme, type Theme } from '@fluentui/react-components';
+import { FluentProvider, Toaster, webDarkTheme, type Theme } from '@fluentui/react-components';
 import { App } from './App';
 import { RootErrorBoundary } from './RootErrorBoundary';
+import { BASE_FONT_PX, TOASTER_ID, scaleTheme } from './theme';
 import './index.css';
 
 /**
@@ -36,14 +37,60 @@ const appTheme: Theme = {
   colorNeutralForeground1Selected: EDITOR_FOREGROUND,
 };
 
-ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
-  <React.StrictMode>
-    <FluentProvider theme={appTheme} style={{ height: '100vh' }}>
+/**
+ * The provider, sized to the user's font-size setting.
+ *
+ * Two mechanisms, because one cannot reach everything. `scaleTheme` multiplies Fluent's
+ * type ramp, which covers every `Text`, `Button`, `Field` and `Badge` in the app without
+ * touching a component. `--app-font-scale` covers the sizes written as literal px in
+ * `makeStyles`, which tokens cannot reach — those call `fontPx()`. Both are derived from
+ * the same number, so they can never disagree.
+ *
+ * Read here rather than passed down because it must wrap the whole tree, and re-read on
+ * `settings:changed` so the size takes effect as you pick it rather than on next launch.
+ */
+function ThemedApp(): JSX.Element {
+  const [fontSizePx, setFontSizePx] = useState(BASE_FONT_PX);
+  const [toasts, setToasts] = useState(true);
+
+  useEffect(() => {
+    const read = (): void => {
+      void window.api
+        .invoke('settings:get')
+        .then((s) => {
+          setFontSizePx(s.fontSizePx || BASE_FONT_PX);
+          setToasts(s.toastsEnabled);
+        })
+        .catch(() => undefined);
+    };
+    read();
+    return window.api.on('settings:changed', read);
+  }, []);
+
+  return (
+    <FluentProvider
+      theme={scaleTheme(appTheme, fontSizePx)}
+      style={
+        {
+          height: '100vh',
+          '--app-font-scale': fontSizePx / BASE_FONT_PX,
+        } as React.CSSProperties
+      }
+    >
       {/* A render crash used to blank the window with no explanation. Inside the provider
           so the fallback still gets the theme's tokens. */}
       <RootErrorBoundary>
         <App />
       </RootErrorBoundary>
+      {/* One surface for the whole app, so any screen can dispatch into it. Absent
+          entirely when toasts are off — everything they say is also on screen. */}
+      {toasts && <Toaster toasterId={TOASTER_ID} position="bottom-end" />}
     </FluentProvider>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
+  <React.StrictMode>
+    <ThemedApp />
   </React.StrictMode>,
 );

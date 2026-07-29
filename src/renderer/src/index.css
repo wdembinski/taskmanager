@@ -39,3 +39,61 @@ body {
 .app-no-drag {
   -webkit-app-region: no-drag;
 }
+
+/*
+ * Scrollbars: thin, rounded, no track, no arrows — and invisible until you are actually
+ * over the thing that scrolls.
+ *
+ * Done globally rather than per-pane because every scrolling surface in the app wants the
+ * same treatment, and a `makeStyles` version would have to be remembered at each new one.
+ *
+ * The thumb fades on hover of the SCROLLING ELEMENT, not of the scrollbar: a 8px target
+ * you must already be touching to make visible is not a target. `:hover` on the element
+ * and a transition on the thumb is the whole mechanism — Chromium animates
+ * `::-webkit-scrollbar-thumb` background like any other property.
+ *
+ * `scrollbar-gutter: stable` keeps the fade from reflowing text: without it the content
+ * would shift by the scrollbar's width every time the pointer entered a pane.
+ */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border-radius: 4px;
+  /* Inset by a transparent border so the visible thumb is 6px inside an 8px lane. */
+  border: 1px solid transparent;
+  background-clip: padding-box;
+  transition: background-color 160ms ease-in-out;
+}
+
+/* Chromium has no arrow buttons by default, but a stray platform theme can add them. */
+*::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+:hover::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.25);
+}
+
+:hover::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.42);
+}
+
+:hover::-webkit-scrollbar-thumb:active {
+  background-color: rgba(255, 255, 255, 0.55);
+}

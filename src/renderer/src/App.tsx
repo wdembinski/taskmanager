@@ -49,10 +49,7 @@ import { Projects } from './Projects';
 import { Settings } from './Settings';
 import { SessionRunner } from './SessionRunner';
 import { TitleBar } from './TitleBar';
-import { UNREAD_ORANGE } from '@shared/accent';
-
-/** The editor's status-bar blue, and the app's own "this one wants you" orange. */
-const STATUS_BLUE = '#007ACC';
+import { ACCENT, fontPx } from './theme';
 
 const useStyles = makeStyles({
   shell: {
@@ -82,11 +79,18 @@ const useStyles = makeStyles({
     // The same surface as the detail pane, so the window reads as content between two
     // lighter edges rather than as three unrelated panels.
     backgroundColor: tokens.colorNeutralBackground1,
-    // The glyphs scale with the rail: 1.5× the 24px they started at, so the icon still
-    // fills the same share of a wider tab.
-    '& svg': { fontSize: '36px' },
-    // The tabs fill that width; their glyphs stay centred in it.
-    '& button': { justifyContent: 'center' },
+    // Square TILES, not wide short buttons: at 84 wide and ~40 tall each tab was a
+    // letterbox, and a rail of letterboxes reads as a toolbar rather than as the app's
+    // primary navigation. Square is also what makes the glyph the whole target.
+    '& button': {
+      justifyContent: 'center',
+      height: '84px',
+      minWidth: '84px',
+      borderRadius: tokens.borderRadiusMedium,
+    },
+    // Twice the 24px they started at. The tile grew with them, so the icon still sits in
+    // the same share of its tab rather than crowding the edges.
+    '& svg': { fontSize: '48px' },
   },
   /** No padding: each screen owns its own insets, so a pane can run to the window edge. */
   content: {
@@ -128,13 +132,35 @@ const useStyles = makeStyles({
     gap: '8px',
     padding: '3px 12px',
     flexShrink: 0,
-    backgroundColor: STATUS_BLUE,
+    backgroundColor: ACCENT.statusBlue,
     color: '#ffffff',
+    // The bar is one line of small text on a saturated fill, which is exactly where
+    // Fluent's default weight goes muddy. A touch more size and weight, stated once here
+    // so every item in the bar gets it.
+    fontSize: fontPx(12),
+    fontWeight: 600,
   },
-  footerAttention: { backgroundColor: UNREAD_ORANGE, color: '#1b1b1b' },
-  dot: { width: '8px', height: '8px', borderRadius: '50%', flexShrink: 0 },
-  ok: { backgroundColor: tokens.colorPaletteGreenBackground3 },
-  bad: { backgroundColor: tokens.colorPaletteRedBackground3 },
+  /**
+   * The attention fill. Near-black ink rather than white: white on this orange is ~2.2:1,
+   * which is the "hard to read when it goes orange" complaint — #1b1b1b is ~8.6:1.
+   */
+  footerAttention: { backgroundColor: ACCENT.unread, color: ACCENT.unreadInk },
+  /**
+   * The live/dead dot, with a dark ring so it separates from BOTH fills it is ever drawn
+   * on. The ring matters because a single colour cannot have good contrast against a
+   * mid-blue and a bright orange at once.
+   */
+  dot: {
+    width: '9px',
+    height: '9px',
+    borderRadius: '50%',
+    flexShrink: 0,
+    boxShadow: '0 0 0 1.5px rgba(0, 0, 0, 0.45)',
+  },
+  // NOT `colorPaletteGreenBackground3` (#0e700e), which was the bug: ~1.6:1 against the
+  // bar's blue and ~3.2:1 against its orange — invisible on both.
+  ok: { backgroundColor: ACCENT.liveGreen },
+  bad: { backgroundColor: ACCENT.liveRed },
   grow: { flex: 1 },
   /**
    * The "a new version is waiting" item. It inherits the bar's own colour rather than
