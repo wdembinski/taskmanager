@@ -29,7 +29,7 @@ plan the orchestrator could one day run on its own repo.
 | 5 | Usage-limit gate (auto-respawn) | ✅ shipped |
 | 6 | History, resume-across-restart & polish | ✅ shipped |
 | 7 | Packaging & release | ✅ shipped |
-| 8 | Import & project configuration | 🚧 in progress (B2 session picker open) |
+| 8 | Import & project configuration | ✅ shipped |
 | 9 | Personal task management (to-do list) | ✅ shipped |
 | — | Interim releases v0.11–v0.21 (worktrees & auto-merge, team orchestration, JIRA sync, My Tasks Kanban) | ✅ shipped, not tracked here |
 | 10 | Delegate a task to an agent | ✅ shipped |
@@ -348,13 +348,17 @@ read (listing existing on-disk sessions).
       `store.updateTask`), sets `task.sessionId` + status `pending`, so **Run**
       resumes that conversation instead of starting fresh. No dependency on CLI
       internals.
-- [ ] **B2 — Session discovery/picker.** `claude:listSessions(cwd)` enumerates
+- [x] **B2 — Session discovery/picker.** `claude:listSessions(cwd, target?)` enumerates
       `~/.claude/projects/<encoded-cwd>/*.jsonl` (filename = resumable session id),
       returning `{ sessionId, startedAt, lastAt, preview }` newest-first; the adopt
       UI shows this as a pick-list with the manual-paste fallback. Pure helpers
       `encodeProjectDir` + `parseSessionPreview` are unit-tested; the reader fails
       soft (the `~/.claude/projects` layout is an **undocumented** CLI convention,
-      verified against the current install — never hard-depend on it).
+      verified against the current install — never hard-depend on it). `target`
+      was added to the signature so a WSL project reads that distro's home rather
+      than the window's. Only the head of each transcript is read: a prompt with a
+      pasted image is one 200 KB+ line, and such a session lists with an empty
+      preview rather than costing megabytes to describe.
 - [x] **C — Ad-hoc tasks + live plan re-sync.** Tasks now carry `source: 'plan' |
       'adhoc'`. **C1:** `task:create` / `task:delete` + an "Add task…" dialog let you
       add work directly to any project (no plan file needed — plan-less projects are
@@ -371,7 +375,7 @@ read (listing existing on-disk sessions).
       model/mode/name/plan afterward.
 - [x] You can attach an existing Claude session to a task and have "Run" continue
       that conversation.
-- [ ] B2: the adopt UI lists real on-disk sessions for a project's folder.
+- [x] B2: the adopt UI lists real on-disk sessions for a project's folder.
 - [x] C: you can add an ad-hoc task to any project, and edits to a plan file (by a
       human or the agent mid-run) re-sync onto the Board without a manual "Sync",
       without ever dropping an ad-hoc or running task.

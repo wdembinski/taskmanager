@@ -86,9 +86,16 @@ export function Projects(): JSX.Element {
     open: false,
     mode: 'add',
   });
-  const [attach, setAttach] = useState<{ open: boolean; task: Task | null }>({
+  // The project rides along so the dialog can list the conversations the CLI has
+  // for its folder, on the machine that ran them (Phase 8 B2).
+  const [attach, setAttach] = useState<{
+    open: boolean;
+    task: Task | null;
+    project: Project | null;
+  }>({
     open: false,
     task: null,
+    project: null,
   });
   const [addTask, setAddTask] = useState<{ open: boolean; projectId: string | null; phases: string[] }>(
     { open: false, projectId: null, phases: [] },
@@ -409,7 +416,7 @@ export function Projects(): JSX.Element {
                               <Button
                                 size="small"
                                 appearance="subtle"
-                                onClick={() => setAttach({ open: true, task })}
+                                onClick={() => setAttach({ open: true, task, project })}
                               >
                                 Attach session…
                               </Button>
@@ -445,6 +452,7 @@ export function Projects(): JSX.Element {
       <AttachSessionDialog
         open={attach.open}
         task={attach.task}
+        project={attach.project}
         onClose={() => setAttach((a) => ({ ...a, open: false }))}
         onSaved={() => void refresh()}
       />

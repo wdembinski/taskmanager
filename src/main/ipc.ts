@@ -63,7 +63,8 @@ import {
 } from './gitlab/gitlabSync';
 import { GitLabPoller } from './gitlabPoller';
 import type { MergeRequest } from '@shared/mergeRequest';
-import { listWslDistros, readinessFor, statusForTargets } from './exec';
+import { hostFor, listWslDistros, readinessFor, statusForTargets } from './exec';
+import { listClaudeSessions } from './claudeSessions';
 import { sanitizeWindowState } from './windowState';
 import { appPlanPath } from './projectPaths';
 import { logMain } from './log';
@@ -361,6 +362,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   };
 
   handle('claude:getStatus', () => statusForTargets(targetsInUse()));
+  handle('claude:listSessions', (cwd, target) => listClaudeSessions(cwd, hostFor(target)));
 
   handle('exec:listDistros', () => listWslDistros());
   handle('exec:readiness', (target) => readinessFor(target));

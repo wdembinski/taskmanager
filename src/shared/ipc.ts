@@ -71,6 +71,24 @@ export interface ClaudeStatus {
   message: string;
 }
 
+/**
+ * One Claude conversation that already exists on disk for a project's directory
+ * (Phase 8 B2), as offered by the "attach existing session" pick-list.
+ */
+export interface ClaudeSessionSummary {
+  /** The id `claude --resume` takes — the transcript's filename. */
+  sessionId: string;
+  /** ISO timestamp of the conversation's first entry. */
+  startedAt: string;
+  /** ISO timestamp of its last activity, used to sort newest-first. */
+  lastAt: string;
+  /**
+   * The opening human prompt, collapsed to one line, so a conversation can be
+   * recognized without opening it. Empty when none could be read.
+   */
+  preview: string;
+}
+
 /** Snapshot of the JIRA connection's configuration state (for the Settings UI). */
 export interface JiraConfigStatus {
   /** Whether the integration is switched on. */
@@ -184,6 +202,15 @@ export interface IpcApi {
    * only inside a WSL distro.
    */
   'claude:getStatus': () => Promise<ClaudeStatus>;
+  /**
+   * The Claude conversations already on disk for a working directory, newest first,
+   * so adopting one is a pick rather than a pasted UUID (Phase 8 B2). `target` says
+   * which machine ran them — a WSL project's transcripts live in that distro.
+   *
+   * Best-effort: this reads an undocumented CLI layout and returns an empty list
+   * rather than failing when it is absent, so the manual paste path always stands.
+   */
+  'claude:listSessions': (cwd: string, target?: ExecTarget) => Promise<ClaudeSessionSummary[]>;
 
   /** Installed WSL distros, for the execution-target picker. Empty when WSL is absent. */
   'exec:listDistros': () => Promise<string[]>;
