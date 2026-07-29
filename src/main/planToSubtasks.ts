@@ -110,6 +110,67 @@ function toTitle(raw: string): string {
   return cleaned || raw.trim();
 }
 
+/** Filler that says nothing: `Implementation of caching` is just `caching`. */
+const LEADING_FILLER = /^(?:implementation\s+of|work\s+on|task|todo)\s*[:—–-]?\s+/i;
+
+/**
+ * A heading that is pure structure and carries no meaning of its own — `Phase 2`,
+ * `Step 3`, `Part B`. `ORDINAL_PREFIX` only strips these when something follows them;
+ * on their own they survive, and a Steps list reading `Phase 1 / Phase 2 / Phase 3` is
+ * the complaint that this rule exists to fix.
+ */
+const STRUCTURAL_ONLY = /^(?:phase|milestone|step|stage|part|section)\s*[0-9a-z]{0,3}$/i;
+
+/** Longest a step title gets. A title that wraps three lines on a card is not a title. */
+const MAX_TITLE_CHARS = 80;
+
+/** Strip inline markdown: `**bold**`, `` `code` ``, `[text](url)`, a trailing colon. */
+function stripMarkup(raw: string): string {
+  return raw
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/[*_`]/g, '')
+    .replace(/\s*:\s*$/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Cut at `max` on a word boundary rather than mid-word, appending an ellipsis. */
+function truncateWords(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max);
+  const lastSpace = cut.lastIndexOf(' ');
+  // Only honour the boundary if it isn't absurdly early (one very long word).
+  const body = lastSpace > max * 0.6 ? cut.slice(0, lastSpace) : cut;
+  return `${body.trimEnd()}…`;
+}
+
+/**
+ * A step's card title, from its heading and — when the heading says nothing — its body.
+ *
+ * The rules are ordered so the cheap textual cleanups run before the fallback: only a
+ * heading that survives stripping and is *still* meaningless falls through to the body.
+ * That fallback is the important one — `splitPlanIntoSteps` splits on `## Phase 1` /
+ * `## Phase 2` headings **and then used them as titles**, so a perfectly well-structured
+ * plan produced a Steps list that named none of its steps.
+ */
+export function toSubtaskTitle(rawHeading: string, body: string): string {
+  let title = stripMarkup(toTitle(rawHeading)).replace(LEADING_FILLER, '').trim();
+
+  if (!title || STRUCTURAL_ONLY.test(title)) {
+    // The heading was scaffolding. The body's first line is what the step is actually about.
+    title = stripMarkup(firstLineTitle(body));
+  }
+  // No minimum length: a terse heading (`## A`) is a title its author chose, and dropping
+  // the step to avoid an ugly one would lose the work it describes. Only genuinely empty
+  // input yields nothing, and `finalize` filters that.
+  if (!title) return '';
+
+  title = truncateWords(title, MAX_TITLE_CHARS);
+  // Sentence-case the FIRST letter only: upper-casing words would wreck `JIRA`, `API`,
+  // `pnpm`, and lower-casing them would be worse.
+  return title.charAt(0).toUpperCase() + title.slice(1);
+}
+
 /** Trim leading/trailing blank lines without touching interior indentation. */
 function trimBlankLines(lines: string[]): string {
   let start = 0;
@@ -193,10 +254,22 @@ function firstLineTitle(text: string): string {
   return toTitle(bare).slice(0, 120) || 'Implement the plan';
 }
 
-/** Clean titles, drop empties, and cap the count. */
+/**
+ * Clean titles, drop empties, de-duplicate, and cap the count.
+ *
+ * De-duplication matters more than it sounds: a plan that ends every phase with an
+ * `### Update the tests` heading produced three identical rows in the Steps list, and no
+ * way to tell which one the chain had reached.
+ */
 function finalize(steps: PlanStep[]): PlanStep[] {
+  const seen = new Map<string, number>();
   return steps
-    .map((s) => ({ title: toTitle(s.title).slice(0, 200), description: s.description }))
+    .map((s) => ({ title: toSubtaskTitle(s.title, s.description), description: s.description }))
     .filter((s) => s.title.length > 0)
+    .map((s) => {
+      const n = (seen.get(s.title) ?? 0) + 1;
+      seen.set(s.title, n);
+      return n === 1 ? s : { ...s, title: `${s.title} (${n})` };
+    })
     .slice(0, MAX_PLAN_STEPS);
 }
