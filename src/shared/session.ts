@@ -62,7 +62,24 @@ export type SessionEvent =
    */
   | { kind: 'tool-use'; name: string; toolId: string; input?: Record<string, unknown> }
   /** A tool finished. */
-  | { kind: 'tool-result'; toolId: string; isError: boolean }
+  | {
+      kind: 'tool-result';
+      toolId: string;
+      isError: boolean;
+      /**
+       * What the tool actually said when it failed, trimmed and capped. Absent on
+       * success. Without it the UI could only ever say "a tool call failed", which is
+       * the worst kind of log line: alarming and useless.
+       */
+      errorText?: string;
+      /**
+       * True when the failure is one the agent routinely fixes on its own next turn (a
+       * stale edit, a file it hadn't read, a cancelled call). The UI folds these into
+       * the collapsed tool row instead of interrupting the thread — but the event still
+       * exists, because it is what closes the paired `tool-use`'s spinner.
+       */
+      benign?: boolean;
+    }
   /**
    * Per-turn token usage, emitted for each assistant message that carries a
    * `usage` block. This is the incremental consumption of ONE model call — the

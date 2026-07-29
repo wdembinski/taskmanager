@@ -28,6 +28,12 @@
  * into implementing) while the human reads the plan: approving turns each of its steps
  * into a subtask and runs them one session at a time; rejecting hands a note back so
  * the same session re-plans.
+ *
+ * **agent-question** (Phase 17) — the CLI's own `AskUserQuestion` tool, held before it
+ * runs. Distinct from `question` (which is a sentinel the agent writes into its prose):
+ * this one arrives as a structured tool call carrying real options with descriptions, and
+ * it MUST be held, because a headless CLI with no terminal answers its own question by
+ * picking its recommended option. That silent self-answer is the reason this kind exists.
  */
 export type AttentionKind =
   | 'permission'
@@ -35,7 +41,30 @@ export type AttentionKind =
   | 'merge-conflict'
   | 'task-failed'
   | 'proposal'
-  | 'plan-approval';
+  | 'plan-approval'
+  | 'agent-question';
+
+/** One choice the agent offered, in the CLI's own `input.questions[].options[]` shape. */
+export interface AttentionOption {
+  label: string;
+  /**
+   * Why the agent offered it, and what happens if you pick it. Carried because it is the
+   * whole reason a structured question beats free text — and it is what makes an option
+   * legible without reading the transcript.
+   */
+  description?: string;
+}
+
+/** One question from an `AskUserQuestion` call. */
+export interface AttentionQuestion {
+  /** The CLI's short chip label ("Auth method"). May be empty. */
+  header: string;
+  /** The question itself, as markdown — agents write backticked identifiers in these. */
+  question: string;
+  /** Whether more than one option may be chosen. */
+  multiSelect: boolean;
+  options: AttentionOption[];
+}
 
 /** One thing waiting on a human, tied to the live run (and task) that raised it. */
 export interface AttentionItem {
@@ -81,6 +110,17 @@ export interface AttentionItem {
    * having to derive it from the prose. Empty for other kinds.
    */
   steps?: string[];
+  /**
+   * For `agent-question` items, the structured questions the agent asked, with their real
+   * options and descriptions.
+   *
+   * Deliberately separate from the flat `options: string[]` above rather than folded into
+   * it: that field is one list of one question's choices, and squeezing a multi-question,
+   * multi-select call with per-option descriptions through it would throw away exactly the
+   * information that makes the form readable. Empty for every other kind, so the sentinel
+   * `question` path is untouched.
+   */
+  questions?: AttentionQuestion[];
   /** Epoch ms when the item was raised (inbox sorts oldest-first). */
   createdAt: number;
 }
@@ -100,10 +140,24 @@ export interface AttentionItem {
  *     subtasks and the first one starts; an optional `note` is filed on the card) or
  *     `deny` ("re-plan", with the note handed back to the planning agent as the
  *     reason). Approving never lets the planning session implement the plan itself.
+ *   - `agent-question` items expect `answers`, one entry per question. A `deny` there
+ *     means "I'm not choosing — use your judgement", which is the ONLY way the agent
+ *     ever gets to decide: it must be an explicit act, never a timeout.
  */
 export type AttentionAnswer =
   | { decision: 'approve'; note?: string }
   | { decision: 'deny'; note?: string }
   // `text` is the reply (a question answer, or a chosen `task-failed` action). `note`
   // is optional extra guidance (e.g. instructions for an "AI fix & retry").
-  | { decision: 'reply'; text: string; note?: string };
+  | { decision: 'reply'; text: string; note?: string }
+  /**
+   * An `agent-question` answer. Positional against the item's `questions`:
+   * `selections[i]` are the chosen labels for question `i` (one entry unless it is
+   * `multiSelect`), and `freeText[i]` is what the human typed instead of picking.
+   */
+  | {
+      decision: 'answers';
+      selections: string[][];
+      freeText?: (string | null)[];
+      note?: string;
+    };

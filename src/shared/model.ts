@@ -444,6 +444,15 @@ export interface Task {
    * the card has been planned.
    */
   agentPlan?: string | null;
+  /**
+   * The git branch this card's worktree runs on (Phase 17), chosen — and editable — when
+   * the agent is assigned. Steps of a plan inherit it: they share the parent's worktree,
+   * so they share its branch.
+   *
+   * Null on every card assigned before branch naming existed, which `branchFor` reads as
+   * "fall back to the legacy `orch/<taskId>` name" so no existing worktree is orphaned.
+   */
+  agentBranch?: string | null;
 }
 
 /** What the assign-to-an-agent action sends: where to run, how, and an optional brief. */
@@ -460,6 +469,20 @@ export interface AssignAgentInput {
    * survives a retry — the prompt is rebuilt from the timeline on every fresh run.
    */
   notes?: string;
+  /**
+   * Whether to launch the agent straight away (Phase 17).
+   *
+   * `false` persists the assignment and stops, so the card shows a Start button and can be
+   * talked to first — assigning used to be indistinguishable from starting, which left no
+   * way to discuss a card with its agent before it began changing files. Defaults to
+   * `true`, so every existing caller behaves exactly as before.
+   */
+  start?: boolean;
+  /**
+   * The git branch the worktree runs on. Proposed by the dialog from `buildBranchName` and
+   * editable there; omitted falls back to the legacy `orch/<taskId>`.
+   */
+  branch?: string;
 }
 
 /**

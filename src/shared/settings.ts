@@ -128,6 +128,33 @@ export const DEFAULT_GITLAB_SETTINGS: GitLabSettings = {
   pollIntervalMinutes: 2,
 };
 
+/**
+ * Which of a card's optional context lines the board draws (Phase 17).
+ *
+ * All three are pure noise on a board where every card shares the same project, and
+ * indispensable on one that doesn't — which is why they are switches rather than a
+ * judgement call baked into the card. Mirrored by a Display menu on the board itself,
+ * so the toggle is where you notice the noise.
+ */
+export interface BoardDisplaySettings {
+  /** Every JIRA label on the issue, as chips. */
+  showLabels: boolean;
+  /** The `Project: <name>` line. */
+  showProjectName: boolean;
+  /**
+   * The parent epic's NAME (not its key). Off by default: it is the newest of the
+   * three, the longest string on the card, and the one most boards don't need.
+   */
+  showEpicName: boolean;
+}
+
+/** Labels and project name on, epic off — see {@link BoardDisplaySettings}. */
+export const DEFAULT_BOARD_DISPLAY: BoardDisplaySettings = {
+  showLabels: true,
+  showProjectName: true,
+  showEpicName: false,
+};
+
 export interface AppSettings {
   /** Model applied to a newly added project (its tasks run with this unless changed). */
   defaultModel: ClaudeModel;
@@ -169,6 +196,22 @@ export interface AppSettings {
    * `jira` because the pane exists whether or not JIRA does.
    */
   showTaskDetail: boolean;
+  /**
+   * Leading segment of every branch an agent's worktree runs on, e.g. `wd` gives
+   * `wd/feat/abc-123/add-sso`. Empty means no prefix AND no leading slash — a branch
+   * called `/feat/…` is not a valid git ref, so this cannot be a naive concatenation.
+   */
+  branchPrefix: string;
+  /**
+   * Base UI font size in px; every Fluent typography token is scaled off it, and the
+   * app's own hardcoded sizes follow via the `--app-font-scale` custom property.
+   * 14 is Fluent's own base, so the default changes nothing.
+   */
+  fontSizePx: number;
+  /** Whether transient toasts are shown at all. Everything they say is also on screen. */
+  toastsEnabled: boolean;
+  /** Which optional context lines the board's cards draw. */
+  board: BoardDisplaySettings;
   /** JIRA integration config for the Personal board (Phase B). */
   jira: JiraSettings;
   /** GitLab integration config — merge requests on the cards their ticket lives on. */
@@ -186,6 +229,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   defaultExecTarget: LOCAL_TARGET,
   statusKeywords: [],
   showTaskDetail: true,
+  branchPrefix: '',
+  fontSizePx: 14,
+  toastsEnabled: true,
+  board: DEFAULT_BOARD_DISPLAY,
   jira: DEFAULT_JIRA_SETTINGS,
   gitlab: DEFAULT_GITLAB_SETTINGS,
 };
