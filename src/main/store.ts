@@ -31,6 +31,7 @@ import type { SessionEvent } from '@shared/session';
 import type { UsageSample } from '@shared/usage';
 import {
   type AppSettings,
+  DEFAULT_BOARD_DISPLAY,
   DEFAULT_GITLAB_SETTINGS,
   DEFAULT_JIRA_SETTINGS,
   DEFAULT_SETTINGS,
@@ -41,6 +42,7 @@ import type { JiraSprintFieldCache } from './jira/jiraSprint';
 import type { JiraIdentityCache } from './jira/identity';
 import type { GitLabIdentityCache } from './gitlab/identity';
 import type { MergeRequest, MergeRequestState, PipelineStatus } from '@shared/mergeRequest';
+import type { AttentionItem } from '@shared/attention';
 import type { ParsedTask } from './planParser';
 import { splitProjectTag } from './projectTagMigration';
 import type { SavedWindowState } from './windowState';
@@ -101,6 +103,8 @@ interface TaskRow {
   agentModel: string | null;
   /** The plan a `plan`-mode delegated run produced, as markdown. NULL until it plans. */
   agentPlan: string | null;
+  /** The git branch this card's worktree runs on; NULL = the legacy `orch/<taskId>`. */
+  agentBranch: string | null;
 }
 
 /** A project row as stored; `writeBackPlan` is a 0/1 INTEGER (SQLite has no boolean). */
@@ -174,6 +178,7 @@ export interface Store {
         | 'agentMode'
         | 'agentModel'
         | 'agentPlan'
+        | 'agentBranch'
       >
     >,
   ): Task | undefined;
@@ -263,6 +268,17 @@ export interface Store {
   upsertMergeRequest(mr: MergeRequest): void;
   /** Drop merge requests GitLab no longer lists. */
   deleteMergeRequests(ids: readonly string[]): void;
+
+  /**
+   * Persist one open inbox item, with the kind-specific `context` its answer path needs
+   * (a `PendingFailure`, a `PendingIntegration`, or null). Upserts, so re-raising the
+   * same id is safe.
+   */
+  saveAttention(item: AttentionItem, context: unknown | null): void;
+  /** Forget one item — it was answered, or its run ended. */
+  deleteAttention(id: string): void;
+  /** Every stored item, oldest first, with the context it was saved with. */
+  listAttention(): Array<{ item: AttentionItem; context: unknown | null }>;
   /** Mark an MR's discussion read, or its pipeline/approval events seen. Returns it. */
   markMergeRequestRead(id: string, at: number): MergeRequest | undefined;
   markMergeRequestEventsSeen(id: string, at: number): MergeRequest | undefined;
@@ -393,7 +409,8 @@ export function createStore(dbPath: string): Store {
       agentProjectId         TEXT,
       agentMode              TEXT,
       agentModel             TEXT,
-      agentPlan              TEXT
+      agentPlan              TEXT,
+      agentBranch            TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(projectId, "order");
     CREATE TABLE IF NOT EXISTS app_state (
@@ -479,6 +496,41 @@ export function createStore(dbPath: string): Store {
       syncedAt          INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_mr_task ON merge_requests(taskId);
+    -- Open Attention-inbox items. A NEW table, so nothing to migrate.
+    --
+    -- These lived only in the Scheduler's memory until Phase 17 made an agent's question
+    -- BLOCKING. Once a run genuinely stops until a human answers, losing the question on
+    -- restart loses the reason it stopped — the app would come back up with a parked task
+    -- and no way to learn what it wanted.
+    --
+    -- What a restart can DO with a row varies by kind, and rehydrateAttention decides
+    -- that rather than pretending uniformity: a failed task or a merge conflict is pure
+    -- stored context any later call can act on, while a permission request is a promise
+    -- held inside a socket handler in a process that no longer exists.
+    --
+    -- The context column carries the kind-specific blob (PendingFailure /
+    -- PendingIntegration) the answer path needs, so a rehydrated item is answerable
+    -- rather than merely visible.
+    CREATE TABLE IF NOT EXISTS attention_items (
+      id           TEXT PRIMARY KEY,
+      runId        TEXT NOT NULL,
+      taskId       TEXT NOT NULL,
+      projectId    TEXT NOT NULL,
+      taskTitle    TEXT NOT NULL,
+      kind         TEXT NOT NULL,
+      prompt       TEXT NOT NULL,
+      options      TEXT NOT NULL,   -- JSON string[]
+      toolName     TEXT,
+      reason       TEXT,
+      worktreePath TEXT,
+      branch       TEXT,
+      plan         TEXT,
+      steps        TEXT,            -- JSON string[]
+      questions    TEXT,            -- JSON AttentionQuestion[]
+      context      TEXT,            -- JSON, kind-specific; NULL when there is none
+      createdAt    INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_attention_task ON attention_items(taskId);
   `);
 
   // Migrate databases created before Phase 3 added the write-back column.
@@ -591,6 +643,10 @@ export function createStore(dbPath: string): Store {
     // "nobody has said where this is yet" — nothing about those cards changes.
     ['statusNote', 'TEXT'],
     ['statusNoteAt', 'INTEGER'],
+    // The git branch this card's worktree runs on (Phase 17). NULL on every pre-existing
+    // row, which `branchFor` reads as "use the legacy orch/<taskId>" — so an upgrade never
+    // orphans a worktree that already exists on the old name.
+    ['agentBranch', 'TEXT'],
   ] as Array<[string, string]>) {
     if (!taskColumns.some((c) => c.name === name)) {
       db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
@@ -672,7 +728,7 @@ export function createStore(dbPath: string): Store {
         externalPriority, externalType, externalLabel, externalParentKey, externalSprint,
         externalDescription,
         preBlockStatus, lastReadCommentAt, latestCommentAt, agentProjectId, agentMode, agentModel,
-        agentPlan)
+        agentPlan, agentBranch)
      VALUES
        (@id, @projectId, @phase, @title, @status, @sessionId, @order, @source, @dependsOn, @isContract, @isScaffold, @type,
         @parentTaskId, @description, @statusNote, @statusNoteAt,
@@ -680,7 +736,7 @@ export function createStore(dbPath: string): Store {
         @externalPriority, @externalType, @externalLabel, @externalParentKey, @externalSprint,
         @externalDescription,
         @preBlockStatus, @lastReadCommentAt, @latestCommentAt, @agentProjectId, @agentMode, @agentModel,
-        @agentPlan)`,
+        @agentPlan, @agentBranch)`,
   );
   const deleteTask = db.prepare(`DELETE FROM tasks WHERE id = ?`);
   const selectSubtasks = db.prepare(
@@ -766,6 +822,27 @@ export function createStore(dbPath: string): Store {
   /** The GitLab PAT ciphertext, and the cached `GET /user` for the configured instance. */
   const GITLAB_TOKEN_KEY = 'gitlab.pat';
   const GITLAB_IDENTITY_KEY = 'gitlab.identity';
+
+  /** An attention_items row: `options`/`steps`/`questions`/`context` are JSON text. */
+  interface AttentionRow {
+    id: string;
+    runId: string;
+    taskId: string;
+    projectId: string;
+    taskTitle: string;
+    kind: string;
+    prompt: string;
+    options: string;
+    toolName: string | null;
+    reason: string | null;
+    worktreePath: string | null;
+    branch: string | null;
+    plan: string | null;
+    steps: string | null;
+    questions: string | null;
+    context: string | null;
+    createdAt: number;
+  }
 
   /** A merge_requests row: SQLite has no boolean, and `issueKeys` is JSON. */
   interface MergeRequestRow {
@@ -860,6 +937,23 @@ export function createStore(dbPath: string): Store {
        updatedAt = excluded.updatedAt, syncedAt = excluded.syncedAt`,
   );
   const deleteMergeRequestStmt = db.prepare(`DELETE FROM merge_requests WHERE id = ?`);
+
+  const upsertAttentionStmt = db.prepare(
+    `INSERT INTO attention_items
+       (id, runId, taskId, projectId, taskTitle, kind, prompt, options, toolName, reason,
+        worktreePath, branch, plan, steps, questions, context, createdAt)
+     VALUES
+       (@id, @runId, @taskId, @projectId, @taskTitle, @kind, @prompt, @options, @toolName,
+        @reason, @worktreePath, @branch, @plan, @steps, @questions, @context, @createdAt)
+     ON CONFLICT(id) DO UPDATE SET
+       runId = excluded.runId, prompt = excluded.prompt, options = excluded.options,
+       toolName = excluded.toolName, reason = excluded.reason,
+       worktreePath = excluded.worktreePath, branch = excluded.branch,
+       plan = excluded.plan, steps = excluded.steps, questions = excluded.questions,
+       context = excluded.context`,
+  );
+  const deleteAttentionStmt = db.prepare(`DELETE FROM attention_items WHERE id = ?`);
+  const selectAttentionStmt = db.prepare(`SELECT * FROM attention_items ORDER BY createdAt ASC`);
   const markMrRead = db.prepare(`UPDATE merge_requests SET lastReadAt = ? WHERE id = ?`);
   const markMrEventsSeen = db.prepare(`UPDATE merge_requests SET lastEventSeenAt = ? WHERE id = ?`);
 
@@ -905,6 +999,7 @@ export function createStore(dbPath: string): Store {
         ...parsed,
         jira: { ...DEFAULT_JIRA_SETTINGS, ...(parsed.jira ?? {}) },
         gitlab: { ...DEFAULT_GITLAB_SETTINGS, ...(parsed.gitlab ?? {}) },
+        board: { ...DEFAULT_BOARD_DISPLAY, ...(parsed.board ?? {}) },
       };
     } catch {
       return { ...DEFAULT_SETTINGS };
@@ -941,6 +1036,22 @@ export function createStore(dbPath: string): Store {
       return Array.isArray(value) ? value.filter((x): x is string => typeof x === 'string') : [];
     } catch {
       return [];
+    }
+  }
+
+  /**
+   * Read a JSON object/array column back, or null when it is absent or unparseable.
+   *
+   * The caller decides what a missing value means: an inbox item with no `questions`
+   * degrades to a free-text prompt, which is still answerable — dropping the whole item
+   * because one column was written by an older build would not be.
+   */
+  function parseJsonColumn<T>(raw: string | null): T | null {
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as T;
+    } catch {
+      return null;
     }
   }
 
@@ -984,6 +1095,7 @@ export function createStore(dbPath: string): Store {
       agentMode: task.agentMode ?? null,
       agentModel: task.agentModel ?? null,
       agentPlan: task.agentPlan ?? null,
+      agentBranch: task.agentBranch ?? null,
     };
   }
 
@@ -1025,6 +1137,7 @@ export function createStore(dbPath: string): Store {
       agentMode: (r.agentMode as Task['agentMode']) ?? null,
       agentModel: (r.agentModel as Task['agentModel']) ?? null,
       agentPlan: r.agentPlan,
+      agentBranch: r.agentBranch,
     };
   }
 
@@ -1202,6 +1315,7 @@ export function createStore(dbPath: string): Store {
         'agentMode',
         'agentModel',
         'agentPlan',
+        'agentBranch',
       ] as const;
       for (const col of columns) {
         const value = (patch as Record<string, unknown>)[col];
@@ -1224,12 +1338,12 @@ export function createStore(dbPath: string): Store {
       const existing = selectTask.get(task.id) as TaskRow | undefined;
       if (existing) {
         // Note the filing column (`projectTagId`), the agent-delegation columns
-        // (`agentProjectId`, `agentMode`, `agentModel`,
-        // `agentPlan`), the subtask columns (`parentTaskId`, `description`) and the card's
-        // own progress note (`statusNote`, `statusNoteAt`) are deliberately absent from
-        // the UPDATE: a JIRA re-sync refreshes tracker fields only and must never clear a
-        // human's agent assignment, the plan that assignment produced, the steps derived
-        // from it, or what they last said about where the card is.
+        // (`agentProjectId`, `agentMode`, `agentModel`, `agentPlan`, `agentBranch`), the
+        // subtask columns (`parentTaskId`, `description`) and the card's own progress note
+        // (`statusNote`, `statusNoteAt`) are deliberately absent from the UPDATE: a JIRA
+        // re-sync refreshes tracker fields only and must never clear a human's agent
+        // assignment, the branch it runs on, the plan that assignment produced, the steps
+        // derived from it, or what they last said about where the card is.
         db.prepare(
           `UPDATE tasks SET
              phase = @phase, title = @title, status = @status, "order" = @order, source = @source,
@@ -1533,6 +1647,57 @@ export function createStore(dbPath: string): Store {
 
     deleteMergeRequests(ids) {
       for (const id of ids) deleteMergeRequestStmt.run(id);
+    },
+
+    saveAttention(item, context) {
+      upsertAttentionStmt.run({
+        id: item.id,
+        runId: item.runId,
+        taskId: item.taskId,
+        projectId: item.projectId,
+        taskTitle: item.taskTitle,
+        kind: item.kind,
+        prompt: item.prompt,
+        options: JSON.stringify(item.options ?? []),
+        toolName: item.toolName,
+        reason: item.reason,
+        worktreePath: item.worktreePath ?? null,
+        branch: item.branch ?? null,
+        plan: item.plan ?? null,
+        steps: JSON.stringify(item.steps ?? []),
+        questions: JSON.stringify(item.questions ?? []),
+        context: context == null ? null : JSON.stringify(context),
+        createdAt: item.createdAt,
+      });
+    },
+
+    deleteAttention(id) {
+      deleteAttentionStmt.run(id);
+    },
+
+    listAttention() {
+      const rows = selectAttentionStmt.all() as AttentionRow[];
+      return rows.map((r) => ({
+        item: {
+          id: r.id,
+          runId: r.runId,
+          taskId: r.taskId,
+          projectId: r.projectId,
+          taskTitle: r.taskTitle,
+          kind: r.kind as AttentionItem['kind'],
+          prompt: r.prompt,
+          options: parseStringArray(r.options),
+          toolName: r.toolName,
+          reason: r.reason,
+          worktreePath: r.worktreePath,
+          branch: r.branch,
+          plan: r.plan,
+          steps: parseStringArray(r.steps),
+          questions: parseJsonColumn<AttentionItem['questions']>(r.questions) ?? [],
+          createdAt: r.createdAt,
+        },
+        context: parseJsonColumn<unknown>(r.context) ?? null,
+      }));
     },
 
     markMergeRequestRead(id, at) {
