@@ -39,6 +39,7 @@ plan the orchestrator could one day run on its own repo.
 | 14 | Sprints on the board | ✅ shipped |
 | 15 | The board grows up (IN REVIEW, status map, priority, notes, colours) | ✅ shipped |
 | 16 | Seventeen fixes and two integrations (bugs, workspace, JIRA depth, auto-update, GitLab) | ✅ shipped (v0.30.0) |
+| 17 | Ask me, and show me what you are doing | 🚧 engine done; renderer components outstanding |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -965,6 +966,108 @@ the issue-creation path that reuses it for a description.
       GitLab round trip (open an MR with the ticket key in the branch, break the
       pipeline, comment as someone else, mark read), item 14's one-shot back-fill on a
       real database, and items 15–16, which are the only two decided by eye.
+
+---
+
+## Phase 17 — Ask me, and show me what you are doing
+
+Eighteen problems and twenty-two requests, from one session of real use. They are not
+independent bugs: most of them are the same two failures wearing different clothes.
+
+**The app answered for the human.** `AskUserQuestion` is an ordinary tool call, the risk
+policy waved it through (it neither deletes, pushes, nor reads secrets), and a headless
+CLI with no terminal resolves its own question by taking its recommended option. So the
+agent asked, nobody saw it, and the run continued as though it had been answered. Items
+1, 2 and 14 are that.
+
+**The app would not say what it was doing.** A spinner derived from `Task.status` cannot
+show a run that has spawned but not yet been persisted as running; an orange ring derived
+from status plus JIRA timestamps cannot show an inbox item raised without that status
+flip. So work happened in silence and cards wanted attention in silence. Items 3, 5, 12
+and 18 are that.
+
+The rest is honest UI debt (the card, the settings pane, scrollbars, markdown) and two
+real behaviour bugs: a card moving itself to Done, and merge requests never refreshing.
+
+### Problems
+
+- [x] **1 — Every question the agent asks reaches the Details Panel.** Raised as a new
+      `agent-question` attention kind carrying the CLI's real questions, options and
+      descriptions — not squeezed through the flat `options: string[]` of the prose
+      sentinel, which would throw away exactly what makes the form readable.
+- [x] **2 — A question is never auto-answered.** Held at the permission broker, above
+      the `bypassPermissions` shortcut: "never ask me to approve tools" is not "answer my
+      questions for me", and full-auto is precisely the mode where nobody is watching.
+      "You decide" exists, but only as an explicit act — never as a timeout.
+- [x] **8 — Steps get titles that say something.** The splitter split on `## Phase 1`
+      and then used the heading verbatim, so a well-formed plan named none of its steps.
+      Fixed at both ends: the planning prompt says headings become titles, and
+      `toSubtaskTitle` falls back to the body when a heading is pure structure.
+- [x] **9 — A finished chain hands back to the card.** Summary filed on the parent's
+      timeline, and a *fresh* session briefed so the card can be talked to again — not
+      the planner's session, which was deliberately stopped and whose context predates
+      every line the steps wrote.
+- [x] **10 — Agents run on a named branch.** `<prefix>/<type>/<key>/<slug>`, prefix
+      configurable, type inferred from the ticket and title, validated at assign time.
+      An empty prefix yields no leading slash; a card with no ticket omits that segment.
+- [x] **11 — Assign, or assign and start.** Staged assignment persists and stops; the
+      first message to a staged card starts it, so it is not a dead end.
+- [x] **13 — A tool failure says what failed.** Reason carried on the event; failures the
+      agent routinely fixes next turn are folded into the tool row rather than
+      interrupting the thread.
+- [x] **14 — `Usage limit: allowed (five_hour)` is gone.** Healthy statuses are dropped
+      at the emit boundary; a real block is said in words.
+- [ ] **3 / 12 — The spinner and the running status.** `runPhase` (shared, tested) is the
+      one answer, and `useActiveRuns` supplies the live-run set it needs. **Renderer
+      wiring outstanding:** card, detail pane, composer strip.
+- [ ] **5 / 18 — The orange ring, for as long as it is owed.** `chainNeedsAttention` now
+      takes the inbox's task ids — the authoritative signal — and `sortCards` threads it
+      so ordering and ring cannot disagree. **`TaskCard` wiring outstanding.**
+- [ ] **4 — A card must never move itself to Done.** Only the human moves a card.
+- [ ] **6 — Merge requests refresh, with pipeline and approval as separate icons.**
+- [ ] **7 — Top padding on every column,** so a selected card's ring is not clipped.
+- [ ] **15 — A merge request that wants attention gets a background, not a border,**
+      so it stops competing with the card's own ring. Tint is in `theme.ts`.
+- [ ] **16 — Subtask rows take the card's background,** not the board's.
+- [ ] **17 — The card, properly.** Subtasks and merge requests as their own sections,
+      integral to the card rather than floating on it.
+
+### Requests
+
+- [x] **1 (partial) — Configurable font size.** `scaleTheme` multiplies Fluent's whole
+      type ramp; `fontPx` covers the sizes hardcoded in `makeStyles`, which tokens cannot
+      reach. **Settings control and provider wiring outstanding.**
+- [x] **20–22 (partial) — Labels, project name and epic name are switchable.** Settings
+      and defaults landed (epic off by default: newest, longest, least needed).
+      **Board menu and Settings controls outstanding.**
+- [ ] **2 / 18 — Markdown everywhere, and readable agent output.** A plan shown for
+      approval is currently unreadable.
+- [ ] **3 — Priority, project and state on one row.**
+- [ ] **4 / 5 — The JIRA badge carries the unread signal** (background, as merge requests
+      do) **and the JIRA mark instead of the word.**
+- [ ] **6 — A status string can be cleared.**
+- [ ] **7 — Nav rail icons: square tiles, twice the size.**
+- [ ] **8 — The orange footer is readable, and the live dot reads on both fills.** The
+      colour bug is fixed in `theme.ts` (the old green sat at ~1.6:1 on blue);
+      **wiring outstanding.**
+- [ ] **9 / 15 — Settings full width; big dialogs become Drawers.**
+- [ ] **10 — The status-map "Why" badge stops overflowing.**
+- [ ] **11 — Projects and Board tabs removed,** with their supporting code.
+- [ ] **12 — Scratch Run holds several runs,** one card each.
+- [ ] **13 — Thin, rounded, trackless scrollbars** that fade in on hover.
+- [ ] **14 — The question form is worth reading.**
+- [ ] **16 — Skeletons while loading.**
+- [ ] **17 — Toasts for what needs attention,** switchable in Settings.
+- [ ] **19 — One Sync button** covering every enabled service.
+
+**Shape of the work.** Contract and engine first (shared types, the four pure modules,
+then the engine and IPC), renderer groundwork second (`theme.ts`, `useAttentionIndex`,
+`useActiveRuns`), components last — which is where the remaining boxes are. The engine is
+green and committed; no renderer component has been rewritten yet.
+
+- [ ] **Live E2E owed for the whole phase**, and it is the only way to check the two
+      that matter most: that a question really blocks its run, and that a spinner really
+      turns while one is working.
 
 ---
 
