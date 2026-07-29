@@ -106,7 +106,14 @@ export type IntegrationResult =
   | { status: 'blocked-untracked'; base: string; files: string[] }
   | { status: 'error'; message: string };
 
-/** The branch name for a task. Namespaced so orchestrator branches are recognizable. */
+/**
+ * The LEGACY branch name for a task, namespaced so orchestrator branches are recognizable.
+ *
+ * Superseded by the named branches of Phase 17 (`branchName.ts`), but kept as the fallback
+ * for any card assigned before those existed (`Task.agentBranch === null`) — its worktree
+ * is already checked out on this name, and renaming it out from under a live run would
+ * orphan the work.
+ */
 export function taskBranch(taskId: string): string {
   return `orch/${taskId}`;
 }
@@ -162,18 +169,33 @@ export class WorktreeManager {
    * run. The plan-driven subtasks feature (Phase 11) is the exception: every step of a
    * plan runs in its parent's worktree on the parent's branch, so the whole chain
    * accumulates on one branch and integrates once — the caller passes the parent's id.
+   *
+   * `branchName` (Phase 17) is the human-chosen branch. Omitted falls back to the legacy
+   * {@link taskBranch}, so an un-migrated card keeps the name its worktree already has.
    */
-  async prepare(project: Project, task: Task, ownerTaskId = task.id): Promise<WorktreePrep> {
+  async prepare(
+    project: Project,
+    task: Task,
+    ownerTaskId = task.id,
+    branchName?: string,
+  ): Promise<WorktreePrep> {
     const { host, root } = await this.workspaceFor(project);
     if (!project.useWorktrees || !(await isRepo(project.path, host))) {
       return { mode: 'shared', cwd: project.path };
     }
     const base = await currentBranch(project.path, host);
-    const branch = taskBranch(ownerTaskId);
+    const branch = branchName?.trim() || taskBranch(ownerTaskId);
     const cwd = this.pathIn(root, project.id, ownerTaskId);
     // `existsSync` runs on the APP's filesystem, so a distro path has to be named the
     // way Windows can see it (`\\wsl.localhost\…`) before it can be checked.
-    if (existsSync(host.toApp(cwd))) return { mode: 'worktree', cwd, branch, base };
+    if (existsSync(host.toApp(cwd))) {
+      // The worktree is already checked out on SOME branch, and if the card was renamed
+      // after it was created that is not the name we were just handed. Returning the
+      // requested name would be a lie the integration step then acts on, so read the real
+      // one — a single git call on a path that already shells out several times.
+      const actual = await currentBranch(cwd, host);
+      return { mode: 'worktree', cwd, branch: actual || branch, base };
+    }
 
     let res = await addWorktree(project.path, cwd, branch, base, host);
     if (res.code !== 0) {
