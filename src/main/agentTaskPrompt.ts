@@ -50,6 +50,31 @@ export interface AgentTaskPromptOptions {
   worktreePath?: string;
   /** The project's canonical directory, which the worktree was branched from. */
   projectPath?: string;
+  /**
+   * True when this run is in `plan` mode, so the prompt can say how the plan's own
+   * headings will be used. They become the card's step titles verbatim, which the agent
+   * has no way to know — and a plan headed `Phase 1` / `Phase 2` therefore produced a
+   * Steps list that named none of its steps.
+   */
+  planMode?: boolean;
+}
+
+/**
+ * How to head a plan, given the headings become step titles.
+ *
+ * Fixing the INPUT rather than post-processing the output: `toSubtaskTitle` can rescue a
+ * structural heading by falling back to the body, but a heading the agent wrote well needs
+ * no rescuing and reads better than anything derived from prose.
+ */
+function planHeadingLines(): string[] {
+  return [
+    `When you present the plan, remember that each of its phase headings becomes the TITLE`,
+    `of a task on the board, shown on its own with no surrounding context. So give every`,
+    `heading an imperative title of roughly 3-8 words that starts with a verb — "Add the`,
+    `auth guard", "Migrate the settings blob", "Extract the branch naming" — never a bare`,
+    `"Phase 1", and never a lone noun.`,
+    '',
+  ];
 }
 
 /**
@@ -130,6 +155,7 @@ export function buildAgentTaskPrompt(
     '',
     // Worktree mode: the same rule plan tasks get — the orchestrator owns integration.
     ...(branch ? worktreeLines(branch, worktreePath, projectPath) : []),
+    ...(options.planMode ? planHeadingLines() : []),
     // Never write to the tracker: that is a hard product decision, not a preference.
     ...(key
       ? [
