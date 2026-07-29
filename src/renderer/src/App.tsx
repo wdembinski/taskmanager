@@ -30,9 +30,7 @@ import {
 } from '@fluentui/react-components';
 import {
   AlertRegular,
-  BoardRegular,
   DataTrendingRegular,
-  FolderRegular,
   PlayRegular,
   SettingsRegular,
   TaskListSquareLtrRegular,
@@ -40,12 +38,10 @@ import {
 import type { AppInfo, ClaudeStatus } from '@shared/ipc';
 import type { UpdateState } from '@shared/update';
 import { Attention } from './Attention';
-import { Board } from './Board';
 import { LimitBanner } from './LimitBanner';
 import { MyTasks } from './MyTasks';
 import { currentSprintName } from './board/currentSprint';
 import { Performance } from './Performance';
-import { Projects } from './Projects';
 import { Settings } from './Settings';
 import { SessionRunner } from './SessionRunner';
 import { TitleBar } from './TitleBar';
@@ -178,14 +174,21 @@ const useStyles = makeStyles({
   },
 });
 
-type TabId =
-  'mytasks' | 'projects' | 'board' | 'performance' | 'attention' | 'settings' | 'scratch';
+/**
+ * Phase 17 removed the Projects and Board screens. Both were the pre-My-Tasks way of
+ * driving work — a project list and a per-project plan board — and everything they did is
+ * now done from a card: a repo is an *agent project* (Settings → Agents), and the work
+ * lives on the personal board.
+ *
+ * The ENGINE's notion of a project stays exactly where it is. Projects are how runs are
+ * queued, how concurrency is bounded and where a worktree is cut; the personal board is
+ * itself a project. Only the two screens are gone.
+ */
+type TabId = 'mytasks' | 'performance' | 'attention' | 'settings' | 'scratch';
 
 /** The rail, in order. The label is the tooltip and the accessible name. */
 const NAV: Array<{ id: TabId; label: string; icon: JSX.Element }> = [
   { id: 'mytasks', label: 'My Tasks', icon: <TaskListSquareLtrRegular /> },
-  { id: 'projects', label: 'Projects', icon: <FolderRegular /> },
-  { id: 'board', label: 'Board', icon: <BoardRegular /> },
   { id: 'performance', label: 'Performance', icon: <DataTrendingRegular /> },
   { id: 'attention', label: 'Attention', icon: <AlertRegular /> },
   { id: 'settings', label: 'Settings', icon: <SettingsRegular /> },
@@ -308,10 +311,6 @@ export function App(): JSX.Element {
           <div className={tab === 'mytasks' ? styles.body : `${styles.body} ${styles.bodyPadded}`}>
             {tab === 'mytasks' ? (
               <MyTasks />
-            ) : tab === 'projects' ? (
-              <Projects />
-            ) : tab === 'board' ? (
-              <Board />
             ) : tab === 'performance' ? (
               <Performance />
             ) : tab === 'attention' ? (
