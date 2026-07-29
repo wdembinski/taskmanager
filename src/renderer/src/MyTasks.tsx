@@ -14,13 +14,26 @@ import {
   MessageBar,
   MessageBarActions,
   MessageBarBody,
+  Menu,
+  MenuItemCheckbox,
+  MenuList,
+  MenuPopover,
+  MenuTrigger,
   Switch,
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
-import { PanelRightContractRegular, PanelRightExpandRegular } from '@fluentui/react-icons';
+import {
+  EyeRegular,
+  PanelRightContractRegular,
+  PanelRightExpandRegular,
+} from '@fluentui/react-icons';
 import { PERSONAL_PROJECT_ID, type Project, type Task } from '@shared/model';
-import type { AppSettings } from '@shared/settings';
+import {
+  DEFAULT_BOARD_DISPLAY,
+  type AppSettings,
+  type BoardDisplaySettings,
+} from '@shared/settings';
 import type { MergeRequest } from '@shared/mergeRequest';
 import { AddTaskDialog } from './AddTaskDialog';
 import { PaneLoading } from './PaneLoading';
@@ -125,6 +138,8 @@ export function MyTasks(): JSX.Element {
   const showDone = settings?.jira.showDoneColumn ?? false;
   const jiraEnabled = settings?.jira.enabled ?? false;
   const currentSprintOnly = settings?.jira.currentSprintOnly ?? false;
+  const gitlabEnabled = settings?.gitlab.enabled ?? false;
+  const display = settings?.board ?? DEFAULT_BOARD_DISPLAY;
   const showDetail = settings?.showTaskDetail ?? true;
 
   const refresh = useCallback(async () => {
@@ -257,6 +272,20 @@ export function MyTasks(): JSX.Element {
     });
   }, []);
 
+  /**
+   * The card's optional lines. Saved through the whole settings blob like the other board
+   * switches, so the Display menu and the Settings page are two views of one value rather
+   * than two places that can disagree.
+   */
+  const saveDisplay = useCallback((board: BoardDisplaySettings) => {
+    setSettings((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, board };
+      void window.api.invoke('settings:save', next);
+      return next;
+    });
+  }, []);
+
   const setShowDetail = useCallback((value: boolean) => {
     setSettings((prev) => {
       if (!prev) return prev;
@@ -266,17 +295,34 @@ export function MyTasks(): JSX.Element {
     });
   }, []);
 
+  /**
+   * Refresh every service that is switched on, not just JIRA.
+   *
+   * The button said "Sync JIRA" while GitLab was only ever refreshed by its own poll, so
+   * merge-request rows sat stale — an MR approved minutes ago still showed as waiting,
+   * and pressing the only visible Sync did nothing about it.
+   *
+   * `allSettled`: one service being unreachable must not stop the other from refreshing,
+   * and the failures are reported together rather than the first one winning.
+   */
   const sync = useCallback(async () => {
     setSyncing(true);
     setError(null);
     try {
-      setTasks(await window.api.invoke('jira:sync'));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      const [jira, gitlab] = await Promise.allSettled([
+        jiraEnabled ? window.api.invoke('jira:sync') : Promise.resolve(null),
+        gitlabEnabled ? window.api.invoke('gitlab:sync') : Promise.resolve(null),
+      ]);
+      if (jira.status === 'fulfilled' && jira.value) setTasks(jira.value);
+      if (gitlab.status === 'fulfilled' && gitlab.value) setMergeRequests(gitlab.value);
+      const failures = [jira, gitlab]
+        .flatMap((r) => (r.status === 'rejected' ? [r.reason] : []))
+        .map((e) => (e instanceof Error ? e.message : String(e)));
+      if (failures.length > 0) setError(failures.join(' · '));
     } finally {
       setSyncing(false);
     }
-  }, []);
+  }, [jiraEnabled, gitlabEnabled]);
 
   // Unlike "Show Done", which only hides a column that is already loaded, this one
   // changes the JQL the next fetch runs — so the board is re-synced immediately,
@@ -335,6 +381,44 @@ export function MyTasks(): JSX.Element {
             />
           )}
           <span className={styles.grow} />
+          {/* The card's optional lines, switchable HERE as well as in Settings — this is
+              where you actually notice the noise, and a trip to Settings to quiet a board
+              you are looking at is a trip most people won't make. */}
+          <Menu>
+            <MenuTrigger disableButtonEnhancement>
+              <Button size="small" appearance="subtle" icon={<EyeRegular />}>
+                Display
+              </Button>
+            </MenuTrigger>
+            <MenuPopover>
+              <MenuList
+                checkedValues={{
+                  display: [
+                    ...(display.showLabels ? ['labels'] : []),
+                    ...(display.showProjectName ? ['project'] : []),
+                    ...(display.showEpicName ? ['epic'] : []),
+                  ],
+                }}
+                onCheckedValueChange={(_e, { checkedItems }) =>
+                  void saveDisplay({
+                    showLabels: checkedItems.includes('labels'),
+                    showProjectName: checkedItems.includes('project'),
+                    showEpicName: checkedItems.includes('epic'),
+                  })
+                }
+              >
+                <MenuItemCheckbox name="display" value="labels" disabled={!settings}>
+                  JIRA labels
+                </MenuItemCheckbox>
+                <MenuItemCheckbox name="display" value="project" disabled={!settings}>
+                  Project name
+                </MenuItemCheckbox>
+                <MenuItemCheckbox name="display" value="epic" disabled={!settings}>
+                  Epic
+                </MenuItemCheckbox>
+              </MenuList>
+            </MenuPopover>
+          </Menu>
           {/* Fold the detail pane away. An icon button rather than a third switch: this
               one is a view control, not a filter on what the board contains. */}
           <Button
@@ -346,9 +430,11 @@ export function MyTasks(): JSX.Element {
             aria-pressed={showDetail}
             onClick={() => setShowDetail(!showDetail)}
           />
-          {jiraEnabled && (
+          {/* One button for every enabled service — it was called "Sync JIRA" while also
+              refreshing GitLab, which made the merge-request rows look stale on purpose. */}
+          {(jiraEnabled || gitlabEnabled) && (
             <Button size="small" disabled={syncing} onClick={() => void sync()}>
-              {syncing ? 'Syncing…' : 'Sync JIRA'}
+              {syncing ? 'Syncing…' : 'Sync'}
             </Button>
           )}
           <Button size="small" appearance="primary" onClick={() => setAddOpen(true)}>
@@ -397,7 +483,7 @@ export function MyTasks(): JSX.Element {
               statusKeywords={settings?.statusKeywords}
               attentionTaskIds={attention.taskIds}
               liveRunTaskIds={liveRuns}
-              display={settings?.board}
+              display={display}
               // A card with a live step is the runner's until the chain stops.
               canDrag={(c) => !managedByAI(c.task) && !hasLiveSubtask(c.subtasks)}
               selectedTaskId={selectedTaskId}

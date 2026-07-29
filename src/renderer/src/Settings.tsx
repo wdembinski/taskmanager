@@ -60,6 +60,8 @@ import { ColorSwatches, PALETTE } from './ColorSwatches';
 import { PaneLoading } from './PaneLoading';
 import { ReadinessPanel } from './ReadinessPanel';
 import { StatusMapViewer } from './StatusMapViewer';
+import { BASE_FONT_PX, FONT_SIZE_OPTIONS } from './theme';
+import { validateBranchName } from '@shared/branchName';
 import { useInitialLoad } from './useInitialLoad';
 
 const useStyles = makeStyles({
@@ -74,7 +76,12 @@ const useStyles = makeStyles({
     display: 'flex',
     flexDirection: 'column',
     gap: '16px',
-    maxWidth: '520px',
+    // Full width, capped only where a line of prose stops being readable. At 520 the
+    // pane was a column down the left of a wide window, and the status-map table — which
+    // is the widest thing in here by far — had to wrap to fit a box half the size of the
+    // space available to it.
+    maxWidth: '1100px',
+    width: '100%',
     // Fill the tab body and scroll internally so long sections never get clipped.
     flex: 1,
     minHeight: 0,
@@ -90,6 +97,8 @@ const useStyles = makeStyles({
   mapName: { flex: 1, minWidth: 0 },
   mapColumn: { minWidth: '132px' },
   actions: { display: 'flex', alignItems: 'center', gap: '12px', marginTop: '4px' },
+  /** Several related switches on one line, rather than three stacked Fields. */
+  switchRow: { display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' },
   // The update state, its progress bar and its button, stacked as one block.
   updateBlock: { display: 'flex', flexDirection: 'column', gap: '8px' },
   saved: { color: tokens.colorPaletteGreenForeground1 },
@@ -273,6 +282,18 @@ export function Settings(): JSX.Element {
     });
   }, []);
 
+  /**
+   * The prefix is a path segment of a real git ref, so it is validated with the same
+   * rules the branch itself gets — against a sample name, because a bare prefix is not a
+   * ref and `validateBranchName` rightly rejects one.
+   */
+  const prefixError = ((): string | null => {
+    const raw = settings?.branchPrefix.trim() ?? '';
+    if (!raw) return null;
+    const check = validateBranchName(`${raw.replace(/^\/+|\/+$/g, '')}/feat/sample`);
+    return check.ok ? null : `That prefix won't work: ${check.reason}.`;
+  })();
+
   // Any edit invalidates the "Saved" confirmation.
   function patch(change: Partial<AppSettings>): void {
     setSettings((prev) => (prev ? { ...prev, ...change } : prev));
@@ -445,6 +466,91 @@ export function Settings(): JSX.Element {
           <Subtitle2>Settings</Subtitle2>
 
           <div className={styles.grid}>
+            <Field
+              label="Interface font size"
+              hint="Scales every size in the app, not just body text. 14 is the default."
+            >
+              <Dropdown
+                value={`${settings.fontSizePx} px`}
+                selectedOptions={[String(settings.fontSizePx)]}
+                onOptionSelect={(_e, d) => patch({ fontSizePx: Number(d.optionValue) })}
+              >
+                {FONT_SIZE_OPTIONS.map((px) => (
+                  <Option key={px} value={String(px)} text={`${px} px`}>
+                    {px === BASE_FONT_PX ? `${px} px (default)` : `${px} px`}
+                  </Option>
+                ))}
+              </Dropdown>
+            </Field>
+
+            <Field
+              label="Branch prefix"
+              hint="Leads every branch an agent works on, e.g. “wd” gives wd/feat/abc-123/add-sso. Leave empty for no prefix — and no leading slash."
+              validationState={prefixError ? 'error' : 'none'}
+              validationMessage={prefixError ?? undefined}
+            >
+              <Input
+                value={settings.branchPrefix}
+                placeholder="none"
+                onChange={(_e, d) => patch({ branchPrefix: d.value })}
+              />
+            </Field>
+
+            <Field
+              label="Merging a finished branch"
+              hint="When off, a finished run leaves its branch alone and the card offers a Merge button — so you merge work you have looked at. Nothing is discarded either way."
+            >
+              <Switch
+                checked={settings.autoIntegrate}
+                label={
+                  settings.autoIntegrate
+                    ? 'Merge automatically when a run finishes'
+                    : 'I merge it myself from the card'
+                }
+                onChange={(_e, d) => patch({ autoIntegrate: d.checked })}
+              />
+            </Field>
+
+            <Field
+              label="Toasts"
+              hint="Brief pop-ups when something wants you. Everything they say is also on the board and in the Attention screen, so turning them off loses nothing."
+            >
+              <Switch
+                checked={settings.toastsEnabled}
+                label={settings.toastsEnabled ? 'Show toasts' : 'No toasts'}
+                onChange={(_e, d) => patch({ toastsEnabled: d.checked })}
+              />
+            </Field>
+
+            <Field
+              label="On each card"
+              hint="The same switches live in the board's Display menu, where you notice the noise."
+            >
+              <div className={styles.switchRow}>
+                <Switch
+                  checked={settings.board.showLabels}
+                  label="JIRA labels"
+                  onChange={(_e, d) =>
+                    patch({ board: { ...settings.board, showLabels: d.checked } })
+                  }
+                />
+                <Switch
+                  checked={settings.board.showProjectName}
+                  label="Project name"
+                  onChange={(_e, d) =>
+                    patch({ board: { ...settings.board, showProjectName: d.checked } })
+                  }
+                />
+                <Switch
+                  checked={settings.board.showEpicName}
+                  label="Epic"
+                  onChange={(_e, d) =>
+                    patch({ board: { ...settings.board, showEpicName: d.checked } })
+                  }
+                />
+              </div>
+            </Field>
+
             <Field label="Default model for new projects">
               <Dropdown
                 value={settings.defaultModel}

@@ -36,6 +36,13 @@ const useStyles = makeStyles({
   // place rather than letting it stretch the Settings column.
   scroll: { maxHeight: '340px', overflowY: 'auto' },
   name: { fontWeight: tokens.fontWeightSemibold },
+  /**
+   * The "Why" cell. Fluent's Badge is a fixed-height pill built for one short word, so a
+   * label like "Learned from a move" wrapped INSIDE it and spilled out of its own
+   * background. Keeping the text on one line and letting the cell be as wide as it needs
+   * is the fix; the column is the narrowest in the table, so there is room to give.
+   */
+  whyCell: { whiteSpace: 'nowrap', width: '1%' },
   muted: { color: tokens.colorNeutralForeground3 },
   empty: { color: tokens.colorNeutralForeground3, padding: '8px 0' },
 });
@@ -102,7 +109,7 @@ export function StatusMapViewer({
                 <TableCell className={styles.name}>{row.name}</TableCell>
                 <TableCell className={styles.muted}>{row.category}</TableCell>
                 <TableCell>{columnLabel[row.column]}</TableCell>
-                <TableCell>
+                <TableCell className={styles.whyCell}>
                   <Badge appearance="tint" color={REASON_APPEARANCE[row.reason]}>
                     {reasonLabel(row.reason)}
                   </Badge>
