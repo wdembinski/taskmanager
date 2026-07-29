@@ -15,7 +15,7 @@
  * `window.api.invoke(...)` and consume pushed updates via `window.api.on(...)`.
  * Those two are the whole UI↔engine vocabulary.
  */
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   Caption1,
   CounterBadge,
@@ -25,8 +25,12 @@ import {
   Spinner,
   Tab,
   TabList,
+  Toast,
+  ToastBody,
+  ToastTitle,
   tokens,
   Tooltip,
+  useToastController,
 } from '@fluentui/react-components';
 import {
   AlertRegular,
@@ -45,7 +49,8 @@ import { Performance } from './Performance';
 import { Settings } from './Settings';
 import { SessionRunner } from './SessionRunner';
 import { TitleBar } from './TitleBar';
-import { ACCENT, fontPx } from './theme';
+import { ACCENT, TOASTER_ID, fontPx } from './theme';
+import type { AttentionItem } from '@shared/attention';
 
 const useStyles = makeStyles({
   shell: {
@@ -195,6 +200,17 @@ const NAV: Array<{ id: TabId; label: string; icon: JSX.Element }> = [
   { id: 'scratch', label: 'Scratch run', icon: <PlayRegular /> },
 ];
 
+/** What each kind of ask is called in a toast — short, because a toast is one glance. */
+const TOAST_TITLE: Record<AttentionItem['kind'], string> = {
+  permission: 'Permission needed',
+  question: 'The agent has a question',
+  'agent-question': 'The agent is asking you to choose',
+  'plan-approval': 'A plan is ready to approve',
+  'merge-conflict': 'Merge conflict',
+  'task-failed': 'A run failed',
+  proposal: 'A proposal needs a decision',
+};
+
 export function App(): JSX.Element {
   const styles = useStyles();
   const [info, setInfo] = useState<AppInfo | null>(null);
@@ -202,6 +218,33 @@ export function App(): JSX.Element {
   const [tab, setTab] = useState<TabId>('mytasks');
   // How many tasks are waiting on a human, shown as a badge on the Attention tab.
   const [attentionCount, setAttentionCount] = useState(0);
+  const { dispatchToast } = useToastController(TOASTER_ID);
+  /**
+   * Raise a toast for an incoming ask, if toasts are on.
+   *
+   * The switch is read at dispatch time rather than held in state because this fires from
+   * inside a subscription that is set up once — a captured value would go stale the
+   * moment the setting changed, and the toast that ignored your preference would be the
+   * one you noticed.
+   */
+  const notify = useCallback(
+    (item: AttentionItem) => {
+      void window.api
+        .invoke('settings:get')
+        .then((settings) => {
+          if (!settings.toastsEnabled) return;
+          dispatchToast(
+            <Toast>
+              <ToastTitle>{TOAST_TITLE[item.kind] ?? 'Something needs you'}</ToastTitle>
+              <ToastBody>{item.taskTitle}</ToastBody>
+            </Toast>,
+            { intent: item.kind === 'task-failed' ? 'error' : 'warning', timeout: 6000 },
+          );
+        })
+        .catch(() => undefined);
+    },
+    [dispatchToast],
+  );
   // Auto-update: only its final state earns a place in the status bar (a downloaded
   // build waiting for a restart). Progress lives in Settings, where it was asked for.
   const [update, setUpdate] = useState<UpdateState | null>(null);
@@ -236,7 +279,13 @@ export function App(): JSX.Element {
     };
     void readSprint().catch(() => setSprint(null));
 
-    const offNew = window.api.on('attention:new', () => setAttentionCount((n) => n + 1));
+    const offNew = window.api.on('attention:new', (item) => {
+      setAttentionCount((n) => n + 1);
+      // A toast is the only part of this that can reach you while you are looking at
+      // another screen — the ring and the badge both need the board to be visible. It
+      // says which card, because "something needs you" with six cards open is a riddle.
+      notify(item);
+    });
     const offResolved = window.api.on('attention:resolved', () =>
       setAttentionCount((n) => Math.max(0, n - 1)),
     );
