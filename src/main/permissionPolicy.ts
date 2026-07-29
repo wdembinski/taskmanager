@@ -19,6 +19,8 @@
  * `--permission-prompt-tool`) is a later hardening; see the Phase 4 notes.
  */
 
+import { isAskUserQuestionTool } from './askUserQuestion';
+
 /** The outcome of classifying one tool use. `reason` explains an `ask` to the human. */
 export type PermissionDecision = { action: 'allow' } | { action: 'ask'; reason: string };
 
@@ -79,6 +81,14 @@ export function evaluateToolUse(
   // agent cannot leave plan mode — and start editing — without approval.
   if (name === EXIT_PLAN_MODE_TOOL.toLowerCase()) {
     return { action: 'ask', reason: 'presents a plan for approval' };
+  }
+
+  // A question FOR THE HUMAN (Phase 17). It deletes nothing, pushes nothing and touches no
+  // secret, so every rule below waved it through to the catch-all `allow` at the bottom —
+  // and a CLI running headless then answered its own question by taking its recommended
+  // option. Held here so the human is the one who answers.
+  if (isAskUserQuestionTool(toolName)) {
+    return { action: 'ask', reason: 'asks you a question' };
   }
 
   // Shell commands: inspect the actual command string for risky fragments.

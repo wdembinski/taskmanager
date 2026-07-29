@@ -65,3 +65,24 @@ describe('evaluateToolUse — plan approval (Phase 11)', () => {
     expect(evaluateToolUse('exitplanmode', {}).action).toBe('ask');
   });
 });
+
+describe('evaluateToolUse — the agent asking YOU (Phase 17)', () => {
+  it('holds AskUserQuestion', () => {
+    // The regression this closes: it deletes nothing, pushes nothing and touches no
+    // secret, so every rule fell through to the catch-all `allow` — and a headless CLI
+    // then answered its own question by taking its recommended option.
+    expect(
+      evaluateToolUse('AskUserQuestion', { questions: [{ question: 'Which DB?' }] }),
+    ).toEqual({ action: 'ask', reason: 'asks you a question' });
+  });
+
+  it('holds it however it is cased or namespaced', () => {
+    expect(evaluateToolUse('askuserquestion', {}).action).toBe('ask');
+    expect(evaluateToolUse('mcp__helper__AskUserQuestion', {}).action).toBe('ask');
+  });
+
+  it('still waves through the ordinary read tools it sits next to', () => {
+    expect(evaluateToolUse('Read', { file_path: 'src/index.ts' }).action).toBe('allow');
+    expect(evaluateToolUse('Grep', { pattern: 'x' }).action).toBe('allow');
+  });
+});
