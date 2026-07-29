@@ -152,12 +152,22 @@ export function parkedStep(subtasks: Task[]): Task | null {
  * `mergeRequests` is DEFAULTED, so every existing call site compiles unchanged. But
  * `sortCards` must pass it: the ordering and the ring are the same predicate on purpose,
  * and a board where the loudest card is not the top one is a board that is lying.
+ *
+ * `attentionTaskIds` is the set of tasks the inbox is actually holding an item for, and
+ * it is the only *authoritative* signal here — the other three are inferences. Until
+ * Phase 17 the board had no access to it at all, so an item raised without the engine
+ * also flipping the task to `waiting-input` drew no ring, which is why cards sometimes
+ * sat there silently wanting you. Defaulted for the main-process callers, which have no
+ * inbox to consult and rely on the status.
  */
 export function chainNeedsAttention(
   task: Task,
   subtasks: Task[],
   mergeRequests: readonly MergeRequest[] = [],
+  attentionTaskIds?: ReadonlySet<string>,
 ): boolean {
+  if (attentionTaskIds?.has(task.id)) return true;
+  if (attentionTaskIds && subtasks.some((s) => attentionTaskIds.has(s.id))) return true;
   return (
     hasUnreadJira(task) ||
     needsAgentInput(task) ||
@@ -213,4 +223,98 @@ export function chainInFlight(subtasks: Task[]): boolean {
  */
 export function isAgentRunning(task: Task): boolean {
   return isAgentAssigned(task) && task.status === 'running';
+}
+
+/**
+ * What a card is doing, as one value. `idle`/`done` are resting states; everything else
+ * means something is happening and the card should say so.
+ */
+export type RunPhase = 'idle' | 'queued' | 'starting' | 'running' | 'waiting' | 'blocked' | 'done';
+
+/** A phase plus the words and the spinner that go with it. */
+export interface RunState {
+  phase: RunPhase;
+  /** Human-facing, e.g. `Running step 2 of 5`. Empty for `idle`/`done`. */
+  label: string;
+  /** Whether a spinner should turn. Only true when something is actually moving. */
+  spinner: boolean;
+}
+
+const IDLE: RunState = { phase: 'idle', label: '', spinner: false };
+const FINISHED: RunState = { phase: 'done', label: '', spinner: false };
+
+/**
+ * The one answer to "what is this card doing right now", shared by the card, the detail
+ * pane and the status strip above the composer, so the three can never disagree.
+ *
+ * Deliberately NOT derived from status alone, for two reasons:
+ *
+ *   1. `task:assignAgent` writes `status: 'pending'` and only *then* calls `runTask`, so
+ *      the task that patches the card says `pending` while a run is already spawning.
+ *      That window is exactly the "it's working but there's no spinner" complaint.
+ *   2. Once an agent can be assigned WITHOUT being started, `assigned + pending` is a
+ *      legitimate resting state — so "starting" stops being derivable from `Task` at all.
+ *
+ * `liveRunTaskIds` (from `scheduler:activeRuns`) closes both. It is optional so a caller
+ * with no snapshot still gets a sane answer, one phase less precise.
+ *
+ * Also deliberately not gated on {@link isAgentAssigned}: a step added by hand carries no
+ * `agentProjectId`, and gating would mean it could never show a spinner however hard it ran.
+ */
+export function runPhase(
+  task: Task,
+  subtasks: Task[] = [],
+  liveRunTaskIds?: ReadonlySet<string>,
+): RunState {
+  // The task's own state always wins over the chain's — a parent that is itself running
+  // (a review-seed turn, say) is running, whatever its finished steps say.
+  switch (task.status) {
+    case 'running':
+      return { phase: 'running', label: 'Running…', spinner: true };
+    case 'waiting-input':
+      return { phase: 'waiting', label: 'Waiting for you', spinner: false };
+    case 'blocked-by-limit':
+      return { phase: 'blocked', label: 'Paused — usage limit', spinner: false };
+    default:
+      break;
+  }
+
+  if (liveRunTaskIds?.has(task.id)) {
+    return { phase: 'starting', label: 'Starting…', spinner: true };
+  }
+
+  if (subtasks.length > 0) {
+    const total = subtasks.length;
+    const live = subtasks.findIndex((s) => s.status === 'running');
+    if (live >= 0) {
+      return { phase: 'running', label: `Running step ${live + 1} of ${total}`, spinner: true };
+    }
+    const starting = subtasks.findIndex((s) => liveRunTaskIds?.has(s.id));
+    if (starting >= 0) {
+      return { phase: 'starting', label: `Starting step ${starting + 1} of ${total}`, spinner: true };
+    }
+    const parked = subtasks.findIndex((s) => s.status === 'waiting-input' || s.status === 'failed');
+    if (parked >= 0) {
+      return { phase: 'waiting', label: `Stopped at step ${parked + 1} of ${total}`, spinner: false };
+    }
+    if (chainInFlight(subtasks)) {
+      return { phase: 'queued', label: 'Queued', spinner: false };
+    }
+  }
+
+  // An agent is on the card but nothing is moving and nothing ever ran: it was assigned
+  // and not started. Saying so is the whole point of offering a Start button.
+  if (isAgentAssigned(task) && task.status === 'pending') {
+    return { phase: 'idle', label: 'Assigned — not started', spinner: false };
+  }
+
+  switch (task.status) {
+    case 'done':
+    case 'failed':
+    case 'stopped':
+    case 'cancelled':
+      return FINISHED;
+    default:
+      return IDLE;
+  }
 }

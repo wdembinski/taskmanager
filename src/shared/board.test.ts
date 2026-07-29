@@ -14,6 +14,7 @@ import {
   isAgentAssigned,
   isAgentRunning,
   needsAgentInput,
+  runPhase,
 } from './board';
 
 const task = (over: Partial<Task>): Task => ({
@@ -182,6 +183,125 @@ describe('parkedStep / chainNeedsAttention', () => {
   it('leaves a healthy card alone', () => {
     expect(chainNeedsAttention(card, [step('s1', 'done'), step('s2', 'running')])).toBe(false);
     expect(chainNeedsAttention(card, [])).toBe(false);
+  });
+
+  describe('the inbox as the authoritative signal', () => {
+    // The bug this closes: an item could be parked on a card whose status the engine had
+    // not (or no longer) flipped to `waiting-input` — a restored item after a restart, or
+    // one raised on a step mid-run — and the board drew nothing at all.
+    it('frames a card the inbox is holding an item for, whatever its status says', () => {
+      const quiet = task({ id: 'c1', status: 'running' });
+      expect(chainNeedsAttention(quiet, [], [], new Set())).toBe(false);
+      expect(chainNeedsAttention(quiet, [], [], new Set(['c1']))).toBe(true);
+    });
+
+    it('frames a card whose STEP the inbox is holding an item for', () => {
+      const running = step('s1', 'running');
+      expect(chainNeedsAttention(card, [running], [], new Set(['s1']))).toBe(true);
+    });
+
+    it('ignores an item parked on some unrelated card', () => {
+      expect(chainNeedsAttention(card, [step('s1', 'running')], [], new Set(['other']))).toBe(
+        false,
+      );
+    });
+
+    it('still falls back to the inferred signals when no set is given', () => {
+      // Main-process callers have no inbox to consult; they must behave as before.
+      expect(chainNeedsAttention(card, [step('s1', 'failed')])).toBe(true);
+    });
+  });
+});
+
+describe('runPhase', () => {
+  const step = (id: string, status: Task['status']): Task =>
+    task({ id, status, parentTaskId: 'c1', agentProjectId: 'agent' });
+
+  it('reads a running task straight off its own status', () => {
+    expect(runPhase(task({ status: 'running' }))).toMatchObject({
+      phase: 'running',
+      spinner: true,
+    });
+  });
+
+  it.each([
+    ['waiting-input', 'waiting'],
+    ['blocked-by-limit', 'blocked'],
+  ] as const)('parks a %s task without a spinner', (status, phase) => {
+    const state = runPhase(task({ status }));
+    expect(state.phase).toBe(phase);
+    expect(state.spinner).toBe(false);
+    expect(state.label).not.toBe('');
+  });
+
+  // The window the whole `liveRunTaskIds` parameter exists for: `task:assignAgent`
+  // persists `pending` and only then calls `runTask`, so the task that patches the card
+  // says `pending` while a session is already spawning.
+  it('shows "starting" for a pending task the engine already has a run for', () => {
+    const t = task({ id: 'c1', status: 'pending', agentProjectId: 'agent' });
+    expect(runPhase(t, [], new Set(['c1']))).toMatchObject({ phase: 'starting', spinner: true });
+    expect(runPhase(t, [], new Set())).toMatchObject({ phase: 'idle', spinner: false });
+  });
+
+  it('names the step a chain is on', () => {
+    const card = task({ id: 'c1', status: 'in-progress' });
+    const steps = [step('s1', 'done'), step('s2', 'running'), step('s3', 'pending')];
+    expect(runPhase(card, steps)).toMatchObject({
+      phase: 'running',
+      label: 'Running step 2 of 3',
+      spinner: true,
+    });
+  });
+
+  it('names the step a chain has stopped at, and does not spin', () => {
+    const card = task({ id: 'c1', status: 'in-progress' });
+    const steps = [step('s1', 'done'), step('s2', 'failed'), step('s3', 'pending')];
+    expect(runPhase(card, steps)).toMatchObject({
+      phase: 'waiting',
+      label: 'Stopped at step 2 of 3',
+      spinner: false,
+    });
+  });
+
+  it('queues a chain whose next step has not been picked up yet', () => {
+    const card = task({ id: 'c1', status: 'in-progress' });
+    expect(runPhase(card, [step('s1', 'done'), step('s2', 'pending')])).toMatchObject({
+      phase: 'queued',
+      spinner: false,
+    });
+  });
+
+  it('rests once every step is done', () => {
+    const card = task({ id: 'c1', status: 'in-progress' });
+    expect(runPhase(card, [step('s1', 'done'), step('s2', 'done')])).toMatchObject({
+      phase: 'idle',
+      spinner: false,
+    });
+  });
+
+  it('says an assigned card was never started', () => {
+    const t = task({ status: 'pending', agentProjectId: 'agent' });
+    expect(runPhase(t)).toMatchObject({ phase: 'idle', label: 'Assigned — not started' });
+  });
+
+  it('spins a hand-added step that carries no agent project', () => {
+    // `isAgentRunning` gates on assignment, which is why a step added by hand could never
+    // show a spinner however hard it ran. `runPhase` deliberately does not.
+    expect(runPhase(task({ status: 'running', agentProjectId: null }))).toMatchObject({
+      phase: 'running',
+      spinner: true,
+    });
+  });
+
+  it.each(['done', 'failed', 'stopped', 'cancelled'] as const)('rests a %s task', (status) => {
+    expect(runPhase(task({ status }))).toMatchObject({ phase: 'done', spinner: false });
+  });
+
+  it('lets the task’s own status outrank its finished chain', () => {
+    // A parent running a review-seed turn after its chain merged is running, whatever the
+    // steps say.
+    const card = task({ id: 'c1', status: 'running' });
+    expect(runPhase(card, [step('s1', 'done')])).toMatchObject({ phase: 'running' });
   });
 });
 
