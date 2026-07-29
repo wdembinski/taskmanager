@@ -75,6 +75,7 @@ import { PermissionBroker } from './permissionBroker';
 import { writePermissionServer } from './permissionServerSource';
 import { PlanWatcher } from './planWatcher';
 import { JiraPoller } from './jiraPoller';
+import { validateBranchName } from './branchName';
 import { Scheduler } from './scheduler';
 import { SessionManager } from './sessionManager';
 import { createStore, type Store } from './store';
@@ -270,6 +271,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // Phase 6: heal tasks the previous run left mid-flight (running/waiting-input →
   // pending, keeping their session id so a re-run resumes them). Runs before the
   // window paints; the UI re-queries project:list on mount and sees the fix.
+  // Phase 17: re-open the inbox FIRST. Since an agent's question now genuinely blocks its
+  // run, the reason a task is parked has to come back with it — and `reconcileInterrupted`
+  // below would otherwise sweep exactly those tasks and throw the question away.
+  scheduler.rehydrateAttention();
   scheduler.reconcileInterruptedTasks();
 
   // Phase 8: watch every project's plan file so edits — including the agent
@@ -532,6 +537,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     const notes = input.notes?.trim();
     if (notes) store.addComment(existing.projectId, taskId, notes);
 
+    // Validated here rather than at worktree-creation time: a bad ref would otherwise
+    // surface as a failed run several seconds later, with the reason buried in git's stderr.
+    const branch = input.branch?.trim() || null;
+    if (branch) {
+      const check = validateBranchName(branch);
+      if (!check.ok) throw new Error(`That branch name won't work: ${check.reason}.`);
+    }
+
     const task = store.updateTask(taskId, {
       agentProjectId: target.id,
       // Delegating a card to the Billing repo does also say the card is about Billing —
@@ -539,12 +552,25 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       ...(existing.projectTagId ? {} : { projectTagId: target.id }),
       agentMode: input.mode ?? null,
       agentModel: input.model ?? null,
+      agentBranch: branch,
       // A previous attempt's session is not this assignment's; start a fresh
       // conversation so the agent gets the full single-ticket brief.
       sessionId: null,
+      // Assigned-but-not-started is `pending`: queued work nobody has begun, which is
+      // exactly what TO DO means. The Start button is the affordance, not a new status —
+      // adding one would ripple through MANUAL_STATUSES, columnForStatus, statusForColumn,
+      // resolveMove and the JIRA transition map.
       status: 'pending',
     });
     if (!task) throw new Error('Task not found.');
+
+    // Assign WITHOUT starting (Phase 17): the human wants to talk to the agent about the
+    // card before it begins changing files. Sending it a message starts it (see
+    // `resumeForChat`), as does the Start button.
+    if (input.start === false) {
+      send('task:changed', { task, runId: null });
+      return task;
+    }
 
     const started = scheduler.runTask(taskId);
     if (!started) {
