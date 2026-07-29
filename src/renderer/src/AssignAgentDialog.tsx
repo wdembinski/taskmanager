@@ -13,6 +13,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   Body1,
   Button,
+  Input,
   Dialog,
   DialogActions,
   DialogBody,
@@ -31,11 +32,22 @@ import {
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
 import type { Project, Task } from '@shared/model';
+import {
+  BRANCH_TYPES,
+  buildBranchName,
+  inferBranchType,
+  validateBranchName,
+  type BranchType,
+} from '@shared/branchName';
 import { resolveAgentProject } from '@shared/agentProjects';
 
 const useStyles = makeStyles({
-  form: { display: 'flex', flexDirection: 'column', gap: '12px', minWidth: '440px' },
+  // Wider than it was: the branch field holds a four-segment ref, and at 440 it wrapped
+  // into an ellipsis you had to select-all to read.
+  form: { display: 'flex', flexDirection: 'column', gap: '12px', minWidth: '560px' },
   row: { display: 'flex', gap: '8px' },
+  /** Narrow — a Conventional Commits type is six characters at most. */
+  type: { width: '120px', flexShrink: 0 },
   grow: { flex: 1 },
   hint: { color: tokens.colorNeutralForeground3 },
   ticket: { color: tokens.colorNeutralForeground2 },
@@ -67,6 +79,12 @@ export function AssignAgentDialog({
   const [model, setModel] = useState<ClaudeModel>('sonnet');
   const [mode, setMode] = useState<PermissionMode>('acceptEdits');
   const [notes, setNotes] = useState('');
+  // The branch, and the Conventional Commits type it is proposed from. `branchTouched`
+  // is what stops re-proposing over a name the human has edited.
+  const [branchType, setBranchType] = useState<BranchType>('feat');
+  const [branch, setBranch] = useState('');
+  const [branchTouched, setBranchTouched] = useState(false);
+  const [prefix, setPrefix] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -84,7 +102,43 @@ export function AssignAgentDialog({
     setProjectId(resolved?.id ?? '');
     setModel(card.agentModel ?? resolved?.defaultModel ?? 'sonnet');
     setMode(card.agentMode ?? resolved?.defaultPermissionMode ?? 'acceptEdits');
+    setBranchTouched(false);
+    const type = inferBranchType(card.title, card.externalType);
+    setBranchType(type);
+    // The card's saved branch wins: re-opening the dialog on an assigned card must show
+    // the branch its worktree is actually on, not a fresh proposal that disagrees with it.
+    void window.api
+      .invoke('settings:get')
+      .then((settings) => {
+        setPrefix(settings.branchPrefix);
+        setBranch(
+          card.agentBranch ??
+            buildBranchName({
+              title: card.title,
+              externalType: card.externalType,
+              externalKey: card.externalKey,
+              prefix: settings.branchPrefix,
+              type,
+            }),
+        );
+      })
+      .catch(() => setBranch(card.agentBranch ?? ''));
   }, [open, task?.id]);
+
+  /** Re-propose from a newly picked type — unless the human has edited the name. */
+  function pickBranchType(type: BranchType): void {
+    setBranchType(type);
+    if (branchTouched || !task) return;
+    setBranch(
+      buildBranchName({
+        title: task.title,
+        externalType: task.externalType,
+        externalKey: task.externalKey,
+        prefix,
+        type,
+      }),
+    );
+  }
 
   /** Switching repo also switches to that repo's defaults — they're per-project settings. */
   function pickProject(id: string): void {
@@ -96,7 +150,7 @@ export function AssignAgentDialog({
     }
   }
 
-  async function assign(): Promise<void> {
+  async function assign(start: boolean): Promise<void> {
     if (!task || !projectId) return;
     setBusy(true);
     setError(null);
@@ -106,6 +160,8 @@ export function AssignAgentDialog({
         mode,
         model,
         notes: notes.trim() || undefined,
+        branch: branch.trim() || undefined,
+        start,
       });
       onAssigned(updated);
       onClose();
@@ -117,6 +173,13 @@ export function AssignAgentDialog({
   }
 
   const selected = agentProjects.find((p) => p.id === projectId) ?? null;
+  // Validated on every keystroke with the SAME rules the engine applies before cutting a
+  // worktree, so a name that will be rejected is rejected here — where you can still fix
+  // it — rather than several seconds later inside git's stderr.
+  const trimmedBranch = branch.trim();
+  const branchCheck = trimmedBranch ? validateBranchName(trimmedBranch) : null;
+  const branchError =
+    trimmedBranch && branchCheck && !branchCheck.ok ? `That won't work: ${branchCheck.reason}.` : null;
   const ticket = task?.externalKey ? `${task.externalKey} — ${task.title}` : (task?.title ?? '');
 
   return (
@@ -190,6 +253,42 @@ export function AssignAgentDialog({
                     </Field>
                   </div>
 
+                  <div className={styles.row}>
+                    <Field label="Type" className={styles.type}>
+                      <Dropdown
+                        value={branchType}
+                        selectedOptions={[branchType]}
+                        onOptionSelect={(_e, d) => pickBranchType(d.optionValue as BranchType)}
+                      >
+                        {BRANCH_TYPES.map((t) => (
+                          <Option key={t} value={t} text={t}>
+                            {t}
+                          </Option>
+                        ))}
+                      </Dropdown>
+                    </Field>
+                    <Field
+                      label="Branch"
+                      className={styles.grow}
+                      validationState={branchError ? 'error' : 'none'}
+                      validationMessage={branchError ?? undefined}
+                      hint={
+                        branchError
+                          ? undefined
+                          : 'The agent works here. Edit it freely — the type above only proposes.'
+                      }
+                    >
+                      <Input
+                        value={branch}
+                        onChange={(_e, d) => {
+                          setBranchTouched(true);
+                          setBranch(d.value);
+                        }}
+                        placeholder="feat/abc-123/add-the-thing"
+                      />
+                    </Field>
+                  </div>
+
                   <Field
                     label="Instructions (optional)"
                     hint="Added to the task's timeline and handed to the agent with the ticket."
@@ -203,8 +302,9 @@ export function AssignAgentDialog({
                   </Field>
 
                   <Body1 className={styles.hint}>
-                    The agent starts immediately on its own branch in a separate worktree, and never
-                    writes anything back to JIRA.
+                    The agent works on its own branch in a separate worktree, and never writes
+                    anything back to JIRA. <b>Assign</b> sets all this up without starting it, so
+                    you can talk to it about the card first — your first message starts it.
                   </Body1>
                 </>
               )}
@@ -214,10 +314,20 @@ export function AssignAgentDialog({
             <Button appearance="secondary" onClick={onClose} disabled={busy}>
               Cancel
             </Button>
+            {/* Assigning and starting used to be the same act, which left no way to
+                discuss a card with its agent before it began changing files. */}
+            <Button
+              appearance="secondary"
+              onClick={() => void assign(false)}
+              disabled={busy || !projectId || branchError !== null}
+              title="Set the agent up on this card without starting it."
+            >
+              Assign
+            </Button>
             <Button
               appearance="primary"
-              onClick={() => void assign()}
-              disabled={busy || !projectId}
+              onClick={() => void assign(true)}
+              disabled={busy || !projectId || branchError !== null}
             >
               {busy ? 'Starting…' : 'Assign & start'}
             </Button>

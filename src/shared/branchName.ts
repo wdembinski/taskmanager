@@ -18,6 +18,10 @@
  * Pure and total: the whole naming policy is unit-tested without git, a store, or a
  * session, which is why validation reimplements git-check-ref-format rather than shelling
  * out (the dialog also needs to validate on every keystroke).
+ *
+ * In `shared/` rather than `main/` for exactly that reason: the assign dialog proposes the
+ * name and validates what you type into it, and the engine validates it again before a
+ * worktree is cut. One policy, both sides — a second copy in the renderer would drift.
  */
 
 /** The Conventional Commits types offered, in the order the dialog lists them. */

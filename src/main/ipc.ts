@@ -75,7 +75,7 @@ import { PermissionBroker } from './permissionBroker';
 import { writePermissionServer } from './permissionServerSource';
 import { PlanWatcher } from './planWatcher';
 import { JiraPoller } from './jiraPoller';
-import { validateBranchName } from './branchName';
+import { validateBranchName } from '@shared/branchName';
 import { Scheduler } from './scheduler';
 import { SessionManager } from './sessionManager';
 import { createStore, type Store } from './store';

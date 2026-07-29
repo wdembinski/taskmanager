@@ -2,11 +2,15 @@
  * TaskAgentPanel — the "Agent" section of the My Tasks detail pane.
  *
  * Everything a human does with a delegated card lives here: assign it to an agent
- * project (or reassign it, which restarts the run with fresh settings), stop the
- * agent, and — while a run is parked — **answer it inline**, without a detour to the
- * Attention inbox. The pending item is read from `attention:list` filtered to this
- * task and kept current over `attention:new` / `attention:resolved`, so a question
- * that arrives while you're reading the card appears on its own.
+ * project (or reassign it, which restarts the run with fresh settings), START it when it
+ * was assigned without being started, stop it, and — while a run is parked — **answer it
+ * inline**, without a detour to the Attention inbox.
+ *
+ * The parked asks arrive as a prop from the board's single `useAttentionIndex`, oldest
+ * first. One is shown at a time and answering it reveals the next, because the index
+ * drops only the item that resolved. This panel used to mount its own subscription, which
+ * showed only the first item and blanked the slot on `attention:resolved` — so a card
+ * with two asks lost the second, and the pane around it held a second, disagreeing copy.
  *
  * Model and permission mode are shown read-only: both are captured when the run
  * starts, so changing them means reassigning (the button says so).
@@ -144,8 +148,12 @@ export function TaskAgentPanel({
   // doesn't silently resume when the limit lifts.
   const stoppable = live || task.status === 'blocked-by-limit';
   const assigned = agentProjects.find((p) => p.id === task.agentProjectId) ?? null;
+  // An agent is on the card, nothing is running, and nothing ever ran: it was assigned
+  // without being started. `sessionId` is the test rather than the status, because a
+  // staged card and a queued one are both `pending`.
+  const staged = Boolean(task.agentProjectId) && !task.sessionId && task.status === 'pending';
 
-  // The pending ask itself is `usePendingAttention`; only the draft reply is local.
+  // The asks arrive as a prop; only the draft reply is local.
   useEffect(() => {
     setReply('');
   }, [taskId]);
@@ -218,6 +226,20 @@ export function TaskAgentPanel({
             Stop
           </Button>
         )}
+        {/* Assigned but never started (Phase 17). The affordance for a staged card —
+            sending it a message starts it too, but a card you have nothing to say to yet
+            still needs a way to begin. */}
+        {staged && (
+          <Button
+            size="small"
+            appearance="primary"
+            disabled={busy}
+            title="Start the agent on this card now."
+            onClick={() => void runStep(taskId)}
+          >
+            Start
+          </Button>
+        )}
         {/* A step is never delegated on its own: it inherits the card's agent project
             and runs in the card's worktree, in its turn. Stop is still offered. */}
         {isStep ? (
@@ -237,6 +259,7 @@ export function TaskAgentPanel({
 
       {task.agentProjectId && (
         <Caption1 className={styles.hint}>
+          {task.agentBranch ? `${task.agentBranch} · ` : ''}
           {task.agentModel ?? assigned?.defaultModel ?? 'project default'} ·{' '}
           {
             PERMISSION_MODE_LABELS[
