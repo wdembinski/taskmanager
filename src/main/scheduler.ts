@@ -42,7 +42,19 @@ import type {
   SessionEvent,
   StartSessionRequest,
 } from '@shared/session';
-import type { AttentionAnswer, AttentionItem, AttentionKind } from '@shared/attention';
+import type {
+  AttentionAnswer,
+  AttentionItem,
+  AttentionKind,
+  AttentionQuestion,
+} from '@shared/attention';
+import {
+  DECLINED_ANSWER_MESSAGE,
+  describeQuestions,
+  formatAnswerMessage,
+  isAskUserQuestionTool,
+  parseAskUserQuestion,
+} from './askUserQuestion';
 import type { LimitState } from '@shared/limit';
 import type { UsageSample, UsageSource } from '@shared/usage';
 import {
@@ -66,6 +78,8 @@ import {
   type AgentPromptComment,
 } from './agentTaskPrompt';
 import type { PermissionGate } from './claudeSession';
+import { buildChainHandbackPrompt, buildChainSummary } from './chainSummary';
+import { shouldSurfaceEvent } from './eventNoise';
 import { isBlockingLimitStatus, LimitGate } from './limitGate';
 import type { PermissionRequest, PermissionDecisionResult } from './permissionBroker';
 import { EXIT_PLAN_MODE_TOOL, evaluateToolUse } from './permissionPolicy';
@@ -75,6 +89,7 @@ import type { SessionManager } from './sessionManager';
 import { hostFor } from './exec';
 import { appPlanPath, appProjectFile, planRelPath } from './projectPaths';
 import type { Store } from './store';
+import { taskBranch } from './worktreeManager';
 import type {
   IntegrationResult,
   LaunchTarget,
@@ -100,11 +115,6 @@ const PLAN_HANDOVER_MESSAGE =
 const PLAN_REJECTED_MESSAGE =
   'The human rejected this plan. Revise it — reconsider the approach and the breakdown ' +
   'into steps — then call ExitPlanMode again with the new plan.';
-
-/** The comment filed on a parent card once the final step of its plan has merged. */
-const PLAN_REVIEW_NOTE =
-  'All steps of the approved plan are merged. Ready for review — move the card to Done ' +
-  'yourself once you are happy with it.';
 
 /** The nudge sent to a session we resume after a usage limit clears (Phase 5). */
 const RESUME_NUDGE =
@@ -465,6 +475,14 @@ interface Run {
    * typed. Absent on every ordinary run.
    */
   chatPrompt?: string;
+  /**
+   * (Phase 17) This run only exists to brief the card after its plan finished, so it must
+   * skip both halves of the worktree lifecycle: there is nothing to integrate (the chain's
+   * branch was merged and deleted) and nothing to isolate (it reads code already in base).
+   * Without the flag, `settle` would try to merge a branch that no longer exists and
+   * `prepare` would cut a brand-new one for a card whose work is already landed.
+   */
+  reviewSeed?: boolean;
   /** Set once we've decided the task's outcome, so a trailing `exited` doesn't re-settle it. */
   settled: boolean;
   /** (Worktree mode) the task's branch, set once the worktree is prepared. */
@@ -920,8 +938,27 @@ export class Scheduler {
       reason,
     });
     if (this.disposed) return refused('not-running');
-    if (!target.sessionId) return refused(this.limitGate.active ? 'limit' : 'never-ran');
     if (this.limitGate.active || target.status === 'blocked-by-limit') return refused('limit');
+
+    // An assigned-but-not-started card (Phase 17) has no conversation to continue — but it
+    // has everything a FIRST one needs: an agent project, a mode, a model and a brief. So
+    // the first message to it STARTS the agent, with what was typed as the opening
+    // instruction. Refusing here would make "assign without starting" a dead end: you could
+    // stage a run but never talk to it.
+    if (!target.sessionId) {
+      if (!target.agentProjectId) return refused('never-ran');
+      const staged = this.runProjectFor(target);
+      if (!staged) return refused('never-ran');
+      if (!target.parentTaskId && chainInFlight(this.store.getSubtasks(target.id))) {
+        return refused('chain-busy');
+      }
+      // Filed as a COMMENT, not a chat line: with no session there is nothing to resume, so
+      // this has to be a fresh full brief, and `buildAgentTaskPrompt` reads the timeline's
+      // comments (`taskNotes`) to assemble one.
+      this.store.addComment(target.projectId, target.id, text);
+      const startedRunId = this.startTask(staged, target);
+      return { status: 'resumed', taskId: target.id, runId: startedRunId };
+    }
     if (!target.parentTaskId && chainInFlight(this.store.getSubtasks(target.id))) {
       return refused('chain-busy');
     }
@@ -1103,6 +1140,10 @@ export class Scheduler {
     for (const project of this.store.listProjects()) {
       for (const task of this.store.getTasks(project.id)) {
         if (task.status !== 'running' && task.status !== 'waiting-input') continue;
+        // A rehydrated inbox item is the reason this task is parked, and it is still
+        // answerable. Sweeping it to `pending`/`failed` would leave the board and the
+        // inbox saying different things about the same card.
+        if (this.hasAttentionForTask(task.id)) continue;
         if (task.parentTaskId) {
           this.noteRun(
             task.projectId,
@@ -1143,6 +1184,24 @@ export class Scheduler {
     // bypass shortcut below, since a full-auto run still produces a plan worth keeping.
     if (request.toolName === EXIT_PLAN_MODE_TOOL) {
       this.capturePlan(run.taskId, request.input);
+    }
+
+    // A question for the HUMAN is not a risk decision, so `bypassPermissions` does not
+    // cover it and this must sit ABOVE the shortcut below. "Never ask me to approve tools"
+    // is not "answer my questions for me" — and full-auto is precisely the mode in which
+    // nobody is watching the agent quietly pick its own recommended option.
+    if (isAskUserQuestionTool(request.toolName)) {
+      const questions = parseAskUserQuestion(request.input);
+      const item = this.raiseAttention(run, {
+        kind: 'agent-question',
+        prompt: describeQuestions(questions),
+        toolName: request.toolName,
+        reason: null,
+        questions,
+      });
+      return new Promise<PermissionDecisionResult>((resolve) => {
+        this.pendingDecisions.set(item.id, { runId: request.runId, input: request.input, resolve });
+      });
     }
 
     const project = this.store.getProject(run.projectId);
@@ -1245,6 +1304,37 @@ export class Scheduler {
       return;
     }
 
+    if (item.kind === 'agent-question') {
+      // The held tool. `deny` is the only channel that carries TEXT back as the tool's
+      // result — `allow` would run the tool, which is the bug: headless, the CLI would
+      // answer itself. Absent only on the observational fallback path (the tool already
+      // ran), where the answer goes into the input stream instead.
+      const pending = this.pendingDecisions.get(itemId);
+      this.pendingDecisions.delete(itemId);
+      this.resolveAttention(itemId);
+
+      const questions = item.questions ?? [];
+      const note = 'note' in answer ? answer.note?.trim() : undefined;
+      let message: string;
+      if (answer.decision === 'answers') {
+        message = formatAnswerMessage(questions, answer.selections, answer.freeText, note);
+      } else if (answer.decision === 'reply') {
+        message = formatAnswerMessage(questions, [[answer.text]], undefined, note);
+      } else {
+        // An explicit "you decide". The agent only ever gets to choose because a human
+        // said so — never because nobody looked in time.
+        message = note ? `${DECLINED_ANSWER_MESSAGE}\n\n${note}` : DECLINED_ANSWER_MESSAGE;
+      }
+
+      if (pending) pending.resolve({ behavior: 'deny', message });
+      else this.deliverOrResume(item, message);
+
+      if (!this.hasPendingAttention(item.runId)) {
+        this.updateTask(item.taskId, { status: 'running' }, item.runId);
+      }
+      return;
+    }
+
     if (item.kind === 'merge-conflict') {
       const pending = this.pendingIntegrations.get(itemId);
       if (!pending) return; // already handled
@@ -1279,10 +1369,11 @@ export class Scheduler {
         pending.resolve({ behavior: 'deny', message: note || DEFAULT_DENY_MESSAGE });
       }
     } else {
-      // A question: deliver the human's reply into the open input stream.
+      // A question: deliver the human's reply into the open input stream — or, for an item
+      // restored after a restart, resume the conversation with it.
       const text =
         answer.decision === 'reply' ? answer.text : ('note' in answer && answer.note) || '';
-      this.sessions.send(item.runId, text);
+      this.deliverOrResume(item, text);
     }
 
     this.resolveAttention(itemId);
@@ -1383,7 +1474,11 @@ export class Scheduler {
    * other respect — same reservation, worktree, settling and integration — but the
    * session is prompted with what the human typed.
    */
-  private startTask(project: Project, task: Task, opts: { chatPrompt?: string } = {}): string {
+  private startTask(
+    project: Project,
+    task: Task,
+    opts: { chatPrompt?: string; reviewSeed?: boolean } = {},
+  ): string {
     const runId = randomUUID();
     const run: Run = {
       taskId: task.id,
@@ -1391,6 +1486,7 @@ export class Scheduler {
       runId,
       settled: false,
       chatPrompt: opts.chatPrompt,
+      reviewSeed: opts.reviewSeed,
       // A per-assignment override (chosen in the assign dialog) beats the project
       // default, and is captured on the run so every later decision — permissions
       // above all — judges the run the human actually authorized.
@@ -1399,7 +1495,12 @@ export class Scheduler {
     };
     this.runs.set(runId, run);
     this.inFlight.add(task.id);
-    if (this.worktrees) {
+    if (run.reviewSeed) {
+      // A review conversation reads code that is already merged into base, so it belongs
+      // in the project directory — not in a fresh worktree cut from a branch that the
+      // chain's own integration just deleted.
+      this.launch(project, task, run, { mode: 'shared', cwd: project.path });
+    } else if (this.worktrees) {
       // Async: prepare (or reuse) the task's worktree, then start the session in it.
       void this.prepareAndLaunch(project, task, run);
     } else {
@@ -1423,7 +1524,12 @@ export class Scheduler {
     try {
       // A step of an approved plan runs in its PARENT's worktree, on the parent's
       // branch — one shared branch per card, integrated once after the last step.
-      prep = await this.worktrees!.prepare(project, task, this.worktreeOwner(task));
+      prep = await this.worktrees!.prepare(
+        project,
+        task,
+        this.worktreeOwner(task),
+        this.branchFor(task),
+      );
     } catch (err) {
       // Preparation blew up (odd git state). For a worktree-enabled repo, never fall back
       // to the base tree (that pollutes it) — fail the task; otherwise use the shared dir.
@@ -1580,6 +1686,10 @@ export class Scheduler {
         failureNote,
         comments,
         notes: this.taskNotes(task.id),
+        // A plan-mode run's headings become this card's step titles, so it is told how
+        // they will be read. The per-assignment override beats the project default, same
+        // as every other decision about the run.
+        planMode: (task.agentMode ?? project.defaultPermissionMode) === 'plan',
         ...context,
       });
     }
@@ -1630,14 +1740,23 @@ export class Scheduler {
   }
 
   /**
-   * The human's own notes on a card, oldest first — the timeline's comments, which
-   * include the instructions typed in the assign dialog. Read fresh on every launch so
-   * a retry (and anything the human added since) reaches the agent.
+   * The human's own notes on a card, oldest first — the timeline's comments AND its chat
+   * messages, which between them include the instructions typed in the assign dialog and
+   * anything said to the agent since. Read fresh on every launch so a retry (and anything
+   * added meanwhile) reaches the agent.
+   *
+   * Chat messages are included deliberately (Phase 17). A message typed at a card whose
+   * agent has never run IS an instruction, and it must reach the brief that starts it.
+   * Their previous absence also meant a retry silently dropped everything the human had
+   * said mid-run, which was a bug rather than a saving.
    */
   private taskNotes(taskId: string): string[] {
     return this.store
       .getTaskActivity(taskId)
-      .filter((e): e is Extract<TaskActivityEntry, { kind: 'comment' }> => e.kind === 'comment')
+      .filter(
+        (e): e is Extract<TaskActivityEntry, { kind: 'comment' | 'chat' }> =>
+          e.kind === 'comment' || e.kind === 'chat',
+      )
       .map((entry) => entry.body);
   }
 
@@ -1746,17 +1865,25 @@ export class Scheduler {
     const run = this.runs.get(runId);
     if (!run) return;
 
-    // Phase 6: persist every event to the task's history so its transcript is
-    // viewable after the run ends or the app restarts.
-    this.store.appendTaskEvent(run.projectId, run.taskId, runId, event);
-
     // Token accounting (Performance dashboard): a per-turn `usage` event is the task's
     // incremental spend; the `result` event carries the run's total cost. Recorded here,
-    // before the negotiation/settlement branches below, so no early-return can skip it.
+    // before the negotiation/settlement branches below, so no early-return can skip it —
+    // and deliberately ABOVE the transcript write, which is now conditional.
     if (event.kind === 'usage') {
       this.recordUsage('task', run.projectId, run.taskId, runId, event);
     } else if (event.kind === 'result') {
       this.recordCost('task', run.projectId, run.taskId, runId, event.costUsd);
+    }
+
+    // Phase 6: persist every event to the task's history so its transcript is
+    // viewable after the run ends or the app restarts.
+    //
+    // Phase 17: filtered by the SAME predicate the live push uses, so a transcript you
+    // scroll back to next week reads exactly like the run you watched happen. (Only
+    // healthy rate-limit signals are dropped; `lastRateLimit` below still sees them,
+    // because it reads the ungated observer stream.)
+    if (shouldSurfaceEvent(event)) {
+      this.store.appendTaskEvent(run.projectId, run.taskId, runId, event);
     }
 
     // Plan capture, fallback path (Phase 11). `decidePermission` normally sees the
@@ -1766,6 +1893,29 @@ export class Scheduler {
     // producing is far worse than writing the same markdown twice.
     if (event.kind === 'tool-use' && event.name === EXIT_PLAN_MODE_TOOL) {
       this.capturePlan(run.taskId, event.input);
+    }
+
+    // The same belt-and-braces for `AskUserQuestion` (Phase 17). If the CLI ever declines
+    // to route its own interactive tool through the permission gate, `decidePermission`
+    // never sees it and the question would go unasked — the exact silent failure this
+    // whole path exists to end. Raising it here cannot BLOCK (the tool has already run),
+    // but a question you can see and answer into the stream beats one you never knew
+    // about. Guarded on `hasPendingAttention` so the gated path doesn't double-raise.
+    if (
+      event.kind === 'tool-use' &&
+      isAskUserQuestionTool(event.name) &&
+      !this.hasPendingAttention(runId)
+    ) {
+      const questions = parseAskUserQuestion(event.input);
+      if (questions.length > 0) {
+        this.raiseAttention(run, {
+          kind: 'agent-question',
+          prompt: describeQuestions(questions),
+          toolName: event.name,
+          reason: null,
+          questions,
+        });
+      }
     }
 
     // Inspect assistant messages for the three explicit markers, in priority order:
@@ -1924,6 +2074,8 @@ export class Scheduler {
       /** `plan-approval` only: the plan markdown and the step titles it would create. */
       plan?: string;
       steps?: string[];
+      /** `agent-question` only: the structured questions, with their options. */
+      questions?: AttentionQuestion[];
     },
   ): AttentionItem {
     const task = this.store.getTask(run.taskId);
@@ -1940,12 +2092,40 @@ export class Scheduler {
       reason: detail.reason,
       plan: detail.plan ?? null,
       steps: detail.steps ?? [],
+      questions: detail.questions ?? [],
       createdAt: Date.now(),
     };
     this.attention.set(item.id, item);
+    // Persisted alongside the in-memory map, not instead of it: the map is what every hot
+    // path reads, the table is what survives a restart. The kind-specific context is
+    // filled in by the specialised raisers (`raiseTaskFailed`, `raiseMergeConflict`),
+    // which know what their answer path will need.
+    this.store.saveAttention(item, null);
     this.updateTask(run.taskId, { status: 'waiting-input' }, run.runId);
     this.emitAttention(item);
     return item;
+  }
+
+  /**
+   * Deliver an answer to the session that asked, or — when that session is gone —
+   * resume the task with it.
+   *
+   * The second case is what makes a restored inbox item answerable at all. A parked HTTP
+   * request cannot survive a restart (the CLI process, the relay and the socket all die
+   * with the app), so a rehydrated item carries no live run: `sessions.send` on a dead
+   * runId is a silent no-op, and the human's answer would vanish. Resuming turns it into
+   * the opening prompt of a `--resume` run instead, which is the same conversation
+   * continued rather than a new one.
+   */
+  private deliverOrResume(item: AttentionItem, message: string): void {
+    if (item.runId && this.runs.has(item.runId)) {
+      this.sessions.send(item.runId, message);
+      return;
+    }
+    const task = this.store.getTask(item.taskId);
+    // `resumeForChat` already refuses for every reason a run must not start (no session,
+    // usage limit, chain busy) and says so; there is no better answer available here.
+    if (task) this.resumeForChat(task, message);
   }
 
   /** True if any inbox item is still open for this run. */
@@ -1956,7 +2136,68 @@ export class Scheduler {
 
   /** Remove one item and notify the UI. */
   private resolveAttention(itemId: string): void {
+    // Deleted from the table unconditionally: an item that was rehydrated and then
+    // answered may have been dropped from the map by some other path, and a row left
+    // behind would come back as a ghost on the next restart.
+    this.store.deleteAttention(itemId);
     if (this.attention.delete(itemId)) this.emitAttentionResolved(itemId);
+  }
+
+  /** Whether the inbox is holding anything for this TASK (as opposed to a run). */
+  private hasAttentionForTask(taskId: string): boolean {
+    for (const item of this.attention.values()) if (item.taskId === taskId) return true;
+    return false;
+  }
+
+  /**
+   * Re-open the inbox from the DB after a restart.
+   *
+   * What can be recovered is decided per KIND, not per item, because the kinds genuinely
+   * differ: a failed task or a merge conflict is stored context that any later call can
+   * act on, while a permission request is a promise held inside a socket handler in a
+   * process that no longer exists. Half the honesty of this feature is admitting that
+   * rather than restoring a row that looks answerable and silently isn't.
+   *
+   * Runs BEFORE `reconcileInterruptedTasks`, which would otherwise sweep the very tasks
+   * these items belong to.
+   */
+  rehydrateAttention(): void {
+    if (this.disposed) return;
+    for (const { item, context } of this.store.listAttention()) {
+      const task = this.store.getTask(item.taskId);
+      if (!task) {
+        this.store.deleteAttention(item.id);
+        continue;
+      }
+
+      if (item.kind === 'permission') {
+        // The specific tool call is gone with its process. Restoring an Approve button
+        // that cannot approve anything would be a lie; say what happened instead.
+        this.noteRun(
+          item.projectId,
+          item.taskId,
+          item.runId,
+          `The app closed while an approval for "${item.toolName ?? 'a tool'}" was pending. ` +
+            `Nothing was run. Start the task again if you still want it done.`,
+        );
+        this.store.deleteAttention(item.id);
+        continue;
+      }
+
+      // Its run is gone, so `runId` is now a dead correlator. Blanked so no live-session
+      // path (`sessions.send`, `hasPendingAttention`) mistakes it for something it can
+      // answer in place — `deliverOrResume` sees the emptiness and resumes instead.
+      const revived: AttentionItem = { ...item, runId: '' };
+      this.attention.set(revived.id, revived);
+      this.store.saveAttention(revived, context);
+      if (item.kind === 'task-failed' && context) {
+        this.pendingFailures.set(item.id, context as PendingFailure);
+      }
+      if (item.kind === 'merge-conflict' && context) {
+        this.pendingIntegrations.set(item.id, context as PendingIntegration);
+      }
+      this.emitAttention(revived);
+    }
   }
 
   /**
@@ -2005,6 +2246,25 @@ export class Scheduler {
    * failed worktree run keeps its worktree and branch for inspection/retry.
    */
   private settle(run: Run, status: 'done' | 'failed', reason?: string): void {
+    // A review seed (Phase 17) is a one-turn briefing on a card whose work is already
+    // merged. It owns no branch, so there is nothing to integrate; and its outcome must
+    // not move the card, which is exactly where the human left it. Checked first, before
+    // any of the chain/worktree branches below can claim it.
+    if (run.reviewSeed) {
+      this.attempts.delete(run.taskId);
+      if (status === 'failed') {
+        this.noteRun(
+          run.projectId,
+          run.taskId,
+          run.runId,
+          `Could not brief this card on its finished plan (${reason ?? 'the run failed'}). ` +
+            `The work is merged regardless — the summary above is the record.`,
+        );
+      }
+      this.updateTask(run.taskId, { status: 'in-progress' }, null);
+      return;
+    }
+
     // A step of an approved plan that still has siblings to run: the chain's branch is
     // not finished, so there is nothing to integrate yet — mark the step done and start
     // the next one. Only the FINAL step falls through to the integration below, which
@@ -2046,7 +2306,11 @@ export class Scheduler {
       return;
     }
     this.attempts.delete(run.taskId); // a success clears the retry counter
-    this.updateTask(run.taskId, { status: 'done' }, null);
+    // The orchestrator finishes WORK; it does not close cards. A run already moved this
+    // card to IN PROGRESS when it started, and that is where it stays: only the human
+    // decides a card is done, by dragging it. What changes here is that the spinner stops
+    // and the outcome lands in the thread.
+    this.updateTask(run.taskId, { status: 'in-progress' }, null);
     this.maybeWriteBackPlan(run.taskId);
   }
 
@@ -2125,11 +2389,21 @@ export class Scheduler {
               `Restore with \`git stash apply ${result.preserved.stashRef}\` in ${project.path} if needed.`
             : `Merged branch "${ctx.branch}" into ${ctx.base}.`;
         this.noteRun(project.id, ctx.taskId, ctx.runId, note);
-        this.updateTask(ctx.taskId, { status: 'done' }, null);
+        // This line runs for BOTH a plain card and the final step of a chain, and the two
+        // want different things. A STEP must reach `done` or the chain machinery breaks:
+        // `hasPendingSibling`, `advanceSubtasks` and `chainInFlight` all read `done` as
+        // "this step is over", and a step is not a board column entry anyway. A CARD must
+        // not — only the human moves a card, so it stays where the run put it.
+        const finished = this.store.getTask(ctx.taskId);
+        this.updateTask(
+          ctx.taskId,
+          { status: finished?.parentTaskId ? 'done' : 'in-progress' },
+          null,
+        );
         this.maybeWriteBackPlan(ctx.taskId);
         // This was the final step of an approved plan (only the last one ever gets
         // here): hand the card back to the human for review.
-        this.finishParentChain(ctx.taskId);
+        void this.finishParentChain(ctx.taskId, { branch: ctx.branch, base: ctx.base });
         break;
       }
       case 'conflict':
@@ -2260,15 +2534,20 @@ export class Scheduler {
       branch: ctx.branch,
       createdAt: Date.now(),
     };
-    this.attention.set(item.id, item);
-    this.pendingIntegrations.set(item.id, {
+    const pending: PendingIntegration = {
       projectId: project.id,
       taskId: ctx.taskId,
       runId: ctx.runId,
       branch: ctx.branch,
       base: ctx.base,
       worktree: ctx.worktree,
-    });
+    };
+    this.attention.set(item.id, item);
+    this.pendingIntegrations.set(item.id, pending);
+    // Saved WITH its context: a conflict is resolved in a worktree on disk, so nothing
+    // about it needs the dead session. This is one of the two kinds a restart can restore
+    // to full working order.
+    this.store.saveAttention(item, pending);
     this.updateTask(ctx.taskId, { status: 'waiting-input' }, ctx.runId);
     this.emitAttention(item);
   }
@@ -2299,6 +2578,10 @@ export class Scheduler {
     };
     this.attention.set(item.id, item);
     this.pendingFailures.set(item.id, f);
+    // `applyFailureChoice` works entirely off this stored context — no live session — so
+    // a parked failure survives a restart fully answerable. That is the biggest single
+    // win from persisting the inbox.
+    this.store.saveAttention(item, f);
     this.updateTask(f.taskId, { status: 'waiting-input' }, f.runId);
     this.emitAttention(item);
   }
@@ -2393,6 +2676,20 @@ export class Scheduler {
    */
   private worktreeOwner(task: Task): string {
     return task.parentTaskId ?? task.id;
+  }
+
+  /**
+   * The branch a run works on: the OWNER card's chosen name, else the legacy one.
+   *
+   * Resolved through the owner because a step of a plan shares its parent's worktree, and a
+   * worktree has exactly one checked-out branch. Giving each step its own would mean N
+   * integrations, N rebase-conflict ladders and N chances to break base, for a chain that
+   * is sequential by construction — so steps inherit, deliberately.
+   */
+  private branchFor(task: Task): string {
+    const ownerId = this.worktreeOwner(task);
+    const owner = ownerId === task.id ? task : this.store.getTask(ownerId);
+    return owner?.agentBranch?.trim() || taskBranch(ownerId);
   }
 
   /**
@@ -2495,20 +2792,78 @@ export class Scheduler {
   }
 
   /**
-   * The final step of a plan merged: leave the parent **In Progress** with a
-   * ready-for-review note. The human moves it to Done — the orchestrator never closes
-   * a ticket it worked on, and never touches the tracker.
+   * The final step of a plan merged. Two things then have to happen on the CARD, because
+   * a chain that ends on its last step leaves the human talking to a step that is over:
+   *
+   *  1. a summary of what every step actually did is filed on the parent's timeline, so
+   *     the Details Panel reads as one story rather than N disconnected transcripts; and
+   *  2. the card gets a live thread of its own again, via a fresh session briefed with
+   *     that summary. We deliberately do NOT resume the planner — `approvePlan` told it to
+   *     stop, its context predates every line the steps wrote, and it is the most
+   *     expensive session in the chain (see `chainSummary.ts`).
+   *
+   * The card stays **In Progress**. Only the human moves a card to Done.
    */
-  private finishParentChain(subtaskId: string): void {
+  private async finishParentChain(
+    subtaskId: string,
+    merged?: { branch: string; base: string },
+  ): Promise<void> {
     const subtask = this.store.getTask(subtaskId);
     if (!subtask?.parentTaskId) return;
     const parent = this.store.getTask(subtask.parentTaskId);
     if (!parent) return;
-    this.store.addComment(parent.projectId, parent.id, PLAN_REVIEW_NOTE);
+
+    const steps = this.store.getSubtasks(parent.id);
+    const summary = buildChainSummary(
+      parent.title,
+      steps.map((step, i) => ({
+        index: i + 1,
+        title: step.title,
+        status: step.status,
+        outcome: this.lastResultText(step.id),
+      })),
+      merged?.branch ?? null,
+      merged?.base ?? null,
+    );
+    this.store.addComment(parent.projectId, parent.id, summary);
     if (parent.status !== 'in-progress') {
       this.updateTask(parent.id, { status: 'in-progress' }, null);
     }
     this.tasksChanged?.(parent.projectId);
+
+    this.seedParentReviewSession(parent, summary);
+  }
+
+  /** A task's own closing words: the `resultText` of its LAST `result` event, or ''. */
+  private lastResultText(taskId: string): string {
+    const events = this.store.getTaskHistory(taskId);
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const event = events[i];
+      if (event.kind === 'result' && event.resultText.trim()) return event.resultText;
+    }
+    return '';
+  }
+
+  /**
+   * Give a card whose chain just finished a session to talk to.
+   *
+   * A real run, so it settles like any other — but flagged `reviewSeed`, which does two
+   * things `settle` and the worktree layer would otherwise get wrong: the chain's branch
+   * has already been merged AND DELETED, so there is nothing to integrate, and preparing a
+   * worktree would cut a brand-new branch for a card whose work is already in base. A
+   * review conversation reads merged code, so it runs on the shared directory.
+   */
+  private seedParentReviewSession(parent: Task, summary: string): void {
+    if (this.disposed || this.limitGate.active) return;
+    // A card that never had an agent has nothing to seed; and one already running (a human
+    // got in first) must not be interrupted.
+    if (!parent.agentProjectId || this.inFlight.has(parent.id)) return;
+    const project = this.runProjectFor(parent);
+    if (!project) return;
+    this.startTask(project, parent, {
+      chatPrompt: buildChainHandbackPrompt(parent.title, summary),
+      reviewSeed: true,
+    });
   }
 
   // ---- Cross-agent negotiation coordinator (Phase D) ----------------------

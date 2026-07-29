@@ -22,6 +22,23 @@ import type { SessionManager } from './sessionManager';
 import type { Store } from './store';
 import type { WorktreeManager } from './worktreeManager';
 
+/**
+ * Inbox persistence, stubbed inert.
+ *
+ * Every path that raises or resolves an Attention item also writes it to the DB so it
+ * survives a restart, but none of these tests are about that — they assert on the
+ * `emitAttention` / `emitAttentionResolved` callbacks instead. Spread into each store
+ * stub so a test only has to say what it actually cares about.
+ */
+const INERT_ATTENTION_STORE = {
+  saveAttention: () => undefined,
+  deleteAttention: () => undefined,
+  listAttention: () => [],
+  // Read when a finished chain summarises itself; no test here asserts on the summary's
+  // per-step outcomes, so an empty history is the honest stub.
+  getTaskHistory: () => [],
+};
+
 // `title` defaults to `id` so dependencies (referenced by title) can name other
 // rows by their id in these tests.
 const t = (
@@ -287,6 +304,7 @@ describe('Scheduler.decidePermission — full auto (bypassPermissions)', () => {
       getTask: (id: string) => (id === 'task' ? task : undefined),
       updateTask: (_id: string, patch: Partial<Task>) => ({ ...task, ...patch }),
       getSettings: () => ({ limitJitterMs: 0 }),
+      ...INERT_ATTENTION_STORE,
     } as unknown as Store;
     const sessions = {} as unknown as SessionManager;
     const scheduler = new Scheduler(
@@ -323,6 +341,88 @@ describe('Scheduler.decidePermission — full auto (bypassPermissions)', () => {
     void scheduler.decidePermission(riskyPush);
     expect(emitAttention).toHaveBeenCalledTimes(1);
   });
+
+  describe('AskUserQuestion is never auto-answered (Phase 17)', () => {
+    const ask = {
+      runId: 'run1',
+      toolName: 'AskUserQuestion',
+      input: {
+        questions: [
+          {
+            header: 'Database',
+            question: 'Which database should this use?',
+            multiSelect: false,
+            options: [
+              { label: 'SQLite', description: 'Embedded, zero-config.' },
+              { label: 'Postgres', description: 'Needs a server.' },
+            ],
+          },
+        ],
+      },
+    };
+
+    it.each(['acceptEdits', 'bypassPermissions'] as const)(
+      'holds it even under %s — that mode waives TOOL approvals, not your judgement',
+      (mode) => {
+        const { scheduler, emitAttention } = makeScheduler(mode);
+        let settled = false;
+        void scheduler.decidePermission(ask).then(() => {
+          settled = true;
+        });
+        expect(settled).toBe(false);
+        expect(emitAttention).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it('carries the real options through to the item, descriptions and all', () => {
+      const { scheduler, emitAttention } = makeScheduler('bypassPermissions');
+      void scheduler.decidePermission(ask);
+      const item = emitAttention.mock.calls[0][0] as {
+        kind: string;
+        prompt: string;
+        questions?: Array<{ options: Array<{ label: string; description?: string }> }>;
+      };
+      expect(item.kind).toBe('agent-question');
+      expect(item.prompt).toBe('Which database should this use?');
+      expect(item.questions?.[0].options).toEqual([
+        { label: 'SQLite', description: 'Embedded, zero-config.' },
+        { label: 'Postgres', description: 'Needs a server.' },
+      ]);
+    });
+
+    it('resolves the held tool as a DENY carrying the answer, never an allow', async () => {
+      // `allow` would run the tool — and headless, the CLI would answer itself. `deny` is
+      // the only channel that hands TEXT back as the tool's result.
+      const { scheduler, emitAttention } = makeScheduler('acceptEdits');
+      const decision = scheduler.decidePermission(ask);
+      const item = emitAttention.mock.calls[0][0] as { id: string };
+
+      scheduler.answerAttention(item.id, {
+        decision: 'answers',
+        selections: [['Postgres']],
+        note: 'staging is on 14',
+      });
+
+      const result = (await decision) as { behavior: string; message: string };
+      expect(result.behavior).toBe('deny');
+      expect(result.message).toContain('Which database should this use?');
+      expect(result.message).toContain('→ Postgres');
+      expect(result.message).toContain('staging is on 14');
+    });
+
+    it('lets the human explicitly hand the choice back', async () => {
+      const { scheduler, emitAttention } = makeScheduler('acceptEdits');
+      const decision = scheduler.decidePermission(ask);
+      const item = emitAttention.mock.calls[0][0] as { id: string };
+
+      scheduler.answerAttention(item.id, { decision: 'deny' });
+
+      const result = (await decision) as { behavior: string; message: string };
+      // The agent still gets to decide — but only because a human said so, which is the
+      // whole difference from the timeout this replaces.
+      expect(result.message).toContain('chose not to pick an option');
+    });
+  });
 });
 
 describe('Scheduler.schedulerStates', () => {
@@ -333,6 +433,7 @@ describe('Scheduler.schedulerStates', () => {
     const store = {
       getSettings: () => ({ limitJitterMs: 0 }),
       getProject: () => undefined,
+      ...INERT_ATTENTION_STORE,
     } as unknown as Store;
     const scheduler = new Scheduler(
       store,
@@ -405,6 +506,7 @@ describe('Scheduler — a card delegated to an agent project', () => {
       getSettings: () => ({ limitJitterMs: 0, concurrency: 1 }),
       appendTaskEvent: vi.fn(),
       getSubtasks: () => [], // an ordinary card: no plan-driven steps
+      ...INERT_ATTENTION_STORE,
     } as unknown as Store;
     const start = vi.fn((_req: unknown, _opts: unknown) => ({ runId: 'r1' }));
     const stop = vi.fn();
@@ -501,6 +603,7 @@ describe('Scheduler.start resumes stopped tasks', () => {
       },
       getSettings: () => ({ limitJitterMs: 0, concurrency: 1 }),
       appendTaskEvent: vi.fn(),
+      ...INERT_ATTENTION_STORE,
     } as unknown as Store;
     const start = vi.fn((_req: unknown, _opts: unknown) => ({ runId: 'r1' }));
     const sessions = { start } as unknown as SessionManager;
@@ -523,6 +626,7 @@ describe('Scheduler.startAuxiliarySession (the AI "Align plan" run)', () => {
     const store = {
       getSettings: () => ({ limitJitterMs: 0 }),
       getProject: () => undefined,
+      ...INERT_ATTENTION_STORE,
     } as unknown as Store;
     const start = vi.fn((_req: unknown, _opts: unknown) => ({ runId: 'align1' }));
     const stop = vi.fn();
@@ -547,6 +651,7 @@ describe('Scheduler.startAuxiliarySession (the AI "Align plan" run)', () => {
     const store = {
       getSettings: () => ({ limitJitterMs: 0 }),
       getProject: () => undefined,
+      ...INERT_ATTENTION_STORE,
     } as unknown as Store;
     let observer: ((event: { kind: string }) => void) | undefined;
     const start = vi.fn((_req: unknown, opts: { onEvent?: (e: { kind: string }) => void }) => {
@@ -636,6 +741,7 @@ describe('Scheduler run-failure handling', () => {
       },
       appendTaskEvent: vi.fn(),
       getSettings: () => ({ maxAutoRetries, limitJitterMs: 0, concurrency: 1 }),
+      ...INERT_ATTENTION_STORE,
     } as unknown as Store;
     const start = vi.fn((_req: unknown, _opts: unknown) => ({ runId: 'r2' }));
     const stop = vi.fn();
@@ -749,6 +855,7 @@ describe('Scheduler cross-agent negotiation (Phase D)', () => {
       },
       appendTaskEvent: vi.fn(),
       getSettings: () => ({ maxAutoRetries: 0, limitJitterMs: 0, concurrency: 2 }),
+      ...INERT_ATTENTION_STORE,
     } as unknown as Store;
     const send = vi.fn();
     const sessions = { send, stop: vi.fn() } as unknown as SessionManager;
@@ -955,6 +1062,7 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       appendTaskEvent: vi.fn(),
       appendTokenUsage: vi.fn(),
       getSettings: () => ({ maxAutoRetries: 0, limitJitterMs: 0, concurrency: 1 }),
+      ...INERT_ATTENTION_STORE,
     } as unknown as Store;
     const prepared: Array<{ taskId: string; owner: string }> = [];
     const integrated: Array<{ branch: string; base: string }> = [];
@@ -1062,10 +1170,20 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
     fire('r2', okResult);
     await flush();
     expect(integrated).toEqual([{ branch: 'orch/t1', base: 'main' }]);
+    // The final STEP still reaches `done` — the chain machinery reads that as "over", and
+    // a step is not a board column entry.
     expect(children[1].status).toBe('done');
     // The parent is NEVER auto-completed: it waits in progress for a human.
     expect(parent.status).toBe('in-progress');
-    expect(comments.join(' ')).toContain('Ready for review');
+    // Phase 17: a summary of what every step did, not a one-line "ready for review" note —
+    // the card's Details Panel should read as one story.
+    const filed = comments.join(' ');
+    expect(filed).toContain('Plan complete');
+    expect(filed).toContain('2 of 2 steps finished');
+    expect(filed).toContain('1. Step 1');
+    expect(filed).toContain('2. Step 2');
+    expect(filed).toContain('Merged `orch/t1` into `main`');
+    expect(filed).toContain('move it to Done yourself');
   });
 
   it('a failed step stops the chain — its siblings stay pending', async () => {
@@ -1246,6 +1364,7 @@ describe('Scheduler.chatWithAgent (Phase 12)', () => {
     );
     const all = [card, ...steps];
     const chats: Array<{ taskId: string; body: string }> = [];
+    const comments: Array<{ taskId: string; body: string }> = [];
     const agentProject = {
       id: 'agent-p',
       name: 'Agent repo',
@@ -1271,8 +1390,18 @@ describe('Scheduler.chatWithAgent (Phase 12)', () => {
         chats.push({ taskId, body });
         return undefined;
       },
+      // A first message to an assigned-but-not-started card is filed as a COMMENT, because
+      // there is no session to resume and the fresh run's prompt is built from the timeline.
+      addComment: (_projectId: string, taskId: string, body: string) => {
+        comments.push({ taskId, body });
+        return undefined;
+      },
       getSettings: () => ({ limitJitterMs: 0, concurrency: 1, maxAutoRetries: 0 }),
       saveLimitGate: () => undefined,
+      // Read by `buildPrompt` when a staged card starts from its timeline rather than
+      // resuming a session.
+      getTaskActivity: () => [],
+      ...INERT_ATTENTION_STORE,
     } as unknown as Store;
     const send = vi.fn();
     const start = vi.fn();
@@ -1299,7 +1428,7 @@ describe('Scheduler.chatWithAgent (Phase 12)', () => {
         createdAt: 0,
       });
     }
-    return { scheduler, card, steps, send, start, chats, resolved };
+    return { scheduler, card, steps, send, start, chats, comments, resolved };
   }
 
   it('sends into the live session and records the message on the timeline', () => {
@@ -1424,13 +1553,31 @@ describe('Scheduler.chatWithAgent (Phase 12)', () => {
     expect(fixNotes.get('c1')).toBe('the build broke');
   });
 
-  it('refuses with never-ran when the card has no session at all', () => {
-    const { scheduler } = setupChat({ card: { status: 'pending', sessionId: null } });
+  it('starts an assigned-but-not-started card on the first message (Phase 17)', () => {
+    const { scheduler, start, comments, chats } = setupChat({
+      card: { status: 'pending', sessionId: null },
+    });
+    expect(scheduler.chatWithAgent('c1', 'hello?')).toMatchObject({
+      status: 'resumed',
+      taskId: 'c1',
+    });
+    expect(start).toHaveBeenCalled();
+    // Filed as a comment, not a chat line: there is no session to resume, so the message
+    // has to reach the agent through the brief its FIRST run is built from.
+    expect(comments).toEqual([{ taskId: 'c1', body: 'hello?' }]);
+    expect(chats).toEqual([]);
+  });
+
+  it('refuses with never-ran when the card has no session AND no agent to start', () => {
+    const { scheduler, start } = setupChat({
+      card: { status: 'pending', sessionId: null, agentProjectId: null },
+    });
     expect(scheduler.chatWithAgent('c1', 'hello?')).toEqual({
       status: 'refused',
       taskId: 'c1',
       reason: 'never-ran',
     });
+    expect(start).not.toHaveBeenCalled();
   });
 
   it('refuses a limit-parked card with the limit reason, not a resume', () => {
