@@ -86,6 +86,7 @@ interface TaskRow {
   externalLabel: string | null;
   /** Key of the issue's epic/parent (upper-cased), for agent-project resolution. */
   externalParentKey: string | null;
+  externalEpicName: string | null;
   /** The name of the sprint the issue is in; NULL when it is in none. */
   externalSprint: string | null;
   /** The issue description flattened to plain text (v2 string / v3 ADF). */
@@ -168,6 +169,7 @@ export interface Store {
         | 'externalType'
         | 'externalLabel'
         | 'externalParentKey'
+        | 'externalEpicName'
         | 'externalSprint'
         | 'externalDescription'
         | 'preBlockStatus'
@@ -400,6 +402,7 @@ export function createStore(dbPath: string): Store {
       externalType           TEXT,
       externalLabel          TEXT,
       externalParentKey      TEXT,
+      externalEpicName       TEXT,
       externalSprint         TEXT,
       externalDescription    TEXT,
       preBlockStatus         TEXT,
@@ -611,6 +614,7 @@ export function createStore(dbPath: string): Store {
     // Agent delegation: the epic/parent key and description come from JIRA (a re-sync
     // fills them in), `agentProjectId` is set only when a human assigns the card.
     ['externalParentKey', 'TEXT'],
+    ['externalEpicName', 'TEXT'],
     // The sprint name, added with sprint support — NULL on every pre-existing row
     // until the next JIRA sync fills it in, which is exactly "no sprint known".
     ['externalSprint', 'TEXT'],
@@ -725,7 +729,7 @@ export function createStore(dbPath: string): Store {
        (id, projectId, phase, title, status, sessionId, "order", source, dependsOn, isContract, isScaffold, type,
         parentTaskId, description, statusNote, statusNoteAt,
         externalSource, externalKey, externalId, externalUrl, externalStatus, externalStatusCategory,
-        externalPriority, externalType, externalLabel, externalParentKey, externalSprint,
+        externalPriority, externalType, externalLabel, externalParentKey, externalEpicName, externalSprint,
         externalDescription,
         preBlockStatus, lastReadCommentAt, latestCommentAt, agentProjectId, agentMode, agentModel,
         agentPlan, agentBranch)
@@ -733,7 +737,7 @@ export function createStore(dbPath: string): Store {
        (@id, @projectId, @phase, @title, @status, @sessionId, @order, @source, @dependsOn, @isContract, @isScaffold, @type,
         @parentTaskId, @description, @statusNote, @statusNoteAt,
         @externalSource, @externalKey, @externalId, @externalUrl, @externalStatus, @externalStatusCategory,
-        @externalPriority, @externalType, @externalLabel, @externalParentKey, @externalSprint,
+        @externalPriority, @externalType, @externalLabel, @externalParentKey, @externalEpicName, @externalSprint,
         @externalDescription,
         @preBlockStatus, @lastReadCommentAt, @latestCommentAt, @agentProjectId, @agentMode, @agentModel,
         @agentPlan, @agentBranch)`,
@@ -1085,6 +1089,7 @@ export function createStore(dbPath: string): Store {
       externalType: task.externalType ?? null,
       externalLabel: task.externalLabel ?? null,
       externalParentKey: task.externalParentKey ?? null,
+      externalEpicName: task.externalEpicName ?? null,
       externalSprint: task.externalSprint ?? null,
       externalDescription: task.externalDescription ?? null,
       preBlockStatus: task.preBlockStatus ?? null,
@@ -1127,6 +1132,7 @@ export function createStore(dbPath: string): Store {
       externalType: r.externalType,
       externalLabel: r.externalLabel,
       externalParentKey: r.externalParentKey,
+      externalEpicName: r.externalEpicName,
       externalSprint: r.externalSprint,
       externalDescription: r.externalDescription,
       preBlockStatus: (r.preBlockStatus as Task['preBlockStatus']) ?? null,
@@ -1305,6 +1311,7 @@ export function createStore(dbPath: string): Store {
         'externalType',
         'externalLabel',
         'externalParentKey',
+        'externalEpicName',
         'externalSprint',
         'externalDescription',
         'preBlockStatus',
@@ -1351,7 +1358,8 @@ export function createStore(dbPath: string): Store {
              externalUrl = @externalUrl, externalStatus = @externalStatus,
              externalStatusCategory = @externalStatusCategory, externalPriority = @externalPriority,
              externalType = @externalType, externalLabel = @externalLabel,
-             externalParentKey = @externalParentKey, externalSprint = @externalSprint,
+             externalParentKey = @externalParentKey, externalEpicName = @externalEpicName,
+             externalSprint = @externalSprint,
              externalDescription = @externalDescription,
              preBlockStatus = @preBlockStatus, lastReadCommentAt = @lastReadCommentAt,
              latestCommentAt = @latestCommentAt

@@ -7,6 +7,7 @@ import { useState } from 'react';
 import { Caption1, Text, makeStyles, mergeClasses, tokens } from '@fluentui/react-components';
 import type { Task } from '@shared/model';
 import type { StatusKeyword } from '@shared/statusKeywords';
+import type { BoardDisplaySettings } from '@shared/settings';
 import { TaskCard } from './TaskCard';
 import type { BoardCard, BoardColumn } from './boardColumns';
 
@@ -52,6 +53,12 @@ const useStyles = makeStyles({
     // 12px, not 10: the attention ring is 3px on each card, so two adjacent shouting
     // cards leave only `gap - 6` between their rings. At 10 that read as one thick band.
     gap: '12px',
+    // Room for the FIRST card's rings, which are painted outside its box and so sit in
+    // the list's padding, not the card's. A selected card that also wants you stacks 3px
+    // of orange and 2px of brand — 5px — and with no inset here the top of that stack was
+    // clipped by the column's own bounds, which is why selecting the top card of a column
+    // looked like a truncated border. 6px is the stack plus a pixel.
+    paddingTop: '6px',
     minHeight: '40px',
     flex: 1,
   },
@@ -72,6 +79,12 @@ export interface KanbanColumnProps {
   showSprint?: boolean;
   /** The user's status-note vocabulary, which colours each card's progress line. */
   statusKeywords?: readonly StatusKeyword[];
+  /** Task ids the inbox holds an item for — the ring's authoritative signal. */
+  attentionTaskIds?: ReadonlySet<string>;
+  /** Task ids the engine has a live run for, so a spawning run still spins. */
+  liveRunTaskIds?: ReadonlySet<string>;
+  /** Which optional context lines each card draws. */
+  display?: BoardDisplaySettings;
   canDrag: (card: BoardCard) => boolean;
   selectedTaskId: string | null;
   draggingId: string | null;
@@ -125,6 +138,9 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               subtasks={subtasks}
               mergeRequests={mergeRequests}
               statusKeywords={props.statusKeywords}
+              attentionTaskIds={props.attentionTaskIds}
+              liveRunTaskIds={props.liveRunTaskIds}
+              display={props.display}
               selected={task.id === props.selectedTaskId}
               selectedTaskId={props.selectedTaskId}
               draggable={props.canDrag({ task, subtasks, mergeRequests })}

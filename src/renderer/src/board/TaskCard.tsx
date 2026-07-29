@@ -12,10 +12,21 @@
  * comments or an agent waiting on an answer, brand for the selected card, both when
  * both. Outside, so clicking a card never moves its own text.
  *
- * A card that has **steps** (Phase 11) renders them as rows flush inside its own
- * frame, separated by hairlines, with a "2/5" progress caption in the header. A step
- * is never a card of its own — it travels with its parent between columns — so the
- * rows are not draggable; clicking one selects that step in the detail pane.
+ * Steps (Phase 11) and merge requests each render as a **section** of the card: one
+ * hairline above the group, a quiet caption naming it, and the card's own fill
+ * continuing underneath. They are part of the card, not strips floating on it. A step is
+ * never a card of its own — it travels with its parent between columns — so the rows are
+ * not draggable; clicking one selects that step in the detail pane.
+ *
+ * Phase 17 changed three things about what the card can say:
+ *
+ *   - The ring is driven by the INBOX (`attentionTaskIds`), not inferred from status and
+ *     JIRA timestamps, so an item raised without a status flip no longer goes unshown.
+ *   - The spinner comes from `runPhase`, which can see a run that has spawned but is not
+ *     yet persisted as `running`, and it is accompanied by words — "Running step 2 of 5"
+ *     rather than bare motion.
+ *   - A row that wants you takes a TINT and the ticket badge takes the JIRA signal, so
+ *     the card's one orange ring keeps its meaning and the reason stays legible.
  */
 import {
   Badge,
@@ -32,7 +43,9 @@ import {
   BeakerFilled,
   BookmarkFilled,
   BugFilled,
+  CheckmarkCircleFilled,
   CircleFilled,
+  DismissCircleFilled,
   NoteFilled,
   PersonFilled,
   SparkleFilled,
@@ -41,16 +54,19 @@ import {
 import type { Task, TaskStatus } from '@shared/model';
 import {
   chainNeedsAttention,
+  hasUnreadJira,
   isAgentAssigned,
-  isAgentRunning,
   needsAgentInput,
   parkedStep,
+  runPhase,
 } from '@shared/board';
 import { priorityColor } from '@shared/priority';
 import { statusNoteColor, type StatusKeyword } from '@shared/statusKeywords';
+import { DEFAULT_BOARD_DISPLAY, type BoardDisplaySettings } from '@shared/settings';
 import { STATUS_COLOR, STATUS_LABEL } from '../taskStatus';
 import { columnForStatus, statusForColumn, subtaskProgress } from './boardColumns';
-import { UNREAD_ORANGE } from '@shared/accent';
+import { ACCENT, ATTENTION_TINT, RING } from '../theme';
+import { JiraMark } from '../JiraMark';
 import {
   approvalSummary,
   mrAttentionReason,
@@ -97,28 +113,48 @@ const useStyles = makeStyles({
    * the card's own `overflow: hidden` + radius.
    */
   projectBar: { height: '3px', flexShrink: 0 },
-  // No container border: each row carries the hairline above it, so the first row's
-  // divider is what separates the steps from the card body — no gap between them.
+  /**
+   * A group of rows (steps, or merge requests) as a SECTION of the card rather than a
+   * strip floating on it: one hairline above the group, a quiet caption naming it, and
+   * the card's own fill continuing underneath.
+   */
+  section: { borderTop: `1px solid ${tokens.colorNeutralStroke2}` },
+  sectionHead: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    padding: '6px 12px 2px',
+    color: tokens.colorNeutralForeground4,
+    textTransform: 'uppercase',
+    letterSpacing: '0.06em',
+    fontSize: '10px',
+    fontWeight: 600,
+  },
+  // No row border: the section owns the one hairline, and a rule per row turned a card
+  // with four steps into a ledger.
   step: {
     display: 'flex',
     alignItems: 'center',
     gap: '8px',
-    padding: '6px 12px',
-    borderTop: `1px solid ${tokens.colorNeutralStroke2}`,
-    backgroundColor: tokens.colorNeutralBackground2,
+    padding: '5px 12px',
+    // The card's own fill, NOT the board's. These rows are part of the card; painting
+    // them in the column's colour made them read as holes punched through it.
+    backgroundColor: tokens.colorNeutralBackground1,
   },
   stepSelected: { backgroundColor: tokens.colorNeutralBackground1Selected },
   /**
-   * An MR row that wants you. A left rule plus a tint, NOT a fourth card boxShadow
-   * variant — the card is already shouting via `chainNeedsAttention`, and adding a
-   * variant would have Griffel replace the orange ring on exactly the card that needs it.
+   * A row that wants you: a TINT and nothing else.
+   *
+   * Not a border — the card already carries the orange ring, and a second orange edge a
+   * few pixels inside it made the two compete for the same glance. Not a fourth card
+   * boxShadow variant either: Griffel would have the later class REPLACE `boxShadow`,
+   * removing the ring from exactly the card that needs it.
    */
-  stepLoud: {
-    borderLeft: `3px solid ${UNREAD_ORANGE}`,
-    backgroundColor: tokens.colorNeutralBackground3,
-  },
+  stepLoud: { backgroundColor: ATTENTION_TINT },
   /** An MR row is a link, but it must look exactly like the step rows above it. */
   mrRow: { textDecoration: 'none', color: 'inherit' },
+  /** The approval glyph, at the row's trailing edge opposite the pipeline dot. */
+  approval: { display: 'flex', alignItems: 'center', fontSize: '14px', flexShrink: 0 },
   // The spinner (16px) and the dot (8px) share this slot so every row's title starts
   // at the same x, whichever glyph the row is showing.
   stepSlot: {
@@ -142,7 +178,13 @@ const useStyles = makeStyles({
   stepDone: { color: tokens.colorNeutralForeground4, textDecoration: 'line-through' },
   progress: { color: tokens.colorNeutralForeground3, flexShrink: 0 },
   /** A stopped chain reads in the frame's colour, so the two say one thing. */
-  progressStopped: { color: UNREAD_ORANGE },
+  progressStopped: { color: ACCENT.unread },
+  /**
+   * What the card is doing, in words, next to the spinner. The spinner alone says
+   * "something is happening"; this says WHICH something, which is the difference
+   * between a card you trust and one you keep clicking to check.
+   */
+  runLabel: { color: tokens.colorNeutralForeground3, flexShrink: 0 },
   /**
    * "Wants you" and "is selected", as rings PAINTED OUTSIDE the card.
    *
@@ -157,10 +199,12 @@ const useStyles = makeStyles({
   // against a dark column, so a good half of its apparent weight is lost to the
   // contrast — at 2px it read as a hairline. Selection stays 2px: only the alarm is
   // worth more ink, and widening both would flatten the difference between them.
-  cardUnread: { boxShadow: `0 0 0 3px ${UNREAD_ORANGE}` },
-  cardSelected: { boxShadow: `0 0 0 2px ${tokens.colorBrandStroke1}` },
+  cardUnread: { boxShadow: `0 0 0 ${RING.attention}px ${ACCENT.unread}` },
+  cardSelected: { boxShadow: `0 0 0 ${RING.selected}px ${tokens.colorBrandStroke1}` },
   cardUnreadSelected: {
-    boxShadow: `0 0 0 3px ${UNREAD_ORANGE}, 0 0 0 5px ${tokens.colorBrandStroke1}`,
+    boxShadow:
+      `0 0 0 ${RING.attention}px ${ACCENT.unread}, ` +
+      `0 0 0 ${RING.attention + RING.selected}px ${tokens.colorBrandStroke1}`,
   },
   agentIcon: { fontSize: AGENT_ICON_SIZE, flexShrink: 0, display: 'flex', color: '#ffffff' },
   dragging: { opacity: 0.5 },
@@ -208,15 +252,40 @@ const useStyles = makeStyles({
   footer: { display: 'flex', alignItems: 'center', gap: '8px' },
   grow: { flex: 1, minWidth: 0 },
   jiraLink: { textDecoration: 'none' },
+  /** The ticket badge: the JIRA mark, then the key. */
+  jiraBadge: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '5px',
+    padding: '2px 7px',
+    borderRadius: '4px',
+    border: `1px solid ${tokens.colorNeutralStroke2}`,
+    color: tokens.colorNeutralForeground2,
+    fontSize: '11px',
+    fontWeight: 600,
+  },
+  /**
+   * The same badge, carrying the unread signal itself.
+   *
+   * The card's ring says "this wants you" but never why, so a new JIRA comment and an
+   * agent's question looked identical. Tinting the badge that OWNS the reason is the
+   * same move the merge-request rows make, and it costs the card no extra furniture.
+   */
+  // The whole `border`, not `borderColor`: Griffel rejects the four-sided shorthand.
+  jiraBadgeUnread: {
+    backgroundColor: ACCENT.unread,
+    border: `1px solid ${ACCENT.unread}`,
+    color: ACCENT.unreadInk,
+  },
   prioritySquare: { width: '14px', height: '14px', borderRadius: '3px', flexShrink: 0 },
 });
 
-// Type-icon colors (shared by internal and JIRA tasks). Declared above the maps
-// below, which read them at module load.
-const BUG_RED = '#E5484D';
-const FEATURE_BLUE = '#0091FF';
-const STORY_GREEN = '#30A46C';
-const EPIC_PURPLE = '#8E4EC6';
+// Type-icon colors, now from the one palette (`theme.ts`) rather than four literals the
+// card owned privately. Aliased so the maps below read the same as they always did.
+const BUG_RED = ACCENT.bugRed;
+const FEATURE_BLUE = ACCENT.featureBlue;
+const STORY_GREEN = ACCENT.storyGreen;
+const EPIC_PURPLE = ACCENT.epicPurple;
 
 /**
  * Step-row dot color per status — the row's whole status display, since a badge per
@@ -235,7 +304,7 @@ const PIPELINE_DOT_COLOR: Record<PipelineStatus, string> = {
   running: tokens.colorBrandBackground,
   success: tokens.colorPaletteGreenBackground3,
   failed: tokens.colorPaletteRedBackground3,
-  canceled: UNREAD_ORANGE,
+  canceled: ACCENT.unread,
 };
 
 const STEP_DOT_COLOR: Record<TaskStatus, string> = {
@@ -243,9 +312,9 @@ const STEP_DOT_COLOR: Record<TaskStatus, string> = {
   'in-progress': tokens.colorBrandBackground,
   'in-review': EPIC_PURPLE,
   running: tokens.colorBrandBackground,
-  'waiting-input': UNREAD_ORANGE,
-  'blocked-by-limit': UNREAD_ORANGE,
-  blocked: UNREAD_ORANGE,
+  'waiting-input': ACCENT.unread,
+  'blocked-by-limit': ACCENT.unread,
+  blocked: ACCENT.unread,
   done: tokens.colorPaletteGreenBackground3,
   failed: tokens.colorPaletteRedBackground3,
   stopped: tokens.colorNeutralForeground4,
@@ -298,6 +367,20 @@ export interface TaskCardProps {
   mergeRequests?: MergeRequest[];
   /** The user's status-note vocabulary, which colours the card's progress line. */
   statusKeywords?: readonly StatusKeyword[];
+  /**
+   * The task ids the inbox is holding an item for. The AUTHORITATIVE "wants you" signal:
+   * without it the ring is inferred from status plus JIRA timestamps, so an item raised
+   * without the engine also flipping the task to `waiting-input` — or one restored from
+   * disk after a restart — left the card sitting there silently.
+   */
+  attentionTaskIds?: ReadonlySet<string>;
+  /**
+   * The task ids the engine currently has a run for, so a run that has spawned but is
+   * not yet persisted as `running` still turns a spinner.
+   */
+  liveRunTaskIds?: ReadonlySet<string>;
+  /** Which optional context lines to draw. Defaults to the shipped defaults. */
+  display?: BoardDisplaySettings;
   selected: boolean;
   /** Id of the selected task, so a selected *step* row can highlight itself. */
   selectedTaskId?: string | null;
@@ -325,6 +408,9 @@ export function TaskCard({
   subtasks = [],
   mergeRequests = [],
   statusKeywords,
+  attentionTaskIds,
+  liveRunTaskIds,
+  display = DEFAULT_BOARD_DISPLAY,
   selected,
   selectedTaskId,
   draggable,
@@ -345,16 +431,17 @@ export function TaskCard({
   // An unread comment, the card's own agent asking, or a step that has parked the
   // chain (question or failure) — all mean "this card wants you", and a step has no
   // frame of its own to say it with.
-  const wantsAttention = chainNeedsAttention(task, subtasks, mergeRequests);
+  const wantsAttention = chainNeedsAttention(task, subtasks, mergeRequests, attentionTaskIds);
   const progress = subtaskProgress(subtasks);
   // A parked chain looks exactly like one between steps unless the card says so.
   const stopped = parkedStep(subtasks) !== null;
-  // A live agent session gets a spinner rather than a static "Running" badge — the
-  // motion is the point: it says work is happening now. The card itself runs when it
-  // was delegated without steps; with steps it stays `in-progress` while one of them
-  // runs, so a live step also makes the card read as live.
-  const running = isAgentRunning(task);
-  const runningStep = subtasks.some(isAgentRunning);
+  // The one answer to "what is this card doing", shared with the detail pane and the
+  // composer strip so the three can never disagree. It replaces a spinner derived from
+  // `status === 'running'`, which could not see a run that had spawned but not yet been
+  // persisted — the "it's clearly working but there's no spinner" complaint.
+  const run = runPhase(task, subtasks, liveRunTaskIds);
+  // Only the ticket badge carries the JIRA signal, so the ring's reason is legible.
+  const jiraUnread = hasUnreadJira(task);
 
   return (
     <div
@@ -409,29 +496,34 @@ export function TaskCard({
               </span>
             </Tooltip>
           )}
-          {/* Bare on purpose, and identical whether the card itself runs or one of its
-              steps does: on a board those look like the same thing, so labelling one
-              "Running" and not the other reads as an inconsistency rather than as the
-              distinction it is. The word lives in the tooltip and the detail pane. */}
-          {(running || runningStep) && (
-            <span
-              className={styles.spinner}
-              title={running ? 'The agent is working on this card' : 'A step is running'}
-            >
+          {/* The spinner turns only while something actually moves; the words say which
+              step it is on. Previously bare, on the theory that "Running" on a card and
+              "Running" on a step read as an inconsistency — but the real complaint was
+              not knowing whether anything was happening at all, and a step counter
+              answers that far better than motion alone. */}
+          {run.spinner && (
+            <span className={styles.spinner} title={run.label}>
               <Spinner size="extra-tiny" />
             </span>
           )}
-          {/* A running card's badge would only repeat the spinner. */}
-          {badge && !running && (
+          {run.label && (
+            <Caption1 className={styles.runLabel} title={run.label}>
+              {run.label}
+            </Caption1>
+          )}
+          {/* A running card's badge would only repeat what the label just said. */}
+          {badge && !run.spinner && (
             <Badge appearance="tint" color={STATUS_COLOR[badge]}>
               {STATUS_LABEL[badge]}
             </Badge>
           )}
         </div>
 
-        {(task.externalLabel || (sprintShown && task.externalSprint)) && (
+        {((display.showLabels && task.externalLabel) || (sprintShown && task.externalSprint)) && (
           <div className={styles.chipRow}>
-            {task.externalLabel && <span className={styles.chip}>{task.externalLabel}</span>}
+            {display.showLabels && task.externalLabel && (
+              <span className={styles.chip}>{task.externalLabel}</span>
+            )}
             {sprintShown && task.externalSprint && (
               <span className={styles.sprintChip} title={`Sprint: ${task.externalSprint}`}>
                 {task.externalSprint}
@@ -452,7 +544,20 @@ export function TaskCard({
           </Caption1>
         )}
 
-        {projectName && <Caption1 className={styles.project}>Project: {projectName}</Caption1>}
+        {display.showProjectName && projectName && (
+          <Caption1 className={styles.project}>Project: {projectName}</Caption1>
+        )}
+
+        {/* The name when the sync has it, the key until then — a key is still an answer
+            to "which epic", where an empty line looks like the toggle is broken. */}
+        {display.showEpicName && (task.externalEpicName || task.externalParentKey) && (
+          <Caption1
+            className={styles.project}
+            title={`Epic: ${task.externalEpicName ?? task.externalParentKey}`}
+          >
+            Epic: {task.externalEpicName ?? task.externalParentKey}
+          </Caption1>
+        )}
 
         {(isJira || squareColor) && (
           <div className={styles.footer}>
@@ -463,10 +568,23 @@ export function TaskCard({
                 target="_blank"
                 rel="noreferrer"
                 onClick={(e) => e.stopPropagation()}
+                title={
+                  jiraUnread
+                    ? `${task.externalKey} — new comments on the ticket`
+                    : (task.externalKey ?? undefined)
+                }
               >
-                <Badge appearance="outline" color="informative">
-                  Jira {task.externalKey}
-                </Badge>
+                <span
+                  className={mergeClasses(
+                    styles.jiraBadge,
+                    jiraUnread && styles.jiraBadgeUnread,
+                  )}
+                >
+                  {/* `currentColor` when tinted, so the mark flips to near-black with the
+                      badge's text instead of sitting brand-blue on orange. */}
+                  <JiraMark size={12} color={jiraUnread ? 'currentColor' : undefined} />
+                  {task.externalKey}
+                </span>
               </a>
             )}
             <span className={styles.grow} />
@@ -481,79 +599,126 @@ export function TaskCard({
         )}
       </div>
 
-      {subtasks.map((step) => (
-        <div
-          key={step.id}
-          className={mergeClasses(styles.step, step.id === selectedTaskId && styles.stepSelected)}
-          title={`${step.title} · ${STATUS_LABEL[step.status]}`}
-          // A step never travels on its own: a drag started on a row is cancelled
-          // rather than dragging the parent out from under the pointer.
-          onDragStart={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-          }}
-          onClick={(e) => {
-            e.stopPropagation();
-            onSelectSubtask?.(step.id);
-          }}
-        >
-          {/* One fixed-width slot for the status glyph, so the running row's spinner
-              doesn't shove its title out of line with its siblings' dots. */}
-          <span className={styles.stepSlot}>
-            {isAgentRunning(step) ? (
-              <Spinner size="extra-tiny" />
-            ) : (
-              <span
-                className={styles.stepDot}
-                style={{ backgroundColor: STEP_DOT_COLOR[step.status] }}
-              />
-            )}
-          </span>
-          <Caption1
-            className={mergeClasses(styles.stepTitle, step.status === 'done' && styles.stepDone)}
-          >
-            {step.title}
-          </Caption1>
-        </div>
-      ))}
-
-      {/* Merge requests, in the same row vocabulary as the steps — a dot in the same
-          slot, a title, the same drag cancel and click isolation. An MR that wants you
-          gets a ROW treatment (a left rule and a tint) rather than a fourth card
-          boxShadow variant: the card already goes orange through `chainNeedsAttention`,
-          and a fourth variant is exactly the Griffel replacement trap the comment above
-          `cardUnread` warns about. */}
-      {mergeRequests.map((mr) => {
-        const reason = mrAttentionReason(mr);
-        return (
-          <a
-            key={mr.id}
-            href={mr.webUrl}
-            target="_blank"
-            rel="noreferrer"
-            className={mergeClasses(styles.step, styles.mrRow, reason !== null && styles.stepLoud)}
-            title={reason ?? `!${mr.iid} ${mr.title} · ${approvalSummary(mr)}`}
-            onDragStart={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-            }}
-            // The shell's window-open handler sends target=_blank to the real browser;
-            // stopPropagation keeps the click from also selecting the card behind it.
-            onClick={(e) => e.stopPropagation()}
-          >
-            <span className={styles.stepSlot}>
-              <span
-                className={styles.stepDot}
-                style={{ backgroundColor: PIPELINE_DOT_COLOR[mr.pipelineStatus] }}
-              />
+      {subtasks.length > 0 && (
+        <div className={styles.section}>
+          <div className={styles.sectionHead}>
+            <span>Steps</span>
+            <span className={styles.grow} />
+            <span>
+              {progress.done}/{progress.total}
             </span>
-            <Caption1 className={styles.stepTitle}>
-              {`!${mr.iid} ${mr.sourceBranch}`}
-            </Caption1>
-            {mr.draft && <Caption1 className={styles.progress}>draft</Caption1>}
-          </a>
-        );
-      })}
+          </div>
+          {subtasks.map((step) => {
+            const stepRun = runPhase(step, [], liveRunTaskIds);
+            const stepWants = attentionTaskIds?.has(step.id) ?? false;
+            return (
+              <div
+                key={step.id}
+                className={mergeClasses(
+                  styles.step,
+                  stepWants && styles.stepLoud,
+                  step.id === selectedTaskId && styles.stepSelected,
+                )}
+                title={`${step.title} · ${stepRun.label || STATUS_LABEL[step.status]}`}
+                // A step never travels on its own: a drag started on a row is cancelled
+                // rather than dragging the parent out from under the pointer.
+                onDragStart={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSelectSubtask?.(step.id);
+                }}
+              >
+                {/* One fixed-width slot for the status glyph, so the running row's spinner
+                    doesn't shove its title out of line with its siblings' dots. */}
+                <span className={styles.stepSlot}>
+                  {stepRun.spinner ? (
+                    <Spinner size="extra-tiny" />
+                  ) : (
+                    <span
+                      className={styles.stepDot}
+                      style={{ backgroundColor: STEP_DOT_COLOR[step.status] }}
+                    />
+                  )}
+                </span>
+                <Caption1
+                  className={mergeClasses(
+                    styles.stepTitle,
+                    step.status === 'done' && styles.stepDone,
+                  )}
+                >
+                  {step.title}
+                </Caption1>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+
+      {/* Merge requests, in the same row vocabulary as the steps. Pipeline and approval
+          are now SEPARATE glyphs: one dot conflated "the build is green" with "a human
+          said yes", which are the two different things you actually wait on. */}
+      {mergeRequests.length > 0 && (
+        <div className={styles.section}>
+          <div className={styles.sectionHead}>
+            <span>{mergeRequests.length === 1 ? 'Merge request' : 'Merge requests'}</span>
+          </div>
+          {mergeRequests.map((mr) => {
+            const reason = mrAttentionReason(mr);
+            return (
+              <a
+                key={mr.id}
+                href={mr.webUrl}
+                target="_blank"
+                rel="noreferrer"
+                className={mergeClasses(
+                  styles.step,
+                  styles.mrRow,
+                  reason !== null && styles.stepLoud,
+                )}
+                title={reason ?? `!${mr.iid} ${mr.title} · ${approvalSummary(mr)}`}
+                onDragStart={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }}
+                // The shell's window-open handler sends target=_blank to the real browser;
+                // stopPropagation keeps the click from also selecting the card behind it.
+                onClick={(e) => e.stopPropagation()}
+              >
+                <span className={styles.stepSlot} title={`Pipeline: ${mr.pipelineStatus}`}>
+                  <span
+                    className={styles.stepDot}
+                    style={{ backgroundColor: PIPELINE_DOT_COLOR[mr.pipelineStatus] }}
+                  />
+                </span>
+                <Caption1 className={styles.stepTitle}>{`!${mr.iid} ${mr.sourceBranch}`}</Caption1>
+                {mr.draft && <Caption1 className={styles.progress}>draft</Caption1>}
+                <span className={styles.approval} title={approvalSummary(mr)}>
+                  {mr.approvalsRequired !== null && mr.approvalsGiven >= mr.approvalsRequired ? (
+                    <CheckmarkCircleFilled
+                      style={{ color: ACCENT.storyGreen }}
+                      aria-label="Approved"
+                    />
+                  ) : mr.changesRequested ? (
+                    <DismissCircleFilled
+                      style={{ color: ACCENT.bugRed }}
+                      aria-label="Changes requested"
+                    />
+                  ) : (
+                    <PersonFilled
+                      style={{ color: tokens.colorNeutralForeground4 }}
+                      aria-label="Awaiting approval"
+                    />
+                  )}
+                </span>
+              </a>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

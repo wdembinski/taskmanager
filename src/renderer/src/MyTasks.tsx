@@ -27,6 +27,8 @@ import { PaneLoading } from './PaneLoading';
 import { TaskDetail } from './TaskDetail';
 import { useInitialLoad } from './useInitialLoad';
 import { KanbanColumn } from './board/KanbanColumn';
+import { useAttentionIndex } from './useAttentionIndex';
+import { useActiveRuns } from './useActiveRuns';
 import {
   COLUMN_META,
   columnForTask,
@@ -110,6 +112,15 @@ export function MyTasks(): JSX.Element {
   // sync rebuilds every task literal, so an array living there would be clobbered on
   // every poll. See the `gitlab:mergeRequests` contract.
   const [mergeRequests, setMergeRequests] = useState<MergeRequest[]>([]);
+  /**
+   * The whole inbox and the live-run set, subscribed ONCE here and passed down.
+   *
+   * Here rather than in the card because both the ring and the sort order read them, and
+   * a per-card subscription would mean one round trip per card and N copies of a state
+   * that must agree. See `useAttentionIndex` for the three bugs this replaced.
+   */
+  const attention = useAttentionIndex();
+  const liveRuns = useActiveRuns();
 
   const showDone = settings?.jira.showDoneColumn ?? false;
   const jiraEnabled = settings?.jira.enabled ?? false;
@@ -205,10 +216,13 @@ export function MyTasks(): JSX.Element {
     for (const card of groupSubtasks(tasks ?? [], mrsByTask)) {
       map[columnForTask(card.task)].push(card);
     }
-    // Cards that want you first, then by priority — see `sortCards`.
-    for (const col of Object.keys(map) as BoardColumn[]) map[col] = sortCards(map[col]);
+    // Cards that want you first, then by priority — see `sortCards`. The inbox's ids go
+    // in too: the ordering and the orange ring are the same predicate on purpose, so
+    // passing it to the card and not to the sort would have the two disagree.
+    for (const col of Object.keys(map) as BoardColumn[])
+      map[col] = sortCards(map[col], attention.taskIds);
     return map;
-  }, [tasks, mrsByTask]);
+  }, [tasks, mrsByTask, attention.taskIds]);
 
   /**
    * The chain the selected task belongs to: a card's own steps, or — when a step is
@@ -381,6 +395,9 @@ export function MyTasks(): JSX.Element {
               // moves to the status bar and is said once. Off, the chip earns its place.
               showSprint={!currentSprintOnly}
               statusKeywords={settings?.statusKeywords}
+              attentionTaskIds={attention.taskIds}
+              liveRunTaskIds={liveRuns}
+              display={settings?.board}
               // A card with a live step is the runner's until the chain stops.
               canDrag={(c) => !managedByAI(c.task) && !hasLiveSubtask(c.subtasks)}
               selectedTaskId={selectedTaskId}

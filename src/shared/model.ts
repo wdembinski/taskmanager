@@ -390,6 +390,17 @@ export interface Task {
    */
   externalParentKey?: string | null;
   /**
+   * The epic's human NAME ("Checkout rework"), as opposed to {@link Task.externalParentKey}'s
+   * key. Carried separately because the key is what resolves a ticket to the repo that
+   * owns it — machine-facing, and never worth a card's widest line — while the name is
+   * the only form worth showing a human.
+   *
+   * Null until the sync has fetched it (the key comes free on the issue; the name costs
+   * a lookup of the epic itself), so the card falls back to the key rather than showing
+   * an empty line.
+   */
+  externalEpicName?: string | null;
+  /**
    * The issue's description, flattened to plain text (v2 returns a string, v3 an
    * Atlassian Document Format tree). Shown in the task detail pane and handed to the
    * agent as the ticket's brief. Null for internal tasks and for empty descriptions.
