@@ -39,7 +39,7 @@ plan the orchestrator could one day run on its own repo.
 | 14 | Sprints on the board | ✅ shipped |
 | 15 | The board grows up (IN REVIEW, status map, priority, notes, colours) | ✅ shipped |
 | 16 | Seventeen fixes and two integrations (bugs, workspace, JIRA depth, auto-update, GitLab) | ✅ shipped (v0.30.0) |
-| 17 | Ask me, and show me what you are doing | 🚧 engine done; renderer components outstanding |
+| 17 | Ask me, and show me what you are doing | ✅ shipped (v0.32.0) — 4 requests deferred |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -1017,53 +1017,76 @@ real behaviour bugs: a card moving itself to Done, and merge requests never refr
       interrupting the thread.
 - [x] **14 — `Usage limit: allowed (five_hour)` is gone.** Healthy statuses are dropped
       at the emit boundary; a real block is said in words.
-- [ ] **3 / 12 — The spinner and the running status.** `runPhase` (shared, tested) is the
-      one answer, and `useActiveRuns` supplies the live-run set it needs. **Renderer
-      wiring outstanding:** card, detail pane, composer strip.
-- [ ] **5 / 18 — The orange ring, for as long as it is owed.** `chainNeedsAttention` now
-      takes the inbox's task ids — the authoritative signal — and `sortCards` threads it
-      so ordering and ring cannot disagree. **`TaskCard` wiring outstanding.**
-- [ ] **4 — A card must never move itself to Done.** Only the human moves a card.
-- [ ] **6 — Merge requests refresh, with pipeline and approval as separate icons.**
-- [ ] **7 — Top padding on every column,** so a selected card's ring is not clipped.
-- [ ] **15 — A merge request that wants attention gets a background, not a border,**
-      so it stops competing with the card's own ring. Tint is in `theme.ts`.
-- [ ] **16 — Subtask rows take the card's background,** not the board's.
-- [ ] **17 — The card, properly.** Subtasks and merge requests as their own sections,
-      integral to the card rather than floating on it.
+- [x] **3 / 12 — The spinner and the running status.** `runPhase` is the one answer,
+      shared by the card, the detail pane and the composer strip. It also fixed a smaller
+      lie: a card WAITING FOR YOU rendered "Agent running" with a spinner over it.
+- [x] **5 / 18 — The orange ring, for as long as it is owed.** Driven by the inbox, which
+      is authoritative; `sortCards` reads the same set, so ordering and ring cannot
+      disagree.
+- [x] **4 — A card never moves itself to Done.** Already true on both settle paths, and
+      pinned by a test — the parent stays `in-progress` after its final step merges.
+- [x] **6 — Merge requests refresh, with pipeline and approval as separate icons.** The
+      Sync button now covers every enabled service; it was called "Sync JIRA" while
+      GitLab was refreshed only by its own poll, which is why rows sat stale.
+- [x] **7 — Top padding on every column.** A selected card that also wants you stacks 5px
+      of ring OUTSIDE its box, and that stack was being clipped by the column's bounds.
+- [x] **15 — A merge request that wants attention gets a tint, not a border.**
+- [x] **16 — Subtask rows take the card's background,** not the board's.
+- [x] **17 — The card, properly.** Steps and merge requests are sections of the card.
+- [x] **19 — Answering an agent from the Details Panel.** (Added mid-phase.) The panel
+      dropped asks: it showed only the first and blanked the slot on resolve.
+- [x] **20 — Integration is manual, and its ask can end.** (Added mid-phase.)
+      `autoIntegrate` defaults off; a finished branch waits for a Merge button. The retry
+      loop gains "Leave the branch (stop asking)".
 
 ### Requests
 
-- [x] **1 (partial) — Configurable font size.** `scaleTheme` multiplies Fluent's whole
-      type ramp; `fontPx` covers the sizes hardcoded in `makeStyles`, which tokens cannot
-      reach. **Settings control and provider wiring outstanding.**
-- [x] **20–22 (partial) — Labels, project name and epic name are switchable.** Settings
-      and defaults landed (epic off by default: newest, longest, least needed).
-      **Board menu and Settings controls outstanding.**
-- [ ] **2 / 18 — Markdown everywhere, and readable agent output.** A plan shown for
-      approval is currently unreadable.
-- [ ] **3 — Priority, project and state on one row.**
-- [ ] **4 / 5 — The JIRA badge carries the unread signal** (background, as merge requests
-      do) **and the JIRA mark instead of the word.**
-- [ ] **6 — A status string can be cleared.**
-- [ ] **7 — Nav rail icons: square tiles, twice the size.**
-- [ ] **8 — The orange footer is readable, and the live dot reads on both fills.** The
-      colour bug is fixed in `theme.ts` (the old green sat at ~1.6:1 on blue);
-      **wiring outstanding.**
-- [ ] **9 / 15 — Settings full width; big dialogs become Drawers.**
-- [ ] **10 — The status-map "Why" badge stops overflowing.**
-- [ ] **11 — Projects and Board tabs removed,** with their supporting code.
-- [ ] **12 — Scratch Run holds several runs,** one card each.
-- [ ] **13 — Thin, rounded, trackless scrollbars** that fade in on hover.
-- [ ] **14 — The question form is worth reading.**
-- [ ] **16 — Skeletons while loading.**
-- [ ] **17 — Toasts for what needs attention,** switchable in Settings.
-- [ ] **19 — One Sync button** covering every enabled service.
+- [x] **1 — Configurable font size.** Two mechanisms from one number: `scaleTheme`
+      multiplies Fluent's type ramp, `--app-font-scale` covers the px sizes in
+      `makeStyles` that tokens cannot reach.
+- [x] **2 / 18 — Markdown everywhere, and readable agent output.** The plan shown for
+      approval was rendered as raw markdown SOURCE — the least readable thing in the app,
+      and the one thing you must read before answering. Code moved to a blue-tinted
+      surface: on the pane's dark grey the neutral fill was invisible, which is the
+      "some words have a background, others do not" complaint (they all did).
+- [x] **3 — Priority, project and state on one row.**
+- [x] **4 / 5 — The JIRA badge carries the unread signal and the JIRA mark.**
+- [x] **6 — A status string can be cleared.** The engine always accepted it; the UI
+      rejected the empty post.
+- [x] **7 — Nav rail icons: square tiles, twice the size.**
+- [x] **8 — The orange footer is readable, and the live dot reads on both fills.** The
+      old green sat at ~1.6:1 on the blue and ~3.2:1 on the orange — invisible on both.
+- [x] **9 — Settings full width.**
+- [x] **10 — The status-map "Why" badge stops overflowing.**
+- [x] **11 — Projects and Board tabs removed.** The screens are gone; the ENGINE's notion
+      of a project stays, because that is how runs are queued and worktrees are cut — the
+      personal board is itself a project.
+- [x] **13 — Thin, rounded, trackless scrollbars** that fade in on hover of the scrolling
+      element (not of the scrollbar — an 8px target you must already be touching to make
+      visible is not a target).
+- [x] **14 — The question form is worth reading.** `AgentQuestionForm`.
+- [x] **17 — Toasts for what needs attention,** switchable in Settings.
+- [x] **19 — One Sync button** covering every enabled service.
+- [x] **20–22 — Labels, project name and epic are switchable,** from a Display menu on the
+      board as well as from Settings — the board is where you notice the noise.
+
+### Still open
+
+Listed here rather than quietly dropped:
+
+- [ ] **12 — Scratch Run holds several runs,** one card each. Untouched: it is the one
+      request that is a new screen rather than a change to an existing one.
+- [ ] **15 — Big dialogs become Drawers.** The assign dialog was widened to fit its branch
+      field; the general Dialog-to-Drawer pass was not made.
+- [ ] **16 — Skeletons while loading.** `PaneLoading` still shows a spinner.
+- [ ] **22 (the NAME) — the epic's name, not its key.** `Task.externalEpicName` and its
+      column exist and the card prefers it, but the JIRA sync does not populate it yet
+      (the key comes free on the issue; the name costs a lookup of the epic itself), so
+      the card falls back to showing the key.
 
 **Shape of the work.** Contract and engine first (shared types, the four pure modules,
 then the engine and IPC), renderer groundwork second (`theme.ts`, `useAttentionIndex`,
-`useActiveRuns`), components last — which is where the remaining boxes are. The engine is
-green and committed; no renderer component has been rewritten yet.
+`useActiveRuns`), components last. Everything ticked above is green and committed.
 
 - [ ] **Live E2E owed for the whole phase**, and it is the only way to check the two
       that matter most: that a question really blocks its run, and that a spinner really
