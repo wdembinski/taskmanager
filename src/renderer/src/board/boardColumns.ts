@@ -89,13 +89,18 @@ export function groupSubtasks(
  *
  * "Wants you" is deliberately `chainNeedsAttention`, the same predicate that draws the
  * card's orange ring, so the loudest card is always the top one — the board would be
- * lying if the two disagreed.
+ * lying if the two disagreed. That is also why `attentionTaskIds` has to be threaded
+ * through here and not just to the card: pass it to one and not the other and the ring
+ * and the ordering start disagreeing again.
  */
-export function sortCards(cards: readonly BoardCard[]): BoardCard[] {
+export function sortCards(
+  cards: readonly BoardCard[],
+  attentionTaskIds?: ReadonlySet<string>,
+): BoardCard[] {
   return [...cards].sort((a, b) => {
     const attention =
-      Number(chainNeedsAttention(b.task, b.subtasks, b.mergeRequests)) -
-      Number(chainNeedsAttention(a.task, a.subtasks, a.mergeRequests));
+      Number(chainNeedsAttention(b.task, b.subtasks, b.mergeRequests, attentionTaskIds)) -
+      Number(chainNeedsAttention(a.task, a.subtasks, a.mergeRequests, attentionTaskIds));
     if (attention !== 0) return attention;
     const priority = priorityRank(b.task.externalPriority) - priorityRank(a.task.externalPriority);
     if (priority !== 0) return priority;

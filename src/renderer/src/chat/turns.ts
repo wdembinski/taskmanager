@@ -65,10 +65,23 @@ function subAgentLabel(input: Record<string, unknown> | undefined): string | nul
   return flat.length > 60 ? `${flat.slice(0, 60)}…` : flat;
 }
 
-/** True for the events that are *work*, not speech — the ones a run folds together. */
+/**
+ * True for the events that are *work*, not speech — the ones a run folds together.
+ *
+ * A BENIGN failure counts as work: a stale edit or an unread file is something the agent
+ * fixes on its own next turn, and interrupting the thread to announce it reports a problem
+ * that was over before you finished reading about it. A real failure still breaks out.
+ */
 function isToolWork(event: SessionEvent): boolean {
   if (event.kind === 'thinking' || event.kind === 'tool-use') return true;
-  return event.kind === 'tool-result' && !event.isError;
+  return event.kind === 'tool-result' && (!event.isError || event.benign === true);
+}
+
+/** Keep a failure reason to one readable line — the full text is in the transcript. */
+function briefly(text: string | undefined, max = 160): string {
+  const flat = (text ?? '').replace(/\s+/g, ' ').trim();
+  if (!flat) return '';
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
 }
 
 /**
@@ -86,9 +99,17 @@ function systemLine(event: SessionEvent): { text: string; tone: 'meta' | 'err' }
             tone: 'err',
           };
     case 'rate-limit':
-      return { text: `Usage limit: ${event.status} (${event.rateLimitType}).`, tone: 'err' };
-    case 'tool-result':
-      return { text: 'A tool call failed.', tone: 'err' };
+      // Healthy signals (`allowed`, `allowed_warning`) never reach the renderer — the
+      // engine drops them at the emit boundary — so anything arriving here is a real
+      // block. Said in words, because `allowed (five_hour)` in red meant nothing to anyone.
+      return { text: 'Paused — Claude’s usage limit was reached.', tone: 'err' };
+    case 'tool-result': {
+      // Only genuine failures reach this line (`isToolWork` folds the benign ones away),
+      // and they now carry their reason. "A tool call failed." with no detail was the
+      // worst kind of log line: alarming and useless.
+      const reason = briefly(event.errorText);
+      return { text: reason ? `A tool call failed — ${reason}` : 'A tool call failed.', tone: 'err' };
+    }
     case 'stderr':
       return { text: event.text.trim(), tone: 'err' };
     case 'exited':
