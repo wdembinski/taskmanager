@@ -37,6 +37,7 @@ import { AssignAgentDialog } from './AssignAgentDialog';
 import { stepPosition } from './board/boardColumns';
 import { STATUS_LABEL } from './taskStatus';
 import { AgentQuestionForm } from './AgentQuestionForm';
+import { Markdown } from './chat/MarkdownView';
 import { UNREAD_ORANGE as ASK_ORANGE } from '@shared/accent';
 
 const useStyles = makeStyles({
@@ -60,21 +61,18 @@ const useStyles = makeStyles({
     border: `2px solid ${ASK_ORANGE}`,
     backgroundColor: tokens.colorNeutralBackground2,
   },
-  prompt: {
-    fontFamily: 'ui-monospace, Consolas, monospace',
-    fontSize: '12px',
-    whiteSpace: 'pre-wrap',
-    maxHeight: '160px',
-    overflowY: 'auto',
-  },
-  /** The plan itself: longer than a prompt, so it gets its own scroll box. */
+  // No `fontFamily`/`pre-wrap` any more: the body is rendered markdown, which brings its
+  // own monospace exactly where it belongs — inside code — rather than everywhere.
+  prompt: { maxHeight: '220px', overflowY: 'auto' },
+  /**
+   * The plan itself: longer than a prompt, so it gets its own scroll box — and taller
+   * than it was, because this is the one thing in the app you have to READ before you can
+   * answer, and 260px of a twenty-step plan is a keyhole.
+   */
   plan: {
-    fontFamily: 'ui-monospace, Consolas, monospace',
-    fontSize: '12px',
-    whiteSpace: 'pre-wrap',
-    maxHeight: '260px',
+    maxHeight: '420px',
     overflowY: 'auto',
-    padding: '8px 10px',
+    padding: '10px 12px',
     borderRadius: tokens.borderRadiusMedium,
     backgroundColor: tokens.colorNeutralBackground1,
     border: `1px solid ${tokens.colorNeutralStroke2}`,
@@ -363,7 +361,11 @@ export function TaskAgentPanel({
                         : 'The agent has a question'}
             </Text>
           </div>
-          <div className={styles.prompt}>{item.prompt}</div>
+          {/* Markdown, not raw monospace: agents write backticked identifiers, lists and
+              headings into these, and showing the source made a plan unreadable. */}
+          <div className={styles.prompt}>
+            <Markdown source={item.prompt} />
+          </div>
           {/* Say that more is waiting. Silence here is what made answering one ask feel
               like it had swallowed the others. */}
           {queued > 0 && (
@@ -382,7 +384,11 @@ export function TaskAgentPanel({
 
           {item.kind === 'plan-approval' && (
             <>
-              {item.plan && <div className={styles.plan}>{item.plan}</div>}
+              {item.plan && (
+                <div className={styles.plan}>
+                  <Markdown source={item.plan} />
+                </div>
+              )}
               {(item.steps?.length ?? 0) > 0 ? (
                 <>
                   <Caption1 className={styles.hint}>

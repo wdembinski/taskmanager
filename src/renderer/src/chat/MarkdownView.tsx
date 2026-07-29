@@ -10,11 +10,14 @@ import { useState } from 'react';
 import { Button, Caption1, Text, makeStyles, tokens } from '@fluentui/react-components';
 import { CheckmarkRegular, CopyRegular } from '@fluentui/react-icons';
 import { parseInline, parseMarkdown, type Inline } from './markdown';
+import { CODE_BG, CODE_BORDER, CODE_INLINE_BG, MONO, fontPx } from '../theme';
 
 const useStyles = makeStyles({
-  root: { display: 'flex', flexDirection: 'column', gap: '8px', minWidth: 0 },
-  para: { whiteSpace: 'pre-wrap', wordBreak: 'break-word' },
-  heading: { fontWeight: tokens.fontWeightSemibold, marginTop: '4px' },
+  // 10px between blocks, and a line height with room to breathe: an agent's answer is
+  // prose, and prose set solid is the thing people call "a wall of text".
+  root: { display: 'flex', flexDirection: 'column', gap: '10px', minWidth: 0 },
+  para: { whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: '1.55' },
+  heading: { fontWeight: tokens.fontWeightSemibold, marginTop: '6px' },
   list: { display: 'flex', flexDirection: 'column', gap: '2px', paddingLeft: '4px' },
   item: { display: 'flex', gap: '8px', alignItems: 'baseline' },
   bullet: { color: tokens.colorNeutralForeground3, flexShrink: 0 },
@@ -25,16 +28,19 @@ const useStyles = makeStyles({
     whiteSpace: 'pre-wrap',
   },
   code: {
-    fontFamily: 'ui-monospace, Consolas, monospace',
-    fontSize: '12px',
-    backgroundColor: tokens.colorNeutralBackground4,
+    fontFamily: MONO,
+    fontSize: fontPx(12),
+    // Blue-tinted, not neutral: against the pane's dark grey a neutral fill was nearly
+    // invisible, so `an inline span` read as ordinary prose.
+    backgroundColor: CODE_INLINE_BG,
+    color: tokens.colorNeutralForeground1,
     borderRadius: tokens.borderRadiusSmall,
-    padding: '1px 4px',
+    padding: '1px 5px',
   },
   codeBlock: {
     borderRadius: tokens.borderRadiusMedium,
-    border: `1px solid ${tokens.colorNeutralStroke2}`,
-    backgroundColor: tokens.colorNeutralBackground4,
+    border: `1px solid ${CODE_BORDER}`,
+    backgroundColor: CODE_BG,
     overflow: 'hidden',
   },
   codeHead: {
@@ -42,7 +48,7 @@ const useStyles = makeStyles({
     alignItems: 'center',
     gap: '8px',
     padding: '2px 4px 2px 10px',
-    borderBottom: `1px solid ${tokens.colorNeutralStroke2}`,
+    borderBottom: `1px solid ${CODE_BORDER}`,
   },
   lang: { color: tokens.colorNeutralForeground3 },
   grow: { flex: 1 },
@@ -51,8 +57,8 @@ const useStyles = makeStyles({
     margin: 0,
     padding: '8px 10px',
     overflowX: 'auto',
-    fontFamily: 'ui-monospace, Consolas, monospace',
-    fontSize: '12px',
+    fontFamily: MONO,
+    fontSize: fontPx(12),
     lineHeight: '1.5',
   },
   link: { color: tokens.colorBrandForegroundLink },

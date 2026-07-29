@@ -50,6 +50,18 @@ export const ACCENT = {
   liveRed: '#F85149',
 } as const;
 
+/**
+ * Code surfaces in agent output — inline spans and fenced blocks.
+ *
+ * A dark BLUE rather than `colorNeutralBackground4`'s near-black: against the pane's own
+ * dark grey a neutral code background is almost invisible, so inline code read as
+ * ordinary prose and a fenced block had no edge of its own. A slight hue shift separates
+ * "this is code" from "this is text" without adding a border to every span.
+ */
+export const CODE_BG = '#16202e';
+export const CODE_INLINE_BG = '#1d2a3a';
+export const CODE_BORDER = '#26364a';
+
 /** Ring widths, so the card's two states can't drift apart. */
 export const RING = { attention: 3, selected: 2 } as const;
 

@@ -26,6 +26,7 @@ import {
 } from '@fluentui/react-components';
 import type { AttentionAnswer, AttentionItem } from '@shared/attention';
 import { AgentQuestionForm } from './AgentQuestionForm';
+import { Markdown } from './chat/MarkdownView';
 import { PaneLoading } from './PaneLoading';
 import { useInitialLoad } from './useInitialLoad';
 
@@ -42,13 +43,13 @@ const useStyles = makeStyles({
   },
   head: { display: 'flex', alignItems: 'center', gap: '8px' },
   grow: { flex: 1, minWidth: 0 },
+  // Rendered markdown, so monospace appears inside code rather than over everything.
   prompt: {
-    fontFamily: 'ui-monospace, Consolas, monospace',
-    fontSize: '12px',
-    whiteSpace: 'pre-wrap',
-    padding: '8px',
+    padding: '10px',
     borderRadius: tokens.borderRadiusSmall,
     backgroundColor: tokens.colorNeutralBackground2,
+    maxHeight: '420px',
+    overflowY: 'auto',
   },
   reason: { color: tokens.colorNeutralForeground3 },
   actions: { display: 'flex', alignItems: 'flex-end', gap: '8px' },
@@ -147,7 +148,9 @@ function InboxItem({
         </Caption1>
       </div>
 
-      <div className={styles.prompt}>{item.prompt}</div>
+      <div className={styles.prompt}>
+        <Markdown source={item.prompt} />
+      </div>
       {item.reason && <Caption1 className={styles.reason}>Held because it {item.reason}.</Caption1>}
       {item.kind === 'plan-approval' && (item.steps?.length ?? 0) > 0 && (
         <Caption1 className={styles.reason}>
