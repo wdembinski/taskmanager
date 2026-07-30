@@ -264,11 +264,15 @@ export function StepBrief({ task, onChanged }: StepBriefProps): JSX.Element {
   const [draft, setDraft] = useState(task.description ?? '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [open, setOpen] = useState(true);
 
   useEffect(() => {
     setEditing(false);
     setDraft(task.description ?? '');
     setError(null);
+    // Reopened per step, for the same reason Steps is: this is a way to clear the screen
+    // while reading, not a setting.
+    setOpen(true);
   }, [task.id, task.description]);
 
   const live = isLive(task);
@@ -293,9 +297,18 @@ export function StepBrief({ task, onChanged }: StepBriefProps): JSX.Element {
   return (
     <div className={styles.box}>
       <div className={styles.head}>
-        <Text weight="semibold">Brief</Text>
+        {/* A brief is the whole prompt a step's session gets, so it can run to many
+            paragraphs — and on a step you are only reading the transcript of, all of it sits
+            between you and the conversation. Same fold as Steps and Description. */}
+        <FoldToggle
+          open={open}
+          onToggle={() => setOpen((v) => !v)}
+          summary={task.description ? undefined : 'none'}
+        >
+          <Text weight="semibold">Brief</Text>
+        </FoldToggle>
         <span className={styles.grow} />
-        {!editing && (
+        {open && !editing && (
           <Button
             size="small"
             appearance="transparent"
@@ -314,7 +327,7 @@ export function StepBrief({ task, onChanged }: StepBriefProps): JSX.Element {
         </MessageBar>
       )}
 
-      {editing ? (
+      {!open ? null : editing ? (
         <div className={styles.form}>
           <Textarea
             value={draft}
