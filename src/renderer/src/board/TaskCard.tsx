@@ -103,9 +103,19 @@ const AGENT_ICON_SIZE = '16px';
  * Derived rather than typed out: an angle and a travel vector that disagree would show up as
  * a slow drift with a jump once per cycle, which is precisely the artefact this is built to
  * avoid, and is not a thing anyone would spot by reading two number literals.
+ *
+ * `PERIOD` is one crest PLUS the dark stretch behind it, so it and `animationDuration` are
+ * the two halves of one decision — the band is a flash that passes, not a light that stays on:
+ *
+ *     speed          = PERIOD / duration        ≈ 404 px/s
+ *     flash, at a point = crest / speed         ≈ 1.2s   (a quick sweep across)
+ *     dark, between     = (PERIOD − crest)/speed ≈ 4.0s   (a real pause, not a blink)
+ *
+ * Lengthening the pause has to be done in `PERIOD` rather than by slowing the animation: the
+ * duration governs how fast the crest MOVES, and the two ask for opposite things.
  */
 const RUN_BAND_ANGLE = 100;
-const RUN_BAND_PERIOD = 760;
+const RUN_BAND_PERIOD = 2100;
 const RUN_BAND_RAD = (RUN_BAND_ANGLE * Math.PI) / 180;
 const RUN_BAND_DX = (RUN_BAND_PERIOD * Math.sin(RUN_BAND_RAD)).toFixed(2);
 const RUN_BAND_DY = (RUN_BAND_PERIOD * -Math.cos(RUN_BAND_RAD)).toFixed(2);
@@ -130,9 +140,12 @@ const runBandCyan = (alpha: number): string => `rgba(${RUN_BAND_RGB}, ${alpha})`
  * under the band is contrast-checked against.
  */
 const RUN_BAND_BELL = [0, 0.066, 0.225, 0.384, 0.45, 0.384, 0.225, 0.066, 0];
-/** Where the crest starts, and how far apart its samples sit. Gap + crest + gap = PERIOD. */
+/**
+ * Where the crest starts, and how far apart its eight samples sit — so the lit part is
+ * `8 × STEP` and everything else in `PERIOD` is the pause between flashes.
+ */
 const RUN_BAND_CREST_START = 120;
-const RUN_BAND_STEP = 65;
+const RUN_BAND_STEP = 60;
 const RUN_BAND_STOPS = [
   `${runBandCyan(0)} 0px`,
   ...RUN_BAND_BELL.map(
@@ -340,8 +353,10 @@ const useStyles = makeStyles({
       from: { backgroundPosition: `${-Number(RUN_BAND_DX)}px ${-Number(RUN_BAND_DY)}px` },
       to: { backgroundPosition: '0px 0px' },
     },
-    // ~160px/s along the axis, the speed the band has always read at.
-    animationDuration: '4.8s',
+    // With PERIOD, this is the flash: ~404px/s, so the crest crosses in about 1.2s and the
+    // card then sits dark for 4. Faster AND rarer — see the geometry block for why those
+    // pull in opposite directions and which knob owns which.
+    animationDuration: '5.2s',
     animationIterationCount: 'infinite',
     animationTimingFunction: 'linear',
     // The state still has to be visible without motion, so it becomes an even wash — at the
