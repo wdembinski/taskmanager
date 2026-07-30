@@ -814,19 +814,37 @@ describe('Scheduler run-failure handling', () => {
    * in this case (an auto-retry re-queued it), which is exactly the state where the
    * snapshot, not the status, decides whether a spinner turns.
    */
-  it('announces the task again once the ended run has left activeRuns', () => {
-    // No auto-retry, so nothing relaunches and the snapshot must end up genuinely empty.
+  /**
+   * The residual half of the "spinner over a finished agent" bug. `result` settles the run
+   * but the process lingers (it holds stdin open, so it only dies when told to), and until
+   * `exited` lands the run is still in the map. Reporting it as active made the UI show
+   * "Starting…" underneath the chat line "The agent finished this turn."
+   */
+  it('drops a settled run from activeRuns before its process has exited', () => {
+    const { scheduler, fire } = setup(0);
+    expect(scheduler.activeRuns()).toEqual([{ taskId: 't1', runId: 'r1' }]);
+
+    fire(failResult); // the outcome is decided; `exited` has not arrived yet
+
+    expect(scheduler.activeRuns()).toEqual([]);
+  });
+
+  /**
+   * A run leaves the map on `exited`, which is after the settling `task:changed` — so the
+   * refresh that event triggers happens while the run is still there. Excluding settled runs
+   * makes the snapshot right at that moment anyway; this announcement is the belt to that
+   * braces, and the only signal for a run that leaves the map with no task change of its own.
+   */
+  it('announces the task again once the ended run has left the map', () => {
+    // No auto-retry, so nothing relaunches and nothing re-enters the snapshot.
     const { scheduler, emitTask, fire } = setup(0);
     fire(failResult);
-    // Settling emitted `task:changed` while the finished run was STILL listed — this is the
-    // snapshot the UI would take, and why it needs telling a second time.
-    expect(scheduler.activeRuns()).toEqual([{ taskId: 't1', runId: 'r1' }]);
     emitTask.mockClear();
 
     fire(exited);
 
     expect(scheduler.activeRuns()).toEqual([]);
-    // ...and the UI was told to go and read it again, with no runId (the run is over).
+    // The UI was told to go and read it again, with no runId (the run is over).
     const announced = emitTask.mock.calls.map(([change]) => change as { task: Task; runId: null });
     expect(announced.some((c) => c.task.id === 't1' && c.runId === null)).toBe(true);
   });

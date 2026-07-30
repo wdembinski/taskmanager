@@ -1110,9 +1110,29 @@ export class Scheduler {
     return [...this.runs.values()].some((r) => r.projectId === projectId);
   }
 
-  /** Snapshot of executing tasks, so the Board can attach live transcripts on load. */
+  /**
+   * Snapshot of executing tasks, so the Board can attach live transcripts on load.
+   *
+   * **Settled runs are excluded.** `settled` means the outcome is already decided — the
+   * turn produced its `result`, or Stop chose for it — and what is left is a process
+   * winding down. It stays in `runs` because `exited` still has bookkeeping to do (free the
+   * slot, pump the queue, advance a chain), but reporting it as active is wrong twice over:
+   *
+   * The UI reads this snapshot to spot a run that exists before its task says `running`,
+   * and shows "Starting…" for it. A settled run is the opposite of starting. That is how a
+   * card came to spin "Starting…" directly underneath the chat line saying "The agent
+   * finished this turn" — the result had landed, the process had not yet gone, and the
+   * window between the two is as long as it takes the CLI to die (it holds stdin open, so
+   * it never exits on its own).
+   *
+   * A terminal status now overrules the snapshot in `runPhase`, but that cannot cover this:
+   * a review seed settles to `in-progress`, which is not terminal, so the snapshot was
+   * still the deciding vote.
+   */
   activeRuns(): ActiveRun[] {
-    return [...this.runs.values()].map((r) => ({ taskId: r.taskId, runId: r.runId }));
+    return [...this.runs.values()]
+      .filter((r) => !r.settled)
+      .map((r) => ({ taskId: r.taskId, runId: r.runId }));
   }
 
   /** Snapshot of each project's current run state (seed the Board's buttons on mount). */
