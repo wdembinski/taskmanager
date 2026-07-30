@@ -52,6 +52,9 @@ export async function describeMergeRequest(
   const updatedAt = Date.parse(listed.updated_at) || 0;
 
   let detail = listed;
+  // Whether `detail` is the DETAIL response or still just the list entry. It decides
+  // whether a missing pipeline is a fact about the MR or a gap in what we asked for.
+  let detailRead = false;
   let approvalsRequired = prior?.approvalsRequired ?? null;
   let approvalsGiven = prior?.approvalsGiven ?? 0;
   let changesRequested = prior?.changesRequested ?? false;
@@ -60,7 +63,11 @@ export async function describeMergeRequest(
   if (stale) {
     // Each of these is allowed to fail on its own: a tier-gated 403 on approvals must
     // not cost us the pipeline status we did manage to read.
-    detail = await client.getMergeRequest(projectId, iid).catch(() => listed);
+    const fetched = await client.getMergeRequest(projectId, iid).catch(() => null);
+    if (fetched) {
+      detail = fetched;
+      detailRead = true;
+    }
 
     const approvals = await client.getApprovals(projectId, iid).catch(() => null);
     if (approvals) {
@@ -81,23 +88,50 @@ export async function describeMergeRequest(
   }
 
   const pipeline = detail.head_pipeline ?? detail.pipeline ?? null;
+
+  /**
+   * **There is genuinely no pipeline** — as opposed to us not having looked.
+   *
+   * These are two different facts that arrive looking identical, and conflating them is
+   * what left a deleted pipeline on screen forever: delete `.gitlab-ci.yml`, push, and the
+   * new head commit has no pipeline at all, so the detail endpoint answers
+   * `head_pipeline: null`. That read `unknown`, `unknown` was treated as "no reading", and
+   * the last thing we knew — a FAILED pipeline that no longer exists — was kept on every
+   * subsequent sync.
+   *
+   * `in` rather than `== null`, because ABSENT and PRESENT-BUT-NULL are the whole
+   * distinction: the list endpoint omits `head_pipeline` entirely, and letting that erase a
+   * status we already knew is the original lie this guard was written to prevent. Only the
+   * detail response gets a vote, and only when it actually answered.
+   */
+  const noPipeline =
+    detailRead && 'head_pipeline' in detail && detail.head_pipeline == null && !detail.pipeline;
+
   // Whatever THIS sync carried wins over what we stored — a pipeline finishes without the
-  // MR being touched, so a status read now can be newer than the MR claims to be. `unknown`
-  // is not a reading though: the list endpoint often omits `head_pipeline` altogether, and
-  // letting that erase a status we already knew would be a different kind of lie.
+  // MR being touched, so a status read now can be newer than the MR claims to be.
   const readStatus = toPipelineStatus(pipeline?.status);
   const pipelineStatus =
-    readStatus === 'unknown' ? (prior?.pipelineStatus ?? readStatus) : readStatus;
+    readStatus !== 'unknown'
+      ? readStatus
+      : noPipeline
+        ? 'unknown'
+        : (prior?.pipelineStatus ?? 'unknown');
 
-  // Stages come from the pipeline's jobs, so they are only re-read when the MR was worth
-  // re-reading at all. An empty result keeps what we had: the jobs endpoint is
-  // permission-gated, and blanking the stage row on a 403 would look like a pipeline that
-  // lost its stages.
+  /**
+   * The stages, under the same rule: an ANSWER replaces what we had, silence keeps it.
+   *
+   * A failed `listPipelineJobs` keeps the old stages — the endpoint is permission-gated,
+   * and blanking the row on a 403 would look like a pipeline that lost its stages. But a
+   * call that SUCCEEDS and returns nothing is an answer, and it must be allowed to empty
+   * the row: a fresh pipeline whose jobs do not exist yet was otherwise shown wearing the
+   * previous pipeline's stages, which is the same staleness in a smaller window.
+   */
   let pipelineStages = prior?.pipelineStages ?? [];
-  if (stale && typeof pipeline?.id === 'number') {
-    const jobs = await client.listPipelineJobs(projectId, pipeline.id).catch(() => []);
-    const stages = stagesFromJobs(jobs);
-    if (stages.length > 0) pipelineStages = stages;
+  if (noPipeline) {
+    pipelineStages = [];
+  } else if (stale && typeof pipeline?.id === 'number') {
+    const jobs = await client.listPipelineJobs(projectId, pipeline.id).catch(() => null);
+    if (jobs) pipelineStages = stagesFromJobs(jobs);
   }
 
   return {
@@ -113,7 +147,9 @@ export async function describeMergeRequest(
     draft: detail.draft ?? detail.work_in_progress ?? false,
     pipelineStatus,
     pipelineStages,
-    pipelineUrl: pipeline?.web_url ?? prior?.pipelineUrl ?? null,
+    // Cleared with the rest of it: a link to the pipeline of a commit that no longer has
+    // one is the same stale claim, just clickable.
+    pipelineUrl: pipeline?.web_url ?? (noPipeline ? null : (prior?.pipelineUrl ?? null)),
     approvalsRequired,
     approvalsGiven,
     changesRequested,
