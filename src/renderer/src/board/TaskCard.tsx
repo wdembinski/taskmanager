@@ -43,6 +43,7 @@ import {
   BookmarkFilled,
   BugFilled,
   CheckmarkCircleFilled,
+  CheckmarkCircleRegular,
   CircleFilled,
   DismissCircleFilled,
   NoteFilled,
@@ -77,6 +78,7 @@ import {
 import { JiraMark } from '../JiraMark';
 import {
   approvalSummary,
+  mrApprovalState,
   mrAttentionReason,
   mrLabel,
   type MergeRequest,
@@ -805,6 +807,7 @@ export function TaskCard({
           </div>
           {mergeRequests.map((mr) => {
             const reason = mrAttentionReason(mr);
+            const approval = mrApprovalState(mr);
             return (
               <a
                 key={mr.id}
@@ -876,10 +879,21 @@ export function TaskCard({
                   {`!${mr.iid} ${mrLabel(mr)}`}
                 </Caption1>
                 {mr.draft && <Caption1 className={styles.progress}>draft</Caption1>}
+                {/* FILLED means a human approved it; the OUTLINE means nothing is blocking
+                    the merge but nobody has actually looked — a project that requires zero
+                    approvals. This row used to render `approvalsGiven >= approvalsRequired`,
+                    which is `0 >= 0` there, so every green MR on a rule-less project wore a
+                    solid green tick it had not earned. The verdict now comes from
+                    `mrApprovalState`, the same one the pane's "ready to merge" badge reads. */}
                 <span className={styles.approval} title={approvalSummary(mr)}>
-                  {mr.approvalsRequired !== null && mr.approvalsGiven >= mr.approvalsRequired ? (
+                  {approval === 'approved' ? (
                     <CheckmarkCircleFilled style={{ color: FLUO.green }} aria-label="Approved" />
-                  ) : mr.changesRequested ? (
+                  ) : approval === 'unopposed' ? (
+                    <CheckmarkCircleRegular
+                      style={{ color: FLUO.green }}
+                      aria-label="Nothing blocking the merge — but no approval was required, and none was given"
+                    />
+                  ) : approval === 'changes-requested' ? (
                     <DismissCircleFilled
                       style={{ color: FLUO.red }}
                       aria-label="Changes requested"

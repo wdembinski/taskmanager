@@ -136,10 +136,42 @@ export type MergeReadiness = Pick<
  */
 
 export function mrReadyToMerge(mr: MergeReadiness): boolean {
-  if (mr.state !== 'opened' || mr.draft || mr.changesRequested) return false;
+  if (mr.state !== 'opened' || mr.draft) return false;
   if (mr.pipelineStatus !== 'success') return false;
-  if (mr.approvalsRequired === null) return false;
-  return mr.approvalsGiven > 0 && mr.approvalsGiven >= mr.approvalsRequired;
+  // `changesRequested` and both approval narrowings above now live in one place, so the
+  // glyph on a card and the "ready to merge" badge in the pane cannot come to different
+  // conclusions about the same MR — which is exactly what had happened.
+  return mrApprovalState(mr) === 'approved';
+}
+
+/** Just the fields the review verdict depends on. See {@link mrApprovalState}. */
+export type ApprovalFacts = Pick<
+  MergeRequest,
+  'changesRequested' | 'approvalsRequired' | 'approvalsGiven'
+>;
+
+/**
+ * What REVIEW says about an MR — the single answer every surface renders.
+ *
+ *  - `changes-requested` — a reviewer objected. First, because an objection outranks a tick:
+ *    an MR can satisfy its approval bar and still have someone asking for changes, and the
+ *    green would bury it.
+ *  - `approved`   — somebody actually approved, and the bar is met.
+ *  - `unopposed`  — the bar is met but NOBODY APPROVED, which only happens on a project
+ *    requiring zero approvals. Nothing is blocking the merge, and no human has looked at it.
+ *    Those are different facts and must not share a glyph: this is the state that had every
+ *    green MR on a rule-less project claiming to be approved.
+ *  - `awaiting`   — the bar is unmet, or the instance would not tell us what it is
+ *    (`/approvals` is tier-gated). Somebody approving against an unknown bar is not evidence
+ *    the bar is met, and this is the wrong place to guess.
+ */
+export type MrApprovalState = 'changes-requested' | 'approved' | 'unopposed' | 'awaiting';
+
+export function mrApprovalState(mr: ApprovalFacts): MrApprovalState {
+  if (mr.changesRequested) return 'changes-requested';
+  if (mr.approvalsRequired === null) return 'awaiting';
+  if (mr.approvalsGiven < mr.approvalsRequired) return 'awaiting';
+  return mr.approvalsGiven > 0 ? 'approved' : 'unopposed';
 }
 
 /**
@@ -190,5 +222,8 @@ export function mrLabel(mr: MergeRequest): string {
 /** "2/3", or "approvals unknown" when the instance would not tell us. */
 export function approvalSummary(mr: MergeRequest): string {
   if (mr.approvalsRequired === null) return 'approvals unknown';
+  // "0/0 approved" is the sentence that started all of this: it reads as a satisfied bar
+  // when what it means is that there is no bar and nobody has looked. Say the second thing.
+  if (mr.approvalsRequired === 0 && mr.approvalsGiven === 0) return 'no approval required';
   return `${mr.approvalsGiven}/${mr.approvalsRequired} approved`;
 }

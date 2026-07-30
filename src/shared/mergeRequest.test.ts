@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   approvalSummary,
+  mrApprovalState,
   mrAttentionReason,
   mrNeedsAttention,
   mrReadyToMerge,
@@ -176,5 +177,57 @@ describe('approvalSummary', () => {
   it('says so rather than claiming a confident 0/0 when it did not', () => {
     // `/approvals` is tier-gated and 403s on some instances.
     expect(approvalSummary(mr({ approvalsRequired: null }))).toBe('approvals unknown');
+  });
+
+  // "0/0 approved" reads as a satisfied bar; what it means is that there is no bar and
+  // nobody has looked.
+  it('does not report a rule-less, unreviewed MR as "0/0 approved"', () => {
+    expect(approvalSummary(mr({ approvalsRequired: 0, approvalsGiven: 0 }))).toBe(
+      'no approval required',
+    );
+    expect(approvalSummary(mr({ approvalsRequired: 0, approvalsGiven: 1 }))).toBe('1/0 approved');
+  });
+});
+
+describe('mrApprovalState', () => {
+  it('is approved only when a human actually approved AND the bar is met', () => {
+    expect(mrApprovalState(mr({ approvalsRequired: 2, approvalsGiven: 2 }))).toBe('approved');
+    expect(mrApprovalState(mr({ approvalsRequired: 0, approvalsGiven: 1 }))).toBe('approved');
+  });
+
+  /**
+   * The bug this exists for: `approvalsGiven >= approvalsRequired` is `0 >= 0` on a project
+   * with no approval rule, so every green MR wore a solid "approved" tick nobody had given.
+   * Nothing is blocking the merge — that is a different fact, and gets a different glyph.
+   */
+  it('separates "nobody objected" from "somebody approved"', () => {
+    expect(mrApprovalState(mr({ approvalsRequired: 0, approvalsGiven: 0 }))).toBe('unopposed');
+  });
+
+  it('is awaiting while the bar is unmet, or unknowable', () => {
+    expect(mrApprovalState(mr({ approvalsRequired: 2, approvalsGiven: 1 }))).toBe('awaiting');
+    expect(mrApprovalState(mr({ approvalsRequired: null, approvalsGiven: 3 }))).toBe('awaiting');
+  });
+
+  // An objection outranks a tick: an MR can satisfy its bar and still have a reviewer
+  // asking for changes, and the green would bury it.
+  it('lets a requested change outrank a met approval bar', () => {
+    expect(
+      mrApprovalState(mr({ approvalsRequired: 1, approvalsGiven: 1, changesRequested: true })),
+    ).toBe('changes-requested');
+  });
+
+  it('agrees with mrReadyToMerge about what "approved" means', () => {
+    const green = { pipelineStatus: 'success', state: 'opened', draft: false } as const;
+    for (const [required, given] of [
+      [0, 0],
+      [0, 1],
+      [1, 0],
+      [2, 1],
+      [2, 2],
+    ] as const) {
+      const subject = mr({ ...green, approvalsRequired: required, approvalsGiven: given });
+      expect(mrReadyToMerge(subject)).toBe(mrApprovalState(subject) === 'approved');
+    }
   });
 });
