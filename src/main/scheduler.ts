@@ -2028,6 +2028,13 @@ export class Scheduler {
         this.clearRunAttention(runId); // a dead run can't be answered — drop its items
         this.runs.delete(runId);
         this.inFlight.delete(run.taskId);
+        // Say so, even though nothing about the task itself changed here. The UI's
+        // active-run snapshot (`scheduler:activeRuns`) is re-read on `task:changed`, and a
+        // run that settled emitted that event BEFORE this line — while it was still in the
+        // map. Without a second announcement the snapshot keeps a run that has just ended,
+        // which is what left a finished card claiming to be starting. An empty patch writes
+        // nothing; it only re-emits the task with no runId, saying "this run is over".
+        this.updateTask(run.taskId, {}, null);
         const retrying = this.retryQueue.delete(run.taskId);
         // An approved plan's chain waits for the planning process to release the shared
         // worktree before its first step starts in the same directory (Phase 11).

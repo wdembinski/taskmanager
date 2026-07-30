@@ -244,6 +244,13 @@ const IDLE: RunState = { phase: 'idle', label: '', spinner: false };
 const FINISHED: RunState = { phase: 'done', label: '', spinner: false };
 
 /**
+ * Statuses that mean this task's own work is over. A terminal status is a *fact* recorded
+ * against the task; `liveRunTaskIds` is only a snapshot, and one that lags on purpose (see
+ * {@link runPhase}) — so the two must never be weighed the other way round.
+ */
+const TERMINAL: ReadonlySet<Task['status']> = new Set(['done', 'failed', 'stopped', 'cancelled']);
+
+/**
  * The one answer to "what is this card doing right now", shared by the card, the detail
  * pane and the status strip above the composer, so the three can never disagree.
  *
@@ -279,7 +286,13 @@ export function runPhase(
       break;
   }
 
-  if (liveRunTaskIds?.has(task.id)) {
+  // Only a task that could still be starting. A finished/stopped one must NOT be read out
+  // of the live-run snapshot, because that snapshot legitimately lags behind the task: the
+  // engine emits the settling `task:changed` and only removes the run when the process
+  // later reports `exited`, so every refresh triggered by that event is taken while the
+  // finished run is still listed. Trusting it here is what left a card spinning
+  // "Starting…" after its agent had finished or been stopped.
+  if (!TERMINAL.has(task.status) && liveRunTaskIds?.has(task.id)) {
     return { phase: 'starting', label: 'Starting…', spinner: true };
   }
 
@@ -308,13 +321,5 @@ export function runPhase(
     return { phase: 'idle', label: 'Assigned — not started', spinner: false };
   }
 
-  switch (task.status) {
-    case 'done':
-    case 'failed':
-    case 'stopped':
-    case 'cancelled':
-      return FINISHED;
-    default:
-      return IDLE;
-  }
+  return TERMINAL.has(task.status) ? FINISHED : IDLE;
 }

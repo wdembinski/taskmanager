@@ -243,6 +243,33 @@ describe('runPhase', () => {
     expect(runPhase(t, [], new Set())).toMatchObject({ phase: 'idle', spinner: false });
   });
 
+  // The bug this guards: the engine removes a run from `activeRuns` only when the process
+  // reports `exited`, which is AFTER the settling `task:changed` — so every snapshot the UI
+  // takes in response to a run finishing still lists that run. Reading "starting" out of it
+  // left a card spinning "Starting…" for a run that was over.
+  it.each(['done', 'failed', 'stopped', 'cancelled'] as const)(
+    'never calls a %s task "starting", however stale the live-run snapshot is',
+    (status) => {
+      const t = task({ id: 'c1', status, agentProjectId: 'agent' });
+      expect(runPhase(t, [], new Set(['c1']))).toEqual({
+        phase: 'done',
+        label: '',
+        spinner: false,
+      });
+    },
+  );
+
+  it('still reports a genuinely running step under a card that was marked done by hand', () => {
+    // The lagging snapshot must not silence the chain either: a step that really is running
+    // is reported even though the parent carries a terminal status.
+    const card = task({ id: 'c1', status: 'done' });
+    expect(runPhase(card, [step('s1', 'running')], new Set(['c1']))).toMatchObject({
+      phase: 'running',
+      label: 'Running step 1 of 1',
+      spinner: true,
+    });
+  });
+
   it('names the step a chain is on', () => {
     const card = task({ id: 'c1', status: 'in-progress' });
     const steps = [step('s1', 'done'), step('s2', 'running'), step('s3', 'pending')];

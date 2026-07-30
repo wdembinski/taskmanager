@@ -559,7 +559,11 @@ export function TaskDetail({
                   the words without the motion, because a spinner over "Waiting for you"
                   says the opposite of what is true. */}
               {run.spinner && <Spinner size="tiny" />}
-              <Caption1 className={styles.runningLabel}>{run.label || 'Agent running'}</Caption1>
+              {/* `run.label`, never a hardcoded fallback: this band only renders for
+                  running/starting/waiting, and every one of those carries a label. A
+                  fallback here could only ever be a claim the phase had already denied —
+                  which is how "Agent running" came to sit under a card that was not. */}
+              <Caption1 className={styles.runningLabel}>{run.label}</Caption1>
             </div>
             {subAgents.map((agent) => (
               <div key={agent.toolId} className={`${styles.running} ${styles.subAgent}`}>

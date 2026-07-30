@@ -750,10 +750,11 @@ describe('Scheduler run-failure handling', () => {
     const stop = vi.fn();
     const sessions = { start, stop } as unknown as SessionManager;
     const emitAttention = vi.fn();
+    const emitTask = vi.fn();
     const scheduler = new Scheduler(
       store,
       sessions,
-      vi.fn(),
+      emitTask,
       vi.fn(),
       emitAttention,
       vi.fn(),
@@ -772,7 +773,7 @@ describe('Scheduler run-failure handling', () => {
         'r1',
         event,
       );
-    return { scheduler, task, start, emitAttention, fire };
+    return { scheduler, task, start, emitAttention, emitTask, fire };
   }
 
   const failResult = {
@@ -803,6 +804,31 @@ describe('Scheduler run-failure handling', () => {
     const item = emitAttention.mock.calls[0][0] as { kind: string; options: string[] };
     expect(item.kind).toBe('task-failed');
     expect(item.options).toEqual(failureActionsFor('run'));
+  });
+
+  /**
+   * The UI re-reads `scheduler:activeRuns` when a `task:changed` arrives, and a run is
+   * removed from that snapshot only here, on `exited` — which is AFTER the settling
+   * `task:changed`. Without an announcement at removal time the UI's last snapshot forever
+   * lists a run that has ended, and the card claims to be starting. The status is `pending`
+   * in this case (an auto-retry re-queued it), which is exactly the state where the
+   * snapshot, not the status, decides whether a spinner turns.
+   */
+  it('announces the task again once the ended run has left activeRuns', () => {
+    // No auto-retry, so nothing relaunches and the snapshot must end up genuinely empty.
+    const { scheduler, emitTask, fire } = setup(0);
+    fire(failResult);
+    // Settling emitted `task:changed` while the finished run was STILL listed — this is the
+    // snapshot the UI would take, and why it needs telling a second time.
+    expect(scheduler.activeRuns()).toEqual([{ taskId: 't1', runId: 'r1' }]);
+    emitTask.mockClear();
+
+    fire(exited);
+
+    expect(scheduler.activeRuns()).toEqual([]);
+    // ...and the UI was told to go and read it again, with no runId (the run is over).
+    const announced = emitTask.mock.calls.map(([change]) => change as { task: Task; runId: null });
+    expect(announced.some((c) => c.task.id === 't1' && c.runId === null)).toBe(true);
   });
 });
 
