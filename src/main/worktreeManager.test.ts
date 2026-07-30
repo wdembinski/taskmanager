@@ -190,3 +190,75 @@ describe('WorktreeManager.prepare — worktree-enabled repo that cannot isolate'
     expect(prep.mode === 'failed' && prep.reason).toMatch(/worktree/i);
   });
 });
+
+/**
+ * The regression this suite exists for: a project pointed at a `git init`-ed repo with NO
+ * commits. `git worktree add -b <branch> <path> <base>` cannot work there — there is no commit
+ * to branch from — and because `currentBranch` reports its failure as `''`, the base handed to
+ * git was an empty string, which git rejected as `fatal: not a valid object name: ''`. Every
+ * recovery button then re-ran the same impossible command.
+ */
+describe('WorktreeManager.prepare — a repo with no commits yet', () => {
+  let unborn = '';
+
+  beforeEach(async () => {
+    unborn = join(root, 'unborn');
+    mkdirSync(unborn);
+    await initRepo(unborn);
+  });
+
+  function unbornProject(): Project {
+    return {
+      id: 'p-unborn',
+      path: unborn,
+      useWorktrees: true,
+      target: LOCAL_TARGET,
+    } as unknown as Project;
+  }
+
+  it('borns the repo and isolates the task, instead of dying on an empty start-point', async () => {
+    const task = { id: 'u1' } as unknown as Task;
+    const wtm = new WorktreeManager(join(root, 'wtroot-unborn'));
+
+    const prep = await wtm.prepare(unbornProject(), task, task.id, 'feat/travel-planning-feature');
+
+    expect(prep.mode).toBe('worktree');
+    if (prep.mode !== 'worktree') return;
+    expect(prep.branch).toBe('feat/travel-planning-feature');
+    // The base is a real branch name — never the `''` that produced the old fatal.
+    expect(prep.base).toBeTruthy();
+    expect(existsSync(prep.cwd)).toBe(true);
+    // The write we made in their repo is reported back so the run's activity can say so.
+    expect(prep.note).toMatch(/no commits/i);
+
+    // The base repo now has exactly one, EMPTY commit — none of its files were swept in.
+    const log = await git(unborn, ['log', '--oneline']);
+    expect(log.stdout.trim().split('\n')).toHaveLength(1);
+    expect((await git(unborn, ['ls-tree', '-r', '--name-only', 'HEAD'])).stdout.trim()).toBe('');
+  });
+
+  it('leaves an untracked file in the unborn repo untracked', async () => {
+    writeFileSync(join(unborn, 'draft.txt'), 'not mine to commit\n');
+    const wtm = new WorktreeManager(join(root, 'wtroot-unborn2'));
+
+    await wtm.prepare(unbornProject(), { id: 'u2' } as unknown as Task);
+
+    const untracked = await git(unborn, ['ls-files', '--others', '--exclude-standard']);
+    expect(untracked.stdout).toContain('draft.txt');
+  });
+
+  it('parks the task with a reason naming the real cause when it cannot even commit', async () => {
+    // A stale index lock: `git commit` refuses outright. Chosen over unsetting the identity
+    // because a developer's GLOBAL user.name/user.email would still satisfy the commit, so
+    // that version of this test passed or failed depending on whose machine ran it.
+    writeFileSync(join(unborn, '.git', 'index.lock'), '');
+
+    const wtm = new WorktreeManager(join(root, 'wtroot-unborn3'));
+    const prep = await wtm.prepare(unbornProject(), { id: 'u3' } as unknown as Task);
+
+    expect(prep.mode).toBe('failed');
+    expect(prep).not.toHaveProperty('cwd');
+    // The message must name the cause (no commits), not git's `not a valid object name: ''`.
+    expect(prep.mode === 'failed' && prep.reason).toMatch(/no commits/i);
+  });
+});

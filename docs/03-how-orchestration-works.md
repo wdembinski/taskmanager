@@ -151,6 +151,16 @@ worktrees, auto-merge, usage attribution and the limit gate all treat it like an
 other project. It has no `plan.md`, it never appears on the legacy **Projects**
 tab, and nothing is ever queued from it.
 
+**What the folder has to be.** The form checks its git as you choose it, rather
+than letting the first run discover the problem: a folder that is not a repo runs
+tasks directly in it (no isolation, no auto-merge), and a repo with **no commits
+yet** has nothing for a task's branch to start from. That last one used to reach
+git as `git worktree add -b <branch> <path> ''` and fail with `fatal: not a valid
+object name: ''` — a message pointing at the branch name rather than the empty
+repo, and one that no retry could get past. Such a repo is now given an **empty**
+`Initial commit` on the first run (`--allow-empty`, nothing staged, your untracked
+files left alone), which is noted in the task's activity.
+
 ### Assigning
 
 Select a card, then **Assign to an agent…** in its detail sidebar. The dialog

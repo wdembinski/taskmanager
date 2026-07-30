@@ -554,6 +554,33 @@ export interface PlanValidation {
 }
 
 /**
+ * What a project folder's git looks like, as answered while you are still CONFIGURING the
+ * project rather than at the first run.
+ *
+ * Isolated worktrees are a per-project switch whose requirements are invisible until a task
+ * dies on them: a folder that is not a repo silently degrades to the shared directory, and a
+ * repo with no commits cannot produce a worktree at all. Both are one `git` call to detect and
+ * unfixable-looking when they surface as a parked run instead.
+ *
+ *   - `missing`     — the path doesn't exist on the chosen machine.
+ *   - `not-a-repo`  — a real folder, but no git. Worktrees will not engage.
+ *   - `no-commits`  — `git init` with an unborn HEAD: nothing for a task branch to start from.
+ *   - `ready`       — a repo with history; `branch` names the base tasks will branch off.
+ *   - `unknown`     — git couldn't be run at all (not installed, distro down); advisory only.
+ */
+export type GitPreflightState = 'missing' | 'not-a-repo' | 'no-commits' | 'ready' | 'unknown';
+
+/** The answer for one project folder. See {@link GitPreflightState}. */
+export interface GitPreflight {
+  state: GitPreflightState;
+  /** The base branch tasks would branch from. Set for `ready`, and for `no-commits`
+   *  (an unborn HEAD still names the branch it will be born on). */
+  branch?: string;
+  /** git's own complaint, when there was one — for `unknown`. */
+  detail?: string;
+}
+
+/**
  * One entry in a task's unified **activity timeline** (Phase 9): the human's
  * comments and status changes merged with the AI transcript, in time order. The
  * `id` is unique within its source table; `event`/`comment`/`status` are the three

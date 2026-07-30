@@ -34,6 +34,7 @@ import type {
   AssignAgentInput,
   BoardColumn,
   ChatSendResult,
+  GitPreflight,
   JiraStatusCategory,
   ManualStatus,
   PlanValidation,
@@ -264,6 +265,14 @@ export interface IpcApi {
   'project:update': (id: string, patch: ProjectPatch) => Promise<Project | null>;
   /** Parse a project's plan file and check its `@needs:` dependencies (resolve + no cycles). */
   'project:validatePlan': (id: string) => Promise<PlanValidation>;
+  /**
+   * Inspect a candidate project FOLDER's git state, before the project is saved — so the
+   * add/edit form can say "this isn't a repo" or "this repo has no commits yet" while you can
+   * still do something about it, instead of the first delegated task dying on `git worktree
+   * add`. Takes a raw path + target rather than a project id precisely because the project may
+   * not exist yet. Read-only: it never writes to the folder.
+   */
+  'project:gitPreflight': (path: string, target: ExecTarget) => Promise<GitPreflight>;
   /**
    * Launch an AI pass that reads the plan and adds `@needs:` dependency annotations,
    * writing the file back for the user to review. Returns the run id so the UI can

@@ -39,6 +39,8 @@ import {
   type ExecTarget,
 } from '@shared/execTarget';
 import { distroFromWindowsPath, windowsToLinux } from '@shared/wslPath';
+import { describeGitPreflight } from '@shared/gitPreflight';
+import { useGitPreflight } from './useGitPreflight';
 
 const useStyles = makeStyles({
   form: { display: 'flex', flexDirection: 'column', gap: '12px', minWidth: '420px' },
@@ -147,6 +149,8 @@ export function ProjectDialog({
     if (picked) setPlanPath(picked);
   }
 
+  const gitNote = describeGitPreflight(useGitPreflight(path, target, open), useWorktrees);
+
   async function save(): Promise<void> {
     setSaving(true);
     setError(null);
@@ -205,7 +209,15 @@ export function ProjectDialog({
                 </MessageBar>
               )}
 
-              <Field label="Project folder" required>
+              {/* Git state belongs on the form, not in the first parked run: a folder that
+                  isn't a repo makes the worktree switch below a no-op, and one with no commits
+                  has nothing for a task branch to start from. */}
+              <Field
+                label="Project folder"
+                required
+                validationState={gitNote.severity}
+                validationMessage={gitNote.message}
+              >
                 <div className={styles.row}>
                   <Input
                     className={`${styles.grow} ${styles.mono}`}

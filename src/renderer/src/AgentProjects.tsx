@@ -48,6 +48,8 @@ import {
   type ExecTarget,
 } from '@shared/execTarget';
 import { distroFromWindowsPath, pathSuitsHost, windowsToLinux } from '@shared/wslPath';
+import { describeGitPreflight } from '@shared/gitPreflight';
+import { useGitPreflight } from './useGitPreflight';
 import { ColorSwatches } from './ColorSwatches';
 import { PaneLoading } from './PaneLoading';
 import { useInitialLoad } from './useInitialLoad';
@@ -332,6 +334,14 @@ function AgentProjectDialog({
   // letting the first run die on a `cd` into a path that machine cannot see.
   const targetMismatch = !pathSuitsHost(path, target.kind === 'wsl' ? 'linux' : 'windows');
 
+  // Same principle, one layer deeper: the machine can be right and the folder still be unable
+  // to host a run. An agent project is ALWAYS worktree-enabled (`store.addProject`, there is no
+  // switch here), so every git state that breaks isolation applies — hence the hardcoded true.
+  const gitNote = describeGitPreflight(
+    useGitPreflight(path, target, open && !targetMismatch),
+    true,
+  );
+
   return (
     <OverlayDrawer
       open={open}
@@ -369,6 +379,8 @@ function AgentProjectDialog({
                 ? 'Browse into a distro (\\\\wsl.localhost\\…) and both the path and "Runs on" follow — or type a Linux path such as /home/you/repo directly.'
                 : undefined
             }
+            validationState={gitNote.severity}
+            validationMessage={gitNote.message}
           >
             <div className={styles.row}>
               {/* Typeable, unlike the plan dialog's: a distro folder the Windows

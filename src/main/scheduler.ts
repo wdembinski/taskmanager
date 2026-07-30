@@ -1614,6 +1614,12 @@ export class Scheduler {
       this.pump(run.projectId);
       return;
     }
+    // Preparation had to write to the human's base repo to make the run possible (an unborn
+    // HEAD it borned). The run is fine; the write still belongs in the task's activity, where
+    // they will look, rather than only in git's reflog, where they won't.
+    if (prep.mode === 'worktree' && prep.note) {
+      this.noteRun(run.projectId, run.taskId, run.runId, prep.note);
+    }
     this.launch(project, task, run, prep, comments);
   }
 

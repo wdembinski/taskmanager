@@ -11,6 +11,8 @@
  * non-zero git exit is surfaced as `GitResult.code` rather than throwing, so the
  * caller decides what a failure means (e.g. a non-zero `rebase` = conflicts).
  */
+import { existsSync } from 'node:fs';
+import type { GitPreflight } from '@shared/model';
 import { localHost, type ExecHost } from './exec';
 
 export interface GitResult {
@@ -44,6 +46,73 @@ export async function isRepo(dir: string, host?: ExecHost): Promise<boolean> {
 export async function currentBranch(dir: string, host?: ExecHost): Promise<string> {
   const res = await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD'], host);
   return res.code === 0 ? res.stdout.trim() : '';
+}
+
+/**
+ * True when the repo has at least one commit — i.e. `HEAD` is BORN.
+ *
+ * A freshly `git init`-ed repo is a perfectly valid work tree ({@link isRepo} says yes) whose
+ * `HEAD` points at a branch that does not exist yet. Almost every ref-taking git command fails
+ * there, including `git worktree add`: there is no commit to branch FROM. Worse,
+ * {@link currentBranch} coerces its own failure to `''`, so an unchecked caller ends up passing
+ * an empty string where git expects a commit-ish and gets `fatal: not a valid object name: ''`
+ * — an error that names neither the repo nor the real problem. Check this first.
+ */
+export async function hasCommits(dir: string, host?: ExecHost): Promise<boolean> {
+  const res = await git(dir, ['rev-parse', '--verify', '--quiet', 'HEAD'], host);
+  return res.code === 0;
+}
+
+/**
+ * Give an unborn repo its root commit, so branches (and therefore worktrees) can exist.
+ *
+ * **Deliberately EMPTY** (`--allow-empty`, and no `git add`): a repo can be unborn while its
+ * folder is already full of files, and sweeping those into a commit the human never wrote is
+ * not ours to do — it would author their project's history and quietly stage secrets, build
+ * output, anything. An empty root commit changes no file on disk, leaves every untracked file
+ * exactly as untracked as it was, and is undone with one `git update-ref -d HEAD`.
+ *
+ * `--no-verify` because a commit hook that fails must not be able to strand the run, and the
+ * commit carries no content for a hook to have an opinion about. Identity is NOT injected: if
+ * `user.email`/`user.name` are unset the commit fails and the caller surfaces git's own
+ * complaint, which is the right thing to fix — an orchestrator-invented author is not.
+ */
+export async function createRootCommit(dir: string, host?: ExecHost): Promise<GitResult> {
+  return git(dir, ['commit', '--allow-empty', '--no-verify', '-m', 'Initial commit'], host);
+}
+
+/**
+ * Answer what a candidate project folder's git looks like, for the add/edit form.
+ *
+ * Read-only and deliberately cheap: three `git` calls at most, so it can run on every edit of
+ * the path field. The point is to move "this folder can't host isolated worktrees" from the
+ * first parked run back to the moment the human chose the folder, when the fix is obvious.
+ */
+export async function gitPreflight(dir: string, host?: ExecHost): Promise<GitPreflight> {
+  // Existence is checked with `fs`, NOT by reading git's complaint, because a cwd that
+  // doesn't exist and a `git` that isn't installed are the SAME failure at this layer: both
+  // arrive as `spawn git ENOENT` with an empty stderr. Only a direct look at the path can
+  // separate "your folder is gone" from "I can't run git here" — and reporting one as the
+  // other sends the human to fix the wrong thing. `toApp` because a distro path has to be
+  // named the way this process can see it (`\\wsl.localhost\…`) before `fs` can answer.
+  const probe = host ?? localHost();
+  if (!existsSync(probe.toApp(dir))) return { state: 'missing' };
+
+  const inside = await git(dir, ['rev-parse', '--is-inside-work-tree'], host);
+  if (inside.code !== 0) {
+    const err = inside.stderr.trim();
+    // The folder is there, so anything that still stops git from answering (not installed,
+    // distro down) is not the folder's fault and must not be reported as "not a repo".
+    if (/not a git repository/i.test(err)) return { state: 'not-a-repo' };
+    return { state: 'unknown', detail: err || 'git could not be run' };
+  }
+  if (inside.stdout.trim() !== 'true') return { state: 'not-a-repo' };
+
+  // `--show-current` rather than `rev-parse --abbrev-ref HEAD`: it is the one form that still
+  // names the branch when HEAD is UNBORN, which is precisely the case being reported here.
+  const branch = (await git(dir, ['branch', '--show-current'], host)).stdout.trim() || undefined;
+  if (!(await hasCommits(dir, host))) return { state: 'no-commits', branch };
+  return { state: 'ready', branch };
 }
 
 /** True when the work tree has no staged or unstaged changes (untracked ignored). */

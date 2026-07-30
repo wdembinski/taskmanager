@@ -25,8 +25,10 @@ import {
   commitAll,
   conflictedFiles,
   continueRebase,
+  createRootCommit,
   currentBranch,
   deleteBranch,
+  hasCommits,
   hasConflicts,
   isClean,
   isRepo,
@@ -76,7 +78,18 @@ function withUnionAttributes(): { file: string; cleanup: () => void } {
  *                 to fall back to the base tree (that would pollute it with uncommitted work).
  */
 export type WorktreePrep =
-  | { mode: 'worktree'; cwd: string; branch: string; base: string }
+  | {
+      mode: 'worktree';
+      cwd: string;
+      branch: string;
+      base: string;
+      /**
+       * Something preparation had to CHANGE in the base repo to make the run possible (today:
+       * born an unborn HEAD). The run proceeds, but a write to the human's repo that they did
+       * not ask for has to appear in the task's activity rather than only in git's reflog.
+       */
+      note?: string;
+    }
   | { mode: 'shared'; cwd: string }
   | { mode: 'failed'; reason: string };
 
@@ -183,7 +196,46 @@ export class WorktreeManager {
     if (!project.useWorktrees || !(await isRepo(project.path, host))) {
       return { mode: 'shared', cwd: project.path };
     }
+
+    // An UNBORN repo (`git init`, no commit yet) is a work tree with no commit to branch from,
+    // so `git worktree add` cannot possibly succeed here — and every failure button the human
+    // is then offered (Retry, Retry fresh, AI fix) re-runs the identical impossible command.
+    // Born it instead: one empty root commit, which touches none of their files. See
+    // `createRootCommit`. Only if that fails do we park the task, naming the real cause.
+    let note: string | undefined;
+    if (!(await hasCommits(project.path, host))) {
+      const born = await createRootCommit(project.path, host);
+      if (born.code !== 0) {
+        return {
+          mode: 'failed',
+          reason:
+            `The repo at ${project.path} has no commits yet, so there is nothing for this ` +
+            `task's branch to start from, and creating an empty first commit failed: ` +
+            `${born.stderr.trim() || 'git commit failed'}. Make one commit in that repo ` +
+            `(\`git commit --allow-empty -m "Initial commit"\`) and retry. The task was not ` +
+            `run, so nothing was written to the base tree.`,
+        };
+      }
+      note =
+        `The repo at ${project.path} had no commits, so this task had nothing to branch ` +
+        `from. Created an empty \`Initial commit\` on \`${await currentBranch(project.path, host)}\` ` +
+        `to start the history — no files were added to it.`;
+    }
+
     const base = await currentBranch(project.path, host);
+    // `currentBranch` reports its own failure as `''`, and an empty string handed to git as a
+    // start-point becomes `fatal: not a valid object name: ''` — a message that sends the human
+    // looking at the branch name. Refuse to shell out with it and say what actually happened.
+    if (!base) {
+      return {
+        mode: 'failed',
+        reason:
+          `Couldn't read the current branch of ${project.path}, so this task has no base to ` +
+          `branch from. The repo is in a state git won't report a HEAD for — check ` +
+          `\`git -C "${project.path}" status\` (a half-finished rebase/merge or a broken HEAD ` +
+          `does this). The task was not run in the base tree.`,
+      };
+    }
     const branch = branchName?.trim() || taskBranch(ownerTaskId);
     const cwd = this.pathIn(root, project.id, ownerTaskId);
     // `existsSync` runs on the APP's filesystem, so a distro path has to be named the
@@ -213,7 +265,7 @@ export class WorktreeManager {
           `tree (${project.path}) to avoid polluting it. Fix the git state and retry.`,
       };
     }
-    return { mode: 'worktree', cwd, branch, base };
+    return { mode: 'worktree', cwd, branch, base, note };
   }
 
   /**

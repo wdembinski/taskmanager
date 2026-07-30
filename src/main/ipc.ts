@@ -65,6 +65,7 @@ import {
 import { GitLabPoller } from './gitlabPoller';
 import type { MergeRequest } from '@shared/mergeRequest';
 import { hostFor, listWslDistros, readinessFor, statusForTargets } from './exec';
+import { gitPreflight } from './git';
 import { listClaudeSessions } from './claudeSessions';
 import { sanitizeWindowState } from './windowState';
 import { appPlanPath } from './projectPaths';
@@ -393,6 +394,18 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       filters: [{ name: 'Plan / Markdown', extensions: ['md', 'markdown', 'txt'] }],
     });
     return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0];
+  });
+
+  // Asked while the add/edit form is open, on a path that may not be a project yet — so it
+  // takes the raw path + target instead of an id. Never throws: a preflight that blew up must
+  // degrade to "unknown" (advisory) rather than break the form the human is filling in.
+  handle('project:gitPreflight', async (path, target) => {
+    if (!path.trim()) return { state: 'unknown' as const };
+    try {
+      return await gitPreflight(path, hostFor(target));
+    } catch (e) {
+      return { state: 'unknown' as const, detail: e instanceof Error ? e.message : String(e) };
+    }
   });
 
   handle('project:add', async (input) => {
