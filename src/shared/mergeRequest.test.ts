@@ -3,6 +3,7 @@ import {
   approvalSummary,
   mrAttentionReason,
   mrNeedsAttention,
+  mrReadyToMerge,
   type MergeRequest,
 } from './mergeRequest';
 
@@ -35,6 +36,45 @@ const mr = (over: Partial<MergeRequest> = {}): MergeRequest => ({
   ...over,
 });
 
+describe('mrReadyToMerge', () => {
+  /** Green and fully approved — the state where the MR is waiting on you specifically. */
+  const ready = (over: Partial<MergeRequest> = {}): MergeRequest =>
+    mr({ pipelineStatus: 'success', approvalsRequired: 1, approvalsGiven: 1, ...over });
+
+  it('is true for a green, approved, open, non-draft MR', () => {
+    expect(mrReadyToMerge(ready())).toBe(true);
+  });
+
+  it('is false while the approvals bar is unmet', () => {
+    expect(mrReadyToMerge(ready({ approvalsRequired: 2, approvalsGiven: 1 }))).toBe(false);
+  });
+
+  // The instance would not say what the bar is (/approvals is tier-gated). Someone
+  // approving against an unknown bar is not evidence the bar is met.
+  it('refuses to guess when the approvals requirement is unknown', () => {
+    expect(mrReadyToMerge(ready({ approvalsRequired: null, approvalsGiven: 3 }))).toBe(false);
+  });
+
+  // Otherwise every green MR on a repo with no approval rule would claim to be approved.
+  it('does not treat "zero approvals required" as approved when nobody approved', () => {
+    expect(mrReadyToMerge(ready({ approvalsRequired: 0, approvalsGiven: 0 }))).toBe(false);
+    expect(mrReadyToMerge(ready({ approvalsRequired: 0, approvalsGiven: 1 }))).toBe(true);
+  });
+
+  it.each(['running', 'failed', 'canceled', 'skipped', 'manual', 'pending', 'unknown'] as const)(
+    'is false when the pipeline is %s rather than passed',
+    (pipelineStatus) => {
+      expect(mrReadyToMerge(ready({ pipelineStatus }))).toBe(false);
+    },
+  );
+
+  it('is false for a draft, a closed MR, or one with changes requested', () => {
+    expect(mrReadyToMerge(ready({ draft: true }))).toBe(false);
+    expect(mrReadyToMerge(ready({ state: 'merged' }))).toBe(false);
+    expect(mrReadyToMerge(ready({ changesRequested: true }))).toBe(false);
+  });
+});
+
 describe('mrNeedsAttention', () => {
   it('is quiet for a healthy, read MR', () => {
     expect(mrNeedsAttention(mr())).toBe(false);
@@ -63,6 +103,19 @@ describe('mrNeedsAttention', () => {
 
   it('shouts about changes requested', () => {
     expect(mrNeedsAttention(mr({ changesRequested: true, lastEventAt: 200 }))).toBe(true);
+  });
+
+  it('shouts when an MR becomes ready to merge, and stops once acknowledged', () => {
+    const readyMr = mr({ approvalsGiven: 2, approvalsRequired: 2, lastEventAt: 200 });
+    expect(mrNeedsAttention(readyMr)).toBe(true);
+    expect(mrAttentionReason(readyMr)).toContain('ready to merge');
+    expect(mrNeedsAttention({ ...readyMr, lastEventSeenAt: 200 })).toBe(false);
+  });
+
+  // Good news is still news, but only once. Without an unseen event a steadily green and
+  // approved MR would wear the ring until somebody merged it.
+  it('stays quiet about an MR that has been ready all along', () => {
+    expect(mrNeedsAttention(mr({ approvalsGiven: 2, approvalsRequired: 2 }))).toBe(false);
   });
 
   it('keeps the two markers independent — clearing one must not silence the other', () => {

@@ -14,6 +14,7 @@
  *    does — see `identity.ts`.
  */
 import {
+  mrReadyToMerge,
   type MergeRequest,
   type MergeRequestState,
   type PipelineStage,
@@ -148,8 +149,15 @@ export function reconcileMergeRequests(
     const wentRed = BAD_PIPELINES.has(mr.pipelineStatus) && !BAD_PIPELINES.has(prior?.pipelineStatus ?? 'unknown');
     const approvalsDropped = prior !== undefined && mr.approvalsGiven < prior.approvalsGiven;
     const nowRequested = mr.changesRequested && !prior?.changesRequested;
+    // Becoming ready to merge is an event too — the good one. Same transition discipline as
+    // `wentRed`, and for the same reason: an MR that is steadily green and approved would
+    // otherwise re-raise itself on every poll, so "Acknowledge pipeline" would never stick
+    // and the ring would follow the MR until somebody merged it.
+    const becameReady = mrReadyToMerge(mr) && !(prior !== undefined && mrReadyToMerge(prior));
     const lastEventAt =
-      wentRed || approvalsDropped || nowRequested ? opts.now : (prior?.lastEventAt ?? null);
+      wentRed || approvalsDropped || nowRequested || becameReady
+        ? opts.now
+        : (prior?.lastEventAt ?? null);
 
     upserts.push({
       id,

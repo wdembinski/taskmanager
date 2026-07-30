@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { MergeRequest } from '@shared/mergeRequest';
-import { mrNeedsAttention } from '@shared/mergeRequest';
+import { mrAttentionReason, mrNeedsAttention } from '@shared/mergeRequest';
 import {
   mergeRequestId,
   needsDetailRefresh,
@@ -143,6 +143,50 @@ describe('reconcileMergeRequests', () => {
     }).upserts;
     expect(stillRed[0].lastEventAt).toBe(2_000);
     expect(mrNeedsAttention(stillRed[0])).toBe(false);
+  });
+
+  it('raises an event when an MR BECOMES ready to merge, but not while it stays ready', () => {
+    // One approval short: nothing to shout about yet. (`fetched()` is green, 1 of 2.)
+    const waiting = reconcileMergeRequests([], [fetched()], opts).upserts;
+    expect(waiting[0].lastEventAt).toBeNull();
+    expect(mrNeedsAttention(waiting[0])).toBe(false);
+
+    // The second approval lands — now it is yours to merge.
+    const ready = reconcileMergeRequests(waiting, [fetched({ approvalsGiven: 2 })], {
+      ...opts,
+      now: 2_000,
+    }).upserts;
+    expect(ready[0].lastEventAt).toBe(2_000);
+    expect(mrNeedsAttention(ready[0])).toBe(true);
+    expect(mrAttentionReason(ready[0])).toContain('ready to merge');
+
+    // Acknowledge it, then poll again while it is still green and still approved. Good news
+    // re-raised on every poll would mean "Acknowledge pipeline" never sticks.
+    const seen = [{ ...ready[0], lastEventSeenAt: 2_000 }];
+    const stillReady = reconcileMergeRequests(seen, [fetched({ approvalsGiven: 2 })], {
+      ...opts,
+      now: 3_000,
+    }).upserts;
+    expect(stillReady[0].lastEventAt).toBe(2_000);
+    expect(mrNeedsAttention(stillReady[0])).toBe(false);
+  });
+
+  // The pipeline finishing is the other half of the same transition.
+  it('raises an event when an already-approved MR turns green', () => {
+    const approvedButRunning = reconcileMergeRequests(
+      [],
+      [fetched({ approvalsGiven: 2, pipelineStatus: 'running' })],
+      opts,
+    ).upserts;
+    expect(approvedButRunning[0].lastEventAt).toBeNull();
+
+    const green = reconcileMergeRequests(
+      approvedButRunning,
+      [fetched({ approvalsGiven: 2, pipelineStatus: 'success' })],
+      { ...opts, now: 2_000 },
+    ).upserts;
+    expect(green[0].lastEventAt).toBe(2_000);
+    expect(mrNeedsAttention(green[0])).toBe(true);
   });
 
   it('raises an event when approvals drop, or when changes are requested', () => {

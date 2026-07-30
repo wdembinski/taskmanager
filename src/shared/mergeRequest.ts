@@ -96,6 +96,44 @@ export interface MergeRequest {
 const BAD_PIPELINES: ReadonlySet<PipelineStatus> = new Set(['failed', 'canceled']);
 
 /**
+ * Just the fields readiness depends on, so the sync can ask about a freshly fetched MR —
+ * which has no id, markers or issue keys yet — without assembling a whole `MergeRequest`
+ * to answer a question about six fields.
+ */
+export type MergeReadiness = Pick<
+  MergeRequest,
+  'state' | 'draft' | 'changesRequested' | 'pipelineStatus' | 'approvalsRequired' | 'approvalsGiven'
+>;
+
+/**
+ * Nothing is left to do but merge it: green, approved, not a draft, nobody objecting.
+ *
+ * The one piece of *good* news the board shouts about, and it earns that because it is the
+ * only state where the MR is waiting on **you** specifically. Red pipelines and review
+ * comments tell you to go and work; this tells you to go and finish.
+ *
+ * Two deliberate narrowings, both about not claiming more than we know:
+ *
+ *  - `approvalsRequired === null` means the instance would not tell us (`/approvals` is
+ *    tier-gated). Somebody approving against an unknown bar is not evidence the bar is met,
+ *    and this is the wrong place to guess — the same reason `approvalSummary` says
+ *    "approvals unknown" rather than `0/0`.
+ *  - `approvalsGiven > 0` on top of meeting the bar, so a project that requires **zero**
+ *    approvals does not mark every green MR as approved. With no rule and nobody having
+ *    looked, "it has been approved" is simply not true.
+ *
+ * `success` only, not `skipped` or `manual`: a pipeline nobody ran is not a pipeline that
+ * passed.
+ */
+
+export function mrReadyToMerge(mr: MergeReadiness): boolean {
+  if (mr.state !== 'opened' || mr.draft || mr.changesRequested) return false;
+  if (mr.pipelineStatus !== 'success') return false;
+  if (mr.approvalsRequired === null) return false;
+  return mr.approvalsGiven > 0 && mr.approvalsGiven >= mr.approvalsRequired;
+}
+
+/**
  * Whether an MR is asking for the user's attention.
  *
  * Only an OPEN one can: a merged or closed MR is history, however red its last pipeline
@@ -106,7 +144,11 @@ export function mrNeedsAttention(mr: MergeRequest): boolean {
   if (mr.state !== 'opened') return false;
   const unreadNote = mr.latestNoteAt !== null && mr.latestNoteAt > (mr.lastReadAt ?? 0);
   const unseenEvent = mr.lastEventAt !== null && mr.lastEventAt > (mr.lastEventSeenAt ?? 0);
-  return unreadNote || (unseenEvent && (BAD_PIPELINES.has(mr.pipelineStatus) || mr.changesRequested));
+  return (
+    unreadNote ||
+    (unseenEvent &&
+      (BAD_PIPELINES.has(mr.pipelineStatus) || mr.changesRequested || mrReadyToMerge(mr)))
+  );
 }
 
 /** Why an MR is shouting, for the tooltip. Null when it isn't. */
@@ -121,6 +163,7 @@ export function mrAttentionReason(mr: MergeRequest): string | null {
     reasons.push(mr.pipelineStatus === 'failed' ? 'the pipeline failed' : 'the pipeline was cancelled');
   }
   if (unseenEvent && mr.changesRequested) reasons.push('changes were requested');
+  if (unseenEvent && mrReadyToMerge(mr)) reasons.push('approved and green — ready to merge');
   return reasons.length ? `!${mr.iid}: ${reasons.join(', ')}` : null;
 }
 

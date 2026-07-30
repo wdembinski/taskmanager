@@ -16,10 +16,11 @@ import {
   approvalSummary,
   mrAttentionReason,
   mrNeedsAttention,
+  mrReadyToMerge,
   type MergeRequest,
   type PipelineStatus,
 } from '@shared/mergeRequest';
-import { PIPELINE_COLOR } from './theme';
+import { FLUO, PIPELINE_COLOR } from './theme';
 
 const useStyles = makeStyles({
   root: { display: 'flex', flexDirection: 'column', gap: '8px' },
@@ -139,6 +140,18 @@ export function MergeRequests({
               >
                 {mr.changesRequested ? 'changes requested' : approvalSummary(mr)}
               </Badge>
+              {/* The one piece of good news worth a badge: nothing is left to do but merge
+                  it. Fluo green rather than a Fluent tint so it reads as the row's verdict
+                  and not as another field. */}
+              {mrReadyToMerge(mr) && (
+                <Badge
+                  appearance="outline"
+                  size="small"
+                  style={{ color: FLUO.green, borderColor: FLUO.green }}
+                >
+                  ready to merge
+                </Badge>
+              )}
               <Caption1 className={styles.muted}>
                 {mr.sourceBranch} → {mr.targetBranch}
               </Caption1>
