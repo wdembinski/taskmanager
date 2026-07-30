@@ -28,7 +28,8 @@ import {
 import type { Task } from '@shared/model';
 import { isAgentRunning } from '@shared/board';
 import { subtaskProgress } from './board/boardColumns';
-import { STATUS_COLOR, STATUS_LABEL } from './taskStatus';
+import { STATUS_LABEL } from './taskStatus';
+import { STATUS_INDICATOR_COLOR } from './theme';
 
 const useStyles = makeStyles({
   /**
@@ -175,7 +176,17 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
               {isAgentRunning(step) ? (
                 <Spinner size="extra-tiny" label="Running" labelPosition="after" />
               ) : (
-                <Badge appearance="tint" color={STATUS_COLOR[step.status]}>
+                /* Outline + the shared indicator colour rather than Fluent's `color` prop:
+                   its named palette bottoms out at mid-dark fills, so "done" and "pending"
+                   were two shades of the same grey-green at this size. Same colour as the
+                   card's step dot, so one step never looks like two states. */
+                <Badge
+                  appearance="outline"
+                  style={{
+                    color: STATUS_INDICATOR_COLOR[step.status],
+                    borderColor: STATUS_INDICATOR_COLOR[step.status],
+                  }}
+                >
                   {STATUS_LABEL[step.status]}
                 </Badge>
               )}

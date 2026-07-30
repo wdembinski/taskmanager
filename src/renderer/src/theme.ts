@@ -16,6 +16,7 @@
 import { tokens, type Theme } from '@fluentui/react-components';
 import { UNREAD_ORANGE } from '@shared/accent';
 import type { PipelineStatus } from '@shared/mergeRequest';
+import type { TaskStatus } from '@shared/model';
 
 /**
  * The mono stack, written out in a dozen `makeStyles` blocks before this existed.
@@ -135,6 +136,55 @@ export function scaleTheme(base: Theme, basePx: number): Theme {
 }
 
 /**
+ * The high-key palette every *state indicator* is drawn in — dots, glyphs, spinners.
+ *
+ * Fluent's palette backgrounds (`colorPaletteGreenBackground3` is #0e700e) are meant to sit
+ * *behind* text, so as 6px dots on a near-black pane they were barely there: "done" and
+ * "pending" differed by a shade of dark. These are picked to read at a glance at that size
+ * against `#1f1f1f`, which is the only job they have.
+ *
+ * Deliberately NOT the issue-type colours in {@link ACCENT} (`bugRed`, `storyGreen`): those
+ * say what a card *is*, and are drawn as larger glyphs where Fluent's weights are right.
+ * These say what it is *doing*.
+ *
+ * `pending`, `skipped` and friends stay neutral grey on purpose — "nothing is happening" is
+ * information too, and a fluo dot for it would make every idle row shout.
+ */
+export const FLUO = {
+  /** Moving: running, starting, in progress. Also every spinner in the app. */
+  cyan: '#22E4FF',
+  /** Finished well: done, a passed stage. */
+  green: '#2BFF88',
+  /** Finished badly: failed. */
+  red: '#FF4D6A',
+  /** Stopped and wants a human: waiting, blocked, a cancelled pipeline. Warm, like the ring. */
+  amber: '#FFC53D',
+  /** In review — the one column that is neither in flight nor finished. */
+  violet: '#C77DFF',
+} as const;
+
+/**
+ * A task status as an indicator colour — the card's step dots and the step rows' badges.
+ *
+ * Shared rather than owned by the card, because the two surfaces show the same steps: a
+ * step that is amber on the card and orange in the detail pane reads as two states.
+ */
+export const STATUS_INDICATOR_COLOR: Record<TaskStatus, string> = {
+  // Not started, or over and not worth a colour: grey is the honest reading.
+  pending: tokens.colorNeutralForeground4,
+  stopped: tokens.colorNeutralForeground4,
+  cancelled: tokens.colorNeutralForeground4,
+  'in-progress': FLUO.cyan,
+  running: FLUO.cyan,
+  'in-review': FLUO.violet,
+  'waiting-input': FLUO.amber,
+  'blocked-by-limit': FLUO.amber,
+  blocked: FLUO.amber,
+  done: FLUO.green,
+  failed: FLUO.red,
+};
+
+/**
  * A pipeline status as a dot colour.
  *
  * Stated once because three surfaces draw it — the card's MR row, the detail pane's, and
@@ -142,15 +192,16 @@ export function scaleTheme(base: Theme, basePx: number): Theme {
  * looks like two pipelines. Keyed by `PipelineStatus` so a new status cannot be forgotten.
  */
 export const PIPELINE_COLOR: Record<PipelineStatus, string> = {
+  // Nothing is happening yet, or ever will: grey says that better than a colour would.
   unknown: tokens.colorNeutralForeground4,
   created: tokens.colorNeutralForeground4,
   pending: tokens.colorNeutralForeground4,
   manual: tokens.colorNeutralForeground4,
   skipped: tokens.colorNeutralForeground4,
-  running: tokens.colorBrandBackground,
-  success: tokens.colorPaletteGreenBackground3,
-  failed: tokens.colorPaletteRedBackground3,
-  canceled: ACCENT.unread,
+  running: FLUO.cyan,
+  success: FLUO.green,
+  failed: FLUO.red,
+  canceled: FLUO.amber,
 };
 
 /** The single `<Toaster>`'s id. Shared so any screen can dispatch into the same surface. */

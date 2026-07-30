@@ -51,7 +51,7 @@ import {
   SparkleFilled,
   TaskListSquareLtrFilled,
 } from '@fluentui/react-icons';
-import type { Task, TaskStatus } from '@shared/model';
+import type { Task } from '@shared/model';
 import {
   chainNeedsAttention,
   hasUnreadJira,
@@ -65,7 +65,14 @@ import { statusNoteColor, type StatusKeyword } from '@shared/statusKeywords';
 import { DEFAULT_BOARD_DISPLAY, type BoardDisplaySettings } from '@shared/settings';
 import { STATUS_COLOR, STATUS_LABEL } from '../taskStatus';
 import { columnForStatus, statusForColumn, subtaskProgress } from './boardColumns';
-import { ACCENT, ATTENTION_TINT, PIPELINE_COLOR, RING } from '../theme';
+import {
+  ACCENT,
+  ATTENTION_TINT,
+  FLUO,
+  PIPELINE_COLOR,
+  RING,
+  STATUS_INDICATOR_COLOR,
+} from '../theme';
 import { JiraMark } from '../JiraMark';
 import { approvalSummary, mrAttentionReason, type MergeRequest } from '@shared/mergeRequest';
 
@@ -289,19 +296,6 @@ const EPIC_PURPLE = ACCENT.epicPurple;
  * `in-review` borrows the epic violet: it is the one column that is neither work in
  * flight nor work finished.
  */
-const STEP_DOT_COLOR: Record<TaskStatus, string> = {
-  pending: tokens.colorNeutralForeground4,
-  'in-progress': tokens.colorBrandBackground,
-  'in-review': EPIC_PURPLE,
-  running: tokens.colorBrandBackground,
-  'waiting-input': ACCENT.unread,
-  'blocked-by-limit': ACCENT.unread,
-  blocked: ACCENT.unread,
-  done: tokens.colorPaletteGreenBackground3,
-  failed: tokens.colorPaletteRedBackground3,
-  stopped: tokens.colorNeutralForeground4,
-  cancelled: tokens.colorNeutralForeground4,
-};
 
 /**
  * Pick a card icon for the task's type. Internal tasks use their user-chosen
@@ -621,7 +615,7 @@ export function TaskCard({
                   ) : (
                     <span
                       className={styles.stepDot}
-                      style={{ backgroundColor: STEP_DOT_COLOR[step.status] }}
+                      style={{ backgroundColor: STATUS_INDICATOR_COLOR[step.status] }}
                     />
                   )}
                 </span>
@@ -680,13 +674,10 @@ export function TaskCard({
                 {mr.draft && <Caption1 className={styles.progress}>draft</Caption1>}
                 <span className={styles.approval} title={approvalSummary(mr)}>
                   {mr.approvalsRequired !== null && mr.approvalsGiven >= mr.approvalsRequired ? (
-                    <CheckmarkCircleFilled
-                      style={{ color: ACCENT.storyGreen }}
-                      aria-label="Approved"
-                    />
+                    <CheckmarkCircleFilled style={{ color: FLUO.green }} aria-label="Approved" />
                   ) : mr.changesRequested ? (
                     <DismissCircleFilled
-                      style={{ color: ACCENT.bugRed }}
+                      style={{ color: FLUO.red }}
                       aria-label="Changes requested"
                     />
                   ) : (
