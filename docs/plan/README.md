@@ -39,7 +39,7 @@ plan the orchestrator could one day run on its own repo.
 | 14 | Sprints on the board | ✅ shipped |
 | 15 | The board grows up (IN REVIEW, status map, priority, notes, colours) | ✅ shipped |
 | 16 | Seventeen fixes and two integrations (bugs, workspace, JIRA depth, auto-update, GitLab) | ✅ shipped (v0.30.0) |
-| 17 | Ask me, and show me what you are doing | ✅ shipped (v0.32.0) — all 42 items |
+| 17 | Ask me, and show me what you are doing | ✅ shipped (v0.33.0) — all 42 items |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
