@@ -42,6 +42,12 @@ export interface UpdateState {
   percent?: number;
   /** Human-readable detail — the error text on failure, otherwise a short note. */
   message?: string;
+  /**
+   * electron-updater's machine-readable error code, when it supplied one
+   * (`ERR_UPDATER_INVALID_SIGNATURE`, `ERR_UPDATER_LATEST_VERSION_NOT_FOUND`, …). Shown
+   * verbatim because these names are searchable in a way the prose message is not.
+   */
+  code?: string;
 }
 
 /**
@@ -67,8 +73,16 @@ export function describeUpdate(state: UpdateState): string {
         : 'Downloading update…';
     case 'downloaded':
       return `Update${version} ready — restart to install`;
-    case 'error':
-      return state.message ? `Update check failed: ${state.message}` : 'Update check failed.';
+    case 'error': {
+      // A known version means the feed was read and the download had already started, so
+      // this is a failed *install*, not a failed check. Saying "check failed" there sent
+      // three releases' worth of ERR_UPDATER_INVALID_SIGNATURE looking like flaky network.
+      const detail = [state.code, state.message].filter(Boolean).join(' — ');
+      const what = state.version
+        ? `Update ${state.version} could not be installed`
+        : 'Update check failed';
+      return detail ? `${what}: ${detail}` : `${what}.`;
+    }
     case 'idle':
     default:
       return version ? `Up to date (${state.version}).` : 'Up to date.';

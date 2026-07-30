@@ -714,7 +714,10 @@ export function Settings(): JSX.Element {
                     )}
                   </div>
                 )}
-                {update?.mode === 'manual' && (
+                {/* An install that CAN update itself still needs this link when the update
+                    failed — otherwise the only way out of a broken updater is to know the
+                    releases URL by heart. */}
+                {(update?.mode === 'manual' || update?.status === 'error') && (
                   <div className={styles.actions}>
                     <Link href={RELEASES_URL} target="_blank" rel="noreferrer">
                       Open the releases page
@@ -723,8 +726,10 @@ export function Settings(): JSX.Element {
                 )}
                 {update?.mode === 'auto' && (
                   <Caption1 className={styles.hint}>
-                    New versions download in the background and install when you quit. The installer
-                    is not code-signed, so Windows SmartScreen will ask you to confirm it.
+                    New versions download in the background and install when you quit — nothing to
+                    confirm. Windows SmartScreen only appears if you install a build downloaded from
+                    the releases page by hand, because the installer is not code-signed: choose{' '}
+                    <strong>More info → Run anyway</strong> that one time.
                   </Caption1>
                 )}
                 {update?.mode === 'manual' && (
@@ -742,10 +747,10 @@ export function Settings(): JSX.Element {
         <div className={styles.pane}>
           <Subtitle2>GitLab</Subtitle2>
           <Body1 className={styles.hint}>
-            Puts your open merge requests on the card whose ticket key they name — in the
-            branch, the title or the description. A red pipeline, a review comment or a
-            request for changes then raises the same orange ring an unread ticket comment
-            does, so one board answers “is this actually done?”.
+            Puts your open merge requests on the card whose ticket key they name — in the branch,
+            the title or the description. A red pipeline, a review comment or a request for changes
+            then raises the same orange ring an unread ticket comment does, so one board answers “is
+            this actually done?”.
           </Body1>
 
           <div className={styles.grid}>

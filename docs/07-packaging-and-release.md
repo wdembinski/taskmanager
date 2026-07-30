@@ -74,6 +74,16 @@ Re-check these if the dependency or spawn model changes.
    `ELECTRON_RUN_AS_NODE=1 "…/Claude Orchestrator.exe" -e "require('http')"` runs as
    Node. (The relay script lives outside the asar, so it needs no unpack.)
 
+4. **The updater config baked into the bundle must not describe a release nobody can
+   install.** Two one-line mistakes have shipped: a `publisherName` that made
+   electron-updater reject every unsigned installer, and a `latest.yml` naming a file that
+   wasn't on the release. Neither has a symptom until a user's app tries to update.
+
+   `pnpm check:feed` (`scripts/check-update-feed.mjs`) reads what electron-builder just
+   wrote into `dist/` and fails on an unexpanded `${…}` macro in `app-update.yml`, a
+   `publisherName` with nothing signing the build, or a `latest*.yml` naming an artifact
+   that isn't beside it. All three `package` scripts run it.
+
 ---
 
 ## Auto-update
@@ -83,17 +93,31 @@ installers **and** a `latest.yml` / `latest-linux.yml` feed to the release;
 `src/main/updater.ts` (wrapping `electron-updater`) reads that feed, downloads a newer
 build in the background, and applies it when the app quits. The status bar offers a
 "restart" shortcut once a build is ready; **Settings → General → Updates** shows the
-state, a *Check now* button and the download progress.
+state, a *Check now* button and the download progress. A failure is never a dialog, but it
+is no longer silent either: the status bar shows *Update failed — see Settings*, and
+Settings names the electron-updater error code alongside a link to the releases page.
 
 **Not every install can update itself** (`src/main/updateSupport.ts`):
 
 | Install | Mode | Why |
 | --- | --- | --- |
-| Windows NSIS | `auto` | Applies unsigned; SmartScreen prompts each time. |
+| Windows NSIS | `auto` | Applies unsigned, with no prompt — the downloaded installer has no mark-of-the-web, so SmartScreen never sees it. |
 | Linux AppImage | `auto` | Only when actually run as the AppImage (`$APPIMAGE` is set). |
 | Linux `.deb` | `manual` | apt owns those files. Pointing the updater at them errors on **every** launch, so it is never armed; Settings links to the releases page instead. |
 | macOS | `manual` | macOS refuses an update that isn't signed and notarized. |
 | `pnpm dev` | `off` | Nothing to update. |
+
+**Builds up to v0.33.0 can never auto-update — they must be replaced by hand once.** Their
+baked `app-update.yml` says `publisherName: ['${author}']`, and electron-updater treats the
+presence of that key as "verify the downloaded installer's Authenticode signature". The
+installer is unsigned, so verification refused it and every Windows update from v0.30.0
+onwards died with `ERR_UPDATER_INVALID_SIGNATURE` *after* a complete download. The failure
+was invisible: the status bar only rendered the `downloaded` state, so the app looked idle
+while the release page looked fine. Anyone on such a build has to download the installer
+from the releases page and click through SmartScreen (*More info → Run anyway*) once;
+from that build on, updates apply themselves. The cause is fixed in `electron-builder.yml`
+(`win.verifyUpdateCodeSignature: false`, no `publisherName`) and `pnpm check:feed` refuses
+to let it return.
 
 **Publishing.** `pnpm package` runs `electron-builder --publish onTagOrDraft`, which
 uploads to a **draft** release when one exists (or when HEAD is a tag). Set a token
@@ -150,6 +174,31 @@ url: http://localhost:8080
 and launch the installed build with `UPDATE_CONFIG_PATH` set to that file. That
 exercises feed → download → install-on-quit end to end. Do this, then one throwaway-repo
 publish, before a real draft release.
+
+**`UPDATE_CONFIG_PATH` replaces the whole updater config, not just the feed URL.** This is
+why the harness above gave false confidence for three releases: electron-updater reads
+`publisherName` and `updaterCacheDirName` from that same file, so a two-line
+`provider: generic` yml silently switches signature verification *off* and downloads into a
+different cache directory. The local test therefore passed while every real release failed.
+
+Copy the whole shape of the real thing, not just the provider, whenever the verification
+path is what you mean to test:
+
+```yaml
+provider: generic
+url: http://localhost:8080
+updaterCacheDirName: claude-orchestrator-updater
+# publisherName: [...]   # only if the release you are simulating carries one
+```
+
+Verified 2026-07-30 by running one binary twice against the same feed, changing only this
+file: with `publisherName` present the download completed and was then refused with
+`ERR_UPDATER_INVALID_SIGNATURE`; without it the same download installed.
+
+Also useful when a local feed appears to do nothing at all: set `UPDATE_LOG_VERBOSE=1`
+alongside it. electron-updater reports "Skip checkForUpdates because application is not
+packed" and similar at `info`, which `src/main/updater.ts` silences by default, so an
+entirely inert updater is otherwise indistinguishable from an up-to-date one.
 
 ---
 
@@ -233,11 +282,33 @@ Non-feature commits (docs, chore) do not bump the version and are not tagged.
 
 ## Code signing (not configured)
 
-No certificate is wired in, so the installer and exe are **unsigned** — Windows
-SmartScreen will show an "unknown publisher" prompt on first run. To sign at release
-time, provide a cert to electron-builder (`CSC_LINK` + `CSC_KEY_PASSWORD`, or
-`win.signtoolOptions`) — the `publisherName` is already set so SmartScreen reputation
-accrues to the right name once signed.
+No certificate is wired in, so the installer and exe are **unsigned**. The only place that
+shows is a hand-downloaded installer: a browser marks it with the mark-of-the-web, and
+SmartScreen then raises "Windows protected your PC — unknown publisher" (*More info → Run
+anyway*). Auto-updates are unaffected; electron-updater fetches the file itself, so it never
+carries that mark.
+
+**`publisherName` must stay unset while nothing is signed.** It is not a harmless label
+waiting for a certificate — electron-builder copies it verbatim into the `app-update.yml`
+baked into the bundle (macros like `${author}` are **not** expanded there), and
+electron-updater treats its presence as an instruction to verify the downloaded installer's
+Authenticode signature. Unsigned + `publisherName` set = every update refused with
+`ERR_UPDATER_INVALID_SIGNATURE`. That is the v0.30.0–v0.33.0 bug described under
+[Auto-update](#auto-update). Hence `win.verifyUpdateCodeSignature: false`, which also stops
+electron-builder writing the key at all, and `pnpm check:feed` as the gate.
+
+To sign later, in **one** commit:
+
+1. hand a certificate to electron-builder — `CSC_LINK` + `CSC_KEY_PASSWORD`, or
+   `win.signtoolOptions.certificateSubjectName`, or `win.azureSignOptions` for Azure
+   Trusted Signing (supported by electron-builder 25);
+2. set `win.signtoolOptions.publisherName` to the certificate's **exact** DN;
+3. remove `win.verifyUpdateCodeSignature: false`.
+
+Doing any of those without the others ships a release that installed clients reject. Note
+the switch-over is one-way: clients running an unsigned build verify nothing, so they will
+take the first signed build happily — but from then on the DN must not change without the
+same care.
 
 ---
 
@@ -296,11 +367,16 @@ self-update without it.
 6. For a Linux release, `pnpm package:linux` on Linux and run the artifact checks
    above. The ABI gate is not optional — a bundle that fails it is broken in a way
    that only shows up after install.
-7. Confirm the draft carries `latest.yml` (and `latest-linux.yml`) beside the
+7. `pnpm check:feed` — the packaging scripts already run it, so this is only needed after
+   a hand-upload or a config change. It fails on an `app-update.yml` carrying an
+   unexpanded macro or a `publisherName` with nothing signing the build, and on a
+   `latest*.yml` naming a file that isn't there. It runs *after* the upload on purpose:
+   the upload went to a **draft**, so failing here is still ahead of any user.
+8. Confirm the draft carries `latest.yml` (and `latest-linux.yml`) beside the
    installers — without them nobody's app will ever see this release.
-8. Promote the draft (`gh release edit vX.Y.Z --draft=false`) — **only once every
+9. Promote the draft (`gh release edit vX.Y.Z --draft=false`) — **only once every
    platform's artifacts are on it**, for the reason above.
-9. Tag `vX.Y.Z` (annotated) and push with `--follow-tags`.
+10. Tag `vX.Y.Z` (annotated) and push with `--follow-tags`.
 
 If artifacts have to be uploaded by hand after promotion, `gh release upload` works, but
 check the asset names against `latest*.yml` afterwards: `gh` rewrites spaces in filenames

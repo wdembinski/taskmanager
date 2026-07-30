@@ -42,6 +42,29 @@ describe('describeUpdate', () => {
     expect(describeUpdate({ status: 'error', mode: 'auto' })).toBe('Update check failed.');
   });
 
+  it('calls a failure mid-download an install failure, not a check failure', () => {
+    // The distinction that mattered: v0.30.0-v0.33.0 downloaded fine and were refused at
+    // the signature check, and "Update check failed" made that look like a network blip.
+    expect(
+      describeUpdate({
+        status: 'error',
+        mode: 'auto',
+        version: '0.34.0',
+        code: 'ERR_UPDATER_INVALID_SIGNATURE',
+        message: 'New version 0.34.0 is not signed by the application owner',
+      }),
+    ).toBe(
+      'Update 0.34.0 could not be installed: ERR_UPDATER_INVALID_SIGNATURE — ' +
+        'New version 0.34.0 is not signed by the application owner',
+    );
+  });
+
+  it('keeps the error code searchable even with no message', () => {
+    expect(
+      describeUpdate({ status: 'error', mode: 'auto', code: 'ERR_UPDATER_ZIP_FILE_NOT_FOUND' }),
+    ).toBe('Update check failed: ERR_UPDATER_ZIP_FILE_NOT_FOUND');
+  });
+
   it('reads as up to date when idle', () => {
     expect(describeUpdate({ status: 'idle', mode: 'auto' })).toBe('Up to date.');
     expect(describeUpdate({ status: 'idle', mode: 'auto', version: '0.29.0' })).toContain('0.29.0');

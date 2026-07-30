@@ -42,11 +42,18 @@ win:
   target:
     - nsis
   icon: build/icon.ico
-  # Windows may flag an unsigned exe; code-signing is a release-time concern (see
-  # docs/07-packaging-and-release.md) and intentionally not configured here. The
-  # publisher name is kept under signtoolOptions so it is used once a cert is added.
-  signtoolOptions:
-    publisherName: ${author}
+  # NOTHING here may set `publisherName` while the build is unsigned, and this flag says so
+  # out loud. electron-builder copies `publisherName` verbatim into the app-update.yml it
+  # bakes into the bundle — macros like ${author} are NOT expanded there — and
+  # electron-updater then runs Get-AuthenticodeSignature on every installer it downloads and
+  # rejects an unsigned one with ERR_UPDATER_INVALID_SIGNATURE. That silently broke every
+  # Windows auto-update up to v0.33.0: the download finished, verification refused it, and
+  # the app reported a "failed check" while the release page looked fine.
+  #
+  # When a certificate is added, set `signtoolOptions.publisherName` to the certificate's
+  # exact DN and drop this flag in the SAME commit — every installed client verifies the two
+  # against each other, so a mismatch is another release nobody can update to.
+  verifyUpdateCodeSignature: false
   # `${name}` (claude-orchestrator), not `${productName}` (Claude Orchestrator): see the
   # publish block above — a space in the filename breaks the update feed.
   artifactName: ${name}-${version}-setup.${ext}

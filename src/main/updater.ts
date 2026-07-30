@@ -61,9 +61,16 @@ export class Updater {
     autoUpdater.autoInstallOnAppQuit = true;
     // electron-updater logs through electron-log if it finds it; we don't ship one, so
     // give it our own file logger and keep the chatty levels out of it.
+    //
+    // `UPDATE_LOG_VERBOSE` opens the chatty levels back up, because their absence hides
+    // the one failure this class of bug produces: electron-updater declines to check at
+    // all — "Skip checkForUpdates because application is not packed" and friends — at
+    // `info`, so a completely inert updater looks exactly like an up-to-date one. Set it
+    // alongside UPDATE_CONFIG_PATH when a local feed appears to do nothing.
+    const verbose = Boolean(process.env['UPDATE_LOG_VERBOSE']);
     autoUpdater.logger = {
-      info: () => {},
-      debug: () => {},
+      info: verbose ? (message: unknown) => logMain('Updater', message) : () => {},
+      debug: verbose ? (message: unknown) => logMain('Updater debug', message) : () => {},
       warn: (message: unknown) => logMain('Updater warning', message),
       error: (message: unknown) => logMain('Updater error', message),
     };
@@ -77,7 +84,7 @@ export class Updater {
       this.set({ status: 'available', version: info.version }),
     );
     autoUpdater.on('update-not-available', (info: { version: string }) =>
-      this.set({ status: 'idle', version: info.version, message: undefined }),
+      this.set({ status: 'idle', version: info.version }),
     );
     autoUpdater.on('download-progress', (progress: { percent: number }) =>
       this.set({ status: 'downloading', percent: progress.percent }),
@@ -85,10 +92,7 @@ export class Updater {
     autoUpdater.on('update-downloaded', (info: { version: string }) =>
       this.set({ status: 'downloaded', version: info.version }),
     );
-    autoUpdater.on('error', (err: Error) => {
-      logMain('Update check failed', err);
-      this.set({ status: 'error', message: err.message });
-    });
+    autoUpdater.on('error', (err: Error) => this.fail(err));
 
     this.firstCheck = setTimeout(() => void this.checkNow(), FIRST_CHECK_DELAY_MS);
     this.timer = setInterval(() => void this.checkNow(), CHECK_INTERVAL_MS);
@@ -105,10 +109,29 @@ export class Updater {
       await autoUpdater.checkForUpdates();
     } catch (err) {
       // Also reported via the 'error' event in most cases, but not all paths emit it.
-      logMain('Update check failed', err);
-      this.set({ status: 'error', message: err instanceof Error ? err.message : String(err) });
+      this.fail(err);
     }
     return this.state;
+  }
+
+  /**
+   * Record a failure. Every updater error lands here so the log line and the state say the
+   * same thing, and so one distinction is made consistently: a failure that arrives while
+   * an update is being fetched is a failed *install*, and only then does the version
+   * identify what failed. Outside that window `version` is merely whatever the last check
+   * reported, and carrying it into the error would read as "this update won't install"
+   * when the truth is "we couldn't reach the feed".
+   */
+  private fail(err: unknown): void {
+    const fetching = this.state.status === 'available' || this.state.status === 'downloading';
+    logMain(fetching ? 'Update download failed' : 'Update check failed', err);
+    const code = (err as { code?: unknown } | null)?.code;
+    this.set({
+      status: 'error',
+      version: fetching ? this.state.version : undefined,
+      message: err instanceof Error ? err.message : String(err),
+      code: typeof code === 'string' ? code : undefined,
+    });
   }
 
   /**
@@ -132,7 +155,11 @@ export class Updater {
 
   /** Merge a change into the state and push the whole thing (the UI replaces wholesale). */
   private set(change: Partial<UpdateState>): void {
-    this.state = { ...this.state, mode: this.mode, ...change };
+    // Moving to any non-error status drops the previous failure's detail. Without this a
+    // stale message or ERR_ code rides along into "Checking…", where it describes nothing.
+    const cleared =
+      change.status && change.status !== 'error' ? { message: undefined, code: undefined } : {};
+    this.state = { ...this.state, mode: this.mode, ...cleared, ...change };
     this.push(this.state);
   }
 }

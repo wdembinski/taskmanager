@@ -40,7 +40,7 @@ import {
   TaskListSquareLtrRegular,
 } from '@fluentui/react-icons';
 import type { AppInfo, ClaudeStatus } from '@shared/ipc';
-import type { UpdateState } from '@shared/update';
+import { describeUpdate, type UpdateState } from '@shared/update';
 import { Attention } from './Attention';
 import { LimitBanner } from './LimitBanner';
 import { MyTasks } from './MyTasks';
@@ -413,6 +413,21 @@ export function App(): JSX.Element {
               onClick={() => void window.api.invoke('update:install')}
             >
               Update {update.version ?? ''} ready — restart
+            </button>
+          </Caption1>
+        )}
+        {/* A failure used to be shown nowhere at all, which is how three releases' worth of
+            refused installs went unnoticed. Still not a dialog — one line that points at the
+            place where the actual reason is written down. */}
+        {update?.status === 'error' && (
+          <Caption1>
+            <button
+              type="button"
+              className={styles.update}
+              title={describeUpdate(update)}
+              onClick={() => setTab('settings')}
+            >
+              Update failed — see Settings
             </button>
           </Caption1>
         )}
