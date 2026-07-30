@@ -20,12 +20,10 @@ import {
   Caption1,
   Card,
   CardHeader,
-  Dialog,
-  DialogActions,
-  DialogBody,
-  DialogContent,
-  DialogSurface,
-  DialogTitle,
+  DrawerBody,
+  DrawerFooter,
+  DrawerHeader,
+  DrawerHeaderTitle,
   Dropdown,
   Field,
   Input,
@@ -33,10 +31,12 @@ import {
   MessageBar,
   MessageBarBody,
   Option,
+  OverlayDrawer,
   Subtitle2,
   Text,
   tokens,
 } from '@fluentui/react-components';
+import { DismissRegular } from '@fluentui/react-icons';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
 import type { Project } from '@shared/model';
@@ -333,146 +333,160 @@ function AgentProjectDialog({
   const targetMismatch = !pathSuitsHost(path, target.kind === 'wsl' ? 'linux' : 'windows');
 
   return (
-    <Dialog open={open} onOpenChange={(_e, d) => !d.open && onClose()}>
-      <DialogSurface>
-        <DialogBody>
-          <DialogTitle>{project ? 'Edit agent project' : 'Add agent project'}</DialogTitle>
-          <DialogContent>
-            <div className={styles.form}>
-              {error && (
-                <MessageBar intent="error">
-                  <MessageBarBody>{error}</MessageBarBody>
-                </MessageBar>
-              )}
+    <OverlayDrawer
+      open={open}
+      position="end"
+      size="medium"
+      onOpenChange={(_e, d) => !d.open && onClose()}
+    >
+      <DrawerHeader>
+        <DrawerHeaderTitle
+          action={
+            <Button
+              appearance="subtle"
+              icon={<DismissRegular />}
+              aria-label="Close"
+              onClick={onClose}
+            />
+          }
+        >
+          {project ? 'Edit agent project' : 'Add agent project'}
+        </DrawerHeaderTitle>
+      </DrawerHeader>
+      <DrawerBody>
+        <div className={styles.form}>
+          {error && (
+            <MessageBar intent="error">
+              <MessageBarBody>{error}</MessageBarBody>
+            </MessageBar>
+          )}
 
-              <Field
-                label="Repository folder"
-                required
-                hint={
-                  distros.length > 0
-                    ? 'Browse into a distro (\\\\wsl.localhost\\…) and both the path and "Runs on" follow — or type a Linux path such as /home/you/repo directly.'
-                    : undefined
-                }
-              >
-                <div className={styles.row}>
-                  {/* Typeable, unlike the plan dialog's: a distro folder the Windows
+          <Field
+            label="Repository folder"
+            required
+            hint={
+              distros.length > 0
+                ? 'Browse into a distro (\\\\wsl.localhost\\…) and both the path and "Runs on" follow — or type a Linux path such as /home/you/repo directly.'
+                : undefined
+            }
+          >
+            <div className={styles.row}>
+              {/* Typeable, unlike the plan dialog's: a distro folder the Windows
                       picker cannot reach (a path outside \\wsl.localhost, or a headless
                       distro) would otherwise be unreachable, and an agent project is
                       nothing but this folder. */}
-                  <Input
-                    className={`${styles.grow} ${styles.mono}`}
-                    value={path}
-                    onChange={(_e, d) => setPath(d.value)}
-                    placeholder="Choose a folder, or type /home/you/repo…"
-                  />
-                  <Button onClick={() => void browseFolder()}>Browse…</Button>
-                </div>
-              </Field>
-
-              {distros.length > 0 && (
-                <Field
-                  label="Runs on"
-                  hint={
-                    project
-                      ? 'Changing this clears this project’s saved sessions and worktrees — they only exist on the machine that created them.'
-                      : 'Where this project’s Claude sessions, git and worktrees execute. Browsing into a distro selects it automatically.'
-                  }
-                  validationState={targetMismatch ? 'warning' : 'none'}
-                  validationMessage={
-                    targetMismatch
-                      ? target.kind === 'wsl'
-                        ? 'That looks like a Windows path. A WSL target needs a Linux one, e.g. /home/you/repo or /mnt/c/…'
-                        : 'That looks like a Linux path. Pick the distro it lives on, or choose a Windows folder.'
-                      : undefined
-                  }
-                >
-                  <Dropdown
-                    value={execTargetLabel(target)}
-                    selectedOptions={[formatExecTarget(target)]}
-                    onOptionSelect={(_e, d) => setTarget(parseExecTarget(d.optionValue))}
-                  >
-                    <Option value="local">{execTargetLabel(LOCAL_TARGET)}</Option>
-                    {distros.map((distro) => (
-                      <Option key={distro} value={`wsl:${distro}`}>
-                        {execTargetLabel({ kind: 'wsl', distro })}
-                      </Option>
-                    ))}
-                  </Dropdown>
-                </Field>
-              )}
-
-              <Field label="Display name" hint="Defaults to the folder name.">
-                <Input
-                  value={name}
-                  onChange={(_e, d) => setName(d.value)}
-                  placeholder="(folder name)"
-                />
-              </Field>
-
-              <Field
-                label="Colour"
-                hint="A card tagged with this project wears a stripe of this colour, so a mixed column says which repo each card is about."
-              >
-                <ColorSwatches value={color} onChange={setColor} allowNone />
-              </Field>
-
-              <Field
-                label="JIRA epics"
-                hint="Epic keys this repo owns, comma separated (e.g. ABC-100, ABC-250). A ticket under one of them is assigned here by default."
-              >
-                <Input
-                  className={styles.mono}
-                  value={epics}
-                  onChange={(_e, d) => setEpics(d.value)}
-                  placeholder="ABC-100, ABC-250"
-                />
-              </Field>
-
-              <div className={styles.row}>
-                <Field label="Default model" className={styles.grow}>
-                  <Dropdown
-                    value={model}
-                    selectedOptions={[model]}
-                    onOptionSelect={(_e, d) => setModel(d.optionValue as ClaudeModel)}
-                  >
-                    {MODELS.map((m) => (
-                      <Option key={m} value={m}>
-                        {m}
-                      </Option>
-                    ))}
-                  </Dropdown>
-                </Field>
-                <Field label="Default permission mode" className={styles.grow}>
-                  <Dropdown
-                    value={PERMISSION_MODE_LABELS[permMode]}
-                    selectedOptions={[permMode]}
-                    onOptionSelect={(_e, d) => setPermMode(d.optionValue as PermissionMode)}
-                  >
-                    {MODES.map((m) => (
-                      <Option key={m} value={m}>
-                        {PERMISSION_MODE_LABELS[m]}
-                      </Option>
-                    ))}
-                  </Dropdown>
-                </Field>
-              </div>
-
-              <Body1 className={styles.hint}>
-                Each assigned card runs on its own git branch in a separate worktree, merged back
-                into the base branch when the agent finishes.
-              </Body1>
+              <Input
+                className={`${styles.grow} ${styles.mono}`}
+                value={path}
+                onChange={(_e, d) => setPath(d.value)}
+                placeholder="Choose a folder, or type /home/you/repo…"
+              />
+              <Button onClick={() => void browseFolder()}>Browse…</Button>
             </div>
-          </DialogContent>
-          <DialogActions>
-            <Button appearance="secondary" onClick={onClose} disabled={saving}>
-              Cancel
-            </Button>
-            <Button appearance="primary" onClick={() => void save()} disabled={saving}>
-              {project ? 'Save' : 'Add agent project'}
-            </Button>
-          </DialogActions>
-        </DialogBody>
-      </DialogSurface>
-    </Dialog>
+          </Field>
+
+          {distros.length > 0 && (
+            <Field
+              label="Runs on"
+              hint={
+                project
+                  ? 'Changing this clears this project’s saved sessions and worktrees — they only exist on the machine that created them.'
+                  : 'Where this project’s Claude sessions, git and worktrees execute. Browsing into a distro selects it automatically.'
+              }
+              validationState={targetMismatch ? 'warning' : 'none'}
+              validationMessage={
+                targetMismatch
+                  ? target.kind === 'wsl'
+                    ? 'That looks like a Windows path. A WSL target needs a Linux one, e.g. /home/you/repo or /mnt/c/…'
+                    : 'That looks like a Linux path. Pick the distro it lives on, or choose a Windows folder.'
+                  : undefined
+              }
+            >
+              <Dropdown
+                value={execTargetLabel(target)}
+                selectedOptions={[formatExecTarget(target)]}
+                onOptionSelect={(_e, d) => setTarget(parseExecTarget(d.optionValue))}
+              >
+                <Option value="local">{execTargetLabel(LOCAL_TARGET)}</Option>
+                {distros.map((distro) => (
+                  <Option key={distro} value={`wsl:${distro}`}>
+                    {execTargetLabel({ kind: 'wsl', distro })}
+                  </Option>
+                ))}
+              </Dropdown>
+            </Field>
+          )}
+
+          <Field label="Display name" hint="Defaults to the folder name.">
+            <Input
+              value={name}
+              onChange={(_e, d) => setName(d.value)}
+              placeholder="(folder name)"
+            />
+          </Field>
+
+          <Field
+            label="Colour"
+            hint="A card tagged with this project wears a stripe of this colour, so a mixed column says which repo each card is about."
+          >
+            <ColorSwatches value={color} onChange={setColor} allowNone />
+          </Field>
+
+          <Field
+            label="JIRA epics"
+            hint="Epic keys this repo owns, comma separated (e.g. ABC-100, ABC-250). A ticket under one of them is assigned here by default."
+          >
+            <Input
+              className={styles.mono}
+              value={epics}
+              onChange={(_e, d) => setEpics(d.value)}
+              placeholder="ABC-100, ABC-250"
+            />
+          </Field>
+
+          <div className={styles.row}>
+            <Field label="Default model" className={styles.grow}>
+              <Dropdown
+                value={model}
+                selectedOptions={[model]}
+                onOptionSelect={(_e, d) => setModel(d.optionValue as ClaudeModel)}
+              >
+                {MODELS.map((m) => (
+                  <Option key={m} value={m}>
+                    {m}
+                  </Option>
+                ))}
+              </Dropdown>
+            </Field>
+            <Field label="Default permission mode" className={styles.grow}>
+              <Dropdown
+                value={PERMISSION_MODE_LABELS[permMode]}
+                selectedOptions={[permMode]}
+                onOptionSelect={(_e, d) => setPermMode(d.optionValue as PermissionMode)}
+              >
+                {MODES.map((m) => (
+                  <Option key={m} value={m}>
+                    {PERMISSION_MODE_LABELS[m]}
+                  </Option>
+                ))}
+              </Dropdown>
+            </Field>
+          </div>
+
+          <Body1 className={styles.hint}>
+            Each assigned card runs on its own git branch in a separate worktree, merged back into
+            the base branch when the agent finishes.
+          </Body1>
+        </div>
+      </DrawerBody>
+      <DrawerFooter>
+        <Button appearance="secondary" onClick={onClose} disabled={saving}>
+          Cancel
+        </Button>
+        <Button appearance="primary" onClick={() => void save()} disabled={saving}>
+          {project ? 'Save' : 'Add agent project'}
+        </Button>
+      </DrawerFooter>
+    </OverlayDrawer>
   );
 }

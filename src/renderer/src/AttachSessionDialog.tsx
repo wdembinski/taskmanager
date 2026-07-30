@@ -15,12 +15,10 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   Button,
-  Dialog,
-  DialogActions,
-  DialogBody,
-  DialogContent,
-  DialogSurface,
-  DialogTitle,
+  DrawerBody,
+  DrawerFooter,
+  DrawerHeader,
+  DrawerHeaderTitle,
   Dropdown,
   Field,
   Input,
@@ -28,15 +26,19 @@ import {
   MessageBar,
   MessageBarBody,
   Option,
+  OverlayDrawer,
   Spinner,
   Text,
   tokens,
 } from '@fluentui/react-components';
+import { DismissRegular } from '@fluentui/react-icons';
 import type { ClaudeSessionSummary } from '@shared/ipc';
 import type { Project, Task } from '@shared/model';
 
 const useStyles = makeStyles({
-  body: { display: 'flex', flexDirection: 'column', gap: '12px', minWidth: '440px' },
+  // No `minWidth`: the drawer owns the width, and a body pushing back against it would
+  // only produce a horizontal scrollbar.
+  body: { display: 'flex', flexDirection: 'column', gap: '12px' },
   mono: { fontFamily: 'ui-monospace, Consolas, monospace' },
   option: { display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '2px' },
   optionPreview: { overflow: 'hidden', textOverflow: 'ellipsis' },
@@ -145,102 +147,112 @@ export function AttachSessionDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={(_e, d) => !d.open && onClose()}>
-      <DialogSurface>
-        <DialogBody>
-          <DialogTitle>Attach existing session</DialogTitle>
-          <DialogContent>
-            <div className={styles.body}>
-              {task && (
-                <Text>
-                  Adopt a Claude conversation for <strong>{task.title}</strong>. Running the task
-                  will resume it instead of starting fresh.
-                </Text>
-              )}
-              {error && (
-                <MessageBar intent="error">
-                  <MessageBarBody>{error}</MessageBarBody>
-                </MessageBar>
-              )}
-
-              {project && (
-                <Field
-                  label="Conversation"
-                  hint={
-                    listing
-                      ? undefined
-                      : `Found in ${project.path}. Newest first — pick one, or type an id below.`
-                  }
-                >
-                  {listing ? (
-                    <div className={styles.loading}>
-                      <Spinner size="tiny" />
-                      <Text size={200}>Looking for conversations…</Text>
-                    </div>
-                  ) : sessions.length === 0 ? (
-                    <MessageBar intent="info">
-                      <MessageBarBody>
-                        No conversations found on disk for this folder. Paste the session id below
-                        instead.
-                      </MessageBarBody>
-                    </MessageBar>
-                  ) : (
-                    <Dropdown
-                      value={picked ? labelFor(picked) : ''}
-                      selectedOptions={picked ? [picked.sessionId] : []}
-                      placeholder="Choose a conversation"
-                      onOptionSelect={(_e, d) => d.optionValue && setSessionId(d.optionValue)}
-                    >
-                      {sessions.map((session) => (
-                        <Option
-                          key={session.sessionId}
-                          value={session.sessionId}
-                          text={labelFor(session)}
-                        >
-                          <span className={styles.option}>
-                            <span className={styles.optionPreview}>{labelFor(session)}</span>
-                            <span className={styles.optionWhen}>
-                              {fmtWhen(session.lastAt)} · {session.sessionId.slice(0, 8)}
-                            </span>
-                          </span>
-                        </Option>
-                      ))}
-                    </Dropdown>
-                  )}
-                </Field>
-              )}
-
-              <Field
-                label="Session id"
-                hint="The conversation's UUID (from `claude --resume`, or a *.jsonl filename under ~/.claude/projects/…)."
-                validationState={trimmed && !looksValid ? 'warning' : 'none'}
-                validationMessage={
-                  trimmed && !looksValid ? 'That does not look like a session UUID.' : undefined
-                }
-              >
-                <Input
-                  className={styles.mono}
-                  value={sessionId}
-                  onChange={(_e, d) => setSessionId(d.value)}
-                  placeholder="00000000-0000-0000-0000-000000000000"
-                />
-              </Field>
-            </div>
-          </DialogContent>
-          <DialogActions>
-            <Button appearance="secondary" onClick={onClose} disabled={saving}>
-              Cancel
-            </Button>
+    <OverlayDrawer
+      open={open}
+      position="end"
+      size="medium"
+      onOpenChange={(_e, d) => !d.open && onClose()}
+    >
+      <DrawerHeader>
+        <DrawerHeaderTitle
+          action={
             <Button
-              appearance="primary"
-              onClick={() => void save()}
-              disabled={saving || !looksValid}
+              appearance="subtle"
+              icon={<DismissRegular />}
+              aria-label="Close"
+              onClick={onClose}
+            />
+          }
+        >
+          Attach existing session
+        </DrawerHeaderTitle>
+      </DrawerHeader>
+      <DrawerBody>
+        <div className={styles.body}>
+          {task && (
+            <Text>
+              Adopt a Claude conversation for <strong>{task.title}</strong>. Running the task will
+              resume it instead of starting fresh.
+            </Text>
+          )}
+          {error && (
+            <MessageBar intent="error">
+              <MessageBarBody>{error}</MessageBarBody>
+            </MessageBar>
+          )}
+
+          {project && (
+            <Field
+              label="Conversation"
+              hint={
+                listing
+                  ? undefined
+                  : `Found in ${project.path}. Newest first — pick one, or type an id below.`
+              }
             >
-              Attach
-            </Button>
-          </DialogActions>
-        </DialogBody>
-      </DialogSurface>
-    </Dialog>
+              {listing ? (
+                <div className={styles.loading}>
+                  <Spinner size="tiny" />
+                  <Text size={200}>Looking for conversations…</Text>
+                </div>
+              ) : sessions.length === 0 ? (
+                <MessageBar intent="info">
+                  <MessageBarBody>
+                    No conversations found on disk for this folder. Paste the session id below
+                    instead.
+                  </MessageBarBody>
+                </MessageBar>
+              ) : (
+                <Dropdown
+                  value={picked ? labelFor(picked) : ''}
+                  selectedOptions={picked ? [picked.sessionId] : []}
+                  placeholder="Choose a conversation"
+                  onOptionSelect={(_e, d) => d.optionValue && setSessionId(d.optionValue)}
+                >
+                  {sessions.map((session) => (
+                    <Option
+                      key={session.sessionId}
+                      value={session.sessionId}
+                      text={labelFor(session)}
+                    >
+                      <span className={styles.option}>
+                        <span className={styles.optionPreview}>{labelFor(session)}</span>
+                        <span className={styles.optionWhen}>
+                          {fmtWhen(session.lastAt)} · {session.sessionId.slice(0, 8)}
+                        </span>
+                      </span>
+                    </Option>
+                  ))}
+                </Dropdown>
+              )}
+            </Field>
+          )}
+
+          <Field
+            label="Session id"
+            hint="The conversation's UUID (from `claude --resume`, or a *.jsonl filename under ~/.claude/projects/…)."
+            validationState={trimmed && !looksValid ? 'warning' : 'none'}
+            validationMessage={
+              trimmed && !looksValid ? 'That does not look like a session UUID.' : undefined
+            }
+          >
+            <Input
+              className={styles.mono}
+              value={sessionId}
+              onChange={(_e, d) => setSessionId(d.value)}
+              placeholder="00000000-0000-0000-0000-000000000000"
+            />
+          </Field>
+        </div>
+      </DrawerBody>
+      <DrawerFooter>
+        <Button appearance="secondary" onClick={onClose} disabled={saving}>
+          Cancel
+        </Button>
+        <Button appearance="primary" onClick={() => void save()} disabled={saving || !looksValid}>
+          Attach
+        </Button>
+      </DrawerFooter>
+    </OverlayDrawer>
   );
 }
