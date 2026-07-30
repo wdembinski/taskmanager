@@ -21,6 +21,7 @@ import {
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
+import { PRODUCT_NAME } from '@shared/product';
 
 const useStyles = makeStyles({
   root: {
@@ -128,7 +129,7 @@ export class RootErrorBoundary extends Component<Props, State> {
     if (this.state.error) {
       return (
         <CrashScreen
-          title="Claude Orchestrator hit an error"
+          title={`${PRODUCT_NAME} hit an error`}
           detail={this.state.error.stack ?? this.state.error.message}
         />
       );

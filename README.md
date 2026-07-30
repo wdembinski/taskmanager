@@ -1,4 +1,4 @@
-# Claude Orchestrator
+# VIPPER Task Manager
 
 A **desktop app** that runs the [Claude](https://claude.com/claude-code) CLI for
 you — across many projects, around the clock.

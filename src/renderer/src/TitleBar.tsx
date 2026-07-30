@@ -10,6 +10,7 @@
  */
 import { useEffect, useState } from 'react';
 import { makeStyles, mergeClasses, Text, tokens } from '@fluentui/react-components';
+import { PRODUCT_NAME } from '@shared/product';
 
 const useStyles = makeStyles({
   bar: {
@@ -107,7 +108,7 @@ export function TitleBar(): JSX.Element {
       <div className={styles.title}>
         <span className={styles.mark} />
         <Text size={200} weight="semibold" className={styles.name}>
-          Claude Orchestrator
+          {PRODUCT_NAME}
         </Text>
       </div>
 

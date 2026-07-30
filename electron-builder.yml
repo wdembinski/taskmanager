@@ -2,8 +2,14 @@
 # Windows: NSIS installer (`pnpm package`). Linux/Ubuntu: AppImage + .deb
 # (`pnpm package:linux`, must run on Linux — e.g. WSL — so the native
 # better-sqlite3 binary is compiled for Linux).
+# `appId` is NOT renamed with the product, and must not be: NSIS matches an installed app by
+# it, so changing it would install the rebranded build ALONGSIDE the old one instead of
+# upgrading it, and would move the updater's cache directory with it. Same for `package.json`'s
+# `name` — Electron derives `app.getPath('userData')` from that, which is where every task,
+# project and setting on this machine lives. The rename is what a human reads; the identity
+# the OS and the updater match on stays put.
 appId: network.vipper.claude-orchestrator
-productName: Claude Orchestrator
+productName: VIPPER Task Manager
 copyright: © ${author}
 
 # Where the app looks for updates, and where `--publish` uploads them. electron-builder
@@ -54,8 +60,10 @@ win:
   # exact DN and drop this flag in the SAME commit — every installed client verifies the two
   # against each other, so a mismatch is another release nobody can update to.
   verifyUpdateCodeSignature: false
-  # `${name}` (claude-orchestrator), not `${productName}` (Claude Orchestrator): see the
-  # publish block above — a space in the filename breaks the update feed.
+  # `${name}` (claude-orchestrator), not `${productName}` (VIPPER Task Manager): see the
+  # publish block above — a space in the filename breaks the update feed. Keeping `${name}`
+  # through the rename also keeps every installed client's differential-update lookup working,
+  # since that is derived from the filename it was installed from.
   artifactName: ${name}-${version}-setup.${ext}
 
 nsis:
@@ -64,7 +72,7 @@ nsis:
   perMachine: false
   createDesktopShortcut: true
   createStartMenuShortcut: true
-  shortcutName: Claude Orchestrator
+  shortcutName: VIPPER Task Manager
 
 linux:
   # AppImage runs on any modern distro; deb is the native Ubuntu/Debian package.

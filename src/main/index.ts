@@ -11,6 +11,7 @@
  */
 import { join } from 'node:path';
 import { app, BrowserWindow, dialog, safeStorage, shell } from 'electron';
+import { PRODUCT_NAME } from '@shared/product';
 import { registerIpcHandlers, type Engine } from './ipc';
 import { formatError, getLogPath, logMain } from './log';
 
@@ -60,7 +61,7 @@ function createWindow(): BrowserWindow {
     minWidth: 940,
     minHeight: 600,
     show: false, // reveal only once the page is painted, to avoid a white flash
-    title: 'Claude Orchestrator',
+    title: PRODUCT_NAME,
     // Frameless: no OS title bar/border — the renderer draws its own title bar and
     // window controls (see src/renderer/src/TitleBar.tsx). Resizing from the window
     // edges still works. The dark backgroundColor avoids a white flash before paint.
@@ -123,7 +124,7 @@ function reportFatal(title: string, err: unknown, fatal = false): void {
     `If this says NODE_MODULE_VERSION, the installed build is packaged against the ` +
     `wrong Electron ABI — please report it with the version number.`;
   // showErrorBox works before the app is ready, unlike the other dialog APIs.
-  dialog.showErrorBox(`Claude Orchestrator — ${title}`, detail);
+  dialog.showErrorBox(`${PRODUCT_NAME} — ${title}`, detail);
   if (fatal) app.exit(1);
 }
 

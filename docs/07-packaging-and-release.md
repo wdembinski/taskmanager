@@ -70,8 +70,8 @@ Re-check these if the dependency or spawn model changes.
    pre-execution permission veto (Phase 4) materializes a `.cjs` relay to `userData`
    at runtime and has the Claude CLI spawn it via `process.execPath` with
    `ELECTRON_RUN_AS_NODE=1`. In a packaged build `process.execPath` is the installed
-   `Claude Orchestrator.exe`. *Verify:*
-   `ELECTRON_RUN_AS_NODE=1 "…/Claude Orchestrator.exe" -e "require('http')"` runs as
+   `VIPPER Task Manager.exe`. *Verify:*
+   `ELECTRON_RUN_AS_NODE=1 "…/VIPPER Task Manager.exe" -e "require('http')"` runs as
    Node. (The relay script lives outside the asar, so it needs no unpack.)
 
 4. **The updater config baked into the bundle must not describe a release nobody can
@@ -333,7 +333,8 @@ Then actually run it **from a terminal** — a `.desktop` launcher discards stde
 that is how a startup failure stayed invisible in v0.25.0:
 
 ```bash
-/opt/Claude\ Orchestrator/claude-orchestrator          # .deb install
+/opt/VIPPER\ Task\ Manager/claude-orchestrator         # .deb install (dir = productName,
+                                                      #  binary = package.json name)
 ./claude-orchestrator-<version>.AppImage               # AppImage (add --no-sandbox if
                                                        # Ubuntu 24.04+ blocks user namespaces)
 ```
@@ -341,7 +342,9 @@ that is how a startup failure stayed invisible in v0.25.0:
 `Failed to connect to the bus: … dbus` messages are cosmetic and expected on a machine
 without a session bus; ignore them. What matters is that no `No handler registered for
 '…'` lines appear and every tab shows data. Since v0.25.1 a startup failure also raises
-an error dialog and writes `~/.config/Claude Orchestrator/logs/main.log`.
+an error dialog and writes `~/.config/claude-orchestrator/logs/main.log`. That path follows
+`package.json`'s `name`, not the product name — which is exactly why the rename to VIPPER Task
+Manager left `name` alone: it is where the database lives.
 
 Since v0.30.0 electron-builder uploads the Linux artifacts too (`--publish onTagOrDraft`,
 same `GH_TOKEN`), which is also what writes `latest-linux.yml` — an AppImage cannot
@@ -362,7 +365,7 @@ self-update without it.
 3. Bump `package.json` `version` if the release commit hasn't; commit.
 4. Create the **draft** release (`gh release create vX.Y.Z --draft …`) and export
    `GH_TOKEN`, so the packaging steps have somewhere to upload to.
-5. `pnpm package`; smoke-test `dist/win-unpacked/Claude Orchestrator.exe` (and,
+5. `pnpm package`; smoke-test `dist/win-unpacked/VIPPER Task Manager.exe` (and,
    ideally, run the installer on a clean machine and take one project end-to-end).
 6. For a Linux release, `pnpm package:linux` on Linux and run the artifact checks
    above. The ABI gate is not optional — a bundle that fails it is broken in a way
