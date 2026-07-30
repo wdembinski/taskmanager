@@ -62,6 +62,38 @@ const useStyles = makeStyles({
     lineHeight: '1.5',
   },
   link: { color: tokens.colorBrandForegroundLink },
+  /**
+   * Text whose layout is its content: a diagram, or an indented block. Monospaced and
+   * `pre` — preserving the spaces is only half of it, the glyphs have to be the same width
+   * or every column drifts. Scrolls inside itself so a wide drawing never widens the pane.
+   */
+  drawing: {
+    margin: 0,
+    padding: '8px 10px',
+    overflowX: 'auto',
+    fontFamily: MONO,
+    fontSize: fontPx(12),
+    lineHeight: '1.4',
+    whiteSpace: 'pre',
+    backgroundColor: CODE_BG,
+    border: `1px solid ${CODE_BORDER}`,
+    borderRadius: tokens.borderRadiusMedium,
+  },
+  /** Tables scroll rather than squeeze: a column crushed to two characters says nothing. */
+  tableWrap: { overflowX: 'auto', maxWidth: '100%' },
+  table: { borderCollapse: 'collapse', fontSize: fontPx(12) },
+  th: {
+    textAlign: 'left',
+    fontWeight: tokens.fontWeightSemibold,
+    padding: '3px 8px',
+    borderBottom: `1px solid ${tokens.colorNeutralStroke1}`,
+    whiteSpace: 'nowrap',
+  },
+  td: {
+    padding: '3px 8px',
+    borderBottom: `1px solid ${tokens.colorNeutralStroke2}`,
+    verticalAlign: 'top',
+  },
 });
 
 function InlineRun({ parts }: { parts: Inline[] }): JSX.Element {
@@ -188,6 +220,40 @@ export function Markdown({ source }: { source: string }): JSX.Element {
               <div key={i} className={styles.quote}>
                 <InlineRun parts={parseInline(block.text)} />
               </div>
+            );
+          case 'table':
+            return (
+              <div key={i} className={styles.tableWrap}>
+                <table className={styles.table}>
+                  <thead>
+                    <tr>
+                      {block.header.map((cell, j) => (
+                        <th key={j} className={styles.th}>
+                          <InlineRun parts={parseInline(cell)} />
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {block.rows.map((row, j) => (
+                      <tr key={j}>
+                        {row.map((cell, k) => (
+                          <td key={k} className={styles.td}>
+                            <InlineRun parts={parseInline(cell)} />
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            );
+          case 'pre':
+            // No `InlineRun`: a `*` or `_` in a diagram is part of the diagram, not emphasis.
+            return (
+              <pre key={i} className={styles.drawing}>
+                {block.text}
+              </pre>
             );
           default:
             return (

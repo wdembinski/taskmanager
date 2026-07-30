@@ -6,12 +6,18 @@
  * far and this is a card-scoped chat, not a document viewer: what an agent actually
  * writes is prose, bullet lists, headings, inline code and fenced blocks. That is the
  * whole grammar below — about a hundred lines, no supply chain, no bundle cost, and no
- * highlighter to argue about. Tables and images fall back to their source text, which
- * is legible; if that stops being enough, swapping this module for `react-markdown`
- * touches exactly one component.
+ * highlighter to argue about. Images fall back to their source text, which is legible; if
+ * that stops being enough, swapping this module for `react-markdown` touches exactly one
+ * component.
  *
  * Deliberately NOT supported: HTML (never parsed — an agent's output is untrusted text
  * and this app has no need to render markup it was handed), reference links, footnotes.
+ *
+ * **Anything whose meaning is its layout must reach the renderer as `pre`.** Tables used to
+ * fall through to a paragraph and drawings still do; a paragraph keeps its whitespace but is
+ * set in a PROPORTIONAL face, so every column in an ASCII table or a box diagram landed a
+ * little further out than the last and the picture came apart. Preserving the spaces is only
+ * half of it — the glyphs have to be the same width too.
  */
 
 export type Block =
@@ -19,6 +25,14 @@ export type Block =
   | { kind: 'heading'; level: number; text: string }
   | { kind: 'list'; ordered: boolean; items: string[] }
   | { kind: 'quote'; text: string }
+  /** A markdown pipe table, rendered as a real table. */
+  | { kind: 'table'; header: string[]; rows: string[][] }
+  /**
+   * Text whose layout IS its content: an indented code block, or a drawing an agent wrote
+   * without fencing it. Shown monospaced and verbatim, with no inline markdown applied —
+   * a `*` in a diagram is part of the diagram.
+   */
+  | { kind: 'pre'; text: string }
   | { kind: 'para'; text: string };
 
 export type Inline =
@@ -33,6 +47,39 @@ const HEADING = /^(#{1,6})\s+(.*)$/;
 const BULLET = /^\s*[-*+]\s+(.*)$/;
 const NUMBERED = /^\s*\d+[.)]\s+(.*)$/;
 const QUOTE = /^\s*>\s?(.*)$/;
+/** A table's second line: `|---|:--:|`. What distinguishes a table from prose with pipes. */
+const TABLE_RULE = /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$/;
+/** An indented code block — four spaces or a tab, CommonMark's rule. */
+const INDENTED = /^(?: {4}|\t)(.*)$/;
+/**
+ * Box-drawing and block-element characters (U+2500–U+259F). Unambiguous: nothing writes
+ * `└` or `│` in prose, so one of these anywhere in a block settles that it is a picture.
+ */
+const BOX_CHARS = /[─-▟]/;
+/** An ASCII table's edge: `+----+` or `| a | b |`. Needs corroboration — see `looksDrawn`. */
+const ASCII_GRID = /^\s*[+|]/;
+
+/** Split `| a | b |` into its cells, tolerating the outer pipes being absent. */
+function tableCells(line: string): string[] {
+  return line
+    .trim()
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split('|')
+    .map((cell) => cell.trim());
+}
+
+/**
+ * Whether a run of lines is a drawing rather than prose.
+ *
+ * Two signals, and the second needs corroboration because a single `|` is ordinary in a
+ * sentence: a box-drawing character anywhere, or at least two lines that open like a grid.
+ * One `| foo` line on its own stays prose.
+ */
+export function looksDrawn(lines: readonly string[]): boolean {
+  if (lines.some((line) => BOX_CHARS.test(line))) return true;
+  return lines.filter((line) => ASCII_GRID.test(line)).length >= 2;
+}
 
 /**
  * Split markdown into blocks. Fenced code is taken first and verbatim — everything
@@ -45,9 +92,22 @@ export function parseMarkdown(source: string): Block[] {
   const blocks: Block[] = [];
   let para: string[] = [];
 
+  /**
+   * Close the paragraph being gathered. A paragraph that turns out to be a drawing becomes
+   * `pre` instead — the decision has to happen here, once every line of it is known, since
+   * a diagram's first line often looks like ordinary text.
+   */
   const flushPara = (): void => {
-    const text = para.join('\n').trim();
-    if (text) blocks.push({ kind: 'para', text });
+    if (para.length > 0) {
+      if (looksDrawn(para)) {
+        // Trailing blank lines go; interior spacing is part of the picture.
+        const text = para.join('\n').replace(/\s+$/, '');
+        if (text) blocks.push({ kind: 'pre', text });
+      } else {
+        const text = para.join('\n').trim();
+        if (text) blocks.push({ kind: 'para', text });
+      }
+    }
     para = [];
   };
 
@@ -68,6 +128,37 @@ export function parseMarkdown(source: string): Block[] {
     if (heading) {
       flushPara();
       blocks.push({ kind: 'heading', level: heading[1].length, text: heading[2].trim() });
+      continue;
+    }
+
+    // A table is a header line followed by a rule. The rule is the whole test: without it
+    // `a | b` is just a sentence with a pipe in it.
+    if (line.includes('|') && i + 1 < lines.length && TABLE_RULE.test(lines[i + 1])) {
+      flushPara();
+      const header = tableCells(line);
+      i++; // step over the rule
+      const rows: string[][] = [];
+      while (i + 1 < lines.length && lines[i + 1].includes('|')) {
+        rows.push(tableCells(lines[++i]));
+      }
+      blocks.push({ kind: 'table', header, rows });
+      continue;
+    }
+
+    // An indented block, but only where CommonMark allows one: at the start of a block,
+    // never mid-paragraph, so a wrapped sentence or a list continuation is left alone.
+    if (para.length === 0 && INDENTED.test(line) && line.trim() !== '') {
+      const body: string[] = [INDENTED.exec(line)![1]];
+      // A blank line continues the block only when another indented line follows it —
+      // a diagram may breathe internally, but two blank lines end it.
+      while (i + 1 < lines.length) {
+        const next = lines[i + 1];
+        if (INDENTED.test(next)) body.push(INDENTED.exec(next)![1]);
+        else if (next.trim() === '' && INDENTED.test(lines[i + 2] ?? '')) body.push('');
+        else break;
+        i++;
+      }
+      blocks.push({ kind: 'pre', text: body.join('\n').replace(/\s+$/, '') });
       continue;
     }
 
