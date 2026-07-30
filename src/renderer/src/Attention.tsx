@@ -323,7 +323,14 @@ export function Attention(): JSX.Element {
   };
 
   if (items === null) {
-    return <PaneLoading label="Loading inbox…" error={initial.error} onRetry={initial.retry} />;
+    return (
+      <PaneLoading
+        label="Loading inbox…"
+        error={initial.error}
+        onRetry={initial.retry}
+        shape="rows"
+      />
+    );
   }
 
   if (items.length === 0) {

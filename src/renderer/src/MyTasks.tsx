@@ -360,7 +360,14 @@ export function MyTasks(): JSX.Element {
   );
 
   if (tasks === null) {
-    return <PaneLoading label="Loading tasks…" error={initial.error} onRetry={initial.retry} />;
+    return (
+      <PaneLoading
+        label="Loading tasks…"
+        error={initial.error}
+        onRetry={initial.retry}
+        shape="board"
+      />
+    );
   }
 
   return (

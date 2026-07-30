@@ -42,6 +42,50 @@ const jiraTask = (over: Partial<Task>): Task => ({
 
 const opts = { baseUrl: 'https://jira.co' };
 
+describe('reconcileJiraTasks — epic name', () => {
+  /** An issue whose parent came back inline, the way Cloud team-managed projects send it. */
+  const withParent = (summary?: string): JiraIssue => {
+    const base = issue('1', 'PROJ-1', 'new');
+    return {
+      ...base,
+      fields: {
+        ...base.fields,
+        parent: { key: 'PROJ-100', ...(summary ? { fields: { summary } } : {}) },
+      },
+    };
+  };
+
+  it('takes the epic name straight off an inline parent — no lookup needed', () => {
+    const { upserts } = reconcileJiraTasks([], [withParent('Checkout rework')], opts);
+    expect(upserts[0].externalEpicName).toBe('Checkout rework');
+    expect(upserts[0].externalParentKey).toBe('PROJ-100');
+  });
+
+  it('falls back to the batch for an Epic Link field, which carries only a key', () => {
+    const { upserts } = reconcileJiraTasks([], [withParent()], {
+      ...opts,
+      epicNames: new Map([['PROJ-100', 'Checkout rework']]),
+    });
+    expect(upserts[0].externalEpicName).toBe('Checkout rework');
+  });
+
+  it('leaves the name null when nothing supplies one, rather than echoing the key', () => {
+    // The card decides what to show without a name; a key masquerading as one would be
+    // worse than an absent one.
+    const { upserts } = reconcileJiraTasks([], [withParent()], opts);
+    expect(upserts[0].externalEpicName).toBeNull();
+    expect(upserts[0].externalParentKey).toBe('PROJ-100');
+  });
+
+  it('keeps a known name when a sync could not resolve one', () => {
+    // Same fall-back rule as every other field here: a sync that did not return the
+    // information must not wipe what we already knew.
+    const existing = jiraTask({ externalEpicName: 'Checkout rework' });
+    const { upserts } = reconcileJiraTasks([existing], [withParent()], opts);
+    expect(upserts[0].externalEpicName).toBe('Checkout rework');
+  });
+});
+
 describe('reconcileJiraTasks — sprint', () => {
   const withSprint = (sprint: unknown): JiraIssue => {
     const i = issue('1', 'PROJ-1', 'new');

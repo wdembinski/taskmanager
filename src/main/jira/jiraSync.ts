@@ -13,7 +13,7 @@ import { categoryFromKey, statusForColumn } from '@shared/board';
 import { resolveStatusColumn } from '@shared/statusResolve';
 import { commentBodyToText, type JiraIssue } from './jiraClient';
 import { authorIsMe, type JiraIdentityCache } from './identity';
-import { epicKeyFromIssue } from './epicField';
+import { epicKeyFromIssue, epicNameFromIssue } from './epicField';
 import { sprintNameFromIssue } from './jiraSprint';
 
 export interface JiraSyncOptions {
@@ -34,6 +34,12 @@ export interface JiraSyncOptions {
    * (Cloud team-managed) or discovery failed — the epic then comes from `parent`.
    */
   epicFieldId?: string | null;
+  /**
+   * Epic key → epic NAME, for instances whose epic link is the custom field (which
+   * carries a bare key). Supplied by the caller from one batched lookup; issues that
+   * carry their parent inline never need it.
+   */
+  epicNames?: ReadonlyMap<string, string>;
   /**
    * The discovered "Sprint" custom field id, or null when the instance has none (no
    * JIRA Software) or discovery failed — cards then simply carry no sprint name.
@@ -99,6 +105,10 @@ function issueToTask(
   // ticket, and the brief handed to the agent). Both fall back to the previously
   // stored value, so a sync that didn't return the field can't wipe what we knew.
   const parentKey = epicKeyFromIssue(issue, opts.epicFieldId ?? null);
+  // Inline parent first (free), then the batch the caller fetched. Same fall-back rule as
+  // every field here: a sync that could not resolve the name must not wipe a known one.
+  const epicName =
+    epicNameFromIssue(issue) ?? (parentKey ? (opts.epicNames?.get(parentKey) ?? null) : null);
   const sprint = sprintNameFromIssue(issue, opts.sprintFieldId ?? null);
   const description = commentBodyToText(issue.fields.description) || null;
 
@@ -133,6 +143,7 @@ function issueToTask(
     externalType: issue.fields.issuetype?.name ?? null,
     externalLabel: issue.fields.labels?.[0] ?? null,
     externalParentKey: parentKey ?? existing?.externalParentKey ?? null,
+    externalEpicName: epicName ?? existing?.externalEpicName ?? null,
     // Same fall-back rule as the epic and description above: a sync that didn't ask
     // for the sprint field must not wipe a name we already knew.
     externalSprint: sprint ?? existing?.externalSprint ?? null,

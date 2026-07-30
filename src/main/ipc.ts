@@ -44,11 +44,11 @@ import { sameExecTarget, type ExecTarget } from '@shared/execTarget';
 import { normalizeBaseUrl } from '@shared/jiraUrl';
 import { createJiraClient } from './jira/jiraConfig';
 import { explainJiraFailure } from './jira/jiraDiagnostics';
-import { commentBodyToText, type JiraClient } from './jira/jiraClient';
+import { commentBodyToText, type JiraClient, type JiraIssue } from './jira/jiraClient';
 import { blocksToText, parseAdf } from './jira/adf';
 import { normalizeIssueTypes, normalizeProjects } from './jira/createMeta';
 import { reconcileJiraTasks } from './jira/jiraSync';
-import { discoverEpicFieldId } from './jira/epicField';
+import { discoverEpicFieldId, epicKeyFromIssue, epicNameFromIssue } from './jira/epicField';
 import { discoverSprintFieldId, withCurrentSprint } from './jira/jiraSprint';
 import { authorIsMe, identityFrom, type JiraIdentityCache } from './jira/identity';
 import { pickTransition, resolveMove } from './jira/jiraMove';
@@ -1253,6 +1253,42 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     }
   };
 
+  /**
+   * Epic key → epic NAME, for the issues that did not carry their parent inline.
+   *
+   * Cloud team-managed projects return the parent's own fields with the issue, so those
+   * cost nothing. The Epic Link custom field carries a bare key, so those epics have to
+   * be looked up — but as ONE `key in (...)` search for every distinct epic on the board,
+   * not one request per card.
+   *
+   * Fails soft: the name is decoration (the card falls back to the key), and a board that
+   * refused to sync because an epic lookup 400'd would be a far worse trade.
+   */
+  const fetchEpicNames = async (
+    client: JiraClient,
+    issues: JiraIssue[],
+    epicField: string | null,
+  ): Promise<Map<string, string>> => {
+    const names = new Map<string, string>();
+    const wanted = new Set<string>();
+    for (const issue of issues) {
+      if (epicNameFromIssue(issue)) continue; // came inline, nothing to look up
+      const key = epicKeyFromIssue(issue, epicField);
+      if (key) wanted.add(key);
+    }
+    if (wanted.size === 0) return names;
+    try {
+      const epics = await client.search(`key in (${[...wanted].join(',')})`, wanted.size, []);
+      for (const epic of epics) {
+        const summary = epic.fields.summary?.trim();
+        if (summary) names.set(epic.key.toUpperCase(), summary);
+      }
+    } catch {
+      // Leave the map empty — every card falls back to its epic key.
+    }
+    return names;
+  };
+
   // One JIRA sync: fetch issues, reconcile into the store, push the fresh board.
   // Shared by the manual `jira:sync` handler and the background poller below.
   const syncJira = async (): Promise<Task[]> => {
@@ -1272,11 +1308,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     const jql = jira.currentSprintOnly ? withCurrentSprint(jira.jql) : jira.jql;
     const extraFields = [epicField, sprintField].filter((f): f is string => f !== null);
     const issues = await client.search(jql, 100, extraFields);
+    const epicNames = await fetchEpicNames(client, issues, epicField);
     const { upserts, deleteIds } = reconcileJiraTasks(store.getPersonalTasks(), issues, {
       baseUrl: jira.baseUrl,
       overrides: jira.statusCategoryOverrides,
       learned: jira.learnedStatusColumns,
       epicFieldId: epicField,
+      epicNames,
       sprintFieldId: sprintField,
       identity,
     });

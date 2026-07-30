@@ -63,7 +63,15 @@ export interface JiraIssue {
      * company-managed Cloud instead use the "Epic Link" custom field, read off
      * `fields` by its discovered id (see `epicField.ts`).
      */
-    parent?: { key?: string } | null;
+    parent?: {
+      key?: string;
+      /**
+       * The parent's own fields, which JIRA returns inline. `summary` is the epic's NAME
+       * — free here, where reading it off the Epic Link custom field would cost a second
+       * request, because that field carries a bare key and nothing else.
+       */
+      fields?: { summary?: string } | null;
+    } | null;
   };
 }
 

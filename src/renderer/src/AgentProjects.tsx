@@ -115,7 +115,12 @@ export function AgentProjects(): JSX.Element {
 
   if (!projects) {
     return (
-      <PaneLoading label="Loading agent projects…" error={initial.error} onRetry={initial.retry} />
+      <PaneLoading
+        label="Loading agent projects…"
+        error={initial.error}
+        onRetry={initial.retry}
+        shape="rows"
+      />
     );
   }
 

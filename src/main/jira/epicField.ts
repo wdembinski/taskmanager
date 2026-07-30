@@ -59,10 +59,26 @@ export async function discoverEpicFieldId(client: {
 }
 
 /**
+ * The epic's human NAME, when the issue carries it for free.
+ *
+ * Only the `parent` path can supply one: JIRA returns the parent's own fields inline, so
+ * Cloud team-managed projects hand over the summary with the issue. The Epic Link custom
+ * field (Server/DC, company-managed Cloud) carries a bare key and nothing else, so those
+ * instances need a separate lookup — see the epic-name batch in the sync handler.
+ *
+ * Null rather than falling back to the key: the caller decides what to show when there is
+ * no name, and a key silently masquerading as a name would be worse than an absent one.
+ */
+/**
  * The key of an issue's epic: the discovered custom field first, then `parent`.
  * Upper-cased to match the canonical form agent projects store their epic keys in
  * (see `normalizeEpicKeys` in `store.ts`). Null when the issue hangs off nothing.
  */
+export function epicNameFromIssue(issue: JiraIssue): string | null {
+  const summary = issue.fields.parent?.fields?.summary;
+  return typeof summary === 'string' && summary.trim() ? summary.trim() : null;
+}
+
 export function epicKeyFromIssue(issue: JiraIssue, epicFieldId: string | null): string | null {
   if (epicFieldId) {
     // The Epic Link custom field carries the epic's key as a bare string.
