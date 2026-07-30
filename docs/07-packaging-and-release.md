@@ -110,6 +110,21 @@ gh release edit v0.30.0 --draft=false
 Nothing is served to users until the draft is promoted, and un-publishing it rolls the
 release back. `pnpm package:local` is the escape hatch that uploads nothing.
 
+**Promote LAST — after every platform has uploaded.** `--publish onTagOrDraft` will only
+write to a *draft*, so once the release is published electron-builder refuses it:
+
+```
+GitHub release not created  reason=existing type not compatible with publishing type
+  tag=v0.33.0 existingType=release publishingType=draft
+skipped publishing  file=claude-orchestrator-0.33.0.AppImage
+```
+
+It says *skipped*, not *failed*, and exits 0 — so a Linux build that uploaded nothing
+looks exactly like one that worked. v0.33.0 was promoted after Windows and before Linux,
+and the artifacts had to go up with `gh release upload` afterwards. Either keep the draft
+until both platforms are done, or flip it back with `gh release edit vX.Y.Z --draft=true`
+before re-running.
+
 **Why builder publishes instead of `gh release create`.** `gh` rewrites spaces in
 uploaded asset names to dots, while `latest.yml` records the filename electron-builder
 wrote — so a hand-uploaded `Claude Orchestrator-x.y.z-setup.exe` arrived as
@@ -283,5 +298,11 @@ self-update without it.
    that only shows up after install.
 7. Confirm the draft carries `latest.yml` (and `latest-linux.yml`) beside the
    installers — without them nobody's app will ever see this release.
-8. Promote the draft (`gh release edit vX.Y.Z --draft=false`).
+8. Promote the draft (`gh release edit vX.Y.Z --draft=false`) — **only once every
+   platform's artifacts are on it**, for the reason above.
 9. Tag `vX.Y.Z` (annotated) and push with `--follow-tags`.
+
+If artifacts have to be uploaded by hand after promotion, `gh release upload` works, but
+check the asset names against `latest*.yml` afterwards: `gh` rewrites spaces in filenames
+to dots, and a feed naming a file that is not on the release is a release nobody can
+update to.
