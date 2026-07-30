@@ -224,6 +224,42 @@ const useStyles = makeStyles({
     justifyContent: 'center',
   },
   stepDot: { width: '8px', height: '8px', borderRadius: '50%', flexShrink: 0 },
+  /**
+   * The pipeline's stages on an MR row, one dot each.
+   *
+   * `minWidth` is the fixed slot the single dot used to occupy, so a one-stage pipeline
+   * still starts its title exactly where every step row above it does; more stages grow
+   * rightwards from there. `flexShrink: 0` because the title beside it is the elastic
+   * element — a pipeline that lost a dot to make room for two more characters of a branch
+   * name would be lying about the pipeline.
+   */
+  stageDots: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '3px',
+    minWidth: '16px',
+    flexShrink: 0,
+  },
+  /** 6px, against the step dot's 8px: several in a row read as a group, not as a queue. */
+  stageDot: { width: '6px', height: '6px', borderRadius: '50%', flexShrink: 0 },
+  /**
+   * A stage the runners are on, blinking between the spinner's two cyans — the same pair
+   * `MergeRequests.stageDotRunning` and the agent glyph use, so "working" looks like one
+   * thing whether you are reading the card or the pane.
+   */
+  stageDotRunning: {
+    animationName: {
+      '0%, 100%': { backgroundColor: FLUO.cyanDeep },
+      '50%': { backgroundColor: FLUO.cyan },
+    },
+    animationDuration: '1s',
+    animationIterationCount: 'infinite',
+    animationTimingFunction: 'ease-in-out',
+    '@media (prefers-reduced-motion: reduce)': {
+      animationName: 'none',
+      backgroundColor: FLUO.cyan,
+    },
+  },
   stepTitle: {
     flex: 1,
     minWidth: 0,
@@ -789,12 +825,46 @@ export function TaskCard({
                 // stopPropagation keeps the click from also selecting the card behind it.
                 onClick={(e) => e.stopPropagation()}
               >
-                <span className={styles.stepSlot} title={`Pipeline: ${mr.pipelineStatus}`}>
+                {/* One dot per pipeline STAGE, in pipeline order — the same reading the
+                    detail pane gives, at the size a card row can afford. A single dot said
+                    whether CI was green; these say how far it got and which part broke,
+                    which is the question you have while an MR sits there. Names don't fit
+                    on this row, so they live in the tooltip.
+
+                    Falls back to the one overall dot when the stages are empty — that means
+                    the jobs endpoint was permission-gated, NOT that a pipeline has no
+                    stages, so inventing dots from the overall status would be a claim we
+                    cannot make. */}
+                {mr.pipelineStages.length > 0 ? (
                   <span
-                    className={styles.stepDot}
-                    style={{ backgroundColor: PIPELINE_COLOR[mr.pipelineStatus] }}
-                  />
-                </span>
+                    className={styles.stageDots}
+                    title={mr.pipelineStages.map((s) => `${s.name}: ${s.status}`).join('\n')}
+                  >
+                    {mr.pipelineStages.map((stage) => (
+                      <span
+                        key={stage.name}
+                        className={mergeClasses(
+                          styles.stageDot,
+                          stage.status === 'running' && styles.stageDotRunning,
+                        )}
+                        // The keyframes own the colour while running, so setting it here
+                        // too would only be the value they immediately override.
+                        style={
+                          stage.status === 'running'
+                            ? undefined
+                            : { backgroundColor: PIPELINE_COLOR[stage.status] }
+                        }
+                      />
+                    ))}
+                  </span>
+                ) : (
+                  <span className={styles.stepSlot} title={`Pipeline: ${mr.pipelineStatus}`}>
+                    <span
+                      className={styles.stepDot}
+                      style={{ backgroundColor: PIPELINE_COLOR[mr.pipelineStatus] }}
+                    />
+                  </span>
+                )}
                 {/* The MR's own name, clipped by `stepTitle`'s ellipsis — what it IS. The
                     source branch used to sit here, which answers where it lives instead.
                     `mrLabel` prefers the local rename when there is one; the tooltip always
