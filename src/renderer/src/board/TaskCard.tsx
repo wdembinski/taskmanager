@@ -90,11 +90,54 @@ import {
 const AGENT_ICON_SIZE = '16px';
 
 /**
- * One period of the running band's sweep, in px. Wider than any card so a single crest is
- * on screen at a time, and shared by the background size and the keyframes — they must
- * agree to the pixel or the loop stops being seamless. See `runningBand`.
+ * The running band's geometry — see `runningBand` for what it draws.
+ *
+ * The band is a repeating gradient tilted `ANGLE` off vertical, swept along its OWN axis
+ * rather than straight sideways. CSS measures a gradient angle clockwise from "to top", so a
+ * θ gradient points along `(sin θ, −cos θ)` in screen coordinates (y growing downwards) —
+ * which is where `DX`/`DY` come from. One cycle travels exactly `PERIOD` along that axis, so
+ * the last frame is identical to the first and the loop has no seam.
+ *
+ * Derived rather than typed out: an angle and a travel vector that disagree would show up as
+ * a slow drift with a jump once per cycle, which is precisely the artefact this is built to
+ * avoid, and is not a thing anyone would spot by reading two number literals.
  */
-const RUN_BAND_TILE = 640;
+const RUN_BAND_ANGLE = 100;
+const RUN_BAND_PERIOD = 760;
+const RUN_BAND_RAD = (RUN_BAND_ANGLE * Math.PI) / 180;
+const RUN_BAND_DX = (RUN_BAND_PERIOD * Math.sin(RUN_BAND_RAD)).toFixed(2);
+const RUN_BAND_DY = (RUN_BAND_PERIOD * -Math.cos(RUN_BAND_RAD)).toFixed(2);
+
+/** `FLUO.cyan` (#22E4FF) as channels, so the band can vary only its alpha. */
+const RUN_BAND_RGB = '34, 228, 255';
+const runBandCyan = (alpha: number): string => `rgba(${RUN_BAND_RGB}, ${alpha})`;
+
+/**
+ * The crest, sampled as a RAISED COSINE — `0.5 · (1 − cos 2πt)` at each eighth — instead of
+ * the three stops it had before.
+ *
+ * This is the fix for the line you could see in the middle of the sweep. A gradient with few
+ * stops is piecewise LINEAR, so its slope changes abruptly at each stop, and vision
+ * exaggerates exactly that into a bright edge (Mach banding) — the crest read as a drawn line
+ * rather than as light. A raised cosine has zero slope where it meets the transparent gap and
+ * turns over smoothly at the peak, so there is no step in the slope left to exaggerate.
+ *
+ * The peak is 0.45 — bright enough that the crest still reads as cyan once composited over
+ * the card's near-black fill, where 0.30 landed on a greyish teal. It is paired with
+ * `runningText`, and the two must not be changed apart: this number is what the white text
+ * under the band is contrast-checked against.
+ */
+const RUN_BAND_BELL = [0, 0.066, 0.225, 0.384, 0.45, 0.384, 0.225, 0.066, 0];
+/** Where the crest starts, and how far apart its samples sit. Gap + crest + gap = PERIOD. */
+const RUN_BAND_CREST_START = 120;
+const RUN_BAND_STEP = 65;
+const RUN_BAND_STOPS = [
+  `${runBandCyan(0)} 0px`,
+  ...RUN_BAND_BELL.map(
+    (alpha, i) => `${runBandCyan(alpha)} ${RUN_BAND_CREST_START + i * RUN_BAND_STEP}px`,
+  ),
+  `${runBandCyan(0)} ${RUN_BAND_PERIOD}px`,
+].join(', ');
 
 const useStyles = makeStyles({
   card: {
@@ -224,51 +267,65 @@ const useStyles = makeStyles({
   dragging: { opacity: 0.5 },
   titleRow: { display: 'flex', alignItems: 'center', gap: '8px' },
   /**
-   * "An agent is working on this card", as a slow cyan sweep behind the card's whole top
+   * "An agent is working on this card", as a slow fluo-cyan sweep behind the card's whole top
    * section — title, chips, note, project, epic, and the JIRA/priority footer. It sits on
    * `body`, which already ends exactly where the Steps and Merge requests sections begin,
    * so the band needs no wrapper and no negative margins: the sweep runs edge to edge and
    * the card's own `overflow: hidden` + radius clip it into the corners.
    *
-   * The alpha is the whole design. The crest is 30% cyan over the card's own fill, which
-   * leaves the title's #CCCCCC comfortably past 7:1 — the band has to be noticeable across a
-   * column of cards while never making the card harder to read than a card at rest. Anything
-   * saturated enough to "look" active turned the title into low-contrast text on teal.
+   * **It travels along the gradient's own axis**, not straight sideways. `RUN_BAND_DX/DY`
+   * are the angle resolved into a screen vector, so one cycle is a diagonal slide of exactly
+   * one `RUN_BAND_PERIOD` down-and-right — the direction the gradient points.
    *
-   * `background-position` is animated rather than the colours: sliding one gradient sweeps a
-   * highlight across without recomputing a single colour stop.
+   * **No tiling.** The earlier version repeated a fixed-width tile, which meant a tile
+   * boundary existed at all and only stayed invisible because the card was short enough to
+   * keep the seam inside the gradient's transparent ends. A `repeating-linear-gradient` has
+   * no boundary to hide: the stripes are absolute px along the gradient line, so the pattern
+   * is defined everywhere and its phase cannot depend on how tall the card grew. The image is
+   * simply oversized by the travel vector and slid back to `0 0`, so it always covers the
+   * card and the last frame is identical to the first.
    *
-   * The loop is SEAMLESS, which the first version was not. It swept a single no-repeat
-   * gradient off one edge and then snapped it back to the other, so every 2.6s the card
-   * visibly jumped. Here the gradient is a tile that is transparent at both ends, tiled with
-   * `repeat-x`, and the animation slides it by EXACTLY one tile width — the last frame is
-   * pixel-identical to the first, so there is no seam to see. The tile is wider than a card,
-   * so only one crest is ever on screen; it just arrives again instead of restarting.
+   * The peak is 45% cyan, which is what makes it read as fluo rather than as a grey-teal
+   * wash — 30% composited over the card's near-black fill lands on rgb(39,97,105), a colour
+   * with very little cyan left in it. That brightening is only affordable because
+   * `runningText` lifts every line under the band to white for as long as it runs: white on
+   * the crest is 4.79:1, against 4.35:1 for the old #CCCCCC on the old dimmer crest. Both the
+   * band and the text got brighter, and the card is more legible running than it was.
    */
   runningBand: {
-    backgroundImage:
-      'linear-gradient(100deg, transparent 18%, rgba(34, 228, 255, 0.10) 38%, ' +
-      'rgba(34, 228, 255, 0.30) 50%, rgba(34, 228, 255, 0.10) 62%, transparent 82%)',
-    // Fixed px, not a %: a percentage background-position is resolved against
-    // (box width − image width), so the travel would differ per card and could never be
-    // made to land exactly one tile along. The tile has to be a length for the loop to close.
-    backgroundSize: `${RUN_BAND_TILE}px 100%`,
-    backgroundRepeat: 'repeat-x',
+    backgroundImage: `repeating-linear-gradient(${RUN_BAND_ANGLE}deg, ${RUN_BAND_STOPS})`,
+    // Oversized by exactly the travel, so the image still covers the card at both ends of
+    // the slide and `no-repeat` is safe — which is what removes the tile seam entirely.
+    backgroundSize: `calc(100% + ${RUN_BAND_DX}px) calc(100% + ${RUN_BAND_DY}px)`,
+    backgroundRepeat: 'no-repeat',
     animationName: {
-      from: { backgroundPosition: '0 0' },
-      to: { backgroundPosition: `${RUN_BAND_TILE}px 0` },
+      from: { backgroundPosition: `${-Number(RUN_BAND_DX)}px ${-Number(RUN_BAND_DY)}px` },
+      to: { backgroundPosition: '0px 0px' },
     },
-    // ~160px/s, the speed the old band read at, now over a full tile.
-    animationDuration: '4s',
+    // ~160px/s along the axis, the speed the band has always read at.
+    animationDuration: '4.8s',
     animationIterationCount: 'infinite',
     animationTimingFunction: 'linear',
-    // The state still has to be visible without motion, so it becomes an even wash.
+    // The state still has to be visible without motion, so it becomes an even wash — at the
+    // bell's midpoint rather than its peak, since a still surface is read, not glanced at.
     '@media (prefers-reduced-motion: reduce)': {
       animationName: 'none',
-      backgroundImage:
-        'linear-gradient(100deg, rgba(34, 228, 255, 0.16), rgba(34, 228, 255, 0.16))',
+      backgroundImage: `linear-gradient(${runBandCyan(0.26)}, ${runBandCyan(0.26)})`,
     },
   },
+  /**
+   * Every line of text sitting on the band, while it runs.
+   *
+   * Not decoration — it is what pays for the crest being bright enough to look fluo. The card
+   * is at its most colourful exactly where its text is, so the two have to move together: at
+   * 45% cyan, #CCCCCC would fall to 2.98:1 and the #ADADAD captions to 2.13:1, both far below
+   * AA. White holds 4.79:1 at the very peak and 7.84:1 through the body of the bell.
+   *
+   * Applied per element with `mergeClasses` rather than as a `& > *` rule on the band: the
+   * captions set their own `color`, and a descendant selector would tie with theirs on
+   * specificity and be settled by whichever class Griffel happened to insert last.
+   */
+  runningText: { color: '#FFFFFF' },
   icon: { fontSize: '18px', flexShrink: 0, display: 'flex' },
   title: { lineHeight: '18px', flex: 1, minWidth: 0 },
   project: { color: tokens.colorNeutralForeground3 },
@@ -479,6 +536,9 @@ export function TaskCard({
   const cardLabel = cardRunLabel(run, isAgentAssigned(task));
   // Only the ticket badge carries the JIRA signal, so the ring's reason is legible.
   const jiraUnread = hasUnreadJira(task);
+  // Applied to every line the band runs behind, and gated on the SAME flag that draws it, so
+  // the text can never be lifted onto a band that isn't there (or left dim on one that is).
+  const onBand = run.spinner && styles.runningText;
 
   return (
     <div
@@ -503,12 +563,18 @@ export function TaskCard({
       <div className={mergeClasses(styles.body, run.spinner && styles.runningBand)}>
         <div className={styles.titleRow}>
           <span className={styles.icon}>{typeIcon(task)}</span>
-          <Text weight="semibold" className={styles.title}>
+          <Text weight="semibold" className={mergeClasses(styles.title, onBand)}>
             {task.title}
           </Text>
           {progress.total > 0 && (
             <Caption1
-              className={mergeClasses(styles.progress, stopped && styles.progressStopped)}
+              className={mergeClasses(
+                styles.progress,
+                stopped && styles.progressStopped,
+                // Not while stopped: that word is orange because the chain needs a human, and
+                // whitening it would delete the signal to make the band look tidier.
+                !stopped && onBand,
+              )}
               title={
                 stopped
                   ? `${progress.done} of ${progress.total} steps done — the chain has stopped at a step that needs you`
@@ -538,7 +604,7 @@ export function TaskCard({
           )}
           {/* Only the states the pulse cannot express — see `cardRunLabel`. */}
           {cardLabel && (
-            <Caption1 className={styles.runLabel} title={cardLabel}>
+            <Caption1 className={mergeClasses(styles.runLabel, onBand)} title={cardLabel}>
               {cardLabel}
             </Caption1>
           )}
@@ -567,7 +633,9 @@ export function TaskCard({
             because it is the thing that changes, and the thing you scan for. */}
         {task.statusNote && (
           <Caption1
-            className={styles.statusNote}
+            className={mergeClasses(styles.statusNote, onBand)}
+            // A note with a status colour keeps it: the inline style outranks both classes, and
+            // that colour is the note's meaning rather than its styling.
             style={noteColor ? { color: noteColor } : undefined}
             title={task.statusNote}
           >
@@ -576,14 +644,16 @@ export function TaskCard({
         )}
 
         {display.showProjectName && projectName && (
-          <Caption1 className={styles.project}>Project: {projectName}</Caption1>
+          <Caption1 className={mergeClasses(styles.project, onBand)}>
+            Project: {projectName}
+          </Caption1>
         )}
 
         {/* The name when the sync has it, the key until then — a key is still an answer
             to "which epic", where an empty line looks like the toggle is broken. */}
         {display.showEpicName && (task.externalEpicName || task.externalParentKey) && (
           <Caption1
-            className={styles.project}
+            className={mergeClasses(styles.project, onBand)}
             title={`Epic: ${task.externalEpicName ?? task.externalParentKey}`}
           >
             Epic: {task.externalEpicName ?? task.externalParentKey}
