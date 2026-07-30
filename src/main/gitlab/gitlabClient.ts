@@ -46,9 +46,23 @@ export interface GitLabMergeRequest {
   target_branch: string;
   updated_at: string;
   references?: { full?: string } | null;
-  head_pipeline?: { status?: string; web_url?: string } | null;
-  pipeline?: { status?: string; web_url?: string } | null;
+  head_pipeline?: { id?: number; status?: string; web_url?: string } | null;
+  pipeline?: { id?: number; status?: string; web_url?: string } | null;
   reviewers?: Array<{ id: number; username?: string }> | null;
+}
+
+/**
+ * One job of a pipeline. `stage` is the only place GitLab exposes a pipeline's stages, so
+ * these are what `pipelineStages.ts` folds. `allow_failure` matters: a job that fails
+ * without failing the pipeline must not paint its stage red.
+ */
+export interface GitLabJob {
+  id?: number;
+  name?: string;
+  stage?: string;
+  status?: string;
+  allow_failure?: boolean;
+  web_url?: string;
 }
 
 export interface GitLabApprovals {
@@ -177,6 +191,22 @@ export class GitLabClient {
       `/projects/${projectId}/merge_requests/${iid}/reviewers`,
     );
     return Array.isArray(body) ? (body as GitLabReviewer[]) : [];
+  }
+
+  /**
+   * A pipeline's jobs, newest first — the only route to its stages, which GitLab does not
+   * expose on their own. Permission-gated on some instances (a 403 for a token that can
+   * read the MR but not its CI), so the caller degrades to the overall status.
+   *
+   * One page of 100: a pipeline with more jobs than that would make the stage row
+   * unreadable anyway, and every stage still appears as long as its first job is on the
+   * page — `include_retried` is left off so retries do not crowd it out.
+   */
+  async listPipelineJobs(projectId: number, pipelineId: number): Promise<GitLabJob[]> {
+    const body = await this.request<unknown>(
+      `/projects/${projectId}/pipelines/${pipelineId}/jobs?per_page=100`,
+    );
+    return Array.isArray(body) ? (body as GitLabJob[]) : [];
   }
 
   /**

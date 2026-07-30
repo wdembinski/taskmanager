@@ -16,6 +16,7 @@
 import {
   type MergeRequest,
   type MergeRequestState,
+  type PipelineStage,
   type PipelineStatus,
 } from '@shared/mergeRequest';
 import { gitlabAuthorIsMe, type GitLabIdentityCache } from './identity';
@@ -35,6 +36,7 @@ export interface FetchedMergeRequest {
   state: MergeRequestState;
   draft: boolean;
   pipelineStatus: PipelineStatus;
+  pipelineStages: PipelineStage[];
   pipelineUrl: string | null;
   approvalsRequired: number | null;
   approvalsGiven: number;
@@ -163,6 +165,7 @@ export function reconcileMergeRequests(
       state: mr.state,
       draft: mr.draft,
       pipelineStatus: mr.pipelineStatus,
+      pipelineStages: mr.pipelineStages,
       pipelineUrl: mr.pipelineUrl,
       approvalsRequired: mr.approvalsRequired,
       approvalsGiven: mr.approvalsGiven,

@@ -268,6 +268,7 @@ describe('sortCards', () => {
       state: 'opened',
       draft: false,
       pipelineStatus: 'failed',
+      pipelineStages: [],
       pipelineUrl: null,
       approvalsRequired: 1,
       approvalsGiven: 0,

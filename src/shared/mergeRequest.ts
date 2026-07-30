@@ -25,6 +25,18 @@ export type PipelineStatus =
   | 'skipped'
   | 'manual';
 
+/**
+ * One stage of the head pipeline, folded from its jobs.
+ *
+ * A single overall status answers "is CI green", but not "how far has it got" or "which
+ * part broke" — which is the question you actually have while an MR waits. GitLab has no
+ * stage endpoint, so these are derived from the pipeline's jobs (see `pipelineStages.ts`).
+ */
+export interface PipelineStage {
+  name: string;
+  status: PipelineStatus;
+}
+
 export interface MergeRequest {
   /** `gl-{projectId}-{iid}` — stable across syncs and unique per instance. */
   id: string;
@@ -44,6 +56,12 @@ export interface MergeRequest {
   draft: boolean;
   pipelineStatus: PipelineStatus;
   pipelineUrl: string | null;
+  /**
+   * The head pipeline's stages, in pipeline order. Empty when the jobs could not be read
+   * (the endpoint is permission-gated on some instances) — never a claim that a pipeline
+   * has no stages, so the UI falls back to the single overall status.
+   */
+  pipelineStages: PipelineStage[];
   /**
    * How many approvals the project requires, or null when we could not find out —
    * `/approvals` is tier-gated and 403s on some instances. Null must render as

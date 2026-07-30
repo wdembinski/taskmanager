@@ -9,6 +9,7 @@
  * clearing one must never silence the other. Reading a discussion after CI went red
  * should not quietly hide the fact that CI went red.
  */
+import React from 'react';
 import { Badge, Body1, Button, Caption1, makeStyles, tokens } from '@fluentui/react-components';
 import { UNREAD_ORANGE } from '@shared/accent';
 import {
@@ -18,6 +19,7 @@ import {
   type MergeRequest,
   type PipelineStatus,
 } from '@shared/mergeRequest';
+import { PIPELINE_COLOR } from './theme';
 
 const useStyles = makeStyles({
   root: { display: 'flex', flexDirection: 'column', gap: '8px' },
@@ -38,6 +40,23 @@ const useStyles = makeStyles({
   link: { color: tokens.colorBrandForegroundLink, textDecoration: 'none' },
   meta: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' },
   actions: { display: 'flex', gap: '6px', flexWrap: 'wrap' },
+  /**
+   * The stage row. Reads left to right in pipeline order, so it doubles as a progress
+   * indicator: where the green stops is how far CI got.
+   */
+  stages: { display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' },
+  stage: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '4px',
+    padding: '1px 6px',
+    borderRadius: tokens.borderRadiusSmall,
+    backgroundColor: tokens.colorNeutralBackground4,
+    color: tokens.colorNeutralForeground2,
+  },
+  stageDot: { width: '6px', height: '6px', borderRadius: '50%', flexShrink: 0 },
+  /** The arrow between stages — a separator, not a stage, so it never takes a dot. */
+  stageArrow: { color: tokens.colorNeutralForeground4 },
 });
 
 /** How a pipeline status should read: colour and words. */
@@ -124,6 +143,28 @@ export function MergeRequests({
                 {mr.sourceBranch} → {mr.targetBranch}
               </Caption1>
             </div>
+
+            {/* Every stage, in pipeline order. The overall badge above says whether CI is
+                green; this says how far it got and which part broke — the question you
+                actually have while an MR sits there. Absent when the jobs could not be
+                read (the endpoint is permission-gated), rather than faked from the
+                overall status. */}
+            {mr.pipelineStages.length > 0 && (
+              <div className={styles.stages}>
+                {mr.pipelineStages.map((stage, i) => (
+                  <React.Fragment key={stage.name}>
+                    {i > 0 && <Caption1 className={styles.stageArrow}>›</Caption1>}
+                    <Caption1 className={styles.stage} title={`${stage.name}: ${stage.status}`}>
+                      <span
+                        className={styles.stageDot}
+                        style={{ backgroundColor: PIPELINE_COLOR[stage.status] }}
+                      />
+                      {stage.name}
+                    </Caption1>
+                  </React.Fragment>
+                ))}
+              </div>
+            )}
 
             {reason && <Caption1 style={{ color: UNREAD_ORANGE }}>{reason}</Caption1>}
 

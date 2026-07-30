@@ -41,7 +41,12 @@ import type { JiraEpicFieldCache } from './jira/epicField';
 import type { JiraSprintFieldCache } from './jira/jiraSprint';
 import type { JiraIdentityCache } from './jira/identity';
 import type { GitLabIdentityCache } from './gitlab/identity';
-import type { MergeRequest, MergeRequestState, PipelineStatus } from '@shared/mergeRequest';
+import type {
+  MergeRequest,
+  MergeRequestState,
+  PipelineStage,
+  PipelineStatus,
+} from '@shared/mergeRequest';
 import type { AttentionItem } from '@shared/attention';
 import type { ParsedTask } from './planParser';
 import { splitProjectTag } from './projectTagMigration';
@@ -486,6 +491,7 @@ export function createStore(dbPath: string): Store {
       state             TEXT NOT NULL,
       draft             INTEGER NOT NULL,
       pipelineStatus    TEXT NOT NULL,
+      pipelineStages    TEXT,               -- JSON array of {name,status}; NULL = not read
       pipelineUrl       TEXT,
       approvalsRequired INTEGER,            -- NULL = the instance would not say
       approvalsGiven    INTEGER NOT NULL,
@@ -566,6 +572,16 @@ export function createStore(dbPath: string): Store {
   // colour, hence no stripe — which is exactly how every board looked before.
   if (!projectColumns.some((c) => c.name === 'color')) {
     db.exec(`ALTER TABLE projects ADD COLUMN color TEXT`);
+  }
+
+  // Migrate databases created before per-stage pipeline detail. NULL reads back as [], and
+  // the UI falls back to the single overall status for those rows — exactly how every MR
+  // looked before. The next sync of an MR fills its stages in.
+  const mrColumns = db.prepare(`PRAGMA table_info(merge_requests)`).all() as Array<{
+    name: string;
+  }>;
+  if (!mrColumns.some((c) => c.name === 'pipelineStages')) {
+    db.exec(`ALTER TABLE merge_requests ADD COLUMN pipelineStages TEXT`);
   }
 
   // Migrate databases created before Phase 8 added the task source column. Existing
@@ -863,6 +879,8 @@ export function createStore(dbPath: string): Store {
     state: string;
     draft: number;
     pipelineStatus: string;
+    /** JSON array of {name,status}; NULL on rows written before stages existed. */
+    pipelineStages: string | null;
     pipelineUrl: string | null;
     approvalsRequired: number | null;
     approvalsGiven: number;
@@ -884,6 +902,19 @@ export function createStore(dbPath: string): Store {
     } catch {
       issueKeys = []; // corrupt JSON — the next sync rediscovers them
     }
+    let pipelineStages: PipelineStage[] = [];
+    try {
+      const parsed: unknown = JSON.parse(r.pipelineStages ?? '[]');
+      if (Array.isArray(parsed)) {
+        pipelineStages = parsed.filter(
+          (s): s is PipelineStage =>
+            typeof (s as PipelineStage)?.name === 'string' &&
+            typeof (s as PipelineStage)?.status === 'string',
+        );
+      }
+    } catch {
+      pipelineStages = []; // corrupt JSON — the next sync refetches the jobs
+    }
     return {
       id: r.id,
       taskId: r.taskId,
@@ -898,6 +929,7 @@ export function createStore(dbPath: string): Store {
       state: r.state as MergeRequestState,
       draft: r.draft === 1,
       pipelineStatus: r.pipelineStatus as PipelineStatus,
+      pipelineStages,
       pipelineUrl: r.pipelineUrl,
       approvalsRequired: r.approvalsRequired,
       approvalsGiven: r.approvalsGiven,
@@ -919,12 +951,14 @@ export function createStore(dbPath: string): Store {
   const upsertMergeRequestStmt = db.prepare(
     `INSERT INTO merge_requests
        (id, taskId, provider, gitlabProjectId, projectPath, iid, title, webUrl,
-        sourceBranch, targetBranch, state, draft, pipelineStatus, pipelineUrl,
+        sourceBranch, targetBranch, state, draft, pipelineStatus, pipelineStages,
+        pipelineUrl,
         approvalsRequired, approvalsGiven, changesRequested, issueKeys,
         latestNoteAt, lastReadAt, lastEventAt, lastEventSeenAt, updatedAt, syncedAt)
      VALUES
        (@id, @taskId, @provider, @gitlabProjectId, @projectPath, @iid, @title, @webUrl,
-        @sourceBranch, @targetBranch, @state, @draft, @pipelineStatus, @pipelineUrl,
+        @sourceBranch, @targetBranch, @state, @draft, @pipelineStatus, @pipelineStages,
+        @pipelineUrl,
         @approvalsRequired, @approvalsGiven, @changesRequested, @issueKeys,
         @latestNoteAt, @lastReadAt, @lastEventAt, @lastEventSeenAt, @updatedAt, @syncedAt)
      ON CONFLICT(id) DO UPDATE SET
@@ -932,7 +966,8 @@ export function createStore(dbPath: string): Store {
        title = excluded.title, webUrl = excluded.webUrl,
        sourceBranch = excluded.sourceBranch, targetBranch = excluded.targetBranch,
        state = excluded.state, draft = excluded.draft,
-       pipelineStatus = excluded.pipelineStatus, pipelineUrl = excluded.pipelineUrl,
+       pipelineStatus = excluded.pipelineStatus,
+       pipelineStages = excluded.pipelineStages, pipelineUrl = excluded.pipelineUrl,
        approvalsRequired = excluded.approvalsRequired,
        approvalsGiven = excluded.approvalsGiven,
        changesRequested = excluded.changesRequested, issueKeys = excluded.issueKeys,
@@ -1650,6 +1685,7 @@ export function createStore(dbPath: string): Store {
         draft: mr.draft ? 1 : 0,
         changesRequested: mr.changesRequested ? 1 : 0,
         issueKeys: JSON.stringify(mr.issueKeys),
+        pipelineStages: JSON.stringify(mr.pipelineStages ?? []),
       });
     },
 

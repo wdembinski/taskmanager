@@ -23,6 +23,7 @@ import {
   type GitLabClient,
   type GitLabMergeRequest,
 } from './gitlabClient';
+import { stagesFromJobs } from './pipelineStages';
 import type { FetchedMergeRequest } from './gitlabSync';
 
 /** `references.full` is `group/repo!12`; the path is everything before the `!`. */
@@ -88,6 +89,17 @@ export async function describeMergeRequest(
   const pipelineStatus =
     readStatus === 'unknown' ? (prior?.pipelineStatus ?? readStatus) : readStatus;
 
+  // Stages come from the pipeline's jobs, so they are only re-read when the MR was worth
+  // re-reading at all. An empty result keeps what we had: the jobs endpoint is
+  // permission-gated, and blanking the stage row on a 403 would look like a pipeline that
+  // lost its stages.
+  let pipelineStages = prior?.pipelineStages ?? [];
+  if (stale && typeof pipeline?.id === 'number') {
+    const jobs = await client.listPipelineJobs(projectId, pipeline.id).catch(() => []);
+    const stages = stagesFromJobs(jobs);
+    if (stages.length > 0) pipelineStages = stages;
+  }
+
   return {
     gitlabProjectId: projectId,
     iid,
@@ -100,6 +112,7 @@ export async function describeMergeRequest(
     state: toMergeRequestState(detail.state ?? listed.state),
     draft: detail.draft ?? detail.work_in_progress ?? false,
     pipelineStatus,
+    pipelineStages,
     pipelineUrl: pipeline?.web_url ?? prior?.pipelineUrl ?? null,
     approvalsRequired,
     approvalsGiven,

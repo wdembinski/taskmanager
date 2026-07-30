@@ -15,6 +15,7 @@
  */
 import { tokens, type Theme } from '@fluentui/react-components';
 import { UNREAD_ORANGE } from '@shared/accent';
+import type { PipelineStatus } from '@shared/mergeRequest';
 
 /**
  * The mono stack, written out in a dozen `makeStyles` blocks before this existed.
@@ -132,6 +133,25 @@ export function scaleTheme(base: Theme, basePx: number): Theme {
   }
   return scaled as unknown as Theme;
 }
+
+/**
+ * A pipeline status as a dot colour.
+ *
+ * Stated once because three surfaces draw it — the card's MR row, the detail pane's, and
+ * now the per-stage row — and a pipeline that is green on the card and grey in the pane
+ * looks like two pipelines. Keyed by `PipelineStatus` so a new status cannot be forgotten.
+ */
+export const PIPELINE_COLOR: Record<PipelineStatus, string> = {
+  unknown: tokens.colorNeutralForeground4,
+  created: tokens.colorNeutralForeground4,
+  pending: tokens.colorNeutralForeground4,
+  manual: tokens.colorNeutralForeground4,
+  skipped: tokens.colorNeutralForeground4,
+  running: tokens.colorBrandBackground,
+  success: tokens.colorPaletteGreenBackground3,
+  failed: tokens.colorPaletteRedBackground3,
+  canceled: ACCENT.unread,
+};
 
 /** The single `<Toaster>`'s id. Shared so any screen can dispatch into the same surface. */
 export const TOASTER_ID = 'app-toaster';

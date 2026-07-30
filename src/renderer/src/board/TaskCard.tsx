@@ -65,14 +65,9 @@ import { statusNoteColor, type StatusKeyword } from '@shared/statusKeywords';
 import { DEFAULT_BOARD_DISPLAY, type BoardDisplaySettings } from '@shared/settings';
 import { STATUS_COLOR, STATUS_LABEL } from '../taskStatus';
 import { columnForStatus, statusForColumn, subtaskProgress } from './boardColumns';
-import { ACCENT, ATTENTION_TINT, RING } from '../theme';
+import { ACCENT, ATTENTION_TINT, PIPELINE_COLOR, RING } from '../theme';
 import { JiraMark } from '../JiraMark';
-import {
-  approvalSummary,
-  mrAttentionReason,
-  type MergeRequest,
-  type PipelineStatus,
-} from '@shared/mergeRequest';
+import { approvalSummary, mrAttentionReason, type MergeRequest } from '@shared/mergeRequest';
 
 
 /**
@@ -294,19 +289,6 @@ const EPIC_PURPLE = ACCENT.epicPurple;
  * `in-review` borrows the epic violet: it is the one column that is neither work in
  * flight nor work finished.
  */
-/** A pipeline's dot, in the same vocabulary the step dots use. */
-const PIPELINE_DOT_COLOR: Record<PipelineStatus, string> = {
-  unknown: tokens.colorNeutralForeground4,
-  created: tokens.colorNeutralForeground4,
-  pending: tokens.colorNeutralForeground4,
-  manual: tokens.colorNeutralForeground4,
-  skipped: tokens.colorNeutralForeground4,
-  running: tokens.colorBrandBackground,
-  success: tokens.colorPaletteGreenBackground3,
-  failed: tokens.colorPaletteRedBackground3,
-  canceled: ACCENT.unread,
-};
-
 const STEP_DOT_COLOR: Record<TaskStatus, string> = {
   pending: tokens.colorNeutralForeground4,
   'in-progress': tokens.colorBrandBackground,
@@ -691,7 +673,7 @@ export function TaskCard({
                 <span className={styles.stepSlot} title={`Pipeline: ${mr.pipelineStatus}`}>
                   <span
                     className={styles.stepDot}
-                    style={{ backgroundColor: PIPELINE_DOT_COLOR[mr.pipelineStatus] }}
+                    style={{ backgroundColor: PIPELINE_COLOR[mr.pipelineStatus] }}
                   />
                 </span>
                 <Caption1 className={styles.stepTitle}>{`!${mr.iid} ${mr.sourceBranch}`}</Caption1>
