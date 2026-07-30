@@ -89,6 +89,13 @@ import {
  */
 const AGENT_ICON_SIZE = '16px';
 
+/**
+ * One period of the running band's sweep, in px. Wider than any card so a single crest is
+ * on screen at a time, and shared by the background size and the keyframes — they must
+ * agree to the pixel or the loop stops being seamless. See `runningBand`.
+ */
+const RUN_BAND_TILE = 640;
+
 const useStyles = makeStyles({
   card: {
     display: 'flex',
@@ -215,41 +222,44 @@ const useStyles = makeStyles({
   },
   agentIcon: { fontSize: AGENT_ICON_SIZE, flexShrink: 0, display: 'flex', color: '#ffffff' },
   dragging: { opacity: 0.5 },
-  titleRow: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-    /**
-     * Pulled out to the card's edges and padded straight back, so the running band below can
-     * span the full width. The margins and paddings cancel exactly — the row's content sits
-     * where it always did, in both states, so a card does not twitch when work starts.
-     * Clipped into the card's corners by its own `overflow: hidden` + radius.
-     */
-    margin: '-12px -12px -8px',
-    padding: '12px 12px 8px',
-  },
+  titleRow: { display: 'flex', alignItems: 'center', gap: '8px' },
   /**
-   * "An agent is working on this card", as a slow cyan sweep behind the top row.
+   * "An agent is working on this card", as a slow cyan sweep behind the card's whole top
+   * section — title, chips, note, project, epic, and the JIRA/priority footer. It sits on
+   * `body`, which already ends exactly where the Steps and Merge requests sections begin,
+   * so the band needs no wrapper and no negative margins: the sweep runs edge to edge and
+   * the card's own `overflow: hidden` + radius clip it into the corners.
    *
    * The alpha is the whole design. The crest is 30% cyan over the card's own fill, which
    * leaves the title's #CCCCCC comfortably past 7:1 — the band has to be noticeable across a
    * column of cards while never making the card harder to read than a card at rest. Anything
    * saturated enough to "look" active turned the title into low-contrast text on teal.
    *
-   * `background-position` is animated rather than the colours: the gradient is wider than the
-   * row, so sliding it sweeps a highlight across without recomputing a single colour stop.
+   * `background-position` is animated rather than the colours: sliding one gradient sweeps a
+   * highlight across without recomputing a single colour stop.
+   *
+   * The loop is SEAMLESS, which the first version was not. It swept a single no-repeat
+   * gradient off one edge and then snapped it back to the other, so every 2.6s the card
+   * visibly jumped. Here the gradient is a tile that is transparent at both ends, tiled with
+   * `repeat-x`, and the animation slides it by EXACTLY one tile width — the last frame is
+   * pixel-identical to the first, so there is no seam to see. The tile is wider than a card,
+   * so only one crest is ever on screen; it just arrives again instead of restarting.
    */
   runningBand: {
     backgroundImage:
       'linear-gradient(100deg, transparent 18%, rgba(34, 228, 255, 0.10) 38%, ' +
       'rgba(34, 228, 255, 0.30) 50%, rgba(34, 228, 255, 0.10) 62%, transparent 82%)',
-    backgroundSize: '220% 100%',
-    backgroundRepeat: 'no-repeat',
+    // Fixed px, not a %: a percentage background-position is resolved against
+    // (box width − image width), so the travel would differ per card and could never be
+    // made to land exactly one tile along. The tile has to be a length for the loop to close.
+    backgroundSize: `${RUN_BAND_TILE}px 100%`,
+    backgroundRepeat: 'repeat-x',
     animationName: {
-      from: { backgroundPosition: '-20% 0' },
-      to: { backgroundPosition: '120% 0' },
+      from: { backgroundPosition: '0 0' },
+      to: { backgroundPosition: `${RUN_BAND_TILE}px 0` },
     },
-    animationDuration: '2.6s',
+    // ~160px/s, the speed the old band read at, now over a full tile.
+    animationDuration: '4s',
     animationIterationCount: 'infinite',
     animationTimingFunction: 'linear',
     // The state still has to be visible without motion, so it becomes an even wash.
@@ -490,8 +500,8 @@ export function TaskCard({
       {projectColor && (
         <div className={styles.projectBar} style={{ backgroundColor: projectColor }} />
       )}
-      <div className={styles.body}>
-        <div className={mergeClasses(styles.titleRow, run.spinner && styles.runningBand)}>
+      <div className={mergeClasses(styles.body, run.spinner && styles.runningBand)}>
+        <div className={styles.titleRow}>
           <span className={styles.icon}>{typeIcon(task)}</span>
           <Text weight="semibold" className={styles.title}>
             {task.title}
