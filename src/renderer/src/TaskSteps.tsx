@@ -30,6 +30,7 @@ import { isAgentRunning } from '@shared/board';
 import { subtaskProgress } from './board/boardColumns';
 import { STATUS_LABEL } from './taskStatus';
 import { STATUS_INDICATOR_COLOR } from './theme';
+import { FoldToggle } from './FoldToggle';
 
 const useStyles = makeStyles({
   /**
@@ -94,6 +95,7 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
   const [showPlan, setShowPlan] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [open, setOpen] = useState(true);
 
   // Switching cards closes whatever was open on the previous one.
   useEffect(() => {
@@ -102,6 +104,9 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
     setDescription('');
     setShowPlan(false);
     setError(null);
+    // Back open on a new card: the fold is a way to get the list out of the way while
+    // reading a long conversation, not a preference to carry between cards.
+    setOpen(true);
   }, [task.id]);
 
   const progress = subtaskProgress(subtasks);
@@ -129,31 +134,42 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
   return (
     <div className={styles.box}>
       <div className={styles.head}>
-        <Text weight="semibold">Steps</Text>
-        {progress.total > 0 && (
+        {/* Folds like Description does. Open by default — this list is the card's progress
+            bar, so hiding it until asked would be a different screen. The count rides along
+            in the header, so a folded section still says whether it is worth opening. */}
+        <FoldToggle
+          open={open}
+          onToggle={() => setOpen((v) => !v)}
+          summary={progress.total > 0 ? `${progress.done}/${progress.total}` : undefined}
+        >
+          <Text weight="semibold">Steps</Text>
+        </FoldToggle>
+        {open && progress.total > 0 && (
           <Badge appearance="tint" color="informative">
             {progress.done}/{progress.total}
           </Badge>
         )}
         <span className={styles.grow} />
-        {task.agentPlan && (
+        {open && task.agentPlan && (
           <Button size="small" appearance="transparent" onClick={() => setShowPlan((v) => !v)}>
             {showPlan ? 'Hide plan' : 'Approved plan'}
           </Button>
         )}
-        <Button size="small" disabled={adding} onClick={() => setAdding(true)}>
-          Add step…
-        </Button>
+        {open && (
+          <Button size="small" disabled={adding} onClick={() => setAdding(true)}>
+            Add step…
+          </Button>
+        )}
       </div>
 
-      {subtasks.length === 0 && !adding && (
+      {open && subtasks.length === 0 && !adding && (
         <Caption1 className={styles.hint}>
           No steps yet — approve an agent&apos;s plan, or add them by hand to run this card one
           session at a time.
         </Caption1>
       )}
 
-      {showPlan && task.agentPlan && <div className={styles.plan}>{task.agentPlan}</div>}
+      {open && showPlan && task.agentPlan && <div className={styles.plan}>{task.agentPlan}</div>}
 
       {error && (
         <MessageBar intent="error">
@@ -161,7 +177,7 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
         </MessageBar>
       )}
 
-      {subtasks.length > 0 && (
+      {open && subtasks.length > 0 && (
         <div className={styles.list}>
           {subtasks.map((step, i) => (
             <div
@@ -195,7 +211,7 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
         </div>
       )}
 
-      {adding && (
+      {open && adding && (
         <div className={styles.form}>
           <Field label="Step" required>
             <Input

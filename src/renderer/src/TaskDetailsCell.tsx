@@ -23,10 +23,11 @@ import {
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
-import { ChevronDownRegular, ChevronRightRegular, DismissRegular } from '@fluentui/react-icons';
+import { DismissRegular } from '@fluentui/react-icons';
 import type { ManualStatus, Project, Task } from '@shared/model';
 import { DEFAULT_PRIORITIES, priorityColor } from '@shared/priority';
 import { MANUAL_STATUS_OPTIONS, STATUS_LABEL } from './taskStatus';
+import { FoldToggle } from './FoldToggle';
 
 /** The dropdown entry for "no priority" — a real option, since clearing must be possible. */
 const NO_PRIORITY = 'None';
@@ -39,16 +40,6 @@ const useStyles = makeStyles({
   row: { display: 'flex', alignItems: 'center', gap: '8px' },
   grow: { flex: 1, minWidth: 0 },
   hint: { color: tokens.colorNeutralForeground3 },
-  fold: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '4px',
-    background: 'none',
-    border: 'none',
-    padding: 0,
-    cursor: 'pointer',
-    color: tokens.colorNeutralForeground2,
-  },
   body: {
     whiteSpace: 'pre-wrap',
     maxHeight: '200px',
@@ -336,10 +327,9 @@ export function TaskDetailsCell({
       )}
 
       <div className={styles.row}>
-        <button type="button" className={styles.fold} onClick={() => setOpen((v) => !v)}>
-          {open ? <ChevronDownRegular /> : <ChevronRightRegular />}
+        <FoldToggle open={open} onToggle={() => setOpen((v) => !v)}>
           <Caption1>Description</Caption1>
-        </button>
+        </FoldToggle>
         <span className={styles.grow} />
         {open && !editing && (
           <Button size="small" appearance="subtle" onClick={() => setEditing(true)}>
