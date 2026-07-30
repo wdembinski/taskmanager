@@ -39,7 +39,7 @@ plan the orchestrator could one day run on its own repo.
 | 14 | Sprints on the board | ✅ shipped |
 | 15 | The board grows up (IN REVIEW, status map, priority, notes, colours) | ✅ shipped |
 | 16 | Seventeen fixes and two integrations (bugs, workspace, JIRA depth, auto-update, GitLab) | ✅ shipped (v0.30.0) |
-| 17 | Ask me, and show me what you are doing | ✅ shipped (v0.32.0) — 4 requests deferred |
+| 17 | Ask me, and show me what you are doing | ✅ shipped (v0.32.0) — all 42 items |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -1070,19 +1070,19 @@ real behaviour bugs: a card moving itself to Done, and merge requests never refr
 - [x] **20–22 — Labels, project name and epic are switchable,** from a Display menu on the
       board as well as from Settings — the board is where you notice the noise.
 
-### Still open
-
-Listed here rather than quietly dropped:
-
-- [ ] **12 — Scratch Run holds several runs,** one card each. Untouched: it is the one
-      request that is a new screen rather than a change to an existing one.
-- [ ] **15 — Big dialogs become Drawers.** The assign dialog was widened to fit its branch
-      field; the general Dialog-to-Drawer pass was not made.
-- [ ] **16 — Skeletons while loading.** `PaneLoading` still shows a spinner.
-- [ ] **22 (the NAME) — the epic's name, not its key.** `Task.externalEpicName` and its
-      column exist and the card prefers it, but the JIRA sync does not populate it yet
-      (the key comes free on the issue; the name costs a lookup of the epic itself), so
-      the card falls back to showing the key.
+- [x] **12 — Scratch Run holds several runs,** one card each, newest first, each with its
+      own transcript, status and Stop. A collapsed card is HIDDEN rather than unmounted:
+      `Transcript` replays persisted history only for a `taskId`, and a scratch run has
+      none, so unmounting would throw away everything that run had said.
+- [x] **15 — The content-heavy dialogs become Drawers.** The agent-project editor and the
+      attach-session picker; the short forms stay dialogs, where a drawer would be a lot
+      of chrome around four fields.
+- [x] **16 — Skeletons while loading.** The board gets columns of cards, the inbox and
+      agent list get rows. Screens whose layout depends on what arrives keep the spinner —
+      guessing the shape wrong is worse than not guessing.
+- [x] **22 (the NAME) — the epic's name, not its key.** Inline `parent.fields.summary`
+      where JIRA sends it free; otherwise ONE `key in (...)` lookup for every distinct
+      epic on the board. Fails soft to the key.
 
 **Shape of the work.** Contract and engine first (shared types, the four pure modules,
 then the engine and IPC), renderer groundwork second (`theme.ts`, `useAttentionIndex`,
