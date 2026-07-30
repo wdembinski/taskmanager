@@ -14,7 +14,9 @@ import {
   isAgentAssigned,
   isAgentRunning,
   needsAgentInput,
+  cardRunLabel,
   runPhase,
+  type RunState,
 } from './board';
 
 const task = (over: Partial<Task>): Task => ({
@@ -210,6 +212,41 @@ describe('parkedStep / chainNeedsAttention', () => {
       // Main-process callers have no inbox to consult; they must behave as before.
       expect(chainNeedsAttention(card, [step('s1', 'failed')])).toBe(true);
     });
+  });
+});
+
+describe('cardRunLabel', () => {
+  const state = (over: Partial<RunState>): RunState => ({
+    phase: 'idle',
+    label: '',
+    spinner: false,
+    ...over,
+  });
+
+  // The pulse on the card's agent glyph says "moving"; the 2/5 counter says how far; the step
+  // rows say which step. A fourth telling in words is what this removes.
+  it.each(['running', 'starting'] as const)('says nothing while %s on an agent card', (phase) => {
+    expect(cardRunLabel(state({ phase, label: 'Running step 2 of 5' }), true)).toBeNull();
+  });
+
+  it.each([
+    ['waiting', 'Waiting for you'],
+    ['blocked', 'Paused — usage limit'],
+    ['queued', 'Queued'],
+    ['idle', 'Assigned — not started'],
+  ] as const)('keeps the words for %s, which no animation can express', (phase, label) => {
+    expect(cardRunLabel(state({ phase, label }), true)).toBe(label);
+  });
+
+  // The exception: no agent means no glyph to pulse, so the words are all there is.
+  it('keeps a running label on a card with no agent assigned', () => {
+    const running = state({ phase: 'running', label: 'Running step 2 of 5' });
+    expect(cardRunLabel(running, false)).toBe('Running step 2 of 5');
+  });
+
+  it('has nothing to say when the phase carries no label', () => {
+    expect(cardRunLabel(state({ phase: 'done' }), true)).toBeNull();
+    expect(cardRunLabel(state({ phase: 'idle' }), false)).toBeNull();
   });
 });
 

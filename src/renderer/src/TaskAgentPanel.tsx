@@ -28,7 +28,7 @@ import {
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
-import { AgentsRegular } from '@fluentui/react-icons';
+import { AgentGlyph } from './AgentGlyph';
 import type { AttentionAnswer, AttentionItem } from '@shared/attention';
 import { parkedStep } from '@shared/board';
 import type { Project, Task } from '@shared/model';
@@ -107,6 +107,15 @@ export interface TaskAgentPanelProps {
   onOpenTask?: (taskId: string) => void;
   /** Called with the updated task after an assign/stop so the board can patch the card. */
   onTaskChanged: (task: Task) => void;
+  /**
+   * Whether the agent is working right now, which pulses the header glyph.
+   *
+   * A prop rather than a `runPhase` call of its own: the pane holds the `liveRunTaskIds`
+   * snapshot and this panel does not, so computing it here would miss the window before a
+   * spawned run is persisted as `running` — and the pane's own comment is that the card, the
+   * pane and the composer strip must never disagree about this.
+   */
+  running?: boolean;
 }
 
 export function TaskAgentPanel({
@@ -116,6 +125,7 @@ export function TaskAgentPanel({
   items = [],
   onOpenTask,
   onTaskChanged,
+  running = false,
 }: TaskAgentPanelProps): JSX.Element {
   const styles = useStyles();
   const [assignOpen, setAssignOpen] = useState(false);
@@ -226,9 +236,10 @@ export function TaskAgentPanel({
   return (
     <div className={styles.box}>
       <div className={styles.head}>
-        <span className={styles.icon}>
-          <AgentsRegular />
-        </span>
+        {/* Pulses while the agent works, exactly as the board card's does. The band at the
+            bottom of the pane keeps its spinner and its words — there the sentence IS the
+            point, rather than a third telling of it. */}
+        <AgentGlyph running={running} size="18px" />
         <Text weight="semibold">Agent</Text>
         {assigned ? (
           <Badge appearance="tint" color="informative">

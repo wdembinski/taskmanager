@@ -9,12 +9,23 @@
  * clearing one must never silence the other. Reading a discussion after CI went red
  * should not quietly hide the fact that CI went red.
  */
-import React from 'react';
-import { Badge, Body1, Button, Caption1, makeStyles, tokens } from '@fluentui/react-components';
+import { useState } from 'react';
+import {
+  Badge,
+  Body1,
+  Button,
+  Caption1,
+  Input,
+  makeStyles,
+  mergeClasses,
+  tokens,
+} from '@fluentui/react-components';
+import { RenameRegular } from '@fluentui/react-icons';
 import { UNREAD_ORANGE } from '@shared/accent';
 import {
   approvalSummary,
   mrAttentionReason,
+  mrLabel,
   mrNeedsAttention,
   mrReadyToMerge,
   type MergeRequest,
@@ -45,19 +56,37 @@ const useStyles = makeStyles({
    * The stage row. Reads left to right in pipeline order, so it doubles as a progress
    * indicator: where the green stops is how far CI got.
    */
-  stages: { display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' },
+  stages: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' },
+  /**
+   * One stage: its own dot, then its name. No chip behind it and no arrows between — the
+   * dots are the thing being read, and a filled pill around each one competed with them for
+   * the same glance. The gap does the separating.
+   */
   stage: {
     display: 'flex',
     alignItems: 'center',
     gap: '4px',
-    padding: '1px 6px',
-    borderRadius: tokens.borderRadiusSmall,
-    backgroundColor: tokens.colorNeutralBackground4,
     color: tokens.colorNeutralForeground2,
   },
-  stageDot: { width: '6px', height: '6px', borderRadius: '50%', flexShrink: 0 },
-  /** The arrow between stages — a separator, not a stage, so it never takes a dot. */
-  stageArrow: { color: tokens.colorNeutralForeground4 },
+  stageDot: { width: '7px', height: '7px', borderRadius: '50%', flexShrink: 0 },
+  /**
+   * A stage the runners are on, blinking between the spinner's two cyans — the same pair the
+   * agent glyph pulses in, so "working" looks like one thing across the app.
+   */
+  stageDotRunning: {
+    animationName: {
+      '0%, 100%': { backgroundColor: FLUO.cyanDeep },
+      '50%': { backgroundColor: FLUO.cyan },
+    },
+    animationDuration: '1s',
+    animationIterationCount: 'infinite',
+    animationTimingFunction: 'ease-in-out',
+    // Without motion the dot must still read as the live one, so hold it at the bright end.
+    '@media (prefers-reduced-motion: reduce)': {
+      animationName: 'none',
+      backgroundColor: FLUO.cyan,
+    },
+  },
 });
 
 /** How a pipeline status should read: colour and words. */
@@ -82,14 +111,31 @@ export interface MergeRequestsProps {
   onMarkRead: (mrId: string) => void;
   /** Acknowledge the pipeline/approval half. */
   onMarkEventsSeen: (mrId: string) => void;
+  /** Rename an MR in this app only; null restores the upstream title. */
+  onRename: (mrId: string, name: string | null) => void;
 }
 
 export function MergeRequests({
   mergeRequests,
   onMarkRead,
   onMarkEventsSeen,
+  onRename,
 }: MergeRequestsProps): React.JSX.Element | null {
   const styles = useStyles();
+  // Which row is being renamed, and the text so far. One at a time: two open editors would
+  // both be claiming to be the name of something.
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [draft, setDraft] = useState('');
+
+  /**
+   * Save and close. A blank name clears the override rather than storing an empty string —
+   * "no name" and "the name is nothing" must not be two different states.
+   */
+  const commitRename = (mrId: string): void => {
+    setRenaming(null);
+    onRename(mrId, draft.trim() || null);
+  };
+
   if (!mergeRequests.length) return null;
 
   return (
@@ -111,9 +157,47 @@ export function MergeRequests({
               <a className={styles.link} href={mr.webUrl} target="_blank" rel="noreferrer">
                 !{mr.iid}
               </a>
-              <Caption1 className={styles.title} title={mr.title}>
-                {mr.title}
-              </Caption1>
+              {renaming === mr.id ? (
+                <Input
+                  size="small"
+                  className={styles.title}
+                  value={draft}
+                  autoFocus
+                  placeholder={mr.title}
+                  onChange={(_e, d) => setDraft(d.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') commitRename(mr.id);
+                    if (e.key === 'Escape') setRenaming(null);
+                  }}
+                  onBlur={() => commitRename(mr.id)}
+                />
+              ) : (
+                <>
+                  {/* The tooltip always carries the upstream title, so a renamed MR never
+                      hides what GitLab actually calls it. */}
+                  <Caption1
+                    className={styles.title}
+                    title={mr.displayName ? `${mr.displayName}\nGitLab: ${mr.title}` : mr.title}
+                  >
+                    {mrLabel(mr)}
+                  </Caption1>
+                  <Button
+                    size="small"
+                    appearance="transparent"
+                    icon={<RenameRegular />}
+                    title={
+                      mr.displayName
+                        ? 'Rename in this app (empty to restore the GitLab title)'
+                        : 'Rename in this app'
+                    }
+                    aria-label="Rename this merge request in this app"
+                    onClick={() => {
+                      setRenaming(mr.id);
+                      setDraft(mr.displayName ?? '');
+                    }}
+                  />
+                </>
+              )}
               {mr.draft && (
                 <Badge appearance="outline" size="small">
                   draft
@@ -164,17 +248,27 @@ export function MergeRequests({
                 overall status. */}
             {mr.pipelineStages.length > 0 && (
               <div className={styles.stages}>
-                {mr.pipelineStages.map((stage, i) => (
-                  <React.Fragment key={stage.name}>
-                    {i > 0 && <Caption1 className={styles.stageArrow}>›</Caption1>}
-                    <Caption1 className={styles.stage} title={`${stage.name}: ${stage.status}`}>
-                      <span
-                        className={styles.stageDot}
-                        style={{ backgroundColor: PIPELINE_COLOR[stage.status] }}
-                      />
-                      {stage.name}
-                    </Caption1>
-                  </React.Fragment>
+                {mr.pipelineStages.map((stage) => (
+                  <Caption1
+                    key={stage.name}
+                    className={styles.stage}
+                    title={`${stage.name}: ${stage.status}`}
+                  >
+                    <span
+                      className={mergeClasses(
+                        styles.stageDot,
+                        stage.status === 'running' && styles.stageDotRunning,
+                      )}
+                      // The animation owns the colour while running, so setting it here too
+                      // would be the value the keyframes immediately override.
+                      style={
+                        stage.status === 'running'
+                          ? undefined
+                          : { backgroundColor: PIPELINE_COLOR[stage.status] }
+                      }
+                    />
+                    {stage.name}
+                  </Caption1>
                 ))}
               </div>
             )}

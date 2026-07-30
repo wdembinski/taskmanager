@@ -13,7 +13,7 @@
  * process, and they are tested. Moving them here would trade a tested mapping for a
  * bag of hex.
  */
-import { tokens, type Theme } from '@fluentui/react-components';
+import { makeStaticStyles, tokens, type Theme } from '@fluentui/react-components';
 import { UNREAD_ORANGE } from '@shared/accent';
 import type { PipelineStatus } from '@shared/mergeRequest';
 import type { TaskStatus } from '@shared/model';
@@ -153,6 +153,17 @@ export function scaleTheme(base: Theme, basePx: number): Theme {
 export const FLUO = {
   /** Moving: running, starting, in progress. Also every spinner in the app. */
   cyan: '#22E4FF',
+  /**
+   * The spinner's *track* — the ring behind the moving arc. Translucent so it sits on
+   * whatever surface the spinner lands on.
+   */
+  cyanDim: 'rgba(34, 228, 255, 0.22)',
+  /**
+   * The same dark half of the spinner, opaque: roughly {@link FLUO.cyanDim} composited over
+   * a card. The trough of the agent glyph's pulse, so a pulsing glyph and a turning spinner
+   * are visibly the same two colours rather than two different cyans.
+   */
+  cyanDeep: '#285258',
   /** Finished well: done, a passed stage. */
   green: '#2BFF88',
   /** Finished badly: failed. */
@@ -203,6 +214,30 @@ export const PIPELINE_COLOR: Record<PipelineStatus, string> = {
   failed: FLUO.red,
   canceled: FLUO.amber,
 };
+
+/**
+ * Every spinner in the app, recoloured to {@link FLUO.cyan}.
+ *
+ * Global rather than per-component because a spinner means one thing wherever it appears —
+ * "this is moving right now" — and there are a dozen of them; a per-component version would
+ * have to be remembered at each new one. Fluent's own is `colorBrandStroke1`, a mid blue that
+ * at `extra-tiny` (16px, the size the board uses) is hard to pick out of the grey it spins
+ * against.
+ *
+ * Written here rather than in `index.css` so the colour has ONE definition: the agent glyph
+ * animates in the same two values, and a third hardcoded copy of a hex is a colour that
+ * drifts — the thing `accent.ts` exists to prevent.
+ *
+ * Both properties are needed and it is not obvious why: Fluent paints the moving arc as a
+ * conic-gradient off `currentcolor` on the tail's pseudo-elements, so `color` is the arc,
+ * and `background-color` is the track behind it.
+ */
+export const useGlobalStyles = makeStaticStyles({
+  '.fui-Spinner__spinnerTail': {
+    color: FLUO.cyan,
+    backgroundColor: FLUO.cyanDim,
+  },
+});
 
 /** The single `<Toaster>`'s id. Shared so any screen can dispatch into the same surface. */
 export const TOASTER_ID = 'app-toaster';

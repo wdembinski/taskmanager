@@ -15,7 +15,7 @@ import ReactDOM from 'react-dom/client';
 import { FluentProvider, Toaster, webDarkTheme, type Theme } from '@fluentui/react-components';
 import { App } from './App';
 import { RootErrorBoundary } from './RootErrorBoundary';
-import { BASE_FONT_PX, TOASTER_ID, scaleTheme } from './theme';
+import { BASE_FONT_PX, TOASTER_ID, scaleTheme, useGlobalStyles } from './theme';
 import './index.css';
 
 /**
@@ -50,6 +50,9 @@ const appTheme: Theme = {
  * `settings:changed` so the size takes effect as you pick it rather than on next launch.
  */
 function ThemedApp(): JSX.Element {
+  // The app's global rules (the spinner's colour). Called here because this component always
+  // renders, and `makeStaticStyles` emits its CSS on first use.
+  useGlobalStyles();
   const [fontSizePx, setFontSizePx] = useState(BASE_FONT_PX);
   const [toasts, setToasts] = useState(true);
 

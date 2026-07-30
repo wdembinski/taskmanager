@@ -323,3 +323,25 @@ export function runPhase(
 
   return TERMINAL.has(task.status) ? FINISHED : IDLE;
 }
+
+/**
+ * What a **card** should say about its run, in words — or nothing, when something else on the
+ * card already says it.
+ *
+ * The card's agent glyph pulses while work is moving, so "Running…" / "Running step 2 of 5"
+ * next to it is the third telling of one fact: the pulse says it is moving, the `2/5` counter
+ * says how far, and the step rows underneath say which step. Only the states motion CANNOT
+ * express are worth the room — "Waiting for you", "Paused — usage limit", "Queued",
+ * "Assigned — not started".
+ *
+ * The `agentAssigned` argument is the exception that makes this a function rather than a
+ * ternary at the call site. The glyph only exists on a card an agent owns, while `runPhase`
+ * is deliberately not gated on that (a hand-written step chain runs without one — see
+ * {@link runPhase}). With no glyph to pulse, dropping the words would leave the card saying
+ * nothing at all, so they stay.
+ */
+export function cardRunLabel(run: RunState, agentAssigned: boolean): string | null {
+  if (!run.label) return null;
+  const moving = run.phase === 'running' || run.phase === 'starting';
+  return moving && agentAssigned ? null : run.label;
+}

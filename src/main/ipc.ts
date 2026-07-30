@@ -1049,6 +1049,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
   handle('gitlab:mergeRequests', async () => store.listMergeRequests());
 
+  handle('gitlab:setMergeRequestName', async (mrId, name) => {
+    store.setMergeRequestName(mrId, name);
+    const all = store.listMergeRequests();
+    send('gitlab:mergeRequestsChanged', all);
+    return all;
+  });
+
   handle('gitlab:markRead', async (mrId) => {
     store.markMergeRequestRead(mrId, Date.now());
     const all = store.listMergeRequests();

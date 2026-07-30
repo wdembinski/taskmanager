@@ -514,6 +514,11 @@ export interface IpcApi {
    */
   'gitlab:mergeRequests': () => Promise<MergeRequest[]>;
   /** Mark an MR's discussion read (clears the comment half of its attention). */
+  /**
+   * Rename a merge request **in this app only** — pass null or blank to go back to the
+   * upstream title. Never written to GitLab, and preserved across syncs.
+   */
+  'gitlab:setMergeRequestName': (mrId: string, name: string | null) => Promise<MergeRequest[]>;
   'gitlab:markRead': (mrId: string) => Promise<MergeRequest[]>;
   /** Acknowledge an MR's pipeline/approval events (the other half, tracked separately). */
   'gitlab:markEventsSeen': (mrId: string) => Promise<MergeRequest[]>;

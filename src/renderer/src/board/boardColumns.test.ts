@@ -262,6 +262,7 @@ describe('sortCards', () => {
       projectPath: 'acme/web',
       iid: 1,
       title: 'ENG-1',
+      displayName: null,
       webUrl: 'https://gitlab/1',
       sourceBranch: 'feature/ENG-1',
       targetBranch: 'main',

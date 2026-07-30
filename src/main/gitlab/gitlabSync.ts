@@ -181,7 +181,9 @@ export function reconcileMergeRequests(
       issueKeys,
       latestNoteAt,
       // The user's own markers survive every sync — they are the one thing GitLab
-      // knows nothing about.
+      // knows nothing about. A local rename is the same kind of field: nothing upstream can
+      // change it, so it is carried rather than re-derived.
+      displayName: prior?.displayName ?? null,
       lastReadAt: prior?.lastReadAt ?? null,
       lastEventAt,
       lastEventSeenAt: prior?.lastEventSeenAt ?? null,

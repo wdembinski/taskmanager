@@ -39,7 +39,6 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import {
-  AgentsRegular,
   BeakerFilled,
   BookmarkFilled,
   BugFilled,
@@ -53,6 +52,7 @@ import {
 } from '@fluentui/react-icons';
 import type { Task } from '@shared/model';
 import {
+  cardRunLabel,
   chainNeedsAttention,
   hasUnreadJira,
   isAgentAssigned,
@@ -63,6 +63,7 @@ import {
 import { priorityColor } from '@shared/priority';
 import { statusNoteColor, type StatusKeyword } from '@shared/statusKeywords';
 import { DEFAULT_BOARD_DISPLAY, type BoardDisplaySettings } from '@shared/settings';
+import { AgentGlyph } from '../AgentGlyph';
 import { STATUS_COLOR, STATUS_LABEL } from '../taskStatus';
 import { columnForStatus, statusForColumn, subtaskProgress } from './boardColumns';
 import {
@@ -74,7 +75,12 @@ import {
   STATUS_INDICATOR_COLOR,
 } from '../theme';
 import { JiraMark } from '../JiraMark';
-import { approvalSummary, mrAttentionReason, type MergeRequest } from '@shared/mergeRequest';
+import {
+  approvalSummary,
+  mrAttentionReason,
+  mrLabel,
+  type MergeRequest,
+} from '@shared/mergeRequest';
 
 
 /**
@@ -168,7 +174,6 @@ const useStyles = makeStyles({
     justifyContent: 'center',
   },
   stepDot: { width: '8px', height: '8px', borderRadius: '50%', flexShrink: 0 },
-  spinner: { display: 'flex', alignItems: 'center', flexShrink: 0 },
   stepTitle: {
     flex: 1,
     minWidth: 0,
@@ -210,7 +215,50 @@ const useStyles = makeStyles({
   },
   agentIcon: { fontSize: AGENT_ICON_SIZE, flexShrink: 0, display: 'flex', color: '#ffffff' },
   dragging: { opacity: 0.5 },
-  titleRow: { display: 'flex', alignItems: 'center', gap: '8px' },
+  titleRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    /**
+     * Pulled out to the card's edges and padded straight back, so the running band below can
+     * span the full width. The margins and paddings cancel exactly — the row's content sits
+     * where it always did, in both states, so a card does not twitch when work starts.
+     * Clipped into the card's corners by its own `overflow: hidden` + radius.
+     */
+    margin: '-12px -12px -8px',
+    padding: '12px 12px 8px',
+  },
+  /**
+   * "An agent is working on this card", as a slow cyan sweep behind the top row.
+   *
+   * The alpha is the whole design. The crest is 30% cyan over the card's own fill, which
+   * leaves the title's #CCCCCC comfortably past 7:1 — the band has to be noticeable across a
+   * column of cards while never making the card harder to read than a card at rest. Anything
+   * saturated enough to "look" active turned the title into low-contrast text on teal.
+   *
+   * `background-position` is animated rather than the colours: the gradient is wider than the
+   * row, so sliding it sweeps a highlight across without recomputing a single colour stop.
+   */
+  runningBand: {
+    backgroundImage:
+      'linear-gradient(100deg, transparent 18%, rgba(34, 228, 255, 0.10) 38%, ' +
+      'rgba(34, 228, 255, 0.30) 50%, rgba(34, 228, 255, 0.10) 62%, transparent 82%)',
+    backgroundSize: '220% 100%',
+    backgroundRepeat: 'no-repeat',
+    animationName: {
+      from: { backgroundPosition: '-20% 0' },
+      to: { backgroundPosition: '120% 0' },
+    },
+    animationDuration: '2.6s',
+    animationIterationCount: 'infinite',
+    animationTimingFunction: 'linear',
+    // The state still has to be visible without motion, so it becomes an even wash.
+    '@media (prefers-reduced-motion: reduce)': {
+      animationName: 'none',
+      backgroundImage:
+        'linear-gradient(100deg, rgba(34, 228, 255, 0.16), rgba(34, 228, 255, 0.16))',
+    },
+  },
   icon: { fontSize: '18px', flexShrink: 0, display: 'flex' },
   title: { lineHeight: '18px', flex: 1, minWidth: 0 },
   project: { color: tokens.colorNeutralForeground3 },
@@ -416,6 +464,9 @@ export function TaskCard({
   // `status === 'running'`, which could not see a run that had spawned but not yet been
   // persisted — the "it's clearly working but there's no spinner" complaint.
   const run = runPhase(task, subtasks, liveRunTaskIds);
+  // What is worth saying in WORDS, once the pulsing glyph and the step counter have had their
+  // say. Null while the agent is visibly working.
+  const cardLabel = cardRunLabel(run, isAgentAssigned(task));
   // Only the ticket badge carries the JIRA signal, so the ring's reason is legible.
   const jiraUnread = hasUnreadJira(task);
 
@@ -440,7 +491,7 @@ export function TaskCard({
         <div className={styles.projectBar} style={{ backgroundColor: projectColor }} />
       )}
       <div className={styles.body}>
-        <div className={styles.titleRow}>
+        <div className={mergeClasses(styles.titleRow, run.spinner && styles.runningBand)}>
           <span className={styles.icon}>{typeIcon(task)}</span>
           <Text weight="semibold" className={styles.title}>
             {task.title}
@@ -458,33 +509,27 @@ export function TaskCard({
               {stopped && ' · stopped'}
             </Caption1>
           )}
+          {/* The glyph pulses while the agent works — it replaced a spinner that sat right
+              here saying the same thing the words and the counter beside it already said.
+              The tooltip still spells the state out for anyone who hovers. */}
           {isAgentAssigned(task) && (
             <Tooltip
               relationship="label"
               content={
                 needsAgentInput(task)
                   ? `Agent needs your input${agentName ? ` · ${agentName}` : ''}`
-                  : `Assigned to an agent${agentName ? ` · ${agentName}` : ''}`
+                  : run.spinner
+                    ? `${run.label || 'The agent is working'}${agentName ? ` · ${agentName}` : ''}`
+                    : `Assigned to an agent${agentName ? ` · ${agentName}` : ''}`
               }
             >
-              <span className={styles.agentIcon}>
-                <AgentsRegular />
-              </span>
+              <AgentGlyph running={run.spinner} size={AGENT_ICON_SIZE} />
             </Tooltip>
           )}
-          {/* The spinner turns only while something actually moves; the words say which
-              step it is on. Previously bare, on the theory that "Running" on a card and
-              "Running" on a step read as an inconsistency — but the real complaint was
-              not knowing whether anything was happening at all, and a step counter
-              answers that far better than motion alone. */}
-          {run.spinner && (
-            <span className={styles.spinner} title={run.label}>
-              <Spinner size="extra-tiny" />
-            </span>
-          )}
-          {run.label && (
-            <Caption1 className={styles.runLabel} title={run.label}>
-              {run.label}
+          {/* Only the states the pulse cannot express — see `cardRunLabel`. */}
+          {cardLabel && (
+            <Caption1 className={styles.runLabel} title={cardLabel}>
+              {cardLabel}
             </Caption1>
           )}
           {/* A running card's badge would only repeat what the label just said. */}
@@ -670,7 +715,16 @@ export function TaskCard({
                     style={{ backgroundColor: PIPELINE_COLOR[mr.pipelineStatus] }}
                   />
                 </span>
-                <Caption1 className={styles.stepTitle}>{`!${mr.iid} ${mr.sourceBranch}`}</Caption1>
+                {/* The MR's own name, clipped by `stepTitle`'s ellipsis — what it IS. The
+                    source branch used to sit here, which answers where it lives instead.
+                    `mrLabel` prefers the local rename when there is one; the tooltip always
+                    carries the upstream title and the branch. */}
+                <Caption1
+                  className={styles.stepTitle}
+                  title={`!${mr.iid} ${mr.title}\n${mr.sourceBranch} → ${mr.targetBranch}`}
+                >
+                  {`!${mr.iid} ${mrLabel(mr)}`}
+                </Caption1>
                 {mr.draft && <Caption1 className={styles.progress}>draft</Caption1>}
                 <span className={styles.approval} title={approvalSummary(mr)}>
                   {mr.approvalsRequired !== null && mr.approvalsGiven >= mr.approvalsRequired ? (

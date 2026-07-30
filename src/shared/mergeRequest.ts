@@ -49,6 +49,15 @@ export interface MergeRequest {
   /** The per-project MR number — what `!123` means to a human. */
   iid: number;
   title: string;
+  /**
+   * A name for this MR **in this app only**, or null to use the upstream `title`.
+   *
+   * Yours, not GitLab's: nothing is ever written back, and the next sync must not touch it —
+   * so it is carried across syncs the way the read markers are, as the one kind of field
+   * GitLab knows nothing about. An MR titled "Draft: WIP fix for the thing (attempt 3)" is a
+   * poor row label, and renaming it upstream is somebody else's call.
+   */
+  displayName: string | null;
   webUrl: string;
   sourceBranch: string;
   targetBranch: string;
@@ -165,6 +174,17 @@ export function mrAttentionReason(mr: MergeRequest): string | null {
   if (unseenEvent && mr.changesRequested) reasons.push('changes were requested');
   if (unseenEvent && mrReadyToMerge(mr)) reasons.push('approved and green — ready to merge');
   return reasons.length ? `!${mr.iid}: ${reasons.join(', ')}` : null;
+}
+
+/**
+ * What to call this MR on screen: your override, else the upstream title.
+ *
+ * One function so the card row and the detail pane cannot disagree — and so a row never
+ * falls back to the source branch, which is what it used to show and which answers a
+ * different question ("where is it") from the one a row label should ("what is it").
+ */
+export function mrLabel(mr: MergeRequest): string {
+  return mr.displayName?.trim() || mr.title;
 }
 
 /** "2/3", or "approvals unknown" when the instance would not tell us. */

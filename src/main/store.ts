@@ -287,6 +287,8 @@ export interface Store {
   /** Every stored item, oldest first, with the context it was saved with. */
   listAttention(): Array<{ item: AttentionItem; context: unknown | null }>;
   /** Mark an MR's discussion read, or its pipeline/approval events seen. Returns it. */
+  /** Rename an MR for this app only, or clear the override with null/blank. */
+  setMergeRequestName(id: string, name: string | null): MergeRequest | undefined;
   markMergeRequestRead(id: string, at: number): MergeRequest | undefined;
   markMergeRequestEventsSeen(id: string, at: number): MergeRequest | undefined;
   /** The GitLab token ciphertext, beside the JIRA trio. */
@@ -485,6 +487,7 @@ export function createStore(dbPath: string): Store {
       projectPath       TEXT NOT NULL,
       iid               INTEGER NOT NULL,
       title             TEXT NOT NULL,
+      displayName       TEXT,               -- yours, never GitLab's; NULL = use the title
       webUrl            TEXT NOT NULL,
       sourceBranch      TEXT NOT NULL,
       targetBranch      TEXT NOT NULL,
@@ -582,6 +585,12 @@ export function createStore(dbPath: string): Store {
   }>;
   if (!mrColumns.some((c) => c.name === 'pipelineStages')) {
     db.exec(`ALTER TABLE merge_requests ADD COLUMN pipelineStages TEXT`);
+  }
+
+  // Migrate databases created before an MR could be renamed locally. NULL means "use the
+  // upstream title", which is what every existing row was already doing.
+  if (!mrColumns.some((c) => c.name === 'displayName')) {
+    db.exec(`ALTER TABLE merge_requests ADD COLUMN displayName TEXT`);
   }
 
   // Migrate databases created before Phase 8 added the task source column. Existing
@@ -873,6 +882,7 @@ export function createStore(dbPath: string): Store {
     projectPath: string;
     iid: number;
     title: string;
+    displayName: string | null;
     webUrl: string;
     sourceBranch: string;
     targetBranch: string;
@@ -923,6 +933,7 @@ export function createStore(dbPath: string): Store {
       projectPath: r.projectPath,
       iid: r.iid,
       title: r.title,
+      displayName: r.displayName,
       webUrl: r.webUrl,
       sourceBranch: r.sourceBranch,
       targetBranch: r.targetBranch,
@@ -950,20 +961,22 @@ export function createStore(dbPath: string): Store {
   const selectMergeRequest = db.prepare(`SELECT * FROM merge_requests WHERE id = ?`);
   const upsertMergeRequestStmt = db.prepare(
     `INSERT INTO merge_requests
-       (id, taskId, provider, gitlabProjectId, projectPath, iid, title, webUrl,
+       (id, taskId, provider, gitlabProjectId, projectPath, iid, title, displayName, webUrl,
         sourceBranch, targetBranch, state, draft, pipelineStatus, pipelineStages,
         pipelineUrl,
         approvalsRequired, approvalsGiven, changesRequested, issueKeys,
         latestNoteAt, lastReadAt, lastEventAt, lastEventSeenAt, updatedAt, syncedAt)
      VALUES
-       (@id, @taskId, @provider, @gitlabProjectId, @projectPath, @iid, @title, @webUrl,
+       (@id, @taskId, @provider, @gitlabProjectId, @projectPath, @iid, @title, @displayName,
+        @webUrl,
         @sourceBranch, @targetBranch, @state, @draft, @pipelineStatus, @pipelineStages,
         @pipelineUrl,
         @approvalsRequired, @approvalsGiven, @changesRequested, @issueKeys,
         @latestNoteAt, @lastReadAt, @lastEventAt, @lastEventSeenAt, @updatedAt, @syncedAt)
      ON CONFLICT(id) DO UPDATE SET
        taskId = excluded.taskId, projectPath = excluded.projectPath,
-       title = excluded.title, webUrl = excluded.webUrl,
+       title = excluded.title, displayName = excluded.displayName,
+       webUrl = excluded.webUrl,
        sourceBranch = excluded.sourceBranch, targetBranch = excluded.targetBranch,
        state = excluded.state, draft = excluded.draft,
        pipelineStatus = excluded.pipelineStatus,
@@ -993,6 +1006,7 @@ export function createStore(dbPath: string): Store {
   );
   const deleteAttentionStmt = db.prepare(`DELETE FROM attention_items WHERE id = ?`);
   const selectAttentionStmt = db.prepare(`SELECT * FROM attention_items ORDER BY createdAt ASC`);
+  const setMrName = db.prepare(`UPDATE merge_requests SET displayName = ? WHERE id = ?`);
   const markMrRead = db.prepare(`UPDATE merge_requests SET lastReadAt = ? WHERE id = ?`);
   const markMrEventsSeen = db.prepare(`UPDATE merge_requests SET lastEventSeenAt = ? WHERE id = ?`);
 
@@ -1742,6 +1756,14 @@ export function createStore(dbPath: string): Store {
         },
         context: parseJsonColumn<unknown>(r.context) ?? null,
       }));
+    },
+
+    setMergeRequestName(id, name) {
+      // Blank means "back to the upstream title", so it is stored as NULL rather than as an
+      // empty string that `mrLabel` would then have to treat as a name.
+      setMrName.run(name?.trim() ? name.trim() : null, id);
+      const row = selectMergeRequest.get(id) as MergeRequestRow | undefined;
+      return row ? rowToMergeRequest(row) : undefined;
     },
 
     markMergeRequestRead(id, at) {

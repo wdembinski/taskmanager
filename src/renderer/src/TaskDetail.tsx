@@ -487,6 +487,7 @@ export function TaskDetail({
           subtasks={subtasks}
           agentProjects={agentProjects}
           items={panelItems}
+          running={run.spinner}
           onOpenTask={onOpenTask}
           onTaskChanged={(updated) => {
             onStatusChanged?.(updated);
@@ -521,6 +522,9 @@ export function TaskDetail({
               mergeRequests={mergeRequests}
               onMarkRead={(id) => void window.api.invoke('gitlab:markRead', id)}
               onMarkEventsSeen={(id) => void window.api.invoke('gitlab:markEventsSeen', id)}
+              onRename={(id, name) =>
+                void window.api.invoke('gitlab:setMergeRequestName', id, name)
+              }
             />
           </>
         )}

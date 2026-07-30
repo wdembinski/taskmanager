@@ -15,6 +15,7 @@ const mr = (over: Partial<MergeRequest> = {}): MergeRequest => ({
   projectPath: 'acme/web',
   iid: 1,
   title: 'ENG-1 fix the thing',
+  displayName: null,
   webUrl: 'https://gitlab.com/acme/web/-/merge_requests/1',
   sourceBranch: 'feature/ENG-1',
   targetBranch: 'main',
