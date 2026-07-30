@@ -62,6 +62,32 @@ export interface GitLabSyncResult {
 /** Pipelines that mean "something broke", as opposed to "still running". */
 const BAD_PIPELINES: ReadonlySet<PipelineStatus> = new Set(['failed', 'canceled']);
 
+/**
+ * Pipeline states a runner will move on **its own**, with nobody touching the MR.
+ *
+ * `manual` and `unknown` are deliberately absent: both can sit unchanged indefinitely, so
+ * treating them as in-flight would re-read those MRs on every single poll forever.
+ */
+const PIPELINE_IN_FLIGHT: ReadonlySet<PipelineStatus> = new Set(['created', 'pending', 'running']);
+
+/**
+ * Whether this MR is worth spending its detail calls on.
+ *
+ * `updated_at` alone is not enough, and that is not a small oversight: **GitLab does not
+ * touch an MR when its pipeline finishes.** A run going from `running` to `success` moves
+ * nothing the list endpoint reports, so an MR first seen mid-pipeline stayed "running" in
+ * the app for good — pressing Sync re-listed it, decided nothing had moved, and kept the
+ * status it already had. Approvals behave the same way.
+ *
+ * So a pipeline the runners are still working is itself a reason to look again. That is
+ * bounded: it stops the moment the pipeline reaches a terminal state.
+ */
+export function needsDetailRefresh(prior: MergeRequest | undefined, updatedAt: number): boolean {
+  if (!prior) return true;
+  if (updatedAt > prior.updatedAt) return true;
+  return PIPELINE_IN_FLIGHT.has(prior.pipelineStatus);
+}
+
 export function mergeRequestId(gitlabProjectId: number, iid: number): string {
   return `gl-${gitlabProjectId}-${iid}`;
 }

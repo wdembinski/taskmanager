@@ -57,6 +57,7 @@ import { gitlabIdentityFrom, type GitLabIdentityCache } from './gitlab/identity'
 import { describeMergeRequest } from './gitlab/describeMergeRequest';
 import {
   mergeRequestId,
+  needsDetailRefresh,
   reconcileMergeRequests,
   rematchMergeRequests,
   type FetchedMergeRequest,
@@ -1007,7 +1008,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
         const id = mergeRequestId(mr.project_id, mr.iid);
         const prior = priorById.get(id);
         const updatedAt = Date.parse(mr.updated_at) || 0;
-        const stale = !prior || updatedAt > prior.updatedAt;
+        const stale = needsDetailRefresh(prior, updatedAt);
         detailed.push(await describeMergeRequest(client, mr, { stale, prior }));
       }
     };

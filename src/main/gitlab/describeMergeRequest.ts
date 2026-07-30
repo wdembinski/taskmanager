@@ -7,9 +7,10 @@
  *
  * Two rules keep that honest:
  *
- *  - **Only re-read what moved.** An MR whose `updated_at` has not changed since the
- *    last sync reuses what we stored. Otherwise every poll would be four requests per
- *    open MR, forever.
+ *  - **Only re-read what moved** — but "moved" is not just `updated_at`. GitLab does not
+ *    touch an MR when its pipeline finishes, so `needsDetailRefresh` also re-reads an MR
+ *    whose pipeline is still in flight; see it for why a green pipeline used to read as
+ *    running forever. Otherwise every poll would be four requests per open MR, forever.
  *  - **Degrade rather than guess.** `/approvals` is tier-gated and 403s on plenty of
  *    instances, and reviewer states need GitLab ≥16. A failure there leaves
  *    `approvalsRequired: null`, which the UI renders as "approvals unknown" — a
@@ -79,6 +80,13 @@ export async function describeMergeRequest(
   }
 
   const pipeline = detail.head_pipeline ?? detail.pipeline ?? null;
+  // Whatever THIS sync carried wins over what we stored — a pipeline finishes without the
+  // MR being touched, so a status read now can be newer than the MR claims to be. `unknown`
+  // is not a reading though: the list endpoint often omits `head_pipeline` altogether, and
+  // letting that erase a status we already knew would be a different kind of lie.
+  const readStatus = toPipelineStatus(pipeline?.status);
+  const pipelineStatus =
+    readStatus === 'unknown' ? (prior?.pipelineStatus ?? readStatus) : readStatus;
 
   return {
     gitlabProjectId: projectId,
@@ -91,9 +99,7 @@ export async function describeMergeRequest(
     targetBranch: detail.target_branch ?? listed.target_branch ?? '',
     state: toMergeRequestState(detail.state ?? listed.state),
     draft: detail.draft ?? detail.work_in_progress ?? false,
-    pipelineStatus: stale
-      ? toPipelineStatus(pipeline?.status)
-      : (prior?.pipelineStatus ?? toPipelineStatus(pipeline?.status)),
+    pipelineStatus,
     pipelineUrl: pipeline?.web_url ?? prior?.pipelineUrl ?? null,
     approvalsRequired,
     approvalsGiven,
