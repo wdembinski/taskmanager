@@ -552,7 +552,6 @@ export function typeIcon(task: Task): JSX.Element {
   return <CircleRegular />;
 }
 
-
 /**
  * The glyph at the end of a merge-request row — the MR's **verdict**.
  *
@@ -575,9 +574,7 @@ export function verdictIcon(verdict: MrVerdict): JSX.Element {
     case 'merged':
       return <MergeFilled style={{ color: FLUO.violet }} aria-label="Merged" />;
     case 'blocked':
-      return (
-        <PresenceBlockedRegular style={{ color: FLUO.red }} aria-label="Cannot be merged" />
-      );
+      return <PresenceBlockedRegular style={{ color: FLUO.red }} aria-label="Cannot be merged" />;
     case 'closed':
       return (
         <BranchRequestClosedFilled
@@ -647,6 +644,13 @@ export interface TaskCardProps {
   selected: boolean;
   /** Id of the selected task, so a selected *step* row can highlight itself. */
   selectedTaskId?: string | null;
+  /**
+   * The chain overlay's tap on this card's root element — it measures where the card is so
+   * the arrows in and out of it land on its edges. A callback ref rather than a forwarded
+   * `ref` because the overlay keeps one per task id and needs the *unmount* call too; see
+   * `useCardAnchors`. Absent everywhere the board is not drawing a chain.
+   */
+  anchorRef?: (el: HTMLDivElement | null) => void;
   draggable: boolean;
   onSelect: () => void;
   /** Open a step in the detail pane (the row never drags or moves the card). */
@@ -683,6 +687,7 @@ export function TaskCard({
   display = DEFAULT_BOARD_DISPLAY,
   selected,
   selectedTaskId,
+  anchorRef,
   draggable,
   onSelect,
   onSelectSubtask,
@@ -726,6 +731,7 @@ export function TaskCard({
 
   return (
     <div
+      ref={anchorRef}
       className={mergeClasses(
         styles.card,
         // Composed, not chosen between: the ring and the fill are different properties now,

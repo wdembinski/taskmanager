@@ -86,6 +86,12 @@ export interface KanbanColumnProps {
   /** Which optional context lines each card draws. */
   display?: BoardDisplaySettings;
   canDrag: (card: BoardCard) => boolean;
+  /**
+   * The chain overlay's measuring tap, handed to each card's root element. The column
+   * only passes it through — it knows nothing about links, and the overlay is drawn once
+   * over the whole board rather than per column (see `ChainOverlay`).
+   */
+  anchorRef?: (taskId: string) => (el: HTMLDivElement | null) => void;
   selectedTaskId: string | null;
   draggingId: string | null;
   onSelectTask: (id: string) => void;
@@ -143,6 +149,7 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               display={props.display}
               selected={task.id === props.selectedTaskId}
               selectedTaskId={props.selectedTaskId}
+              anchorRef={props.anchorRef?.(task.id)}
               draggable={props.canDrag({ task, subtasks, mergeRequests })}
               dragging={task.id === props.draggingId}
               onSelect={() => props.onSelectTask(task.id)}
