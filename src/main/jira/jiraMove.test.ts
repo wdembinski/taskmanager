@@ -57,9 +57,14 @@ describe('resolveMove', () => {
     });
   });
 
-  it('moving back to TO DO does not transition JIRA', () => {
+  it('moving back to TO DO transitions JIRA too — the board is a view of the ticket', () => {
+    const r = resolveMove(task({ status: 'in-progress' }), 'todo');
+    expect(r).toMatchObject({ localStatus: 'pending', jiraTransition: 'toTodo' });
+  });
+
+  it('un-blocking to TO DO transitions JIRA, since BLOCKED left the ticket where it was', () => {
     const r = resolveMove(task({ status: 'blocked', preBlockStatus: 'pending' }), 'todo');
-    expect(r).toMatchObject({ localStatus: 'pending', jiraTransition: null });
+    expect(r).toMatchObject({ localStatus: 'pending', jiraTransition: 'toTodo' });
   });
 
   it('moving into In Review transitions JIRA to In Review', () => {

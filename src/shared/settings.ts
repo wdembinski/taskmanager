@@ -75,6 +75,13 @@ export interface JiraSettings {
    * and by category on the way back in, so the next sync undid the move.
    */
   learnedStatusColumns?: Record<string, BoardColumn>;
+  /**
+   * Optional exact transition name to use when moving a card back to To Do (else
+   * auto-detected). The one target with no natural default name — workflows call it
+   * "Reopen", "Back to To Do", "Stop Progress" — so it is the one most likely to need
+   * saying out loud.
+   */
+  todoTransitionName?: string;
   /** Optional exact transition name to use for To Do → In Progress (else auto-detected). */
   inProgressTransitionName?: string;
   /** Optional exact transition name to use when moving into In Review (else auto-detected). */

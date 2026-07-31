@@ -1036,6 +1036,14 @@ export function Settings(): JSX.Element {
               hint="Only needed when your workflow's transition names can't be worked out from the status they lead to. Leave blank to auto-detect."
             >
               <div className={styles.mapList}>
+                {/* First, because it is the one workflows least agree on: moving a card
+                    back to TO DO can be "Reopen", "Stop Progress" or "Back to backlog",
+                    none of which name the status they lead to. */}
+                <Input
+                  value={jira.todoTransitionName ?? ''}
+                  placeholder="Move back to To Do — e.g. Reopen"
+                  onChange={(_e, d) => patchJira({ todoTransitionName: d.value })}
+                />
                 <Input
                   value={jira.inProgressTransitionName ?? ''}
                   placeholder="Move to In Progress — e.g. Start work"

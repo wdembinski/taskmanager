@@ -36,8 +36,9 @@ import {
   type ProjectPatch,
   type ProjectWithTasks,
   type Task,
+  type TaskStatus,
 } from '@shared/model';
-import { categoryFromKey } from '@shared/board';
+import { categoryFromKey, columnForStatus, isRunStatus, restingStatus } from '@shared/board';
 import { resolveStatusColumn } from '@shared/statusResolve';
 import type { AppSettings } from '@shared/settings';
 import { sameExecTarget, type ExecTarget } from '@shared/execTarget';
@@ -51,7 +52,12 @@ import { reconcileJiraTasks } from './jira/jiraSync';
 import { discoverEpicFieldId, epicKeyFromIssue, epicNameFromIssue } from './jira/epicField';
 import { discoverSprintFieldId, withCurrentSprint } from './jira/jiraSprint';
 import { authorIsMe, identityFrom, type JiraIdentityCache } from './jira/identity';
-import { pickTransition, resolveMove } from './jira/jiraMove';
+import {
+  pickTransition,
+  resolveMove,
+  TARGET_LABEL,
+  type JiraTransitionTarget,
+} from './jira/jiraMove';
 import { GitLabClient } from './gitlab/gitlabClient';
 import { gitlabIdentityFrom, type GitLabIdentityCache } from './gitlab/identity';
 import { describeMergeRequest } from './gitlab/describeMergeRequest';
@@ -752,10 +758,29 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     if (existing.status === 'running' || existing.status === 'waiting-input') {
       throw new Error('Stop the running session before changing status.');
     }
-    if (existing.status === status) return existing;
-    const task = store.updateTask(taskId, { status });
+    const from = restingStatus(existing);
+    if (from === status) return existing;
+
+    // The dropdown is the detail pane's drag-and-drop: same resolution, same JIRA
+    // transition, same pre-block memory. Two controls that set the same states and only
+    // one of which reached the tracker was a coin toss over whether the ticket moved.
+    //
+    // The chosen status is written verbatim rather than `move.localStatus`, which is the
+    // column's REPRESENTATIVE status: Done and Cancelled share the DONE column, and a
+    // cancelled card that came back reading "Done" would have lost the distinction the
+    // user reached for the dropdown to make.
+    const move = resolveMove(existing, columnForStatus(status));
+    const patch: Parameters<Store['updateTask']>[1] = {
+      ...humanStatusPatch(existing, status),
+      preBlockStatus: move.preBlockStatus,
+      ...(move.jiraTransition
+        ? await transitionIssue(existing, move.jiraTransition, columnForStatus(status))
+        : {}),
+    };
+
+    const task = store.updateTask(taskId, patch);
     if (!task) throw new Error('Task not found.');
-    store.recordStatusChange(task.projectId, taskId, existing.status, status);
+    store.recordStatusChange(task.projectId, taskId, from, status);
     send('task:changed', { task, runId: null });
     return task;
   });
@@ -946,7 +971,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       return { ok: true, message: 'Token cleared.' };
     }
     if (!safeStorage.isEncryptionAvailable()) {
-      return { ok: false, message: 'OS secure storage is unavailable, so the token was not saved.' };
+      return {
+        ok: false,
+        message: 'OS secure storage is unavailable, so the token was not saved.',
+      };
     }
     store.saveGitLabToken(safeStorage.encryptString(token).toString('base64'));
     return {
@@ -1208,7 +1236,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
     // Remember the choice for next time. Behind the UI's back, so it goes out on
     // `settings:changed` — a screen that saves the whole blob would otherwise clobber it.
-    if (jira.lastCreateProjectKey !== input.projectKey || jira.lastCreateIssueTypeId !== input.issueTypeId) {
+    if (
+      jira.lastCreateProjectKey !== input.projectKey ||
+      jira.lastCreateIssueTypeId !== input.issueTypeId
+    ) {
       const next: AppSettings = {
         ...settings,
         jira: {
@@ -1402,6 +1433,48 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     send('settings:changed', next);
   };
 
+  /**
+   * Transition the linked issue and hand back the tracker fields to patch locally.
+   *
+   * Called BEFORE any local write, and it throws rather than returning a failure: if the
+   * tracker rejects the move (no such transition in this workflow, the token lacks the
+   * permission) the card must not budge either, or the board would be showing a column
+   * the ticket has never been in. The optimistic move in the UI rolls back on the throw.
+   */
+  const transitionIssue = async (
+    task: Task,
+    target: JiraTransitionTarget,
+    toColumn: BoardColumn,
+  ): Promise<Parameters<Store['updateTask']>[1]> => {
+    if (task.externalSource !== 'jira' || !task.externalKey) return {};
+    const client = buildJiraClient();
+    const { jira } = store.getSettings();
+    const transitions = await client.getTransitions(task.externalKey);
+    const picked = pickTransition(transitions, target, jira);
+    if (!picked) {
+      throw new Error(
+        `No JIRA transition to ${TARGET_LABEL[target]} is available for ${task.externalKey}. ` +
+          `Set an exact transition name in Settings if your workflow uses a custom one.`,
+      );
+    }
+    await client.doTransition(task.externalKey, picked.id);
+    const category = categoryFromKey(picked.to.statusCategory.key);
+    learnStatusColumn(picked.to.name, category, toColumn);
+    // Reflect the new tracker status locally for display.
+    return { externalStatus: picked.to.name, externalStatusCategory: category };
+  };
+
+  /**
+   * Where to write a status the HUMAN chose.
+   *
+   * Straight into `status`, unless a run has borrowed that field (`preRunStatus`) — then
+   * into the parked value the run will be restored to, so choosing a state mid-run neither
+   * kills the run nor gets undone when it ends. Only reachable while a card sits at
+   * `blocked-by-limit`; the two live run states are refused outright by both callers.
+   */
+  const humanStatusPatch = (task: Task, status: TaskStatus): Parameters<Store['updateTask']>[1] =>
+    isRunStatus(task.status) ? { preRunStatus: status } : { status };
+
   handle('task:move', async (taskId, toColumn) => {
     const existing = store.getTask(taskId);
     if (!existing) throw new Error('Task not found.');
@@ -1412,39 +1485,16 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     if (move.noop) return existing;
 
     const patch: Parameters<Store['updateTask']>[1] = {
-      status: move.localStatus,
+      ...humanStatusPatch(existing, move.localStatus),
       preBlockStatus: move.preBlockStatus,
+      ...(move.jiraTransition
+        ? await transitionIssue(existing, move.jiraTransition, toColumn)
+        : {}),
     };
-
-    // Apply the JIRA transition FIRST. If it fails, throw without changing local state
-    // so the optimistic card move rolls back and JIRA/local stay consistent.
-    if (move.jiraTransition && existing.externalSource === 'jira' && existing.externalKey) {
-      const client = buildJiraClient();
-      const { jira } = store.getSettings();
-      const transitions = await client.getTransitions(existing.externalKey);
-      const picked = pickTransition(transitions, move.jiraTransition, jira);
-      if (!picked) {
-        const target =
-          move.jiraTransition === 'toInProgress'
-            ? 'In Progress'
-            : move.jiraTransition === 'toInReview'
-              ? 'In Review'
-              : 'Done';
-        throw new Error(
-          `No JIRA transition to ${target} is available for ${existing.externalKey}. ` +
-            `Set an exact transition name in Settings if your workflow uses a custom one.`,
-        );
-      }
-      await client.doTransition(existing.externalKey, picked.id);
-      // Reflect the new tracker status locally for display.
-      patch.externalStatus = picked.to.name;
-      patch.externalStatusCategory = categoryFromKey(picked.to.statusCategory.key);
-      learnStatusColumn(picked.to.name, categoryFromKey(picked.to.statusCategory.key), toColumn);
-    }
 
     const task = store.updateTask(taskId, patch);
     if (!task) throw new Error('Task not found.');
-    store.recordStatusChange(task.projectId, taskId, existing.status, move.localStatus);
+    store.recordStatusChange(task.projectId, taskId, restingStatus(existing), move.localStatus);
     send('task:changed', { task, runId: null });
     return task;
   });

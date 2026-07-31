@@ -5,20 +5,21 @@
  *
  * The rules encode the product decisions:
  *   - Moving to/from BLOCKED is internal-only — JIRA is never touched, and the
- *     pre-block column is remembered so un-blocking restores it.
- *   - TO DO → IN PROGRESS transitions the JIRA issue to In Progress.
- *   - Moving into IN REVIEW transitions the JIRA issue to its review status.
- *   - Moving into DONE transitions the JIRA issue to Done.
- *   - Moving back to TO DO does not transition JIRA (we don't reopen tickets).
+ *     pre-block column is remembered so un-blocking restores it. BLOCKED is the app's
+ *     own idea of where a card is; no tracker status stands behind it.
+ *   - EVERY other column move transitions the linked issue, TO DO included: the board is
+ *     a view of the ticket, so a column that disagrees with the tracker is a board that
+ *     lies. (Moving a card back to TO DO used to be local-only, on a "we don't reopen
+ *     tickets" rule that made dragging a card leftwards silently meaningless.)
  *   - Internal (non-JIRA) tasks never transition anything.
  */
 import type { BoardColumn, Task, TaskStatus } from '@shared/model';
-import { categoryFromKey, columnForTask, statusForColumn } from '@shared/board';
+import { categoryFromKey, columnForTask, restingStatus, statusForColumn } from '@shared/board';
 import { STATUS_REASONS, resolveStatusColumn } from '@shared/statusResolve';
 import type { JiraTransition } from './jiraClient';
 import type { JiraSettings } from '@shared/settings';
 
-export type JiraTransitionTarget = 'toInProgress' | 'toInReview' | 'toDone';
+export type JiraTransitionTarget = 'toTodo' | 'toInProgress' | 'toInReview' | 'toDone';
 
 export interface MoveResolution {
   /** The task's new local status. */
@@ -38,7 +39,7 @@ export function resolveMove(task: Task, toColumn: BoardColumn): MoveResolution {
 
   if (toColumn === from) {
     return {
-      localStatus: task.status,
+      localStatus: restingStatus(task),
       preBlockStatus: task.preBlockStatus ?? null,
       jiraTransition: null,
       noop: true,
@@ -46,10 +47,12 @@ export function resolveMove(task: Task, toColumn: BoardColumn): MoveResolution {
   }
 
   // Into Blocked: internal-only. Remember where it came from; never touch JIRA.
+  // Where it came FROM is where the card rests — a card whose agent is mid-run is not
+  // "coming from" the run, and un-blocking must not restore it to a run state.
   if (toColumn === 'blocked') {
     return {
       localStatus: 'blocked',
-      preBlockStatus: task.status,
+      preBlockStatus: restingStatus(task),
       jiraTransition: null,
       noop: false,
     };
@@ -59,10 +62,10 @@ export function resolveMove(task: Task, toColumn: BoardColumn): MoveResolution {
   const localStatus = statusForColumn(toColumn);
   let jiraTransition: JiraTransitionTarget | null = null;
   if (isJira) {
-    if (toColumn === 'in-progress') jiraTransition = 'toInProgress';
+    if (toColumn === 'todo') jiraTransition = 'toTodo';
+    else if (toColumn === 'in-progress') jiraTransition = 'toInProgress';
     else if (toColumn === 'in-review') jiraTransition = 'toInReview';
     else if (toColumn === 'done') jiraTransition = 'toDone';
-    // toColumn === 'todo' → no transition (we don't reopen tickets).
   }
   return { localStatus, preBlockStatus: null, jiraTransition, noop: false };
 }
@@ -70,6 +73,7 @@ export function resolveMove(task: Task, toColumn: BoardColumn): MoveResolution {
 /** The settings `pickTransition` consults — the three name overrides plus both status maps. */
 export type TransitionSettings = Pick<
   JiraSettings,
+  | 'todoTransitionName'
   | 'inProgressTransitionName'
   | 'inReviewTransitionName'
   | 'doneTransitionName'
@@ -78,6 +82,7 @@ export type TransitionSettings = Pick<
 >;
 
 const NAME_OVERRIDE: Record<JiraTransitionTarget, keyof TransitionSettings> = {
+  toTodo: 'todoTransitionName',
   toInProgress: 'inProgressTransitionName',
   toInReview: 'inReviewTransitionName',
   toDone: 'doneTransitionName',
@@ -85,9 +90,18 @@ const NAME_OVERRIDE: Record<JiraTransitionTarget, keyof TransitionSettings> = {
 
 /** The board column each transition target is trying to reach. */
 const TARGET_COLUMN: Record<JiraTransitionTarget, BoardColumn> = {
+  toTodo: 'todo',
   toInProgress: 'in-progress',
   toInReview: 'in-review',
   toDone: 'done',
+};
+
+/** What each target is called when a failure has to be explained to a human. */
+export const TARGET_LABEL: Record<JiraTransitionTarget, string> = {
+  toTodo: 'To Do',
+  toInProgress: 'In Progress',
+  toInReview: 'In Review',
+  toDone: 'Done',
 };
 
 /**
