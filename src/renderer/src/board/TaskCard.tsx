@@ -98,11 +98,16 @@ const AGENT_ICON_SIZE = '16px';
 /**
  * The running band's geometry — see `runningBand` for what it draws.
  *
- * The band is a repeating gradient tilted `ANGLE` off vertical, swept along its OWN axis
- * rather than straight sideways. CSS measures a gradient angle clockwise from "to top", so a
- * θ gradient points along `(sin θ, −cos θ)` in screen coordinates (y growing downwards) —
- * which is where `DX`/`DY` come from. One cycle travels exactly `PERIOD` along that axis, so
- * the last frame is identical to the first and the loop has no seam.
+ * The band is a repeating gradient swept along its OWN axis rather than straight sideways.
+ * CSS measures a gradient angle clockwise from "to top", so a θ gradient points along
+ * `(sin θ, −cos θ)` in screen coordinates (y growing downwards) — which is where `DX`/`DY`
+ * come from. One cycle travels exactly `PERIOD` along that axis, so the last frame is
+ * identical to the first and the loop has no seam.
+ *
+ * `ANGLE` is that CSS angle, NOT the lean you see: the band tilts `ANGLE − 90` off vertical
+ * and its travel runs the same `ANGLE − 90` below horizontal. Worth stating because the two
+ * numbers are ten apart at 100 and twenty at 110, and reading `110` as "110° of lean" is
+ * exactly the mistake this block exists to prevent.
  *
  * Derived rather than typed out: an angle and a travel vector that disagree would show up as
  * a slow drift with a jump once per cycle, which is precisely the artefact this is built to
@@ -118,7 +123,11 @@ const AGENT_ICON_SIZE = '16px';
  * Lengthening the pause has to be done in `PERIOD` rather than by slowing the animation: the
  * duration governs how fast the crest MOVES, and the two ask for opposite things.
  */
-const RUN_BAND_ANGLE = 100;
+// 20° of lean. At 10° the sweep was geometrically correct — travel perpendicular to the band,
+// tilted by the same 10° — but read as plain sideways motion: the lean was too shallow to see,
+// and an edge-to-edge band offers no ends to track its direction by. Doubling it is the one
+// lever that changes what actually reaches the eye.
+const RUN_BAND_ANGLE = 110;
 const RUN_BAND_PERIOD = 2100;
 const RUN_BAND_RAD = (RUN_BAND_ANGLE * Math.PI) / 180;
 const RUN_BAND_DX = (RUN_BAND_PERIOD * Math.sin(RUN_BAND_RAD)).toFixed(2);
