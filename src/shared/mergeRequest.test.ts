@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   approvalSummary,
+  mergeBlockers,
   mrApprovalState,
   mrAttentionReason,
   mrIsSettled,
@@ -31,6 +32,10 @@ const mr = (over: Partial<MergeRequest> = {}): MergeRequest => ({
   approvalsRequired: 2,
   approvalsGiven: 1,
   changesRequested: false,
+  // Mergeable by default, so every pre-existing case still describes the MR it always did:
+  // the blockers these tests are about come from the fields they set explicitly.
+  detailedMergeStatus: 'mergeable',
+  hasConflicts: false,
   issueKeys: ['ENG-1'],
   latestNoteAt: null,
   lastReadAt: null,
@@ -269,5 +274,101 @@ describe('mrVerdict / mrIsSettled / verdictSummary', () => {
     expect(verdictSummary(mr({ state: 'closed' }))).toBe('closed without merging');
     expect(verdictSummary(mr({ changesRequested: true }))).toBe('changes requested');
     expect(verdictSummary(mr({ approvalsRequired: 2, approvalsGiven: 1 }))).toBe('1/2 approved');
+  });
+});
+
+describe('mergeBlockers', () => {
+  /** Everything green and approved, and GitLab agrees it can merge. */
+  const clear = (over: Partial<MergeRequest> = {}): MergeRequest =>
+    mr({ approvalsRequired: 1, approvalsGiven: 1, ...over });
+
+  it('is empty for an MR with nothing left to do', () => {
+    expect(mergeBlockers(clear())).toEqual([]);
+    expect(mrReadyToMerge(clear())).toBe(true);
+  });
+
+  // The bug this exists for: GitLab reported "must not be a draft, fast-forward is not
+  // possible, resolve the conflicts" while the app showed the row entirely green. Every one
+  // of those is invisible in the MR's own inputs, so the old hand-written conjunction over
+  // state/draft/pipeline/approvals could not see any of them.
+  it('reports what only GitLab knows: conflicts, a needed rebase, another MR in the way', () => {
+    expect(mergeBlockers(clear({ detailedMergeStatus: 'conflict' }))).toContain('conflict');
+    expect(mergeBlockers(clear({ detailedMergeStatus: 'need_rebase' }))).toContain('need-rebase');
+    expect(mergeBlockers(clear({ detailedMergeStatus: 'blocked_status' }))).toContain(
+      'blocked-by-another',
+    );
+    expect(mergeBlockers(clear({ hasConflicts: true }))).toContain('conflict');
+  });
+
+  it('stops calling a blocked MR ready to merge', () => {
+    for (const status of ['conflict', 'need_rebase', 'blocked_status', 'discussions_not_resolved']) {
+      expect(mrReadyToMerge(clear({ detailedMergeStatus: status }))).toBe(false);
+    }
+    expect(mrReadyToMerge(clear({ hasConflicts: true }))).toBe(false);
+  });
+
+  // Optimism is the failure mode worth engineering against — GitLab keeps adding statuses,
+  // and one we have never heard of must not read as "go ahead and merge".
+  it('treats an unrecognised GitLab status as blocked, not as mergeable', () => {
+    expect(mergeBlockers(clear({ detailedMergeStatus: 'security_policy_violations' }))).toEqual([
+      'other',
+    ]);
+    expect(mrReadyToMerge(clear({ detailedMergeStatus: 'security_policy_violations' }))).toBe(false);
+  });
+
+  it('distinguishes "still checking" from a real blocker', () => {
+    // Not an answer yet. It must still stop the "ready to merge" badge — we do not know that
+    // it is ready — but it is not something the human has to go and fix.
+    for (const status of ['checking', 'unchecked', 'preparing']) {
+      expect(mergeBlockers(clear({ detailedMergeStatus: status }))).toEqual(['checking']);
+    }
+  });
+
+  // GitLab only enforces CI and approvals when the PROJECT requires them, so a rule-less
+  // project answers `mergeable` over a failed pipeline. "Nothing left to do but merge it" is
+  // plainly untrue there, so our own two conditions stack on top of GitLab's verdict.
+  it('keeps its own pipeline and approval conditions on top of a mergeable verdict', () => {
+    expect(mergeBlockers(clear({ pipelineStatus: 'failed' }))).toEqual(['pipeline']);
+    expect(mergeBlockers(mr({ approvalsRequired: 2, approvalsGiven: 0 }))).toEqual(['approvals']);
+    expect(mergeBlockers(clear({ changesRequested: true }))).toEqual(['changes-requested']);
+  });
+
+  it('falls back to what it knows when GitLab would not say', () => {
+    // An instance older than 15.6 carries no `detailed_merge_status` at all. The row must not
+    // become MORE optimistic for it — draft and conflicts still stand on their own.
+    expect(mergeBlockers(clear({ detailedMergeStatus: null, draft: true }))).toEqual(['draft']);
+    expect(mergeBlockers(clear({ detailedMergeStatus: null }))).toEqual([]);
+  });
+
+  it('lists every reason at once, structural ones first', () => {
+    const stuck = clear({
+      detailedMergeStatus: 'need_rebase',
+      hasConflicts: true,
+      draft: true,
+      pipelineStatus: 'failed',
+    });
+    expect(mergeBlockers(stuck)).toEqual(['conflict', 'need-rebase', 'draft', 'pipeline']);
+  });
+
+  it('says nothing about a merge request that is over', () => {
+    // A merged MR is not "blocked", it is finished — and a closed one is not asking either.
+    for (const state of ['merged', 'closed'] as const) {
+      expect(mergeBlockers(clear({ state, hasConflicts: true }))).toEqual([]);
+    }
+  });
+
+  it('sends a structurally blocked MR to the `blocked` verdict, over its approval', () => {
+    // The green tick was true about the review and badly misleading about the merge.
+    const approvedButStuck = clear({ hasConflicts: true });
+    expect(mrApprovalState(approvedButStuck)).toBe('approved');
+    expect(mrVerdict(approvedButStuck)).toBe('blocked');
+    expect(verdictSummary(approvedButStuck)).toContain('merge conflicts');
+  });
+
+  it('leaves the verdict alone for blockers the row already shows another way', () => {
+    // A red pipeline has its own dots and a draft its own chip; promoting either to the
+    // verdict slot would be the same fact told twice.
+    expect(mrVerdict(clear({ pipelineStatus: 'failed' }))).toBe('approved');
+    expect(mrVerdict(clear({ draft: true }))).toBe('approved');
   });
 });

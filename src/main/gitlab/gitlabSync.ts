@@ -43,6 +43,9 @@ export interface FetchedMergeRequest {
   approvalsRequired: number | null;
   approvalsGiven: number;
   changesRequested: boolean;
+  /** GitLab's `detailed_merge_status`, or null when this sync could not read it. */
+  detailedMergeStatus: string | null;
+  hasConflicts: boolean;
   updatedAt: number;
   /** Human notes, when this sync fetched them. Undefined = "not re-read this time". */
   notes?: GitLabNote[];
@@ -211,6 +214,11 @@ export function reconcileMergeRequests(
       approvalsRequired: mr.approvalsRequired,
       approvalsGiven: mr.approvalsGiven,
       changesRequested: mr.changesRequested,
+      // Same fall-back rule as the pipeline and the notes: a sync that did not re-read the
+      // detail keeps what we knew, rather than blanking GitLab's verdict into "unknown" —
+      // which `mergeBlockers` would then read as one fewer reason not to merge.
+      detailedMergeStatus: mr.detailedMergeStatus ?? prior?.detailedMergeStatus ?? null,
+      hasConflicts: mr.hasConflicts,
       issueKeys,
       latestNoteAt,
       // The user's own markers survive every sync — they are the one thing GitLab

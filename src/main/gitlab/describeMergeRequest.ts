@@ -134,6 +134,22 @@ export async function describeMergeRequest(
     if (jobs) pipelineStages = stagesFromJobs(jobs);
   }
 
+  /**
+   * GitLab's merge verdict, and **only from the detail response**.
+   *
+   * The list endpoint omits `detailed_merge_status` entirely, so reading it off a list entry
+   * would hand `mergeBlockers` a null and quietly drop the one source that knows about
+   * conflicts and rebases. Null here means "we did not look this time", which the reconciler
+   * turns into "keep what we knew" — not into "nothing is wrong".
+   *
+   * `merge_status` is the pre-15.6 spelling and only distinguishes can/cannot, so it is
+   * mapped to the vaguest blocker we have rather than a specific one we would be inventing.
+   */
+  const detailedMergeStatus = detailRead
+    ? (detail.detailed_merge_status ??
+      (detail.merge_status === 'cannot_be_merged' ? 'broken_status' : (detail.merge_status ?? null)))
+    : null;
+
   return {
     gitlabProjectId: projectId,
     iid,
@@ -153,6 +169,10 @@ export async function describeMergeRequest(
     approvalsRequired,
     approvalsGiven,
     changesRequested,
+    detailedMergeStatus,
+    // Only the detail response speaks to this; a list entry saying nothing is not a branch
+    // saying it is clean, so an unread MR keeps whatever the last real read found.
+    hasConflicts: detailRead ? (detail.has_conflicts ?? false) : (prior?.hasConflicts ?? false),
     updatedAt,
     notes,
   };

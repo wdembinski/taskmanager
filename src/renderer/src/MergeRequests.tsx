@@ -23,6 +23,8 @@ import {
 import { RenameRegular } from '@fluentui/react-icons';
 import { UNREAD_ORANGE } from '@shared/accent';
 import {
+  MERGE_BLOCKER_LABEL,
+  mergeBlockers,
   mrIsSettled,
   mrAttentionReason,
   mrLabel,
@@ -30,6 +32,7 @@ import {
   mrReadyToMerge,
   mrVerdict,
   verdictSummary,
+  type MergeBlocker,
   type MergeRequest,
   type PipelineStatus,
 } from '@shared/mergeRequest';
@@ -107,6 +110,19 @@ const PIPELINE_BADGE: Record<
   canceled: { color: 'warning', label: 'pipeline cancelled' },
 };
 
+/**
+ * Blockers another element of the row already accounts for, so the reason badges say only
+ * what would otherwise go unsaid. Keeping this list here rather than in `mergeBlockers` is
+ * deliberate: the ENGINE must know every reason a merge is blocked, and only this surface
+ * knows which of them it has already drawn.
+ */
+const SAID_ELSEWHERE: ReadonlySet<MergeBlocker> = new Set([
+  'pipeline', // the pipeline badge, plus a dot per stage
+  'approvals', // the approval badge beside it
+  'changes-requested', // ditto — it is what that badge turns into
+  'draft', // the "draft" chip in the title row
+]);
+
 export interface MergeRequestsProps {
   mergeRequests: readonly MergeRequest[];
   /** Clear the comment half of an MR's attention. */
@@ -152,6 +168,7 @@ export function MergeRequests({
         const reason = mrAttentionReason(mr);
         const verdict = mrVerdict(mr);
         const settled = mrIsSettled(mr);
+        const blockers = mergeBlockers(mr).filter((b) => !SAID_ELSEWHERE.has(b));
         return (
           <div
             key={mr.id}
@@ -243,6 +260,24 @@ export function MergeRequests({
                   ready to merge
                 </Badge>
               )}
+              {/* …and its opposite, which the pane could not say at all until now: the
+                  reasons GitLab is refusing the merge. Only the ones nothing else on the row
+                  already carries — the pipeline has its own badge and its stage dots, the
+                  approval bar has the badge beside it, and a draft has its chip up in the
+                  title. What is left is exactly what the row could not previously express:
+                  conflicts, a branch needing a rebase, another MR in the way, unresolved
+                  threads. Listed rather than summarised, because GitLab surfaces them
+                  together and fixing one at a time is a trip per reason. */}
+              {blockers.map((blocker) => (
+                <Badge
+                  key={blocker}
+                  appearance="outline"
+                  size="small"
+                  style={{ color: FLUO.red, borderColor: FLUO.red }}
+                >
+                  {MERGE_BLOCKER_LABEL[blocker]}
+                </Badge>
+              ))}
               <Caption1 className={styles.muted}>
                 {mr.sourceBranch} → {mr.targetBranch}
               </Caption1>

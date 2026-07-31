@@ -506,6 +506,8 @@ export function createStore(dbPath: string): Store {
       approvalsRequired INTEGER,            -- NULL = the instance would not say
       approvalsGiven    INTEGER NOT NULL,
       changesRequested  INTEGER NOT NULL,
+      detailedMergeStatus TEXT,             -- GitLab's own verdict; NULL = not read
+      hasConflicts      INTEGER NOT NULL DEFAULT 0,
       issueKeys         TEXT NOT NULL,      -- JSON array
       latestNoteAt      INTEGER,
       lastReadAt        INTEGER,
@@ -598,6 +600,16 @@ export function createStore(dbPath: string): Store {
   // upstream title", which is what every existing row was already doing.
   if (!mrColumns.some((c) => c.name === 'displayName')) {
     db.exec(`ALTER TABLE merge_requests ADD COLUMN displayName TEXT`);
+  }
+
+  // Migrate databases from before the board asked GitLab whether a merge would actually
+  // succeed. NULL reads as "not read yet", which is honest — the next sync fetches it, and
+  // until then `mergeBlockers` falls back to what the row already knows.
+  if (!mrColumns.some((c) => c.name === 'detailedMergeStatus')) {
+    db.exec(`ALTER TABLE merge_requests ADD COLUMN detailedMergeStatus TEXT`);
+  }
+  if (!mrColumns.some((c) => c.name === 'hasConflicts')) {
+    db.exec(`ALTER TABLE merge_requests ADD COLUMN hasConflicts INTEGER NOT NULL DEFAULT 0`);
   }
 
   // Migrate databases created before Phase 8 added the task source column. Existing
@@ -910,6 +922,9 @@ export function createStore(dbPath: string): Store {
     approvalsRequired: number | null;
     approvalsGiven: number;
     changesRequested: number;
+    /** GitLab's `detailed_merge_status`, raw; NULL on rows written before we asked. */
+    detailedMergeStatus: string | null;
+    hasConflicts: number;
     issueKeys: string;
     latestNoteAt: number | null;
     lastReadAt: number | null;
@@ -961,6 +976,8 @@ export function createStore(dbPath: string): Store {
       approvalsRequired: r.approvalsRequired,
       approvalsGiven: r.approvalsGiven,
       changesRequested: r.changesRequested === 1,
+      detailedMergeStatus: r.detailedMergeStatus ?? null,
+      hasConflicts: r.hasConflicts === 1,
       issueKeys,
       latestNoteAt: r.latestNoteAt,
       lastReadAt: r.lastReadAt,
@@ -978,14 +995,16 @@ export function createStore(dbPath: string): Store {
        (id, taskId, provider, gitlabProjectId, projectPath, iid, title, displayName, webUrl,
         sourceBranch, targetBranch, state, draft, pipelineStatus, pipelineStages,
         pipelineUrl,
-        approvalsRequired, approvalsGiven, changesRequested, issueKeys,
+        approvalsRequired, approvalsGiven, changesRequested,
+        detailedMergeStatus, hasConflicts, issueKeys,
         latestNoteAt, lastReadAt, lastEventAt, lastEventSeenAt, updatedAt, syncedAt)
      VALUES
        (@id, @taskId, @provider, @gitlabProjectId, @projectPath, @iid, @title, @displayName,
         @webUrl,
         @sourceBranch, @targetBranch, @state, @draft, @pipelineStatus, @pipelineStages,
         @pipelineUrl,
-        @approvalsRequired, @approvalsGiven, @changesRequested, @issueKeys,
+        @approvalsRequired, @approvalsGiven, @changesRequested,
+        @detailedMergeStatus, @hasConflicts, @issueKeys,
         @latestNoteAt, @lastReadAt, @lastEventAt, @lastEventSeenAt, @updatedAt, @syncedAt)
      ON CONFLICT(id) DO UPDATE SET
        taskId = excluded.taskId, projectPath = excluded.projectPath,
@@ -997,7 +1016,9 @@ export function createStore(dbPath: string): Store {
        pipelineStages = excluded.pipelineStages, pipelineUrl = excluded.pipelineUrl,
        approvalsRequired = excluded.approvalsRequired,
        approvalsGiven = excluded.approvalsGiven,
-       changesRequested = excluded.changesRequested, issueKeys = excluded.issueKeys,
+       changesRequested = excluded.changesRequested,
+       detailedMergeStatus = excluded.detailedMergeStatus,
+       hasConflicts = excluded.hasConflicts, issueKeys = excluded.issueKeys,
        latestNoteAt = excluded.latestNoteAt, lastReadAt = excluded.lastReadAt,
        lastEventAt = excluded.lastEventAt, lastEventSeenAt = excluded.lastEventSeenAt,
        updatedAt = excluded.updatedAt, syncedAt = excluded.syncedAt`,
@@ -1719,6 +1740,7 @@ export function createStore(dbPath: string): Store {
         ...mr,
         draft: mr.draft ? 1 : 0,
         changesRequested: mr.changesRequested ? 1 : 0,
+        hasConflicts: mr.hasConflicts ? 1 : 0,
         issueKeys: JSON.stringify(mr.issueKeys),
         pipelineStages: JSON.stringify(mr.pipelineStages ?? []),
       });

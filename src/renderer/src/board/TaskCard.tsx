@@ -50,6 +50,7 @@ import {
   NoteRegular,
   PersonFilled,
   PersonRegular,
+  PresenceBlockedRegular,
   SparkleRegular,
   TaskListSquareLtrRegular,
 } from '@fluentui/react-icons';
@@ -554,11 +555,20 @@ export function typeIcon(task: Task): JSX.Element {
  * FILLED green means a human approved it; the OUTLINE means nothing is blocking the merge but
  * nobody has actually looked — a project that requires zero approvals. The verdict comes from
  * `mrVerdict`, the same one the pane's badge reads.
+ *
+ * `blocked` is the newest and the one that had been missing: GitLab refusing the merge
+ * outright — conflicts, a branch needing a rebase, another MR in the way. An approved MR in
+ * that state used to wear the green tick, which is true about the review and badly
+ * misleading about the merge.
  */
 export function verdictIcon(verdict: MrVerdict): JSX.Element {
   switch (verdict) {
     case 'merged':
       return <MergeFilled style={{ color: FLUO.violet }} aria-label="Merged" />;
+    case 'blocked':
+      return (
+        <PresenceBlockedRegular style={{ color: FLUO.red }} aria-label="Cannot be merged" />
+      );
     case 'closed':
       return (
         <BranchRequestClosedFilled

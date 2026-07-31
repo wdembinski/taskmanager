@@ -45,6 +45,15 @@ export interface GitLabMergeRequest {
   source_branch: string;
   target_branch: string;
   updated_at: string;
+  /**
+   * GitLab's own verdict on whether this can merge (15.6+). Carried by the DETAIL endpoint
+   * only — the list omits it, which is why `describeMergeRequest` must not read it off a
+   * list entry and call the absence "mergeable".
+   */
+  detailed_merge_status?: string | null;
+  /** The pre-15.6 spelling, kept as a fallback for older self-hosted instances. */
+  merge_status?: string | null;
+  has_conflicts?: boolean | null;
   references?: { full?: string } | null;
   head_pipeline?: { id?: number; status?: string; web_url?: string } | null;
   pipeline?: { id?: number; status?: string; web_url?: string } | null;

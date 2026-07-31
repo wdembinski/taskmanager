@@ -29,6 +29,8 @@ const fetched = (over: Partial<FetchedMergeRequest> = {}): FetchedMergeRequest =
   approvalsRequired: 2,
   approvalsGiven: 1,
   changesRequested: false,
+  detailedMergeStatus: 'mergeable',
+  hasConflicts: false,
   updatedAt: 900,
   ...over,
 });

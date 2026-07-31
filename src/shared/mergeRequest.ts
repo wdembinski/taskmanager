@@ -84,6 +84,24 @@ export interface MergeRequest {
    * reviewer state is not available.
    */
   changesRequested: boolean;
+  /**
+   * **GitLab's own answer to "can this merge"** — `detailed_merge_status`, raw and
+   * unnormalized, or null when we could not read it (an instance older than 15.6, or a
+   * sync that only saw the list endpoint, which does not carry it).
+   *
+   * This is the field whose absence made the board lie. Everything else here describes the
+   * merge request's *inputs* — is CI green, has anyone approved — and the app inferred
+   * "ready to merge" from those. But GitLab refuses a merge for reasons no input mentions:
+   * the branch has diverged and needs a rebase, fast-forward is impossible, another MR is
+   * blocking it. An MR sitting behind three of those was showing as green and approved.
+   *
+   * Kept raw rather than parsed into an enum on the way in, so an instance that invents a
+   * status we have never heard of degrades to "blocked, and here is what GitLab called it"
+   * instead of being silently read as mergeable. See {@link mergeBlockers}.
+   */
+  detailedMergeStatus: string | null;
+  /** Whether the source branch conflicts with its target, as GitLab reports it. */
+  hasConflicts: boolean;
   /** Every JIRA key found in the branch, title or description. */
   issueKeys: string[];
   /** Epoch ms of the newest note NOT written by you, or null. */
@@ -111,37 +129,157 @@ const BAD_PIPELINES: ReadonlySet<PipelineStatus> = new Set(['failed', 'canceled'
  */
 export type MergeReadiness = Pick<
   MergeRequest,
-  'state' | 'draft' | 'changesRequested' | 'pipelineStatus' | 'approvalsRequired' | 'approvalsGiven'
+  | 'state'
+  | 'draft'
+  | 'changesRequested'
+  | 'pipelineStatus'
+  | 'approvalsRequired'
+  | 'approvalsGiven'
+  | 'detailedMergeStatus'
+  | 'hasConflicts'
 >;
 
 /**
- * Nothing is left to do but merge it: green, approved, not a draft, nobody objecting.
+ * Why this merge request cannot be merged right now — one reason per thing a human would
+ * have to go and fix.
+ *
+ * `other` is deliberate and load-bearing: GitLab keeps adding statuses (security policies,
+ * external status checks, title regexes), and an unknown one must read as **blocked** with
+ * the raw string shown, never as mergeable. Guessing in the optimistic direction is exactly
+ * how an MR with conflicts came to wear a green tick.
+ */
+export type MergeBlocker =
+  | 'draft'
+  | 'conflict'
+  | 'need-rebase'
+  | 'discussions'
+  | 'changes-requested'
+  | 'approvals'
+  | 'pipeline'
+  | 'blocked-by-another'
+  | 'checking'
+  | 'other';
+
+/** How each blocker reads on screen — a phrase that completes "can't merge: …". */
+export const MERGE_BLOCKER_LABEL: Record<MergeBlocker, string> = {
+  draft: 'still a draft',
+  conflict: 'merge conflicts',
+  'need-rebase': 'needs a rebase',
+  discussions: 'unresolved threads',
+  'changes-requested': 'changes requested',
+  approvals: 'not approved',
+  pipeline: 'pipeline not green',
+  'blocked-by-another': 'blocked by another merge request',
+  checking: 'GitLab is still checking',
+  other: 'blocked by GitLab',
+};
+
+/**
+ * Normalize one `detailed_merge_status` string, or null when GitLab says it can merge.
+ *
+ * `mergeable` is the ONLY value that means yes. Everything else — including a value this
+ * table has never seen — is a blocker, which is the whole point: the failure mode worth
+ * engineering against is claiming an MR is ready when it isn't.
+ */
+export function detailedMergeBlocker(raw: string | null | undefined): MergeBlocker | null {
+  if (!raw) return null; // not read at all — the caller falls back to what it does know
+  switch (raw) {
+    case 'mergeable':
+      return null;
+    case 'draft_status':
+      return 'draft';
+    case 'conflict':
+      return 'conflict';
+    case 'need_rebase':
+      return 'need-rebase';
+    case 'discussions_not_resolved':
+      return 'discussions';
+    case 'requested_changes':
+      return 'changes-requested';
+    case 'not_approved':
+    case 'approvals_syncing':
+      return 'approvals';
+    case 'ci_must_pass':
+    case 'ci_still_running':
+      return 'pipeline';
+    case 'blocked_status':
+      return 'blocked-by-another';
+    // Not an answer yet — GitLab is working it out. Distinct from a real blocker, because
+    // "we don't know yet" must not read as "you have something to fix".
+    case 'checking':
+    case 'unchecked':
+    case 'preparing':
+      return 'checking';
+    case 'not_open':
+      return null; // a closed/merged MR is handled by `state`, not by this
+    default:
+      return 'other';
+  }
+}
+
+/**
+ * Everything standing between this merge request and a merge, in the order you would fix it.
+ *
+ * Two sources, deliberately combined rather than one trusted over the other:
+ *
+ *  - **GitLab's own verdict** (`detailedMergeStatus`), which is the only thing that knows
+ *    about conflicts, rebases and cross-MR blocks. When it is absent — an older instance, or
+ *    a sync that never fetched the detail — `hasConflicts` and `draft` still stand in for
+ *    the two most common cases.
+ *  - **Our own two conditions**, a red pipeline and a missing approval, which GitLab only
+ *    enforces when the *project* is configured to require them. A project with no such rule
+ *    reports `mergeable` over a failed pipeline, and "nothing left to do but merge it" is
+ *    plainly untrue there.
+ *
+ * Empty means empty: a merge request with no blockers is one you can go and land.
+ * Non-`opened` returns empty too — a merged MR is not "blocked", it is finished.
+ */
+export function mergeBlockers(mr: MergeReadiness): MergeBlocker[] {
+  if (mr.state !== 'opened') return [];
+  const found = new Set<MergeBlocker>();
+  if (mr.draft) found.add('draft');
+  if (mr.hasConflicts) found.add('conflict');
+
+  const upstream = detailedMergeBlocker(mr.detailedMergeStatus);
+  if (upstream) found.add(upstream);
+
+  if (mr.pipelineStatus !== 'success') found.add('pipeline');
+  const approval = mrApprovalState(mr);
+  if (approval === 'changes-requested') found.add('changes-requested');
+  else if (approval !== 'approved') found.add('approvals');
+
+  // A stable order, so a row's reasons don't reshuffle between syncs: structural problems
+  // first (they block everything else), then review, then CI.
+  const ORDER: MergeBlocker[] = [
+    'conflict',
+    'need-rebase',
+    'blocked-by-another',
+    'draft',
+    'changes-requested',
+    'discussions',
+    'approvals',
+    'pipeline',
+    'checking',
+    'other',
+  ];
+  return ORDER.filter((b) => found.has(b));
+}
+
+/**
+ * Nothing is left to do but merge it — literally nothing: {@link mergeBlockers} is empty.
  *
  * The one piece of *good* news the board shouts about, and it earns that because it is the
  * only state where the MR is waiting on **you** specifically. Red pipelines and review
  * comments tell you to go and work; this tells you to go and finish.
  *
- * Two deliberate narrowings, both about not claiming more than we know:
- *
- *  - `approvalsRequired === null` means the instance would not tell us (`/approvals` is
- *    tier-gated). Somebody approving against an unknown bar is not evidence the bar is met,
- *    and this is the wrong place to guess — the same reason `approvalSummary` says
- *    "approvals unknown" rather than `0/0`.
- *  - `approvalsGiven > 0` on top of meeting the bar, so a project that requires **zero**
- *    approvals does not mark every green MR as approved. With no rule and nobody having
- *    looked, "it has been approved" is simply not true.
- *
- * `success` only, not `skipped` or `manual`: a pipeline nobody ran is not a pipeline that
- * passed.
+ * It used to be a hand-written conjunction over the MR's inputs — open, not a draft, green,
+ * approved — and that list was missing everything only GitLab knows: conflicts, a branch
+ * that needs rebasing, a block by another MR. An MR failing all three of those satisfied
+ * every clause here and was announced as ready. Asking `mergeBlockers` instead means the
+ * question is answered in one place and a newly invented GitLab status blocks by default.
  */
-
 export function mrReadyToMerge(mr: MergeReadiness): boolean {
-  if (mr.state !== 'opened' || mr.draft) return false;
-  if (mr.pipelineStatus !== 'success') return false;
-  // `changesRequested` and both approval narrowings above now live in one place, so the
-  // glyph on a card and the "ready to merge" badge in the pane cannot come to different
-  // conclusions about the same MR — which is exactly what had happened.
-  return mrApprovalState(mr) === 'approved';
+  return mr.state === 'opened' && mergeBlockers(mr).length === 0;
 }
 
 /** Just the fields the review verdict depends on. See {@link mrApprovalState}. */
@@ -197,11 +335,25 @@ export function mrIsSettled(mr: Pick<MergeRequest, 'state'>): boolean {
  * MR is still asking to be merged. So an outcome outranks a review state: `merged` and
  * `closed` are terminal and win.
  */
-export type MrVerdict = MrApprovalState | 'merged' | 'closed';
+export type MrVerdict = MrApprovalState | 'merged' | 'closed' | 'blocked';
 
-export function mrVerdict(mr: ApprovalFacts & Pick<MergeRequest, 'state'>): MrVerdict {
+/**
+ * `blocked` outranks every review state, and that is the fix for a green tick on an MR
+ * nobody could merge: an approval is a statement about a REVIEW, and it stays true, but on a
+ * branch with conflicts it is not the thing the row should be saying. Only the STRUCTURAL
+ * blockers get here — a red pipeline has its own dots on the row and a draft its own chip,
+ * so promoting those would be the same fact told twice.
+ */
+const STRUCTURAL: ReadonlySet<MergeBlocker> = new Set([
+  'conflict',
+  'need-rebase',
+  'blocked-by-another',
+]);
+
+export function mrVerdict(mr: MergeReadiness): MrVerdict {
   if (mr.state === 'merged') return 'merged';
   if (mr.state === 'closed') return 'closed';
+  if (mergeBlockers(mr).some((b) => STRUCTURAL.has(b))) return 'blocked';
   return mrApprovalState(mr);
 }
 
@@ -267,6 +419,10 @@ export function verdictSummary(mr: MergeRequest): string {
       return 'closed without merging';
     case 'changes-requested':
       return 'changes requested';
+    case 'blocked':
+      // Every reason, not just the first: GitLab's own UI lists them together, and being
+      // told about the conflict only to hit the rebase next is two trips for one problem.
+      return `can't merge — ${mergeBlockers(mr).map((b) => MERGE_BLOCKER_LABEL[b]).join(', ')}`;
     default:
       return approvalSummary(mr);
   }
