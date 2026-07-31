@@ -42,13 +42,32 @@ import {
 import { resolveAgentProject } from '@shared/agentProjects';
 
 const useStyles = makeStyles({
-  // Wider than it was: the branch field holds a four-segment ref, and at 440 it wrapped
-  // into an ellipsis you had to select-all to read.
-  form: { display: 'flex', flexDirection: 'column', gap: '12px', minWidth: '560px' },
-  row: { display: 'flex', gap: '8px' },
+  /**
+   * The surface, sized to the form rather than the other way round.
+   *
+   * The form asked for `minWidth: 560px` while the surface kept Fluent's default 600px cap
+   * and its own 24px padding either side — so the content was 560 wide inside 552 of usable
+   * room and simply overflowed, which is what made the dialog look broken. The surface is
+   * now the thing with the width, capped at the viewport so a small window narrows it
+   * instead of pushing the buttons off the edge.
+   *
+   * `maxHeight` + a scrolling body for the same reason on the other axis: eight fields, two
+   * hints and a paragraph do not fit a short window, and a dialog whose Assign button is
+   * below the fold is a dialog you cannot use.
+   */
+  surface: { maxWidth: 'min(720px, calc(100vw - 48px))', width: '100%' },
+  body: { maxHeight: 'calc(100vh - 160px)' },
+  /**
+   * `minWidth: 0` and not a fixed one: the surface owns the width now, and a min-width here
+   * would put it straight back to overflowing the moment the window got narrow.
+   */
+  form: { display: 'flex', flexDirection: 'column', gap: '12px', minWidth: 0 },
+  /** Wraps rather than squeezing: two dropdowns side by side need real width each. */
+  row: { display: 'flex', gap: '8px', flexWrap: 'wrap' },
   /** Narrow — a Conventional Commits type is six characters at most. */
   type: { width: '120px', flexShrink: 0 },
-  grow: { flex: 1 },
+  /** `minWidth` so a flex child can actually shrink instead of forcing the row wider. */
+  grow: { flex: 1, minWidth: '180px' },
   hint: { color: tokens.colorNeutralForeground3 },
   ticket: { color: tokens.colorNeutralForeground2 },
 });
@@ -184,8 +203,8 @@ export function AssignAgentDialog({
 
   return (
     <Dialog open={open} onOpenChange={(_e, d) => !d.open && onClose()}>
-      <DialogSurface>
-        <DialogBody>
+      <DialogSurface className={styles.surface}>
+        <DialogBody className={styles.body}>
           <DialogTitle>Assign to an agent</DialogTitle>
           <DialogContent>
             <div className={styles.form}>
