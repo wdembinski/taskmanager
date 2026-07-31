@@ -64,8 +64,12 @@ export const CODE_BG = '#16202e';
 export const CODE_INLINE_BG = '#1d2a3a';
 export const CODE_BORDER = '#26364a';
 
-/** Ring widths, so the card's two states can't drift apart. */
-export const RING = { attention: 3, selected: 2 } as const;
+/**
+ * The card's ring width. There is only one ring now — "this card wants you". Selection
+ * stopped being a second, blue ring and became a lift in the card's own fill instead (see
+ * `TaskCard.cardSelected`), which is why `selected` is gone from here.
+ */
+export const RING = { attention: 3 } as const;
 
 /**
  * A px size that follows the user's font-size setting.

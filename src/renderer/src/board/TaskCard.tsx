@@ -230,11 +230,19 @@ const useStyles = makeStyles({
     alignItems: 'center',
     gap: '8px',
     padding: '5px 12px',
-    // The card's own fill, NOT the board's. These rows are part of the card; painting
-    // them in the column's colour made them read as holes punched through it.
-    backgroundColor: tokens.colorNeutralBackground1,
+    // Transparent, so the row shows whatever the CARD is filled with — including the lift a
+    // selected card gets (`cardSelected`). It used to name `colorNeutralBackground1`
+    // explicitly, which was the same colour right up until selection changed it, and then
+    // every step row stayed behind as an unlit band across the bottom of a lit card.
+    backgroundColor: 'transparent',
   },
-  stepSelected: { backgroundColor: tokens.colorNeutralBackground1Selected },
+  /**
+   * A step row that is itself the selected task. Brighter than `cardSelected`, and it has to
+   * be: selecting a step does NOT select its card, so this row is lit against an unlit card
+   * — but a card selected a moment earlier sits at `…1Selected`, and a step matching that
+   * exactly would vanish into it.
+   */
+  stepSelected: { backgroundColor: tokens.colorNeutralBackground1Hover },
   /**
    * A row that wants you: a TINT and nothing else.
    *
@@ -319,26 +327,36 @@ const useStyles = makeStyles({
    */
   runLabel: { color: tokens.colorNeutralForeground3, flexShrink: 0 },
   /**
-   * "Wants you" and "is selected", as rings PAINTED OUTSIDE the card.
+   * **"Wants you" is a ring; "is selected" is a brighter card.**
    *
-   * `box-shadow`, not `border`: a border is part of the box, so adding one on click
-   * reflowed the card's own text by a pixel — a visible twitch on every selection.
-   * A shadow costs no layout at all. It is also stackable, which is why the third
-   * class exists: with two separate classes Griffel would have the later one REPLACE
-   * `boxShadow`, and the orange would vanish the moment you clicked the card that was
-   * shouting for you — exactly the card you most need to keep flagged.
+   * The ring is `box-shadow`, not `border`: a border is part of the box, so adding one
+   * would reflow the card's own text by a pixel — a visible twitch every time a card
+   * started shouting. A shadow costs no layout at all. 3px, because the orange is painted
+   * OUTSIDE the card against a dark column, where a good half of its apparent weight is
+   * lost to the contrast; at 2px it read as a hairline.
+   *
+   * Selection used to be a second, blue ring inside it, and that was two problems. Every
+   * card on the board is a rectangle with an outline, so a *third* outline state had almost
+   * nowhere left to be read; and both states wrote `boxShadow`, so they could not simply be
+   * composed — Griffel lets the later class REPLACE the property, which would have deleted
+   * the orange from the very card that was shouting. A whole extra `cardUnreadSelected`
+   * class existed only to stack the two by hand.
+   *
+   * Lifting the fill instead separates the two channels completely: the ring says *this one
+   * wants you*, the brightness says *this is the one you are reading*. They are now
+   * different CSS properties, so they compose by themselves and the third class is gone.
    */
-  // 3px for the alarm, 2px for mere selection. The orange is painted OUTSIDE the card
-  // against a dark column, so a good half of its apparent weight is lost to the
-  // contrast — at 2px it read as a hairline. Selection stays 2px: only the alarm is
-  // worth more ink, and widening both would flatten the difference between them.
   cardUnread: { boxShadow: `0 0 0 ${RING.attention}px ${ACCENT.unread}` },
-  cardSelected: { boxShadow: `0 0 0 ${RING.selected}px ${tokens.colorBrandStroke1}` },
-  cardUnreadSelected: {
-    boxShadow:
-      `0 0 0 ${RING.attention}px ${ACCENT.unread}, ` +
-      `0 0 0 ${RING.attention + RING.selected}px ${tokens.colorBrandStroke1}`,
-  },
+  /**
+   * One step up the neutral ladder from the card's own fill. Deliberately slight: it has to
+   * be unmistakable when you scan the column for the card the pane is showing, and invisible
+   * as a *distraction* on the thirty cards around it.
+   *
+   * This is the whole card, not just the body — the step and merge-request rows are
+   * transparent (see `step`) precisely so the lift runs to the card's edges rather than
+   * stopping at a seam halfway down.
+   */
+  cardSelected: { backgroundColor: tokens.colorNeutralBackground1Selected },
   agentIcon: { fontSize: AGENT_ICON_SIZE, flexShrink: 0, display: 'flex', color: '#ffffff' },
   dragging: { opacity: 0.5 },
   /**
@@ -691,12 +709,10 @@ export function TaskCard({
     <div
       className={mergeClasses(
         styles.card,
-        // One of three, never two: see `cardUnreadSelected`.
-        wantsAttention && selected
-          ? styles.cardUnreadSelected
-          : wantsAttention
-            ? styles.cardUnread
-            : selected && styles.cardSelected,
+        // Composed, not chosen between: the ring and the fill are different properties now,
+        // so a card that both wants you and is selected simply gets both.
+        wantsAttention && styles.cardUnread,
+        selected && styles.cardSelected,
         dragging && styles.dragging,
       )}
       draggable={draggable}
