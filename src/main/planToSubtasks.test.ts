@@ -2,9 +2,17 @@ import { describe, expect, it } from 'vitest';
 import {
   MAX_PLAN_STEPS,
   extractPlanMarkdown,
+  normalizeStepTitle,
   splitPlanIntoSteps,
+  stepsToAppend,
   toSubtaskTitle,
 } from './planToSubtasks';
+
+/** A step, as `stepsToAppend` takes them. */
+const step = (title: string, description = ''): { title: string; description: string } => ({
+  title,
+  description,
+});
 
 describe('toSubtaskTitle', () => {
   it('strips inline markdown and a trailing colon', () => {
@@ -175,7 +183,9 @@ describe('splitPlanIntoSteps', () => {
     // A plan that ends every phase with "### Update the tests" produced three identical
     // rows, with no way to tell which one the chain had reached.
     const steps = splitPlanIntoSteps(
-      ['## Update the tests', 'a', '## Update the tests', 'b', '## Update the tests', 'c'].join('\n'),
+      ['## Update the tests', 'a', '## Update the tests', 'b', '## Update the tests', 'c'].join(
+        '\n',
+      ),
     );
     expect(steps.map((s) => s.title)).toEqual([
       'Update the tests',
@@ -186,9 +196,12 @@ describe('splitPlanIntoSteps', () => {
 
   it('falls back to top-level list items, folding indented lines into the brief', () => {
     const steps = splitPlanIntoSteps(
-      ['- [ ] Add the column', '  - migrate old rows', '  - backfill nulls', '- [ ] Wire the UI'].join(
-        '\n',
-      ),
+      [
+        '- [ ] Add the column',
+        '  - migrate old rows',
+        '  - backfill nulls',
+        '- [ ] Wire the UI',
+      ].join('\n'),
     );
     expect(steps.map((s) => s.title)).toEqual(['Add the column', 'Wire the UI']);
     expect(steps[0].description).toBe('  - migrate old rows\n  - backfill nulls');
@@ -220,5 +233,68 @@ describe('splitPlanIntoSteps', () => {
   it('caps runaway plans', () => {
     const plan = Array.from({ length: 40 }, (_, i) => `## Step ${i + 1}\nbody`).join('\n\n');
     expect(splitPlanIntoSteps(plan)).toHaveLength(MAX_PLAN_STEPS);
+  });
+});
+
+describe('normalizeStepTitle', () => {
+  it('ignores case, markdown and trailing punctuation', () => {
+    expect(normalizeStepTitle('**Wire the IPC**')).toBe(normalizeStepTitle('wire the ipc'));
+    expect(normalizeStepTitle('Wire the IPC.')).toBe(normalizeStepTitle('Wire the IPC'));
+    expect(normalizeStepTitle('Wire   the\tIPC')).toBe('wire the ipc');
+  });
+
+  // `finalize` disambiguates repeats WITHIN one plan by appending a counter, so a second
+  // round re-proposing an existing step can arrive already wearing one.
+  it('strips the (2) disambiguator, so a re-proposed step still matches', () => {
+    expect(normalizeStepTitle('Update the tests (2)')).toBe(normalizeStepTitle('Update the tests'));
+  });
+
+  it('keeps a number that is part of the title', () => {
+    expect(normalizeStepTitle('Migrate to v2')).toBe('migrate to v2');
+  });
+});
+
+describe('stepsToAppend', () => {
+  it('keeps everything when the card has no steps yet', () => {
+    const fresh = stepsToAppend([], [step('Scaffold the store'), step('Wire the IPC')]);
+    expect(fresh.map((s) => s.title)).toEqual(['Scaffold the store', 'Wire the IPC']);
+  });
+
+  it('drops steps the card already carries, in any casing', () => {
+    const fresh = stepsToAppend(
+      ['Scaffold the store', 'Wire the IPC'],
+      [step('**wire the ipc**'), step('Add JIRA sync')],
+    );
+    expect(fresh.map((s) => s.title)).toEqual(['Add JIRA sync']);
+  });
+
+  it('drops a step the incoming plan repeats within itself', () => {
+    const fresh = stepsToAppend([], [step('Add JIRA sync'), step('Add JIRA sync (2)')]);
+    expect(fresh.map((s) => s.title)).toEqual(['Add JIRA sync']);
+  });
+
+  it('preserves plan order and each step brief', () => {
+    const fresh = stepsToAppend([], [step('First', 'do this'), step('Second', 'then this')]);
+    expect(fresh).toEqual([
+      { title: 'First', description: 'do this' },
+      { title: 'Second', description: 'then this' },
+    ]);
+  });
+
+  // The cap is on the CARD, not the plan: counting per round would let a card re-planned
+  // five times sail past the bound the cap exists to enforce.
+  it('caps on the total, not on this round', () => {
+    const existing = Array.from({ length: MAX_PLAN_STEPS - 2 }, (_, i) => `Old ${i + 1}`);
+    const proposed = Array.from({ length: 5 }, (_, i) => step(`New ${i + 1}`));
+    expect(stepsToAppend(existing, proposed).map((s) => s.title)).toEqual(['New 1', 'New 2']);
+  });
+
+  it('returns nothing when the card is already full', () => {
+    const existing = Array.from({ length: MAX_PLAN_STEPS }, (_, i) => `Old ${i + 1}`);
+    expect(stepsToAppend(existing, [step('New')])).toEqual([]);
+  });
+
+  it('returns nothing when every proposed step is a duplicate', () => {
+    expect(stepsToAppend(['Wire the IPC'], [step('Wire the IPC')])).toEqual([]);
   });
 });

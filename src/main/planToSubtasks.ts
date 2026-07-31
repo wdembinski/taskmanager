@@ -32,8 +32,14 @@ export interface PlanStep {
   description: string;
 }
 
-/** Upper bound on generated subtasks; a runaway plan shouldn't create 200 rows. */
-export const MAX_PLAN_STEPS = 20;
+import { MAX_PLAN_STEPS } from '@shared/board';
+
+/**
+ * Upper bound on generated subtasks; a runaway plan shouldn't create 200 rows. Defined in
+ * `shared` (the panel enforces it too) and re-exported here, where every caller already
+ * looks for it.
+ */
+export { MAX_PLAN_STEPS };
 
 /** `## Heading` → level + text. */
 const HEADING = /^(#{1,6})\s+(.*\S)\s*$/;
@@ -272,4 +278,60 @@ function finalize(steps: PlanStep[]): PlanStep[] {
       return n === 1 ? s : { ...s, title: `${s.title} (${n})` };
     })
     .slice(0, MAX_PLAN_STEPS);
+}
+
+/**
+ * A step title reduced to what makes it the SAME step — for comparing a newly planned
+ * step against one a card already has.
+ *
+ * Case, markdown and trailing punctuation are noise: an agent re-planning a card writes
+ * its headings fresh, so "Wire the IPC" and "**Wire the IPC.**" are one step, not two.
+ *
+ * The `(2)` strip is the subtle one. {@link finalize} disambiguates repeated titles
+ * WITHIN one plan by appending a counter, so a second round that re-proposes an existing
+ * step can arrive as `Update the tests (2)` and would otherwise sail straight past a
+ * stored `Update the tests` — reintroducing the duplicate rows `finalize` exists to stop.
+ */
+export function normalizeStepTitle(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/[*_`#]/g, '')
+    .replace(/\s*\(\d+\)$/, '')
+    .replace(/[.:;,!?]+$/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Which of a freshly planned set of steps a card should actually gain, given the steps it
+ * already has (Phase 18 — re-planning).
+ *
+ * Approving a plan used to be a once-per-card event, so the engine could assume an empty
+ * chain. It no longer can: a card whose steps are all done can be re-planned, and the new
+ * plan is written by an agent that was TOLD what is already there — which makes it likely,
+ * not merely possible, that it restates a step or two while joining the dots.
+ *
+ * Two rules, both about not lying to the human:
+ *   - a title the card already carries is dropped, so approving twice cannot fork the
+ *     chain into near-identical rows nobody can tell apart; and
+ *   - {@link MAX_PLAN_STEPS} is a cap on the CARD, not on the plan. Counting only the
+ *     current round would let round after round pile up past the bound the cap exists to
+ *     enforce.
+ *
+ * Order is preserved, so appended steps run in the order the plan argued for.
+ */
+export function stepsToAppend(
+  existingTitles: readonly string[],
+  steps: readonly PlanStep[],
+): PlanStep[] {
+  const taken = new Set(existingTitles.map(normalizeStepTitle));
+  const fresh: PlanStep[] = [];
+  for (const step of steps) {
+    const key = normalizeStepTitle(step.title);
+    // Also guards against the incoming plan duplicating itself past `finalize`'s counter.
+    if (!key || taken.has(key)) continue;
+    taken.add(key);
+    fresh.push(step);
+  }
+  return fresh.slice(0, Math.max(0, MAX_PLAN_STEPS - existingTitles.length));
 }

@@ -19,6 +19,18 @@ const RUN_STATUSES: ReadonlySet<TaskStatus> = new Set([
   'blocked-by-limit',
 ]);
 
+/**
+ * Upper bound on the steps ONE CARD may carry, across every planning round.
+ *
+ * Lives in `shared` because both sides enforce it and must agree: the engine caps what an
+ * approved plan appends (`stepsToAppend`), and the panel greys out "Plan more steps…" when
+ * there is no room left, so the human is told before the round trip rather than after.
+ *
+ * A cap on the CARD, not on any one plan — counting per round would let a card re-planned
+ * five times sail past the bound the cap exists to enforce.
+ */
+export const MAX_PLAN_STEPS = 20;
+
 /** Whether `status` is one a live run put there. See {@link RUN_STATUSES}. */
 export function isRunStatus(status: TaskStatus): boolean {
   return RUN_STATUSES.has(status);
