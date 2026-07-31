@@ -229,6 +229,10 @@ export function TaskDetail({
   // carries a runId, so track which run belongs to this card: the active-runs snapshot
   // seeds it, and `task:changed` keeps it current as runs start and end.
   const runIdRef = useRef<string | null>(null);
+  // Read by the subscription below, which must not be torn down and rebuilt every time a
+  // prop changes identity — it would drop events in the gap.
+  const reloadRef = useRef(loadActivity);
+  reloadRef.current = loadActivity;
   useEffect(() => {
     runIdRef.current = null;
     if (!taskId) return;
@@ -239,8 +243,32 @@ export function TaskDetail({
         if (!cancelled) runIdRef.current = runs.find((r) => r.taskId === taskId)?.runId ?? null;
       })
       .catch(() => undefined);
+    // The tail of a run arrives in two waves and needs a reload for each. The engine
+    // settles the task first (a `task:changed` carrying no runId) and the process only
+    // then reports its closing lines and exits, announcing itself with a second such
+    // event — and a run's outcome note is written straight to the DB, never streamed at
+    // all. Neither wave used to land: `runIdRef` was nulled on the first event, so
+    // `session:event` stopped matching, and nothing re-read the rows. The pane kept a
+    // transcript that stopped mid-sentence until you clicked another card and back —
+    // which is exactly this reload, done by hand.
+    //
+    // Reloading twice is deliberate, and the second is the one that guarantees the
+    // result: a reload replaces the timeline wholesale, so a line that arrived while the
+    // first was in flight (and so landed in both the fetched rows and the live buffer) is
+    // de-duplicated by the second rather than shown twice.
+    let phase: 'idle' | 'live' | 'settling' = 'idle';
     const offTask = window.api.on('task:changed', ({ task: changed, runId }) => {
-      if (changed.id === taskId) runIdRef.current = runId;
+      if (changed.id !== taskId) return;
+      if (runId) {
+        runIdRef.current = runId;
+        phase = 'live';
+        return;
+      }
+      // `runIdRef` is deliberately NOT cleared here: the run that just ended is still
+      // emitting, and only its own id can match those events anyway.
+      if (phase === 'idle') return; // no run of ours to be the end of
+      phase = phase === 'live' ? 'settling' : 'idle';
+      void reloadRef.current();
     });
     return () => {
       cancelled = true;
