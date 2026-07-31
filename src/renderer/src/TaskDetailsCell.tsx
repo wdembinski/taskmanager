@@ -14,6 +14,12 @@ import { useEffect, useState } from 'react';
 import {
   Button,
   Caption1,
+  Dialog,
+  DialogActions,
+  DialogBody,
+  DialogContent,
+  DialogSurface,
+  DialogTitle,
   Dropdown,
   MessageBar,
   MessageBarBody,
@@ -23,7 +29,7 @@ import {
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
-import { DismissRegular } from '@fluentui/react-icons';
+import { DeleteRegular, DismissRegular } from '@fluentui/react-icons';
 import type { ManualStatus, Project, Task } from '@shared/model';
 import { restingStatus } from '@shared/board';
 import { DEFAULT_PRIORITIES, priorityColor } from '@shared/priority';
@@ -71,6 +77,13 @@ const useStyles = makeStyles({
   trioLabel: { display: 'flex', alignItems: 'center', gap: '5px' },
   // `minWidth: 0` so a long project name shrinks the control rather than the row.
   trioPicker: { minWidth: 0 },
+  /**
+   * The delete action, alone on the last row and pushed right — as far from the controls
+   * you use every day as the cell allows. Subtle, not a filled danger button: it is a rare
+   * action that should be findable, not one the eye lands on first.
+   */
+  deleteRow: { display: 'flex', justifyContent: 'flex-end' },
+  delete: { color: tokens.colorPaletteRedForeground1 },
 });
 
 export interface TaskDetailsCellProps {
@@ -99,6 +112,7 @@ export function TaskDetailsCell({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [jiraPriorities, setJiraPriorities] = useState<string[]>([]);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   // Switching cards closes whatever was open on the previous one.
   useEffect(() => {
@@ -106,7 +120,31 @@ export function TaskDetailsCell({
     setEditing(false);
     setDraft(task.externalDescription ?? '');
     setError(null);
+    setConfirmDelete(false);
   }, [task.id, task.externalDescription]);
+
+  /**
+   * Delete the card. The main process refuses while a run owns it (or one of its steps), so
+   * the failure a human can actually act on — "stop it first" — arrives as a message here
+   * rather than as a silently dropped click.
+   *
+   * Nothing is called back: the handler broadcasts `project:tasksChanged`, the board
+   * replaces its list, and the pane's selected task resolves to nothing — so the pane
+   * empties itself without this component having to know it is being unmounted.
+   */
+  async function remove(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      await window.api.invoke('task:delete', task.id);
+      setConfirmDelete(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setConfirmDelete(false);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   const isJira = task.externalSource === 'jira';
 
@@ -388,6 +426,51 @@ export function TaskDetailsCell({
             No description yet — Edit adds one, and the agent&apos;s prompt quotes it.
           </Caption1>
         ))}
+
+      {/* Deleting is offered ONLY for a card this app owns. A JIRA card is a mirror of a
+          ticket: removing it here would delete the row and then the very next sync would
+          fetch it straight back, which is a button that lies about what it does. Take a
+          mirrored card off the board by changing the query, or delete the issue in JIRA. */}
+      {!isJira && (
+        <>
+          <div className={styles.deleteRow}>
+            <Button
+              size="small"
+              appearance="subtle"
+              icon={<DeleteRegular />}
+              className={styles.delete}
+              disabled={busy}
+              onClick={() => setConfirmDelete(true)}
+            >
+              Delete task
+            </Button>
+          </div>
+
+          {/* A dialog rather than an inline "are you sure": this takes the card's whole
+              timeline and every step with it, and there is no undo. */}
+          <Dialog open={confirmDelete} onOpenChange={(_e, d) => !d.open && setConfirmDelete(false)}>
+            <DialogSurface>
+              <DialogBody>
+                <DialogTitle>Delete this task?</DialogTitle>
+                <DialogContent>
+                  <Text>
+                    <b>{task.title}</b> and everything on it — its steps, its notes and its whole
+                    conversation — are removed. This cannot be undone.
+                  </Text>
+                </DialogContent>
+                <DialogActions>
+                  <Button appearance="secondary" disabled={busy} onClick={() => setConfirmDelete(false)}>
+                    Cancel
+                  </Button>
+                  <Button appearance="primary" disabled={busy} onClick={() => void remove()}>
+                    {busy ? 'Deleting…' : 'Delete'}
+                  </Button>
+                </DialogActions>
+              </DialogBody>
+            </DialogSurface>
+          </Dialog>
+        </>
+      )}
     </div>
   );
 }
