@@ -4,9 +4,11 @@
  * copies of REAL output captured from `claude … --output-format stream-json`,
  * so these tests pin our parser to the actual protocol.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { PassThrough } from 'node:stream';
+import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { MAX_TOOL_ERROR_CHARS } from './eventNoise';
+import { HEADLESS_TURN_CONTRACT } from './headlessContract';
 import {
   buildClaudeArgs,
   encodeUserMessage,
@@ -297,6 +299,22 @@ describe('encodeUserMessage', () => {
  * WSL target uses.
  */
 describe('session isolation', () => {
+  /**
+   * Contract files written by these tests. The real cleanup runs on the child's `close`
+   * event, which a fake child never emits — so without this the suite quietly litters the
+   * OS temp directory a few files at a time, every run.
+   */
+  const written: string[] = [];
+  afterEach(() => {
+    for (const path of written.splice(0)) {
+      try {
+        unlinkSync(path);
+      } catch {
+        // A test that cleaned up after itself already.
+      }
+    }
+  });
+
   function fakeHost(): { host: ExecHost; argvs: string[][] } {
     const argvs: string[][] = [];
     const host = {
@@ -304,6 +322,8 @@ describe('session isolation', () => {
       exec: async () => ({ code: 0, stdout: '', stderr: '' }),
       spawn: (_cwd: string, _file: string, args: string[]) => {
         argvs.push(args);
+        const contract = args[args.indexOf('--append-system-prompt-file') + 1];
+        if (contract) written.push(contract);
         const child = {
           stdin: Object.assign(new PassThrough(), { writable: true }),
           stdout: new PassThrough(),
@@ -354,5 +374,64 @@ describe('session isolation', () => {
     expect(handle.sessionId).toBe(existing);
     expect(argvs[0]).toContain('--resume');
     expect(argvs[0]).not.toContain('--session-id');
+  });
+
+  /**
+   * The wiring, not just the argument builder: a run must actually materialize the
+   * contract where it tells the CLI to look. A path pointing at nothing would leave every
+   * agent free to strand itself again, and nothing else in the system would notice.
+   */
+  it('writes the headless contract and points the CLI at that exact file', () => {
+    const { host, argvs } = fakeHost();
+    runClaudeSession(request, () => undefined, { host });
+
+    const i = argvs[0].indexOf('--append-system-prompt-file');
+    expect(i).toBeGreaterThan(-1);
+    const path = argvs[0][i + 1];
+    expect(existsSync(path)).toBe(true);
+    expect(readFileSync(path, 'utf8')).toBe(HEADLESS_TURN_CONTRACT);
+  });
+
+  it('gives concurrent runs their own contract file, so neither can delete the other’s', () => {
+    const { host, argvs } = fakeHost();
+    runClaudeSession(request, () => undefined, { host });
+    runClaudeSession(request, () => undefined, { host });
+
+    const paths = argvs.map((a) => a[a.indexOf('--append-system-prompt-file') + 1]);
+    expect(paths[0]).not.toBe(paths[1]);
+  });
+});
+
+describe('buildClaudeArgs — the headless contract (Phase 18)', () => {
+  const req = {
+    prompt: 'x',
+    cwd: 'C:\work',
+    model: 'haiku' as const,
+    permissionMode: 'acceptEdits' as const,
+  };
+
+  it('points the CLI at the contract FILE, never at its text', () => {
+    const args = buildClaudeArgs(req, 's1', undefined, false, 'C:\tmp\contract.md');
+    const i = args.indexOf('--append-system-prompt-file');
+    expect(i).toBeGreaterThan(-1);
+    expect(args[i + 1]).toBe('C:\tmp\contract.md');
+    // The inline form would be rewritten by cmd.exe: the CLI is spawned with shell: true,
+    // and the contract is multi-line and full of quotes and ampersands.
+    expect(args).not.toContain('--append-system-prompt');
+  });
+
+  // A resume is the path that most needs it — its prompt is the human's raw words, so it
+  // carries no guidance of its own at all.
+  it('still carries the contract when resuming', () => {
+    const args = buildClaudeArgs(req, 's1', undefined, true, 'C:\tmp\contract.md');
+    expect(args).toContain('--append-system-prompt-file');
+    expect(args).toContain('--resume');
+  });
+
+  it('is omitted entirely when no contract could be written', () => {
+    // Failing to materialize the file must not stop the run — a stranded agent is bad,
+    // a card that will not start at all is worse.
+    const args = buildClaudeArgs(req, 's1');
+    expect(args).not.toContain('--append-system-prompt-file');
   });
 });

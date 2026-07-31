@@ -26,10 +26,12 @@
  */
 import { randomUUID } from 'node:crypto';
 import { unlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { SessionEvent, StartSessionRequest } from '@shared/session';
 import { localHost, type ExecHost } from './exec';
 import { isBenignToolFailure, MAX_TOOL_ERROR_CHARS, toolResultText } from './eventNoise';
+import { HEADLESS_TURN_CONTRACT } from './headlessContract';
 import { PERMISSION_MCP_SERVER_KEY, PERMISSION_PROMPT_TOOL } from './permissionServerSource';
 
 /** A live handle to a running session so callers can send to / stop it. */
@@ -245,12 +247,19 @@ export function readUsage(raw: unknown): {
  * `ExitPlanMode` call the orchestrator turns into an approvable plan. The gate still
  * applies on top — the CLI consults the permission tool in plan mode too — so keeping
  * it loosens nothing.
+ *
+ * `contractPath` points at the file holding {@link HEADLESS_TURN_CONTRACT}. Passed as a
+ * FILE rather than inline text because this process spawns the CLI with `shell: true`, so
+ * a multi-line argument full of quotes and ampersands would be rewritten by `cmd.exe`
+ * before the CLI ever saw it. Optional so a caller without one (tests, and any path that
+ * cannot materialize a file) still builds valid arguments.
  */
 export function buildClaudeArgs(
   req: StartSessionRequest,
   sessionId: string,
   gate?: { configPath: string },
   resume = false,
+  contractPath?: string,
 ): string[] {
   const args = [
     '-p',
@@ -268,6 +277,9 @@ export function buildClaudeArgs(
     resume ? '--resume' : '--session-id',
     sessionId,
   ];
+  // Appended to the CLI's own system prompt, so it applies to every turn of the session —
+  // including a `--resume`, which a line baked into one prompt would not reach.
+  if (contractPath) args.push('--append-system-prompt-file', contractPath);
   if (gate) {
     args.push('--mcp-config', gate.configPath, '--permission-prompt-tool', PERMISSION_PROMPT_TOOL);
   }
@@ -305,6 +317,31 @@ function writeSessionMcpConfig(
 }
 
 /**
+ * Materialize {@link HEADLESS_TURN_CONTRACT} for one session, and say where the CLI will
+ * find it. Two paths for the same reason the MCP config has two: this process writes and
+ * deletes the file, but the CLI reads it from wherever IT runs (a WSL target sees the
+ * Windows path through `/mnt`).
+ *
+ * Written per session rather than once at startup so its lifetime is the session's — no
+ * shared file for concurrent runs to race, and nothing left behind if the app is killed
+ * mid-run beyond one small file in the OS temp directory. Returns null if the write fails:
+ * a missing contract makes agents likelier to strand themselves, but refusing to start the
+ * run over it would be a far worse trade.
+ */
+function writeContractFile(
+  sessionId: string,
+  host: ExecHost,
+): { appPath: string; hostPath: string } | null {
+  try {
+    const appPath = join(tmpdir(), `claude-orch-contract-${sessionId}.md`);
+    writeFileSync(appPath, HEADLESS_TURN_CONTRACT, 'utf8');
+    return { appPath, hostPath: host.toNative(appPath) };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Start a Claude session. `onEvent` is called for every normalized event as it
  * arrives (started → assistant/tool/rate-limit … → result → exited). Returns a
  * handle with the pre-assigned session id and a stop() method.
@@ -325,11 +362,15 @@ export function runClaudeSession(
   if (options.permission && options.runId) {
     config = writeSessionMcpConfig(options.permission, options.runId, host);
   }
+  // Every run gets the headless contract, gated or not: stranding yourself on a background
+  // subagent has nothing to do with permissions.
+  const contract = writeContractFile(sessionId, host);
   const args = buildClaudeArgs(
     req,
     sessionId,
     config ? { configPath: config.hostPath } : undefined,
     resuming,
+    contract?.hostPath,
   );
 
   // resolveViaShell lets Windows resolve `claude.cmd` from PATH the way a terminal
@@ -370,10 +411,11 @@ export function runClaudeSession(
   );
 
   child.on('close', (code) => {
-    // Clean up the throwaway MCP config once the session is gone.
-    if (config) {
+    // Clean up the throwaway MCP config and contract file once the session is gone.
+    for (const path of [config?.appPath, contract?.appPath]) {
+      if (!path) continue;
       try {
-        unlinkSync(config.appPath);
+        unlinkSync(path);
       } catch {
         // Already gone / never written — nothing to do.
       }
