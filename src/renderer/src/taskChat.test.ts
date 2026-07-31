@@ -6,7 +6,8 @@
 import { describe, expect, it } from 'vitest';
 import type { AttentionItem, AttentionKind } from '@shared/attention';
 import type { Task } from '@shared/model';
-import { chatAvailability, REFUSAL_HINT } from './taskChat';
+import { MAX_PLAN_STEPS } from '@shared/board';
+import { canReplan, chatAvailability, REFUSAL_HINT } from './taskChat';
 
 const task = (over: Partial<Task> = {}): Task =>
   ({
@@ -100,5 +101,56 @@ describe('chatAvailability', () => {
     const a = chatAvailability(s, [step('s1', 'done'), s], null);
     expect(a.target.id).toBe('s2');
     expect(a.can).toBe(true);
+  });
+});
+
+/**
+ * The re-plan button's copy of `Scheduler.replanCard`'s guards. Same contract as
+ * `chatAvailability` above: every disabled state here must match a refusal the scheduler
+ * would actually give, or the button lies about what pressing it would do.
+ */
+describe('canReplan', () => {
+  it('is not offered for a card that was never delegated', () => {
+    expect(canReplan(task({ agentProjectId: null }), []).offered).toBe(false);
+  });
+
+  it('is not offered on a step — a step cannot own a plan', () => {
+    expect(canReplan(step('s1', 'done'), []).offered).toBe(false);
+  });
+
+  // The case the whole feature is for: the chain is finished and the human wants more.
+  it('is offered on a card whose chain has finished', () => {
+    const steps = [step('s1', 'done'), step('s2', 'done')];
+    expect(canReplan(task(), steps)).toMatchObject({ offered: true, can: true });
+  });
+
+  it('is offered on a delegated card with no steps at all', () => {
+    expect(canReplan(task(), [])).toMatchObject({ offered: true, can: true });
+  });
+
+  it('is blocked while the chain is still running', () => {
+    const steps = [step('s1', 'done'), step('s2', 'pending')];
+    const r = canReplan(task(), steps);
+    expect(r).toMatchObject({ offered: true, can: false });
+    expect(r.hint).toBe(REFUSAL_HINT['chain-busy']);
+  });
+
+  it('is blocked while the card itself is mid-turn', () => {
+    // Pressing it would stop the very answer the human is reading.
+    expect(canReplan(task({ status: 'running' }), []).can).toBe(false);
+    expect(canReplan(task({ status: 'waiting-input' }), []).can).toBe(false);
+  });
+
+  it('is blocked behind a usage limit', () => {
+    const r = canReplan(task({ status: 'blocked-by-limit' }), []);
+    expect(r.can).toBe(false);
+    expect(r.hint).toBe(REFUSAL_HINT.limit);
+  });
+
+  it('is blocked once the card is full', () => {
+    const steps = Array.from({ length: MAX_PLAN_STEPS }, (_, i) => step(`s${i}`, 'done'));
+    const r = canReplan(task(), steps);
+    expect(r.can).toBe(false);
+    expect(r.hint).toBe(REFUSAL_HINT['chain-full']);
   });
 });

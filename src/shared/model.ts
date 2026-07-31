@@ -339,6 +339,18 @@ export interface Task {
    * Null for cards that carry no brief of their own.
    */
   description?: string | null;
+  /**
+   * Which planning round produced this step (Phase 18 — re-planning). 1 for a card's
+   * first approved plan and for every step that predates the field; 2 for the steps a
+   * second approved plan appended, and so on. A step added by hand joins whichever round
+   * is current.
+   *
+   * Purely a grouping: the chain still runs strictly in `order` across all rounds, and the
+   * card's counter stays cumulative. It exists so the Details Panel can fold a finished
+   * round away instead of showing one flat list that grows every time you re-plan.
+   * Undefined on cards, which have no round of their own.
+   */
+  planRound?: number;
 
   // --- The card's own progress note (free text, yours alone). ---
   /**
@@ -555,6 +567,16 @@ export type ChatRefusal =
   | 'chain-busy'
   /** A usage limit is holding all work; the message would go nowhere. */
   | 'limit'
+  /**
+   * (Re-planning, Phase 18) The target is a STEP, not a card. A step is one unit of an
+   * approved plan and cannot own a plan of its own — re-plan its parent instead.
+   */
+  | 'not-a-card'
+  /**
+   * (Re-planning, Phase 18) The card already carries `MAX_PLAN_STEPS` steps, so a new
+   * round has nowhere to land. The cap is on the card, not on any one plan.
+   */
+  | 'chain-full'
   | 'unknown-task'
   | 'empty-message';
 

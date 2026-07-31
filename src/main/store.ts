@@ -116,6 +116,8 @@ interface TaskRow {
   agentPlan: string | null;
   /** The git branch this card's worktree runs on; NULL = the legacy `orch/<taskId>`. */
   agentBranch: string | null;
+  /** Which planning round produced this step; NULL pre-migration, read as round 1. */
+  planRound: number | null;
 }
 
 /** A project row as stored; `writeBackPlan` is a 0/1 INTEGER (SQLite has no boolean). */
@@ -212,11 +214,16 @@ export interface Store {
    * repo, but always in `bypassPermissions` — the human approved the plan, so the
    * steps run unattended. Returns the created step, or undefined if the parent is
    * unknown, is itself a step, or the title is blank.
+   *
+   * `round` says which planning round the step belongs to (Phase 18), and only
+   * `approvePlan` passes it — everyone else joins the round already in progress.
    */
   addSubtask(
     parentId: string,
-    input: { title: string; description?: string | null },
+    input: { title: string; description?: string | null; round?: number },
   ): Task | undefined;
+  /** The card's newest planning round, or 0 when it has no steps yet. */
+  maxSubtaskRound(parentId: string): number;
   /** Delete one task (and its transcript history) by id. */
   deleteTask(id: string): void;
   /** Re-parse a plan and reconcile it into the project's tasks; returns the result. */
@@ -428,7 +435,8 @@ export function createStore(dbPath: string): Store {
       agentMode              TEXT,
       agentModel             TEXT,
       agentPlan              TEXT,
-      agentBranch            TEXT
+      agentBranch            TEXT,
+      planRound              INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(projectId, "order");
     CREATE TABLE IF NOT EXISTS app_state (
@@ -702,6 +710,10 @@ export function createStore(dbPath: string): Store {
     // row, which `branchFor` reads as "use the legacy orch/<taskId>" — so an upgrade never
     // orphans a worktree that already exists on the old name.
     ['agentBranch', 'TEXT'],
+    // Which round of planning produced this step (Phase 18 — re-planning). NULL on every
+    // pre-existing row, coerced to 1 by `rowToTask`: everything that exists today came from
+    // a card's first and only approved plan, which IS round 1.
+    ['planRound', 'INTEGER'],
   ] as Array<[string, string]>) {
     if (!taskColumns.some((c) => c.name === name)) {
       db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
@@ -773,8 +785,7 @@ export function createStore(dbPath: string): Store {
    */
   {
     const row = db.prepare(`SELECT value FROM app_state WHERE key = 'settings'`).get() as
-      | { value: string }
-      | undefined;
+      { value: string } | undefined;
     if (row) {
       try {
         const saved = JSON.parse(row.value) as Partial<AppSettings>;
@@ -816,7 +827,7 @@ export function createStore(dbPath: string): Store {
         externalDescription,
         preBlockStatus, preRunStatus, retainedSince, lastReadCommentAt, latestCommentAt,
         agentProjectId, agentMode, agentModel,
-        agentPlan, agentBranch)
+        agentPlan, agentBranch, planRound)
      VALUES
        (@id, @projectId, @phase, @title, @status, @sessionId, @order, @source, @dependsOn, @isContract, @isScaffold, @type,
         @parentTaskId, @description, @statusNote, @statusNoteAt,
@@ -825,7 +836,7 @@ export function createStore(dbPath: string): Store {
         @externalDescription,
         @preBlockStatus, @preRunStatus, @retainedSince, @lastReadCommentAt, @latestCommentAt,
         @agentProjectId, @agentMode, @agentModel,
-        @agentPlan, @agentBranch)`,
+        @agentPlan, @agentBranch, @planRound)`,
   );
   const deleteTask = db.prepare(`DELETE FROM tasks WHERE id = ?`);
   const selectSubtasks = db.prepare(
@@ -837,6 +848,12 @@ export function createStore(dbPath: string): Store {
   );
   const nextSubtaskOrder = db.prepare(
     `SELECT COALESCE(MAX("order"), -1) + 1 AS next FROM tasks WHERE parentTaskId = ?`,
+  );
+  // The card's newest planning round, or 0 when it has no steps at all — so the first
+  // round a card ever gets is 1. COALESCE covers pre-migration rows, whose `planRound`
+  // is NULL and which `rowToTask` reads as round 1.
+  const maxSubtaskRound = db.prepare(
+    `SELECT COALESCE(MAX(COALESCE(planRound, 1)), 0) AS round FROM tasks WHERE parentTaskId = ?`,
   );
   const upsertState = db.prepare(
     `INSERT INTO app_state (key, value) VALUES (?, ?)
@@ -1220,6 +1237,7 @@ export function createStore(dbPath: string): Store {
       agentModel: task.agentModel ?? null,
       agentPlan: task.agentPlan ?? null,
       agentBranch: task.agentBranch ?? null,
+      planRound: task.planRound ?? null,
     };
   }
 
@@ -1265,6 +1283,10 @@ export function createStore(dbPath: string): Store {
       agentModel: (r.agentModel as Task['agentModel']) ?? null,
       agentPlan: r.agentPlan,
       agentBranch: r.agentBranch,
+      // Every step that predates re-planning came from the card's one and only approved
+      // plan, so NULL is round 1 — not "no round", which would leave the panel unable to
+      // group the very rows the grouping exists for.
+      planRound: r.planRound ?? 1,
     };
   }
 
@@ -1528,6 +1550,7 @@ export function createStore(dbPath: string): Store {
       // sequential runner (and would make "the parent's worktree" ambiguous).
       if (!parent || parent.parentTaskId) return undefined;
       const description = input.description?.trim() || null;
+      const currentRound = Math.max(1, (maxSubtaskRound.get(parentId) as { round: number }).round);
       const task: Task = {
         id: randomUUID(),
         // The step lives on the parent's board, so it travels with the card and is
@@ -1550,9 +1573,17 @@ export function createStore(dbPath: string): Store {
         agentProjectId: parent.agentProjectId ?? null,
         agentModel: parent.agentModel ?? null,
         agentMode: 'bypassPermissions',
+        // A caller that knows which planning round it is filling (`approvePlan`) says so;
+        // everyone else — the "Add step…" form above all — joins the round already in
+        // progress, because a step typed by hand belongs with the ones it is typed among.
+        planRound: input.round ?? currentRound,
       };
       insertTask.run(taskToRow(task));
       return task;
+    },
+
+    maxSubtaskRound(parentId) {
+      return (maxSubtaskRound.get(parentId) as { round: number }).round;
     },
 
     deleteTask(id) {
