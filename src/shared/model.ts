@@ -432,6 +432,25 @@ export interface Task {
    * a step of an approved plan must still reach `done` or the chain cannot advance.
    */
   preRunStatus?: TaskStatus | null;
+  /**
+   * Epoch ms this card started being **kept past the query**, or null while the JQL still
+   * returns it.
+   *
+   * The board is the JQL result, so a card used to be deleted the moment its issue stopped
+   * matching — and the commonest JQL there is (`resolution = Unresolved`) stops matching an
+   * issue the instant you finish it. Dragging a card to DONE therefore made it disappear
+   * from the very column you had just dropped it in.
+   *
+   * So a card that leaves the query while it is done is retained instead, and this is the
+   * clock on that: the sync re-reads a retained card by key (its column keeps following the
+   * ticket, even out of Done) and drops it once it has been retained longer than
+   * `JiraSettings.doneRetentionDays`. Cleared the moment the issue matches the JQL again —
+   * it is an ordinary card once more.
+   *
+   * The same shape as {@link Task.preBlockStatus} and {@link Task.preRunStatus}: local state
+   * about a card that the tracker knows nothing about, carried across every sync.
+   */
+  retainedSince?: number | null;
   /** Epoch ms of the newest tracker comment the user has read (unread-badge marker). */
   lastReadCommentAt?: number | null;
   /** Epoch ms of the newest tracker comment seen at the last sync (drives unread). */

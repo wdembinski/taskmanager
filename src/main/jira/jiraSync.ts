@@ -7,6 +7,12 @@
  * Internal-only state is preserved: a task the user moved to `blocked` stays blocked
  * (JIRA is never consulted for blocking), and blocked tasks that drop out of the JQL
  * result are NOT deleted, so a blocked ticket never silently vanishes.
+ *
+ * The other thing that does not vanish is a **finished** card. The board is the JQL result,
+ * and the commonest JQL there is — `resolution = Unresolved` — stops matching an issue the
+ * instant you finish it, so dragging a card into DONE used to delete it out of the column
+ * you had just dropped it in. Those cards are retained instead, and re-read by key so they
+ * keep following their ticket even while the query cannot see them. See {@link retainedKeys}.
  */
 import { PERSONAL_PROJECT_ID, type BoardColumn, type Task } from '@shared/model';
 import { categoryFromKey, isRunStatus, restingStatus, statusForColumn } from '@shared/board';
@@ -51,6 +57,24 @@ export interface JiraSyncOptions {
    * counts. See `latestForeignCommentTime`.
    */
   identity?: JiraIdentityCache | null;
+  /**
+   * The issues fetched by key for the cards being retained past the query (the keys
+   * {@link retainedKeys} asked for), or **null when that fetch did not run or failed**.
+   *
+   * Null and empty are deliberately different answers. An empty array is JIRA saying "none
+   * of those keys exist any more", which retires them; null is us not having asked, and a
+   * card must never be deleted on the strength of a question nobody put.
+   */
+  rechecked?: JiraIssue[] | null;
+  /** Now, in epoch ms — when a card's retention clock starts, and what prunes it. */
+  now?: number;
+  /**
+   * How long a retained card is kept, in ms. **Defaults to 0**, which retires a finished
+   * card the moment the query drops it — the behaviour before retention existed, and the
+   * right answer for every caller that is not the poll (a freshly created issue has no
+   * history to keep).
+   */
+  retentionMs?: number;
 }
 
 export interface JiraSyncResult {
@@ -92,6 +116,7 @@ function issueToTask(
   existing: Task | undefined,
   opts: JiraSyncOptions,
   order: number,
+  retainedSince: number | null = null,
 ): Task {
   const rawStatus = issue.fields.status.name;
   const category = categoryFromKey(issue.fields.status.statusCategory.key);
@@ -160,6 +185,8 @@ function issueToTask(
     externalDescription: description ?? existing?.externalDescription ?? null,
     preBlockStatus: blocked ? (existing?.preBlockStatus ?? null) : null,
     preRunStatus: borrowed ? resting : null,
+    // Null for an issue the JQL returned — it is an ordinary card, whatever it was before.
+    retainedSince,
     lastReadCommentAt,
     // Keep the newest known comment time: fall back to the prior value if this sync
     // didn't return comments for the issue.
@@ -172,19 +199,69 @@ function issueToTask(
 }
 
 /**
+ * Whether a card that has left the query is one the board **keeps**.
+ *
+ * Either it is finished — the case this exists for, since the query it just fell out of is
+ * almost certainly one that excludes finished work — or it is already being retained, which
+ * has to keep counting even after the ticket moves back out of Done. That second clause is
+ * what makes reopening a ticket in JIRA visible on the board: without it a retained card
+ * would be retired by the very sync that discovered it had come back to life.
+ */
+function isRetained(task: Task): boolean {
+  return task.retainedSince != null || restingStatus(task) === 'done';
+}
+
+/** JIRA tasks on the board, keyed by issue key. */
+function jiraTasksByKey(existing: readonly Task[]): Map<string, Task> {
+  return new Map(
+    existing
+      .filter((t) => t.source === 'jira' && t.externalKey)
+      .map((t) => [t.externalKey as string, t]),
+  );
+}
+
+/**
+ * The issue keys the sync must re-read **by key**, because the JQL no longer returns them
+ * but the board is keeping their cards anyway.
+ *
+ * This is what stops a retained card from freezing at the state it was in when it left the
+ * query. Move the ticket from Done back to In Progress in JIRA and the JQL may still not
+ * match it — `resolution` is only cleared by a workflow post-function, and plenty of
+ * workflows do not have one — so the query alone would never mention it again. Asking for it
+ * by key always answers, and the card lands in whatever column its real status resolves to.
+ *
+ * Bounded by construction: only cards already on the board, only ones the query dropped.
+ */
+export function retainedKeys(existing: readonly Task[], issues: readonly JiraIssue[]): string[] {
+  const returned = new Set(issues.map((i) => i.key));
+  const keys: string[] = [];
+  for (const task of existing) {
+    if (task.source !== 'jira' || task.externalKey == null) continue;
+    if (returned.has(task.externalKey)) continue;
+    if (restingStatus(task) === 'blocked') continue; // never consulted; never deleted
+    if (isRetained(task)) keys.push(task.externalKey);
+  }
+  return keys;
+}
+
+/**
  * Reconcile the JQL result against the current Personal-board tasks. Ad-hoc tasks are
  * never touched. Returns the JIRA upserts and the ids of stale (removable) JIRA tasks.
+ *
+ * A card the query dropped meets one of four fates:
+ *
+ *   1. **blocked** — left exactly as it is. An internal-only state JIRA is never asked about.
+ *   2. **not retained** — deleted, as it always was: the query is the board.
+ *   3. **retained and re-read** — upserted from the re-read issue, so it shows the ticket's
+ *      real status and column while keeping its retention clock running.
+ *   4. **retained too long, or JIRA no longer returns it** — deleted.
  */
 export function reconcileJiraTasks(
   existing: Task[],
   issues: JiraIssue[],
   opts: JiraSyncOptions,
 ): JiraSyncResult {
-  const existingByKey = new Map(
-    existing
-      .filter((t) => t.source === 'jira' && t.externalKey)
-      .map((t) => [t.externalKey as string, t]),
-  );
+  const existingByKey = jiraTasksByKey(existing);
   const seen = new Set<string>();
 
   const upserts = issues.map((issue, i) => {
@@ -192,17 +269,36 @@ export function reconcileJiraTasks(
     return issueToTask(issue, existingByKey.get(issue.key), opts, i);
   });
 
-  const deleteIds = existing
-    .filter(
-      (t) =>
-        t.source === 'jira' &&
-        t.externalKey != null &&
-        !seen.has(t.externalKey) &&
-        // Keep blocked tickets even if they left the JQL — and read where the card RESTS,
-        // so one whose agent is mid-run isn't deleted out from under the session.
-        restingStatus(t) !== 'blocked',
-    )
-    .map((t) => t.id);
+  const rechecked = opts.rechecked ? new Map(opts.rechecked.map((i) => [i.key, i])) : null;
+  const deleteIds: string[] = [];
+
+  for (const task of existing) {
+    if (task.source !== 'jira' || task.externalKey == null || seen.has(task.externalKey)) continue;
+    // Keep blocked tickets even if they left the JQL — and read where the card RESTS, so one
+    // whose agent is mid-run isn't deleted out from under the session.
+    if (restingStatus(task) === 'blocked') continue;
+    if (!isRetained(task)) {
+      deleteIds.push(task.id);
+      continue;
+    }
+    const now = opts.now ?? Date.now();
+    const since = task.retainedSince ?? now;
+    // `>=`, so a retention of 0 retires the card on the very sync that dropped it.
+    if (now - since >= (opts.retentionMs ?? 0)) {
+      deleteIds.push(task.id);
+      continue;
+    }
+    // The re-read didn't run (or failed). Keep the card untouched rather than retire it on
+    // a question nobody put — its clock simply starts on the next sync that does ask.
+    if (rechecked === null) continue;
+    const issue = rechecked.get(task.externalKey);
+    // JIRA answered and does not have it: deleted, or no longer visible to this token.
+    if (!issue) {
+      deleteIds.push(task.id);
+      continue;
+    }
+    upserts.push(issueToTask(issue, task, opts, task.order, since));
+  }
 
   return { upserts, deleteIds };
 }

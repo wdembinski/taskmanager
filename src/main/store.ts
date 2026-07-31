@@ -99,6 +99,8 @@ interface TaskRow {
   preBlockStatus: string | null;
   /** The human's status, parked while a run borrows `status`. See `Task.preRunStatus`. */
   preRunStatus: string | null;
+  /** When this card started being kept past the JQL. See `Task.retainedSince`. */
+  retainedSince: number | null;
   lastReadCommentAt: number | null;
   latestCommentAt: number | null;
   /** The project this card is filed under — what it is ABOUT. NULL when unfiled. */
@@ -417,6 +419,7 @@ export function createStore(dbPath: string): Store {
       externalDescription    TEXT,
       preBlockStatus         TEXT,
       preRunStatus           TEXT,
+      retainedSince          INTEGER,
       lastReadCommentAt      INTEGER,
       latestCommentAt        INTEGER,
       projectTagId           TEXT,
@@ -641,6 +644,9 @@ export function createStore(dbPath: string): Store {
     // Null on every existing row, which reads as "no run has borrowed this card's
     // status" — exactly true of a task sitting in the DB when the app starts.
     ['preRunStatus', 'TEXT'],
+    // NULL on every existing row, which reads as "the JQL still returns this card" — true
+    // of anything already on the board when the app starts.
+    ['retainedSince', 'INTEGER'],
     ['lastReadCommentAt', 'INTEGER'],
     ['latestCommentAt', 'INTEGER'],
     // Agent delegation: the epic/parent key and description come from JIRA (a re-sync
@@ -763,7 +769,8 @@ export function createStore(dbPath: string): Store {
         externalSource, externalKey, externalId, externalUrl, externalStatus, externalStatusCategory,
         externalPriority, externalType, externalLabel, externalParentKey, externalEpicName, externalSprint,
         externalDescription,
-        preBlockStatus, preRunStatus, lastReadCommentAt, latestCommentAt, agentProjectId, agentMode, agentModel,
+        preBlockStatus, preRunStatus, retainedSince, lastReadCommentAt, latestCommentAt,
+        agentProjectId, agentMode, agentModel,
         agentPlan, agentBranch)
      VALUES
        (@id, @projectId, @phase, @title, @status, @sessionId, @order, @source, @dependsOn, @isContract, @isScaffold, @type,
@@ -771,7 +778,8 @@ export function createStore(dbPath: string): Store {
         @externalSource, @externalKey, @externalId, @externalUrl, @externalStatus, @externalStatusCategory,
         @externalPriority, @externalType, @externalLabel, @externalParentKey, @externalEpicName, @externalSprint,
         @externalDescription,
-        @preBlockStatus, @preRunStatus, @lastReadCommentAt, @latestCommentAt, @agentProjectId, @agentMode, @agentModel,
+        @preBlockStatus, @preRunStatus, @retainedSince, @lastReadCommentAt, @latestCommentAt,
+        @agentProjectId, @agentMode, @agentModel,
         @agentPlan, @agentBranch)`,
   );
   const deleteTask = db.prepare(`DELETE FROM tasks WHERE id = ?`);
@@ -1149,6 +1157,7 @@ export function createStore(dbPath: string): Store {
       externalDescription: task.externalDescription ?? null,
       preBlockStatus: task.preBlockStatus ?? null,
       preRunStatus: task.preRunStatus ?? null,
+      retainedSince: task.retainedSince ?? null,
       lastReadCommentAt: task.lastReadCommentAt ?? null,
       latestCommentAt: task.latestCommentAt ?? null,
       projectTagId: task.projectTagId ?? null,
@@ -1193,6 +1202,7 @@ export function createStore(dbPath: string): Store {
       externalDescription: r.externalDescription,
       preBlockStatus: (r.preBlockStatus as Task['preBlockStatus']) ?? null,
       preRunStatus: (r.preRunStatus as Task['preRunStatus']) ?? null,
+      retainedSince: r.retainedSince ?? null,
       lastReadCommentAt: r.lastReadCommentAt,
       latestCommentAt: r.latestCommentAt,
       projectTagId: r.projectTagId,
@@ -1420,6 +1430,7 @@ export function createStore(dbPath: string): Store {
              externalSprint = @externalSprint,
              externalDescription = @externalDescription,
              preBlockStatus = @preBlockStatus, preRunStatus = @preRunStatus,
+             retainedSince = @retainedSince,
              lastReadCommentAt = @lastReadCommentAt,
              latestCommentAt = @latestCommentAt
            WHERE id = @id`,

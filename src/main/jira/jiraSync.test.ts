@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { PERSONAL_PROJECT_ID, type Task } from '@shared/model';
-import { reconcileJiraTasks } from './jiraSync';
+import { reconcileJiraTasks, retainedKeys } from './jiraSync';
 import type { JiraIssue } from './jiraClient';
 
 const issue = (
@@ -385,5 +385,119 @@ describe('reconcileJiraTasks — whose comment raises the unread border', () => 
     const issues = [withComments([{ created: '2026-07-20T10:00:00.000Z', accountId: 'acc-them' }])];
     const { upserts } = reconcileJiraTasks([], issues, { ...opts, identity: ME });
     expect(upserts[0].lastReadCommentAt).toBe(upserts[0].latestCommentAt);
+  });
+});
+
+describe('retainedKeys / reconcileJiraTasks — a finished card outlives the query', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const NOW = Date.parse('2026-07-31T12:00:00.000Z');
+  /** Two weeks, the shipped default. */
+  const KEEP = { now: NOW, retentionMs: 14 * DAY };
+
+  /** A card the human has finished, which is why its issue no longer matches the JQL. */
+  const doneCard = (over: Partial<Task> = {}): Task =>
+    jiraTask({ status: 'done', externalKey: 'PROJ-1', ...over });
+
+  /** The same issue, read back BY KEY — the only way the board can still see it. */
+  const doneIssue = issue('1', 'PROJ-1', 'done');
+  const reopened = issue('1', 'PROJ-1', 'indeterminate');
+
+  it('asks for the finished cards the query dropped, and for nothing else', () => {
+    const stale = jiraTask({ id: 'jira-2', status: 'pending', externalKey: 'PROJ-2' });
+    expect(retainedKeys([doneCard(), stale], [])).toEqual(['PROJ-1']);
+  });
+
+  it('never asks about a card the query still returns', () => {
+    expect(retainedKeys([doneCard()], [doneIssue])).toEqual([]);
+  });
+
+  it('keeps asking once a retained card has been reopened — the clock, not the status', () => {
+    // Without this the very sync that discovered the ticket was alive again would stop
+    // looking at it, and the card would be retired by the next one.
+    const card = doneCard({ status: 'in-progress', retainedSince: NOW - DAY });
+    expect(retainedKeys([card], [])).toEqual(['PROJ-1']);
+  });
+
+  it('leaves a blocked card alone, however finished it looks', () => {
+    expect(retainedKeys([doneCard({ status: 'blocked' })], [])).toEqual([]);
+  });
+
+  it('keeps the card in DONE instead of deleting it out of the column it was dropped in', () => {
+    const { upserts, deleteIds } = reconcileJiraTasks([doneCard()], [], {
+      ...opts,
+      ...KEEP,
+      rechecked: [doneIssue],
+    });
+    expect(deleteIds).toEqual([]);
+    expect(upserts[0].status).toBe('done');
+    expect(upserts[0].retainedSince).toBe(NOW);
+  });
+
+  it('follows the ticket back OUT of Done when JIRA moves it, query or no query', () => {
+    // The whole point of the by-key re-read: `resolution = Unresolved` never matches this
+    // issue again if the workflow did not clear the resolution, so the query alone would
+    // leave the card frozen in DONE for ever.
+    const { upserts, deleteIds } = reconcileJiraTasks(
+      [doneCard({ retainedSince: NOW - DAY })],
+      [],
+      { ...opts, ...KEEP, rechecked: [reopened] },
+    );
+    expect(deleteIds).toEqual([]);
+    expect(upserts[0].status).toBe('in-progress');
+    // The clock keeps running from when it started, not from this sync.
+    expect(upserts[0].retainedSince).toBe(NOW - DAY);
+  });
+
+  it('retires a card JIRA no longer returns at all', () => {
+    const { upserts, deleteIds } = reconcileJiraTasks([doneCard()], [], {
+      ...opts,
+      ...KEEP,
+      rechecked: [],
+    });
+    expect(deleteIds).toEqual(['jira-1']);
+    expect(upserts).toEqual([]);
+  });
+
+  it('retires a card that has been retained longer than the window', () => {
+    const { deleteIds } = reconcileJiraTasks([doneCard({ retainedSince: NOW - 15 * DAY })], [], {
+      ...opts,
+      ...KEEP,
+      rechecked: [doneIssue],
+    });
+    expect(deleteIds).toEqual(['jira-1']);
+  });
+
+  it('keeps every retained card when the re-read could not run', () => {
+    // A network blip must not empty the Done column: `rechecked: null` is "nobody asked",
+    // which is a different answer from "JIRA says it is gone".
+    const { upserts, deleteIds } = reconcileJiraTasks([doneCard({ retainedSince: NOW })], [], {
+      ...opts,
+      ...KEEP,
+      rechecked: null,
+    });
+    expect(deleteIds).toEqual([]);
+    expect(upserts).toEqual([]);
+  });
+
+  it('still deletes an unfinished card the query dropped', () => {
+    const { deleteIds } = reconcileJiraTasks([jiraTask({ status: 'pending' })], [], {
+      ...opts,
+      ...KEEP,
+      rechecked: [],
+    });
+    expect(deleteIds).toEqual(['jira-1']);
+  });
+
+  it('clears the retention marker the moment the query returns the issue again', () => {
+    const { upserts } = reconcileJiraTasks([doneCard({ retainedSince: NOW - DAY })], [reopened], {
+      ...opts,
+      ...KEEP,
+    });
+    expect(upserts[0].retainedSince).toBeNull();
+  });
+
+  it('with a retention of zero, behaves exactly as it did before retention existed', () => {
+    const { deleteIds } = reconcileJiraTasks([doneCard()], [], { ...opts, rechecked: [doneIssue] });
+    expect(deleteIds).toEqual(['jira-1']);
   });
 });

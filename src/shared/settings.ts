@@ -49,6 +49,18 @@ export interface JiraSettings {
   /** Whether the board shows the Done column. */
   showDoneColumn: boolean;
   /**
+   * How long (in days) a finished card is kept on the board after its issue stops matching
+   * the JQL. 0 keeps the old behaviour: it goes the moment it leaves the query.
+   *
+   * A Done column is only as useful as what it holds, and the commonest JQL there is
+   * (`resolution = Unresolved`) stops matching an issue the instant you finish it — so the
+   * card you had just dragged into DONE vanished out of it. The retained card is re-read by
+   * key on every sync, so it still follows its ticket: move the issue back to In Progress in
+   * JIRA and the card leaves Done, whether or not the query has caught up. See
+   * `Task.retainedSince`.
+   */
+  doneRetentionDays: number;
+  /**
    * How often (in minutes) the app polls JIRA in the background to fetch new/changed
    * issues onto the board. 0 = off (the manual "Sync JIRA" button still works).
    */
@@ -107,6 +119,7 @@ export const DEFAULT_JIRA_SETTINGS: JiraSettings = {
   jql: 'assignee = currentUser() AND resolution = Unresolved ORDER BY updated DESC',
   currentSprintOnly: false,
   showDoneColumn: false,
+  doneRetentionDays: 14,
   pollIntervalMinutes: 5,
 };
 

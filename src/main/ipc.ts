@@ -48,7 +48,7 @@ import { explainJiraFailure } from './jira/jiraDiagnostics';
 import { commentBodyToText, type JiraClient, type JiraIssue } from './jira/jiraClient';
 import { blocksToText, parseAdf } from './jira/adf';
 import { normalizeIssueTypes, normalizeProjects } from './jira/createMeta';
-import { reconcileJiraTasks } from './jira/jiraSync';
+import { reconcileJiraTasks, retainedKeys } from './jira/jiraSync';
 import { discoverEpicFieldId, epicKeyFromIssue, epicNameFromIssue } from './jira/epicField';
 import { discoverSprintFieldId, withCurrentSprint } from './jira/jiraSprint';
 import { authorIsMe, identityFrom, type JiraIdentityCache } from './jira/identity';
@@ -1360,8 +1360,33 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     const jql = jira.currentSprintOnly ? withCurrentSprint(jira.jql) : jira.jql;
     const extraFields = [epicField, sprintField].filter((f): f is string => f !== null);
     const issues = await client.search(jql, 100, extraFields);
-    const epicNames = await fetchEpicNames(client, issues, epicField);
-    const { upserts, deleteIds } = reconcileJiraTasks(store.getPersonalTasks(), issues, {
+    const personal = store.getPersonalTasks();
+
+    /**
+     * Re-read the cards the board is keeping past the query, by key.
+     *
+     * A finished card is retained rather than deleted (see `jiraSync.ts`), and this is what
+     * stops it freezing there: the query that dropped it will very likely never mention it
+     * again — `resolution = Unresolved` does not match a ticket whose resolution was never
+     * cleared on the way back out of Done — so asking for it by key is the only way the card
+     * can follow its ticket into IN PROGRESS.
+     *
+     * Failure leaves `rechecked: null`, which the reconciler reads as "not asked" and keeps
+     * every retained card. A network blip must not empty the Done column.
+     */
+    const keys = retainedKeys(personal, issues);
+    let rechecked: JiraIssue[] | null = keys.length ? null : [];
+    if (keys.length) {
+      rechecked = await client
+        .search(`key in (${keys.join(',')})`, keys.length, extraFields)
+        .catch((e: unknown) => {
+          logMain('JIRA re-read of retained cards failed', e);
+          return null;
+        });
+    }
+
+    const epicNames = await fetchEpicNames(client, [...issues, ...(rechecked ?? [])], epicField);
+    const { upserts, deleteIds } = reconcileJiraTasks(personal, issues, {
       baseUrl: jira.baseUrl,
       overrides: jira.statusCategoryOverrides,
       learned: jira.learnedStatusColumns,
@@ -1369,6 +1394,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       epicNames,
       sprintFieldId: sprintField,
       identity,
+      rechecked,
+      now: Date.now(),
+      retentionMs: Math.max(0, jira.doneRetentionDays) * 24 * 60 * 60 * 1000,
     });
     for (const t of upserts) store.upsertJiraTask(t);
     for (const id of deleteIds) store.deleteTask(id);

@@ -1071,6 +1071,22 @@ export function Settings(): JSX.Element {
             </Field>
 
             <Field
+              label="Keep finished cards for (days)"
+              hint="Most JQL (`resolution = Unresolved`) stops matching an issue the moment you finish it, which would empty the Done column as fast as you filled it. A finished card is kept this long past the query instead, and re-read by key each sync — so moving the ticket back out of Done in JIRA still moves the card. 0 = drop it as soon as the query does."
+            >
+              <SpinButton
+                min={0}
+                max={365}
+                value={jira.doneRetentionDays}
+                onChange={(_e, d) => {
+                  const n = d.value ?? Number(d.displayValue);
+                  if (Number.isFinite(n))
+                    patchJira({ doneRetentionDays: Math.max(0, Math.round(n as number)) });
+                }}
+              />
+            </Field>
+
+            <Field
               label="Auto-sync interval (minutes)"
               hint="How often the board fetches new/changed JIRA issues in the background. 0 = off (the Sync button still works)."
             >
