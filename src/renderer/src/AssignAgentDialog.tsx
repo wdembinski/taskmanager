@@ -62,12 +62,31 @@ const useStyles = makeStyles({
    * would put it straight back to overflowing the moment the window got narrow.
    */
   form: { display: 'flex', flexDirection: 'column', gap: '12px', minWidth: 0 },
-  /** Wraps rather than squeezing: two dropdowns side by side need real width each. */
-  row: { display: 'flex', gap: '8px', flexWrap: 'wrap' },
+  /**
+   * Wraps rather than squeezing: two dropdowns side by side need real width each.
+   *
+   * `alignItems: start` because the fields in a row rarely have the same height — Branch
+   * carries a hint (or a validation message) and Type does not — and the default `stretch`
+   * makes the shorter field's box as tall as its neighbour for no reason.
+   */
+  row: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'start' },
   /** Narrow — a Conventional Commits type is six characters at most. */
   type: { width: '120px', flexShrink: 0 },
   /** `minWidth` so a flex child can actually shrink instead of forcing the row wider. */
   grow: { flex: 1, minWidth: '180px' },
+  /**
+   * Let a Dropdown be as wide as the Field around it, and no wider.
+   *
+   * Fluent's Dropdown hard-codes `minWidth: 250px` on its own root, which a `Field` cannot
+   * override from the outside — so the Type field, sized to 120px above, rendered a 250px
+   * control that spilled out of its slot and painted straight over the Branch field beside
+   * it. The layout was never wrong; the control simply refused to fit it.
+   *
+   * Applied to EVERY dropdown here, not just Type: two 250px minimums plus the gap exceed
+   * the surface as soon as the window is narrow, and the same overflow would come back on
+   * the Model / Permission mode row.
+   */
+  dropdown: { minWidth: 0, width: '100%' },
   hint: { color: tokens.colorNeutralForeground3 },
   ticket: { color: tokens.colorNeutralForeground2 },
 });
@@ -231,6 +250,7 @@ export function AssignAgentDialog({
                     hint={selected ? selected.path : 'The repository the agent works in.'}
                   >
                     <Dropdown
+                      className={styles.dropdown}
                       value={selected?.name ?? ''}
                       selectedOptions={projectId ? [projectId] : []}
                       onOptionSelect={(_e, d) => d.optionValue && pickProject(d.optionValue)}
@@ -246,6 +266,7 @@ export function AssignAgentDialog({
                   <div className={styles.row}>
                     <Field label="Model" className={styles.grow}>
                       <Dropdown
+                        className={styles.dropdown}
                         value={model}
                         selectedOptions={[model]}
                         onOptionSelect={(_e, d) => setModel(d.optionValue as ClaudeModel)}
@@ -259,6 +280,7 @@ export function AssignAgentDialog({
                     </Field>
                     <Field label="Permission mode" className={styles.grow}>
                       <Dropdown
+                        className={styles.dropdown}
                         value={PERMISSION_MODE_LABELS[mode]}
                         selectedOptions={[mode]}
                         onOptionSelect={(_e, d) => setMode(d.optionValue as PermissionMode)}
@@ -275,6 +297,7 @@ export function AssignAgentDialog({
                   <div className={styles.row}>
                     <Field label="Type" className={styles.type}>
                       <Dropdown
+                        className={styles.dropdown}
                         value={branchType}
                         selectedOptions={[branchType]}
                         onOptionSelect={(_e, d) => pickBranchType(d.optionValue as BranchType)}
