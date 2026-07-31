@@ -302,13 +302,28 @@ export function runPhase(
     if (live >= 0) {
       return { phase: 'running', label: `Running step ${live + 1} of ${total}`, spinner: true };
     }
-    const starting = subtasks.findIndex((s) => liveRunTaskIds?.has(s.id));
+    // Same discipline as the parent's own check above: the step's recorded status is a FACT,
+    // the snapshot only a lagging hint, so a step that has finished is never read out of it.
+    // Without the guard a `done` step still listed in `scheduler:activeRuns` — which it is
+    // for the moment between settling and the process exiting — spins the whole card as
+    // "Starting step N of M", and a step whose run leaked from the snapshot spins it forever.
+    const starting = subtasks.findIndex(
+      (s) => !TERMINAL.has(s.status) && liveRunTaskIds?.has(s.id),
+    );
     if (starting >= 0) {
-      return { phase: 'starting', label: `Starting step ${starting + 1} of ${total}`, spinner: true };
+      return {
+        phase: 'starting',
+        label: `Starting step ${starting + 1} of ${total}`,
+        spinner: true,
+      };
     }
     const parked = subtasks.findIndex((s) => s.status === 'waiting-input' || s.status === 'failed');
     if (parked >= 0) {
-      return { phase: 'waiting', label: `Stopped at step ${parked + 1} of ${total}`, spinner: false };
+      return {
+        phase: 'waiting',
+        label: `Stopped at step ${parked + 1} of ${total}`,
+        spinner: false,
+      };
     }
     if (chainInFlight(subtasks)) {
       return { phase: 'queued', label: 'Queued', spinner: false };

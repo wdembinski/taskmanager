@@ -425,6 +425,68 @@ describe('Scheduler.decidePermission — full auto (bypassPermissions)', () => {
   });
 });
 
+/**
+ * The CLI can emit a second `system/init` — which `mapRawEvent` turns into another
+ * `started` — AFTER its `result`. Seen in the wild: a finished step was written `done` by
+ * `settle`, a late `started` 30ms later put it back to `running`, and the `exited` 96ms
+ * after that declined to fix it because that case is guarded on `!run.settled`. The step
+ * spun on the board for hours with nothing executing.
+ */
+describe('Scheduler.onRunEvent — a late `started` must not resurrect a settled run', () => {
+  function makeScheduler(settled: boolean) {
+    const task = { id: 'task', projectId: 'p', title: 'x' } as Task;
+    const updateTask = vi.fn((_id: string, patch: Partial<Task>) => ({ ...task, ...patch }));
+    const store = {
+      getProject: () => undefined,
+      getTask: () => task,
+      updateTask,
+      getSettings: () => ({ limitJitterMs: 0 }),
+      appendTaskEvent: () => undefined,
+      ...INERT_ATTENTION_STORE,
+    } as unknown as Store;
+    const scheduler = new Scheduler(
+      store,
+      {} as unknown as SessionManager,
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+    );
+    (scheduler as unknown as { runs: Map<string, unknown> }).runs.set('run1', {
+      taskId: 'task',
+      projectId: 'p',
+      runId: 'run1',
+      settled,
+    });
+    const fire = (
+      scheduler as unknown as {
+        onRunEvent(runId: string, event: unknown): void;
+      }
+    ).onRunEvent.bind(scheduler);
+    return { fire, updateTask };
+  }
+
+  const started = { kind: 'started', sessionId: 's-1', model: '', cwd: '', permissionMode: '' };
+
+  it('leaves the status alone once the run has settled', () => {
+    const { fire, updateTask } = makeScheduler(true);
+    fire('run1', started);
+    expect(updateTask).toHaveBeenCalledTimes(1);
+    const patch = updateTask.mock.calls[0][1];
+    // The session id is still worth recording — it is a resume handle. The claim that
+    // work is moving is the only part that is wrong.
+    expect(patch).toEqual({ sessionId: 's-1' });
+    expect(patch).not.toHaveProperty('status');
+  });
+
+  it('still marks a genuinely starting run as running', () => {
+    const { fire, updateTask } = makeScheduler(false);
+    fire('run1', started);
+    expect(updateTask.mock.calls[0][1]).toEqual({ status: 'running', sessionId: 's-1' });
+  });
+});
+
 describe('Scheduler.schedulerStates', () => {
   function bareScheduler() {
     const emitScheduler = vi.fn();

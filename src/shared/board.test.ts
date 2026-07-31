@@ -343,6 +343,36 @@ describe('runPhase', () => {
     });
   });
 
+  /**
+   * The snapshot legitimately lags: a step is still listed by `scheduler:activeRuns` between
+   * settling and its process exiting. Its recorded status is the fact, so a finished step is
+   * never read out of the snapshot — the same rule the card's own check already followed.
+   */
+  it('still rests when a finished step lingers in the live-run snapshot', () => {
+    const card = task({ id: 'c1', status: 'in-progress' });
+    const phase = runPhase(card, [step('s1', 'done'), step('s2', 'done')], new Set(['s2']));
+    expect(phase).toMatchObject({ phase: 'idle', spinner: false });
+  });
+
+  it('does not read a stopped or failed step out of the snapshot either', () => {
+    const card = task({ id: 'c1', status: 'in-progress' });
+    // `failed` is a park, not a start — the card must say so rather than spin.
+    expect(runPhase(card, [step('s1', 'failed')], new Set(['s1']))).toMatchObject({
+      phase: 'waiting',
+      spinner: false,
+    });
+    expect(runPhase(card, [step('s1', 'stopped')], new Set(['s1']))).toMatchObject({
+      spinner: false,
+    });
+  });
+
+  it('still spins a step the snapshot has picked up before it reports running', () => {
+    const card = task({ id: 'c1', status: 'in-progress' });
+    expect(
+      runPhase(card, [step('s1', 'done'), step('s2', 'pending')], new Set(['s2'])),
+    ).toMatchObject({ phase: 'starting', label: 'Starting step 2 of 2', spinner: true });
+  });
+
   it('says an assigned card was never started', () => {
     const t = task({ status: 'pending', agentProjectId: 'agent' });
     expect(runPhase(t)).toMatchObject({ phase: 'idle', label: 'Assigned — not started' });

@@ -2006,7 +2006,24 @@ export class Scheduler {
       case 'started':
         // Persist the session id the instant it arrives, per docs/03, so the task
         // can be resumed after a limit reset or an app restart.
-        this.updateTask(run.taskId, { status: 'running', sessionId: event.sessionId }, runId);
+        //
+        // ...but a SETTLED run must never be talked back into `running`. The CLI can emit a
+        // second `system/init` — which `mapRawEvent` turns into another `started` — AFTER its
+        // `result`, and 30ms was enough to overwrite the `done` that `settle` had just
+        // written for a finished step. `exited` cannot undo it: that case is itself guarded
+        // on `!run.settled`, so it declined to touch the status and the step stayed `running`
+        // for as long as the app lived, spinning a card whose work was finished and committed.
+        // Every other terminal path in this switch is guarded; this one was the exception.
+        //
+        // The session id is still worth keeping — it is a resume handle, and recording it is
+        // what this case has always done. Only the claim that work is moving is wrong.
+        this.updateTask(
+          run.taskId,
+          run.settled
+            ? { sessionId: event.sessionId }
+            : { status: 'running', sessionId: event.sessionId },
+          runId,
+        );
         break;
 
       case 'rate-limit':
@@ -2564,7 +2581,12 @@ export class Scheduler {
       const project = this.store.getProject(task.agentProjectId ?? '');
       if (!project) return 'The agent project for this card has been removed.';
       const owner = task.parentTaskId ?? task.id;
-      const prep = await this.worktrees.prepare(project, task, owner, task.agentBranch ?? undefined);
+      const prep = await this.worktrees.prepare(
+        project,
+        task,
+        owner,
+        task.agentBranch ?? undefined,
+      );
       if (prep.mode !== 'worktree' || !prep.branch || !prep.base) {
         return 'This card did not run in a worktree, so there is nothing to merge.';
       }
