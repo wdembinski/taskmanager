@@ -448,6 +448,17 @@ export interface IpcApi {
    * so the UI can explain itself.
    */
   'task:chat': (taskId: string, message: string) => Promise<ChatSendResult>;
+  /**
+   * Ask a card's agent to plan the NEXT round of steps (Phase 18). Runs one turn in
+   * `plan` mode — whatever mode the card is otherwise assigned — so the agent finishes
+   * with `ExitPlanMode` and the plan reaches the inbox for approval instead of being
+   * written as prose into the chat, where nothing can turn it into steps.
+   *
+   * `note` is the human's brief for what the round should cover. Refusals come back as
+   * data (`{ status: 'refused', reason }`), same as `task:chat`, so the panel can explain
+   * why the button did nothing.
+   */
+  'task:replan': (taskId: string, note?: string) => Promise<ChatSendResult>;
 
   /** Snapshot of everything currently waiting on a human (seed the inbox on load). */
   'attention:list': () => Promise<AttentionItem[]>;

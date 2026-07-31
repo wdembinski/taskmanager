@@ -613,6 +613,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     return store.getTask(taskId) ?? existing;
   });
   handle('task:chat', async (taskId, message) => scheduler.chatWithAgent(taskId, message));
+  handle('task:replan', async (taskId, note) => scheduler.replanCard(taskId, note));
   handle('task:create', async (projectId, input) => {
     const task = store.createTask(projectId, input);
     if (!task) throw new Error('A task needs a title.');
@@ -1037,7 +1038,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // the manual button and the background poller share one body each, so there is no way
   // to sync without the bar noticing.
   // -------------------------------------------------------------------------
-  const syncClock: Record<SyncServiceId, { lastSyncAt: number | null; syncing: boolean; error: string | null }> = {
+  const syncClock: Record<
+    SyncServiceId,
+    { lastSyncAt: number | null; syncing: boolean; error: string | null }
+  > = {
     jira: { lastSyncAt: null, syncing: false, error: null },
     gitlab: { lastSyncAt: null, syncing: false, error: null },
   };

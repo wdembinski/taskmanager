@@ -27,6 +27,7 @@ import {
 import type { Task } from '@shared/model';
 import { isAgentRunning } from '@shared/board';
 import { subtaskProgress } from './board/boardColumns';
+import { canReplan, REFUSAL_HINT } from './taskChat';
 import { STATUS_LABEL } from './taskStatus';
 import { FLUO, STATUS_INDICATOR_COLOR } from './theme';
 import { FoldToggle } from './FoldToggle';
@@ -103,6 +104,36 @@ function isLive(task: Task): boolean {
   return task.status === 'running' || task.status === 'waiting-input';
 }
 
+/** One planning round's steps, with the index each holds in the card's whole chain. */
+interface StepRound {
+  round: number;
+  steps: Array<{ step: Task; index: number }>;
+}
+
+/**
+ * Split a chain into its planning rounds, in order (Phase 18).
+ *
+ * The chain itself stays one sequence — `index` is the step's position across the WHOLE
+ * card, so the numbering the human reads never restarts and never disagrees with the
+ * card's `3/7` counter. Rounds only decide what can be folded away.
+ *
+ * Steps that predate re-planning carry no round at all, which `rowToTask` already reads
+ * as round 1; the `?? 1` here is the same answer for a task that never went through it.
+ */
+export function groupStepsByRound(subtasks: Task[]): StepRound[] {
+  const rounds: StepRound[] = [];
+  subtasks.forEach((step, index) => {
+    const round = step.planRound ?? 1;
+    const last = rounds[rounds.length - 1];
+    // Grouped by ADJACENCY, not by collecting equal round numbers: steps are appended in
+    // round order, and a list that reordered them would put the chain's numbering out of
+    // step with the order it actually runs in.
+    if (last && last.round === round) last.steps.push({ step, index });
+    else rounds.push({ round, steps: [{ step, index }] });
+  });
+  return rounds;
+}
+
 export interface TaskStepsProps {
   /** The card whose chain this is (never a step itself). */
   task: Task;
@@ -132,6 +163,12 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
    * count rides in the header, so a folded section still says whether opening it is worth it.
    */
   const [open, setOpen] = useState(false);
+  /** The re-plan brief box, and the "it's thinking" banner once a turn has started. */
+  const [planning, setPlanning] = useState(false);
+  const [planNote, setPlanNote] = useState('');
+  const [planStarted, setPlanStarted] = useState(false);
+  /** Which earlier rounds the human has opened. The current one is never in here. */
+  const [openRounds, setOpenRounds] = useState<ReadonlySet<number>>(new Set());
 
   // Switching cards closes whatever was open on the previous one.
   useEffect(() => {
@@ -142,9 +179,21 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
     setError(null);
     // Folded again on a new card: the fold is the resting state, not a preference to carry.
     setOpen(false);
+    setPlanning(false);
+    setPlanNote('');
+    setPlanStarted(false);
+    setOpenRounds(new Set());
   }, [task.id]);
 
+  // The planner's turn is over once the card stops running — drop the banner rather than
+  // leave it claiming work is in flight. The plan itself arrives as an inbox item above.
+  useEffect(() => {
+    if (planStarted && !isLive(task)) setPlanStarted(false);
+  }, [planStarted, task.status]);
+
   const progress = subtaskProgress(subtasks);
+  const replan = canReplan(task, subtasks);
+  const rounds = groupStepsByRound(subtasks);
 
   async function add(): Promise<void> {
     if (!title.trim()) return;
@@ -158,6 +207,31 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
       setTitle('');
       setDescription('');
       setAdding(false);
+      onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /**
+   * Ask the agent for the next round. A refusal is a normal answer here, not an error —
+   * the scheduler's guards are stricter than this component can see (a run reserved but
+   * not yet spawned, say), so its reason is shown rather than a thrown string.
+   */
+  async function startReplan(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await window.api.invoke('task:replan', task.id, planNote.trim() || undefined);
+      if (result.status === 'refused') {
+        setError(REFUSAL_HINT[result.reason]);
+        return;
+      }
+      setPlanning(false);
+      setPlanNote('');
+      setPlanStarted(true);
       onChanged();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -190,12 +264,63 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
             {showPlan ? 'Hide plan' : 'Approved plan'}
           </Button>
         )}
+        {/* Deliberately OUTSIDE the `open &&` gate the other controls sit behind. The section
+            starts folded, and a card whose chain has finished shows `3/3` and nothing else —
+            so a re-plan control you can only reach by unfolding first is the very "there is
+            no way to ask for more work" this exists to fix. */}
+        {replan.offered && (
+          <Button
+            size="small"
+            disabled={!replan.can || busy || planning}
+            title={replan.hint}
+            onClick={() => setPlanning(true)}
+          >
+            Plan more steps…
+          </Button>
+        )}
         {open && (
           <Button size="small" disabled={adding} onClick={() => setAdding(true)}>
             Add step…
           </Button>
         )}
       </div>
+
+      {planStarted && (
+        <MessageBar intent="info">
+          <MessageBarBody>
+            Planning… the agent will propose the next steps; approve them above when it asks.
+          </MessageBarBody>
+        </MessageBar>
+      )}
+
+      {planning && (
+        <div className={styles.form}>
+          <Field
+            label="What should the next steps cover?"
+            hint="Optional — the agent is already told which steps this card has finished."
+          >
+            <Textarea
+              value={planNote}
+              resize="vertical"
+              onChange={(_e, d) => setPlanNote(d.value)}
+              placeholder="The remaining work, anything to leave alone, what “done” looks like…"
+            />
+          </Field>
+          <div className={styles.formRow}>
+            <Button size="small" disabled={busy} onClick={() => setPlanning(false)}>
+              Cancel
+            </Button>
+            <Button
+              size="small"
+              appearance="primary"
+              disabled={busy}
+              onClick={() => void startReplan()}
+            >
+              Plan
+            </Button>
+          </div>
+        </div>
+      )}
 
       {open && subtasks.length === 0 && !adding && (
         <Caption1 className={styles.hint}>
@@ -212,45 +337,79 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
         </MessageBar>
       )}
 
-      {open && subtasks.length > 0 && (
-        <div className={styles.list}>
-          {subtasks.map((step, i) => (
-            <div
-              key={step.id}
-              className={mergeClasses(styles.row, isLive(step) && styles.rowLive)}
-              onClick={() => onOpen(step.id)}
-            >
-              <Caption1 className={styles.index}>{i + 1}.</Caption1>
-              <Text className={styles.title}>{step.title}</Text>
-              {/* A running step wears a blinking cyan dot, exactly as a running pipeline
-                  stage does two sections below it — the app says "this is moving" with one
-                  shape everywhere, and this row used to say it with a turning spinner
-                  instead. The word stays: the rows around it carry a status word, and a
-                  bare dot here would be the only row saying nothing. */}
-              {isAgentRunning(step) ? (
-                <span className={styles.running}>
-                  <span className={mergeClasses(styles.dot, styles.dotRunning)} />
-                  <Caption1>Running</Caption1>
-                </span>
-              ) : (
-                /* Outline + the shared indicator colour rather than Fluent's `color` prop:
-                   its named palette bottoms out at mid-dark fills, so "done" and "pending"
-                   were two shades of the same grey-green at this size. Same colour as the
-                   card's step dot, so one step never looks like two states. */
-                <Badge
-                  appearance="outline"
-                  style={{
-                    color: STATUS_INDICATOR_COLOR[step.status],
-                    borderColor: STATUS_INDICATOR_COLOR[step.status],
-                  }}
+      {open &&
+        rounds.map((group, gi) => {
+          // The newest round is the one being worked, so it is always open. Earlier rounds
+          // fold away — a card re-planned three times would otherwise push the conversation
+          // off-screen with work that is already finished.
+          const current = gi === rounds.length - 1;
+          const grouped = rounds.length > 1;
+          const shown = current || openRounds.has(group.round);
+          const done = group.steps.filter((s) => s.step.status === 'done').length;
+          return (
+            <div key={group.round} className={styles.box}>
+              {grouped && (
+                <FoldToggle
+                  open={shown}
+                  onToggle={() =>
+                    setOpenRounds((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(group.round)) next.delete(group.round);
+                      else next.add(group.round);
+                      return next;
+                    })
+                  }
+                  summary={`${done}/${group.steps.length}`}
                 >
-                  {STATUS_LABEL[step.status]}
-                </Badge>
+                  <Caption1 className={styles.hint}>Round {group.round}</Caption1>
+                </FoldToggle>
+              )}
+              {shown && (
+                <div className={styles.list}>
+                  {group.steps.map(({ step, index }) => (
+                    <div
+                      key={step.id}
+                      className={mergeClasses(styles.row, isLive(step) && styles.rowLive)}
+                      onClick={() => onOpen(step.id)}
+                    >
+                      {/* The step's place in the WHOLE chain, so the numbers never restart
+                          and never contradict the card's own counter. */}
+                      <Caption1 className={styles.index}>{index + 1}.</Caption1>
+                      <Text className={styles.title}>{step.title}</Text>
+                      {/* A running step wears a blinking cyan dot, exactly as a running
+                          pipeline stage does two sections below it — the app says "this is
+                          moving" with one shape everywhere, and this row used to say it with
+                          a turning spinner instead. The word stays: the rows around it carry
+                          a status word, and a bare dot here would be the only row saying
+                          nothing. */}
+                      {isAgentRunning(step) ? (
+                        <span className={styles.running}>
+                          <span className={mergeClasses(styles.dot, styles.dotRunning)} />
+                          <Caption1>Running</Caption1>
+                        </span>
+                      ) : (
+                        /* Outline + the shared indicator colour rather than Fluent's `color`
+                           prop: its named palette bottoms out at mid-dark fills, so "done"
+                           and "pending" were two shades of the same grey-green at this size.
+                           Same colour as the card's step dot, so one step never looks like
+                           two states. */
+                        <Badge
+                          appearance="outline"
+                          style={{
+                            color: STATUS_INDICATOR_COLOR[step.status],
+                            borderColor: STATUS_INDICATOR_COLOR[step.status],
+                          }}
+                        >
+                          {STATUS_LABEL[step.status]}
+                        </Badge>
+                      )}
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
-          ))}
-        </div>
-      )}
+          );
+        })}
 
       {open && adding && (
         <div className={styles.form}>
