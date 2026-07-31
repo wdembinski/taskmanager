@@ -1275,6 +1275,59 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
     expect(prepared).toEqual([{ taskId: 's2', owner: 't1' }]);
   });
 
+  describe('starting a CARD that has steps', () => {
+    // The bug: steps written by hand were ignored by `runTask`, so starting the card ran the
+    // card's own session with the whole ticket as its brief. One agent did all the work in
+    // one go while the board sat at 0/2 — the steps had been typed out and then quietly
+    // bypassed. An approved plan handed over correctly, so who wrote the steps down decided
+    // whether they were honoured.
+    it('starts the first pending STEP, not the card’s own session', async () => {
+      const { scheduler, prepared } = setup();
+      scheduler.runTask('t1');
+      await flush();
+      expect(prepared).toEqual([{ taskId: 's1', owner: 't1' }]);
+    });
+
+    it('skips a step that is already done and starts the next one waiting', async () => {
+      const { scheduler, children, prepared } = setup();
+      children[0].status = 'done';
+      scheduler.runTask('t1');
+      await flush();
+      expect(prepared).toEqual([{ taskId: 's2', owner: 't1' }]);
+    });
+
+    // The fall-through, and it matters as much as the hand-over: once the chain is over the
+    // card holds the review conversation, and running it must reach the card again.
+    it('runs the CARD once no step is left pending', async () => {
+      const { scheduler, children, prepared } = setup();
+      children[0].status = 'done';
+      children[1].status = 'done';
+      scheduler.runTask('t1');
+      await flush();
+      expect(prepared).toEqual([{ taskId: 't1', owner: 't1' }]);
+    });
+
+    // A parked chain is the human's to resolve — `advanceSubtasks` will not step over a
+    // failure, and neither may this.
+    it('runs the CARD when the chain is parked at a failed step', async () => {
+      const { scheduler, children, prepared } = setup();
+      children[0].status = 'failed';
+      children[1].status = 'pending';
+      scheduler.runTask('t1');
+      await flush();
+      // Step 2 is pending, but step 1 failed — the first PENDING step is still what starts,
+      // which is the same rule `advanceSubtasks` applies. The card is not run behind it.
+      expect(prepared).toEqual([{ taskId: 's2', owner: 't1' }]);
+    });
+
+    it('leaves a card with no steps at all exactly as it was', async () => {
+      const { scheduler, prepared } = setup([]);
+      scheduler.runTask('t1');
+      await flush();
+      expect(prepared).toEqual([{ taskId: 't1', owner: 't1' }]);
+    });
+  });
+
   it('a non-final step settles WITHOUT integrating, and starts its sibling', async () => {
     const { children, integrated, start, seedRun, fire } = setup();
     seedRun('r1', 's1');

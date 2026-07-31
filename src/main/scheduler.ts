@@ -863,7 +863,25 @@ export class Scheduler {
     this.setState(projectId, 'idle');
   }
 
-  /** Run a single task ad-hoc, regardless of whether its project's queue is active. */
+  /**
+   * Run a single task ad-hoc, regardless of whether its project's queue is active.
+   *
+   * **A card with steps runs its CHAIN, not itself.** Steps written by hand were being
+   * ignored by this: starting the card started the card's own session with the whole ticket
+   * as its brief, so one agent did all the work in one go while the steps sat `pending`
+   * forever — the board showed `0/4` for something that had already been built. Approving a
+   * plan handed over to the chain correctly (`approvePlan`), so a card broken into steps
+   * behaved completely differently depending on who had written them down.
+   *
+   * Steps ARE the card's work once they exist, however they got there. So the first pending
+   * one is what starts, and each subsequent one follows as its predecessor finishes
+   * (`advanceSubtasks`) — one session each, which is the whole point of writing steps.
+   *
+   * The fall-through matters as much as the hand-over: a chain with nothing left `pending`
+   * is finished (or parked at a step that needs a human), and then the card's own session is
+   * the right thing to start again — that is how the post-chain review conversation is
+   * resumed. Only a step actually waiting to run diverts this.
+   */
   runTask(taskId: string): { runId: string } | null {
     if (this.disposed) return null;
     // A usage limit holds everything account-wide — don't start ad-hoc work either.
@@ -874,6 +892,20 @@ export class Scheduler {
     if (this.inFlight.has(taskId)) return null;
     const task = this.store.getTask(taskId);
     if (!task) return null;
+
+    if (!task.parentTaskId) {
+      const next = this.store
+        .getSubtasks(taskId)
+        .find((s) => s.status === 'pending' && !this.inFlight.has(s.id));
+      if (next) {
+        const stepProject = this.runProjectFor(next);
+        // No project resolves for the step (so none would for the card either) — say so by
+        // failing rather than quietly running the card and doing the work the wrong way.
+        if (!stepProject) return null;
+        return { runId: this.startTask(stepProject, next) };
+      }
+    }
+
     const project = this.runProjectFor(task);
     if (!project) return null;
     return { runId: this.startTask(project, task) };
