@@ -211,6 +211,56 @@ export function shouldAutoRetry(attemptsSpent: number, maxAutoRetries: number): 
   return attemptsSpent < Math.max(0, maxAutoRetries);
 }
 
+/** The `result` fields this judgement needs — a slice, so tests need no full event. */
+type SettledResult = Pick<
+  Extract<SessionEvent, { kind: 'result' }>,
+  'resultText' | 'stopReason' | 'terminalReason' | 'usage'
+>;
+
+/**
+ * Why a run that reported success actually produced nothing — or null when it is a real
+ * outcome. Pure, so both rules are testable without a CLI (Phase 18).
+ *
+ * Two runs of this app burned ~$1.70 and 50 tool calls each and were filed as successes,
+ * because the CLI's verdict is about whether the TURN ended cleanly, not about whether the
+ * work happened. What the human saw was "Finished on branch…" and an empty branch.
+ *
+ *  1. **The session never ran a turn.** No stop reason of any kind, no tokens on the
+ *     clock, nothing said. The model was never called — this is a process that started and
+ *     died, and it is what a chat resume looked like when it silently did nothing.
+ *  2. **A plan-mode run that never presented a plan.** Producing a plan is the entire job;
+ *     ending `end_turn` without one is a failure whatever the CLI thinks. See
+ *     {@link Run.planPresented} for why the run's flag, and not the task's stored plan, is
+ *     what answers this.
+ *
+ * The wording is what lands on the card, so each reason says what to do about it.
+ */
+export function describeEmptyOutcome(
+  permissionMode: PermissionMode | undefined,
+  planPresented: boolean | undefined,
+  event: SettledResult,
+): string | null {
+  // Deliberately `usage` PRESENT and zero, not merely absent. The CLI omits the field in
+  // some shapes, and an omission is not evidence — reading it as one would misfile
+  // perfectly good runs as dead. The sessions this catches reported an explicit
+  // `{0, 0, 0, 0}`, which is the CLI saying the model was never called.
+  const usage = event.usage;
+  const spentNothing =
+    !!usage &&
+    usage.inputTokens + usage.outputTokens + usage.cacheCreationTokens + usage.cacheReadTokens ===
+      0;
+  if (!event.stopReason && !event.terminalReason && spentNothing && !event.resultText.trim()) {
+    return 'the session ended without running a turn — nothing was sent to the model';
+  }
+  if (permissionMode === 'plan' && !planPresented) {
+    return (
+      'the planning session ended without presenting a plan. If it stopped to wait for ' +
+      'background subagents, they were discarded when the turn ended — re-run it'
+    );
+  }
+  return null;
+}
+
 /** Minimal shape the selection logic needs — kept tiny so tests don't build full tasks. */
 export interface Schedulable {
   id: string;
@@ -507,6 +557,19 @@ interface Run {
    * `prepare` would cut a brand-new one for a card whose work is already landed.
    */
   reviewSeed?: boolean;
+  /**
+   * Whether this run ever put a plan in front of the human (Phase 18).
+   *
+   * The check that needs it: a `plan`-mode run exists to produce a plan, so one that ends
+   * without ever presenting one did nothing, however cheerfully the CLI reports `end_turn`
+   * / `completed`. Two cards burned $1.70 each that way and were filed as successes.
+   *
+   * A flag rather than "is `task.agentPlan` still null", because null-checking is wrong in
+   * both directions: a re-planned card already carries a plan from its previous round, and
+   * a plan approved mid-run has already settled this run (`approvePlan`) — a late `result`
+   * arriving after that must not be able to mark the card failed.
+   */
+  planPresented?: boolean;
   /** Set once we've decided the task's outcome, so a trailing `exited` doesn't re-settle it. */
   settled: boolean;
   /** (Worktree mode) the task's branch, set once the worktree is prepared. */
@@ -2219,11 +2282,16 @@ export class Scheduler {
         // Parked awaiting a human (a question/permission): stay alive for the answer.
         if (this.hasPendingAttention(runId)) break;
         run.settled = true;
-        this.settle(
-          run,
-          event.success ? 'done' : 'failed',
-          event.terminalReason || event.stopReason || 'the session ended without success',
-        );
+        {
+          // The two ways the CLI reports "success" about a run that achieved nothing.
+          // Both were filed as wins before Phase 18, which is exactly what made them so
+          // hard to see: the card said "Finished on branch…" and the human found nothing.
+          const empty = describeEmptyOutcome(run.permissionMode, run.planPresented, event);
+          const reason =
+            empty ??
+            (event.terminalReason || event.stopReason || 'the session ended without success');
+          this.settle(run, empty || !event.success ? 'failed' : 'done', reason);
+        }
         // stdin is held open in Phase 4, so the process won't exit by itself —
         // end it explicitly now that the task is done.
         this.sessions.stop(runId);
@@ -3087,6 +3155,7 @@ export class Scheduler {
    * an app restart between the agent producing it and the human reading it.
    */
   private raisePlanApproval(run: Run): AttentionItem {
+    run.planPresented = true; // this run did its job, whatever the human decides next
     const plan = this.store.getTask(run.taskId)?.agentPlan ?? '';
     const existing = this.store.getSubtasks(run.taskId);
     const steps = this.planStepsToAppend(run.taskId, plan);

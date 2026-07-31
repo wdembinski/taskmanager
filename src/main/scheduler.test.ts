@@ -12,6 +12,7 @@ import {
   Scheduler,
   selectNextPending,
   shouldAutoRetry,
+  describeEmptyOutcome,
   type Schedulable,
 } from './scheduler';
 import { AGREE_SENTINEL, OBJECT_SENTINEL, PROPOSE_SENTINEL } from './attention';
@@ -2155,5 +2156,73 @@ describe('Scheduler.chatWithAgent (Phase 12)', () => {
       reason: 'unknown-task',
     });
     expect(send).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The two ways the CLI reports "success" about a run that produced nothing (Phase 18).
+ * The shapes below are taken verbatim from the runs that exposed this: two cards that
+ * spent ~$1.70 and 50 tool calls each and were filed as wins.
+ */
+describe('describeEmptyOutcome', () => {
+  const zero = { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0 };
+  const spent = { inputTokens: 11, outputTokens: 3680, cacheCreationTokens: 0, cacheReadTokens: 0 };
+
+  const healthy = {
+    resultText: 'Done — committed on the branch.',
+    stopReason: 'end_turn',
+    terminalReason: 'completed',
+    usage: spent,
+  };
+
+  it('passes a real outcome through', () => {
+    expect(describeEmptyOutcome('bypassPermissions', undefined, healthy)).toBeNull();
+  });
+
+  // The chat resume that looked like it had worked: 102ms, no reasons, nothing billed.
+  it('catches a session that never ran a turn', () => {
+    const dead = { resultText: '', stopReason: null, terminalReason: null, usage: zero };
+    expect(describeEmptyOutcome('manual', undefined, dead)).toMatch(/without running a turn/);
+  });
+
+  // An omission is not evidence. The CLI leaves `usage` out in some shapes, and reading
+  // that as "nothing happened" would misfile perfectly good runs as dead.
+  it('does NOT call a run dead merely because usage was not reported', () => {
+    const noUsage = { resultText: '', stopReason: null, terminalReason: null, usage: null };
+    expect(describeEmptyOutcome('manual', undefined, noUsage)).toBeNull();
+  });
+
+  it('leaves a quiet but real turn alone', () => {
+    const quiet = { resultText: '', stopReason: 'end_turn', terminalReason: null, usage: spent };
+    expect(describeEmptyOutcome('manual', undefined, quiet)).toBeNull();
+  });
+
+  // THE bug: 50 tool calls, end_turn/completed, and no plan — because the agent stopped to
+  // wait for background subagents that headless mode will never deliver.
+  it('fails a plan-mode run that never presented a plan', () => {
+    const reason = describeEmptyOutcome('plan', undefined, {
+      resultText: "I'll continue once those return.",
+      stopReason: 'end_turn',
+      terminalReason: 'completed',
+      usage: spent,
+    });
+    expect(reason).toMatch(/without presenting a plan/);
+    expect(reason).toMatch(/background subagents/); // says what to do about it
+  });
+
+  it('accepts a plan-mode run that did present one', () => {
+    expect(describeEmptyOutcome('plan', true, healthy)).toBeNull();
+  });
+
+  // The rule is scoped to plan mode: an ordinary run owes no plan.
+  it('does not demand a plan from a run that was not planning', () => {
+    expect(describeEmptyOutcome('bypassPermissions', undefined, healthy)).toBeNull();
+    expect(describeEmptyOutcome(undefined, undefined, healthy)).toBeNull();
+  });
+
+  // A dead session in plan mode gets the more precise of the two messages.
+  it('prefers "never ran a turn" over the plan rule', () => {
+    const dead = { resultText: '', stopReason: null, terminalReason: null, usage: zero };
+    expect(describeEmptyOutcome('plan', undefined, dead)).toMatch(/without running a turn/);
   });
 });
