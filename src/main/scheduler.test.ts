@@ -1155,7 +1155,7 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       [parent.id, parent],
       ...children.map((c) => [c.id, c] as const),
     ]);
-    const added: Array<{ title: string; description?: string | null }> = [];
+    const added: Array<{ title: string; description?: string | null; round?: number }> = [];
     const comments: string[] = [];
     const store = {
       getTask: (id: string) => byId.get(id),
@@ -1164,10 +1164,17 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       getTasks: () => [parent, ...children],
       getSubtasks: (parentId: string) => children.filter((c) => c.parentTaskId === parentId),
       getTaskActivity: () => [],
-      addSubtask: (_p: string, input: { title: string; description?: string | null }) => {
+      addSubtask: (
+        _p: string,
+        input: { title: string; description?: string | null; round?: number },
+      ) => {
         added.push(input);
         return undefined;
       },
+      maxSubtaskRound: (parentId: string) =>
+        children
+          .filter((c) => c.parentTaskId === parentId)
+          .reduce((max, c) => Math.max(max, c.planRound ?? 1), 0),
       addComment: (_p: string, _t: string, body: string) => comments.push(body),
       updateTask: (id: string, patch: Partial<Task>) => {
         const task = byId.get(id);
@@ -1505,6 +1512,339 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
     expect(added).toEqual([]);
     expect(stop).not.toHaveBeenCalled();
     expect(parent.status).toBe('running');
+  });
+
+  /**
+   * Re-planning a card whose chain has finished (Phase 18). The bug this closes: approval
+   * used to skip creation entirely when the card already had steps, so a card's first plan
+   * was its only one — the human watched an agent plan work that never appeared anywhere.
+   */
+  describe('a SECOND plan approved onto a card that already has steps', () => {
+    /** A finished chain, so `chainInFlight` is false and the card is free to re-plan. */
+    const finished = [
+      { id: 's1', title: 'Reproduce it', status: 'done' as const },
+      { id: 's2', title: 'Fix it', status: 'done' as const },
+    ];
+
+    async function approve(
+      h: ReturnType<typeof setup>,
+      plan: string,
+    ): Promise<{ behavior: string; message?: string } | undefined> {
+      h.seedRun('r0', 't1');
+      let decision: { behavior: string; message?: string } | undefined;
+      void scheduleDecision(h, plan).then((d) => {
+        decision = d as { behavior: string; message?: string };
+      });
+      await Promise.resolve();
+      const item = h.emitAttention.mock.calls.at(-1)?.[0] as { id: string };
+      h.scheduler.answerAttention(item.id, { decision: 'approve' });
+      await Promise.resolve();
+      return decision;
+    }
+
+    const scheduleDecision = (h: ReturnType<typeof setup>, plan: string): Promise<unknown> =>
+      h.scheduler.decidePermission({
+        runId: 'r0',
+        toolName: 'ExitPlanMode',
+        input: { plan },
+      } as never);
+
+    it('APPENDS the new steps instead of creating nothing', async () => {
+      const h = setup(finished);
+      h.parent.agentPlan = '## Add JIRA sync\na\n\n## Map the columns\nb';
+      await approve(h, h.parent.agentPlan);
+      expect(h.added.map((s) => s.title)).toEqual(['Add JIRA sync', 'Map the columns']);
+      expect(h.parent.status).toBe('in-progress');
+    });
+
+    it('files the appended steps under the next round, so the panel can fold round 1', async () => {
+      const h = setup(finished);
+      h.parent.agentPlan = '## Add JIRA sync\na\n\n## Map the columns\nb';
+      await approve(h, h.parent.agentPlan);
+      expect(h.added.map((s) => s.round)).toEqual([2, 2]);
+    });
+
+    it('drops the steps the card already carries, keeping only what is new', async () => {
+      const h = setup(finished);
+      h.parent.agentPlan = '## Fix it\nagain\n\n## Add JIRA sync\nnew';
+      await approve(h, h.parent.agentPlan);
+      expect(h.added.map((s) => s.title)).toEqual(['Add JIRA sync']);
+    });
+
+    it('lists ONLY the steps approval will create, so the inbox cannot over-promise', async () => {
+      const h = setup(finished);
+      h.parent.agentPlan = '## Fix it\nagain\n\n## Add JIRA sync\nnew';
+      h.seedRun('r0', 't1');
+      void scheduleDecision(h, h.parent.agentPlan);
+      await Promise.resolve();
+      const item = h.emitAttention.mock.calls.at(-1)?.[0] as { steps: string[]; prompt: string };
+      expect(item.steps).toEqual(['Add JIRA sync']);
+      expect(item.prompt).toContain('2 already on this card');
+    });
+
+    /**
+     * The failure mode that reads EXACTLY like the original bug: approval resolves, the card
+     * flips to `in-progress` and nothing appears. It has to say so instead.
+     */
+    it('adds nothing and does no hand-over when every step is a duplicate', async () => {
+      const h = setup(finished);
+      h.parent.agentPlan = '## Reproduce it\nx\n\n## Fix it\ny';
+      h.parent.status = 'pending';
+      await approve(h, h.parent.agentPlan);
+      expect(h.added).toEqual([]);
+      // Released from the `waiting-input` the approval item borrowed, back to the status the
+      // human left it in — not left wearing a "wants you" ring over an answered item.
+      expect(h.parent.status).toBe('pending');
+      expect(h.comments.some((c) => c.includes('no steps this card does not already have'))).toBe(
+        true,
+      );
+    });
+
+    it('caps on the card’s total, not on the round', async () => {
+      const many = Array.from({ length: 19 }, (_, i) => ({
+        id: `s${i}`,
+        title: `Old ${i + 1}`,
+        status: 'done' as const,
+      }));
+      const h = setup(many);
+      h.parent.agentPlan = '## New one\na\n\n## New two\nb\n\n## New three\nc';
+      await approve(h, h.parent.agentPlan);
+      expect(h.added.map((s) => s.title)).toEqual(['New one']);
+    });
+  });
+
+  it('raises the plan for approval even under bypassPermissions', async () => {
+    // "Never ask me to approve tools" is not "silently discard the plan": `capturePlan` used
+    // to store the markdown and the bypass shortcut then allowed the call with nothing
+    // raised, leaving a full-auto card unable to gain a single step.
+    const { scheduler, emitAttention, seedRun } = setup([]);
+    seedRun('r0', 't1');
+    (scheduler as unknown as { runs: Map<string, { permissionMode?: string }> }).runs.get(
+      'r0',
+    )!.permissionMode = 'bypassPermissions';
+    let released = false;
+    void scheduler
+      .decidePermission({
+        runId: 'r0',
+        toolName: 'ExitPlanMode',
+        input: { plan: '## Reproduce it\nfirst\n\n## Fix it\nsecond' },
+      } as never)
+      .then(() => {
+        released = true;
+      });
+    await Promise.resolve();
+    expect(released).toBe(false);
+    expect(emitAttention.mock.calls.at(-1)?.[0]).toMatchObject({ kind: 'plan-approval' });
+  });
+
+  it('raises the plan from the event stream when the gate never saw the tool', async () => {
+    // The observational fallback used to capture the markdown and raise nothing, so an
+    // ungated run's plan landed where no step could ever come of it.
+    const { emitAttention, seedRun, fire, parent } = setup([]);
+    seedRun('r0', 't1');
+    fire('r0', {
+      kind: 'tool-use',
+      name: 'ExitPlanMode',
+      id: 'x',
+      input: { plan: '## Reproduce it\nfirst\n\n## Fix it\nsecond' },
+    });
+    await Promise.resolve();
+    expect(parent.agentPlan).toContain('## Fix it');
+    const raised = emitAttention.mock.calls.filter(
+      (c) => (c[0] as { kind: string }).kind === 'plan-approval',
+    );
+    expect(raised).toHaveLength(1);
+    expect((raised[0][0] as { steps: string[] }).steps).toEqual(['Reproduce it', 'Fix it']);
+  });
+
+  it('does not double-raise when the gate already holds the plan', async () => {
+    const { scheduler, emitAttention, seedRun, fire } = setup([]);
+    seedRun('r0', 't1');
+    const plan = '## Reproduce it\nfirst\n\n## Fix it\nsecond';
+    void scheduler.decidePermission({
+      runId: 'r0',
+      toolName: 'ExitPlanMode',
+      input: { plan },
+    } as never);
+    await Promise.resolve();
+    fire('r0', { kind: 'tool-use', name: 'ExitPlanMode', id: 'x', input: { plan } });
+    await Promise.resolve();
+    expect(
+      emitAttention.mock.calls.filter((c) => (c[0] as { kind: string }).kind === 'plan-approval'),
+    ).toHaveLength(1);
+  });
+});
+
+describe('Scheduler.replanCard (Phase 18)', () => {
+  /**
+   * A delegated card with a FINISHED chain — the state the bug report is about: the steps
+   * are done, the human asks for more work, and nothing they can type produces any.
+   */
+  function setupReplan(
+    opts: { card?: Partial<Task>; steps?: Array<Partial<Task>>; liveRun?: boolean } = {},
+  ) {
+    const agentProject = {
+      id: 'agent-1',
+      name: 'repo',
+      path: 'C:/repo',
+      planPath: 'C:/repo/plan.md',
+      defaultModel: 'sonnet',
+      defaultPermissionMode: 'bypassPermissions',
+      kind: 'agent',
+    } as unknown as Project;
+    const card = {
+      id: 'c1',
+      projectId: 'personal',
+      phase: 'JIRA',
+      title: 'Ship the board',
+      status: 'in-progress',
+      sessionId: 's-old',
+      order: 0,
+      source: 'jira',
+      dependsOn: [],
+      isContract: false,
+      isScaffold: false,
+      parentTaskId: null,
+      agentProjectId: 'agent-1',
+      agentMode: 'bypassPermissions',
+      ...opts.card,
+    } as unknown as Task;
+    const steps = (opts.steps ?? [{ title: 'Scaffold it' }, { title: 'Wire it' }]).map(
+      (s, i) =>
+        ({
+          id: `s${i + 1}`,
+          projectId: 'personal',
+          phase: 'JIRA',
+          title: `Step ${i + 1}`,
+          status: 'done',
+          sessionId: null,
+          order: i,
+          source: 'adhoc',
+          dependsOn: [],
+          isContract: false,
+          isScaffold: false,
+          parentTaskId: 'c1',
+          planRound: 1,
+          ...s,
+        }) as unknown as Task,
+    );
+    const all = [card, ...steps];
+    const chats: string[] = [];
+    const store = {
+      getTask: (id: string) => all.find((t) => t.id === id),
+      getTasks: () => all,
+      getProject: (id: string) => (id === 'agent-1' ? agentProject : undefined),
+      getSubtasks: (parentId: string) => steps.filter((s) => s.parentTaskId === parentId),
+      getTaskActivity: () => [],
+      addChatMessage: (_p: string, _t: string, body: string) => {
+        chats.push(body);
+        return undefined;
+      },
+      updateTask: (id: string, patch: Partial<Task>) => {
+        const t = all.find((x) => x.id === id);
+        if (t) Object.assign(t, patch);
+        return t;
+      },
+      appendTaskEvent: vi.fn(),
+      appendTokenUsage: vi.fn(),
+      getSettings: () => ({ maxAutoRetries: 0, limitJitterMs: 0, concurrency: 1 }),
+      ...INERT_ATTENTION_STORE,
+    } as unknown as Store;
+    const start = vi.fn((_req: unknown, o: { runId?: string }) => ({ runId: o?.runId ?? 'r-new' }));
+    const stop = vi.fn();
+    const sessions = { start, stop, send: vi.fn() } as unknown as SessionManager;
+    const scheduler = new Scheduler(store, sessions, vi.fn(), vi.fn(), vi.fn(), vi.fn(), vi.fn());
+    if (opts.liveRun) {
+      (scheduler as unknown as { runs: Map<string, unknown> }).runs.set('r-live', {
+        taskId: 'c1',
+        projectId: 'agent-1',
+        runId: 'r-live',
+        settled: false,
+      });
+      (scheduler as unknown as { inFlight: Set<string> }).inFlight.add('c1');
+    }
+    const exit = (runId: string): void =>
+      (scheduler as unknown as { onRunEvent: (r: string, e: unknown) => void }).onRunEvent(runId, {
+        kind: 'exited',
+        code: 0,
+      });
+    return { scheduler, card, steps, start, stop, chats, exit };
+  }
+
+  it('runs the turn in PLAN mode, whatever the card is assigned', () => {
+    // The heart of the bug: a chat resume inherits `bypassPermissions`, `buildClaudeArgs`
+    // rewrites that to `default`, and the agent then has no ExitPlanMode tool at all — so it
+    // writes its plan as prose and nothing can ever become a step.
+    const h = setupReplan();
+    const result = h.scheduler.replanCard('c1', 'Add the JIRA sync');
+    expect(result.status).toBe('resumed');
+    expect(h.start).toHaveBeenCalledTimes(1);
+    const request = h.start.mock.calls[0][0] as { permissionMode: string; prompt: string };
+    expect(request.permissionMode).toBe('plan');
+    expect(request.prompt).toContain('ExitPlanMode');
+  });
+
+  it('tells the agent which steps are already on the card, and how much room is left', () => {
+    const h = setupReplan({ steps: [{ title: 'Scaffold the store' }, { title: 'Wire the IPC' }] });
+    h.scheduler.replanCard('c1', 'Now add the sync');
+    const { prompt } = h.start.mock.calls[0][0] as { prompt: string };
+    expect(prompt).toContain('Scaffold the store');
+    expect(prompt).toContain('Wire the IPC');
+    expect(prompt).toContain('Now add the sync');
+    expect(prompt).toContain('18 step(s)'); // MAX_PLAN_STEPS (20) minus the two it has
+  });
+
+  it('does NOT write the plan mode back to the card, so later runs are unaffected', () => {
+    const h = setupReplan();
+    h.scheduler.replanCard('c1');
+    expect(h.card.agentMode).toBe('bypassPermissions');
+  });
+
+  it('files the human’s brief on the timeline before anything starts', () => {
+    const h = setupReplan();
+    h.scheduler.replanCard('c1', 'Add the JIRA sync');
+    expect(h.chats).toEqual(['Add the JIRA sync']);
+  });
+
+  it('stops a live turn first and waits for its process to exit', () => {
+    // The card's review session (seeded when the chain finished) is the very conversation
+    // the human is typing into. Both runs share the card's worktree, so the planner must not
+    // resume into it while the old process is still shutting down.
+    const h = setupReplan({ liveRun: true });
+    h.scheduler.replanCard('c1', 'more work');
+    expect(h.stop).toHaveBeenCalledWith('r-live');
+    expect(h.start).not.toHaveBeenCalled();
+    h.exit('r-live');
+    expect(h.start).toHaveBeenCalledTimes(1);
+    expect((h.start.mock.calls[0][0] as { permissionMode: string }).permissionMode).toBe('plan');
+  });
+
+  it('refuses a step: a step cannot own a plan', () => {
+    const h = setupReplan();
+    expect(h.scheduler.replanCard('s1')).toMatchObject({ reason: 'not-a-card' });
+  });
+
+  it('refuses while the chain is still running', () => {
+    const h = setupReplan({
+      steps: [
+        { title: 'a', status: 'done' },
+        { title: 'b', status: 'pending' },
+      ],
+    });
+    expect(h.scheduler.replanCard('c1')).toMatchObject({ reason: 'chain-busy' });
+  });
+
+  it('refuses a card with no agent, and an unknown card', () => {
+    const h = setupReplan({ card: { agentProjectId: null } });
+    expect(h.scheduler.replanCard('c1')).toMatchObject({ reason: 'never-ran' });
+    expect(h.scheduler.replanCard('nope')).toMatchObject({ reason: 'unknown-task' });
+  });
+
+  it('refuses once the card is full', () => {
+    const h = setupReplan({
+      steps: Array.from({ length: 20 }, (_, i) => ({ id: `s${i}`, title: `Step ${i}` })),
+    });
+    expect(h.scheduler.replanCard('c1')).toMatchObject({ reason: 'chain-full' });
   });
 });
 

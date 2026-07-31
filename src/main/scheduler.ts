@@ -75,6 +75,7 @@ import {
 import {
   buildAgentSubtaskPrompt,
   buildAgentTaskPrompt,
+  buildReplanPrompt,
   type AgentPromptComment,
 } from './agentTaskPrompt';
 import { guardCardStatus } from './cardStatusGuard';
@@ -85,7 +86,13 @@ import { isBlockingLimitStatus, LimitGate } from './limitGate';
 import type { PermissionRequest, PermissionDecisionResult } from './permissionBroker';
 import { EXIT_PLAN_MODE_TOOL, evaluateToolUse } from './permissionPolicy';
 import { tickPlanCheckbox } from './planParser';
-import { extractPlanMarkdown, splitPlanIntoSteps } from './planToSubtasks';
+import {
+  extractPlanMarkdown,
+  splitPlanIntoSteps,
+  stepsToAppend,
+  MAX_PLAN_STEPS,
+  type PlanStep,
+} from './planToSubtasks';
 import type { SessionManager } from './sessionManager';
 import { hostFor } from './exec';
 import { appPlanPath, appProjectFile, planRelPath } from './projectPaths';
@@ -477,6 +484,11 @@ interface Run {
    * Permission mode / model this run was started with. Set from the task's
    * per-assignment override when it has one, else the project default; kept on the run
    * so `decidePermission` judges the run the human actually authorized.
+   *
+   * Since Phase 18 the mode can also be a per-TURN override, which is why it must be read
+   * from here and never re-derived from the task: a re-plan turn runs in `plan` mode on a
+   * card assigned any other mode, and writing that back to `task.agentMode` would make
+   * every later run a planning run.
    */
   permissionMode?: PermissionMode;
   model?: ClaudeModel;
@@ -695,6 +707,21 @@ export class Scheduler {
    * than racing it in the same directory.
    */
   private readonly chainStarts = new Set<string>();
+  /**
+   * Cards whose re-planning turn is waiting for their CURRENT run to exit (Phase 18).
+   * Same hazard as `chainStarts`: the planner resumes the card's session in the card's
+   * worktree, so it must not start while the run it replaced is still shutting down there.
+   * Keyed by task id; the value is everything `startTask` will need by then.
+   */
+  private readonly pendingReplans = new Map<string, { projectId: string; prompt: string }>();
+  /**
+   * Step ids already covered by a chain hand-back summary, per parent card (Phase 18).
+   * A re-planned card finishes a chain once per ROUND, and `buildChainSummary` enumerates
+   * whatever it is given — so without this, round 2's hand-back re-tells round 1 as though
+   * it had just run. In-memory only: a restart falls back to summarizing the whole chain,
+   * which is what every version before re-planning did anyway.
+   */
+  private readonly summarizedSteps = new Map<string, Set<string>>();
   /** The permission gate handed to every task run (null until the broker is up). */
   private gate: PermissionGate | null = null;
   /**
@@ -995,6 +1022,91 @@ export class Scheduler {
    * The message is recorded before the run starts, so the timeline reads in the order it
    * happened even if the session dies on spawn.
    */
+  /**
+   * Ask a card's agent to plan ANOTHER round of steps (Phase 18).
+   *
+   * The gap this closes: a card whose chain has finished has no way to grow. Chatting with
+   * it resumes an ordinary run, and `buildClaudeArgs` rewrites every mode except `plan` to
+   * `default` — so the agent has no `ExitPlanMode` tool, writes its plan as prose in the
+   * reply, and nothing is ever captured or approved. The human sees an answer and no steps.
+   *
+   * So this is deliberately NOT `chatWithAgent` with a different prompt. Two things differ,
+   * and both matter:
+   *   - it targets the CARD, never `chatTarget`'s live step: a plan is about the whole
+   *     chain, and a step has no authority to extend the card it belongs to; and
+   *   - it forces `plan` mode for this ONE turn, whatever the card is assigned, without
+   *     touching `task.agentMode` — which would otherwise make every later run a planner.
+   *
+   * A live run on the card (normally the review session `finishParentChain` seeded, i.e.
+   * exactly the conversation the human is typing into) is stopped first and the planner
+   * deferred until its process is gone — same reason `chainStarts` exists: both runs share
+   * the card's worktree, and `--resume` against a session still shutting down is a race.
+   */
+  replanCard(taskId: string, note?: string): ChatSendResult {
+    const refused = (reason: ChatRefusal): ChatSendResult => ({
+      status: 'refused',
+      taskId,
+      reason,
+    });
+    if (this.disposed) return refused('not-running');
+    const card = this.store.getTask(taskId);
+    if (!card) return refused('unknown-task');
+    // A step cannot own a plan: it IS one unit of its parent's.
+    if (card.parentTaskId) return refused('not-a-card');
+    if (!card.agentProjectId) return refused('never-ran');
+    if (this.limitGate.active || card.status === 'blocked-by-limit') return refused('limit');
+
+    const steps = this.store.getSubtasks(card.id);
+    // A chain still working owns the card's worktree and its own sequence; planning more
+    // work on top of it would queue steps behind an outcome nobody has seen yet.
+    if (chainInFlight(steps)) return refused('chain-busy');
+    const slotsLeft = MAX_PLAN_STEPS - steps.length;
+    if (slotsLeft <= 0) return refused('chain-full');
+
+    const project = this.runProjectFor(card);
+    if (!project) return refused('never-ran');
+
+    const prompt = buildReplanPrompt(
+      card.title,
+      steps.map((s) => s.title),
+      { note, slotsLeft },
+    );
+    // Filed before anything starts, so the timeline records the ask even if the run dies on
+    // spawn — and so the human can see what they asked for while the planner is thinking.
+    if (note?.trim()) this.store.addChatMessage(card.projectId, card.id, note.trim());
+
+    // A live run on the card has to end before the planner can resume its session in the
+    // same worktree. `exited` drains the map (beside `chainStarts`, for the same reason).
+    const live = [...this.runs.values()].find((r) => r.taskId === card.id && !r.settled);
+    if (live) {
+      live.settled = true; // we are deciding this run's outcome, not its exit code
+      this.clearRunAttention(live.runId);
+      this.sessions.stop(live.runId);
+      this.pendingReplans.set(card.id, { projectId: project.id, prompt });
+      return { status: 'resumed', taskId: card.id, runId: live.runId };
+    }
+    // Reserved elsewhere (a run spawning right now) — refuse rather than double-run a task.
+    if (this.inFlight.has(card.id)) return refused('not-running');
+
+    return {
+      status: 'resumed',
+      taskId: card.id,
+      runId: this.startTask(project, card, { chatPrompt: prompt, permissionMode: 'plan' }),
+    };
+  }
+
+  /** Start a re-plan whose predecessor run has now exited. See {@link replanCard}. */
+  private startPendingReplan(taskId: string): void {
+    const pending = this.pendingReplans.get(taskId);
+    if (!pending) return;
+    this.pendingReplans.delete(taskId);
+    if (this.disposed || this.limitGate.active) return;
+    const task = this.store.getTask(taskId);
+    const project = this.store.getProject(pending.projectId);
+    if (!task || !project || this.inFlight.has(taskId)) return;
+    this.startTask(project, task, { chatPrompt: pending.prompt, permissionMode: 'plan' });
+  }
+
   private resumeForChat(target: Task, text: string): ChatSendResult {
     const refused = (reason: ChatRefusal): ChatSendResult => ({
       status: 'refused',
@@ -1078,6 +1190,9 @@ export class Scheduler {
     // step must not spring to life when the planning run finally exits, and its
     // remaining steps are stopped so nothing is left looking runnable (Phase 11).
     this.chainStarts.delete(taskId);
+    // Stopping the card also cancels a re-plan queued behind the run being stopped —
+    // otherwise the planner would spring to life the moment that process exits (Phase 18).
+    this.pendingReplans.delete(taskId);
     for (const step of this.store.getSubtasks(taskId)) {
       if (step.status === 'pending') this.updateTask(step.id, { status: 'stopped' }, null);
     }
@@ -1288,20 +1403,27 @@ export class Scheduler {
       });
     }
 
-    const project = this.store.getProject(run.projectId);
-    const mode = run.permissionMode ?? project?.defaultPermissionMode;
-    if (mode === 'bypassPermissions') {
-      return Promise.resolve({ behavior: 'allow', updatedInput: request.input });
-    }
-
     // A finished plan gets its own inbox kind rather than a generic permission prompt:
     // the human is approving a BREAKDOWN (which becomes subtasks), not a tool call. The
     // tool stays blocked meanwhile, so the agent can't slide from planning to editing.
+    //
+    // Sits ABOVE the `bypassPermissions` shortcut for the same reason `AskUserQuestion`
+    // does: this is not a risk decision. "Never ask me to approve tools" is not "throw away
+    // the plan an agent spent a whole session producing" — but that is what it used to
+    // mean, since `capturePlan` stored the markdown and the shortcut then allowed the call
+    // with nothing ever raised, leaving a plan-mode full-auto card unable to gain a single
+    // step. `ExitPlanMode` mutates nothing, so holding it costs a pause and no more.
     if (request.toolName === EXIT_PLAN_MODE_TOOL) {
       const item = this.raisePlanApproval(run);
       return new Promise<PermissionDecisionResult>((resolve) => {
         this.pendingDecisions.set(item.id, { runId: request.runId, input: request.input, resolve });
       });
+    }
+
+    const project = this.store.getProject(run.projectId);
+    const mode = run.permissionMode ?? project?.defaultPermissionMode;
+    if (mode === 'bypassPermissions') {
+      return Promise.resolve({ behavior: 'allow', updatedInput: request.input });
     }
 
     const decision = evaluateToolUse(request.toolName, request.input);
@@ -1506,6 +1628,8 @@ export class Scheduler {
     this.fixNotes.clear();
     this.conflictFixAttempts.clear();
     this.chainStarts.clear();
+    this.pendingReplans.clear();
+    this.summarizedSteps.clear();
     this.pendingConflictFix.clear();
     this.activeProjects.clear();
     this.runs.clear();
@@ -1561,7 +1685,7 @@ export class Scheduler {
   private startTask(
     project: Project,
     task: Task,
-    opts: { chatPrompt?: string; reviewSeed?: boolean } = {},
+    opts: { chatPrompt?: string; reviewSeed?: boolean; permissionMode?: PermissionMode } = {},
   ): string {
     const runId = randomUUID();
     const run: Run = {
@@ -1571,10 +1695,12 @@ export class Scheduler {
       settled: false,
       chatPrompt: opts.chatPrompt,
       reviewSeed: opts.reviewSeed,
-      // A per-assignment override (chosen in the assign dialog) beats the project
-      // default, and is captured on the run so every later decision — permissions
-      // above all — judges the run the human actually authorized.
-      permissionMode: task.agentMode ?? project.defaultPermissionMode,
+      // A per-TURN override (a re-plan, which must run in `plan` mode whatever the card is
+      // assigned) beats a per-assignment override (chosen in the assign dialog), which
+      // beats the project default. Captured on the run so every later decision —
+      // permissions above all — judges the run the human actually authorized, and so the
+      // one-turn override never outlives its turn.
+      permissionMode: opts.permissionMode ?? task.agentMode ?? project.defaultPermissionMode,
       model: task.agentModel ?? project.defaultModel,
     };
     this.runs.set(runId, run);
@@ -1715,6 +1841,7 @@ export class Scheduler {
             failureNote,
             comments,
             worktreePath,
+            permissionMode: run.permissionMode,
           }));
     const request: StartSessionRequest = {
       prompt,
@@ -1751,6 +1878,8 @@ export class Scheduler {
       failureNote?: string;
       comments: AgentPromptComment[];
       worktreePath?: string;
+      /** The RUN's mode, which may be a one-turn override of the task's. See {@link Run}. */
+      permissionMode?: PermissionMode;
     },
   ): string {
     const { branch, planRel, failureNote, comments, worktreePath } = opts;
@@ -1777,9 +1906,10 @@ export class Scheduler {
         comments,
         notes: this.taskNotes(task.id),
         // A plan-mode run's headings become this card's step titles, so it is told how
-        // they will be read. The per-assignment override beats the project default, same
-        // as every other decision about the run.
-        planMode: (task.agentMode ?? project.defaultPermissionMode) === 'plan',
+        // they will be read. Read off the RUN, not the task: a re-plan turn is plan-mode
+        // for this turn only, and asking the task would tell it the opposite.
+        planMode:
+          (opts.permissionMode ?? task.agentMode ?? project.defaultPermissionMode) === 'plan',
         ...context,
       });
     }
@@ -1981,8 +2111,16 @@ export class Scheduler {
     // the permission gate. The event stream always carries it, so capture here too —
     // `capturePlan` is idempotent, and losing a plan the agent spent a whole session
     // producing is far worse than writing the same markdown twice.
+    //
+    // Capturing alone was not enough, though (Phase 18): the plan landed in `agentPlan`
+    // and no `plan-approval` item was ever raised on this path, so an ungated run's plan
+    // was stored where only the "Approved plan" fold could show it and no step could ever
+    // come of it. Raise the item too, exactly as the `AskUserQuestion` fallback below does
+    // — `capturePlan` must stay FIRST, since `raisePlanApproval` reads back what it wrote.
+    // `answerAttention` already tolerates an item with no held tool.
     if (event.kind === 'tool-use' && event.name === EXIT_PLAN_MODE_TOOL) {
       this.capturePlan(run.taskId, event.input);
+      if (!this.hasPendingAttention(runId)) this.raisePlanApproval(run);
     }
 
     // The same belt-and-braces for `AskUserQuestion` (Phase 17). If the CLI ever declines
@@ -2115,6 +2253,8 @@ export class Scheduler {
         // An approved plan's chain waits for the planning process to release the shared
         // worktree before its first step starts in the same directory (Phase 11).
         if (this.chainStarts.delete(run.taskId)) this.advanceSubtasks(run.taskId);
+        // A re-plan queued behind this run (Phase 18) — the worktree is free now.
+        this.startPendingReplan(run.taskId);
         this.pump(run.projectId); // a slot freed up — advance the queue
         // An auto-retry of a task whose project queue is idle (e.g. an ad-hoc run):
         // `pump` won't touch an inactive project, so relaunch it directly.
@@ -2945,19 +3085,41 @@ export class Scheduler {
    */
   private raisePlanApproval(run: Run): AttentionItem {
     const plan = this.store.getTask(run.taskId)?.agentPlan ?? '';
-    const steps = splitPlanIntoSteps(plan);
+    const existing = this.store.getSubtasks(run.taskId);
+    const steps = this.planStepsToAppend(run.taskId, plan);
     return this.raiseAttention(run, {
       kind: 'plan-approval',
       prompt:
-        steps.length > 0
-          ? `The agent finished planning and proposes ${steps.length} step(s). Approving runs ` +
-            `them one at a time, each in its own session, on this card's branch.`
-          : 'The agent finished planning. Review the plan below before it is executed.',
+        steps.length === 0
+          ? 'The agent finished planning, but the plan proposes nothing this card does not ' +
+            'already have. Review it below — approving will not add any steps.'
+          : existing.length > 0
+            ? `The agent proposes ${steps.length} more step(s), on top of the ` +
+              `${existing.length} already on this card. Approving runs them one at a time, ` +
+              `each in its own session, on this card's branch.`
+            : `The agent finished planning and proposes ${steps.length} step(s). Approving runs ` +
+              `them one at a time, each in its own session, on this card's branch.`,
       toolName: null,
       reason: null,
       plan,
       steps: steps.map((s) => s.title),
     });
+  }
+
+  /**
+   * The steps approving this plan would actually CREATE on the card — the plan split, minus
+   * anything the card already carries, capped at what is left of {@link MAX_PLAN_STEPS}.
+   *
+   * Shared by `raisePlanApproval` and `approvePlan` on purpose. They used to answer this
+   * question differently (the inbox listed the whole plan, approval created a subset), which
+   * meant a re-planning round could promise five steps and deliver two with no explanation.
+   */
+  private planStepsToAppend(parentId: string, plan: string): PlanStep[] {
+    const existing = this.store.getSubtasks(parentId);
+    return stepsToAppend(
+      existing.map((s) => s.title),
+      splitPlanIntoSteps(plan),
+    );
   }
 
   /**
@@ -2968,6 +3130,12 @@ export class Scheduler {
    * is denied with a hand-over message and its process is stopped — because the whole
    * point is that each step runs in a fresh session carrying only its own context.
    * The parent moves to `in-progress` and stays there: it is never auto-completed.
+   *
+   * Steps APPEND (Phase 18). This used to skip creation entirely whenever the card already
+   * had steps, which made a card's first plan its only one: re-planning a finished chain
+   * resolved the approval, moved the card to `in-progress` and created nothing, so the
+   * human saw an agent "plan" work that never appeared anywhere. Duplicate protection
+   * moved into `stepsToAppend`, which drops individual repeats rather than the whole round.
    */
   private approvePlan(
     item: AttentionItem,
@@ -2976,19 +3144,29 @@ export class Scheduler {
   ): void {
     const parent = this.store.getTask(item.taskId);
     if (!parent) return;
-    const steps = splitPlanIntoSteps(parent.agentPlan ?? item.plan ?? '');
-    // Existing steps win: a re-approval (or a hand-written breakdown) must not duplicate
-    // the chain. `splitPlanIntoSteps` never returns zero for a non-empty plan, so an
-    // empty result here means there was no plan to run at all.
-    const existing = this.store.getSubtasks(parent.id);
-    if (existing.length === 0) {
-      for (const step of steps) {
-        this.store.addSubtask(parent.id, { title: step.title, description: step.description });
-      }
+    const plan = parent.agentPlan ?? item.plan ?? '';
+    const fresh = this.planStepsToAppend(parent.id, plan);
+    const round = this.store.maxSubtaskRound(parent.id) + 1;
+    for (const step of fresh) {
+      this.store.addSubtask(parent.id, {
+        title: step.title,
+        description: step.description,
+        round,
+      });
     }
     // An approval note is the human's own guidance — filed on the card, where every
     // step's prompt picks it up.
     if (note) this.store.addComment(parent.projectId, parent.id, note);
+    // The plan itself goes on the timeline, because `capturePlan` overwrites `agentPlan`:
+    // without this, a second approved plan silently erases the first from the card, and the
+    // "Approved plan" fold would claim round 2's plan produced round 1's steps.
+    if (plan.trim() && round > 1) {
+      this.store.addComment(
+        parent.projectId,
+        parent.id,
+        `Approved plan (round ${round}):\n\n${plan}`,
+      );
+    }
 
     // Hand over: stop the planner rather than let it implement what it just planned.
     release?.({ behavior: 'deny', message: PLAN_HANDOVER_MESSAGE });
@@ -2998,6 +3176,28 @@ export class Scheduler {
       this.clearRunAttention(run.runId);
       this.sessions.stop(run.runId);
     }
+
+    // Nothing new to run: say so, release the card, and stop short of the hand-over.
+    // Queueing `chainStarts` for a chain that gained nothing would leave the card looking
+    // like it had work coming when it has none — indistinguishable, from the outside, from
+    // the bug this whole path exists to fix. The status write is still needed: raising the
+    // approval item borrowed `status` for `waiting-input`, and without releasing it the
+    // card keeps its "wants you" ring over an item nobody can answer.
+    if (fresh.length === 0) {
+      // A comment on the CARD, not a note on the run's transcript: the planner's session is
+      // about to be stopped, and the one place the human is certain to look is the card's
+      // own timeline.
+      this.store.addComment(
+        parent.projectId,
+        parent.id,
+        'The approved plan proposed no steps this card does not already have, so nothing ' +
+          'was added. Re-plan with more specific guidance if there is work left to do.',
+      );
+      this.updateTask(parent.id, { status: 'in-progress' }, null);
+      this.tasksChanged?.(parent.projectId);
+      return;
+    }
+
     this.updateTask(parent.id, { status: 'in-progress' }, null);
     this.tasksChanged?.(parent.projectId);
     // Step 1 shares the planner's worktree, so it waits for that process to be gone
@@ -3063,9 +3263,18 @@ export class Scheduler {
     if (!parent) return;
 
     const steps = this.store.getSubtasks(parent.id);
+    // Only the steps this hand-back is actually about (Phase 18). A re-planned card reaches
+    // here once per round, and summarizing all of it every time would re-tell round 1's
+    // story — with round 1's outcomes — as if it had just happened. An empty set means we
+    // have no record of a previous round (a restart, or a card that predates the tracking),
+    // and then the whole chain is the honest answer, exactly as it was before.
+    const summarized = this.summarizedSteps.get(parent.id);
+    const unseen = summarized ? steps.filter((s) => !summarized.has(s.id)) : steps;
+    const reported = unseen.length > 0 ? unseen : steps;
+    this.summarizedSteps.set(parent.id, new Set(steps.map((s) => s.id)));
     const summary = buildChainSummary(
       parent.title,
-      steps.map((step, i) => ({
+      reported.map((step, i) => ({
         index: i + 1,
         title: step.title,
         status: step.status,

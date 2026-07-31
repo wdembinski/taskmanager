@@ -147,7 +147,11 @@ export function buildAgentTaskPrompt(
         ]
       : []),
     ...(notes.length > 0
-      ? [`Notes from the human who assigned this (oldest first):`, ...notes.map((n) => `- ${n}`), '']
+      ? [
+          `Notes from the human who assigned this (oldest first):`,
+          ...notes.map((n) => `- ${n}`),
+          '',
+        ]
       : []),
     `Read whatever you need to understand the codebase first — including any \`.md\``,
     `documentation, memory, or state files in this directory — then make the necessary`,
@@ -183,6 +187,61 @@ export function buildAgentTaskPrompt(
     `answer will be delivered so you can continue.`,
   ]
     .filter((line, i, all) => !(line === '' && all[i - 1] === '')) // collapse double blanks
+    .join('\n');
+}
+
+/**
+ * The prompt for a **re-planning turn** (Phase 18): the human asking a card whose steps
+ * are finished to work out what comes next.
+ *
+ * This is a chat prompt, not a fresh brief — it resumes a session that already knows the
+ * card, so it repeats nothing about the ticket. What it must supply is the three things
+ * the session CANNOT know:
+ *
+ *  1. **What is already on the board.** The agent's own transcript ends where its last
+ *     step did; it has no idea which titles the card carries. Told them, it plans the
+ *     remainder — untold, it re-proposes the work it just finished, and `stepsToAppend`
+ *     drops the lot as duplicates, which reads to the human as "nothing happened".
+ *  2. **How many slots are left.** `MAX_PLAN_STEPS` caps the CARD, so a late round has
+ *     less room than the first one. Better the agent chooses the surviving steps than
+ *     that the cap truncates its tail arbitrarily.
+ *  3. **That it must finish with `ExitPlanMode`.** Nothing becomes a step otherwise: a
+ *     plan written as prose in the reply is exactly the failure this feature fixes.
+ *
+ * The heading rule is shared verbatim with the first-round prompt — these titles land in
+ * the same list as the existing ones, so they have to read the same way.
+ */
+export function buildReplanPrompt(
+  taskTitle: string,
+  existingStepTitles: readonly string[],
+  options: { note?: string; slotsLeft: number } = { slotsLeft: 0 },
+): string {
+  const note = clean(options.note);
+  const done = existingStepTitles.map(clean).filter(Boolean);
+  return [
+    `Plan the NEXT round of work on this card: "${taskTitle}".`,
+    '',
+    ...(done.length > 0
+      ? [
+          `These steps are already on the card — do not propose them again, and do not`,
+          `re-do their work:`,
+          ...done.map((t, i) => `  ${i + 1}. ${t}`),
+          '',
+        ]
+      : []),
+    ...(note ? [`What the human asked for:`, note, ''] : []),
+    `Look at the current state of the code before you plan — the steps above have already`,
+    `landed, so plan against what is actually there now, not against what you remember.`,
+    '',
+    `Propose ONLY the work that remains. At most ${options.slotsLeft} step(s) — if more`,
+    `than that is genuinely needed, plan the most valuable ones now and say what you left`,
+    `out. If nothing meaningful is left to do, say so plainly instead of inventing work.`,
+    '',
+    ...planHeadingLines(),
+    `When the plan is ready, call ExitPlanMode with it. That is what puts the steps on the`,
+    `card for the human to approve — a plan written out in your reply reaches nobody.`,
+  ]
+    .filter((line, i, all) => !(line === '' && all[i - 1] === ''))
     .join('\n');
 }
 
@@ -256,7 +315,11 @@ export function buildAgentSubtaskPrompt(
         ]
       : []),
     ...(notes.length > 0
-      ? [`Notes from the human who assigned this (oldest first):`, ...notes.map((n) => `- ${n}`), '']
+      ? [
+          `Notes from the human who assigned this (oldest first):`,
+          ...notes.map((n) => `- ${n}`),
+          '',
+        ]
       : []),
     `Read whatever you need in the codebase first, then make this step's changes and`,
     `briefly summarize what you did.`,
