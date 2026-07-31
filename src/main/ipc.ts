@@ -70,6 +70,7 @@ import {
 } from './gitlab/gitlabSync';
 import { GitLabPoller } from './gitlabPoller';
 import { mrIsSettled, type MergeRequest } from '@shared/mergeRequest';
+import type { ServiceSyncState, SyncServiceId } from '@shared/sync';
 import { hostFor, listWslDistros, readinessFor, statusForTargets } from './exec';
 import { gitPreflight } from './git';
 import { listClaudeSessions } from './claudeSessions';
@@ -858,6 +859,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // Pick up a changed poll interval (or enable/disable) without a restart.
     jiraPoller.reschedule();
     gitlabPoller.reschedule();
+    // The countdown is drawn from the interval, so a changed one has to reach the bar or
+    // the ring would keep draining at the old rate until the next sync landed.
+    pushSyncState();
   });
 
   // Whether the token is being protected by the weak built-in password rather than an
@@ -1024,6 +1028,73 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     return { knownKeys: [...taskIdByKey.keys()], taskIdByKey };
   };
 
+  // -------------------------------------------------------------------------
+  // Sync freshness — what the status bar's countdown rings are drawn from.
+  //
+  // Held in memory, not the DB, and that is the right call: "when did we last talk to
+  // JIRA" is a fact about THIS app run. Persisting it would have a freshly launched app
+  // claim a mirror was two minutes old when it had not fetched anything at all.
+  //
+  // One record per service, updated by `trackSync`, which every sync path goes through —
+  // the manual button and the background poller share one body each, so there is no way
+  // to sync without the bar noticing.
+  // -------------------------------------------------------------------------
+  const syncClock: Record<SyncServiceId, { lastSyncAt: number | null; syncing: boolean; error: string | null }> = {
+    jira: { lastSyncAt: null, syncing: false, error: null },
+    gitlab: { lastSyncAt: null, syncing: false, error: null },
+  };
+
+  const syncStates = (): ServiceSyncState[] => {
+    const { jira, gitlab } = store.getSettings();
+    return [
+      {
+        id: 'jira',
+        label: 'JIRA',
+        enabled: jira.enabled,
+        intervalMs: Math.max(0, Math.round(jira.pollIntervalMinutes ?? 0)) * 60_000,
+        ...syncClock.jira,
+      },
+      {
+        id: 'gitlab',
+        label: 'GitLab',
+        enabled: gitlab.enabled,
+        intervalMs: Math.max(0, Math.round(gitlab.pollIntervalMinutes ?? 0)) * 60_000,
+        ...syncClock.gitlab,
+      },
+    ];
+  };
+
+  const pushSyncState = (): void => send('sync:changed', syncStates());
+
+  /**
+   * Run one sync with the status bar watching: mark it in flight, push, run it, record the
+   * outcome, push again.
+   *
+   * `lastSyncAt` moves only on SUCCESS — the ring is "how fresh is this mirror", and a
+   * failed attempt refreshed nothing. The error is kept beside it so a service that has
+   * quietly stopped working says so in its tooltip rather than only in the log.
+   */
+  const trackSync = async <T>(id: SyncServiceId, run: () => Promise<T>): Promise<T> => {
+    syncClock[id].syncing = true;
+    pushSyncState();
+    try {
+      const result = await run();
+      syncClock[id] = { lastSyncAt: Date.now(), syncing: false, error: null };
+      return result;
+    } catch (e) {
+      syncClock[id] = {
+        ...syncClock[id],
+        syncing: false,
+        error: e instanceof Error ? e.message : String(e),
+      };
+      throw e;
+    } finally {
+      pushSyncState();
+    }
+  };
+
+  handle('sync:state', async () => syncStates());
+
   /**
    * One GitLab sync: list your open MRs, re-read detail only for the ones that moved,
    * reconcile, push.
@@ -1093,7 +1164,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
   handle('gitlab:sync', async () => {
     try {
-      return await syncGitLab();
+      return await trackSync('gitlab', syncGitLab);
     } catch (e) {
       logMain('GitLab sync failed', e);
       throw new Error(e instanceof Error ? e.message : String(e));
@@ -1435,7 +1506,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // deployment/credential the same way the Settings "Test connection" button does.
   handle('jira:sync', async () => {
     try {
-      return await syncJira();
+      return await trackSync('jira', syncJira);
     } catch (e) {
       logMain('JIRA sync failed', e);
       throw new Error(explainJiraFailure(e, store.getSettings().jira));
@@ -1742,12 +1813,15 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // registering would otherwise leave the API half-wired — some channels live, the
   // ones below it missing — which is the same failure mode as a dead engine, only
   // harder to spot.
-  const jiraPoller = new JiraPoller(store, syncJira);
+  // Wrapped, so a background tick moves the status bar's ring exactly as the button does —
+  // the bar's whole job is answering "how fresh is this", and a poll it could not see would
+  // leave the ring counting down past a sync that had already happened.
+  const jiraPoller = new JiraPoller(store, () => trackSync('jira', syncJira));
   jiraPoller.reschedule();
 
   // Its own timer on its own setting: a pipeline turns red on a machine's timescale,
   // not a human's, so 2 minutes is the default rather than JIRA's 5.
-  const gitlabPoller = new GitLabPoller(store, syncGitLab);
+  const gitlabPoller = new GitLabPoller(store, () => trackSync('gitlab', syncGitLab));
   gitlabPoller.reschedule();
 
   // Same reasoning: the updater's first feed request is scheduled here, once every

@@ -51,6 +51,7 @@ import type { AttentionAnswer, AttentionItem } from './attention';
 import type { LimitState } from './limit';
 import type { MergeRequest } from './mergeRequest';
 import type { AppSettings } from './settings';
+import type { ServiceSyncState } from './sync';
 import type { UpdateState } from './update';
 import type { UsageSample, UsageSeriesPoint, UsageSummary } from './usage';
 
@@ -522,6 +523,14 @@ export interface IpcApi {
    * `Map<taskId, MergeRequest[]>`, exactly as it does for `board:tasks`.
    */
   'gitlab:mergeRequests': () => Promise<MergeRequest[]>;
+
+  // --- Sync freshness (the status bar's countdown rings) --------------------
+  /**
+   * How stale each tracker's mirror is, and when the next poll is due. One entry per
+   * integration; the UI is driven by the list, so a third tracker appears in the status bar
+   * by being added to it here.
+   */
+  'sync:state': () => Promise<ServiceSyncState[]>;
   /** Mark an MR's discussion read (clears the comment half of its attention). */
   /**
    * Rename a merge request **in this app only** — pass null or blank to go back to the
@@ -679,6 +688,12 @@ export interface IpcEvents {
    * patches.
    */
   'gitlab:mergeRequestsChanged': MergeRequest[];
+  /**
+   * A sync started, finished or failed — the whole list, so the status bar replaces rather
+   * than patches. Pushed on every sync from either path (the button and the poller share
+   * one body), and whenever settings change the interval out from under the countdown.
+   */
+  'sync:changed': ServiceSyncState[];
   /**
    * Settings changed in the MAIN process rather than on the Settings screen — the
    * engine learning a JIRA status→column mapping from a successful drag, for one.

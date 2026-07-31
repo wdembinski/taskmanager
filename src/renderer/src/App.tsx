@@ -45,6 +45,8 @@ import { Attention } from './Attention';
 import { LimitBanner } from './LimitBanner';
 import { MyTasks } from './MyTasks';
 import { currentSprintName } from './board/currentSprint';
+import { SyncRings } from './SyncRings';
+import type { ServiceSyncState } from '@shared/sync';
 import { Performance } from './Performance';
 import { Settings } from './Settings';
 import { SessionRunner } from './SessionRunner';
@@ -257,6 +259,13 @@ export function App(): JSX.Element {
    */
   const [sprint, setSprint] = useState<string | null>(null);
 
+  /**
+   * How fresh each tracker's mirror is, for the status bar's countdown rings. Held by the
+   * shell rather than the board for the same reason `sprint` is: the bar stays right while
+   * another tab is open, and it is the shell that owns the bar.
+   */
+  const [syncStates, setSyncStates] = useState<ServiceSyncState[]>([]);
+
   // Set when the app shell itself can't reach the engine — the clearest possible signal
   // that nothing else on screen will load either.
   const [bootError, setBootError] = useState<string | null>(null);
@@ -267,6 +276,7 @@ export function App(): JSX.Element {
       window.api.invoke('claude:getStatus').then(setClaude),
       window.api.invoke('attention:list').then((items) => setAttentionCount(items.length)),
       window.api.invoke('update:get').then(setUpdate),
+      window.api.invoke('sync:state').then(setSyncStates),
     ]).catch((e: unknown) => setBootError(e instanceof Error ? e.message : String(e)));
 
     /** Recompute the footer's sprint from the settings flag and the board's cards. */
@@ -290,6 +300,9 @@ export function App(): JSX.Element {
       setAttentionCount((n) => Math.max(0, n - 1)),
     );
     const offUpdate = window.api.on('update:changed', setUpdate);
+    // Fires when a sync starts, finishes or fails — the ring's own countdown between those
+    // moments is a local timer inside `SyncRings`, so this is only the resets.
+    const offSync = window.api.on('sync:changed', setSyncStates);
     // Both signals matter: a sync replaces the board (the sprint's cards may change),
     // and the engine can rewrite settings behind the UI's back.
     const offTasks = window.api.on('project:tasksChanged', () => void readSprint());
@@ -298,6 +311,7 @@ export function App(): JSX.Element {
       offNew();
       offResolved();
       offUpdate();
+      offSync();
       offTasks();
       offSettings();
     };
@@ -431,6 +445,9 @@ export function App(): JSX.Element {
             </button>
           </Caption1>
         )}
+        {/* How stale each mirror is, and how long until the next pull. On the right, beside
+            the version: it is ambient state, not something that wants a decision. */}
+        <SyncRings states={syncStates} />
         {info && (
           <Caption1>
             v{info.version} · electron {info.electron} · node {info.node}
