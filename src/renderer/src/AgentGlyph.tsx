@@ -7,22 +7,59 @@
  * counter sat beside it, while the step rows underneath already showed which step was live.
  * The glyph was going to be on the row anyway, so animating it costs no space at all.
  *
- * The animation is deliberately the SPINNER's two colours — the bright arc and its dark
- * track — so a pulsing glyph and a turning spinner read as one vocabulary rather than two
- * unrelated cyans. Nothing about the layout moves: only colour and a glow, because a card is
+ * **Two glyphs, cross-faded.** At rest it is the OUTLINE (`AgentsRegular`) in white: an
+ * agent owns this card, and nothing more. While it works it is the SOLID one, pulsing. That
+ * is a weight change as well as a colour change, so the running state reads even at a glance
+ * that misses the colour — and it is the one moment the card has earned the extra ink.
+ *
+ * The two cannot be morphed (they are different paths), so both are rendered, stacked, and
+ * their opacity is transitioned. A hard swap between two shapes is a flicker; a 260ms
+ * cross-fade is the glyph thickening and thinning again, which is what the state is doing.
+ *
+ * The pulse is deliberately the SPINNER's two colours — the bright arc and its dark track —
+ * so a pulsing glyph and a turning spinner read as one vocabulary rather than two unrelated
+ * cyans. Nothing about the layout moves: only colour, weight and a glow, because a card is
  * something you scan past and a moving shape in the corner of the eye is a cost.
  */
 import { makeStyles, mergeClasses, tokens } from '@fluentui/react-components';
-import { AgentsRegular } from '@fluentui/react-icons';
+import { AgentsFilled, AgentsRegular } from '@fluentui/react-icons';
 import { FLUO } from './theme';
 
 const useStyles = makeStyles({
+  /**
+   * The stack. `position: relative` and an explicit size, because the solid layer is taken
+   * out of flow — without a size of its own the box would collapse to nothing.
+   */
   glyph: {
     flexShrink: 0,
-    display: 'flex',
+    position: 'relative',
+    display: 'inline-flex',
+    width: '1em',
+    height: '1em',
     // White at rest: the glyph's job then is only to say "an agent owns this card".
     color: '#ffffff',
   },
+  /** Both layers occupy the whole box, so the two shapes sit exactly on top of each other. */
+  layer: {
+    position: 'absolute',
+    inset: 0,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    // The cross-fade. Long enough to read as the glyph gaining weight rather than as a
+    // swap, short enough that it is over before you have finished looking at the card.
+    transitionProperty: 'opacity',
+    transitionDuration: '260ms',
+    transitionTimingFunction: 'ease-in-out',
+    // A state change you cannot see is better than one that flickers, so the fade is the
+    // first thing to go when motion is unwelcome — the weight change survives.
+    '@media (prefers-reduced-motion: reduce)': { transitionDuration: '0ms' },
+  },
+  hidden: { opacity: 0 },
+  /**
+   * The solid layer while it runs. `color` and the glow are the animation's; `opacity` is
+   * the transition's — two properties, two mechanisms, no contention.
+   */
   running: {
     // Griffel compiles this object into its own `@keyframes` rule.
     animationName: {
@@ -62,11 +99,15 @@ export interface AgentGlyphProps {
 export function AgentGlyph({ running = false, size = '16px' }: AgentGlyphProps): JSX.Element {
   const styles = useStyles();
   return (
-    <span
-      className={mergeClasses(styles.glyph, running && styles.running)}
-      style={{ fontSize: size }}
-    >
-      <AgentsRegular />
+    <span className={styles.glyph} style={{ fontSize: size }}>
+      <span className={mergeClasses(styles.layer, running && styles.hidden)}>
+        <AgentsRegular />
+      </span>
+      <span
+        className={mergeClasses(styles.layer, !running && styles.hidden, running && styles.running)}
+      >
+        <AgentsFilled />
+      </span>
     </span>
   );
 }
