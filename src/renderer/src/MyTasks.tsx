@@ -531,6 +531,9 @@ export function MyTasks(): JSX.Element {
             parentTask={parentOfSelected}
             mergeRequests={selectedTask ? (mrsByTask.get(selectedTask.id) ?? []) : []}
             statusKeywords={settings?.statusKeywords}
+            // The pane draws priority the same way the cards beside it do — one setting,
+            // both surfaces, so they can never show the same fact two different ways.
+            priorityDisplay={display.priorityDisplay}
             attention={attention}
             liveRunTaskIds={liveRuns}
             onOpenTask={setSelectedTaskId}

@@ -32,7 +32,9 @@ import {
 import { DeleteRegular, DismissRegular } from '@fluentui/react-icons';
 import type { ManualStatus, Project, Task } from '@shared/model';
 import { restingStatus } from '@shared/board';
-import { DEFAULT_PRIORITIES, priorityColor } from '@shared/priority';
+import { DEFAULT_PRIORITIES } from '@shared/priority';
+import type { PriorityDisplay } from '@shared/settings';
+import { PriorityGlyph } from './PriorityGlyph';
 import { MANUAL_STATUS_OPTIONS, STATUS_LABEL } from './taskStatus';
 import { FoldToggle } from './FoldToggle';
 
@@ -59,8 +61,12 @@ const useStyles = makeStyles({
     fontSize: '12px',
   },
   editRow: { display: 'flex', justifyContent: 'flex-end', gap: '8px' },
-  /** The same square the board card wears, so the two read as one control's two views. */
-  prioritySquare: { width: '12px', height: '12px', borderRadius: '3px', flexShrink: 0 },
+  /**
+   * The PROJECT's colour, beside its dropdown. Priority used to share this style; it now
+   * comes from `PriorityGlyph`, which the board card uses too — a project colour is not a
+   * priority and had no business being drawn by the same rule.
+   */
+  projectSwatch: { width: '12px', height: '12px', borderRadius: '3px', flexShrink: 0 },
   picker: { minWidth: '116px' },
   /** The headline, clipped to one line — the full text is in the tooltip and the pane. */
   noteText: {
@@ -92,6 +98,11 @@ export interface TaskDetailsCellProps {
   agentProjects?: Project[];
   /** True while the scheduler owns the task — status is not hand-settable then. */
   managedByAI: boolean;
+  /**
+   * How the board draws priority, so this pane draws it the same way. Defaults to the
+   * colour square — what every caller got before the setting existed.
+   */
+  priorityDisplay?: PriorityDisplay;
   /** Called with the updated task after a status or description change. */
   onTaskChanged: (task: Task) => void;
   /** Called after a description edit, so the timeline/pane can refresh. */
@@ -102,6 +113,7 @@ export function TaskDetailsCell({
   task,
   agentProjects = [],
   managedByAI,
+  priorityDisplay = 'color',
   onTaskChanged,
   onEdited,
 }: TaskDetailsCellProps): JSX.Element {
@@ -168,7 +180,6 @@ export function TaskDetailsCell({
     isJira && jiraPriorities.length ? jiraPriorities : DEFAULT_PRIORITIES
   ).slice();
   const priority = task.externalPriority ?? null;
-  const squareColor = priorityColor(priority);
   // The FILING, not the delegation — this dropdown says what the card is about.
   const project = agentProjects.find((p) => p.id === task.projectTagId) ?? null;
   const resting = restingStatus(task);
@@ -303,9 +314,10 @@ export function TaskDetailsCell({
         <div className={styles.trioCell}>
           <div className={styles.trioLabel}>
             <Caption1 className={styles.hint}>Priority</Caption1>
-            {squareColor && (
-              <span className={styles.prioritySquare} style={{ backgroundColor: squareColor }} />
-            )}
+            {/* The same indicator the cards wear. The dropdown beside it spells the name
+                out either way, so this is the redundant half — which is exactly why it is
+                the half that follows the board's setting. */}
+            <PriorityGlyph mode={priorityDisplay} priority={priority} size={16} />
           </div>
           <Dropdown
             className={styles.trioPicker}
@@ -336,7 +348,7 @@ export function TaskDetailsCell({
               <Caption1 className={styles.hint}>Project</Caption1>
               {project?.color && (
                 <span
-                  className={styles.prioritySquare}
+                  className={styles.projectSwatch}
                   style={{ backgroundColor: project.color }}
                 />
               )}

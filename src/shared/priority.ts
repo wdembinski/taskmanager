@@ -12,6 +12,7 @@
  * most specific spelling down. This is exactly what the board's old inline colour
  * helper got wrong.
  */
+import type { PriorityDisplay } from './settings';
 
 /** The five rungs of the scale, plus "nobody said". */
 export type PriorityBucket = 'highest' | 'high' | 'medium' | 'low' | 'lowest' | 'none';
@@ -77,4 +78,28 @@ export const PRIORITY_COLOR: Record<PriorityBucket, string | null> = {
 /** The card square's colour for a priority name, or null when there is none to show. */
 export function priorityColor(name: string | null | undefined): string | null {
   return PRIORITY_COLOR[priorityBucket(name)];
+}
+
+/**
+ * Whether a board set to `mode` draws **anything at all** for this priority.
+ *
+ * Asked twice per card and it must give the same answer both times: once by the indicator
+ * itself, and once by the card's footer deciding whether that row needs to exist. Getting
+ * those two out of step leaves an empty row holding a glyph nobody drew.
+ *
+ * The two modes deliberately disagree about the middle rung. `color` paints all five,
+ * because a scale of squares with a hole in it reads as a bug. `mono` skips `medium`: medium
+ * IS normal, and the point of the colourless mode is that only an abnormal priority is worth
+ * ink — a board where most cards say nothing is a board where the ones that do are seen.
+ * That also silences a name nobody recognises, since `priorityBucket` calls those `medium`,
+ * and "we couldn't read this one" is not worth a mark either.
+ */
+export function priorityIndicatorShown(
+  mode: PriorityDisplay,
+  name: string | null | undefined,
+): boolean {
+  if (mode === 'off') return false;
+  const bucket = priorityBucket(name);
+  if (bucket === 'none') return false;
+  return mode === 'color' || bucket !== 'medium';
 }

@@ -43,11 +43,6 @@ import {
   BookmarkRegular,
   BranchRequestClosedFilled,
   BugRegular,
-  CellularData1Regular,
-  CellularData2Regular,
-  CellularData3Regular,
-  CellularData4Regular,
-  CellularData5Regular,
   CheckmarkCircleFilled,
   CheckmarkCircleRegular,
   CircleRegular,
@@ -69,7 +64,7 @@ import {
   parkedStep,
   runPhase,
 } from '@shared/board';
-import { priorityBucket, priorityColor, type PriorityBucket } from '@shared/priority';
+import { priorityIndicatorShown } from '@shared/priority';
 import { statusNoteColor, type StatusKeyword } from '@shared/statusKeywords';
 import { DEFAULT_BOARD_DISPLAY, type BoardDisplaySettings } from '@shared/settings';
 import { AgentGlyph } from '../AgentGlyph';
@@ -84,6 +79,7 @@ import {
   STATUS_INDICATOR_COLOR,
 } from '../theme';
 import { JiraMark } from '../JiraMark';
+import { PriorityGlyph } from '../PriorityGlyph';
 import {
   mrAttentionReason,
   mrLabel,
@@ -485,15 +481,6 @@ const useStyles = makeStyles({
     border: `1px solid ${ACCENT.unread}`,
     color: ACCENT.unreadInk,
   },
-  prioritySquare: { width: '14px', height: '14px', borderRadius: '3px', flexShrink: 0 },
-  /** The mono rank glyph, sized and coloured to sit exactly where the square did. */
-  priorityGlyph: {
-    display: 'flex',
-    alignItems: 'center',
-    fontSize: '16px',
-    flexShrink: 0,
-    color: tokens.colorNeutralForeground3,
-  },
 });
 
 /**
@@ -533,23 +520,6 @@ export function typeIcon(task: Task): JSX.Element {
   return <CircleRegular />;
 }
 
-/**
- * The **monochrome** priority indicator: a rank glyph instead of a colour.
- *
- * `CellularData1…5` is a real Fluent family whose whole job is showing a magnitude — five
- * bars rising left to right — so rank is read from SHAPE. That is the point of the option:
- * on a board already spending colour on step dots, pipeline dots and the running band, one
- * more coloured square is the square nobody sees. Neutral-foreground, always; the name
- * itself rides in the tooltip.
- */
-const PRIORITY_GLYPH: Record<PriorityBucket, JSX.Element | null> = {
-  highest: <CellularData5Regular />,
-  high: <CellularData4Regular />,
-  medium: <CellularData3Regular />,
-  low: <CellularData2Regular />,
-  lowest: <CellularData1Regular />,
-  none: null,
-};
 
 /**
  * The glyph at the end of a merge-request row — the MR's **verdict**.
@@ -684,14 +654,11 @@ export function TaskCard({
   const sprintShown = showSprint;
   const isJira = task.externalSource === 'jira';
   /**
-   * The priority indicator this board is set to, already resolved to "what to draw" — so the
-   * footer asks one question rather than re-deriving the mode at each of its two uses.
-   * `null` covers both "switched off" and "this card has no priority".
+   * Whether the priority indicator will draw anything — asked here so the footer row is not
+   * created for a mark that turns out to be nothing. The same predicate `PriorityGlyph`
+   * itself asks, which is what keeps the row and its contents in step.
    */
-  const priorityMode = display.priorityDisplay;
-  const squareColor = priorityMode === 'color' ? priorityColor(task.externalPriority) : null;
-  const priorityGlyph =
-    priorityMode === 'mono' ? PRIORITY_GLYPH[priorityBucket(task.externalPriority)] : null;
+  const showsPriority = priorityIndicatorShown(display.priorityDisplay, task.externalPriority);
   // Null when the note matched no keyword — the line then keeps the card's ordinary
   // secondary text colour, so an uncoloured note reads as text rather than as a state.
   const noteColor = statusNoteColor(task.statusNote, statusKeywords);
@@ -836,7 +803,7 @@ export function TaskCard({
           </Caption1>
         )}
 
-        {(isJira || squareColor || priorityGlyph) && (
+        {(isJira || showsPriority) && (
           <div className={styles.footer}>
             {isJira && task.externalKey && (
               <a
@@ -862,27 +829,12 @@ export function TaskCard({
               </a>
             )}
             <span className={styles.grow} />
-            {squareColor && (
-              <span
-                className={styles.prioritySquare}
-                style={{ backgroundColor: squareColor }}
-                title={task.externalPriority ?? undefined}
-              />
-            )}
-            {/* The colourless alternative. The glyph says the RANK; the instance's own name
-                for it ("Blocker", "P2") is the tooltip's job, since no five-rung shape can
-                carry a word. */}
-            {priorityGlyph && (
-              <span
-                className={styles.priorityGlyph}
-                title={task.externalPriority ?? undefined}
-                aria-label={
-                  task.externalPriority ? `Priority: ${task.externalPriority}` : undefined
-                }
-              >
-                {priorityGlyph}
-              </span>
-            )}
+            {/* Square, chevron or nothing — whichever this board is set to. */}
+            <PriorityGlyph
+              mode={display.priorityDisplay}
+              priority={task.externalPriority}
+              size={18}
+            />
           </div>
         )}
       </div>

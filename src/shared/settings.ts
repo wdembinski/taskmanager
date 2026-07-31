@@ -161,8 +161,10 @@ export const DEFAULT_GITLAB_SETTINGS: GitLabSettings = {
  *
  *  - `color` — the rounded colour square. Fastest to read, and the most ink on a board
  *    that already spends colour on step dots, pipeline dots and the running band.
- *  - `mono`  — a neutral rank glyph (Fluent's `CellularData1…5`), so priority is read by
- *    SHAPE and colour is left to the things that are actually moving.
+ *  - `mono`  — JIRA's own priority chevrons (single for high/low, doubled for the extremes),
+ *    so rank is read from direction and weight and colour is left to the things that are
+ *    actually moving. **Medium draws nothing**: medium is normal, and only an abnormal
+ *    priority is worth ink — see `priorityIndicatorShown`.
  *  - `off`   — not shown. The sort order still honours it; see `sortCards`.
  */
 export type PriorityDisplay = 'color' | 'mono' | 'off';

@@ -37,6 +37,7 @@ import type { MergeRequest } from '@shared/mergeRequest';
 import type { SessionEvent } from '@shared/session';
 import { chatTarget } from '@shared/board';
 import type { StatusKeyword } from '@shared/statusKeywords';
+import type { PriorityDisplay } from '@shared/settings';
 import { ChevronLeftRegular, CollectionsEmptyRegular } from '@fluentui/react-icons';
 import { runningSubAgents } from './agentActivity';
 import { stepPosition } from './board/boardColumns';
@@ -153,6 +154,8 @@ export interface TaskDetailProps {
   mergeRequests?: MergeRequest[];
   /** The status-note vocabulary, so a past update reads in the colour the board gave it. */
   statusKeywords?: readonly StatusKeyword[];
+  /** How the board draws priority, so this pane draws it the same way. */
+  priorityDisplay?: PriorityDisplay;
   /**
    * The board's single attention index. Passed in rather than subscribed to here: this
    * pane and the agent panel inside it were each mounting their own subscription, holding
@@ -176,6 +179,7 @@ export function TaskDetail({
   parentTask = null,
   mergeRequests = [],
   statusKeywords,
+  priorityDisplay = 'color',
   attention,
   liveRunTaskIds,
   onOpenTask,
@@ -570,6 +574,7 @@ export function TaskDetail({
               task={task}
               agentProjects={agentProjects}
               managedByAI={managedByAI}
+              priorityDisplay={priorityDisplay}
               onTaskChanged={(updated) => onStatusChanged?.(updated)}
               onEdited={() => void loadActivity()}
             />
