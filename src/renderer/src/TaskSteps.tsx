@@ -18,7 +18,6 @@ import {
   Input,
   MessageBar,
   MessageBarBody,
-  Spinner,
   Text,
   Textarea,
   makeStyles,
@@ -29,7 +28,7 @@ import type { Task } from '@shared/model';
 import { isAgentRunning } from '@shared/board';
 import { subtaskProgress } from './board/boardColumns';
 import { STATUS_LABEL } from './taskStatus';
-import { STATUS_INDICATOR_COLOR } from './theme';
+import { FLUO, STATUS_INDICATOR_COLOR } from './theme';
 import { FoldToggle } from './FoldToggle';
 
 const useStyles = makeStyles({
@@ -69,6 +68,34 @@ const useStyles = makeStyles({
     backgroundColor: tokens.colorNeutralBackground2,
   },
   brief: { whiteSpace: 'pre-wrap', color: tokens.colorNeutralForeground2, fontSize: '12px' },
+  /** The live row's marker: the dot, then the word, on one baseline. */
+  running: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    flexShrink: 0,
+    color: FLUO.cyan,
+  },
+  /** 7px, matching the pane's pipeline-stage dots exactly — this is the same signal. */
+  dot: { width: '7px', height: '7px', borderRadius: '50%', flexShrink: 0 },
+  /**
+   * The blink, between the spinner's two cyans — the same keyframes the card's step and
+   * stage dots and the agent glyph use, so "working" looks like one thing everywhere.
+   */
+  dotRunning: {
+    animationName: {
+      '0%, 100%': { backgroundColor: FLUO.cyanDeep },
+      '50%': { backgroundColor: FLUO.cyan },
+    },
+    animationDuration: '1s',
+    animationIterationCount: 'infinite',
+    animationTimingFunction: 'ease-in-out',
+    // Without motion the dot must still read as the live one, so hold it at the bright end.
+    '@media (prefers-reduced-motion: reduce)': {
+      animationName: 'none',
+      backgroundColor: FLUO.cyan,
+    },
+  },
 });
 
 /** A step is the runner's while it is live — no editing under a live session. */
@@ -195,10 +222,16 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
             >
               <Caption1 className={styles.index}>{i + 1}.</Caption1>
               <Text className={styles.title}>{step.title}</Text>
-              {/* A running step spins instead of wearing a static badge; the highlight
-                  says which row, the spinner says it is actually moving. */}
+              {/* A running step wears a blinking cyan dot, exactly as a running pipeline
+                  stage does two sections below it — the app says "this is moving" with one
+                  shape everywhere, and this row used to say it with a turning spinner
+                  instead. The word stays: the rows around it carry a status word, and a
+                  bare dot here would be the only row saying nothing. */}
               {isAgentRunning(step) ? (
-                <Spinner size="extra-tiny" label="Running" labelPosition="after" />
+                <span className={styles.running}>
+                  <span className={mergeClasses(styles.dot, styles.dotRunning)} />
+                  <Caption1>Running</Caption1>
+                </span>
               ) : (
                 /* Outline + the shared indicator colour rather than Fluent's `color` prop:
                    its named palette bottoms out at mid-dark fills, so "done" and "pending"

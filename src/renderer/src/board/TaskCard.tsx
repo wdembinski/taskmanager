@@ -31,7 +31,6 @@
 import {
   Badge,
   Caption1,
-  Spinner,
   Text,
   Tooltip,
   makeStyles,
@@ -279,11 +278,16 @@ const useStyles = makeStyles({
   /** 6px, against the step dot's 8px: several in a row read as a group, not as a queue. */
   stageDot: { width: '6px', height: '6px', borderRadius: '50%', flexShrink: 0 },
   /**
-   * A stage the runners are on, blinking between the spinner's two cyans — the same pair
+   * **A dot that is live**, blinking between the spinner's two cyans — the same pair
    * `MergeRequests.stageDotRunning` and the agent glyph use, so "working" looks like one
    * thing whether you are reading the card or the pane.
+   *
+   * Worn by a pipeline STAGE and by a running STEP alike. The step row used to put a
+   * `Spinner` in its dot slot instead, which made one card carry two unrelated shapes for
+   * the same fact — a turning arc on the step and a blinking dot two rows below it on the
+   * merge request. Sets nothing but the colour, so it composes over either dot size.
    */
-  stageDotRunning: {
+  dotRunning: {
     animationName: {
       '0%, 100%': { backgroundColor: FLUO.cyanDeep },
       '50%': { backgroundColor: FLUO.cyan },
@@ -871,17 +875,22 @@ export function TaskCard({
                   onSelectSubtask?.(step.id);
                 }}
               >
-                {/* One fixed-width slot for the status glyph, so the running row's spinner
-                    doesn't shove its title out of line with its siblings' dots. */}
+                {/* One dot, whatever the step is doing — it just blinks while the step is
+                    live. The slot keeps its fixed width so every row's title starts at the
+                    same x. This used to be a spinner, which meant a card said "working" with
+                    a turning arc here and with a blinking dot on the merge-request rows
+                    below: two shapes for one fact, on one card. */}
                 <span className={styles.stepSlot}>
-                  {stepRun.spinner ? (
-                    <Spinner size="extra-tiny" />
-                  ) : (
-                    <span
-                      className={styles.stepDot}
-                      style={{ backgroundColor: STATUS_INDICATOR_COLOR[step.status] }}
-                    />
-                  )}
+                  <span
+                    className={mergeClasses(styles.stepDot, stepRun.spinner && styles.dotRunning)}
+                    // The keyframes own the colour while it blinks, so setting it here too
+                    // would only be the value they immediately override.
+                    style={
+                      stepRun.spinner
+                        ? undefined
+                        : { backgroundColor: STATUS_INDICATOR_COLOR[step.status] }
+                    }
+                  />
                 </span>
                 <Caption1
                   className={mergeClasses(
@@ -948,7 +957,7 @@ export function TaskCard({
                         key={stage.name}
                         className={mergeClasses(
                           styles.stageDot,
-                          stage.status === 'running' && styles.stageDotRunning,
+                          stage.status === 'running' && styles.dotRunning,
                         )}
                         // The keyframes own the colour while running, so setting it here
                         // too would only be the value they immediately override.
