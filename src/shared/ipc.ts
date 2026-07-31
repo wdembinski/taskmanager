@@ -50,6 +50,7 @@ import type { ActiveRun, SchedulerChange, TaskChange } from './scheduler';
 import type { AttentionAnswer, AttentionItem } from './attention';
 import type { LimitState } from './limit';
 import type { MergeRequest } from './mergeRequest';
+import type { LinkGate, LinkResult, TaskLink } from './taskChain';
 import type { AppSettings } from './settings';
 import type { SyncState } from './sync';
 import type { UpdateState } from './update';
@@ -572,6 +573,27 @@ export interface IpcApi {
   'jira:statuses': () => Promise<JiraStatusList>;
   /** Every task on the standalone Personal board (JIRA tickets + internal ad-hoc). */
   'board:tasks': () => Promise<Task[]>;
+
+  // --- The chain of execution (see `@shared/taskChain`) ---------------------
+  /**
+   * Every link on the board, in one call — the arrows, not the cards.
+   *
+   * Held as its own list for the same reason `gitlab:mergeRequests` is: the board derives
+   * whatever per-card index it needs from it, and a JIRA sync (which rewrites whole task
+   * rows every poll) cannot clobber something that does not live on `Task`.
+   */
+  'chain:links': () => Promise<TaskLink[]>;
+  /**
+   * Draw an arrow: `toTaskId` runs after `fromTaskId`. `gate` defaults to the strict
+   * `after-merge`. Refusals (self, step, duplicate, cycle) come back as data — the
+   * renderer's own `canLink` is for live feedback while dragging, this is the one that
+   * decides. Returns the full link list on success.
+   */
+  'chain:link': (fromTaskId: string, toTaskId: string, gate?: LinkGate) => Promise<LinkResult>;
+  /** Erase one arrow by id; returns the full list. */
+  'chain:unlink': (linkId: string) => Promise<TaskLink[]>;
+  /** Change one arrow's gate without redrawing it; returns the full list. */
+  'chain:setGate': (linkId: string, gate: LinkGate) => Promise<TaskLink[]>;
   /**
    * Fetch the user's JIRA issues (per the configured JQL) and reconcile them into the
    * Personal board, preserving internal-only state. Returns the board's full task list.
@@ -699,6 +721,12 @@ export interface IpcEvents {
    * patches.
    */
   'gitlab:mergeRequestsChanged': MergeRequest[];
+  /**
+   * The chain changed — an arrow was drawn, erased, re-gated, or cascaded away with a
+   * deleted card. Carries the whole list, exactly as `gitlab:mergeRequestsChanged` does,
+   * so the board replaces rather than patches.
+   */
+  'chain:changed': TaskLink[];
   /**
    * A sync started, finished or failed — the whole state, so the status bar replaces rather
    * than patches. Pushed on every sync from either path (the button and the poller share
