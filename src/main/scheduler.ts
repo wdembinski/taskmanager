@@ -77,6 +77,7 @@ import {
   buildAgentTaskPrompt,
   type AgentPromptComment,
 } from './agentTaskPrompt';
+import { guardCardStatus } from './cardStatusGuard';
 import type { PermissionGate } from './claudeSession';
 import { buildChainHandbackPrompt, buildChainSummary } from './chainSummary';
 import { shouldSurfaceEvent } from './eventNoise';
@@ -2088,7 +2089,12 @@ export class Scheduler {
         if (retrying && !this.activeProjects.has(run.projectId)) {
           const task = this.store.getTask(run.taskId);
           const project = task ? this.runProjectFor(task) : undefined;
-          if (project && task && task.status === 'pending') this.startTask(project, task);
+          // Membership in `retryQueue` (which is what `retrying` is) is the authority on
+          // "this one is meant to run again", not the status. A board card's status is
+          // the human's — `handleRunFailure` asks for `pending` and gets back wherever
+          // they left the card (see `cardStatusGuard`) — so requiring `pending` here is
+          // what would silently drop the retry for every card not sitting in TO DO.
+          if (project && task && !this.inFlight.has(task.id)) this.startTask(project, task);
         }
         break;
 
@@ -3428,10 +3434,11 @@ export class Scheduler {
 
   private updateTask(
     taskId: string,
-    patch: Partial<Pick<Task, 'status' | 'sessionId' | 'agentPlan'>>,
+    patch: Partial<Pick<Task, 'status' | 'sessionId' | 'agentPlan' | 'preRunStatus'>>,
     runId: string | null,
   ): void {
-    const task = this.store.updateTask(taskId, patch);
+    const before = patch.status !== undefined ? this.store.getTask(taskId) : undefined;
+    const task = this.store.updateTask(taskId, before ? guardCardStatus(before, patch) : patch);
     if (task) this.emitTask({ task, runId });
   }
 

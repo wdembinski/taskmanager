@@ -97,6 +97,8 @@ interface TaskRow {
   /** The issue description flattened to plain text (v2 string / v3 ADF). */
   externalDescription: string | null;
   preBlockStatus: string | null;
+  /** The human's status, parked while a run borrows `status`. See `Task.preRunStatus`. */
+  preRunStatus: string | null;
   lastReadCommentAt: number | null;
   latestCommentAt: number | null;
   /** The project this card is filed under — what it is ABOUT. NULL when unfiled. */
@@ -178,6 +180,7 @@ export interface Store {
         | 'externalSprint'
         | 'externalDescription'
         | 'preBlockStatus'
+        | 'preRunStatus'
         | 'lastReadCommentAt'
         | 'latestCommentAt'
         | 'projectTagId'
@@ -413,6 +416,7 @@ export function createStore(dbPath: string): Store {
       externalSprint         TEXT,
       externalDescription    TEXT,
       preBlockStatus         TEXT,
+      preRunStatus           TEXT,
       lastReadCommentAt      INTEGER,
       latestCommentAt        INTEGER,
       projectTagId           TEXT,
@@ -634,6 +638,9 @@ export function createStore(dbPath: string): Store {
     ['externalType', 'TEXT'],
     ['externalLabel', 'TEXT'],
     ['preBlockStatus', 'TEXT'],
+    // Null on every existing row, which reads as "no run has borrowed this card's
+    // status" — exactly true of a task sitting in the DB when the app starts.
+    ['preRunStatus', 'TEXT'],
     ['lastReadCommentAt', 'INTEGER'],
     ['latestCommentAt', 'INTEGER'],
     // Agent delegation: the epic/parent key and description come from JIRA (a re-sync
@@ -756,7 +763,7 @@ export function createStore(dbPath: string): Store {
         externalSource, externalKey, externalId, externalUrl, externalStatus, externalStatusCategory,
         externalPriority, externalType, externalLabel, externalParentKey, externalEpicName, externalSprint,
         externalDescription,
-        preBlockStatus, lastReadCommentAt, latestCommentAt, agentProjectId, agentMode, agentModel,
+        preBlockStatus, preRunStatus, lastReadCommentAt, latestCommentAt, agentProjectId, agentMode, agentModel,
         agentPlan, agentBranch)
      VALUES
        (@id, @projectId, @phase, @title, @status, @sessionId, @order, @source, @dependsOn, @isContract, @isScaffold, @type,
@@ -764,7 +771,7 @@ export function createStore(dbPath: string): Store {
         @externalSource, @externalKey, @externalId, @externalUrl, @externalStatus, @externalStatusCategory,
         @externalPriority, @externalType, @externalLabel, @externalParentKey, @externalEpicName, @externalSprint,
         @externalDescription,
-        @preBlockStatus, @lastReadCommentAt, @latestCommentAt, @agentProjectId, @agentMode, @agentModel,
+        @preBlockStatus, @preRunStatus, @lastReadCommentAt, @latestCommentAt, @agentProjectId, @agentMode, @agentModel,
         @agentPlan, @agentBranch)`,
   );
   const deleteTask = db.prepare(`DELETE FROM tasks WHERE id = ?`);
@@ -908,7 +915,8 @@ export function createStore(dbPath: string): Store {
     let issueKeys: string[] = [];
     try {
       const parsed: unknown = JSON.parse(r.issueKeys);
-      if (Array.isArray(parsed)) issueKeys = parsed.filter((k): k is string => typeof k === 'string');
+      if (Array.isArray(parsed))
+        issueKeys = parsed.filter((k): k is string => typeof k === 'string');
     } catch {
       issueKeys = []; // corrupt JSON — the next sync rediscovers them
     }
@@ -955,9 +963,7 @@ export function createStore(dbPath: string): Store {
     };
   }
 
-  const selectMergeRequests = db.prepare(
-    `SELECT * FROM merge_requests ORDER BY updatedAt DESC`,
-  );
+  const selectMergeRequests = db.prepare(`SELECT * FROM merge_requests ORDER BY updatedAt DESC`);
   const selectMergeRequest = db.prepare(`SELECT * FROM merge_requests WHERE id = ?`);
   const upsertMergeRequestStmt = db.prepare(
     `INSERT INTO merge_requests
@@ -1142,6 +1148,7 @@ export function createStore(dbPath: string): Store {
       externalSprint: task.externalSprint ?? null,
       externalDescription: task.externalDescription ?? null,
       preBlockStatus: task.preBlockStatus ?? null,
+      preRunStatus: task.preRunStatus ?? null,
       lastReadCommentAt: task.lastReadCommentAt ?? null,
       latestCommentAt: task.latestCommentAt ?? null,
       projectTagId: task.projectTagId ?? null,
@@ -1185,6 +1192,7 @@ export function createStore(dbPath: string): Store {
       externalSprint: r.externalSprint,
       externalDescription: r.externalDescription,
       preBlockStatus: (r.preBlockStatus as Task['preBlockStatus']) ?? null,
+      preRunStatus: (r.preRunStatus as Task['preRunStatus']) ?? null,
       lastReadCommentAt: r.lastReadCommentAt,
       latestCommentAt: r.latestCommentAt,
       projectTagId: r.projectTagId,
@@ -1364,6 +1372,7 @@ export function createStore(dbPath: string): Store {
         'externalSprint',
         'externalDescription',
         'preBlockStatus',
+        'preRunStatus',
         'lastReadCommentAt',
         'latestCommentAt',
         'projectTagId',
@@ -1410,7 +1419,8 @@ export function createStore(dbPath: string): Store {
              externalParentKey = @externalParentKey, externalEpicName = @externalEpicName,
              externalSprint = @externalSprint,
              externalDescription = @externalDescription,
-             preBlockStatus = @preBlockStatus, lastReadCommentAt = @lastReadCommentAt,
+             preBlockStatus = @preBlockStatus, preRunStatus = @preRunStatus,
+             lastReadCommentAt = @lastReadCommentAt,
              latestCommentAt = @latestCommentAt
            WHERE id = @id`,
         ).run(taskToRow(task));

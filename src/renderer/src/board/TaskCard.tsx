@@ -66,7 +66,7 @@ import { statusNoteColor, type StatusKeyword } from '@shared/statusKeywords';
 import { DEFAULT_BOARD_DISPLAY, type BoardDisplaySettings } from '@shared/settings';
 import { AgentGlyph } from '../AgentGlyph';
 import { STATUS_COLOR, STATUS_LABEL } from '../taskStatus';
-import { columnForStatus, statusForColumn, subtaskProgress } from './boardColumns';
+import { columnForTask, statusForColumn, subtaskProgress } from './boardColumns';
 import {
   ACCENT,
   ATTENTION_TINT,
@@ -83,7 +83,6 @@ import {
   mrLabel,
   type MergeRequest,
 } from '@shared/mergeRequest';
-
 
 /**
  * The delegation glyph, white so a card an agent owns reads at a glance. Sized to sit
@@ -537,9 +536,16 @@ export interface TaskCardProps {
   dragging: boolean;
 }
 
-/** The status worth badging on the card, or null when the column already says it. */
+/**
+ * The status worth badging on the card, or null when the column already says it.
+ *
+ * Measured against the column the card is actually IN (`columnForTask`), not against the
+ * one its raw status would imply. Those two part company the moment a run borrows the
+ * status: a card sitting in TO DO with a live agent is `running`, and the badge is then
+ * the card's own way of saying so — without the card going anywhere.
+ */
 function secondaryStatus(task: Task): Task['status'] | null {
-  const canonical = statusForColumn(columnForStatus(task.status));
+  const canonical = statusForColumn(columnForTask(task));
   return task.status === canonical ? null : task.status;
 }
 
@@ -729,10 +735,7 @@ export function TaskCard({
                 }
               >
                 <span
-                  className={mergeClasses(
-                    styles.jiraBadge,
-                    jiraUnread && styles.jiraBadgeUnread,
-                  )}
+                  className={mergeClasses(styles.jiraBadge, jiraUnread && styles.jiraBadgeUnread)}
                 >
                   {/* `currentColor` when tinted, so the mark flips to near-black with the
                       badge's text instead of sitting brand-blue on orange. */}
@@ -810,7 +813,6 @@ export function TaskCard({
           })}
         </div>
       )}
-
 
       {/* Merge requests, in the same row vocabulary as the steps. Pipeline and approval
           are now SEPARATE glyphs: one dot conflated "the build is green" with "a human

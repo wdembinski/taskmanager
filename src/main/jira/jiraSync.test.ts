@@ -155,6 +155,42 @@ describe('reconcileJiraTasks', () => {
     expect(upserts[0].externalStatusCategory).toBe('In Progress');
   });
 
+  it('does not evict a live run from `status` — it re-aims where the run will land', () => {
+    // A poll landing mid-session used to overwrite `running` with the tracker's status,
+    // which dropped the card out of the run: no spinner, no drag guard, no chat target.
+    const existing = jiraTask({ status: 'running', preRunStatus: 'pending' });
+    const { upserts } = reconcileJiraTasks(
+      [existing],
+      [issue('1', 'PROJ-1', 'indeterminate')],
+      opts,
+    );
+    expect(upserts[0].status).toBe('running');
+    // JIRA still owns the COLUMN: someone moved the ticket to In Progress while the agent
+    // worked, so that is where the card comes to rest when the run ends.
+    expect(upserts[0].preRunStatus).toBe('in-progress');
+  });
+
+  it('keeps a blocked card blocked while its agent runs', () => {
+    const existing = jiraTask({
+      status: 'running',
+      preRunStatus: 'blocked',
+      preBlockStatus: 'pending',
+    });
+    const { upserts } = reconcileJiraTasks(
+      [existing],
+      [issue('1', 'PROJ-1', 'indeterminate')],
+      opts,
+    );
+    expect(upserts[0].status).toBe('running');
+    expect(upserts[0].preRunStatus).toBe('blocked');
+    expect(upserts[0].preBlockStatus).toBe('pending');
+  });
+
+  it('does NOT delete a blocked task whose agent is running when it leaves the JQL', () => {
+    const existing = jiraTask({ status: 'running', preRunStatus: 'blocked' });
+    expect(reconcileJiraTasks([existing], [], opts).deleteIds).toEqual([]);
+  });
+
   it('keeps the task id (and thus history) stable for an existing issue', () => {
     const existing = jiraTask({ id: 'jira-1', lastReadCommentAt: 555 });
     const { upserts } = reconcileJiraTasks([existing], [issue('1', 'PROJ-1', 'new')], opts);
@@ -346,9 +382,7 @@ describe('reconcileJiraTasks — whose comment raises the unread border', () => 
   });
 
   it('starts a brand-new card read, however many comments it arrives with', () => {
-    const issues = [
-      withComments([{ created: '2026-07-20T10:00:00.000Z', accountId: 'acc-them' }]),
-    ];
+    const issues = [withComments([{ created: '2026-07-20T10:00:00.000Z', accountId: 'acc-them' }])];
     const { upserts } = reconcileJiraTasks([], issues, { ...opts, identity: ME });
     expect(upserts[0].lastReadCommentAt).toBe(upserts[0].latestCommentAt);
   });

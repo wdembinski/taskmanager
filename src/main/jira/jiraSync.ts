@@ -9,7 +9,7 @@
  * result are NOT deleted, so a blocked ticket never silently vanishes.
  */
 import { PERSONAL_PROJECT_ID, type BoardColumn, type Task } from '@shared/model';
-import { categoryFromKey, statusForColumn } from '@shared/board';
+import { categoryFromKey, isRunStatus, restingStatus, statusForColumn } from '@shared/board';
 import { resolveStatusColumn } from '@shared/statusResolve';
 import { commentBodyToText, type JiraIssue } from './jiraClient';
 import { authorIsMe, type JiraIdentityCache } from './identity';
@@ -99,7 +99,17 @@ function issueToTask(
   const derivedStatus = statusForColumn(column);
 
   // `blocked` is an internal-only state — keep it (and its restore target) across syncs.
-  const blocked = existing?.status === 'blocked';
+  // Read from where the card RESTS, not from `status`: a card whose agent is running has
+  // lent that field to the run, and a blocked card that is running is still blocked.
+  const blocked = existing ? restingStatus(existing) === 'blocked' : false;
+  // Where the card should rest once the tracker has had its say.
+  const resting = blocked ? 'blocked' : derivedStatus;
+  // A live run owns `status` and a poll must not evict it — that would drop the card out
+  // of "running" mid-session, and with it the spinner, the drag guard and the chat
+  // target. The tracker still decides the COLUMN; it just writes it to the parked value
+  // the run will be restored to, so a ticket someone moved in JIRA while the agent worked
+  // lands in its new column the moment the run ends.
+  const borrowed = existing && isRunStatus(existing.status) ? existing.status : null;
 
   // Epic/parent key and description drive agent delegation (which repo owns the
   // ticket, and the brief handed to the agent). Both fall back to the previously
@@ -123,7 +133,7 @@ function issueToTask(
     // The board shows the JIRA project name as the card's "Project:" label.
     phase: issue.fields.project?.name ?? issue.key.split('-')[0],
     title: issue.fields.summary,
-    status: blocked ? 'blocked' : derivedStatus,
+    status: borrowed ?? resting,
     sessionId: null,
     order: existing?.order ?? order,
     dependsOn: [],
@@ -149,6 +159,7 @@ function issueToTask(
     externalSprint: sprint ?? existing?.externalSprint ?? null,
     externalDescription: description ?? existing?.externalDescription ?? null,
     preBlockStatus: blocked ? (existing?.preBlockStatus ?? null) : null,
+    preRunStatus: borrowed ? resting : null,
     lastReadCommentAt,
     // Keep the newest known comment time: fall back to the prior value if this sync
     // didn't return comments for the issue.
@@ -187,7 +198,9 @@ export function reconcileJiraTasks(
         t.source === 'jira' &&
         t.externalKey != null &&
         !seen.has(t.externalKey) &&
-        t.status !== 'blocked', // keep blocked tickets even if they left the JQL
+        // Keep blocked tickets even if they left the JQL — and read where the card RESTS,
+        // so one whose agent is mid-run isn't deleted out from under the session.
+        restingStatus(t) !== 'blocked',
     )
     .map((t) => t.id);
 

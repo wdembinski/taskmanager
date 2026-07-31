@@ -4,8 +4,53 @@
  * move resolution) and the renderer (the board UI) agree on the vocabulary without
  * either importing the other. No React, no Electron, no DB — trivially testable.
  */
+import { isPersonalBoard } from './model';
 import type { BoardColumn, JiraStatusCategory, ManualStatus, Task, TaskStatus } from './model';
 import { mrNeedsAttention, type MergeRequest } from './mergeRequest';
+
+/**
+ * The statuses that mean **a run owns this task right now**. They are the scheduler's,
+ * not the human's: nothing a person can pick from a menu produces one (see
+ * `MANUAL_STATUSES`), and each of them ends by itself when the session does.
+ */
+const RUN_STATUSES: ReadonlySet<TaskStatus> = new Set([
+  'running',
+  'waiting-input',
+  'blocked-by-limit',
+]);
+
+/** Whether `status` is one a live run put there. See {@link RUN_STATUSES}. */
+export function isRunStatus(status: TaskStatus): boolean {
+  return RUN_STATUSES.has(status);
+}
+
+/**
+ * Whether this task's state belongs to the human alone — a top-level card of the
+ * Personal board, the thing you drag between columns.
+ *
+ * Its two exclusions are the whole point. A **plan project's** tasks are a queue the
+ * orchestrator drains, where `pending → running → done` IS the feature. A **step** of an
+ * approved plan is not a card at all — it renders inside its parent, and the chain reads
+ * its `done`/`failed` to know whether to advance. Both must keep the lifecycle they have;
+ * only a card the human files by hand is protected from the agent.
+ */
+export function isBoardCard(task: Task): boolean {
+  return isPersonalBoard(task.projectId) && !task.parentTaskId;
+}
+
+/**
+ * Where a card **rests** — the status the human put it in, whatever a run is doing to it
+ * this second. Equal to `task.status` except while a run has borrowed that field, and
+ * then it is what the run borrowed it from (see {@link Task.preRunStatus}).
+ *
+ * This, not `status`, is what the board and every "what state is this card in" control
+ * must read: a card left in TO DO stays in TO DO while its agent works, and the spinner,
+ * the glyph and the run strip are what say the agent is working.
+ */
+export function restingStatus(task: Task): TaskStatus {
+  if (isRunStatus(task.status) && task.preRunStatus) return task.preRunStatus;
+  return task.status;
+}
 
 /** Which board column a bare status maps to. Total over every `TaskStatus`. */
 export function columnForStatus(status: TaskStatus): BoardColumn {
@@ -95,9 +140,12 @@ export function lookupStatusColumn(
  * its tracker category (except when the task is internally `blocked`, which is
  * preserved), so a single status-based mapping is correct for both internal and
  * JIRA tasks.
+ *
+ * Reads {@link restingStatus} rather than `status`, so a running card sits where its
+ * human left it instead of being dragged into IN PROGRESS by its own agent.
  */
 export function columnForTask(task: Task): BoardColumn {
-  return columnForStatus(task.status);
+  return columnForStatus(restingStatus(task));
 }
 
 /**
@@ -332,7 +380,11 @@ export function runPhase(
 
   // An agent is on the card but nothing is moving and nothing ever ran: it was assigned
   // and not started. Saying so is the whole point of offering a Start button.
-  if (isAgentAssigned(task) && task.status === 'pending') {
+  //
+  // `sessionId` is what makes "never ran" mean it: a card whose run is over goes back to
+  // the status its human left it in (see `restingStatus`), which is very often `pending`
+  // — and a finished card claiming it had never started was the first thing that broke.
+  if (isAgentAssigned(task) && task.status === 'pending' && !task.sessionId) {
     return { phase: 'idle', label: 'Assigned — not started', spinner: false };
   }
 

@@ -25,6 +25,7 @@ import {
 } from '@fluentui/react-components';
 import { DismissRegular } from '@fluentui/react-icons';
 import type { ManualStatus, Project, Task } from '@shared/model';
+import { restingStatus } from '@shared/board';
 import { DEFAULT_PRIORITIES, priorityColor } from '@shared/priority';
 import { MANUAL_STATUS_OPTIONS, STATUS_LABEL } from './taskStatus';
 import { FoldToggle } from './FoldToggle';
@@ -132,9 +133,10 @@ export function TaskDetailsCell({
   const squareColor = priorityColor(priority);
   // The FILING, not the delegation — this dropdown says what the card is about.
   const project = agentProjects.find((p) => p.id === task.projectTagId) ?? null;
+  const resting = restingStatus(task);
 
   async function setStatus(next: ManualStatus): Promise<void> {
-    if (next === task.status) return;
+    if (next === resting) return;
     setError(null);
     try {
       onTaskChanged(await window.api.invoke('task:setStatus', task.id, next));
@@ -235,11 +237,15 @@ export function TaskDetailsCell({
       <div className={styles.trio}>
         <div className={styles.trioCell}>
           <Caption1 className={styles.hint}>State</Caption1>
+          {/* Where the card RESTS, not `status` — which a live run has borrowed, and
+              which would have this control announce "Running" as the card's state and
+              then quietly change it back. The run says so through the spinner and the run
+              strip above; this says where you filed the card, and only you move it. */}
           <Dropdown
             className={styles.trioPicker}
             size="small"
-            value={STATUS_LABEL[task.status]}
-            selectedOptions={[task.status]}
+            value={STATUS_LABEL[resting]}
+            selectedOptions={[resting]}
             disabled={managedByAI}
             title={managedByAI ? 'Stop the session to change status.' : 'Status'}
             onOptionSelect={(_e, d) => {

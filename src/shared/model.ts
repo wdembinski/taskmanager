@@ -412,6 +412,26 @@ export interface Task {
    * internal-only state — moving to/from it never touches the tracker.
    */
   preBlockStatus?: TaskStatus | null;
+  /**
+   * The status the HUMAN left this card in, remembered for as long as an agent run owns
+   * `status`. Null whenever no run is in flight.
+   *
+   * A card's state is the human's alone: an agent run says nothing about whether the work
+   * is To Do, In Review or Done, so a run must never move a card between columns. But the
+   * run's own lifecycle (`running`/`waiting-input`/`blocked-by-limit`) lives in that same
+   * `status` field and the whole engine reads it, so the two are separated here rather
+   * than by a second status column: the run borrows `status`, this remembers what it
+   * borrowed it from, and the card goes back to it when the run ends. The board reads the
+   * remembered one (see `restingStatus`), so the card doesn't visibly move meanwhile.
+   *
+   * The same trick as {@link Task.preBlockStatus}, one layer up: that one preserves a
+   * column across an internal state, this one preserves it across a run.
+   *
+   * Only ever set on a **board card** — a top-level card of the Personal board. A plan
+   * project's tasks are a QUEUE, where `pending → running → done` is the whole point, and
+   * a step of an approved plan must still reach `done` or the chain cannot advance.
+   */
+  preRunStatus?: TaskStatus | null;
   /** Epoch ms of the newest tracker comment the user has read (unread-badge marker). */
   lastReadCommentAt?: number | null;
   /** Epoch ms of the newest tracker comment seen at the last sync (drives unread). */

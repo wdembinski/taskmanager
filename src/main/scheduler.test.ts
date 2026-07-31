@@ -625,12 +625,15 @@ describe('Scheduler — a card delegated to an agent project', () => {
     expect(start.mock.calls[0][1]).toMatchObject({ resumeSessionId: 's1' });
   });
 
-  it('stopTask ends that task’s run and marks it stopped', () => {
+  it('stopTask ends that task’s run and leaves the card where its human left it', () => {
     const { scheduler, stop, task } = makeAgentScheduler();
     scheduler.runTask('t1');
     expect(scheduler.stopTask('t1')).toBe(true);
     expect(stop).toHaveBeenCalledTimes(1);
-    expect(task.status).toBe('stopped');
+    // NOT `stopped`, which would have thrown the card into the DONE column. Stopping an
+    // agent says nothing about whether the work is done — only the human moves a card.
+    expect(task.status).toBe('pending');
+    expect(task.preRunStatus).toBe(null);
     // A task with nothing running is a no-op, not an error (and never re-marked).
     expect(scheduler.stopTask('unknown')).toBe(false);
   });
