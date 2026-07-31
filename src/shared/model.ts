@@ -530,6 +530,22 @@ export interface Task {
    * "fall back to the legacy `orch/<taskId>` name" so no existing worktree is orphaned.
    */
   agentBranch?: string | null;
+
+  // --- The chain of execution (see `@shared/taskChain`). ---
+  /**
+   * Epoch ms this card's work **landed** — integration merged its branch, or a merge
+   * request linked to it was first seen `merged`. Null while it has not.
+   *
+   * The condition an `after-merge` link waits on, and stored rather than derived for the
+   * same reason `planRound` is: a chain that has been released must stay released. Every
+   * derivable answer flickers — an MR list that has not been polled yet reads as "not
+   * merged", and a card dragged back out of Done would un-land work that is demonstrably
+   * in the base branch. Neither may pull a successor's start back out from under it.
+   *
+   * Null on every card that predates the field, which reads as "has not landed": nothing
+   * is chained yet either, so nothing is held back by it.
+   */
+  landedAt?: number | null;
 }
 
 /** What the assign-to-an-agent action sends: where to run, how, and an optional brief. */

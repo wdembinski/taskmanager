@@ -69,6 +69,7 @@ import {
   type FetchedMergeRequest,
 } from './gitlab/gitlabSync';
 import { mrIsSettled, type MergeRequest } from '@shared/mergeRequest';
+import { canLink, isLinkGate, type LinkResult, type TaskLink } from '@shared/taskChain';
 import type { ServiceSyncState, SyncServiceId, SyncState } from '@shared/sync';
 import { hostFor, listWslDistros, readinessFor, statusForTargets } from './exec';
 import { gitPreflight } from './git';
@@ -637,6 +638,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       projectId: task.projectId,
       tasks: store.getTasks(task.projectId),
     });
+    // The card's chain links cascaded away with it, so the board has to be told — an
+    // arrow left drawn to a card that is gone is the exact failure the cascade prevents
+    // in the database and this prevents on screen.
+    pushChainLinks();
   });
   handle('task:subtasks', async (parentTaskId) => store.getSubtasks(parentTaskId));
   handle('task:addSubtask', async (parentTaskId, input) => {
@@ -1356,6 +1361,42 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   });
 
   handle('board:tasks', async () => store.getPersonalTasks());
+
+  // --- The chain of execution ------------------------------------------------
+  /** Push the whole link list at the board. Returns it, so handlers can also reply with it. */
+  function pushChainLinks(): TaskLink[] {
+    const links = store.listTaskLinks();
+    send('chain:changed', links);
+    return links;
+  }
+
+  handle('chain:links', async () => store.listTaskLinks());
+
+  handle('chain:link', async (fromTaskId, toTaskId, gate): Promise<LinkResult> => {
+    // The renderer checks this too, while the drag is still in the air — but its copy of
+    // the board can be a poll behind, and a cycle that slips through is a chain that can
+    // never start. So the answer that counts is computed here, against the real rows.
+    const links = store.listTaskLinks();
+    const refusal = canLink(links, store.getTask(fromTaskId), store.getTask(toTaskId));
+    if (refusal) return { status: 'refused', reason: refusal };
+    const created = store.addTaskLink(fromTaskId, toTaskId, gate ?? 'after-merge');
+    // `canLink` already passed, so this is a race with another writer rather than a
+    // refusal we can explain: report it as the duplicate the unique index caught.
+    if (!created) return { status: 'refused', reason: 'duplicate' };
+    return { status: 'ok', links: pushChainLinks() };
+  });
+
+  handle('chain:unlink', async (linkId) => {
+    store.deleteTaskLink(linkId);
+    return pushChainLinks();
+  });
+
+  handle('chain:setGate', async (linkId, gate) => {
+    if (!isLinkGate(gate)) throw new Error(`Unknown chain gate: ${String(gate)}`);
+    store.setTaskLinkGate(linkId, gate);
+    return pushChainLinks();
+  });
+  // ---------------------------------------------------------------------------
 
   /**
    * The instance's "Epic Link" custom field id, discovered once and cached in

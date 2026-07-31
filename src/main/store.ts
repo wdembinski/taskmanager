@@ -49,6 +49,7 @@ import type {
   PipelineStatus,
 } from '@shared/mergeRequest';
 import type { AttentionItem } from '@shared/attention';
+import { isLinkGate, type LinkGate, type TaskLink } from '@shared/taskChain';
 import type { ParsedTask } from './planParser';
 import { splitProjectTag } from './projectTagMigration';
 import type { SavedWindowState } from './windowState';
@@ -118,6 +119,8 @@ interface TaskRow {
   agentBranch: string | null;
   /** Which planning round produced this step; NULL pre-migration, read as round 1. */
   planRound: number | null;
+  /** Epoch ms this card's work landed; NULL = it has not. See `Task.landedAt`. */
+  landedAt: number | null;
 }
 
 /** A project row as stored; `writeBackPlan` is a 0/1 INTEGER (SQLite has no boolean). */
@@ -196,6 +199,7 @@ export interface Store {
         | 'agentModel'
         | 'agentPlan'
         | 'agentBranch'
+        | 'landedAt'
       >
     >,
   ): Task | undefined;
@@ -290,6 +294,20 @@ export interface Store {
   upsertMergeRequest(mr: MergeRequest): void;
   /** Drop merge requests GitLab no longer lists. */
   deleteMergeRequests(ids: readonly string[]): void;
+
+  // --- The chain of execution (see `@shared/taskChain`). ---
+  /** Every link on the board, oldest first. Small enough to hand over whole. */
+  listTaskLinks(): TaskLink[];
+  /**
+   * Draw one arrow: `to` runs after `from`, subject to `gate`. Returns the created link,
+   * or undefined when the pair is already linked — the caller has already run
+   * `canLink`, and this last guard is the UNIQUE constraint, not a second opinion.
+   */
+  addTaskLink(fromTaskId: string, toTaskId: string, gate: LinkGate): TaskLink | undefined;
+  /** Erase one arrow by id. No-op when it is already gone. */
+  deleteTaskLink(id: string): void;
+  /** Change what "after" means for one arrow, without redrawing it. */
+  setTaskLinkGate(id: string, gate: LinkGate): TaskLink | undefined;
 
   /**
    * Persist one open inbox item, with the kind-specific `context` its answer path needs
@@ -439,7 +457,8 @@ export function createStore(dbPath: string): Store {
       agentModel             TEXT,
       agentPlan              TEXT,
       agentBranch            TEXT,
-      planRound              INTEGER
+      planRound              INTEGER,
+      landedAt               INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(projectId, "order");
     CREATE TABLE IF NOT EXISTS app_state (
@@ -564,6 +583,28 @@ export function createStore(dbPath: string): Store {
       createdAt    INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_attention_task ON attention_items(taskId);
+    -- The chain of execution: one row per arrow drawn between two cards, saying the
+    -- second runs after the first (see shared/taskChain.ts for what each gate means).
+    -- A NEW table, so nothing to migrate.
+    --
+    -- A table rather than a JSON column on tasks, for two reasons. ON DELETE CASCADE:
+    -- deleting a card cannot leave an arrow pointing at nothing, which a JSON array of
+    -- ids would do silently and forever. And both directions are queried — the runner
+    -- asks "who follows me", the board asks "what am I waiting on" — so both ends get an
+    -- index. foreign_keys = ON is set above, so the cascade actually fires.
+    --
+    -- UNIQUE(fromTaskId, toTaskId) makes the same arrow undrawable twice; the reverse
+    -- arrow is refused as a cycle rather than by the schema.
+    CREATE TABLE IF NOT EXISTS task_links (
+      id          TEXT PRIMARY KEY,
+      fromTaskId  TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      toTaskId    TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      gate        TEXT NOT NULL DEFAULT 'after-merge',   -- 'after-merge' | 'stacked'
+      createdAt   INTEGER NOT NULL,
+      UNIQUE (fromTaskId, toTaskId)
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_links_from ON task_links(fromTaskId);
+    CREATE INDEX IF NOT EXISTS idx_task_links_to   ON task_links(toTaskId);
   `);
 
   // Migrate databases created before Phase 3 added the write-back column.
@@ -724,6 +765,10 @@ export function createStore(dbPath: string): Store {
     // pre-existing row, coerced to 1 by `rowToTask`: everything that exists today came from
     // a card's first and only approved plan, which IS round 1.
     ['planRound', 'INTEGER'],
+    // When this card's work landed (the chain of execution). NULL on every pre-existing
+    // row = "it has not", which holds nothing back: no card is chained until a human
+    // draws an arrow, and the next merge of a chained card fills it in.
+    ['landedAt', 'INTEGER'],
   ] as Array<[string, string]>) {
     if (!taskColumns.some((c) => c.name === name)) {
       db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
@@ -837,7 +882,7 @@ export function createStore(dbPath: string): Store {
         externalDescription,
         preBlockStatus, preRunStatus, retainedSince, lastReadCommentAt, latestCommentAt,
         agentProjectId, agentMode, agentModel,
-        agentPlan, agentBranch, planRound)
+        agentPlan, agentBranch, planRound, landedAt)
      VALUES
        (@id, @projectId, @phase, @title, @status, @sessionId, @order, @source, @dependsOn, @isContract, @isScaffold, @type,
         @parentTaskId, @description, @statusNote, @statusNoteAt,
@@ -846,7 +891,7 @@ export function createStore(dbPath: string): Store {
         @externalDescription,
         @preBlockStatus, @preRunStatus, @retainedSince, @lastReadCommentAt, @latestCommentAt,
         @agentProjectId, @agentMode, @agentModel,
-        @agentPlan, @agentBranch, @planRound)`,
+        @agentPlan, @agentBranch, @planRound, @landedAt)`,
   );
   const deleteTask = db.prepare(`DELETE FROM tasks WHERE id = ?`);
   const selectSubtasks = db.prepare(
@@ -1085,6 +1130,43 @@ export function createStore(dbPath: string): Store {
   );
   const deleteMergeRequestStmt = db.prepare(`DELETE FROM merge_requests WHERE id = ?`);
 
+  /** A task_links row. `gate` is validated on the way out, not trusted from the column. */
+  interface TaskLinkRow {
+    id: string;
+    fromTaskId: string;
+    toTaskId: string;
+    gate: string;
+    createdAt: number;
+  }
+
+  /** An unknown `gate` degrades to the strict default rather than to "no gate at all". */
+  function rowToTaskLink(r: TaskLinkRow): TaskLink {
+    return {
+      id: r.id,
+      fromTaskId: r.fromTaskId,
+      toTaskId: r.toTaskId,
+      gate: isLinkGate(r.gate) ? r.gate : 'after-merge',
+      createdAt: r.createdAt,
+    };
+  }
+
+  const selectTaskLinks = db.prepare(`SELECT * FROM task_links ORDER BY createdAt, rowid`);
+  const selectTaskLink = db.prepare(`SELECT * FROM task_links WHERE id = ?`);
+  // The links touching a set of tasks — used to carry a project's chain across the
+  // delete-and-reinsert a plan re-sync performs. See `syncTasksFromPlan`.
+  const selectTaskLinksForProject = db.prepare(
+    `SELECT * FROM task_links
+     WHERE fromTaskId IN (SELECT id FROM tasks WHERE projectId = ?)
+        OR toTaskId   IN (SELECT id FROM tasks WHERE projectId = ?)`,
+  );
+  const insertTaskLink = db.prepare<[TaskLinkRow]>(
+    `INSERT INTO task_links (id, fromTaskId, toTaskId, gate, createdAt)
+     VALUES (@id, @fromTaskId, @toTaskId, @gate, @createdAt)
+     ON CONFLICT(fromTaskId, toTaskId) DO NOTHING`,
+  );
+  const deleteTaskLinkStmt = db.prepare(`DELETE FROM task_links WHERE id = ?`);
+  const updateTaskLinkGate = db.prepare(`UPDATE task_links SET gate = ? WHERE id = ?`);
+
   const upsertAttentionStmt = db.prepare(
     `INSERT INTO attention_items
        (id, runId, taskId, projectId, taskTitle, kind, prompt, options, toolName, reason,
@@ -1249,6 +1331,7 @@ export function createStore(dbPath: string): Store {
       agentPlan: task.agentPlan ?? null,
       agentBranch: task.agentBranch ?? null,
       planRound: task.planRound ?? null,
+      landedAt: task.landedAt ?? null,
     };
   }
 
@@ -1298,6 +1381,7 @@ export function createStore(dbPath: string): Store {
       // plan, so NULL is round 1 — not "no round", which would leave the panel unable to
       // group the very rows the grouping exists for.
       planRound: r.planRound ?? 1,
+      landedAt: r.landedAt ?? null,
     };
   }
 
@@ -1483,6 +1567,7 @@ export function createStore(dbPath: string): Store {
         'agentModel',
         'agentPlan',
         'agentBranch',
+        'landedAt',
       ] as const;
       for (const col of columns) {
         const value = (patch as Record<string, unknown>)[col];
@@ -1621,9 +1706,22 @@ export function createStore(dbPath: string): Store {
     syncTasksFromPlan(projectId, parsed) {
       const desired = reconcileTasks(projectId, getTasks(projectId), parsed);
       // Replace the project's task set with the reconciled list, in one transaction.
+      //
+      // The DELETE cascades chain links away, and a task the reconciler KEPT comes back
+      // with the same id — so its arrows have to be re-drawn, or every save of a plan
+      // file would quietly erase the chain drawn over that project. Only links whose
+      // both ends survive are restored; one pointing at a task the plan dropped is a
+      // genuine cascade and stays gone.
       const replace = db.transaction((tasks: Task[]) => {
+        const links = (selectTaskLinksForProject.all(projectId, projectId) as TaskLinkRow[]).map(
+          rowToTaskLink,
+        );
         deleteTasks.run(projectId);
         for (const t of tasks) insertTask.run(taskToRow(t));
+        for (const link of links) {
+          if (!selectTask.get(link.fromTaskId) || !selectTask.get(link.toTaskId)) continue;
+          insertTaskLink.run(link);
+        }
       });
       replace(desired);
       return desired;
@@ -1828,6 +1926,38 @@ export function createStore(dbPath: string): Store {
 
     deleteMergeRequests(ids) {
       for (const id of ids) deleteMergeRequestStmt.run(id);
+    },
+
+    listTaskLinks() {
+      return (selectTaskLinks.all() as TaskLinkRow[]).map(rowToTaskLink);
+    },
+
+    addTaskLink(fromTaskId, toTaskId, gate) {
+      const row: TaskLinkRow = {
+        id: randomUUID(),
+        fromTaskId,
+        toTaskId,
+        gate,
+        createdAt: Date.now(),
+      };
+      // The foreign keys reject an unknown card, and the unique index a repeated arrow;
+      // either way the caller gets "no link" rather than an exception out of a drag.
+      try {
+        if (insertTaskLink.run(row).changes === 0) return undefined;
+      } catch {
+        return undefined;
+      }
+      return rowToTaskLink(row);
+    },
+
+    deleteTaskLink(id) {
+      deleteTaskLinkStmt.run(id);
+    },
+
+    setTaskLinkGate(id, gate) {
+      updateTaskLinkGate.run(gate, id);
+      const row = selectTaskLink.get(id) as TaskLinkRow | undefined;
+      return row ? rowToTaskLink(row) : undefined;
     },
 
     saveAttention(item, context) {
