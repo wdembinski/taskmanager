@@ -156,6 +156,17 @@ export const DEFAULT_GITLAB_SETTINGS: GitLabSettings = {
  * judgement call baked into the card. Mirrored by a Display menu on the board itself,
  * so the toggle is where you notice the noise.
  */
+/**
+ * How a card shows its priority.
+ *
+ *  - `color` — the rounded colour square. Fastest to read, and the most ink on a board
+ *    that already spends colour on step dots, pipeline dots and the running band.
+ *  - `mono`  — a neutral rank glyph (Fluent's `CellularData1…5`), so priority is read by
+ *    SHAPE and colour is left to the things that are actually moving.
+ *  - `off`   — not shown. The sort order still honours it; see `sortCards`.
+ */
+export type PriorityDisplay = 'color' | 'mono' | 'off';
+
 export interface BoardDisplaySettings {
   /** Every JIRA label on the issue, as chips. */
   showLabels: boolean;
@@ -166,6 +177,11 @@ export interface BoardDisplaySettings {
    * three, the longest string on the card, and the one most boards don't need.
    */
   showEpicName: boolean;
+  /**
+   * Which priority indicator the cards wear. Defaults to `color`, which is what every
+   * board looked like before this was a choice.
+   */
+  priorityDisplay: PriorityDisplay;
 }
 
 /** Labels and project name on, epic off — see {@link BoardDisplaySettings}. */
@@ -173,6 +189,7 @@ export const DEFAULT_BOARD_DISPLAY: BoardDisplaySettings = {
   showLabels: true,
   showProjectName: true,
   showEpicName: false,
+  priorityDisplay: 'color',
 };
 
 export interface AppSettings {

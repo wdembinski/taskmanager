@@ -39,19 +39,25 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import {
-  BeakerFilled,
-  BookmarkFilled,
+  BeakerRegular,
+  BookmarkRegular,
   BranchRequestClosedFilled,
-  BugFilled,
+  BugRegular,
+  CellularData1Regular,
+  CellularData2Regular,
+  CellularData3Regular,
+  CellularData4Regular,
+  CellularData5Regular,
   CheckmarkCircleFilled,
   CheckmarkCircleRegular,
-  CircleFilled,
+  CircleRegular,
   DismissCircleFilled,
   MergeFilled,
-  NoteFilled,
+  NoteRegular,
   PersonFilled,
-  SparkleFilled,
-  TaskListSquareLtrFilled,
+  PersonRegular,
+  SparkleRegular,
+  TaskListSquareLtrRegular,
 } from '@fluentui/react-icons';
 import type { Task } from '@shared/model';
 import {
@@ -63,7 +69,7 @@ import {
   parkedStep,
   runPhase,
 } from '@shared/board';
-import { priorityColor } from '@shared/priority';
+import { priorityBucket, priorityColor, type PriorityBucket } from '@shared/priority';
 import { statusNoteColor, type StatusKeyword } from '@shared/statusKeywords';
 import { DEFAULT_BOARD_DISPLAY, type BoardDisplaySettings } from '@shared/settings';
 import { AgentGlyph } from '../AgentGlyph';
@@ -166,6 +172,8 @@ const useStyles = makeStyles({
     // whole edge — there is no frame, because a frame was saying a second time what the
     // fill already said, and it fought the rings below for the same pixels.
     backgroundColor: tokens.colorNeutralBackground1,
+    // The project notch is absolutely positioned against this box.
+    position: 'relative',
     // Step rows sit flush against the frame, so they must be clipped by its radius.
     overflow: 'hidden',
     // ...but `overflow: hidden` also drops this flex item's automatic minimum size to
@@ -182,12 +190,27 @@ const useStyles = makeStyles({
   },
   body: { display: 'flex', flexDirection: 'column', gap: '8px', padding: '12px' },
   /**
-   * The card's project, as a stripe along the top edge. Top rather than left so it can
-   * never be confused with — or crowd — the ring that says a card wants you, and so it
-   * stays put however tall the card's step rows make it. Clipped into the corners by
-   * the card's own `overflow: hidden` + radius.
+   * The card's project, as a **notch in the top-left corner**.
+   *
+   * It was a stripe across the whole top edge, and full width was more ink than the fact
+   * deserved: a board of thirty cards became thirty coloured rules, and the things actually
+   * worth a colour — the step dots, the pipeline dots, the running band — had to compete
+   * with them. A 12px corner is the same information at a sixth of the ink.
+   *
+   * Top-LEFT, and a triangle rather than a square: it reads as a corner fold on the card,
+   * which is unmistakably a marker, where a square in the corner reads as something clipped.
+   * `pointerEvents: none` so it never eats a click meant for the card, and the card's own
+   * `overflow: hidden` + radius rounds its outer corner to match the frame.
    */
-  projectBar: { height: '3px', flexShrink: 0 },
+  projectNotch: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    width: '12px',
+    height: '12px',
+    clipPath: 'polygon(0 0, 100% 0, 0 100%)',
+    pointerEvents: 'none',
+  },
   /**
    * A group of rows (steps, or merge requests) as a SECTION of the card rather than a
    * strip floating on it: one hairline above the group, a quiet caption naming it, and
@@ -318,7 +341,18 @@ const useStyles = makeStyles({
   },
   agentIcon: { fontSize: AGENT_ICON_SIZE, flexShrink: 0, display: 'flex', color: '#ffffff' },
   dragging: { opacity: 0.5 },
-  titleRow: { display: 'flex', alignItems: 'center', gap: '8px' },
+  /**
+   * `flex-start`, not `center`: a two-line title would otherwise push the type glyph and the
+   * agent glyph down to its middle, so the same two icons sat at a different height on every
+   * card and the column lost the vertical rhythm you scan it by. Pinned to the top, they line
+   * up across the whole board however long the titles run — and everything else on the row
+   * (the step counter, the run label, the status badge) lines up with the title's FIRST line,
+   * which is the line they are about.
+   *
+   * It costs nothing on a one-line card: the glyph box is 18px and so is the title's
+   * `lineHeight`, so top-aligned and centre-aligned are the same pixel there.
+   */
+  titleRow: { display: 'flex', alignItems: 'flex-start', gap: '8px' },
   /**
    * "An agent is working on this card", as a slow fluo-cyan sweep behind the card's whole top
    * section — title, chips, note, project, epic, and the JIRA/priority footer. It sits on
@@ -381,7 +415,9 @@ const useStyles = makeStyles({
    * specificity and be settled by whichever class Griffel happened to insert last.
    */
   runningText: { color: '#FFFFFF' },
-  icon: { fontSize: '18px', flexShrink: 0, display: 'flex' },
+  // The same white the agent glyph wears — see `typeIcon` for why the type is no longer
+  // one of the things the board spends colour on.
+  icon: { fontSize: '18px', flexShrink: 0, display: 'flex', color: '#ffffff' },
   title: { lineHeight: '18px', flex: 1, minWidth: 0 },
   project: { color: tokens.colorNeutralForeground3 },
   /**
@@ -450,14 +486,15 @@ const useStyles = makeStyles({
     color: ACCENT.unreadInk,
   },
   prioritySquare: { width: '14px', height: '14px', borderRadius: '3px', flexShrink: 0 },
+  /** The mono rank glyph, sized and coloured to sit exactly where the square did. */
+  priorityGlyph: {
+    display: 'flex',
+    alignItems: 'center',
+    fontSize: '16px',
+    flexShrink: 0,
+    color: tokens.colorNeutralForeground3,
+  },
 });
-
-// Type-icon colors, now from the one palette (`theme.ts`) rather than four literals the
-// card owned privately. Aliased so the maps below read the same as they always did.
-const BUG_RED = ACCENT.bugRed;
-const FEATURE_BLUE = ACCENT.featureBlue;
-const STORY_GREEN = ACCENT.storyGreen;
-const EPIC_PURPLE = ACCENT.epicPurple;
 
 /**
  * Step-row dot color per status — the row's whole status display, since a badge per
@@ -471,23 +508,48 @@ const EPIC_PURPLE = ACCENT.epicPurple;
  * Pick a card icon for the task's type. Internal tasks use their user-chosen
  * `type` (bug/feature); JIRA tasks map their issue-type name onto the same glyphs.
  * A typeless internal task (legacy) falls back to a neutral note.
+ *
+ * **Outline, and uncoloured.** These used to be solid and each in its own hue — a red bug,
+ * a green story, a violet epic — which meant every card on the board opened with a saturated
+ * shape whatever was happening to it. A card's type is the least urgent thing about it: it
+ * never changes, and it is the same on the forty cards beside it. Colour is spent instead on
+ * the things that MOVE — the step dots, the pipeline dots, the running band — and the type
+ * reads as the same quiet white the agent glyph does. The colour is inherited from the
+ * wrapping span, so the pane and the card cannot drift apart.
  */
 export function typeIcon(task: Task): JSX.Element {
   if (task.externalSource !== 'jira') {
-    if (task.type === 'bug') return <BugFilled style={{ color: BUG_RED }} />;
-    if (task.type === 'feature') return <BeakerFilled style={{ color: FEATURE_BLUE }} />;
-    return <NoteFilled />;
+    if (task.type === 'bug') return <BugRegular />;
+    if (task.type === 'feature') return <BeakerRegular />;
+    return <NoteRegular />;
   }
   const t = (task.externalType ?? '').toLowerCase();
-  if (t.includes('bug')) return <BugFilled style={{ color: BUG_RED }} />;
-  if (t.includes('story')) return <BookmarkFilled style={{ color: STORY_GREEN }} />;
-  if (t.includes('epic')) return <SparkleFilled style={{ color: EPIC_PURPLE }} />;
-  if (t.includes('feature') || t.includes('improvement'))
-    return <BeakerFilled style={{ color: FEATURE_BLUE }} />;
-  if (t.includes('sub')) return <PersonFilled />;
-  if (t.includes('task')) return <TaskListSquareLtrFilled style={{ color: FEATURE_BLUE }} />;
-  return <CircleFilled style={{ color: FEATURE_BLUE }} />;
+  if (t.includes('bug')) return <BugRegular />;
+  if (t.includes('story')) return <BookmarkRegular />;
+  if (t.includes('epic')) return <SparkleRegular />;
+  if (t.includes('feature') || t.includes('improvement')) return <BeakerRegular />;
+  if (t.includes('sub')) return <PersonRegular />;
+  if (t.includes('task')) return <TaskListSquareLtrRegular />;
+  return <CircleRegular />;
 }
+
+/**
+ * The **monochrome** priority indicator: a rank glyph instead of a colour.
+ *
+ * `CellularData1…5` is a real Fluent family whose whole job is showing a magnitude — five
+ * bars rising left to right — so rank is read from SHAPE. That is the point of the option:
+ * on a board already spending colour on step dots, pipeline dots and the running band, one
+ * more coloured square is the square nobody sees. Neutral-foreground, always; the name
+ * itself rides in the tooltip.
+ */
+const PRIORITY_GLYPH: Record<PriorityBucket, JSX.Element | null> = {
+  highest: <CellularData5Regular />,
+  high: <CellularData4Regular />,
+  medium: <CellularData3Regular />,
+  low: <CellularData2Regular />,
+  lowest: <CellularData1Regular />,
+  none: null,
+};
 
 /**
  * The glyph at the end of a merge-request row — the MR's **verdict**.
@@ -621,7 +683,15 @@ export function TaskCard({
   const badge = secondaryStatus(task);
   const sprintShown = showSprint;
   const isJira = task.externalSource === 'jira';
-  const squareColor = priorityColor(task.externalPriority);
+  /**
+   * The priority indicator this board is set to, already resolved to "what to draw" — so the
+   * footer asks one question rather than re-deriving the mode at each of its two uses.
+   * `null` covers both "switched off" and "this card has no priority".
+   */
+  const priorityMode = display.priorityDisplay;
+  const squareColor = priorityMode === 'color' ? priorityColor(task.externalPriority) : null;
+  const priorityGlyph =
+    priorityMode === 'mono' ? PRIORITY_GLYPH[priorityBucket(task.externalPriority)] : null;
   // Null when the note matched no keyword — the line then keeps the card's ordinary
   // secondary text colour, so an uncoloured note reads as text rather than as a state.
   const noteColor = statusNoteColor(task.statusNote, statusKeywords);
@@ -664,7 +734,7 @@ export function TaskCard({
       onClick={onSelect}
     >
       {projectColor && (
-        <div className={styles.projectBar} style={{ backgroundColor: projectColor }} />
+        <div className={styles.projectNotch} style={{ backgroundColor: projectColor }} />
       )}
       <div className={mergeClasses(styles.body, run.spinner && styles.runningBand)}>
         <div className={styles.titleRow}>
@@ -766,7 +836,7 @@ export function TaskCard({
           </Caption1>
         )}
 
-        {(isJira || squareColor) && (
+        {(isJira || squareColor || priorityGlyph) && (
           <div className={styles.footer}>
             {isJira && task.externalKey && (
               <a
@@ -798,6 +868,20 @@ export function TaskCard({
                 style={{ backgroundColor: squareColor }}
                 title={task.externalPriority ?? undefined}
               />
+            )}
+            {/* The colourless alternative. The glyph says the RANK; the instance's own name
+                for it ("Blocker", "P2") is the tooltip's job, since no five-rung shape can
+                carry a word. */}
+            {priorityGlyph && (
+              <span
+                className={styles.priorityGlyph}
+                title={task.externalPriority ?? undefined}
+                aria-label={
+                  task.externalPriority ? `Priority: ${task.externalPriority}` : undefined
+                }
+              >
+                {priorityGlyph}
+              </span>
             )}
           </div>
         )}

@@ -40,7 +40,22 @@ import {
 import { AddRegular, DismissRegular } from '@fluentui/react-icons';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
-import type { AppSettings, GitLabSettings, JiraSettings } from '@shared/settings';
+import type {
+  AppSettings,
+  GitLabSettings,
+  JiraSettings,
+  PriorityDisplay,
+} from '@shared/settings';
+
+/**
+ * The three priority indicators, in the order they are offered. Keyed by the stored value,
+ * so the dropdown's options and its current label come from one place.
+ */
+const PRIORITY_DISPLAY_LABELS: Record<PriorityDisplay, string> = {
+  color: 'Colour square',
+  mono: 'Rank glyph (no colour)',
+  off: 'Don’t show it',
+};
 import type { BoardColumn } from '@shared/model';
 import type { AppInfo, JiraConfigStatus, JiraStatusOption, JiraTestResult } from '@shared/ipc';
 import { describeUpdate, type UpdateState } from '@shared/update';
@@ -549,6 +564,30 @@ export function Settings(): JSX.Element {
                   }
                 />
               </div>
+            </Field>
+
+            <Field
+              label="Priority on a card"
+              hint="A board already spends colour on step dots, pipeline dots and the running band. This is the one place that colour is optional — the sort order honours priority either way."
+            >
+              <Dropdown
+                value={PRIORITY_DISPLAY_LABELS[settings.board.priorityDisplay]}
+                selectedOptions={[settings.board.priorityDisplay]}
+                onOptionSelect={(_e, d) =>
+                  patch({
+                    board: {
+                      ...settings.board,
+                      priorityDisplay: d.optionValue as PriorityDisplay,
+                    },
+                  })
+                }
+              >
+                {(Object.keys(PRIORITY_DISPLAY_LABELS) as PriorityDisplay[]).map((mode) => (
+                  <Option key={mode} value={mode} text={PRIORITY_DISPLAY_LABELS[mode]}>
+                    {PRIORITY_DISPLAY_LABELS[mode]}
+                  </Option>
+                ))}
+              </Dropdown>
             </Field>
 
             <Field label="Default model for new projects">

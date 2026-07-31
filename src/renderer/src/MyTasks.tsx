@@ -417,6 +417,7 @@ export function MyTasks(): JSX.Element {
                 }}
                 onCheckedValueChange={(_e, { checkedItems }) =>
                   void saveDisplay({
+                    ...display,
                     showLabels: checkedItems.includes('labels'),
                     showProjectName: checkedItems.includes('project'),
                     showEpicName: checkedItems.includes('epic'),
