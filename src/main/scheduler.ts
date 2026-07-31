@@ -2706,9 +2706,12 @@ export class Scheduler {
         this.parkIntegrationFailure(
           project,
           ctx,
-          `Base branch "${result.base}" has uncommitted changes, so branch "${ctx.branch}" ` +
-            `was not merged. Commit or stash your work in ${project.path}, then choose ` +
-            `"Retry integration".`,
+          `Base branch "${result.base}" is checked out in ${project.path} and has uncommitted ` +
+            `changes, so branch "${ctx.branch}" was not merged — fast-forwarding it would ` +
+            `write over your work. Commit or stash it there, then choose "Retry integration". ` +
+            `If you'd rather this project merged into a branch you don't keep checked out, ` +
+            `set its base branch in the project's settings — that merge moves the branch ` +
+            `pointer only and never touches your working files.`,
         );
         break;
       case 'blocked-untracked':

@@ -130,6 +130,8 @@ interface ProjectRow {
   defaultPermissionMode: string;
   concurrency: number;
   useWorktrees: number;
+  /** Integration branch; null (pre-migration) and '' both mean "the checkout's current branch". */
+  baseBranch: string | null;
   writeBackPlan: number;
   planAligned: number;
   /** 'plan' | 'agent'; NULL is impossible (NOT NULL DEFAULT 'plan'), but old rows read back as 'plan'. */
@@ -386,6 +388,7 @@ export function createStore(dbPath: string): Store {
       defaultPermissionMode TEXT NOT NULL,
       concurrency           INTEGER NOT NULL DEFAULT 1,
       useWorktrees          INTEGER NOT NULL DEFAULT 1,
+      baseBranch            TEXT,
       writeBackPlan         INTEGER NOT NULL DEFAULT 0,
       planAligned           INTEGER NOT NULL DEFAULT 0,
       kind                  TEXT NOT NULL DEFAULT 'plan',
@@ -587,6 +590,13 @@ export function createStore(dbPath: string): Store {
   }
   if (!projectColumns.some((c) => c.name === 'instructions')) {
     db.exec(`ALTER TABLE projects ADD COLUMN instructions TEXT`);
+  }
+
+  // Migrate databases created before a project could NAME its integration branch. NULL
+  // reads back as '' = "whatever the checkout is on", which is precisely what every
+  // existing project did, so nothing about how they integrate changes until it's set.
+  if (!projectColumns.some((c) => c.name === 'baseBranch')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN baseBranch TEXT`);
   }
 
   // Migrate databases created before per-project colours. NULL reads back as '' — no
@@ -807,8 +817,8 @@ export function createStore(dbPath: string): Store {
   }
 
   const insertProject = db.prepare<[ProjectRow]>(
-    `INSERT INTO projects (id, name, path, planPath, defaultModel, defaultPermissionMode, concurrency, useWorktrees, writeBackPlan, planAligned, kind, jiraEpicKeys, target, instructions, color, createdAt)
-     VALUES (@id, @name, @path, @planPath, @defaultModel, @defaultPermissionMode, @concurrency, @useWorktrees, @writeBackPlan, @planAligned, @kind, @jiraEpicKeys, @target, @instructions, @color, @createdAt)`,
+    `INSERT INTO projects (id, name, path, planPath, defaultModel, defaultPermissionMode, concurrency, useWorktrees, baseBranch, writeBackPlan, planAligned, kind, jiraEpicKeys, target, instructions, color, createdAt)
+     VALUES (@id, @name, @path, @planPath, @defaultModel, @defaultPermissionMode, @concurrency, @useWorktrees, @baseBranch, @writeBackPlan, @planAligned, @kind, @jiraEpicKeys, @target, @instructions, @color, @createdAt)`,
   );
   const selectProjects = db.prepare(`SELECT * FROM projects ORDER BY createdAt`);
   const selectProject = db.prepare(`SELECT * FROM projects WHERE id = ?`);
@@ -1155,6 +1165,7 @@ export function createStore(dbPath: string): Store {
       defaultPermissionMode: r.defaultPermissionMode as Project['defaultPermissionMode'],
       concurrency: r.concurrency,
       useWorktrees: r.useWorktrees !== 0,
+      baseBranch: r.baseBranch ?? '',
       writeBackPlan: r.writeBackPlan !== 0,
       planAligned: r.planAligned !== 0,
       kind: r.kind === 'agent' ? 'agent' : 'plan',
@@ -1318,6 +1329,7 @@ export function createStore(dbPath: string): Store {
         defaultPermissionMode: input.defaultPermissionMode ?? defaults.defaultPermissionMode,
         concurrency: Math.max(1, Math.round(input.concurrency ?? defaults.concurrency)),
         useWorktrees: isAgent ? true : (input.useWorktrees ?? true),
+        baseBranch: input.baseBranch?.trim() ?? '',
         writeBackPlan: isAgent ? false : (input.writeBackPlan ?? defaults.writeBackPlan),
         // New projects are trusted as aligned; legacy projects backfill to false via
         // the migration above. A plan carrying `@needs:`/`@contract` is also confirmed
@@ -1393,6 +1405,10 @@ export function createStore(dbPath: string): Store {
       if (patch.useWorktrees !== undefined) {
         sets.push(`useWorktrees = @useWorktrees`);
         params.useWorktrees = patch.useWorktrees ? 1 : 0;
+      }
+      if (patch.baseBranch !== undefined) {
+        sets.push(`baseBranch = @baseBranch`);
+        params.baseBranch = patch.baseBranch.trim();
       }
       if (patch.writeBackPlan !== undefined) {
         sets.push(`writeBackPlan = @writeBackPlan`);

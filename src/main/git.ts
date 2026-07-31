@@ -112,7 +112,17 @@ export async function gitPreflight(dir: string, host?: ExecHost): Promise<GitPre
   // names the branch when HEAD is UNBORN, which is precisely the case being reported here.
   const branch = (await git(dir, ['branch', '--show-current'], host)).stdout.trim() || undefined;
   if (!(await hasCommits(dir, host))) return { state: 'no-commits', branch };
-  return { state: 'ready', branch };
+  return { state: 'ready', branch, branches: await listBranches(dir, host) };
+}
+
+/** Every local branch in the repo, in git's own (alphabetical) order. Empty on error. */
+export async function listBranches(dir: string, host?: ExecHost): Promise<string[]> {
+  const res = await git(dir, ['for-each-ref', '--format=%(refname:short)', 'refs/heads'], host);
+  if (res.code !== 0) return [];
+  return res.stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
 }
 
 /** True when the work tree has no staged or unstaged changes (untracked ignored). */
@@ -250,6 +260,26 @@ export async function mergeFfOnly(
   host?: ExecHost,
 ): Promise<GitResult> {
   return git(repoDir, ['merge', '--ff-only', branch], host);
+}
+
+/**
+ * Fast-forward the ref `target` to `source` **without touching any work tree**.
+ *
+ * `git merge` can only ever advance the branch that is CHECKED OUT, which is why a base
+ * branch nobody has checked out used to be unreachable — and why uncommitted work in the
+ * main checkout blocked merges into a branch that work had nothing to do with. Pushing
+ * into the repo itself has neither problem: no files are written, so a dirty work tree is
+ * irrelevant, and git refuses the update outright (non-zero) if `target` IS checked out
+ * somewhere, or if the move would not be a fast-forward — both of which we want to hear
+ * about rather than force past. The refspec is deliberately un-prefixed (no `+`).
+ */
+export async function fastForwardRef(
+  repoDir: string,
+  source: string,
+  target: string,
+  host?: ExecHost,
+): Promise<GitResult> {
+  return git(repoDir, ['fetch', '.', `${source}:${target}`], host);
 }
 
 /** Split a NUL-delimited git output (`-z`) into paths, dropping the empty trailing entry. */

@@ -166,6 +166,99 @@ describe('WorktreeManager.integrate — conflict ladder Rung 1 (mechanical)', ()
   });
 });
 
+/**
+ * The reported bug: "Base branch «development» has uncommitted changes, so branch «…» was not
+ * merged" on a repo where nothing else was running. Integration used to be a `git merge` in the
+ * main checkout, which can only ever advance the branch that is CHECKED OUT — so it had to
+ * refuse whenever that tree was dirty, even when the human's uncommitted work had nothing to do
+ * with the base branch. A base branch that isn't checked out is now integrated by moving the
+ * ref, which touches no file and therefore cannot be blocked by one.
+ */
+describe('WorktreeManager.integrate — a base branch that is not checked out', () => {
+  /** A project pinned to `branch` as its integration base. */
+  function pinned(branch: string): Project {
+    return { id: 'p1', path: repo, baseBranch: branch, target: LOCAL_TARGET } as unknown as Project;
+  }
+
+  it('merges into the pinned base while the checkout sits dirty on another branch', async () => {
+    const wtm = new WorktreeManager(root);
+    // Never named after the machine's `init.defaultBranch` — that IS `base`, and a fixture
+    // that accidentally names the checked-out branch tests the opposite of what it says.
+    await git(repo, ['branch', 'integration']);
+    const wt = await branchAdding('orch/nb1', 'feature.txt', 'feature\n');
+    // The human is on another branch, mid-edit — none of it concerns `integration`.
+    await git(repo, ['checkout', '-b', 'scratch']);
+    writeFileSync(join(repo, 'seed.txt'), 'my uncommitted work\n');
+
+    const res = await wtm.integrate(pinned('integration'), 'orch/nb1', 'integration', wt, 'nb1');
+
+    expect(res.status).toBe('merged');
+    // `integration` really moved...
+    expect((await git(repo, ['cat-file', '-e', 'integration:feature.txt'])).code).toBe(0);
+    // ...and the dirty file the human was editing was never touched.
+    expect(readFileSync(join(repo, 'seed.txt'), 'utf8')).toBe('my uncommitted work\n');
+    expect(existsSync(join(repo, 'feature.txt'))).toBe(false);
+    // The branch and its worktree are cleaned up exactly as a checked-out merge does.
+    expect((await git(repo, ['rev-parse', '--verify', '--quiet', 'orch/nb1'])).code).not.toBe(0);
+    expect(existsSync(wt)).toBe(false);
+  });
+
+  it('still refuses when the dirty tree IS on the base branch — that merge would overwrite it', async () => {
+    const wtm = new WorktreeManager(root);
+    const wt = await branchAdding('orch/nb2', 'feature.txt', 'feature\n');
+    writeFileSync(join(repo, 'seed.txt'), 'my uncommitted work\n');
+
+    const res = await wtm.integrate(pinned(base), 'orch/nb2', base, wt, 'nb2');
+
+    expect(res.status).toBe('dirty-base');
+    expect(readFileSync(join(repo, 'seed.txt'), 'utf8')).toBe('my uncommitted work\n');
+  });
+});
+
+describe('WorktreeManager.prepare — a project that names its base branch', () => {
+  /** A project pinned to `branch`, with worktrees on. */
+  function pinnedProject(branch: string): Project {
+    return {
+      id: 'p1',
+      path: repo,
+      useWorktrees: true,
+      baseBranch: branch,
+      target: LOCAL_TARGET,
+    } as unknown as Project;
+  }
+
+  it('branches from the pinned base, not from whatever is checked out', async () => {
+    const wtm = new WorktreeManager(join(root, 'wtroot-pin'));
+    // `integration` gets a commit the checked-out branch will never have.
+    await git(repo, ['checkout', '-b', 'integration']);
+    writeFileSync(join(repo, 'only-on-integration.txt'), 'dev\n');
+    await git(repo, ['add', '-A']);
+    await git(repo, ['commit', '--no-verify', '-m', 'integration only']);
+    await git(repo, ['checkout', base]);
+
+    const prep = await wtm.prepare(pinnedProject('integration'), { id: 'pin1' } as unknown as Task);
+
+    expect(prep.mode).toBe('worktree');
+    if (prep.mode !== 'worktree') return;
+    expect(prep.base).toBe('integration');
+    expect(existsSync(join(prep.cwd, 'only-on-integration.txt'))).toBe(true);
+  });
+
+  it('parks the task, naming the branches that DO exist, when the pinned base is gone', async () => {
+    const wtm = new WorktreeManager(join(root, 'wtroot-pin2'));
+
+    const prep = await wtm.prepare(pinnedProject('no-such-branch'), {
+      id: 'pin2',
+    } as unknown as Task);
+
+    expect(prep.mode).toBe('failed');
+    expect(prep).not.toHaveProperty('cwd');
+    // The message says which branch is missing AND which ones are there, so the fix is obvious.
+    expect(prep.mode === 'failed' && prep.reason).toContain('"no-such-branch"');
+    expect(prep.mode === 'failed' && prep.reason).toContain(base);
+  });
+});
+
 describe('WorktreeManager.prepare — worktree-enabled repo that cannot isolate', () => {
   it('reports "failed" (never falls back to the base tree) when a worktree cannot be created', async () => {
     const task = { id: 't1' } as unknown as Task;

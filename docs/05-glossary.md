@@ -265,6 +265,19 @@ A second working directory checked out from the same repository, on its own
 branch. Delegated (and plan) runs work in one so the agent never touches your
 files; a clean finish merges the branch back and removes the worktree.
 
+### Base branch
+
+The branch a project's task branches start FROM and are merged back INTO — set per
+project (**Base branch** on the project form). Left unset it follows whatever the main
+checkout has out, which is how this always worked.
+
+Naming it is the sturdier setup, for a reason worth knowing: `git merge` can only advance
+the branch that is *checked out*, so integrating into the checked-out branch writes files
+into your folder and has to be refused whenever you have uncommitted work there — even
+work with nothing to do with it. A base branch you do NOT keep checked out is integrated
+by moving the branch pointer instead (`git fetch . <branch>:<base>`), which touches no
+file and so can never be blocked by one.
+
 ### electron-vite
 
 Our build tool. Compiles the three parts (main/preload/renderer) from TypeScript

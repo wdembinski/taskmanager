@@ -147,6 +147,18 @@ export interface Project {
    */
   useWorktrees: boolean;
   /**
+   * The branch task branches start FROM and are merged back INTO — the repo's
+   * integration branch (`main`, `master`, `development`, …).
+   *
+   * `''` means "whatever the main checkout happens to have checked out", which is how
+   * this always worked and stays the default. Naming it explicitly is worth doing for
+   * two reasons: the checkout wanders (you look at a branch, and suddenly every task
+   * is based on it), and a named base that ISN'T checked out is integrated by moving
+   * the ref rather than by merging in the work tree — so your uncommitted work in the
+   * main checkout stops blocking merges it has nothing to do with.
+   */
+  baseBranch: string;
+  /**
    * When true, the scheduler ticks the matching `- [ ]` back to `- [x]` in the
    * project's plan file as each task completes. Off by default so we never touch
    * the user's file unless they opt in. Only the single completed checkbox is
@@ -216,6 +228,8 @@ export interface AddProjectInput {
   defaultPermissionMode?: PermissionMode;
   concurrency?: number;
   useWorktrees?: boolean;
+  /** Integration branch; defaults to `''` = the main checkout's current branch. */
+  baseBranch?: string;
   writeBackPlan?: boolean;
   planAligned?: boolean;
   /** Defaults to `plan`. `agent` forces a plan-less, worktree-isolated project. */
@@ -245,6 +259,7 @@ export type ProjectPatch = Partial<
     | 'defaultPermissionMode'
     | 'concurrency'
     | 'useWorktrees'
+    | 'baseBranch'
     | 'writeBackPlan'
     | 'planAligned'
     | 'jiraEpicKeys'
@@ -634,9 +649,15 @@ export type GitPreflightState = 'missing' | 'not-a-repo' | 'no-commits' | 'ready
 /** The answer for one project folder. See {@link GitPreflightState}. */
 export interface GitPreflight {
   state: GitPreflightState;
-  /** The base branch tasks would branch from. Set for `ready`, and for `no-commits`
+  /** The branch the checkout is currently on. Set for `ready`, and for `no-commits`
    *  (an unborn HEAD still names the branch it will be born on). */
   branch?: string;
+  /**
+   * Every local branch in the repo, so the form can offer a base to merge into rather
+   * than making the human type one. Only populated for `ready` — an unborn repo has no
+   * branches to list yet.
+   */
+  branches?: string[];
   /** git's own complaint, when there was one — for `unknown`. */
   detail?: string;
 }

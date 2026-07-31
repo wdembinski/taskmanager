@@ -13,6 +13,7 @@ const project = (over: Partial<Project>): Project => ({
   defaultPermissionMode: 'acceptEdits',
   concurrency: 1,
   useWorktrees: true,
+  baseBranch: '',
   writeBackPlan: false,
   planAligned: true,
   kind: 'agent',

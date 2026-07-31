@@ -41,6 +41,7 @@ import {
 import { distroFromWindowsPath, windowsToLinux } from '@shared/wslPath';
 import { describeGitPreflight } from '@shared/gitPreflight';
 import { useGitPreflight } from './useGitPreflight';
+import { BaseBranchField } from './BaseBranchField';
 
 const useStyles = makeStyles({
   form: { display: 'flex', flexDirection: 'column', gap: '12px', minWidth: '420px' },
@@ -77,6 +78,7 @@ export function ProjectDialog({
   const [permMode, setPermMode] = useState<PermissionMode>('acceptEdits');
   const [concurrency, setConcurrency] = useState(1);
   const [useWorktrees, setUseWorktrees] = useState(true);
+  const [baseBranch, setBaseBranch] = useState('');
   const [writeBack, setWriteBack] = useState(false);
   const [target, setTarget] = useState<ExecTarget>(LOCAL_TARGET);
   const [distros, setDistros] = useState<string[]>([]);
@@ -104,6 +106,7 @@ export function ProjectDialog({
       setPermMode(project.defaultPermissionMode);
       setConcurrency(project.concurrency);
       setUseWorktrees(project.useWorktrees);
+      setBaseBranch(project.baseBranch);
       setWriteBack(project.writeBackPlan);
       setTarget(project.target);
       setInstructions(project.instructions);
@@ -113,6 +116,7 @@ export function ProjectDialog({
       setName('');
       setInstructions('');
       setUseWorktrees(true); // default on; only engages for git repos
+      setBaseBranch(''); // follow the checkout, exactly as before this field existed
       void window.api.invoke('settings:get').then((s) => {
         setModel(s.defaultModel);
         setPermMode(s.defaultPermissionMode);
@@ -149,7 +153,8 @@ export function ProjectDialog({
     if (picked) setPlanPath(picked);
   }
 
-  const gitNote = describeGitPreflight(useGitPreflight(path, target, open), useWorktrees);
+  const preflight = useGitPreflight(path, target, open);
+  const gitNote = describeGitPreflight(preflight, useWorktrees);
 
   async function save(): Promise<void> {
     setSaving(true);
@@ -168,6 +173,7 @@ export function ProjectDialog({
           defaultPermissionMode: permMode,
           concurrency,
           useWorktrees,
+          baseBranch,
           writeBackPlan: writeBack,
           target,
           instructions,
@@ -180,6 +186,7 @@ export function ProjectDialog({
           defaultPermissionMode: permMode,
           concurrency,
           useWorktrees,
+          baseBranch,
           writeBackPlan: writeBack,
           target,
           instructions,
@@ -327,6 +334,16 @@ export function ProjectDialog({
                   onChange={(_e, d) => setUseWorktrees(d.checked)}
                 />
               </Field>
+
+              {/* Only meaningful with isolation on: a shared-folder project has no branch
+                  to merge back, so the field would be a setting that does nothing. */}
+              {useWorktrees && (
+                <BaseBranchField
+                  value={baseBranch}
+                  onChange={setBaseBranch}
+                  preflight={preflight}
+                />
+              )}
 
               <Switch
                 checked={writeBack}

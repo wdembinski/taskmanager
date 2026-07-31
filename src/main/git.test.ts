@@ -12,12 +12,14 @@ import {
   createRootCommit,
   currentBranch,
   deleteBranch,
+  fastForwardRef,
   git,
   gitPreflight,
   hasCommits,
   hasConflicts,
   isClean,
   isRepo,
+  listBranches,
   mergeFfOnly,
   rebaseOnto,
   removeWorktree,
@@ -109,9 +111,40 @@ describe('git helpers', () => {
 
   it('reports a repo with history as having commits, and preflights it as ready', async () => {
     expect(await hasCommits(repo)).toBe(true);
+    await git(repo, ['branch', 'integration']);
     const pre = await gitPreflight(repo);
     expect(pre.state).toBe('ready');
     expect(pre.branch).toBe(base);
+    // The whole branch list rides along, so the project form can offer a base to merge into.
+    expect(pre.branches).toEqual(expect.arrayContaining([base, 'integration']));
+  });
+
+  it('lists local branches only — a remote-tracking ref is not something we can merge into', async () => {
+    await git(repo, ['branch', 'integration']);
+    await git(repo, ['update-ref', 'refs/remotes/origin/nope', 'HEAD']);
+    expect(await listBranches(repo)).toEqual(expect.arrayContaining([base, 'integration']));
+    expect(await listBranches(repo)).not.toContain('origin/nope');
+  });
+
+  it('fast-forwards a branch nobody has checked out, without touching the work tree', async () => {
+    // Never the machine's `init.defaultBranch` — that IS `base`, and a fixture that
+    // accidentally names the checked-out branch tests the opposite of what it says.
+    await git(repo, ['branch', 'integration']);
+    const wt = join(repo, '..', `wtf-${Date.now()}`);
+    await addWorktree(repo, wt, 'orch/t3', 'integration');
+    writeFileSync(join(wt, 'b.txt'), 'from-branch\n');
+    await commitAll(wt, 'add b');
+    // The checkout is dirty on a DIFFERENT branch — irrelevant to a ref move.
+    writeFileSync(join(repo, 'a.txt'), 'uncommitted\n');
+
+    expect((await fastForwardRef(repo, 'orch/t3', 'integration')).code).toBe(0);
+    expect((await git(repo, ['cat-file', '-e', 'integration:b.txt'])).code).toBe(0);
+    expect(await isClean(repo)).toBe(false); // their edit is still exactly where it was
+
+    // The checked-out branch is refused rather than forced — `git merge` is the tool for that.
+    expect((await fastForwardRef(repo, 'orch/t3', base)).code).not.toBe(0);
+
+    await removeWorktree(repo, wt);
   });
 });
 

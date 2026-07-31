@@ -3,8 +3,14 @@
  *
  * Gives each task its own **git worktree on its own branch** so parallel agents
  * never share a working tree, then integrates a finished branch back into the base
- * (rebase onto latest base → fast-forward merge → remove the worktree). All git
- * sequencing lives here so `scheduler.ts` only deals in high-level results.
+ * (rebase onto latest base → fast-forward → remove the worktree). All git sequencing
+ * lives here so `scheduler.ts` only deals in high-level results.
+ *
+ * The base is `Project.baseBranch` when the project names one, and otherwise whatever
+ * the main checkout has out. That distinction reaches all the way into HOW the final
+ * fast-forward happens: a base that is checked out has to be merged in the work tree
+ * (and so must refuse a dirty one), while a base that isn't is advanced as a bare ref
+ * move that no working file can block. See {@link WorktreeManager.fastForward}.
  *
  * Integration is **serialized per project** (a promise chain) so two tasks that
  * finish together can't race each other into the base branch.
@@ -22,16 +28,19 @@ import {
   addedInBranch,
   addWorktree,
   blobSha,
+  branchExists,
   commitAll,
   conflictedFiles,
   continueRebase,
   createRootCommit,
   currentBranch,
   deleteBranch,
+  fastForwardRef,
   hasCommits,
   hasConflicts,
   isClean,
   isRepo,
+  listBranches,
   listUntracked,
   mergeFfOnly,
   preserveUntracked,
@@ -222,7 +231,26 @@ export class WorktreeManager {
         `to start the history — no files were added to it.`;
     }
 
-    const base = await currentBranch(project.path, host);
+    // The project may NAME its integration branch, in which case the checkout's wandering
+    // HEAD is none of this task's business. An unnamed base still means "whatever is
+    // checked out", exactly as before.
+    const configured = project.baseBranch?.trim() ?? '';
+    if (configured && !(await branchExists(project.path, configured, host))) {
+      const known = await listBranches(project.path, host);
+      return {
+        mode: 'failed',
+        reason:
+          `This project's base branch is set to "${configured}", but no such branch exists in ` +
+          `${project.path}, so there is nothing for this task to branch from or merge back ` +
+          `into. ${
+            known.length > 0
+              ? `The repo has: ${known.join(', ')}.`
+              : 'The repo has no local branches.'
+          } Fix it in the project's settings. The task was not run.`,
+      };
+    }
+
+    const base = configured || (await currentBranch(project.path, host));
     // `currentBranch` reports its own failure as `''`, and an empty string handed to git as a
     // start-point becomes `fatal: not a valid object name: ''` — a message that sends the human
     // looking at the branch name. Refuse to shell out with it and say what actually happened.
@@ -233,7 +261,8 @@ export class WorktreeManager {
           `Couldn't read the current branch of ${project.path}, so this task has no base to ` +
           `branch from. The repo is in a state git won't report a HEAD for — check ` +
           `\`git -C "${project.path}" status\` (a half-finished rebase/merge or a broken HEAD ` +
-          `does this). The task was not run in the base tree.`,
+          `does this), or name the branch to build on in the project's settings. The task was ` +
+          `not run in the base tree.`,
       };
     }
     const branch = branchName?.trim() || taskBranch(ownerTaskId);
@@ -346,7 +375,7 @@ export class WorktreeManager {
     return conflictedFiles(worktree, host);
   }
 
-  /** ff-merge the (already rebased) branch into base in the main tree, then clean up. */
+  /** Advance base to the (already rebased) branch, then clean up the worktree. */
   private async fastForward(
     project: Project,
     branch: string,
@@ -354,6 +383,26 @@ export class WorktreeManager {
     worktree: string,
   ): Promise<IntegrationResult> {
     const { host } = await this.workspaceFor(project);
+
+    // Is `base` the branch the main checkout is sitting on? Only then does integrating it
+    // mean writing files into that checkout — and only then can the human's uncommitted work
+    // be at risk from it. When it isn't (they named an integration branch and are looking at
+    // something else, or at a detached HEAD), the merge is a pure ref move: no file is
+    // touched, so a dirty work tree is simply irrelevant and must not block anything.
+    if ((await currentBranch(project.path, host)) !== base) {
+      const advanced = await fastForwardRef(project.path, branch, base, host);
+      if (advanced.code !== 0) {
+        return {
+          status: 'error',
+          message:
+            advanced.stderr.trim() ||
+            `could not fast-forward "${base}" to "${branch}" in ${project.path}`,
+        };
+      }
+      await removeWorktree(project.path, worktree, host);
+      await deleteBranch(project.path, branch, host);
+      return { status: 'merged' };
+    }
 
     // Never fast-forward a base tree that has uncommitted *tracked* work — we'd risk the
     // user's changes. Park instead; they can commit/stash and retry.

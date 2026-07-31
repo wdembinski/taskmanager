@@ -185,6 +185,13 @@ commits on its own branch in an isolated **git worktree**, which is auto-merged
 back into the base branch when the run finishes cleanly (a merge conflict comes
 back to you as an Attention item).
 
+The base branch is the project's **Base branch** setting — pick the one your repo
+actually integrates on (`main`, `master`, `development`, …). Left unset it follows
+whatever the main checkout has out at the time, which is how this always behaved but
+does mean the base moves when you switch branches. Pinning one you don't keep checked
+out also makes integration immune to your own uncommitted work: that merge only moves
+the branch pointer, so it never has to refuse in order to protect your files.
+
 > **A delegated run never writes to JIRA.** Assigning, starting or finishing one
 > never transitions a ticket or posts a comment. You can write to JIRA yourself —
 > drag a card between columns, post a comment, create a card as a real issue — but

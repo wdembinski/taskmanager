@@ -50,6 +50,7 @@ import {
 import { distroFromWindowsPath, pathSuitsHost, windowsToLinux } from '@shared/wslPath';
 import { describeGitPreflight } from '@shared/gitPreflight';
 import { useGitPreflight } from './useGitPreflight';
+import { BaseBranchField } from './BaseBranchField';
 import { ColorSwatches } from './ColorSwatches';
 import { PaneLoading } from './PaneLoading';
 import { useInitialLoad } from './useInitialLoad';
@@ -228,6 +229,7 @@ function AgentProjectDialog({
   const [name, setName] = useState('');
   const [epics, setEpics] = useState('');
   const [color, setColor] = useState('');
+  const [baseBranch, setBaseBranch] = useState('');
   const [model, setModel] = useState<ClaudeModel>('sonnet');
   const [permMode, setPermMode] = useState<PermissionMode>('acceptEdits');
   const [target, setTarget] = useState<ExecTarget>(LOCAL_TARGET);
@@ -251,6 +253,7 @@ function AgentProjectDialog({
       setName(project.name);
       setEpics(project.jiraEpicKeys.join(', '));
       setColor(project.color);
+      setBaseBranch(project.baseBranch);
       setModel(project.defaultModel);
       setPermMode(project.defaultPermissionMode);
       setTarget(project.target);
@@ -259,6 +262,7 @@ function AgentProjectDialog({
       setName('');
       setEpics('');
       setColor('');
+      setBaseBranch(''); // follow the checkout, exactly as before this field existed
       void window.api.invoke('settings:get').then((s) => {
         setModel(s.defaultModel);
         setPermMode(s.defaultPermissionMode);
@@ -309,6 +313,7 @@ function AgentProjectDialog({
           jiraEpicKeys: parseEpicKeys(epics),
           color,
           target,
+          baseBranch,
         });
       } else {
         await window.api.invoke('agentProject:add', {
@@ -319,6 +324,7 @@ function AgentProjectDialog({
           jiraEpicKeys: parseEpicKeys(epics),
           color,
           target,
+          baseBranch,
         });
       }
       onSaved();
@@ -337,10 +343,8 @@ function AgentProjectDialog({
   // Same principle, one layer deeper: the machine can be right and the folder still be unable
   // to host a run. An agent project is ALWAYS worktree-enabled (`store.addProject`, there is no
   // switch here), so every git state that breaks isolation applies — hence the hardcoded true.
-  const gitNote = describeGitPreflight(
-    useGitPreflight(path, target, open && !targetMismatch),
-    true,
-  );
+  const preflight = useGitPreflight(path, target, open && !targetMismatch);
+  const gitNote = describeGitPreflight(preflight, true);
 
   return (
     <OverlayDrawer
@@ -444,6 +448,8 @@ function AgentProjectDialog({
             <ColorSwatches value={color} onChange={setColor} allowNone />
           </Field>
 
+          <BaseBranchField value={baseBranch} onChange={setBaseBranch} preflight={preflight} />
+
           <Field
             label="JIRA epics"
             hint="Epic keys this repo owns, comma separated (e.g. ABC-100, ABC-250). A ticket under one of them is assigned here by default."
@@ -487,7 +493,7 @@ function AgentProjectDialog({
 
           <Body1 className={styles.hint}>
             Each assigned card runs on its own git branch in a separate worktree, merged back into
-            the base branch when the agent finishes.
+            the base branch above when the agent finishes.
           </Body1>
         </div>
       </DrawerBody>
