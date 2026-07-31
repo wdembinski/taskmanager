@@ -89,7 +89,16 @@ const useStyles = makeStyles({
     paddingTop: '4px',
   },
   right: {
-    flex: '1 1 40%',
+    // Exactly 40%, whatever the card holds. `1 1 40%` let the pane grow past its basis:
+    // a flex item's automatic minimum is its CONTENT's min-width, so a card with wide
+    // content (a long MR title, a full stage row, the three pickers side by side) widened
+    // the pane and squeezed the board — and the pane visibly changed size card to card.
+    // `minWidth: 0` drops that automatic minimum and `flex-shrink: 0` holds the basis.
+    flex: '0 0 40%',
+    minWidth: 0,
+    // Anything that still doesn't fit scrolls inside its own row (the chat, the code
+    // blocks, the details cell) rather than spilling over the board.
+    overflow: 'hidden',
     display: 'flex',
     minHeight: 0,
     // No inset: the detail pane's top band is full-bleed (it is a section of the pane,

@@ -55,7 +55,10 @@ import type { AttentionIndex } from './useAttentionIndex';
 
 const useStyles = makeStyles({
   // No gap: the top band is full-bleed, so spacing belongs to the rows themselves.
-  root: { display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1 },
+  // `minWidth: 0` for the same reason as `minHeight: 0`: this is a flex item, and without
+  // it the pane's width would be dictated by its widest descendant instead of the fixed
+  // share the shell gives it.
+  root: { display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0, flex: 1 },
   head: { display: 'flex', flexDirection: 'column', gap: '2px' },
   crumbRow: { display: 'flex', alignItems: 'center', gap: '6px', marginLeft: '-8px' },
   titleRow: { display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 },
@@ -317,7 +320,8 @@ export function TaskDetail({
    * WAITING FOR YOU "Agent running", spinner and all.
    */
   const run = runPhase(task, subtasks, liveRunTaskIds);
-  const managedByAI = run.phase === 'running' || run.phase === 'starting' || run.phase === 'waiting';
+  const managedByAI =
+    run.phase === 'running' || run.phase === 'starting' || run.phase === 'waiting';
 
   async function addComment(): Promise<void> {
     if (!task || !comment.text.trim()) return;
@@ -340,7 +344,9 @@ export function TaskDetail({
     setBusy(true);
     setError(null);
     try {
-      onStatusChanged?.(await window.api.invoke('task:setStatusNote', task.id, comment.text.trim()));
+      onStatusChanged?.(
+        await window.api.invoke('task:setStatusNote', task.id, comment.text.trim()),
+      );
       setComment(EMPTY_COMPOSER);
       await loadActivity();
     } catch (e) {
