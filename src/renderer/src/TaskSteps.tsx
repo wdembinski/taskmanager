@@ -95,7 +95,16 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
   const [showPlan, setShowPlan] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [open, setOpen] = useState(true);
+  /**
+   * Folded to start with, like Description and Brief.
+   *
+   * The pane is capped at half the screen and everything in it competes with the
+   * conversation underneath — which is the half you actually work in. The card's progress
+   * is already on the CARD (the `3/5` counter and a row per step), so the list here is
+   * detail you open when you want it, not the first thing to push the chat off-screen. The
+   * count rides in the header, so a folded section still says whether opening it is worth it.
+   */
+  const [open, setOpen] = useState(false);
 
   // Switching cards closes whatever was open on the previous one.
   useEffect(() => {
@@ -104,9 +113,8 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
     setDescription('');
     setShowPlan(false);
     setError(null);
-    // Back open on a new card: the fold is a way to get the list out of the way while
-    // reading a long conversation, not a preference to carry between cards.
-    setOpen(true);
+    // Folded again on a new card: the fold is the resting state, not a preference to carry.
+    setOpen(false);
   }, [task.id]);
 
   const progress = subtaskProgress(subtasks);
@@ -134,9 +142,9 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
   return (
     <div className={styles.box}>
       <div className={styles.head}>
-        {/* Folds like Description does. Open by default — this list is the card's progress
-            bar, so hiding it until asked would be a different screen. The count rides along
-            in the header, so a folded section still says whether it is worth opening. */}
+        {/* Folds like Description and Brief do, and starts folded for the same reason — see
+            `open` above. The count rides along in the header, so a folded section still says
+            whether it is worth opening. */}
         <FoldToggle
           open={open}
           onToggle={() => setOpen((v) => !v)}
@@ -264,15 +272,19 @@ export function StepBrief({ task, onChanged }: StepBriefProps): JSX.Element {
   const [draft, setDraft] = useState(task.description ?? '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [open, setOpen] = useState(true);
+  /**
+   * Folded to start with, like Steps and Description. A brief is the whole prompt a step's
+   * session gets, so it can run to many paragraphs — and on a step you have opened to read
+   * the transcript of, all of it sits between you and the conversation.
+   */
+  const [open, setOpen] = useState(false);
 
   useEffect(() => {
     setEditing(false);
     setDraft(task.description ?? '');
     setError(null);
-    // Reopened per step, for the same reason Steps is: this is a way to clear the screen
-    // while reading, not a setting.
-    setOpen(true);
+    // Folded again per step, for the same reason Steps is.
+    setOpen(false);
   }, [task.id, task.description]);
 
   const live = isLive(task);
@@ -297,9 +309,8 @@ export function StepBrief({ task, onChanged }: StepBriefProps): JSX.Element {
   return (
     <div className={styles.box}>
       <div className={styles.head}>
-        {/* A brief is the whole prompt a step's session gets, so it can run to many
-            paragraphs — and on a step you are only reading the transcript of, all of it sits
-            between you and the conversation. Same fold as Steps and Description. */}
+        {/* Same fold as Steps and Description, and folded to start with for the reason
+            spelled out on `open` above. */}
         <FoldToggle
           open={open}
           onToggle={() => setOpen((v) => !v)}
