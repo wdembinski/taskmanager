@@ -41,11 +41,13 @@ import {
 import {
   BeakerFilled,
   BookmarkFilled,
+  BranchRequestClosedFilled,
   BugFilled,
   CheckmarkCircleFilled,
   CheckmarkCircleRegular,
   CircleFilled,
   DismissCircleFilled,
+  MergeFilled,
   NoteFilled,
   PersonFilled,
   SparkleFilled,
@@ -77,11 +79,12 @@ import {
 } from '../theme';
 import { JiraMark } from '../JiraMark';
 import {
-  approvalSummary,
-  mrApprovalState,
   mrAttentionReason,
   mrLabel,
+  mrVerdict,
+  verdictSummary,
   type MergeRequest,
+  type MrVerdict,
 } from '@shared/mergeRequest';
 
 /**
@@ -486,6 +489,50 @@ export function typeIcon(task: Task): JSX.Element {
   return <CircleFilled style={{ color: FEATURE_BLUE }} />;
 }
 
+/**
+ * The glyph at the end of a merge-request row — the MR's **verdict**.
+ *
+ * The first two are outcomes and the rest are review states, which is why they share a slot:
+ * once an MR has landed, "who approved it" is a question about a queue nobody is standing in
+ * any more. A merged MR used to keep wearing its approval tick right up until the next sync
+ * deleted the row out from under it; now it says `merged` and stays.
+ *
+ * FILLED green means a human approved it; the OUTLINE means nothing is blocking the merge but
+ * nobody has actually looked — a project that requires zero approvals. The verdict comes from
+ * `mrVerdict`, the same one the pane's badge reads.
+ */
+export function verdictIcon(verdict: MrVerdict): JSX.Element {
+  switch (verdict) {
+    case 'merged':
+      return <MergeFilled style={{ color: FLUO.violet }} aria-label="Merged" />;
+    case 'closed':
+      return (
+        <BranchRequestClosedFilled
+          style={{ color: tokens.colorNeutralForeground4 }}
+          aria-label="Closed without merging"
+        />
+      );
+    case 'approved':
+      return <CheckmarkCircleFilled style={{ color: FLUO.green }} aria-label="Approved" />;
+    case 'unopposed':
+      return (
+        <CheckmarkCircleRegular
+          style={{ color: FLUO.green }}
+          aria-label="Nothing blocking the merge — but no approval was required, and none was given"
+        />
+      );
+    case 'changes-requested':
+      return <DismissCircleFilled style={{ color: FLUO.red }} aria-label="Changes requested" />;
+    case 'awaiting':
+      return (
+        <PersonFilled
+          style={{ color: tokens.colorNeutralForeground4 }}
+          aria-label="Awaiting approval"
+        />
+      );
+  }
+}
+
 export interface TaskCardProps {
   task: Task;
   /** The card's "Project:" label (the JIRA project name for JIRA tasks). */
@@ -824,7 +871,7 @@ export function TaskCard({
           </div>
           {mergeRequests.map((mr) => {
             const reason = mrAttentionReason(mr);
-            const approval = mrApprovalState(mr);
+            const verdict = mrVerdict(mr);
             return (
               <a
                 key={mr.id}
@@ -836,7 +883,7 @@ export function TaskCard({
                   styles.mrRow,
                   reason !== null && styles.stepLoud,
                 )}
-                title={reason ?? `!${mr.iid} ${mr.title} · ${approvalSummary(mr)}`}
+                title={reason ?? `!${mr.iid} ${mr.title} · ${verdictSummary(mr)}`}
                 onDragStart={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
@@ -896,31 +943,9 @@ export function TaskCard({
                   {`!${mr.iid} ${mrLabel(mr)}`}
                 </Caption1>
                 {mr.draft && <Caption1 className={styles.progress}>draft</Caption1>}
-                {/* FILLED means a human approved it; the OUTLINE means nothing is blocking
-                    the merge but nobody has actually looked — a project that requires zero
-                    approvals. This row used to render `approvalsGiven >= approvalsRequired`,
-                    which is `0 >= 0` there, so every green MR on a rule-less project wore a
-                    solid green tick it had not earned. The verdict now comes from
-                    `mrApprovalState`, the same one the pane's "ready to merge" badge reads. */}
-                <span className={styles.approval} title={approvalSummary(mr)}>
-                  {approval === 'approved' ? (
-                    <CheckmarkCircleFilled style={{ color: FLUO.green }} aria-label="Approved" />
-                  ) : approval === 'unopposed' ? (
-                    <CheckmarkCircleRegular
-                      style={{ color: FLUO.green }}
-                      aria-label="Nothing blocking the merge — but no approval was required, and none was given"
-                    />
-                  ) : approval === 'changes-requested' ? (
-                    <DismissCircleFilled
-                      style={{ color: FLUO.red }}
-                      aria-label="Changes requested"
-                    />
-                  ) : (
-                    <PersonFilled
-                      style={{ color: tokens.colorNeutralForeground4 }}
-                      aria-label="Awaiting approval"
-                    />
-                  )}
+                {/* The row's verdict — see `verdictIcon`. */}
+                <span className={styles.approval} title={verdictSummary(mr)}>
+                  {verdictIcon(verdict)}
                 </span>
               </a>
             );

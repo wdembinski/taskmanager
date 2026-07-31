@@ -175,6 +175,37 @@ export function mrApprovalState(mr: ApprovalFacts): MrApprovalState {
 }
 
 /**
+ * Whether an MR's life is **over** — it landed, or somebody closed it unmerged.
+ *
+ * The board only ever fetches `state=opened`, so a settled MR is one GitLab has stopped
+ * listing. That absence used to delete it, which is why merging an MR made it vanish off
+ * the card that had been tracking it all week. A settled MR is that card's history and it
+ * stays; see `gitlab/gitlabSync.ts` for the retention rule.
+ *
+ * `locked` is deliberately absent: a locked MR is still open, just frozen.
+ */
+export function mrIsSettled(mr: Pick<MergeRequest, 'state'>): boolean {
+  return mr.state === 'merged' || mr.state === 'closed';
+}
+
+/**
+ * The one thing an MR's review slot says — the verdict every surface renders.
+ *
+ * {@link mrApprovalState} answers "what does REVIEW say", which is only the interesting
+ * question while the MR is still open. Once it has landed, "2/2 approved" is a fact about
+ * a decision nobody is waiting on any more, and showing the approval tick there claims the
+ * MR is still asking to be merged. So an outcome outranks a review state: `merged` and
+ * `closed` are terminal and win.
+ */
+export type MrVerdict = MrApprovalState | 'merged' | 'closed';
+
+export function mrVerdict(mr: ApprovalFacts & Pick<MergeRequest, 'state'>): MrVerdict {
+  if (mr.state === 'merged') return 'merged';
+  if (mr.state === 'closed') return 'closed';
+  return mrApprovalState(mr);
+}
+
+/**
  * Whether an MR is asking for the user's attention.
  *
  * Only an OPEN one can: a merged or closed MR is history, however red its last pipeline
@@ -201,7 +232,9 @@ export function mrAttentionReason(mr: MergeRequest): string | null {
   }
   const unseenEvent = mr.lastEventAt !== null && mr.lastEventAt > (mr.lastEventSeenAt ?? 0);
   if (unseenEvent && BAD_PIPELINES.has(mr.pipelineStatus)) {
-    reasons.push(mr.pipelineStatus === 'failed' ? 'the pipeline failed' : 'the pipeline was cancelled');
+    reasons.push(
+      mr.pipelineStatus === 'failed' ? 'the pipeline failed' : 'the pipeline was cancelled',
+    );
   }
   if (unseenEvent && mr.changesRequested) reasons.push('changes were requested');
   if (unseenEvent && mrReadyToMerge(mr)) reasons.push('approved and green — ready to merge');
@@ -217,6 +250,26 @@ export function mrAttentionReason(mr: MergeRequest): string | null {
  */
 export function mrLabel(mr: MergeRequest): string {
   return mr.displayName?.trim() || mr.title;
+}
+
+/**
+ * The verdict in words — the card row's tooltip and the pane's badge, so the glyph and the
+ * sentence beside it can never come from two different readings of the same MR.
+ *
+ * A settled MR says how it ended, not how its review was going: "2/2 approved" on something
+ * that merged last Tuesday describes a queue nobody is in any more.
+ */
+export function verdictSummary(mr: MergeRequest): string {
+  switch (mrVerdict(mr)) {
+    case 'merged':
+      return 'merged';
+    case 'closed':
+      return 'closed without merging';
+    case 'changes-requested':
+      return 'changes requested';
+    default:
+      return approvalSummary(mr);
+  }
 }
 
 /** "2/3", or "approvals unknown" when the instance would not tell us. */

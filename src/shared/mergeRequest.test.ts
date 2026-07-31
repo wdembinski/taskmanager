@@ -3,8 +3,11 @@ import {
   approvalSummary,
   mrApprovalState,
   mrAttentionReason,
+  mrIsSettled,
   mrNeedsAttention,
   mrReadyToMerge,
+  mrVerdict,
+  verdictSummary,
   type MergeRequest,
 } from './mergeRequest';
 
@@ -143,7 +146,9 @@ describe('mrNeedsAttention', () => {
   it('never shouts about an MR that is no longer open', () => {
     for (const state of ['merged', 'closed', 'locked'] as const) {
       expect(
-        mrNeedsAttention(mr({ state, latestNoteAt: 200, pipelineStatus: 'failed', lastEventAt: 200 })),
+        mrNeedsAttention(
+          mr({ state, latestNoteAt: 200, pipelineStatus: 'failed', lastEventAt: 200 }),
+        ),
       ).toBe(false);
     }
   });
@@ -229,5 +234,40 @@ describe('mrApprovalState', () => {
       const subject = mr({ ...green, approvalsRequired: required, approvalsGiven: given });
       expect(mrReadyToMerge(subject)).toBe(mrApprovalState(subject) === 'approved');
     }
+  });
+});
+
+describe('mrVerdict / mrIsSettled / verdictSummary', () => {
+  it('reports how an MR ENDED, in preference to how its review was going', () => {
+    // "2/2 approved" on something that landed last Tuesday describes a queue nobody is
+    // standing in any more — and it was the tick the card kept wearing right up until the
+    // next sync deleted the row out from under it.
+    const approved = { approvalsRequired: 2, approvalsGiven: 2 };
+    expect(mrVerdict(mr({ ...approved, state: 'merged' }))).toBe('merged');
+    expect(mrVerdict(mr({ ...approved, state: 'closed' }))).toBe('closed');
+  });
+
+  it('outranks even an objection once the MR has landed', () => {
+    expect(mrVerdict(mr({ state: 'merged', changesRequested: true }))).toBe('merged');
+  });
+
+  it('falls through to the review state while the MR is open', () => {
+    const open = mr({ approvalsRequired: 2, approvalsGiven: 2 });
+    expect(mrVerdict(open)).toBe(mrApprovalState(open));
+  });
+
+  it('counts merged and closed as settled — and a locked MR as still open', () => {
+    expect(mrIsSettled(mr({ state: 'merged' }))).toBe(true);
+    expect(mrIsSettled(mr({ state: 'closed' }))).toBe(true);
+    expect(mrIsSettled(mr({ state: 'opened' }))).toBe(false);
+    // Locked is frozen, not finished: it still wants a human.
+    expect(mrIsSettled(mr({ state: 'locked' }))).toBe(false);
+  });
+
+  it('says how it ended in words, so the glyph and its tooltip cannot disagree', () => {
+    expect(verdictSummary(mr({ state: 'merged' }))).toBe('merged');
+    expect(verdictSummary(mr({ state: 'closed' }))).toBe('closed without merging');
+    expect(verdictSummary(mr({ changesRequested: true }))).toBe('changes requested');
+    expect(verdictSummary(mr({ approvalsRequired: 2, approvalsGiven: 1 }))).toBe('1/2 approved');
   });
 });

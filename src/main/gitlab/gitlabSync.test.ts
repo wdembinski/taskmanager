@@ -40,7 +40,10 @@ const opts = {
   now: NOW,
 };
 
-const note = (at: string, authorId: number): { id: number; body: string; created_at: string; author: { id: number } } => ({
+const note = (
+  at: string,
+  authorId: number,
+): { id: number; body: string; created_at: string; author: { id: number } } => ({
   id: authorId,
   body: 'hi',
   created_at: at,
@@ -212,11 +215,54 @@ describe('reconcileMergeRequests', () => {
     expect(again.upserts[0].title).toBe('ENG-1: retitled');
   });
 
-  it('deletes an MR GitLab stopped listing — it merged or closed, which is not news', () => {
+  it('deletes an MR that vanished while still open — it is no longer ours to track', () => {
     const stored = reconcileMergeRequests([], [fetched()], opts).upserts;
     const { upserts, deleteIds } = reconcileMergeRequests(stored, [], opts);
     expect(upserts).toEqual([]);
     expect(deleteIds).toEqual([mergeRequestId(9, 1)]);
+  });
+
+  describe('a settled MR is the card’s history, not a row to delete', () => {
+    /** What the IPC layer hands back after reading a dropped-out MR by iid. */
+    const settled = (state: 'merged' | 'closed'): MergeRequest =>
+      reconcileMergeRequests([], [fetched({ state })], opts).upserts[0];
+
+    it('keeps a merged MR on its card once GitLab stops listing it', () => {
+      // The complaint this fixes: merge the MR and the row disappeared off the card at the
+      // very moment it had something worth saying.
+      const { upserts, deleteIds } = reconcileMergeRequests([settled('merged')], [], opts);
+      expect(deleteIds).toEqual([]);
+      expect(upserts).toEqual([]); // nothing changed about it — no needless write
+    });
+
+    it('keeps a closed one too: how it ended is part of the story', () => {
+      const { deleteIds } = reconcileMergeRequests([settled('closed')], [], opts);
+      expect(deleteIds).toEqual([]);
+    });
+
+    it('lets a settled MR go once its ticket has left the board', () => {
+      // What bounds the table: nothing on screen points at it any more.
+      const { deleteIds } = reconcileMergeRequests([settled('merged')], [], {
+        ...opts,
+        knownKeys: [],
+        taskIdByKey: new Map(),
+      });
+      expect(deleteIds).toEqual([mergeRequestId(9, 1)]);
+    });
+
+    it('re-files a retained MR when its ticket lands on a different card', () => {
+      const { upserts, deleteIds } = reconcileMergeRequests([settled('merged')], [], {
+        ...opts,
+        taskIdByKey: new Map([['ENG-1', 'task-2']]),
+      });
+      expect(deleteIds).toEqual([]);
+      expect(upserts[0].taskId).toBe('task-2');
+    });
+
+    it('never shouts: a merged MR cannot raise the card’s ring', () => {
+      const merged = { ...settled('merged'), latestNoteAt: 9_999, lastReadAt: null };
+      expect(mrNeedsAttention(merged)).toBe(false);
+    });
   });
 
   it('handles several MRs on one ticket', () => {

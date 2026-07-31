@@ -69,7 +69,7 @@ import {
   type FetchedMergeRequest,
 } from './gitlab/gitlabSync';
 import { GitLabPoller } from './gitlabPoller';
-import type { MergeRequest } from '@shared/mergeRequest';
+import { mrIsSettled, type MergeRequest } from '@shared/mergeRequest';
 import { hostFor, listWslDistros, readinessFor, statusForTargets } from './exec';
 import { gitPreflight } from './git';
 import { listClaudeSessions } from './claudeSessions';
@@ -1054,6 +1054,28 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       }
     };
     await Promise.all(Array.from({ length: Math.min(4, queue.length) }, worker));
+
+    /**
+     * Read back the open MRs that dropped out of the list, so their ENDING is a fact.
+     *
+     * `listMyMergeRequests` asks for `state=opened`, so an MR that landed simply stops
+     * being returned. Deleting on that absence is what wiped a merged MR off its card the
+     * moment it merged; asking GitLab what actually happened costs one call per MR, once,
+     * because the answer is terminal and the guard below never asks again.
+     *
+     * `stale: false` keeps the pipeline, approvals and notes we already hold — none of them
+     * can move now, and re-reading four endpoints to learn nothing would be waste.
+     */
+    const listedIds = new Set(list.map((mr) => mergeRequestId(mr.project_id, mr.iid)));
+    for (const prior of stored) {
+      if (listedIds.has(prior.id) || mrIsSettled(prior)) continue;
+      const fetched = await client
+        .getMergeRequest(prior.gitlabProjectId, prior.iid)
+        .catch(() => null);
+      // Unreadable or gone: leave it out, and the reconciler deletes it as it always did.
+      if (fetched)
+        detailed.push(await describeMergeRequest(client, fetched, { stale: false, prior }));
+    }
 
     const { knownKeys, taskIdByKey } = boardKeyIndex();
     const { upserts, deleteIds } = reconcileMergeRequests(stored, detailed, {

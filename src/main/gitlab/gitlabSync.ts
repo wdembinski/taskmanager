@@ -14,6 +14,7 @@
  *    does — see `identity.ts`.
  */
 import {
+  mrIsSettled,
   mrReadyToMerge,
   type MergeRequest,
   type MergeRequestState,
@@ -110,12 +111,42 @@ function latestForeignNoteAt(
 }
 
 /**
+ * Which board task a STORED MR belongs to, given the board as it is now.
+ *
+ * Re-matching only sees the fields we store, and the description is not one of them — so a
+ * key discovered from the description on the last real sync is kept rather than forgotten.
+ */
+function matchTaskId(
+  mr: Pick<MergeRequest, 'title' | 'sourceBranch' | 'issueKeys'>,
+  opts: Pick<GitLabSyncOptions, 'knownKeys' | 'taskIdByKey'>,
+): string | null {
+  const found = discoverIssueKeys(
+    { title: mr.title, sourceBranch: mr.sourceBranch },
+    opts.knownKeys,
+  );
+  const keys = found.length ? found : mr.issueKeys.filter((k) => opts.knownKeys.includes(k));
+  const key = pickTaskKey(keys);
+  return key ? (opts.taskIdByKey.get(key) ?? null) : null;
+}
+
+/**
  * Reconcile the fetched MRs against what is stored.
  *
- * MRs that dropped out of the fetch are deleted — the fetch is `state=opened`, so
- * dropping out means merged or closed, and a landed MR is not news. A stored MR whose
- * task has since left the board is NOT deleted: it keeps `taskId: null` and is re-matched
- * every sync, so a JQL change does not throw away its read markers.
+ * The fetch is `state=opened`, so an MR that dropped out of it has either **landed** or
+ * been closed. Those two used to be the same case — deleted — which is why merging an MR
+ * made it disappear off the card that had been carrying it: the one moment you most want
+ * the card to say "this shipped" was the moment the row vanished.
+ *
+ * So a SETTLED MR is retained, as long as it still names a card on the board. It is that
+ * card's history: no ring (see `mrNeedsAttention`), no further network calls (its state is
+ * terminal, so there is nothing left to re-read), and a merged/closed verdict where the
+ * approval tick used to be. Everything else that dropped out is deleted as before —
+ * including a settled MR whose ticket has since left the board, which is what stops the
+ * table growing without bound.
+ *
+ * A stored MR whose task has since left the board but which is still OPEN is not deleted
+ * either: it keeps `taskId: null` and is re-matched every sync, so a JQL change does not
+ * throw away its read markers.
  */
 export function reconcileMergeRequests(
   existing: readonly MergeRequest[],
@@ -146,7 +177,9 @@ export function reconcileMergeRequests(
 
     // An event fires on the TRANSITION, never on a steady state — otherwise "Mark seen"
     // would be undone by the very next poll.
-    const wentRed = BAD_PIPELINES.has(mr.pipelineStatus) && !BAD_PIPELINES.has(prior?.pipelineStatus ?? 'unknown');
+    const wentRed =
+      BAD_PIPELINES.has(mr.pipelineStatus) &&
+      !BAD_PIPELINES.has(prior?.pipelineStatus ?? 'unknown');
     const approvalsDropped = prior !== undefined && mr.approvalsGiven < prior.approvalsGiven;
     const nowRequested = mr.changesRequested && !prior?.changesRequested;
     // Becoming ready to merge is an event too — the good one. Same transition discipline as
@@ -192,11 +225,18 @@ export function reconcileMergeRequests(
     });
   }
 
-  // Re-match anything the fetch didn't return: the MR is still open (we only delete
-  // what GitLab stopped listing), but the board may have gained the card it names.
   const deleteIds: string[] = [];
   for (const mr of existing) {
     if (seen.has(mr.id)) continue;
+    // Settled and still filed under a card: keep it, re-matched against the board as it is
+    // now — a card whose ticket has left takes its merged MRs with it on the next pass.
+    if (mrIsSettled(mr)) {
+      const taskId = matchTaskId(mr, opts);
+      if (taskId !== null) {
+        if (taskId !== mr.taskId) upserts.push({ ...mr, taskId });
+        continue;
+      }
+    }
     deleteIds.push(mr.id);
   }
 
@@ -216,15 +256,7 @@ export function rematchMergeRequests(
 ): MergeRequest[] {
   const changed: MergeRequest[] = [];
   for (const mr of existing) {
-    const issueKeys = discoverIssueKeys(
-      { title: mr.title, sourceBranch: mr.sourceBranch },
-      opts.knownKeys,
-    );
-    // Keep what we discovered from the description on the last real sync: re-matching
-    // only sees the fields we store, so a description-only key must not be forgotten.
-    const keys = issueKeys.length ? issueKeys : mr.issueKeys.filter((k) => opts.knownKeys.includes(k));
-    const key = pickTaskKey(keys);
-    const taskId = key ? (opts.taskIdByKey.get(key) ?? null) : null;
+    const taskId = matchTaskId(mr, opts);
     if (taskId !== mr.taskId) changed.push({ ...mr, taskId });
   }
   return changed;

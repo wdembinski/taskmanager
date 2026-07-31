@@ -23,11 +23,13 @@ import {
 import { RenameRegular } from '@fluentui/react-icons';
 import { UNREAD_ORANGE } from '@shared/accent';
 import {
-  approvalSummary,
+  mrIsSettled,
   mrAttentionReason,
   mrLabel,
   mrNeedsAttention,
   mrReadyToMerge,
+  mrVerdict,
+  verdictSummary,
   type MergeRequest,
   type PipelineStatus,
 } from '@shared/mergeRequest';
@@ -148,6 +150,8 @@ export function MergeRequests({
       {mergeRequests.map((mr) => {
         const pipeline = PIPELINE_BADGE[mr.pipelineStatus];
         const reason = mrAttentionReason(mr);
+        const verdict = mrVerdict(mr);
+        const settled = mrIsSettled(mr);
         return (
           <div
             key={mr.id}
@@ -215,14 +219,17 @@ export function MergeRequests({
                   pipeline.label
                 )}
               </Badge>
-              {/* "approvals unknown" rather than a confident 0/0: /approvals is
-                  tier-gated and 403s on plenty of instances. */}
+              {/* The verdict: how it ENDED once it has, else where its review stands.
+                  Merged wears the same violet as the card row's merge glyph, so the two
+                  surfaces read as one fact. "approvals unknown" rather than a confident
+                  0/0 — /approvals is tier-gated and 403s on plenty of instances. */}
               <Badge
                 appearance="tint"
                 size="small"
-                color={mr.changesRequested ? 'danger' : 'informative'}
+                color={verdict === 'changes-requested' ? 'danger' : 'informative'}
+                style={verdict === 'merged' ? { color: FLUO.violet } : undefined}
               >
-                {mr.changesRequested ? 'changes requested' : approvalSummary(mr)}
+                {verdictSummary(mr)}
               </Badge>
               {/* The one piece of good news worth a badge: nothing is left to do but merge
                   it. Fluo green rather than a Fluent tint so it reads as the row's verdict
@@ -275,14 +282,19 @@ export function MergeRequests({
 
             {reason && <Caption1 style={{ color: UNREAD_ORANGE }}>{reason}</Caption1>}
 
-            <div className={styles.actions}>
-              <Button size="small" appearance="subtle" onClick={() => onMarkRead(mr.id)}>
-                Mark comments read
-              </Button>
-              <Button size="small" appearance="subtle" onClick={() => onMarkEventsSeen(mr.id)}>
-                Acknowledge pipeline
-              </Button>
-            </div>
+            {/* Both actions silence an MR that is shouting, and a settled one cannot shout
+                (see `mrNeedsAttention`) — so on a merged or closed row they are two buttons
+                that do nothing. The row stays; the controls for a live MR do not. */}
+            {!settled && (
+              <div className={styles.actions}>
+                <Button size="small" appearance="subtle" onClick={() => onMarkRead(mr.id)}>
+                  Mark comments read
+                </Button>
+                <Button size="small" appearance="subtle" onClick={() => onMarkEventsSeen(mr.id)}>
+                  Acknowledge pipeline
+                </Button>
+              </div>
+            )}
           </div>
         );
       })}
