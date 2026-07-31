@@ -220,10 +220,37 @@ export function TaskDetail({
   }, [taskId, isJira, onStatusChanged]);
 
   useEffect(() => {
-    setComment(EMPTY_COMPOSER);
     setError(null);
     void loadActivity();
   }, [loadActivity]);
+
+  /**
+   * **Half-written messages survive switching cards.**
+   *
+   * The composer used to be cleared whenever the pane changed task, so glancing at another
+   * card — which is most of what a board is for — threw away whatever you were partway
+   * through typing, with no warning and no way back. A draft belongs to the card it was
+   * written for, so it is parked under that card's id and restored when you return.
+   *
+   * A ref rather than state: nothing renders from the map, and putting it in state would
+   * re-render the whole pane on every keystroke that saves into it.
+   */
+  const drafts = useRef(new Map<string, ComposerValue>());
+  // Mirrors `comment` so the cleanup below can read the LATEST value. The cleanup closes
+  // over the old `taskId` by construction, which is exactly the card the draft belongs to.
+  const commentRef = useRef(comment);
+  commentRef.current = comment;
+  useEffect(() => {
+    setComment((taskId && drafts.current.get(taskId)) || EMPTY_COMPOSER);
+    return () => {
+      if (!taskId) return;
+      const draft = commentRef.current;
+      // Empty drafts are deleted rather than stored: "nothing typed" and "typed and then
+      // cleared" are the same state, and keeping the second would grow the map for ever.
+      if (draft.text.trim() || draft.attachments.length) drafts.current.set(taskId, draft);
+      else drafts.current.delete(taskId);
+    };
+  }, [taskId]);
 
   // Follow this task's live run so its transcript streams in. `session:event` only
   // carries a runId, so track which run belongs to this card: the active-runs snapshot

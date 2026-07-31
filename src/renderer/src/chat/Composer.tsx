@@ -66,7 +66,14 @@ const useStyles = makeStyles({
       backgroundColor: 'transparent',
       border: 'none',
       padding: '2px 4px',
-      maxHeight: '160px',
+      /**
+       * Room for four lines before it starts scrolling, against the two it opened with.
+       * What you type here is usually a brief for an agent — a paragraph, not a chat line —
+       * and at two rows you were writing into a slot that hid its own first sentence. The
+       * ceiling rises with it so the growth still has somewhere to go.
+       */
+      minHeight: '72px',
+      maxHeight: '220px',
     },
     '&::after': { display: 'none' },
     '&::before': { display: 'none' },
