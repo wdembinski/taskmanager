@@ -567,6 +567,22 @@ export function Settings(): JSX.Element {
             </Field>
 
             <Field
+              label="Auto-sync interval (minutes)"
+              hint="How often every connected tracker is refreshed in the background — JIRA, GitLab and anything added later share one timer. 0 = off; the Sync button always works. The status bar's ring counts down to the next one."
+            >
+              <SpinButton
+                min={0}
+                max={120}
+                value={settings.syncIntervalMinutes}
+                onChange={(_e, d) => {
+                  const n = d.value ?? Number(d.displayValue);
+                  if (Number.isFinite(n))
+                    patch({ syncIntervalMinutes: Math.max(0, Math.round(n as number)) });
+                }}
+              />
+            </Field>
+
+            <Field
               label="Priority on a card"
               hint="A board already spends colour on step dots, pipeline dots and the running band. This is the one place that colour is optional — the sort order honours priority either way."
             >
@@ -811,19 +827,6 @@ export function Settings(): JSX.Element {
               />
             </Field>
 
-            <Field
-              label="Poll every (minutes)"
-              hint="0 = off. Faster than the JIRA poll on purpose: a pipeline turns red on a machine's timescale, not a person's."
-            >
-              <SpinButton
-                min={0}
-                max={120}
-                value={gitlab.pollIntervalMinutes}
-                onChange={(_e, d) =>
-                  patchGitLab({ pollIntervalMinutes: Number(d.value ?? d.displayValue ?? 0) })
-                }
-              />
-            </Field>
 
             <Field
               label="Personal access token"
@@ -1121,22 +1124,6 @@ export function Settings(): JSX.Element {
                   const n = d.value ?? Number(d.displayValue);
                   if (Number.isFinite(n))
                     patchJira({ doneRetentionDays: Math.max(0, Math.round(n as number)) });
-                }}
-              />
-            </Field>
-
-            <Field
-              label="Auto-sync interval (minutes)"
-              hint="How often the board fetches new/changed JIRA issues in the background. 0 = off (the Sync button still works)."
-            >
-              <SpinButton
-                min={0}
-                max={120}
-                value={jira.pollIntervalMinutes}
-                onChange={(_e, d) => {
-                  const n = d.value ?? Number(d.displayValue);
-                  if (Number.isFinite(n))
-                    patchJira({ pollIntervalMinutes: Math.max(0, Math.round(n as number)) });
                 }}
               />
             </Field>

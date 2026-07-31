@@ -68,9 +68,8 @@ import {
   rematchMergeRequests,
   type FetchedMergeRequest,
 } from './gitlab/gitlabSync';
-import { GitLabPoller } from './gitlabPoller';
 import { mrIsSettled, type MergeRequest } from '@shared/mergeRequest';
-import type { ServiceSyncState, SyncServiceId } from '@shared/sync';
+import type { ServiceSyncState, SyncServiceId, SyncState } from '@shared/sync';
 import { hostFor, listWslDistros, readinessFor, statusForTargets } from './exec';
 import { gitPreflight } from './git';
 import { listClaudeSessions } from './claudeSessions';
@@ -83,7 +82,7 @@ import { buildAlignPrompt } from './alignPrompt';
 import { PermissionBroker } from './permissionBroker';
 import { writePermissionServer } from './permissionServerSource';
 import { PlanWatcher } from './planWatcher';
-import { JiraPoller } from './jiraPoller';
+import { SyncPoller } from './syncPoller';
 import { validateBranchName } from '@shared/branchName';
 import { Scheduler } from './scheduler';
 import { SessionManager } from './sessionManager';
@@ -138,8 +137,8 @@ export interface Engine {
   store: Store;
   broker: PermissionBroker;
   watcher: PlanWatcher;
-  jiraPoller: JiraPoller;
-  gitlabPoller: GitLabPoller;
+  /** The one background timer that refreshes every integration. */
+  syncPoller: SyncPoller;
   updater: Updater;
   /** Flushes the window geometry — must be disposed BEFORE the store closes. */
   windowTracker: { dispose(): void };
@@ -857,8 +856,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       },
     });
     // Pick up a changed poll interval (or enable/disable) without a restart.
-    jiraPoller.reschedule();
-    gitlabPoller.reschedule();
+    syncPoller.reschedule();
     // The countdown is drawn from the interval, so a changed one has to reach the bar or
     // the ring would keep draining at the old rate until the next sync landed.
     pushSyncState();
@@ -1044,27 +1042,28 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     gitlab: { lastSyncAt: null, syncing: false, error: null },
   };
 
-  const syncStates = (): ServiceSyncState[] => {
-    const { jira, gitlab } = store.getSettings();
-    return [
-      {
-        id: 'jira',
-        label: 'JIRA',
-        enabled: jira.enabled,
-        intervalMs: Math.max(0, Math.round(jira.pollIntervalMinutes ?? 0)) * 60_000,
-        ...syncClock.jira,
-      },
-      {
-        id: 'gitlab',
-        label: 'GitLab',
-        enabled: gitlab.enabled,
-        intervalMs: Math.max(0, Math.round(gitlab.pollIntervalMinutes ?? 0)) * 60_000,
-        ...syncClock.gitlab,
-      },
+  const syncState = (): SyncState => {
+    const settings = store.getSettings();
+    const services: ServiceSyncState[] = [
+      { id: 'jira', label: 'JIRA', enabled: settings.jira.enabled, ...syncClock.jira },
+      { id: 'gitlab', label: 'GitLab', enabled: settings.gitlab.enabled, ...syncClock.gitlab },
     ];
+    // The NEWEST of the services' clocks, so a sweep in which one tracker failed still
+    // counts as having happened for the ones that did not — the ring would otherwise sit
+    // pinned at empty because of a single broken integration.
+    const stamps = services
+      .filter((s) => s.enabled)
+      .map((s) => s.lastSyncAt)
+      .filter((t): t is number => t !== null);
+    return {
+      intervalMs: Math.max(0, Math.round(settings.syncIntervalMinutes ?? 0)) * 60_000,
+      lastSyncAt: stamps.length ? Math.max(...stamps) : null,
+      syncing: Object.values(syncClock).some((c) => c.syncing),
+      services,
+    };
   };
 
-  const pushSyncState = (): void => send('sync:changed', syncStates());
+  const pushSyncState = (): void => send('sync:changed', syncState());
 
   /**
    * Run one sync with the status bar watching: mark it in flight, push, run it, record the
@@ -1093,7 +1092,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     }
   };
 
-  handle('sync:state', async () => syncStates());
+  handle('sync:state', async () => syncState());
 
   /**
    * One GitLab sync: list your open MRs, re-read detail only for the ones that moved,
@@ -1808,21 +1807,28 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('update:install', async () => updater.install());
 
   // Background poll: keep the Personal board fresh on the user's configured cadence
-  // (JIRA setting `pollIntervalMinutes`; 0 = off). Re-armed whenever settings change.
+  // (`syncIntervalMinutes`; 0 = off). Re-armed whenever settings change.
   // Constructed AFTER every handle() call on purpose: anything that can throw while
   // registering would otherwise leave the API half-wired — some channels live, the
   // ones below it missing — which is the same failure mode as a dead engine, only
   // harder to spot.
-  // Wrapped, so a background tick moves the status bar's ring exactly as the button does —
-  // the bar's whole job is answering "how fresh is this", and a poll it could not see would
-  // leave the ring counting down past a sync that had already happened.
-  const jiraPoller = new JiraPoller(store, () => trackSync('jira', syncJira));
-  jiraPoller.reschedule();
-
-  // Its own timer on its own setting: a pipeline turns red on a machine's timescale,
-  // not a human's, so 2 minutes is the default rather than JIRA's 5.
-  const gitlabPoller = new GitLabPoller(store, () => trackSync('gitlab', syncGitLab));
-  gitlabPoller.reschedule();
+  //
+  // Every service goes through `trackSync`, so a background tick moves the status bar's ring
+  // exactly as the button does — the bar's whole job is answering "how fresh is this", and a
+  // poll it could not see would leave the ring counting down past a sync that had happened.
+  const syncPoller = new SyncPoller(store, [
+    {
+      id: 'jira',
+      isEnabled: (s) => s.getSettings().jira.enabled,
+      run: () => trackSync('jira', syncJira),
+    },
+    {
+      id: 'gitlab',
+      isEnabled: (s) => s.getSettings().gitlab.enabled,
+      run: () => trackSync('gitlab', syncGitLab),
+    },
+  ]);
+  syncPoller.reschedule();
 
   // Same reasoning: the updater's first feed request is scheduled here, once every
   // channel is live, so a network stall can never delay handler registration.
@@ -1834,8 +1840,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     store,
     broker,
     watcher,
-    jiraPoller,
-    gitlabPoller,
+    syncPoller,
     updater,
     windowTracker,
   };

@@ -5,19 +5,26 @@ import {
   syncRemaining,
   syncTooltip,
   type ServiceSyncState,
+  type SyncState,
 } from './sync';
 
 const MINUTE = 60_000;
 const NOW = Date.parse('2026-07-31T12:00:00.000Z');
 
-const state = (over: Partial<ServiceSyncState> = {}): ServiceSyncState => ({
+const service = (over: Partial<ServiceSyncState> = {}): ServiceSyncState => ({
   id: 'jira',
   label: 'JIRA',
   enabled: true,
+  lastSyncAt: NOW,
+  error: null,
+  ...over,
+});
+
+const state = (over: Partial<SyncState> = {}): SyncState => ({
   intervalMs: 5 * MINUTE,
   lastSyncAt: NOW,
   syncing: false,
-  error: null,
+  services: [service()],
   ...over,
 });
 
@@ -81,23 +88,52 @@ describe('nextSyncLabel', () => {
 });
 
 describe('syncTooltip', () => {
-  it('reads as one sentence: what, how stale, what next', () => {
-    expect(syncTooltip(state(), NOW + 2 * MINUTE)).toBe('JIRA — synced 2m ago · next in 3m');
+  it('leads with the shared clock, then a line per enabled service', () => {
+    // One interval and one timer, so the countdown is said ONCE at the top — the per-service
+    // lines are only for what the shared line cannot carry.
+    const tip = syncTooltip(
+      state({
+        services: [service(), service({ id: 'gitlab', label: 'GitLab', lastSyncAt: NOW })],
+      }),
+      NOW + 2 * MINUTE,
+    );
+    expect(tip.split('\n')).toEqual([
+      'Synced 2m ago · next in 3m',
+      'JIRA — 2m ago',
+      'GitLab — 2m ago',
+    ]);
   });
 
-  it('says so plainly while a sync is actually running', () => {
-    expect(syncTooltip(state({ syncing: true }), NOW)).toBe('JIRA — syncing now');
+  it('says so plainly while a sweep is running', () => {
+    expect(syncTooltip(state({ syncing: true }), NOW)).toContain('Syncing now');
   });
 
   it('names auto-sync being off rather than leaving the ring unexplained', () => {
     expect(syncTooltip(state({ intervalMs: 0 }), NOW)).toContain('auto-sync off');
   });
 
-  // A service that has quietly stopped working is the case this indicator is most useful
-  // for, so the reason belongs where the staleness is, not only in the log.
-  it('carries the last failure', () => {
-    expect(syncTooltip(state({ error: 'GitLab 401 Unauthorized' }), NOW)).toContain(
-      'last attempt failed: GitLab 401 Unauthorized',
+  // The reason the per-service lines survive a single shared ring: one broken tracker is
+  // otherwise invisible behind the others succeeding, and it is the fact you most need.
+  it('names the service that failed, not just that something did', () => {
+    const tip = syncTooltip(
+      state({
+        services: [
+          service(),
+          service({ id: 'gitlab', label: 'GitLab', error: 'GitLab 401 Unauthorized' }),
+        ],
+      }),
+      NOW,
     );
+    expect(tip).toContain('GitLab — failed: GitLab 401 Unauthorized');
+    expect(tip).toContain('JIRA — just now');
+  });
+
+  it('leaves a switched-off integration out entirely', () => {
+    // A line about something you have turned off is noise pretending to be information.
+    const tip = syncTooltip(
+      state({ services: [service(), service({ id: 'gitlab', label: 'GitLab', enabled: false })] }),
+      NOW,
+    );
+    expect(tip).not.toContain('GitLab');
   });
 });

@@ -61,10 +61,11 @@ export interface JiraSettings {
    */
   doneRetentionDays: number;
   /**
-   * How often (in minutes) the app polls JIRA in the background to fetch new/changed
-   * issues onto the board. 0 = off (the manual "Sync JIRA" button still works).
+   * @deprecated Superseded by {@link AppSettings.syncIntervalMinutes} — every integration
+   * shares one timer now. Read once, on the way past, to migrate a settings blob written
+   * before that; nothing else may consult it.
    */
-  pollIntervalMinutes: number;
+  pollIntervalMinutes?: number;
   /**
    * The user's map from a JIRA workflow status NAME to a board column, matched
    * case-insensitively (`{ "Code Review": "in-review" }`).
@@ -120,7 +121,6 @@ export const DEFAULT_JIRA_SETTINGS: JiraSettings = {
   currentSprintOnly: false,
   showDoneColumn: false,
   doneRetentionDays: 14,
-  pollIntervalMinutes: 5,
 };
 
 /**
@@ -134,18 +134,44 @@ export interface GitLabSettings {
   /** Instance root, e.g. `https://gitlab.com` or `https://gitlab.acme.internal`. */
   baseUrl: string;
   /**
-   * Minutes between background syncs; 0 = off. Faster than JIRA's default because a
-   * pipeline turns red on a timescale of minutes, and a red pipeline you learn about
-   * ten minutes later has already cost you the context you needed to fix it.
+   * @deprecated Superseded by {@link AppSettings.syncIntervalMinutes}. See the note on
+   * `JiraSettings.pollIntervalMinutes`; kept only so an older blob can be migrated.
    */
-  pollIntervalMinutes: number;
+  pollIntervalMinutes?: number;
+}
+
+/**
+ * The one sync interval for a settings blob, migrating a pre-consolidation one.
+ *
+ * Takes the SMALLER of whatever the two integrations were separately set to, so a user who
+ * had GitLab on 2 minutes does not silently drop to JIRA's 5 — nothing gets staler than it
+ * already was, which is the only safe direction for a setting nobody asked to have changed.
+ *
+ * A `0` on one side means "that one was switched off", not "sync never", so it is skipped
+ * rather than winning the minimum; two zeroes do mean off.
+ */
+export function resolveSyncInterval(saved: {
+  syncIntervalMinutes?: number;
+  jira?: { pollIntervalMinutes?: number };
+  gitlab?: { pollIntervalMinutes?: number };
+}): number {
+  if (typeof saved.syncIntervalMinutes === 'number') return Math.max(0, saved.syncIntervalMinutes);
+  const legacy = [saved.jira?.pollIntervalMinutes, saved.gitlab?.pollIntervalMinutes].filter(
+    (n): n is number => typeof n === 'number' && n > 0,
+  );
+  if (legacy.length === 0) {
+    // Both off, or a blob that predates either — but "both explicitly off" must stay off.
+    const anyZero =
+      saved.jira?.pollIntervalMinutes === 0 || saved.gitlab?.pollIntervalMinutes === 0;
+    return anyZero ? 0 : DEFAULT_SETTINGS.syncIntervalMinutes;
+  }
+  return Math.min(...legacy);
 }
 
 /** The out-of-the-box GitLab config: off, pointed at gitlab.com. */
 export const DEFAULT_GITLAB_SETTINGS: GitLabSettings = {
   enabled: false,
   baseUrl: 'https://gitlab.com',
-  pollIntervalMinutes: 2,
 };
 
 /**
@@ -201,6 +227,20 @@ export interface AppSettings {
   defaultPermissionMode: PermissionMode;
   /** Max tasks a single project runs at once (scheduler concurrency; 1 = sequential). */
   concurrency: number;
+  /**
+   * **How often every integration is refreshed, in minutes.** 0 = off; the manual Sync
+   * button always works.
+   *
+   * One interval for all of them, and one timer behind it. JIRA and GitLab used to carry
+   * their own — 5 minutes and 2 — which meant two settings, two timers firing at unrelated
+   * moments, and a status bar that could only answer "how fresh is this" one integration at
+   * a time. There is no version of "the board is up to date" that is true of one tracker and
+   * not the other, so there is no reason for the app to hold two answers.
+   *
+   * Migrated from the pair as the SMALLER of the two, so nothing an existing user relies on
+   * gets staler than it already was.
+   */
+  syncIntervalMinutes: number;
   /**
    * Upper bound on the random jitter (ms) added to a usage limit's reset time
    * before resuming, so many parked apps don't all retry the same instant (Phase 5).
@@ -274,6 +314,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   defaultModel: 'sonnet',
   defaultPermissionMode: 'acceptEdits',
   concurrency: 1,
+  // Two minutes: the faster of the pair this replaced, so no integration polls less often
+  // than it did before the two timers became one. Pipelines are the reason — a red one you
+  // learn about ten minutes late has already cost you the context to fix it.
+  syncIntervalMinutes: 2,
   limitJitterMs: 60_000,
   writeBackPlan: false,
   maxAutoRetries: 1,

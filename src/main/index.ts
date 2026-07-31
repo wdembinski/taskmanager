@@ -157,8 +157,7 @@ void app.whenReady().then(() => {
 app.on('before-quit', () => {
   engine?.windowTracker.dispose(); // last geometry write, before the DB goes away
   engine?.updater.dispose();
-  engine?.jiraPoller.dispose();
-  engine?.gitlabPoller.dispose();
+  engine?.syncPoller.dispose();
   engine?.watcher.dispose();
   engine?.scheduler.dispose();
   engine?.sessions.stopAll();

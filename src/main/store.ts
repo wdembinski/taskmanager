@@ -35,6 +35,7 @@ import {
   DEFAULT_GITLAB_SETTINGS,
   DEFAULT_JIRA_SETTINGS,
   DEFAULT_SETTINGS,
+  resolveSyncInterval,
 } from '@shared/settings';
 import { mergeActivity } from './activityMerge';
 import type { JiraEpicFieldCache } from './jira/epicField';
@@ -760,6 +761,38 @@ export function createStore(dbPath: string): Store {
     db.prepare(`UPDATE projects SET concurrency = ?`).run(
       Math.max(1, Math.round(globalConcurrency)),
     );
+  }
+
+  /**
+   * Fold the two per-integration poll intervals into the one shared `syncIntervalMinutes`.
+   *
+   * Written back once rather than derived on every read, so `getSettings` stays a plain merge
+   * over defaults and the Settings screen — which saves the whole blob — cannot resurrect the
+   * legacy pair by round-tripping them. `resolveSyncInterval` takes the SMALLER of the two,
+   * so nobody's board gets staler than it already was.
+   */
+  {
+    const row = db.prepare(`SELECT value FROM app_state WHERE key = 'settings'`).get() as
+      | { value: string }
+      | undefined;
+    if (row) {
+      try {
+        const saved = JSON.parse(row.value) as Partial<AppSettings>;
+        if (typeof saved.syncIntervalMinutes !== 'number') {
+          const migrated = { ...saved, syncIntervalMinutes: resolveSyncInterval(saved) };
+          delete (migrated.jira as { pollIntervalMinutes?: number } | undefined)
+            ?.pollIntervalMinutes;
+          delete (migrated.gitlab as { pollIntervalMinutes?: number } | undefined)
+            ?.pollIntervalMinutes;
+          db.prepare(
+            `INSERT INTO app_state (key, value) VALUES ('settings', ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+          ).run(JSON.stringify(migrated));
+        }
+      } catch {
+        // Malformed settings row — `getSettings` already falls back to the defaults.
+      }
+    }
   }
 
   const insertProject = db.prepare<[ProjectRow]>(
