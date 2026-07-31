@@ -35,11 +35,14 @@ import {
   type BoardDisplaySettings,
 } from '@shared/settings';
 import type { MergeRequest } from '@shared/mergeRequest';
+import type { TaskLink } from '@shared/taskChain';
 import { AddTaskDialog } from './AddTaskDialog';
 import { PaneLoading } from './PaneLoading';
 import { TaskDetail } from './TaskDetail';
 import { useInitialLoad } from './useInitialLoad';
 import { KanbanColumn } from './board/KanbanColumn';
+import { ChainOverlay } from './board/ChainOverlay';
+import { useCardAnchors } from './board/useCardAnchors';
 import { useAttentionIndex } from './useAttentionIndex';
 import { useActiveRuns } from './useActiveRuns';
 import {
@@ -83,6 +86,13 @@ const useStyles = makeStyles({
     flex: 1,
     minHeight: 0,
     overflowY: 'auto',
+    // The containing block for the chain overlay (`ChainOverlay`), which is one `<svg>`
+    // laid over the whole board. It had none, and this is exactly why one overlay is
+    // possible at all: this is the ONLY scrolling element, so an absolutely-positioned
+    // child of it shares the cards' coordinate space and scrolls with them. It changes
+    // nothing about the columns themselves — an absolutely-positioned child of a grid
+    // container is out of flow and never becomes a track of its own.
+    position: 'relative',
     // Breathing room above the first card. Its 3px project stripe and its 3px attention
     // ring both live ON the card's top edge, and with the sticky header sitting directly
     // on top of the list they had nothing to breathe into.
@@ -135,6 +145,12 @@ export function MyTasks(): JSX.Element {
   // every poll. See the `gitlab:mergeRequests` contract.
   const [mergeRequests, setMergeRequests] = useState<MergeRequest[]>([]);
   /**
+   * The chain's edges, held as their own list for exactly the reason the merge requests
+   * are: a JIRA sync rebuilds every `Task` literal on every poll, so an arrow hung off a
+   * task would be clobbered by the next one. The board derives whatever index it needs.
+   */
+  const [links, setLinks] = useState<TaskLink[]>([]);
+  /**
    * The whole inbox and the live-run set, subscribed ONCE here and passed down.
    *
    * Here rather than in the card because both the ring and the sort order read them, and
@@ -158,16 +174,18 @@ export function MyTasks(): JSX.Element {
   // One seed load for all three channels, so a failure in any of them is reported
   // rather than leaving the board on its spinner.
   const seed = useCallback(async () => {
-    const [board, appSettings, repos, mrs] = await Promise.all([
+    const [board, appSettings, repos, mrs, chain] = await Promise.all([
       window.api.invoke('board:tasks'),
       window.api.invoke('settings:get'),
       window.api.invoke('agentProject:list'),
       window.api.invoke('gitlab:mergeRequests'),
+      window.api.invoke('chain:links'),
     ]);
     setTasks(board);
     setSettings(appSettings);
     setAgentProjects(repos);
     setMergeRequests(mrs);
+    setLinks(chain);
   }, []);
 
   const initial = useInitialLoad(seed);
@@ -202,11 +220,15 @@ export function MyTasks(): JSX.Element {
       );
     });
     const offMrs = window.api.on('gitlab:mergeRequestsChanged', setMergeRequests);
+    // The whole list, replaced — a link can also vanish because its CARD was deleted and
+    // the row cascaded away, which no per-link patch would ever hear about.
+    const offLinks = window.api.on('chain:changed', setLinks);
     return () => {
       offTask();
       offTasks();
       offSettings();
       offMrs();
+      offLinks();
     };
   }, [patchTask]);
 
@@ -247,6 +269,18 @@ export function MyTasks(): JSX.Element {
       map[col] = sortCards(map[col], attention.taskIds);
     return map;
   }, [tasks, mrsByTask, attention.taskIds]);
+
+  /**
+   * Where every card is, for the chain overlay's arrows — plus which card the pointer is
+   * over, which only this hook is in a position to know cheaply (see `useCardAnchors`).
+   *
+   * `cardsByColumn` is the revision it re-measures on: re-sorting a column moves cards
+   * without resizing anything, so no observer would otherwise see it.
+   */
+  const anchors = useCardAnchors(cardsByColumn);
+
+  /** id → task for the whole board, so an arrow can ask its gate about the predecessor. */
+  const tasksById = useMemo(() => new Map((tasks ?? []).map((t) => [t.id, t])), [tasks]);
 
   /**
    * The chain the selected task belongs to: a card's own steps, or — when a step is
@@ -478,7 +512,11 @@ export function MyTasks(): JSX.Element {
           container never unmounts, so it also catches an ESC-cancelled drag and the
           `managedByAI` early-return, both of which leaked the same state.
         */}
-        <div className={styles.columns} onDragEnd={() => setDraggingId(null)}>
+        <div
+          ref={anchors.containerRef}
+          className={styles.columns}
+          onDragEnd={() => setDraggingId(null)}
+        >
           {visibleColumns(showDone).map((col) => (
             <KanbanColumn
               key={col}
@@ -503,6 +541,7 @@ export function MyTasks(): JSX.Element {
               display={display}
               // A card with a live step is the runner's until the chain stops.
               canDrag={(c) => !managedByAI(c.task) && !hasLiveSubtask(c.subtasks)}
+              anchorRef={anchors.anchorRef}
               selectedTaskId={selectedTaskId}
               draggingId={draggingId}
               onSelectTask={setSelectedTaskId}
@@ -516,6 +555,18 @@ export function MyTasks(): JSX.Element {
               }}
             />
           ))}
+          {/* Last, so the arrows paint over the cards — and inside the scroll container,
+              so they travel with them. It takes no pointer events; only the strokes do. */}
+          <ChainOverlay
+            links={links}
+            anchors={anchors.rects}
+            tasksById={tasksById}
+            runningTaskIds={liveRuns}
+            selectedTaskId={selectedTaskId}
+            hoveredTaskId={anchors.hoveredTaskId}
+            width={anchors.bounds.width}
+            height={anchors.bounds.height}
+          />
         </div>
       </div>
 
