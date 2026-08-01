@@ -82,6 +82,17 @@ export function ProjectDialog({
   const [baseBranch, setBaseBranch] = useState('');
   const [writeBack, setWriteBack] = useState(false);
   const [autoRelease, setAutoRelease] = useState(false);
+  /** `null` = follow the app-wide setting, which is what a project that never ruled does. */
+  const [autoIntegrate, setAutoIntegrate] = useState<boolean | null>(null);
+  /**
+   * What the app-wide merge switch says right now.
+   *
+   * Needed for more than the label: setting this project's switch to whatever the app
+   * already says stores `null` rather than the same value again, which is how a project
+   * goes back to following it. Read in BOTH modes — an edited project needs it just as
+   * much as a new one, and the add-mode `settings:get` below only runs for new ones.
+   */
+  const [appAutoIntegrate, setAppAutoIntegrate] = useState(false);
   const [target, setTarget] = useState<ExecTarget>(LOCAL_TARGET);
   const [distros, setDistros] = useState<string[]>([]);
   const [instructions, setInstructions] = useState('');
@@ -93,6 +104,12 @@ export function ProjectDialog({
   useEffect(() => {
     if (!open) return;
     void window.api.invoke('exec:listDistros').then(setDistros);
+  }, [open]);
+
+  // The app-wide merge default, in both modes — see `appAutoIntegrate`.
+  useEffect(() => {
+    if (!open) return;
+    void window.api.invoke('settings:get').then((s) => setAppAutoIntegrate(s.autoIntegrate));
   }, [open]);
 
   // Seed the form whenever the dialog opens (from the project in edit mode, or
@@ -111,6 +128,7 @@ export function ProjectDialog({
       setBaseBranch(project.baseBranch);
       setWriteBack(project.writeBackPlan);
       setAutoRelease(project.autoRelease);
+      setAutoIntegrate(project.autoIntegrate);
       setTarget(project.target);
       setInstructions(project.instructions);
     } else {
@@ -121,6 +139,7 @@ export function ProjectDialog({
       setUseWorktrees(true); // default on; only engages for git repos
       setBaseBranch(''); // follow the checkout, exactly as before this field existed
       setAutoRelease(false); // releasing is opt-in, always
+      setAutoIntegrate(null); // and merging follows the app until this project says otherwise
       void window.api.invoke('settings:get').then((s) => {
         setModel(s.defaultModel);
         setPermMode(s.defaultPermissionMode);
@@ -180,6 +199,7 @@ export function ProjectDialog({
           baseBranch,
           writeBackPlan: writeBack,
           autoRelease,
+          autoIntegrate,
           target,
           instructions,
         });
@@ -194,6 +214,7 @@ export function ProjectDialog({
           baseBranch,
           writeBackPlan: writeBack,
           autoRelease,
+          autoIntegrate,
           target,
           instructions,
         });
@@ -349,6 +370,34 @@ export function ProjectDialog({
                   onChange={setBaseBranch}
                   preflight={preflight}
                 />
+              )}
+
+              {/* Merging is per-repo before it is per-app: the repo you own outright wants
+                  its branches merged the moment they are green, and the one your team ships
+                  from does not. Off the app's default only when this project says so —
+                  choosing what the app already says hands it back to following it. */}
+              {useWorktrees && (
+                <Field
+                  hint={
+                    autoIntegrate === null
+                      ? `Following the app-wide setting (${appAutoIntegrate ? 'merge automatically' : 'you merge from the card'}), so changing that changes this project too. Set it here to decide for this repo alone.`
+                      : autoIntegrate
+                        ? "Every task here merges its own branch into the base as soon as it finishes. Any card can still say otherwise on the board, right up to the moment it's merged."
+                        : 'Every task here leaves its branch alone and offers a Merge button on the card — so you merge work you have looked at. Nothing is discarded either way.'
+                  }
+                >
+                  <Switch
+                    checked={autoIntegrate ?? appAutoIntegrate}
+                    label={
+                      autoIntegrate === null
+                        ? `Merge finished branches automatically (app default: ${appAutoIntegrate ? 'on' : 'off'})`
+                        : 'Merge finished branches automatically'
+                    }
+                    onChange={(_e, d) =>
+                      setAutoIntegrate(d.checked === appAutoIntegrate ? null : d.checked)
+                    }
+                  />
+                </Field>
               )}
 
               {/* Same reason as the base-branch field above: with no isolation there is no

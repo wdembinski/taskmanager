@@ -40,12 +40,7 @@ import {
 import { AddRegular, DismissRegular } from '@fluentui/react-icons';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
-import type {
-  AppSettings,
-  GitLabSettings,
-  JiraSettings,
-  PriorityDisplay,
-} from '@shared/settings';
+import type { AppSettings, GitLabSettings, JiraSettings, PriorityDisplay } from '@shared/settings';
 
 /**
  * The three priority indicators, in the order they are offered. Keyed by the stored value,
@@ -513,7 +508,7 @@ export function Settings(): JSX.Element {
 
             <Field
               label="Merging a finished branch"
-              hint="When off, a finished run leaves its branch alone and the card offers a Merge button — so you merge work you have looked at. Nothing is discarded either way."
+              hint="When off, a finished run leaves its branch alone and the card offers a Merge button — so you merge work you have looked at. Nothing is discarded either way. This is the default: each project can decide for itself in its dialog, and each card on the board, and changing this still moves everything that never disagreed with it."
             >
               <Switch
                 checked={settings.autoIntegrate}
@@ -826,7 +821,6 @@ export function Settings(): JSX.Element {
                 onChange={(_e, d) => patchGitLab({ baseUrl: d.value })}
               />
             </Field>
-
 
             <Field
               label="Personal access token"

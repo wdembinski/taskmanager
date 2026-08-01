@@ -233,6 +233,14 @@ function AgentProjectDialog({
   const [color, setColor] = useState('');
   const [baseBranch, setBaseBranch] = useState('');
   const [autoRelease, setAutoRelease] = useState(false);
+  /** `null` = follow the app-wide setting, which is what a repo that never ruled does. */
+  const [autoIntegrate, setAutoIntegrate] = useState<boolean | null>(null);
+  /**
+   * The app-wide merge switch as it stands. Read in both modes — setting this repo's
+   * switch to what the app already says stores `null`, which is how it goes back to
+   * following, and that comparison needs the app's answer even when editing.
+   */
+  const [appAutoIntegrate, setAppAutoIntegrate] = useState(false);
   const [model, setModel] = useState<ClaudeModel>('sonnet');
   const [permMode, setPermMode] = useState<PermissionMode>('acceptEdits');
   const [target, setTarget] = useState<ExecTarget>(LOCAL_TARGET);
@@ -251,6 +259,8 @@ function AgentProjectDialog({
   useEffect(() => {
     if (!open) return;
     setError(null);
+    // Needed whichever mode this is; the defaults fetch below only runs for a new repo.
+    void window.api.invoke('settings:get').then((s) => setAppAutoIntegrate(s.autoIntegrate));
     if (project) {
       setPath(project.path);
       setName(project.name);
@@ -258,6 +268,7 @@ function AgentProjectDialog({
       setColor(project.color);
       setBaseBranch(project.baseBranch);
       setAutoRelease(project.autoRelease);
+      setAutoIntegrate(project.autoIntegrate);
       setModel(project.defaultModel);
       setPermMode(project.defaultPermissionMode);
       setTarget(project.target);
@@ -268,6 +279,7 @@ function AgentProjectDialog({
       setColor('');
       setBaseBranch(''); // follow the checkout, exactly as before this field existed
       setAutoRelease(false); // releasing is opt-in, always
+      setAutoIntegrate(null); // and merging follows the app until this repo says otherwise
       void window.api.invoke('settings:get').then((s) => {
         setModel(s.defaultModel);
         setPermMode(s.defaultPermissionMode);
@@ -320,6 +332,7 @@ function AgentProjectDialog({
           target,
           baseBranch,
           autoRelease,
+          autoIntegrate,
         });
       } else {
         await window.api.invoke('agentProject:add', {
@@ -332,6 +345,7 @@ function AgentProjectDialog({
           target,
           baseBranch,
           autoRelease,
+          autoIntegrate,
         });
       }
       onSaved();
@@ -456,6 +470,31 @@ function AgentProjectDialog({
           </Field>
 
           <BaseBranchField value={baseBranch} onChange={setBaseBranch} preflight={preflight} />
+
+          {/* Whether a finished branch merges itself, decided per repo. Same three-state
+              shape as the release switch below, one level up: this repo's answer, or the
+              app's when it has none — and choosing the app's answer hands it back. */}
+          <Field
+            hint={
+              autoIntegrate === null
+                ? `Following the app-wide setting (${appAutoIntegrate ? 'merge automatically' : 'you merge from the card'}), so changing that changes this repo too. Set it here to decide for this repo alone.`
+                : autoIntegrate
+                  ? "Every card assigned here merges its branch into the base as soon as its work finishes. A card can still say otherwise on the board, right up to the moment it's merged."
+                  : 'Every card assigned here leaves its branch alone and offers a Merge button — so you merge work you have looked at. Nothing is discarded either way.'
+            }
+          >
+            <Switch
+              checked={autoIntegrate ?? appAutoIntegrate}
+              label={
+                autoIntegrate === null
+                  ? `Merge finished branches automatically (app default: ${appAutoIntegrate ? 'on' : 'off'})`
+                  : 'Merge finished branches automatically'
+              }
+              onChange={(_e, d) =>
+                setAutoIntegrate(d.checked === appAutoIntegrate ? null : d.checked)
+              }
+            />
+          </Field>
 
           {/* The project's PREFERENCE, not its decision: every card can still say
               otherwise in its Details Panel, and one that never does follows this. */}

@@ -200,9 +200,10 @@ the task at all.
 The prompt is a single-ticket brief: key, URL and title, the ticket description,
 its JIRA comments oldest→newest, your own notes, and your extra instructions. No
 plan, no queue, no phases. It may read the repo's docs and memory files, and it
-commits on its own branch in an isolated **git worktree**, which is auto-merged
-back into the base branch when the run finishes cleanly (a merge conflict comes
-back to you as an Attention item).
+commits on its own branch in an isolated **git worktree**. When the run finishes
+cleanly that branch is either merged back into the base branch or left for you to
+merge from the card — see [Merging the branch](#merging-the-branch) below. Either
+way a merge conflict comes back to you as an Attention item.
 
 The base branch is the project's **Base branch** setting — pick the one your repo
 actually integrates on (`main`, `master`, `development`, …). Left unset it follows
@@ -215,6 +216,30 @@ the branch pointer, so it never has to refuse in order to protect your files.
 > never transitions a ticket or posts a comment. You can write to JIRA yourself —
 > drag a card between columns, post a comment, create a card as a real issue — but
 > the agent never does it on your behalf.
+
+### Merging the branch
+
+Whether a finished branch merges itself is asked of the **card**, and answered by the
+first of these that has an opinion:
+
+1. **the card**, on the board — the *Merge when finished* switch in its Details Panel;
+2. **the project**, in its dialog — *Merge finished branches automatically*;
+3. **the app**, in Settings → General — *Merging a finished branch*, off out of the box.
+
+A level you never touch keeps following the one above it, which is the point: turn the
+app's switch over and every project that never disagreed with it moves too, and set a
+project's and every one of its cards moves with it. Setting a switch back to whatever it
+was inheriting hands it back to inheriting — agreeing with a default is not disagreeing
+with it, and its label says which default it is following.
+
+Merging automatically merges at the moment the work has been reviewed *least*, which is
+why the app-wide default is off: a finished branch then waits, its worktree is kept, and
+the card offers a **Merge branch** button. Nothing is discarded on either path. Steps of
+an approved plan are never asked — they share the card's branch and the whole plan merges
+once, so the card's answer governs.
+
+The switch is read when the run **finishes**, not when it starts, so you can change your
+mind while the agent is still working.
 
 ### Releasing after the merge
 

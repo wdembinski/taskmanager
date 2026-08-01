@@ -34,6 +34,7 @@ import { AgentGlyph } from './AgentGlyph';
 import type { AttentionAnswer, AttentionItem } from '@shared/attention';
 import { parkedStep } from '@shared/board';
 import type { Project, Task } from '@shared/model';
+import { autoIntegrateOn, projectAutoIntegrate } from '@shared/integrate';
 import { autoReleaseOn, RELEASE_DOC } from '@shared/release';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import { AssignAgentDialog } from './AssignAgentDialog';
@@ -224,6 +225,21 @@ export function TaskAgentPanel({
    */
   const releasing = autoReleaseOn(task, assigned);
   /**
+   * The app-wide merge default, which this card resolves through its project.
+   *
+   * Held here rather than passed down: the pane is reached from two different boards and
+   * neither carries settings, and re-read on `settings:changed` so flipping the global
+   * switch in Settings is reflected on an open card instead of on the next mount.
+   */
+  const [appAutoIntegrate, setAppAutoIntegrate] = useState(false);
+  /**
+   * Whether this card's branch merges itself when the work finishes: the card's own
+   * answer when it has one, else the project's, else the app's (`@shared/integrate`).
+   */
+  const autoMerging = autoIntegrateOn(task, assigned, { autoIntegrate: appAutoIntegrate });
+  /** What this card would do if it stopped overriding — the value that means "inherit". */
+  const inheritedIntegrate = projectAutoIntegrate(assigned, { autoIntegrate: appAutoIntegrate });
+  /**
    * Whether the repo actually has release instructions. `null` while we are asking —
    * which is a real third state, not a false: rendering "no RELEASE.md" for the half
    * second before the answer arrives would tell every card a lie it then took back.
@@ -242,6 +258,25 @@ export function TaskAgentPanel({
   useEffect(() => {
     if (merging) setMergePressed(false);
   }, [merging]);
+
+  // The app-wide merge default, kept live. A card that has not ruled and a project that
+  // has not either both read straight through to this, so a switch flipped in Settings has
+  // to reach an open card — otherwise the pane would keep showing yesterday's answer to a
+  // question the engine will ask again at merge time.
+  useEffect(() => {
+    let alive = true;
+    void window.api
+      .invoke('settings:get')
+      .then((s) => alive && setAppAutoIntegrate(s.autoIntegrate))
+      .catch(() => undefined);
+    const off = window.api.on('settings:changed', (next) =>
+      setAppAutoIntegrate(next.autoIntegrate),
+    );
+    return () => {
+      alive = false;
+      off();
+    };
+  }, []);
 
   // Asked per project, and re-asked whenever the pane shows a different one: the file
   // appears the moment someone writes it, and this is the cheapest place to notice.
@@ -322,6 +357,29 @@ export function TaskAgentPanel({
       onTaskChanged(
         await window.api.invoke('task:setAgentOptions', taskId, {
           autoRelease: on === Boolean(assigned?.autoRelease) ? null : on,
+        }),
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /**
+   * Turn auto-merge on or off for THIS card.
+   *
+   * Same rule as the release switch above, one level deeper: choosing what the card would
+   * have done anyway stores `null`, which puts it back to inheriting from the project (and
+   * through it from the app). Agreeing with a default is not disagreeing with it.
+   */
+  async function setAutoIntegrate(on: boolean): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      onTaskChanged(
+        await window.api.invoke('task:setAgentOptions', taskId, {
+          autoIntegrate: on === inheritedIntegrate ? null : on,
         }),
       );
     } catch (e) {
@@ -474,6 +532,35 @@ export function TaskAgentPanel({
           }
           {assigned ? ` · ${assigned.path}` : ''}
         </Caption1>
+      )}
+
+      {/* Whether there IS a merge to press, which is why it sits immediately above the
+          release switch — the two read as one sentence: merge this, then release it.
+
+          Offered on the same terms as the Merge button, and answerable right up to the
+          moment the run finishes: the engine reads it when the work settles, not when it
+          started, so turning it on mid-run still merges the branch being written. */}
+      {canIntegrate && !isStep && (
+        <Field
+          hint={
+            autoMerging
+              ? `The branch is merged into ${assigned?.baseBranch || 'the base branch'} as soon as this card's work finishes — no Merge button, no review pause.`
+              : `The branch is left for you to merge with the button above. ${
+                  inheritedIntegrate
+                    ? `${assigned?.name ?? 'This repo'} merges automatically by default — this card is the exception.`
+                    : ''
+                }`
+          }
+        >
+          <Switch
+            checked={autoMerging}
+            // Not while one is running: the answer has already been taken for this branch,
+            // and a switch that appeared to change it would be describing the past.
+            disabled={busy || mergeBusy}
+            label="Merge when finished"
+            onChange={(_e, d) => void setAutoIntegrate(d.checked)}
+          />
+        </Field>
       )}
 
       {/* What happens AFTER the merge, so it sits with the Merge button rather than in the
