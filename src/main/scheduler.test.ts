@@ -2409,6 +2409,166 @@ describe('Scheduler — auto-release after a merge', () => {
   });
 });
 
+/**
+ * "I clicked Merge branch and nothing appeared."
+ *
+ * A merge is the one long job in the app that changes NOTHING while it runs: no session,
+ * no status, no streamed line, and `task:integrate` resolves the moment the work is handed
+ * to git rather than when it lands. So the engine has to say it is happening — that is the
+ * whole of this set, and these tests pin the two ends nobody notices until they break: it
+ * is raised before the git call, and it is given back on EVERY way out, refusals included.
+ */
+describe('Scheduler.integrateNow — saying that a merge is under way', () => {
+  function setup() {
+    const project = {
+      id: 'agent-1',
+      name: 'Checkout service',
+      path: mkdtempSync(join(tmpdir(), 'orch-merging-')),
+      planPath: '',
+      kind: 'agent',
+      concurrency: 1,
+      useWorktrees: true,
+      defaultModel: 'sonnet',
+      defaultPermissionMode: 'acceptEdits',
+      instructions: '',
+    } as unknown as Project;
+    const card = {
+      id: 't1',
+      projectId: 'personal',
+      phase: '',
+      title: 'Fix the export dialog',
+      status: 'in-progress',
+      sessionId: 'sess-1',
+      order: 0,
+      source: 'jira',
+      dependsOn: [],
+      isContract: false,
+      isScaffold: false,
+      agentProjectId: 'agent-1',
+      parentTaskId: null,
+    } as unknown as Task;
+    const store = {
+      getTask: (id: string) => (id === 't1' ? card : undefined),
+      getProject: (id: string) => (id === 'agent-1' ? project : undefined),
+      listProjects: () => [project],
+      getTasks: () => [card],
+      getSubtasks: () => [],
+      getTaskActivity: () => [],
+      addComment: vi.fn(),
+      listTaskLinks: () => [],
+      updateTask: (id: string, patch: Partial<Task>) => {
+        if (id === 't1') Object.assign(card, patch);
+        return card;
+      },
+      appendTaskEvent: vi.fn(),
+      appendTokenUsage: vi.fn(),
+      getSettings: () => ({ maxAutoRetries: 0, limitJitterMs: 0, concurrency: 1 }),
+      ...INERT_ATTENTION_STORE,
+    } as unknown as Store;
+    // The merge is held open so the test can look at the world MID-MERGE, which is the
+    // only moment any of this is about.
+    let land = (): void => undefined;
+    const integrate = vi.fn(
+      () => new Promise((resolve) => (land = () => resolve({ status: 'merged' }))),
+    );
+    const worktrees = { prepare: vi.fn(), integrate, cleanup: vi.fn() };
+    const sessions = { start: vi.fn(), stop: vi.fn(), send: vi.fn() } as unknown as SessionManager;
+    const scheduler = new Scheduler(
+      store,
+      sessions,
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      worktrees as unknown as WorktreeManager,
+    );
+    const pushes: string[][] = [];
+    scheduler.setIntegratingNotifier((ids) => pushes.push(ids));
+    // The offer the UI's Merge button consumes, as a finished run would have left it.
+    (scheduler as unknown as { readyToIntegrate: Map<string, unknown> }).readyToIntegrate.set(
+      't1',
+      {
+        projectId: 'agent-1',
+        taskId: 't1',
+        runId: 'r1',
+        branch: 'feat/export',
+        base: 'development',
+        worktree: 'C:/wt/t1',
+      },
+    );
+    return { scheduler, card, worktrees, pushes, land: () => land(), store };
+  }
+
+  /** Let the fired-and-forgotten `integrateWorktree` chain settle. */
+  const settle = async (): Promise<void> => {
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+  };
+
+  it('says the card is merging before git is called, and stops once it lands', async () => {
+    const { scheduler, worktrees, pushes, land } = setup();
+    expect(await scheduler.integrateNow('t1')).toBeNull();
+    await settle();
+
+    expect(worktrees.integrate).toHaveBeenCalledTimes(1);
+    expect(scheduler.integratingTaskIds()).toEqual(['t1']);
+    expect(pushes[0]).toEqual(['t1']);
+
+    land();
+    await settle();
+    expect(scheduler.integratingTaskIds()).toEqual([]);
+    expect(pushes.at(-1)).toEqual([]);
+  });
+
+  it('files the attempt on the timeline, not just its outcome', async () => {
+    const { scheduler, store } = setup();
+    await scheduler.integrateNow('t1');
+    await settle();
+    const note = (store.appendTaskEvent as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect((note?.[3] as { text: string }).text).toContain('Merging branch "feat/export"');
+  });
+
+  it('gives the card back when it refuses — a refusal must not spin forever', async () => {
+    const { scheduler, card } = setup();
+    card.status = 'running';
+    expect(await scheduler.integrateNow('t1')).toMatch(/still working/);
+    expect(scheduler.integratingTaskIds()).toEqual([]);
+  });
+
+  it('gives the card back when the project it merges into is gone', async () => {
+    const { scheduler, card } = setup();
+    card.agentProjectId = 'deleted';
+    (scheduler as unknown as { readyToIntegrate: Map<string, unknown> }).readyToIntegrate.clear();
+    expect(await scheduler.integrateNow('t1')).toMatch(/has been removed/);
+    expect(scheduler.integratingTaskIds()).toEqual([]);
+  });
+
+  it('ignores a second press while the first merge is still running', async () => {
+    const { scheduler, worktrees } = setup();
+    await scheduler.integrateNow('t1');
+    await settle();
+    expect(await scheduler.integrateNow('t1')).toBeNull();
+    await settle();
+    // One rebase in that worktree, not two.
+    expect(worktrees.integrate).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives the card back — and parks the failure — when git throws', async () => {
+    const { scheduler, worktrees, store } = setup();
+    worktrees.integrate.mockImplementation(() => Promise.reject(new Error('git exploded')));
+    await scheduler.integrateNow('t1');
+    await settle();
+    expect(scheduler.integratingTaskIds()).toEqual([]);
+    // Nobody awaits the merge, so a throw used to be an unhandled rejection and the card
+    // just stopped merging. It has to land somewhere a human will read it.
+    const notes = (store.appendTaskEvent as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c) => (c[3] as { text: string }).text,
+    );
+    expect(notes.some((n) => n.includes('git exploded'))).toBe(true);
+  });
+});
+
 describe('releaseMode', () => {
   const project = (defaultPermissionMode: string): { defaultPermissionMode: PermissionMode } => ({
     defaultPermissionMode: defaultPermissionMode as PermissionMode,

@@ -785,6 +785,20 @@ export class Scheduler {
     }
   >();
   /**
+   * Tasks whose branch is being merged **right now**, by task id.
+   *
+   * The one long-running job that leaves no trace while it runs: rebasing a branch onto a
+   * moving base and fast-forwarding it can take a minute, and until it settles there is no
+   * session, no status change and no transcript line — so the UI had nothing at all to draw
+   * from, and Merge looked like a button that did nothing. Every path into the git work
+   * marks the task here and clears it in a `finally`, and each change is pushed whole to
+   * the renderer (see {@link Scheduler.setIntegratingNotifier}).
+   *
+   * In memory, like `readyToIntegrate`: a merge cannot outlive the process that runs it, so
+   * a restart correctly forgets it rather than leaving a card spinning forever.
+   */
+  private readonly integrating = new Set<string>();
+  /**
    * Non-task sessions started for a project — currently the AI "Align plan" run,
    * which is launched outside the task queue. Tracked as runId → projectId so
    * `stop(projectId)` can terminate it too; without this an Align agent keeps
@@ -822,6 +836,11 @@ export class Scheduler {
    * owns the renderer channel; null in tests.
    */
   private tasksChanged: ((projectId: string) => void) | null = null;
+  /**
+   * Tells the UI which branches are mid-merge. Injected by the IPC layer like
+   * {@link Scheduler.tasksChanged}; null in tests.
+   */
+  private integratingChanged: ((taskIds: string[]) => void) | null = null;
   /**
    * Fetches the linked ticket's comments for a delegated card's prompt. Injected by the
    * IPC layer (which owns the JIRA client) so the scheduler stays tracker-agnostic and
@@ -926,6 +945,33 @@ export class Scheduler {
    */
   setTasksChangedNotifier(notify: (projectId: string) => void): void {
     this.tasksChanged = notify;
+  }
+
+  /** Wire the "these branches are mid-merge" notifier (see {@link Scheduler.integrating}). */
+  setIntegratingNotifier(notify: (taskIds: string[]) => void): void {
+    this.integratingChanged = notify;
+  }
+
+  /** The tasks whose branch is being merged right now — seeds the UI on mount. */
+  integratingTaskIds(): string[] {
+    return [...this.integrating];
+  }
+
+  /**
+   * Mark a task's branch as being merged, and say so. Idempotent: the manual path marks it
+   * before reading the branch off disk and the merge itself marks it again, so that the
+   * seconds spent in `prepare` are not a gap in which the button looks dead again.
+   */
+  private beginIntegration(taskId: string): void {
+    if (this.integrating.has(taskId)) return;
+    this.integrating.add(taskId);
+    this.integratingChanged?.(this.integratingTaskIds());
+  }
+
+  /** The merge settled (merged, conflicted, or refused) — stop saying it is under way. */
+  private endIntegration(taskId: string): void {
+    if (!this.integrating.delete(taskId)) return;
+    this.integratingChanged?.(this.integratingTaskIds());
   }
 
   /** Start (or resume) a project's queue. */
@@ -2866,15 +2912,42 @@ export class Scheduler {
   ): Promise<void> {
     const task = this.store.getTask(ctx.taskId);
     const message = `orchestrator: ${task?.title ?? ctx.taskId}`;
-    const result = await this.worktrees!.integrate(
-      project,
-      ctx.branch,
-      ctx.base,
-      ctx.worktree,
-      message,
+    // Both halves of "say what is happening": the set drives the live spinner, and the note
+    // is what the timeline still shows tomorrow — a merge that took a minute and then failed
+    // should not read as though it had never been attempted.
+    this.beginIntegration(ctx.taskId);
+    this.noteRun(
+      project.id,
+      ctx.taskId,
+      ctx.runId,
+      `Merging branch "${ctx.branch}" into ${ctx.base}…`,
     );
-    if (this.disposed) return;
-    this.applyIntegrationResult(project, ctx, result);
+    try {
+      const result = await this.worktrees!.integrate(
+        project,
+        ctx.branch,
+        ctx.base,
+        ctx.worktree,
+        message,
+      );
+      if (this.disposed) return;
+      this.applyIntegrationResult(project, ctx, result);
+    } catch (err) {
+      // This promise is deliberately not awaited by its callers, so a throw out of git had
+      // nowhere to go but an unhandled rejection — the card would simply stop merging and
+      // never say why. It lands exactly where a reported `error` does: parked, worktree
+      // kept, reason on the card.
+      if (this.disposed) return;
+      this.applyIntegrationResult(project, ctx, {
+        status: 'error',
+        message: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      // In a `finally` so a throw from git cannot leave a card merging forever. After
+      // `applyIntegrationResult`, so the outcome is already on the card when the spinner
+      // stops rather than a frame after it.
+      this.endIntegration(ctx.taskId);
+    }
   }
 
   /** Apply the outcome of an integrate/finish-after-conflict attempt (shared path). */
@@ -2986,7 +3059,33 @@ export class Scheduler {
     const task = this.store.getTask(taskId);
     if (!task) return 'That task no longer exists.';
     if (task.status === 'running') return 'The agent is still working — stop it first.';
+    // Already merging: pressing Merge twice must not start a second rebase in the same
+    // worktree. The UI disables the button while this is true, but the guard belongs here —
+    // the set is the engine's fact, not the renderer's.
+    if (this.integrating.has(taskId)) return null;
 
+    // From here on the answer takes real time — `prepare` below shells out to git — and
+    // every path out of it either starts the merge or explains itself, so the card can say
+    // it is working from the moment the human pressed the button.
+    this.beginIntegration(taskId);
+    try {
+      return await this.startIntegration(taskId, task);
+    } catch (err) {
+      this.endIntegration(taskId);
+      throw err;
+    }
+  }
+
+  /**
+   * The body of {@link Scheduler.integrateNow}, split out so every early return it makes is
+   * covered by one `try` — a refusal must give the card back, and forgetting one of them
+   * would leave it spinning on a merge that never started.
+   */
+  private async startIntegration(taskId: string, task: Task): Promise<string | null> {
+    const refuse = (why: string): string => {
+      this.endIntegration(taskId);
+      return why;
+    };
     let ctx = this.readyToIntegrate.get(taskId);
     if (!ctx) {
       // The offer is gone but the branch is not: `readyToIntegrate` lives in memory and a
@@ -2994,16 +3093,16 @@ export class Scheduler {
       // is how those facts are read — it reuses the existing worktree and reports the
       // branch it is ACTUALLY on, which is the same call the launcher makes.
       const project = this.store.getProject(task.agentProjectId ?? '');
-      if (!project) return 'The agent project for this card has been removed.';
+      if (!project) return refuse('The agent project for this card has been removed.');
       const owner = task.parentTaskId ?? task.id;
-      const prep = await this.worktrees.prepare(
+      const prep = await this.worktrees!.prepare(
         project,
         task,
         owner,
         task.agentBranch ?? undefined,
       );
       if (prep.mode !== 'worktree' || !prep.branch || !prep.base) {
-        return 'This card did not run in a worktree, so there is nothing to merge.';
+        return refuse('This card did not run in a worktree, so there is nothing to merge.');
       }
       ctx = {
         projectId: project.id,
@@ -3015,7 +3114,7 @@ export class Scheduler {
       };
     }
     const project = this.store.getProject(ctx.projectId);
-    if (!project) return 'The agent project for this card has been removed.';
+    if (!project) return refuse('The agent project for this card has been removed.');
 
     this.readyToIntegrate.delete(taskId);
     void this.integrateWorktree(project, {
@@ -3974,14 +4073,29 @@ export class Scheduler {
       base: pending.base,
       worktree: pending.worktree,
     };
-    const result = await this.worktrees!.finishAfterConflict(
-      project,
-      pending.branch,
-      pending.base,
-      pending.worktree,
-    );
-    if (this.disposed) return;
-    this.applyIntegrationResult(project, ctx, result);
+    // The same merge, resumed — so it says the same thing while it runs. Answering
+    // "Resolved — finish merge" otherwise dismissed the inbox item and left the card
+    // looking idle for however long the continued rebase took.
+    this.beginIntegration(ctx.taskId);
+    try {
+      const result = await this.worktrees!.finishAfterConflict(
+        project,
+        pending.branch,
+        pending.base,
+        pending.worktree,
+      );
+      if (this.disposed) return;
+      this.applyIntegrationResult(project, ctx, result);
+    } catch (err) {
+      // Same reasoning as `integrateWorktree`: nobody awaits this, so a throw would be lost.
+      if (this.disposed) return;
+      this.applyIntegrationResult(project, ctx, {
+        status: 'error',
+        message: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      this.endIntegration(ctx.taskId);
+    }
   }
 
   private maybeWriteBackPlan(taskId: string): void {

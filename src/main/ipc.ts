@@ -279,6 +279,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) }),
   );
 
+  // A merge changes nothing about the task while it runs, so it needs a channel of its own
+  // to say it is happening at all — otherwise pressing Merge looks like pressing nothing.
+  scheduler.setIntegratingNotifier((taskIds) => send('task:integrating', taskIds));
+
   // Phase 6: heal tasks the previous run left mid-flight (running/waiting-input →
   // pending, keeping their session id so a re-run resumes them). Runs before the
   // window paints; the UI re-queries project:list on mount and sees the fix.
@@ -527,6 +531,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('scheduler:stop', async (projectId) => scheduler.stop(projectId));
   handle('scheduler:activeRuns', async () => scheduler.activeRuns());
   handle('scheduler:states', async () => scheduler.schedulerStates());
+  handle('scheduler:integrating', async () => scheduler.integratingTaskIds());
   handle('task:run', async (taskId) => {
     const started = scheduler.runTask(taskId);
     // `runTask` returns null for every "not now" as well as "not found", so say both:
