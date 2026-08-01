@@ -771,6 +771,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       // Read at merge time, not at run time, so flipping it while the agent works still
       // decides what happens when that work lands.
       ...(options.autoRelease !== undefined ? { autoRelease: options.autoRelease } : {}),
+      // Read the moment the run FINISHES, likewise, so changing your mind while the agent
+      // works still decides what happens to the branch it is writing.
+      ...(options.autoIntegrate !== undefined ? { autoIntegrate: options.autoIntegrate } : {}),
     });
     if (!task) throw new Error('Task not found.');
     send('task:changed', { task, runId: null });

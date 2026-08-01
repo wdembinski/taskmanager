@@ -88,6 +88,7 @@ import type { PermissionRequest, PermissionDecisionResult } from './permissionBr
 import { EXIT_PLAN_MODE_TOOL, evaluateToolUse } from './permissionPolicy';
 import { tickPlanCheckbox } from './planParser';
 import { buildReleasePrompt } from './releasePrompt';
+import { autoIntegrateOn } from '@shared/integrate';
 import { autoReleaseOn, RELEASE_DOC } from '@shared/release';
 import {
   extractPlanMarkdown,
@@ -766,8 +767,9 @@ export class Scheduler {
   >();
   /**
    * Branches that are finished and waiting for a human to merge them (Phase 17), keyed by
-   * task id. Populated when a worktree run settles with `autoIntegrate` off, and consumed
-   * by {@link Scheduler.integrateNow}.
+   * task id. Populated when a worktree run settles and auto-merge is off FOR THAT CARD
+   * (`@shared/integrate` — the card's answer, else its project's, else the app's), and
+   * consumed by {@link Scheduler.integrateNow}.
    *
    * In memory rather than persisted: the durable facts are the branch and the worktree,
    * both of which survive on disk. A restart forgets the offer, not the work — and
@@ -2917,7 +2919,16 @@ export class Scheduler {
         // Phase 17: merging is the human's call unless they asked for it to be automatic.
         // Auto-merge happens at the moment the work has been reviewed least, and when it
         // failed it parked an ask whose only real option retried the same failure.
-        if (this.store.getSettings().autoIntegrate) {
+        //
+        // Asked of the CARD, not of the app: a repo you own outright wants its branches
+        // merged the moment they are green, and the one your team ships from does not, so
+        // the card answers first, then its project, then the app-wide default
+        // (`@shared/integrate`). A step is never asked — the branch belongs to the parent
+        // card and the whole plan merges once, so the parent's answer governs the merge of
+        // work its steps only contributed to.
+        const settling = this.store.getTask(run.taskId);
+        const owner = settling?.parentTaskId ? this.store.getTask(settling.parentTaskId) : settling;
+        if (autoIntegrateOn(owner, project, this.store.getSettings())) {
           void this.integrateWorktree(project, ctx);
           return;
         }

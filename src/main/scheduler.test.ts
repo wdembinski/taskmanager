@@ -1106,7 +1106,14 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
    */
   function setup(
     steps: Array<Partial<Task>> = [{ id: 's1' }, { id: 's2' }],
-    opts?: { autoIntegrate?: boolean; savedLimit?: LimitState | null },
+    opts?: {
+      autoIntegrate?: boolean;
+      /** The repo's own auto-merge preference; `undefined` = it has not ruled. */
+      projectAutoIntegrate?: boolean | null;
+      /** The CARD's override; `undefined` = it has not ruled either. */
+      cardAutoIntegrate?: boolean | null;
+      savedLimit?: LimitState | null;
+    },
   ) {
     const agentProject = {
       id: 'agent-1',
@@ -1118,6 +1125,7 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       useWorktrees: true,
       defaultModel: 'sonnet',
       defaultPermissionMode: 'acceptEdits',
+      autoIntegrate: opts?.projectAutoIntegrate ?? null,
     } as unknown as Project;
     const parent = {
       id: 't1',
@@ -1136,6 +1144,7 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       agentMode: 'plan',
       agentPlan: '## Reproduce it\nfirst\n\n## Fix it\nsecond',
       parentTaskId: null,
+      autoIntegrate: opts?.cardAutoIntegrate ?? null,
     } as unknown as Task;
     const children = steps.map(
       (s, i) =>
@@ -1399,6 +1408,71 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
     const filed = comments.join(' ');
     expect(filed).toContain('orch/t1');
     expect(filed).toContain('NOT been merged');
+  });
+
+  /**
+   * Auto-merge is asked of the CARD, not of the app (`@shared/integrate`): the card's own
+   * answer, else its project's, else the app-wide setting. Each of these drives a real
+   * chain to its last step and asks the only question that matters — was it merged.
+   */
+  describe('whose auto-merge answer counts', () => {
+    /** Run the chain to the end and report whether the branch was merged. */
+    const finish = async (opts: Parameters<typeof setup>[1]): Promise<boolean> => {
+      const { children, integrated, seedRun, fire } = setup(undefined, opts);
+      children[0].status = 'done';
+      seedRun('r2', 's2');
+      fire('r2', okResult);
+      await flush();
+      return integrated.length > 0;
+    };
+
+    it('lets a repo refuse what the app turned on for everyone', async () => {
+      expect(await finish({ autoIntegrate: true, projectAutoIntegrate: false })).toBe(false);
+    });
+
+    it('lets a repo merge by itself while the app leaves it to the human', async () => {
+      expect(await finish({ autoIntegrate: false, projectAutoIntegrate: true })).toBe(true);
+    });
+
+    it('lets one card opt out of a repo that merges everything', async () => {
+      expect(
+        await finish({
+          autoIntegrate: false,
+          projectAutoIntegrate: true,
+          cardAutoIntegrate: false,
+        }),
+      ).toBe(false);
+    });
+
+    it('lets one card opt in where nothing else does', async () => {
+      expect(
+        await finish({
+          autoIntegrate: false,
+          projectAutoIntegrate: false,
+          cardAutoIntegrate: true,
+        }),
+      ).toBe(true);
+    });
+
+    it('falls all the way through to the app when neither has ruled', async () => {
+      expect(await finish({ autoIntegrate: true })).toBe(true);
+      expect(await finish({ autoIntegrate: false })).toBe(false);
+    });
+
+    // The step that finishes a chain is the one holding the run, but the branch is the
+    // PARENT's and the whole plan merges once — so a step's own field is never consulted.
+    it('asks the parent card, not the step that happened to finish', async () => {
+      const { children, integrated, seedRun, fire } = setup(undefined, {
+        autoIntegrate: false,
+        cardAutoIntegrate: true,
+      });
+      children[0].status = 'done';
+      (children[1] as { autoIntegrate?: boolean | null }).autoIntegrate = false;
+      seedRun('r2', 's2');
+      fire('r2', okResult);
+      await flush();
+      expect(integrated).toEqual([{ branch: 'orch/t1', base: 'main' }]);
+    });
   });
 
   it('a failed step stops the chain — its siblings stay pending', async () => {
