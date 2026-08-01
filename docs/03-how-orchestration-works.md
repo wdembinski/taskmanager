@@ -229,6 +229,22 @@ changes. **Stop** ends the run and keeps the worktree.
 Usage limits behave exactly as they do for plan tasks: the task parks as
 `blocked-by-limit` behind the global gate and resumes by session id at reset.
 
+### Where the card sits while it works
+
+**A running agent never moves a card, and never stops you moving one.** A card left in
+TO DO stays in TO DO while its agent works, and after it finishes; that a run is happening
+is said by the spinner, the agent glyph and the run strip, not by the column.
+
+The reverse holds too, and is the same rule read the other way: you can drag a card to any
+column — or pick a state in the detail pane — **while its agent is mid-run**, including a
+card running an approved plan's steps. The card moves, the linked JIRA issue transitions as
+it would for any other move, and the run carries on untouched. Moving a card says where the
+work belongs, not that it should stop; stopping is what **Stop** is for.
+
+Under the hood a run *borrows* the card's status field rather than owning it, and the state
+you pick is parked in `preRunStatus` and handed back to the card when the run settles — so
+your move is neither lost nor able to evict the run (`src/main/cardStatusGuard.ts`).
+
 ---
 
 ## Plan first, then execute in steps
