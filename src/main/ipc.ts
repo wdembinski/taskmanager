@@ -610,6 +610,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // Assign WITHOUT starting (Phase 17): the human wants to talk to the agent about the
     // card before it begins changing files. Sending it a message starts it (see
     // `resumeForChat`), as does the Start button.
+    //
+    // Deliberately NOT a moment the chain is re-asked at (Phase 21). Every other route
+    // that can make a card releasable gained a re-ask; this one is left out because
+    // assigning a card either starts it already — the branch below calls `runTask` — or is
+    // `start: false`, which is the human staging the card on purpose. Re-asking here would
+    // start the run they had just declined to start.
     if (input.start === false) {
       send('task:changed', { task, runId: null });
       return task;
@@ -1416,6 +1422,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
   handle('chain:unlink', async (linkId) => {
     store.deleteTaskLink(linkId);
+    // Erasing an arrow can satisfy the last thing a card was waiting on, which is why the
+    // chain is re-asked here (Phase 21). The rule that bounds it: the re-ask considers
+    // only cards that STILL have an incoming arrow. Erasing a card's last arrow starts
+    // nothing — a card with no arrows is not the chain's business any more, and a cleanup
+    // gesture that spawns an agent is the wrong kind of automatic.
     return pushChainLinks();
   });
 

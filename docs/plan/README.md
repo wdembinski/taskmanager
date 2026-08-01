@@ -43,6 +43,7 @@ plan the orchestrator could one day run on its own repo.
 | — | Interim releases v0.34–v0.50 (branch naming, re-planning, base branch, board polish, engine fixes) | ✅ shipped, not tracked here |
 | 19 | Setting a chain of execution (links, gates, the release engine) | ✅ shipped (v0.51.0) |
 | 20 | Auto-release (RELEASE.md, the per-card switch and the project's preference) | ✅ shipped (v0.52.0) |
+| 21 | Starting the next card automatically (the re-ask, and what a merge is holding) | 🚧 in progress |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -1278,6 +1279,73 @@ card**, exactly like every other run.
 - [ ] **6 — Live E2E owed.** Nothing here has been through the UI: the switch's inherit
       behaviour, the "no RELEASE.md" hint, and above all a real release run following this
       repo's own `RELEASE.md` end to end.
+
+---
+
+## Phase 21 — Starting the next card automatically
+
+**Goal.** Phase 19 built the release engine and wired it to the three moments the world
+changes: a branch landed, a run finished writing, the app booted. That list turned out to
+be short. A card can also become releasable because a usage limit lifted, because someone
+erased the arrow that was holding it, or because a human dragged it back to To Do — and in
+every one of those cases the chain sat there until the next restart, because `sweep` was a
+boot-time thing rather than a question the engine could be asked at any moment. The other
+half is the same silence read from the other end: a card that is waiting says *waiting on
+KEY*, but the card it is waiting **on** says nothing at all about the queue it is holding
+up, and the merge that would release it takes a human going and finding it.
+
+**Decisions taken with the user** — all three flag rather than block, which is what this
+phase's first commit is:
+
+- **Unlinking the _last_ arrow into a card does not start it.** The re-ask looks only at
+  cards that still have an incoming arrow, so erasing one of several arrows releases the
+  card (the reported gap), while erasing the last one leaves it alone. A card with no
+  arrows is not the chain's business, and a cleanup gesture that spawns an agent is a
+  surprise — the wrong kind of automatic.
+- **`task:assignAgent` gets no re-ask, on purpose.** Its default branch already calls
+  `runTask`; the only branch that assigns without starting is `start: false`, which is the
+  human deliberately staging the card to talk to it first. Re-asking the chain there would
+  start exactly the run they just declined to start. A comment at the handler says so, so
+  the omission reads as a decision rather than an oversight.
+- **No tag and no release on this branch.** [`RELEASE.md`](../../RELEASE.md) rule 5
+  forbids releasing from anything but the integration branch, and a tag pushed from a
+  feature branch cannot be moved afterwards. Every commit here still bumps `version` in
+  `package.json` per [`CONTRIBUTING.md`](../../CONTRIBUTING.md) §4 — the bump is the
+  commit's business, the tag is the integration branch's.
+
+### Deliverables
+
+- [x] **1 — The decisions.** This entry, and the deliberate-omission comments at
+      `task:assignAgent` and `chain:unlink`, written where the later steps will be editing.
+- [ ] **2 — The boot sweep becomes a general re-ask.** One method the engine can be asked
+      at any moment, with `sweep` as its boot-time caller rather than its only one.
+- [ ] **3 — A lifting usage limit restarts card chains.** The gate already resumes parked
+      sessions and steps; a card released while the gate was up has nothing parked to
+      resume, so it needs the re-ask.
+- [ ] **4 — The arrows changing re-asks the chain.** Erasing an arrow or re-gating one can
+      satisfy the last thing a card was waiting on. Bounded by the first decision above.
+- [ ] **5 — A card returning to To Do re-asks.** `pending` is the one status a release may
+      start from, so arriving at it is a moment worth re-asking at.
+- [ ] **6 — A pending merge says what it is holding.** From the predecessor's end: the
+      cards whose start is waiting on this one's branch going in.
+- [ ] **7 — "Waiting on X to merge", and the merge offered there.** The successor's chip
+      names the card and gives you the button, instead of sending you to find it.
+- [ ] **8 — Verification.** `pnpm typecheck`, `pnpm test`, `pnpm build`, and the live pass.
+
+### Done when
+
+- Every moment that can make a card releasable asks the engine, and the answer is the same
+  one `sweep` gives on boot — one code path, not five.
+- A chain stopped by a usage limit carries on when the limit lifts, without a restart.
+- Erasing one of several arrows into a card releases it; erasing its last one does not.
+- A card holding others up says so, and the card waiting says which merge it is waiting
+  for and offers it.
+- `pnpm typecheck`, `pnpm test` and `pnpm build` are green.
+
+**Notes.**
+
+- The phase ships as a **MINOR** bump (new behaviour a user notices), reached through the
+  per-commit bumps each step makes; the tag is cut when this lands on `development`.
 
 ---
 
