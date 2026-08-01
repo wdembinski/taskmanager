@@ -69,6 +69,10 @@ Start at the top:
 6. [`docs/06-licensing.md`](docs/06-licensing.md) — the MIT/Apache-only rule and
    how to keep the app commercially usable.
 
+Then, before your first commit, read [`CONTRIBUTING.md`](CONTRIBUTING.md) — how
+commit messages are written here, and the rule that every change bumps and tags
+the version in the same commit.
+
 ---
 
 ## Tech stack

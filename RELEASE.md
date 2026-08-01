@@ -38,8 +38,10 @@ git log --oneline "$(git describe --tags --abbrev=0)"..HEAD
 ```
 
 - A dirty tree is a stop: something is uncommitted and it is not yours to commit or stash.
-- If the last tag is already on `HEAD`, there is nothing to release. Say so and stop —
-  that is a normal outcome, not a failure.
+- A tag on `HEAD` is **expected**, not a stop — [`CONTRIBUTING.md`](CONTRIBUTING.md) has every
+  commit bump and tag its own version. What tells you there is nothing to release is a
+  `gh release view vX.Y.Z` that finds an already-**published** release for the version in
+  `package.json`. Say so and stop — that is a normal outcome, not a failure.
 - The commit list is the release notes' raw material. Read it; it also tells you the bump.
 
 ## 1. Green gates
@@ -54,22 +56,24 @@ All three, in that order, all green. See rule 1.
 
 ## 2. The version
 
-`package.json`'s `version` **is** the release. The house rule is that the bump rides inside
-the commit that ships the change, so most of the time it is already correct and this step is
-a check, not an edit.
+`package.json`'s `version` **is** the release. The house rule
+([`CONTRIBUTING.md`](CONTRIBUTING.md)) is that the bump rides inside the commit that ships the
+change, so most of the time it is already correct and this step is a check, not an edit.
 
 - Pre-1.0 (`0.x`): a `feat:` in the range bumps **MINOR**, a `fix:`-only range bumps
   **PATCH**. A breaking change also bumps MINOR while pre-1.0.
 - If `version` is unchanged since the last tag, bump it yourself and commit _just that_:
   `chore(release): vX.Y.Z`. (This is the one commit allowed to carry only a version — the
   no-standalone-bump rule is about work commits, and here there is no work commit to ride.)
-- If `version` names a version that is **already tagged**, stop and ask. Somebody has
-  released it and you are about to overwrite history.
+- If `version` names a version that is **already tagged on a commit other than `HEAD`**,
+  stop and ask. Somebody has released it and you are about to overwrite history. A tag on
+  `HEAD` naming that same version is the normal case — the work commit put it there.
 
 ## 3. Tag and push
 
 ```bash
-git tag -a vX.Y.Z -m "vX.Y.Z — <one line saying what changed>"
+git tag -l vX.Y.Z                   # normally already there; created by the work commit
+git tag -a vX.Y.Z -m "vX.Y.Z — <one line saying what changed>"   # only if it is not
 git push --follow-tags origin <integration-branch>
 ```
 

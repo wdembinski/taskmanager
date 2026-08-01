@@ -23,8 +23,10 @@ anything with a visible effect — you've run `pnpm dev` and seen it work. We ke
   Explain *why*, not just *what*. Match the density of comments already in the
   files you touch.
 - **Small, self-contained commits.** Each commit should build and pass tests on its
-  own. End commit messages with the `Co-Authored-By` trailer if you paired with
-  Claude.
+  own. How the message is written — Conventional Commits, the 50/72 body shape,
+  the `Ticket ID:`/`Tested:` trailers — and the rule that every commit bumps and
+  tags the version are all in [`CONTRIBUTING.md`](../CONTRIBUTING.md). Read it
+  before your first commit.
 - **Security first.** Never widen the renderer's powers (keep `contextIsolation`
   on, `nodeIntegration` off). Never auto-approve dangerous tools by default. Never
   commit secrets; never set `ANTHROPIC_API_KEY`.
