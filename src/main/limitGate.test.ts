@@ -191,6 +191,27 @@ describe('LimitGate', () => {
     expect(h.changes).toEqual([]);
   });
 
+  it('park() adds work the limit stopped that was never running', () => {
+    const h = harness(0);
+    h.gate.engage(rolling, ['t1']);
+    // The next step of a chain, which had no run of its own to be parked by `engage`.
+    expect(h.gate.park(['s2'])).toEqual(['s2']);
+    expect(h.gate.state!.parkedTaskIds).toEqual(['t1', 's2']);
+    expect(h.changes.at(-1)).toEqual(h.gate.state); // persisted, so it survives a restart
+    // Idempotent: parking the same task twice must not resume it twice at the reset.
+    expect(h.gate.park(['s2', 't1'])).toEqual([]);
+    expect(h.gate.state!.parkedTaskIds).toEqual(['t1', 's2']);
+    h.advanceTo(100_000);
+    expect(h.resumed[0].parkedTaskIds).toEqual(['t1', 's2']);
+  });
+
+  it('park() is a no-op with no gate up — the caller should just run the task', () => {
+    const h = harness(0);
+    expect(h.gate.park(['s2'])).toEqual([]);
+    expect(h.gate.active).toBe(false);
+    expect(h.changes).toEqual([]);
+  });
+
   it('unpark() drops tasks without lifting the gate', () => {
     const h = harness(0);
     h.gate.engage(rolling, ['t1', 't2', 't3']);

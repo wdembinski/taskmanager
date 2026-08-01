@@ -163,6 +163,27 @@ export class LimitGate {
   }
 
   /**
+   * Add tasks to the parked set of a gate that is ALREADY up — work that wanted to
+   * start while the account was limited and therefore never got a run of its own.
+   *
+   * The engage path can only park what was running at the moment the wall was hit,
+   * and that is not the same set as "everything the limit stopped". The next step of
+   * a plan is the case that matters: its predecessor finished mid-limit, the chain
+   * asked to advance, and there was no run to park — so without this the step was
+   * simply dropped and the card sat at `2/4` for good. Returns the tasks actually
+   * added (none, if no gate is up — the caller should then just run them).
+   */
+  park(taskIds: readonly string[]): string[] {
+    if (!this.current) return [];
+    const known = new Set(this.current.parkedTaskIds);
+    const added = taskIds.filter((id) => !known.has(id));
+    if (added.length === 0) return [];
+    this.current = { ...this.current, parkedTaskIds: [...this.current.parkedTaskIds, ...added] };
+    this.deps.onChanged(this.current);
+    return added;
+  }
+
+  /**
    * Forget some tasks so they are NOT resumed (e.g. the user stopped them while
    * parked). Does not lift the gate — the account is still limited.
    */
