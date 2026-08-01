@@ -71,7 +71,7 @@ import {
   columnForTask,
   focusCards,
   groupSubtasks,
-  hasLiveSubtask,
+  isRunStatus,
   sortCards,
   statusForColumn,
   visibleColumns,
@@ -145,9 +145,17 @@ const COLUMN_LABEL: Record<BoardColumn, string> = Object.fromEntries(
   COLUMN_META.map((c) => [c.column, c.label]),
 ) as Record<BoardColumn, string>;
 
-/** AI-owned states a human may not move by hand (mirrors the `task:setStatus` guard). */
-function managedByAI(task: Task): boolean {
-  return task.status === 'running' || task.status === 'waiting-input';
+/**
+ * The optimistic half of the main process's `humanStatusPatch`: where a status the human
+ * just chose goes on THIS copy of the task, until the real one comes back.
+ *
+ * A card whose run has borrowed `status` gets the new state parked in `preRunStatus`, which
+ * is what `columnForTask` reads — so the card jumps columns the instant you let go without
+ * the spinner, the run strip or the attention ring flickering off and back on.
+ */
+function optimisticMove(task: Task, column: BoardColumn): Task {
+  const status = statusForColumn(column);
+  return isRunStatus(task.status) ? { ...task, preRunStatus: status } : { ...task, status };
 }
 
 export function MyTasks(): JSX.Element {
@@ -472,13 +480,9 @@ export function MyTasks(): JSX.Element {
     async (taskId: string, column: BoardColumn) => {
       const task = tasks?.find((t) => t.id === taskId);
       if (!task || columnForTask(task) === column) return;
-      if (managedByAI(task)) {
-        setError('Stop the running session before moving this task.');
-        return;
-      }
       setError(null);
       const prev = task;
-      patchTask({ ...task, status: statusForColumn(column) }); // optimistic
+      patchTask(optimisticMove(task, column)); // optimistic
       try {
         patchTask(await window.api.invoke('task:move', taskId, column));
       } catch (e) {
@@ -797,8 +801,8 @@ export function MyTasks(): JSX.Element {
           another column is re-parented by the optimistic patch below, so React unmounts
           the node the drag started on and its `dragend` never reaches the root — the
           card would keep `styles.dragging` (half opacity) until the next drag. This
-          container never unmounts, so it also catches an ESC-cancelled drag and the
-          `managedByAI` early-return, both of which leaked the same state.
+          container never unmounts, so it also catches an ESC-cancelled drag and a drop
+          back into the column the card came from, both of which leaked the same state.
         */}
         <div
           ref={anchors.containerRef}
@@ -857,8 +861,6 @@ export function MyTasks(): JSX.Element {
               attentionTaskIds={attention.taskIds}
               liveRunTaskIds={liveRuns}
               display={display}
-              // A card with a live step is the runner's until the chain stops.
-              canDrag={(c) => !managedByAI(c.task) && !hasLiveSubtask(c.subtasks)}
               anchorRef={anchors.anchorRef}
               linkDrag={linkDrag}
               onLinkStart={(taskId) => {

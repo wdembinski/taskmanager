@@ -601,7 +601,6 @@ export function TaskDetail({
             <TaskDetailsCell
               task={task}
               agentProjects={agentProjects}
-              managedByAI={managedByAI}
               priorityDisplay={priorityDisplay}
               onTaskChanged={(updated) => onStatusChanged?.(updated)}
               onEdited={() => void loadActivity()}

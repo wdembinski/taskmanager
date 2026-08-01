@@ -91,7 +91,6 @@ export interface KanbanColumnProps {
   liveRunTaskIds?: ReadonlySet<string>;
   /** Which optional context lines each card draws. */
   display?: BoardDisplaySettings;
-  canDrag: (card: BoardCard) => boolean;
   /**
    * The chain overlay's measuring tap, handed to each card's root element. The column
    * only passes it through — it knows nothing about links, and the overlay is drawn once
@@ -189,10 +188,11 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               onLinkArm={() => props.onLinkArm?.(task.id)}
               waitingOn={props.chainStateOf?.(task)?.waitingOn}
               chainReady={props.chainStateOf?.(task)?.ready}
-              // Unchanged by any of the chain work above it: a chained card is still freely
-              // draggable, because a chain says what runs after what, never where a card
-              // belongs. Only a live step takes a card out of the human's hands.
-              draggable={props.canDrag({ task, subtasks, mergeRequests })}
+              // Every card, unconditionally. A chain says what runs after what, never where
+              // a card belongs; and a run only BORROWS the card's status (`cardStatusGuard`),
+              // so not even a live agent or a live step takes a card out of the human's
+              // hands. There is no state in which a card refuses to be filed.
+              draggable
               dragging={task.id === props.draggingId}
               onSelect={() => props.onSelectTask(task.id)}
               onSelectSubtask={props.onSelectTask}

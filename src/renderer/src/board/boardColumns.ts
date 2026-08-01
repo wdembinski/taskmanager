@@ -14,6 +14,7 @@ export {
   categoryToColumn,
   columnForStatus,
   columnForTask,
+  isRunStatus,
   statusForColumn,
 } from '@shared/board';
 
@@ -139,16 +140,6 @@ export function subtaskProgress(subtasks: readonly Task[]): { done: number; tota
     done: subtasks.filter((s) => s.status === 'done').length,
     total: subtasks.length,
   };
-}
-
-/**
- * Is a step of this card mid-run? A card whose chain is live must not be dragged to
- * another column: the steps travel with it, and the runner owns their statuses until
- * the chain stops. (The parent's own status is checked separately — it reads
- * `in-progress` while a step runs, which on its own says nothing.)
- */
-export function hasLiveSubtask(subtasks: readonly Task[]): boolean {
-  return subtasks.some((s) => s.status === 'running' || s.status === 'waiting-input');
 }
 
 /**

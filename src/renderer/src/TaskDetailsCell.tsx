@@ -96,8 +96,6 @@ export interface TaskDetailsCellProps {
   task: Task;
   /** The projects a card can be filed under (Settings → Agents). */
   agentProjects?: Project[];
-  /** True while the scheduler owns the task — status is not hand-settable then. */
-  managedByAI: boolean;
   /**
    * How the board draws priority, so this pane draws it the same way. Defaults to the
    * colour square — what every caller got before the setting existed.
@@ -112,7 +110,6 @@ export interface TaskDetailsCellProps {
 export function TaskDetailsCell({
   task,
   agentProjects = [],
-  managedByAI,
   priorityDisplay = 'color',
   onTaskChanged,
   onEdited,
@@ -289,14 +286,18 @@ export function TaskDetailsCell({
           {/* Where the card RESTS, not `status` — which a live run has borrowed, and
               which would have this control announce "Running" as the card's state and
               then quietly change it back. The run says so through the spinner and the run
-              strip above; this says where you filed the card, and only you move it. */}
+              strip above; this says where you filed the card, and only you move it.
+
+              Enabled during a run, for the same reason: the run borrowed the field, so the
+              state you pick is parked and handed back to the card when the run settles
+              (`humanStatusPatch`). Disabling it meant a delegated card's state was frozen
+              for as long as its agent worked. */}
           <Dropdown
             className={styles.trioPicker}
             size="small"
             value={STATUS_LABEL[resting]}
             selectedOptions={[resting]}
-            disabled={managedByAI}
-            title={managedByAI ? 'Stop the session to change status.' : 'Status'}
+            title="Status"
             onOptionSelect={(_e, d) => {
               if (d.optionValue) void setStatus(d.optionValue as ManualStatus);
             }}
@@ -347,10 +348,7 @@ export function TaskDetailsCell({
             <div className={styles.trioLabel}>
               <Caption1 className={styles.hint}>Project</Caption1>
               {project?.color && (
-                <span
-                  className={styles.projectSwatch}
-                  style={{ backgroundColor: project.color }}
-                />
+                <span className={styles.projectSwatch} style={{ backgroundColor: project.color }} />
               )}
             </div>
             <Dropdown
@@ -471,7 +469,11 @@ export function TaskDetailsCell({
                   </Text>
                 </DialogContent>
                 <DialogActions>
-                  <Button appearance="secondary" disabled={busy} onClick={() => setConfirmDelete(false)}>
+                  <Button
+                    appearance="secondary"
+                    disabled={busy}
+                    onClick={() => setConfirmDelete(false)}
+                  >
                     Cancel
                   </Button>
                   <Button appearance="primary" disabled={busy} onClick={() => void remove()}>
