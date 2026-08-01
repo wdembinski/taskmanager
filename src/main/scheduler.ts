@@ -79,6 +79,7 @@ import {
   type AgentPromptComment,
 } from './agentTaskPrompt';
 import { guardCardStatus } from './cardStatusGuard';
+import { ChainRunner } from './chainRunner';
 import type { PermissionGate } from './claudeSession';
 import { buildChainHandbackPrompt, buildChainSummary } from './chainSummary';
 import { shouldSurfaceEvent } from './eventNoise';
@@ -804,6 +805,13 @@ export class Scheduler {
    * held; when its timer fires, every parked task resumes by its saved session id.
    */
   private readonly limitGate: LimitGate;
+  /**
+   * The chain of execution's engine (`@shared/taskChain`): what happens to the NEXT card
+   * when this one's work lands. Owned the way `worktrees` is — this class tells it when the
+   * world changed and it owns everything that follows, so the release rules live in one
+   * file instead of being spread through `settle` and `applyIntegrationResult`.
+   */
+  private readonly chain: ChainRunner;
   /** Once disposed (app quitting), ignore late session events so we never touch a closed DB. */
   private disposed = false;
   /**
@@ -844,6 +852,25 @@ export class Scheduler {
       clearTimer: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
       onResumeDue: (state) => this.resumeParked(state),
       onChanged: (state) => this.onLimitChanged(state),
+    });
+    this.chain = new ChainRunner({
+      // Every dependency is a thunk onto this scheduler's own machinery, so a release is
+      // reserved, gated and settled exactly as any other run — there is no second way in.
+      links: () => this.store.listTaskLinks(),
+      getTask: (id) => this.store.getTask(id),
+      setLandedAt: (id, at) => {
+        const task = this.store.updateTask(id, { landedAt: at });
+        if (task) this.emitTask({ task, runId: null });
+      },
+      addComment: (projectId, taskId, body) => {
+        this.store.addComment(projectId, taskId, body);
+        this.tasksChanged?.(projectId);
+      },
+      runTask: (id) => this.runTask(id) !== null,
+      limitActive: () => this.limitGate.active,
+      inFlight: (id) => this.inFlight.has(id),
+      branchOf: (task) => this.branchFor(task),
+      now: () => Date.now(),
     });
   }
 
@@ -1422,6 +1449,45 @@ export class Scheduler {
   }
 
   /**
+   * On startup, beside {@link Scheduler.reconcileInterruptedTasks}: start every chained card
+   * whose predecessors finished while the app was closed (`@shared/taskChain`).
+   *
+   * Unlike the sweep above this one is not healing anything — the DB is perfectly
+   * consistent, it is just that nobody was listening at the moment the gate opened. That it
+   * is safe to run on EVERY boot is a consequence of `landedAt` being persisted: the
+   * question has the same answer it had before the restart, so a card that was already
+   * released is not released twice (it has a session by then, and this only starts cards
+   * that have never run).
+   */
+  releaseReadyChains(): void {
+    if (this.disposed) return;
+    this.chain.sweep();
+  }
+
+  /**
+   * A card's work landed somewhere the engine did not do the merging — a linked merge
+   * request that GitLab now reports as `merged` (see `gitlab/gitlabSync`).
+   *
+   * The same fact as the local integrate path, arriving by a different road, and it needs no
+   * setting of its own: a local-only project simply has no merge-request rows, so nothing
+   * ever calls this for one. Idempotent, which matters here — the sync repeats the verdict
+   * on every poll for as long as the MR is retained.
+   */
+  noteWorkLanded(taskId: string): void {
+    if (this.disposed) return;
+    this.chain.landed(taskId);
+  }
+
+  /**
+   * Start a blocked card despite its chain (the detail pane's **Release now**). Returns why
+   * it could not start, or null once a run is under way. See {@link ChainRunner.releaseNow}.
+   */
+  releaseChainNow(taskId: string): string | null {
+    if (this.disposed) return 'The app is shutting down.';
+    return this.chain.releaseNow(taskId);
+  }
+
+  /**
    * Decide one tool use the broker forwarded (a tool the CLI is BLOCKED on).
    * Safe → allow immediately; risky → raise an inbox item and return a promise
    * that stays unresolved until a human answers, holding the tool the whole time.
@@ -1802,6 +1868,10 @@ export class Scheduler {
         task,
         this.worktreeOwner(task),
         this.branchFor(task),
+        // Normally undefined. A card `stacked` on another one's branch is cut from THAT
+        // branch instead of from base, so it opens with the predecessor's commits already
+        // in the tree — which is the only thing that makes the loose gate worth having.
+        this.chain.startPointFor(task),
       );
     } catch (err) {
       // Preparation blew up (odd git state). For a worktree-enabled repo, never fall back
@@ -2605,6 +2675,13 @@ export class Scheduler {
         this.advanceSubtasks(finished.parentTaskId);
         return;
       }
+      // Past that return, this card's work is WRITTEN: either it has no steps, or the last
+      // of them just finished, and in both cases there is a branch to build on. That is the
+      // `stacked` gate's whole moment, and it is deliberately here — BEFORE integration,
+      // before review, before anyone has said the work is good. A `stacked` successor buys
+      // exactly that head start and accepts exactly that risk; `after-merge` (the default)
+      // waits for the merge below instead.
+      this.chain.workWritten(finished?.parentTaskId ?? run.taskId);
     }
     if (status === 'done' && run.branch && run.base && run.worktree && this.worktrees) {
       // Capture the integration inputs now — the imminent `exited` event deletes this
@@ -2760,6 +2837,14 @@ export class Scheduler {
           null,
         );
         this.maybeWriteBackPlan(ctx.taskId);
+        // The same split, read the other way round: whichever of the two this was, the CARD
+        // is what landed. A step shares its parent's branch and the whole plan integrates
+        // once, so the merge that gets here is the parent's work reaching base — and a chain
+        // links cards, never steps. That fact is written down (`landedAt`), which is what
+        // satisfies every `after-merge` gate downstream and lets the release survive a
+        // restart. Before `finishParentChain`, so the next card is on its way while this
+        // one's hand-back summary is still being assembled.
+        this.chain.landed(finished?.parentTaskId ?? ctx.taskId);
         // This was the final step of an approved plan (only the last one ever gets
         // here): hand the card back to the human for review.
         void this.finishParentChain(ctx.taskId, { branch: ctx.branch, base: ctx.base });

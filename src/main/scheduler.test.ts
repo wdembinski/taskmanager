@@ -1177,6 +1177,9 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
           .filter((c) => c.parentTaskId === parentId)
           .reduce((max, c) => Math.max(max, c.planRound ?? 1), 0),
       addComment: (_p: string, _t: string, body: string) => comments.push(body),
+      // A board with no arrows on it: these cases run a plan's steps through settle and
+      // integration, both of which now ask the chain runner what to release next.
+      listTaskLinks: () => [],
       updateTask: (id: string, patch: Partial<Task>) => {
         const task = byId.get(id);
         if (task) Object.assign(task, patch);

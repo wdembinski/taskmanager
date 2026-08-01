@@ -35,7 +35,13 @@ import {
   type BoardDisplaySettings,
 } from '@shared/settings';
 import type { MergeRequest } from '@shared/mergeRequest';
-import { LINK_REFUSAL_MESSAGE, canLink, type LinkGate, type TaskLink } from '@shared/taskChain';
+import {
+  LINK_REFUSAL_MESSAGE,
+  blockedBy,
+  canLink,
+  type LinkGate,
+  type TaskLink,
+} from '@shared/taskChain';
 import { AddTaskDialog } from './AddTaskDialog';
 import { PaneLoading } from './PaneLoading';
 import { TaskDetail } from './TaskDetail';
@@ -297,6 +303,33 @@ export function MyTasks(): JSX.Element {
 
   /** id → task for the whole board, so an arrow can ask its gate about the predecessor. */
   const tasksById = useMemo(() => new Map((tasks ?? []).map((t) => [t.id, t])), [tasks]);
+
+  /**
+   * Where each chained card stands: what it is still waiting on, and whether its turn has
+   * come without anything having started.
+   *
+   * Computed once for the board rather than per card, and only for cards that actually have
+   * an arrow into them — `readyToRelease` is vacuously true for everything else, so asking
+   * per card would have every unchained card on the board answering a question about a
+   * feature nobody used on it.
+   *
+   * `ready` matches the ENGINE's own release condition (never run, still waiting in To Do):
+   * the chip has to mean "the engine would have started this", or a card that shows `ready`
+   * and then sits there teaches the human to distrust the word.
+   */
+  const chainStates = useMemo(() => {
+    const byTask = new Map<string, { waitingOn: Task[]; ready: boolean }>();
+    for (const id of new Set(links.map((l) => l.toTaskId))) {
+      const task = tasksById.get(id);
+      if (!task) continue;
+      const waitingOn = blockedBy(task, links, tasksById);
+      byTask.set(id, {
+        waitingOn,
+        ready: waitingOn.length === 0 && task.status === 'pending' && !task.sessionId,
+      });
+    }
+    return byTask;
+  }, [links, tasksById]);
 
   /**
    * The chain the selected task belongs to: a card's own steps, or — when a step is
@@ -775,6 +808,7 @@ export function MyTasks(): JSX.Element {
               onLinkEnd={() => setLinkDrag(null)}
               onLinkTo={(fromTaskId, toTaskId) => void drawLink(fromTaskId, toTaskId)}
               onLinkArm={armLink}
+              chainStateOf={(t) => chainStates.get(t.id)}
               selectedTaskId={selectedTaskId}
               draggingId={draggingId}
               onSelectTask={selectTask}
@@ -836,6 +870,10 @@ export function MyTasks(): JSX.Element {
             priorityDisplay={display.priorityDisplay}
             attention={attention}
             liveRunTaskIds={liveRuns}
+            // What the selected card is still waiting on, so the pane can offer to override
+            // it. From the same index the chips read, so the chip and the button can never
+            // disagree about whether this card is blocked.
+            chainWaitingOn={selectedTask ? chainStates.get(selectedTask.id)?.waitingOn : undefined}
             onOpenTask={setSelectedTaskId}
             onStatusChanged={patchTask}
             onSubtasksChanged={() => void refresh()}

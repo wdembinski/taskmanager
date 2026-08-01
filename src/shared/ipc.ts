@@ -595,6 +595,15 @@ export interface IpcApi {
   /** Change one arrow's gate without redrawing it; returns the full list. */
   'chain:setGate': (linkId: string, gate: LinkGate) => Promise<TaskLink[]>;
   /**
+   * Start a card now, despite a predecessor that has not finished — the human override.
+   *
+   * Some chains only ever wanted the ordering as a reminder, and for those, refusing to
+   * start is an obstacle rather than a safeguard. The link is NOT removed: the ordering is
+   * still recorded, this run simply went ahead of it. Resolves to a sentence saying why
+   * nothing started, or null once a run is under way.
+   */
+  'chain:releaseNow': (taskId: string) => Promise<string | null>;
+  /**
    * Fetch the user's JIRA issues (per the configured JQL) and reconcile them into the
    * Personal board, preserving internal-only state. Returns the board's full task list.
    */

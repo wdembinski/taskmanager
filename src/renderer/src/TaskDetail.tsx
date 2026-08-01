@@ -164,6 +164,12 @@ export interface TaskDetailProps {
   attention?: AttentionIndex;
   /** Task ids the engine has a live run for, so the pane can show a spawning run. */
   liveRunTaskIds?: ReadonlySet<string>;
+  /**
+   * The chained predecessors this card is still waiting on (`blockedBy`) — what the agent
+   * panel's **Release now** override is offered against. Empty or absent for a card that is
+   * not blocked, which is the only reason the button is not there.
+   */
+  chainWaitingOn?: readonly Task[];
   /** Show another task in this pane (the breadcrumb, and opening a step). */
   onOpenTask?: (taskId: string) => void;
   /** Called after a successful manual status change so the parent list can patch. */
@@ -182,6 +188,7 @@ export function TaskDetail({
   priorityDisplay = 'color',
   attention,
   liveRunTaskIds,
+  chainWaitingOn,
   onOpenTask,
   onStatusChanged,
   onSubtasksChanged,
@@ -553,6 +560,7 @@ export function TaskDetail({
           agentProjects={agentProjects}
           items={panelItems}
           running={run.spinner}
+          waitingOn={chainWaitingOn}
           onOpenTask={onOpenTask}
           onTaskChanged={(updated) => {
             onStatusChanged?.(updated);

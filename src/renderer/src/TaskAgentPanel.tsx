@@ -61,6 +61,23 @@ const useStyles = makeStyles({
     border: `2px solid ${ASK_ORANGE}`,
     backgroundColor: tokens.colorNeutralBackground2,
   },
+  /**
+   * "This card is waiting for another one, and here is how to go anyway."
+   *
+   * Deliberately NOT the orange `ask` frame above it. That frame means *something is
+   * blocked on you* and is meant to interrupt; a chain link is a standing fact about the
+   * card that will read the same tomorrow. The board draws the same distinction with its
+   * monochrome chip — colour is for things that move.
+   */
+  blocked: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '8px',
+    padding: '10px',
+    borderRadius: tokens.borderRadiusMedium,
+    border: `1px solid ${tokens.colorNeutralStroke2}`,
+    backgroundColor: tokens.colorNeutralBackground2,
+  },
   // No `fontFamily`/`pre-wrap` any more: the body is rendered markdown, which brings its
   // own monospace exactly where it belongs — inside code — rather than everywhere.
   prompt: { maxHeight: '220px', overflowY: 'auto' },
@@ -116,6 +133,12 @@ export interface TaskAgentPanelProps {
    * pane and the composer strip must never disagree about this.
    */
   running?: boolean;
+  /**
+   * The chained cards this one is still waiting on (`@shared/taskChain`). Present and
+   * non-empty is exactly the condition for offering **Release now**: the chain would not
+   * start this card yet, and the human may know better.
+   */
+  waitingOn?: readonly Task[];
 }
 
 export function TaskAgentPanel({
@@ -126,6 +149,7 @@ export function TaskAgentPanel({
   onOpenTask,
   onTaskChanged,
   running = false,
+  waitingOn = [],
 }: TaskAgentPanelProps): JSX.Element {
   const styles = useStyles();
   const [assignOpen, setAssignOpen] = useState(false);
@@ -214,6 +238,27 @@ export function TaskAgentPanel({
     setError(null);
     try {
       await window.api.invoke('task:run', stepId);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /**
+   * Start this card despite the chain (the human override).
+   *
+   * The link is deliberately NOT removed: plenty of chains are drawn as a reminder of the
+   * order things ought to be looked at, and erasing the arrow to get one card moving would
+   * throw that record away to solve a problem it did not cause. The engine files a note on
+   * the card saying it went ahead of its predecessors, so the timeline still reads straight.
+   */
+  async function releaseNow(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      // A refusal comes back as a sentence, not as a throw — see `chain:releaseNow`.
+      setError(await window.api.invoke('chain:releaseNow', taskId));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -318,6 +363,41 @@ export function TaskAgentPanel({
         <MessageBar intent="error">
           <MessageBarBody>{error}</MessageBarBody>
         </MessageBar>
+      )}
+
+      {/* Chained behind something that has not finished. The engine will start this card by
+          itself the moment its predecessors land — so this block exists for the case where
+          the human does not want to wait: some chains only ever record the order things
+          ought to be LOOKED at, and there the gate is an obstacle rather than a safeguard. */}
+      {waitingOn.length > 0 && !isStep && !live && (
+        <div className={styles.blocked}>
+          <Text weight="semibold">
+            {waitingOn.length === 1
+              ? 'Waiting on another card'
+              : `Waiting on ${waitingOn.length} other cards`}
+          </Text>
+          <Caption1 className={styles.hint}>
+            This card is chained to run after{' '}
+            {waitingOn.map((t) => t.externalKey || t.title).join(', ')}, and starts by itself when{' '}
+            {waitingOn.length === 1 ? 'it is' : 'they are'} done. Release it now to go ahead anyway
+            — the chain keeps the ordering either way.
+          </Caption1>
+          <div className={styles.choices}>
+            <Button disabled={busy} onClick={() => void releaseNow()}>
+              Release now
+            </Button>
+            {waitingOn.map((t) => (
+              <Button
+                key={t.id}
+                appearance="subtle"
+                disabled={busy}
+                onClick={() => onOpenTask?.(t.id)}
+              >
+                Open {t.externalKey || t.title}
+              </Button>
+            ))}
+          </div>
+        </div>
       )}
 
       {/* The chain stopped and its inbox item is gone (items live in the scheduler, so a

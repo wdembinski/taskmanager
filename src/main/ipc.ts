@@ -62,6 +62,7 @@ import { GitLabClient } from './gitlab/gitlabClient';
 import { gitlabIdentityFrom, type GitLabIdentityCache } from './gitlab/identity';
 import { describeMergeRequest } from './gitlab/describeMergeRequest';
 import {
+  landedTaskIds,
   mergeRequestId,
   needsDetailRefresh,
   reconcileMergeRequests,
@@ -285,6 +286,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // below would otherwise sweep exactly those tasks and throw the question away.
   scheduler.rehydrateAttention();
   scheduler.reconcileInterruptedTasks();
+  // Then let the chain of execution catch up: a card whose predecessor landed while the app
+  // was closed has been waiting since, and nothing else would ever ask again. After the
+  // reconcile above, so the two sweeps cannot both decide what to do with one card — this
+  // one starts only cards that have never run at all.
+  scheduler.releaseReadyChains();
 
   // Phase 8: watch every project's plan file so edits — including the agent
   // rewriting the plan mid-run — re-sync into the task list live.
@@ -1165,6 +1171,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     });
     for (const mr of upserts) store.upsertMergeRequest(mr);
     store.deleteMergeRequests(deleteIds);
+    // A merged MR is this app's only way of learning that a reviewed branch actually landed
+    // — nobody here ran the merge. It is what a chain's `after-merge` gate waits for, so it
+    // is handed to the engine before the board is told anything (see `Task.landedAt`).
+    for (const taskId of landedTaskIds(upserts)) scheduler.noteWorkLanded(taskId);
     const all = store.listMergeRequests();
     send('gitlab:mergeRequestsChanged', all);
     return all;
@@ -1396,6 +1406,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     store.setTaskLinkGate(linkId, gate);
     return pushChainLinks();
   });
+
+  // The refusal comes back as a sentence rather than as a rejected promise: "a usage limit
+  // is holding everything" is something to tell the human, not an error — the same reasoning
+  // as `LinkResult`.
+  handle('chain:releaseNow', async (taskId) => scheduler.releaseChainNow(taskId));
   // ---------------------------------------------------------------------------
 
   /**

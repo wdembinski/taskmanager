@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { MergeRequest } from '@shared/mergeRequest';
 import { mrAttentionReason, mrNeedsAttention } from '@shared/mergeRequest';
 import {
+  landedTaskIds,
   mergeRequestId,
   needsDetailRefresh,
   reconcileMergeRequests,
@@ -264,6 +265,36 @@ describe('reconcileMergeRequests', () => {
     it('never shouts: a merged MR cannot raise the card’s ring', () => {
       const merged = { ...settled('merged'), latestNoteAt: 9_999, lastReadAt: null };
       expect(mrNeedsAttention(merged)).toBe(false);
+    });
+
+    /**
+     * The chain of execution's other half: for a project whose branches go through review,
+     * this is the ONLY way the app learns that a card's work landed — nobody here ran the
+     * merge (see `Task.landedAt`).
+     */
+    describe('landedTaskIds', () => {
+      it('reports the card behind a merged MR', () => {
+        expect(landedTaskIds([settled('merged')])).toEqual(['task-1']);
+      });
+
+      it('reports nothing for one that is open or closed', () => {
+        expect(landedTaskIds([settled('closed')])).toEqual([]);
+        expect(landedTaskIds(reconcileMergeRequests([], [fetched()], opts).upserts)).toEqual([]);
+      });
+
+      it('names a card once however many of its MRs merged', () => {
+        const two = reconcileMergeRequests(
+          [],
+          [fetched({ iid: 1, state: 'merged' }), fetched({ iid: 2, state: 'merged' })],
+          opts,
+        ).upserts;
+        expect(landedTaskIds(two)).toEqual(['task-1']);
+      });
+
+      it('skips an MR that matches no card on the board', () => {
+        const orphan = { ...settled('merged'), taskId: null };
+        expect(landedTaskIds([orphan])).toEqual([]);
+      });
     });
   });
 

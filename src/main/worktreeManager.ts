@@ -194,12 +194,20 @@ export class WorktreeManager {
    *
    * `branchName` (Phase 17) is the human-chosen branch. Omitted falls back to the legacy
    * {@link taskBranch}, so an un-migrated card keeps the name its worktree already has.
+   *
+   * `startPoint` is what a `stacked` chain link needs (see `@shared/taskChain`): the new
+   * branch is cut from the PREDECESSOR's branch, so this card starts with that card's
+   * commits already in its tree. It affects the `git worktree add` start-point and nothing
+   * else — the returned `base` is still the project's integration branch, so where this
+   * card eventually merges is unchanged. Ignored for a worktree that already exists, which
+   * has a start point by definition.
    */
   async prepare(
     project: Project,
     task: Task,
     ownerTaskId = task.id,
     branchName?: string,
+    startPoint?: string,
   ): Promise<WorktreePrep> {
     const { host, root } = await this.workspaceFor(project);
     if (!project.useWorktrees || !(await isRepo(project.path, host))) {
@@ -278,12 +286,29 @@ export class WorktreeManager {
       return { mode: 'worktree', cwd, branch: actual || branch, base };
     }
 
-    let res = await addWorktree(project.path, cwd, branch, base, host);
+    // A `stacked` chain link asks for this branch to be cut from another card's, not from
+    // base. A start point that no longer exists falls back to `base` in silence, and that
+    // is the right answer rather than a failure: the commonest way for it to go missing is
+    // the predecessor merging and its branch being deleted — by which time its work IS in
+    // base, so base gives this card exactly what the link asked for.
+    const wanted = startPoint?.trim() ?? '';
+    const from =
+      wanted && wanted !== base && (await branchExists(project.path, wanted, host)) ? wanted : base;
+    if (from !== base) {
+      // The one place that knows what the start point turned out to be, so it is also the
+      // only place that can say it truthfully on the card's timeline.
+      note =
+        `${note ? `${note} ` : ''}This task's branch "${branch}" was cut from "${from}" rather ` +
+        `than from ${base}, because its chain stacks it on that branch — it starts with that ` +
+        `work already in it, and still merges back into ${base}.`;
+    }
+
+    let res = await addWorktree(project.path, cwd, branch, from, host);
     if (res.code !== 0) {
       // One recovery attempt: a stale worktree admin record (e.g. a dir removed out of
       // band) can block re-creation. Prune, then retry once.
       await pruneWorktrees(project.path, host);
-      res = await addWorktree(project.path, cwd, branch, base, host);
+      res = await addWorktree(project.path, cwd, branch, from, host);
     }
     if (res.code !== 0) {
       return {
