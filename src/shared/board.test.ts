@@ -327,6 +327,18 @@ describe('runPhase', () => {
     });
   });
 
+  it('names the step a usage limit is holding, rather than calling it queued', () => {
+    // A chain that stops for five hours and one waiting its turn are the same "Queued" to
+    // a card that does not distinguish them — and the first is the one people ask about.
+    const card = task({ id: 'c1', status: 'in-progress' });
+    const steps = [step('s1', 'done'), step('s2', 'blocked-by-limit'), step('s3', 'pending')];
+    expect(runPhase(card, steps)).toMatchObject({
+      phase: 'blocked',
+      label: 'Paused — usage limit (step 2 of 3)',
+      spinner: false,
+    });
+  });
+
   it('queues a chain whose next step has not been picked up yet', () => {
     const card = task({ id: 'c1', status: 'in-progress' });
     expect(runPhase(card, [step('s1', 'done'), step('s2', 'pending')])).toMatchObject({

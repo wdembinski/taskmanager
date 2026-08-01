@@ -397,6 +397,18 @@ export function runPhase(
         spinner: true,
       };
     }
+    // A step held behind the usage-limit gate: say so on the card, rather than leaving it
+    // to the "Queued" fall-through below. A chain that stops between steps for five hours
+    // and a chain that is merely waiting its turn look identical otherwise, and the first
+    // one is the one people ask about.
+    const limited = subtasks.findIndex((s) => s.status === 'blocked-by-limit');
+    if (limited >= 0) {
+      return {
+        phase: 'blocked',
+        label: `Paused — usage limit (step ${limited + 1} of ${total})`,
+        spinner: false,
+      };
+    }
     const parked = subtasks.findIndex((s) => s.status === 'waiting-input' || s.status === 'failed');
     if (parked >= 0) {
       return {
