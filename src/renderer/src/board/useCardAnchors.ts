@@ -43,6 +43,16 @@ export interface CardAnchors {
   rects: ReadonlyMap<string, AnchorRect>;
   bounds: AnchorBounds;
   hoveredTaskId: string | null;
+  /**
+   * A pointer's VIEWPORT coordinates (a drag event's `clientX`/`clientY`) turned into the
+   * same board content space the rects are in — what the rubber band's loose end needs.
+   *
+   * Here rather than in the component because this hook already owns the container element
+   * and the one formula that maps into its content space; a second copy of "minus the
+   * origin, plus the scroll" elsewhere is a second thing to get wrong when either changes.
+   * Null before the container mounts.
+   */
+  toContentPoint: (clientX: number, clientY: number) => { x: number; y: number } | null;
 }
 
 /** Whether two measurements say the same thing, so an idle re-measure re-renders nothing. */
@@ -120,6 +130,13 @@ export function useCardAnchors(revision?: unknown): CardAnchors {
     });
   }, []);
 
+  const toContentPoint = useCallback((clientX: number, clientY: number) => {
+    const root = containerEl.current;
+    if (!root) return null;
+    const base = root.getBoundingClientRect();
+    return { x: clientX - base.left + root.scrollLeft, y: clientY - base.top + root.scrollTop };
+  }, []);
+
   const schedule = useCallback(() => {
     if (frame.current !== null) return;
     frame.current = requestAnimationFrame(() => {
@@ -185,5 +202,5 @@ export function useCardAnchors(revision?: unknown): CardAnchors {
   // The cards changed, or were re-ordered — see `revision`.
   useEffect(schedule, [schedule, revision]);
 
-  return { containerRef: setContainer, anchorRef, rects, bounds, hoveredTaskId };
+  return { containerRef: setContainer, anchorRef, rects, bounds, hoveredTaskId, toContentPoint };
 }

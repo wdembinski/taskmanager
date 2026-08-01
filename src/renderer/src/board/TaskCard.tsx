@@ -71,6 +71,13 @@ import { AgentGlyph } from '../AgentGlyph';
 import { STATUS_COLOR, STATUS_LABEL } from '../taskStatus';
 import { columnForTask, statusForColumn, subtaskProgress } from './boardColumns';
 import {
+  CHAIN_LINK_MIME,
+  TASK_ID_ATTR,
+  dropEffectFor,
+  isChainLinkDrag,
+  type LinkDropState,
+} from './chainDrag';
+import {
   ACCENT,
   ATTENTION_TINT,
   FLUO,
@@ -172,6 +179,11 @@ const useStyles = makeStyles({
     display: 'flex',
     flexDirection: 'column',
     borderRadius: tokens.borderRadiusMedium,
+    // The link handle costs nothing at rest and appears when you reach for it. Written as
+    // one combined selector rather than a `:hover` nesting a descendant rule, so there is
+    // exactly one atomic class deciding the handle's opacity and no insertion-order race
+    // with the base rule on the handle itself.
+    '&:hover [data-chain-handle]': { opacity: 1, pointerEvents: 'auto' },
     // Brighter than the board it sits on: a card is the object, the column is the space
     // between objects, and the old darker fill had that backwards. That contrast is the
     // whole edge — there is no frame, because a frame was saying a second time what the
@@ -367,6 +379,61 @@ const useStyles = makeStyles({
    * stopping at a seam halfway down.
    */
   cardSelected: { backgroundColor: tokens.colorNeutralBackground1Selected },
+  /**
+   * **The link handle** — a dot on the card's right edge, which is where the arrows leave.
+   *
+   * Hidden until you hover the card or tab to it, so a board of forty cards is not a board
+   * of forty dots. `pointerEvents: none` while hidden matters as much as the opacity does:
+   * a transparent 10px target sitting on every card's right edge would quietly eat clicks
+   * meant for the card underneath it, and "the card sometimes doesn't select" is a far
+   * worse bug than a missing affordance.
+   *
+   * A real `<button>`, so it is reachable by keyboard and announces itself. Enter or Space
+   * ARMS the link (the next card you pick becomes the successor) — a focusable control that
+   * only worked with a mouse would be a trap rather than an affordance, and the armed path
+   * reuses the drag's own states, so the two cannot disagree about what is a valid target.
+   */
+  linkHandle: {
+    position: 'absolute',
+    right: '3px',
+    // Level with where the arrows themselves leave and land — the card's vertical middle.
+    top: '50%',
+    transform: 'translateY(-50%)',
+    width: '10px',
+    height: '10px',
+    padding: 0,
+    borderRadius: '50%',
+    border: `1px solid ${tokens.colorNeutralStroke1}`,
+    backgroundColor: tokens.colorNeutralBackground3,
+    cursor: 'grab',
+    opacity: 0,
+    pointerEvents: 'none',
+    // The whole `border`, not `borderColor`: Griffel rejects the four-sided shorthand.
+    ':hover': {
+      backgroundColor: tokens.colorBrandStroke1,
+      border: `1px solid ${tokens.colorBrandStroke1}`,
+    },
+    ':focus-visible': { opacity: 1, pointerEvents: 'auto' },
+  },
+  /** The handle of the card the link is being drawn FROM: filled, and it stays put. */
+  linkHandleActive: {
+    backgroundColor: tokens.colorBrandStroke1,
+    border: `1px solid ${tokens.colorBrandStroke1}`,
+  },
+  /**
+   * A card the drop would land on. An `outline`, not the `boxShadow` the attention ring
+   * uses: Griffel would have the later class REPLACE `boxShadow`, so a card that both wants
+   * you and is a valid target would lose its orange ring at exactly the wrong moment. Two
+   * different properties compose by themselves.
+   */
+  linkValid: { outline: `2px solid ${tokens.colorBrandStroke1}`, outlineOffset: '2px' },
+  /** Already joined — dashed and neutral, because nothing is wrong, it is simply already said. */
+  linkExisting: {
+    outline: `2px dashed ${tokens.colorNeutralStroke1}`,
+    outlineOffset: '2px',
+  },
+  /** A step, or a loop. Dimmed, and the drop bounces — see `dropEffectFor`. */
+  linkRefused: { opacity: 0.35 },
   agentIcon: { fontSize: AGENT_ICON_SIZE, flexShrink: 0, display: 'flex', color: '#ffffff' },
   dragging: { opacity: 0.5 },
   /**
@@ -651,6 +718,24 @@ export interface TaskCardProps {
    * `useCardAnchors`. Absent everywhere the board is not drawing a chain.
    */
   anchorRef?: (el: HTMLDivElement | null) => void;
+  /**
+   * What this card would do with the link currently being drawn, or undefined when no link
+   * gesture is in the air. Computed once per gesture for the whole board (`linkDropStates`)
+   * rather than per card per `dragover`.
+   */
+  linkState?: LinkDropState;
+  /**
+   * Called when a link drag starts from this card's handle — the card has already put its
+   * own id on the `DataTransfer`; this is only so the board can light the targets up.
+   * Absent on a board that is not drawing chains, which is also what hides the handle.
+   */
+  onLinkStart?: () => void;
+  /** The drag ended, however it ended — dropped, escaped, or dropped on nothing. */
+  onLinkEnd?: () => void;
+  /** A link was dropped ON this card: `fromTaskId` runs first, this card runs after. */
+  onLinkTo?: (fromTaskId: string) => void;
+  /** Enter/Space on the handle — arm a link from this card, for anyone not using a mouse. */
+  onLinkArm?: () => void;
   draggable: boolean;
   onSelect: () => void;
   /** Open a step in the detail pane (the row never drags or moves the card). */
@@ -688,6 +773,11 @@ export function TaskCard({
   selected,
   selectedTaskId,
   anchorRef,
+  linkState,
+  onLinkStart,
+  onLinkEnd,
+  onLinkTo,
+  onLinkArm,
   draggable,
   onSelect,
   onSelectSubtask,
@@ -732,6 +822,8 @@ export function TaskCard({
   return (
     <div
       ref={anchorRef}
+      // How a drag event names the card it happened over — see `taskIdUnder`.
+      {...{ [TASK_ID_ATTR]: task.id }}
       className={mergeClasses(
         styles.card,
         // Composed, not chosen between: the ring and the fill are different properties now,
@@ -739,14 +831,72 @@ export function TaskCard({
         wantsAttention && styles.cardUnread,
         selected && styles.cardSelected,
         dragging && styles.dragging,
+        linkState === 'valid' && styles.linkValid,
+        linkState === 'linked' && styles.linkExisting,
+        linkState === 'refused' && styles.linkRefused,
       )}
       draggable={draggable}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
+      // A link being drawn, not a card being moved. Two gestures share one mechanism and
+      // are told apart by the `DataTransfer`'s TYPE — a card drag falls straight through
+      // to the column, which is the only thing that should ever act on it.
+      onDragOver={(e) => {
+        if (!isChainLinkDrag(e.dataTransfer.types)) return;
+        e.preventDefault();
+        // `'none'` on an invalid target cancels the drop in the browser itself, so the
+        // refusal is in the cursor before you let go. No `stopPropagation`: the board
+        // above still needs this event to move the rubber band's loose end.
+        e.dataTransfer.dropEffect = dropEffectFor(linkState);
+      }}
+      onDrop={(e) => {
+        if (!isChainLinkDrag(e.dataTransfer.types)) return;
+        e.preventDefault();
+        // Consumed here — the column below must not also read it as a card being moved.
+        e.stopPropagation();
+        const fromTaskId = e.dataTransfer.getData(CHAIN_LINK_MIME);
+        if (fromTaskId) onLinkTo?.(fromTaskId);
+      }}
       onClick={onSelect}
     >
       {projectColor && (
         <div className={styles.projectNotch} style={{ backgroundColor: projectColor }} />
+      )}
+      {onLinkStart && (
+        <button
+          type="button"
+          // What the card's `:hover` rule reaches for. A data attribute rather than the
+          // generated class name, which Griffel does not let a sibling rule name.
+          data-chain-handle=""
+          className={mergeClasses(
+            styles.linkHandle,
+            linkState === 'source' && styles.linkHandleActive,
+          )}
+          // The source card's handle has to stay put for the whole gesture, and an inline
+          // style is the one thing that outranks the card's hover rule either way.
+          style={linkState === 'source' ? { opacity: 1, pointerEvents: 'auto' } : undefined}
+          draggable
+          aria-label={`Chain from ${task.title} — drag onto another card to run that card after this one`}
+          title="Drag onto another card to run that card after this one"
+          onDragStart={(e) => {
+            // The card's own `onDragStart` is an ancestor handler and would otherwise ALSO
+            // fire, putting this id on `text/plain` and turning the gesture into a move.
+            e.stopPropagation();
+            e.dataTransfer.setData(CHAIN_LINK_MIME, task.id);
+            e.dataTransfer.effectAllowed = 'link';
+            onLinkStart();
+          }}
+          onDragEnd={(e) => {
+            e.stopPropagation();
+            onLinkEnd?.();
+          }}
+          // A button's Enter and Space arrive here as a click, so the keyboard path costs
+          // no handler of its own.
+          onClick={(e) => {
+            e.stopPropagation();
+            onLinkArm?.();
+          }}
+        />
       )}
       <div className={mergeClasses(styles.body, run.spinner && styles.runningBand)}>
         <div className={styles.titleRow}>

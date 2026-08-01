@@ -2,6 +2,11 @@
  * KanbanColumn — one column of the My Tasks board: a header with a live count and
  * a drop zone holding its cards. Uses native HTML5 drag-and-drop (no library):
  * the dragged task id travels in `dataTransfer`, set by each `TaskCard`.
+ *
+ * Two different gestures now ride that one mechanism — a card moving between columns, and
+ * a link being drawn from one card to another — and they are told apart by the type on the
+ * `DataTransfer`, never by where the pointer is. This column owns the first and must stay
+ * completely out of the second's way; see `chainDrag`.
  */
 import { useState } from 'react';
 import { Caption1, Text, makeStyles, mergeClasses, tokens } from '@fluentui/react-components';
@@ -10,6 +15,7 @@ import type { StatusKeyword } from '@shared/statusKeywords';
 import type { BoardDisplaySettings } from '@shared/settings';
 import { TaskCard } from './TaskCard';
 import type { BoardCard, BoardColumn } from './boardColumns';
+import { isChainLinkDrag, type LinkDragState } from './chainDrag';
 
 const useStyles = makeStyles({
   // A grid item of the board's scroll container (`MyTasks.columns`): it stretches to
@@ -92,6 +98,15 @@ export interface KanbanColumnProps {
    * over the whole board rather than per column (see `ChainOverlay`).
    */
   anchorRef?: (taskId: string) => (el: HTMLDivElement | null) => void;
+  /**
+   * The link gesture in flight, if any — each card asks it what IT would do with the drop.
+   * Passed through like `anchorRef`: the column neither starts one nor acts on one.
+   */
+  linkDrag?: LinkDragState | null;
+  onLinkStart?: (taskId: string) => void;
+  onLinkEnd?: () => void;
+  onLinkTo?: (fromTaskId: string, toTaskId: string) => void;
+  onLinkArm?: (taskId: string) => void;
   selectedTaskId: string | null;
   draggingId: string | null;
   onSelectTask: (id: string) => void;
@@ -108,6 +123,10 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
     <div
       className={mergeClasses(styles.column, over && styles.columnOver)}
       onDragOver={(e) => {
+        // A link being drawn is not this column's business. Without this the column would
+        // accept the drop as well, so drawing an arrow ACROSS a column would also move the
+        // card into it — and it must not even highlight, or it would be offering to.
+        if (isChainLinkDrag(e.dataTransfer.types)) return;
         e.preventDefault();
         e.dataTransfer.dropEffect = 'move';
         if (!over) setOver(true);
@@ -117,6 +136,10 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
         if (!e.currentTarget.contains(e.relatedTarget as Node)) setOver(false);
       }}
       onDrop={(e) => {
+        // Belt and braces: a card consumes its own link drop, and `dragover` never accepted
+        // one anyway — but `text/plain` is empty on a link drag, so read the type first
+        // rather than relying on the id coming back blank.
+        if (isChainLinkDrag(e.dataTransfer.types)) return;
         e.preventDefault();
         setOver(false);
         const id = e.dataTransfer.getData('text/plain');
@@ -150,6 +173,13 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               selected={task.id === props.selectedTaskId}
               selectedTaskId={props.selectedTaskId}
               anchorRef={props.anchorRef?.(task.id)}
+              linkState={props.linkDrag?.states.get(task.id)}
+              // Absent when the board is not wired for chains, which is also what decides
+              // whether the card grows a handle at all.
+              onLinkStart={props.onLinkStart && (() => props.onLinkStart?.(task.id))}
+              onLinkEnd={props.onLinkEnd}
+              onLinkTo={(fromTaskId) => props.onLinkTo?.(fromTaskId, task.id)}
+              onLinkArm={() => props.onLinkArm?.(task.id)}
               draggable={props.canDrag({ task, subtasks, mergeRequests })}
               dragging={task.id === props.draggingId}
               onSelect={() => props.onSelectTask(task.id)}
