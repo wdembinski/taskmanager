@@ -36,9 +36,9 @@ import {
   type ProjectPatch,
   type ProjectWithTasks,
   type Task,
-  type TaskStatus,
 } from '@shared/model';
-import { categoryFromKey, columnForStatus, isRunStatus, restingStatus } from '@shared/board';
+import { categoryFromKey, columnForStatus, restingStatus } from '@shared/board';
+import { humanStatusPatch } from './cardStatusGuard';
 import { resolveStatusColumn } from '@shared/statusResolve';
 import type { AppSettings } from '@shared/settings';
 import { sameExecTarget, type ExecTarget } from '@shared/execTarget';
@@ -766,10 +766,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     const existing = store.getTask(taskId);
     if (!existing) throw new Error('Task not found.');
     if (!isManualStatus(status)) throw new Error(`"${status}" is not a hand-settable status.`);
-    // The scheduler owns a task while it runs; don't let a manual change desync it.
-    if (existing.status === 'running' || existing.status === 'waiting-input') {
-      throw new Error('Stop the running session before changing status.');
-    }
+    // A live run is NOT a refusal — see `humanStatusPatch`. The run borrowed `status`, so
+    // the human's choice is parked in `preRunStatus` and the card moves without the run
+    // noticing. This used to throw "stop the session first", which made a delegated card
+    // unmovable for as long as its agent worked.
     const from = restingStatus(existing);
     if (from === status) return existing;
 
@@ -1644,23 +1644,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     return { externalStatus: picked.to.name, externalStatusCategory: category };
   };
 
-  /**
-   * Where to write a status the HUMAN chose.
-   *
-   * Straight into `status`, unless a run has borrowed that field (`preRunStatus`) — then
-   * into the parked value the run will be restored to, so choosing a state mid-run neither
-   * kills the run nor gets undone when it ends. Only reachable while a card sits at
-   * `blocked-by-limit`; the two live run states are refused outright by both callers.
-   */
-  const humanStatusPatch = (task: Task, status: TaskStatus): Parameters<Store['updateTask']>[1] =>
-    isRunStatus(task.status) ? { preRunStatus: status } : { status };
-
   handle('task:move', async (taskId, toColumn) => {
     const existing = store.getTask(taskId);
     if (!existing) throw new Error('Task not found.');
-    if (existing.status === 'running' || existing.status === 'waiting-input') {
-      throw new Error('Stop the running session before moving this task.');
-    }
+    // Draggable mid-run, on purpose: `resolveMove` reads where the card RESTS and
+    // `humanStatusPatch` writes to the field the run is not using, so the column follows
+    // the drop and the session carries on. (See `cardStatusGuard.ts`.)
     const move = resolveMove(existing, toColumn);
     if (move.noop) return existing;
 

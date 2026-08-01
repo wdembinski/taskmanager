@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { guardCardStatus } from './cardStatusGuard';
+import { guardCardStatus, humanStatusPatch } from './cardStatusGuard';
 import { PERSONAL_PROJECT_ID, type Task, type TaskStatus } from '@shared/model';
 import { columnForTask } from '@shared/board';
 
@@ -85,6 +85,52 @@ describe('guardCardStatus — a run borrows a card’s status, it never takes it
   it('passes a STEP straight through — its chain reads `done` to advance', () => {
     const step = card({ parentTaskId: 't1', id: 's1', status: 'running' });
     expect(guardCardStatus(step, { status: 'done' })).toEqual({ status: 'done' });
+  });
+});
+
+describe('humanStatusPatch — the human can still move a card the run is holding', () => {
+  it('writes straight to `status` when no run has borrowed it', () => {
+    expect(humanStatusPatch(card({ status: 'pending' }), 'in-review')).toEqual({
+      status: 'in-review',
+    });
+  });
+
+  it.each<TaskStatus>(['running', 'waiting-input', 'blocked-by-limit'])(
+    'parks the chosen status instead of evicting a %s run',
+    (live) => {
+      const before = card({ status: live, preRunStatus: 'pending' });
+      const patch = humanStatusPatch(before, 'done');
+      // The run's field is untouched — the spinner, the ring and the chat target all read it.
+      expect(patch.status).toBeUndefined();
+      expect(patch).toEqual({ preRunStatus: 'done' });
+      // ...and the board has already moved the card, mid-run.
+      expect(columnForTask({ ...before, ...patch })).toBe('done');
+    },
+  );
+
+  it('hands the card back where the human moved it, not where the run found it', () => {
+    // The whole round trip: TO DO card starts running, human drags it to IN REVIEW, run settles.
+    const todo = card({ status: 'pending' });
+    const started = { ...todo, ...guardCardStatus(todo, { status: 'running' }) };
+    expect(started.preRunStatus).toBe('pending');
+
+    const moved = { ...started, ...humanStatusPatch(started, 'in-review') };
+    expect(moved.status).toBe('running'); // still running
+    expect(columnForTask(moved)).toBe('in-review'); // but filed under IN REVIEW
+
+    const settled = { ...moved, ...guardCardStatus(moved, { status: 'in-progress' }) };
+    expect(settled.status).toBe('in-review');
+    expect(settled.preRunStatus).toBeNull();
+    expect(columnForTask(settled)).toBe('in-review');
+  });
+
+  it('writes `status` for a step or a plan task — nothing there ever releases the parked value', () => {
+    expect(humanStatusPatch(card({ parentTaskId: 't1', status: 'running' }), 'done')).toEqual({
+      status: 'done',
+    });
+    expect(humanStatusPatch(card({ projectId: 'p1', status: 'running' }), 'done')).toEqual({
+      status: 'done',
+    });
   });
 });
 

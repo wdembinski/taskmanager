@@ -14,6 +14,11 @@
  *   - a run that finishes, fails, is stopped or is retried changes no column;
  *   - only a drag, or the detail pane's dropdown, ever moves a card.
  *
+ * The rule has a second half, {@link humanStatusPatch}: because the run only BORROWED the
+ * field, the human can still move the card while the run holds it — the move is written to
+ * the parked value instead. The two functions are deliberately scoped by the same
+ * `isBoardCard` predicate, so whatever the guard protects is exactly what the move parks.
+ *
  * Every status write the scheduler makes goes through here (see `Scheduler.updateTask`),
  * which is the point: there are some thirty of them and a rule enforced at each would
  * have been a rule with holes.
@@ -24,7 +29,7 @@
  * pass through untouched.
  */
 import { isBoardCard, isRunStatus } from '@shared/board';
-import type { Task } from '@shared/model';
+import type { Task, TaskStatus } from '@shared/model';
 
 /** The subset of a task the scheduler patches. */
 export type SchedulerPatch = Partial<
@@ -66,4 +71,25 @@ export function guardCardStatus(before: Task, patch: SchedulerPatch): SchedulerP
     status: before.preRunStatus ?? (isRunStatus(before.status) ? 'pending' : before.status),
     preRunStatus: null,
   };
+}
+
+/**
+ * Where to write a status the HUMAN chose — the other half of the borrowing rule.
+ *
+ * Straight into `status`, unless a run has borrowed that field, and then into
+ * `preRunStatus`: the value the run will be given back when it settles. So moving a card
+ * mid-run neither kills the run nor gets quietly undone the moment it ends — the card
+ * lands in the column you dropped it in and stays there.
+ *
+ * That is the whole reason a live run no longer blocks a move. The two states cannot
+ * collide because they are two different fields: the run keeps saying `running` (spinner,
+ * attention ring, chat target), while the board reads `restingStatus` and shows the card
+ * where you put it. The run is left running on purpose — moving a card says where the work
+ * belongs, not that it should stop; stopping is what the Stop button is for.
+ *
+ * Scoped by `isBoardCard` for the same reason {@link guardCardStatus} is: on anything else
+ * nothing ever releases `preRunStatus`, so parking a status there would strand it.
+ */
+export function humanStatusPatch(task: Task, status: TaskStatus): SchedulerPatch {
+  return isBoardCard(task) && isRunStatus(task.status) ? { preRunStatus: status } : { status };
 }
