@@ -77,6 +77,27 @@ export function groupSubtasks(
 }
 
 /**
+ * Chain focus mode: the cards the board shows when it is narrowed to one chain.
+ *
+ * `focusIds` is the chain's component (see `chainComponent`) or **null** for "show
+ * everything" — null rather than a set of every id on the board, so the ordinary case is a
+ * no-op and focus with nothing selected reads as no filter rather than as an empty board.
+ *
+ * The test is the CARD's id, never a step's. A card's steps are not cards of their own —
+ * they render inside the parent and travel with it — and a step can never be chained
+ * (`canLink` refuses one at either end), so a card whose step id somehow appeared in the
+ * set would still be the wrong thing to keep, and filtering the steps themselves would
+ * empty a card of its work.
+ */
+export function focusCards(
+  cards: readonly BoardCard[],
+  focusIds: ReadonlySet<string> | null,
+): BoardCard[] {
+  if (!focusIds) return [...cards];
+  return cards.filter((card) => focusIds.has(card.task.id));
+}
+
+/**
  * The order cards sit in within a column:
  *
  *   1. **cards that want you** — an unread ticket comment, this card's agent parked on

@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardColumn, Task, TaskStatus } from '@shared/model';
 import type { MergeRequest } from '@shared/mergeRequest';
+import type { TaskLink } from '@shared/taskChain';
+import { chainComponent } from '@shared/taskChain';
 import {
   COLUMN_META,
   columnForStatus,
   columnForTask,
+  focusCards,
   groupSubtasks,
   hasLiveSubtask,
   sortCards,
@@ -140,6 +143,84 @@ describe('groupSubtasks', () => {
 
   it('handles an empty board', () => {
     expect(groupSubtasks([])).toEqual([]);
+  });
+});
+
+describe('focusCards — chain focus mode', () => {
+  /**
+   * The chain under test, drawn as the board draws it — a fan-out from #1 into #2 and #3,
+   * fanning back in on #4 — plus `far`, an unrelated card, and `solo`, a card on nobody's
+   * chain. `focusIds` comes from the real `chainComponent` rather than a hand-written set,
+   * so this covers the actual pairing the board uses and not a restatement of it.
+   */
+  const links: TaskLink[] = [
+    { id: 'l1', fromTaskId: '1', toTaskId: '2', gate: 'after-merge', createdAt: 0 },
+    { id: 'l2', fromTaskId: '1', toTaskId: '3', gate: 'after-merge', createdAt: 0 },
+    { id: 'l3', fromTaskId: '2', toTaskId: '4', gate: 'after-merge', createdAt: 0 },
+    { id: 'l4', fromTaskId: '3', toTaskId: '4', gate: 'after-merge', createdAt: 0 },
+    { id: 'l5', fromTaskId: 'far', toTaskId: 'other', gate: 'after-merge', createdAt: 0 },
+  ];
+  const board = groupSubtasks([
+    card('1'),
+    card('2'),
+    card('3'),
+    card('4'),
+    card('far'),
+    card('other'),
+    card('solo'),
+  ]);
+
+  it('passes the whole board through when focus is off', () => {
+    // Null is "no filter", not "no cards" — the ordinary case must be a no-op.
+    expect(focusCards(board, null).map((c) => c.task.id)).toEqual([
+      '1',
+      '2',
+      '3',
+      '4',
+      'far',
+      'other',
+      'solo',
+    ]);
+  });
+
+  it('keeps the selected card’s whole chain and nothing else', () => {
+    const ids = focusCards(board, chainComponent(links, '4')).map((c) => c.task.id);
+    expect(ids).toEqual(['1', '2', '3', '4']);
+  });
+
+  it('shows the same four cards whichever card of the chain is selected', () => {
+    // The component is undirected: focusing the card at the head of the fan-out has to
+    // give the same board as focusing the one it all joins back into.
+    const fromHead = focusCards(board, chainComponent(links, '1')).map((c) => c.task.id);
+    const fromTail = focusCards(board, chainComponent(links, '4')).map((c) => c.task.id);
+    expect(fromHead).toEqual(fromTail);
+  });
+
+  it('narrows to just the card itself when it is on nobody’s chain', () => {
+    expect(focusCards(board, chainComponent(links, 'solo')).map((c) => c.task.id)).toEqual([
+      'solo',
+    ]);
+  });
+
+  it('leaves a card’s steps with it — a chained card keeps its work', () => {
+    // Focus filters CARDS. A step is never chained itself, so testing step ids would
+    // empty the card of the very work the chain is about.
+    const withSteps = groupSubtasks([
+      card('1'),
+      card('2'),
+      card('s1', { parentTaskId: '2', order: 0 }),
+      card('s2', { parentTaskId: '2', order: 1 }),
+      card('solo'),
+    ]);
+    const focused = focusCards(withSteps, chainComponent(links, '2'));
+    expect(focused.map((c) => c.task.id)).toEqual(['1', '2']);
+    expect(focused[1].subtasks.map((s) => s.id)).toEqual(['s1', 's2']);
+  });
+
+  it('does not mutate the board it was given', () => {
+    const before = board.map((c) => c.task.id);
+    focusCards(board, chainComponent(links, '1'));
+    expect(board.map((c) => c.task.id)).toEqual(before);
   });
 });
 

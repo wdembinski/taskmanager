@@ -584,6 +584,14 @@ const useStyles = makeStyles({
   },
   /** The names inside the chip — the chip's border stays put however long they run. */
   chainChipText: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  /**
+   * The "+2" tail. Outside the truncating span and unshrinkable on purpose: it is the only
+   * part of the chip that says the card waits on MORE than the one card it names, so it is
+   * the last thing that may be ellipsised away. Inside `chainChipText` a long first title
+   * ate it, and the chip then read as a single dependency — the exact lie the tooltip
+   * below exists to prevent.
+   */
+  chainChipMore: { flexShrink: 0, whiteSpace: 'nowrap' },
   chainChipIcon: { fontSize: '12px', flexShrink: 0, display: 'flex' },
   grow: { flex: 1, minWidth: 0 },
   jiraLink: { textDecoration: 'none' },
@@ -865,10 +873,10 @@ export function TaskCard({
       }
     >
       <LinkRegular className={styles.chainChipIcon} />
-      <span className={styles.chainChipText}>
-        waiting on {waitingNames[0]}
-        {waitingNames.length > 1 ? ` +${waitingNames.length - 1}` : ''}
-      </span>
+      <span className={styles.chainChipText}>waiting on {waitingNames[0]}</span>
+      {waitingNames.length > 1 && (
+        <span className={styles.chainChipMore}>+{waitingNames.length - 1}</span>
+      )}
     </span>
   ) : chainReady ? (
     <span

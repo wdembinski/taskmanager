@@ -69,6 +69,7 @@ import { useActiveRuns } from './useActiveRuns';
 import {
   COLUMN_META,
   columnForTask,
+  focusCards,
   groupSubtasks,
   hasLiveSubtask,
   sortCards,
@@ -316,11 +317,9 @@ export function MyTasks(): JSX.Element {
       done: [],
     };
     // A card's steps are not cards of their own — they render inside the parent and
-    // travel with it, whatever their own status.
-    for (const card of groupSubtasks(tasks ?? [], mrsByTask)) {
-      // Focus mode. The test is the CARD's id — a card's steps travel with it, and a step
-      // is never chained itself, so filtering by step would empty a card of its work.
-      if (focusIds && !focusIds.has(card.task.id)) continue;
+    // travel with it, whatever their own status. `focusCards` then narrows the board to
+    // the selected card's chain, or passes everything through when focus is off.
+    for (const card of focusCards(groupSubtasks(tasks ?? [], mrsByTask), focusIds)) {
       map[columnForTask(card.task)].push(card);
     }
     // Cards that want you first, then by priority — see `sortCards`. The inbox's ids go
