@@ -112,6 +112,14 @@ describe('litLinkIds', () => {
   it('lights nothing when nothing is selected or hovered', () => {
     expect(litLinkIds(links, new Set()).size).toBe(0);
   });
+
+  // What focus mode relies on: the board is filtered to one whole component and every card
+  // in it is passed as a seed, so the sibling branch that stays dark for ONE card lights up
+  // — the noise the hairline was quiet for is no longer on the board.
+  it('lights every arrow within a whole component seeded at once', () => {
+    const focused = new Set(['a', 'b', 'c', 'd', 'e']);
+    expect([...litLinkIds(links, focused)].sort()).toEqual(['l1', 'l2', 'l3', 'l4']);
+  });
 });
 
 describe('arrowRoute', () => {

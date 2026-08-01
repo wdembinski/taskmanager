@@ -34,6 +34,7 @@ import {
 import type { ClaudeModel, PermissionMode } from '@shared/session';
 import type { Project, Task, TaskActivityEntry } from '@shared/model';
 import type { MergeRequest } from '@shared/mergeRequest';
+import type { TaskLink } from '@shared/taskChain';
 import type { SessionEvent } from '@shared/session';
 import { chatTarget } from '@shared/board';
 import type { StatusKeyword } from '@shared/statusKeywords';
@@ -47,6 +48,7 @@ import { Composer } from './chat/Composer';
 import { foldTurns } from './chat/turns';
 import { EMPTY_COMPOSER, type ComposerValue } from './chat/mentions';
 import { MergeRequests } from './MergeRequests';
+import { TaskChain } from './TaskChain';
 import { StepBrief, TaskSteps } from './TaskSteps';
 import { TaskAgentPanel } from './TaskAgentPanel';
 import { TaskDetailsCell } from './TaskDetailsCell';
@@ -170,6 +172,18 @@ export interface TaskDetailProps {
    * not blocked, which is the only reason the button is not there.
    */
   chainWaitingOn?: readonly Task[];
+  /**
+   * Every link on the board, for the **Chain** section — the card's own predecessors and
+   * successors as a list, which is the keyboard's route to what the arrows do by dragging.
+   *
+   * The whole list rather than this card's share of it, and the board's task index with it,
+   * for the same reason `MyTasks` holds both: a JIRA sync rewrites every `Task` literal, so
+   * anything derived per card would have to be rebuilt here on every poll anyway.
+   */
+  chainLinks?: readonly TaskLink[];
+  chainTasksById?: ReadonlyMap<string, Task>;
+  /** Erase one link. The board owns the call, so its arrow and this pane's row agree. */
+  onUnlinkChain?: (linkId: string) => void;
   /** Show another task in this pane (the breadcrumb, and opening a step). */
   onOpenTask?: (taskId: string) => void;
   /** Called after a successful manual status change so the parent list can patch. */
@@ -177,6 +191,9 @@ export interface TaskDetailProps {
   /** Called after a step is added or edited, so the board can reload its cards. */
   onSubtasksChanged?: () => void;
 }
+
+/** One empty map for every pane with no chain index, rather than a new one per render. */
+const NO_TASKS: ReadonlyMap<string, Task> = new Map();
 
 export function TaskDetail({
   task,
@@ -189,6 +206,9 @@ export function TaskDetail({
   attention,
   liveRunTaskIds,
   chainWaitingOn,
+  chainLinks = [],
+  chainTasksById = NO_TASKS,
+  onUnlinkChain,
   onOpenTask,
   onStatusChanged,
   onSubtasksChanged,
@@ -591,6 +611,16 @@ export function TaskDetail({
               subtasks={subtasks}
               onOpen={(id) => onOpenTask?.(id)}
               onChanged={() => onSubtasksChanged?.()}
+            />
+            {/* Beside Steps, and deliberately after it: a card's own steps are the work
+                inside it, and the chain is where that work sits among everything else.
+                Never on a STEP's pane — a step cannot be chained at either end. */}
+            <TaskChain
+              task={task}
+              links={chainLinks}
+              tasksById={chainTasksById}
+              onOpen={(id) => onOpenTask?.(id)}
+              onUnlink={(linkId) => onUnlinkChain?.(linkId)}
             />
             <MergeRequests
               mergeRequests={mergeRequests}

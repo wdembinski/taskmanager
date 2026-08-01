@@ -15,6 +15,8 @@
  *   - **lit** — you selected or hovered one of its cards. 2px in the accent, along the
  *     whole route upstream and downstream of that card, so one glance answers "what does
  *     this wait for, and what waits on it" rather than just naming the next card along.
+ *     A board FOCUSED on one chain (`focusTaskIds`) is lit throughout: the budget the
+ *     hairline was kept to is a budget against noise, and focus removed the noise.
  *   - **blocked** — the target is still waiting on this predecessor. Dashed, which is the
  *     one thing a line can say without a colour.
  *   - **releasing** — and the predecessor is running right now, so the dash travels toward
@@ -205,6 +207,15 @@ export interface ChainOverlayProps {
   runningTaskIds?: ReadonlySet<string>;
   selectedTaskId?: string | null;
   hoveredTaskId?: string | null;
+  /**
+   * The chain the board has been FOCUSED on, when it has (`MyTasks.focusIds`) — every card
+   * it is showing, so every arrow among them is lit rather than resting.
+   *
+   * The hairline is a budget kept against a board full of cards that have nothing to do with
+   * this chain. In focus mode there are none: the noise the arrows were quiet for is gone,
+   * and what is left is the one thing you asked to look at.
+   */
+  focusTaskIds?: ReadonlySet<string> | null;
   /** The arrow being edited — drawn heavier, with its two ends marked. */
   selectedLinkId?: string | null;
   /** Click an arrow to select it; click its own stroke again is still just a select. */
@@ -222,7 +233,10 @@ export function ChainOverlay(props: ChainOverlayProps): JSX.Element | null {
   const band = bandFor(props);
   if ((props.links.length === 0 && !band) || props.width === 0) return null;
 
-  const litTaskIds = new Set<string>();
+  // Seeded with the focused chain, so a focused board's arrows are lit throughout: every
+  // card on it is on the route, and `litLinkIds` reaching up and down from all of them
+  // lights exactly the arrows between them.
+  const litTaskIds = new Set<string>(props.focusTaskIds ?? []);
   if (props.selectedTaskId) litTaskIds.add(props.selectedTaskId);
   if (props.hoveredTaskId) litTaskIds.add(props.hoveredTaskId);
 

@@ -9,6 +9,11 @@
  * On a board that passes `parents` (My Tasks, Phase 11), the dialog can also add a
  * **step** under an existing card: pick the card and write the step's brief, and it
  * joins that card's chain — the hand-written equivalent of an approved plan.
+ *
+ * And on a board that passes `chainCandidates`, it can draw the card's first chain link
+ * as it is created: *Runs after…* names the card this one waits for. Most chained cards
+ * are known to be chained at the moment somebody thinks of them, and making a new card,
+ * finding it on the board and dragging an arrow to it is three steps for one intent.
  */
 import { useEffect, useMemo, useState } from 'react';
 import {
@@ -31,6 +36,7 @@ import {
 import { Switch } from '@fluentui/react-components';
 import type { Task, TaskType } from '@shared/model';
 import type { JiraIssueTypeOption, JiraProjectOption } from '@shared/ipc';
+import { LINK_GATE_LABEL, LINK_REFUSAL_MESSAGE } from '@shared/taskChain';
 
 /** The task types offered in the picker, with their display labels. */
 const TASK_TYPES: Array<{ value: TaskType; label: string }> = [
@@ -44,6 +50,8 @@ const useStyles = makeStyles({
 
 /** Sentinel for "no parent" in the parent dropdown (an Option needs a value). */
 const NO_PARENT = '';
+/** The same, for "chained after nothing" — the ordinary case, and the default. */
+const NO_LINK = '';
 
 export interface AddTaskDialogProps {
   open: boolean;
@@ -58,6 +66,14 @@ export interface AddTaskDialogProps {
   /** Preselected parent, when the dialog is opened from a card's Steps section. */
   defaultParentId?: string | null;
   /**
+   * Cards the new one may be chained AFTER. Omit (or pass an empty list) to hide the
+   * picker — only the My Tasks board has a chain to join.
+   *
+   * The same cards `parents` offers, and a different question: `parents` makes this task a
+   * STEP of one card's plan, while this makes it a card of its own that waits for another.
+   */
+  chainCandidates?: Task[];
+  /**
    * Whether this board can also create the task as a real JIRA issue. Set only by My
    * Tasks with JIRA on — the dialog is also used from Projects, where a ticket makes
    * no sense.
@@ -65,6 +81,15 @@ export interface AddTaskDialogProps {
   jiraEnabled?: boolean;
   onClose: () => void;
   onCreated: () => void;
+  /**
+   * Something the board should say once this dialog has gone.
+   *
+   * The chain link is drawn AFTER the card exists, so a refusal there cannot be reported
+   * where an error normally is: the card was created, the dialog is closing, and an error
+   * bar inside it would either vanish or invite a second Add. It goes to the board, which
+   * is where the new card now is.
+   */
+  onNotice?: (message: string) => void;
 }
 
 export function AddTaskDialog({
@@ -73,9 +98,11 @@ export function AddTaskDialog({
   phases,
   parents = [],
   defaultParentId = null,
+  chainCandidates = [],
   jiraEnabled = false,
   onClose,
   onCreated,
+  onNotice,
 }: AddTaskDialogProps): JSX.Element {
   const styles = useStyles();
   const [title, setTitle] = useState('');
@@ -83,6 +110,8 @@ export function AddTaskDialog({
   const [type, setType] = useState<TaskType>('feature');
   const [description, setDescription] = useState('');
   const [parentId, setParentId] = useState<string>(NO_PARENT);
+  /** The card this one runs after, drawn as a link the moment the card exists. */
+  const [runsAfterId, setRunsAfterId] = useState<string>(NO_LINK);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Create in JIRA. Off by default: the fast path is still a local card, and a ticket
@@ -101,6 +130,7 @@ export function AddTaskDialog({
       setType('feature');
       setDescription('');
       setParentId(defaultParentId ?? NO_PARENT);
+      setRunsAfterId(NO_LINK);
       setError(null);
       setAsJira(false);
     }
@@ -155,6 +185,29 @@ export function AddTaskDialog({
 
   const parent = useMemo(() => parents.find((p) => p.id === parentId) ?? null, [parents, parentId]);
   const isStep = parent !== null;
+  const runsAfter = useMemo(
+    () => chainCandidates.find((c) => c.id === runsAfterId) ?? null,
+    [chainCandidates, runsAfterId],
+  );
+
+  /**
+   * Draw the arrow the picker asked for — `created` runs after `fromTaskId`.
+   *
+   * Deliberately not part of `save`'s try: the card is already on the board by the time
+   * this runs, so a link that will not draw is a note to the human rather than a failure of
+   * the whole dialog. It takes the default `after-merge` gate, changed on the arrow itself
+   * afterwards — a strict default is the one you can loosen once you have seen the chain.
+   */
+  async function chainAfter(fromTaskId: string, createdId: string): Promise<void> {
+    const excuse = (why: string): void =>
+      onNotice?.(`The card was created, but it could not be chained — ${why}.`);
+    try {
+      const result = await window.api.invoke('chain:link', fromTaskId, createdId);
+      if (result.status === 'refused') excuse(LINK_REFUSAL_MESSAGE[result.reason]);
+    } catch (e) {
+      excuse(e instanceof Error ? e.message : String(e));
+    }
+  }
 
   async function save(): Promise<void> {
     if (!projectId || !title.trim()) return;
@@ -165,6 +218,9 @@ export function AddTaskDialog({
     setSaving(true);
     setError(null);
     try {
+      // The card the chain link is drawn to, once there is one. A step never has it: its
+      // order comes from the plan it belongs to, and `canLink` refuses steps at either end.
+      let created: Task | null = null;
       // A step is created through its parent (it inherits the delegation and joins
       // the chain); everything else is an ordinary ad-hoc card.
       if (parent) {
@@ -175,19 +231,20 @@ export function AddTaskDialog({
       } else if (asJira) {
         // A real ticket. Its own channel, not a widened `task:create`: that one is a
         // local write other screens rely on, and it hardcodes `source: 'adhoc'`.
-        await window.api.invoke('jira:createTask', {
+        created = await window.api.invoke('jira:createTask', {
           projectKey: jiraProjectKey,
           issueTypeId: jiraTypeId,
           summary: title.trim(),
           description: description.trim() || undefined,
         });
       } else {
-        await window.api.invoke('task:create', projectId, {
+        created = await window.api.invoke('task:create', projectId, {
           title: title.trim(),
           phase: phase.trim() || undefined,
           type,
         });
       }
+      if (created && runsAfter) await chainAfter(runsAfter.id, created.id);
       onCreated();
       onClose();
     } catch (e) {
@@ -234,6 +291,34 @@ export function AddTaskDialog({
                     {parents.map((p) => (
                       <Option key={p.id} value={p.id}>
                         {p.title}
+                      </Option>
+                    ))}
+                  </Dropdown>
+                </Field>
+              )}
+              {/* Chain it as it is created. Never offered for a step — a step's order is
+                  the plan's, and a second, contradictory ordering over the top of it could
+                  only ever mean the two disagree (see `canLink`). */}
+              {chainCandidates.length > 0 && !isStep && (
+                <Field
+                  label="Runs after… (optional)"
+                  hint={
+                    runsAfter
+                      ? // The gate the link is drawn with, said in the same words the board
+                        // and the detail pane use for it — one phrase, three surfaces.
+                        `Runs ${LINK_GATE_LABEL['after-merge']}, then starts by itself. Change the gate on the board's arrow.`
+                      : 'Chain this card after another one, instead of drawing the arrow afterwards.'
+                  }
+                >
+                  <Dropdown
+                    value={runsAfter?.title ?? 'Nothing — it can start whenever'}
+                    selectedOptions={[runsAfterId]}
+                    onOptionSelect={(_e, d) => setRunsAfterId(d.optionValue ?? NO_LINK)}
+                  >
+                    <Option value={NO_LINK}>Nothing — it can start whenever</Option>
+                    {chainCandidates.map((c) => (
+                      <Option key={c.id} value={c.id} text={c.title}>
+                        {c.externalKey ? `${c.externalKey} · ${c.title}` : c.title}
                       </Option>
                     ))}
                   </Dropdown>
