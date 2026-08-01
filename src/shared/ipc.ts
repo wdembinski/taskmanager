@@ -323,6 +323,15 @@ export interface IpcApi {
    */
   'task:integrate': (taskId: string) => Promise<void>;
   /**
+   * Whether a project has release instructions on disk (`RELEASE.md` at its root).
+   *
+   * A question about the FILE SYSTEM, which the renderer cannot see, and the reason the
+   * Details Panel can say "this repo has no RELEASE.md yet" instead of offering a switch
+   * that would quietly do nothing. Answered fresh on every ask — the file appears the
+   * moment someone writes it, and a cached "no" would outlive that.
+   */
+  'project:hasReleaseDoc': (projectId: string) => Promise<boolean>;
+  /**
    * Create an ad-hoc task in a project (Phase 8) — no plan line required, so
    * plan-less projects are usable and you can add work on the fly. Returns the task.
    */
@@ -398,7 +407,16 @@ export interface IpcApi {
    */
   'task:setAgentOptions': (
     taskId: string,
-    options: { model?: ClaudeModel | null; mode?: PermissionMode | null },
+    options: {
+      model?: ClaudeModel | null;
+      mode?: PermissionMode | null;
+      /**
+       * Release this card after its branch merges (`@shared/release`). `null` hands the
+       * decision back to the agent project's own preference, which is what an untouched
+       * card does — so the switch has an off, an on, and a "whatever the project says".
+       */
+      autoRelease?: boolean | null;
+    },
   ) => Promise<Task>;
   /** The task's unified activity timeline (comments + status changes + AI transcript). */
   'task:activity': (taskId: string) => Promise<TaskActivityEntry[]>;

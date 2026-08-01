@@ -166,6 +166,16 @@ export interface Project {
    */
   writeBackPlan: boolean;
   /**
+   * The project's PREFERENCE for auto-release: when a card's branch is merged back into
+   * base, follow the repo's `RELEASE.md` and cut the release too (see `@shared/release`).
+   *
+   * A default, not a decision — every card may override it in the Details Panel, and a
+   * card that never did follows this. Off for every project that predates the field, and
+   * inert for a repo with no `RELEASE.md`: the merge notes that the file is missing and
+   * nothing is run, because the instructions are the repo's to write.
+   */
+  autoRelease: boolean;
+  /**
    * Whether the plan has been reviewed for the team-orchestration features
    * (dependency `@needs:` clauses and, later, a shared contract). Projects that
    * predate those features migrate in as `false` ("needs review") so the UI can
@@ -231,6 +241,8 @@ export interface AddProjectInput {
   /** Integration branch; defaults to `''` = the main checkout's current branch. */
   baseBranch?: string;
   writeBackPlan?: boolean;
+  /** Release after a card's branch merges, per the repo's `RELEASE.md`. Defaults to off. */
+  autoRelease?: boolean;
   planAligned?: boolean;
   /** Defaults to `plan`. `agent` forces a plan-less, worktree-isolated project. */
   kind?: ProjectKind;
@@ -261,6 +273,7 @@ export type ProjectPatch = Partial<
     | 'useWorktrees'
     | 'baseBranch'
     | 'writeBackPlan'
+    | 'autoRelease'
     | 'planAligned'
     | 'jiraEpicKeys'
     | 'target'
@@ -530,6 +543,16 @@ export interface Task {
    * "fall back to the legacy `orch/<taskId>` name" so no existing worktree is orphaned.
    */
   agentBranch?: string | null;
+  /**
+   * This card's answer to "release after the merge?" — `true`/`false` when the human has
+   * said so in the Details Panel, `null` (the default, and every pre-existing card) when
+   * they have not, which follows the agent project's `autoRelease` preference.
+   *
+   * Three states rather than two on purpose: a card that merely inherits must keep
+   * inheriting, so that turning the preference on for the project turns it on for the
+   * cards nobody has ruled on. See `@shared/release`.
+   */
+  autoRelease?: boolean | null;
 
   // --- The chain of execution (see `@shared/taskChain`). ---
   /**

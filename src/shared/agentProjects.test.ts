@@ -15,6 +15,7 @@ const project = (over: Partial<Project>): Project => ({
   useWorktrees: true,
   baseBranch: '',
   writeBackPlan: false,
+  autoRelease: false,
   planAligned: true,
   kind: 'agent',
   jiraEpicKeys: [],
