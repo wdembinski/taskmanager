@@ -7,6 +7,10 @@
  * JIRA ticket that also transitions the real issue (TO DO → IN PROGRESS, or → Done),
  * while Blocked is internal-only and never touches JIRA. The selected card's status
  * and activity timeline show in the right pane (`TaskDetail`).
+ *
+ * The chain of execution is drawn over the top of it: arrows between cards (`ChainOverlay`),
+ * drawn by dragging a card's handle, and a **Chain** toggle in the toolbar that reduces the
+ * board to the selected card's chain and nothing else — see `focusIds`.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
@@ -20,10 +24,12 @@ import {
   MenuPopover,
   MenuTrigger,
   Switch,
+  ToggleButton,
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
 import {
+  ArrowRoutingRegular,
   EyeRegular,
   PanelRightContractRegular,
   PanelRightExpandRegular,
@@ -39,6 +45,7 @@ import {
   LINK_REFUSAL_MESSAGE,
   blockedBy,
   canLink,
+  chainComponent,
   type LinkGate,
   type TaskLink,
 } from '@shared/taskChain';
@@ -173,6 +180,15 @@ export function MyTasks(): JSX.Element {
   /** The arrow being edited: heavier, endpoints marked, and wearing the gate popover. */
   const [selectedLinkId, setSelectedLinkId] = useState<string | null>(null);
   /**
+   * **Focus mode** — show only the selected card's chain.
+   *
+   * Local state rather than a saved setting, unlike the other toolbar switches: it is not a
+   * preference about how cards are drawn but a lens on ONE card, and a board that came back
+   * next launch showing three of your twenty cards, for a selection you no longer remember
+   * making, would read as lost work rather than as a filter left on.
+   */
+  const [chainFocus, setChainFocus] = useState(false);
+  /**
    * The whole inbox and the live-run set, subscribed ONCE here and passed down.
    *
    * Here rather than in the card because both the ring and the sort order read them, and
@@ -271,6 +287,26 @@ export function MyTasks(): JSX.Element {
     return map;
   }, [mergeRequests]);
 
+  /**
+   * The ids focus mode allows through — the selected card, everything upstream of it and
+   * everything downstream — or null when the board is showing everything.
+   *
+   * Null rather than "every id on the board": the filter below is then a no-op in the
+   * ordinary case, and focus with nothing selected (which the toggle disables, though a
+   * deleted card could still get you there) reads as no filter rather than as an empty
+   * board. The component is undirected — see `chainComponent` — because the question focus
+   * asks is "show me this piece of work and everything it is entangled with", which is not
+   * the same as the ROUTE the arrows light, and a card that branches off a shared
+   * predecessor belongs on the board you are using to reason about it.
+   *
+   * The columns are the board's real ones throughout: a chain is not a pipeline of its own,
+   * and its cards sit exactly where their status puts them.
+   */
+  const focusIds = useMemo(
+    () => (chainFocus && selectedTaskId ? chainComponent(links, selectedTaskId) : null),
+    [chainFocus, selectedTaskId, links],
+  );
+
   const cardsByColumn = useMemo(() => {
     const map: Record<BoardColumn, BoardCard[]> = {
       todo: [],
@@ -282,6 +318,9 @@ export function MyTasks(): JSX.Element {
     // A card's steps are not cards of their own — they render inside the parent and
     // travel with it, whatever their own status.
     for (const card of groupSubtasks(tasks ?? [], mrsByTask)) {
+      // Focus mode. The test is the CARD's id — a card's steps travel with it, and a step
+      // is never chained itself, so filtering by step would empty a card of its work.
+      if (focusIds && !focusIds.has(card.task.id)) continue;
       map[columnForTask(card.task)].push(card);
     }
     // Cards that want you first, then by priority — see `sortCards`. The inbox's ids go
@@ -290,7 +329,7 @@ export function MyTasks(): JSX.Element {
     for (const col of Object.keys(map) as BoardColumn[])
       map[col] = sortCards(map[col], attention.taskIds);
     return map;
-  }, [tasks, mrsByTask, attention.taskIds]);
+  }, [tasks, mrsByTask, attention.taskIds, focusIds]);
 
   /**
    * Where every card is, for the chain overlay's arrows — plus which card the pointer is
@@ -652,6 +691,35 @@ export function MyTasks(): JSX.Element {
             />
           )}
           <span className={styles.grow} />
+          {/* Focus the board on ONE route through it: the selected card, everything it
+              waits for and everything waiting on it. A busy board is where a chain is
+              hardest to follow and where you most need to — this reduces it to the piece
+              of work you are actually reasoning about, in the board's own columns.
+
+              A `ToggleButton` rather than an accent-filled one: an on-state is a fact about
+              the VIEW, and this board spends colour only on things that move (the running
+              band, the travelling dash). Its pressed shade says it without borrowing that.
+
+              `disabledFocusable` rather than `disabled`: focus follows the selection, so
+              with nothing selected the control has something to SAY, and a plainly
+              disabled button can be neither hovered for its tooltip nor tabbed to. */}
+          <ToggleButton
+            size="small"
+            appearance="subtle"
+            icon={<ArrowRoutingRegular />}
+            checked={chainFocus}
+            disabledFocusable={!selectedTaskId}
+            title={
+              !selectedTaskId
+                ? 'Pick a card first — focus follows the selected card’s chain'
+                : chainFocus
+                  ? 'Showing this card’s chain only — click for the whole board'
+                  : 'Show only this card’s chain: what it waits for, and what waits on it'
+            }
+            onClick={() => setChainFocus((v) => !v)}
+          >
+            Chain
+          </ToggleButton>
           {/* The card's optional lines, switchable HERE as well as in Settings — this is
               where you actually notice the noise, and a trip to Settings to quiet a board
               you are looking at is a trip most people won't make. */}
@@ -831,6 +899,7 @@ export function MyTasks(): JSX.Element {
             runningTaskIds={liveRuns}
             selectedTaskId={selectedTaskId}
             hoveredTaskId={anchors.hoveredTaskId}
+            focusTaskIds={focusIds}
             selectedLinkId={selectedLinkId}
             onSelectLink={setSelectedLinkId}
             linkDrag={linkDrag}
@@ -874,6 +943,12 @@ export function MyTasks(): JSX.Element {
             // it. From the same index the chips read, so the chip and the button can never
             // disagree about whether this card is blocked.
             chainWaitingOn={selectedTask ? chainStates.get(selectedTask.id)?.waitingOn : undefined}
+            // The whole chain, for the pane's Chain section — the keyboard's route to what
+            // the board does by dragging. `removeLink` is the board's own, so an unlink from
+            // the pane and one from the arrow's popover are the same call.
+            chainLinks={links}
+            chainTasksById={tasksById}
+            onUnlinkChain={(linkId) => void removeLink(linkId)}
             onOpenTask={setSelectedTaskId}
             onStatusChanged={patchTask}
             onSubtasksChanged={() => void refresh()}
@@ -886,9 +961,16 @@ export function MyTasks(): JSX.Element {
         projectId={PERSONAL_PROJECT_ID}
         phases={[]}
         parents={parentCandidates}
+        // The same cards, asked a different question: a step of that card, or a card of its
+        // own that runs after it. Chaining at creation saves finding the new card on the
+        // board and dragging an arrow to it — three moves for one intent.
+        chainCandidates={parentCandidates}
         jiraEnabled={jiraEnabled}
         onClose={() => setAddOpen(false)}
         onCreated={() => void refresh()}
+        // A link that would not draw is reported HERE: the card exists by then, and the
+        // dialog it was refused in is already closing.
+        onNotice={setError}
       />
     </div>
   );
