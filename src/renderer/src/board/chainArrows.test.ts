@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { Task } from '@shared/model';
 import type { TaskLink } from '@shared/taskChain';
-import { arrowPath, buildChainDrawing, litLinkIds, type AnchorRect } from './chainArrows';
+import {
+  arrowPath,
+  arrowRoute,
+  buildChainDrawing,
+  litLinkIds,
+  rubberBandPath,
+  type AnchorRect,
+} from './chainArrows';
 
 const rect = (left: number, top: number, width = 240, height = 80): AnchorRect => ({
   left,
@@ -104,6 +111,46 @@ describe('litLinkIds', () => {
 
   it('lights nothing when nothing is selected or hovered', () => {
     expect(litLinkIds(links, new Set()).size).toBe(0);
+  });
+});
+
+describe('arrowRoute', () => {
+  it('reports the ends the selected arrow puts its dots on', () => {
+    const { start, end } = arrowRoute(rect(0, 0), rect(400, 200));
+    expect(start).toEqual({ x: 240, y: 40 });
+    expect(end).toEqual({ x: 400, y: 240 });
+  });
+
+  it('anchors the popover on the curve at t = ½', () => {
+    // Both control points sit level with their own end, so y is the mean of the two ends.
+    const { mid } = arrowRoute(rect(0, 0), rect(400, 200));
+    expect(mid).toEqual({ x: 320, y: 140 });
+  });
+
+  it('follows the bow rather than the chord when the curve loops out', () => {
+    // Two cards in one column: the arrow loops into the gutter to the right, so its middle
+    // is well clear of the straight line between them — which is where the panel belongs.
+    const { mid } = arrowRoute(rect(0, 0), rect(0, 400));
+    expect(mid.x).toBeGreaterThan(240);
+  });
+});
+
+describe('rubberBandPath', () => {
+  it('leaves the handle — the card’s right edge, level with where arrows leave', () => {
+    const [x1, y1] = points(rubberBandPath(rect(0, 0), { x: 600, y: 300 }));
+    expect([x1, y1]).toEqual([240, 40]);
+  });
+
+  it('lands exactly on the pointer', () => {
+    const p = points(rubberBandPath(rect(0, 0), { x: 600, y: 300 }));
+    expect([p[6], p[7]]).toEqual([600, 300]);
+  });
+
+  it('still leaves the handle when the pointer is to the LEFT, and loops back', () => {
+    const [x1, , c1x, , c2x, , x2] = points(rubberBandPath(rect(400, 0), { x: 40, y: 300 }));
+    expect(x1).toBe(640); // the right edge, where your finger closed on the dot
+    expect(c1x).toBeGreaterThan(x1); // out to the right first…
+    expect(c2x).toBeGreaterThan(x2); // …then back in to the pointer from its right
   });
 });
 

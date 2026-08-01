@@ -32,15 +32,37 @@ export interface AnchorRect {
   height: number;
 }
 
+/** A point in board content space. */
+export interface Point {
+  x: number;
+  y: number;
+}
+
+/**
+ * A drawn cubic, plus the three points anything hung ON the arrow needs.
+ *
+ * The `d` alone was enough while an arrow was only ever a line. A SELECTED arrow is not:
+ * it wears a dot at each end (so you can see which two cards it actually joins, which a
+ * thicker stroke on its own does not settle when three arrows leave the same edge) and it
+ * carries the gate popover at its middle. Parsing those back out of the `d` string would
+ * be re-deriving numbers this function had in hand.
+ */
+export interface ArrowRoute {
+  d: string;
+  /** Where it leaves the predecessor, and where it lands on the successor. */
+  start: Point;
+  end: Point;
+  /** The curve at t = ½ — where the gate popover hangs. */
+  mid: Point;
+}
+
 /** One drawn arrow: where it goes, and everything the stroke has to say about it. */
-export interface ChainArrow {
-  /** The link's id — what Phase 3's click handler will address. */
+export interface ChainArrow extends ArrowRoute {
+  /** The link's id — what the click handler addresses. */
   linkId: string;
   fromTaskId: string;
   toTaskId: string;
   gate: LinkGate;
-  /** The `d` of the cubic Bézier — see {@link arrowPath}. */
-  d: string;
   /** On the route through a selected or hovered card — drawn heavier, in the accent. */
   lit: boolean;
   /** The target is still waiting on this predecessor — drawn dashed. */
@@ -114,6 +136,22 @@ function curve(x1: number, y1: number, c1: number, c2: number, x2: number, y2: n
   return `M ${r(x1)} ${r(y1)} C ${r(c1)} ${r(y1)}, ${r(c2)} ${r(y2)}, ${r(x2)} ${r(y2)}`;
 }
 
+/** The same cubic, with its ends and its middle kept rather than thrown away. */
+function route(x1: number, y1: number, c1: number, c2: number, x2: number, y2: number): ArrowRoute {
+  return {
+    d: curve(x1, y1, c1, c2, x2, y2),
+    start: { x: r(x1), y: r(y1) },
+    end: { x: r(x2), y: r(y2) },
+    mid: {
+      // A cubic at t = ½ is (P₀ + 3P₁ + 3P₂ + P₃)/8. Both control points sit LEVEL with
+      // their own end (see `curve`), so the y term collapses to the mean of the two ends
+      // — which is why this is a two-line calculation rather than a Bézier evaluator.
+      x: r((x1 + 3 * c1 + 3 * c2 + x2) / 8),
+      y: r((y1 + y2) / 2),
+    },
+  };
+}
+
 function clamp(value: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, value));
 }
@@ -151,23 +189,49 @@ function clamp(value: number, lo: number, hi: number): number {
  * @param boardWidth the overlay's width, for the loop's choice of side. Left off, the loop
  *   always takes the right — which is what a test measuring the shape wants.
  */
-export function arrowPath(from: AnchorRect, to: AnchorRect, boardWidth = Infinity): string {
+export function arrowRoute(from: AnchorRect, to: AnchorRect, boardWidth = Infinity): ArrowRoute {
   const y1 = from.top + from.height / 2;
   const y2 = to.top + to.height / 2;
 
   if (to.left >= from.right) {
     const b = clamp((to.left - from.right) * 0.5, MIN_BOW, MAX_BOW);
-    return curve(from.right, y1, from.right + b, to.left - b, to.left, y2);
+    return route(from.right, y1, from.right + b, to.left - b, to.left, y2);
   }
   if (to.right <= from.left) {
     const b = clamp((from.left - to.right) * 0.5, MIN_BOW, MAX_BOW);
-    return curve(from.left, y1, from.left - b, to.right + b, to.right, y2);
+    return route(from.left, y1, from.left - b, to.right + b, to.right, y2);
   }
   const b = clamp(Math.abs(y2 - y1) * 0.3, LOOP_BOW.min, LOOP_BOW.max);
   if (Math.max(from.right, to.right) + b <= boardWidth - EDGE) {
-    return curve(from.right, y1, from.right + b, to.right + b, to.right, y2);
+    return route(from.right, y1, from.right + b, to.right + b, to.right, y2);
   }
-  return curve(from.left, y1, from.left - b, to.left - b, to.left, y2);
+  return route(from.left, y1, from.left - b, to.left - b, to.left, y2);
+}
+
+/** Just the `d` of {@link arrowRoute}, for a caller that only wants to draw the line. */
+export function arrowPath(from: AnchorRect, to: AnchorRect, boardWidth = Infinity): string {
+  return arrowRoute(from, to, boardWidth).d;
+}
+
+/**
+ * The rubber band, from a card's link handle to wherever the pointer currently is.
+ *
+ * It leaves the handle — the card's RIGHT edge — because that is where your finger closed
+ * on it, and a line that starts anywhere else reads as having come loose from the grab. It
+ * leaves horizontally for the same reason every settled arrow does, so the shape you drag
+ * out is the shape you will get.
+ *
+ * A pointer to the LEFT of the handle therefore gets the same outward loop `arrowRoute`
+ * draws for a link inside one column: out of the right edge, round, and back. That is the
+ * honest picture — the arrow it becomes will enter the target's facing edge, and a band
+ * that instead sprang from the card's left edge would be drawing from a handle that isn't
+ * there.
+ */
+export function rubberBandPath(from: AnchorRect, at: Point): string {
+  const y1 = from.top + from.height / 2;
+  const sx = from.right;
+  const b = clamp(Math.abs(at.x - sx) * 0.5, MIN_BOW, MAX_BOW);
+  return curve(sx, y1, sx + b, at.x >= sx ? at.x - b : at.x + b, at.x, at.y);
 }
 
 /** Walk the links from every seed, forwards or backwards, and return everything reached. */
@@ -319,7 +383,7 @@ export function buildChainDrawing(input: ChainDrawingInput): ChainDrawing {
       fromTaskId: link.fromTaskId,
       toTaskId: link.toTaskId,
       gate: link.gate,
-      d: arrowPath(from, to, boardWidth),
+      ...arrowRoute(from, to, boardWidth),
       lit: lit.has(link.id),
       blocked,
       releasing,

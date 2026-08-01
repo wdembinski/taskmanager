@@ -35,13 +35,21 @@ import {
   type BoardDisplaySettings,
 } from '@shared/settings';
 import type { MergeRequest } from '@shared/mergeRequest';
-import type { TaskLink } from '@shared/taskChain';
+import { LINK_REFUSAL_MESSAGE, canLink, type LinkGate, type TaskLink } from '@shared/taskChain';
 import { AddTaskDialog } from './AddTaskDialog';
 import { PaneLoading } from './PaneLoading';
 import { TaskDetail } from './TaskDetail';
 import { useInitialLoad } from './useInitialLoad';
 import { KanbanColumn } from './board/KanbanColumn';
 import { ChainOverlay } from './board/ChainOverlay';
+import { ChainLinkPopover } from './board/ChainLinkPopover';
+import { arrowRoute } from './board/chainArrows';
+import {
+  isChainLinkDrag,
+  linkDropStates,
+  taskIdUnder,
+  type LinkDragState,
+} from './board/chainDrag';
 import { useCardAnchors } from './board/useCardAnchors';
 import { useAttentionIndex } from './useAttentionIndex';
 import { useActiveRuns } from './useActiveRuns';
@@ -150,6 +158,14 @@ export function MyTasks(): JSX.Element {
    * task would be clobbered by the next one. The board derives whatever index it needs.
    */
   const [links, setLinks] = useState<TaskLink[]>([]);
+  /**
+   * The link being drawn right now — by dragging a card's handle, or armed from the
+   * keyboard. Holds every card's verdict, computed once when the gesture starts (see
+   * `linkDropStates`) rather than per card per `dragover`.
+   */
+  const [linkDrag, setLinkDrag] = useState<LinkDragState | null>(null);
+  /** The arrow being edited: heavier, endpoints marked, and wearing the gate popover. */
+  const [selectedLinkId, setSelectedLinkId] = useState<string | null>(null);
   /**
    * The whole inbox and the live-run set, subscribed ONCE here and passed down.
    *
@@ -402,6 +418,178 @@ export function MyTasks(): JSX.Element {
     [tasks, patchTask],
   );
 
+  /**
+   * Draw an arrow — `toTaskId` runs after `fromTaskId`.
+   *
+   * The same confirm-free optimistic shape `moveTask` uses: the arrow appears the instant
+   * you let go, and un-draws itself with a message if the main process disagrees. Drawing
+   * a link is trivially reversible (select it, press Delete), so making you wait on a round
+   * trip to see whether it worked would be charging for a certainty you already have.
+   *
+   * The refusal is asked TWICE on purpose. Here, so the message names what went wrong
+   * without a round trip; and again in the handler, against the real rows — this copy of
+   * the board can be a poll behind, and a cycle that slips past is a chain that never runs.
+   */
+  const drawLink = useCallback(
+    async (fromTaskId: string, toTaskId: string) => {
+      setLinkDrag(null);
+      const refusal = canLink(links, tasksById.get(fromTaskId), tasksById.get(toTaskId));
+      if (refusal) {
+        setError(`Can't chain those two — ${LINK_REFUSAL_MESSAGE[refusal]}.`);
+        return;
+      }
+      setError(null);
+      const prev = links;
+      // A stand-in id until the real row comes back a frame later. Namespaced rather than
+      // random because it CAN be addressed in that frame — click the new arrow fast enough
+      // and Delete would send this id — and `chain:unlink` on an id no row has is a no-op
+      // that returns the true list, so the board corrects itself either way. A UUID here
+      // would look like a real id in a log without behaving any better.
+      const optimistic: TaskLink = {
+        id: `pending:${fromTaskId}:${toTaskId}`,
+        fromTaskId,
+        toTaskId,
+        // The strict gate is the default — see `LinkGate`. Change it in the popover.
+        gate: 'after-merge',
+        createdAt: Date.now(),
+      };
+      setLinks([...prev, optimistic]);
+      try {
+        const result = await window.api.invoke('chain:link', fromTaskId, toTaskId, 'after-merge');
+        if (result.status === 'refused') {
+          setLinks(prev);
+          setError(`Can't chain those two — ${LINK_REFUSAL_MESSAGE[result.reason]}.`);
+          return;
+        }
+        setLinks(result.links);
+      } catch (e) {
+        setLinks(prev);
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [links, tasksById],
+  );
+
+  const removeLink = useCallback(
+    async (linkId: string) => {
+      const prev = links;
+      setSelectedLinkId(null);
+      setLinks(prev.filter((l) => l.id !== linkId)); // optimistic
+      try {
+        setLinks(await window.api.invoke('chain:unlink', linkId));
+      } catch (e) {
+        setLinks(prev); // rollback
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [links],
+  );
+
+  const setLinkGate = useCallback(
+    async (linkId: string, gate: LinkGate) => {
+      const prev = links;
+      setLinks(prev.map((l) => (l.id === linkId ? { ...l, gate } : l))); // optimistic
+      try {
+        setLinks(await window.api.invoke('chain:setGate', linkId, gate));
+      } catch (e) {
+        setLinks(prev); // rollback
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [links],
+  );
+
+  /**
+   * Start a link, or — when one is already armed from the keyboard — cancel it. The handle
+   * is a button, so Enter and Space arrive here as a click.
+   */
+  const armLink = useCallback(
+    (taskId: string) => {
+      setSelectedLinkId(null);
+      setLinkDrag((at) =>
+        at?.fromTaskId === taskId
+          ? null
+          : {
+              fromTaskId: taskId,
+              // The same verdicts the drag shows, so an armed board marks its valid,
+              // already-linked and refused cards exactly as a dragged one does. `at: null`
+              // is the whole difference — there is no pointer, so there is no band.
+              states: linkDropStates(links, tasks ?? [], taskId),
+              at: null,
+              overTaskId: null,
+            },
+      );
+    },
+    [links, tasks],
+  );
+
+  /**
+   * Picking a card. While a link is ARMED (the keyboard path, which has no drop) the next
+   * card you pick is the successor rather than the card you wanted to read — the one modal
+   * moment in the board, which is why Escape and a second press on the handle both leave it.
+   */
+  const selectTask = useCallback(
+    (id: string) => {
+      setSelectedLinkId(null);
+      if (linkDrag && linkDrag.at === null && linkDrag.fromTaskId !== id) {
+        void drawLink(linkDrag.fromTaskId, id);
+        return;
+      }
+      setLinkDrag(null);
+      setSelectedTaskId(id);
+    },
+    [linkDrag, drawLink],
+  );
+
+  /** The selected arrow, and the point on its curve the gate popover hangs from. */
+  const selectedLink = useMemo(
+    () => links.find((l) => l.id === selectedLinkId) ?? null,
+    [links, selectedLinkId],
+  );
+  const selectedLinkAt = useMemo(() => {
+    if (!selectedLink) return null;
+    const from = anchors.rects.get(selectedLink.fromTaskId);
+    const to = anchors.rects.get(selectedLink.toTaskId);
+    // An endpoint the board is not showing has a stub rather than an arrow, and a stub is
+    // a fact about the FILTER — there is no curve to hang a gate picker on.
+    if (!from || !to) return null;
+    return arrowRoute(from, to, anchors.bounds.width).mid;
+  }, [selectedLink, anchors.rects, anchors.bounds.width]);
+
+  // Delete or Backspace erases the selected arrow, Escape lets it go. On the window rather
+  // than on the path, because an SVG `<path>` cannot hold focus — and never while the caret
+  // is in a field, where Backspace means "delete a character" and always will.
+  useEffect(() => {
+    if (!selectedLinkId) return;
+    const onKey = (e: KeyboardEvent): void => {
+      const el = e.target as HTMLElement | null;
+      if (el?.isContentEditable) return;
+      if (el && ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)) return;
+      if (e.key === 'Escape') {
+        setSelectedLinkId(null);
+        return;
+      }
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        // Backspace is "go back" in a browser and nothing at all here; take it either way.
+        e.preventDefault();
+        void removeLink(selectedLinkId);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selectedLinkId, removeLink]);
+
+  // The way out of an armed link for anyone who armed it and changed their mind. A DRAG
+  // needs none of this — Escape cancels it in the browser and `dragend` still fires.
+  useEffect(() => {
+    if (!linkDrag || linkDrag.at !== null) return;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setLinkDrag(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [linkDrag]);
+
   if (tasks === null) {
     return (
       <PaneLoading
@@ -515,7 +703,37 @@ export function MyTasks(): JSX.Element {
         <div
           ref={anchors.containerRef}
           className={styles.columns}
-          onDragEnd={() => setDraggingId(null)}
+          onDragEnd={() => {
+            setDraggingId(null);
+            // Covers every way a link drag can end that is not a drop on a card: escaped,
+            // released over the toolbar, released over a gap between columns.
+            setLinkDrag(null);
+          }}
+          // The rubber band's loose end. `dragover` is the only event that reports the
+          // pointer during a native drag — `mousemove` does not fire at all — and it
+          // reaches here because neither the cards nor the columns stop it.
+          onDragOver={(e) => {
+            if (!linkDrag || !isChainLinkDrag(e.dataTransfer.types)) return;
+            const at = anchors.toContentPoint(e.clientX, e.clientY);
+            if (!at) return;
+            const overTaskId = taskIdUnder(e.target);
+            setLinkDrag((d) => {
+              if (!d) return d;
+              // `dragover` keeps firing at a stationary pointer, and re-rendering the whole
+              // board for a band that has not moved is work for nothing. Sub-pixel moves
+              // are below what the 2px stroke could show anyway.
+              const still =
+                d.at !== null &&
+                Math.abs(d.at.x - at.x) < 2 &&
+                Math.abs(d.at.y - at.y) < 2 &&
+                d.overTaskId === overTaskId;
+              return still ? d : { ...d, at, overTaskId };
+            });
+          }}
+          // Any click that gets this far landed on the board rather than on an arrow — the
+          // arrows stop their own. Letting go of the selection here is what makes clicking
+          // away the obvious way to close the gate popover.
+          onClick={() => setSelectedLinkId(null)}
         >
           {visibleColumns(showDone).map((col) => (
             <KanbanColumn
@@ -542,9 +760,24 @@ export function MyTasks(): JSX.Element {
               // A card with a live step is the runner's until the chain stops.
               canDrag={(c) => !managedByAI(c.task) && !hasLiveSubtask(c.subtasks)}
               anchorRef={anchors.anchorRef}
+              linkDrag={linkDrag}
+              onLinkStart={(taskId) => {
+                // Drawing a new arrow puts the old one's panel away — it is a real DOM box
+                // lying over the board, and the cards under it are drop targets now.
+                setSelectedLinkId(null);
+                setLinkDrag({
+                  fromTaskId: taskId,
+                  states: linkDropStates(links, tasks, taskId),
+                  at: null,
+                  overTaskId: null,
+                });
+              }}
+              onLinkEnd={() => setLinkDrag(null)}
+              onLinkTo={(fromTaskId, toTaskId) => void drawLink(fromTaskId, toTaskId)}
+              onLinkArm={armLink}
               selectedTaskId={selectedTaskId}
               draggingId={draggingId}
-              onSelectTask={setSelectedTaskId}
+              onSelectTask={selectTask}
               onDragStartTask={setDraggingId}
               onDragEndTask={() => setDraggingId(null)}
               onDropInColumn={(taskId, column) => {
@@ -564,9 +797,25 @@ export function MyTasks(): JSX.Element {
             runningTaskIds={liveRuns}
             selectedTaskId={selectedTaskId}
             hoveredTaskId={anchors.hoveredTaskId}
+            selectedLinkId={selectedLinkId}
+            onSelectLink={setSelectedLinkId}
+            linkDrag={linkDrag}
             width={anchors.bounds.width}
             height={anchors.bounds.height}
           />
+          {/* A sibling of the overlay, in the same scrolling container — so it sits on the
+              arrow's own curve and stays there while the board scrolls. */}
+          {selectedLink && selectedLinkAt && (
+            <ChainLinkPopover
+              link={selectedLink}
+              fromTitle={tasksById.get(selectedLink.fromTaskId)?.title ?? 'another card'}
+              toTitle={tasksById.get(selectedLink.toTaskId)?.title ?? 'another card'}
+              at={selectedLinkAt}
+              boardWidth={anchors.bounds.width}
+              onSetGate={(gate) => void setLinkGate(selectedLink.id, gate)}
+              onRemove={() => void removeLink(selectedLink.id)}
+            />
+          )}
         </div>
       </div>
 

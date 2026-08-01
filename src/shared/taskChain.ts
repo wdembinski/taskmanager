@@ -41,6 +41,26 @@ export const LINK_GATE_LABEL: Record<LinkGate, string> = {
   stacked: 'stacked on the branch',
 };
 
+/** The same gate as a PICKER's label — a noun phrase, where {@link LINK_GATE_LABEL} is a clause. */
+export const LINK_GATE_TITLE: Record<LinkGate, string> = {
+  'after-merge': 'After merge',
+  stacked: 'Stacked on this branch',
+};
+
+/**
+ * The one line under each choice.
+ *
+ * Both gates are a trade, and neither name says which way: "stacked" sounds like a
+ * technique rather than like a risk accepted. So each choice says what you GET and what
+ * you give up, in the order you care about them.
+ */
+export const LINK_GATE_HELP: Record<LinkGate, string> = {
+  'after-merge':
+    'Waits for the branch to land, so this card starts from code that is settled. The safe one.',
+  stacked:
+    'Starts as soon as the other card stops working — sooner, but its branch may still be rewritten underneath.',
+};
+
 /** Narrow an unvalidated string (an IPC argument, a DB column) to a gate. */
 export function isLinkGate(value: unknown): value is LinkGate {
   return value === 'after-merge' || value === 'stacked';
