@@ -268,7 +268,7 @@ leaves something to run.
 Each step becomes a normal task row with `parentTaskId` set and the section's own
 text as its `description` (its **brief**).
 
-### Running the chain
+### Running the step chain
 
 Steps run **strictly one at a time, in order**, in `bypassPermissions` — you approved
 the plan, so the steps are full-auto.
@@ -298,6 +298,120 @@ parent and "Step N of M".
 
 ---
 
+## Chaining cards
+
+A board says what there is to do. It has never said what **order** it has to happen
+in: two cards that touch the same file, or one that cannot start until another's
+branch has landed, look exactly like two independent cards, and the ordering lives in
+the head of whoever set the work up. A **chain** writes that down — an arrow from one
+card to another, plus the **gate** that says what "after" means for that pair.
+
+### A chain is not a card's steps
+
+The two features share the word and almost nothing else. Steps are one card's work,
+split up; a chain is several cards, ordered.
+
+| | **Steps** (of one card) | **A chain** (between cards) |
+|---|---|---|
+| What it is | phases of one approved plan, `parentTaskId` → the card | links (`task_links`) between two ordinary cards |
+| Where the work happens | **one** branch in **one** worktree, shared by every step | each card keeps **its own** branch and worktree |
+| Integration | **once**, when the last step finishes | **each card merges itself**, in its own time |
+| Order | implicit and total — `order`, one at a time | whatever arrows you drew: a line, a fan, a diamond |
+| Who made it | the planner (or you, by hand, in the Steps box) | you, by dragging |
+| Failure | the rest of the steps stop | the successor is simply never released |
+
+Which is why a **step may not be chained at either end**: its order *is* a chain
+already, and a second one over the top of it could only ever disagree. Chain the
+parent cards — the steps come along with them. A loop is refused for a blunter
+reason: every card in it would be waiting for a card that is waiting for it, so it
+could never start, and nothing downstream would ever say so.
+
+### The two gates
+
+A link carries one, and it is the whole of what the link means.
+
+- **After merge** (`after-merge`, the default) — the predecessor's work has **landed**:
+  its branch is in the base branch. The successor starts from settled code. This is the
+  safe one, and the one to use when the successor would otherwise build on something
+  still under review and still liable to change.
+- **Stacked on this branch** (`stacked`) — the predecessor has stopped *writing*, and
+  there is a branch to build on. The successor's worktree is **cut from the predecessor's
+  branch** instead of from base, so it starts with those commits already in its tree.
+  Sooner, at a price: the branch underneath may still be rebased or rewritten in review,
+  and merging the successor carries the predecessor's work along with it. The successor's
+  timeline says both of those in words when it is released.
+
+"Landed" is a stored fact (`Task.landedAt`), not one inferred from the card's column or
+its merge request's current state — a card dragged back out of Done, or a GitLab poll
+that has not run yet, must not pull a start out from under a card that already began. It
+is stamped from **two** places: a local integrate that merges the branch, and a linked
+merge request GitLab reports as `merged`. On a project whose branches go through review
+nobody merges locally, so the second one is how the app ever learns the work shipped.
+
+The merge **target** is never affected by a gate: a stacked card still integrates into
+its project's base branch, exactly like every other card.
+
+### Drawing one
+
+Drag the dot on a card's right edge onto the card that should run **after** it. Every
+other card is marked the moment the drag begins — valid, already linked, or refused —
+and an invalid target cancels the drop in the cursor rather than in a message afterwards.
+The handle is a real button, so **Enter** arms a link that the next card you pick
+completes. Click an arrow to select it: a small panel on its middle switches the gate,
+**Delete** erases it.
+
+Two more routes to the same fact, neither needing a mouse or a visible board:
+
+- **Add task** has a *Runs after…* picker, so a card can be chained as it is created.
+- The card's detail pane has a **Chain** section — *Waiting on* above, *Releases* below,
+  each row naming the gate, opening that card, and carrying an unlink button.
+
+### What the board shows
+
+One arrow per link, drawn over the board in a single SVG that scrolls with the cards. The
+ink is budgeted: a resting arrow is a 1px neutral hairline, and anything louder is earned
+by something moving.
+
+- **Dashed** while the gate is not yet met; **cyan and travelling** while the predecessor
+  is actually running; **2px accent** along the whole route upstream and downstream of the
+  card you selected or hovered.
+- A **stacked** gate is a double hairline — the two gates are told apart without spending
+  a colour on a fact that never changes.
+- An arrow leaves and enters the two edges that **face each other**, because a board's
+  chains mostly run backwards (the card doing the work is in In Progress, the card waiting
+  on it is still in To Do, to its left). An end the board is not currently showing — Done
+  hidden, filtered out by the sprint switch — becomes a counted stub into the board's edge
+  rather than a line to nowhere.
+- The card itself carries a monochrome **`waiting on KEY`** chip, and **`ready`** once
+  every predecessor is satisfied but nothing has started.
+- **Chain focus** in the toolbar reduces the board to the selected card's chain —
+  everything upstream, everything downstream, and the siblings entangled with it. The cards
+  stay in their real columns; it is a filter, not a pipeline of its own. It is deliberately
+  not remembered between launches.
+
+### What happens when a predecessor finishes
+
+`src/main/chainRunner.ts` owns this, called by the scheduler at the three moments the world
+changes: a branch landed, a run finished writing, the app booted.
+
+- A card fed by several arrows waits for **all** of them (an AND-join) — a diamond is the
+  commonest shape a chain takes, and releasing on the first arrow would start the work whose
+  whole reason for waiting was the other two.
+- A release **starts** the successor only if it is assigned to an agent and still `pending`
+  with no session of its own. Anything else gets a note on its timeline naming what released
+  it, and is left alone.
+- **A chain never moves a card between columns.** Where a card sits stays yours, exactly as
+  it is for every other run.
+- A predecessor you **stopped or cancelled** releases nothing: whatever state its branch is
+  in, that is not "carry on with the next one". A **usage limit** holds a release exactly as
+  it holds everything else — and nothing is lost, because `landedAt` is on disk and every
+  boot re-asks the question for cards that never ran.
+- **Release now**, in a blocked card's pane, starts it anyway. Some chains only ever recorded
+  the order things ought to be *looked at*, and there the gate is an obstacle rather than a
+  safeguard. The link stays; the timeline says it went ahead of it.
+
+---
+
 ## Talking to the agent on a card
 
 Answering a question the agent asked is one half of a conversation. The other half is
@@ -313,7 +427,7 @@ working it, not an alternative to it — so both are on screen at once:
   link to JIRA, type · priority · phase), then the agent controls, the **Details** cell
   (status, dependencies, a foldable description) and the **Steps**. One shaded slab, no
   boxes inside it, capped at half the pane's height with its own scroll so a long step
-  chain can never crowd out the conversation. On a *step*, the brief replaces the details
+  step chain can never crowd out the conversation. On a *step*, the brief replaces the details
   and the steps — for a step the brief is the whole spec.
 - **The conversation below**, which is the only thing that scrolls. The live-run rows and
   the composer stay pinned beneath it.
@@ -379,7 +493,7 @@ one matters: a card executing an approved plan holds only its *planner's* sessio
 the conversation lives on the step — chatting with such a card talks to the working
 step, and the composer says which one ("Talking to step 2 of 4 — …").
 
-### When a chain stops
+### When a step chain stops
 
 A step that fails, or one parked on a question, now shows on **its card**: the orange
 "wants you" frame, and a step count that reads `2/4 · stopped` rather than a bare `2/4`.
