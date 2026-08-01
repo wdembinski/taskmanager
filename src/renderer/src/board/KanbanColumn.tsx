@@ -89,6 +89,8 @@ export interface KanbanColumnProps {
   attentionTaskIds?: ReadonlySet<string>;
   /** Task ids the engine has a live run for, so a spawning run still spins. */
   liveRunTaskIds?: ReadonlySet<string>;
+  /** Task ids whose branch is being merged, so the card says so while git works. */
+  mergingTaskIds?: ReadonlySet<string>;
   /** Which optional context lines each card draws. */
   display?: BoardDisplaySettings;
   /**
@@ -175,6 +177,7 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               statusKeywords={props.statusKeywords}
               attentionTaskIds={props.attentionTaskIds}
               liveRunTaskIds={props.liveRunTaskIds}
+              mergingTaskIds={props.mergingTaskIds}
               display={props.display}
               selected={task.id === props.selectedTaskId}
               selectedTaskId={props.selectedTaskId}

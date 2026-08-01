@@ -23,6 +23,7 @@ import {
   Field,
   MessageBar,
   MessageBarBody,
+  Spinner,
   Switch,
   Text,
   Textarea,
@@ -136,6 +137,16 @@ export interface TaskAgentPanelProps {
    */
   running?: boolean;
   /**
+   * Whether this card's branch is being merged right now (`scheduler:integrating`).
+   *
+   * The engine's fact, not a local flag set on click, because the merge outlives the IPC
+   * call that starts it by a long way: `task:integrate` resolves as soon as the rebase has
+   * been *handed off*, and the git work then runs for as long as it runs with nothing else
+   * to show for it. A purely local spinner would stop at the wrong moment — the one thing
+   * worse than no feedback is feedback that lies.
+   */
+  merging?: boolean;
+  /**
    * The chained cards this one is still waiting on (`@shared/taskChain`). Present and
    * non-empty is exactly the condition for offering **Release now**: the chain would not
    * start this card yet, and the human may know better.
@@ -151,6 +162,7 @@ export function TaskAgentPanel({
   onOpenTask,
   onTaskChanged,
   running = false,
+  merging = false,
   waitingOn = [],
 }: TaskAgentPanelProps): JSX.Element {
   const styles = useStyles();
@@ -166,6 +178,16 @@ export function TaskAgentPanel({
   const [reply, setReply] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * Merge has been pressed but the engine has not said so yet.
+   *
+   * Only ever bridges the round trip: it is raised on click and lowered when `merging`
+   * arrives (or when the call comes back refused). Without it the button would sit inert
+   * for the length of one IPC hop — small, but it is precisely the moment the human is
+   * looking for a response, and "nothing happened when I clicked" is the bug.
+   */
+  const [mergePressed, setMergePressed] = useState(false);
+  const mergeBusy = mergePressed || merging;
 
   const taskId = task.id;
   // Which step (if any) the shown item belongs to, and which step has stopped the chain
@@ -211,7 +233,15 @@ export function TaskAgentPanel({
   // The asks arrive as a prop; only the draft reply is local.
   useEffect(() => {
     setReply('');
+    setMergePressed(false);
   }, [taskId]);
+
+  // Hand over cleanly: once the engine is reporting the merge, the local bridge lets go.
+  // Lowering it on the IPC call resolving instead would blink, because that call returns
+  // the moment the merge is handed off — before, or at best alongside, the first push.
+  useEffect(() => {
+    if (merging) setMergePressed(false);
+  }, [merging]);
 
   // Asked per project, and re-asked whenever the pane shows a different one: the file
   // appears the moment someone writes it, and this is the cheapest place to notice.
@@ -253,16 +283,28 @@ export function TaskAgentPanel({
     [item],
   );
 
-  /** Merge this card's branch into base, on the human's say-so. */
+  /**
+   * Merge this card's branch into base, on the human's say-so.
+   *
+   * Note what this call does NOT wait for: it resolves once the merge has been handed to
+   * git, and the rebase-and-fast-forward that follows can run for a minute afterwards. So
+   * the spinner is not tied to this promise — `merging` is, and it comes from the engine
+   * (see `useIntegratingTasks`). `busy` is deliberately left alone here for the same
+   * reason: it would go back down while the merge was still running and re-enable every
+   * button on the panel.
+   */
   async function integrate(): Promise<void> {
-    setBusy(true);
+    setMergePressed(true);
     setError(null);
     try {
       await window.api.invoke('task:integrate', taskId);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setBusy(false);
+      // Whatever happened, stop bridging: either `merging` has taken over by now, or the
+      // merge was refused and the error above says why. Leaving this raised on a refusal
+      // is the one way this could spin forever.
+      setMergePressed(false);
     }
   }
 
@@ -364,15 +406,25 @@ export function TaskAgentPanel({
             sending it a message starts it too, but a card you have nothing to say to yet
             still needs a way to begin. */}
         {/* Merging is the human's call: a branch is merged when it has been reviewed,
-            not at the instant the agent happened to stop. */}
+            not at the instant the agent happened to stop.
+
+            It is also the slowest thing on this panel and the only one that used to look
+            instantaneous: a rebase onto a base that has moved can take a minute, and the
+            button simply sat there unchanged for all of it. So it wears the spinner and
+            says what it is doing until the engine reports the merge has settled. */}
         {canIntegrate && !isStep && !live && (
           <Button
             size="small"
-            disabled={busy}
-            title="Merge this card's branch into its base branch."
+            disabled={busy || mergeBusy}
+            icon={mergeBusy ? <Spinner size="tiny" /> : undefined}
+            title={
+              mergeBusy
+                ? 'Rebasing this branch onto its base and fast-forwarding — this can take a minute.'
+                : "Merge this card's branch into its base branch."
+            }
             onClick={() => void integrate()}
           >
-            Merge branch
+            {mergeBusy ? 'Merging…' : 'Merge branch'}
           </Button>
         )}
         {staged && (
@@ -394,8 +446,16 @@ export function TaskAgentPanel({
           <Button
             size="small"
             appearance={task.agentProjectId ? 'secondary' : 'primary'}
-            disabled={live}
-            title={live ? 'Stop the agent before reassigning this card.' : undefined}
+            // Not while its branch is being merged either: reassigning restarts the run in
+            // the same worktree, which is the directory the rebase is standing in.
+            disabled={live || mergeBusy}
+            title={
+              live
+                ? 'Stop the agent before reassigning this card.'
+                : mergeBusy
+                  ? 'Wait for the merge to finish before reassigning this card.'
+                  : undefined
+            }
             onClick={() => setAssignOpen(true)}
           >
             {task.agentProjectId ? 'Reassign…' : 'Assign to an agent…'}
@@ -439,7 +499,9 @@ export function TaskAgentPanel({
         >
           <Switch
             checked={releasing}
-            disabled={busy}
+            // The merge is the deadline this switch is read at, so once one is running the
+            // answer is already taken — changing it now could only mislead.
+            disabled={busy || mergeBusy}
             label="Release after merge"
             onChange={(_e, d) => void setAutoRelease(d.checked)}
           />

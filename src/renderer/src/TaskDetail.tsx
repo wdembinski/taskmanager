@@ -167,6 +167,12 @@ export interface TaskDetailProps {
   /** Task ids the engine has a live run for, so the pane can show a spawning run. */
   liveRunTaskIds?: ReadonlySet<string>;
   /**
+   * Task ids whose branch is being merged, so Merge shows a spinner instead of looking
+   * like a button that did nothing — and so the timeline is re-read when the merge lands,
+   * since its outcome note is written straight to the DB and never streamed.
+   */
+  mergingTaskIds?: ReadonlySet<string>;
+  /**
    * The chained predecessors this card is still waiting on (`blockedBy`) — what the agent
    * panel's **Release now** override is offered against. Empty or absent for a card that is
    * not blocked, which is the only reason the button is not there.
@@ -205,6 +211,7 @@ export function TaskDetail({
   priorityDisplay = 'color',
   attention,
   liveRunTaskIds,
+  mergingTaskIds,
   chainWaitingOn,
   chainLinks = [],
   chainTasksById = NO_TASKS,
@@ -345,6 +352,32 @@ export function TaskDetail({
     });
   }, []);
 
+  /**
+   * A merge finished — re-read the timeline so its outcome appears without clicking away
+   * and back.
+   *
+   * Both notes a merge writes ("Merging branch…", then what happened) go straight into the
+   * DB and are never streamed, and the `task:changed` the outcome carries is ignored by the
+   * reload above unless a RUN was live in this pane — which, for a branch merged long after
+   * its agent stopped, it never was. So the merge leaving the set is the signal, and it is
+   * the only one there is.
+   */
+  const wasMerging = useRef(false);
+  const merging = Boolean(
+    taskId && (mergingTaskIds?.has(taskId) || subtasks.some((s) => mergingTaskIds?.has(s.id))),
+  );
+  useEffect(() => {
+    if (merging) {
+      wasMerging.current = true;
+      // The first note is already written, so pick it up now rather than only at the end.
+      void reloadRef.current();
+      return;
+    }
+    if (!wasMerging.current) return;
+    wasMerging.current = false;
+    void reloadRef.current();
+  }, [merging, taskId]);
+
   // One chronological story: persisted activity + live JIRA comments + live output.
   // Nothing is filtered here — `foldTurns` decides what the conversation shows and what
   // collapses into a single "worked with N tools" line.
@@ -405,9 +438,14 @@ export function TaskDetail({
    * "no spinner though it is clearly working" complaint) and which called a card that is
    * WAITING FOR YOU "Agent running", spinner and all.
    */
-  const run = runPhase(task, subtasks, liveRunTaskIds);
+  const run = runPhase(task, subtasks, liveRunTaskIds, mergingTaskIds);
   const managedByAI =
-    run.phase === 'running' || run.phase === 'starting' || run.phase === 'waiting';
+    run.phase === 'running' ||
+    run.phase === 'starting' ||
+    run.phase === 'waiting' ||
+    // A merge is not the agent, but it IS the card working — and the band above the
+    // composer is the one place that says so in words.
+    run.phase === 'merging';
 
   async function addComment(): Promise<void> {
     if (!task || !comment.text.trim()) return;
@@ -580,6 +618,7 @@ export function TaskDetail({
           agentProjects={agentProjects}
           items={panelItems}
           running={run.spinner}
+          merging={merging}
           waitingOn={chainWaitingOn}
           onOpenTask={onOpenTask}
           onTaskChanged={(updated) => {

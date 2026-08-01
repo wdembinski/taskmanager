@@ -746,6 +746,12 @@ export interface TaskCardProps {
    * not yet persisted as `running` still turns a spinner.
    */
   liveRunTaskIds?: ReadonlySet<string>;
+  /**
+   * The task ids whose branch is being merged, so the card says "Merging branch…" for the
+   * minute git takes. Nothing about the task itself moves in that window, so without this
+   * a card that had just been sent to merge looked identical to one nobody had touched.
+   */
+  mergingTaskIds?: ReadonlySet<string>;
   /** Which optional context lines to draw. Defaults to the shipped defaults. */
   display?: BoardDisplaySettings;
   selected: boolean;
@@ -824,6 +830,7 @@ export function TaskCard({
   statusKeywords,
   attentionTaskIds,
   liveRunTaskIds,
+  mergingTaskIds,
   display = DEFAULT_BOARD_DISPLAY,
   selected,
   selectedTaskId,
@@ -901,7 +908,7 @@ export function TaskCard({
   // composer strip so the three can never disagree. It replaces a spinner derived from
   // `status === 'running'`, which could not see a run that had spawned but not yet been
   // persisted — the "it's clearly working but there's no spinner" complaint.
-  const run = runPhase(task, subtasks, liveRunTaskIds);
+  const run = runPhase(task, subtasks, liveRunTaskIds, mergingTaskIds);
   // What is worth saying in WORDS, once the pulsing glyph and the step counter have had their
   // say. Null while the agent is visibly working.
   const cardLabel = cardRunLabel(run, isAgentAssigned(task));
@@ -1139,7 +1146,7 @@ export function TaskCard({
             </span>
           </div>
           {subtasks.map((step) => {
-            const stepRun = runPhase(step, [], liveRunTaskIds);
+            const stepRun = runPhase(step, [], liveRunTaskIds, mergingTaskIds);
             const stepWants = attentionTaskIds?.has(step.id) ?? false;
             return (
               <div

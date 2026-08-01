@@ -66,6 +66,7 @@ import {
 import { useCardAnchors } from './board/useCardAnchors';
 import { useAttentionIndex } from './useAttentionIndex';
 import { useActiveRuns } from './useActiveRuns';
+import { useIntegratingTasks } from './useIntegratingTasks';
 import {
   COLUMN_META,
   columnForTask,
@@ -206,6 +207,10 @@ export function MyTasks(): JSX.Element {
    */
   const attention = useAttentionIndex();
   const liveRuns = useActiveRuns();
+  // The third of the same kind: which cards are having their branch merged. Nothing about
+  // a merging task changes while it merges, so this is the only thing any surface has to
+  // go on — see `useIntegratingTasks`.
+  const merging = useIntegratingTasks();
 
   const showDone = settings?.jira.showDoneColumn ?? false;
   const jiraEnabled = settings?.jira.enabled ?? false;
@@ -860,6 +865,7 @@ export function MyTasks(): JSX.Element {
               statusKeywords={settings?.statusKeywords}
               attentionTaskIds={attention.taskIds}
               liveRunTaskIds={liveRuns}
+              mergingTaskIds={merging}
               display={display}
               anchorRef={anchors.anchorRef}
               linkDrag={linkDrag}
@@ -940,6 +946,7 @@ export function MyTasks(): JSX.Element {
             priorityDisplay={display.priorityDisplay}
             attention={attention}
             liveRunTaskIds={liveRuns}
+            mergingTaskIds={merging}
             // What the selected card is still waiting on, so the pane can offer to override
             // it. From the same index the chips read, so the chip and the button can never
             // disagree about whether this card is blocked.
