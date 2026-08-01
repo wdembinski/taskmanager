@@ -121,6 +121,8 @@ interface TaskRow {
   planRound: number | null;
   /** Per-card auto-release override as 0/1; NULL = follow the project. See `Task.autoRelease`. */
   autoRelease: number | null;
+  /** Per-card auto-merge override as 0/1; NULL = follow the project. See `Task.autoIntegrate`. */
+  autoIntegrate: number | null;
   /** Epoch ms this card's work landed; NULL = it has not. See `Task.landedAt`. */
   landedAt: number | null;
 }
@@ -140,6 +142,8 @@ interface ProjectRow {
   writeBackPlan: number;
   /** The project's auto-release preference as 0/1. See `Project.autoRelease`. */
   autoRelease: number;
+  /** The project's auto-merge preference as 0/1; NULL = follow the app-wide setting. */
+  autoIntegrate: number | null;
   planAligned: number;
   /** 'plan' | 'agent'; NULL is impossible (NOT NULL DEFAULT 'plan'), but old rows read back as 'plan'. */
   kind: string;
@@ -205,6 +209,7 @@ export interface Store {
         | 'agentBranch'
         | 'landedAt'
         | 'autoRelease'
+        | 'autoIntegrate'
       >
     >,
   ): Task | undefined;
@@ -414,6 +419,7 @@ export function createStore(dbPath: string): Store {
       baseBranch            TEXT,
       writeBackPlan         INTEGER NOT NULL DEFAULT 0,
       autoRelease           INTEGER NOT NULL DEFAULT 0,
+      autoIntegrate         INTEGER,
       planAligned           INTEGER NOT NULL DEFAULT 0,
       kind                  TEXT NOT NULL DEFAULT 'plan',
       jiraEpicKeys          TEXT,
@@ -465,7 +471,8 @@ export function createStore(dbPath: string): Store {
       agentBranch            TEXT,
       planRound              INTEGER,
       landedAt               INTEGER,
-      autoRelease            INTEGER
+      autoRelease            INTEGER,
+      autoIntegrate          INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(projectId, "order");
     CREATE TABLE IF NOT EXISTS app_state (
@@ -659,6 +666,14 @@ export function createStore(dbPath: string): Store {
     db.exec(`ALTER TABLE projects ADD COLUMN autoRelease INTEGER NOT NULL DEFAULT 0`);
   }
 
+  // Migrate databases created before a project could decide auto-merge for itself. NULL —
+  // "follow the app-wide setting" — is deliberately NOT a `DEFAULT 0`: every existing
+  // project was already doing exactly what `AppSettings.autoIntegrate` said, and writing a
+  // 0 here would pin them all to "never" the instant the global was turned on.
+  if (!projectColumns.some((c) => c.name === 'autoIntegrate')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN autoIntegrate INTEGER`);
+  }
+
   // Migrate databases created before per-stage pipeline detail. NULL reads back as [], and
   // the UI falls back to the single overall status for those rows — exactly how every MR
   // looked before. The next sync of an MR fills its stages in.
@@ -786,6 +801,10 @@ export function createStore(dbPath: string): Store {
     // on this card", which follows the project's (also new, also off) preference — so no
     // upgraded install starts releasing anything by itself.
     ['autoRelease', 'INTEGER'],
+    // The card's auto-merge override. NULL on every pre-existing row = "nobody has ruled on
+    // this card", which follows its project and, through it, the app-wide setting — so an
+    // upgrade merges exactly as often as the install did the day before.
+    ['autoIntegrate', 'INTEGER'],
   ] as Array<[string, string]>) {
     if (!taskColumns.some((c) => c.name === name)) {
       db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
@@ -879,8 +898,8 @@ export function createStore(dbPath: string): Store {
   }
 
   const insertProject = db.prepare<[ProjectRow]>(
-    `INSERT INTO projects (id, name, path, planPath, defaultModel, defaultPermissionMode, concurrency, useWorktrees, baseBranch, writeBackPlan, autoRelease, planAligned, kind, jiraEpicKeys, target, instructions, color, createdAt)
-     VALUES (@id, @name, @path, @planPath, @defaultModel, @defaultPermissionMode, @concurrency, @useWorktrees, @baseBranch, @writeBackPlan, @autoRelease, @planAligned, @kind, @jiraEpicKeys, @target, @instructions, @color, @createdAt)`,
+    `INSERT INTO projects (id, name, path, planPath, defaultModel, defaultPermissionMode, concurrency, useWorktrees, baseBranch, writeBackPlan, autoRelease, autoIntegrate, planAligned, kind, jiraEpicKeys, target, instructions, color, createdAt)
+     VALUES (@id, @name, @path, @planPath, @defaultModel, @defaultPermissionMode, @concurrency, @useWorktrees, @baseBranch, @writeBackPlan, @autoRelease, @autoIntegrate, @planAligned, @kind, @jiraEpicKeys, @target, @instructions, @color, @createdAt)`,
   );
   const selectProjects = db.prepare(`SELECT * FROM projects ORDER BY createdAt`);
   const selectProject = db.prepare(`SELECT * FROM projects WHERE id = ?`);
@@ -899,7 +918,7 @@ export function createStore(dbPath: string): Store {
         externalDescription,
         preBlockStatus, preRunStatus, retainedSince, lastReadCommentAt, latestCommentAt,
         agentProjectId, agentMode, agentModel,
-        agentPlan, agentBranch, planRound, landedAt, autoRelease)
+        agentPlan, agentBranch, planRound, landedAt, autoRelease, autoIntegrate)
      VALUES
        (@id, @projectId, @phase, @title, @status, @sessionId, @order, @source, @dependsOn, @isContract, @isScaffold, @type,
         @parentTaskId, @description, @statusNote, @statusNoteAt,
@@ -908,7 +927,7 @@ export function createStore(dbPath: string): Store {
         @externalDescription,
         @preBlockStatus, @preRunStatus, @retainedSince, @lastReadCommentAt, @latestCommentAt,
         @agentProjectId, @agentMode, @agentModel,
-        @agentPlan, @agentBranch, @planRound, @landedAt, @autoRelease)`,
+        @agentPlan, @agentBranch, @planRound, @landedAt, @autoRelease, @autoIntegrate)`,
   );
   const deleteTask = db.prepare(`DELETE FROM tasks WHERE id = ?`);
   const selectSubtasks = db.prepare(
@@ -1267,6 +1286,11 @@ export function createStore(dbPath: string): Store {
       baseBranch: r.baseBranch ?? '',
       writeBackPlan: r.writeBackPlan !== 0,
       autoRelease: r.autoRelease !== 0,
+      // NULL stays null: a real third state ("this project has not ruled"), which follows
+      // the app-wide setting. Collapsing it to false here would pin every project to
+      // "never merge" the first time it was read.
+      autoIntegrate:
+        r.autoIntegrate === null || r.autoIntegrate === undefined ? null : r.autoIntegrate !== 0,
       planAligned: r.planAligned !== 0,
       kind: r.kind === 'agent' ? 'agent' : 'plan',
       jiraEpicKeys: parseStringArray(r.jiraEpicKeys),
@@ -1357,6 +1381,13 @@ export function createStore(dbPath: string): Store {
           : task.autoRelease
             ? 1
             : 0,
+      // Same three states, same reason: 1 = merge, 0 = don't, NULL = follow the project.
+      autoIntegrate:
+        task.autoIntegrate === null || task.autoIntegrate === undefined
+          ? null
+          : task.autoIntegrate
+            ? 1
+            : 0,
     };
   }
 
@@ -1412,6 +1443,9 @@ export function createStore(dbPath: string): Store {
       // project's preference was the first time it was read.
       autoRelease:
         r.autoRelease === null || r.autoRelease === undefined ? null : r.autoRelease !== 0,
+      // Ditto — see `@shared/integrate` for why the null must survive the round trip.
+      autoIntegrate:
+        r.autoIntegrate === null || r.autoIntegrate === undefined ? null : r.autoIntegrate !== 0,
     };
   }
 
@@ -1448,6 +1482,9 @@ export function createStore(dbPath: string): Store {
         // Off unless asked for, on both kinds of project: releasing is the one thing a
         // human is entitled to have never happen by accident.
         autoRelease: input.autoRelease ?? false,
+        // `null` unless the caller ruled: a new project inherits the app-wide switch and
+        // keeps inheriting it, rather than freezing today's value into the row.
+        autoIntegrate: input.autoIntegrate ?? null,
         // New projects are trusted as aligned; legacy projects backfill to false via
         // the migration above. A plan carrying `@needs:`/`@contract` is also confirmed
         // aligned on its next sync (see ipc `syncProjectPlan`).
@@ -1464,6 +1501,7 @@ export function createStore(dbPath: string): Store {
         useWorktrees: project.useWorktrees ? 1 : 0,
         writeBackPlan: project.writeBackPlan ? 1 : 0,
         autoRelease: project.autoRelease ? 1 : 0,
+        autoIntegrate: project.autoIntegrate === null ? null : project.autoIntegrate ? 1 : 0,
         planAligned: project.planAligned ? 1 : 0,
         jiraEpicKeys: JSON.stringify(project.jiraEpicKeys),
         target: formatExecTarget(project.target),
@@ -1535,6 +1573,12 @@ export function createStore(dbPath: string): Store {
       if (patch.autoRelease !== undefined) {
         sets.push(`autoRelease = @autoRelease`);
         params.autoRelease = patch.autoRelease ? 1 : 0;
+      }
+      // `null` is a value the caller may really mean here ("this project follows the app
+      // setting again"), which is why it is tested against `undefined` rather than falsiness.
+      if (patch.autoIntegrate !== undefined) {
+        sets.push(`autoIntegrate = @autoIntegrate`);
+        params.autoIntegrate = patch.autoIntegrate === null ? null : patch.autoIntegrate ? 1 : 0;
       }
       if (patch.planAligned !== undefined) {
         sets.push(`planAligned = @planAligned`);
@@ -1620,6 +1664,10 @@ export function createStore(dbPath: string): Store {
       if (patch.autoRelease !== undefined) {
         sets.push(`autoRelease = @autoRelease`);
         params.autoRelease = patch.autoRelease === null ? null : patch.autoRelease ? 1 : 0;
+      }
+      if (patch.autoIntegrate !== undefined) {
+        sets.push(`autoIntegrate = @autoIntegrate`);
+        params.autoIntegrate = patch.autoIntegrate === null ? null : patch.autoIntegrate ? 1 : 0;
       }
       if (sets.length > 0) {
         db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = @id`).run(params);

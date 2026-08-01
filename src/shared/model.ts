@@ -176,6 +176,16 @@ export interface Project {
    */
   autoRelease: boolean;
   /**
+   * The project's PREFERENCE for auto-merge: when a card's run finishes, merge its branch
+   * back into base without waiting to be asked (see `@shared/integrate`).
+   *
+   * `null` — the default, and every project that predates the field — means "whatever the
+   * app-wide `AppSettings.autoIntegrate` says", so an upgrade changes nothing and turning
+   * the global switch over still moves every repo that never disagreed with it. A card may
+   * overrule this in turn, on the board.
+   */
+  autoIntegrate: boolean | null;
+  /**
    * Whether the plan has been reviewed for the team-orchestration features
    * (dependency `@needs:` clauses and, later, a shared contract). Projects that
    * predate those features migrate in as `false` ("needs review") so the UI can
@@ -243,6 +253,8 @@ export interface AddProjectInput {
   writeBackPlan?: boolean;
   /** Release after a card's branch merges, per the repo's `RELEASE.md`. Defaults to off. */
   autoRelease?: boolean;
+  /** Merge a finished card's branch by itself; defaults to `null` = follow the app setting. */
+  autoIntegrate?: boolean | null;
   planAligned?: boolean;
   /** Defaults to `plan`. `agent` forces a plan-less, worktree-isolated project. */
   kind?: ProjectKind;
@@ -274,6 +286,7 @@ export type ProjectPatch = Partial<
     | 'baseBranch'
     | 'writeBackPlan'
     | 'autoRelease'
+    | 'autoIntegrate'
     | 'planAligned'
     | 'jiraEpicKeys'
     | 'target'
@@ -553,6 +566,16 @@ export interface Task {
    * cards nobody has ruled on. See `@shared/release`.
    */
   autoRelease?: boolean | null;
+  /**
+   * This card's answer to "merge the branch when the work is finished?" — `true`/`false`
+   * when the human has said so on the board, `null` (the default, and every pre-existing
+   * card) when they have not, which follows the agent project's preference and, through
+   * it, the app-wide setting. See `@shared/integrate`.
+   *
+   * Read at the moment a run FINISHES, not when it starts, so changing your mind while the
+   * agent works still decides what happens to the branch it produces.
+   */
+  autoIntegrate?: boolean | null;
 
   // --- The chain of execution (see `@shared/taskChain`). ---
   /**

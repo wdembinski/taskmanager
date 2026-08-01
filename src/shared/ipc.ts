@@ -324,8 +324,10 @@ export interface IpcApi {
   /**
    * Merge a finished card's branch back into its base, on the human's say-so (Phase 17).
    *
-   * Integration is manual unless `AppSettings.autoIntegrate` is on, because merging at the
-   * moment the agent stops is merging at the moment the work has been reviewed least.
+   * Integration is manual unless auto-merge is on for the card — its own answer, else its
+   * project's, else the app-wide `AppSettings.autoIntegrate` (`@shared/integrate`) —
+   * because merging at the moment the agent stops is merging at the moment the work has
+   * been reviewed least.
    * Resolves once the merge has been STARTED; its outcome arrives as a task note, or as an
    * inbox item when it conflicts.
    *
@@ -428,6 +430,12 @@ export interface IpcApi {
        * card does — so the switch has an off, an on, and a "whatever the project says".
        */
       autoRelease?: boolean | null;
+      /**
+       * Merge this card's branch as soon as its work finishes (`@shared/integrate`). `null`
+       * hands the decision back to the agent project — and through it to the app-wide
+       * setting — which is what an untouched card does.
+       */
+      autoIntegrate?: boolean | null;
     },
   ) => Promise<Task>;
   /** The task's unified activity timeline (comments + status changes + AI transcript). */
