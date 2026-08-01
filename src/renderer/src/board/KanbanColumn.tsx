@@ -107,6 +107,13 @@ export interface KanbanColumnProps {
   onLinkEnd?: () => void;
   onLinkTo?: (fromTaskId: string, toTaskId: string) => void;
   onLinkArm?: (taskId: string) => void;
+  /**
+   * Where a card stands in its chain — what it is still waiting on, and whether its turn
+   * has come. Asked per card rather than passed as a map for the same reason the names and
+   * colours above are: the column holds no board-wide index of its own, and the board
+   * already has one (see `MyTasks`). Undefined for a card nobody chained.
+   */
+  chainStateOf?: (task: Task) => { waitingOn: Task[]; ready: boolean } | undefined;
   selectedTaskId: string | null;
   draggingId: string | null;
   onSelectTask: (id: string) => void;
@@ -180,6 +187,11 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               onLinkEnd={props.onLinkEnd}
               onLinkTo={(fromTaskId) => props.onLinkTo?.(fromTaskId, task.id)}
               onLinkArm={() => props.onLinkArm?.(task.id)}
+              waitingOn={props.chainStateOf?.(task)?.waitingOn}
+              chainReady={props.chainStateOf?.(task)?.ready}
+              // Unchanged by any of the chain work above it: a chained card is still freely
+              // draggable, because a chain says what runs after what, never where a card
+              // belongs. Only a live step takes a card out of the human's hands.
               draggable={props.canDrag({ task, subtasks, mergeRequests })}
               dragging={task.id === props.draggingId}
               onSelect={() => props.onSelectTask(task.id)}

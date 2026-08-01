@@ -259,6 +259,62 @@ describe('WorktreeManager.prepare — a project that names its base branch', () 
   });
 });
 
+/**
+ * The `stacked` chain gate (`@shared/taskChain`): the successor's branch is cut from the
+ * PREDECESSOR's, so it opens with that work already in the tree — while still merging back
+ * into the project's base. Those two being separate is the whole point; a start point that
+ * also moved the merge target would quietly make one card's review the other's problem.
+ */
+describe('WorktreeManager.prepare — a branch stacked on another card’s', () => {
+  function worktreeProject(): Project {
+    return { id: 'p1', path: repo, useWorktrees: true, target: LOCAL_TARGET } as unknown as Project;
+  }
+
+  it('cuts the branch from the start point but still merges back into base', async () => {
+    const wtm = new WorktreeManager(join(root, 'wtroot-stack'));
+    // The predecessor's branch, with a commit base has never seen.
+    await git(repo, ['checkout', '-b', 'orch/first']);
+    writeFileSync(join(repo, 'from-first.txt'), 'first\n');
+    await git(repo, ['add', '-A']);
+    await git(repo, ['commit', '--no-verify', '-m', 'first card']);
+    await git(repo, ['checkout', base]);
+
+    const prep = await wtm.prepare(
+      worktreeProject(),
+      { id: 'second' } as unknown as Task,
+      'second',
+      'orch/second',
+      'orch/first',
+    );
+
+    expect(prep.mode).toBe('worktree');
+    if (prep.mode !== 'worktree') return;
+    expect(existsSync(join(prep.cwd, 'from-first.txt'))).toBe(true);
+    // The merge TARGET is untouched — integration still goes to the project's base.
+    expect(prep.base).toBe(base);
+    expect(prep.note).toContain('orch/first');
+  });
+
+  it('falls back to base when the start point is gone, and says nothing about it', async () => {
+    const wtm = new WorktreeManager(join(root, 'wtroot-stack2'));
+
+    // The commonest way for a start point to vanish: the predecessor merged and its branch
+    // was deleted — by which time its work is in base anyway.
+    const prep = await wtm.prepare(
+      worktreeProject(),
+      { id: 'third' } as unknown as Task,
+      'third',
+      'orch/third',
+      'orch/long-gone',
+    );
+
+    expect(prep.mode).toBe('worktree');
+    if (prep.mode !== 'worktree') return;
+    expect(prep.base).toBe(base);
+    expect(prep.note).toBeUndefined();
+  });
+});
+
 describe('WorktreeManager.prepare — worktree-enabled repo that cannot isolate', () => {
   it('reports "failed" (never falls back to the base tree) when a worktree cannot be created', async () => {
     const task = { id: 't1' } as unknown as Task;

@@ -10,6 +10,7 @@ import {
   outgoingLinks,
   predecessorsOf,
   readyToRelease,
+  readyToReleaseGiven,
   successorsOf,
   wouldCycle,
   type LinkGate,
@@ -222,6 +223,34 @@ describe('readyToRelease', () => {
 
   it('keeps waiting when a predecessor has gone missing', () => {
     expect(readyToRelease(b, [link('a', 'b')], index(b))).toBe(false);
+  });
+});
+
+describe('readyToReleaseGiven', () => {
+  it('takes the named predecessor as satisfied however the board looks', () => {
+    const b = task({ id: 'b' });
+    // Mid-settle: the run has ended, but the card's status has not been written yet, so
+    // asking `linkSatisfied` about it would answer "still running".
+    const a = task({ id: 'a', status: 'running' });
+    const links = [link('a', 'b', 'stacked')];
+    expect(readyToRelease(b, links, index(a, b))).toBe(false);
+    expect(readyToReleaseGiven(b, links, index(a, b), 'a')).toBe(true);
+  });
+
+  it('judges every OTHER arm of a diamond normally', () => {
+    const d = task({ id: 'd' });
+    const links = [link('a', 'd', 'stacked'), link('c', 'd')];
+    const a = task({ id: 'a', status: 'running' });
+    expect(readyToReleaseGiven(d, links, index(a, task({ id: 'c' }), d), 'a')).toBe(false);
+    expect(readyToReleaseGiven(d, links, index(a, task({ id: 'c', landedAt: 2 }), d), 'a')).toBe(
+      true,
+    );
+  });
+
+  it('asserts nothing for null — exactly readyToRelease', () => {
+    const b = task({ id: 'b' });
+    const links = [link('a', 'b')];
+    expect(readyToReleaseGiven(b, links, index(task({ id: 'a' }), b), null)).toBe(false);
   });
 });
 

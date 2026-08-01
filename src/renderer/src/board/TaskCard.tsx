@@ -46,7 +46,9 @@ import {
   CheckmarkCircleRegular,
   CircleRegular,
   DismissCircleFilled,
+  LinkRegular,
   MergeFilled,
+  PlayCircleRegular,
   NoteRegular,
   PersonFilled,
   PersonRegular,
@@ -553,6 +555,36 @@ const useStyles = makeStyles({
     whiteSpace: 'nowrap',
   },
   footer: { display: 'flex', alignItems: 'center', gap: '8px' },
+  /**
+   * Where this card sits in its chain — "waiting on VIP-3", or "ready".
+   *
+   * **Monochrome, and that is the point.** Everything the board spends colour on is
+   * something in MOTION: the cyan band of a live run, the orange ring of a card that wants
+   * you, a red pipeline. A dependency is none of those — it is a standing fact about the
+   * card that will read the same tomorrow — so it takes the same neutral treatment as the
+   * sprint chip beside it and lets the moving things keep the eye.
+   *
+   * The icon carries the distinction the colour would otherwise have made: a chain link for
+   * blocked, a play mark for released-but-not-started.
+   */
+  chainChip: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '4px',
+    backgroundColor: tokens.colorNeutralBackground4,
+    color: tokens.colorNeutralForeground2,
+    border: `1px solid ${tokens.colorNeutralStroke2}`,
+    fontSize: '11px',
+    fontWeight: 600,
+    padding: '1px 7px',
+    borderRadius: '4px',
+    maxWidth: '100%',
+    minWidth: 0,
+    overflow: 'hidden',
+  },
+  /** The names inside the chip — the chip's border stays put however long they run. */
+  chainChipText: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  chainChipIcon: { fontSize: '12px', flexShrink: 0, display: 'flex' },
   grow: { flex: 1, minWidth: 0 },
   jiraLink: { textDecoration: 'none' },
   /** The ticket badge: the JIRA mark, then the key. */
@@ -736,6 +768,21 @@ export interface TaskCardProps {
   onLinkTo?: (fromTaskId: string) => void;
   /** Enter/Space on the handle — arm a link from this card, for anyone not using a mouse. */
   onLinkArm?: () => void;
+  /**
+   * The predecessors this card is still waiting on (`blockedBy`), for its chip.
+   *
+   * The cards themselves rather than a count, because "waiting on VIP-3" sends you
+   * somewhere and "waiting on 1 card" sends you hunting for the arrow. Empty or absent for
+   * every card nobody has chained, which is most of them.
+   */
+  waitingOn?: readonly Task[];
+  /**
+   * Every predecessor has finished and nothing has started yet — the window between the
+   * chain opening and the card actually moving. Worth saying out loud because it is exactly
+   * when a card looks abandoned: it sits in To Do like any other, and the only thing that
+   * distinguishes it is that its turn has come.
+   */
+  chainReady?: boolean;
   draggable: boolean;
   onSelect: () => void;
   /** Open a step in the detail pane (the row never drags or moves the card). */
@@ -776,6 +823,8 @@ export function TaskCard({
   linkState,
   onLinkStart,
   onLinkEnd,
+  waitingOn = [],
+  chainReady = false,
   onLinkTo,
   onLinkArm,
   draggable,
@@ -795,6 +844,41 @@ export function TaskCard({
    * itself asks, which is what keeps the row and its contents in step.
    */
   const showsPriority = priorityIndicatorShown(display.priorityDisplay, task.externalPriority);
+  /**
+   * Where this card stands in its chain, as one chip — or null, which is the answer for
+   * every card nobody has drawn an arrow to.
+   *
+   * Waiting beats ready, because they cannot both be true and the blocked case is the one
+   * that explains why nothing is happening. The chip NAMES what it waits on; the tooltip
+   * spells the list out when there is more than one, since a diamond waits for all of them
+   * (`readyToRelease` is an AND-join) and a chip that showed only the first would be lying
+   * about how much is left.
+   */
+  const waitingNames = waitingOn.map((t) => t.externalKey || t.title);
+  const chainChip = waitingOn.length ? (
+    <span
+      className={styles.chainChip}
+      title={
+        waitingOn.length === 1
+          ? `Waiting on ${waitingOn[0].title} — chained to run after it`
+          : `Waiting on all of: ${waitingOn.map((t) => t.title).join(', ')}`
+      }
+    >
+      <LinkRegular className={styles.chainChipIcon} />
+      <span className={styles.chainChipText}>
+        waiting on {waitingNames[0]}
+        {waitingNames.length > 1 ? ` +${waitingNames.length - 1}` : ''}
+      </span>
+    </span>
+  ) : chainReady ? (
+    <span
+      className={styles.chainChip}
+      title="Everything this card waits for has finished — it can start."
+    >
+      <PlayCircleRegular className={styles.chainChipIcon} />
+      <span className={styles.chainChipText}>ready</span>
+    </span>
+  ) : null;
   // Null when the note matched no keyword — the line then keeps the card's ordinary
   // secondary text colour, so an uncoloured note reads as text rather than as a state.
   const noteColor = statusNoteColor(task.statusNote, statusKeywords);
@@ -998,8 +1082,11 @@ export function TaskCard({
           </Caption1>
         )}
 
-        {(isJira || showsPriority) && (
+        {(isJira || showsPriority || chainChip !== null) && (
           <div className={styles.footer}>
+            {/* First in the row, ahead of the ticket badge: it is the reason this card is
+                not moving, and that outranks where it came from. */}
+            {chainChip}
             {isJira && task.externalKey && (
               <a
                 className={styles.jiraLink}

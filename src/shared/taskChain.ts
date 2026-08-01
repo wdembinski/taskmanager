@@ -250,7 +250,32 @@ export function readyToRelease(
   links: readonly TaskLink[],
   byId: ReadonlyMap<string, Task>,
 ): boolean {
-  return incomingLinks(links, task.id).every((l) => linkSatisfied(l, byId.get(l.fromTaskId)));
+  return readyToReleaseGiven(task, links, byId, null);
+}
+
+/**
+ * The same AND-join as {@link readyToRelease}, with ONE predecessor taken as satisfied
+ * whatever the board currently says about it.
+ *
+ * The engine releases at the instant it watched a predecessor finish, and at that instant
+ * the board has not caught up: a `stacked` release fires from the handler that settles a
+ * run, several lines before that handler writes the card's new status, so asking
+ * {@link linkSatisfied} about it would answer "still running" about a run we have just seen
+ * end. Rather than re-deriving the card's imminent state — which is how the engine and the
+ * board come to disagree — the caller names the one card it has first-hand knowledge of.
+ *
+ * Every OTHER link into the successor is judged normally, so a diamond still waits for its
+ * other arm. `null` asserts nothing and is exactly {@link readyToRelease}.
+ */
+export function readyToReleaseGiven(
+  task: Pick<Task, 'id'>,
+  links: readonly TaskLink[],
+  byId: ReadonlyMap<string, Task>,
+  satisfiedId: string | null,
+): boolean {
+  return incomingLinks(links, task.id).every(
+    (l) => l.fromTaskId === satisfiedId || linkSatisfied(l, byId.get(l.fromTaskId)),
+  );
 }
 
 /**

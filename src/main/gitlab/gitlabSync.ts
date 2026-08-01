@@ -252,6 +252,26 @@ export function reconcileMergeRequests(
 }
 
 /**
+ * The cards whose work this sync says has **landed** — one entry per card with a merge
+ * request GitLab reports as `merged`.
+ *
+ * This is the other half of `Task.landedAt`, and the one that matters for a team: the app
+ * only ever does the merging itself for a project it integrates locally, whereas a card
+ * whose branch goes through review lands when somebody clicks Merge in GitLab, which the
+ * app learns about here and nowhere else. Without it, an `after-merge` chain on a
+ * review-based project would wait forever for a merge that had already happened.
+ *
+ * No setting gates it, and none is needed: a local-only project has no merge-request rows,
+ * so this simply returns nothing for one. Filtering is left to the caller, which is
+ * idempotent — a merged MR is retained on its card and re-reported on every poll.
+ */
+export function landedTaskIds(mrs: readonly MergeRequest[]): string[] {
+  const ids = new Set<string>();
+  for (const mr of mrs) if (mr.state === 'merged' && mr.taskId) ids.add(mr.taskId);
+  return [...ids];
+}
+
+/**
  * Re-file stored MRs against the board as it is now, without touching GitLab.
  *
  * Called when the board changes (a sync, a JQL edit): an MR whose ticket has just
