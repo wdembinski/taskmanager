@@ -201,7 +201,51 @@ a card executing an approved plan holds no session of its own, so the target is 
 A card whose approved plan has stopped: some step is `failed` or waiting on a question,
 so its siblings stay pending. The card wears the orange frame and reads `2/4 · stopped`,
 and the step's resolutions are offered from the card's own pane. An app restart parks an
-interrupted step the same way — nothing re-enters a chain on its own.
+interrupted step the same way — nothing re-enters a chain on its own. This is a **step
+chain** — one card's own work — not a [chain](#chain-of-execution) between cards.
+
+### Chain (of execution)
+
+The ordering between **whole cards**, drawn as arrows on the board: *this one runs after
+that one*. Every card keeps its own branch, its own worktree and its own merge — which is
+what makes it a different thing from a card's [steps](#subtask-step), where one branch is
+shared and only the last step integrates. A chain can be a line, a fan or a diamond
+(a card waits for **all** the arrows into it); it can never be a loop, and it can never
+include a step at either end. A chain never moves a card between columns. See
+[doc 03](03-how-orchestration-works.md#chaining-cards).
+
+### Link (edge)
+
+One arrow: a `task_links` row saying `toTaskId` runs after `fromTaskId`, under one
+**gate**. Drawn by dragging the handle on a card's right edge, from *Add task*'s
+*Runs after…* picker, or listed and unlinked in the pane's **Chain** section. Deliberately
+not `@needs:`, which is matched by title inside one plan project's file and re-derived on
+every sync; a link is between arbitrary cards, made by a human, and survives a re-sync.
+
+### Gate
+
+What "after" means for one link. **After merge** (`after-merge`, the default) waits for the
+predecessor to have **landed** — settled code, the safe choice. **Stacked on this branch**
+(`stacked`) fires as soon as the predecessor stops writing, so the next card starts sooner
+on a base that may still be rewritten under it. Both the board and the release engine ask
+the same function (`linkSatisfied` in `src/shared/taskChain.ts`), so they cannot disagree
+about whether a card is ready.
+
+### Stacked branch
+
+The successor's worktree in a `stacked` link, cut from the **predecessor's** branch rather
+than from the project's base, so it starts with that card's commits already in its tree.
+The merge target is unchanged (still the base branch) — which means merging the successor
+carries the predecessor's work along with it, so the predecessor should merge first. The
+card's timeline says so when it is released.
+
+### Landed
+
+A card's work is in the base branch (`Task.landedAt`) — the fact every `after-merge` gate
+waits on. Stored rather than inferred, so a card dragged back out of Done or a merge-request
+list a poll behind cannot un-release a chain that already started. Stamped from two places:
+a local integrate that merges the branch, and a linked **merge request** GitLab reports as
+`merged` — the only signal that exists on a project where nobody merges locally.
 
 ### Nav rail
 

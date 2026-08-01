@@ -40,6 +40,8 @@ plan the orchestrator could one day run on its own repo.
 | 15 | The board grows up (IN REVIEW, status map, priority, notes, colours) | ✅ shipped |
 | 16 | Seventeen fixes and two integrations (bugs, workspace, JIRA depth, auto-update, GitLab) | ✅ shipped (v0.30.0) |
 | 17 | Ask me, and show me what you are doing | ✅ shipped (v0.33.0) — all 42 items |
+| — | Interim releases v0.34–v0.50 (branch naming, re-planning, base branch, board polish, engine fixes) | ✅ shipped, not tracked here |
+| 19 | Setting a chain of execution (links, gates, the release engine) | ✅ shipped (v0.51.0) |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -1091,6 +1093,118 @@ then the engine and IPC), renderer groundwork second (`theme.ts`, `useAttentionI
 - [ ] **Live E2E owed for the whole phase**, and it is the only way to check the two
       that matter most: that a question really blocks its run, and that a spinner really
       turns while one is working.
+
+---
+
+## Phase 19 — Setting a chain of execution
+
+**Goal.** Let the board say what **order** the work has to happen in. A board has only
+ever said what there is to do: two cards that must land in sequence — one touching a file
+the other rewrites, one that cannot start until the other's branch is in — look exactly
+like two independent cards, and the ordering lives in the head of whoever set the work up.
+A chain writes it down as an arrow between two cards, and then *runs* it: when the first
+card's work lands, the second one starts by itself.
+
+Decisions taken with the user: an arrow is drawn **between whole cards**, never between a
+card's steps (their order already *is* a chain, and a second one could only disagree); the
+ordering carries a **gate**, because "after" means two different things (after the branch
+*merges*, or stacked on the branch as soon as it stops being *rewritten*); a chain
+**never moves a card between columns** — where a card sits stays the human's, exactly as
+for every other run; and the arrows live **on the board**, not in a list, because
+"what runs after what" is a shape.
+
+### Deliverables
+
+- [x] **1 — The edges, and what they wait on** (`75c740b`). A `task_links` table — one row
+      per arrow, `ON DELETE CASCADE` from both ends so deleting a card cannot leave an arrow
+      pointing at nothing, indexed in both directions (the engine asks *who follows me*, the
+      board asks *what am I waiting on*). `tasks.landedAt` is the fact `after-merge` waits on,
+      **stored** rather than derived: an MR list a poll behind, or a card dragged back out of
+      Done, must never pull a successor's start out from under it. All the graph logic is
+      pure and shared (`src/shared/taskChain.ts`) so the board and the engine answer from the
+      same functions — cycles refused as an edge is drawn, steps refused at either end, and
+      an **AND-join** so a diamond waits for both arms rather than the first.
+- [x] **2 — The arrows** (`96c7825`). One `<svg>` over the whole board, an absolutely
+      positioned child of the single scrolling column strip, so the arrows share the cards'
+      coordinate space and no seam has to be stitched between columns. An arrow leaves and
+      enters the two edges that **face each other** — a board's chains mostly run *backwards*
+      (the working card is in In Progress, the card waiting on it is still in To Do, to its
+      left), so "right edge to left edge" dragged the commonest arrow straight across its own
+      target. A same-column link loops out into the gutter. The ink budget: a 1px neutral
+      hairline at rest, 2px accent for the whole route through a selected or hovered card,
+      dashed while waiting, cyan and travelling while the predecessor runs, a double hairline
+      for `stacked`. An endpoint the board is not showing becomes a counted stub into the
+      board's edge, never a line to nowhere.
+- [x] **3 — The gesture** (`258b1ae`). A handle on the card's right edge, dragged onto the
+      card that runs after it, reusing the board's own drag-and-drop. The two gestures are
+      told apart by the DataTransfer's **type** (`application/x-chain-link` vs `text/plain`)
+      and never by where the pointer is — `dragover` may not read the payload, but it can
+      always see the type list — and the column stands aside for a link, so drawing an arrow
+      across a column no longer also moves the card. Every card is marked valid /
+      already-linked / refused when the drag *starts*, asked of `@shared/taskChain`, so the
+      refusal under the cursor is the one the handler would give. The handle is a real
+      button: Enter arms a link the next card completes. An arrow can be selected, re-gated
+      from a panel on its middle, and erased with Delete.
+- [x] **4 — The release engine** (`172e989`). `src/main/chainRunner.ts`, owned by
+      `Scheduler` the way `WorktreeManager` is, so `scheduler.ts` gains three calls rather
+      than another feature's logic. `landedAt` is stamped by a local integrate **and** by a
+      linked merge request GitLab reports as `merged` — on a project whose branches go
+      through review, the second is the only way the app learns the work shipped. A
+      `stacked` edge fires earlier, from where `settle` sees a card's run succeed, and the
+      successor's worktree is cut from the predecessor's branch (`prepare` takes an optional
+      start point; the returned `base` is unchanged, so integration still targets the
+      project's base branch). Guards: a usage limit holds a release as it holds
+      `advanceSubtasks`; a stopped or cancelled predecessor releases nothing; only a
+      `pending`, assigned, never-run card is started, and everything else gets a timeline
+      note naming what released it and why nothing started. **Release now** in the pane
+      overrides the gate by hand. The card grows a monochrome `waiting on KEY` chip, and
+      `ready` when the gates are met but nothing has started.
+- [x] **5 — One chain at a time** (`ea15835`). A **Chain focus** toggle beside Display
+      filters the board to `chainComponent(links, selected)` — the card, everything upstream,
+      everything downstream, undirected, because "show me this and everything it is entangled
+      with" includes the sibling branching off a shared predecessor. The board's real columns
+      throughout: a chain is not a pipeline of its own. Local state, not a saved setting — a
+      board reopening with three of your twenty cards, for a selection you no longer remember
+      making, reads as lost work. Its two companions are the pane's **Chain** section
+      (*Waiting on* / *Releases*, each row a real button naming the gate, with an unlink —
+      the keyboard's route to what dragging does) and *Add task*'s **Runs after…** picker.
+- [x] **6 — The documentation, and the release.** A *Chaining cards* section in
+      [`docs/03`](../03-how-orchestration-works.md#chaining-cards) — the chain-versus-steps
+      table, the two gates, the board's vocabulary and what the engine does when a
+      predecessor finishes — and five new glossary entries (*chain*, *link*, *gate*,
+      *stacked branch*, *landed*). Doc 03's older use of "chain" for a card's own steps is
+      now spelled **step chain**, so the two senses can be told apart.
+
+### Done when
+
+- Drawing an arrow between two cards survives a restart, and deleting either card takes
+  the arrow with it.
+- A card whose predecessor has not landed shows `waiting on …`, and its arrow is dashed;
+  when the predecessor's branch merges, the card starts on its own and its timeline says
+  which card released it.
+- A `stacked` successor's worktree contains the predecessor's commits, and still merges
+  into the project's base branch.
+- Neither a cycle nor a step can be linked, from any of the three routes (drag, keyboard,
+  *Runs after…*), and the refusal is a sentence rather than a snap-back.
+- No release ever changes a card's column.
+- `pnpm typecheck`, `pnpm test` and `pnpm build` are green.
+
+**Notes.**
+
+- Shipped as **0.51.0** — a minor bump: new capability. (The plan said 0.50.0, which
+  `development` had already released while this branch was open.)
+- Deliberately **not** `Task.dependsOn`: that is a plan project's `@needs:` clause, matched
+  by title within one parsed plan file and re-derived on every sync. These are edges between
+  arbitrary cards, drawn by a human, that survive a re-sync.
+- Two known gaps left standing on purpose: the dangling-end count chip is dropped in the
+  leftmost column (a card there has ~4px to its left, and nothing fits — the count stays in
+  the path's `<title>`), and the `stacked` double hairline collapses to one line on the
+  near-vertical middle of a gutter loop, still reading as double where it meets its cards.
+
+- [ ] **7 — Live E2E owed.** Steps 1–4 were checked by eye on the demo profile; step 5's UI
+      has not been looked at yet. The two that only a live run can settle are the GitLab half
+      of `landedAt` (a real MR merged, releasing a card that was never touched locally) and a
+      `stacked` successor's worktree actually containing the predecessor's commits.
 
 ---
 
