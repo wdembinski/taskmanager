@@ -311,6 +311,14 @@ export interface IpcApi {
   'scheduler:activeRuns': () => Promise<ActiveRun[]>;
   /** Snapshot of each project's run state, so the Board's buttons survive a remount. */
   'scheduler:states': () => Promise<SchedulerChange[]>;
+  /**
+   * The task ids whose branch is being merged **right now**, so a board that mounts
+   * mid-merge shows the spinner too. Live changes arrive on `task:integrating`.
+   *
+   * A merge is the one long job that changes nothing observable while it runs — no run,
+   * no status, no transcript line — so without this the UI has no way to know it started.
+   */
+  'scheduler:integrating': () => Promise<string[]>;
   /** Run a single task ad-hoc (independent of its project's queue). Returns its run id. */
   'task:run': (taskId: string) => Promise<{ runId: string }>;
   /**
@@ -320,6 +328,10 @@ export interface IpcApi {
    * moment the agent stops is merging at the moment the work has been reviewed least.
    * Resolves once the merge has been STARTED; its outcome arrives as a task note, or as an
    * inbox item when it conflicts.
+   *
+   * That "started, not finished" is why `task:integrating` exists: the card is in the set
+   * before this resolves and leaves it when the merge settles, which is what the button's
+   * spinner and the card's "Merging branch…" are driven from.
    */
   'task:integrate': (taskId: string) => Promise<void>;
   /**
@@ -716,6 +728,17 @@ export interface IpcEvents {
   'session:event': SessionEventEnvelope;
   /** A task's status/sessionId changed (with its live runId while executing). */
   'task:changed': TaskChange;
+  /**
+   * The set of tasks whose branch is being merged changed — carries the WHOLE set, like
+   * `chain:changed` and friends, so the UI replaces rather than patches.
+   *
+   * Its own channel rather than a flag on `TaskChange`, because a merge is precisely the
+   * thing that does NOT change the task: the row is untouched from the moment Merge is
+   * pressed until the merge lands, so there is no `task:changed` to hang it off. It is
+   * also what tells an open detail pane to re-read its timeline when a merge finishes —
+   * the outcome note is written straight to the DB and never streamed.
+   */
+  'task:integrating': string[];
   /** A project's queue moved between running/paused/idle. */
   'scheduler:changed': SchedulerChange;
   /** A task needs a human: a permission request or a clarifying question. */

@@ -289,7 +289,8 @@ export function isAgentRunning(task: Task): boolean {
  * What a card is doing, as one value. `idle`/`done` are resting states; everything else
  * means something is happening and the card should say so.
  */
-export type RunPhase = 'idle' | 'queued' | 'starting' | 'running' | 'waiting' | 'blocked' | 'done';
+export type RunPhase =
+  'idle' | 'queued' | 'starting' | 'running' | 'waiting' | 'blocked' | 'merging' | 'done';
 
 /** A phase plus the words and the spinner that go with it. */
 export interface RunState {
@@ -327,11 +328,19 @@ const TERMINAL: ReadonlySet<Task['status']> = new Set(['done', 'failed', 'stoppe
  *
  * Also deliberately not gated on {@link isAgentAssigned}: a step added by hand carries no
  * `agentProjectId`, and gating would mean it could never show a spinner however hard it ran.
+ *
+ * `mergingTaskIds` (from `scheduler:integrating`) closes the third window, the one Merge
+ * left open: pressing it starts a rebase-and-fast-forward that can run for a minute, and
+ * NOTHING about the card changes while it does — no run, no status, no transcript line —
+ * so the board said the card was resting and the button simply looked dead. Unlike the
+ * live-run snapshot this set never lags: the engine adds a task before the git work starts
+ * and removes it in a `finally`, so it is a fact rather than a hint.
  */
 export function runPhase(
   task: Task,
   subtasks: Task[] = [],
   liveRunTaskIds?: ReadonlySet<string>,
+  mergingTaskIds?: ReadonlySet<string>,
 ): RunState {
   // The task's own state always wins over the chain's — a parent that is itself running
   // (a review-seed turn, say) is running, whatever its finished steps say.
@@ -344,6 +353,17 @@ export function runPhase(
       return { phase: 'blocked', label: 'Paused — usage limit', spinner: false };
     default:
       break;
+  }
+
+  // Merging outranks everything below, including a terminal status: a chain's branch is
+  // integrated under the id of the STEP that finished it, and that step is `done` by
+  // then — so refusing to read a settled task out of this set would hide the merge on
+  // exactly the cards that most often have one. The card claims its steps' merges too,
+  // since the branch being merged is the card's work reaching base.
+  if (mergingTaskIds?.size) {
+    const merging =
+      mergingTaskIds.has(task.id) || subtasks.some((step) => mergingTaskIds.has(step.id));
+    if (merging) return { phase: 'merging', label: 'Merging branch…', spinner: true };
   }
 
   // Only a task that could still be starting. A finished/stopped one must NOT be read out
@@ -418,6 +438,11 @@ export function runPhase(
  * is deliberately not gated on that (a hand-written step chain runs without one — see
  * {@link runPhase}). With no glyph to pulse, dropping the words would leave the card saying
  * nothing at all, so they stay.
+ *
+ * `merging` is deliberately NOT one of the moving states here, even though it spins. The
+ * pulse means "the agent is working", and during a merge the agent is finished — what is
+ * moving is git. A bare pulse there would be indistinguishable from a run, so this one
+ * phase keeps its words.
  */
 export function cardRunLabel(run: RunState, agentAssigned: boolean): string | null {
   if (!run.label) return null;

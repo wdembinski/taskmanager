@@ -397,6 +397,51 @@ describe('runPhase', () => {
     const card = task({ id: 'c1', status: 'running' });
     expect(runPhase(card, [step('s1', 'done')])).toMatchObject({ phase: 'running' });
   });
+
+  /**
+   * A merge is the one long job that changes nothing about the task while it runs, so
+   * without the set the card is indistinguishable from one nobody has touched — which is
+   * exactly what "I clicked Merge and nothing appeared" was.
+   */
+  it('spins a card whose branch is being merged, and says so', () => {
+    const card = task({ id: 'c1', status: 'in-progress', agentProjectId: 'agent' });
+    expect(runPhase(card, [], new Set(), new Set(['c1']))).toEqual({
+      phase: 'merging',
+      label: 'Merging branch…',
+      spinner: true,
+    });
+    expect(runPhase(card, [], new Set(), new Set())).toMatchObject({ phase: 'idle' });
+  });
+
+  /**
+   * A chain's branch is integrated under the id of the step that finished it — and that
+   * step is `done` by then. Reading a settled task out of this set is therefore required,
+   * not a slip: the opposite rule (correct for the lagging live-run snapshot) would hide
+   * the merge on precisely the cards that have one.
+   */
+  it('claims its steps’ merges, terminal status and all', () => {
+    const card = task({ id: 'c1', status: 'in-progress' });
+    expect(runPhase(card, [step('s1', 'done')], new Set(), new Set(['s1']))).toMatchObject({
+      phase: 'merging',
+      spinner: true,
+    });
+    expect(runPhase(step('s1', 'done'), [], new Set(), new Set(['s1']))).toMatchObject({
+      phase: 'merging',
+    });
+  });
+
+  it('lets a live run outrank a merge — the agent moving is the louder fact', () => {
+    const card = task({ id: 'c1', status: 'running' });
+    expect(runPhase(card, [], new Set(), new Set(['c1']))).toMatchObject({ phase: 'running' });
+  });
+
+  // The words stay on the card for this one phase: the pulse would read as "the agent is
+  // working", and during a merge the agent has finished — what is moving is git.
+  it('keeps the merging words on a card whose glyph is already pulsing', () => {
+    const card = task({ id: 'c1', status: 'in-progress', agentProjectId: 'agent' });
+    const merging = runPhase(card, [], new Set(), new Set(['c1']));
+    expect(cardRunLabel(merging, true)).toBe('Merging branch…');
+  });
 });
 
 describe('chainInFlight', () => {
