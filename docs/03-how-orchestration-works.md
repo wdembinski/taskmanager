@@ -87,6 +87,25 @@ tells us **when the limit resets**. The engine then:
 The dashboard shows a banner with a live countdown so you always know why work is
 paused and when it'll pick back up.
 
+**Everything the limit stopped is parked, not just what was running.** The gate is
+what remembers work across the reset, so anything that would have started while it
+is up is parked behind it too — above all the **next step of a card's plan**, whose
+predecessor finished mid-limit. A step held this way says *Paused — usage limit* on
+its card and starts by itself at the reset. Three things follow from the same rule:
+
+- a task the limit caught **before its session id existed** (the wall was hit while
+  its worktree was still being prepared) is *started* at the reset rather than
+  resumed — there is no conversation to lose, and skipping it was what left cards
+  parked behind a gate that had already cleared;
+- a **card** with steps outstanding hands back to its chain at the reset instead of
+  opening a session beside them (its own session is the planner's, and two agents in
+  one worktree is exactly what the chain exists to prevent);
+- on startup, anything still `blocked-by-limit` is adopted by the restored gate — or,
+  if no gate survived, resumed at once. Nothing else would ever raise it again.
+
+**Stop** still wins: stopping a card drops it *and* any step the gate is holding, so
+nothing comes back to life at the reset after you said stop.
+
 > **Honest expectations:** orchestration makes Claude *resume* after a reset. It
 > cannot give you more capacity. If you exhaust the **weekly** cap, work waits
 > until the weekly window rolls over — that's a subscription limit, not a bug.
@@ -337,7 +356,9 @@ the plan, so the steps are full-auto.
   Progress* with a "ready for review" comment — moving it to Done is yours.
 - A **failed** step parks and the chain simply stops; fixing it and marking it done
   resumes the chain. **Stop** on the parent stops the running step and marks the rest
-  `stopped`. Usage limits park and resume a step like any other task.
+  `stopped`. Usage limits park and resume a step like any other task — including the
+  step that had not started yet when the limit arrived, which is parked behind the
+  same gate so the reset can start it (see *Usage limits* above).
 - Each step's prompt is deliberately narrow: *step N of M*, its own brief, the sibling
   titles as one-liners, your notes on the card, and the shared-branch rule (commit;
   never reset/rebase/merge/switch). The JIRA comment thread is **not** included — it is

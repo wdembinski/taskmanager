@@ -34,7 +34,7 @@ import type {
   TaskActivityEntry,
   TaskStatus,
 } from '@shared/model';
-import { chainInFlight, chatTarget } from '@shared/board';
+import { chainInFlight, chatTarget, parkedStep } from '@shared/board';
 import type { SchedulerState, TaskChange, SchedulerChange, ActiveRun } from '@shared/scheduler';
 import type {
   ClaudeModel,
@@ -1342,8 +1342,15 @@ export class Scheduler {
     // to life at reset time.
     if (this.store.getTask(taskId)?.status === 'blocked-by-limit') stopped = true;
     // A card whose plan is approved but whose first step hasn't started yet is still
-    // stoppable: there is queued work even though nothing is running.
-    if (this.chainStarts.has(taskId) || steps.some((s) => s.status === 'pending')) stopped = true;
+    // stoppable: there is queued work even though nothing is running. A step held behind
+    // the usage-limit gate counts for the same reason as a parked card does — it would
+    // otherwise start by itself at the reset, after the human said stop.
+    if (
+      this.chainStarts.has(taskId) ||
+      steps.some((s) => s.status === 'pending' || s.status === 'blocked-by-limit')
+    ) {
+      stopped = true;
+    }
     if (!stopped) return false;
     this.attempts.delete(taskId);
     this.retryQueue.delete(taskId);
@@ -1357,12 +1364,13 @@ export class Scheduler {
     // Stopping the card also cancels a re-plan queued behind the run being stopped —
     // otherwise the planner would spring to life the moment that process exits (Phase 18).
     this.pendingReplans.delete(taskId);
-    for (const step of this.store.getSubtasks(taskId)) {
-      if (step.status === 'pending') this.updateTask(step.id, { status: 'stopped' }, null);
-    }
-    // A limit-parked task counts as stoppable too: drop it from the gate so it is not
-    // resurrected when the limit resets.
-    this.limitGate.unpark([taskId]);
+    const queuedSteps = this.store
+      .getSubtasks(taskId)
+      .filter((s) => s.status === 'pending' || s.status === 'blocked-by-limit');
+    for (const step of queuedSteps) this.updateTask(step.id, { status: 'stopped' }, null);
+    // A limit-parked task counts as stoppable too: drop it — and any step of its chain the
+    // gate is holding — so nothing is resurrected when the limit resets.
+    this.limitGate.unpark([taskId, ...queuedSteps.map((s) => s.id)]);
     this.updateTask(taskId, { status: 'stopped' }, null);
     return true;
   }
@@ -1481,7 +1489,37 @@ export class Scheduler {
   restoreLimitGate(): void {
     if (this.disposed) return;
     const saved = this.store.loadLimitGate();
-    if (saved) this.limitGate.restore(saved);
+    // What the DB says is parked, which is the authority — the saved gate is only what the
+    // engine happened to remember. The two can disagree in both directions (a task parked
+    // in the instant before the app went down; a gate written before the status was), and
+    // either way the task is the thing left `blocked-by-limit`, so it is what we go by.
+    const parked = this.store
+      .listProjects()
+      .flatMap((project) => this.store.getTasks(project.id))
+      .filter((task) => task.status === 'blocked-by-limit');
+
+    if (!saved) {
+      // Nothing will ever raise these again: no gate, no timer, no reset to wait for. They
+      // are the cards that "never came back" after a limit — resume them now, the same way
+      // the reset would have. (Should the limit somehow still be in force, the first run to
+      // hit the wall simply raises a fresh gate and parks them again.)
+      if (parked.length > 0) {
+        this.resumeParked({
+          limitType: 'rolling',
+          resetsAt: null,
+          resumeAt: Date.now(),
+          parkedTaskIds: parked.map((task) => task.id),
+        });
+      }
+      return;
+    }
+    const known = new Set(saved.parkedTaskIds);
+    const adopted = parked.filter((task) => !known.has(task.id)).map((task) => task.id);
+    this.limitGate.restore(
+      adopted.length > 0
+        ? { ...saved, parkedTaskIds: [...saved.parkedTaskIds, ...adopted] }
+        : saved,
+    );
   }
 
   /**
@@ -2531,22 +2569,79 @@ export class Scheduler {
   }
 
   /**
-   * The gate's timer fired: the limit has reset. Resume each parked task by its
-   * saved session id, skipping any the user has since stopped or removed.
+   * The gate's timer fired: the limit has reset. Put every parked task back to work,
+   * skipping any the user has since stopped or removed.
+   *
+   * Three things here are not obvious, and each of them was a card that never came back:
+   *
+   *  1. **A missing session id is not a reason to skip.** The gate parks whatever was
+   *     in flight, and a run is in flight from the moment its slot is reserved — before
+   *     the worktree is prepared, before the process spawns, before the `started` event
+   *     that records the id. Requiring one meant a task limited in that window was left
+   *     `blocked-by-limit` behind a gate that had just cleared, with nothing to ever
+   *     raise it again. There is no conversation to lose in that case, so it simply
+   *     starts (`startTask` resumes only when there IS an id).
+   *  2. **A card with steps outstanding hands back to its CHAIN**, exactly as `runTask`
+   *     does — resuming the card's own session beside its steps would put two agents in
+   *     one worktree, and after an approved plan the card's session is the planner, which
+   *     was told to stop.
+   *  3. **A task that cannot start is released rather than left parked**, because
+   *     `blocked-by-limit` with no gate behind it is a card that waits for ever.
    */
   private resumeParked(state: LimitState): void {
     if (this.disposed) return;
+    /** Cards that yielded to their chain above — advanced after the loop, once per card. */
+    const chains = new Set<string>();
     for (const taskId of state.parkedTaskIds) {
       const task = this.store.getTask(taskId);
-      // Only resume tasks still parked by the limit (not since stopped/deleted),
-      // and only if we captured a session id to resume from.
-      if (!task || task.status !== 'blocked-by-limit' || !task.sessionId) continue;
+      // Only resume tasks still parked by the limit (not since stopped/deleted).
+      if (!task || task.status !== 'blocked-by-limit') continue;
+      if (!task.parentTaskId && chainInFlight(this.store.getSubtasks(task.id))) {
+        // The steps ARE this card's work; give the field back and let the chain run.
+        this.updateTask(task.id, { status: 'in-progress' }, null);
+        chains.add(task.id);
+        continue;
+      }
+      // Something live already owns it (a human pressed Run as the gate lifted); that run
+      // sets the status itself. Judged on unsettled runs, so the process the gate itself
+      // stopped — which lingers in `inFlight` until its `exited` arrives — is not mistaken
+      // for one, which is what "Resume now" clicked straight after a false trip produces.
+      if (this.hasLiveRunFor([task])) continue;
       const project = this.runProjectFor(task);
-      if (!project) continue;
-      this.startTask(project, task); // resumes by task.sessionId
+      if (!project) {
+        this.releaseStrandedPark(task);
+        continue;
+      }
+      this.startTask(project, task); // resumes by task.sessionId when there is one
+    }
+    // A step parked by `advanceSubtasks` is resumed by its own entry above; this covers the
+    // card whose chain simply had nothing running to park. A chain stopped at a failed or
+    // questioning step is NOT nudged: that one is the human's to resolve, and a limit
+    // resetting is not them resolving it.
+    for (const parentId of chains) {
+      if (parkedStep(this.store.getSubtasks(parentId))) continue;
+      this.advanceSubtasks(parentId);
     }
     // Slots may have freed without a parked task — nudge every active queue.
     for (const projectId of this.activeProjects) this.pump(projectId);
+  }
+
+  /**
+   * Hand back a task the reset could not start, so it does not sit `blocked-by-limit`
+   * behind a gate that no longer exists. The same shapes {@link
+   * Scheduler.reconcileInterruptedTasks} uses for the same reason: a card re-queues, a
+   * step parks for the human (nothing re-enters a chain on its own).
+   */
+  private releaseStrandedPark(task: Task): void {
+    this.noteRun(
+      task.projectId,
+      task.id,
+      'limit',
+      'The usage limit cleared, but this no longer resolves to a project to run in, so it ' +
+        'was not restarted. Its session is kept — running it again continues the same ' +
+        'conversation.',
+    );
+    this.updateTask(task.id, { status: task.parentTaskId ? 'failed' : 'pending' }, null);
   }
 
   /** Persist the gate (so a limit survives a restart) and mirror it to the UI. */
@@ -3548,21 +3643,68 @@ export class Scheduler {
    * finishes and when an approved plan hands over. Strictly one at a time: a step that
    * failed (and is parked in the inbox) leaves its siblings pending until the human
    * resolves it, which is what stops a broken chain from running to the end.
+   *
+   * **Under a usage limit the step is PARKED, not dropped.** This used to return here and
+   * say, in a comment, that the human would run the card again — but nothing told them to,
+   * and nothing else ever re-entered the chain: `advanceSubtasks` only runs when a step
+   * *finishes*, and the step that would have finished never started. A card whose limit
+   * arrived between two steps therefore sat at `2/4` for ever, with the reset that was
+   * supposed to fix it passing unnoticed. Parking the step behind the same gate as a
+   * running one puts it in the set `resumeParked` walks at reset, gives it the state the
+   * board already reads as "paused — usage limit", and survives a restart, because the
+   * gate's parked set is persisted.
    */
   private advanceSubtasks(parentId: string): void {
     if (this.disposed) return;
-    // A usage limit holds ALL scheduling; the chain resumes when the human runs the
-    // card again (the parked step, not this one, is what the gate knows about).
-    if (this.limitGate.active) return;
     const parent = this.store.getTask(parentId);
     if (!parent || parent.status === 'stopped' || parent.status === 'cancelled') return;
-    const next = this.store
-      .getSubtasks(parentId)
-      .find((t) => t.status === 'pending' && !this.inFlight.has(t.id));
+    const steps = this.store.getSubtasks(parentId);
+    // One step at a time is the chain's whole contract, and the resume path is where it
+    // could break: a step parked mid-run is restarted by `resumeParked` while its siblings
+    // are still `pending`, so a chain nudged at the same moment must not start a second
+    // agent in the one shared worktree. Weighed on UNSETTLED runs, not on `inFlight`: the
+    // ordinary caller is a step that has just settled and whose slot is not freed until its
+    // process exits, and reading that as "busy" would stop every chain at step one.
+    if (this.hasLiveRunFor(steps)) return;
+    const next = steps.find((t) => t.status === 'pending');
     if (!next) return;
+    if (this.limitGate.active) {
+      this.parkStepForLimit(next);
+      return;
+    }
     const project = this.runProjectFor(next);
     if (!project) return;
     this.startTask(project, next);
+  }
+
+  /**
+   * Hold one step behind the usage-limit gate until the reset (see `advanceSubtasks`).
+   *
+   * Said on the step's own timeline as well as in its status, because the alternative —
+   * a card that quietly stops between steps — is indistinguishable from a card that has
+   * finished. If no gate is up (a race: it lifted between the check and here) nothing is
+   * parked and the step is left `pending` for the caller's next pass.
+   */
+  private parkStepForLimit(step: Task): void {
+    if (this.limitGate.park([step.id]).length === 0) return;
+    this.updateTask(step.id, { status: 'blocked-by-limit' }, null);
+    this.noteRun(
+      step.projectId,
+      step.id,
+      'limit',
+      'A usage limit was in force when this step came up, so it is waiting for the reset. ' +
+        'It starts by itself when the limit clears — nothing to do.',
+    );
+  }
+
+  /**
+   * True when any of these tasks has a run that has not settled yet — i.e. one that is
+   * genuinely still working, as opposed to one whose outcome is decided and whose process
+   * is winding down (which stays in `runs`/`inFlight` until its `exited` arrives).
+   */
+  private hasLiveRunFor(tasks: readonly Task[]): boolean {
+    const ids = new Set(tasks.map((t) => t.id));
+    return [...this.runs.values()].some((r) => !r.settled && ids.has(r.taskId));
   }
 
   /** True when a step of this chain other than `exceptTaskId` is still waiting to run. */

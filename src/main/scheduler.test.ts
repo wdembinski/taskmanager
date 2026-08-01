@@ -1106,7 +1106,7 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
    */
   function setup(
     steps: Array<Partial<Task>> = [{ id: 's1' }, { id: 's2' }],
-    opts?: { autoIntegrate?: boolean },
+    opts?: { autoIntegrate?: boolean; savedLimit?: LimitState | null },
   ) {
     const agentProject = {
       id: 'agent-1',
@@ -1199,6 +1199,11 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
         concurrency: 1,
         autoIntegrate: opts?.autoIntegrate ?? true,
       }),
+      // The usage-limit gate persists itself on every change; these cases drive it, so the
+      // two ends of that have to exist. `loadLimitGate` answering null is also the state
+      // the restart case below is about: statuses left parked with no gate behind them.
+      saveLimitGate: () => undefined,
+      loadLimitGate: () => opts?.savedLimit ?? null,
       ...INERT_ATTENTION_STORE,
     } as unknown as Store;
     const prepared: Array<{ taskId: string; owner: string }> = [];
@@ -1451,6 +1456,133 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
     h.parent.status = 'running';
     h.scheduler.reconcileInterruptedTasks();
     expect(h.parent.status).toBe('pending');
+  });
+
+  // ---- a usage limit in the middle of a chain ----------------------------------
+  //
+  // The bug: a card stopped mid-plan when the account hit its limit and never started
+  // again. Three separate holes, each of which alone was enough to strand it:
+  //
+  //  1. `advanceSubtasks` returned early under a limit and left the next step `pending`
+  //     — but nothing re-enters a chain, so the reset had nothing to resume;
+  //  2. `resumeParked` skipped any task with no `sessionId`, which is every run the
+  //     limit caught before its process had started;
+  //  3. a restart with no gate left in the DB left the parked statuses there for ever.
+  describe('a usage limit interrupting a chain', () => {
+    const limited = {
+      kind: 'rate-limit' as const,
+      status: 'rejected',
+      rateLimitType: 'five_hour',
+      resetsAt: null,
+    };
+
+    /** The scheduler's private gate, so a limit can be put in force without a run. */
+    const gateOf = (scheduler: Scheduler) =>
+      (
+        scheduler as unknown as {
+          limitGate: { engage: (s: unknown, ids: string[]) => void; dispose: () => void };
+        }
+      ).limitGate;
+
+    it('parks the next step instead of dropping the chain, and starts it at the reset', async () => {
+      const h = setup();
+      const gate = gateOf(h.scheduler);
+      // A limit is in force account-wide (some other run hit the wall) as step 1 finishes.
+      gate.engage(limited, []);
+      h.seedRun('r1', 's1');
+      h.fire('r1', okResult);
+      await flush();
+
+      expect(h.children[0].status).toBe('done');
+      // Not `pending`: nothing would ever have looked at it again. Parked is a state the
+      // reset walks and the board reads as "paused — usage limit".
+      expect(h.children[1].status).toBe('blocked-by-limit');
+      expect(h.prepared).toEqual([]); // and nothing ran under the limit
+
+      h.scheduler.resumeLimitNow(); // the reset (or the banner's "Resume now")
+      await flush();
+      expect(h.prepared).toEqual([{ taskId: 's2', owner: 't1' }]);
+    });
+
+    it('resumes a step the limit caught before its session ever started', async () => {
+      const h = setup();
+      h.seedRun('r1', 's1'); // reserved and launching; no `started` event yet, so no session id
+      h.fire('r1', limited);
+      expect(h.children[0].status).toBe('blocked-by-limit');
+      expect(h.children[0].sessionId).toBeNull();
+
+      h.scheduler.resumeLimitNow();
+      await flush();
+      // Nothing to resume, so it starts from its brief — which is still the whole point:
+      // skipping it left the step parked behind a gate that no longer existed.
+      expect(h.prepared).toEqual([{ taskId: 's1', owner: 't1' }]);
+    });
+
+    it('hands a parked CARD back to its chain rather than running it beside its steps', async () => {
+      const h = setup();
+      h.seedRun('r0', 't1'); // the planner, parked mid-run by the limit
+      h.fire('r0', limited);
+      expect(h.parent.status).toBe('blocked-by-limit');
+
+      h.scheduler.resumeLimitNow();
+      await flush();
+      // The card's own session is the planner's, and its steps are its work: two agents in
+      // one worktree is what running the card here would mean.
+      expect(h.prepared).toEqual([{ taskId: 's1', owner: 't1' }]);
+    });
+
+    it('does not step over a failed step when it hands a card back to its chain', async () => {
+      const h = setup([{ id: 's1', status: 'failed' }, { id: 's2' }]);
+      h.seedRun('r0', 't1');
+      h.fire('r0', limited);
+      expect(h.parent.status).toBe('blocked-by-limit');
+
+      h.scheduler.resumeLimitNow();
+      await flush();
+      // The chain is stopped on a step the human owns; a limit resetting is not them
+      // resolving it. Nothing runs — not the card's own session, not step 2.
+      expect(h.prepared).toEqual([]);
+      expect(h.children[1].status).toBe('pending');
+    });
+
+    it('stopping the card releases a step the gate is holding', async () => {
+      const h = setup();
+      const gate = gateOf(h.scheduler);
+      gate.engage(limited, []);
+      h.seedRun('r1', 's1');
+      h.fire('r1', okResult);
+      await flush();
+      expect(h.children[1].status).toBe('blocked-by-limit');
+
+      expect(h.scheduler.stopTask('t1')).toBe(true);
+      expect(h.children[1].status).toBe('stopped');
+      h.scheduler.resumeLimitNow();
+      await flush();
+      expect(h.prepared).toEqual([]); // it must not come back to life at the reset
+      gate.dispose();
+    });
+
+    it('un-strands a step left blocked-by-limit with no gate behind it (restart)', async () => {
+      const h = setup([{ id: 's1', status: 'blocked-by-limit' }, { id: 's2' }]);
+      h.scheduler.restoreLimitGate(); // nothing saved: the limit it waited for is long gone
+      await flush();
+      expect(h.prepared).toEqual([{ taskId: 's1', owner: 't1' }]);
+    });
+
+    it('adopts a parked task the saved gate never knew about', async () => {
+      const h = setup([{ id: 's1', status: 'blocked-by-limit' }, { id: 's2' }], {
+        savedLimit: {
+          limitType: 'rolling',
+          resetsAt: null,
+          resumeAt: Date.now() - 1, // already due, so restore() fires at once
+          parkedTaskIds: [], // …and the gate has no memory of s1
+        },
+      });
+      h.scheduler.restoreLimitGate();
+      await new Promise((resolve) => setTimeout(resolve, 5)); // the 0ms resume timer
+      await flush();
+      expect(h.prepared).toEqual([{ taskId: 's1', owner: 't1' }]);
+    });
   });
 
   it('holds ExitPlanMode as a plan-approval item listing the steps it would create', async () => {
