@@ -23,6 +23,7 @@ import {
   Field,
   MessageBar,
   MessageBarBody,
+  Switch,
   Text,
   Textarea,
   makeStyles,
@@ -32,6 +33,7 @@ import { AgentGlyph } from './AgentGlyph';
 import type { AttentionAnswer, AttentionItem } from '@shared/attention';
 import { parkedStep } from '@shared/board';
 import type { Project, Task } from '@shared/model';
+import { autoReleaseOn, RELEASE_DOC } from '@shared/release';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import { AssignAgentDialog } from './AssignAgentDialog';
 import { stepPosition } from './board/boardColumns';
@@ -194,11 +196,43 @@ export function TaskAgentPanel({
    */
   const canIntegrate =
     Boolean(task.agentProjectId) && Boolean(task.sessionId) && Boolean(assigned?.useWorktrees);
+  /**
+   * What happens when this card's branch merges: the card's own answer when it has one,
+   * else the agent project's preference (`@shared/release`).
+   */
+  const releasing = autoReleaseOn(task, assigned);
+  /**
+   * Whether the repo actually has release instructions. `null` while we are asking —
+   * which is a real third state, not a false: rendering "no RELEASE.md" for the half
+   * second before the answer arrives would tell every card a lie it then took back.
+   */
+  const [hasReleaseDoc, setHasReleaseDoc] = useState<boolean | null>(null);
 
   // The asks arrive as a prop; only the draft reply is local.
   useEffect(() => {
     setReply('');
   }, [taskId]);
+
+  // Asked per project, and re-asked whenever the pane shows a different one: the file
+  // appears the moment someone writes it, and this is the cheapest place to notice.
+  useEffect(() => {
+    const projectId = assigned?.id;
+    if (!projectId) {
+      setHasReleaseDoc(null);
+      return;
+    }
+    let live = true;
+    setHasReleaseDoc(null);
+    void window.api
+      .invoke('project:hasReleaseDoc', projectId)
+      .then((found) => live && setHasReleaseDoc(found))
+      // A failed lookup must not disable the switch — the engine checks the file again
+      // at merge time, and that check is the one that decides anything.
+      .catch(() => live && setHasReleaseDoc(true));
+    return () => {
+      live = false;
+    };
+  }, [assigned?.id]);
 
   const answer = useCallback(
     async (a: AttentionAnswer): Promise<void> => {
@@ -225,6 +259,29 @@ export function TaskAgentPanel({
     setError(null);
     try {
       await window.api.invoke('task:integrate', taskId);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /**
+   * Turn auto-release on or off for THIS card.
+   *
+   * Choosing what the project already prefers stores `null` rather than the same value
+   * again, which puts the card back to inheriting: a human who agrees with the default
+   * has not disagreed with it, and should keep following it when it changes.
+   */
+  async function setAutoRelease(on: boolean): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      onTaskChanged(
+        await window.api.invoke('task:setAgentOptions', taskId, {
+          autoRelease: on === Boolean(assigned?.autoRelease) ? null : on,
+        }),
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -357,6 +414,36 @@ export function TaskAgentPanel({
           }
           {assigned ? ` · ${assigned.path}` : ''}
         </Caption1>
+      )}
+
+      {/* What happens AFTER the merge, so it sits with the Merge button rather than in the
+          assign dialog: this is a decision about the work, and it is worth being able to
+          change it while reading the work — right up to the moment you press Merge.
+          Offered on the same terms as that button (a delegated card in a worktree repo),
+          because a card with no branch has no merge to follow. */}
+      {canIntegrate && !isStep && (
+        <Field
+          hint={
+            hasReleaseDoc === false
+              ? `${assigned?.name ?? 'This repo'} has no ${RELEASE_DOC} yet, so nothing would run. ` +
+                `Add one describing how it is released — the next merge follows it.`
+              : releasing
+                ? `When this card's branch merges, an agent follows ${RELEASE_DOC} in the repo and releases it.`
+                : `The branch is merged and left there. ${
+                    assigned?.autoRelease
+                      ? `${assigned.name} releases by default — this card is the exception.`
+                      : ''
+                  }`
+          }
+          validationState={hasReleaseDoc === false && releasing ? 'warning' : 'none'}
+        >
+          <Switch
+            checked={releasing}
+            disabled={busy}
+            label="Release after merge"
+            onChange={(_e, d) => void setAutoRelease(d.checked)}
+          />
+        </Field>
       )}
 
       {error && (

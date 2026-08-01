@@ -33,6 +33,7 @@ import {
   Option,
   OverlayDrawer,
   Subtitle2,
+  Switch,
   Text,
   tokens,
 } from '@fluentui/react-components';
@@ -40,6 +41,7 @@ import { DismissRegular } from '@fluentui/react-icons';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
 import type { Project } from '@shared/model';
+import { RELEASE_DOC } from '@shared/release';
 import {
   execTargetLabel,
   formatExecTarget,
@@ -230,6 +232,7 @@ function AgentProjectDialog({
   const [epics, setEpics] = useState('');
   const [color, setColor] = useState('');
   const [baseBranch, setBaseBranch] = useState('');
+  const [autoRelease, setAutoRelease] = useState(false);
   const [model, setModel] = useState<ClaudeModel>('sonnet');
   const [permMode, setPermMode] = useState<PermissionMode>('acceptEdits');
   const [target, setTarget] = useState<ExecTarget>(LOCAL_TARGET);
@@ -254,6 +257,7 @@ function AgentProjectDialog({
       setEpics(project.jiraEpicKeys.join(', '));
       setColor(project.color);
       setBaseBranch(project.baseBranch);
+      setAutoRelease(project.autoRelease);
       setModel(project.defaultModel);
       setPermMode(project.defaultPermissionMode);
       setTarget(project.target);
@@ -263,6 +267,7 @@ function AgentProjectDialog({
       setEpics('');
       setColor('');
       setBaseBranch(''); // follow the checkout, exactly as before this field existed
+      setAutoRelease(false); // releasing is opt-in, always
       void window.api.invoke('settings:get').then((s) => {
         setModel(s.defaultModel);
         setPermMode(s.defaultPermissionMode);
@@ -314,6 +319,7 @@ function AgentProjectDialog({
           color,
           target,
           baseBranch,
+          autoRelease,
         });
       } else {
         await window.api.invoke('agentProject:add', {
@@ -325,6 +331,7 @@ function AgentProjectDialog({
           color,
           target,
           baseBranch,
+          autoRelease,
         });
       }
       onSaved();
@@ -449,6 +456,18 @@ function AgentProjectDialog({
           </Field>
 
           <BaseBranchField value={baseBranch} onChange={setBaseBranch} preflight={preflight} />
+
+          {/* The project's PREFERENCE, not its decision: every card can still say
+              otherwise in its Details Panel, and one that never does follows this. */}
+          <Field
+            hint={`Every card assigned here starts with "Release after merge" already on. When its branch merges, an agent reads ${RELEASE_DOC} in this repo and follows it — so the repo has to have one, and it is the repo's instructions that decide what releasing means.`}
+          >
+            <Switch
+              checked={autoRelease}
+              label="Release after merge by default"
+              onChange={(_e, d) => setAutoRelease(d.checked)}
+            />
+          </Field>
 
           <Field
             label="JIRA epics"

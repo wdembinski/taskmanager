@@ -31,6 +31,7 @@ import {
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
 import type { Project } from '@shared/model';
+import { RELEASE_DOC } from '@shared/release';
 import {
   execTargetLabel,
   formatExecTarget,
@@ -80,6 +81,7 @@ export function ProjectDialog({
   const [useWorktrees, setUseWorktrees] = useState(true);
   const [baseBranch, setBaseBranch] = useState('');
   const [writeBack, setWriteBack] = useState(false);
+  const [autoRelease, setAutoRelease] = useState(false);
   const [target, setTarget] = useState<ExecTarget>(LOCAL_TARGET);
   const [distros, setDistros] = useState<string[]>([]);
   const [instructions, setInstructions] = useState('');
@@ -108,6 +110,7 @@ export function ProjectDialog({
       setUseWorktrees(project.useWorktrees);
       setBaseBranch(project.baseBranch);
       setWriteBack(project.writeBackPlan);
+      setAutoRelease(project.autoRelease);
       setTarget(project.target);
       setInstructions(project.instructions);
     } else {
@@ -117,6 +120,7 @@ export function ProjectDialog({
       setInstructions('');
       setUseWorktrees(true); // default on; only engages for git repos
       setBaseBranch(''); // follow the checkout, exactly as before this field existed
+      setAutoRelease(false); // releasing is opt-in, always
       void window.api.invoke('settings:get').then((s) => {
         setModel(s.defaultModel);
         setPermMode(s.defaultPermissionMode);
@@ -175,6 +179,7 @@ export function ProjectDialog({
           useWorktrees,
           baseBranch,
           writeBackPlan: writeBack,
+          autoRelease,
           target,
           instructions,
         });
@@ -188,6 +193,7 @@ export function ProjectDialog({
           useWorktrees,
           baseBranch,
           writeBackPlan: writeBack,
+          autoRelease,
           target,
           instructions,
         });
@@ -343,6 +349,20 @@ export function ProjectDialog({
                   onChange={setBaseBranch}
                   preflight={preflight}
                 />
+              )}
+
+              {/* Same reason as the base-branch field above: with no isolation there is no
+                  branch to merge, so there is no merge for a release to follow. */}
+              {useWorktrees && (
+                <Field
+                  hint={`Every task here starts with "Release after merge" already on. When its branch merges, an agent reads ${RELEASE_DOC} in the repo and follows it — the repo's own instructions decide what releasing means, and a repo without one is simply left alone.`}
+                >
+                  <Switch
+                    checked={autoRelease}
+                    label="Release after merge by default"
+                    onChange={(_e, d) => setAutoRelease(d.checked)}
+                  />
+                </Field>
               )}
 
               <Switch

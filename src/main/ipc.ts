@@ -7,7 +7,7 @@
  * makes each registration type-safe against the shared `IpcApi` interface, so a
  * handler whose return type doesn't match the contract won't compile.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import {
   app,
@@ -76,7 +76,8 @@ import { hostFor, listWslDistros, readinessFor, statusForTargets } from './exec'
 import { gitPreflight } from './git';
 import { listClaudeSessions } from './claudeSessions';
 import { sanitizeWindowState } from './windowState';
-import { appPlanPath } from './projectPaths';
+import { appPlanPath, appProjectFile } from './projectPaths';
+import { RELEASE_DOC } from '@shared/release';
 import { logMain } from './log';
 import { parsePlan } from './planParser';
 import { planHasAlignmentMarkers, validatePlan } from './planValidate';
@@ -541,6 +542,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     const refusal = await scheduler.integrateNow(taskId);
     if (refusal) throw new Error(refusal);
   });
+  handle('project:hasReleaseDoc', async (projectId) => {
+    const project = store.getProject(projectId);
+    // `appProjectFile`, not `join`: a WSL project's path is a Linux one, and this process
+    // opens the same file under `\\wsl.localhost\<distro>\…`.
+    return Boolean(project?.path) && existsSync(appProjectFile(project!, RELEASE_DOC));
+  });
   handle('task:history', async (taskId) => store.getTaskHistory(taskId));
   handle('task:cleanupWorktree', async (taskId) => {
     const task = store.getTask(taskId);
@@ -756,6 +763,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     const task = store.updateTask(taskId, {
       ...(options.model !== undefined ? { agentModel: options.model } : {}),
       ...(options.mode !== undefined ? { agentMode: options.mode } : {}),
+      // Read at merge time, not at run time, so flipping it while the agent works still
+      // decides what happens when that work lands.
+      ...(options.autoRelease !== undefined ? { autoRelease: options.autoRelease } : {}),
     });
     if (!task) throw new Error('Task not found.');
     send('task:changed', { task, runId: null });
