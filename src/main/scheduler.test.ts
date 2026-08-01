@@ -4,6 +4,9 @@
  * hand / verify; here we prove the selection rule and prompt shape.
  */
 import { describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   buildTaskPrompt,
   failureActionsFor,
@@ -13,6 +16,7 @@ import {
   selectNextPending,
   shouldAutoRetry,
   describeEmptyOutcome,
+  releaseMode,
   type Schedulable,
 } from './scheduler';
 import { AGREE_SENTINEL, OBJECT_SENTINEL, PROPOSE_SENTINEL } from './attention';
@@ -2227,5 +2231,202 @@ describe('describeEmptyOutcome', () => {
   it('prefers "never ran a turn" over the plan rule', () => {
     const dead = { resultText: '', stopReason: null, terminalReason: null, usage: zero };
     expect(describeEmptyOutcome('plan', undefined, dead)).toMatch(/without running a turn/);
+  });
+});
+
+describe('Scheduler — auto-release after a merge', () => {
+  /**
+   * A delegated card, in worktree mode, whose branch is about to merge.
+   *
+   * The project path is a REAL temp directory so the `RELEASE.md` check is the real
+   * `existsSync` the engine runs — the whole feature turns on that file being there, and
+   * a stubbed answer would prove nothing about the only question being asked.
+   */
+  function setup(opts: {
+    /** Write a RELEASE.md into the repo. */
+    releaseDoc?: boolean;
+    /** The project's preference. */
+    projectAutoRelease?: boolean;
+    /** The card's override, or undefined for "it has not ruled". */
+    cardAutoRelease?: boolean | null;
+  }) {
+    const path = mkdtempSync(join(tmpdir(), 'orch-release-'));
+    if (opts.releaseDoc) writeFileSync(join(path, 'RELEASE.md'), '# How to release\n');
+    const project = {
+      id: 'agent-1',
+      name: 'Checkout service',
+      path,
+      planPath: '',
+      kind: 'agent',
+      concurrency: 1,
+      useWorktrees: true,
+      defaultModel: 'sonnet',
+      defaultPermissionMode: 'acceptEdits',
+      instructions: '',
+      autoRelease: opts.projectAutoRelease ?? false,
+    } as unknown as Project;
+    const card = {
+      id: 't1',
+      projectId: 'personal',
+      phase: '',
+      title: 'Fix the export dialog',
+      status: 'in-progress',
+      sessionId: 'sess-1',
+      order: 0,
+      source: 'jira',
+      dependsOn: [],
+      isContract: false,
+      isScaffold: false,
+      agentProjectId: 'agent-1',
+      parentTaskId: null,
+      autoRelease: opts.cardAutoRelease ?? null,
+    } as unknown as Task;
+    const comments: string[] = [];
+    const store = {
+      getTask: (id: string) => (id === 't1' ? card : undefined),
+      getProject: (id: string) => (id === 'agent-1' ? project : undefined),
+      listProjects: () => [project],
+      getTasks: () => [card],
+      getSubtasks: () => [],
+      getTaskActivity: () => [],
+      addComment: (_p: string, _t: string, body: string) => comments.push(body),
+      listTaskLinks: () => [],
+      updateTask: (id: string, patch: Partial<Task>) => {
+        if (id === 't1') Object.assign(card, patch);
+        return card;
+      },
+      appendTaskEvent: vi.fn(),
+      appendTokenUsage: vi.fn(),
+      getSettings: () => ({ maxAutoRetries: 0, limitJitterMs: 0, concurrency: 1 }),
+      ...INERT_ATTENTION_STORE,
+    } as unknown as Store;
+    const worktrees = { prepare: vi.fn(), integrate: vi.fn(), cleanup: vi.fn() };
+    const start = vi.fn((_req: unknown, o: { runId?: string }) => ({ runId: o?.runId ?? 'r-new' }));
+    const sessions = { start, stop: vi.fn(), send: vi.fn() } as unknown as SessionManager;
+    const scheduler = new Scheduler(
+      store,
+      sessions,
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      worktrees as unknown as WorktreeManager,
+    );
+    /** The merge landing, exactly as `integrateWorktree` reports it. */
+    const merge = (result: { status: 'merged'; refMoveOnly?: boolean } = { status: 'merged' }) =>
+      (
+        scheduler as unknown as {
+          applyIntegrationResult: (p: Project, ctx: unknown, r: unknown) => void;
+        }
+      ).applyIntegrationResult(
+        project,
+        {
+          taskId: 't1',
+          runId: 'r1',
+          branch: 'feat/export',
+          base: 'development',
+          worktree: 'C:/wt/t1',
+        },
+        result,
+      );
+    return { scheduler, card, comments, start, merge, path };
+  }
+
+  /** The prompt a started run was launched with. */
+  const promptOf = (start: ReturnType<typeof vi.fn>): string =>
+    (start.mock.calls[0]?.[0] as { prompt: string }).prompt;
+
+  it('releases the card when the project prefers it and the repo says how', () => {
+    const { start, merge, comments } = setup({ releaseDoc: true, projectAutoRelease: true });
+    merge();
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(promptOf(start)).toContain('RELEASE.md');
+    expect(promptOf(start)).toContain('development');
+    expect(comments.some((c) => c.includes('releasing it now'))).toBe(true);
+  });
+
+  it('says so, and runs nothing, when the repo has no RELEASE.md', () => {
+    const { start, merge, comments } = setup({ projectAutoRelease: true });
+    merge();
+    expect(start).not.toHaveBeenCalled();
+    expect(comments.some((c) => c.includes('no `RELEASE.md`'))).toBe(true);
+  });
+
+  it('does nothing at all when nobody asked for a release', () => {
+    const { start, merge, comments } = setup({ releaseDoc: true });
+    merge();
+    expect(start).not.toHaveBeenCalled();
+    expect(comments.some((c) => c.toLowerCase().includes('release'))).toBe(false);
+  });
+
+  it('lets a card opt out of a project that releases by default', () => {
+    const { start, merge } = setup({
+      releaseDoc: true,
+      projectAutoRelease: true,
+      cardAutoRelease: false,
+    });
+    merge();
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('lets a card opt IN on a project that does not release by default', () => {
+    const { start, merge } = setup({ releaseDoc: true, cardAutoRelease: true });
+    merge();
+    expect(start).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts a FRESH session — the card’s was recorded against a deleted worktree', () => {
+    const { start, merge } = setup({ releaseDoc: true, projectAutoRelease: true });
+    merge();
+    expect((start.mock.calls[0]?.[1] as { resumeSessionId?: string }).resumeSessionId).toBe(
+      undefined,
+    );
+  });
+
+  it('warns the agent to check out base when the merge only moved the ref', () => {
+    const { start, merge } = setup({ releaseDoc: true, projectAutoRelease: true });
+    merge({ status: 'merged', refMoveOnly: true });
+    expect(promptOf(start)).toMatch(/only moved the `development` ref/);
+  });
+
+  it('leaves the card where the human left it, and never marks the release a failure', () => {
+    const { scheduler, card, merge, start } = setup({
+      releaseDoc: true,
+      projectAutoRelease: true,
+    });
+    merge();
+    const runId = (start.mock.calls[0]?.[1] as { runId: string }).runId;
+    const run = (scheduler as unknown as { runs: Map<string, unknown> }).runs.get(runId);
+    (scheduler as unknown as { settle: (r: unknown, s: string, why?: string) => void }).settle(
+      run,
+      'failed',
+      'the release blew up',
+    );
+    // Still In Progress — a release that failed says so on the timeline; it does not
+    // move the card, retry the work, or park a failed task.
+    expect(card.status).toBe('in-progress');
+  });
+});
+
+describe('releaseMode', () => {
+  const project = (defaultPermissionMode: string): { defaultPermissionMode: PermissionMode } => ({
+    defaultPermissionMode: defaultPermissionMode as PermissionMode,
+  });
+
+  it('keeps the card’s own mode when it can actually do the work', () => {
+    expect(releaseMode({ agentMode: 'bypassPermissions' }, project('acceptEdits'))).toBe(
+      'bypassPermissions',
+    );
+  });
+
+  it('never releases in plan mode — that card could only read the instructions', () => {
+    expect(releaseMode({ agentMode: 'plan' }, project('acceptEdits'))).toBe('acceptEdits');
+    // …and when the project is a planning project too, something has to be able to run.
+    expect(releaseMode({ agentMode: 'plan' }, project('plan'))).toBe('acceptEdits');
+  });
+
+  it('falls back to the project default for a card with no override', () => {
+    expect(releaseMode({ agentMode: null }, project('manual'))).toBe('manual');
   });
 });

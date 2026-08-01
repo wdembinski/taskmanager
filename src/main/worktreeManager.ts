@@ -116,7 +116,20 @@ export interface PreservedSnapshot {
 
 /** The outcome of integrating a task's branch back into base. */
 export type IntegrationResult =
-  | { status: 'merged'; preserved?: PreservedSnapshot }
+  | {
+      status: 'merged';
+      preserved?: PreservedSnapshot;
+      /**
+       * The merge moved the `base` REF without touching the main checkout, because that
+       * checkout is sitting on some other branch. True of every project that names an
+       * integration branch it doesn't keep checked out.
+       *
+       * It matters to anything that then wants to *use* the merged code in `project.path`
+       * — an auto-release above all, which would otherwise cut a release from whatever
+       * branch happened to be checked out there (see `scheduler.startReleaseRun`).
+       */
+      refMoveOnly?: boolean;
+    }
   /** Rebase left conflicts; the worktree is paused mid-rebase for resolution. */
   | { status: 'conflict'; worktree: string; branch: string; base: string }
   /** The base working tree has uncommitted changes, so we won't fast-forward it. */
@@ -426,7 +439,7 @@ export class WorktreeManager {
       }
       await removeWorktree(project.path, worktree, host);
       await deleteBranch(project.path, branch, host);
-      return { status: 'merged' };
+      return { status: 'merged', refMoveOnly: true };
     }
 
     // Never fast-forward a base tree that has uncommitted *tracked* work — we'd risk the

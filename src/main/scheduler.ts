@@ -25,7 +25,7 @@
  * events (`task:changed`, `scheduler:changed`).
  */
 import { randomUUID } from 'node:crypto';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import type {
   ChatRefusal,
   ChatSendResult,
@@ -87,6 +87,8 @@ import { isBlockingLimitStatus, LimitGate } from './limitGate';
 import type { PermissionRequest, PermissionDecisionResult } from './permissionBroker';
 import { EXIT_PLAN_MODE_TOOL, evaluateToolUse } from './permissionPolicy';
 import { tickPlanCheckbox } from './planParser';
+import { buildReleasePrompt } from './releasePrompt';
+import { autoReleaseOn, RELEASE_DOC } from '@shared/release';
 import {
   extractPlanMarkdown,
   splitPlanIntoSteps,
@@ -210,6 +212,23 @@ const NEGOTIATION_TIMEOUT_MS = 120_000;
  */
 export function shouldAutoRetry(attemptsSpent: number, maxAutoRetries: number): boolean {
   return attemptsSpent < Math.max(0, maxAutoRetries);
+}
+
+/**
+ * The permission mode a RELEASE run gets (see `@shared/release`).
+ *
+ * Everything else about a release run inherits the card, but not this: `plan` mode may
+ * read and nothing else, so a card assigned it — which is most planned cards — would get a
+ * release that reads `RELEASE.md` and then cannot follow a single line of it. The fallback
+ * ladder is the project's own default, then `acceptEdits`. Pure, so the ladder is testable.
+ */
+export function releaseMode(
+  task: Pick<Task, 'agentMode'>,
+  project: Pick<Project, 'defaultPermissionMode'>,
+): PermissionMode {
+  const chosen = task.agentMode ?? project.defaultPermissionMode;
+  if (chosen && chosen !== 'plan') return chosen;
+  return project.defaultPermissionMode !== 'plan' ? project.defaultPermissionMode : 'acceptEdits';
 }
 
 /** The `result` fields this judgement needs — a slice, so tests need no full event. */
@@ -558,6 +577,15 @@ interface Run {
    * `prepare` would cut a brand-new one for a card whose work is already landed.
    */
   reviewSeed?: boolean;
+  /**
+   * This run exists to RELEASE work that has just been merged (see `@shared/release`).
+   *
+   * Shares every reason `reviewSeed` skips the worktree lifecycle — the branch is merged
+   * and deleted, and the code to release is the code in base — and adds one of its own:
+   * its outcome is about the release, not about the card, so a failure must not retry the
+   * card's work or park it as a failed task. It files what happened and stops.
+   */
+  releaseSeed?: boolean;
   /**
    * Whether this run ever put a plan in front of the human (Phase 18).
    *
@@ -1814,7 +1842,12 @@ export class Scheduler {
   private startTask(
     project: Project,
     task: Task,
-    opts: { chatPrompt?: string; reviewSeed?: boolean; permissionMode?: PermissionMode } = {},
+    opts: {
+      chatPrompt?: string;
+      reviewSeed?: boolean;
+      releaseSeed?: boolean;
+      permissionMode?: PermissionMode;
+    } = {},
   ): string {
     const runId = randomUUID();
     const run: Run = {
@@ -1824,6 +1857,7 @@ export class Scheduler {
       settled: false,
       chatPrompt: opts.chatPrompt,
       reviewSeed: opts.reviewSeed,
+      releaseSeed: opts.releaseSeed,
       // A per-TURN override (a re-plan, which must run in `plan` mode whatever the card is
       // assigned) beats a per-assignment override (chosen in the assign dialog), which
       // beats the project default. Captured on the run so every later decision —
@@ -1834,10 +1868,12 @@ export class Scheduler {
     };
     this.runs.set(runId, run);
     this.inFlight.add(task.id);
-    if (run.reviewSeed) {
+    if (run.reviewSeed || run.releaseSeed) {
       // A review conversation reads code that is already merged into base, so it belongs
       // in the project directory — not in a fresh worktree cut from a branch that the
-      // chain's own integration just deleted.
+      // chain's own integration just deleted. A release run wants the same directory for a
+      // stronger reason: releasing from an isolated worktree would tag and publish a
+      // branch instead of the integration branch the work landed on.
       this.launch(project, task, run, { mode: 'shared', cwd: project.path });
     } else if (this.worktrees) {
       // Async: prepare (or reuse) the task's worktree, then start the session in it.
@@ -1942,7 +1978,12 @@ export class Scheduler {
     prep: LaunchTarget,
     comments: AgentPromptComment[] = [],
   ): void {
-    const resumeSessionId = task.sessionId ?? undefined;
+    // A release run is deliberately a FRESH conversation. The card's saved session was
+    // recorded against the worktree it ran in — a directory integration has just deleted —
+    // and the CLI looks a session id up under the directory it is started in. There is also
+    // nothing in that conversation a release needs: `buildReleasePrompt` says which branch
+    // landed where, and `RELEASE.md` says the rest.
+    const resumeSessionId = run.releaseSeed ? undefined : (task.sessionId ?? undefined);
     if (prep.mode === 'worktree') {
       run.branch = prep.branch;
       run.base = prep.base;
@@ -2321,11 +2362,20 @@ export class Scheduler {
         //
         // The session id is still worth keeping — it is a resume handle, and recording it is
         // what this case has always done. Only the claim that work is moving is wrong.
+        //
+        // A RELEASE run is the exception that keeps none of it: its session belongs to the
+        // release, not to the card, and writing it here would hand the card's chat a resume
+        // handle pointing at a one-turn publishing conversation instead of at the work. The
+        // spinner is still wanted, so only the id is dropped.
         this.updateTask(
           run.taskId,
-          run.settled
-            ? { sessionId: event.sessionId }
-            : { status: 'running', sessionId: event.sessionId },
+          run.releaseSeed
+            ? run.settled
+              ? {}
+              : { status: 'running' }
+            : run.settled
+              ? { sessionId: event.sessionId }
+              : { status: 'running', sessionId: event.sessionId },
           runId,
         );
         break;
@@ -2647,6 +2697,26 @@ export class Scheduler {
     // merged. It owns no branch, so there is nothing to integrate; and its outcome must
     // not move the card, which is exactly where the human left it. Checked first, before
     // any of the chain/worktree branches below can claim it.
+    // A release run (see `@shared/release`) is about the RELEASE, not about the card's
+    // work — which is merged either way. So it settles first and quietly: no integration
+    // (there is no branch left), no auto-retry (re-running half a publish is how you get
+    // two tags), and no failed-task park. What happened goes on the timeline, where the
+    // human is already looking, and the card stays exactly where they left it.
+    if (run.releaseSeed) {
+      this.attempts.delete(run.taskId);
+      if (status === 'failed') {
+        this.noteRun(
+          run.projectId,
+          run.taskId,
+          run.runId,
+          `The release did not finish (${reason ?? 'the run failed'}). The work is merged — ` +
+            `read the transcript above, then release by hand or send the agent another message.`,
+        );
+      }
+      this.updateTask(run.taskId, { status: 'in-progress' }, null);
+      return;
+    }
+
     if (run.reviewSeed) {
       this.attempts.delete(run.taskId);
       if (status === 'failed') {
@@ -2845,6 +2915,17 @@ export class Scheduler {
         // restart. Before `finishParentChain`, so the next card is on its way while this
         // one's hand-back summary is still being assembled.
         this.chain.landed(finished?.parentTaskId ?? ctx.taskId);
+        // Auto-release, if this card asked for it (see `@shared/release`). BEFORE
+        // `finishParentChain`, and that ordering is the whole coordination between the
+        // two: starting the release reserves the card, and `seedParentReviewSession`
+        // already declines to seed a card that is in flight. So a released card gets ONE
+        // session — the release run, which ends by reporting what it shipped — instead of
+        // a review conversation and a release talking over each other in the same thread.
+        this.startReleaseRun(project, finished?.parentTaskId ?? ctx.taskId, {
+          branch: ctx.branch,
+          base: ctx.base,
+          refMoveOnly: result.refMoveOnly === true,
+        });
         // This was the final step of an approved plan (only the last one ever gets
         // here): hand the card back to the human for review.
         void this.finishParentChain(ctx.taskId, { branch: ctx.branch, base: ctx.base });
@@ -3482,6 +3563,85 @@ export class Scheduler {
     });
   }
 
+  /**
+   * A card's branch just merged — release it too, if it was asked for and the repo says
+   * how (`@shared/release`).
+   *
+   * Three things had to be decided here, and none of them is obvious:
+   *
+   * 1. **Who is asked.** The repo, via `RELEASE.md`. A missing file is not a failure and
+   *    not silence either: it is noted on the card, because "I turned auto-release on and
+   *    nothing happened" is the one outcome that would look like a bug.
+   * 2. **Where it runs.** The project directory, never a worktree — the release is of the
+   *    integration branch, and the branch that carried the work has just been deleted.
+   *    When the merge only moved the ref, the checkout is on something else entirely and
+   *    the prompt says so (see {@link buildReleasePrompt}).
+   * 3. **When it doesn't.** A usage limit, a disposed scheduler, or a card that already
+   *    has something running — the last of which is a human who got there first, and they
+   *    outrank an automation every time.
+   *
+   * Returns whether a release run was started, so the caller knows the card is reserved.
+   */
+  private startReleaseRun(
+    project: Project,
+    /** The CARD that landed — a step's parent, never the step: a chain releases once. */
+    cardId: string,
+    merge: { branch: string; base: string; refMoveOnly: boolean },
+  ): boolean {
+    const card = this.store.getTask(cardId);
+    if (!card) return false;
+    if (!autoReleaseOn(card, project)) return false;
+    if (this.disposed || this.limitGate.active) return false;
+    // Something is already talking on this card (a human sent a message, a chain is
+    // mid-flight). Say why the release did not start rather than dropping it.
+    if (this.inFlight.has(card.id)) {
+      this.noteCard(
+        project.id,
+        card.id,
+        `Auto-release is on for this card, but something is already running on it — ` +
+          `release \`${merge.base}\` by hand, or ask the agent to once it is free.`,
+      );
+      return false;
+    }
+    // The instructions are the repo's. Read through `appProjectFile` so a WSL project's
+    // Linux path is named the way THIS process can open it.
+    if (!existsSync(appProjectFile(project, RELEASE_DOC))) {
+      this.noteCard(
+        project.id,
+        card.id,
+        `Auto-release is on for this card, but ${project.name} has no \`${RELEASE_DOC}\` — ` +
+          `nothing was released. Add one describing how this repo is released, and the next ` +
+          `merge will follow it.`,
+      );
+      return false;
+    }
+
+    this.noteCard(
+      project.id,
+      card.id,
+      `Merged into \`${merge.base}\` — releasing it now by following \`${RELEASE_DOC}\`.`,
+    );
+    this.startTask(project, card, {
+      releaseSeed: true,
+      // `plan` is the one mode that structurally cannot do this job — it may read and
+      // nothing else — and it is the commonest mode a card carries, since planning a card
+      // is how most chains start. Inheriting it would make every planned card's release a
+      // run that reads RELEASE.md and then cannot follow a line of it. So a release falls
+      // back to the project's own default, and to `acceptEdits` if that is planning too;
+      // whatever it lands on, the permission broker still vets each risky command.
+      permissionMode: releaseMode(card, project),
+      chatPrompt: buildReleasePrompt({
+        cardTitle: card.title,
+        branch: merge.branch,
+        base: merge.base,
+        releaseDoc: RELEASE_DOC,
+        refMoveOnly: merge.refMoveOnly,
+        instructions: project.instructions,
+      }),
+    });
+    return true;
+  }
+
   // ---- Cross-agent negotiation coordinator (Phase D) ----------------------
 
   /**
@@ -3787,6 +3947,16 @@ export class Scheduler {
   /** Append a synthetic assistant note to a task's transcript (integration outcomes). */
   private noteRun(projectId: string, taskId: string, runId: string, text: string): void {
     this.store.appendTaskEvent(projectId, taskId, runId, { kind: 'assistant', text });
+  }
+
+  /**
+   * File a note on a CARD's timeline — for things that belong to the card rather than to
+   * any one run, and which therefore have no runId to hang off (the same route the chain
+   * files its release notes by).
+   */
+  private noteCard(projectId: string, taskId: string, body: string): void {
+    this.store.addComment(projectId, taskId, body);
+    this.tasksChanged?.(projectId);
   }
 
   /**
