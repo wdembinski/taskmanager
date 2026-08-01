@@ -42,6 +42,7 @@ plan the orchestrator could one day run on its own repo.
 | 17 | Ask me, and show me what you are doing | ✅ shipped (v0.33.0) — all 42 items |
 | — | Interim releases v0.34–v0.50 (branch naming, re-planning, base branch, board polish, engine fixes) | ✅ shipped, not tracked here |
 | 19 | Setting a chain of execution (links, gates, the release engine) | ✅ shipped (v0.51.0) |
+| 20 | Auto-release (RELEASE.md, the per-card switch and the project's preference) | ✅ shipped (v0.52.0) |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -1205,6 +1206,78 @@ for every other run; and the arrows live **on the board**, not in a list, becaus
       has not been looked at yet. The two that only a live run can settle are the GitLab half
       of `landedAt` (a real MR merged, releasing a card that was never touched locally) and a
       `stacked` successor's worktree actually containing the predecessor's commits.
+
+---
+
+## Phase 20 — Auto-release
+
+**Goal.** Finish the job. A merge is where the orchestrator has always stopped, and for a
+repo that knows how to release itself that is one step short: the work is in the base
+branch, and what a human then does is the same every time. So — when a card's branch
+merges, optionally carry on and release it.
+
+Decisions taken with the user: the app decides **when**, the repo decides **how** — the
+recipe lives in the repo's own `RELEASE.md`, and there is deliberately no release
+procedure in this codebase; the switch lives on the **card** (Details Panel), with the
+**project** carrying the preference a card starts from; and a release **never moves a
+card**, exactly like every other run.
+
+### Deliverables
+
+- [x] **1 — The contract, and the two switches.** `src/shared/release.ts` — `RELEASE_DOC`
+      and `autoReleaseOn(task, project)`. `Project.autoRelease` is a boolean preference;
+      `Task.autoRelease` is `boolean | null`, and the `null` is the point: a card that has
+      never been switched **follows** its project, so turning the preference on later turns
+      it on for every card nobody has ruled on. Both migrate in as off/null, so no upgraded
+      install starts releasing anything by itself.
+- [x] **2 — The engine.** `applyIntegrationResult`'s `merged` branch asks
+      `startReleaseRun`, which checks the switch, checks `RELEASE.md` is actually on disk
+      (`existsSync` through `appProjectFile`, so a WSL project's path is named the way this
+      process can open it), and starts one more turn on the card's own session with
+      `buildReleasePrompt`. It runs in the project directory, never a worktree — the branch
+      has just been merged and deleted, and what is being released is the integration
+      branch. `IntegrationResult.merged` gained `refMoveOnly`, so a project whose base is
+      not checked out gets told to check it out first rather than releasing whatever the
+      checkout happened to be on.
+- [x] **3 — Settling it as a release, not as the work.** A `releaseSeed` run settles first
+      and quietly: no integration (there is no branch left), no auto-retry, no failed-task
+      park, no column change. A failure files what happened on the timeline and stops —
+      re-running half a publish is how you get two tags for one version. Ordered **before**
+      `finishParentChain` on purpose: starting the release reserves the card, and the chain
+      hand-back already declines to seed a card that is in flight, so a released card gets
+      one session rather than two talking over each other.
+- [x] **4 — The UI.** A *Release after merge* switch in the card's Agent panel, offered on
+      the same terms as the Merge button and hinting what will happen — including "this repo
+      has no RELEASE.md yet", answered by a new `project:hasReleaseDoc` channel rather than
+      guessed. *Release after merge by default* on both project forms. Choosing what the
+      project already prefers stores `null`, which puts the card back to following it.
+- [x] **5 — The file, and the docs.** A real [`RELEASE.md`](../../RELEASE.md) for this repo,
+      written for an unattended agent: green gates, stop-and-ask for anything needing a
+      credential or a decision, promote-last, and an explicit hand-back for the platform it
+      cannot build. A *Releasing after the merge* section in
+      [`docs/03`](../03-how-orchestration-works.md) and two glossary entries.
+
+### Done when
+
+- A merged card with the switch on starts exactly one release run, in the project
+  directory, prompted with `RELEASE.md`.
+- A project with the preference on and no `RELEASE.md` releases nothing and says so on the
+  card's timeline.
+- A card can opt out of a releasing project, and into a non-releasing one.
+- A failed release leaves the card exactly where the human left it.
+- `pnpm typecheck`, `pnpm test` and `pnpm build` are green.
+
+**Notes.**
+
+- Shipped as **0.52.0** — a minor bump: new capability.
+- Scoped to the **local** integration path (`applyIntegrationResult`), which is every merge
+  the app performs. A card that lands because GitLab reported its MR merged sets `landedAt`
+  and releases its chain, but does not trigger a release run: nobody merged it here, and
+  the tree it would release from may be a poll behind.
+
+- [ ] **6 — Live E2E owed.** Nothing here has been through the UI: the switch's inherit
+      behaviour, the "no RELEASE.md" hint, and above all a real release run following this
+      repo's own `RELEASE.md` end to end.
 
 ---
 

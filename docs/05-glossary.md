@@ -322,6 +322,20 @@ work with nothing to do with it. A base branch you do NOT keep checked out is in
 by moving the branch pointer instead (`git fetch . <branch>:<base>`), which touches no
 file and so can never be blocked by one.
 
+### Auto-release
+
+"When this card's branch merges, release it too." Set as a preference on the agent
+project and overridden per card in the detail pane; a card that has never been switched
+follows its project. The app decides *when*, never *how* — the recipe is the repo's own
+`RELEASE.md`.
+
+### `RELEASE.md`
+
+A file at a repo's root telling an agent how that project is released. There is no
+schema: it is prose an agent follows, and it is the only thing an auto-release run is
+given beyond "the branch merged into this base". A repo without one is never released
+automatically, and the card says so rather than the switch quietly doing nothing.
+
 ### electron-vite
 
 Our build tool. Compiles the three parts (main/preload/renderer) from TypeScript

@@ -197,6 +197,45 @@ the branch pointer, so it never has to refuse in order to protect your files.
 > drag a card between columns, post a comment, create a card as a real issue — but
 > the agent never does it on your behalf.
 
+### Releasing after the merge
+
+A merge is not always the end of the job. If a repo knows how to release itself, the
+app can carry straight on and do that too — but it never guesses what releasing means.
+
+**The repo says how, in a `RELEASE.md` at its root.** That file is the whole recipe:
+gates, version bump, tag, publish, whatever this project actually does. The
+orchestrator only decides *when* to ask, which is why there is no release procedure
+anywhere in its own code. A repo without a `RELEASE.md` is simply left alone — and the
+card's timeline says so, rather than the switch silently doing nothing.
+
+Two switches decide it, and the second one wins:
+
+| Where | What it is |
+| --- | --- |
+| **Settings → Agents → the project → *Release after merge by default*** | The project's preference. Every card assigned to it starts here. |
+| **The card's detail pane → *Release after merge*** | This card's answer. Overrides the project in either direction. |
+
+A card that has never been switched **follows the project**, so turning the preference
+on later turns it on for every card nobody has ruled on. Setting a card back to what the
+project already prefers puts it back to following, rather than pinning today's answer.
+
+When the branch merges, the card's own session is given one more turn: read
+`RELEASE.md`, follow it, report what shipped. It runs in the project directory rather
+than a worktree — the branch has just been merged and deleted, and what is being
+released is the integration branch. If the merge only moved the base *ref* (your
+checkout is on something else), the agent is told that before anything else: a release
+cut from the wrong branch is the one mistake that cannot be taken back.
+
+Nothing about the card moves. A release that fails files what happened on the timeline
+and stops there — it does not retry, does not park a failed task, and does not touch
+the column you left the card in. The work is merged either way, and re-running half a
+publish is how you get two tags for one version.
+
+> **This repo's own [`RELEASE.md`](../RELEASE.md)** is worth reading as an example:
+> gates first, a stop-and-ask rule for anything needing a credential or a decision, and
+> an explicit "leave the draft unpromoted and hand back" for the platform an unattended
+> run cannot build.
+
 ### Merge requests on the card
 
 With **Settings → GitLab** configured, your open merge requests are fetched on their
