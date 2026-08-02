@@ -411,3 +411,110 @@ describe('WorktreeManager.prepare — a repo with no commits yet', () => {
     expect(prep.mode === 'failed' && prep.reason).toMatch(/no commits/i);
   });
 });
+
+/**
+ * The regression that produced this suite: a card whose branch had merged PERFECTLY WELL sat
+ * parked in the inbox saying "fatal: not a git repository", and its Retry button reproduced
+ * that forever.
+ *
+ * The chain was: cleanup after the successful merge died part-way through the directory
+ * (Windows won't delete a folder a still-exiting process has as its cwd), leaving files but no
+ * `.git`; `prepare` tested only `existsSync` and so handed the remains to the next run as a
+ * live worktree, naming the branch the merge had just deleted; and a chat reply on the card
+ * settled through the same auto-integration path and tried to merge it a second time.
+ *
+ * Each of those three is pinned separately below — any one of them alone breaks the loop.
+ */
+describe('WorktreeManager — a worktree that was already merged and cleaned up', () => {
+  function worktreeProject(): Project {
+    return { id: 'p1', path: repo, useWorktrees: true, target: LOCAL_TARGET } as unknown as Project;
+  }
+
+  /** Exactly what a half-finished cleanup leaves: the files, minus `.git`. */
+  function halfDeleteWorktree(dir: string): void {
+    rmSync(join(dir, '.git'), { recursive: true, force: true });
+  }
+
+  it('rebuilds a worktree whose .git a failed cleanup removed, instead of trusting the remains', async () => {
+    const wtm = new WorktreeManager(join(root, 'wtroot-debris'));
+    const task = { id: 'debris1' } as unknown as Task;
+    const first = await wtm.prepare(worktreeProject(), task, task.id, 'feat/whitening');
+    expect(first.mode).toBe('worktree');
+    if (first.mode !== 'worktree') return;
+
+    // The merge lands and its cleanup dies half-way: `.git` gone, a build artifact left.
+    writeFileSync(join(first.cwd, 'node_modules-stand-in.txt'), 'locked\n');
+    halfDeleteWorktree(first.cwd);
+    await git(repo, ['worktree', 'prune']);
+    await git(repo, ['branch', '-D', 'feat/whitening']);
+
+    const again = await wtm.prepare(worktreeProject(), task, task.id, 'feat/whitening');
+
+    expect(again.mode).toBe('worktree');
+    if (again.mode !== 'worktree') return;
+    // A real worktree this time — not a folder that merely exists.
+    expect(existsSync(join(again.cwd, '.git'))).toBe(true);
+    // The debris is gone rather than inherited.
+    expect(existsSync(join(again.cwd, 'node_modules-stand-in.txt'))).toBe(false);
+    // And the repair is on the record, because it deleted something.
+    expect(again.note).toMatch(/half-deleted/i);
+  });
+
+  it('refuses to merge a branch the previous merge deleted, rather than parking the card', async () => {
+    const wtm = new WorktreeManager(join(root, 'wtroot-gone'));
+    const wt = await branchAdding('integration/gone', 'shipped.txt', 'work\n');
+
+    const first = await wtm.integrate(project(), 'integration/gone', base, wt, 'integrate once');
+    expect(first.status).toBe('merged');
+
+    // The second attempt — a chat reply settling, or the Merge button pressed again.
+    const second = await wtm.integrate(project(), 'integration/gone', base, wt, 'integrate twice');
+
+    expect(second.status).toBe('nothing-to-merge');
+    // Never `error`: an error parks the card and offers a Retry that repeats this exact call.
+    expect(second.status === 'nothing-to-merge' && second.reason).toMatch(/no longer|already/i);
+  });
+
+  it('refuses to merge a branch that has no commits base lacks', async () => {
+    const wtm = new WorktreeManager(join(root, 'wtroot-empty'));
+    // A branch cut from base that nobody ever committed to — what a conversation-only run
+    // leaves behind.
+    const wt = join(root, 'wt-empty');
+    await git(repo, ['worktree', 'add', '-b', 'integration/empty', wt, base]);
+
+    const res = await wtm.integrate(project(), 'integration/empty', base, wt, 'integrate empty');
+
+    expect(res.status).toBe('nothing-to-merge');
+    expect(res.status === 'nothing-to-merge' && res.reason).toMatch(/no commits/i);
+    // The branch is left alone — refusing is not abandoning.
+    expect((await git(repo, ['rev-parse', '--verify', 'integration/empty'])).code).toBe(0);
+  });
+
+  it('still merges a run that left work uncommitted — the safety commit comes first', async () => {
+    const wtm = new WorktreeManager(join(root, 'wtroot-dirty'));
+    const wt = join(root, 'wt-dirty');
+    await git(repo, ['worktree', 'add', '-b', 'integration/dirty', wt, base]);
+    // No commit, just a file the agent left on disk. This must NOT read as "nothing to merge".
+    writeFileSync(join(wt, 'left-behind.txt'), 'real work\n');
+
+    const res = await wtm.integrate(project(), 'integration/dirty', base, wt, 'integrate dirty');
+
+    expect(res.status).toBe('merged');
+    expect((await git(repo, ['show', `${base}:left-behind.txt`])).stdout).toBe('real work\n');
+  });
+
+  it('inspect() reads what is there without creating a worktree or resurrecting a branch', async () => {
+    const wtm = new WorktreeManager(join(root, 'wtroot-inspect'));
+    const task = { id: 'insp1' } as unknown as Task;
+
+    // Nothing prepared yet: no worktree, no branch, and asking must not make either.
+    expect(await wtm.inspect(worktreeProject(), task.id, 'feat/never-ran')).toBeNull();
+    expect((await git(repo, ['rev-parse', '--verify', 'feat/never-ran'])).code).not.toBe(0);
+
+    const prep = await wtm.prepare(worktreeProject(), task, task.id, 'feat/inspect-me');
+    expect(prep.mode).toBe('worktree');
+    const live = await wtm.inspect(worktreeProject(), task.id, 'feat/inspect-me');
+    expect(live?.branch).toBe('feat/inspect-me');
+    expect(live?.base).toBe(base);
+  });
+});

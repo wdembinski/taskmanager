@@ -30,12 +30,14 @@ import {
   blobSha,
   branchExists,
   commitAll,
+  commitsAhead,
   conflictedFiles,
   continueRebase,
   createRootCommit,
   currentBranch,
   deleteBranch,
   fastForwardRef,
+  gitPreflight,
   hasCommits,
   hasConflicts,
   isClean,
@@ -57,6 +59,15 @@ import {
  * ordering doesn't matter — never source. Lockfiles and code go to the AI/human rungs instead.
  */
 const UNION_MERGE_FILES = ['.gitignore', 'pnpm-workspace.yaml', '.npmrc'];
+
+/**
+ * How long to wait before retrying a worktree removal that git refused. Long enough for an
+ * exiting process to release the directory it had as a cwd (the Windows case this exists
+ * for), short enough that a merge never visibly stalls on it.
+ */
+const WORKTREE_REMOVE_RETRY_MS = 750;
+
+const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Write an ephemeral gitattributes file declaring `merge=union` for {@link UNION_MERGE_FILES},
@@ -129,7 +140,27 @@ export type IntegrationResult =
        * branch happened to be checked out there (see `scheduler.startReleaseRun`).
        */
       refMoveOnly?: boolean;
+      /**
+       * The merge landed but the worktree could not be deleted afterwards, and this names
+       * what is left on disk. Windows holds a directory open while any process has it as a
+       * cwd, so a run whose CLI is still exiting can lose the race with its own cleanup.
+       *
+       * Reported, never retried into a failure: the merge SUCCEEDED, and re-running it is
+       * exactly the loop this field exists to make impossible. A leftover directory that is
+       * named on the timeline can be dealt with; a silent one poisons the next run instead.
+       */
+      cleanupFailed?: string;
     }
+  /**
+   * There was nothing to land, so no merge was attempted: the branch is already contained
+   * in base (it merged before), or it no longer exists, or the worktree is not a repo.
+   *
+   * Deliberately NOT an `error`. An error parks the card and offers a Retry that re-runs
+   * the identical impossible merge — which is precisely how a card that had already merged
+   * successfully ended up stuck in the inbox. Nothing is wrong here, so nothing is asked of
+   * the human: the timeline says why, and the card stays where it was.
+   */
+  | { status: 'nothing-to-merge'; branch: string; base: string; reason: string }
   /** Rebase left conflicts; the worktree is paused mid-rebase for resolution. */
   | { status: 'conflict'; worktree: string; branch: string; base: string }
   /** The base working tree has uncommitted changes, so we won't fast-forward it. */
@@ -290,13 +321,76 @@ export class WorktreeManager {
     const cwd = this.pathIn(root, project.id, ownerTaskId);
     // `existsSync` runs on the APP's filesystem, so a distro path has to be named the
     // way Windows can see it (`\\wsl.localhost\…`) before it can be checked.
-    if (existsSync(host.toApp(cwd))) {
+    //
+    // Existing is NOT the same as being a worktree, and treating it as such is what let a
+    // card try to merge a branch its own successful merge had already deleted: cleanup
+    // removed `.git` and then died on a locked `node_modules`, and every later run was
+    // handed the leftovers as though they were live. One `isRepo` call settles it.
+    if (existsSync(host.toApp(cwd)) && (await isRepo(cwd, host))) {
       // The worktree is already checked out on SOME branch, and if the card was renamed
       // after it was created that is not the name we were just handed. Returning the
       // requested name would be a lie the integration step then acts on, so read the real
       // one — a single git call on a path that already shells out several times.
+      //
+      // Past `isRepo`, an empty answer is a real anomaly rather than the ordinary "no
+      // worktree yet", so it must not fall back to the name we were asked for — that
+      // fallback is the exact shape of the bug above.
       const actual = await currentBranch(cwd, host);
-      return { mode: 'worktree', cwd, branch: actual || branch, base };
+      if (!actual) {
+        return {
+          mode: 'failed',
+          reason:
+            `The worktree at ${cwd} is a git repository but git won't say which branch it ` +
+            `has checked out, so this task has no branch to work on or merge back. Check ` +
+            `\`git -C "${cwd}" status\` (a half-finished rebase or a broken HEAD does this). ` +
+            `The task was not run in the base tree (${project.path}) to avoid polluting it.`,
+        };
+      }
+      return { mode: 'worktree', cwd, branch: actual, base };
+    }
+
+    // The directory is there but git does not recognise it: debris from a cleanup that
+    // half-finished. Clear it so the worktree can be rebuilt below.
+    //
+    // Safe by construction, which is the only reason this deletes anything: `integrate`
+    // commits everything in the worktree (`commitAll`) BEFORE it merges, and cleanup only
+    // runs after that merge succeeded. So whatever is left in a directory git has stopped
+    // tracking was already committed and already landed — there is nothing here that git
+    // ever held and could still lose.
+    if (existsSync(host.toApp(cwd))) {
+      const why = await gitPreflight(cwd, host);
+      if (why.state !== 'not-a-repo') {
+        // git itself could not be run (not installed, distro down). That is not the
+        // directory's fault, and deleting a work tree on the strength of an answer we
+        // never got is how real work disappears. Refuse instead.
+        return {
+          mode: 'failed',
+          reason:
+            `Couldn't tell whether the worktree at ${cwd} is still a git repository: ` +
+            `${why.state === 'unknown' ? why.detail : why.state}. Nothing was deleted and ` +
+            `the task was not run — fix git for that path and retry.`,
+        };
+      }
+      try {
+        rmSync(host.toApp(cwd), { recursive: true, force: true });
+      } catch (err) {
+        return {
+          mode: 'failed',
+          reason:
+            `The worktree at ${cwd} is no longer a git repository — a previous cleanup left ` +
+            `it half-deleted — and it could not be removed to rebuild it: ` +
+            `${(err as Error).message ?? err}. Delete that directory and retry. The task was ` +
+            `not run in the base tree (${project.path}) to avoid polluting it.`,
+        };
+      }
+      // A write outside the task's own worktree belongs on the timeline, exactly like the
+      // unborn-HEAD repair above — it explains where a directory went.
+      note =
+        `${note ? `${note} ` : ''}The worktree at ${cwd} was left half-deleted by an earlier ` +
+        `cleanup (its \`.git\` was gone), so it was removed and rebuilt. Nothing was lost: a ` +
+        `worktree is only ever cleaned up after its work has been committed and merged.`;
+      // git may still hold an admin record pointing at the path we just removed, which
+      // would make `worktree add` refuse. `prepare`'s own prune-and-retry below covers it.
     }
 
     // A `stacked` chain link asks for this branch to be cut from another card's, not from
@@ -339,6 +433,12 @@ export class WorktreeManager {
    * Integrate a finished task's branch back into base: safety-commit anything the
    * agent left, rebase onto the latest base, then fast-forward base to it and remove
    * the worktree. Serialized per project. See IntegrationResult for the outcomes.
+   *
+   * Refuses up front when there is nothing to land (see `nothing-to-merge`). Every caller
+   * fires this without knowing whether a merge is owed — `settle` runs it for any finished
+   * worktree run including a chat reply, and the Merge button rebuilds its context from
+   * facts on disk — so "is there work here?" has to be answered HERE, once, rather than by
+   * each caller guessing.
    */
   integrate(
     project: Project,
@@ -349,7 +449,46 @@ export class WorktreeManager {
   ): Promise<IntegrationResult> {
     return this.enqueue(project.id, async () => {
       const { host } = await this.workspaceFor(project);
+
+      // Checked BEFORE `commitAll`, which would otherwise shell out into a directory that
+      // is not a repo and report its failure as a bare "not a git repository" — the message
+      // that sent a human looking for a broken project rather than a finished merge.
+      if (!(await isRepo(worktree, host))) {
+        return {
+          status: 'nothing-to-merge',
+          branch,
+          base,
+          reason:
+            `the worktree at ${worktree} is no longer a git repository, which is what a ` +
+            `worktree looks like after its branch has been merged and cleaned up`,
+        };
+      }
+      if (!(await branchExists(project.path, branch, host))) {
+        return {
+          status: 'nothing-to-merge',
+          branch,
+          base,
+          reason:
+            `branch "${branch}" no longer exists in ${project.path} — it is deleted as the ` +
+            `last step of a successful merge, so its work is already in ${base}`,
+        };
+      }
+
+      // AFTER `commitAll`, and that order matters: a run that left work uncommitted has
+      // something to land, and asking before the safety commit would call it empty.
       await commitAll(worktree, commitMessage, host);
+      const ahead = await commitsAhead(worktree, base, branch, host);
+      if (ahead === 0) {
+        return {
+          status: 'nothing-to-merge',
+          branch,
+          base,
+          reason:
+            `branch "${branch}" has no commits that ${base} does not already have, so there ` +
+            `is nothing for a merge to move`,
+        };
+      }
+
       // Rung 1 (mechanical): rebase with union merge for additive config files, so
       // `.gitignore`/workspace-list churn auto-resolves instead of conflicting. Anything
       // left conflicted is a real conflict → returned as `conflict` for the AI/human rungs.
@@ -404,7 +543,64 @@ export class WorktreeManager {
   async cleanup(project: Project, taskId: string): Promise<void> {
     const { host, root } = await this.workspaceFor(project);
     const cwd = this.pathIn(root, project.id, taskId);
-    if (existsSync(host.toApp(cwd))) await removeWorktree(project.path, cwd, host);
+    if (existsSync(host.toApp(cwd))) await this.removeWorktreeChecked(project, cwd, host);
+  }
+
+  /**
+   * Remove a worktree, and say so when it doesn't work. Returns null on success, or a
+   * sentence naming what is left behind.
+   *
+   * Every call site used to discard `removeWorktree`'s exit code, and the one time it
+   * mattered it mattered a lot: on Windows a directory cannot be deleted while any process
+   * holds it as a cwd, so a run whose CLI was still exiting lost the race with its own
+   * cleanup. Git got as far as `.git` and stopped, and every later run was handed the
+   * remains as a live worktree. Hence the retry — the lock is held by something on its way
+   * out, so a moment later it is usually gone — and hence the message when it isn't.
+   */
+  private async removeWorktreeChecked(
+    project: Project,
+    worktree: string,
+    host: ExecHost,
+  ): Promise<string | null> {
+    let res = await removeWorktree(project.path, worktree, host);
+    if (res.code !== 0) {
+      await delay(WORKTREE_REMOVE_RETRY_MS);
+      res = await removeWorktree(project.path, worktree, host);
+    }
+    if (res.code === 0) return null;
+    const why = res.stderr.trim() || 'git worktree remove failed';
+    return (
+      `the worktree at ${worktree} could not be removed (${why}), so it is still on disk. ` +
+      `Nothing depends on it — delete it when convenient.`
+    );
+  }
+
+  /**
+   * What a task's worktree and branch ARE on disk right now, or null if there is no live
+   * pair to merge. Creates nothing, deletes nothing, repairs nothing.
+   *
+   * This exists because the Merge button needs to answer "is there a branch here?" and the
+   * only thing that could answer it was `prepare` — which is a *mutating* call. Asking it
+   * on a card whose branch had already merged rebuilt the worktree and re-created the
+   * deleted branch, so pressing Merge on finished work manufactured the very thing it was
+   * about to report as empty. Reading and preparing are different questions.
+   */
+  async inspect(
+    project: Project,
+    ownerTaskId: string,
+    branchName?: string,
+  ): Promise<{ cwd: string; branch: string; base: string } | null> {
+    const { host, root } = await this.workspaceFor(project);
+    if (!project.useWorktrees || !(await isRepo(project.path, host))) return null;
+    const cwd = this.pathIn(root, project.id, ownerTaskId);
+    if (!existsSync(host.toApp(cwd)) || !(await isRepo(cwd, host))) return null;
+    // The worktree's own HEAD outranks the name we were handed: a card renamed after its
+    // worktree was made carries a branch name that was never checked out anywhere.
+    const branch =
+      (await currentBranch(cwd, host)) || branchName?.trim() || taskBranch(ownerTaskId);
+    if (!(await branchExists(project.path, branch, host))) return null;
+    const base = project.baseBranch?.trim() || (await currentBranch(project.path, host));
+    return base ? { cwd, branch, base } : null;
   }
 
   /** The work-tree paths currently in conflict (for the human/AI conflict-fix prompt). */
@@ -437,9 +633,9 @@ export class WorktreeManager {
             `could not fast-forward "${base}" to "${branch}" in ${project.path}`,
         };
       }
-      await removeWorktree(project.path, worktree, host);
+      const leftover = await this.removeWorktreeChecked(project, worktree, host);
       await deleteBranch(project.path, branch, host);
-      return { status: 'merged', refMoveOnly: true };
+      return { status: 'merged', refMoveOnly: true, cleanupFailed: leftover ?? undefined };
     }
 
     // Never fast-forward a base tree that has uncommitted *tracked* work — we'd risk the
@@ -474,9 +670,9 @@ export class WorktreeManager {
 
     const merged = await mergeFfOnly(project.path, branch, host);
     if (merged.code !== 0) return { status: 'error', message: merged.stderr || 'merge failed' };
-    await removeWorktree(project.path, worktree, host);
+    const leftover = await this.removeWorktreeChecked(project, worktree, host);
     await deleteBranch(project.path, branch, host);
-    return { status: 'merged', preserved };
+    return { status: 'merged', preserved, cleanupFailed: leftover ?? undefined };
   }
 
   /** Run `fn` after any pending work for `key`, keeping a single chain per project. */
