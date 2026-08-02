@@ -146,7 +146,7 @@ describe('ChainRunner — a card lands', () => {
     );
     runner.landed('a');
     // The LANDING is still recorded — it is a fact about the world, and it is what lets
-    // the next boot's sweep pick this release up.
+    // the re-ask made when the limit lifts pick this release up.
     expect(byId.get('a')?.landedAt).toBe(1_000);
     expect(started).toEqual([]);
   });
@@ -289,7 +289,7 @@ describe('ChainRunner — restart recovery', () => {
       [task({ id: 'a', landedAt: 5 }), successor('b')],
       [link('a', 'b')],
     );
-    runner.sweep();
+    runner.reconsider('boot');
     expect(started).toEqual(['b']);
     expect(notes[0].body).toContain('startup');
   });
@@ -299,13 +299,13 @@ describe('ChainRunner — restart recovery', () => {
       [task({ id: 'a', landedAt: 5 }), task({ ...successor('b'), sessionId: 'session-1' })],
       [link('a', 'b')],
     );
-    runner.sweep();
+    runner.reconsider('boot');
     expect(started).toEqual([]);
   });
 
   it('leaves a card still waiting on something', () => {
     const { runner, started } = harness([task({ id: 'a' }), successor('b')], [link('a', 'b')]);
-    runner.sweep();
+    runner.reconsider('boot');
     expect(started).toEqual([]);
   });
 
@@ -315,7 +315,7 @@ describe('ChainRunner — restart recovery', () => {
       [link('a', 'b')],
       { limit: true },
     );
-    runner.sweep();
+    runner.reconsider('boot');
     expect(started).toEqual([]);
   });
 });
@@ -384,13 +384,6 @@ describe('ChainRunner — re-asking the chain', () => {
     expect(said[1]).toContain('usage limit');
     expect(said[2]).toContain('chain changed');
     expect(said[3]).toContain('To Do');
-  });
-
-  it('sweep is that same question, asked at boot', () => {
-    const { runner, started, notes } = overdue();
-    runner.sweep();
-    expect(started).toEqual(['b']);
-    expect(notes[0].body).toContain('startup');
   });
 });
 

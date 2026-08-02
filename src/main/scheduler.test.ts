@@ -573,6 +573,9 @@ describe('Scheduler — a card delegated to an agent project', () => {
       getSettings: () => ({ limitJitterMs: 0, concurrency: 1 }),
       appendTaskEvent: vi.fn(),
       getSubtasks: () => [], // an ordinary card: no plan-driven steps
+      // …and no arrows either. The limit-resume case below ends by re-asking the chain,
+      // which reads every link on the board.
+      listTaskLinks: () => [],
       ...INERT_ATTENTION_STORE,
     } as unknown as Store;
     const start = vi.fn((_req: unknown, _opts: unknown) => ({ runId: 'r1' }));
@@ -2437,6 +2440,135 @@ describe('describeEmptyOutcome', () => {
   it('prefers "never ran a turn" over the plan rule', () => {
     const dead = { resultText: '', stopReason: null, terminalReason: null, usage: zero };
     expect(describeEmptyOutcome('plan', undefined, dead)).toMatch(/without running a turn/);
+  });
+});
+
+/**
+ * "The limit lifted and the next card in the chain never started."
+ *
+ * A card released while a usage limit is up is the one thing the gate cannot park: nothing
+ * is running on it, so there is nothing to park. It sits `pending` with its predecessor
+ * long landed, and until this the only thing that ever asked again was the next boot. So
+ * the resume ends by re-asking the chain — LAST, after everything the gate parked has
+ * re-reserved its slot and every queue has been pumped, which is what makes a second start
+ * impossible rather than merely unlikely.
+ */
+describe('Scheduler — a lifting usage limit restarts a card chain', () => {
+  const limited = {
+    kind: 'rate-limit' as const,
+    status: 'rejected',
+    rateLimitType: 'five_hour',
+    resetsAt: null,
+  };
+
+  /** Two cards, `b` chained to start after `a` merges, and a limit already in force. */
+  function setup() {
+    const project = {
+      id: 'agent-1',
+      name: 'Checkout service',
+      path: 'C:/repos/checkout',
+      planPath: '',
+      kind: 'agent',
+      concurrency: 1,
+      defaultModel: 'sonnet',
+      defaultPermissionMode: 'acceptEdits',
+    } as unknown as Project;
+    const card = (id: string, order: number, extra: Partial<Task> = {}): Task =>
+      ({
+        id,
+        projectId: 'agent-1',
+        phase: '',
+        title: id === 'a' ? 'Extract the parser' : 'Rewire the importer',
+        status: 'pending',
+        sessionId: null,
+        order,
+        source: 'adhoc',
+        dependsOn: [],
+        isContract: false,
+        isScaffold: false,
+        agentProjectId: 'agent-1',
+        parentTaskId: null,
+        ...extra,
+      }) as unknown as Task;
+    // `a` has finished writing and is waiting for review; `b` waits for it to MERGE.
+    const a = card('a', 0, { status: 'in-review', sessionId: 's-a', agentBranch: 'orch/a' });
+    const b = card('b', 1);
+    const byId = new Map([a, b].map((task) => [task.id, task]));
+    const links = [
+      { id: 'l1', fromTaskId: 'a', toTaskId: 'b', gate: 'after-merge' as const, createdAt: 1 },
+    ];
+    const comments: string[] = [];
+    const store = {
+      getTask: (id: string) => byId.get(id),
+      getProject: (id: string) => (id === 'agent-1' ? project : undefined),
+      listProjects: () => [project],
+      getTasks: () => [a, b],
+      getSubtasks: () => [],
+      getTaskActivity: () => [],
+      addComment: (_p: string, _t: string, body: string) => comments.push(body),
+      listTaskLinks: () => links,
+      updateTask: (id: string, patch: Partial<Task>) => {
+        const task = byId.get(id);
+        if (task) Object.assign(task, patch);
+        return task;
+      },
+      appendTaskEvent: vi.fn(),
+      appendTokenUsage: vi.fn(),
+      getSettings: () => ({ maxAutoRetries: 0, limitJitterMs: 0, concurrency: 1 }),
+      saveLimitGate: () => undefined,
+      loadLimitGate: () => null,
+      ...INERT_ATTENTION_STORE,
+    } as unknown as Store;
+    const start = vi.fn((_req: unknown, o: { runId?: string }) => ({ runId: o?.runId ?? 'r-new' }));
+    const sessions = { start, stop: vi.fn(), send: vi.fn() } as unknown as SessionManager;
+    const scheduler = new Scheduler(store, sessions, vi.fn(), vi.fn(), vi.fn(), vi.fn(), vi.fn());
+    // A limit is in force account-wide — some other run hit the wall — with nothing parked:
+    // neither of these cards was running when it did.
+    (
+      scheduler as unknown as { limitGate: { engage: (s: unknown, ids: string[]) => void } }
+    ).limitGate.engage(limited, []);
+    return { scheduler, start, a, b, comments };
+  }
+
+  /** The task behind every run the scheduler has reserved — who actually got started. */
+  const runTaskIds = (scheduler: Scheduler): string[] =>
+    [...(scheduler as unknown as { runs: Map<string, { taskId: string }> }).runs.values()].map(
+      (run) => run.taskId,
+    );
+
+  it('records the landing under the limit, and starts nothing', () => {
+    const { scheduler, start, a, comments } = setup();
+    scheduler.noteWorkLanded('a');
+    // The landing is the durable half and is written whatever the limit says — it is what
+    // the re-ask will read once the gate lifts.
+    expect(a.landedAt).toEqual(expect.any(Number));
+    expect(start).not.toHaveBeenCalled();
+    expect(comments).toEqual([]);
+  });
+
+  it('starts the successor exactly once when the limit lifts', () => {
+    const { scheduler, start, comments } = setup();
+    scheduler.noteWorkLanded('a');
+    scheduler.resumeLimitNow(); // the reset, or the banner's "Resume now"
+
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(runTaskIds(scheduler)).toEqual(['b']);
+    // …and the card says what started it, rather than "started automatically" with no
+    // subject, which is the entry that sends a human hunting through other cards' logs.
+    expect(comments.some((body) => body.includes('usage limit lifted'))).toBe(true);
+  });
+
+  it('does not start again a card the pump has already taken', () => {
+    const { scheduler, start } = setup();
+    scheduler.noteWorkLanded('a');
+    scheduler.start('agent-1'); // the project's queue is running; the limit holds its pump
+    expect(start).not.toHaveBeenCalled();
+
+    scheduler.resumeLimitNow();
+    // `b` is both the queue's next pending task and a released chain card. The re-ask runs
+    // after the pump, by which time `b` is in flight — so it is started once, not twice.
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(runTaskIds(scheduler)).toEqual(['b']);
   });
 });
 

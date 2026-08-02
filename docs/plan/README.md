@@ -1320,9 +1320,12 @@ phase's first commit is:
 - [x] **2 — The boot sweep becomes a general re-ask.** `ChainRunner.reconsider(trigger)`
       can be asked at any moment, with `sweep` as its boot-time caller rather than its only
       one, and each trigger naming its own cause on the timeline.
-- [ ] **3 — A lifting usage limit restarts card chains.** The gate already resumes parked
+- [x] **3 — A lifting usage limit restarts card chains.** The gate already resumes parked
       sessions and steps; a card released while the gate was up has nothing parked to
-      resume, so it needs the re-ask.
+      resume, so it needs the re-ask. `resumeParked` ends with it — after the parked set
+      has re-reserved its slots and the queues have been pumped, which is what makes a
+      second start impossible. It is the one place all three lifts (the timer, *Resume
+      now*, and a restart finding no saved gate) pass through.
 - [ ] **4 — The arrows changing re-asks the chain.** Erasing an arrow or re-gating one can
       satisfy the last thing a card was waiting on. Bounded by the first decision above.
 - [ ] **5 — A card returning to To Do re-asks.** `pending` is the one status a release may

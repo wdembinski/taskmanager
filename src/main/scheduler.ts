@@ -79,7 +79,7 @@ import {
   type AgentPromptComment,
 } from './agentTaskPrompt';
 import { guardCardStatus } from './cardStatusGuard';
-import { ChainRunner } from './chainRunner';
+import { ChainRunner, type ChainTrigger } from './chainRunner';
 import type { PermissionGate } from './claudeSession';
 import { buildChainHandbackPrompt, buildChainSummary } from './chainSummary';
 import { shouldSurfaceEvent } from './eventNoise';
@@ -1563,19 +1563,24 @@ export class Scheduler {
   }
 
   /**
-   * On startup, beside {@link Scheduler.reconcileInterruptedTasks}: start every chained card
-   * whose predecessors finished while the app was closed (`@shared/taskChain`).
+   * **Ask the chain again**: start every chained card whose predecessors are already
+   * satisfied but which nobody ever released (`@shared/taskChain`).
    *
-   * Unlike the sweep above this one is not healing anything — the DB is perfectly
-   * consistent, it is just that nobody was listening at the moment the gate opened. That it
-   * is safe to run on EVERY boot is a consequence of `landedAt` being persisted: the
-   * question has the same answer it had before the restart, so a card that was already
-   * released is not released twice (it has a session by then, and this only starts cards
-   * that have never run).
+   * Unlike {@link Scheduler.reconcileInterruptedTasks} this heals nothing — the DB is
+   * perfectly consistent, it is just that nobody was listening at the moment the gate
+   * opened. That it is safe to ask at ANY moment, and repeatedly, is a consequence of
+   * `landedAt` being persisted: the question has the same answer it had a second ago, so a
+   * card that was already released is not released twice (it has a session by then, and
+   * this only starts cards that have never run).
+   *
+   * `trigger` is what made the moment worth asking at, and the only thing that reaches the
+   * card's timeline — see {@link ChainTrigger}. Boot is one caller among several; the
+   * others are the usage limit lifting (below, in {@link Scheduler.resumeParked}) and the
+   * board's own chain edits.
    */
-  releaseReadyChains(): void {
+  reconsiderChains(trigger: ChainTrigger): void {
     if (this.disposed) return;
-    this.chain.sweep();
+    this.chain.reconsider(trigger);
   }
 
   /**
@@ -2589,6 +2594,18 @@ export class Scheduler {
    *     was told to stop.
    *  3. **A task that cannot start is released rather than left parked**, because
    *     `blocked-by-limit` with no gate behind it is a card that waits for ever.
+   *  4. **The chain of execution is re-asked at the very end**, because a card the chain
+   *     would have released while the limit was up was never parked by the gate: nothing
+   *     was running on it to park. It is `pending` with its predecessors long satisfied,
+   *     and until this it waited for the next restart. Last on purpose — see below.
+   *
+   * This is the one right place for that re-ask, rather than `onLimitChanged` or the gate
+   * itself: every way a limit can lift comes through here — the timer
+   * ({@link LimitGate.fire}), the banner's *Resume now*, and {@link
+   * Scheduler.restoreLimitGate}'s no-saved-gate branch, which calls this directly with a
+   * synthetic state and no gate ever armed. `onLimitChanged` fires on ENGAGE too and never
+   * fires on that last branch. `fire()` nulls its state before calling this, so the
+   * re-ask's own `limitActive()` guard already passes.
    */
   private resumeParked(state: LimitState): void {
     if (this.disposed) return;
@@ -2626,6 +2643,10 @@ export class Scheduler {
     }
     // Slots may have freed without a parked task — nudge every active queue.
     for (const projectId of this.activeProjects) this.pump(projectId);
+    // LAST, and that is the whole of its correctness: by now everything the gate parked has
+    // re-reserved its slot and every queue has been pumped, so the chain sees those cards as
+    // in flight and cannot start one a second time.
+    this.chain.reconsider('limit-lifted');
   }
 
   /**

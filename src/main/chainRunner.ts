@@ -3,9 +3,11 @@
  *
  * `@shared/taskChain` answers "is this card allowed to start yet"; this decides what to do
  * about the answer. It is owned by the `Scheduler` the way `WorktreeManager` is: the
- * scheduler calls in at the three moments the world changes (a branch merged, a run
- * finished writing, the app booted) and this module owns everything that follows, so
- * `scheduler.ts` gains calls rather than another feature's logic.
+ * scheduler calls in whenever the world changes in a way that could release a card — a
+ * branch merged, a run finished writing, and, through {@link ChainRunner.reconsider}, any
+ * other such moment (the app booted, a usage limit lifted, the arrows changed) — and this
+ * module owns everything that follows, so `scheduler.ts` gains calls rather than another
+ * feature's logic.
  *
  * Three rules run through all of it, and they are worth stating once:
  *
@@ -223,16 +225,6 @@ export class ChainRunner {
   }
 
   /**
-   * On boot: start every chained card that became releasable while the app was shut.
-   *
-   * The original re-ask, and now one caller of it among several — kept under its own name
-   * because boot is where this began and where `Scheduler` still calls it from.
-   */
-  sweep(): void {
-    this.reconsider('boot');
-  }
-
-  /**
    * The branch a card's worktree should be **cut from**, or undefined for the usual case.
    *
    * Only a `stacked` link answers anything here: its whole promise is that the successor
@@ -269,7 +261,7 @@ export class ChainRunner {
   private release(fromTaskId: string, cause: ReleaseCause): void {
     // A usage limit holds a release exactly as it holds `advanceSubtasks`: nothing starts
     // account-wide until it lifts. Nothing is lost — `landedAt` is already written, so the
-    // next boot's `sweep` picks up whatever this pass could not.
+    // re-ask the scheduler makes when the limit lifts picks up whatever this pass could not.
     if (this.deps.limitActive()) return;
     const from = this.deps.getTask(fromTaskId);
     // A card the human stopped or cancelled releases nothing. Whatever state its branch is

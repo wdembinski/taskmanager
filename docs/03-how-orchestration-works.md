@@ -492,8 +492,14 @@ by something moving.
 
 ### What happens when a predecessor finishes
 
-`src/main/chainRunner.ts` owns this, called by the scheduler at the three moments the world
-changes: a branch landed, a run finished writing, the app booted.
+`src/main/chainRunner.ts` owns this, called by the scheduler whenever the world changes in
+a way that could release a card. Two of those moments are a card of its own finishing — a
+branch landed, a run finished writing. The rest have no card to point at: nothing finished,
+something around the chain merely changed. Those all come through one **re-ask**
+(`reconsider`), which starts every card whose predecessors are already satisfied and which
+has never run — today the app booting and a usage limit lifting. Each names its own cause
+on the card's timeline, because "started automatically" with no subject is the entry that
+sends you hunting through three other cards' logs.
 
 - A card fed by several arrows waits for **all** of them (an AND-join) — a diamond is the
   commonest shape a chain takes, and releasing on the first arrow would start the work whose
@@ -505,8 +511,10 @@ changes: a branch landed, a run finished writing, the app booted.
   it is for every other run.
 - A predecessor you **stopped or cancelled** releases nothing: whatever state its branch is
   in, that is not "carry on with the next one". A **usage limit** holds a release exactly as
-  it holds everything else — and nothing is lost, because `landedAt` is on disk and every
-  boot re-asks the question for cards that never ran.
+  it holds everything else — and nothing is lost, because `landedAt` is on disk and the
+  moment the limit lifts the chain is re-asked, so a card released behind the gate starts
+  then rather than at the next restart. That re-ask is the last thing the resume does, after
+  every parked run has re-reserved its slot, so no card is started twice.
 - **Release now**, in a blocked card's pane, starts it anyway. Some chains only ever recorded
   the order things ought to be *looked at*, and there the gate is an obstacle rather than a
   safeguard. The link stays; the timeline says it went ahead of it.

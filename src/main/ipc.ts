@@ -295,7 +295,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // was closed has been waiting since, and nothing else would ever ask again. After the
   // reconcile above, so the two sweeps cannot both decide what to do with one card — this
   // one starts only cards that have never run at all.
-  scheduler.releaseReadyChains();
+  scheduler.reconsiderChains('boot');
 
   // Phase 8: watch every project's plan file so edits — including the agent
   // rewriting the plan mid-run — re-sync into the task list live.
