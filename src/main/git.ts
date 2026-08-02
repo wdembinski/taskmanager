@@ -307,6 +307,31 @@ export async function addedInBranch(
   return res.code === 0 ? splitZ(res.stdout) : [];
 }
 
+/**
+ * How many commits `branch` has that `base` does not.
+ *
+ * `0` means merging it would be a no-op: everything on it is already contained in base,
+ * either because it was merged before or because nothing was ever written to it. That is
+ * the difference between "this branch has work to land" and "there is nothing to land",
+ * which no other signal here can tell apart — a branch that merged an hour ago and a
+ * branch an agent never committed to look identical from every other angle.
+ *
+ * `-1` when the count can't be read at all (a ref that no longer exists, git unavailable).
+ * Callers must treat that as "don't know" and never as "nothing" — refusing to merge on a
+ * failed count would strand real work.
+ */
+export async function commitsAhead(
+  dir: string,
+  base: string,
+  branch: string,
+  host?: ExecHost,
+): Promise<number> {
+  const res = await git(dir, ['rev-list', '--count', `${base}..${branch}`], host);
+  if (res.code !== 0) return -1;
+  const n = Number.parseInt(res.stdout.trim(), 10);
+  return Number.isFinite(n) ? n : -1;
+}
+
 /** Untracked, non-ignored files in the work tree (NUL-delimited). */
 export async function listUntracked(dir: string, host?: ExecHost): Promise<string[]> {
   const res = await git(dir, ['ls-files', '-z', '--others', '--exclude-standard'], host);
