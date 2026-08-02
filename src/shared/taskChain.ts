@@ -298,3 +298,33 @@ export function blockedBy(
   }
   return waiting;
 }
+
+/**
+ * Of the predecessors still holding this card ({@link blockedBy}), the ones whose only
+ * outstanding condition is that **a human presses Merge**.
+ *
+ * The distinction the board could not otherwise draw: "waiting on VIP-3" reads the same
+ * whether VIP-3 has not been started yet or finished three days ago and is sitting in
+ * review. Only the second one is a thing the person reading the card can fix, and it is
+ * the commonest reason a chain looks stalled.
+ *
+ * Asked as *"a `stacked` gate would already be satisfied where this `after-merge` one is
+ * not"*, rather than by re-testing status and branch here. There is one definition of
+ * "the work is written" ({@link linkSatisfied}), including its escape hatch for a run that
+ * stopped part-way, and a second copy of it would drift from the gate the engine actually
+ * applies — at which point the chip is a lie. A `stacked` link falls out for free: the two
+ * questions are then literally the same call, so it can never answer both ways.
+ */
+export function awaitingMerge(
+  task: Pick<Task, 'id'>,
+  links: readonly TaskLink[],
+  byId: ReadonlyMap<string, Task>,
+): Task[] {
+  const held: Task[] = [];
+  for (const link of incomingLinks(links, task.id)) {
+    const from = byId.get(link.fromTaskId);
+    if (!from || linkSatisfied(link, from)) continue;
+    if (linkSatisfied({ ...link, gate: 'stacked' }, from)) held.push(from);
+  }
+  return held;
+}

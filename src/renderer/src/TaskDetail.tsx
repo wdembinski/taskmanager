@@ -179,6 +179,12 @@ export interface TaskDetailProps {
    */
   chainWaitingOn?: readonly Task[];
   /**
+   * The subset of {@link chainWaitingOn} waiting on nothing but a merge (`awaitingMerge`) —
+   * what the agent panel offers a **Merge** button for. From the board's index, so the
+   * card's chip and this pane's button can never disagree about which card that is.
+   */
+  chainMergeHeld?: readonly Task[];
+  /**
    * Every link on the board, for the **Chain** section — the card's own predecessors and
    * successors as a list, which is the keyboard's route to what the arrows do by dragging.
    *
@@ -213,6 +219,7 @@ export function TaskDetail({
   liveRunTaskIds,
   mergingTaskIds,
   chainWaitingOn,
+  chainMergeHeld,
   chainLinks = [],
   chainTasksById = NO_TASKS,
   onUnlinkChain,
@@ -620,6 +627,7 @@ export function TaskDetail({
           running={run.spinner}
           merging={merging}
           waitingOn={chainWaitingOn}
+          mergeHeld={chainMergeHeld}
           onOpenTask={onOpenTask}
           onTaskChanged={(updated) => {
             onStatusChanged?.(updated);

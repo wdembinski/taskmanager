@@ -484,7 +484,13 @@ by something moving.
   hidden, filtered out by the sprint switch — becomes a counted stub into the board's edge
   rather than a line to nowhere.
 - The card itself carries a monochrome **`waiting on KEY`** chip, and **`ready`** once
-  every predecessor is satisfied but nothing has started.
+  every predecessor is satisfied but nothing has started. When the card it names has already
+  finished writing and is only waiting to be merged, the chip says **`waiting on KEY to
+  merge`** — same neutral chip, same link icon, one extra word, because "waiting on VIP-3"
+  otherwise reads the same whether VIP-3 has not been started or has been sitting in review
+  for two days, and only the second is something you can fix. The card's pane goes further:
+  it offers **Merge VIP-3** beside *Open VIP-3*, so the one thing holding the chain up is a
+  click from where you already are.
 - **Chain focus** in the toolbar reduces the board to the selected card's chain —
   everything upstream, everything downstream, and the siblings entangled with it. The cards
   stay in their real columns; it is a filter, not a pipeline of its own. It is deliberately
@@ -515,6 +521,15 @@ sends you hunting through three other cards' logs.
   moment the limit lifts the chain is re-asked, so a card released behind the gate starts
   then rather than at the next restart. That re-ask is the last thing the resume does, after
   every parked run has re-reserved its slot, so no card is started twice.
+- **A merge nobody has pressed is the commonest reason a chain looks stalled**, so both ends
+  say so. The predecessor's timeline note — the one you already read to learn its branch was
+  *not* merged — ends by naming the cards parked until it is (`ChainRunner.heldByMerge`);
+  "merge it when you get to it" and "three cards are waiting on you" are different decisions.
+  From the other end, `awaitingMerge` picks out the predecessors waiting on nothing but a
+  human, which is what the successor's chip and its **Merge** button are drawn from. It asks
+  one question — *would a `stacked` gate already be satisfied where this `after-merge` one is
+  not?* — so there is a single definition of "the work is written" rather than a second copy
+  that could drift from the gate the engine applies.
 - **Release now**, in a blocked card's pane, starts it anyway. Some chains only ever recorded
   the order things ought to be *looked at*, and there the gate is an obstacle rather than a
   safeguard. The link stays; the timeline says it went ahead of it.

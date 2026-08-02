@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { PERSONAL_PROJECT_ID, type Task } from './model';
 import {
+  awaitingMerge,
   blockedBy,
   canLink,
   chainComponent,
@@ -269,5 +270,47 @@ describe('blockedBy', () => {
     const byId = index(task({ id: 'b', landedAt: 1 }), d);
     expect(blockedBy(d, links, byId)).toEqual([]);
     expect(readyToRelease(d, links, byId)).toBe(true);
+  });
+});
+
+describe('awaitingMerge', () => {
+  const b = task({ id: 'b' });
+
+  it('names a predecessor whose work is written but not landed', () => {
+    const written = task({ id: 'a', status: 'in-review' });
+    expect(awaitingMerge(b, [link('a', 'b')], index(written, b)).map((t) => t.id)).toEqual(['a']);
+  });
+
+  it('is empty once it has landed — there is nothing left to press', () => {
+    const landed = task({ id: 'a', status: 'in-review', landedAt: 7 });
+    expect(awaitingMerge(b, [link('a', 'b')], index(landed, b))).toEqual([]);
+  });
+
+  it('is empty for a stacked link, whose gate never wanted a merge', () => {
+    const written = task({ id: 'a', status: 'in-review' });
+    expect(awaitingMerge(b, [link('a', 'b', 'stacked')], index(written, b))).toEqual([]);
+  });
+
+  it('is empty while the predecessor is still running — nobody can merge that yet', () => {
+    const running = task({ id: 'a', status: 'running' });
+    expect(awaitingMerge(b, [link('a', 'b')], index(running, b))).toEqual([]);
+  });
+
+  it('names a run that stopped part-way but left a branch behind', () => {
+    // `linkSatisfied`'s escape hatch, asserted deliberately: a card that failed or was
+    // stopped mid-run is NOT in-review, yet it has run and it has a branch — so a `stacked`
+    // gate would release on it, and the chip says the merge is what stands in the way.
+    const halfDone = task({ id: 'a', status: 'failed', sessionId: 's1', agentBranch: 'task/a' });
+    expect(awaitingMerge(b, [link('a', 'b')], index(halfDone, b)).map((t) => t.id)).toEqual(['a']);
+  });
+
+  it('names the same card blockedBy does — the chip is a lie if they disagree', () => {
+    const d = task({ id: 'd' });
+    const landed = task({ id: 'a', status: 'done', landedAt: 3 });
+    const written = task({ id: 'c', status: 'in-review' });
+    const links = [link('a', 'd'), link('c', 'd')];
+    const byId = index(landed, written, d);
+    expect(blockedBy(d, links, byId).map((t) => t.id)).toEqual(['c']);
+    expect(awaitingMerge(d, links, byId).map((t) => t.id)).toEqual(['c']);
   });
 });

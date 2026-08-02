@@ -1349,8 +1349,16 @@ phase's first commit is:
       them apart. Asked of the card that OWNS the branch, so a plan's steps answer through
       their parent; `stacked` successors are excluded, because the merge is not what they
       were ever waiting for.
-- [ ] **7 — "Waiting on X to merge", and the merge offered there.** The successor's chip
+- [x] **7 — "Waiting on X to merge", and the merge offered there.** The successor's chip
       names the card and gives you the button, instead of sending you to find it.
+      `awaitingMerge(task, links, byId)` sits beside `blockedBy` and answers it by asking
+      whether a `stacked` gate would already be satisfied where this `after-merge` one is
+      not — one definition of "the work is written", reused rather than copied, escape hatch
+      included. The chip stays monochrome with its link icon and gains one word (`waiting on
+      VIP-3 to merge`), because a dependency is a standing fact and "not merged yet" is
+      exactly that; the pane's *Waiting on another card* block grows a **Merge VIP-3** button
+      beside its **Open**, calling the same `task:integrate` the card's own branch uses, whose
+      refusals already arrive as one sentence.
 - [ ] **8 — Verification.** `pnpm typecheck`, `pnpm test`, `pnpm build`, and the live pass.
 
 ### Done when

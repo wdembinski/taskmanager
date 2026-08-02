@@ -15,7 +15,7 @@
  * Model and permission mode are shown read-only: both are captured when the run
  * starts, so changing them means reassigning (the button says so).
  */
-import { useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
 import {
   Badge,
   Button,
@@ -153,6 +153,15 @@ export interface TaskAgentPanelProps {
    * start this card yet, and the human may know better.
    */
   waitingOn?: readonly Task[];
+  /**
+   * The subset of {@link waitingOn} waiting on nothing but a merge (`awaitingMerge`) — each
+   * of those gets a **Merge** button beside its **Open**.
+   *
+   * The one thing standing between this card and starting by itself is then a click away
+   * from where the human already is. Sending them to the other card to find the same button
+   * is how a chain ends up looking stalled for a day.
+   */
+  mergeHeld?: readonly Task[];
 }
 
 export function TaskAgentPanel({
@@ -165,6 +174,7 @@ export function TaskAgentPanel({
   running = false,
   merging = false,
   waitingOn = [],
+  mergeHeld = [],
 }: TaskAgentPanelProps): JSX.Element {
   const styles = useStyles();
   const [assignOpen, setAssignOpen] = useState(false);
@@ -189,6 +199,16 @@ export function TaskAgentPanel({
    */
   const [mergePressed, setMergePressed] = useState(false);
   const mergeBusy = mergePressed || merging;
+  /**
+   * A PREDECESSOR whose Merge was pressed from here, if any.
+   *
+   * Not lowered when the call resolves, unlike `mergePressed` above: `merging` only ever
+   * reports THIS card, so nothing would take over the way it does for our own branch, and
+   * the git work runs on well past the hand-off. The block disappears of its own accord the
+   * moment that card's `landedAt` arrives, which is the honest end of the wait; a refusal
+   * lowers it, because then there is a sentence to read and something to press again.
+   */
+  const [mergingOther, setMergingOther] = useState<string | null>(null);
 
   const taskId = task.id;
   // Which step (if any) the shown item belongs to, and which step has stopped the chain
@@ -250,6 +270,7 @@ export function TaskAgentPanel({
   useEffect(() => {
     setReply('');
     setMergePressed(false);
+    setMergingOther(null);
   }, [taskId]);
 
   // Hand over cleanly: once the engine is reporting the merge, the local bridge lets go.
@@ -340,6 +361,28 @@ export function TaskAgentPanel({
       // merge was refused and the error above says why. Leaving this raised on a refusal
       // is the one way this could spin forever.
       setMergePressed(false);
+    }
+  }
+
+  /**
+   * Merge a PREDECESSOR's branch — the one thing this card is waiting for.
+   *
+   * The same `task:integrate` call as `integrate` above, addressed at the other card, and
+   * for the same reason it is safe to offer optimistically: every refusal ("no branch",
+   * "not a worktree repo", a conflict) arrives as one thrown sentence and lands in `error`
+   * below. Nothing here has to know whether that card can merge; the merge itself knows.
+   *
+   * Once it lands, the chain does the rest — this card starts by itself, with no second
+   * thing for the human to remember to press.
+   */
+  async function integrateOther(id: string): Promise<void> {
+    setMergingOther(id);
+    setError(null);
+    try {
+      await window.api.invoke('task:integrate', id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setMergingOther(null);
     }
   }
 
@@ -618,19 +661,38 @@ export function TaskAgentPanel({
             {waitingOn.length === 1 ? 'it is' : 'they are'} done. Release it now to go ahead anyway
             — the chain keeps the ordering either way.
           </Caption1>
+          {/* The part that is actually YOURS to do. Named separately from the sentence above
+              because "starts by itself when it is done" is true and, for a card that finished
+              days ago and is sitting in review, deeply misleading: nothing further is going to
+              happen until somebody merges it. */}
+          {mergeHeld.length > 0 && (
+            <Caption1 className={styles.hint}>
+              {mergeHeld.length === 1
+                ? `${mergeHeld[0].externalKey || mergeHeld[0].title} has already finished — its branch just has not been merged yet.`
+                : `${mergeHeld.length} of them have already finished — their branches just have not been merged yet.`}{' '}
+              Merge {mergeHeld.length === 1 ? 'it' : 'them'} here and this card starts on its own.
+            </Caption1>
+          )}
           <div className={styles.choices}>
             <Button disabled={busy} onClick={() => void releaseNow()}>
               Release now
             </Button>
             {waitingOn.map((t) => (
-              <Button
-                key={t.id}
-                appearance="subtle"
-                disabled={busy}
-                onClick={() => onOpenTask?.(t.id)}
-              >
-                Open {t.externalKey || t.title}
-              </Button>
+              <Fragment key={t.id}>
+                <Button appearance="subtle" disabled={busy} onClick={() => onOpenTask?.(t.id)}>
+                  Open {t.externalKey || t.title}
+                </Button>
+                {mergeHeld.some((h) => h.id === t.id) && (
+                  <Button
+                    disabled={busy || mergingOther !== null}
+                    icon={mergingOther === t.id ? <Spinner size="tiny" /> : undefined}
+                    title={`Merge ${t.externalKey || t.title}'s branch into its base — the one thing this card is waiting for.`}
+                    onClick={() => void integrateOther(t.id)}
+                  >
+                    {mergingOther === t.id ? 'Merging…' : `Merge ${t.externalKey || t.title}`}
+                  </Button>
+                )}
+              </Fragment>
             ))}
           </div>
         </div>

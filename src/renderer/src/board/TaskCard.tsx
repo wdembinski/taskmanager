@@ -791,6 +791,15 @@ export interface TaskCardProps {
    */
   waitingOn?: readonly Task[];
   /**
+   * The subset of {@link waitingOn} that is waiting on nothing but a **human** pressing
+   * Merge (`awaitingMerge`), so the chip can say so.
+   *
+   * Worth the extra word: "waiting on VIP-3" reads identically whether VIP-3 has not been
+   * started or finished days ago and is sitting in review, and only one of those is
+   * something the person reading the card can act on.
+   */
+  mergeHeld?: readonly Task[];
+  /**
    * Every predecessor has finished and nothing has started yet — the window between the
    * chain opening and the card actually moving. Worth saying out loud because it is exactly
    * when a card looks abandoned: it sits in To Do like any other, and the only thing that
@@ -839,6 +848,7 @@ export function TaskCard({
   onLinkStart,
   onLinkEnd,
   waitingOn = [],
+  mergeHeld = [],
   chainReady = false,
   onLinkTo,
   onLinkArm,
@@ -868,19 +878,32 @@ export function TaskCard({
    * spells the list out when there is more than one, since a diamond waits for all of them
    * (`readyToRelease` is an AND-join) and a chip that showed only the first would be lying
    * about how much is left.
+   *
+   * **`to merge`** is appended when the card it names has finished writing and is only
+   * waiting to be merged — one word, still monochrome, still the same link icon. That is
+   * the whole point of the treatment above: a dependency is a standing fact, and "not
+   * merged yet" is exactly that, however much you would like it pressed.
    */
   const waitingNames = waitingOn.map((t) => t.externalKey || t.title);
+  // Only about the card the chip actually NAMES, so its noun and its verb agree; the
+  // tooltip is what covers the rest of a diamond.
+  const namedIsMergeHeld = waitingOn.length > 0 && mergeHeld.some((t) => t.id === waitingOn[0].id);
   const chainChip = waitingOn.length ? (
     <span
       className={styles.chainChip}
       title={
-        waitingOn.length === 1
-          ? `Waiting on ${waitingOn[0].title} — chained to run after it`
-          : `Waiting on all of: ${waitingOn.map((t) => t.title).join(', ')}`
+        waitingOn.length > 1
+          ? `Waiting on all of: ${waitingOn.map((t) => t.title).join(', ')}`
+          : namedIsMergeHeld
+            ? `${waitingNames[0]} has finished — merge its branch and this card starts by itself.`
+            : `Waiting on ${waitingOn[0].title} — chained to run after it`
       }
     >
       <LinkRegular className={styles.chainChipIcon} />
-      <span className={styles.chainChipText}>waiting on {waitingNames[0]}</span>
+      <span className={styles.chainChipText}>
+        waiting on {waitingNames[0]}
+        {namedIsMergeHeld && ' to merge'}
+      </span>
       {waitingNames.length > 1 && (
         <span className={styles.chainChipMore}>+{waitingNames.length - 1}</span>
       )}
