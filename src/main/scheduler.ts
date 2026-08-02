@@ -3109,7 +3109,16 @@ export class Scheduler {
               `"${result.preserved.stashRef}" before merging (${summarizeFiles(result.preserved.files)}). ` +
               `Restore with \`git stash apply ${result.preserved.stashRef}\` in ${project.path} if needed.`
             : `Merged branch "${ctx.branch}" into ${ctx.base}.`;
-        this.noteRun(project.id, ctx.taskId, ctx.runId, note);
+        // A cleanup that failed does not change what happened to the work — the merge
+        // landed — so it is appended to the same note rather than raised as a problem of
+        // its own. Said at all, though: an unremoved worktree used to be invisible, and the
+        // next run picked up its remains believing they were a live branch.
+        this.noteRun(
+          project.id,
+          ctx.taskId,
+          ctx.runId,
+          result.cleanupFailed ? `${note} Note: ${result.cleanupFailed}` : note,
+        );
         // This line runs for BOTH a plain card and the final step of a chain, and the two
         // want different things. A STEP must reach `done` or the chain machinery breaks:
         // `hasPendingSibling`, `advanceSubtasks` and `chainInFlight` all read `done` as
@@ -3146,6 +3155,24 @@ export class Scheduler {
         void this.finishParentChain(ctx.taskId, { branch: ctx.branch, base: ctx.base });
         break;
       }
+      case 'nothing-to-merge':
+        // Nothing happened and nothing is wrong, so the card is left exactly as it was: no
+        // status change, no inbox item, no `landedAt`, no chain release, no auto-release.
+        // Only a line on the timeline saying why the merge it was told about did not occur.
+        //
+        // This is the case that used to arrive as `error`, which parked the card and
+        // offered a "Retry integration" that re-ran the same impossible merge — a card
+        // whose work had merged perfectly well an hour earlier, stuck in the inbox with no
+        // way out but abandoning it. Anything that reaches here has already succeeded or
+        // has nothing to do; neither deserves an interruption.
+        this.attempts.delete(ctx.taskId);
+        this.noteRun(
+          project.id,
+          ctx.taskId,
+          ctx.runId,
+          `No merge was needed: ${result.reason}. Nothing was changed.`,
+        );
+        break;
       case 'conflict':
         this.escalateConflict(project, ctx);
         break;
@@ -3230,29 +3257,31 @@ export class Scheduler {
     };
     let ctx = this.readyToIntegrate.get(taskId);
     if (!ctx) {
-      // The offer is gone but the branch is not: `readyToIntegrate` lives in memory and a
-      // restart empties it, while the worktree and the branch are facts on disk. `prepare`
-      // is how those facts are read — it reuses the existing worktree and reports the
-      // branch it is ACTUALLY on, which is the same call the launcher makes.
+      // The offer is gone but the branch may not be: `readyToIntegrate` lives in memory and
+      // a restart empties it, while the worktree and the branch are facts on disk.
+      // `inspect` READS those facts — deliberately not `prepare`, which would build them.
+      // Asking `prepare` here meant that pressing Merge on a card whose branch had already
+      // merged rebuilt its worktree and re-created the branch git had deleted, then
+      // reported the result as unmergeable: a button that could only ever fail.
       const project = this.store.getProject(task.agentProjectId ?? '');
       if (!project) return refuse('The agent project for this card has been removed.');
       const owner = task.parentTaskId ?? task.id;
-      const prep = await this.worktrees!.prepare(
-        project,
-        task,
-        owner,
-        task.agentBranch ?? undefined,
-      );
-      if (prep.mode !== 'worktree' || !prep.branch || !prep.base) {
-        return refuse('This card did not run in a worktree, so there is nothing to merge.');
+      const live = await this.worktrees!.inspect(project, owner, task.agentBranch ?? undefined);
+      if (!live) {
+        return refuse(
+          `There is no branch left to merge for this card. Its worktree and branch are ` +
+            `removed as the last step of a successful merge, so this usually means the ` +
+            `work is already in ${project.baseBranch?.trim() || 'the base branch'} — check ` +
+            `the card's timeline for when it landed.`,
+        );
       }
       ctx = {
         projectId: project.id,
         taskId,
         runId: task.sessionId ?? taskId,
-        branch: prep.branch,
-        base: prep.base,
-        worktree: prep.cwd,
+        branch: live.branch,
+        base: live.base,
+        worktree: live.cwd,
       };
     }
     const project = this.store.getProject(ctx.projectId);

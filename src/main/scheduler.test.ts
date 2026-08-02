@@ -2928,3 +2928,143 @@ describe('releaseMode', () => {
     expect(releaseMode({ agentMode: null }, project('manual'))).toBe('manual');
   });
 });
+
+/**
+ * A merge that has nothing to do must not park the card.
+ *
+ * The bug: a card merged successfully, its branch and worktree were deleted, and then a chat
+ * reply on that same card settled through the identical auto-integration path in `settle`.
+ * The second merge failed ("not a git repository"), which arrived as `error` — so the card
+ * went to `waiting-input` with an inbox item whose only real option, "Retry integration",
+ * re-ran the same impossible merge. Work that had shipped an hour earlier looked broken.
+ */
+describe('Scheduler — an integration with nothing to merge', () => {
+  function setup() {
+    const project = {
+      id: 'agent-1',
+      name: 'Checkout service',
+      path: 'C:/repo',
+      planPath: '',
+      kind: 'agent',
+      concurrency: 1,
+      useWorktrees: true,
+      instructions: '',
+    } as unknown as Project;
+    const card = {
+      id: 't1',
+      projectId: 'personal',
+      phase: '',
+      title: 'Some task cards have white and bold title',
+      status: 'in-progress',
+      sessionId: 'sess-1',
+      order: 0,
+      source: 'adhoc',
+      dependsOn: [],
+      isContract: false,
+      isScaffold: false,
+      agentProjectId: 'agent-1',
+      agentBranch: 'feat/whitening',
+      parentTaskId: null,
+      landedAt: 1_700_000_000_000,
+    } as unknown as Task;
+    const notes: string[] = [];
+    const store = {
+      getTask: (id: string) => (id === 't1' ? card : undefined),
+      getProject: (id: string) => (id === 'agent-1' ? project : undefined),
+      listProjects: () => [project],
+      getTasks: () => [card],
+      getSubtasks: () => [],
+      getTaskActivity: () => [],
+      addComment: vi.fn(),
+      listTaskLinks: () => [],
+      updateTask: (id: string, patch: Partial<Task>) => {
+        if (id === 't1') Object.assign(card, patch);
+        return card;
+      },
+      appendTaskEvent: vi.fn((_p: string, _t: string, _r: string, e: { text?: string }) => {
+        if (e?.text) notes.push(e.text);
+      }),
+      appendTokenUsage: vi.fn(),
+      getSettings: () => ({ maxAutoRetries: 0, limitJitterMs: 0, concurrency: 1 }),
+      ...INERT_ATTENTION_STORE,
+      // Overrides the inert stub: parking a failure persists its inbox item through here,
+      // so "was the human interrupted?" is exactly "was this called?".
+      saveAttention: vi.fn(),
+    } as unknown as Store;
+    const worktrees = {
+      prepare: vi.fn(),
+      inspect: vi.fn(async () => null),
+      integrate: vi.fn(async () => ({
+        status: 'nothing-to-merge',
+        branch: 'feat/whitening',
+        base: 'development',
+        reason: 'branch "feat/whitening" no longer exists in C:/repo',
+      })),
+      cleanup: vi.fn(),
+    };
+    const start = vi.fn(() => ({ runId: 'r-new' }));
+    const sessions = { start, stop: vi.fn(), send: vi.fn() } as unknown as SessionManager;
+    const scheduler = new Scheduler(
+      store,
+      sessions,
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      worktrees as unknown as WorktreeManager,
+    );
+    return { scheduler, card, notes, worktrees, start, store };
+  }
+
+  const settle = async (): Promise<void> => {
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+  };
+
+  it('notes it and leaves the card exactly where it was — no inbox item', async () => {
+    const { scheduler, card, notes, store } = setup();
+    (
+      scheduler as unknown as {
+        applyIntegrationResult: (p: Project, c: unknown, r: unknown) => void;
+      }
+    ).applyIntegrationResult(
+      { id: 'agent-1', path: 'C:/repo' } as unknown as Project,
+      {
+        taskId: 't1',
+        runId: 'r1',
+        branch: 'feat/whitening',
+        base: 'development',
+        worktree: 'C:/wt/t1',
+      },
+      {
+        status: 'nothing-to-merge',
+        branch: 'feat/whitening',
+        base: 'development',
+        reason: 'branch "feat/whitening" no longer exists in C:/repo',
+      },
+    );
+    await settle();
+
+    // The card is untouched — this is the whole fix. It must NOT reach `waiting-input`.
+    expect(card.status).toBe('in-progress');
+    expect(store.saveAttention).not.toHaveBeenCalled();
+    // And the timeline says why, so the human is not left guessing at a button that did nothing.
+    expect(notes.some((n) => n.includes('No merge was needed'))).toBe(true);
+    expect(notes.some((n) => n.includes('no longer exists'))).toBe(true);
+  });
+
+  it('refuses the Merge button without resurrecting the branch, when nothing is left to merge', async () => {
+    const { scheduler, worktrees } = setup();
+
+    const why = await scheduler.integrateNow('t1');
+
+    expect(why).toMatch(/no branch left to merge/i);
+    // `inspect` READS; `prepare` would have rebuilt the worktree and re-created the branch.
+    expect(worktrees.inspect).toHaveBeenCalledTimes(1);
+    expect(worktrees.prepare).not.toHaveBeenCalled();
+    expect(worktrees.integrate).not.toHaveBeenCalled();
+    // A refusal must give the card back rather than leaving it spinning on a merge.
+    expect(scheduler.integratingTaskIds()).toEqual([]);
+  });
+});
