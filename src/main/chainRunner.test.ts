@@ -402,6 +402,28 @@ describe('ChainRunner — re-asking the chain', () => {
     expect(started).toEqual(['b']);
   });
 
+  it('starts a released card the human has put back in To Do', () => {
+    // The reported gap, end to end. `b` was Blocked when `a` landed, so the chain could only
+    // file "Ready to start … start it whenever you like" and leave it there. Dragging it to
+    // To Do is the human answering that note — and it is the LAST such moment there is,
+    // because the landing has already happened and will never be announced again.
+    const { runner, byId, started, notes } = harness(
+      [task({ id: 'a' }), task({ id: 'b', status: 'blocked', agentProjectId: 'agent-1' })],
+      [link('a', 'b')],
+    );
+    runner.landed('a');
+    expect(started).toEqual([]);
+    expect(notes[0].body).toContain('Ready to start');
+
+    byId.get('b')!.status = 'pending';
+    runner.reconsider('card-changed');
+    expect(started).toEqual(['b']);
+    // A SECOND note: `announced` guards the release's own note about a non-event, and must
+    // not silence this one — the card has not had a note saying it started.
+    expect(notes).toHaveLength(2);
+    expect(notes[1].body).toContain('To Do');
+  });
+
   it('names the cause on the timeline — each trigger its own sentence', () => {
     const triggers: ChainTrigger[] = ['boot', 'limit-lifted', 'links-changed', 'card-changed'];
     const said = triggers.map((trigger) => {

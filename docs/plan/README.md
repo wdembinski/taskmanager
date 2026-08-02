@@ -1332,8 +1332,14 @@ phase's first commit is:
       after `pushChainLinks`, so the board has the new arrow before a `task:changed` arrives
       for the card that arrow explains. Bounded by the first decision above, which needs no
       code: the re-ask walks the cards the remaining links point at.
-- [ ] **5 — A card returning to To Do re-asks.** `pending` is the one status a release may
-      start from, so arriving at it is a moment worth re-asking at.
+- [x] **5 — A card returning to To Do re-asks.** `pending` is the one status a release may
+      start from, so arriving at it is a moment worth re-asking at. Both routes to it re-ask
+      — `task:move` (the drag, and the one that matters) and `task:setStatus` (the detail
+      pane's dropdown, which is the same gesture by another control) — each guarded on the
+      status it is actually writing. It is the human answering the "Ready to start … start
+      it whenever you like" note a release already filed on a card it found in Blocked, and
+      it is the last moment there is: the landing has happened and nothing will announce it
+      again.
 - [ ] **6 — A pending merge says what it is holding.** From the predecessor's end: the
       cards whose start is waiting on this one's branch going in.
 - [ ] **7 — "Waiting on X to merge", and the merge offered there.** The successor's chip

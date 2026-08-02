@@ -818,6 +818,15 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     if (!task) throw new Error('Task not found.');
     store.recordStatusChange(task.projectId, taskId, from, status);
     send('task:changed', { task, runId: null });
+    // Back in To Do re-asks the chain (Phase 21). `pending` is the ONE status a release may
+    // start a card from, so arriving at it can be the last thing a card was waiting for —
+    // and it is a change to the CARD, which no landing or arrow will ever mention again.
+    // Typically the card was blocked when its predecessor landed, so it holds a "Ready to
+    // start … start it whenever you like" note; putting it back in To Do is the human
+    // answering that note. The guards stay `reconsider`'s own: only a chained, assigned card
+    // that has never run starts here. The dropdown does it because it is the detail pane's
+    // drag-and-drop — the same reasoning as the JIRA transition above.
+    if (status === 'pending') scheduler.reconsiderChains('card-changed');
     return task;
   });
   handle('task:activity', async (taskId) => store.getTaskActivity(taskId));
@@ -1714,6 +1723,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     if (!task) throw new Error('Task not found.');
     store.recordStatusChange(task.projectId, taskId, restingStatus(existing), move.localStatus);
     send('task:changed', { task, runId: null });
+    // Dragged back to TO DO re-asks the chain (Phase 21) — the path a drag actually takes,
+    // and the one that matters: a card released while it sat in Blocked was told "Ready to
+    // start … start it whenever you like", and dropping it in To Do is how a human says so.
+    // `move.localStatus` rather than the column, because the column's representative status
+    // is the thing `reconsider` gates on. See `task:setStatus` for the rest of the reasoning.
+    if (move.localStatus === 'pending') scheduler.reconsiderChains('card-changed');
     return task;
   });
 
