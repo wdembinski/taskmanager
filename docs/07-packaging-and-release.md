@@ -365,8 +365,12 @@ self-update without it.
 3. Bump `package.json` `version` if the release commit hasn't; commit.
 4. Create the **draft** release (`gh release create vX.Y.Z --draft …`) and export
    `GH_TOKEN`, so the packaging steps have somewhere to upload to.
-5. `pnpm package`; smoke-test `dist/win-unpacked/VIPPER Task Manager.exe` (and,
-   ideally, run the installer on a clean machine and take one project end-to-end).
+5. `pnpm package`; then smoke-test the build **headlessly** — see
+   [`RELEASE.md`](../RELEASE.md) step 5 for the exact command. Do **not** launch
+   `dist/win-unpacked/VIPPER Task Manager.exe` on a machine somebody is using: the app takes
+   no single-instance lock, and on 2026-08-02 doing this took down the copy the user had
+   open. (Running the installer on a *clean* machine and taking one project end-to-end is
+   still the ideal check — that is a different machine, and a human doing it.)
 6. For a Linux release, `pnpm package:linux` on Linux and run the artifact checks
    above. The ABI gate is not optional — a bundle that fails it is broken in a way
    that only shows up after install.

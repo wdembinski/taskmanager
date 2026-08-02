@@ -26,6 +26,11 @@ This file is the _procedure_; that one is the _reasons_. Read it if a step surpr
 5. **Never release from a branch.** Only the integration branch (`development`, or whatever
    the project's base branch is) is releasable. If the checkout is on something else, say so
    and stop.
+6. **Never launch the app to check it.** Not `dist/win-unpacked/…exe`, not `pnpm dev`, not
+   `electron.exe .` — and not even with `--user-data-dir` pointed at a throwaway profile.
+   This machine is the machine the user works on, and their copy of this app is very often
+   open on it. Every check in this file is headless. If someone wants to look at the window,
+   they will open it themselves.
 
 ---
 
@@ -108,14 +113,31 @@ This uploads the installer, its blockmap and `latest.yml` to the draft. If it re
 `skipped publishing`, the release is not a draft any more — see rule 4 — and you must fix
 that before continuing.
 
-Then smoke-test what you built:
+Then smoke-test what you built — **without launching it** (rule 6):
 
 ```bash
-dist/win-unpacked/"VIPPER Task Manager.exe"
+ELECTRON_RUN_AS_NODE=1 "dist/win-unpacked/VIPPER Task Manager.exe" -e "
+  const path = require('path');
+  const pkg = 'dist/win-unpacked/resources/app.asar.unpacked/node_modules/better-sqlite3';
+  const Database = require(path.resolve(pkg));
+  new Database(':memory:').prepare('select 1 as ok').get();
+  console.log('packaged addon OK on ABI ' + process.versions.modules);
+"
 ```
 
-It must open, show the board, and not sit on "Loading…" (that symptom is the native-module
-ABI mismatch, and it means the gate was bypassed).
+`ELECTRON_RUN_AS_NODE` runs the packaged binary as plain Node: no window, no engine, no
+scheduler, nothing that can collide with a copy the user has open.
+
+This is a **stronger** check than opening the window ever was. The "Loading…" symptom is the
+native addon failing to load, and the addon loads lazily inside `new Database()` — so that is
+precisely what this does, against the very binary that shipped, from inside
+`app.asar.unpacked`, under the very Electron that will load it. `check:abi` compares ABI
+numbers on the copy in `node_modules`; this actually opens a database with the copy in
+`dist`. If it throws, the release is bad — stop.
+
+What it does not cover is whether the window renders. Nothing headless can, and that is an
+acceptable gap: every renderer failure this project has actually shipped came through the
+addon. If a human wants the window looked at, say in your report that it is owed.
 
 ## 6. Linux — usually a hand-back, not a step
 
@@ -166,3 +188,10 @@ Each of these cost a release. They are here so they cost nothing again.
 - **Never upload assets with `gh` if you can avoid it.** It rewrites spaces in filenames to
   dots, and `latest.yml` names the file electron-builder wrote — a mismatch is a release
   nobody can update to.
+- **A "boot smoke test" took down the app the user was working in** (2026-08-02). An agent
+  ran `timeout 12 electron.exe .` to prove the app still started. The exact mechanism was
+  never pinned down, and that is the point: `src/main/index.ts` takes no
+  `requestSingleInstanceLock`, so a second instance is a second full engine — scheduler,
+  watcher, sync poller, updater — with its own `before-quit` teardown calling
+  `sessions.stopAll()`. Pointing it at a throwaway `--user-data-dir` does not make it safe;
+  that isolates the database and nothing else. This is why rule 6 exists.
