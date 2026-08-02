@@ -43,7 +43,7 @@ plan the orchestrator could one day run on its own repo.
 | — | Interim releases v0.34–v0.50 (branch naming, re-planning, base branch, board polish, engine fixes) | ✅ shipped, not tracked here |
 | 19 | Setting a chain of execution (links, gates, the release engine) | ✅ shipped (v0.51.0) |
 | 20 | Auto-release (RELEASE.md, the per-card switch and the project's preference) | ✅ shipped (v0.52.0) |
-| 21 | Starting the next card automatically (the re-ask, and what a merge is holding) | 🚧 in progress |
+| 21 | Starting the next card automatically (the re-ask, and what a merge is holding) | ✅ shipped (v0.55.1) |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -1359,7 +1359,42 @@ phase's first commit is:
       exactly that; the pane's *Waiting on another card* block grows a **Merge VIP-3** button
       beside its **Open**, calling the same `task:integrate` the card's own branch uses, whose
       refusals already arrive as one sentence.
-- [ ] **8 — Verification.** `pnpm typecheck`, `pnpm test`, `pnpm build`, and the live pass.
+- [x] **8 — Verification.** `pnpm format`, `pnpm typecheck`, `pnpm test` (**1402 passing**,
+      2 skipped) and `pnpm build` green, plus a live pass on a throwaway profile. Driving a
+      chain by hand needs a mouse, so what was mechanised instead is the **CLI**: a
+      stand-in `claude` on `PATH` that speaks the two stream-json lines the app reads
+      (`system/init`, `result`) and commits a file in whatever worktree it is handed.
+      Everything above it is then the app's own — the real DB and its migrations, real
+      worktree prep, real merges, the real engine — and a run costs nothing and takes three
+      seconds, so a whole chain can be watched inside one boot.
+
+      **The boot re-ask, and what a merge is holding** (deliverables 2 and 6). A landed
+      card with a `stacked` and an `after-merge` arrow out of it: on boot both successors
+      started, each with *"Started on startup: everything this card was chained to wait for
+      had already finished while the app was closed"*, each in its own worktree on its own
+      branch. With auto-merge off, both then settled with the new sentence on the end of
+      the note a human already reads — *"1 card is chained to start when this merges —
+      CHAIN 4 — wire the CLI to both — so nothing downstream moves until you press it."*
+
+      **A landing under a usage limit** (deliverable 3), which is the phase's headline and
+      the one that used to need a restart. A gate seeded to lift 75 seconds after boot, and
+      a card set to merge itself: it landed at `08:56:21`, **while the gate was up**, and
+      nothing started — the release is held by `limitActive()`, exactly as the unit test
+      says. At `08:57:23` the gate's timer fired and its successor started, sixty-two
+      seconds after the landing, carrying *"Started when the usage limit lifted: everything
+      this card was chained to wait for had already finished while the limit was holding
+      all work."* One card, one start, one note.
+
+      **The chip** (deliverable 7) read on the board with both predecessors in review:
+      *"waiting on CHAIN 2 — port the parser onto them **to merge** +1"*, with the arrows
+      drawn to both.
+
+      **Left to a human**, because each is a gesture and this app is deliberately not
+      drivable by synthetic clicks: drawing an arrow and re-gating one (deliverable 4),
+      dragging a card back to To Do (deliverable 5), and pressing the **Merge** button the
+      successor's pane now offers (deliverable 7). All three are one `reconsiderChains`
+      call at an IPC handler over logic the tests drive directly; what is unverified is the
+      wiring, not the behaviour.
 
 ### Done when
 
@@ -1375,6 +1410,24 @@ phase's first commit is:
 
 - The phase ships as a **MINOR** bump (new behaviour a user notices), reached through the
   per-commit bumps each step makes; the tag is cut when this lands on `development`.
+- **Two things the live pass turned up, neither of them this phase's to fix**, recorded
+  because they are invisible in the code and were both a surprise on screen:
+  - **The boot re-ask runs before the saved limit gate is restored.** `reconsiderChains('boot')`
+    is called synchronously while the handlers are registered; `restoreLimitGate()` waits on
+    the permission broker's promise. So a restart during a live limit has a window in which
+    a chained card starts, which is how the fixture above got its card running before the
+    gate came back up. It predates this phase — `releaseReadyChains()` sat on the same line
+    — and it is self-correcting, since such a run hits the wall and the gate parks it. Moving
+    it is a change to Phase 5's startup ordering, not to this one's.
+  - **"waiting on X to merge" needs the predecessor to READ as written.** `linkSatisfied`'s
+    `stacked` question is `in-review`/`done`, or `sessionId && agentBranch` — and
+    `Task.agentBranch` holds the branch name a human TYPED when delegating, not the branch
+    the run actually used. A run that settles leaves its card in the column the human left
+    it in (usually To Do), so the chip says a plain *"waiting on X"* until the card is moved
+    to IN REVIEW, which is what the settle note asks for anyway. Coherent, and narrower than
+    this phase's own script assumed: the wording that names a merge only appears once
+    somebody has reviewed. Making a run record the branch it wrote on would close the gap
+    for every card, and is a change to what a run stores.
 
 ---
 
