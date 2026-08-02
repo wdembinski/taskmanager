@@ -1326,8 +1326,12 @@ phase's first commit is:
       has re-reserved its slots and the queues have been pumped, which is what makes a
       second start impossible. It is the one place all three lifts (the timer, *Resume
       now*, and a restart finding no saved gate) pass through.
-- [ ] **4 — The arrows changing re-asks the chain.** Erasing an arrow or re-gating one can
-      satisfy the last thing a card was waiting on. Bounded by the first decision above.
+- [x] **4 — The arrows changing re-asks the chain.** Drawing an arrow, erasing one, or
+      re-gating one can satisfy the last thing a card was waiting on, and none of the three
+      changes anything about a CARD, so nothing else would ever say so. All three re-ask
+      after `pushChainLinks`, so the board has the new arrow before a `task:changed` arrives
+      for the card that arrow explains. Bounded by the first decision above, which needs no
+      code: the re-ask walks the cards the remaining links point at.
 - [ ] **5 — A card returning to To Do re-asks.** `pending` is the one status a release may
       start from, so arriving at it is a moment worth re-asking at.
 - [ ] **6 — A pending merge says what it is holding.** From the predecessor's end: the

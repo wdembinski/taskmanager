@@ -370,6 +370,38 @@ describe('ChainRunner — re-asking the chain', () => {
     expect(started).toEqual(['b']);
   });
 
+  it('releases a card the moment an arrow is drawn from a landed predecessor', () => {
+    // The arrow arrives ALREADY satisfied, which is the ordinary way a chain is built after
+    // the fact. Nothing about either card changes, so the drawing is the only event there is.
+    const links: TaskLink[] = [];
+    const { runner, started } = harness([task({ id: 'a', landedAt: 5 }), successor('b')], links);
+    runner.reconsider('links-changed');
+    expect(started).toEqual([]);
+    links.push(link('a', 'b'));
+    runner.reconsider('links-changed');
+    expect(started).toEqual(['b']);
+  });
+
+  it('releases when a gate is loosened from after-merge to stacked', () => {
+    // `a` wrote its work hours ago and simply has not merged. Loosening the gate is the
+    // whole of what `b` was waiting for — and it is a change to the LINK, so no card-level
+    // event will ever mention it.
+    const links = [link('a', 'b')];
+    const { runner, started } = harness(
+      [
+        task({ id: 'a', status: 'in-review', sessionId: 'session-1', agentBranch: 'feat/a' }),
+        successor('b'),
+      ],
+      links,
+    );
+    runner.reconsider('links-changed');
+    expect(started).toEqual([]);
+    // Mutated in place, exactly as `store.setTaskLinkGate` re-reads it: same link id, new gate.
+    links[0].gate = 'stacked';
+    runner.reconsider('links-changed');
+    expect(started).toEqual(['b']);
+  });
+
   it('names the cause on the timeline — each trigger its own sentence', () => {
     const triggers: ChainTrigger[] = ['boot', 'limit-lifted', 'links-changed', 'card-changed'];
     const said = triggers.map((trigger) => {

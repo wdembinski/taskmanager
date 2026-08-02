@@ -1417,23 +1417,43 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // `canLink` already passed, so this is a race with another writer rather than a
     // refusal we can explain: report it as the duplicate the unique index caught.
     if (!created) return { status: 'refused', reason: 'duplicate' };
-    return { status: 'ok', links: pushChainLinks() };
+    const updated = pushChainLinks();
+    // A new arrow can arrive already satisfied — drawn FROM a card that landed hours ago,
+    // which is the ordinary way a chain gets built after the fact. Nothing about either
+    // card changes here, so without this the successor waits for the next restart. After
+    // the push, so the board has the arrow before a `task:changed` arrives for the card it
+    // explains.
+    scheduler.reconsiderChains('links-changed');
+    return { status: 'ok', links: updated };
   });
 
   handle('chain:unlink', async (linkId) => {
     store.deleteTaskLink(linkId);
-    // Erasing an arrow can satisfy the last thing a card was waiting on, which is why the
-    // chain is re-asked here (Phase 21). The rule that bounds it: the re-ask considers
+    // ONE OF SEVERAL arrows erased is the case this releases: the card was waiting on two
+    // predecessors, one of them turned out not to matter, and the other landed long ago —
+    // so erasing the arrow is the last thing that had to happen, and it is the only event
+    // there is. Which is why the chain is re-asked here (Phase 21). The rule that bounds
+    // it, and the first decision this phase took: the re-ask considers
     // only cards that STILL have an incoming arrow. Erasing a card's last arrow starts
     // nothing — a card with no arrows is not the chain's business any more, and a cleanup
-    // gesture that spawns an agent is the wrong kind of automatic.
-    return pushChainLinks();
+    // gesture that spawns an agent is the wrong kind of automatic. That bound needs no code
+    // here: `reconsider` walks the cards the REMAINING links point at.
+    const updated = pushChainLinks();
+    scheduler.reconsiderChains('links-changed');
+    return updated;
   });
 
   handle('chain:setGate', async (linkId, gate) => {
     if (!isLinkGate(gate)) throw new Error(`Unknown chain gate: ${String(gate)}`);
     store.setTaskLinkGate(linkId, gate);
-    return pushChainLinks();
+    const updated = pushChainLinks();
+    // `after-merge` loosened to `stacked` is the case this releases: the predecessor wrote
+    // its work hours ago and simply has not merged, so the gate changing is the whole of
+    // what the successor was waiting for, and nothing else on the board will ever mention
+    // it again. Tightening the other way starts nothing — the re-ask only starts a card
+    // every arrow into it now allows.
+    scheduler.reconsiderChains('links-changed');
+    return updated;
   });
 
   // The refusal comes back as a sentence rather than as a rejected promise: "a usage limit
