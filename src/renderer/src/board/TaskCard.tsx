@@ -157,9 +157,21 @@ const runBandCyan = (alpha: number): string => `rgba(${RUN_BAND_RGB}, ${alpha})`
  * turns over smoothly at the peak, so there is no step in the slope left to exaggerate.
  *
  * The peak is 0.45 — bright enough that the crest still reads as cyan once composited over
- * the card's near-black fill, where 0.30 landed on a greyish teal. It is paired with
- * `runningText`, and the two must not be changed apart: this number is what the white text
- * under the band is contrast-checked against.
+ * the card's near-black fill, where 0.30 landed on a greyish teal.
+ *
+ * It used to be paired with a `runningText` rule that lifted every line of the card to pure
+ * white so this number could be contrast-checked against something. That trade was the wrong
+ * way round: the crest is over any given word for about 1.2s in every 5.2 (see the geometry
+ * block above), and the white stayed on for the whole run — so a running card spent four
+ * seconds out of five looking like an ordinary card whose title someone had bolded and
+ * whitened for no reason. The board's text is #CCCCCC everywhere on purpose (see
+ * `main.tsx`), and a card that quietly opts out of that is the more visible defect: it reads
+ * as a styling bug on the board, where the dip reads as the sweep passing.
+ *
+ * So the text under the band is now left alone, and this number is the only lever left. At
+ * 0.45 the crest takes the card's #CCCCCC from 11.3:1 down to 2.98:1 for the ~1.2s it is
+ * overhead. If that ever reads as washing the title out rather than as light crossing it,
+ * lower the peak — not the text: 0.28 puts #CCCCCC back over 4.5:1, at the cost of the fluo.
  */
 const RUN_BAND_BELL = [0, 0.066, 0.225, 0.384, 0.45, 0.384, 0.225, 0.066, 0];
 /**
@@ -471,10 +483,10 @@ const useStyles = makeStyles({
    *
    * The peak is 45% cyan, which is what makes it read as fluo rather than as a grey-teal
    * wash — 30% composited over the card's near-black fill lands on rgb(39,97,105), a colour
-   * with very little cyan left in it. That brightening is only affordable because
-   * `runningText` lifts every line under the band to white for as long as it runs: white on
-   * the crest is 4.79:1, against 4.35:1 for the old #CCCCCC on the old dimmer crest. Both the
-   * band and the text got brighter, and the card is more legible running than it was.
+   * with very little cyan left in it. **The text underneath is not rewritten to pay for
+   * that**: the band is what moves, so the band is what has to carry the change, and a card
+   * whose title turns white for the whole run is a permanent mark bought for a transient
+   * one. See `RUN_BAND_BELL` for the contrast the crest costs and which knob buys it back.
    */
   runningBand: {
     backgroundImage: `repeating-linear-gradient(${RUN_BAND_ANGLE}deg, ${RUN_BAND_STOPS})`,
@@ -499,22 +511,20 @@ const useStyles = makeStyles({
       backgroundImage: `linear-gradient(${runBandCyan(0.26)}, ${runBandCyan(0.26)})`,
     },
   },
-  /**
-   * Every line of text sitting on the band, while it runs.
-   *
-   * Not decoration — it is what pays for the crest being bright enough to look fluo. The card
-   * is at its most colourful exactly where its text is, so the two have to move together: at
-   * 45% cyan, #CCCCCC would fall to 2.98:1 and the #ADADAD captions to 2.13:1, both far below
-   * AA. White holds 4.79:1 at the very peak and 7.84:1 through the body of the bell.
-   *
-   * Applied per element with `mergeClasses` rather than as a `& > *` rule on the band: the
-   * captions set their own `color`, and a descendant selector would tie with theirs on
-   * specificity and be settled by whichever class Griffel happened to insert last.
-   */
-  runningText: { color: '#FFFFFF' },
   // The same white the agent glyph wears — see `typeIcon` for why the type is no longer
   // one of the things the board spends colour on.
   icon: { fontSize: '18px', flexShrink: 0, display: 'flex', color: '#ffffff' },
+  /**
+   * The card's headline. Sets no `color`, deliberately: it takes
+   * `colorNeutralForeground1` — the editor grey `main.tsx` picks over Fluent's white — and it
+   * takes it on EVERY card, whatever the card is doing. There used to be a `runningText`
+   * rule that lifted a running card's whole top section to #FFFFFF, and the result was a
+   * board where some titles were white and bold and some were not, with nothing on screen
+   * to say why for the four seconds in five the running band spends dark.
+   *
+   * Nothing here should ever say "this card is working": the band, the pulsing agent glyph,
+   * the step counter and the run label all say it already, and all four stop when it stops.
+   */
   title: { lineHeight: '18px', flex: 1, minWidth: 0 },
   project: { color: tokens.colorNeutralForeground3 },
   /**
@@ -937,9 +947,6 @@ export function TaskCard({
   const cardLabel = cardRunLabel(run, isAgentAssigned(task));
   // Only the ticket badge carries the JIRA signal, so the ring's reason is legible.
   const jiraUnread = hasUnreadJira(task);
-  // Applied to every line the band runs behind, and gated on the SAME flag that draws it, so
-  // the text can never be lifted onto a band that isn't there (or left dim on one that is).
-  const onBand = run.spinner && styles.runningText;
 
   return (
     <div
@@ -1023,18 +1030,12 @@ export function TaskCard({
       <div className={mergeClasses(styles.body, run.spinner && styles.runningBand)}>
         <div className={styles.titleRow}>
           <span className={styles.icon}>{typeIcon(task)}</span>
-          <Text weight="semibold" className={mergeClasses(styles.title, onBand)}>
+          <Text weight="semibold" className={styles.title}>
             {task.title}
           </Text>
           {progress.total > 0 && (
             <Caption1
-              className={mergeClasses(
-                styles.progress,
-                stopped && styles.progressStopped,
-                // Not while stopped: that word is orange because the chain needs a human, and
-                // whitening it would delete the signal to make the band look tidier.
-                !stopped && onBand,
-              )}
+              className={mergeClasses(styles.progress, stopped && styles.progressStopped)}
               title={
                 stopped
                   ? `${progress.done} of ${progress.total} steps done — the chain has stopped at a step that needs you`
@@ -1064,7 +1065,7 @@ export function TaskCard({
           )}
           {/* Only the states the pulse cannot express — see `cardRunLabel`. */}
           {cardLabel && (
-            <Caption1 className={mergeClasses(styles.runLabel, onBand)} title={cardLabel}>
+            <Caption1 className={styles.runLabel} title={cardLabel}>
               {cardLabel}
             </Caption1>
           )}
@@ -1093,8 +1094,8 @@ export function TaskCard({
             because it is the thing that changes, and the thing you scan for. */}
         {task.statusNote && (
           <Caption1
-            className={mergeClasses(styles.statusNote, onBand)}
-            // A note with a status colour keeps it: the inline style outranks both classes, and
+            className={styles.statusNote}
+            // A note with a status colour keeps it: the inline style outranks the class, and
             // that colour is the note's meaning rather than its styling.
             style={noteColor ? { color: noteColor } : undefined}
             title={task.statusNote}
@@ -1104,16 +1105,14 @@ export function TaskCard({
         )}
 
         {display.showProjectName && projectName && (
-          <Caption1 className={mergeClasses(styles.project, onBand)}>
-            Project: {projectName}
-          </Caption1>
+          <Caption1 className={styles.project}>Project: {projectName}</Caption1>
         )}
 
         {/* The name when the sync has it, the key until then — a key is still an answer
             to "which epic", where an empty line looks like the toggle is broken. */}
         {display.showEpicName && (task.externalEpicName || task.externalParentKey) && (
           <Caption1
-            className={mergeClasses(styles.project, onBand)}
+            className={styles.project}
             title={`Epic: ${task.externalEpicName ?? task.externalParentKey}`}
           >
             Epic: {task.externalEpicName ?? task.externalParentKey}
