@@ -1317,8 +1317,9 @@ phase's first commit is:
 
 - [x] **1 — The decisions.** This entry, and the deliberate-omission comments at
       `task:assignAgent` and `chain:unlink`, written where the later steps will be editing.
-- [ ] **2 — The boot sweep becomes a general re-ask.** One method the engine can be asked
-      at any moment, with `sweep` as its boot-time caller rather than its only one.
+- [x] **2 — The boot sweep becomes a general re-ask.** `ChainRunner.reconsider(trigger)`
+      can be asked at any moment, with `sweep` as its boot-time caller rather than its only
+      one, and each trigger naming its own cause on the timeline.
 - [ ] **3 — A lifting usage limit restarts card chains.** The gate already resumes parked
       sessions and steps; a card released while the gate was up has nothing parked to
       resume, so it needs the re-ask.

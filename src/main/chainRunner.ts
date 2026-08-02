@@ -14,7 +14,9 @@
  *    `@shared/board`'s `restingStatus`). Nothing here writes `status`.
  *  - **`landedAt` is the durable fact, and the release is the perishable one.** A release
  *    that could not happen — a usage limit, an app that closed — is not lost, because the
- *    landing is on disk and {@link ChainRunner.sweep} re-asks the question on every boot.
+ *    landing is on disk and {@link ChainRunner.reconsider} can re-ask the question at any
+ *    moment: on boot, and at every other point the world changes in a way that could have
+ *    satisfied the last thing a card was waiting for.
  *  - **Never two agents on one card.** Every start goes through the scheduler's own
  *    `runTask`, which already refuses an in-flight task; the checks here are so the card
  *    does not collect a timeline note about a run that was never going to start.
@@ -54,6 +56,40 @@ export interface ChainRunnerDeps {
  */
 type ReleaseCause = 'landed' | 'written';
 
+/**
+ * Why the chain is being **re-asked** — a moment that could have made a waiting card
+ * releasable without any card of its own having just finished.
+ *
+ * Unlike a {@link ReleaseCause} there is no predecessor to point at: nothing landed and
+ * nothing was written. What changed is the world around the chain, and this is the only
+ * record of which part of it — which is why each trigger carries its own sentence.
+ */
+export type ChainTrigger = 'boot' | 'limit-lifted' | 'links-changed' | 'card-changed';
+
+/**
+ * What a card's timeline says when a re-ask started it.
+ *
+ * One sentence per trigger, all the same shape, differing only in the CAUSE — because
+ * "started automatically" with no subject is the entry that sends a human through three
+ * other cards' logs looking for what did it. There is no "ready to start" variant here as
+ * there is in {@link ChainRunner.releaseNote}: a re-ask files its note only once the run
+ * is actually under way.
+ */
+const TRIGGER_NOTE: Record<ChainTrigger, string> = {
+  boot:
+    'Started on startup: everything this card was chained to wait for had already ' +
+    'finished while the app was closed.',
+  'limit-lifted':
+    'Started when the usage limit lifted: everything this card was chained to wait for ' +
+    'had already finished while the limit was holding all work.',
+  'links-changed':
+    'Started when its chain changed: everything this card is now chained to wait for had ' +
+    'already finished.',
+  'card-changed':
+    'Started when this card came back to To Do: everything it was chained to wait for had ' +
+    'already finished.',
+};
+
 /** The statuses that mean "the human has taken this card off the chain's hands". */
 const ABANDONED: ReadonlySet<Task['status']> = new Set(['stopped', 'cancelled']);
 
@@ -66,6 +102,15 @@ export class ChainRunner {
   /**
    * Links whose successor has already been told about this release, so a predecessor that
    * runs twice does not file the same note twice.
+   *
+   * The invariant, because it reads as accidental otherwise: **this guards notes about
+   * non-events.** {@link ChainRunner.release} can file a note when nothing started, and
+   * nothing changes in the world when it does, so a second pass would say the same thing
+   * again and needs a key to stop it. {@link ChainRunner.reconsider} files its note **only
+   * after `runTask()` returned true** — and that call adds the card to `inFlight`
+   * synchronously, so the card cannot pass the loop's guards twice. It must therefore
+   * neither read nor write `announced`; writing it would silence a note the card has not
+   * had yet.
    *
    * In memory only, and deliberately: the note is a courtesy, and a restart re-announcing
    * one release is a far smaller wrong than a persisted flag that gets out of step with
@@ -141,15 +186,28 @@ export class ChainRunner {
   }
 
   /**
-   * On boot: start every chained card that became releasable while the app was shut.
+   * **Ask the chain again**: start every chained card that has become releasable since
+   * anybody last asked, whatever it was that made it so.
    *
-   * Safe to run on every single boot precisely because `landedAt` is persisted — the
-   * question "is this card's predecessor done" has the same answer today as it had when
-   * the app closed, so this cannot re-release something that already ran. It starts only
-   * cards that have **never** run (no `sessionId`, still `pending`), which is the one
-   * state that can only mean "the release never happened".
+   * Safe to run at any moment, and safe to run repeatedly, precisely because `landedAt` is
+   * persisted and because this starts only cards that have **never** run (no `sessionId`,
+   * still `pending`, not in flight) — the one state that can only mean "the release never
+   * happened". The question "is this card's predecessor done" has the same answer now as it
+   * had a second ago, so re-asking cannot re-release something that already ran.
+   *
+   * The guards are deliberately the same ones {@link ChainRunner.release} applies to a
+   * successor (`to.sessionId || inFlight`). That is not caution, it is agreement: a looser
+   * rule here would mean one card is started by a re-ask and refused by a landing depending
+   * only on which of the two happened first.
+   *
+   * Idempotency rests on the reservation rather than on any bookkeeping here.
+   * `Scheduler.startTask` adds the card to `inFlight` synchronously, before its first
+   * await, and `runTask` refuses a card already in flight — and every start this class makes
+   * goes through `deps.runTask`. So a note implies a start, and a start implies the card
+   * cannot reach the note a second time. See `announced` for why this path must stay out of
+   * it.
    */
-  sweep(): void {
+  reconsider(trigger: ChainTrigger): void {
     if (this.deps.limitActive()) return;
     const links = this.deps.links();
     if (links.length === 0) return;
@@ -160,13 +218,18 @@ export class ChainRunner {
       if (!this.startable(task)) continue;
       if (!readyToReleaseGiven(task, links, byId, null)) continue;
       if (!this.deps.runTask(task.id)) continue;
-      this.deps.addComment(
-        task.projectId,
-        task.id,
-        'Started on startup: everything this card was chained to wait for had already ' +
-          'finished while the app was closed.',
-      );
+      this.deps.addComment(task.projectId, task.id, TRIGGER_NOTE[trigger]);
     }
+  }
+
+  /**
+   * On boot: start every chained card that became releasable while the app was shut.
+   *
+   * The original re-ask, and now one caller of it among several — kept under its own name
+   * because boot is where this began and where `Scheduler` still calls it from.
+   */
+  sweep(): void {
+    this.reconsider('boot');
   }
 
   /**

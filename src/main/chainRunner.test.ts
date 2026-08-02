@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { PERSONAL_PROJECT_ID, type Task } from '@shared/model';
 import type { LinkGate, TaskLink } from '@shared/taskChain';
-import { ChainRunner, type ChainRunnerDeps } from './chainRunner';
+import { ChainRunner, type ChainRunnerDeps, type ChainTrigger } from './chainRunner';
 
 const task = (over: Partial<Task> & { id: string }): Task => ({
   projectId: PERSONAL_PROJECT_ID,
@@ -29,6 +29,14 @@ const link = (from: string, to: string, gate: LinkGate = 'after-merge'): TaskLin
 /**
  * A runner over a fake board. Everything it did is readable afterwards: which cards were
  * started, what was written on whose timeline, and what `landedAt` it stamped.
+ *
+ * Two details mirror the real engine rather than simplifying it, because the re-ask's
+ * whole safety argument rests on them:
+ *
+ *  - `runTask` **reserves**. `Scheduler.startTask` adds the task to `inFlight` before it
+ *    does anything else, so a second pass over the same card sees it as busy. A fake that
+ *    only recorded the call would let "re-asking twice starts once" pass vacuously.
+ *  - the usage limit can be **lifted** mid-test, which is the one moment step 3 is about.
  */
 function harness(
   tasks: Task[],
@@ -38,6 +46,8 @@ function harness(
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const started: string[] = [];
   const notes: Array<{ taskId: string; body: string }> = [];
+  let limit = opts.limit ?? false;
+  const reserved = new Set<string>(opts.inFlight ?? []);
   const deps: ChainRunnerDeps = {
     links: () => links,
     getTask: (id) => byId.get(id),
@@ -49,14 +59,23 @@ function harness(
     runTask: (id) => {
       if (opts.refuseRun) return false;
       started.push(id);
+      reserved.add(id);
       return true;
     },
-    limitActive: () => opts.limit ?? false,
-    inFlight: (id) => (opts.inFlight ?? []).includes(id),
+    limitActive: () => limit,
+    inFlight: (id) => reserved.has(id),
     branchOf: (t) => t.agentBranch || `orch/${t.id}`,
     now: () => 1_000,
   };
-  return { runner: new ChainRunner(deps), byId, started, notes };
+  return {
+    runner: new ChainRunner(deps),
+    byId,
+    started,
+    notes,
+    setLimit: (on: boolean) => {
+      limit = on;
+    },
+  };
 }
 
 /** The shape a chained successor has to be in for the engine to start it by itself. */
@@ -298,6 +317,80 @@ describe('ChainRunner — restart recovery', () => {
     );
     runner.sweep();
     expect(started).toEqual([]);
+  });
+});
+
+describe('ChainRunner — re-asking the chain', () => {
+  /** A card whose only predecessor landed: releasable the moment anybody asks. */
+  const overdue = () => harness([task({ id: 'a', landedAt: 5 }), successor('b')], [link('a', 'b')]);
+
+  it('starts the card once and notes it once, however often it is asked', () => {
+    const { runner, started, notes } = overdue();
+    runner.reconsider('links-changed');
+    runner.reconsider('links-changed');
+    runner.reconsider('card-changed');
+    // The reservation `runTask` made on the first pass is what refuses the rest — no
+    // bookkeeping in the runner, and so nothing that can drift out of step with the board.
+    expect(started).toEqual(['b']);
+    expect(notes).toHaveLength(1);
+  });
+
+  it('never re-runs a card that has a session behind it', () => {
+    const { runner, started, notes } = harness(
+      [task({ id: 'a', landedAt: 5 }), task({ ...successor('b'), sessionId: 'session-1' })],
+      [link('a', 'b')],
+    );
+    runner.reconsider('card-changed');
+    expect(started).toEqual([]);
+    expect(notes).toEqual([]);
+  });
+
+  it('is still an AND-join: a diamond waits for both arms', () => {
+    const { runner, byId, started } = harness(
+      [task({ id: 'a', landedAt: 5 }), task({ id: 'b' }), successor('d')],
+      [link('a', 'd'), link('b', 'd')],
+    );
+    runner.reconsider('links-changed');
+    expect(started).toEqual([]);
+    byId.get('b')!.landedAt = 6;
+    runner.reconsider('links-changed');
+    expect(started).toEqual(['d']);
+  });
+
+  it('does nothing while a limit is live, and everything once it lifts', () => {
+    const { runner, started, setLimit } = harness(
+      [task({ id: 'a', landedAt: 5 }), successor('b')],
+      [link('a', 'b')],
+      { limit: true },
+    );
+    runner.reconsider('limit-lifted');
+    expect(started).toEqual([]);
+    setLimit(false);
+    runner.reconsider('limit-lifted');
+    expect(started).toEqual(['b']);
+  });
+
+  it('names the cause on the timeline — each trigger its own sentence', () => {
+    const triggers: ChainTrigger[] = ['boot', 'limit-lifted', 'links-changed', 'card-changed'];
+    const said = triggers.map((trigger) => {
+      const { runner, notes } = overdue();
+      runner.reconsider(trigger);
+      return notes[0].body;
+    });
+    // "Started automatically" with no subject is what sends a human hunting; every one of
+    // these has to say what did it, and no two may say the same thing.
+    expect(new Set(said).size).toBe(triggers.length);
+    expect(said[0]).toContain('startup');
+    expect(said[1]).toContain('usage limit');
+    expect(said[2]).toContain('chain changed');
+    expect(said[3]).toContain('To Do');
+  });
+
+  it('sweep is that same question, asked at boot', () => {
+    const { runner, started, notes } = overdue();
+    runner.sweep();
+    expect(started).toEqual(['b']);
+    expect(notes[0].body).toContain('startup');
   });
 });
 
