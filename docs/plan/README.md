@@ -1340,8 +1340,15 @@ phase's first commit is:
       it whenever you like" note a release already filed on a card it found in Blocked, and
       it is the last moment there is: the landing has happened and nothing will announce it
       again.
-- [ ] **6 — A pending merge says what it is holding.** From the predecessor's end: the
-      cards whose start is waiting on this one's branch going in.
+- [x] **6 — A pending merge says what it is holding.** From the predecessor's end: the
+      cards whose start is waiting on this one's branch going in. `ChainRunner.heldByMerge`
+      answers it — outgoing `after-merge` links whose successor has never run, while this
+      card's `landedAt` is still null — and the sentence goes on the end of the note a human
+      already reads to learn the branch was not merged. "Merge it when you get to it" and
+      "three cards are parked until you do" are different decisions, and nothing else told
+      them apart. Asked of the card that OWNS the branch, so a plan's steps answer through
+      their parent; `stacked` successors are excluded, because the merge is not what they
+      were ever waiting for.
 - [ ] **7 — "Waiting on X to merge", and the merge offered there.** The successor's chip
       names the card and gives you the button, instead of sending you to find it.
 - [ ] **8 — Verification.** `pnpm typecheck`, `pnpm test`, `pnpm build`, and the live pass.

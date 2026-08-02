@@ -2955,12 +2955,27 @@ export class Scheduler {
         }
         this.attempts.delete(run.taskId);
         this.readyToIntegrate.set(run.taskId, { projectId: project.id, ...ctx });
+        // What this unmerged branch is HOLDING, said in the one note a human already reads
+        // to learn it was not merged. "Merge when you get to it" and "three cards are
+        // parked until you do" are different decisions, and only this sentence tells them
+        // apart. Asked of `owner`, the card that owns the branch, because that is the id
+        // the chain is drawn between — a step is never linked, so a plan's steps all point
+        // at their parent, exactly as `chain.workWritten` was handed it above. No de-dup is
+        // needed: `settle` runs once per run, so this lands once per thing there is to press.
+        const held = owner ? this.chain.heldByMerge(owner.id) : [];
+        const holding =
+          held.length > 0
+            ? ` ${held.length} ${held.length === 1 ? 'card is' : 'cards are'} chained to ` +
+              `start when this merges — ${held.join(', ')} — so nothing downstream moves ` +
+              `until you press it.`
+            : '';
         this.noteRun(
           project.id,
           run.taskId,
           run.runId,
           `Finished on branch "${ctx.branch}". It has NOT been merged into ${ctx.base} — ` +
-            `review it, then choose Merge on the card. The worktree is kept at ${ctx.worktree}.`,
+            `review it, then choose Merge on the card. The worktree is kept at ` +
+            `${ctx.worktree}.${holding}`,
         );
         // Same split as the merged path: a STEP must reach `done` or the chain machinery
         // breaks (`hasPendingSibling`, `advanceSubtasks` and `chainInFlight` all read it

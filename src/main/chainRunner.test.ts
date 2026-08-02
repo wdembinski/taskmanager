@@ -441,6 +441,43 @@ describe('ChainRunner — re-asking the chain', () => {
   });
 });
 
+describe('ChainRunner — what a pending merge is holding', () => {
+  it('names the cards chained behind an unmerged branch', () => {
+    const { runner } = harness(
+      [task({ id: 'a' }), successor('b'), successor('c')],
+      [link('a', 'b'), link('a', 'c')],
+    );
+    expect(runner.heldByMerge('a')).toEqual(['b', 'c']);
+  });
+
+  it('holds nothing once the branch has landed', () => {
+    const { runner } = harness([task({ id: 'a', landedAt: 5 }), successor('b')], [link('a', 'b')]);
+    expect(runner.heldByMerge('a')).toEqual([]);
+  });
+
+  it('ignores a stacked successor — the merge is not what it waits for', () => {
+    const { runner } = harness([task({ id: 'a' }), successor('b')], [link('a', 'b', 'stacked')]);
+    expect(runner.heldByMerge('a')).toEqual([]);
+  });
+
+  it('ignores a successor that has already run, or is running now', () => {
+    const { runner } = harness(
+      [task({ id: 'a' }), task({ ...successor('b'), sessionId: 'session-1' }), successor('c')],
+      [link('a', 'b'), link('a', 'c')],
+      { inFlight: ['c'] },
+    );
+    expect(runner.heldByMerge('a')).toEqual([]);
+  });
+
+  it('names the ticket rather than the title when the card has a key', () => {
+    const { runner } = harness(
+      [task({ id: 'a' }), { ...successor('b'), title: 'Rework the parser', externalKey: 'VIP-3' }],
+      [link('a', 'b')],
+    );
+    expect(runner.heldByMerge('a')).toEqual(['VIP-3 — Rework the parser']);
+  });
+});
+
 describe('ChainRunner — Release now (the human override)', () => {
   it('starts a blocked card and records that it went ahead of its chain', () => {
     const { runner, started, notes } = harness(

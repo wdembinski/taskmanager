@@ -225,6 +225,40 @@ export class ChainRunner {
   }
 
   /**
+   * The cards whose only outstanding condition is that **this** card's branch merges —
+   * named, because the one caller is writing a sentence to a human.
+   *
+   * The mirror of {@link ChainRunner.release}, asked one moment earlier: a run has finished
+   * on a branch nobody has merged, and the note that says so is the last thing anyone reads
+   * before deciding whether pressing Merge is urgent. Without this it says only that the
+   * branch is unmerged; the fact that three other cards cannot start until it is lives
+   * nowhere a human would look.
+   *
+   * `landedAt` still null is the whole question — once it is set every `after-merge` gate
+   * here is satisfied and this card is holding nothing. `stacked` successors are excluded
+   * for the same reason: their gate was the work being WRITTEN, which has already happened,
+   * so the merge is not what they are waiting for. And a successor that has a `sessionId`
+   * or is in flight is not waiting either — those are exactly the guards `release` applies
+   * before it starts one, so the two cannot disagree about who is held.
+   *
+   * Says nothing about the successors' OTHER arrows: a card in a diamond is listed here
+   * even when a second predecessor is also outstanding. It is still true that it cannot
+   * start until this merges, which is what the sentence claims.
+   */
+  heldByMerge(taskId: string): string[] {
+    const from = this.deps.getTask(taskId);
+    if (!from || from.landedAt != null) return [];
+    const held: string[] = [];
+    for (const link of outgoingLinks(this.deps.links(), taskId)) {
+      if (link.gate !== 'after-merge') continue;
+      const to = this.deps.getTask(link.toTaskId);
+      if (!to || to.sessionId || this.deps.inFlight(to.id)) continue;
+      held.push(name(to));
+    }
+    return held;
+  }
+
+  /**
    * The branch a card's worktree should be **cut from**, or undefined for the usual case.
    *
    * Only a `stacked` link answers anything here: its whole promise is that the successor
