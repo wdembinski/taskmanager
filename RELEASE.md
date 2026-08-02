@@ -118,10 +118,10 @@ Then smoke-test what you built — **without launching it** (rule 6):
 ```bash
 ELECTRON_RUN_AS_NODE=1 "dist/win-unpacked/VIPPER Task Manager.exe" -e "
   const path = require('path');
-  const pkg = 'dist/win-unpacked/resources/app.asar.unpacked/node_modules/better-sqlite3';
+  const pkg = 'dist/win-unpacked/resources/app.asar/node_modules/better-sqlite3';
   const Database = require(path.resolve(pkg));
-  new Database(':memory:').prepare('select 1 as ok').get();
-  console.log('packaged addon OK on ABI ' + process.versions.modules);
+  const row = new Database(':memory:').prepare('select 1 as ok').get();
+  console.log('packaged addon OK on ABI ' + process.versions.modules, row);
 "
 ```
 
@@ -130,10 +130,18 @@ scheduler, nothing that can collide with a copy the user has open.
 
 This is a **stronger** check than opening the window ever was. The "Loading…" symptom is the
 native addon failing to load, and the addon loads lazily inside `new Database()` — so that is
-precisely what this does, against the very binary that shipped, from inside
-`app.asar.unpacked`, under the very Electron that will load it. `check:abi` compares ABI
-numbers on the copy in `node_modules`; this actually opens a database with the copy in
-`dist`. If it throws, the release is bad — stop.
+precisely what this does, against the very binary that shipped, under the very Electron that
+will load it. `check:abi` compares ABI numbers on the copy in `node_modules`; this actually
+opens a database with the copy in `dist`. If it throws, the release is bad — stop.
+
+**Require it through `app.asar`, not through `app.asar.unpacked`.** Only the compiled
+`.node` is unpacked; `better-sqlite3`'s own dependencies — `bindings` above all — stay inside
+the archive. Requiring the unpacked directory directly therefore dies with
+`Cannot find module 'bindings'` on a perfectly good build, because the sibling it wants is in
+the asar it just stepped outside of. Asking for the asar path is also what the app itself
+does: Electron resolves the JavaScript from inside the archive and redirects the `.node` to
+`app.asar.unpacked` on its own. This file said `app.asar.unpacked` until v0.55.5 and so
+failed every healthy build it was run against.
 
 What it does not cover is whether the window renders. Nothing headless can, and that is an
 acceptable gap: every renderer failure this project has actually shipped came through the
