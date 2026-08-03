@@ -44,6 +44,8 @@ plan the orchestrator could one day run on its own repo.
 | 19 | Setting a chain of execution (links, gates, the release engine) | ✅ shipped (v0.51.0) |
 | 20 | Auto-release (RELEASE.md, the per-card switch and the project's preference) | ✅ shipped (v0.52.0) |
 | 21 | Starting the next card automatically (the re-ask, and what a merge is holding) | ✅ shipped (v0.55.1) |
+| — | Interim releases v0.56–v0.57 (a Stop button everywhere, the Add-task dialog's options) | ✅ shipped, not tracked here |
+| 22 | Attachments in the task and its steps | 🔨 in progress |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -1428,6 +1430,123 @@ phase's first commit is:
     this phase's own script assumed: the wording that names a merge only appears once
     somebody has reviewed. Making a run record the branch it wrote on would close the gap
     for every card, and is a change to what a run stores.
+
+---
+
+## Phase 22 — Attachments in the task and its steps
+
+**Goal.** Let a card carry the files the work is *about*. A brief is prose today, so
+anything that is not prose — the screenshot of the bug, the mockup the layout has to match,
+the CSV that reproduces it, the log — is either described in words or pasted as a path to a
+file only the person who wrote it can see. An agent handed that brief gets the description
+of a screenshot. So: attach files to a task and to its steps, keep the bytes where the app
+keeps everything else, and hand the agent the actual files.
+
+### The shape of the design
+
+Four decisions, each following something the codebase already does rather than inventing a
+second way of doing it.
+
+**A `task_attachments` child table, not a column on `tasks`.** It follows `task_links`
+([`store.ts:625`](../../src/main/store.ts)) exactly: a real foreign key
+`REFERENCES tasks(id) ON DELETE CASCADE` — the pragma is on at `store.ts:420`, so the
+cascade actually fires — an index on `taskId`, and the house comment *"A NEW table, so
+nothing to migrate"*. Deleting a card cannot leave an attachment row pointing at nothing,
+which a JSON array on the row would do silently and forever. It also keeps `tasks` out of
+the change entirely, and that matters here for a specific reason: `insertTask`'s explicit
+column list (`store.ts:925`) is the trap that silently dropped `projectTagId` in v0.57.0 —
+a column added later and only ever set by an `UPDATE`, so a card created already filed lost
+its project between the form and the row. A new column would be a new chance to repeat it;
+a new table is not.
+
+Because a step is itself a task row (`parentTaskId`), attaching to a step needs no second
+table and no second shape — the same row, hung off a different `taskId`.
+
+**No `path` column.** The absolute path is `join(userData, 'attachments', taskId, name)` —
+derivable from the two things the row already holds, so it cannot drift. A stored path is a
+fact about *this* machine and *this* Windows user, and the profile is a directory a human
+can copy: restore it under a different account and every stored path is a lie, while a
+derived one is right by construction. `UNIQUE (taskId, name)` then does two jobs at once —
+it is what makes `@name` unambiguous when an agent is told what it has, *and* what makes the
+on-disk filename collision-free, so one constraint is both the addressing rule and the
+storage rule instead of two rules that can disagree.
+
+**The renderer never learns a filesystem path.** `TaskAttachment` carries no path at all.
+The renderer opens a file by asking main — `attachment:open(id)` — and previews an image at
+`vipper-attachment://a/<id>`. The protocol handler resolves that id *through the store*, so
+what it serves is a row that exists or nothing; there is no string from the renderer that
+reaches the filesystem, and path traversal is impossible by construction rather than by
+validation. That preserves the rule already stated at
+[`ipc.ts:680`](../../src/shared/ipc.ts) for JIRA attachments — the renderer never ships
+bytes over IPC, main reads and uploads them — and extends it in the direction that was left
+open: the paths JIRA's draft carries come from main's own picker (`jira:pickAttachments`,
+`ipc.ts:696`), never typed by the renderer, and here not even that much is handed back. The
+window is `contextIsolation: true` with `nodeIntegration: false` (`index.ts:50`), which is
+the same posture; a custom scheme is how a locked-down renderer is *allowed* to see a local
+file, and it has to be registered as privileged before the app is ready.
+
+**One flat list and a push event, not a per-card fetch.** `chain:links` / `chain:changed`
+([`ipc.ts:642`](../../src/shared/ipc.ts), [`:813`](../../src/shared/ipc.ts)) is the
+precedent, and the reason it gives applies here verbatim: a JIRA sync rewrites whole task
+rows on every poll, so anything hung off `Task` gets clobbered — the attachments have to
+live somewhere a sync cannot reach, and be replaced whole rather than patched.
+`MyTasks.tsx:229-236` already seeds five whole-board lists in one `Promise.all`; this is a
+sixth, and costs one more entry in an array.
+
+### Deliverables
+
+- [x] **1 — The shape of the design.** This entry: the four decisions above, each named
+      against the thing in the codebase it copies, written before anything is built so the
+      later steps are implementing a decision rather than taking one.
+- [ ] **2 — Verified facts this rests on.** The file:line claims above, re-read and
+      confirmed against the working tree — the design is only as good as the precedents it
+      cites, and a stale line number is a decision nobody actually checked.
+- [ ] **3 — The contract and the store.** `TaskAttachment` in `src/shared/` before either
+      side uses it (Conventions, *contract first*), the `task_attachments` table and its
+      index, and the store methods over them.
+- [ ] **4 — Copy the bytes into app data.** Main picks the files, copies them under
+      `userData/attachments/<taskId>/`, and writes the row. A copy, not a reference: the
+      file the human picked can be moved, renamed or deleted the minute after they picked
+      it, and a brief that points at a file that is gone is worse than one that never had it.
+- [ ] **5 — Serve attachment images over a protocol.** The `vipper-attachment` scheme,
+      registered privileged before the app is ready, resolving `a/<id>` through the store.
+- [ ] **6 — Attach from the card details.** The pane grows the list, the picker, the
+      previews and the delete.
+- [ ] **7 — Attach to a step brief.** The same UI against a step's row, which the schema
+      already allows for free.
+- [ ] **8 — Stage attachments in the Add dialog.** Files chosen before the card exists, so
+      they land the moment it does — the same problem the dialog's ticket already solves by
+      writing the card first (`ipc.ts:718`, `adoptTaskId`).
+- [ ] **9 — Hand the attachment legend to the agent.** The prompt says what is attached and
+      where, so `@name` in a brief resolves to a file the agent can actually open. This is
+      the point of the phase; everything above it is plumbing.
+- [ ] **10 — Sequencing.** The order the above lands in, and what each step may assume.
+- [ ] **11 — Verification.** `pnpm format`, `pnpm typecheck`, `pnpm test`, `pnpm build`,
+      plus whatever can be driven headlessly — never by launching the app on this machine.
+- [ ] **12 — Release.**
+
+### Done when
+
+- A file attached to a card survives a restart, and deleting the card takes both the row and
+  the bytes with it.
+- A JIRA sync leaves a card's attachments exactly where they were.
+- An image attached to a card is previewed in the pane, and no filesystem path ever crosses
+  into the renderer.
+- A step's brief can name an attachment, and the agent running that step opens the real file.
+- `pnpm typecheck`, `pnpm test` and `pnpm build` are green.
+
+**Notes.**
+
+- The phase ships as a **MINOR** bump (new behaviour a user notices), reached through the
+  per-commit bumps each step makes ([`CONTRIBUTING.md`](../../CONTRIBUTING.md) §4).
+- **No tag and no release on this branch.** [`RELEASE.md`](../../RELEASE.md) rule 5 forbids
+  releasing from anything but the integration branch, and a tag pushed from a feature branch
+  cannot be moved afterwards. Same standing rule as Phase 21.
+- Every step of this plan shares the one branch `feat/attachments-in-the-task-subtasks`, so
+  each step's session reads this entry to find what the previous one left it.
+- The worktree this plan runs in has **no `node_modules`** — the first step that touches
+  `src/` pays for a `pnpm install` before any gate can be run. Steps 1 and 2 change only
+  this file, so there is nothing for a gate to say about them.
 
 ---
 
