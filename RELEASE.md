@@ -20,9 +20,13 @@ This file is the _procedure_; that one is the _reasons_. Read it if a step surpr
 3. **Stop and ask** — using the `@@NEEDS_INPUT@@` contract — the moment you need a
    credential, a decision about the version number, or a force-push. A release that waited
    for an answer costs an hour; a half-published one costs a day.
-4. **Promote the draft LAST**, after every platform's artifacts are on it. electron-builder
-   refuses to write to a release that is already published, and it says _skipped_ while
-   exiting 0 — so a Linux build that uploaded nothing looks exactly like one that worked.
+4. **Promote the draft LAST — but DO promote it.** Last, because electron-builder refuses to
+   write to a published release and says _skipped_ while exiting 0, so anything still to
+   upload must go up first. And do it, because a release nobody can install is not a release:
+   four green drafts once piled up here unpublished, each waiting on a platform build that
+   was never going to happen on its own. Rules 1 and 3 are the only things that may leave a
+   release unpublished. A platform this machine cannot build for is **not** one of them —
+   ship what you have and say what is owed (see §6).
 5. **Never release from a branch.** Only the integration branch (`development`, or whatever
    the project's base branch is) is releasable. If the checkout is on something else, say so
    and stop.
@@ -153,9 +157,20 @@ addon. If a human wants the window looked at, say in your report that it is owed
 `/mnt/c`, whose `node_modules` holds win32 prebuilds). Unless you are already running there
 with a working Node 22 toolchain, do **not** try to improvise it.
 
-Instead: leave the release a **draft**, and say plainly in your summary that the Linux
-artifacts are owed and the draft must not be promoted until they are up. That is a correct,
-complete outcome for an unattended run.
+Instead: **publish the Windows release anyway**, and say plainly in your summary that the
+Linux artifacts are owed. Windows users get the release; the Linux build catches up in a
+later version.
+
+This used to say the opposite — leave it a draft until Linux is up — and the result was four
+green releases nobody could install, because the Linux pass never came. An unattended run
+holding a finished release hostage to a build it cannot perform is not caution, it is a
+release that silently never happened.
+
+Publishing Windows-only does cost something, so know what you are choosing: electron-builder
+cannot upload into a published release, so Linux artifacts for **that version** can no longer
+go up the normal way. Attaching them afterwards means `gh release upload`, which mangles
+filenames containing spaces — check the name against `latest-linux.yml` if you try it. The
+usual answer is simply to ship Linux in the next version instead.
 
 If you _are_ on Linux, follow the artifact checks in
 [`docs/07`](docs/07-packaging-and-release.md#building-for-linux) — the ELF check and the
@@ -163,7 +178,8 @@ If you _are_ on Linux, follow the artifact checks in
 
 ## 7. Promote
 
-Only once every platform that this release is for has its artifacts on the draft:
+Not optional, and not conditional on Linux (rule 4, §6). Once every artifact you are
+**able** to build is on the draft:
 
 ```bash
 gh release edit vX.Y.Z --draft=false
@@ -171,6 +187,10 @@ gh release edit vX.Y.Z --draft=false
 
 Confirm first that `latest.yml` (and `latest-linux.yml`, if Linux shipped) sit beside the
 installers. Without them, no installed app will ever see this release.
+
+The only ways to finish without publishing are a failed gate (rule 1) or a decision you had
+to stop and ask about (rule 3). Both are reportable outcomes. "Left as a draft because
+something else is owed" is not — say what is owed in your report instead.
 
 ## 8. Report
 

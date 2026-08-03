@@ -51,4 +51,24 @@ describe('buildReleasePrompt', () => {
     const prompt = buildReleasePrompt(base);
     expect(prompt).toMatch(/failing[\s\S]*gate ENDS the release/);
   });
+
+  // The rule the feature turned out to need: four green releases piled up unpublished,
+  // each one waiting on a platform build that was never going to happen unattended.
+  it('requires an automatic release to end published, not as a draft', () => {
+    const prompt = buildReleasePrompt(base);
+    expect(prompt).toMatch(/Finish it/);
+    expect(prompt).toMatch(/a draft[\s\S]*is NOT a complete outcome/);
+    expect(prompt).toMatch(/publish it/i);
+  });
+
+  // ...without turning "publish" into "publish over a red gate".
+  it('still lets a gate or a missing approval stop it short of publishing', () => {
+    const prompt = buildReleasePrompt(base);
+    expect(prompt).toMatch(/Gates and[\s\S]*missing approvals are the only things that may stop you/);
+  });
+
+  // Rule 4 of the repo's own file: uploads cannot go into a published release.
+  it('keeps promotion last even while insisting on it', () => {
+    expect(buildReleasePrompt(base)).toMatch(/Publishing LAST is still right/);
+  });
 });

@@ -13,6 +13,12 @@
  * the working tree in `project.path` can be sitting on something else entirely, and a
  * release cut from there would ship the wrong code.
  *
+ * The one thing it does assert over the file is that an automatic release must END
+ * PUBLISHED. That is not a mechanic, it is what the human asked for when they turned the
+ * switch on — "release this" cannot mean "prepare something and leave it". The distinction
+ * is worth holding on to: the repo still decides every step of HOW, and the app decides
+ * only when a release happens and that it finishes.
+ *
  * Pure — the caller reads the store, git and the disk, and passes plain values.
  */
 
@@ -74,15 +80,28 @@ export function buildReleasePrompt(ctx: ReleaseContext): string {
   }
 
   lines.push(
-    'Two rules that outrank anything convenience suggests:',
+    'Three rules that outrank anything convenience suggests:',
     '',
     `- If ${ctx.releaseDoc} has a verification gate (tests, typecheck, a build), a failing`,
     '  gate ENDS the release. Report what failed; do not tag or publish around it.',
     '- If a step needs a decision, a credential, or an approval you do not have, stop and',
     '  ask instead of guessing. A half-published release is worse than one that waited.',
+    // The rule this whole feature turned out to need. An automatic release that stops at a
+    // draft has not released anything: four of them accumulated unpublished on this project
+    // before anyone noticed, each one green, each one waiting on a platform build that was
+    // never going to happen unattended. "Publish unless a GATE failed" is the line — a
+    // platform you cannot build for is not a gate, it is a fact to report.
+    '- **Finish it.** This release was asked for automatically, so a draft, an unpublished',
+    '  tag or an artifact-less release is NOT a complete outcome — publish it. Gates and',
+    `  missing approvals are the only things that may stop you. If ${ctx.releaseDoc} would`,
+    '  leave it unpublished for any other reason — a platform this machine cannot build for,',
+    '  artifacts owed by someone else — publish anyway and say plainly in your reply what is',
+    '  still owed. Publishing LAST is still right: if the file says to attach artifacts',
+    '  before promoting, do that first, then promote.',
     '',
     'When you are done, reply with what you released (the version, the tag, where it was',
-    'published) or — if you stopped — exactly which step you stopped at and why.',
+    'published, and whether it is published or still a draft and why) or — if you stopped —',
+    'exactly which step you stopped at and why.',
   );
 
   return lines.join('\n');
