@@ -11,6 +11,11 @@ dist/
 *.sqlite
 *.sqlite-journal
 
+# Headless verification work dirs (scripts/verify-*.mjs). Inside the repo because their
+# bundles keep better-sqlite3 external and so need node_modules on the resolution path;
+# removed on the way out, but `--keep` leaves one behind on purpose.
+/.verify-*/
+
 # Local environment files (NEVER commit real secrets)
 .env
 .env.local
