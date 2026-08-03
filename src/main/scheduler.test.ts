@@ -20,6 +20,7 @@ import {
   type Schedulable,
 } from './scheduler';
 import { AGREE_SENTINEL, OBJECT_SENTINEL, PROPOSE_SENTINEL } from './attention';
+import { MAX_PLAN_STEPS } from '@shared/board';
 import type { PermissionMode } from '@shared/session';
 import type { Project, Task } from '@shared/model';
 import type { LimitState } from '@shared/limit';
@@ -1818,7 +1819,7 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
     });
 
     it('caps on the card’s total, not on the round', async () => {
-      const many = Array.from({ length: 19 }, (_, i) => ({
+      const many = Array.from({ length: MAX_PLAN_STEPS - 1 }, (_, i) => ({
         id: `s${i}`,
         title: `Old ${i + 1}`,
         status: 'done' as const,
@@ -2001,14 +2002,25 @@ describe('Scheduler.replanCard (Phase 18)', () => {
     expect(request.prompt).toContain('ExitPlanMode');
   });
 
-  it('tells the agent which steps are already on the card, and how much room is left', () => {
+  it('tells the agent which steps are already on the card', () => {
     const h = setupReplan({ steps: [{ title: 'Scaffold the store' }, { title: 'Wire the IPC' }] });
     h.scheduler.replanCard('c1', 'Now add the sync');
     const { prompt } = h.start.mock.calls[0][0] as { prompt: string };
     expect(prompt).toContain('Scaffold the store');
     expect(prompt).toContain('Wire the IPC');
     expect(prompt).toContain('Now add the sync');
-    expect(prompt).toContain('18 step(s)'); // MAX_PLAN_STEPS (20) minus the two it has
+    // The bound is a runaway guard, not a budget: with 198 slots left, quoting the number
+    // would read as permission to write a hundred more steps.
+    expect(prompt).not.toMatch(/step\(s\)/);
+  });
+
+  it('quotes the room left only once the card is genuinely close to the bound', () => {
+    const h = setupReplan({
+      steps: Array.from({ length: MAX_PLAN_STEPS - 3 }, (_, i) => ({ title: `Old ${i + 1}` })),
+    });
+    h.scheduler.replanCard('c1');
+    const { prompt } = h.start.mock.calls[0][0] as { prompt: string };
+    expect(prompt).toContain('At most 3 step(s)');
   });
 
   it('does NOT write the plan mode back to the card, so later runs are unaffected', () => {
@@ -2059,7 +2071,10 @@ describe('Scheduler.replanCard (Phase 18)', () => {
 
   it('refuses once the card is full', () => {
     const h = setupReplan({
-      steps: Array.from({ length: 20 }, (_, i) => ({ id: `s${i}`, title: `Step ${i}` })),
+      steps: Array.from({ length: MAX_PLAN_STEPS }, (_, i) => ({
+        id: `s${i}`,
+        title: `Step ${i}`,
+      })),
     });
     expect(h.scheduler.replanCard('c1')).toMatchObject({ reason: 'chain-full' });
   });
@@ -3164,8 +3179,11 @@ describe('Scheduler — which runs owe a plan', () => {
     const scheduler = new Scheduler(store, sessions, vi.fn(), vi.fn(), vi.fn(), vi.fn(), vi.fn());
     /** The run object the scheduler just created, straight off its private map. */
     const runFor = (runId: string) =>
-      (scheduler as unknown as { runs: Map<string, { permissionMode?: string; expectsPlan?: boolean }> })
-        .runs.get(runId);
+      (
+        scheduler as unknown as {
+          runs: Map<string, { permissionMode?: string; expectsPlan?: boolean }>;
+        }
+      ).runs.get(runId);
     return { scheduler, card, runFor };
   }
 

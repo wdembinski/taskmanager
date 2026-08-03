@@ -278,6 +278,16 @@ export function buildAgentTaskPrompt(
 }
 
 /**
+ * How few slots must remain before a re-plan is told the number at all.
+ *
+ * `MAX_PLAN_STEPS` is a runaway guard, not a budget, so its remainder is usually a number
+ * no plan would ever reach — quoting it would read as permission to write a hundred steps.
+ * Below this, the remainder is a real constraint on what the agent can propose, and staying
+ * silent about it would let the guard silently drop the tail of its plan instead.
+ */
+const SLOTS_WORTH_SAYING = 20;
+
+/**
  * The prompt for a **re-planning turn** (Phase 18): the human asking a card whose steps
  * are finished to work out what comes next.
  *
@@ -289,9 +299,13 @@ export function buildAgentTaskPrompt(
  *     step did; it has no idea which titles the card carries. Told them, it plans the
  *     remainder — untold, it re-proposes the work it just finished, and `stepsToAppend`
  *     drops the lot as duplicates, which reads to the human as "nothing happened".
- *  2. **How many slots are left.** `MAX_PLAN_STEPS` caps the CARD, so a late round has
- *     less room than the first one. Better the agent chooses the surviving steps than
- *     that the cap truncates its tail arbitrarily.
+ *  2. **How many slots are left — but only when that is nearly none.** `MAX_PLAN_STEPS` is
+ *     a runaway guard on the CARD, set far above any plan a human would approve, so on
+ *     almost every round the number is not a constraint and saying it is noise: told it may
+ *     write 187 steps, an agent learns nothing. Only once the card is genuinely close to the
+ *     bound does it matter, and then it matters a lot — better the agent chooses which steps
+ *     survive than that the guard truncates its tail arbitrarily. See
+ *     {@link SLOTS_WORTH_SAYING}.
  *  3. **That it must finish with `ExitPlanMode`.** Nothing becomes a step otherwise: a
  *     plan written as prose in the reply is exactly the failure this feature fixes.
  *
@@ -322,9 +336,14 @@ export function buildReplanPrompt(
     `Look at the current state of the code before you plan — the steps above have already`,
     `landed, so plan against what is actually there now, not against what you remember.`,
     '',
-    `Propose ONLY the work that remains. At most ${options.slotsLeft} step(s) — if more`,
-    `than that is genuinely needed, plan the most valuable ones now and say what you left`,
-    `out. If nothing meaningful is left to do, say so plainly instead of inventing work.`,
+    `Propose ONLY the work that remains.`,
+    ...(options.slotsLeft <= SLOTS_WORTH_SAYING
+      ? [
+          `At most ${options.slotsLeft} step(s) — if more than that is genuinely needed, plan`,
+          `the most valuable ones now and say what you left out.`,
+        ]
+      : []),
+    `If nothing meaningful is left to do, say so plainly instead of inventing work.`,
     '',
     ...planHeadingLines(),
     ...planScopeLines(),

@@ -64,7 +64,9 @@ describe('buildReleasePrompt', () => {
   // ...without turning "publish" into "publish over a red gate".
   it('still lets a gate or a missing approval stop it short of publishing', () => {
     const prompt = buildReleasePrompt(base);
-    expect(prompt).toMatch(/Gates and[\s\S]*missing approvals are the only things that may stop you/);
+    expect(prompt).toMatch(
+      /Gates and[\s\S]*missing approvals are the only things that may stop you/,
+    );
   });
 
   // Rule 4 of the repo's own file: uploads cannot go into a published release.

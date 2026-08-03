@@ -230,8 +230,20 @@ describe('splitPlanIntoSteps', () => {
     expect(splitPlanIntoSteps('   \n  ')).toEqual([]);
   });
 
+  // The bound is a runaway guard, not a product rule: a plan that argued for thirty steps
+  // was approved by a human, and thirty steps are what the card gets.
+  it('keeps every step of a long plan', () => {
+    const plan = Array.from({ length: 30 }, (_, i) => `## Wire panel ${i + 1}\nbody`).join('\n\n');
+    const steps = splitPlanIntoSteps(plan);
+    expect(steps).toHaveLength(30);
+    expect(steps[29].title).toBe('Wire panel 30');
+  });
+
   it('caps runaway plans', () => {
-    const plan = Array.from({ length: 40 }, (_, i) => `## Step ${i + 1}\nbody`).join('\n\n');
+    const plan = Array.from(
+      { length: MAX_PLAN_STEPS + 40 },
+      (_, i) => `## Wire panel ${i + 1}\nbody`,
+    ).join('\n\n');
     expect(splitPlanIntoSteps(plan)).toHaveLength(MAX_PLAN_STEPS);
   });
 });

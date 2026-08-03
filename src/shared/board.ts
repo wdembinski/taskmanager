@@ -20,16 +20,23 @@ const RUN_STATUSES: ReadonlySet<TaskStatus> = new Set([
 ]);
 
 /**
- * Upper bound on the steps ONE CARD may carry, across every planning round.
+ * Runaway guard on the steps ONE CARD may carry, across every planning round.
+ *
+ * This is **not** a product rule about how much work a card is allowed to be. An approved
+ * plan is a human decision: if it argued for forty steps and someone approved it, forty
+ * steps are what the card gets. The bound exists for the other case — a parse gone wrong,
+ * where a document full of `##` headings splits into hundreds of rows nobody asked for.
+ * Set high enough that no real plan reaches it, low enough that a misparse cannot fill the
+ * Steps list with noise.
  *
  * Lives in `shared` because both sides enforce it and must agree: the engine caps what an
  * approved plan appends (`stepsToAppend`), and the panel greys out "Plan more steps…" when
  * there is no room left, so the human is told before the round trip rather than after.
  *
- * A cap on the CARD, not on any one plan — counting per round would let a card re-planned
- * five times sail past the bound the cap exists to enforce.
+ * A bound on the CARD, not on any one plan — counting per round would let a card re-planned
+ * five times sail past the bound the guard exists to enforce.
  */
-export const MAX_PLAN_STEPS = 20;
+export const MAX_PLAN_STEPS = 200;
 
 /** Whether `status` is one a live run put there. See {@link RUN_STATUSES}. */
 export function isRunStatus(status: TaskStatus): boolean {
