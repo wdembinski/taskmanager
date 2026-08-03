@@ -181,6 +181,128 @@ describe('ChainRunner — a card lands', () => {
   });
 });
 
+describe('ChainRunner — a successor that has run before', () => {
+  it('starts a card that has only been planned — a session is not the work', () => {
+    // The reported stall. `b` was assigned in plan mode and planned, so it has a session
+    // and a plan and has changed nothing; every reason it was chained behind `a` still
+    // stands, and refusing it left the chain dead with no note anywhere saying why.
+    const { runner, started, notes } = harness(
+      [task({ id: 'a' }), { ...successor('b'), sessionId: 'session-1', agentPlan: '## Plan' }],
+      [link('a', 'b')],
+    );
+    runner.landed('a');
+    expect(started).toEqual(['b']);
+    expect(notes[0].body).toContain('Started automatically');
+  });
+
+  it('starts a card the human had begun by hand', () => {
+    const { runner, started } = harness(
+      [task({ id: 'a' }), { ...successor('b'), status: 'in-progress', sessionId: 'session-1' }],
+      [link('a', 'b')],
+    );
+    runner.landed('a');
+    expect(started).toEqual(['b']);
+  });
+
+  it('leaves a card whose own work has already landed, and says so', () => {
+    const { runner, started, notes } = harness(
+      [task({ id: 'a' }), { ...successor('b'), sessionId: 'session-1', landedAt: 7 }],
+      [link('a', 'b')],
+    );
+    runner.landed('a');
+    expect(started).toEqual([]);
+    expect(notes[0].body).toContain('Not started');
+    expect(notes[0].body).toContain('already landed');
+  });
+
+  it.each([['in-review'], ['done']] as const)(
+    'leaves a card resting in %s — its work is finished with',
+    (resting) => {
+      const { runner, started, notes } = harness(
+        [task({ id: 'a' }), { ...successor('b'), status: resting, sessionId: 'session-1' }],
+        [link('a', 'b')],
+      );
+      runner.landed('a');
+      expect(started).toEqual([]);
+      expect(notes[0].body).toContain('Not started');
+      expect(notes[0].body).toContain(resting);
+    },
+  );
+
+  it('refuses a card parked in Blocked WITH a note, and starts it once it moves back', () => {
+    // The whole of the rule that the release is not idempotent, only the landing is: the
+    // GitLab poll repeats "merged" for as long as the MR is retained, and between two of
+    // those passes the human answered the note by dragging the card back to TO DO.
+    const { runner, byId, started, notes } = harness(
+      [task({ id: 'a' }), { ...successor('b'), status: 'blocked' }],
+      [link('a', 'b')],
+    );
+    runner.landed('a');
+    expect(started).toEqual([]);
+    expect(notes).toHaveLength(1);
+    expect(notes[0].body).toContain('Ready to start');
+    expect(notes[0].body).toContain('blocked');
+
+    // The poll repeating itself changes nothing and, above all, says nothing twice.
+    runner.landed('a');
+    expect(started).toEqual([]);
+    expect(notes).toHaveLength(1);
+
+    byId.get('b')!.status = 'pending';
+    runner.landed('a');
+    expect(started).toEqual(['b']);
+    expect(notes[1].body).toContain('Started automatically');
+  });
+
+  it('does not start the same card twice however often the landing is repeated', () => {
+    const { runner, started, notes } = harness(
+      [task({ id: 'a' }), successor('b')],
+      [link('a', 'b')],
+    );
+    runner.landed('a');
+    runner.landed('a');
+    runner.landed('a');
+    expect(started).toEqual(['b']);
+    expect(notes).toHaveLength(1);
+  });
+
+  it('names the reason when a card is already running', () => {
+    const { runner, started, notes } = harness(
+      [task({ id: 'a' }), successor('b')],
+      [link('a', 'b')],
+      {
+        inFlight: ['b'],
+      },
+    );
+    runner.landed('a');
+    expect(started).toEqual([]);
+    expect(notes[0].body).toContain('already has a run under way');
+  });
+
+  it('names the reason when the engine itself refuses the run', () => {
+    const { runner, started, notes } = harness(
+      [task({ id: 'a' }), successor('b')],
+      [link('a', 'b')],
+      {
+        refuseRun: true,
+      },
+    );
+    runner.landed('a');
+    expect(started).toEqual([]);
+    expect(notes[0].body).toContain('Not started');
+    expect(notes[0].body).toContain('engine refused');
+  });
+
+  it('re-asks the chain and starts a planned card the app was restarted around', () => {
+    const { runner, started } = harness(
+      [task({ id: 'a', landedAt: 5 }), { ...successor('b'), sessionId: 'session-1' }],
+      [link('a', 'b')],
+    );
+    runner.reconsider('boot');
+    expect(started).toEqual(['b']);
+  });
+});
+
 describe('ChainRunner — a card finishes writing (the `stacked` gate)', () => {
   it('starts a stacked successor before anything is merged', () => {
     const { runner, started, notes } = harness(
@@ -294,9 +416,9 @@ describe('ChainRunner — restart recovery', () => {
     expect(notes[0].body).toContain('startup');
   });
 
-  it('leaves a card that has already run — the release plainly happened', () => {
+  it('leaves a card whose own work has landed — the release plainly happened', () => {
     const { runner, started } = harness(
-      [task({ id: 'a', landedAt: 5 }), task({ ...successor('b'), sessionId: 'session-1' })],
+      [task({ id: 'a', landedAt: 5 }), task({ ...successor('b'), landedAt: 6 })],
       [link('a', 'b')],
     );
     runner.reconsider('boot');
@@ -335,9 +457,14 @@ describe('ChainRunner — re-asking the chain', () => {
     expect(notes).toHaveLength(1);
   });
 
-  it('never re-runs a card that has a session behind it', () => {
+  it('never re-runs a card whose work is finished with', () => {
+    // A session alone no longer counts — the card has to have gone somewhere with it. Here
+    // the human filed it under IN REVIEW, which is as plain a "leave this one" as there is.
     const { runner, started, notes } = harness(
-      [task({ id: 'a', landedAt: 5 }), task({ ...successor('b'), sessionId: 'session-1' })],
+      [
+        task({ id: 'a', landedAt: 5 }),
+        task({ ...successor('b'), status: 'in-review', sessionId: 'session-1' }),
+      ],
       [link('a', 'b')],
     );
     runner.reconsider('card-changed');
@@ -460,13 +587,25 @@ describe('ChainRunner — what a pending merge is holding', () => {
     expect(runner.heldByMerge('a')).toEqual([]);
   });
 
-  it('ignores a successor that has already run, or is running now', () => {
+  it('ignores a successor whose work is finished with, or that is running now', () => {
     const { runner } = harness(
-      [task({ id: 'a' }), task({ ...successor('b'), sessionId: 'session-1' }), successor('c')],
+      [
+        task({ id: 'a' }),
+        task({ ...successor('b'), status: 'done', sessionId: 'session-1' }),
+        successor('c'),
+      ],
       [link('a', 'b'), link('a', 'c')],
       { inFlight: ['c'] },
     );
     expect(runner.heldByMerge('a')).toEqual([]);
+  });
+
+  it('still names a successor that has only been planned — the merge is what it waits for', () => {
+    const { runner } = harness(
+      [task({ id: 'a' }), task({ ...successor('b'), sessionId: 'session-1' })],
+      [link('a', 'b')],
+    );
+    expect(runner.heldByMerge('a')).toEqual(['b']);
   });
 
   it('names the ticket rather than the title when the card has a key', () => {
