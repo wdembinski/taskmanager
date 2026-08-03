@@ -46,6 +46,7 @@ import type {
   TaskType,
 } from './model';
 import type { TaskAttachment } from './attachments';
+import type { GitGraph } from './gitGraph';
 import type { ExecTarget, TargetReadiness } from './execTarget';
 import type { ActiveRun, SchedulerChange, TaskChange } from './scheduler';
 import type { AttentionAnswer, AttentionItem } from './attention';
@@ -276,6 +277,20 @@ export interface IpcApi {
    * not exist yet. Read-only: it never writes to the folder.
    */
   'project:gitPreflight': (path: string, target: ExecTarget) => Promise<GitPreflight>;
+
+  /**
+   * The project repository's recent history, laid out in lanes and ready to draw.
+   *
+   * The board shows what the app believes about a card; this shows what actually happened in
+   * the repo — which branches exist, which forked from where, and which have merged back into
+   * base. The refs come back role-marked (`base`, `card`), so a branch can be labelled with
+   * the CARD it belongs to instead of a name like `orch/abc123`.
+   *
+   * `limit` caps the commits read (newest first); omit it for a sensible default. Never
+   * rejects: a folder that isn't a repository, has no commits, or has gone missing comes back
+   * as an empty graph with `reason` set, exactly like `project:gitPreflight`.
+   */
+  'git:graph': (projectId: string, limit?: number) => Promise<GitGraph>;
   /**
    * Launch an AI pass that reads the plan and adds `@needs:` dependency annotations,
    * writing the file back for the user to review. Returns the run id so the UI can

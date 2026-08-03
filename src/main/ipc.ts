@@ -84,6 +84,8 @@ import { attachmentFile } from './attachmentPaths';
 import type { ServiceSyncState, SyncServiceId, SyncState } from '@shared/sync';
 import { hostFor, listWslDistros, readinessFor, statusForTargets } from './exec';
 import { gitPreflight } from './git';
+import { emptyGitGraph } from '@shared/gitGraph';
+import { cardBranchesFor, readGitGraph } from './gitGraph';
 import { listClaudeSessions } from './claudeSessions';
 import { sanitizeWindowState } from './windowState';
 import { appPlanPath, appProjectFile } from './projectPaths';
@@ -460,6 +462,18 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     } catch (e) {
       return { state: 'unknown' as const, detail: e instanceof Error ? e.message : String(e) };
     }
+  });
+
+  /**
+   * The project repo's commit graph. Reads from every board, not just this project's tasks:
+   * a card delegated to an agent project lives on the Personal board, and its branch is one
+   * of the ones worth naming in the drawing.
+   */
+  handle('git:graph', async (projectId, limit) => {
+    const project = store.getProject(projectId);
+    if (!project) return emptyGitGraph('That project is no longer in the app.');
+    const tasks = store.listProjects().flatMap((p) => store.getTasks(p.id));
+    return readGitGraph(project, cardBranchesFor(tasks, projectId), limit);
   });
 
   handle('project:add', async (input) => {
