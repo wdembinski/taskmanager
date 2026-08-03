@@ -351,7 +351,26 @@ export interface IpcApi {
    */
   'task:create': (
     projectId: string,
-    input: { title: string; phase?: string; type?: TaskType | null },
+    input: {
+      title: string;
+      phase?: string;
+      type?: TaskType | null;
+      /**
+       * The card's brief — what it is and what "done" means. Stored where every other
+       * surface already reads a CARD's description from (`Task.externalDescription`,
+       * which `task:setDescription` writes and the agent's prompt quotes), so a card
+       * given one at creation is indistinguishable from one given it afterwards.
+       * `Task.description` is deliberately NOT it: that field is a STEP's brief.
+       */
+      description?: string;
+      /**
+       * File the new card under a project — `Task.projectTagId`, the same tagging
+       * `task:setProject` does. Filing, never delegation: nothing is started, and the
+       * card's own `projectId` (its board) is untouched. Rejects an id that is not an
+       * agent project, exactly as `task:setProject` does.
+       */
+      projectTagId?: string | null;
+    },
   ) => Promise<Task>;
   /** Delete a task (and its history, and any steps under it). Rejects if it is running. */
   'task:delete': (taskId: string) => Promise<void>;
@@ -689,12 +708,19 @@ export interface IpcApi {
    * `source: 'adhoc'` and is used by other screens. The created issue is read back and
    * run through the same `issueToTask` a sync uses, so the new card is identical to a
    * synced one — hand-building the Task would make it mutate on the first poll.
+   *
+   * `adoptTaskId` names a card that already exists and should BECOME this issue's card,
+   * rather than a second one appearing beside it. That is how the Add-task dialog offers
+   * a ticket alongside everything else it asks for: the card is written locally first
+   * (with its project, its type and its description) and the ticket is linked onto it, so
+   * JIRA being unreachable costs you the ticket and not the card you just typed.
    */
   'jira:createTask': (input: {
     projectKey: string;
     issueTypeId: string;
     summary: string;
     description?: string;
+    adoptTaskId?: string;
   }) => Promise<Task>;
   /** Mark a JIRA task's comments as read (clears the unread border); returns the task. */
   'jira:markRead': (taskId: string) => Promise<Task>;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { PERSONAL_PROJECT_ID, type Task } from '@shared/model';
-import { reconcileJiraTasks, retainedKeys } from './jiraSync';
+import { issueToBoardTask, reconcileJiraTasks, retainedKeys } from './jiraSync';
 import type { JiraIssue } from './jiraClient';
 
 const issue = (
@@ -41,6 +41,53 @@ const jiraTask = (over: Partial<Task>): Task => ({
 });
 
 const opts = { baseUrl: 'https://jira.co' };
+
+describe('issueToBoardTask — a ticket raised for a card that already exists', () => {
+  /** The card the Add-task dialog wrote locally a moment ago, before the ticket existed. */
+  const localCard = (over: Partial<Task> = {}): Task =>
+    ({
+      id: 'local-1',
+      projectId: PERSONAL_PROJECT_ID,
+      phase: '',
+      title: 'Do a thing',
+      status: 'pending',
+      sessionId: null,
+      order: 7,
+      dependsOn: [],
+      source: 'adhoc',
+      isContract: false,
+      isScaffold: false,
+      type: 'feature',
+      projectTagId: 'p-billing',
+      externalDescription: 'What it is about.',
+      ...over,
+    }) as Task;
+
+  it('lands the issue on that card rather than making a second one', () => {
+    const card = issueToBoardTask(issue('1', 'PROJ-1', 'new'), localCard(), opts);
+    expect(card.id).toBe('local-1');
+    expect(card.order).toBe(7);
+    expect(card.source).toBe('jira');
+    expect(card.externalKey).toBe('PROJ-1');
+    expect(card.externalUrl).toBe('https://jira.co/browse/PROJ-1');
+  });
+
+  it('keeps the filing, which JIRA knows nothing about', () => {
+    const card = issueToBoardTask(issue('1', 'PROJ-1', 'new'), localCard(), opts);
+    expect(card.projectTagId).toBe('p-billing');
+  });
+
+  it('starts the card read, so raising a ticket does not light up its own border', () => {
+    const card = issueToBoardTask(issue('1', 'PROJ-1', 'new'), localCard(), opts);
+    expect(card.lastReadCommentAt).toBe(card.latestCommentAt);
+  });
+
+  it('brings a card of its own when nothing is adopted', () => {
+    const card = issueToBoardTask(issue('1', 'PROJ-1', 'new'), undefined, opts);
+    expect(card.id).toBe('jira-1');
+    expect(card.projectTagId).toBeNull();
+  });
+});
 
 describe('reconcileJiraTasks — epic name', () => {
   /** An issue whose parent came back inline, the way Cloud team-managed projects send it. */

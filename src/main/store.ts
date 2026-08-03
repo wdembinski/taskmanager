@@ -217,10 +217,23 @@ export interface Store {
   getPersonalTasks(): Task[];
   /** Insert a new JIRA-sourced task, or update the existing one with the same key. */
   upsertJiraTask(task: Task): Task;
-  /** Create an ad-hoc task (Phase 8): appended after existing tasks, `source: 'adhoc'`. */
+  /**
+   * Create an ad-hoc task (Phase 8): appended after existing tasks, `source: 'adhoc'`.
+   *
+   * `description` is the CARD's brief and lands in `externalDescription` — the field the
+   * detail pane edits and the agent's prompt quotes (`Task.description` is a step's
+   * brief, which a card never has). `projectTagId` files it under a project; the caller
+   * checks the id, since the store does not know an agent project from a plan one.
+   */
   createTask(
     projectId: string,
-    input: { title: string; phase?: string; type?: TaskType | null },
+    input: {
+      title: string;
+      phase?: string;
+      type?: TaskType | null;
+      description?: string | null;
+      projectTagId?: string | null;
+    },
   ): Task | undefined;
   /** A card's steps, in execution order (empty for a card with no subtasks). */
   getSubtasks(parentId: string): Task[];
@@ -917,7 +930,7 @@ export function createStore(dbPath: string): Store {
         externalPriority, externalType, externalLabel, externalParentKey, externalEpicName, externalSprint,
         externalDescription,
         preBlockStatus, preRunStatus, retainedSince, lastReadCommentAt, latestCommentAt,
-        agentProjectId, agentMode, agentModel,
+        projectTagId, agentProjectId, agentMode, agentModel,
         agentPlan, agentBranch, planRound, landedAt, autoRelease, autoIntegrate)
      VALUES
        (@id, @projectId, @phase, @title, @status, @sessionId, @order, @source, @dependsOn, @isContract, @isScaffold, @type,
@@ -926,7 +939,10 @@ export function createStore(dbPath: string): Store {
         @externalPriority, @externalType, @externalLabel, @externalParentKey, @externalEpicName, @externalSprint,
         @externalDescription,
         @preBlockStatus, @preRunStatus, @retainedSince, @lastReadCommentAt, @latestCommentAt,
-        @agentProjectId, @agentMode, @agentModel,
+        -- The filing column was added after this INSERT was written and only ever set by
+        -- an UPDATE, so a card created already filed (the Add-task dialog's Project
+        -- picker) used to lose its project between the form and the row.
+        @projectTagId, @agentProjectId, @agentMode, @agentModel,
         @agentPlan, @agentBranch, @planRound, @landedAt, @autoRelease, @autoIntegrate)`,
   );
   const deleteTask = db.prepare(`DELETE FROM tasks WHERE id = ?`);
@@ -1727,6 +1743,10 @@ export function createStore(dbPath: string): Store {
         isContract: false,
         isScaffold: false,
         type: input.type ?? null,
+        // The card's own brief, in the field every other surface reads a card's
+        // description from — see the interface above.
+        externalDescription: input.description?.trim() || null,
+        projectTagId: input.projectTagId ?? null,
       };
       insertTask.run(taskToRow(task));
       return task;

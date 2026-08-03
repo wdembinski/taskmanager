@@ -199,6 +199,27 @@ function issueToTask(
 }
 
 /**
+ * The board card for ONE issue — the freshly-created-issue path, where there is no query
+ * to reconcile against and at most one card in play.
+ *
+ * `existing` is the card the issue lands on. Passing the card you just created locally is
+ * what "create the ticket and link it to this task" means: the issue's fields are written
+ * onto that same row (same id, so its timeline, its filing and its steps all stay put),
+ * rather than a second card appearing beside the one you typed. Pass `undefined` and the
+ * issue brings a brand-new card with it, which is what creating a ticket on its own does.
+ *
+ * Deliberately the SAME `issueToTask` a sync uses: a hand-built card would differ from
+ * whatever the next poll produces and appear to mutate on its own.
+ */
+export function issueToBoardTask(
+  issue: JiraIssue,
+  existing: Task | undefined,
+  opts: JiraSyncOptions,
+): Task {
+  return issueToTask(issue, existing, opts, existing?.order ?? 0);
+}
+
+/**
  * Whether a card that has left the query is one the board **keeps**.
  *
  * Either it is finished — the case this exists for, since the query it just fell out of is

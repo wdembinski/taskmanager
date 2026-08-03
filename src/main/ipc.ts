@@ -48,7 +48,7 @@ import { explainJiraFailure } from './jira/jiraDiagnostics';
 import { commentBodyToText, type JiraClient, type JiraIssue } from './jira/jiraClient';
 import { blocksToText, parseAdf } from './jira/adf';
 import { normalizeIssueTypes, normalizeProjects } from './jira/createMeta';
-import { reconcileJiraTasks, retainedKeys } from './jira/jiraSync';
+import { issueToBoardTask, reconcileJiraTasks, retainedKeys } from './jira/jiraSync';
 import { discoverEpicFieldId, epicKeyFromIssue, epicNameFromIssue } from './jira/epicField';
 import { discoverSprintFieldId, withCurrentSprint } from './jira/jiraSprint';
 import { authorIsMe, identityFrom, type JiraIdentityCache } from './jira/identity';
@@ -640,6 +640,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('task:chat', async (taskId, message) => scheduler.chatWithAgent(taskId, message));
   handle('task:replan', async (taskId, note) => scheduler.replanCard(taskId, note));
   handle('task:create', async (projectId, input) => {
+    // The same check `task:setProject` makes, for the same reason: filing is only ever
+    // under an agent project, and a card created with a dangling tag would wear a colour
+    // stripe nothing on the board could explain.
+    if (input.projectTagId) {
+      const target = store.getProject(input.projectTagId);
+      if (!target || target.kind !== 'agent') throw new Error('Unknown project.');
+    }
     const task = store.createTask(projectId, input);
     if (!task) throw new Error('A task needs a title.');
     send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) });
@@ -1356,17 +1363,36 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     const { jira } = settings;
     if (!jira.enabled) throw new Error('JIRA is switched off.');
     if (!input.summary.trim()) throw new Error('A JIRA issue needs a summary.');
-    const client = buildJiraClient();
-    const created = await client.createIssue({ ...input, summary: input.summary.trim() });
 
-    // Read the issue back and run it through the SAME reconciler a sync uses, rather
-    // than hand-building a Task. A hand-built one would differ from what the next poll
-    // produces — a different status, a missing field — and appear to mutate on its own.
+    // The card the ticket is being linked ONTO, when the dialog wrote one locally first.
+    // Checked before the issue is created, so a stale id is a refusal rather than an
+    // orphaned ticket. A step is refused too: a step is one unit of a card's plan, and
+    // nothing in JIRA corresponds to it.
+    const adopt = input.adoptTaskId ? store.getTask(input.adoptTaskId) : undefined;
+    if (input.adoptTaskId) {
+      if (!adopt) throw new Error('Task not found.');
+      if (adopt.parentTaskId) throw new Error('A step cannot have a ticket of its own.');
+      if (adopt.externalKey) {
+        throw new Error(`That task is already linked to ${adopt.externalKey}.`);
+      }
+    }
+
+    const client = buildJiraClient();
+    const created = await client.createIssue({
+      projectKey: input.projectKey,
+      issueTypeId: input.issueTypeId,
+      summary: input.summary.trim(),
+      description: input.description,
+    });
+
+    // Read the issue back and build the card with the SAME `issueToTask` a sync uses,
+    // rather than hand-building a Task. A hand-built one would differ from what the next
+    // poll produces — a different status, a missing field — and appear to mutate on its own.
     const epicField = await epicFieldId(jira.baseUrl, client);
     const sprintField = await sprintFieldId(jira.baseUrl, client);
     const extraFields = [epicField, sprintField].filter((f): f is string => f !== null);
     const issue = await client.getIssue(created.key, extraFields);
-    const { upserts } = reconcileJiraTasks([], [issue], {
+    const card = issueToBoardTask(issue, adopt, {
       baseUrl: jira.baseUrl,
       overrides: jira.statusCategoryOverrides,
       learned: jira.learnedStatusColumns,
@@ -1374,9 +1400,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       sprintFieldId: sprintField,
       identity: await jiraIdentity(jira.baseUrl, client),
     });
-    const task = upserts[0];
+    // The stored row, not the computed one: adopting keeps everything JIRA knows nothing
+    // about (the filing, the type, an assignment), and only the round trip has those.
+    const task = store.upsertJiraTask(card);
     if (!task) throw new Error(`JIRA created ${created.key} but it could not be read back.`);
-    store.upsertJiraTask(task);
 
     // Remember the choice for next time. Behind the UI's back, so it goes out on
     // `settings:changed` — a screen that saves the whole blob would otherwise clobber it.

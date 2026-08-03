@@ -1004,6 +1004,9 @@ export function MyTasks(): JSX.Element {
         // own that runs after it. Chaining at creation saves finding the new card on the
         // board and dragging an arrow to it — three moves for one intent.
         chainCandidates={parentCandidates}
+        // The same repos the detail pane files a card under, offered while the card is
+        // being written instead of only afterwards.
+        projects={agentProjects}
         jiraEnabled={jiraEnabled}
         onClose={() => setAddOpen(false)}
         onCreated={() => void refresh()}

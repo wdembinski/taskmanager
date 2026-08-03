@@ -14,6 +14,13 @@
  * as it is created: *Runs after…* names the card this one waits for. Most chained cards
  * are known to be chained at the moment somebody thinks of them, and making a new card,
  * finding it on the board and dragging an arrow to it is three steps for one intent.
+ *
+ * The three things a card is made of are all asked for here, and none of them exclude the
+ * others: **which project** it is filed under, **what it is** (its description), and —
+ * optionally — **a JIRA ticket** for it. The ticket used to be an either/or that replaced
+ * the card, which is why filing and a description had to be added afterwards, in a pane,
+ * on a card that already existed. The card is written locally first and the ticket is
+ * linked onto it, so JIRA being unreachable costs you the ticket and not the card.
  */
 import { useEffect, useMemo, useState } from 'react';
 import {
@@ -34,7 +41,7 @@ import {
   Textarea,
 } from '@fluentui/react-components';
 import { Switch } from '@fluentui/react-components';
-import type { Task, TaskType } from '@shared/model';
+import type { Project, Task, TaskType } from '@shared/model';
 import type { JiraIssueTypeOption, JiraProjectOption } from '@shared/ipc';
 import { LINK_GATE_LABEL, LINK_REFUSAL_MESSAGE } from '@shared/taskChain';
 
@@ -52,6 +59,99 @@ const useStyles = makeStyles({
 const NO_PARENT = '';
 /** The same, for "chained after nothing" — the ordinary case, and the default. */
 const NO_LINK = '';
+/** The same again, for a card filed under no project at all. */
+const NO_PROJECT = '';
+
+/** Everything the form holds, as the plan below reads it. */
+export interface AddTaskForm {
+  title: string;
+  /** The card's brief, or the step's — see {@link AddTaskPlan}. */
+  description: string;
+  type: TaskType;
+  phase: string;
+  /** The project the card is filed under; `''` for none. */
+  projectTagId: string;
+  /** The card this is a step OF; `''` for a card of its own. */
+  parentId: string;
+  /** Whether a JIRA ticket should be created for this card as well. */
+  asJira: boolean;
+  jiraProjectKey: string;
+  jiraTypeId: string;
+}
+
+/**
+ * What Add does, worked out from the form alone — the writes, in order, with nothing
+ * asked of the engine yet.
+ *
+ * Pure and separate from the dialog because this is where the rules live: a step takes a
+ * brief and nothing else (no filing, no ticket — its plan already decides where it runs),
+ * a card takes all of it, and a ticket is an addition to a card rather than a replacement
+ * for one.
+ */
+export type AddTaskPlan =
+  /** Nothing can be created yet. `error` is null when the only thing missing is the
+   *  title, which the disabled Add button already says. */
+  | { kind: 'incomplete'; error: string | null }
+  /** One step appended to `parentId`'s chain. */
+  | { kind: 'step'; parentId: string; step: { title: string; description: string | null } }
+  /** A card, and — when `ticket` is set — a JIRA issue linked onto it afterwards. */
+  | {
+      kind: 'card';
+      card: {
+        title: string;
+        phase?: string;
+        type: TaskType;
+        description?: string;
+        projectTagId: string | null;
+      };
+      ticket: {
+        projectKey: string;
+        issueTypeId: string;
+        summary: string;
+        description?: string;
+      } | null;
+    };
+
+/** Work out what Add should do. See {@link AddTaskPlan}. */
+export function addTaskPlan(form: AddTaskForm): AddTaskPlan {
+  const title = form.title.trim();
+  const description = form.description.trim();
+  if (!title) return { kind: 'incomplete', error: null };
+
+  if (form.parentId) {
+    return {
+      kind: 'step',
+      parentId: form.parentId,
+      step: { title, description: description || null },
+    };
+  }
+
+  // A ticket the instance cannot place is not a ticket; refuse before the card is
+  // written, so Add never half-succeeds on something the form could have caught.
+  if (form.asJira && (!form.jiraProjectKey || !form.jiraTypeId)) {
+    return { kind: 'incomplete', error: 'Pick a JIRA project and issue type first.' };
+  }
+
+  return {
+    kind: 'card',
+    card: {
+      title,
+      phase: form.phase.trim() || undefined,
+      type: form.type,
+      description: description || undefined,
+      projectTagId: form.projectTagId || null,
+    },
+    // The same text on both: the description you typed is what the ticket is about.
+    ticket: form.asJira
+      ? {
+          projectKey: form.jiraProjectKey,
+          issueTypeId: form.jiraTypeId,
+          summary: title,
+          description: description || undefined,
+        }
+      : null,
+  };
+}
 
 export interface AddTaskDialogProps {
   open: boolean;
@@ -74,7 +174,15 @@ export interface AddTaskDialogProps {
    */
   chainCandidates?: Task[];
   /**
-   * Whether this board can also create the task as a real JIRA issue. Set only by My
+   * The projects the new card may be FILED under (`Task.projectTagId`) — the agent
+   * projects, the same list the detail pane's Project dropdown offers. Omit (or pass an
+   * empty list) to hide the picker; a board with no repos has nothing to file under.
+   *
+   * Filing, never delegation: it says what the card is about, and starts nothing.
+   */
+  projects?: Project[];
+  /**
+   * Whether this board can also create a real JIRA issue for the task. Set only by My
    * Tasks with JIRA on — the dialog is also used from Projects, where a ticket makes
    * no sense.
    */
@@ -99,6 +207,7 @@ export function AddTaskDialog({
   parents = [],
   defaultParentId = null,
   chainCandidates = [],
+  projects = [],
   jiraEnabled = false,
   onClose,
   onCreated,
@@ -109,6 +218,8 @@ export function AddTaskDialog({
   const [phase, setPhase] = useState('');
   const [type, setType] = useState<TaskType>('feature');
   const [description, setDescription] = useState('');
+  /** The project the card is filed under — tagging, not delegation. */
+  const [projectTagId, setProjectTagId] = useState<string>(NO_PROJECT);
   const [parentId, setParentId] = useState<string>(NO_PARENT);
   /** The card this one runs after, drawn as a link the moment the card exists. */
   const [runsAfterId, setRunsAfterId] = useState<string>(NO_LINK);
@@ -129,6 +240,7 @@ export function AddTaskDialog({
       setPhase('');
       setType('feature');
       setDescription('');
+      setProjectTagId(NO_PROJECT);
       setParentId(defaultParentId ?? NO_PARENT);
       setRunsAfterId(NO_LINK);
       setError(null);
@@ -142,19 +254,18 @@ export function AddTaskDialog({
     if (!open || !asJira) return;
     let live = true;
     setLoadingMeta(true);
-    void Promise.all([
-      window.api.invoke('jira:projects'),
-      window.api.invoke('settings:get'),
-    ]).then(([projects, settings]) => {
-      if (!live) return;
-      setJiraProjects(projects);
-      const last = settings.jira.lastCreateProjectKey;
-      setJiraProjectKey((current) => {
-        if (current) return current;
-        return last && projects.some((p) => p.key === last) ? last : (projects[0]?.key ?? '');
-      });
-      setLoadingMeta(false);
-    });
+    void Promise.all([window.api.invoke('jira:projects'), window.api.invoke('settings:get')]).then(
+      ([projects, settings]) => {
+        if (!live) return;
+        setJiraProjects(projects);
+        const last = settings.jira.lastCreateProjectKey;
+        setJiraProjectKey((current) => {
+          if (current) return current;
+          return last && projects.some((p) => p.key === last) ? last : (projects[0]?.key ?? '');
+        });
+        setLoadingMeta(false);
+      },
+    );
     return () => {
       live = false;
     };
@@ -174,9 +285,7 @@ export function AddTaskDialog({
       if (!live) return;
       setJiraTypes(types);
       const last = settings.jira.lastCreateIssueTypeId;
-      setJiraTypeId(
-        last && types.some((t) => t.id === last) ? last : (types[0]?.id ?? ''),
-      );
+      setJiraTypeId(last && types.some((t) => t.id === last) ? last : (types[0]?.id ?? ''));
     });
     return () => {
       live = false;
@@ -185,6 +294,12 @@ export function AddTaskDialog({
 
   const parent = useMemo(() => parents.find((p) => p.id === parentId) ?? null, [parents, parentId]);
   const isStep = parent !== null;
+  /** A ticket belongs to a card, so a step is never offered one (nor filed, nor typed). */
+  const canJira = jiraEnabled && !isStep;
+  const filedProject = useMemo(
+    () => projects.find((p) => p.id === projectTagId) ?? null,
+    [projects, projectTagId],
+  );
   const runsAfter = useMemo(
     () => chainCandidates.find((c) => c.id === runsAfterId) ?? null,
     [chainCandidates, runsAfterId],
@@ -209,10 +324,43 @@ export function AddTaskDialog({
     }
   }
 
+  /**
+   * Raise the ticket the switch asked for, on the card that now exists.
+   *
+   * Reported the way a refused chain link is, and for the same reason: by the time this
+   * runs the card is on the board, so JIRA being unreachable is a note to the human
+   * rather than a failure of the whole dialog. Losing what you typed because a network
+   * call failed is the outcome writing the card first exists to prevent.
+   */
+  async function ticketFor(
+    createdId: string,
+    ticket: { projectKey: string; issueTypeId: string; summary: string; description?: string },
+  ): Promise<void> {
+    try {
+      await window.api.invoke('jira:createTask', { ...ticket, adoptTaskId: createdId });
+    } catch (e) {
+      const why = e instanceof Error ? e.message : String(e);
+      onNotice?.(`The card was created, but its JIRA ticket was not — ${why}`);
+    }
+  }
+
   async function save(): Promise<void> {
-    if (!projectId || !title.trim()) return;
-    if (asJira && !parent && (!jiraProjectKey || !jiraTypeId)) {
-      setError('Pick a JIRA project and issue type first.');
+    if (!projectId) return;
+    const plan = addTaskPlan({
+      title,
+      description,
+      type,
+      phase,
+      projectTagId,
+      // A step is created through its parent whatever else the form says, so this is the
+      // one field that decides which shape the plan takes.
+      parentId: parent?.id ?? NO_PARENT,
+      asJira: canJira && asJira,
+      jiraProjectKey,
+      jiraTypeId,
+    });
+    if (plan.kind === 'incomplete') {
+      setError(plan.error);
       return;
     }
     setSaving(true);
@@ -223,26 +371,11 @@ export function AddTaskDialog({
       let created: Task | null = null;
       // A step is created through its parent (it inherits the delegation and joins
       // the chain); everything else is an ordinary ad-hoc card.
-      if (parent) {
-        await window.api.invoke('task:addSubtask', parent.id, {
-          title: title.trim(),
-          description: description.trim() || null,
-        });
-      } else if (asJira) {
-        // A real ticket. Its own channel, not a widened `task:create`: that one is a
-        // local write other screens rely on, and it hardcodes `source: 'adhoc'`.
-        created = await window.api.invoke('jira:createTask', {
-          projectKey: jiraProjectKey,
-          issueTypeId: jiraTypeId,
-          summary: title.trim(),
-          description: description.trim() || undefined,
-        });
+      if (plan.kind === 'step') {
+        await window.api.invoke('task:addSubtask', plan.parentId, plan.step);
       } else {
-        created = await window.api.invoke('task:create', projectId, {
-          title: title.trim(),
-          phase: phase.trim() || undefined,
-          type,
-        });
+        created = await window.api.invoke('task:create', projectId, plan.card);
+        if (plan.ticket) await ticketFor(created.id, plan.ticket);
       }
       if (created && runsAfter) await chainAfter(runsAfter.id, created.id);
       onCreated();
@@ -324,29 +457,63 @@ export function AddTaskDialog({
                   </Dropdown>
                 </Field>
               )}
-              {/* A brief belongs to a step: it is what that step's session is given.
-                  A standalone card has no such field — its context is the ticket. */}
-              {isStep && (
+              {/* Which project the card is ABOUT. Filing, not delegation — it gives the
+                  card its colour stripe and pre-answers "which repo" if you later assign
+                  an agent, but nothing runs because of it. A step inherits its parent's,
+                  so it is never asked. */}
+              {projects.length > 0 && !isStep && (
                 <Field
-                  label="Brief for this step"
-                  hint="The only context the step’s session gets — say what “done” means."
+                  label="Project (optional)"
+                  hint="What this card is about. It files the card — nothing is started."
                 >
-                  <Textarea
-                    value={description}
-                    resize="vertical"
-                    onChange={(_e, d) => setDescription(d.value)}
-                    placeholder="What this step must deliver…"
-                  />
+                  <Dropdown
+                    value={filedProject?.name ?? 'None'}
+                    selectedOptions={[projectTagId]}
+                    onOptionSelect={(_e, d) => setProjectTagId(d.optionValue ?? NO_PROJECT)}
+                  >
+                    <Option value={NO_PROJECT} text="None">
+                      None
+                    </Option>
+                    {projects.map((p) => (
+                      <Option key={p.id} value={p.id} text={p.name}>
+                        {p.name}
+                      </Option>
+                    ))}
+                  </Dropdown>
                 </Field>
               )}
-              {/* A real ticket rather than a local card. Never offered for a step:
-                  a step is part of a card's chain, not a thing JIRA knows about. */}
-              {jiraEnabled && !isStep && (
+              {/* One description field, whatever the card turns out to be: a step's brief
+                  is what its session is given, a card's is what the agent's prompt quotes,
+                  and with the switch on it is also the ticket's body. Asking for it here
+                  saves creating the card and then opening it to say what it is. */}
+              <Field
+                label={isStep ? 'Brief for this step' : 'Description (optional)'}
+                hint={
+                  isStep
+                    ? 'The only context the step’s session gets — say what “done” means.'
+                    : canJira && asJira
+                      ? 'The agent’s prompt quotes this, and it becomes the ticket’s description.'
+                      : 'What this card is, and what done means. The agent’s prompt quotes it.'
+                }
+              >
+                <Textarea
+                  value={description}
+                  resize="vertical"
+                  onChange={(_e, d) => setDescription(d.value)}
+                  placeholder={isStep ? 'What this step must deliver…' : 'What this card is about…'}
+                />
+              </Field>
+              {/* A ticket AS WELL as the card, not instead of it: the card is written
+                  first and the issue is linked onto it, so everything above still applies
+                  and a JIRA that will not answer costs you the ticket alone. Never offered
+                  for a step — a step is part of a card's chain, not a thing JIRA knows
+                  about. */}
+              {canJira && (
                 <Field
-                  label="Create in JIRA"
+                  label="Also create a JIRA ticket"
                   hint={
                     asJira
-                      ? 'Creates the issue, then reads it back — the card is exactly what a sync would have produced.'
+                      ? 'Raises the issue and links it to this card, which then follows the ticket like any synced one.'
                       : 'Off: this stays a local card on your board.'
                   }
                 >
@@ -354,7 +521,7 @@ export function AddTaskDialog({
                 </Field>
               )}
 
-              {jiraEnabled && !isStep && asJira && (
+              {canJira && asJira && (
                 <>
                   <Field
                     label="JIRA project"
@@ -393,14 +560,6 @@ export function AddTaskDialog({
                         </Option>
                       ))}
                     </Dropdown>
-                  </Field>
-                  <Field label="Description (optional)">
-                    <Textarea
-                      value={description}
-                      resize="vertical"
-                      onChange={(_e, d) => setDescription(d.value)}
-                      placeholder="What the ticket is about…"
-                    />
                   </Field>
                 </>
               )}
