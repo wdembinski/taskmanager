@@ -436,6 +436,49 @@ export function runPhase(
 }
 
 /**
+ * Whether **Stop** would actually stop something on this task — what decides that the
+ * button is offered at all. The renderer's copy of `Scheduler.stopTask`'s own test, in
+ * the same spirit as `chatAvailability`: it decides whether to OFFER the control, never
+ * what pressing it does.
+ *
+ * Deliberately not `isRunStatus(task.status)`, which is the question the detail pane used
+ * to ask. That one is answered `false` in exactly the cases where the human most wants the
+ * button, and every one of them is work the engine has always been willing to stop:
+ *
+ *  - **a card executing an approved plan.** It sits `in-progress` while a STEP holds the
+ *    run, so the card offering the button had no button, and the only way to stop the
+ *    work was to know that steps have panes of their own. `stopTask` stops the card AND
+ *    its steps in one call — the button was the only thing missing.
+ *  - **a run that has spawned but is not yet persisted as `running`** — the window
+ *    `runPhase` calls `starting`, and the reason this takes the live-run snapshot too.
+ *  - **a chain between steps.** Nothing is running this instant and the next step starts
+ *    by itself, so "there is no button because nothing is running" is at best a race.
+ *
+ * `subtasks` must be the task's OWN steps. A step's SIBLINGS would offer a Stop that
+ * stops the wrong work, since the button stops the id it was drawn for.
+ */
+export function canStopWork(
+  task: Task,
+  subtasks: Task[] = [],
+  liveRunTaskIds?: ReadonlySet<string>,
+): boolean {
+  // Same discipline as {@link runPhase}: a terminal status is a FACT and the snapshot only
+  // a lagging hint, so a finished task is never read out of it — that lag is what used to
+  // leave cards spinning "Starting…" after their agent had stopped.
+  const spawning = (t: Task): boolean =>
+    !TERMINAL.has(t.status) && Boolean(liveRunTaskIds?.has(t.id));
+  if (isRunStatus(task.status) || spawning(task)) return true;
+  if (subtasks.some((s) => isRunStatus(s.status) || spawning(s))) return true;
+  // A chain caught between steps: something is still to run, and the chain has already
+  // started — so it WILL run, and stopping it is a real choice. The second half is what
+  // keeps this honest: steps written by hand on a card nobody has started are queued for
+  // nothing, and a Stop there would cancel work that never began.
+  return (
+    subtasks.some((s) => s.status === 'pending') && subtasks.some((s) => TERMINAL.has(s.status))
+  );
+}
+
+/**
  * What a **card** should say about its run, in words — or nothing, when something else on the
  * card already says it.
  *

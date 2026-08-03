@@ -309,6 +309,24 @@ one-click options or a free-text reply, renders in the card's detail sidebar. Th
 live transcript streams into the same timeline as your comments and status
 changes. **Stop** ends the run and keeps the worktree.
 
+### Stopping it
+
+**Stop** is on the card itself — a small square-in-circle button beside the agent
+glyph — and again in the detail pane's **Agent** panel. It appears whenever there is
+work a click could stop, which is wider than "this card says `running`":
+
+- the card's own run, including the moment between the session spawning and the board
+  hearing about it;
+- a card executing an approved plan, whose *step* holds the run while the card sits
+  *In Progress* — one Stop covers the card and every step of its chain;
+- a chain caught between steps, whose next step would start by itself;
+- a card parked behind the usage limit, which Stop unparks so it does not come back to
+  life at the reset.
+
+Stopping keeps the branch and the worktree, so the work is picked up again by sending
+the agent a message. It changes no column: stopping is a run's end, not a card's, and
+only you move a card (see *Where the card sits while it works* below).
+
 Usage limits behave exactly as they do for plan tasks: the task parks as
 `blocked-by-limit` behind the global gate and resumes by session id at reset.
 

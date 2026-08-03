@@ -503,6 +503,29 @@ export function MyTasks(): JSX.Element {
   );
 
   /**
+   * Stop the agent working a card, from the card itself.
+   *
+   * NOT optimistic, unlike the move above: stopping a run is the engine's to do, it can
+   * take the length of an IPC hop plus a process dying, and the steps it cancels along the
+   * way are rows this board also draws. Painting a guess would mean guessing at all of
+   * them. The task that comes back is the truth, and `task:changed` brings the rest.
+   *
+   * One call covers the whole card — `stopTask` stops the card AND its steps, which is
+   * what makes a single button on the card the right shape for a chain.
+   */
+  const stopTask = useCallback(
+    async (taskId: string) => {
+      setError(null);
+      try {
+        patchTask(await window.api.invoke('task:stopAgent', taskId));
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [patchTask],
+  );
+
+  /**
    * Draw an arrow — `toTaskId` runs after `fromTaskId`.
    *
    * The same confirm-free optimistic shape `moveTask` uses: the arrow appears the instant
@@ -890,6 +913,7 @@ export function MyTasks(): JSX.Element {
               chainStateOf={(t) => chainStates.get(t.id)}
               selectedTaskId={selectedTaskId}
               draggingId={draggingId}
+              onStopTask={(taskId) => void stopTask(taskId)}
               onSelectTask={selectTask}
               onDragStartTask={setDraggingId}
               onDragEndTask={() => setDraggingId(null)}

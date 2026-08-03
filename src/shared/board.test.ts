@@ -15,6 +15,7 @@ import {
   isAgentRunning,
   needsAgentInput,
   cardRunLabel,
+  canStopWork,
   runPhase,
   type RunState,
 } from './board';
@@ -473,4 +474,60 @@ describe('chainInFlight', () => {
       expect(chainInFlight([step('done'), step(status)])).toBe(true);
     },
   );
+});
+
+describe('canStopWork', () => {
+  const card = (over: Partial<Task> = {}): Task =>
+    task({ id: 'c1', agentProjectId: 'a1', status: 'in-progress', ...over });
+  const step = (id: string, status: Task['status']): Task =>
+    task({ id, status, parentTaskId: 'c1' });
+
+  it('is false for a card nobody has delegated', () => {
+    expect(canStopWork(task({ status: 'pending' }))).toBe(false);
+  });
+
+  it.each(['running', 'waiting-input', 'blocked-by-limit'] as const)(
+    'is true while the card itself is %s',
+    (status) => {
+      expect(canStopWork(card({ status }))).toBe(true);
+    },
+  );
+
+  // The complaint this whole predicate exists for: the card stays `in-progress` while a
+  // step holds the run, so asking its status alone offered no Stop on the one card that
+  // most obviously had an agent working it.
+  it('is true for a card whose STEP is running', () => {
+    expect(canStopWork(card(), [step('s1', 'done'), step('s2', 'running')])).toBe(true);
+  });
+
+  it('is true for a chain between steps — the next one starts by itself', () => {
+    expect(canStopWork(card(), [step('s1', 'done'), step('s2', 'pending')])).toBe(true);
+  });
+
+  it('is true while a step is parked on a failure, with siblings still to run', () => {
+    expect(canStopWork(card(), [step('s1', 'failed'), step('s2', 'pending')])).toBe(true);
+  });
+
+  it('is false for steps written by hand on a card nobody has started', () => {
+    expect(canStopWork(card({ status: 'pending' }), [step('s1', 'pending')])).toBe(false);
+  });
+
+  it('is false once the whole chain has settled', () => {
+    expect(canStopWork(card(), [step('s1', 'done'), step('s2', 'stopped')])).toBe(false);
+  });
+
+  // The `starting` window: `task:assignAgent` persists `pending` and only then spawns.
+  it('is true for a run that has spawned but is not persisted as running yet', () => {
+    expect(canStopWork(card({ status: 'pending' }), [], new Set(['c1']))).toBe(true);
+    expect(canStopWork(card({ status: 'pending' }), [step('s1', 'pending')], new Set(['s1']))).toBe(
+      true,
+    );
+  });
+
+  // The snapshot lags behind the task on purpose — reading a finished one out of it is
+  // what left cards claiming to be starting long after their agent had stopped.
+  it('never reads a settled task out of the live-run snapshot', () => {
+    expect(canStopWork(card({ status: 'done' }), [], new Set(['c1']))).toBe(false);
+    expect(canStopWork(card(), [step('s1', 'done')], new Set(['s1']))).toBe(false);
+  });
 });

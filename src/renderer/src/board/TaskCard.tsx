@@ -30,6 +30,7 @@
  */
 import {
   Badge,
+  Button,
   Caption1,
   Text,
   Tooltip,
@@ -53,11 +54,13 @@ import {
   PersonFilled,
   PersonRegular,
   PresenceBlockedRegular,
+  RecordStopRegular,
   SparkleRegular,
   TaskListSquareLtrRegular,
 } from '@fluentui/react-icons';
 import type { Task } from '@shared/model';
 import {
+  canStopWork,
   cardRunLabel,
   chainNeedsAttention,
   hasUnreadJira,
@@ -362,6 +365,21 @@ const useStyles = makeStyles({
    * between a card you trust and one you keep clicking to check.
    */
   runLabel: { color: tokens.colorNeutralForeground3, flexShrink: 0 },
+  /**
+   * The Stop button on a working card: icon only, the height of the title line, and no
+   * wider than its glyph. Subtle by default so it does not compete with the title — a card
+   * has one loud thing at a time and that is the ring — and it comes up to full contrast on
+   * hover, which is where a button that ends a run ought to look like one.
+   */
+  stopButton: {
+    flexShrink: 0,
+    minWidth: '20px',
+    maxWidth: '20px',
+    height: '20px',
+    padding: 0,
+    color: tokens.colorNeutralForeground3,
+    ':hover': { color: tokens.colorNeutralForeground1 },
+  },
   /**
    * **"Wants you" is a ring; "is selected" is a brighter card.**
    *
@@ -816,6 +834,16 @@ export interface TaskCardProps {
    * distinguishes it is that its turn has come.
    */
   chainReady?: boolean;
+  /**
+   * Stop the agent working this card — absent on a board that does not offer it, which is
+   * also what hides the button.
+   *
+   * On the CARD and not only in the detail pane, because the card is where you watch the
+   * agent work: the pane's Stop was the only one there was, so stopping meant selecting the
+   * card first and finding a button in a panel — and for a card executing a plan there was
+   * no button at all (see `canStopWork`). One click, from the place you noticed.
+   */
+  onStop?: () => void;
   draggable: boolean;
   onSelect: () => void;
   /** Open a step in the detail pane (the row never drags or moves the card). */
@@ -862,6 +890,7 @@ export function TaskCard({
   chainReady = false,
   onLinkTo,
   onLinkArm,
+  onStop,
   draggable,
   onSelect,
   onSelectSubtask,
@@ -945,6 +974,17 @@ export function TaskCard({
   // What is worth saying in WORDS, once the pulsing glyph and the step counter have had their
   // say. Null while the agent is visibly working.
   const cardLabel = cardRunLabel(run, isAgentAssigned(task));
+  /**
+   * Whether this card has agent work a click could stop — the same predicate the detail
+   * pane asks, so the card and the pane can never disagree about whether there is anything
+   * to stop. A merge is deliberately not one of them: `stopTask` kills sessions, and git is
+   * not a session — offering a Stop over a rebase would promise something it cannot do.
+   */
+  const stoppable = Boolean(onStop) && canStopWork(task, subtasks, liveRunTaskIds);
+  /** Whether that click reaches into the card's PLAN — one Stop covers the whole chain. */
+  const stopsChain = subtasks.some(
+    (s) => s.status === 'running' || s.status === 'waiting-input' || s.status === 'pending',
+  );
   // Only the ticket badge carries the JIRA signal, so the ring's reason is legible.
   const jiraUnread = hasUnreadJira(task);
 
@@ -1074,6 +1114,37 @@ export function TaskCard({
             <Badge appearance="tint" color={STATUS_COLOR[badge]}>
               {STATUS_LABEL[badge]}
             </Badge>
+          )}
+          {/* Stop, on the card that is working — the click the board had nowhere to put.
+              Drawn only while there IS something to stop, so it is not one more control
+              every card carries; on the few cards that have one it is always visible
+              rather than hidden behind a hover, since a button you cannot find is the
+              complaint this exists to answer. */}
+          {stoppable && (
+            <Tooltip
+              relationship="label"
+              content={
+                stopsChain
+                  ? "Stop the agent: the step that is running is stopped and the steps queued behind it are cancelled. The card's branch and worktree are kept."
+                  : 'Stop the agent working on this card. Its branch and worktree are kept, so the work can be picked up again.'
+              }
+            >
+              <Button
+                className={styles.stopButton}
+                size="small"
+                appearance="subtle"
+                icon={<RecordStopRegular />}
+                // The card is a drop target and a click target; this button is neither.
+                // Without this the click selects the card as well, and dragging from it
+                // would try to move the card it is stopping.
+                draggable={false}
+                onDragStart={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onStop?.();
+                }}
+              />
+            </Tooltip>
           )}
         </div>
 

@@ -30,9 +30,10 @@ import {
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
+import { RecordStopRegular } from '@fluentui/react-icons';
 import { AgentGlyph } from './AgentGlyph';
 import type { AttentionAnswer, AttentionItem } from '@shared/attention';
-import { parkedStep } from '@shared/board';
+import { canStopWork, parkedStep } from '@shared/board';
 import type { Project, Task } from '@shared/model';
 import { autoIntegrateOn, projectAutoIntegrate } from '@shared/integrate';
 import { autoReleaseOn, RELEASE_DOC } from '@shared/release';
@@ -138,6 +139,12 @@ export interface TaskAgentPanelProps {
    */
   running?: boolean;
   /**
+   * The task ids the engine has a live run for (`scheduler:activeRuns`), so **Stop** is
+   * offered for a run that has spawned but is not yet persisted as `running` — the same
+   * window the spinner needs it for (see `canStopWork`).
+   */
+  liveRunTaskIds?: ReadonlySet<string>;
+  /**
    * Whether this card's branch is being merged right now (`scheduler:integrating`).
    *
    * The engine's fact, not a local flag set on click, because the merge outlives the IPC
@@ -172,6 +179,7 @@ export function TaskAgentPanel({
   onOpenTask,
   onTaskChanged,
   running = false,
+  liveRunTaskIds,
   merging = false,
   waitingOn = [],
   mergeHeld = [],
@@ -221,9 +229,27 @@ export function TaskAgentPanel({
   const stuckPosition = stuck ? stepPosition(subtasks, stuck.id) : null;
   const isStep = Boolean(task.parentTaskId);
   const live = task.status === 'running' || task.status === 'waiting-input';
-  // A limit-parked card has no process to kill, but Stop still unparks it so it
-  // doesn't silently resume when the limit lifts.
-  const stoppable = live || task.status === 'blocked-by-limit';
+  /**
+   * A card's own steps — and a STEP's nothing.
+   *
+   * `subtasks` is the chain this pane is showing, which for a step is its SIBLINGS. Stop
+   * stops the id it is drawn for, so a step must be weighed on its own state alone; asking
+   * about its siblings would put a button on step 3 that claims to stop step 2.
+   */
+  const ownSteps = isStep ? [] : subtasks;
+  /**
+   * Is there work here to stop? Asked of {@link canStopWork} rather than of `task.status`,
+   * which was blind to the two commonest cases: a card whose STEP holds the run (the card
+   * stays `in-progress`, so the pane that offers the button had none), and the moment
+   * between a run spawning and being persisted as `running`. A limit-parked card has no
+   * process to kill but is still stoppable — that is what keeps it from silently resuming
+   * when the limit lifts.
+   */
+  const stoppable = canStopWork(task, ownSteps, liveRunTaskIds);
+  /** Whether pressing Stop reaches into the card's PLAN, which the tooltip should say. */
+  const stopsChain = ownSteps.some(
+    (s) => s.status === 'running' || s.status === 'waiting-input' || s.status === 'pending',
+  );
   const assigned = agentProjects.find((p) => p.id === task.agentProjectId) ?? null;
   // An agent is on the card, nothing is running, and nothing ever ran: it was assigned
   // without being started. `sessionId` is the test rather than the status, because a
@@ -498,8 +524,24 @@ export function TaskAgentPanel({
           <Caption1 className={styles.hint}>Not assigned</Caption1>
         )}
         <span className={styles.grow} />
+        {/* The one control that ends a run. Its branch and worktree are left where they
+            are, so this is a pause you can pick up again — send the agent a message and
+            the session resumes. Said in the tooltip, because a button that reads "Stop"
+            next to a working agent is otherwise scarier than what it does. */}
         {stoppable && (
-          <Button size="small" disabled={busy} onClick={() => void stop()}>
+          <Button
+            size="small"
+            icon={<RecordStopRegular />}
+            disabled={busy}
+            title={
+              stopsChain
+                ? 'Stop the agent: the step that is running is stopped and the steps queued ' +
+                  "behind it are cancelled. The card's branch and worktree are kept."
+                : 'Stop the agent working on this card. Its branch and worktree are kept, so ' +
+                  'you can pick the work up again.'
+            }
+            onClick={() => void stop()}
+          >
             Stop
           </Button>
         )}

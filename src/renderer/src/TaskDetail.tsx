@@ -625,6 +625,7 @@ export function TaskDetail({
           agentProjects={agentProjects}
           items={panelItems}
           running={run.spinner}
+          liveRunTaskIds={liveRunTaskIds}
           merging={merging}
           waitingOn={chainWaitingOn}
           mergeHeld={chainMergeHeld}

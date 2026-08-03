@@ -119,6 +119,12 @@ export interface KanbanColumnProps {
   ) => { waitingOn: Task[]; mergeHeld: Task[]; ready: boolean } | undefined;
   selectedTaskId: string | null;
   draggingId: string | null;
+  /**
+   * Stop the agent working a card, from the card itself. Passed straight through like the
+   * link callbacks: the column neither knows what is running nor decides whether the
+   * button is drawn — the card asks `canStopWork` for that.
+   */
+  onStopTask?: (id: string) => void;
   onSelectTask: (id: string) => void;
   onDragStartTask: (id: string) => void;
   onDragEndTask: () => void;
@@ -191,6 +197,7 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               onLinkEnd={props.onLinkEnd}
               onLinkTo={(fromTaskId) => props.onLinkTo?.(fromTaskId, task.id)}
               onLinkArm={() => props.onLinkArm?.(task.id)}
+              onStop={props.onStopTask && (() => props.onStopTask?.(task.id))}
               waitingOn={props.chainStateOf?.(task)?.waitingOn}
               mergeHeld={props.chainStateOf?.(task)?.mergeHeld}
               chainReady={props.chainStateOf?.(task)?.ready}
