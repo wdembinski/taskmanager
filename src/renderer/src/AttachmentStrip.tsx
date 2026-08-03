@@ -7,8 +7,13 @@
  * board's attachment list, which the board owns because a JIRA sync rewrites whole `Task`
  * literals on every poll and anything hung off one would be clobbered.
  *
- * Three things here are deliberate and easy to get wrong:
+ * Four things here are deliberate and easy to get wrong:
  *
+ * - **A file may be shown here without belonging here.** A step's strip lists its own
+ *   files *and* its card's, so a brief can cite the mockup attached once above it
+ *   (`attachmentsInScope`). Those inherited chips cite and open like any other, and are the
+ *   one thing this strip will not remove — `taskId` is what tells them apart, and the `×`
+ *   belongs on the pane the file was attached from.
  * - **The renderer never holds a path.** Adding sends paths main just handed it (the
  *   picker's, or `pathForFile` on a dropped `File`) straight back to main; opening and
  *   previewing go by `id`. `attachmentUrl(id)` is how a locked-down window is allowed to
@@ -135,9 +140,16 @@ const useStyles = makeStyles({
 });
 
 export interface AttachmentStripProps {
-  /** The card or step the files hang off — a step is a task row, so this is the only key. */
+  /**
+   * The card or step a NEW file is attached to — a step is a task row, so this is the only
+   * key. Also what tells an inherited chip from an own one: see `attachments`.
+   */
   taskId: string;
-  /** This task's attachments, sliced out of the board's list by whoever owns it. */
+  /**
+   * The files in scope here, sliced out of the board's list by whoever owns it. For a card
+   * that is its own; for a step it is `attachmentsInScope(own, parent)`, so the mockup
+   * attached once to the card can be cited by every step of its plan.
+   */
   attachments: readonly TaskAttachment[];
   /**
    * Cite what was just attached, at the caret of the text being edited.
@@ -150,6 +162,12 @@ export interface AttachmentStripProps {
   onInsertRefs?: (names: readonly string[]) => void;
   /** True while the section around it is mid-save, so the two cannot race. */
   disabled?: boolean;
+  /**
+   * Why attaching is off — for a `disabled` that is a standing refusal rather than a
+   * moment's busy-ness. Shown on the Attach button, so a control that cannot be pressed
+   * says why: a step whose session has started is the case, since its prompt is built.
+   */
+  disabledHint?: string;
 }
 
 export function AttachmentStrip({
@@ -157,6 +175,7 @@ export function AttachmentStrip({
   attachments,
   onInsertRefs,
   disabled = false,
+  disabledHint,
 }: AttachmentStripProps): JSX.Element {
   const styles = useStyles();
   const [busy, setBusy] = useState(false);
@@ -277,6 +296,13 @@ export function AttachmentStrip({
         <div className={styles.chips}>
           {attachments.map((a) => {
             const missing = gone.has(a.id);
+            // Hung off the PARENT card, not off this task — a step is shown its card's
+            // files so a brief can cite the mockup that was attached once, above it. It
+            // may be cited from here and opened from here, but not REMOVED from here: a
+            // × on this row would take the file off the card and every other step of the
+            // plan with it, from a pane that mentions neither. It comes off where it went
+            // on. A card's own strip never sees this — every file there is its own.
+            const inherited = a.taskId !== taskId;
             return (
               <Badge
                 key={a.id}
@@ -288,7 +314,9 @@ export function AttachmentStrip({
                 title={
                   missing
                     ? `${a.fileName} — the file is missing; remove the chip or attach it again`
-                    : `${a.fileName} · ${formatSize(a.size)} · cite it as @${a.name}`
+                    : `${a.fileName} · ${formatSize(a.size)} · cite it as @${a.name}${
+                        inherited ? ' · attached to the card' : ''
+                      }`
                 }
               >
                 <button
@@ -299,16 +327,18 @@ export function AttachmentStrip({
                 >
                   {a.name}
                 </button>
-                <button
-                  type="button"
-                  className={styles.chipX}
-                  aria-label={`Remove ${a.fileName}`}
-                  title="Remove this attachment"
-                  disabled={locked}
-                  onClick={() => void remove(a.id)}
-                >
-                  ×
-                </button>
+                {!inherited && (
+                  <button
+                    type="button"
+                    className={styles.chipX}
+                    aria-label={`Remove ${a.fileName}`}
+                    title="Remove this attachment"
+                    disabled={locked}
+                    onClick={() => void remove(a.id)}
+                  >
+                    ×
+                  </button>
+                )}
               </Badge>
             );
           })}
@@ -344,6 +374,7 @@ export function AttachmentStrip({
           appearance="subtle"
           icon={<AttachRegular />}
           disabled={locked}
+          title={disabledHint}
           onClick={() => void pick()}
         >
           Attach

@@ -1000,6 +1000,12 @@ export function MyTasks(): JSX.Element {
             // The shown task's own files — a step's slice when a step is shown, since a
             // step is a task row and carries its own.
             attachments={selectedTask ? (attachmentsByTask.get(selectedTask.id) ?? []) : []}
+            // And the card's, when what is shown is a step: a step's brief may name its
+            // parent's files as well as its own, so the mockup attached once above it is
+            // citable from every step of the plan without a copy per step.
+            parentAttachments={
+              parentOfSelected ? (attachmentsByTask.get(parentOfSelected.id) ?? []) : []
+            }
             statusKeywords={settings?.statusKeywords}
             // The pane draws priority the same way the cards beside it do — one setting,
             // both surfaces, so they can never show the same fact two different ways.

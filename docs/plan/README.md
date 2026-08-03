@@ -1743,6 +1743,44 @@ Gates: `pnpm typecheck` clean, `pnpm test` **1492 green**, `pnpm build` clean, `
 applied. What a rendered chip looks like, and whether a dropped file actually lands, cannot
 be shown without launching the app — owed to step 11 with the rest.
 
+### Attaching to a step brief
+
+The second caller, and the one the strip was written for. `StepBrief` gets the same strip in
+the same place — inside the Brief fold, under the words, `onInsertRefs` only while editing —
+because a step's brief and a card's description differ in nothing but which row they hang
+off. The fold's `summary` counts the files exactly as the card's now does, and `none`
+survives for the step that has neither prose nor a file.
+
+**A step's scope is `attachmentsInScope(own, parent)`.** The mockup is attached once, to the
+card, and every step of the plan that has to match it writes `@mockup.png`; attaching it per
+step would be a copy per step, and copies drift. The step's own list wins a name clash, so a
+step that attaches its *own* `mockup.png` shadows the card's and the parent one is simply
+unreachable from there — which is what the human asked for by giving it that name. This is
+the function step 9's prompt builder resolves `@name` against, called here so what the chips
+offer and what the agent is handed cannot disagree (union and shadowing: 2 cases in
+`attachments.test.ts`, written with the rule in step 3).
+
+**An inherited chip cannot be removed from the step it is shown on.** The `×` is rendered
+only for a chip whose `taskId` is the strip's own — the strip already knows both, so this
+costs no prop. A `×` on the card's mockup, pressed from step 4's pane, would take the file
+off the card and every other step of the plan with it, from a pane that names neither; it
+comes off where it went on. A card's own strip never meets the case, since every file there
+is its own. Citing and opening are unaffected: those are exactly what a step is shown its
+parent's files *for*.
+
+**`live` is one guard with one sentence.** A running step's prompt is already built, so a
+file attached now would be attached to nothing that can still read it — the same reason the
+Edit button gives, so the string is now a `LIVE_HINT` const both use rather than two
+sentences that drift. It reaches the strip as `disabledHint`, the one prop this step added:
+a control that cannot be pressed has to say why, and `disabled` alone is a dead button.
+
+`MyTasks` hands the pane a second slice from the index it already built
+(`parentAttachments`, from `parentOfSelected`) — no new channel, no new fetch, and nothing at
+all for a card, which has no parent to inherit from.
+
+Gates: `pnpm typecheck` clean, `pnpm test` **1492 green** (no new cases — the rule this step
+leans on was pinned when it was written), `pnpm build` clean, `pnpm format` applied.
+
 ### Deliverables
 
 - [x] **1 — The shape of the design.** This entry: the four decisions above, each named
@@ -1774,8 +1812,11 @@ be shown without launching the app — owed to step 11 with the rest.
       fold because a file is part of the brief; attaching cites itself at the caret in one
       fold; the drop zone reads `'Files'` so it cannot answer a card drag or a chain link;
       and the window refuses a stray file drop that would otherwise navigate it away.
-- [ ] **7 — Attach to a step brief.** The same UI against a step's row, which the schema
-      already allows for free.
+- [x] **7 — Attach to a step brief.** The same UI against a step's row, which the schema
+      already allows for free. See above: a step's scope is its own files plus its card's,
+      through the one `attachmentsInScope` step 9 will resolve `@name` with; an inherited
+      chip cites and opens but does not offer a `×`, since it comes off where it went on;
+      and `live` freezes the strip with the same sentence the Edit button uses.
 - [ ] **8 — Stage attachments in the Add dialog.** Files chosen before the card exists, so
       they land the moment it does — the same problem the dialog's ticket already solves by
       writing the card first (`ipc.ts:723`, `adoptTaskId`).

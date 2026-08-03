@@ -7,9 +7,10 @@
  *    form to write one by hand. The runner executes them one at a time, each in its
  *    own session, so this list is also the card's progress bar.
  *  - `StepBrief` — a single step's brief: the *only* context its session is given, so
- *    it is editable here right up until that step starts.
+ *    it is editable here right up until that step starts. Its files sit inside the same
+ *    fold, for the reason the card's do: a file is the part of the brief that is not prose.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Badge,
   Button,
@@ -26,6 +27,8 @@ import {
 } from '@fluentui/react-components';
 import type { Task } from '@shared/model';
 import { isAgentRunning } from '@shared/board';
+import { attachmentsInScope, insertAttachmentRef, type TaskAttachment } from '@shared/attachments';
+import { AttachmentStrip } from './AttachmentStrip';
 import { subtaskProgress } from './board/boardColumns';
 import { canReplan, REFUSAL_HINT } from './taskChat';
 import { STATUS_LABEL } from './taskStatus';
@@ -103,6 +106,15 @@ const useStyles = makeStyles({
 function isLive(task: Task): boolean {
   return task.status === 'running' || task.status === 'waiting-input';
 }
+
+/**
+ * Why a live step's brief is frozen — one sentence for BOTH controls it turns off.
+ *
+ * Editing the words and attaching a file are the same act at different granularity, and
+ * they are refused for the same reason: the prompt this step's session was handed is
+ * already built, so anything added now would be added to nothing.
+ */
+const LIVE_HINT = 'The step is running — its prompt is already built.';
 
 /** One planning round's steps, with the index each holds in the card's whole chain. */
 interface StepRound {
@@ -453,17 +465,32 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
 export interface StepBriefProps {
   /** The step being shown (has a `parentTaskId`). */
   task: Task;
+  /** This STEP's own files, sliced out of the board's attachment list. */
+  attachments?: readonly TaskAttachment[];
+  /**
+   * The parent CARD's files. A step sees them too — the mockup is attached once, to the
+   * card, and every step that has to match it says `@mockup.png`; attaching it again per
+   * step would be a copy per step, and copies drift. See {@link attachmentsInScope}.
+   */
+  parentAttachments?: readonly TaskAttachment[];
   /** Called with the updated step after an edit. */
   onChanged: (task: Task) => void;
 }
 
-/** A step's brief, editable until its session starts. */
-export function StepBrief({ task, onChanged }: StepBriefProps): JSX.Element {
+/** A step's brief and its files, editable until its session starts. */
+export function StepBrief({
+  task,
+  attachments = [],
+  parentAttachments = [],
+  onChanged,
+}: StepBriefProps): JSX.Element {
   const styles = useStyles();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(task.description ?? '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** The brief field, so an attachment can be cited where the caret actually is. */
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   /**
    * Folded to start with, like Steps and Description. A brief is the whole prompt a step's
    * session gets, so it can run to many paragraphs — and on a step you have opened to read
@@ -480,6 +507,38 @@ export function StepBrief({ task, onChanged }: StepBriefProps): JSX.Element {
   }, [task.id, task.description]);
 
   const live = isLive(task);
+
+  /**
+   * What this step may name: its own files, then whatever the card adds that it has not
+   * already shadowed. The same list the prompt builder will resolve `@name` against, from
+   * the same function, so what the chips offer and what the agent gets cannot disagree.
+   */
+  const scope = useMemo(
+    () => attachmentsInScope(attachments, parentAttachments),
+    [attachments, parentAttachments],
+  );
+
+  /**
+   * Write `@name` for each of `names` into the draft, where the caret is — the card's
+   * `insertRefs` verbatim, and folded rather than looped for the reason given there: every
+   * call reads the SAME `draft` from this render, so five separate inserts would leave only
+   * the fifth file cited.
+   */
+  function insertRefs(names: readonly string[]): void {
+    let text = draft;
+    let caret = textareaRef.current?.selectionStart ?? draft.length;
+    for (const name of names) ({ text, caret } = insertAttachmentRef(text, caret, name));
+    setDraft(text);
+    // After React has written the new value, or the browser puts the caret back at the end
+    // of the old one and the next thing typed lands somewhere else entirely.
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(caret, caret);
+      }
+    });
+  }
 
   async function save(): Promise<void> {
     setBusy(true);
@@ -502,11 +561,24 @@ export function StepBrief({ task, onChanged }: StepBriefProps): JSX.Element {
     <div className={styles.box}>
       <div className={styles.head}>
         {/* Same fold as Steps and Description, and folded to start with for the reason
-            spelled out on `open` above. */}
+            spelled out on `open` above.
+
+            The summary counts the FILES when there are any, exactly as the card's
+            Description fold does: a brief you have read is worth leaving shut, and the one
+            thing still worth knowing about what is behind it is whether this step is
+            carrying something. The count is the SCOPE, not just the step's own — a mockup
+            inherited from the card is as much a part of this step's material as one
+            attached to it. `none` survives for the step that has neither. */}
         <FoldToggle
           open={open}
           onToggle={() => setOpen((v) => !v)}
-          summary={task.description ? undefined : 'none'}
+          summary={
+            scope.length > 0
+              ? `${scope.length} file${scope.length === 1 ? '' : 's'}`
+              : task.description
+                ? undefined
+                : 'none'
+          }
         >
           <Text weight="semibold">Brief</Text>
         </FoldToggle>
@@ -516,7 +588,7 @@ export function StepBrief({ task, onChanged }: StepBriefProps): JSX.Element {
             size="small"
             appearance="transparent"
             disabled={live}
-            title={live ? 'The step is running — its prompt is already built.' : undefined}
+            title={live ? LIVE_HINT : undefined}
             onClick={() => setEditing(true)}
           >
             Edit
@@ -530,36 +602,62 @@ export function StepBrief({ task, onChanged }: StepBriefProps): JSX.Element {
         </MessageBar>
       )}
 
-      {!open ? null : editing ? (
-        <div className={styles.form}>
-          <Textarea
-            value={draft}
-            resize="vertical"
-            onChange={(_e, d) => setDraft(d.value)}
-            placeholder="What this step must deliver…"
+      {open && (
+        <>
+          {editing ? (
+            <div className={styles.form}>
+              <Textarea
+                value={draft}
+                resize="vertical"
+                textarea={{ ref: textareaRef }}
+                onChange={(_e, d) => setDraft(d.value)}
+                placeholder="What this step must deliver…"
+              />
+              <div className={styles.formRow}>
+                <Button
+                  size="small"
+                  disabled={busy}
+                  onClick={() => {
+                    setDraft(task.description ?? '');
+                    setEditing(false);
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  size="small"
+                  appearance="primary"
+                  disabled={busy}
+                  onClick={() => void save()}
+                >
+                  Save
+                </Button>
+              </div>
+            </div>
+          ) : task.description ? (
+            <div className={styles.brief}>{task.description}</div>
+          ) : (
+            <Caption1 className={styles.hint}>
+              No brief — the step will run on its title alone.
+            </Caption1>
+          )}
+
+          {/* The step's files, under its words and inside the same fold — the card's
+              Description does exactly this, because a file is a part of the brief and not a
+              separate thing to browse. `onInsertRefs` only while EDITING, for the reason
+              given there: citing at a caret needs a caret.
+
+              Disabled by the same `live` guard the Edit button carries, and with its
+              sentence: a running step's prompt is already built, so a file attached now
+              would be attached to nothing it can still read. */}
+          <AttachmentStrip
+            taskId={task.id}
+            attachments={scope}
+            disabled={busy || live}
+            disabledHint={live ? LIVE_HINT : undefined}
+            onInsertRefs={editing ? insertRefs : undefined}
           />
-          <div className={styles.formRow}>
-            <Button
-              size="small"
-              disabled={busy}
-              onClick={() => {
-                setDraft(task.description ?? '');
-                setEditing(false);
-              }}
-            >
-              Cancel
-            </Button>
-            <Button size="small" appearance="primary" disabled={busy} onClick={() => void save()}>
-              Save
-            </Button>
-          </div>
-        </div>
-      ) : task.description ? (
-        <div className={styles.brief}>{task.description}</div>
-      ) : (
-        <Caption1 className={styles.hint}>
-          No brief — the step will run on its title alone.
-        </Caption1>
+        </>
       )}
     </div>
   );

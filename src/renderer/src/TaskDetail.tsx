@@ -161,6 +161,12 @@ export interface TaskDetailProps {
    * already narrowed to this task and the pane never has to ask.
    */
   attachments?: readonly TaskAttachment[];
+  /**
+   * The PARENT card's files, when a step is shown — a step's brief may cite them too, so
+   * the mockup attached once to the card is nameable from every step of its plan. Empty
+   * for an ordinary card, which has no parent to inherit from.
+   */
+  parentAttachments?: readonly TaskAttachment[];
   /** The status-note vocabulary, so a past update reads in the colour the board gave it. */
   statusKeywords?: readonly StatusKeyword[];
   /** How the board draws priority, so this pane draws it the same way. */
@@ -221,6 +227,7 @@ export function TaskDetail({
   parentTask = null,
   mergeRequests = [],
   attachments = [],
+  parentAttachments = [],
   statusKeywords,
   priorityDisplay = 'color',
   attention,
@@ -647,6 +654,8 @@ export function TaskDetail({
         {isStep ? (
           <StepBrief
             task={task}
+            attachments={attachments}
+            parentAttachments={parentAttachments}
             onChanged={(updated) => {
               onStatusChanged?.(updated);
               onSubtasksChanged?.();
