@@ -528,11 +528,16 @@ sends you hunting through three other cards' logs.
 - A card fed by several arrows waits for **all** of them (an AND-join) — a diamond is the
   commonest shape a chain takes, and releasing on the first arrow would start the work whose
   whole reason for waiting was the other two.
-- A release **starts** the successor only if it is assigned to an agent and still `pending`
-  with no session of its own. Anything else gets a note on its timeline naming what released
-  it, and is left alone.
-- **A chain never moves a card between columns.** Where a card sits stays yours, exactly as
-  it is for every other run.
+- A release **starts** the successor only if it is assigned to an agent and still resting in
+  To Do or In Progress, with its own work neither landed nor under way. Anything else gets a
+  note on its timeline naming what released it, and is left alone.
+- **The only column a chain writes is the one it starts a card into.** Where a card sits
+  stays yours, exactly as it is for every other run — with one exception, and it is what
+  makes the rule honest: a card the **app** starts by itself is moved to In Progress, because
+  nobody was here to move it and a card being worked on that still reads To Do is a lie. The
+  move is said on the card's timeline, and the card comes back to In Progress when the run
+  settles. Nothing else moves a card: not a decline, not a run finishing, and not **Release
+  now** — there you are looking at the board and already chose the column.
 - A predecessor you **stopped or cancelled** releases nothing: whatever state its branch is
   in, that is not "carry on with the next one". A **usage limit** holds a release exactly as
   it holds everything else — and nothing is lost, because `landedAt` is on disk and the

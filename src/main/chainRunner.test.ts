@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { restingStatus } from '@shared/board';
 import { PERSONAL_PROJECT_ID, type Task } from '@shared/model';
 import type { LinkGate, TaskLink } from '@shared/taskChain';
+import { guardCardStatus, humanStatusPatch } from './cardStatusGuard';
 import { ChainRunner, type ChainRunnerDeps, type ChainTrigger } from './chainRunner';
 
 const task = (over: Partial<Task> & { id: string }): Task => ({
@@ -37,6 +39,9 @@ const link = (from: string, to: string, gate: LinkGate = 'after-merge'): TaskLin
  *    does anything else, so a second pass over the same card sees it as busy. A fake that
  *    only recorded the call would let "re-asking twice starts once" pass vacuously.
  *  - the usage limit can be **lifted** mid-test, which is the one moment step 3 is about.
+ *  - `markInProgress` writes through the REAL `humanStatusPatch`, the same function the
+ *    scheduler wires in, so a test can ask where the card actually ended up rather than
+ *    only whether the runner meant to move it.
  */
 function harness(
   tasks: Task[],
@@ -62,6 +67,11 @@ function harness(
       reserved.add(id);
       return true;
     },
+    markInProgress: (id) => {
+      const t = byId.get(id);
+      if (!t) return;
+      Object.assign(t, humanStatusPatch(t, 'in-progress'));
+    },
     limitActive: () => limit,
     inFlight: (id) => reserved.has(id),
     branchOf: (t) => t.agentBranch || `orch/${t.id}`,
@@ -74,6 +84,21 @@ function harness(
     notes,
     setLimit: (on: boolean) => {
       limit = on;
+    },
+    /**
+     * What the engine does a moment after `runTask`: the CLI reports `started`, and the run
+     * borrows `status` through `guardCardStatus`. The gap between the two writes is where
+     * this step's whole ordering argument lives, so a test that asks where a card rests has
+     * to cross it rather than assume it.
+     */
+    runStarts: (id: string) => {
+      const t = byId.get(id);
+      if (t) Object.assign(t, guardCardStatus(t, { status: 'running' }));
+    },
+    /** And the moment it settles: the guard hands the borrowed field back. */
+    runSettles: (id: string) => {
+      const t = byId.get(id);
+      if (t) Object.assign(t, guardCardStatus(t, { status: 'done' }));
     },
   };
 }
@@ -655,5 +680,72 @@ describe('ChainRunner — Release now (the human override)', () => {
     });
     expect(runner.releaseNow('b')).toContain('could not start');
     expect(notes).toEqual([]);
+  });
+});
+
+describe('ChainRunner — an automatic start moves the card', () => {
+  it('lands a released successor in In Progress, and leaves it there when the run settles', () => {
+    const { runner, byId, notes, runStarts, runSettles } = harness(
+      [task({ id: 'a' }), successor('b')],
+      [link('a', 'b')],
+    );
+    runner.landed('a');
+    // Written before the run borrows `status`, so it is a plain column move, not a parked one.
+    expect(byId.get('b')?.status).toBe('in-progress');
+    expect(byId.get('b')?.preRunStatus).toBeUndefined();
+    expect(notes[0].body).toContain('In Progress');
+
+    // The CLI reports `started` a moment later and the run takes the field over — parking
+    // the column this just wrote, which is the whole reason the order matters.
+    runStarts('b');
+    expect(byId.get('b')?.status).toBe('running');
+    expect(restingStatus(byId.get('b')!)).toBe('in-progress');
+
+    runSettles('b');
+    expect(byId.get('b')?.status).toBe('in-progress');
+  });
+
+  it('moves a card a re-ask started, whatever re-asked', () => {
+    const { runner, byId, notes } = harness(
+      [task({ id: 'a', landedAt: 5 }), successor('b')],
+      [link('a', 'b')],
+    );
+    runner.reconsider('boot');
+    expect(byId.get('b')?.status).toBe('in-progress');
+    expect(notes[0].body).toContain('startup');
+    expect(notes[0].body).toContain('In Progress');
+  });
+
+  it('leaves the card where the human put it when they pressed Release now', () => {
+    // Somebody is looking at the board and chose that column a second ago. The whole point
+    // of the automatic move is that nobody was there — here they are.
+    const { runner, byId, started } = harness(
+      [task({ id: 'a' }), task({ id: 'b', status: 'blocked', agentProjectId: 'agent-1' })],
+      [link('a', 'b')],
+    );
+    expect(runner.releaseNow('b')).toBeNull();
+    expect(started).toEqual(['b']);
+    expect(byId.get('b')?.status).toBe('blocked');
+  });
+
+  it('moves nothing for a card the release declined', () => {
+    const { runner, byId, started } = harness(
+      [task({ id: 'a' }), task({ id: 'b', status: 'blocked', agentProjectId: 'agent-1' })],
+      [link('a', 'b')],
+    );
+    runner.landed('a');
+    expect(started).toEqual([]);
+    expect(byId.get('b')?.status).toBe('blocked');
+  });
+
+  it('leaves a successor already resting in In Progress exactly as it was', () => {
+    const { runner, byId, started } = harness(
+      [task({ id: 'a' }), task({ ...successor('b'), status: 'in-progress' })],
+      [link('a', 'b')],
+    );
+    runner.landed('a');
+    expect(started).toEqual(['b']);
+    expect(byId.get('b')?.status).toBe('in-progress');
+    expect(byId.get('b')?.preRunStatus).toBeUndefined();
   });
 });

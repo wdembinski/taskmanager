@@ -80,7 +80,7 @@ import {
   type AgentPromptComment,
 } from './agentTaskPrompt';
 import { attachmentFile } from './attachmentPaths';
-import { guardCardStatus } from './cardStatusGuard';
+import { guardCardStatus, humanStatusPatch } from './cardStatusGuard';
 import { ChainRunner, type ChainTrigger } from './chainRunner';
 import type { PermissionGate } from './claudeSession';
 import { buildChainHandbackPrompt, buildChainSummary } from './chainSummary';
@@ -958,6 +958,16 @@ export class Scheduler {
         this.tasksChanged?.(projectId);
       },
       runTask: (id) => this.runTask(id) !== null,
+      // Written as the HUMAN's move, not the scheduler's: `humanStatusPatch` puts it in
+      // `preRunStatus` if a run has already borrowed `status`, and never meets
+      // `guardCardStatus`, which would send a bare `in-progress` straight back to where
+      // the card came from. Bypasses this class's own `updateTask` for exactly that reason.
+      markInProgress: (id) => {
+        const before = this.store.getTask(id);
+        if (!before) return;
+        const task = this.store.updateTask(id, humanStatusPatch(before, 'in-progress'));
+        if (task) this.emitTask({ task, runId: null });
+      },
       limitActive: () => this.limitGate.active,
       inFlight: (id) => this.inFlight.has(id),
       branchOf: (task) => this.branchFor(task),

@@ -11,9 +11,13 @@
  *
  * Five rules run through all of it, and they are worth stating once:
  *
- *  - **A chain never moves a card between columns.** Releasing a card starts an agent on
- *    it; where the card SITS stays the human's, exactly as it is for every other run (see
- *    `@shared/board`'s `restingStatus`). Nothing here writes `status`.
+ *  - **The only column a chain writes is the one it starts a card into.** Where a card SITS
+ *    is the human's, exactly as it is for every other run (see `@shared/board`'s
+ *    `restingStatus`) — with one exception, and it is the exception that makes the rule
+ *    honest: when the APP starts a card by itself it also moves it to IN PROGRESS, because
+ *    nobody was here to move it and a card being worked on that still reads TO DO is a lie.
+ *    Everything else moves nothing — a decline, a settle, and the human's own **Release
+ *    now**, where the person pressing the button already chose the column.
  *  - **`landedAt` is the durable fact, and the release is the perishable one.** A release
  *    that could not happen — a usage limit, an app that closed — is not lost, because the
  *    landing is on disk and {@link ChainRunner.reconsider} can re-ask the question at any
@@ -49,6 +53,17 @@ export interface ChainRunnerDeps {
   addComment(projectId: string, taskId: string, body: string): void;
   /** Start a card's agent run. False when the engine refused it. */
   runTask(taskId: string): boolean;
+  /**
+   * Move a card to IN PROGRESS, as the HUMAN would (`humanStatusPatch`) — the one column
+   * write the chain makes, and only for a start nobody was present for.
+   *
+   * Called immediately after a successful `runTask`, which matters: `runTask` is
+   * synchronous only up to the spawn, so the run has not borrowed `status` yet and this
+   * writes a plain `in-progress`. The `started` event that follows then parks exactly that
+   * as `preRunStatus`, and the card comes back to IN PROGRESS when the run settles — which
+   * is the state we were after.
+   */
+  markInProgress(taskId: string): void;
   /** True while a usage limit holds ALL scheduling. */
   limitActive(): boolean;
   /** True when the engine already has a run reserved for this card. */
@@ -103,6 +118,16 @@ const TRIGGER_NOTE: Record<ChainTrigger, string> = {
     'Started when this card came back to To Do: everything it was chained to wait for had ' +
     'already finished.',
 };
+
+/**
+ * The half-sentence every automatic start adds to its note.
+ *
+ * The move is the one thing the chain does to a card that a human did not ask for, so the
+ * card's own timeline is the only place it can be accounted for. Shared by both notes —
+ * a release's and a re-ask's — because it is the same act either way.
+ */
+const MOVED_NOTE =
+  ' The card was moved to In Progress: nobody was here to move it, and its work is under way.';
 
 /** The statuses that mean "the human has taken this card off the chain's hands". */
 const ABANDONED: ReadonlySet<Task['status']> = new Set(['stopped', 'cancelled']);
@@ -233,6 +258,11 @@ export class ChainRunner {
    * and for those, refusing to start is not a safeguard, it is an obstacle. So this skips
    * the gates entirely and says so on the timeline, naming what was still outstanding.
    *
+   * The one thing it does NOT do is move the card, and that is the difference between this
+   * and every automatic start: a card the app starts is moved to IN PROGRESS because nobody
+   * was there to do it, and here somebody is — looking at the board, having chosen where
+   * this card sits. Moving it out from under them would be the tool arguing.
+   *
    * Returns a sentence saying why nothing started, or null once a run is under way.
    */
   releaseNow(taskId: string): string | null {
@@ -296,7 +326,10 @@ export class ChainRunner {
       if (!task || this.declineReason(task)) continue;
       if (!readyToReleaseGiven(task, links, byId, null)) continue;
       if (!this.deps.runTask(task.id)) continue;
-      this.deps.addComment(task.projectId, task.id, TRIGGER_NOTE[trigger]);
+      // Only now, and only here: the APP started this card, so the APP moves it. Order
+      // matters — see `ChainRunnerDeps.markInProgress`.
+      this.deps.markInProgress(task.id);
+      this.deps.addComment(task.projectId, task.id, TRIGGER_NOTE[trigger] + MOVED_NOTE);
     }
   }
 
@@ -414,6 +447,8 @@ export class ChainRunner {
         continue;
       }
       this.announced.add(said);
+      // The start was automatic, so the move comes with it — see `reconsider` for the twin.
+      this.deps.markInProgress(to.id);
       this.deps.addComment(to.projectId, to.id, this.releaseNote(from, to, link, cause, null));
     }
   }
@@ -452,6 +487,10 @@ export class ChainRunner {
    * **Ready to start** is an invitation — the card is still waiting to be run and a human
    * can have it running in one click — while **Not started** reports a card that has moved
    * past this arrow and wants nothing from anybody.
+   *
+   * A start also reports the COLUMN move it came with ({@link MOVED_NOTE}), because that is
+   * the one change to the card nobody asked for and the timeline is where it is answered
+   * for. A decline never does: nothing moved.
    */
   private releaseNote(
     from: Task,
@@ -483,13 +522,14 @@ export class ChainRunner {
   private tail(to: Task, why: Decline | null): string {
     switch (why) {
       case null:
-        return '';
+        return MOVED_NOTE;
       case 'no-agent':
         return ' Nothing was started: this card has no agent assigned. Assign one to run it.';
       case 'resting':
         return (
-          ` Nothing was started: the card is ${restingStatus(to)}, and the chain never takes ` +
-          `a card off a run or a column you put it in. Start it whenever you like.`
+          ` Nothing was started: the card is ${restingStatus(to)}, and the chain starts a ` +
+          `card from To Do or In Progress only — it never takes one off a run, or off a ` +
+          `column you deliberately put it in. Start it whenever you like.`
         );
       case 'in-flight':
         return ' Nothing was started: this card already has a run under way.';
@@ -551,8 +591,9 @@ export class ChainRunner {
    * only crime was that somebody had talked to it.
    *
    * BLOCKED, IN REVIEW and DONE are left alone, because the human put the card there
-   * deliberately. For those the chain says its piece on the timeline and moves nothing —
-   * the same restraint as the rule that a chain never moves a card between columns.
+   * deliberately. For those the chain says its piece on the timeline and moves nothing — the
+   * automatic move to IN PROGRESS belongs to a card the chain STARTED, and one it declined
+   * was never started.
    *
    * Reads `restingStatus`, never `status`: while a run holds that field the question is
    * about the column the card was left in, and a live run is refused a line earlier anyway.

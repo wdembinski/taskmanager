@@ -227,7 +227,8 @@ that one*. Every card keeps its own branch, its own worktree and its own merge â
 what makes it a different thing from a card's [steps](#subtask-step), where one branch is
 shared and only the last step integrates. A chain can be a line, a fan or a diamond
 (a card waits for **all** the arrows into it); it can never be a loop, and it can never
-include a step at either end. A chain never moves a card between columns. See
+include a step at either end. The only column a chain writes is the one it starts a card
+into: a card the app starts by itself moves to In Progress, and nothing else moves it. See
 [doc 03](03-how-orchestration-works.md#chaining-cards).
 
 ### Link (edge)
