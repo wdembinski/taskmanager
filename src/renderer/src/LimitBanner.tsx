@@ -75,8 +75,8 @@ export function LimitBanner(): JSX.Element | null {
   return (
     <MessageBar intent={limit.limitType === 'weekly' ? 'error' : 'warning'} politeness="assertive">
       <MessageBarBody>
-        <MessageBarTitle>{LIMIT_LABEL[limit.limitType]}</MessageBarTitle>{' '}
-        All work is paused — <span className={styles.countdown}>{resumeText}</span>.{' '}
+        <MessageBarTitle>{LIMIT_LABEL[limit.limitType]}</MessageBarTitle> All work is paused —{' '}
+        <span className={styles.countdown}>{resumeText}</span>.{' '}
         {parked > 0 && `${parked} task${parked === 1 ? '' : 's'} parked, resuming automatically.`}
       </MessageBarBody>
       <MessageBarActions>

@@ -130,7 +130,8 @@ export class LimitGate {
     const next: LimitState = this.current
       ? {
           // Weekly is the more restrictive; if either limit is weekly, wait it out.
-          limitType: this.current.limitType === 'weekly' || limitType === 'weekly' ? 'weekly' : 'rolling',
+          limitType:
+            this.current.limitType === 'weekly' || limitType === 'weekly' ? 'weekly' : 'rolling',
           resetsAt: pickLaterReset(this.current.resetsAt, signal.resetsAt),
           resumeAt: Math.max(this.current.resumeAt, resumeAt),
           parkedTaskIds: [...new Set([...this.current.parkedTaskIds, ...parkedTaskIds])],

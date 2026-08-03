@@ -132,8 +132,8 @@ export function StatusMapViewer({
         </Table>
       </div>
       <Caption1 className={styles.muted}>
-        Pin a row to turn what the engine worked out into a mapping you own — then it can
-        never change under you.
+        Pin a row to turn what the engine worked out into a mapping you own — then it can never
+        change under you.
       </Caption1>
     </div>
   );

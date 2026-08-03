@@ -8,14 +8,7 @@
  * and reported here, each with the specific thing to do about it.
  */
 import { useCallback, useEffect, useState } from 'react';
-import {
-  Body1,
-  Caption1,
-  makeStyles,
-  Spinner,
-  Tag,
-  tokens,
-} from '@fluentui/react-components';
+import { Body1, Caption1, makeStyles, Spinner, Tag, tokens } from '@fluentui/react-components';
 import { CheckmarkCircleFilled, DismissCircleFilled } from '@fluentui/react-icons';
 import { execTargetLabel, type ExecTarget, type TargetReadiness } from '@shared/execTarget';
 

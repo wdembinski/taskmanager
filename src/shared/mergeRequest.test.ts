@@ -301,7 +301,12 @@ describe('mergeBlockers', () => {
   });
 
   it('stops calling a blocked MR ready to merge', () => {
-    for (const status of ['conflict', 'need_rebase', 'blocked_status', 'discussions_not_resolved']) {
+    for (const status of [
+      'conflict',
+      'need_rebase',
+      'blocked_status',
+      'discussions_not_resolved',
+    ]) {
       expect(mrReadyToMerge(clear({ detailedMergeStatus: status }))).toBe(false);
     }
     expect(mrReadyToMerge(clear({ hasConflicts: true }))).toBe(false);
@@ -313,7 +318,9 @@ describe('mergeBlockers', () => {
     expect(mergeBlockers(clear({ detailedMergeStatus: 'security_policy_violations' }))).toEqual([
       'other',
     ]);
-    expect(mrReadyToMerge(clear({ detailedMergeStatus: 'security_policy_violations' }))).toBe(false);
+    expect(mrReadyToMerge(clear({ detailedMergeStatus: 'security_policy_violations' }))).toBe(
+      false,
+    );
   });
 
   it('distinguishes "still checking" from a real blocker', () => {

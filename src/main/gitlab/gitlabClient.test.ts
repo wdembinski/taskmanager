@@ -1,10 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import {
-  GitLabClient,
-  GitLabError,
-  toMergeRequestState,
-  toPipelineStatus,
-} from './gitlabClient';
+import { GitLabClient, GitLabError, toMergeRequestState, toPipelineStatus } from './gitlabClient';
 
 function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
   return {

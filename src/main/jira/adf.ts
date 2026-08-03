@@ -118,7 +118,9 @@ export function buildAdf(
         const node = a.url
           ? { type: 'text', text: label, marks: [{ type: 'link', attrs: { href: a.url } }] }
           : { type: 'text', text: label };
-        return i === 0 ? [{ type: 'text', text: '📎 ' }, node] : [{ type: 'text', text: ', ' }, node];
+        return i === 0
+          ? [{ type: 'text', text: '📎 ' }, node]
+          : [{ type: 'text', text: ', ' }, node];
       }),
     });
   }
@@ -210,7 +212,10 @@ function readSpans(nodes: readonly unknown[]): AdfSpan[] {
         return;
       }
       case 'emoji': {
-        push({ kind: 'text', text: attrString(node, 'text') ?? attrString(node, 'shortName') ?? '' });
+        push({
+          kind: 'text',
+          text: attrString(node, 'text') ?? attrString(node, 'shortName') ?? '',
+        });
         return;
       }
       default:
@@ -239,9 +244,10 @@ function readListItems(node: Record<string, unknown>): AdfSpan[][] {
  */
 export function parseAdf(body: unknown): AdfBlock[] {
   if (typeof body === 'string') {
-    return body
-      .split('\n')
-      .map((line) => ({ kind: 'paragraph' as const, spans: [{ kind: 'text' as const, text: line }] }));
+    return body.split('\n').map((line) => ({
+      kind: 'paragraph' as const,
+      spans: [{ kind: 'text' as const, text: line }],
+    }));
   }
   const doc = asRecord(body);
   if (!doc) return [];

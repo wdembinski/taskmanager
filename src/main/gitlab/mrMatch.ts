@@ -46,10 +46,7 @@ export interface MergeRequestText {
  * ticket called UTF-8. Matching is case-insensitive; the returned keys are the board's
  * own spelling, so callers can compare them directly.
  */
-export function discoverIssueKeys(
-  mr: MergeRequestText,
-  knownKeys: readonly string[],
-): string[] {
+export function discoverIssueKeys(mr: MergeRequestText, knownKeys: readonly string[]): string[] {
   const known = new Map(knownKeys.map((k) => [k.trim().toUpperCase(), k]));
   if (known.size === 0) return [];
 

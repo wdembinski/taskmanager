@@ -217,7 +217,9 @@ export function AssignAgentDialog({
   const trimmedBranch = branch.trim();
   const branchCheck = trimmedBranch ? validateBranchName(trimmedBranch) : null;
   const branchError =
-    trimmedBranch && branchCheck && !branchCheck.ok ? `That won't work: ${branchCheck.reason}.` : null;
+    trimmedBranch && branchCheck && !branchCheck.ok
+      ? `That won't work: ${branchCheck.reason}.`
+      : null;
   const ticket = task?.externalKey ? `${task.externalKey} — ${task.title}` : (task?.title ?? '');
 
   return (

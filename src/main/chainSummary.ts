@@ -75,7 +75,9 @@ export function buildChainSummary(
   const lines: string[] = [];
   const finished = steps.filter((s) => s.status === 'done').length;
 
-  lines.push(`**Plan complete** — ${finished} of ${steps.length} steps finished on “${cardTitle}”.`);
+  lines.push(
+    `**Plan complete** — ${finished} of ${steps.length} steps finished on “${cardTitle}”.`,
+  );
   lines.push('');
 
   if (steps.length === 0) {

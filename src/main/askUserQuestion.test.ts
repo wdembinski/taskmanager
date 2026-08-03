@@ -19,12 +19,9 @@ describe('isAskUserQuestionTool', () => {
     expect(isAskUserQuestionTool('mcp__some-server__AskUserQuestion')).toBe(true);
   });
 
-  it.each(['Bash', 'ExitPlanMode', 'AskUserQuestions', 'Ask', ''])(
-    'does not match %s',
-    (name) => {
-      expect(isAskUserQuestionTool(name)).toBe(false);
-    },
-  );
+  it.each(['Bash', 'ExitPlanMode', 'AskUserQuestions', 'Ask', ''])('does not match %s', (name) => {
+    expect(isAskUserQuestionTool(name)).toBe(false);
+  });
 });
 
 describe('parseAskUserQuestion', () => {
@@ -58,7 +55,12 @@ describe('parseAskUserQuestion', () => {
 
   it('keeps a question that offers no options — it is still a question', () => {
     const [q] = parseAskUserQuestion({ questions: [{ question: 'What should I name it?' }] });
-    expect(q).toEqual({ header: '', question: 'What should I name it?', multiSelect: false, options: [] });
+    expect(q).toEqual({
+      header: '',
+      question: 'What should I name it?',
+      multiSelect: false,
+      options: [],
+    });
   });
 
   it('carries multiSelect through', () => {
@@ -99,9 +101,9 @@ describe('parseAskUserQuestion', () => {
 
 describe('describeQuestions', () => {
   it('uses the question itself when there is one', () => {
-    expect(describeQuestions(parseAskUserQuestion({ questions: [{ question: 'Which DB?' }] }))).toBe(
-      'Which DB?',
-    );
+    expect(
+      describeQuestions(parseAskUserQuestion({ questions: [{ question: 'Which DB?' }] })),
+    ).toBe('Which DB?');
   });
 
   it('counts the rest when there are several', () => {
@@ -158,7 +160,12 @@ describe('formatAnswerMessage', () => {
   });
 
   it('carries a free-standing note at the end', () => {
-    const message = formatAnswerMessage(questions, [['SQLite'], ['auth']], undefined, 'keep it read-only');
+    const message = formatAnswerMessage(
+      questions,
+      [['SQLite'], ['auth']],
+      undefined,
+      'keep it read-only',
+    );
     expect(message).toContain('Additional instruction from the user: keep it read-only');
   });
 

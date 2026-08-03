@@ -132,11 +132,7 @@ export async function isClean(dir: string, host?: ExecHost): Promise<boolean> {
 }
 
 /** True if the given branch name already exists. */
-export async function branchExists(
-  dir: string,
-  branch: string,
-  host?: ExecHost,
-): Promise<boolean> {
+export async function branchExists(dir: string, branch: string, host?: ExecHost): Promise<boolean> {
   const res = await git(dir, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], host);
   return res.code === 0;
 }
@@ -354,11 +350,7 @@ export async function blobSha(
  * (`--path` applies `.gitattributes`/autocrlf), so a content comparison against a stored
  * blob isn't fooled by line-ending normalization. '' if the file can't be hashed.
  */
-export async function workingFileSha(
-  dir: string,
-  path: string,
-  host?: ExecHost,
-): Promise<string> {
+export async function workingFileSha(dir: string, path: string, host?: ExecHost): Promise<string> {
   const res = await git(dir, ['hash-object', `--path=${path}`, '--', path], host);
   return res.code === 0 ? res.stdout.trim() : '';
 }

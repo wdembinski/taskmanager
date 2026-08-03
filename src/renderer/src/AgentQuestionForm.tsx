@@ -130,9 +130,7 @@ export function AgentQuestionForm({
           <div className={styles.prompt}>
             <Markdown source={q.question} />
           </div>
-          {q.multiSelect && (
-            <Caption1 className={styles.hint}>Choose as many as apply.</Caption1>
-          )}
+          {q.multiSelect && <Caption1 className={styles.hint}>Choose as many as apply.</Caption1>}
 
           <div className={styles.options}>
             {q.multiSelect
@@ -186,9 +184,7 @@ export function AgentQuestionForm({
             value={freeText[qi] ?? ''}
             resize="vertical"
             disabled={busy}
-            placeholder={
-              q.options.length > 0 ? 'Or answer in your own words…' : 'Your answer…'
-            }
+            placeholder={q.options.length > 0 ? 'Or answer in your own words…' : 'Your answer…'}
             onChange={(_e, d) =>
               setFreeText((prev) => prev.map((t, i) => (i === qi ? d.value : t)))
             }
@@ -223,7 +219,9 @@ export function AgentQuestionForm({
       </div>
       {!complete && (
         <Caption1 className={styles.hint}>
-          <Text weight="semibold">{questions.length === 1 ? 'This question' : 'Every question'}</Text>{' '}
+          <Text weight="semibold">
+            {questions.length === 1 ? 'This question' : 'Every question'}
+          </Text>{' '}
           needs an answer — pick an option or type one.
         </Caption1>
       )}

@@ -422,7 +422,9 @@ export function verdictSummary(mr: MergeRequest): string {
     case 'blocked':
       // Every reason, not just the first: GitLab's own UI lists them together, and being
       // told about the conflict only to hit the rebase next is two trips for one problem.
-      return `can't merge — ${mergeBlockers(mr).map((b) => MERGE_BLOCKER_LABEL[b]).join(', ')}`;
+      return `can't merge — ${mergeBlockers(mr)
+        .map((b) => MERGE_BLOCKER_LABEL[b])
+        .join(', ')}`;
     default:
       return approvalSummary(mr);
   }

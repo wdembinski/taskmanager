@@ -9,12 +9,7 @@ import { PassThrough } from 'node:stream';
 import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { MAX_TOOL_ERROR_CHARS } from './eventNoise';
 import { HEADLESS_TURN_CONTRACT } from './headlessContract';
-import {
-  buildClaudeArgs,
-  encodeUserMessage,
-  mapRawEvent,
-  runClaudeSession,
-} from './claudeSession';
+import { buildClaudeArgs, encodeUserMessage, mapRawEvent, runClaudeSession } from './claudeSession';
 import type { ExecHost } from './exec';
 
 describe('mapRawEvent', () => {
@@ -167,7 +162,12 @@ describe('mapRawEvent', () => {
         durationMs: 1494,
         stopReason: 'end_turn',
         terminalReason: 'completed',
-        usage: { inputTokens: 12, outputTokens: 34, cacheCreationTokens: 100, cacheReadTokens: 900 },
+        usage: {
+          inputTokens: 12,
+          outputTokens: 34,
+          cacheCreationTokens: 100,
+          cacheReadTokens: 900,
+        },
       },
     ]);
   });
@@ -191,7 +191,13 @@ describe('mapRawEvent', () => {
       },
     });
     expect(events).toEqual([
-      { kind: 'usage', inputTokens: 5, outputTokens: 7, cacheCreationTokens: 0, cacheReadTokens: 2048 },
+      {
+        kind: 'usage',
+        inputTokens: 5,
+        outputTokens: 7,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 2048,
+      },
       { kind: 'assistant', text: 'hi' },
     ]);
   });

@@ -25,7 +25,12 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import { ChevronDownRegular, ChevronRightRegular } from '@fluentui/react-icons';
-import type { UsageProjectBreakdown, UsageSeriesPoint, UsageSlice, UsageSummary } from '@shared/usage';
+import type {
+  UsageProjectBreakdown,
+  UsageSeriesPoint,
+  UsageSlice,
+  UsageSummary,
+} from '@shared/usage';
 import { BurnRateGauge } from './BurnRateGauge';
 import { PaneLoading } from './PaneLoading';
 import { useInitialLoad } from './useInitialLoad';
@@ -63,15 +68,32 @@ const BAR_COLORS = [
 const ORCH_COLOR = tokens.colorPaletteMarigoldForeground2;
 
 const useStyles = makeStyles({
-  root: { display: 'flex', flexDirection: 'column', gap: '12px', minHeight: 0, overflowY: 'auto', paddingRight: '4px' },
+  root: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '12px',
+    minHeight: 0,
+    overflowY: 'auto',
+    paddingRight: '4px',
+  },
   header: { display: 'flex', alignItems: 'center', gap: '10px' },
   reset: { color: tokens.colorNeutralForeground3, fontVariantNumeric: 'tabular-nums' },
   selector: { display: 'flex', gap: '4px', marginLeft: 'auto' },
-  main: { display: 'grid', gridTemplateColumns: 'minmax(220px, 1fr) minmax(0, 3fr)', gap: '16px', alignItems: 'start' },
+  main: {
+    display: 'grid',
+    gridTemplateColumns: 'minmax(220px, 1fr) minmax(0, 3fr)',
+    gap: '16px',
+    alignItems: 'start',
+  },
   rail: { display: 'flex', flexDirection: 'column', gap: '8px' },
   panel: { display: 'flex', flexDirection: 'column', gap: '12px', minWidth: 0 },
   topRow: { display: 'flex', gap: '16px', alignItems: 'center', flexWrap: 'wrap' },
-  tiles: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '10px', flex: 1 },
+  tiles: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
+    gap: '10px',
+    flex: 1,
+  },
   tile: {
     display: 'flex',
     flexDirection: 'column',
@@ -82,21 +104,66 @@ const useStyles = makeStyles({
     borderRadius: tokens.borderRadiusMedium,
   },
   tileValue: { fontSize: '20px', fontWeight: 700, fontVariantNumeric: 'tabular-nums' },
-  tileLabel: { fontSize: '11px', color: tokens.colorNeutralForeground3, textTransform: 'uppercase', letterSpacing: '0.03em' },
+  tileLabel: {
+    fontSize: '11px',
+    color: tokens.colorNeutralForeground3,
+    textTransform: 'uppercase',
+    letterSpacing: '0.03em',
+  },
   section: { display: 'flex', flexDirection: 'column', gap: '6px' },
   sectionTitle: { fontSize: '12px', fontWeight: 600, color: tokens.colorNeutralForeground2 },
   rowList: { display: 'flex', flexDirection: 'column', gap: '6px' },
   row: { display: 'grid', gridTemplateColumns: '1fr auto', gap: '4px 10px', alignItems: 'center' },
-  rowLabel: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '13px' },
-  rowNums: { fontVariantNumeric: 'tabular-nums', fontSize: '12px', color: tokens.colorNeutralForeground2, whiteSpace: 'nowrap' },
-  bar: { gridColumn: '1 / -1', height: '4px', borderRadius: '2px', backgroundColor: tokens.colorNeutralBackground4, overflow: 'hidden' },
+  rowLabel: {
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    fontSize: '13px',
+  },
+  rowNums: {
+    fontVariantNumeric: 'tabular-nums',
+    fontSize: '12px',
+    color: tokens.colorNeutralForeground2,
+    whiteSpace: 'nowrap',
+  },
+  bar: {
+    gridColumn: '1 / -1',
+    height: '4px',
+    borderRadius: '2px',
+    backgroundColor: tokens.colorNeutralBackground4,
+    overflow: 'hidden',
+  },
   barFill: { height: '100%', borderRadius: '2px' },
   empty: { color: tokens.colorNeutralForeground3, padding: '24px 0', textAlign: 'center' },
   // Drill-down tree
-  project: { display: 'flex', flexDirection: 'column', gap: '6px', paddingBottom: '8px', borderBottom: `1px solid ${tokens.colorNeutralStroke2}` },
-  projectHead: { display: 'grid', gridTemplateColumns: 'auto 1fr auto', gap: '4px 8px', alignItems: 'center', cursor: 'pointer', background: 'none', border: 'none', padding: 0, textAlign: 'left', color: 'inherit', width: '100%' },
+  project: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '6px',
+    paddingBottom: '8px',
+    borderBottom: `1px solid ${tokens.colorNeutralStroke2}`,
+  },
+  projectHead: {
+    display: 'grid',
+    gridTemplateColumns: 'auto 1fr auto',
+    gap: '4px 8px',
+    alignItems: 'center',
+    cursor: 'pointer',
+    background: 'none',
+    border: 'none',
+    padding: 0,
+    textAlign: 'left',
+    color: 'inherit',
+    width: '100%',
+  },
   chevron: { display: 'flex', alignItems: 'center', color: tokens.colorNeutralForeground3 },
-  projectName: { fontSize: '13px', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  projectName: {
+    fontSize: '13px',
+    fontWeight: 600,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
   children: { display: 'flex', flexDirection: 'column', gap: '6px', paddingLeft: '22px' },
   childEmpty: { fontSize: '12px', color: tokens.colorNeutralForeground3, paddingLeft: '22px' },
 });
@@ -113,7 +180,10 @@ function ShareRow({ slice, color }: { slice: UsageSlice; color: string }): JSX.E
         {formatTokens(slice.tokens)} · {formatPct(slice.pct)}
       </span>
       <div className={styles.bar}>
-        <div className={styles.barFill} style={{ width: `${Math.min(100, slice.pct)}%`, backgroundColor: color }} />
+        <div
+          className={styles.barFill}
+          style={{ width: `${Math.min(100, slice.pct)}%`, backgroundColor: color }}
+        />
       </div>
     </div>
   );
@@ -137,7 +207,15 @@ function ProjectBlock({
     <div className={styles.project}>
       <button className={styles.projectHead} onClick={onToggle} aria-expanded={expanded}>
         <span className={styles.chevron}>
-          {hasChildren ? (expanded ? <ChevronDownRegular /> : <ChevronRightRegular />) : <span style={{ width: 16 }} />}
+          {hasChildren ? (
+            expanded ? (
+              <ChevronDownRegular />
+            ) : (
+              <ChevronRightRegular />
+            )
+          ) : (
+            <span style={{ width: 16 }} />
+          )}
         </span>
         <span className={styles.projectName} title={project.label}>
           {project.label}
@@ -146,7 +224,10 @@ function ProjectBlock({
           {formatTokens(project.tokens)} · {formatPct(project.pct)}
         </span>
         <div className={styles.bar}>
-          <div className={styles.barFill} style={{ width: `${Math.min(100, project.pct)}%`, backgroundColor: color }} />
+          <div
+            className={styles.barFill}
+            style={{ width: `${Math.min(100, project.pct)}%`, backgroundColor: color }}
+          />
         </div>
       </button>
       {expanded &&
@@ -244,7 +325,9 @@ export function Performance(): JSX.Element {
         <MessageBar intent={summary.runningLow === 'critical' ? 'error' : 'warning'}>
           <MessageBarBody>
             <MessageBarTitle>
-              {summary.runningLow === 'critical' ? 'Usage limit reached' : 'Approaching the usage limit'}
+              {summary.runningLow === 'critical'
+                ? 'Usage limit reached'
+                : 'Approaching the usage limit'}
             </MessageBarTitle>{' '}
             {summary.limitStatus ? `Claude reported "${summary.limitStatus}".` : ''}{' '}
             {resetMs != null && resetMs > 0 && `Window resets in ${formatCountdown(resetMs)}.`}
@@ -283,7 +366,11 @@ export function Performance(): JSX.Element {
                 <span className={styles.rowNums}>No usage yet</span>
               ) : (
                 summary.bySource.map((s) => (
-                  <ShareRow key={s.id} slice={s} color={s.id === 'orchestrator' ? ORCH_COLOR : BAR_COLORS[0]} />
+                  <ShareRow
+                    key={s.id}
+                    slice={s}
+                    color={s.id === 'orchestrator' ? ORCH_COLOR : BAR_COLORS[0]}
+                  />
                 ))
               )}
             </div>
@@ -292,11 +379,25 @@ export function Performance(): JSX.Element {
             <span className={styles.sectionTitle}>Totals ({rangeLabel})</span>
             <div className={styles.rowList}>
               <ShareRow
-                slice={{ id: 'tasks', label: 'Task agents', tokens: summary.taskTotal, pct: summary.windowTotal > 0 ? (summary.taskTotal / summary.windowTotal) * 100 : 0 }}
+                slice={{
+                  id: 'tasks',
+                  label: 'Task agents',
+                  tokens: summary.taskTotal,
+                  pct:
+                    summary.windowTotal > 0 ? (summary.taskTotal / summary.windowTotal) * 100 : 0,
+                }}
                 color={BAR_COLORS[0]}
               />
               <ShareRow
-                slice={{ id: 'orch', label: 'Orchestrator', tokens: summary.orchestratorTotal, pct: summary.windowTotal > 0 ? (summary.orchestratorTotal / summary.windowTotal) * 100 : 0 }}
+                slice={{
+                  id: 'orch',
+                  label: 'Orchestrator',
+                  tokens: summary.orchestratorTotal,
+                  pct:
+                    summary.windowTotal > 0
+                      ? (summary.orchestratorTotal / summary.windowTotal) * 100
+                      : 0,
+                }}
                 color={ORCH_COLOR}
               />
             </div>

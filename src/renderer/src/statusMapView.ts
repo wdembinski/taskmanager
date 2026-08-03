@@ -50,9 +50,7 @@ export function buildStatusMapRows(
       const { column, reason } = resolveStatusColumn(name, category, map, learned);
       return { name, category, column, reason };
     })
-    .sort(
-      (a, b) => columnRank(a.column) - columnRank(b.column) || a.name.localeCompare(b.name),
-    );
+    .sort((a, b) => columnRank(a.column) - columnRank(b.column) || a.name.localeCompare(b.name));
 }
 
 /** The badge text for a row's tier. Sentence-shaped, because it answers "why?". */

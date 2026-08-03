@@ -54,15 +54,36 @@ export function BurnRateGauge({ burn, max }: BurnRateGaugeProps): JSX.Element {
   const f = max > 0 ? burn.perSecond / max : 0;
   const [nx, ny] = polar(R * 0.82, f);
   const TrendIcon =
-    burn.trend === 'up' ? ArrowUpRegular : burn.trend === 'down' ? ArrowDownRegular : ArrowRightRegular;
+    burn.trend === 'up'
+      ? ArrowUpRegular
+      : burn.trend === 'down'
+        ? ArrowDownRegular
+        : ArrowRightRegular;
 
   return (
     <div className={styles.root}>
       <svg className={styles.svg} viewBox="0 0 200 116" role="img" aria-label="Token burn rate">
         {/* Zones: green (calm) → amber → red (burning fast) */}
-        <path d={arc(R, 0, 0.6)} stroke={tokens.colorPaletteGreenBackground3} strokeWidth={13} fill="none" strokeLinecap="round" />
-        <path d={arc(R, 0.6, 0.85)} stroke={tokens.colorPaletteYellowBackground3} strokeWidth={13} fill="none" />
-        <path d={arc(R, 0.85, 1)} stroke={tokens.colorPaletteRedBackground3} strokeWidth={13} fill="none" strokeLinecap="round" />
+        <path
+          d={arc(R, 0, 0.6)}
+          stroke={tokens.colorPaletteGreenBackground3}
+          strokeWidth={13}
+          fill="none"
+          strokeLinecap="round"
+        />
+        <path
+          d={arc(R, 0.6, 0.85)}
+          stroke={tokens.colorPaletteYellowBackground3}
+          strokeWidth={13}
+          fill="none"
+        />
+        <path
+          d={arc(R, 0.85, 1)}
+          stroke={tokens.colorPaletteRedBackground3}
+          strokeWidth={13}
+          fill="none"
+          strokeLinecap="round"
+        />
         {/* Needle */}
         <line
           x1={CX}

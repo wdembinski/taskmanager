@@ -175,7 +175,8 @@ export function validateBranchName(name: string): { ok: true } | { ok: false; re
   if (value.includes('@{')) return { ok: false, reason: 'it contains "@{"' };
   if (value === '@') return { ok: false, reason: '"@" on its own is reserved' };
   // eslint-disable-next-line no-control-regex
-  if (/[\x00-\x1f\x7f]/.test(value)) return { ok: false, reason: 'it contains a control character' };
+  if (/[\x00-\x1f\x7f]/.test(value))
+    return { ok: false, reason: 'it contains a control character' };
   const bad = [' ', '~', '^', ':', '?', '*', '[', '\\'].find((c) => value.includes(c));
   if (bad) return { ok: false, reason: `it contains "${bad}"` };
   for (const segment of value.split('/')) {

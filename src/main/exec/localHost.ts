@@ -45,7 +45,12 @@ export class LocalExecHost implements ExecHost {
       // A failed command is an ordinary outcome (a dirty tree, a missing binary),
       // so the exit code is returned rather than thrown. `code` is a string like
       // 'ENOENT' when the process never started at all.
-      const e = err as { code?: number | string; stdout?: string; stderr?: string; message?: string };
+      const e = err as {
+        code?: number | string;
+        stdout?: string;
+        stderr?: string;
+        message?: string;
+      };
       return {
         code: typeof e.code === 'number' ? e.code : 1,
         stdout: e.stdout ?? '',

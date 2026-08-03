@@ -72,7 +72,11 @@ export interface PriorityGlyphProps {
   size?: number;
 }
 
-export function PriorityGlyph({ mode, priority, size = 18 }: PriorityGlyphProps): JSX.Element | null {
+export function PriorityGlyph({
+  mode,
+  priority,
+  size = 18,
+}: PriorityGlyphProps): JSX.Element | null {
   const styles = useStyles();
   // Asked here and by the card's footer, so a row can never be drawn for a mark that isn't.
   if (!priorityIndicatorShown(mode, priority)) return null;

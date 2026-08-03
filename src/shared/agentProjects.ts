@@ -53,5 +53,7 @@ export function resolveAgentProject(task: Task, projects: Project[]): Project | 
   const epicKey = task.externalParentKey ? normalizeEpicKey(task.externalParentKey) : null;
   if (!epicKey) return null;
 
-  return candidates.find((p) => p.jiraEpicKeys.some((k) => normalizeEpicKey(k) === epicKey)) ?? null;
+  return (
+    candidates.find((p) => p.jiraEpicKeys.some((k) => normalizeEpicKey(k) === epicKey)) ?? null
+  );
 }

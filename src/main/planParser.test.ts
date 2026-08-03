@@ -13,8 +13,22 @@ describe('parsePlan', () => {
       ),
     );
     expect(tasks).toEqual([
-      { phase: 'Phase 1 — Setup', title: 'install deps', done: false, needs: [], isContract: false, isScaffold: false },
-      { phase: 'Phase 1 — Setup', title: 'configure lint', done: false, needs: [], isContract: false, isScaffold: false },
+      {
+        phase: 'Phase 1 — Setup',
+        title: 'install deps',
+        done: false,
+        needs: [],
+        isContract: false,
+        isScaffold: false,
+      },
+      {
+        phase: 'Phase 1 — Setup',
+        title: 'configure lint',
+        done: false,
+        needs: [],
+        isContract: false,
+        isScaffold: false,
+      },
     ]);
   });
 
@@ -36,7 +50,16 @@ describe('parsePlan', () => {
     const tasks = parsePlan(
       ['## P', 'Some explanation.', '- a plain bullet', '- [ ] a real task'].join('\n'),
     );
-    expect(tasks).toEqual([{ phase: 'P', title: 'a real task', done: false, needs: [], isContract: false, isScaffold: false }]);
+    expect(tasks).toEqual([
+      {
+        phase: 'P',
+        title: 'a real task',
+        done: false,
+        needs: [],
+        isContract: false,
+        isScaffold: false,
+      },
+    ]);
   });
 
   it('folds wrapped continuation lines into the task title', () => {
@@ -44,7 +67,14 @@ describe('parsePlan', () => {
       ['## P', '- [ ] a long task that', '      wraps across', '      three lines'].join('\n'),
     );
     expect(tasks).toEqual([
-      { phase: 'P', title: 'a long task that wraps across three lines', done: false, needs: [], isContract: false, isScaffold: false },
+      {
+        phase: 'P',
+        title: 'a long task that wraps across three lines',
+        done: false,
+        needs: [],
+        isContract: false,
+        isScaffold: false,
+      },
     ]);
   });
 
@@ -55,19 +85,37 @@ describe('parsePlan', () => {
       ),
     );
     expect(tasks).toEqual([
-      { phase: 'P', title: 'first continued', done: false, needs: [], isContract: false, isScaffold: false },
+      {
+        phase: 'P',
+        title: 'first continued',
+        done: false,
+        needs: [],
+        isContract: false,
+        isScaffold: false,
+      },
       { phase: 'P', title: 'second', done: false, needs: [], isContract: false, isScaffold: false },
     ]);
   });
 
   it('assigns phase "" to tasks before any heading', () => {
     const tasks = parsePlan(['- [ ] orphan'].join('\n'));
-    expect(tasks).toEqual([{ phase: '', title: 'orphan', done: false, needs: [], isContract: false, isScaffold: false }]);
+    expect(tasks).toEqual([
+      { phase: '', title: 'orphan', done: false, needs: [], isContract: false, isScaffold: false },
+    ]);
   });
 
   it('handles CRLF line endings', () => {
     const tasks = parsePlan('## P\r\n- [ ] windows\r\n');
-    expect(tasks).toEqual([{ phase: 'P', title: 'windows', done: false, needs: [], isContract: false, isScaffold: false }]);
+    expect(tasks).toEqual([
+      {
+        phase: 'P',
+        title: 'windows',
+        done: false,
+        needs: [],
+        isContract: false,
+        isScaffold: false,
+      },
+    ]);
   });
 
   it('returns [] for empty or checkbox-free input', () => {
@@ -80,8 +128,22 @@ describe('parsePlan', () => {
       ['## P', '- [ ] Set up DB', '- [ ] Build API @needs: Set up DB'].join('\n'),
     );
     expect(tasks).toEqual([
-      { phase: 'P', title: 'Set up DB', done: false, needs: [], isContract: false, isScaffold: false },
-      { phase: 'P', title: 'Build API', done: false, needs: ['Set up DB'], isContract: false, isScaffold: false },
+      {
+        phase: 'P',
+        title: 'Set up DB',
+        done: false,
+        needs: [],
+        isContract: false,
+        isScaffold: false,
+      },
+      {
+        phase: 'P',
+        title: 'Build API',
+        done: false,
+        needs: ['Set up DB'],
+        isContract: false,
+        isScaffold: false,
+      },
     ]);
   });
 
@@ -107,7 +169,9 @@ describe('parsePlan', () => {
         '- [ ] Vite app @needs: Create packages (`apps/*`, `packages/*`, `tools/*`) with stubs',
       ].join('\n'),
     );
-    expect(tasks[1].needs).toEqual(['Create packages (`apps/*`, `packages/*`, `tools/*`) with stubs']);
+    expect(tasks[1].needs).toEqual([
+      'Create packages (`apps/*`, `packages/*`, `tools/*`) with stubs',
+    ]);
   });
 
   it('resolves a comma-in-title dep alongside a second plain dep', () => {
@@ -134,7 +198,9 @@ describe('parsePlan', () => {
       ].join('\n'),
     );
     // Stores the CANONICAL title (as authored), so the scheduler's exact match holds.
-    expect(tasks[1].needs).toEqual(['Restore fields (`passwordHash?`,`emailVerified`,`roles` M2M)']);
+    expect(tasks[1].needs).toEqual([
+      'Restore fields (`passwordHash?`,`emailVerified`,`roles` M2M)',
+    ]);
   });
 
   it('resolves a no-space comma-in-title dep alongside a second dep', () => {
@@ -153,7 +219,9 @@ describe('parsePlan', () => {
   });
 
   it('surfaces a genuinely-unknown @needs ref verbatim as a single unmet dep', () => {
-    const tasks = parsePlan(['## P', '- [x] Set up DB', '- [ ] Build @needs: No Such Task'].join('\n'));
+    const tasks = parsePlan(
+      ['## P', '- [x] Set up DB', '- [ ] Build @needs: No Such Task'].join('\n'),
+    );
     expect(tasks[1].needs).toEqual(['No Such Task']);
   });
 
@@ -171,11 +239,27 @@ describe('parsePlan', () => {
 
   it('extracts a trailing @contract marker into isContract and strips it from the title', () => {
     const tasks = parsePlan(
-      ['## P', '- [ ] Define shared contract in CONTRACT.md @contract', '- [ ] Build API'].join('\n'),
+      ['## P', '- [ ] Define shared contract in CONTRACT.md @contract', '- [ ] Build API'].join(
+        '\n',
+      ),
     );
     expect(tasks).toEqual([
-      { phase: 'P', title: 'Define shared contract in CONTRACT.md', done: false, needs: [], isContract: true, isScaffold: false },
-      { phase: 'P', title: 'Build API', done: false, needs: [], isContract: false, isScaffold: false },
+      {
+        phase: 'P',
+        title: 'Define shared contract in CONTRACT.md',
+        done: false,
+        needs: [],
+        isContract: true,
+        isScaffold: false,
+      },
+      {
+        phase: 'P',
+        title: 'Build API',
+        done: false,
+        needs: [],
+        isContract: false,
+        isScaffold: false,
+      },
     ]);
   });
 
@@ -210,15 +294,25 @@ describe('parsePlan', () => {
         isContract: false,
         isScaffold: true,
       },
-      { phase: 'P', title: 'Build API', done: false, needs: [], isContract: false, isScaffold: false },
+      {
+        phase: 'P',
+        title: 'Build API',
+        done: false,
+        needs: [],
+        isContract: false,
+        isScaffold: false,
+      },
     ]);
   });
 
   it('parses @scaffold alongside a @needs clause, in either order', () => {
     const tasks = parsePlan(
-      ['## P', '- [ ] Root @scaffold @needs: Setup', '- [ ] Other @needs: Setup @scaffold', '- [ ] Setup'].join(
-        '\n',
-      ),
+      [
+        '## P',
+        '- [ ] Root @scaffold @needs: Setup',
+        '- [ ] Other @needs: Setup @scaffold',
+        '- [ ] Setup',
+      ].join('\n'),
     );
     expect(tasks[0]).toMatchObject({ title: 'Root', needs: ['Setup'], isScaffold: true });
     expect(tasks[1]).toMatchObject({ title: 'Other', needs: ['Setup'], isScaffold: true });

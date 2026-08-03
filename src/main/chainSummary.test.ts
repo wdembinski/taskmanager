@@ -51,7 +51,8 @@ describe('buildChainSummary', () => {
       [
         step({
           index: 1,
-          outcome: 'First I read the router.\n\nThen I looked at the guard.\n\nAdded the guard; 4 tests pass.',
+          outcome:
+            'First I read the router.\n\nThen I looked at the guard.\n\nAdded the guard; 4 tests pass.',
         }),
       ],
       null,
@@ -68,9 +69,9 @@ describe('buildChainSummary', () => {
   });
 
   it('names the merge when there was one, and stays quiet when there wasn’t', () => {
-    expect(
-      buildChainSummary('x', [step({ index: 1 })], 'wd/feat/abc-1/add-sso', 'main'),
-    ).toContain('Merged `wd/feat/abc-1/add-sso` into `main`.');
+    expect(buildChainSummary('x', [step({ index: 1 })], 'wd/feat/abc-1/add-sso', 'main')).toContain(
+      'Merged `wd/feat/abc-1/add-sso` into `main`.',
+    );
     expect(buildChainSummary('x', [step({ index: 1 })], null, null)).not.toContain('Merged');
   });
 

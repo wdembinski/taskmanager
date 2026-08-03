@@ -79,13 +79,7 @@ function Spans({ spans }: { spans: readonly AdfSpan[] }): React.JSX.Element {
             );
           case 'link':
             return (
-              <a
-                key={i}
-                className={styles.link}
-                href={span.href}
-                target="_blank"
-                rel="noreferrer"
-              >
+              <a key={i} className={styles.link} href={span.href} target="_blank" rel="noreferrer">
                 {span.text}
               </a>
             );

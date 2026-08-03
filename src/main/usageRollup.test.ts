@@ -36,7 +36,13 @@ describe('rollupWindow', () => {
     const samples = [
       sample({ taskId: 'a', projectId: 'p1', inputTokens: 30_000, createdAt: now - MIN }),
       sample({ taskId: 'b', projectId: 'p1', inputTokens: 50_000, createdAt: now - 2 * MIN }),
-      sample({ taskId: null, source: 'orchestrator', projectId: 'p1', inputTokens: 20_000, createdAt: now - 3 * MIN }),
+      sample({
+        taskId: null,
+        source: 'orchestrator',
+        projectId: 'p1',
+        inputTokens: 20_000,
+        createdAt: now - 3 * MIN,
+      }),
     ];
     const summary = rollupWindow(samples, {
       now,
@@ -73,8 +79,20 @@ describe('rollupWindow', () => {
 
   it('sums the input/output/cache breakdown', () => {
     const samples = [
-      sample({ inputTokens: 10, outputTokens: 20, cacheCreationTokens: 30, cacheReadTokens: 40, createdAt: now - MIN }),
-      sample({ inputTokens: 1, outputTokens: 2, cacheCreationTokens: 3, cacheReadTokens: 4, createdAt: now - MIN }),
+      sample({
+        inputTokens: 10,
+        outputTokens: 20,
+        cacheCreationTokens: 30,
+        cacheReadTokens: 40,
+        createdAt: now - MIN,
+      }),
+      sample({
+        inputTokens: 1,
+        outputTokens: 2,
+        cacheCreationTokens: 3,
+        cacheReadTokens: 4,
+        createdAt: now - MIN,
+      }),
     ];
     const summary = rollupWindow(samples, { now });
     expect(summary.breakdown).toEqual({ input: 11, output: 22, cacheCreation: 33, cacheRead: 44 });
@@ -91,7 +109,13 @@ describe('rollupWindow', () => {
       sample({ projectId: 'p1', taskId: 'a', inputTokens: 40_000, createdAt: now - MIN }),
       sample({ projectId: 'p1', taskId: 'b', inputTokens: 10_000, createdAt: now - MIN }),
       // Orchestrator (Align) spend for p1 — no taskId.
-      sample({ projectId: 'p1', taskId: null, source: 'orchestrator', inputTokens: 20_000, createdAt: now - MIN }),
+      sample({
+        projectId: 'p1',
+        taskId: null,
+        source: 'orchestrator',
+        inputTokens: 20_000,
+        createdAt: now - MIN,
+      }),
       sample({ projectId: 'p2', taskId: 'c', inputTokens: 30_000, createdAt: now - MIN }),
     ];
     const summary = rollupWindow(samples, {
@@ -107,7 +131,12 @@ describe('rollupWindow', () => {
     expect(summary.orchestratorTotal).toBe(20_000);
 
     const alpha = summary.projects.find((p) => p.projectId === 'p1');
-    expect(alpha).toMatchObject({ label: 'Alpha', tokens: 70_000, taskTokens: 50_000, orchestratorTokens: 20_000 });
+    expect(alpha).toMatchObject({
+      label: 'Alpha',
+      tokens: 70_000,
+      taskTokens: 50_000,
+      orchestratorTokens: 20_000,
+    });
     // Tasks sorted desc; unknown title falls back to the id prefix.
     expect(alpha?.tasks).toEqual([
       { id: 'a', label: 'Task A', tokens: 40_000, pct: 40 },

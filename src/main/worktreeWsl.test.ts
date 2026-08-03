@@ -54,7 +54,10 @@ beforeAll(async () => {
 afterAll(async () => {
   if (host && repo) {
     // Remove the repo AND the worktrees the manager sited under the distro's home.
-    await host.exec('/', 'sh', ['-c', `rm -rf ${repo} ~/.local/share/claude-orchestrator/worktrees`]);
+    await host.exec('/', 'sh', [
+      '-c',
+      `rm -rf ${repo} ~/.local/share/claude-orchestrator/worktrees`,
+    ]);
   }
 });
 

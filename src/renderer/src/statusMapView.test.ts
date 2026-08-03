@@ -33,12 +33,14 @@ describe('buildStatusMapRows', () => {
 
   it('shows what a drag taught, below an explicit mapping', () => {
     const learned = { 'in progress': 'in-review' as const };
-    expect(buildStatusMapRows(STATUSES, undefined, learned).find((r) => r.name === 'In Progress'))
-      .toMatchObject({ column: 'in-review', reason: 'learned' });
+    expect(
+      buildStatusMapRows(STATUSES, undefined, learned).find((r) => r.name === 'In Progress'),
+    ).toMatchObject({ column: 'in-review', reason: 'learned' });
 
     const explicit = { 'in progress': 'in-progress' as const };
-    expect(buildStatusMapRows(STATUSES, explicit, learned).find((r) => r.name === 'In Progress'))
-      .toMatchObject({ column: 'in-progress', reason: 'explicit' });
+    expect(
+      buildStatusMapRows(STATUSES, explicit, learned).find((r) => r.name === 'In Progress'),
+    ).toMatchObject({ column: 'in-progress', reason: 'explicit' });
   });
 
   it('groups by resolved column in board order, then by name', () => {

@@ -149,25 +149,28 @@ describe('parseAdf', () => {
   it('reads lists, headings, quotes, code blocks and media', () => {
     const body = doc(
       { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: 'Why' }] },
-      { type: 'blockquote', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'q' }] }] },
+      {
+        type: 'blockquote',
+        content: [{ type: 'paragraph', content: [{ type: 'text', text: 'q' }] }],
+      },
       { type: 'codeBlock', content: [{ type: 'text', text: 'const a = 1' }] },
       {
         type: 'bulletList',
         content: [
-          { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'one' }] }] },
-          { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'two' }] }] },
+          {
+            type: 'listItem',
+            content: [{ type: 'paragraph', content: [{ type: 'text', text: 'one' }] }],
+          },
+          {
+            type: 'listItem',
+            content: [{ type: 'paragraph', content: [{ type: 'text', text: 'two' }] }],
+          },
         ],
       },
       { type: 'mediaSingle', content: [{ type: 'media', attrs: { alt: 'shot.png' } }] },
     );
     const blocks = parseAdf(body);
-    expect(blocks.map((b) => b.kind)).toEqual([
-      'heading',
-      'quote',
-      'codeBlock',
-      'list',
-      'media',
-    ]);
+    expect(blocks.map((b) => b.kind)).toEqual(['heading', 'quote', 'codeBlock', 'list', 'media']);
     expect(blocks[3]).toMatchObject({ ordered: false });
     expect(blocksToText(blocks)).toBe('Why\nq\nconst a = 1\none\ntwo\nshot.png');
   });

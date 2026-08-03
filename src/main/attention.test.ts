@@ -160,9 +160,9 @@ describe('siblingsAffectedByProposal', () => {
   );
 
   it('narrows to the owner whose files the proposal touches', () => {
-    expect(siblingsAffectedByProposal(['src/api/routes.ts'], ownership, ['Build API', 'Build UI'])).toEqual([
-      'Build API',
-    ]);
+    expect(
+      siblingsAffectedByProposal(['src/api/routes.ts'], ownership, ['Build API', 'Build UI']),
+    ).toEqual(['Build API']);
   });
 
   it('falls back to all siblings when the proposal names no files', () => {
@@ -173,9 +173,9 @@ describe('siblingsAffectedByProposal', () => {
   });
 
   it('falls back to all siblings when nothing in the contract matches', () => {
-    expect(siblingsAffectedByProposal(['docs/readme.md'], ownership, ['Build API', 'Build UI'])).toEqual(
-      ['Build API', 'Build UI'],
-    );
+    expect(
+      siblingsAffectedByProposal(['docs/readme.md'], ownership, ['Build API', 'Build UI']),
+    ).toEqual(['Build API', 'Build UI']);
   });
 
   it('falls back to all siblings when there is no parseable ownership', () => {

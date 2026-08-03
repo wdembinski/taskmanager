@@ -65,84 +65,89 @@ describe.runIf(ENABLED)('Claude session inside WSL', () => {
     // setup is wrong, while a failure in only one localizes the bug to that host.
     { name: 'local (control)', makeHost: () => localHost(), makeCwd: () => scratchDir },
     { name: 'wsl', makeHost: () => new WslExecHost(distro), makeCwd: () => '/tmp' },
-  ])('$name: runs the tool and routes it through the gate', async ({ makeHost, makeCwd }) => {
-    expect(distro).not.toBe('');
-    const host = makeHost();
-    const cwd = makeCwd();
+  ])(
+    '$name: runs the tool and routes it through the gate',
+    async ({ makeHost, makeCwd }) => {
+      expect(distro).not.toBe('');
+      const host = makeHost();
+      const cwd = makeCwd();
 
-    // A real broker on Windows loopback — the address Linux cannot reach directly,
-    // which is precisely why the relay has to be a Windows process.
-    const seen: PermissionRequest[] = [];
-    const broker = new PermissionBroker(async (request) => {
-      seen.push(request);
-      return { behavior: 'allow', updatedInput: request.input };
-    });
-    const address = await broker.start();
+      // A real broker on Windows loopback — the address Linux cannot reach directly,
+      // which is precisely why the relay has to be a Windows process.
+      const seen: PermissionRequest[] = [];
+      const broker = new PermissionBroker(async (request) => {
+        seen.push(request);
+        return { behavior: 'allow', updatedInput: request.input };
+      });
+      const address = await broker.start();
 
-    const events: SessionEvent[] = [];
-    // Unique per case: the run id names the throwaway MCP config file, which a
-    // finishing session deletes. Sharing one would let the first case's cleanup
-    // unlink the second case's config while its CLI was still starting.
-    const runId = `e2e-${randomUUID()}`;
-    const probeFile = `orch-gate-${runId.slice(4, 12)}.txt`;
-    const handle = runClaudeSession(
-      {
-        // Force exactly one tool use whose output proves which kernel ran it.
-        // A MUTATING tool: read-only commands like `uname` are auto-approved by the
-        // CLI and never reach the permission tool, so they cannot prove the gate.
-        // The name is unique per run — against an existing file the agent reads it,
-        // sees the work is already done, and answers without ever calling a tool.
-        prompt: `Use the Write tool to create a file named ${probeFile} containing the single word ok. Then reply "done".`,
-        cwd,
-        model: 'haiku',
-        // With a gate present this becomes the CLI's `default` mode (see
-        // `buildClaudeArgs`), which is what routes tool use through the relay.
-        permissionMode: 'manual',
-      },
-      (event) => events.push(event),
-      {
-        runId,
-        host,
-        permission: {
-          brokerUrl: address.url,
-          token: address.token,
-          serverScriptPath: writePermissionServer(mcpDir),
-          configDir: mcpDir,
+      const events: SessionEvent[] = [];
+      // Unique per case: the run id names the throwaway MCP config file, which a
+      // finishing session deletes. Sharing one would let the first case's cleanup
+      // unlink the second case's config while its CLI was still starting.
+      const runId = `e2e-${randomUUID()}`;
+      const probeFile = `orch-gate-${runId.slice(4, 12)}.txt`;
+      const handle = runClaudeSession(
+        {
+          // Force exactly one tool use whose output proves which kernel ran it.
+          // A MUTATING tool: read-only commands like `uname` are auto-approved by the
+          // CLI and never reach the permission tool, so they cannot prove the gate.
+          // The name is unique per run — against an existing file the agent reads it,
+          // sees the work is already done, and answers without ever calling a tool.
+          prompt: `Use the Write tool to create a file named ${probeFile} containing the single word ok. Then reply "done".`,
+          cwd,
+          model: 'haiku',
+          // With a gate present this becomes the CLI's `default` mode (see
+          // `buildClaudeArgs`), which is what routes tool use through the relay.
+          permissionMode: 'manual',
         },
-      },
-    );
+        (event) => events.push(event),
+        {
+          runId,
+          host,
+          permission: {
+            brokerUrl: address.url,
+            token: address.token,
+            serverScriptPath: writePermissionServer(mcpDir),
+            configDir: mcpDir,
+          },
+        },
+      );
 
-    // Wait for the session to produce its result.
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('session timed out')), 180_000);
-      const done = (): void => {
-        clearTimeout(timer);
-        resolve();
-      };
-      const poll = setInterval(() => {
-        if (events.some((e) => e.kind === 'result' || e.kind === 'exited')) {
-          clearInterval(poll);
-          done();
-        }
-      }, 500);
-    });
-    handle.stop();
-    broker.close();
+      // Wait for the session to produce its result.
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('session timed out')), 180_000);
+        const done = (): void => {
+          clearTimeout(timer);
+          resolve();
+        };
+        const poll = setInterval(() => {
+          if (events.some((e) => e.kind === 'result' || e.kind === 'exited')) {
+            clearInterval(poll);
+            done();
+          }
+        }, 500);
+      });
+      handle.stop();
+      broker.close();
 
-    const stderr = events
-      .filter((e): e is Extract<SessionEvent, { kind: 'stderr' }> => e.kind === 'stderr')
-      .map((e) => e.text)
-      .join('');
+      const stderr = events
+        .filter((e): e is Extract<SessionEvent, { kind: 'stderr' }> => e.kind === 'stderr')
+        .map((e) => e.text)
+        .join('');
 
-    const transcript = JSON.stringify(events, null, 2);
-    const diagnostics = `stderr:\n${stderr}\n\nevents:\n${transcript}`;
+      const transcript = JSON.stringify(events, null, 2);
+      const diagnostics = `stderr:\n${stderr}\n\nevents:\n${transcript}`;
 
-    // 1. The gate was actually consulted — the relay crossed the boundary.
-    expect(seen.length, `no permission request reached the broker.\n${diagnostics}`).toBeGreaterThan(
-      0,
-    );
+      // 1. The gate was actually consulted — the relay crossed the boundary.
+      expect(
+        seen.length,
+        `no permission request reached the broker.\n${diagnostics}`,
+      ).toBeGreaterThan(0);
 
-    // 2. The tool really ran.
-    expect(transcript, diagnostics).toContain('tool-use');
-  }, 240_000);
+      // 2. The tool really ran.
+      expect(transcript, diagnostics).toContain('tool-use');
+    },
+    240_000,
+  );
 });

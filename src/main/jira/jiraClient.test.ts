@@ -372,9 +372,11 @@ describe('JiraClient.addComment — mentions and attachments', () => {
 
 describe('JiraClient.searchUsers', () => {
   it('uses `query` on v3 and `username` on v2, and normalizes both shapes', async () => {
-    const cloudFetch = vi.fn().mockResolvedValue(
-      jsonResponse([{ accountId: 'acc-a', displayName: 'Alice', emailAddress: 'a@x.com' }]),
-    );
+    const cloudFetch = vi
+      .fn()
+      .mockResolvedValue(
+        jsonResponse([{ accountId: 'acc-a', displayName: 'Alice', emailAddress: 'a@x.com' }]),
+      );
     vi.stubGlobal('fetch', cloudFetch);
     const cloud = await cloudClient().searchUsers('ali');
     expect(String(cloudFetch.mock.calls[0][0])).toContain('query=ali');

@@ -105,7 +105,7 @@ function resolveNeeds(raw: string, titles: ReadonlySet<string>): string[] {
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
   const needs: string[] = [];
-  for (let i = 0; i < parts.length; ) {
+  for (let i = 0; i < parts.length;) {
     let end = -1;
     let matched: string | null = null;
     let candidate = '';

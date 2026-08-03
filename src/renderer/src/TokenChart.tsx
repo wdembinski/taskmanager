@@ -58,11 +58,10 @@ export function TokenChart({ points, color, bucketMs }: TokenChartProps): JSX.El
   const x = (i: number): number => (n <= 1 ? 0 : (i / (n - 1)) * VIEW_W);
   const y = (v: number): number => PAD_TOP + plotH - (v / scaleMax) * plotH;
 
-  const line = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${x(i).toFixed(1)} ${y(p.tokens).toFixed(1)}`).join(' ');
-  const area =
-    n > 1
-      ? `${line} L ${VIEW_W} ${PAD_TOP + plotH} L 0 ${PAD_TOP + plotH} Z`
-      : '';
+  const line = points
+    .map((p, i) => `${i === 0 ? 'M' : 'L'} ${x(i).toFixed(1)} ${y(p.tokens).toFixed(1)}`)
+    .join(' ');
+  const area = n > 1 ? `${line} L ${VIEW_W} ${PAD_TOP + plotH} L 0 ${PAD_TOP + plotH} Z` : '';
 
   // Four horizontal grid lines, plus vertical grid every 1/6 of the span.
   const hLines = [0.25, 0.5, 0.75, 1].map((f) => PAD_TOP + plotH - f * plotH);
@@ -70,7 +69,9 @@ export function TokenChart({ points, color, bucketMs }: TokenChartProps): JSX.El
 
   return (
     <div className={styles.root}>
-      <span className={styles.peak}>peak {formatTokens(peak)} {perUnit}</span>
+      <span className={styles.peak}>
+        peak {formatTokens(peak)} {perUnit}
+      </span>
       <svg
         className={styles.svg}
         viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}

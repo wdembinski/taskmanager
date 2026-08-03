@@ -109,8 +109,10 @@ export function nextSyncLabel(state: SyncState, now: number): string | null {
 export function syncTooltip(state: SyncState, now: number): string {
   const head = state.syncing
     ? 'Syncing now'
-    : [`Synced ${syncAgeLabel(state.lastSyncAt, now)}`, nextSyncLabel(state, now) ?? 'auto-sync off']
-        .join(' · ');
+    : [
+        `Synced ${syncAgeLabel(state.lastSyncAt, now)}`,
+        nextSyncLabel(state, now) ?? 'auto-sync off',
+      ].join(' · ');
 
   const lines = state.services
     .filter((s) => s.enabled)

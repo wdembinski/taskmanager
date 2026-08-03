@@ -108,7 +108,10 @@ function systemLine(event: SessionEvent): { text: string; tone: 'meta' | 'err' }
       // and they now carry their reason. "A tool call failed." with no detail was the
       // worst kind of log line: alarming and useless.
       const reason = briefly(event.errorText);
-      return { text: reason ? `A tool call failed — ${reason}` : 'A tool call failed.', tone: 'err' };
+      return {
+        text: reason ? `A tool call failed — ${reason}` : 'A tool call failed.',
+        tone: 'err',
+      };
     }
     case 'stderr':
       return { text: event.text.trim(), tone: 'err' };

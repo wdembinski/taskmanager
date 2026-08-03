@@ -24,12 +24,7 @@ const event = (id: number, createdAt: number): TaskActivityEntry => ({
 
 describe('mergeActivity', () => {
   it('interleaves the two sources oldest-first by timestamp', () => {
-    const merged = mergeActivity([
-      comment(1, 300),
-      status(1, 100),
-      event(5, 200),
-      comment(2, 400),
-    ]);
+    const merged = mergeActivity([comment(1, 300), status(1, 100), event(5, 200), comment(2, 400)]);
     expect(merged.map((e) => [e.kind, e.createdAt])).toEqual([
       ['status', 100],
       ['event', 200],

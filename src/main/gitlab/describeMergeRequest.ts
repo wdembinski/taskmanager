@@ -147,7 +147,9 @@ export async function describeMergeRequest(
    */
   const detailedMergeStatus = detailRead
     ? (detail.detailed_merge_status ??
-      (detail.merge_status === 'cannot_be_merged' ? 'broken_status' : (detail.merge_status ?? null)))
+      (detail.merge_status === 'cannot_be_merged'
+        ? 'broken_status'
+        : (detail.merge_status ?? null)))
     : null;
 
   return {

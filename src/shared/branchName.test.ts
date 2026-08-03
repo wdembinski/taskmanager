@@ -102,7 +102,12 @@ describe('buildBranchName', () => {
   it('omits the prefix segment entirely when there is none — no leading slash', () => {
     // `/feat/…` is not a valid git ref, so this cannot be a naive concatenation.
     expect(
-      buildBranchName({ prefix: '', externalKey: 'ABC-9', externalType: 'Story', title: 'Add SSO' }),
+      buildBranchName({
+        prefix: '',
+        externalKey: 'ABC-9',
+        externalType: 'Story',
+        title: 'Add SSO',
+      }),
     ).toBe('feat/abc-9/add-sso');
     expect(buildBranchName({ title: 'Add SSO' }).startsWith('/')).toBe(false);
   });
@@ -146,14 +151,12 @@ describe('buildBranchName', () => {
 });
 
 describe('validateBranchName', () => {
-  it.each([
-    'feat/add-sso',
-    'wd/fix/abc-123/login-fails',
-    'main',
-    'release/2.0.1',
-  ])('accepts %s', (name) => {
-    expect(validateBranchName(name)).toEqual({ ok: true });
-  });
+  it.each(['feat/add-sso', 'wd/fix/abc-123/login-fails', 'main', 'release/2.0.1'])(
+    'accepts %s',
+    (name) => {
+      expect(validateBranchName(name)).toEqual({ ok: true });
+    },
+  );
 
   it.each([
     ['', 'empty'],

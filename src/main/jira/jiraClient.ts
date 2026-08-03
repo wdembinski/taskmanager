@@ -485,9 +485,7 @@ export class JiraClient {
         if (!(e instanceof JiraError) || e.status !== 404) throw e;
       }
     }
-    return this.request<unknown>(
-      `/issue/createmeta?projectKeys=${key}&expand=projects.issuetypes`,
-    );
+    return this.request<unknown>(`/issue/createmeta?projectKeys=${key}&expand=projects.issuetypes`);
   }
 
   /** Create an issue. Returns the key JIRA assigned, which is then read back in full. */

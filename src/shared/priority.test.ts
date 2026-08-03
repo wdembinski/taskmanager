@@ -1,10 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  priorityBucket,
-  priorityColor,
-  priorityIndicatorShown,
-  priorityRank,
-} from './priority';
+import { priorityBucket, priorityColor, priorityIndicatorShown, priorityRank } from './priority';
 
 describe('priorityBucket', () => {
   // The bug this module exists to prevent: "Highest" contains "high", so a naive
