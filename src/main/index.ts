@@ -10,7 +10,8 @@
  * usage-limit gate) from here too.
  */
 import { join } from 'node:path';
-import { app, BrowserWindow, dialog, safeStorage, shell } from 'electron';
+import { app, BrowserWindow, dialog, protocol, safeStorage, shell } from 'electron';
+import { ATTACHMENT_SCHEME } from '@shared/attachments';
 import { PRODUCT_NAME } from '@shared/product';
 import { registerIpcHandlers, type Engine } from './ipc';
 import { formatError, getLogPath, logMain } from './log';
@@ -43,6 +44,32 @@ app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 // — and it is a no-op on Windows/macOS. It MUST run before the app is ready, because
 // Electron fixes the encryption config as it starts up.
 if (process.platform === 'linux') safeStorage.setUsePlainTextEncryption(true);
+
+// The scheme an attachment image is previewed over. Chromium fixes the properties of a
+// scheme while it starts up, so — like the two switches above — this MUST run at module
+// scope, before the app is ready; `protocol.handle` (the half that needs the store, and
+// therefore a ready app) is called from `ipc.ts` instead.
+//
+// What each flag buys, since a privileged scheme is exactly as trusted as it is declared:
+//
+// - `standard` makes it a hierarchical URL, so `vipper-attachment://a/<id>` parses with a
+//   host and a path at all — and is why the id lives in the PATH: a standard scheme's
+//   authority is canonicalised (lower-cased, IDNA-mapped), which a UUID must not be.
+// - `secure` puts it in a secure context, so the page may load it without Chromium
+//   treating it as mixed content.
+// - `supportFetchAPI` + `stream` let the handler answer with a `Response` object, which is
+//   what the modern `protocol.handle` API takes.
+//
+// Deliberately NOT `bypassCSP`. That flag would exempt the scheme from the page's policy
+// entirely — including `script-src`, which is not what is being asked for. Widening
+// `img-src` by one token in `renderer/index.html` says precisely the true thing: this
+// scheme may supply IMAGES.
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: ATTACHMENT_SCHEME,
+    privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
+  },
+]);
 
 /**
  * Create the main window.

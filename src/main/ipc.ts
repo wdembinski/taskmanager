@@ -77,6 +77,7 @@ import {
   addAttachments,
   deleteAttachmentFile,
   deleteTaskAttachments,
+  registerAttachmentProtocol,
   sweepOrphanAttachments,
 } from './attachments';
 import { attachmentFile } from './attachmentPaths';
@@ -186,6 +187,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   void sweepOrphanAttachments(store, userData).catch((e) =>
     logMain('Sweeping orphaned attachments failed', e),
   );
+
+  // Serve `vipper-attachment://a/<id>` — how the window shows an image it is never told
+  // the path of. Here rather than in `index.ts` beside the scheme's privileges, because
+  // `protocol.handle` needs both a ready app and the store, and here it also inherits the
+  // guarantee it needs: `registerIpcHandlers` runs exactly ONCE. (`app.on('activate')` at
+  // `index.ts:175` only calls `createWindow`.) Registering a scheme twice throws.
+  registerAttachmentProtocol(store, userData);
 
   // ---------------------------------------------------------------------------
   // Window geometry.
@@ -1586,7 +1594,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     if (!attachment) throw new Error('That attachment is no longer there.');
     // `shell.openPath` hands back the OS's complaint, or '' when it opened — which is why
     // the channel resolves to a string-or-null rather than rejecting. NOT `openExternal`
-    // (index.ts:83): that one is for URLs, and would push a local path at the browser.
+    // (index.ts:110): that one is for URLs, and would push a local path at the browser.
     const failure = await shell.openPath(
       attachmentFile(userData, attachment.taskId, attachment.name),
     );

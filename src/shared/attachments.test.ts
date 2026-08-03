@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  attachmentIdFromUrl,
   attachmentName,
   attachmentUrl,
   attachmentsInScope,
@@ -227,5 +228,34 @@ describe('attachmentUrl', () => {
 
   it('escapes an id that would otherwise change the path', () => {
     expect(attachmentUrl('a/../b')).toBe('vipper-attachment://a/a%2F..%2Fb');
+  });
+});
+
+describe('attachmentIdFromUrl', () => {
+  it('reads back what attachmentUrl wrote', () => {
+    for (const id of ['abc-123', 'f81d4fae-7dec-11d0-a765-00a0c91e6bf6', 'a/../b', 'a b', '%']) {
+      expect(attachmentIdFromUrl(attachmentUrl(id))).toBe(id);
+    }
+  });
+
+  it('refuses a URL that is not ours', () => {
+    expect(attachmentIdFromUrl('file:///C:/Windows/win.ini')).toBeNull();
+    expect(attachmentIdFromUrl('https://a/abc')).toBeNull();
+    expect(attachmentIdFromUrl('not a url at all')).toBeNull();
+  });
+
+  it('refuses anything but the single id segment', () => {
+    expect(attachmentIdFromUrl('vipper-attachment://a/')).toBeNull();
+    expect(attachmentIdFromUrl('vipper-attachment://a/one/two')).toBeNull();
+  });
+
+  it('refuses escaping that does not decode', () => {
+    expect(attachmentIdFromUrl('vipper-attachment://a/%E0%A4%A')).toBeNull();
+  });
+
+  it('ignores the host, which Chromium is free to canonicalise', () => {
+    // The id is in the PATH for exactly this reason: a standard scheme's authority is not
+    // ours to control, so nothing may be read out of it.
+    expect(attachmentIdFromUrl('vipper-attachment://anything/abc-123')).toBe('abc-123');
   });
 });

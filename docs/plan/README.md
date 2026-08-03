@@ -1481,7 +1481,7 @@ validation. That preserves the rule already stated at
 bytes over IPC, main reads and uploads them — and extends it in the direction that was left
 open: the paths JIRA's draft carries come from main's own picker (`jira:pickAttachments`,
 `ipc.ts:696`), never typed by the renderer, and here not even that much is handed back. The
-window is `contextIsolation: true` with `nodeIntegration: false` (`index.ts:72-74`), which is
+window is `contextIsolation: true` with `nodeIntegration: false` (`index.ts:99-101`), which is
 the same posture; a custom scheme is how a locked-down renderer is *allowed* to see a local
 file, and it has to be registered as privileged before the app is ready.
 
@@ -1508,7 +1508,7 @@ citation is about how it happened, not a live defect. `ipc.ts:642` is `'chain:li
 `:813` is `'chain:changed'`, `:680` is the "renderer never ships bytes over IPC" sentence in
 `jira:addComment`'s doc comment, and `:696` is `'jira:pickAttachments'`. Corrected: the
 `adoptTaskId` **field** is at `ipc.ts:723` (its explanation runs 712-716), not 718; and
-`contextIsolation`/`nodeIntegration` are set at `index.ts:72-74` — line 50 is the SECURITY
+`contextIsolation`/`nodeIntegration` are set at `index.ts:99-101` — line 77 is the SECURITY
 NOTE comment that describes them. Both are fixed above. `MyTasks.tsx` is right as a range,
 though the five `invoke`s are 231-235 and the comment above them at 227 still says "all three
 channels" — stale since two were added, and worth a word when step 8 edits that block.
@@ -1634,7 +1634,7 @@ cannot be caught by a stale list.
 
 `attachment:open` is the codebase's first `shell.openPath` — it answers with the OS's
 complaint or `''` when it opened, which is why the channel resolves to a string-or-null
-instead of rejecting. Not `openExternal` (`index.ts:83`): that one is for URLs and would
+instead of rejecting. Not `openExternal` (`index.ts:110`): that one is for URLs and would
 hand a local path to the browser.
 
 Beyond `pnpm typecheck` / `test` (1478) / `build`, the copy itself was driven headlessly
@@ -1643,6 +1643,59 @@ root — 24 checks, all green. The one that matters most: two files both called 
 picked in one gesture, land as `shot.png` and `shot-2.png` with their own bytes intact.
 Also confirmed there: a step keeps its own directory beside its parent's, a project delete
 leaves bytes the sweep then collects, and a second sweep finds nothing to do.
+
+### Serving the images to the window
+
+A locked-down renderer (`contextIsolation: true`, `nodeIntegration: false`) cannot open a
+file, and by design it is never told a path. A custom scheme is the sanctioned way it gets
+to *see* one, so `<img src={attachmentUrl(id)}>` is the whole renderer-side story.
+
+**The registration is in two halves, in two files, and that is not an accident.**
+`protocol.registerSchemesAsPrivileged` must run at module scope before the app is ready —
+Chromium fixes a scheme's properties as it starts — so it sits in `index.ts` beside the
+occlusion switch and `setUsePlainTextEncryption`, which are there for the same reason.
+`protocol.handle` is the opposite: it needs a ready app *and* the store, so it is called
+from `ipc.ts` next to `createStore`. That placement also buys the guarantee it needs —
+registering a scheme twice throws, and `registerIpcHandlers` runs exactly once
+(`app.on('activate')` at `index.ts:175` only calls `createWindow`).
+
+The privileges are `{ standard, secure, supportFetchAPI, stream }` and deliberately **not**
+`bypassCSP`. `bypassCSP` would exempt the scheme from the page's policy wholesale —
+`script-src` included — to buy something one token in `img-src` buys honestly. So
+`renderer/index.html` now reads `img-src 'self' data: vipper-attachment:`, which states
+exactly the true thing: an attachment may be a picture, never code.
+
+**The id is in the path, behind a fixed dummy host.** `standard: true` means Chromium
+canonicalises the authority (lower-casing, IDNA), which is not something a UUID can be
+subjected to; `vipper-attachment://a/<id>` keeps the id where it is preserved verbatim.
+`attachmentIdFromUrl` reads it back, and lives in `shared/attachments.ts` beside
+`attachmentUrl` rather than inside the handler — the handler cannot be unit-tested (it
+needs Electron, a store and a disk), and a URL grammar only an untestable function knows is
+a grammar that drifts. The round trip is pinned both ways, including the host being ignored.
+
+What the handler does with that id is the security property of the whole feature: it
+resolves it **through the store** and builds the path from the row it got back. No string
+the renderer chose reaches `readFile`, so traversal is impossible by construction rather
+than by validation — a made-up id is simply a 404, which an `<img>` shows as a broken
+image. Failures are statuses, never throws: a rejected handler paints Chromium's own error
+page inside the element, which cannot be styled and says nothing. The response carries an
+explicit `content-type` (Chromium has no filename to sniff from here) and an immutable
+`cache-control` — the bytes behind an id never change, since removing and re-adding mints a
+new one. An attachment over **25 MB** gets a 413 instead of bytes: the disk limit is 100 MB
+and answers a different question, while the whole of this response is decoded into a bitmap
+in the renderer, so a huge file loses its preview rather than the window losing its manners.
+
+Inserting the registration moved everything below it in `index.ts` by 26 lines, so the
+`index.ts:NN` citations in this entry and in `ipc.ts` were re-pointed to where they now are
+(`99-101`, `110`, `175`) — the step-2 audit's whole argument is that a citation nobody
+re-checks is a decision nobody made.
+
+Gates: `pnpm typecheck` clean, `pnpm test` 1483 green, `pnpm build` clean. That the bytes
+actually *arrive* cannot be shown without launching the app, so it is owed to step 11 along
+with the rest of the visual verification. If the protocol ever misbehaves there, the
+fallback needs no CSP change at all — `attachment:thumbnail(id)` returning a `data:` URL
+over IPC, since `img-src` already allows `data:`, and main→renderer bytes do not violate
+the renderer-never-ships-bytes rule, which is about the other direction.
 
 ### Deliverables
 
@@ -1665,8 +1718,11 @@ leaves bytes the sweep then collects, and a second sweep finds nothing to do.
       it, and a brief that points at a file that is gone is worse than one that never had it.
       See above: the pure arithmetic is split from the `fs` so the traversal promise can be
       unit-tested, and deletion lands in three places because the bytes do not cascade.
-- [ ] **5 — Serve attachment images over a protocol.** The `vipper-attachment` scheme,
+- [x] **5 — Serve attachment images over a protocol.** The `vipper-attachment` scheme,
       registered privileged before the app is ready, resolving `a/<id>` through the store.
+      See above: the registration splits across two files because its two halves want
+      opposite moments, the CSP is widened by one token in `img-src` rather than waved away
+      with `bypassCSP`, and the id round trip is a pure pair so the grammar is testable.
 - [ ] **6 — Attach from the card details.** The pane grows the list, the picker, the
       previews and the delete.
 - [ ] **7 — Attach to a step brief.** The same UI against a step's row, which the schema

@@ -1,6 +1,6 @@
 /**
- * The bytes behind an attachment row: copying them in, removing them, and sweeping up the
- * ones nothing points at any more.
+ * The bytes behind an attachment row: copying them in, serving them to the window,
+ * removing them, and sweeping up the ones nothing points at any more.
  *
  * **A copy, not a reference.** The file the human picked can be moved, renamed, emptied or
  * deleted the minute after they picked it — and a brief that points at a file which is
@@ -24,14 +24,26 @@
  *    between the copy and the insert leaves bytes no row ever named. One pass over
  *    `attachments/*` catches both, and every future path that forgets.
  *
+ * **Reading them out is a protocol, not an IPC channel.** {@link registerAttachmentProtocol}
+ * is how a `contextIsolation: true` renderer that has never been told a path gets to see a
+ * picture: it writes `<img src={attachmentUrl(id)}>` and the handler below turns that id
+ * into bytes. No path crosses the bridge in either direction, so traversal is not
+ * something to validate — there is nothing to traverse WITH.
+ *
  * Nothing here throws at the caller for a filesystem failure it can do nothing about — a
  * file that would not unlink is logged and left to the sweep. The one exception is
  * {@link addAttachments}, where a file that did not land is something the human has to be
  * told about, and it reports rather than throws so one bad pick cannot discard the rest.
  */
-import { copyFile, mkdir, readdir, rm, stat } from 'node:fs/promises';
+import { copyFile, mkdir, readdir, readFile, rm, stat } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import { attachmentName, type TaskAttachment } from '@shared/attachments';
+import { protocol } from 'electron';
+import {
+  ATTACHMENT_SCHEME,
+  attachmentIdFromUrl,
+  attachmentName,
+  type TaskAttachment,
+} from '@shared/attachments';
 import {
   attachmentDir,
   attachmentFile,
@@ -50,6 +62,17 @@ import type { Store } from './store';
  * screen recording) with room to spare.
  */
 export const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
+
+/**
+ * The most one attachment may weigh and still be served to the window.
+ *
+ * Well under {@link MAX_ATTACHMENT_BYTES}, because the two limits answer different
+ * questions: that one is about the disk, this one is about the renderer, where the whole
+ * response is decoded into a bitmap in the GPU process. A 40 MB PNG is a perfectly good
+ * attachment — the human can still open it in a real viewer — it just does not get an
+ * inline preview, which fails as "no thumbnail" rather than as a stalled window.
+ */
+export const MAX_PREVIEW_BYTES = 25 * 1024 * 1024;
 
 /** One picked file that did not become an attachment, and the sentence explaining it. */
 export interface FailedAttachment {
@@ -185,6 +208,64 @@ export async function deleteTaskAttachments(
       logMain(`Could not remove the attachments directory ${dir}`, e);
     }
   }
+}
+
+/**
+ * Answer `vipper-attachment://a/<id>` with that attachment's bytes.
+ *
+ * Called once, from `registerIpcHandlers` — after the app is ready (which `protocol.handle`
+ * requires) and beside `createStore`, since the store is the whole point of the handler.
+ * The scheme itself is declared privileged at module scope in `index.ts`; that half must
+ * run BEFORE ready, which is why the two live apart.
+ *
+ * The request carries an id and nothing else, and the id is resolved THROUGH the store, so
+ * the path this reads is one main assembled out of a row that exists. That is the property
+ * worth stating plainly: no string the renderer chose reaches `readFile`. An id that names
+ * nothing — a stale pane still pointing at a removed attachment is the ordinary way this
+ * happens — is a 404, which the `<img>` renders as a broken image and the pane can style.
+ *
+ * Failures are statuses rather than throws: a rejected handler shows Chromium's own error
+ * page inside the element, which says nothing useful and cannot be styled. A file that is
+ * missing on disk under a live row is the one case worth a line in the log, because it
+ * means the bytes and the rows disagree and the sweep is not what caused it.
+ */
+export function registerAttachmentProtocol(store: Store, root: string): void {
+  protocol.handle(ATTACHMENT_SCHEME, async (request) => {
+    const id = attachmentIdFromUrl(request.url);
+    const attachment = id ? store.getAttachment(id) : undefined;
+    if (!attachment) return notFound();
+    if (attachment.size > MAX_PREVIEW_BYTES) {
+      // 413 rather than 404: the attachment is there, it is just not previewable. Nothing
+      // reads the status today — it is what a future "too big to preview" hint would.
+      return new Response('Too large to preview', { status: 413 });
+    }
+
+    const path = attachmentFile(root, attachment.taskId, attachment.name);
+    try {
+      const bytes = await readFile(path);
+      return new Response(bytes, {
+        headers: {
+          // Explicit, and never sniffed: Chromium has no filename to guess from here, and
+          // an image served without a type is not rendered at all. `mimeType` is null only
+          // for a suffix `mimeForExtension` does not know, and such a file is not an image
+          // the pane would be previewing anyway.
+          'content-type': attachment.mimeType ?? 'application/octet-stream',
+          // The URL is keyed by an id, and the bytes behind one id never change — removing
+          // an attachment and adding it again mints a new UUID. So the response is safe to
+          // treat as immutable, and a pane that re-renders does not re-read the file.
+          'cache-control': 'max-age=31536000, immutable',
+        },
+      });
+    } catch (e) {
+      logMain(`Could not read the attachment file ${path}`, e);
+      return notFound();
+    }
+  });
+}
+
+/** The one answer for "that attachment is not there", however it turned out not to be. */
+function notFound(): Response {
+  return new Response('No such attachment', { status: 404 });
 }
 
 /**

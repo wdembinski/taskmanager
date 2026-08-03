@@ -96,6 +96,38 @@ export function attachmentUrl(id: string): string {
   return `${ATTACHMENT_SCHEME}://a/${encodeURIComponent(id)}`;
 }
 
+/**
+ * The id back out of an {@link attachmentUrl}, or null when the URL is not one of ours.
+ *
+ * The other half of the round trip, and it lives here rather than in the protocol handler
+ * so the two are written against each other and tested together — the handler is the one
+ * caller, but it cannot be unit-tested (it needs Electron, a store and a disk) and a URL
+ * grammar that only one untestable function knows is a grammar that drifts.
+ *
+ * Everything is checked and nothing is trusted: the scheme, that the path is exactly the
+ * one segment behind the dummy host, and that the escaping decodes. What comes back is
+ * still only an id — it is looked up in the store, never joined onto a path — so this is
+ * where a malformed URL turns into a 404 rather than where a traversal is caught.
+ */
+export function attachmentIdFromUrl(url: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== `${ATTACHMENT_SCHEME}:`) return null;
+  const segments = parsed.pathname.split('/').filter((s) => s !== '');
+  if (segments.length !== 1) return null;
+  try {
+    // `%2F` survives parsing as an escape (it is not a separator), so an id that was
+    // escaped on the way out is one segment here and decodes back to itself.
+    return decodeURIComponent(segments[0]) || null;
+  } catch {
+    return null; // a lone `%` — malformed escaping is simply not one of our URLs
+  }
+}
+
 /** The most a `name` may run to. Long enough to stay recognizable, short enough to type. */
 const NAME_MAX = 64;
 
