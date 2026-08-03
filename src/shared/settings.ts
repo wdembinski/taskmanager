@@ -276,6 +276,17 @@ export interface AppSettings {
    */
   showTaskDetail: boolean;
   /**
+   * Whether the My Tasks screen shows its commit-graph pane. **Off by default**, unlike
+   * `showTaskDetail`: the detail pane is the point of the screen, whereas the graph answers
+   * a question you only sometimes have ("what actually happened in the repo?"), and it costs
+   * a `git log` on the project it is pointed at.
+   *
+   * Its own switch rather than a mode of the detail pane, because the two answer different
+   * questions about different things — one card against one repository — and you often want
+   * both on screen at once.
+   */
+  showGitGraph: boolean;
+  /**
    * Leading segment of every branch an agent's worktree runs on, e.g. `wd` gives
    * `wd/feat/abc-123/add-sso`. Empty means no prefix AND no leading slash — a branch
    * called `/feat/…` is not a valid git ref, so this cannot be a naive concatenation.
@@ -324,6 +335,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   defaultExecTarget: LOCAL_TARGET,
   statusKeywords: [],
   showTaskDetail: true,
+  showGitGraph: false,
   branchPrefix: '',
   fontSizePx: 14,
   toastsEnabled: true,

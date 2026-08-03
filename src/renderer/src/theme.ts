@@ -220,6 +220,36 @@ export const PIPELINE_COLOR: Record<PipelineStatus, string> = {
 };
 
 /**
+ * The commit graph's ink (`GitGraphPane`), and the whole of its colour budget.
+ *
+ * The graph is a picture of the PAST, and the past does not move: a repository with forty
+ * branches in it would, coloured per branch the way `gitk` colours them, put more ink on the
+ * screen than the board it sits beside — and every stroke of it would be saying something
+ * that had already finished happening. So the lanes, the dots, the refs and the base branch
+ * are all monochrome, and exactly one thing on the drawing is allowed a colour: the branch of
+ * a card whose agent is **running right now**.
+ *
+ * That is the same rule the rest of the app is kept to — colour is for things that MOVE (the
+ * card's running band, the chain's travelling dash, every spinner) — and it is why this is
+ * {@link FLUO.cyan} rather than the brand accent: cyan is already what this app means by
+ * "working", so a live branch in the graph and a live card on the board read as one state.
+ */
+export const GRAPH_INK = {
+  /** Every lane at rest, and the border of every dot. */
+  line: tokens.colorNeutralStroke2,
+  /**
+   * The lines a MERGE pulled in — its second and later parents. A step fainter than
+   * {@link GRAPH_INK.line}, because a merge's incoming lines are the ones you read past
+   * when following a branch down its own lane.
+   */
+  merge: tokens.colorNeutralStroke3,
+  /** A commit's dot. Neutral: every commit in the window is equally over and done with. */
+  dot: tokens.colorNeutralForeground3,
+  /** The one moving thing — the branch an agent is on this second, and its dot. */
+  live: FLUO.cyan,
+} as const;
+
+/**
  * Every spinner in the app, recoloured to {@link FLUO.cyan}.
  *
  * Global rather than per-component because a spinner means one thing wherever it appears —

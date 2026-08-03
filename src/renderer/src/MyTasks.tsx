@@ -30,6 +30,7 @@ import {
 } from '@fluentui/react-components';
 import {
   ArrowRoutingRegular,
+  BranchForkRegular,
   EyeRegular,
   PanelRightContractRegular,
   PanelRightExpandRegular,
@@ -52,6 +53,7 @@ import {
   type TaskLink,
 } from '@shared/taskChain';
 import { AddTaskDialog } from './AddTaskDialog';
+import { GitGraphPane } from './GitGraphPane';
 import { PaneLoading } from './PaneLoading';
 import { TaskDetail } from './TaskDetail';
 import { useInitialLoad } from './useInitialLoad';
@@ -86,7 +88,11 @@ const useStyles = makeStyles({
   // shade is the seam.
   root: { display: 'flex', minHeight: 0, flex: 1 },
   board: {
-    flex: '1 1 60%',
+    // `auto` rather than a 60% basis: with the graph pane open there are THREE panes in this
+    // row, and a board that insists on 60% of the window plus the detail pane's 40% plus the
+    // graph's own width adds up to more than there is — so something would be squeezed by
+    // whichever flex rule happened to lose. The board simply takes what the other two leave.
+    flex: '1 1 auto',
     // The screen owns its insets now that the shell adds none, and only the board side
     // needs them — the detail pane runs to the window's edges on purpose.
     padding: '12px 16px 12px 12px',
@@ -141,6 +147,24 @@ const useStyles = makeStyles({
     // One surface for the whole pane, a step LIGHTER than the board — that contrast is
     // what separates the two halves of the screen, so no dividing line is needed.
     backgroundColor: tokens.colorNeutralBackground1,
+  },
+  /**
+   * The commit graph's pane. A fixed px basis rather than the detail pane's percentage: what
+   * it holds is a fixed-width thing — a lane gutter, a subject, an author and a date — so a
+   * share of the window would leave it either clipping every subject or padded with empty
+   * space, depending only on how wide the monitor is. `0 0` so it neither grows nor shrinks,
+   * and the board (`flex: 1 1 auto`) absorbs the difference.
+   */
+  graph: {
+    flex: '0 0 340px',
+    minWidth: 0,
+    display: 'flex',
+    minHeight: 0,
+    overflow: 'hidden',
+    backgroundColor: tokens.colorNeutralBackground1,
+    // A rule rather than a change of shade: with the detail pane open this sits against
+    // another pane of the same surface, and two identical surfaces need an edge.
+    borderLeft: `1px solid ${tokens.colorNeutralStroke2}`,
   },
 });
 
@@ -227,6 +251,9 @@ export function MyTasks(): JSX.Element {
   const gitlabEnabled = settings?.gitlab.enabled ?? false;
   const display = settings?.board ?? DEFAULT_BOARD_DISPLAY;
   const showDetail = settings?.showTaskDetail ?? true;
+  // Off until the settings land, unlike the detail pane: the graph costs a `git log` on the
+  // machine the project runs on, so guessing it ON would spawn one before we know it is wanted.
+  const showGraph = settings?.showGitGraph ?? false;
 
   const refresh = useCallback(async () => {
     setTasks(await window.api.invoke('board:tasks'));
@@ -466,6 +493,16 @@ export function MyTasks(): JSX.Element {
     setSettings((prev) => {
       if (!prev) return prev;
       const next = { ...prev, showTaskDetail: value };
+      void window.api.invoke('settings:save', next);
+      return next;
+    });
+  }, []);
+
+  /** The commit-graph pane, saved the same optimistic way the detail pane's fold is. */
+  const setShowGraph = useCallback((value: boolean) => {
+    setSettings((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, showGitGraph: value };
       void window.api.invoke('settings:save', next);
       return next;
     });
@@ -823,6 +860,18 @@ export function MyTasks(): JSX.Element {
               </MenuList>
             </MenuPopover>
           </Menu>
+          {/* What actually happened in the repo, beside what the board believes about it.
+              The same kind of control as the fold beside it — a view, not a filter — and off
+              by default, because it costs a `git log` on the project it is pointed at. */}
+          <Button
+            size="small"
+            appearance="subtle"
+            icon={<BranchForkRegular />}
+            title={showGraph ? 'Hide the commit graph' : 'Show the repository’s commit graph'}
+            aria-label={showGraph ? 'Hide the commit graph' : 'Show the commit graph'}
+            aria-pressed={showGraph}
+            onClick={() => setShowGraph(!showGraph)}
+          />
           {/* Fold the detail pane away. An icon button rather than a third switch: this
               one is a view control, not a filter on what the board contains. */}
           <Button
@@ -1029,6 +1078,22 @@ export function MyTasks(): JSX.Element {
             onOpenTask={setSelectedTaskId}
             onStatusChanged={patchTask}
             onSubtasksChanged={() => void refresh()}
+          />
+        </div>
+      )}
+
+      {/* Last in the row, so folding it away never shifts the detail pane sideways — and
+          unmounted rather than hidden, for the same reason the detail pane is: a graph
+          nobody is looking at should not be re-reading a repository on every `task:changed`. */}
+      {showGraph && (
+        <div className={styles.graph}>
+          <GitGraphPane
+            projects={agentProjects}
+            selectedTask={selectedTask}
+            // The whole board, so a branch can carry the CARD's title instead of `orch/…`.
+            tasksById={tasksById}
+            // The only thing on the drawing allowed a colour — see `GRAPH_INK`.
+            runningTaskIds={liveRuns}
           />
         </div>
       )}
