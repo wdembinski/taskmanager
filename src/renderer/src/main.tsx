@@ -14,9 +14,35 @@ import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import { FluentProvider, Toaster, webDarkTheme, type Theme } from '@fluentui/react-components';
 import { App } from './App';
+import { isFileDrag } from './AttachmentStrip';
 import { RootErrorBoundary } from './RootErrorBoundary';
 import { BASE_FONT_PX, TOASTER_ID, scaleTheme, useGlobalStyles } from './theme';
 import './index.css';
+
+/**
+ * **A file dropped anywhere else must not navigate the window.**
+ *
+ * A drop the page does not cancel is handled by Chromium itself, and its default for a
+ * file is to *open* it — the window leaves the app for a `file://` view of a PNG. In a
+ * frameless window (`index.ts:68`) there is no back button and no address bar to come
+ * back with, so it is unrecoverable without restarting the app. Both events have to be
+ * cancelled: `dragover` is what makes the page a drop target at all, and `drop` is what
+ * would otherwise navigate.
+ *
+ * Gated on `Files` for the same reason the strip's own zone is: the board drags cards and
+ * draws chain links with this mechanism, and cancelling every `dragover` at the window
+ * would make the whole page accept those drops and take the "no" cursor away from the
+ * targets that legitimately refuse them.
+ *
+ * At module scope rather than in a `useEffect`: it is a property of the window, not of
+ * anything mounted in it, and there is no moment during the app's life when it should be
+ * off. Non-passive by necessity — a passive listener may not call `preventDefault`.
+ */
+for (const type of ['dragover', 'drop'] as const) {
+  window.addEventListener(type, (event: DragEvent) => {
+    if (isFileDrag(event.dataTransfer?.types)) event.preventDefault();
+  });
+}
 
 /**
  * The dark theme with **softer body text**.

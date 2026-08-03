@@ -34,6 +34,7 @@ import {
 import type { ClaudeModel, PermissionMode } from '@shared/session';
 import type { Project, Task, TaskActivityEntry } from '@shared/model';
 import type { MergeRequest } from '@shared/mergeRequest';
+import type { TaskAttachment } from '@shared/attachments';
 import type { TaskLink } from '@shared/taskChain';
 import type { SessionEvent } from '@shared/session';
 import { chatTarget } from '@shared/board';
@@ -154,6 +155,12 @@ export interface TaskDetailProps {
   parentTask?: Task | null;
   /** The merge requests filed under this card (empty when GitLab is off). */
   mergeRequests?: MergeRequest[];
+  /**
+   * The files hung off the task being shown — its slice of the board's attachment list.
+   * The board holds that list whole (see `attachment:changed`), so what arrives here is
+   * already narrowed to this task and the pane never has to ask.
+   */
+  attachments?: readonly TaskAttachment[];
   /** The status-note vocabulary, so a past update reads in the colour the board gave it. */
   statusKeywords?: readonly StatusKeyword[];
   /** How the board draws priority, so this pane draws it the same way. */
@@ -213,6 +220,7 @@ export function TaskDetail({
   subtasks = [],
   parentTask = null,
   mergeRequests = [],
+  attachments = [],
   statusKeywords,
   priorityDisplay = 'color',
   attention,
@@ -649,6 +657,7 @@ export function TaskDetail({
             <TaskDetailsCell
               task={task}
               agentProjects={agentProjects}
+              attachments={attachments}
               priorityDisplay={priorityDisplay}
               onTaskChanged={(updated) => onStatusChanged?.(updated)}
               onEdited={() => void loadActivity()}

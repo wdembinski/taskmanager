@@ -41,6 +41,7 @@ import {
   type BoardDisplaySettings,
 } from '@shared/settings';
 import type { MergeRequest } from '@shared/mergeRequest';
+import type { TaskAttachment } from '@shared/attachments';
 import {
   LINK_REFUSAL_MESSAGE,
   awaitingMerge,
@@ -183,6 +184,13 @@ export function MyTasks(): JSX.Element {
    */
   const [links, setLinks] = useState<TaskLink[]>([]);
   /**
+   * Every attachment on the board, for the third time and the third reason: the pane that
+   * shows a card's files is not the only thing that can change them (a step's brief shows
+   * its own beside its parent's), and a JIRA sync would clobber anything hung off `Task`.
+   * The board holds the flat list and hands each pane its slice.
+   */
+  const [attachments, setAttachments] = useState<TaskAttachment[]>([]);
+  /**
    * The link being drawn right now — by dragging a card's handle, or armed from the
    * keyboard. Holds every card's verdict, computed once when the gesture starts (see
    * `linkDropStates`) rather than per card per `dragover`.
@@ -224,21 +232,23 @@ export function MyTasks(): JSX.Element {
     setTasks(await window.api.invoke('board:tasks'));
   }, []);
 
-  // One seed load for all three channels, so a failure in any of them is reported
-  // rather than leaving the board on its spinner.
+  // One seed load for every channel the board reads, so a failure in any of them is
+  // reported rather than leaving the board on its spinner.
   const seed = useCallback(async () => {
-    const [board, appSettings, repos, mrs, chain] = await Promise.all([
+    const [board, appSettings, repos, mrs, chain, files] = await Promise.all([
       window.api.invoke('board:tasks'),
       window.api.invoke('settings:get'),
       window.api.invoke('agentProject:list'),
       window.api.invoke('gitlab:mergeRequests'),
       window.api.invoke('chain:links'),
+      window.api.invoke('attachment:list'),
     ]);
     setTasks(board);
     setSettings(appSettings);
     setAgentProjects(repos);
     setMergeRequests(mrs);
     setLinks(chain);
+    setAttachments(files);
   }, []);
 
   const initial = useInitialLoad(seed);
@@ -276,12 +286,16 @@ export function MyTasks(): JSX.Element {
     // The whole list, replaced — a link can also vanish because its CARD was deleted and
     // the row cascaded away, which no per-link patch would ever hear about.
     const offLinks = window.api.on('chain:changed', setLinks);
+    // Ditto, and one more reason on top: an attachment also vanishes when its CARD is
+    // deleted and the row cascades away, which no per-file patch would hear about.
+    const offAttachments = window.api.on('attachment:changed', setAttachments);
     return () => {
       offTask();
       offTasks();
       offSettings();
       offMrs();
       offLinks();
+      offAttachments();
     };
   }, [patchTask]);
 
@@ -289,6 +303,21 @@ export function MyTasks(): JSX.Element {
     () => tasks?.find((t) => t.id === selectedTaskId) ?? null,
     [tasks, selectedTaskId],
   );
+
+  /**
+   * taskId → its files, so each pane gets its own slice and nothing downstream filters a
+   * whole-board list per render. Built the same way `mrsByTask` is, and for the same
+   * reason — the list arrives flat because that is the only shape a sync cannot clobber.
+   */
+  const attachmentsByTask = useMemo(() => {
+    const map = new Map<string, TaskAttachment[]>();
+    for (const attachment of attachments) {
+      const list = map.get(attachment.taskId);
+      if (list) list.push(attachment);
+      else map.set(attachment.taskId, [attachment]);
+    }
+    return map;
+  }, [attachments]);
 
   /** taskId → its merge requests, so a card can be built in one pass. */
   const mrsByTask = useMemo(() => {
@@ -968,6 +997,9 @@ export function MyTasks(): JSX.Element {
             subtasks={chain}
             parentTask={parentOfSelected}
             mergeRequests={selectedTask ? (mrsByTask.get(selectedTask.id) ?? []) : []}
+            // The shown task's own files — a step's slice when a step is shown, since a
+            // step is a task row and carries its own.
+            attachments={selectedTask ? (attachmentsByTask.get(selectedTask.id) ?? []) : []}
             statusKeywords={settings?.statusKeywords}
             // The pane draws priority the same way the cards beside it do — one setting,
             // both surfaces, so they can never show the same fact two different ways.

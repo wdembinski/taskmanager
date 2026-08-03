@@ -9,8 +9,12 @@
  * Editing the description edits the app's **copy**. That copy is what the agent's
  * prompt quotes, so the edit is real work — but a JIRA sync will replace it with the
  * issue's text, and nothing here writes back to the tracker (see `docs/03`).
+ *
+ * The card's **files** live in that same section rather than in one of their own, because
+ * they are not a separate list to browse: they are the parts of the brief that are not
+ * prose, and the description is where one is cited as `@name`.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Button,
   Caption1,
@@ -32,8 +36,10 @@ import {
 import { DeleteRegular, DismissRegular } from '@fluentui/react-icons';
 import type { ManualStatus, Project, Task } from '@shared/model';
 import { restingStatus } from '@shared/board';
+import { insertAttachmentRef, type TaskAttachment } from '@shared/attachments';
 import { DEFAULT_PRIORITIES } from '@shared/priority';
 import type { PriorityDisplay } from '@shared/settings';
+import { AttachmentStrip } from './AttachmentStrip';
 import { PriorityGlyph } from './PriorityGlyph';
 import { MANUAL_STATUS_OPTIONS, STATUS_LABEL } from './taskStatus';
 import { FoldToggle } from './FoldToggle';
@@ -97,6 +103,12 @@ export interface TaskDetailsCellProps {
   /** The projects a card can be filed under (Settings → Agents). */
   agentProjects?: Project[];
   /**
+   * This card's files, sliced out of the board's list. Passed in rather than fetched here
+   * for the reason the list exists at all: a JIRA sync rewrites whole `Task` literals on
+   * every poll, so the attachments live beside the board's tasks and not on them.
+   */
+  attachments?: readonly TaskAttachment[];
+  /**
    * How the board draws priority, so this pane draws it the same way. Defaults to the
    * colour square — what every caller got before the setting existed.
    */
@@ -110,6 +122,7 @@ export interface TaskDetailsCellProps {
 export function TaskDetailsCell({
   task,
   agentProjects = [],
+  attachments = [],
   priorityDisplay = 'color',
   onTaskChanged,
   onEdited,
@@ -122,6 +135,8 @@ export function TaskDetailsCell({
   const [error, setError] = useState<string | null>(null);
   const [jiraPriorities, setJiraPriorities] = useState<string[]>([]);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  /** The description field, so an attachment can be cited where the caret actually is. */
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Switching cards closes whatever was open on the previous one.
   useEffect(() => {
@@ -233,6 +248,31 @@ export function TaskDetailsCell({
     } finally {
       setBusy(false);
     }
+  }
+
+  /**
+   * Write `@name` for each of `names` into the draft, where the caret is.
+   *
+   * Folded rather than looped through `setDraft`: every call reads the SAME `draft` from
+   * this render, so five separate inserts would each overwrite the last and only the fifth
+   * file would end up cited. The caret walks along with the text, so a pick of five reads
+   * as one phrase. With no textarea to ask (the field has not mounted yet), the refs go on
+   * the end — which is where they belong when nothing was being pointed at.
+   */
+  function insertRefs(names: readonly string[]): void {
+    let text = draft;
+    let caret = textareaRef.current?.selectionStart ?? draft.length;
+    for (const name of names) ({ text, caret } = insertAttachmentRef(text, caret, name));
+    setDraft(text);
+    // After React has written the new value, or the browser puts the caret back at the end
+    // of the old one and the next thing typed lands somewhere else entirely.
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(caret, caret);
+      }
+    });
   }
 
   async function save(): Promise<void> {
@@ -381,7 +421,18 @@ export function TaskDetailsCell({
       )}
 
       <div className={styles.row}>
-        <FoldToggle open={open} onToggle={() => setOpen((v) => !v)}>
+        {/* The fold's summary counts the FILES, not the words: a description you have read
+            is worth leaving shut, and the one thing you would still want to know about
+            what is behind it is whether the card is carrying something. */}
+        <FoldToggle
+          open={open}
+          onToggle={() => setOpen((v) => !v)}
+          summary={
+            attachments.length > 0
+              ? `${attachments.length} file${attachments.length === 1 ? '' : 's'}`
+              : undefined
+          }
+        >
           <Caption1>Description</Caption1>
         </FoldToggle>
         <span className={styles.grow} />
@@ -398,44 +449,65 @@ export function TaskDetailsCell({
         </MessageBar>
       )}
 
-      {open &&
-        (editing ? (
-          <>
-            <Textarea
-              value={draft}
-              resize="vertical"
-              onChange={(_e, d) => setDraft(d.value)}
-              placeholder="What this card is, and what done means…"
-            />
-            {isJira && (
-              <Caption1 className={styles.hint}>
-                Edits the app&apos;s copy — the agent reads this, but nothing is written back to
-                JIRA and the next sync replaces it with the ticket&apos;s text.
-              </Caption1>
-            )}
-            <div className={styles.editRow}>
-              <Button
-                size="small"
-                disabled={busy}
-                onClick={() => {
-                  setDraft(task.externalDescription ?? '');
-                  setEditing(false);
-                }}
-              >
-                Cancel
-              </Button>
-              <Button size="small" appearance="primary" disabled={busy} onClick={() => void save()}>
-                Save
-              </Button>
-            </div>
-          </>
-        ) : task.externalDescription ? (
-          <div className={styles.body}>{task.externalDescription}</div>
-        ) : (
-          <Caption1 className={styles.hint}>
-            No description yet — Edit adds one, and the agent&apos;s prompt quotes it.
-          </Caption1>
-        ))}
+      {open && (
+        <>
+          {editing ? (
+            <>
+              <Textarea
+                value={draft}
+                resize="vertical"
+                textarea={{ ref: textareaRef }}
+                onChange={(_e, d) => setDraft(d.value)}
+                placeholder="What this card is, and what done means…"
+              />
+              {isJira && (
+                <Caption1 className={styles.hint}>
+                  Edits the app&apos;s copy — the agent reads this, but nothing is written back to
+                  JIRA and the next sync replaces it with the ticket&apos;s text.
+                </Caption1>
+              )}
+              <div className={styles.editRow}>
+                <Button
+                  size="small"
+                  disabled={busy}
+                  onClick={() => {
+                    setDraft(task.externalDescription ?? '');
+                    setEditing(false);
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  size="small"
+                  appearance="primary"
+                  disabled={busy}
+                  onClick={() => void save()}
+                >
+                  Save
+                </Button>
+              </div>
+            </>
+          ) : task.externalDescription ? (
+            <div className={styles.body}>{task.externalDescription}</div>
+          ) : (
+            <Caption1 className={styles.hint}>
+              No description yet — Edit adds one, and the agent&apos;s prompt quotes it.
+            </Caption1>
+          )}
+
+          {/* The files, under the words, inside the same fold — one section, because a
+              file here is a part of the brief and not a separate thing to browse.
+              `onInsertRefs` only while EDITING: the whole point of citing at the caret is
+              that there is a caret, and offering it against text nobody is typing would
+              write into a draft that Cancel then throws away. */}
+          <AttachmentStrip
+            taskId={task.id}
+            attachments={attachments}
+            disabled={busy}
+            onInsertRefs={editing ? insertRefs : undefined}
+          />
+        </>
+      )}
 
       {/* Deleting is offered ONLY for a card this app owns. A JIRA card is a mirror of a
           ticket: removing it here would delete the row and then the very next sync would

@@ -8,16 +8,19 @@
  * runs with privileges and exposes a small, explicit object onto `window`. The
  * UI can only ever call the methods we deliberately list here — nothing more.
  *
- * We expose two things:
+ * We expose three things:
  *   - `window.api.invoke(channel, ...args)` — call an engine handler and await
  *     its reply (maps to ipcMain.handle in src/main/ipc.ts).
  *   - `window.api.on(channel, cb)` — subscribe to engine-pushed events, and get
  *     back an unsubscribe function.
+ *   - `window.api.pathForFile(file)` — the one thing here that is about a FEATURE
+ *     rather than about the boundary itself, and it is here only because Electron
+ *     leaves no other door (see its comment below).
  *
  * The types come from the shared IPC contract, so the UI gets full
  * autocomplete and type-checking on every call.
  */
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { IpcApi, IpcEvents } from '@shared/ipc';
 
 /** The typed API surface the renderer sees as `window.api`. */
@@ -38,6 +41,15 @@ const api = {
     const listener = (_event: unknown, payload: IpcEvents[K]): void => callback(payload);
     ipcRenderer.on(channel, listener as Parameters<typeof ipcRenderer.on>[1]);
     return () => ipcRenderer.removeListener(channel, listener as never);
+  },
+
+  /**
+   * The absolute path of a file the user DROPPED on the window. `File.path` was removed in
+   * Electron 32 and `webUtils` lives only in the privileged world, so this is the single
+   * thing the bridge must know about a feature. Returns '' for a File with no path on disk.
+   */
+  pathForFile(file: File): string {
+    return webUtils.getPathForFile(file);
   },
 };
 

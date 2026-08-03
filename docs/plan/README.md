@@ -1697,6 +1697,52 @@ fallback needs no CSP change at all — `attachment:thumbnail(id)` returning a `
 over IPC, since `img-src` already allows `data:`, and main→renderer bytes do not violate
 the renderer-never-ships-bytes rule, which is about the other direction.
 
+### Attaching from the card details
+
+`AttachmentStrip` is one component for what will be two callers, because a card's
+description and a step's brief are the same thing — prose an agent is handed — hung off two
+rows of the same table. It takes the task's id and its slice of the board's list, and owns
+nothing else; every action it offers is a channel from step 4.
+
+**It lives inside the Description fold, not in a section of its own.** A file here is not a
+list to browse, it is the part of the brief that is not prose — and the description is where
+one is cited as `@name`. The fold's `summary` (unused until now) counts the files, so a
+section left shut still says the card is carrying something.
+
+**Attaching writes the `@name` for you.** `insertAttachmentRef` at the caret of the
+description textarea, which needed a `textarea={{ ref }}` on it exactly as
+`chat/Composer.tsx:241` already does. The names are inserted in ONE fold rather than one
+`setDraft` per file: each call reads the same `draft` from the same render, so a pick of five
+files inserted five times would cite only the fifth. The offer is withdrawn when the
+description is not being edited — citing at a caret needs a caret, and writing into a draft
+that Cancel then discards is worse than not offering. A chip's name then does the other
+useful thing instead and opens the file.
+
+**Three drag gestures now share one `dragover`.** The board moves cards (`text/plain`) and
+draws chain links (`CHAIN_LINK_MIME`) through the same native mechanism the strip's drop zone
+uses, so the strip reads `types` for `'Files'` and returns without `preventDefault` for
+anything else — the mirror of `isChainLinkDrag`, and the one rule here worth pinning without
+a browser (`isFileDrag`, plus `formatSize`: 14 cases).
+
+**The window itself has to refuse a file drop.** A drop nothing cancels is handled by
+Chromium, and its default for a file is to *navigate* — the window leaves the app for a
+`file://` view of a PNG, with no back button and no address bar in a frameless window
+(`index.ts:68`) to come back with. A pair of listeners at the renderer's module scope cancels
+`dragover` and `drop`, gated on `Files` so the board's own drags keep their refusal cursors.
+
+**`src/preload/index.ts` stops being generic, once.** `File.path` was removed in Electron 32
+and `webUtils` lives only in the privileged world, so `pathForFile(file)` is the single thing
+the bridge must know about a feature — the documented recipe, and the reason the step-2 audit
+pinned the Electron version. `index.d.ts` needed no change: it exports `typeof api`.
+
+Everything else is the board's existing shape. `MyTasks` seeds a sixth whole-board list,
+subscribes to `attachment:changed`, and hands the pane its slice from a `useMemo` index —
+the same three lines `mergeRequests` and `chain:links` each have, for the reason they give.
+
+Gates: `pnpm typecheck` clean, `pnpm test` **1492 green**, `pnpm build` clean, `pnpm format`
+applied. What a rendered chip looks like, and whether a dropped file actually lands, cannot
+be shown without launching the app — owed to step 11 with the rest.
+
 ### Deliverables
 
 - [x] **1 — The shape of the design.** This entry: the four decisions above, each named
@@ -1723,8 +1769,11 @@ the renderer-never-ships-bytes rule, which is about the other direction.
       See above: the registration splits across two files because its two halves want
       opposite moments, the CSP is widened by one token in `img-src` rather than waved away
       with `bypassCSP`, and the id round trip is a pure pair so the grammar is testable.
-- [ ] **6 — Attach from the card details.** The pane grows the list, the picker, the
-      previews and the delete.
+- [x] **6 — Attach from the card details.** The pane grows the list, the picker, the
+      previews and the delete. See above: one strip for both callers, inside the Description
+      fold because a file is part of the brief; attaching cites itself at the caret in one
+      fold; the drop zone reads `'Files'` so it cannot answer a card drag or a chain link;
+      and the window refuses a stray file drop that would otherwise navigate it away.
 - [ ] **7 — Attach to a step brief.** The same UI against a step's row, which the schema
       already allows for free.
 - [ ] **8 — Stage attachments in the Add dialog.** Files chosen before the card exists, so
