@@ -249,10 +249,10 @@ type SettledResult = Pick<
  *  1. **The session never ran a turn.** No stop reason of any kind, no tokens on the
  *     clock, nothing said. The model was never called — this is a process that started and
  *     died, and it is what a chat resume looked like when it silently did nothing.
- *  2. **A plan-mode run that never presented a plan.** Producing a plan is the entire job;
- *     ending `end_turn` without one is a failure whatever the CLI thinks. See
+ *  2. **A plan-mode run that never presented a plan** — but only when producing a plan was
+ *     the job. Ending `end_turn` without one is then a failure whatever the CLI thinks. See
  *     {@link Run.planPresented} for why the run's flag, and not the task's stored plan, is
- *     what answers this.
+ *     what answers this, and {@link Run.expectsPlan} for why the mode alone cannot.
  *
  * The wording is what lands on the card, so each reason says what to do about it.
  */
@@ -260,6 +260,15 @@ export function describeEmptyOutcome(
   permissionMode: PermissionMode | undefined,
   planPresented: boolean | undefined,
   event: SettledResult,
+  /**
+   * Whether a plan was this run's job at all. Defaults to true, which is right for an
+   * ordinary work run: on a card assigned `plan`, planning IS the work.
+   *
+   * It is false for a conversation — a chat reply, a post-chain review — that merely
+   * INHERITED the card's mode. Those legitimately end with an answer and no plan, and
+   * judging them by this rule failed them unconditionally, however good the answer was.
+   */
+  expectsPlan = true,
 ): string | null {
   // Deliberately `usage` PRESENT and zero, not merely absent. The CLI omits the field in
   // some shapes, and an omission is not evidence — reading it as one would misfile
@@ -273,7 +282,7 @@ export function describeEmptyOutcome(
   if (!event.stopReason && !event.terminalReason && spentNothing && !event.resultText.trim()) {
     return 'the session ended without running a turn — nothing was sent to the model';
   }
-  if (permissionMode === 'plan' && !planPresented) {
+  if (expectsPlan && permissionMode === 'plan' && !planPresented) {
     return (
       'the planning session ended without presenting a plan. If it stopped to wait for ' +
       'background subagents, they were discarded when the turn ended — re-run it'
@@ -600,6 +609,21 @@ interface Run {
    * arriving after that must not be able to mark the card failed.
    */
   planPresented?: boolean;
+  /**
+   * Whether a plan was this run's JOB — the question {@link planPresented} is graded against.
+   *
+   * `permissionMode` cannot answer it, because `plan` reaches a run two different ways. A
+   * card assigned `plan` passes it to *everything* it ever starts, including a chat reply
+   * and the review a finished chain seeds; those are conversations, and a conversation ends
+   * with an answer, not a plan. A per-turn `plan` (the "Plan more steps" path) is the other
+   * way, and that one really is a planning run.
+   *
+   * Grading conversations by the planning rule failed them unconditionally: a card's review
+   * session delivered a complete, verified branch review and was parked as "the planning
+   * session ended without presenting a plan", twice — the retry could not have passed
+   * either. Meanwhile the card's work sat finished and unmerged.
+   */
+  expectsPlan?: boolean;
   /** Set once we've decided the task's outcome, so a trailing `exited` doesn't re-settle it. */
   settled: boolean;
   /** (Worktree mode) the task's branch, set once the worktree is prepared. */
@@ -1956,6 +1980,13 @@ export class Scheduler {
       // one-turn override never outlives its turn.
       permissionMode: opts.permissionMode ?? task.agentMode ?? project.defaultPermissionMode,
       model: task.agentModel ?? project.defaultModel,
+      // Read off the SAME two inputs the mode is, and that symmetry is the point: `plan`
+      // asked for on this turn means "come back with a plan", while `plan` inherited from
+      // the card means only "this card may not write". A conversation — a chat reply, a
+      // post-chain review — is judged as a conversation unless the caller says otherwise.
+      expectsPlan:
+        opts.permissionMode === 'plan' ||
+        !(opts.chatPrompt !== undefined || opts.reviewSeed || opts.releaseSeed),
     };
     this.runs.set(runId, run);
     this.inFlight.add(task.id);
@@ -2497,7 +2528,12 @@ export class Scheduler {
           // The two ways the CLI reports "success" about a run that achieved nothing.
           // Both were filed as wins before Phase 18, which is exactly what made them so
           // hard to see: the card said "Finished on branch…" and the human found nothing.
-          const empty = describeEmptyOutcome(run.permissionMode, run.planPresented, event);
+          const empty = describeEmptyOutcome(
+            run.permissionMode,
+            run.planPresented,
+            event,
+            run.expectsPlan,
+          );
           const reason =
             empty ??
             (event.terminalReason || event.stopReason || 'the session ended without success');

@@ -2441,6 +2441,33 @@ describe('describeEmptyOutcome', () => {
     const dead = { resultText: '', stopReason: null, terminalReason: null, usage: zero };
     expect(describeEmptyOutcome('plan', undefined, dead)).toMatch(/without running a turn/);
   });
+
+  // A card assigned `plan` hands that mode to EVERY run it starts, including conversations.
+  // A conversation ends with an answer; grading it by the planning rule failed it whatever
+  // it said. A real card's post-chain review was parked this way — twice — while its work
+  // sat finished and unmerged.
+  it('does not demand a plan from a conversation that merely inherited plan mode', () => {
+    const review = {
+      resultText: 'Reviewed the branch: 8 commits, tests green, I would merge it.',
+      stopReason: 'end_turn',
+      terminalReason: 'completed',
+      usage: spent,
+    };
+    expect(describeEmptyOutcome('plan', undefined, review, false)).toBeNull();
+  });
+
+  // ...but the run whose JOB is a plan is still held to it, in the same mode.
+  it('still fails a planning run that owed a plan', () => {
+    const stalled = {
+      resultText: "I'll continue once those return.",
+      stopReason: 'end_turn',
+      terminalReason: 'completed',
+      usage: spent,
+    };
+    expect(describeEmptyOutcome('plan', undefined, stalled, true)).toMatch(/presenting a plan/);
+    // Omitted means "a plan was expected" — the safe default for an ordinary work run.
+    expect(describeEmptyOutcome('plan', undefined, stalled)).toMatch(/presenting a plan/);
+  });
 });
 
 /**
@@ -3066,5 +3093,140 @@ describe('Scheduler — an integration with nothing to merge', () => {
     expect(worktrees.integrate).not.toHaveBeenCalled();
     // A refusal must give the card back rather than leaving it spinning on a merge.
     expect(scheduler.integratingTaskIds()).toEqual([]);
+  });
+});
+
+/**
+ * A card assigned `plan` mode passes that mode to every run it ever starts. Only the runs
+ * whose JOB is a plan may be graded on producing one.
+ *
+ * The card that exposed this had all eight steps done and eight commits on its branch. Its
+ * post-chain review session delivered a complete, verified branch review — and was parked as
+ * "the planning session ended without presenting a plan", then auto-retried into the same
+ * verdict, because a conversation cannot present a plan and was never going to.
+ */
+describe('Scheduler — which runs owe a plan', () => {
+  function setup() {
+    const project = {
+      id: 'agent-1',
+      name: 'Travelbook',
+      path: 'C:/repo',
+      planPath: '',
+      kind: 'agent',
+      concurrency: 1,
+      useWorktrees: false,
+      defaultPermissionMode: 'bypassPermissions',
+      defaultModel: 'sonnet',
+      instructions: '',
+    } as unknown as Project;
+    // Assigned `plan` in the assign dialog — the setting that leaks into every later run.
+    const card = {
+      id: 't1',
+      projectId: 'personal',
+      phase: '',
+      title: 'Backend processing may require more time',
+      status: 'in-progress',
+      sessionId: 'sess-1',
+      order: 0,
+      source: 'adhoc',
+      dependsOn: [],
+      isContract: false,
+      isScaffold: false,
+      agentProjectId: 'agent-1',
+      agentMode: 'plan',
+      agentPlan: '# An approved plan from round 1',
+      parentTaskId: null,
+    } as unknown as Task;
+    const store = {
+      getTask: (id: string) => (id === 't1' ? card : undefined),
+      getProject: (id: string) => (id === 'agent-1' ? project : undefined),
+      listProjects: () => [project],
+      getTasks: () => [card],
+      getSubtasks: () => [],
+      getTaskActivity: () => [],
+      listTaskLinks: () => [],
+      addComment: vi.fn(),
+      addChatMessage: vi.fn(),
+      updateTask: (id: string, patch: Partial<Task>) => {
+        if (id === 't1') Object.assign(card, patch);
+        return card;
+      },
+      appendTaskEvent: vi.fn(),
+      appendTokenUsage: vi.fn(),
+      getSettings: () => ({ maxAutoRetries: 0, limitJitterMs: 0, concurrency: 1 }),
+      ...INERT_ATTENTION_STORE,
+    } as unknown as Store;
+    const sessions = {
+      start: vi.fn(() => ({ runId: 'r-new' })),
+      stop: vi.fn(),
+      send: vi.fn(),
+    } as unknown as SessionManager;
+    const scheduler = new Scheduler(store, sessions, vi.fn(), vi.fn(), vi.fn(), vi.fn(), vi.fn());
+    /** The run object the scheduler just created, straight off its private map. */
+    const runFor = (runId: string) =>
+      (scheduler as unknown as { runs: Map<string, { permissionMode?: string; expectsPlan?: boolean }> })
+        .runs.get(runId);
+    return { scheduler, card, runFor };
+  }
+
+  it('does not make a chat reply owe a plan, though it inherits plan mode', () => {
+    const { scheduler, runFor } = setup();
+
+    const sent = scheduler.chatWithAgent('t1', 'how did the branch turn out?');
+
+    expect(sent.status).toBe('resumed');
+    if (sent.status === 'refused') throw new Error(sent.reason);
+    const run = runFor(sent.runId);
+    // The mode is still inherited — a card restricted to read-only stays read-only. It is
+    // the VERDICT that changes, not the permissions.
+    expect(run?.permissionMode).toBe('plan');
+    expect(run?.expectsPlan).toBe(false);
+  });
+
+  it('still makes a re-plan owe a plan — that turn asked for one', () => {
+    const { scheduler, runFor } = setup();
+
+    const sent = scheduler.replanCard('t1', 'plan me another round');
+
+    expect(sent.status).toBe('resumed');
+    if (sent.status === 'refused') throw new Error(sent.reason);
+    const run = runFor(sent.runId);
+    expect(run?.permissionMode).toBe('plan');
+    expect(run?.expectsPlan).toBe(true);
+  });
+
+  // The exact run that was parked twice: the session a finished chain seeds so the card can
+  // be talked to about what it built.
+  it('does not make the post-chain review owe a plan', () => {
+    const { scheduler, card } = setup();
+
+    (
+      scheduler as unknown as { seedParentReviewSession: (t: Task, s: string) => void }
+    ).seedParentReviewSession(card, 'all eight steps done');
+
+    const runs = [
+      ...(
+        scheduler as unknown as {
+          runs: Map<string, { reviewSeed?: boolean; expectsPlan?: boolean }>;
+        }
+      ).runs.values(),
+    ];
+    expect(runs).toHaveLength(1);
+    expect(runs[0].reviewSeed).toBe(true);
+    expect(runs[0].expectsPlan).toBe(false);
+  });
+
+  it('still makes an ordinary run on a plan-mode card owe a plan', () => {
+    const { scheduler, card, runFor } = setup();
+    // No session yet: the first message to an assigned card starts it as a real work run,
+    // and on a `plan` card planning IS that work.
+    card.sessionId = null as unknown as string;
+
+    const sent = scheduler.chatWithAgent('t1', 'off you go');
+
+    expect(sent.status).toBe('resumed');
+    if (sent.status === 'refused') throw new Error(sent.reason);
+    const run = runFor(sent.runId);
+    expect(run?.expectsPlan).toBe(true);
   });
 });
