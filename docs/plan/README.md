@@ -45,7 +45,7 @@ plan the orchestrator could one day run on its own repo.
 | 20 | Auto-release (RELEASE.md, the per-card switch and the project's preference) | ✅ shipped (v0.52.0) |
 | 21 | Starting the next card automatically (the re-ask, and what a merge is holding) | ✅ shipped (v0.55.1) |
 | — | Interim releases v0.56–v0.57 (a Stop button everywhere, the Add-task dialog's options) | ✅ shipped, not tracked here |
-| 22 | Attachments in the task and its steps | 🔨 in progress |
+| 22 | Attachments in the task and its steps | ✅ complete (v0.64.4) — tag and draft cut once it lands on `development` |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -2092,7 +2092,49 @@ there is no single-instance lock, and a second instance killed a live session on
       v0.57.0 database written by v0.57.0's own code. See above: the app was never launched,
       so the protocol serving bytes, drag-and-drop, every visual, `shell.openPath` and the
       WSL leg are **owed to a human** rather than claimed.
-- [ ] **12 — Release.**
+- [x] **12 — Release.** What a release can honestly do from a feature branch, done; what it
+      cannot, named and handed on. Every gate was re-run at the branch tip: `pnpm typecheck`
+      (node + web), `pnpm test` — **1506 passed**, 2 skipped, 81 files — `pnpm build`, and
+      `pnpm exec node scripts/verify-attachments.mjs`, whose **42 checks** all pass,
+      including the leg that opens a real v0.57.0 database. `pnpm check:abi` agrees as well:
+      `better_sqlite3.node` and Electron are both on ABI 130. `check:feed` is a *post*-package
+      gate and says so on a tree with no `dist/` — it runs inside `pnpm package`, from the
+      integration branch, and is not a question this branch can answer.
+
+      **The version is 0.64.4, not the 0.58.0 this phase was scoped against**, and that is
+      the per-commit bump rule working rather than a mistake. The scoping assumed one bump
+      for the whole phase; [`CONTRIBUTING.md`](../../CONTRIBUTING.md) §4 has *every* commit
+      carry its own, so the steps climbed 0.58.0 (the store) → 0.59.0 (the bytes) → 0.60.0
+      (the protocol) → 0.61.0 (the pane) → 0.62.0 (the step brief) → 0.63.0 (the dialog) →
+      0.64.0 (the legend), then four patches for the two docs entries, the reflow and the
+      verification script. The phase still ships as a MINOR; it just spends seven of them.
+      Only the tip is ever tagged, so the numbers in between cost nothing.
+
+      **One collision to know about before the merge:** step 1 bumped this branch to 0.57.1
+      while `development` independently shipped a *different* commit as `v0.57.1` (eeddcd3,
+      published, `Latest`). Both exist, only development's is tagged, and the tag cut after
+      integration names the tip — so nothing overwrites anything. It is recorded because two
+      commits claiming one version is precisely what reads as a corrupted history later.
+
+      **No tag and no release were cut here** — this phase's Notes and
+      [`RELEASE.md`](../../RELEASE.md) rule 5. Once the orchestrator lands this branch on
+      `development`, the release is that file run start to finish, already green through its
+      step 2: tag `v0.64.4` annotated, `git push --follow-tags`, a **draft** release, then
+      `pnpm package` on Windows and the packaged-addon check *through* `app.asar`. **Do not
+      promote the draft** — v0.56.0's and v0.57.0's are both still waiting on the same Linux
+      build, and rule 4 makes promotion the one irreversible step.
+
+      **Release notes, grouped as a user would notice them.** New: a card and each of its
+      steps can carry files — picked or dropped onto the Description fold, previewed inline
+      when they are images, opened with a click, and staged in the Add-task dialog before
+      the card exists. The bytes are copied into the profile, so moving or deleting the
+      original afterwards costs nothing. An agent is handed the list and the real paths, so
+      `@name` in a brief resolves to a file it can open — translated for WSL when the run
+      is over there. Internal: a `task_attachments` table with a cascading foreign key, a
+      `vipper-attachment` protocol behind a one-token `img-src` widening rather than a
+      disabled CSP, a boot sweep for bytes no row points at, and attachments that survive a
+      JIRA plan re-sync. Still owed to a human: everything in the *Owed to a human* list
+      above (the app was never launched), and the Linux artifacts.
 
 ### Done when
 
@@ -2107,10 +2149,12 @@ there is no single-instance lock, and a second instance killed a live session on
 **Notes.**
 
 - The phase ships as a **MINOR** bump (new behaviour a user notices), reached through the
-  per-commit bumps each step makes ([`CONTRIBUTING.md`](../../CONTRIBUTING.md) §4).
+  per-commit bumps each step makes ([`CONTRIBUTING.md`](../../CONTRIBUTING.md) §4) — seven
+  of them, landing on **v0.64.4**; deliverable 12 has the arithmetic.
 - **No tag and no release on this branch.** [`RELEASE.md`](../../RELEASE.md) rule 5 forbids
   releasing from anything but the integration branch, and a tag pushed from a feature branch
-  cannot be moved afterwards. Same standing rule as Phase 21.
+  cannot be moved afterwards. Same standing rule as Phase 21: the tag is cut when this lands
+  on `development`.
 - Every step of this plan shares the one branch `feat/attachments-in-the-task-subtasks`, so
   each step's session reads this entry to find what the previous one left it.
 - The worktree this plan runs in has **no `node_modules`** — the first step that touches
