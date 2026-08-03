@@ -45,6 +45,7 @@ import type {
   TaskActivityEntry,
   TaskType,
 } from './model';
+import type { TaskAttachment } from './attachments';
 import type { ExecTarget, TargetReadiness } from './execTarget';
 import type { ActiveRun, SchedulerChange, TaskChange } from './scheduler';
 import type { AttentionAnswer, AttentionItem } from './attention';
@@ -725,6 +726,37 @@ export interface IpcApi {
   /** Mark a JIRA task's comments as read (clears the unread border); returns the task. */
   'jira:markRead': (taskId: string) => Promise<Task>;
 
+  // --- Attachments (see `@shared/attachments`) ------------------------------
+  /**
+   * Every attachment on the board, in one call — the same shape as `chain:links`, and for
+   * the same reason it gives: a JIRA sync rewrites whole task rows on every poll, so
+   * anything hung off `Task` gets clobbered. The board indexes this by `taskId` itself.
+   */
+  'attachment:list': () => Promise<TaskAttachment[]>;
+  /**
+   * Open the OS file picker and return the chosen absolute paths — the exact shape and
+   * the exact reason as `jira:pickAttachments`: the renderer has no filesystem access and
+   * no business having any, so the only paths it ever holds are ones main just handed it,
+   * on their way straight back to main.
+   */
+  'attachment:pick': () => Promise<string[]>;
+  /**
+   * Copy those files under `userData` and hang them off a task. **Paths, never bytes** —
+   * an attachment can be a 30 MB video, and shipping it through the structured clone
+   * would copy it twice through memory to reach a process that could simply read it.
+   *
+   * A copy rather than a reference, because the file the human picked can be moved,
+   * renamed or deleted the minute after they picked it. Returns the whole list.
+   */
+  'attachment:add': (taskId: string, paths: string[]) => Promise<TaskAttachment[]>;
+  /** Drop one attachment — the row and the bytes. Returns the whole list. */
+  'attachment:remove': (id: string) => Promise<TaskAttachment[]>;
+  /**
+   * Open one in whatever the OS uses for it. By id, because the renderer never learns a
+   * path; resolves to the OS's complaint, or null when it opened.
+   */
+  'attachment:open': (id: string) => Promise<string | null>;
+
   /** Frameless-window controls, driven by the renderer's custom title bar. */
   'window:minimize': () => Promise<void>;
   /** Toggle maximize/restore. */
@@ -811,6 +843,13 @@ export interface IpcEvents {
    * so the board replaces rather than patches.
    */
   'chain:changed': TaskLink[];
+  /**
+   * The attachments changed — one was added, removed, or cascaded away with a deleted
+   * card. The WHOLE list, like `chain:changed`, so every open pane replaces rather than
+   * patches: a card's chips and a step's chips are two views of one list, and the card
+   * detail pane is not the only screen that can change it.
+   */
+  'attachment:changed': TaskAttachment[];
   /**
    * A sync started, finished or failed — the whole state, so the status bar replaces rather
    * than patches. Pushed on every sync from either path (the button and the poller share

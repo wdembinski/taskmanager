@@ -1,0 +1,298 @@
+/**
+ * The files a card carries — and the rules for naming and citing them.
+ *
+ * A brief is prose, so anything that is not prose (the screenshot of the bug, the mockup
+ * the layout has to match, the CSV that reproduces it) was either described in words or
+ * pasted as a path only the person who wrote it can open. An attachment is that file
+ * kept where the app keeps everything else, and named so a brief can point AT it:
+ * `@shot.png`, resolved to a real file by the agent that runs the card.
+ *
+ * The type and its rules live in one module, the way `taskChain.ts` holds `TaskLink` and
+ * `canLink`, and for the same reason: three sides ask the same questions and must not
+ * answer differently. The renderer greys out an `@foo` whose file is gone, the prompt
+ * builder decides which files a step's brief actually cites, and main decides what a
+ * picked file is called on disk. One `name` policy, one `@ref` grammar, both pure.
+ *
+ * Two rules that are not obvious and hold this together:
+ *
+ * - **`name` is both the token and the filename.** `UNIQUE (taskId, name)` in the store
+ *   is therefore one constraint doing two jobs — it is what makes `@name` unambiguous and
+ *   what keeps the bytes from colliding on disk. So the name is sanitized to what BOTH a
+ *   Windows filename and an `@token` can be, which is the narrow intersection
+ *   `[A-Za-z0-9._-]`, and deduped **case-insensitively** because NTFS says `A.png` and
+ *   `a.png` are the same file even though a Set of strings does not.
+ * - **A ref is resolved against the known list, never against a syntax.** Nothing here
+ *   decides what an `@token` *means* on its own; a token that matches no attachment is
+ *   prose. That is what stops `@needs:` (the plan-file dependency syntax, see
+ *   `docs/03-how-orchestration-works.md`) and an email address from ever being read as an
+ *   attachment, without either of them being special-cased — and it doubles as how the UI
+ *   knows to grey out an `@foo` whose file was removed.
+ *
+ * No path anywhere in this file. The absolute path is
+ * `join(userData, ATTACHMENTS_DIR, taskId, name)`, derived where it is needed; the
+ * renderer never learns one at all and reaches an image through {@link attachmentUrl}.
+ */
+
+/** One file attached to one card (or to one step — a step is a task row). */
+export interface TaskAttachment {
+  /** Stable app-assigned id (UUID) — what remove/open/preview address. */
+  id: string;
+  /** The card or step this hangs off. */
+  taskId: string;
+  /**
+   * The `@token`, and the file's name on disk — see the note above on why those are the
+   * same string. Unique within a task; sanitized by {@link attachmentName}.
+   */
+  name: string;
+  /**
+   * The name the file arrived with, untouched — what the chip shows. Kept separately
+   * because `name` may have been stripped of spaces, accents and parentheses, and
+   * "Screenshot 2026-08-03 at 11.04 (1).png" is how a human recognizes their own file.
+   */
+  fileName: string;
+  /** Best-effort content type, or null when nothing could be inferred from the suffix. */
+  mimeType: string | null;
+  /** Bytes on disk, for the chip's subtitle and for refusing something absurd. */
+  size: number;
+  createdAt: number;
+}
+
+/**
+ * What an agent is told about one attachment: the token to expect in the brief, and where
+ * that file actually is **on the machine the run happens on** — already translated for a
+ * WSL run, so the prompt never carries a path the agent cannot open.
+ */
+export interface PromptAttachment {
+  name: string;
+  path: string;
+}
+
+/** One `@name` found in a piece of text, with where it sits so the UI can decorate it. */
+export interface AttachmentRef {
+  /** The attachment's `name` as the known list spells it, without the `@`. */
+  name: string;
+  /** Index of the `@` in the source text. */
+  start: number;
+  /** Index one past the ref's last character. */
+  end: number;
+}
+
+/** The directory under `userData` the bytes live in: `<userData>/attachments/<taskId>/<name>`. */
+export const ATTACHMENTS_DIR = 'attachments';
+
+/** The custom scheme the renderer previews images over (registered privileged before ready). */
+export const ATTACHMENT_SCHEME = 'vipper-attachment';
+
+/**
+ * The URL an image preview loads.
+ *
+ * A host segment (`a`) rather than `scheme:///<id>`, because a URL with an empty authority
+ * parses inconsistently and Chromium's own `new URL()` is what the protocol handler will
+ * use to pull the id back out. The id is all that crosses: the handler resolves it
+ * THROUGH the store, so there is no renderer-supplied string that reaches the filesystem
+ * and traversal is impossible by construction rather than by validation.
+ */
+export function attachmentUrl(id: string): string {
+  return `${ATTACHMENT_SCHEME}://a/${encodeURIComponent(id)}`;
+}
+
+/** The most a `name` may run to. Long enough to stay recognizable, short enough to type. */
+const NAME_MAX = 64;
+
+/** What a name degrades to when sanitizing leaves nothing at all (emoji-only, `...`, blank). */
+const FALLBACK_NAME = 'file';
+
+/** The one character class that is legal in a Windows filename AND in an `@token`. */
+const NAME_CHAR = /[A-Za-z0-9._-]/;
+
+/**
+ * Names Windows reserves at the device level — unusable as a filename with or without an
+ * extension, and failing at `open()` rather than at validation. Prefixed with `_` rather
+ * than rejected, so the human still recognizes the file they picked.
+ */
+const DEVICE_NAMES: ReadonlySet<string> = new Set([
+  'con',
+  'prn',
+  'aux',
+  'nul',
+  ...Array.from({ length: 9 }, (_, i) => `com${i + 1}`),
+  ...Array.from({ length: 9 }, (_, i) => `lpt${i + 1}`),
+]);
+
+/**
+ * Split off the extension. A leading dot is part of the STEM (`.gitignore` is a dotfile,
+ * not an extension), which is why the test is `> 0` and not `>= 0`.
+ */
+function splitExtension(name: string): { stem: string; ext: string } {
+  const dot = name.lastIndexOf('.');
+  if (dot <= 0) return { stem: name, ext: '' };
+  return { stem: name.slice(0, dot), ext: name.slice(dot) };
+}
+
+/**
+ * `stem` + a dedupe suffix + `ext`, capped at {@link NAME_MAX} by shortening the STEM.
+ *
+ * The extension and the suffix are both load-bearing — one decides what opens the file,
+ * the other is the only thing telling two files apart — so the cap can only ever eat into
+ * the middle. A pathological extension (longer than the whole budget) is the one case
+ * where there is nothing left to protect, and the name is simply cut.
+ */
+function composeName(stem: string, ext: string, n: number): string {
+  const suffix = n < 2 ? '' : `-${n}`;
+  const room = NAME_MAX - ext.length - suffix.length;
+  if (room < 1) return `${stem}${suffix}${ext}`.slice(0, NAME_MAX);
+  const cut = stem.length <= room ? stem : stem.slice(0, room).replace(/-+$/, '');
+  return `${cut || FALLBACK_NAME}${suffix}${ext}`;
+}
+
+/**
+ * What a picked file is called once it is ours: an `@token` that is also a safe filename,
+ * unique among `taken`.
+ *
+ * Every step here is a rule about one of the two jobs the name does:
+ * directories are stripped (a picked path must not become a path), the text is
+ * NFC-normalized (macOS hands over decomposed accents, so the same filename would
+ * otherwise compare unequal to itself), whitespace becomes `-` so the token does not end
+ * at the first space, everything outside {@link NAME_CHAR} is dropped, and a trailing dot
+ * — legal to *write* on Windows and impossible to open afterwards — goes with it. `..`
+ * and `.` fall out of that as `''` and land on {@link FALLBACK_NAME}, which is why
+ * traversal is not a case that needs its own check.
+ *
+ * Dedupe inserts `-2`, `-3` **before** the extension, so the file still opens in the right
+ * program, and compares case-insensitively because the name is also a Windows filename.
+ */
+export function attachmentName(fileName: string, taken: readonly string[]): string {
+  const bare = fileName.split(/[\\/]/).pop() ?? '';
+  const sanitized = bare
+    .normalize('NFC')
+    .replace(/\s+/g, '-')
+    .replace(/[^A-Za-z0-9._-]+/g, '')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-+|[-.]+$/g, '');
+
+  const split = splitExtension(sanitized || FALLBACK_NAME);
+  const ext = split.ext;
+  let stem = split.stem || FALLBACK_NAME;
+  if (DEVICE_NAMES.has(stem.toLowerCase())) stem = `_${stem}`;
+
+  const used = new Set(taken.map((t) => t.toLowerCase()));
+  // Bounded by the list itself: each `n` yields a distinct name, so `taken.length + 1`
+  // attempts cannot all collide.
+  for (let n = 1; n <= taken.length + 1; n += 1) {
+    const candidate = composeName(stem, ext, n);
+    if (!used.has(candidate.toLowerCase())) return candidate;
+  }
+  return composeName(stem, ext, taken.length + 2);
+}
+
+/**
+ * Trailing punctuation peeled off a candidate while it matches nothing.
+ *
+ * Only `.` can actually occur today — the others are not in {@link NAME_CHAR}, so the
+ * greedy match stops before them — but the rule is stated whole, because "a ref may end
+ * at a sentence's full stop" is the intent, and a later widening of the character class
+ * must not quietly change what `@shot.png.` means.
+ */
+const PEELABLE = '.,;:!?)';
+
+/**
+ * Every `@name` in `text` that names something in `known`, in the order they appear.
+ *
+ * Three rules, and the third is the one that matters:
+ *
+ * 1. The `@` must start a word — the preceding character is absent or outside
+ *    {@link NAME_CHAR}. That one rule alone is what stops `bob@example.com`.
+ * 2. The token runs greedily over {@link NAME_CHAR}, then trailing punctuation is peeled
+ *    off while the candidate matches nothing — so `@shot.png.` at the end of a sentence
+ *    resolves, and `@a.png.bak` still prefers the longer name when both exist.
+ * 3. Only candidates present in `known` are emitted. A token that names no attachment is
+ *    prose, which is how `@needs:` and every other stray `@` stay out of this without
+ *    being special-cased.
+ *
+ * Every OCCURRENCE is returned, not every distinct name: the offsets are the point, since
+ * the pane decorates each token where it sits.
+ */
+export function parseAttachmentRefs(text: string, known: readonly string[]): AttachmentRef[] {
+  const byLower = new Map(known.map((n) => [n.toLowerCase(), n]));
+  const refs: AttachmentRef[] = [];
+  const pattern = /@[A-Za-z0-9._-]*/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text)) !== null) {
+    const at = match.index;
+    const before = at > 0 ? text[at - 1] : '';
+    if (before && NAME_CHAR.test(before)) continue;
+    let candidate = match[0].slice(1);
+    while (candidate) {
+      const hit = byLower.get(candidate.toLowerCase());
+      if (hit !== undefined) {
+        refs.push({ name: hit, start: at, end: at + 1 + candidate.length });
+        break;
+      }
+      if (!PEELABLE.includes(candidate[candidate.length - 1])) break;
+      candidate = candidate.slice(0, -1);
+    }
+  }
+  return refs;
+}
+
+/**
+ * The attachments a piece of text actually cites — what the agent is handed, so a brief
+ * mentioning one of six files does not come with a legend for all six.
+ *
+ * Returned in `all`'s order (the order the chips are listed in) rather than in order of
+ * mention, and each named file appears once however often it is written.
+ */
+export function referencedAttachments<T extends { name: string }>(
+  text: string,
+  all: readonly T[],
+): T[] {
+  const cited = new Set(
+    parseAttachmentRefs(
+      text,
+      all.map((a) => a.name),
+    ).map((r) => r.name.toLowerCase()),
+  );
+  return all.filter((a) => cited.has(a.name.toLowerCase()));
+}
+
+/**
+ * What a step may name: its own attachments, plus its parent card's.
+ *
+ * A step's brief is written against the card's material — the mockup is attached once, to
+ * the card, and every step that has to match it says `@mockup.png`. Attaching it again per
+ * step would be a copy per step, and copies drift.
+ *
+ * The step's own list wins a name clash, since that is the one attached closest to the
+ * work, and a shadowed parent file is then simply unreachable from that step — which is
+ * exactly what the human asked for by giving it the same name.
+ */
+export function attachmentsInScope<T extends { name: string }>(
+  own: readonly T[],
+  parent: readonly T[],
+): T[] {
+  const shadowed = new Set(own.map((a) => a.name.toLowerCase()));
+  return [...own, ...parent.filter((a) => !shadowed.has(a.name.toLowerCase()))];
+}
+
+/**
+ * Write `@name` into `text` at the caret — what clicking a chip (or picking from the `@`
+ * menu) does — and say where the caret ends up.
+ *
+ * Spacing is added only where it is missing, on both sides, because the commonest way to
+ * ruin a ref is to graft it onto the previous word: `see@shot.png` is not a ref at all
+ * (rule 1 of {@link parseAttachmentRefs}), and it would fail silently. The caret lands
+ * after the inserted text, so typing continues where the eye is.
+ */
+export function insertAttachmentRef(
+  text: string,
+  caret: number,
+  name: string,
+): { text: string; caret: number } {
+  const at = Math.max(0, Math.min(caret, text.length));
+  const before = text.slice(0, at);
+  const after = text.slice(at);
+  const lead = before && !/\s$/.test(before) ? ' ' : '';
+  const trail = after && /^\s/.test(after) ? '' : ' ';
+  const token = `${lead}@${name}${trail}`;
+  return { text: before + token + after, caret: at + token.length };
+}

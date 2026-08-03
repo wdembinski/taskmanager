@@ -1559,6 +1559,45 @@ silently deletes that project's attachment rows — leaving the bytes orphaned o
 the cascade cannot reach them. Step 3 owns this; it is not optional and it is not obvious from
 reading the table definition.
 
+### The contract and the store
+
+`src/shared/attachments.ts` holds `TaskAttachment` **and** its rules, the way `taskChain.ts`
+holds `TaskLink` and `canLink` — three sides ask the same two questions (what is this file
+called, and does this `@token` name it) and must not answer differently. Both answers are
+pure and unit-tested: 36 cases in `attachments.test.ts`.
+
+`attachmentName` sanitizes to `[A-Za-z0-9._-]`, the narrow intersection of what a Windows
+filename and an `@token` can both be, and dedupes `-2`/`-3` **before** the extension and
+**case-insensitively** — NTFS says `A.png` and `a.png` are one file even though a `Set` of
+strings does not. Traversal is not a case it checks for: `..` sanitizes to `''` and lands on
+`file`, and a directory is stripped before anything else runs.
+
+`parseAttachmentRefs` resolves against the KNOWN list rather than against a syntax, which is
+the decision the whole grammar rests on. A token naming no attachment is prose, so `@needs:`
+and `bob@example.com` are excluded without either being special-cased, and the same call is
+what lets the UI grey out an `@foo` whose file was removed. Trailing `.` is peeled while the
+candidate matches nothing, so `@shot.png.` at the end of a sentence resolves and `@a.png.bak`
+still prefers the longer name when both exist.
+
+The channels are declared before either side uses them (Conventions, *contract first*):
+`attachment:list` / `:pick` / `:add` / `:remove` / `:open`, plus `attachment:changed`
+carrying the whole list. `add` takes **paths, never bytes** — an attachment can be a 30 MB
+video, and the structured clone would copy it twice through memory to reach a process that
+could simply read it.
+
+Two things in `store.ts` worth naming. The `UNIQUE (taskId, name)` index is `COLLATE NOCASE`,
+because it is standing in for the filesystem's own uniqueness; and it needs **no companion
+index on `taskId`** — `taskId` is its leftmost column, so it already serves "the attachments
+of this task", and a second one would be dead weight. And `syncTasksFromPlan` now carries
+attachments across its delete-and-reinsert exactly as it carries chain links, ids and all, so
+a preview URL an open pane is showing survives a plan save.
+
+Verified headlessly against the real store on a scratch DB (`ELECTRON_RUN_AS_NODE=1
+electron.exe`, since better-sqlite3 is built for Electron's ABI): the cascade takes a card's
+attachments *and* its steps' with it, a repeated name is refused in either case, an unknown
+task is refused by the foreign key, `deleteAttachment` hands the row back so the bytes can be
+unlinked, and a plan re-sync keeps what it kept and drops what it dropped.
+
 ### Deliverables
 
 - [x] **1 — The shape of the design.** This entry: the four decisions above, each named
@@ -1569,9 +1608,11 @@ reading the table definition.
       cites, and a stale line number is a decision nobody actually checked. Three were stale
       and are corrected; the `File.path` typing hole and the `syncTasksFromPlan` cascade are
       what the audit turned up that the design had not accounted for.
-- [ ] **3 — The contract and the store.** `TaskAttachment` in `src/shared/` before either
+- [x] **3 — The contract and the store.** `TaskAttachment` in `src/shared/` before either
       side uses it (Conventions, *contract first*), the `task_attachments` table and its
-      index, and the store methods over them.
+      index, and the store methods over them. See above: the name/ref rules ship with it,
+      because the store's `UNIQUE (taskId, name)` is only unambiguous if one policy decides
+      what a name is; and `syncTasksFromPlan` restores attachments as it does links.
 - [ ] **4 — Copy the bytes into app data.** Main picks the files, copies them under
       `userData/attachments/<taskId>/`, and writes the row. A copy, not a reference: the
       file the human picked can be moved, renamed or deleted the minute after they picked

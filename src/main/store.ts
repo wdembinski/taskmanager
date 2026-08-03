@@ -50,6 +50,7 @@ import type {
 } from '@shared/mergeRequest';
 import type { AttentionItem } from '@shared/attention';
 import { isLinkGate, type LinkGate, type TaskLink } from '@shared/taskChain';
+import type { TaskAttachment } from '@shared/attachments';
 import type { ParsedTask } from './planParser';
 import { splitProjectTag } from './projectTagMigration';
 import type { SavedWindowState } from './windowState';
@@ -331,6 +332,31 @@ export interface Store {
   deleteTaskLink(id: string): void;
   /** Change what "after" means for one arrow, without redrawing it. */
   setTaskLinkGate(id: string, gate: LinkGate): TaskLink | undefined;
+
+  // --- Attachments (see `@shared/attachments`). ---
+  /** Every attachment on the board, oldest first — the whole list `attachment:list` hands over. */
+  listAttachments(): TaskAttachment[];
+  /** One task's own attachments, oldest first. A step's parent is NOT included. */
+  attachmentsForTask(taskId: string): TaskAttachment[];
+  /** One by id — how the protocol handler turns a URL into a file it may serve. */
+  getAttachment(id: string): TaskAttachment | undefined;
+  /**
+   * Record a file that has already been copied into place. The id and `createdAt` are the
+   * store's to assign; `name` is the caller's, already through `attachmentName` against
+   * the names this task has.
+   *
+   * Undefined when the row is refused — an unknown task (foreign key) or a name already
+   * taken (the unique index). Both are the caller having raced or skipped
+   * `attachmentName`, and both are "no attachment" rather than an exception, exactly as
+   * `addTaskLink` treats its own two rejections.
+   */
+  addAttachment(input: Omit<TaskAttachment, 'id' | 'createdAt'>): TaskAttachment | undefined;
+  /**
+   * Forget one. Returns the row that WAS there, because the bytes live outside the
+   * database and the caller needs its `taskId` and `name` to unlink them — a plain
+   * `void` would delete the only record of where the file is.
+   */
+  deleteAttachment(id: string): TaskAttachment | undefined;
 
   /**
    * Persist one open inbox item, with the kind-specific `context` its answer path needs
@@ -632,6 +658,36 @@ export function createStore(dbPath: string): Store {
     );
     CREATE INDEX IF NOT EXISTS idx_task_links_from ON task_links(fromTaskId);
     CREATE INDEX IF NOT EXISTS idx_task_links_to   ON task_links(toTaskId);
+    -- The files a card carries (see shared/attachments.ts). A step is a task row, so a
+    -- step's attachments are the same shape hung off a different taskId.
+    -- A NEW table, so nothing to migrate.
+    --
+    -- Follows task_links above: a real foreign key with ON DELETE CASCADE, because
+    -- deleting a card must not leave a row pointing at nothing — and because that cascade
+    -- is what makes "delete the card, delete its files" a fact of the schema rather than a
+    -- step someone has to remember. (The BYTES are not reachable by a cascade; whoever
+    -- deletes rows unlinks the directory, which is why deleteAttachment hands the row back.)
+    --
+    -- No path column. The absolute path is join(userData, 'attachments', taskId, name),
+    -- so it cannot drift when a profile is restored under another Windows account.
+    -- UNIQUE (taskId, name) is therefore doing two jobs at once: it is the addressing rule
+    -- that makes an @name unambiguous AND the storage rule that keeps the filenames
+    -- collision-free. Its index has taskId as its leftmost column, so it already serves
+    -- "the attachments of this task" — a separate index on taskId would be dead weight.
+    --
+    -- COLLATE NOCASE on the name because that unique index stands in for the filesystem's
+    -- own uniqueness, and NTFS says A.png and a.png are the same file. NOCASE folds ASCII
+    -- only, which is exactly the character set attachmentName() emits.
+    CREATE TABLE IF NOT EXISTS task_attachments (
+      id        TEXT PRIMARY KEY,
+      taskId    TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      name      TEXT NOT NULL COLLATE NOCASE,   -- the @token, and the file's name on disk
+      fileName  TEXT NOT NULL,                  -- the name it arrived with, for the chip
+      mimeType  TEXT,                           -- NULL when the suffix said nothing
+      size      INTEGER NOT NULL,
+      createdAt INTEGER NOT NULL,
+      UNIQUE (taskId, name)
+    );
   `);
 
   // Migrate databases created before Phase 3 added the write-back column.
@@ -1218,6 +1274,27 @@ export function createStore(dbPath: string): Store {
   );
   const deleteTaskLinkStmt = db.prepare(`DELETE FROM task_links WHERE id = ?`);
   const updateTaskLinkGate = db.prepare(`UPDATE task_links SET gate = ? WHERE id = ?`);
+
+  const selectAttachments = db.prepare(`SELECT * FROM task_attachments ORDER BY createdAt, rowid`);
+  const selectAttachmentsForTask = db.prepare(
+    `SELECT * FROM task_attachments WHERE taskId = ? ORDER BY createdAt, rowid`,
+  );
+  const selectAttachment = db.prepare(`SELECT * FROM task_attachments WHERE id = ?`);
+  // The attachments of a project's tasks — used to carry them across the
+  // delete-and-reinsert a plan re-sync performs, exactly as the links above are.
+  const selectAttachmentsForProject = db.prepare(
+    `SELECT * FROM task_attachments
+     WHERE taskId IN (SELECT id FROM tasks WHERE projectId = ?)
+     ORDER BY createdAt, rowid`,
+  );
+  // No conflict target: DO NOTHING then covers the unique (taskId, name) AND the primary
+  // key, so a re-inserted row on the plan-sync path is idempotent for free.
+  const insertAttachment = db.prepare<[TaskAttachment]>(
+    `INSERT INTO task_attachments (id, taskId, name, fileName, mimeType, size, createdAt)
+     VALUES (@id, @taskId, @name, @fileName, @mimeType, @size, @createdAt)
+     ON CONFLICT DO NOTHING`,
+  );
+  const deleteAttachmentStmt = db.prepare(`DELETE FROM task_attachments WHERE id = ?`);
 
   const upsertAttentionStmt = db.prepare(
     `INSERT INTO attention_items
@@ -1825,15 +1902,26 @@ export function createStore(dbPath: string): Store {
       // file would quietly erase the chain drawn over that project. Only links whose
       // both ends survive are restored; one pointing at a task the plan dropped is a
       // genuine cascade and stays gone.
+      //
+      // Attachments are the same shape and need the same treatment, in the same
+      // transaction and for a sharper reason: the bytes live on disk, where no cascade can
+      // reach them, so losing the rows would leave a directory of files nothing points at
+      // and no way to get them back. Their ids are preserved along with them, so a
+      // `vipper-attachment://a/<id>` an open pane is already showing stays valid.
       const replace = db.transaction((tasks: Task[]) => {
         const links = (selectTaskLinksForProject.all(projectId, projectId) as TaskLinkRow[]).map(
           rowToTaskLink,
         );
+        const attachments = selectAttachmentsForProject.all(projectId) as TaskAttachment[];
         deleteTasks.run(projectId);
         for (const t of tasks) insertTask.run(taskToRow(t));
         for (const link of links) {
           if (!selectTask.get(link.fromTaskId) || !selectTask.get(link.toTaskId)) continue;
           insertTaskLink.run(link);
+        }
+        for (const attachment of attachments) {
+          if (!selectTask.get(attachment.taskId)) continue;
+          insertAttachment.run(attachment);
         }
       });
       replace(desired);
@@ -2071,6 +2159,40 @@ export function createStore(dbPath: string): Store {
       updateTaskLinkGate.run(gate, id);
       const row = selectTaskLink.get(id) as TaskLinkRow | undefined;
       return row ? rowToTaskLink(row) : undefined;
+    },
+
+    // The seven columns ARE `TaskAttachment`, in order, so these rows need no mapper —
+    // unlike a link's `gate`, nothing here is a string the schema could disagree with.
+    listAttachments() {
+      return selectAttachments.all() as TaskAttachment[];
+    },
+
+    attachmentsForTask(taskId) {
+      return selectAttachmentsForTask.all(taskId) as TaskAttachment[];
+    },
+
+    getAttachment(id) {
+      return selectAttachment.get(id) as TaskAttachment | undefined;
+    },
+
+    addAttachment(input) {
+      const row: TaskAttachment = { ...input, id: randomUUID(), createdAt: Date.now() };
+      // The foreign key rejects an unknown task and the unique index a name already used
+      // on it; either way the caller gets "no attachment" rather than an exception out of
+      // a file drop. Same contract as `addTaskLink`.
+      try {
+        if (insertAttachment.run(row).changes === 0) return undefined;
+      } catch {
+        return undefined;
+      }
+      return row;
+    },
+
+    deleteAttachment(id) {
+      const row = selectAttachment.get(id) as TaskAttachment | undefined;
+      if (!row) return undefined;
+      deleteAttachmentStmt.run(id);
+      return row;
     },
 
     saveAttention(item, context) {
