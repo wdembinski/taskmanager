@@ -40,6 +40,7 @@ import { autoReleaseOn, RELEASE_DOC } from '@shared/release';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import { AssignAgentDialog } from './AssignAgentDialog';
 import { stepPosition } from './board/boardColumns';
+import { draftKey, useDraft } from './drafts';
 import { STATUS_LABEL } from './taskStatus';
 import { AgentQuestionForm } from './AgentQuestionForm';
 import { Markdown } from './chat/MarkdownView';
@@ -194,7 +195,16 @@ export function TaskAgentPanel({
   // only the item that was resolved rather than blanking the whole slot.
   const item = items[0] ?? null;
   const queued = Math.max(0, items.length - 1);
-  const [reply, setReply] = useState('');
+  /**
+   * What you are typing back to the agent, as a DRAFT (`./drafts`): looking at another card
+   * to work out the answer — which is most of what answering an ask involves — no longer
+   * empties the box on the way back.
+   */
+  const replyDraft = useDraft(draftKey(task.id, 'reply'), '');
+  const reply = replyDraft.value;
+  // Pulled out because `answer` below is memoised: the hook's own callbacks are stable per
+  // card, while the object holding them is a fresh one every render.
+  const resetReply = replyDraft.reset;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /**
@@ -292,9 +302,9 @@ export function TaskAgentPanel({
    */
   const [hasReleaseDoc, setHasReleaseDoc] = useState<boolean | null>(null);
 
-  // The asks arrive as a prop; only the draft reply is local.
+  // The asks arrive as a prop; only the draft reply is local — and it is a draft, so
+  // switching card parks it rather than clearing it (see `useDraft`).
   useEffect(() => {
-    setReply('');
     setMergePressed(false);
     setMergingOther(null);
   }, [taskId]);
@@ -353,16 +363,17 @@ export function TaskAgentPanel({
       setError(null);
       try {
         await window.api.invoke('attention:answer', item.id, a);
-        // No local clear: the engine emits `attention:resolved` and the board's index
-        // drops exactly this item, leaving any sibling ask standing.
-        setReply('');
+        // No local clear of the ITEM: the engine emits `attention:resolved` and the board's
+        // index drops exactly this one, leaving any sibling ask standing. The reply itself
+        // has been sent, so its draft is spent.
+        resetReply();
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       } finally {
         setBusy(false);
       }
     },
-    [item],
+    [item, resetReply],
   );
 
   /**
@@ -863,7 +874,7 @@ export function TaskAgentPanel({
                 <Textarea
                   value={reply}
                   resize="vertical"
-                  onChange={(_e, d) => setReply(d.value)}
+                  onChange={(_e, d) => replyDraft.set(d.value)}
                   placeholder="Add guidance (optional)…"
                 />
               </Field>
@@ -927,7 +938,7 @@ export function TaskAgentPanel({
                   <Textarea
                     value={reply}
                     resize="vertical"
-                    onChange={(_e, d) => setReply(d.value)}
+                    onChange={(_e, d) => replyDraft.set(d.value)}
                     placeholder="Type your reply…"
                   />
                 </Field>

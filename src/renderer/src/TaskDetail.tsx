@@ -52,6 +52,7 @@ import { ChatTurns } from './chat/ChatTurns';
 import { Composer } from './chat/Composer';
 import { foldTurns } from './chat/turns';
 import { EMPTY_COMPOSER, type ComposerValue } from './chat/mentions';
+import { draftKey, useDraft } from './drafts';
 import { MergeRequests } from './MergeRequests';
 import { TaskChain } from './TaskChain';
 import { StepBrief, TaskSteps } from './TaskSteps';
@@ -259,14 +260,27 @@ export function TaskDetail({
   const [activity, setActivity] = useState<TaskActivityEntry[]>([]);
   const [jiraComments, setJiraComments] = useState<TaskActivityEntry[]>([]);
   const [liveEvents, setLiveEvents] = useState<TaskActivityEntry[]>([]);
-  // The composer's whole value: what was typed, who is named in it, and what is
-  // attached. Only the JIRA path uses the last two; the other three actions read `.text`.
-  const [comment, setComment] = useState<ComposerValue>(EMPTY_COMPOSER);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const taskId = task?.id ?? null;
   const isJira = task?.externalSource === 'jira';
+
+  /**
+   * The composer's whole value: what was typed, who is named in it, and what is attached.
+   * Only the JIRA path uses the last two; the other three actions read `.text`.
+   *
+   * A draft, so a half-written message survives glancing at another card — the mechanism
+   * this pane invented and now shares with every other editable field (`./drafts`). "Empty"
+   * for a composer is no text *and* no files: a message that is only an attachment is still
+   * worth coming back to.
+   */
+  const composer = useDraft<ComposerValue>(
+    taskId === null ? null : draftKey(taskId, 'comment'),
+    EMPTY_COMPOSER,
+    (v) => !v.text.trim() && v.attachments.length === 0,
+  );
+  const comment = composer.value;
 
   const loadActivity = useCallback(async () => {
     if (!taskId) {
@@ -296,34 +310,6 @@ export function TaskDetail({
     setError(null);
     void loadActivity();
   }, [loadActivity]);
-
-  /**
-   * **Half-written messages survive switching cards.**
-   *
-   * The composer used to be cleared whenever the pane changed task, so glancing at another
-   * card — which is most of what a board is for — threw away whatever you were partway
-   * through typing, with no warning and no way back. A draft belongs to the card it was
-   * written for, so it is parked under that card's id and restored when you return.
-   *
-   * A ref rather than state: nothing renders from the map, and putting it in state would
-   * re-render the whole pane on every keystroke that saves into it.
-   */
-  const drafts = useRef(new Map<string, ComposerValue>());
-  // Mirrors `comment` so the cleanup below can read the LATEST value. The cleanup closes
-  // over the old `taskId` by construction, which is exactly the card the draft belongs to.
-  const commentRef = useRef(comment);
-  commentRef.current = comment;
-  useEffect(() => {
-    setComment((taskId && drafts.current.get(taskId)) || EMPTY_COMPOSER);
-    return () => {
-      if (!taskId) return;
-      const draft = commentRef.current;
-      // Empty drafts are deleted rather than stored: "nothing typed" and "typed and then
-      // cleared" are the same state, and keeping the second would grow the map for ever.
-      if (draft.text.trim() || draft.attachments.length) drafts.current.set(taskId, draft);
-      else drafts.current.delete(taskId);
-    };
-  }, [taskId]);
 
   // Follow this task's live run so its transcript streams in. `session:event` only
   // carries a runId, so track which run belongs to this card: the active-runs snapshot
@@ -488,7 +474,7 @@ export function TaskDetail({
     setError(null);
     try {
       await window.api.invoke('task:addComment', task.id, comment.text.trim());
-      setComment(EMPTY_COMPOSER);
+      composer.reset();
       await loadActivity();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -506,7 +492,7 @@ export function TaskDetail({
       onStatusChanged?.(
         await window.api.invoke('task:setStatusNote', task.id, comment.text.trim()),
       );
-      setComment(EMPTY_COMPOSER);
+      composer.reset();
       await loadActivity();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -533,7 +519,7 @@ export function TaskDetail({
         })),
         attachmentPaths: comment.attachments,
       });
-      setComment(EMPTY_COMPOSER);
+      composer.reset();
       await loadActivity();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -558,7 +544,7 @@ export function TaskDetail({
         setError(REFUSAL_HINT[result.reason]);
         return;
       }
-      setComment(EMPTY_COMPOSER);
+      composer.reset();
       await loadActivity();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -819,7 +805,7 @@ export function TaskDetail({
               : null
           }
           value={comment}
-          onChange={setComment}
+          onChange={composer.set}
           busy={busy}
           isJira={isJira}
           onSearchPeople={(q) => window.api.invoke('jira:searchUsers', task.id, q)}

@@ -40,6 +40,7 @@ import { insertAttachmentRef, type TaskAttachment } from '@shared/attachments';
 import { DEFAULT_PRIORITIES } from '@shared/priority';
 import type { PriorityDisplay } from '@shared/settings';
 import { AttachmentStrip } from './AttachmentStrip';
+import { draftKey, useDraft } from './drafts';
 import { PriorityGlyph } from './PriorityGlyph';
 import { MANUAL_STATUS_OPTIONS, STATUS_LABEL } from './taskStatus';
 import { FoldToggle } from './FoldToggle';
@@ -130,7 +131,14 @@ export function TaskDetailsCell({
   const styles = useStyles();
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(task.externalDescription ?? '');
+  /**
+   * The description being written, kept as a DRAFT (`./drafts`): opening another card to
+   * check something no longer throws away an edit in progress, and the pane being folded
+   * away does not either — the store outlives this component.
+   */
+  const description = useDraft(draftKey(task.id, 'description'), task.externalDescription ?? '');
+  const draft = description.value;
+  const setDraft = description.set;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [jiraPriorities, setJiraPriorities] = useState<string[]>([]);
@@ -138,14 +146,21 @@ export function TaskDetailsCell({
   /** The description field, so an attachment can be cited where the caret actually is. */
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Switching cards closes whatever was open on the previous one.
+  /**
+   * Switching cards closes whatever was open on the previous one.
+   *
+   * Keyed on the card's ID **only**. It used to depend on the description text as well, so
+   * a background JIRA sync — which rewrites the whole `Task` on every poll — folded the
+   * section shut and wiped whatever was half-typed in it, for a card nobody had touched.
+   * The text is the draft's business now, and a draft is left alone by an external change:
+   * what you are writing wins until you save or cancel it.
+   */
   useEffect(() => {
     setOpen(false);
     setEditing(false);
-    setDraft(task.externalDescription ?? '');
     setError(null);
     setConfirmDelete(false);
-  }, [task.id, task.externalDescription]);
+  }, [task.id]);
 
   /**
    * Delete the card. The main process refuses while a run owns it (or one of its steps), so
@@ -280,6 +295,9 @@ export function TaskDetailsCell({
     setError(null);
     try {
       onTaskChanged(await window.api.invoke('task:setDescription', task.id, draft));
+      // Saved, so there is no longer a draft: the card now says this. Leaving one parked
+      // would have it restored over the card's own text the next time you came back.
+      description.commit();
       setEditing(false);
       onEdited?.();
     } catch (e) {
@@ -471,7 +489,8 @@ export function TaskDetailsCell({
                   size="small"
                   disabled={busy}
                   onClick={() => {
-                    setDraft(task.externalDescription ?? '');
+                    // Abandoned: the card's own text comes back and the draft goes.
+                    description.reset();
                     setEditing(false);
                   }}
                 >

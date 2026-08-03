@@ -30,6 +30,7 @@ import { isAgentRunning } from '@shared/board';
 import { attachmentsInScope, insertAttachmentRef, type TaskAttachment } from '@shared/attachments';
 import { AttachmentStrip } from './AttachmentStrip';
 import { subtaskProgress } from './board/boardColumns';
+import { draftKey, useDraft } from './drafts';
 import { canReplan, REFUSAL_HINT } from './taskChat';
 import { STATUS_LABEL } from './taskStatus';
 import { FLUO, STATUS_INDICATOR_COLOR } from './theme';
@@ -160,8 +161,15 @@ export interface TaskStepsProps {
 export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps): JSX.Element {
   const styles = useStyles();
   const [adding, setAdding] = useState(false);
-  const [title, setTitle] = useState('');
-  const [description, setDescription] = useState('');
+  /**
+   * The step being written by hand — its title and its brief — as DRAFTS (`./drafts`), so
+   * checking another card mid-sentence no longer empties the form. Both belong to the card
+   * the step is being added to, hence the key.
+   */
+  const stepTitle = useDraft(draftKey(task.id, 'newStepTitle'), '');
+  const stepBrief = useDraft(draftKey(task.id, 'newStepBrief'), '');
+  const title = stepTitle.value;
+  const description = stepBrief.value;
   const [showPlan, setShowPlan] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -177,22 +185,23 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
   const [open, setOpen] = useState(false);
   /** The re-plan brief box, and the "it's thinking" banner once a turn has started. */
   const [planning, setPlanning] = useState(false);
-  const [planNote, setPlanNote] = useState('');
+  /** The re-plan note, drafted per card for the same reason the add-step form is. */
+  const planNoteDraft = useDraft(draftKey(task.id, 'planNote'), '');
+  const planNote = planNoteDraft.value;
   const [planStarted, setPlanStarted] = useState(false);
   /** Which earlier rounds the human has opened. The current one is never in here. */
   const [openRounds, setOpenRounds] = useState<ReadonlySet<number>>(new Set());
 
-  // Switching cards closes whatever was open on the previous one.
+  // Switching cards closes whatever was open on the previous one. What was TYPED into those
+  // forms is not cleared here any more — each field is a draft, parked under the card it was
+  // written for and put back when you return to it.
   useEffect(() => {
     setAdding(false);
-    setTitle('');
-    setDescription('');
     setShowPlan(false);
     setError(null);
     // Folded again on a new card: the fold is the resting state, not a preference to carry.
     setOpen(false);
     setPlanning(false);
-    setPlanNote('');
     setPlanStarted(false);
     setOpenRounds(new Set());
   }, [task.id]);
@@ -216,8 +225,9 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
         title: title.trim(),
         description: description.trim() || null,
       });
-      setTitle('');
-      setDescription('');
+      // The step exists now, so the form's drafts have been spent.
+      stepTitle.reset();
+      stepBrief.reset();
       setAdding(false);
       onChanged();
     } catch (e) {
@@ -242,7 +252,7 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
         return;
       }
       setPlanning(false);
-      setPlanNote('');
+      planNoteDraft.reset();
       setPlanStarted(true);
       onChanged();
     } catch (e) {
@@ -314,12 +324,21 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
             <Textarea
               value={planNote}
               resize="vertical"
-              onChange={(_e, d) => setPlanNote(d.value)}
+              onChange={(_e, d) => planNoteDraft.set(d.value)}
               placeholder="The remaining work, anything to leave alone, what “done” looks like…"
             />
           </Field>
           <div className={styles.formRow}>
-            <Button size="small" disabled={busy} onClick={() => setPlanning(false)}>
+            {/* Cancel throws the note away — a draft is kept for the human who WANDERED
+                off, not for the one who said no. */}
+            <Button
+              size="small"
+              disabled={busy}
+              onClick={() => {
+                planNoteDraft.reset();
+                setPlanning(false);
+              }}
+            >
               Cancel
             </Button>
             <Button
@@ -428,7 +447,7 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
           <Field label="Step" required>
             <Input
               value={title}
-              onChange={(_e, d) => setTitle(d.value)}
+              onChange={(_e, d) => stepTitle.set(d.value)}
               placeholder="What this step delivers…"
             />
           </Field>
@@ -439,12 +458,23 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
             <Textarea
               value={description}
               resize="vertical"
-              onChange={(_e, d) => setDescription(d.value)}
+              onChange={(_e, d) => stepBrief.set(d.value)}
               placeholder="Files to touch, the acceptance check, anything it must not do…"
             />
           </Field>
           <div className={styles.formRow}>
-            <Button size="small" disabled={busy} onClick={() => setAdding(false)}>
+            {/* Cancel empties the form: the drafts are there for the card you wandered away
+                from, not for the step you decided against. Without this the text would now
+                outlive the "no" that dismissed it, since nothing else clears it any more. */}
+            <Button
+              size="small"
+              disabled={busy}
+              onClick={() => {
+                stepTitle.reset();
+                stepBrief.reset();
+                setAdding(false);
+              }}
+            >
               Cancel
             </Button>
             <Button
@@ -486,7 +516,10 @@ export function StepBrief({
 }: StepBriefProps): JSX.Element {
   const styles = useStyles();
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(task.description ?? '');
+  /** The brief being written, as a draft — see `./drafts` and the card's description. */
+  const brief = useDraft(draftKey(task.id, 'brief'), task.description ?? '');
+  const draft = brief.value;
+  const setDraft = brief.set;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /** The brief field, so an attachment can be cited where the caret actually is. */
@@ -498,13 +531,15 @@ export function StepBrief({
    */
   const [open, setOpen] = useState(false);
 
+  // Keyed on the step's ID alone: it used to depend on the brief's TEXT as well, so anything
+  // that rewrote the step row while you were editing — a sync, a run's own update — folded
+  // the section shut and threw the edit away. The text is the draft's business now.
   useEffect(() => {
     setEditing(false);
-    setDraft(task.description ?? '');
     setError(null);
     // Folded again per step, for the same reason Steps is.
     setOpen(false);
-  }, [task.id, task.description]);
+  }, [task.id]);
 
   const live = isLive(task);
 
@@ -549,6 +584,8 @@ export function StepBrief({
           description: draft.trim() || null,
         }),
       );
+      // Saved: the step says this now, so there is nothing left to restore.
+      brief.commit();
       setEditing(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -618,7 +655,8 @@ export function StepBrief({
                   size="small"
                   disabled={busy}
                   onClick={() => {
-                    setDraft(task.description ?? '');
+                    // Abandoned: the step's own words come back and the draft goes.
+                    brief.reset();
                     setEditing(false);
                   }}
                 >
