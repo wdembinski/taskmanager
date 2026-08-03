@@ -1778,6 +1778,58 @@ a control that cannot be pressed has to say why, and `disabled` alone is a dead 
 (`parentAttachments`, from `parentOfSelected`) — no new channel, no new fetch, and nothing at
 all for a card, which has no parent to inherit from.
 
+### Staging files in the Add dialog
+
+A screenshot is on the clipboard at the moment somebody thinks of the card, not ten minutes
+later in a pane — so the dialog that already asks the three questions a card is made of asks
+the fourth. It is the one answer that cannot be *written* when it is given: an attachment
+hangs off a task id, and there is no task yet. So the paths are **staged** — held while the
+form is filled in, copied once the row exists.
+
+**Attachments stay out of `AddTaskPlan`.** That type describes the writes derivable from the
+form; copying bytes is a post-create side effect, and folding it in would make a pure
+function describe something that cannot happen yet. The staged paths live in their own state,
+reset by the same `useEffect` that clears the form, and `stageAttachments` sits beside
+`addTaskPlan` as the second pure export — the house pattern of a rule tested from a `.tsx`
+without a renderer.
+
+**The invariant that makes staging correct at all:** the renderer derives provisional names
+with the same pure `attachmentName` main will use, and for a brand-new task the "already
+taken" list is empty on **both** sides — so the `@name` typed into the description and the
+name main assigns after `task:create` agree by construction, not by a lookup that could miss.
+That is why the names are re-derived over the whole list on every change rather than appended
+to: `attachmentName` is a function of the list before it, so a file un-staged from the middle
+has to hand back the `-2` it was pushing onto the one after it, exactly as main's own run over
+the remaining paths will. A ref already typed for a file since un-staged is left alone — a
+token naming no attachment is prose, so it costs nothing, and rewriting the human's own
+sentence would cost a great deal. (6 cases: picked twice stages once, two basenames get `-2`,
+the provisional names equal `attachmentName` against an empty taken-list, un-staging gives the
+suffix back.)
+
+**`task:addSubtask` returns the step it made** — `Promise<Task>` in the contract
+([`shared/ipc.ts:388-391`](../../src/shared/ipc.ts), *"Returns the created step"*), returned
+by the handler at [`main/ipc.ts:728`](../../src/main/ipc.ts) — the `return task;` this step
+was pointed at as `:688`, which is where it sat before steps 4 and 5 added the attachment
+handlers and the protocol above it (678 → 710 → 718 across those commits). The dialog had
+been discarding it. It is captured into a local of its own rather than into `created`,
+because `created` is what decides whether a chain link is drawn and must stay null for a step
+— `canLink` refuses a step at either end. So both shapes have an id to hang files off, and
+only one of them has an arrow.
+
+A failed copy follows the soft-failure convention `ticketFor` and `chainAfter` already set:
+`onNotice`, never a lost card. By the time it runs the row is on the board, so a locked file
+is a note to the human rather than a failure of the whole dialog — and main attaches what it
+can before reporting the rest, so the refusal does not mean nothing landed.
+
+The strip itself is the same skin as `AttachmentStrip` at a different moment (chips, an
+Attach button, the same `isFileDrag`-gated drop zone) rather than that component, which is
+built around a `taskId` and the channels that need one. No thumbnails here for the reason the
+whole design rests on: a preview is served *by id*, and `img-src` allows no local file.
+
+Gates: `pnpm typecheck` clean, `pnpm test` **1498 green**, `pnpm build` clean, `pnpm format`
+applied. That a staged file actually lands on the new card needs the app running — owed to
+step 11 with the rest.
+
 Gates: `pnpm typecheck` clean, `pnpm test` **1492 green** (no new cases — the rule this step
 leans on was pinned when it was written), `pnpm build` clean, `pnpm format` applied.
 

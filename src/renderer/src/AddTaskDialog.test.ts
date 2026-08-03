@@ -1,14 +1,21 @@
 /**
- * What Add actually writes, worked out from the form alone (`addTaskPlan`).
+ * What Add actually writes, worked out from the form alone (`addTaskPlan`), and what it
+ * holds on to until there is somewhere to write it (`stageAttachments`).
  *
  * The rule under test is that the dialog's three questions compose: filing a card under a
  * project, giving it a description and raising a JIRA ticket for it are separate answers,
  * and asking for one must never quietly drop the others. The ticket in particular is an
  * ADDITION to the card — it used to replace it, which is how a card created "in JIRA"
  * ended up with no project and no description of its own.
+ *
+ * Files are the fourth answer and the one that cannot be written when it is given, so what
+ * is pinned there is the invariant that lets a brief cite a file that does not exist yet:
+ * the provisional name equals what `attachmentName` will produce in main, against the empty
+ * taken-list a brand-new task has on both sides.
  */
 import { describe, expect, it } from 'vitest';
-import { addTaskPlan, type AddTaskForm } from './AddTaskDialog';
+import { attachmentName } from '@shared/attachments';
+import { addTaskPlan, stageAttachments, type AddTaskForm } from './AddTaskDialog';
 
 const form = (over: Partial<AddTaskForm> = {}): AddTaskForm => ({
   title: 'Ship the thing',
@@ -114,5 +121,55 @@ describe('addTaskPlan', () => {
   it('gives a brief-less step a null brief, not an empty one', () => {
     const plan = addTaskPlan(form({ parentId: 'c1', description: '  ' }));
     expect(plan.kind === 'step' && plan.step.description).toBe(null);
+  });
+});
+
+describe('stageAttachments', () => {
+  it('stages a file once however often it is picked', () => {
+    const once = stageAttachments([], ['C:\\shots\\shot.png']);
+    expect(stageAttachments(once, ['C:\\shots\\shot.png'])).toEqual(once);
+    expect(once).toHaveLength(1);
+  });
+
+  it('keeps what was already staged when more arrives', () => {
+    const staged = stageAttachments(stageAttachments([], ['C:\\a\\one.png']), ['C:\\a\\two.log']);
+    expect(staged.map((s) => s.path)).toEqual(['C:\\a\\one.png', 'C:\\a\\two.log']);
+    expect(staged.map((s) => s.name)).toEqual(['one.png', 'two.log']);
+  });
+
+  it('tells two files with the same basename apart, before the extension', () => {
+    const staged = stageAttachments([], ['C:\\before\\shot.png', 'C:\\after\\shot.png']);
+    expect(staged.map((s) => s.name)).toEqual(['shot.png', 'shot-2.png']);
+  });
+
+  it('names a file exactly as main will, against the empty list a new task has', () => {
+    const paths = ['C:\\Users\\me\\Screenshot 2026-08-03 at 11.04 (1).png', '/home/me/../log.txt'];
+    // The invariant staging rests on: the same pure function, the same growing taken-list,
+    // starting empty — so the `@name` typed into the description before the task exists is
+    // the name `attachment:add` gives the file afterwards.
+    const taken: string[] = [];
+    const expected = paths.map((p) => {
+      const name = attachmentName(p, taken);
+      taken.push(name);
+      return name;
+    });
+    expect(stageAttachments([], paths).map((s) => s.name)).toEqual(expected);
+  });
+
+  it('gives back the dedupe suffix when the file that caused it is un-staged', () => {
+    const staged = stageAttachments([], ['C:\\before\\shot.png', 'C:\\after\\shot.png']);
+    const left = staged.filter((s) => s.path !== 'C:\\before\\shot.png');
+    // Re-derived rather than filtered: main will run over the remaining path alone and call
+    // it `shot.png`, so a chip still saying `shot-2.png` would be a ref pointing at nothing.
+    expect(
+      stageAttachments(
+        [],
+        left.map((s) => s.path),
+      ).map((s) => s.name),
+    ).toEqual(['shot.png']);
+  });
+
+  it('stages nothing for a pick that was cancelled', () => {
+    expect(stageAttachments([], [])).toEqual([]);
   });
 });

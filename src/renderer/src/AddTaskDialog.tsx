@@ -21,10 +21,17 @@
  * the card, which is why filing and a description had to be added afterwards, in a pane,
  * on a card that already existed. The card is written locally first and the ticket is
  * linked onto it, so JIRA being unreachable costs you the ticket and not the card.
+ *
+ * Files are the fourth, and the one thing here that cannot be written when it is asked for:
+ * an attachment hangs off a task id, and there is no task yet. So they are **staged** — held
+ * as paths while the form is filled in, and copied once the row exists. See
+ * {@link stageAttachments} for why the `@name` you cite before that is the name you get.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Badge,
   Button,
+  Caption1,
   Dialog,
   DialogActions,
   DialogBody,
@@ -35,15 +42,20 @@ import {
   Field,
   Input,
   makeStyles,
+  mergeClasses,
   MessageBar,
   MessageBarBody,
   Option,
   Textarea,
+  tokens,
 } from '@fluentui/react-components';
 import { Switch } from '@fluentui/react-components';
+import { AttachRegular } from '@fluentui/react-icons';
 import type { Project, Task, TaskType } from '@shared/model';
 import type { JiraIssueTypeOption, JiraProjectOption } from '@shared/ipc';
+import { attachmentName, insertAttachmentRef } from '@shared/attachments';
 import { LINK_GATE_LABEL, LINK_REFUSAL_MESSAGE } from '@shared/taskChain';
+import { isFileDrag } from './AttachmentStrip';
 
 /** The task types offered in the picker, with their display labels. */
 const TASK_TYPES: Array<{ value: TaskType; label: string }> = [
@@ -53,6 +65,47 @@ const TASK_TYPES: Array<{ value: TaskType; label: string }> = [
 
 const useStyles = makeStyles({
   body: { display: 'flex', flexDirection: 'column', gap: '12px', minWidth: '440px' },
+  /**
+   * The staged files, skinned like `AttachmentStrip` — the same control at a different
+   * moment, so it should not look like a different one. Transparent border until a file is
+   * over it, so nothing moves when the drop zone appears.
+   */
+  files: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '6px',
+    padding: '6px',
+    borderRadius: tokens.borderRadiusMedium,
+    border: `1px dashed ${tokens.colorTransparentStroke}`,
+  },
+  over: {
+    border: `1px dashed ${tokens.colorNeutralStroke1}`,
+    backgroundColor: tokens.colorNeutralBackground2,
+  },
+  chips: { display: 'flex', flexWrap: 'wrap', gap: '4px', alignItems: 'center' },
+  chipName: {
+    border: 'none',
+    background: 'none',
+    cursor: 'pointer',
+    color: 'inherit',
+    font: 'inherit',
+    padding: 0,
+    maxWidth: '160px',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  chipX: {
+    border: 'none',
+    background: 'none',
+    cursor: 'pointer',
+    color: 'inherit',
+    padding: '0 0 0 4px',
+    fontSize: tokens.fontSizeBase300,
+    lineHeight: 1,
+  },
+  row: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' },
+  hint: { color: tokens.colorNeutralForeground3 },
 });
 
 /** Sentinel for "no parent" in the parent dropdown (an Option needs a value). */
@@ -153,6 +206,49 @@ export function addTaskPlan(form: AddTaskForm): AddTaskPlan {
   };
 }
 
+/** One file the dialog is holding on to until there is a task row to hang it off. */
+export interface StagedAttachment {
+  /** The absolute path main handed back — from its picker, or `pathForFile` on a drop. */
+  path: string;
+  /** What it will be called once it is attached, and so what a brief may cite as `@name`. */
+  name: string;
+}
+
+/**
+ * Add `picked` to what is already staged: deduped by absolute path, and named.
+ *
+ * Deliberately **not** part of {@link AddTaskPlan} — that type describes writes derivable
+ * from the form, and copying bytes is a side effect that happens after the row exists.
+ *
+ * **The invariant that makes staging correct:** the renderer derives provisional names with
+ * the same pure `attachmentName` main will use, and for a brand-new task the "already taken"
+ * list is empty on both sides — so the `@name` typed into the description and the name main
+ * assigns after `task:create` agree by construction. Which is why the names are re-derived
+ * over the WHOLE list on every change rather than appended to: `attachmentName` is a
+ * function of the list before it, so a file un-staged from the middle must give back the
+ * `-2` it was pushing onto the one after it, exactly as main's own run over these paths will.
+ * (A ref already typed for a file then un-staged is left where it is: a token naming no
+ * attachment is prose — see `parseAttachmentRefs` — so it costs nothing to leave and would
+ * cost an edit of the human's own words to remove.)
+ *
+ * The dedupe is on the exact string, since that is the only comparison that is right on
+ * both platforms the app runs on — the same file reached by two different paths is two
+ * files here, and lands as `shot.png` and `shot-2.png` rather than as a lost pick.
+ */
+export function stageAttachments(
+  staged: readonly StagedAttachment[],
+  picked: readonly string[],
+): StagedAttachment[] {
+  const paths = staged.map((s) => s.path);
+  for (const path of picked) if (!paths.includes(path)) paths.push(path);
+  const taken: string[] = [];
+  return paths.map((path) => {
+    const name = attachmentName(path, taken);
+    taken.push(name);
+    return { path, name };
+  });
+}
+
 export interface AddTaskDialogProps {
   open: boolean;
   projectId: string | null;
@@ -233,6 +329,12 @@ export function AddTaskDialog({
   const [jiraProjectKey, setJiraProjectKey] = useState('');
   const [jiraTypeId, setJiraTypeId] = useState('');
   const [loadingMeta, setLoadingMeta] = useState(false);
+  /** Files picked before there was anything to attach them to — see {@link stageAttachments}. */
+  const [staged, setStaged] = useState<StagedAttachment[]>([]);
+  /** True while a file is over the strip, for the border that says it will be taken. */
+  const [over, setOver] = useState(false);
+  /** The description's textarea, so a chip can write `@name` where the caret actually is. */
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     if (open) {
@@ -245,6 +347,10 @@ export function AddTaskDialog({
       setRunsAfterId(NO_LINK);
       setError(null);
       setAsJira(false);
+      // Nothing staged survives a close: the paths were for the card being written, and a
+      // second card silently carrying the first one's files is the worst kind of surprise.
+      setStaged([]);
+      setOver(false);
     }
   }, [open, defaultParentId]);
 
@@ -344,6 +450,83 @@ export function AddTaskDialog({
     }
   }
 
+  /**
+   * Copy the staged files onto the row that now exists.
+   *
+   * Reported the way a refused chain link and an unraised ticket are, and for the reason
+   * they give: by the time this runs the card is on the board, so a file that would not
+   * copy is a note to the human rather than a failure of the whole dialog. Losing what you
+   * typed because one of five picked files was locked is the outcome writing the row first
+   * exists to prevent — and main attaches what it can and reports the rest, so a refusal
+   * here does not mean nothing landed.
+   */
+  async function attachTo(createdId: string, paths: string[]): Promise<void> {
+    try {
+      await window.api.invoke('attachment:add', createdId, paths);
+    } catch (e) {
+      const why = e instanceof Error ? e.message : String(e);
+      onNotice?.(
+        `The ${isStep ? 'step' : 'card'} was created, but its files were not attached — ${why}`,
+      );
+    }
+  }
+
+  /**
+   * Write `@name` into the description at the caret — the same fold, and the same reason
+   * for it, as the detail pane's strip: each call would otherwise read the same
+   * `description` from this render, so a pick of five files would cite only the fifth. With
+   * no caret to speak of the refs go on the end, which is where they belong when nothing
+   * was being pointed at.
+   */
+  function insertRefs(names: readonly string[]): void {
+    let text = description;
+    let caret = textareaRef.current?.selectionStart ?? description.length;
+    for (const name of names) ({ text, caret } = insertAttachmentRef(text, caret, name));
+    setDescription(text);
+    // After React has written the new value, or the browser puts the caret back at the end
+    // of the old one and the next thing typed lands somewhere else entirely.
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(caret, caret);
+      }
+    });
+  }
+
+  /** Take paths on, and cite whatever was actually new — attaching writes the `@name` for you. */
+  function stage(paths: string[]): void {
+    const next = stageAttachments(staged, paths);
+    const before = new Set(staged.map((s) => s.path));
+    setStaged(next);
+    const added = next.filter((s) => !before.has(s.path));
+    if (added.length) insertRefs(added.map((s) => s.name));
+  }
+
+  /**
+   * Drop one again. Back through {@link stageAttachments} rather than a plain `filter`, so
+   * the names left behind are re-derived: the one that was wearing `-2` because of the file
+   * just removed gets its plain name back, which is the name main will give it.
+   */
+  function unstage(path: string): void {
+    setStaged((prev) =>
+      stageAttachments(
+        [],
+        prev.filter((s) => s.path !== path).map((s) => s.path),
+      ),
+    );
+  }
+
+  /** The OS picker. Main owns it — the renderer only holds the paths until Add. */
+  async function pickFiles(): Promise<void> {
+    setError(null);
+    try {
+      stage(await window.api.invoke('attachment:pick'));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   async function save(): Promise<void> {
     if (!projectId) return;
     const plan = addTaskPlan({
@@ -369,13 +552,25 @@ export function AddTaskDialog({
       // The card the chain link is drawn to, once there is one. A step never has it: its
       // order comes from the plan it belongs to, and `canLink` refuses steps at either end.
       let created: Task | null = null;
+      // The row the files hang off, which a step DOES have — `task:addSubtask` returns the
+      // step it made. A separate local rather than reusing `created`, which must stay null
+      // for a step so the chain link below is never drawn for one.
+      let createdId: string;
       // A step is created through its parent (it inherits the delegation and joins
       // the chain); everything else is an ordinary ad-hoc card.
       if (plan.kind === 'step') {
-        await window.api.invoke('task:addSubtask', plan.parentId, plan.step);
+        createdId = (await window.api.invoke('task:addSubtask', plan.parentId, plan.step)).id;
       } else {
         created = await window.api.invoke('task:create', projectId, plan.card);
+        createdId = created.id;
         if (plan.ticket) await ticketFor(created.id, plan.ticket);
+      }
+      // Only now is there a `taskId` to hang a file off — the whole reason they were staged.
+      if (staged.length) {
+        await attachTo(
+          createdId,
+          staged.map((s) => s.path),
+        );
       }
       if (created && runsAfter) await chainAfter(runsAfter.id, created.id);
       onCreated();
@@ -499,9 +694,102 @@ export function AddTaskDialog({
                 <Textarea
                   value={description}
                   resize="vertical"
+                  textarea={{ ref: textareaRef }}
                   onChange={(_e, d) => setDescription(d.value)}
                   placeholder={isStep ? 'What this step must deliver…' : 'What this card is about…'}
                 />
+              </Field>
+              {/* The files the work is ABOUT, picked while the brief is being written rather
+                  than afterwards in a pane — the screenshot is on the clipboard at the moment
+                  somebody thinks of the card, not ten minutes later. Nothing is copied yet:
+                  an attachment hangs off a task id and there is none until Add. No thumbnail
+                  for the same reason — a preview is served BY id (`vipper-attachment://`),
+                  and `img-src` does not allow a local file, which is the point of it. */}
+              <Field
+                label="Files (optional)"
+                hint={
+                  staged.length
+                    ? `Copied onto the ${isStep ? 'step' : 'card'} when you press Add. Name one as @file in the text above and the agent running this gets the real file.`
+                    : 'Attach a screenshot, a mockup, a log — the agent gets the file, not a description of it.'
+                }
+              >
+                <div
+                  className={mergeClasses(styles.files, over && styles.over)}
+                  onDragOver={(e) => {
+                    // Not ours — and a `dragover` handler may only read the type list, not
+                    // the payload. Returning without `preventDefault` is what lets anything
+                    // else land where it was aimed; the window itself refuses the rest.
+                    if (!isFileDrag(e.dataTransfer.types) || saving) return;
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'copy';
+                    if (!over) setOver(true);
+                  }}
+                  onDragLeave={(e) => {
+                    // Only when the pointer really leaves the strip, not every child it enters.
+                    if (!e.currentTarget.contains(e.relatedTarget as Node)) setOver(false);
+                  }}
+                  onDrop={(e) => {
+                    if (!isFileDrag(e.dataTransfer.types) || saving) return;
+                    e.preventDefault();
+                    setOver(false);
+                    // `File.path` was removed in Electron 32, so the path comes from the
+                    // preload bridge. Something with no file on disk answers '' and is dropped.
+                    const paths = Array.from(e.dataTransfer.files)
+                      .map((file) => window.api.pathForFile(file))
+                      .filter((path) => path !== '');
+                    if (paths.length) stage(paths);
+                    else setError('That has no file on disk to attach.');
+                  }}
+                >
+                  {staged.length > 0 && (
+                    <div className={styles.chips}>
+                      {staged.map((s) => (
+                        <Badge
+                          key={s.path}
+                          appearance="tint"
+                          color="informative"
+                          icon={<AttachRegular />}
+                          title={`${s.path} · cite it as @${s.name}`}
+                        >
+                          <button
+                            type="button"
+                            className={styles.chipName}
+                            title={`Write @${s.name} into the text above`}
+                            onClick={() => insertRefs([s.name])}
+                          >
+                            {s.name}
+                          </button>
+                          <button
+                            type="button"
+                            className={styles.chipX}
+                            aria-label={`Don’t attach ${s.name}`}
+                            title="Don’t attach this one"
+                            disabled={saving}
+                            onClick={() => unstage(s.path)}
+                          >
+                            ×
+                          </button>
+                        </Badge>
+                      ))}
+                    </div>
+                  )}
+                  <div className={styles.row}>
+                    <Button
+                      size="small"
+                      appearance="subtle"
+                      icon={<AttachRegular />}
+                      disabled={saving}
+                      onClick={() => void pickFiles()}
+                    >
+                      Attach
+                    </Button>
+                    <Caption1 className={styles.hint}>
+                      {staged.length === 0
+                        ? 'Drop files here, or pick them.'
+                        : 'Click a file to write its @name where the caret is.'}
+                    </Caption1>
+                  </div>
+                </div>
               </Field>
               {/* A ticket AS WELL as the card, not instead of it: the card is written
                   first and the issue is linked onto it, so everything above still applies
