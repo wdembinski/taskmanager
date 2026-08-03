@@ -35,6 +35,7 @@ import type {
   TaskStatus,
 } from '@shared/model';
 import { chainInFlight, chatTarget, parkedStep } from '@shared/board';
+import { attachmentsInScope, type PromptAttachment } from '@shared/attachments';
 import type { SchedulerState, TaskChange, SchedulerChange, ActiveRun } from '@shared/scheduler';
 import type {
   ClaudeModel,
@@ -78,6 +79,7 @@ import {
   buildReplanPrompt,
   type AgentPromptComment,
 } from './agentTaskPrompt';
+import { attachmentFile } from './attachmentPaths';
 import { guardCardStatus } from './cardStatusGuard';
 import { ChainRunner, type ChainTrigger } from './chainRunner';
 import type { PermissionGate } from './claudeSession';
@@ -874,6 +876,12 @@ export class Scheduler {
    */
   private ticketComments: ((task: Task) => Promise<AgentPromptComment[]>) | null = null;
   /**
+   * `userData` — the root every attachment path is built under (Phase 22). Injected by the
+   * IPC layer, which owns `app.getPath`; null in tests, where a prompt then carries no
+   * legend rather than a path assembled from a guess.
+   */
+  private attachmentRoot: string | null = null;
+  /**
    * The account-wide usage-limit gate (Phase 5). When active, ALL scheduling is
    * held; when its timer fires, every parked task resumes by its saved session id.
    */
@@ -976,6 +984,16 @@ export class Scheduler {
   /** Wire the "these branches are mid-merge" notifier (see {@link Scheduler.integrating}). */
   setIntegratingNotifier(notify: (taskIds: string[]) => void): void {
     this.integratingChanged = notify;
+  }
+
+  /**
+   * Wire `userData`, under which attachments live (Phase 22) — the one absolute path this
+   * class needs and cannot derive, since `app.getPath` belongs to Electron and the
+   * scheduler is unit-tested without it. Optional: unwired, a prompt simply carries no
+   * attachment legend (see {@link Scheduler.promptAttachments}).
+   */
+  setAttachmentRoot(root: string): void {
+    this.attachmentRoot = root;
   }
 
   /** The tasks whose branch is being merged right now — seeds the UI on mount. */
@@ -2206,6 +2224,7 @@ export class Scheduler {
         // for this turn only, and asking the task would tell it the opposite.
         planMode:
           (opts.permissionMode ?? task.agentMode ?? project.defaultPermissionMode) === 'plan',
+        attachments: this.promptAttachments(project, task),
         ...context,
       });
     }
@@ -2252,7 +2271,43 @@ export class Scheduler {
       instructions: opts.instructions,
       worktreePath: opts.worktreePath,
       projectPath: opts.projectPath,
+      attachments: this.promptAttachments(project, task),
     });
+  }
+
+  /**
+   * The files a run is handed (Phase 22): every attachment in the task's scope, as a
+   * `@name` and an absolute path **on the machine the run happens on**.
+   *
+   * Three things happen here and nowhere else, because this is the only place that knows
+   * all three:
+   *
+   *  - **Scope.** A step sees its own files plus its card's (`attachmentsInScope`), the
+   *    same union the step's chips offer, so what the human is shown and what the agent is
+   *    told cannot disagree. A card sees its own only — a card does not inherit its steps'.
+   *  - **The path.** There is no `path` column; it is derived from the row through
+   *    `attachmentFile`, and from the attachment's OWN `taskId`, which is what makes an
+   *    inherited parent file resolve to the parent's directory rather than the step's.
+   *  - **The translation.** `hostFor(project.target).toNative()` — a WSL run must be told
+   *    `/mnt/c/...` or the path is one it cannot open. `localHost().toNative` is the
+   *    identity, so there is one code path here and a local run is unaffected.
+   *
+   * Empty until {@link Scheduler.setAttachmentRoot} is wired (unit tests never wire it):
+   * without `userData` there is no path to give, and a legend of names alone would be worse
+   * than none — it would promise files the agent then cannot find.
+   */
+  private promptAttachments(project: Project, task: Task): PromptAttachment[] {
+    if (!this.attachmentRoot) return [];
+    const own = this.store.attachmentsForTask(task.id);
+    const scoped = task.parentTaskId
+      ? attachmentsInScope(own, this.store.attachmentsForTask(task.parentTaskId))
+      : own;
+    if (scoped.length === 0) return [];
+    const host = hostFor(project.target);
+    return scoped.map((a) => ({
+      name: a.name,
+      path: host.toNative(attachmentFile(this.attachmentRoot!, a.taskId, a.name)),
+    }));
   }
 
   /**

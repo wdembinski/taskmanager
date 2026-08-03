@@ -130,6 +130,22 @@ holds the task until the named prerequisite task(s) are `done`. Referenced by ex
 title. Independent tasks (no `@needs:`) run in parallel up to the concurrency cap.
 **Align plan…** (Projects tab) uses Claude to add these to an existing plan.
 
+### Attachment / `@name` (attachment reference)
+
+A file attached to a card or to one of its steps: the screenshot of the bug, the
+mockup a layout has to match, the CSV that reproduces it. The bytes are **copied**
+into the app's own data (`userData/attachments/<taskId>/<name>`), so the original can
+be moved or deleted afterwards without breaking anything. Writing `@mockup.png` in a
+description or a step brief points at one; the prompt that starts the run carries a
+legend of every attached file and its real path, so the agent opens the actual file.
+A step can name its own attachments **and** its card's.
+
+Not to be confused with `@needs:` above — different syntax, different place, different
+job. `@needs:` is a dependency clause in a **plan file**, resolved against task titles;
+`@name` is a file reference in a **card or step brief**, resolved against that task's
+attachment list. A token matching no attachment is simply prose, which is why the two
+never collide.
+
 ### My Tasks
 
 The personal Kanban board: your own tasks and your synced JIRA tickets as cards,

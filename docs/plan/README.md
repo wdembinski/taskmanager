@@ -1833,6 +1833,57 @@ step 11 with the rest.
 Gates: `pnpm typecheck` clean, `pnpm test` **1492 green** (no new cases — the rule this step
 leans on was pinned when it was written), `pnpm build` clean, `pnpm format` applied.
 
+### Handing the legend to the agent
+
+The point of the phase, and it is four lines of prompt. `@shot.png` in a brief means nothing
+to an agent on its own; the legend is the table that turns it into a file:
+
+```
+Files attached to this task — the description refers to them by the @name on the left:
+- @mockup.png -> /mnt/c/Users/you/AppData/Roaming/…/attachments/<taskId>/mockup.png
+Read them with your file tools. They live outside the repository; do not copy them into it.
+```
+
+It is spliced straight after the description in `buildAgentTaskPrompt` and after the brief in
+`buildAgentSubtaskPrompt`, with the same `...(cond ? [...] : [])` idiom every other optional
+block uses, so the blank-collapsing filter that ends both builders keeps it from leaving a
+seam. Absent entirely when nothing is attached — an empty heading is worse than silence.
+
+**That last line is load-bearing.** The bytes live under `userData`, outside the worktree;
+without it an agent will cheerfully `cp` a 4 MB PNG into the repository and commit it, and
+the branch the orchestrator merges is then carrying a binary nobody asked for.
+
+**Every attachment is listed, not just the referenced ones.** Somebody who attached a file
+and then mistyped the token still meant the agent to have it, and filtering would turn that
+typo into a silently missing input — the one failure the human has no way to see.
+`referencedAttachments` therefore serves the *renderer's* highlighting; the prompt does not
+call it.
+
+**The translation stays in the scheduler.** `agentTaskPrompt.ts` is pure and unit-tested and
+must not learn about execution hosts, so it takes `PromptAttachment[]` — a name and a path
+already native to the machine the run happens on — and only formats it. `promptAttachments`
+in `scheduler.ts` is the one place that knows all three moving parts: the scope
+(`attachmentsInScope(own, parent)` for a step, the same union its chips offer, so what the
+human sees and what the agent is told cannot disagree), the path (`attachmentFile` over the
+attachment's **own** `taskId`, which is what makes an inherited card file resolve to the
+card's directory rather than the step's), and the host (`hostFor(project.target).toNative()`,
+already imported there). `localHost().toNative` is the identity, so there is one code path
+and a local run is unaffected. Because a `name` is `[A-Za-z0-9._-]` by construction, no
+legend path contains a space and there is nothing to quote.
+
+`userData` reaches the scheduler through `setAttachmentRoot`, beside the four notifiers the
+IPC layer already wires: `app.getPath` is Electron's and the scheduler is unit-tested without
+it. Unwired, the legend is simply absent — a list of names with no paths would promise files
+the agent then cannot find, which is worse than not mentioning them.
+
+`docs/05-glossary.md` gains an `@name` entry beside `@needs:`, saying plainly that the two
+are different syntax in different files resolved against different things, and that a token
+matching no attachment is prose — which is exactly why they never collide.
+
+Gates: `pnpm typecheck` clean, `pnpm test` **1506 green** (8 new cases), `pnpm build` clean,
+`pnpm format` applied. That a real WSL agent opens the file needs a live run — owed to step
+11 with the rest.
+
 ### Deliverables
 
 - [x] **1 — The shape of the design.** This entry: the four decisions above, each named
@@ -1869,12 +1920,15 @@ leans on was pinned when it was written), `pnpm build` clean, `pnpm format` appl
       through the one `attachmentsInScope` step 9 will resolve `@name` with; an inherited
       chip cites and opens but does not offer a `×`, since it comes off where it went on;
       and `live` freezes the strip with the same sentence the Edit button uses.
-- [ ] **8 — Stage attachments in the Add dialog.** Files chosen before the card exists, so
+- [x] **8 — Stage attachments in the Add dialog.** Files chosen before the card exists, so
       they land the moment it does — the same problem the dialog's ticket already solves by
       writing the card first (`ipc.ts:723`, `adoptTaskId`).
-- [ ] **9 — Hand the attachment legend to the agent.** The prompt says what is attached and
+- [x] **9 — Hand the attachment legend to the agent.** The prompt says what is attached and
       where, so `@name` in a brief resolves to a file the agent can actually open. This is
-      the point of the phase; everything above it is plumbing.
+      the point of the phase; everything above it is plumbing. See above: every attachment
+      is listed rather than only the cited ones, "do not copy them into the repository" is a
+      line the prompt cannot lose, and the WSL translation stays in the scheduler so the
+      prompt builder itself remains pure.
 - [ ] **10 — Sequencing.** The order the above lands in, and what each step may assume.
 - [ ] **11 — Verification.** `pnpm format`, `pnpm typecheck`, `pnpm test`, `pnpm build`,
       plus whatever can be driven headlessly — never by launching the app on this machine.

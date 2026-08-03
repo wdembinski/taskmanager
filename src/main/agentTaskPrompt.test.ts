@@ -258,3 +258,115 @@ describe('project setup notes and worktree identity', () => {
     expect(prompt).not.toContain('/should/not/appear');
   });
 });
+
+/**
+ * The attachment legend (Phase 22) — what turns `@shot.png` in a brief into a file the
+ * agent can open. The paths arrive already native to the run's machine (the scheduler
+ * translates for WSL), so what is checked here is only the table and its two rules: every
+ * attachment is listed, and none of them may be copied into the repository.
+ */
+describe('the attachment legend', () => {
+  const step = {
+    id: 's1',
+    projectId: 'personal',
+    phase: '',
+    title: 'Match the mockup',
+    status: 'pending',
+    sessionId: null,
+    order: 0,
+    source: 'adhoc',
+    dependsOn: [],
+    isContract: false,
+    isScaffold: false,
+    parentTaskId: 't1',
+    description: 'Lay the toolbar out as @mockup.png shows.',
+    agentProjectId: 'agent-1',
+  } as Task;
+
+  const stepBase = { stepNumber: 1, stepCount: 2, stepTitles: ['Match the mockup', 'Test it'] };
+
+  it('names every attached file and where it is', () => {
+    const prompt = buildAgentTaskPrompt('Checkout service', jiraTask, {
+      attachments: [
+        { name: 'mockup.png', path: '/mnt/c/Users/you/AppData/attachments/t1/mockup.png' },
+        { name: 'repro.csv', path: '/mnt/c/Users/you/AppData/attachments/t1/repro.csv' },
+      ],
+    });
+    expect(prompt).toContain('Files attached to this task');
+    expect(prompt).toContain('the @name on the left');
+    expect(prompt).toContain('- @mockup.png -> /mnt/c/Users/you/AppData/attachments/t1/mockup.png');
+    expect(prompt).toContain('- @repro.csv -> /mnt/c/Users/you/AppData/attachments/t1/repro.csv');
+    // The description is what cites them, so the legend follows it.
+    expect(prompt.indexOf('The export dialog closes')).toBeLessThan(prompt.indexOf('@mockup.png'));
+  });
+
+  it('forbids copying the files into the repository', () => {
+    const prompt = buildAgentTaskPrompt('Checkout service', jiraTask, {
+      attachments: [{ name: 'shot.png', path: '/data/attachments/t1/shot.png' }],
+    });
+    expect(prompt).toContain('Read them with your file tools');
+    expect(prompt).toContain('do not copy them into it');
+  });
+
+  it('lists a file the text never cites — a mistyped token is not a missing input', () => {
+    const prompt = buildAgentTaskPrompt('Checkout service', jiraTask, {
+      attachments: [
+        { name: 'never-mentioned.log', path: '/data/attachments/t1/never-mentioned.log' },
+      ],
+    });
+    expect(prompt).toContain('- @never-mentioned.log -> /data/attachments/t1/never-mentioned.log');
+  });
+
+  it('is absent entirely when nothing is attached, and leaves no double blank line', () => {
+    const withNone = buildAgentTaskPrompt('Checkout service', jiraTask, { attachments: [] });
+    expect(withNone).not.toContain('Files attached');
+    expect(buildAgentTaskPrompt('Checkout service', jiraTask)).not.toContain('Files attached');
+    expect(withNone).not.toContain('\n\n\n');
+  });
+
+  it('leaves no double blank around it, with or without a description', () => {
+    const attachments = [{ name: 'a.png', path: '/data/attachments/t1/a.png' }];
+    expect(
+      buildAgentTaskPrompt('Checkout service', jiraTask, { attachments, branch: 'orch/t1' }),
+    ).not.toContain('\n\n\n');
+    // `internalTask` has no description at all, so the legend lands against the heading.
+    expect(buildAgentTaskPrompt('Checkout service', internalTask, { attachments })).not.toContain(
+      '\n\n\n',
+    );
+  });
+
+  it('drops an entry with no name or no path rather than emitting a broken row', () => {
+    const prompt = buildAgentTaskPrompt('Checkout service', jiraTask, {
+      attachments: [
+        { name: '  ', path: '/data/attachments/t1/x.png' },
+        { name: 'y.png', path: '   ' },
+      ],
+    });
+    expect(prompt).not.toContain('Files attached');
+  });
+
+  it('carries the parent card’s file into a step’s legend, from the card’s directory', () => {
+    const prompt = buildAgentSubtaskPrompt('Checkout service', jiraTask, step, {
+      ...stepBase,
+      attachments: [
+        { name: 'own.log', path: '/data/attachments/s1/own.log' },
+        { name: 'mockup.png', path: '/data/attachments/t1/mockup.png' },
+      ],
+    });
+    expect(prompt).toContain('Files attached to this step and its card');
+    expect(prompt).toContain('- @own.log -> /data/attachments/s1/own.log');
+    // The parent's file resolves under the PARENT's task id, not the step's.
+    expect(prompt).toContain('- @mockup.png -> /data/attachments/t1/mockup.png');
+    expect(prompt).toContain('do not copy them into it');
+    // Straight after the brief that cites it, before the plan listing.
+    expect(prompt.indexOf('Lay the toolbar out')).toBeLessThan(prompt.indexOf('@mockup.png'));
+    expect(prompt.indexOf('@mockup.png')).toBeLessThan(prompt.indexOf('for orientation only'));
+    expect(prompt).not.toContain('\n\n\n');
+  });
+
+  it('omits a step’s legend when neither it nor its card carries a file', () => {
+    const prompt = buildAgentSubtaskPrompt('Checkout service', jiraTask, step, stepBase);
+    expect(prompt).not.toContain('Files attached');
+    expect(prompt).not.toContain('\n\n\n');
+  });
+});

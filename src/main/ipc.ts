@@ -314,6 +314,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // to say it is happening at all — otherwise pressing Merge looks like pressing nothing.
   scheduler.setIntegratingNotifier((taskIds) => send('task:integrating', taskIds));
 
+  // Phase 22: where the attached bytes live, so a prompt can hand the agent real paths.
+  // `app.getPath` is Electron's, and the scheduler is unit-tested without it — so the root
+  // is injected here, exactly as the store's own path is.
+  scheduler.setAttachmentRoot(userData);
+
   // Phase 6: heal tasks the previous run left mid-flight (running/waiting-input →
   // pending, keeping their session id so a re-run resumes them). Runs before the
   // window paints; the UI re-queries project:list on mount and sees the fix.

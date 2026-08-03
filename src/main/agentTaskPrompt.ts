@@ -19,6 +19,7 @@
  * that guarantee.
  */
 import type { Task } from '@shared/model';
+import type { PromptAttachment } from '@shared/attachments';
 import { NEEDS_INPUT_SENTINEL } from './attention';
 
 /** One comment handed to the agent as context (author + plain-text body). */
@@ -57,6 +58,12 @@ export interface AgentTaskPromptOptions {
    * Steps list that named none of its steps.
    */
   planMode?: boolean;
+  /**
+   * The files attached to this card (Phase 22), with paths **already native to the
+   * machine the run happens on** — the caller translates, this module only formats. See
+   * {@link attachmentLines}.
+   */
+  attachments?: PromptAttachment[];
 }
 
 /**
@@ -110,6 +117,46 @@ function clean(text: string | null | undefined): string {
 }
 
 /**
+ * The attachment legend (Phase 22) — the point of the whole feature, in four lines.
+ *
+ * `@shot.png` in a brief means nothing to an agent on its own; this is the table that
+ * turns it into a file it can open. Three decisions are baked in here:
+ *
+ * - **Every attachment is listed, not just the ones the text cites.** Somebody who
+ *   attached a file and then mistyped the token still meant the agent to have it, and
+ *   filtering would turn that typo into a silently missing input. `referencedAttachments`
+ *   (`@shared/attachments`) exists for the renderer's highlighting, not for this.
+ * - **"Do not copy them into the repository" is load-bearing.** The files live under
+ *   `userData`, outside the worktree; without that sentence an agent will cheerfully `cp`
+ *   a 4 MB PNG into the tree and commit it.
+ * - **The paths arrive already translated.** A WSL run needs `/mnt/c/...`, but this module
+ *   is pure and unit-tested and must not learn about execution hosts — the scheduler maps
+ *   them through `hostFor(project.target).toNative()` before calling in.
+ *
+ * No quoting: a `name` is `[A-Za-z0-9._-]` by construction (`attachmentName`), so no legend
+ * path can contain a space.
+ */
+const TASK_FILES_HEADING = `Files attached to this task — the description refers to them by the @name on the left:`;
+
+/**
+ * A step's files include its parent card's, so the heading says so: a step that cites
+ * `@mockup.png` never attached it, and an agent told only about "this step" would read the
+ * card's file as an unexplained extra.
+ */
+const STEP_FILES_HEADING = `Files attached to this step and its card — the brief refers to them by the @name on the left:`;
+
+function attachmentLines(heading: string, attachments: readonly PromptAttachment[]): string[] {
+  const files = attachments.filter((a) => clean(a.name) && clean(a.path));
+  if (files.length === 0) return [];
+  return [
+    heading,
+    ...files.map((a) => `- @${clean(a.name)} -> ${clean(a.path)}`),
+    `Read them with your file tools. They live outside the repository; do not copy them into it.`,
+    '',
+  ];
+}
+
+/**
  * Build the single-ticket prompt for an assigned card. `projectName` is the AGENT
  * project (the repo the run happens in), not the Personal board.
  */
@@ -139,6 +186,9 @@ export function buildAgentTaskPrompt(
     url ? `Link: ${url}` : '',
     '',
     ...(description ? ['Description:', description, ''] : []),
+    // Straight after the words that cite them — a legend read before the brief is a list
+    // of paths with nothing to resolve.
+    ...attachmentLines(TASK_FILES_HEADING, options.attachments ?? []),
     ...(comments.length > 0
       ? [
           `Comments on the ticket (oldest first):`,
@@ -268,6 +318,12 @@ export interface AgentSubtaskPromptOptions {
   worktreePath?: string;
   /** The project's canonical directory, which the worktree was branched from. */
   projectPath?: string;
+  /**
+   * The files in this step's scope (Phase 22) — its own attachments **plus its parent
+   * card's**, resolved by `attachmentsInScope` and translated by the caller. A mockup is
+   * attached once, to the card, and every step that has to match it says `@mockup.png`.
+   */
+  attachments?: PromptAttachment[];
 }
 
 /**
@@ -307,6 +363,7 @@ export function buildAgentSubtaskPrompt(
     `Your step: ${subtask.title}`,
     '',
     ...(brief ? ['What this step covers:', brief, ''] : []),
+    ...attachmentLines(STEP_FILES_HEADING, options.attachments ?? []),
     ...(stepTitles.length > 1
       ? [
           `The full plan, for orientation only (you are on step ${stepNumber}):`,
