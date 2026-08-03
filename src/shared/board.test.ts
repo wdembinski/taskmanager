@@ -463,6 +463,14 @@ describe('runPhase', () => {
     expect(runPhase(t)).toMatchObject({ phase: 'idle', label: 'Assigned — not started' });
   });
 
+  it('says nothing about a card assigned somewhere other than TO DO', () => {
+    // Assignment no longer drags the card into TO DO, so this state is now reachable:
+    // agent assigned, never run, resting in IN REVIEW. "Not started" is a claim about the
+    // queue, and this card is not in it — the column already says what it is.
+    const t = task({ status: 'in-review', agentProjectId: 'agent', sessionId: null });
+    expect(runPhase(t)).toMatchObject({ phase: 'idle', label: '' });
+  });
+
   it('spins a hand-added step that carries no agent project', () => {
     // `isAgentRunning` gates on assignment, which is why a step added by hand could never
     // show a spinner however hard it ran. `runPhase` deliberately does not.

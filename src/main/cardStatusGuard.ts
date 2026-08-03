@@ -28,7 +28,7 @@
  * reach `done` or its chain cannot advance — neither is a card anybody drags, and both
  * pass through untouched.
  */
-import { isBoardCard, isRunStatus } from '@shared/board';
+import { isBoardCard, isRunStatus, restingStatus } from '@shared/board';
 import type { Task, TaskStatus } from '@shared/model';
 
 /** The subset of a task the scheduler patches. */
@@ -92,4 +92,33 @@ export function guardCardStatus(before: Task, patch: SchedulerPatch): SchedulerP
  */
 export function humanStatusPatch(task: Task, status: TaskStatus): SchedulerPatch {
   return isBoardCard(task) && isRunStatus(task.status) ? { preRunStatus: status } : { status };
+}
+
+/**
+ * The status write **wiring an agent onto a task** is allowed to make — for a card, almost
+ * always none.
+ *
+ * Assigning an agent (`task:assignAgent`) or attaching a session (`task:attachSession`) says
+ * who will do the work. It says nothing about which column the work belongs in, and the
+ * column is the human's: a ticket resting in IN REVIEW that you hand to an agent is still in
+ * review, and one you had filed under BLOCKED does not become un-blocked by being delegated.
+ * Both handlers used to write `status: 'pending'` unconditionally, which yanked the card back
+ * to TO DO — the same thing {@link guardCardStatus} exists to stop a run doing, just through
+ * a door the guard does not watch, because these are the human's writes and not the
+ * scheduler's.
+ *
+ * So a board card that rests somewhere is left exactly there, and only a card with no resting
+ * place to protect gets one. That is the case `restingStatus` reports a RUN status for: the
+ * field is borrowed and nothing is remembered behind it, so there is no column a human ever
+ * chose, and `pending` — queued work nobody has begun — is the honest answer. It still goes
+ * through {@link humanStatusPatch}, so if a run really is live it is parked for the settle
+ * rather than evicting it.
+ *
+ * Off the board the write survives unchanged, and deliberately: a plan project's task and a
+ * step of a chain are a queue whose `pending` means "runnable", which is exactly what
+ * re-wiring one is asking for.
+ */
+export function assignmentStatusPatch(task: Task): SchedulerPatch {
+  if (isBoardCard(task) && !isRunStatus(restingStatus(task))) return {};
+  return humanStatusPatch(task, 'pending');
 }

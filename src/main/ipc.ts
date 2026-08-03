@@ -39,7 +39,7 @@ import {
   type Task,
 } from '@shared/model';
 import { categoryFromKey, columnForStatus, restingStatus } from '@shared/board';
-import { humanStatusPatch } from './cardStatusGuard';
+import { assignmentStatusPatch, humanStatusPatch } from './cardStatusGuard';
 import { resolveStatusColumn } from '@shared/statusResolve';
 import type { AppSettings } from '@shared/settings';
 import { sameExecTarget, type ExecTarget } from '@shared/execTarget';
@@ -635,11 +635,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       // A previous attempt's session is not this assignment's; start a fresh
       // conversation so the agent gets the full single-ticket brief.
       sessionId: null,
-      // Assigned-but-not-started is `pending`: queued work nobody has begun, which is
-      // exactly what TO DO means. The Start button is the affordance, not a new status —
-      // adding one would ripple through MANUAL_STATUSES, columnForStatus, statusForColumn,
-      // resolveMove and the JIRA transition map.
-      status: 'pending',
+      // ...and no column change. Delegating a card says who does the work, not where the
+      // work belongs: a ticket resting in IN REVIEW that you hand to an agent is still in
+      // review. This used to write `pending` unconditionally, on the reasoning that
+      // assigned-but-not-started IS what TO DO means — true of a card already in TO DO,
+      // and a card-moving bug everywhere else. Only a card resting nowhere gets a status
+      // now; see `assignmentStatusPatch`.
+      ...assignmentStatusPatch(existing),
     });
     if (!task) throw new Error('Task not found.');
 
@@ -899,7 +901,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     if (existing.status === 'running' || existing.status === 'waiting-input') {
       throw new Error('Stop the task before attaching a session.');
     }
-    const task = store.updateTask(taskId, { sessionId: sessionId.trim(), status: 'pending' });
+    // Rewiring the session must not move the card either — the same unguarded write, and
+    // the same answer, as `task:assignAgent` above.
+    const task = store.updateTask(taskId, {
+      sessionId: sessionId.trim(),
+      ...assignmentStatusPatch(existing),
+    });
     if (task) send('task:changed', { task, runId: null }); // keep the Board in sync
     return task ?? null;
   });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { guardCardStatus, humanStatusPatch } from './cardStatusGuard';
-import { PERSONAL_PROJECT_ID, type Task, type TaskStatus } from '@shared/model';
+import { assignmentStatusPatch, guardCardStatus, humanStatusPatch } from './cardStatusGuard';
+import { MANUAL_STATUSES, PERSONAL_PROJECT_ID, type Task, type TaskStatus } from '@shared/model';
 import { columnForTask } from '@shared/board';
 
 /** A top-level card of the Personal board — the thing a human drags between columns. */
@@ -130,6 +130,41 @@ describe('humanStatusPatch — the human can still move a card the run is holdin
     });
     expect(humanStatusPatch(card({ projectId: 'p1', status: 'running' }), 'done')).toEqual({
       status: 'done',
+    });
+  });
+});
+
+describe('assignmentStatusPatch — wiring an agent on does not move the card', () => {
+  it('leaves a card resting in IN REVIEW in IN REVIEW', () => {
+    const before = card({ status: 'in-review' });
+    const patch = assignmentStatusPatch(before);
+    expect(patch.status).toBeUndefined();
+    expect(columnForTask({ ...before, ...patch })).toBe('in-review');
+  });
+
+  it.each(MANUAL_STATUSES)('writes no status over a card resting in %s', (resting) => {
+    expect(assignmentStatusPatch(card({ status: resting }))).toEqual({});
+  });
+
+  it('gives a card with no resting place at all the queue’s status', () => {
+    // The field is borrowed and nothing is remembered behind it, so no human ever chose a
+    // column here. `pending` is parked for the settle rather than evicting the live run.
+    const wedged = card({ status: 'blocked-by-limit', preRunStatus: null });
+    expect(assignmentStatusPatch(wedged)).toEqual({ preRunStatus: 'pending' });
+  });
+
+  it('leaves a card whose run remembers where it came from where it came from', () => {
+    expect(
+      assignmentStatusPatch(card({ status: 'blocked-by-limit', preRunStatus: 'blocked' })),
+    ).toEqual({});
+  });
+
+  it('still re-queues a plan task or a step — there `pending` means runnable', () => {
+    expect(assignmentStatusPatch(card({ projectId: 'p1', status: 'done' }))).toEqual({
+      status: 'pending',
+    });
+    expect(assignmentStatusPatch(card({ parentTaskId: 't1', status: 'done' }))).toEqual({
+      status: 'pending',
     });
   });
 });

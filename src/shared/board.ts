@@ -349,9 +349,9 @@ const TERMINAL: ReadonlySet<Task['status']> = new Set(['done', 'failed', 'stoppe
  *
  * Deliberately NOT derived from status alone, for two reasons:
  *
- *   1. `task:assignAgent` writes `status: 'pending'` and only *then* calls `runTask`, so
- *      the task that patches the card says `pending` while a run is already spawning.
- *      That window is exactly the "it's working but there's no spinner" complaint.
+ *   1. `task:assignAgent` patches the card and only *then* calls `runTask`, so the task it
+ *      hands back still says whatever the card was resting in while a run is already
+ *      spawning. That window is exactly the "it's working but there's no spinner" complaint.
  *   2. Once an agent can be assigned WITHOUT being started, `assigned + pending` is a
  *      legitimate resting state — so "starting" stops being derivable from `Task` at all.
  *
@@ -460,6 +460,13 @@ export function runPhase(
   // `sessionId` is what makes "never ran" mean it: a card whose run is over goes back to
   // the status its human left it in (see `restingStatus`), which is very often `pending`
   // — and a finished card claiming it had never started was the first thing that broke.
+  //
+  // Still keyed on `pending`, and deliberately, now that assignment no longer drags a card
+  // into TO DO (`assignmentStatusPatch`): a card assigned while it rests in IN REVIEW or
+  // BLOCKED simply says nothing here. "Not started" is a statement about a queue, and the
+  // only column that means queued is TO DO — on any other, where the card sits already says
+  // what it is, and the words would be contradicting it rather than adding to it. The Start
+  // button is offered from the card either way; this is only what the card SAYS.
   if (isAgentAssigned(task) && task.status === 'pending' && !task.sessionId) {
     return { phase: 'idle', label: 'Assigned — not started', spinner: false };
   }
