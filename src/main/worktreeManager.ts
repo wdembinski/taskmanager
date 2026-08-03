@@ -371,16 +371,20 @@ export class WorktreeManager {
             `the task was not run — fix git for that path and retry.`,
         };
       }
-      try {
-        rmSync(host.toApp(cwd), { recursive: true, force: true });
-      } catch (err) {
+      // Retried, for exactly the reason the directory is in this state at all: what
+      // half-deleted it was a Windows lock on `node_modules`, and a lock held by an exiting
+      // process is usually gone a moment later. `removeWorktreeChecked` next door already
+      // retries; a single attempt here left a card parked on `ENOTEMPTY` while the git path
+      // beside it would have recovered.
+      const removed = await this.removeDebris(host.toApp(cwd));
+      if (removed) {
         return {
           mode: 'failed',
           reason:
             `The worktree at ${cwd} is no longer a git repository — a previous cleanup left ` +
-            `it half-deleted — and it could not be removed to rebuild it: ` +
-            `${(err as Error).message ?? err}. Delete that directory and retry. The task was ` +
-            `not run in the base tree (${project.path}) to avoid polluting it.`,
+            `it half-deleted — and it could not be removed to rebuild it: ${removed}. Delete ` +
+            `that directory and retry. The task was not run in the base tree ` +
+            `(${project.path}) to avoid polluting it.`,
         };
       }
       // A write outside the task's own worktree belongs on the timeline, exactly like the
@@ -544,6 +548,28 @@ export class WorktreeManager {
     const { host, root } = await this.workspaceFor(project);
     const cwd = this.pathIn(root, project.id, taskId);
     if (existsSync(host.toApp(cwd))) await this.removeWorktreeChecked(project, cwd, host);
+  }
+
+  /**
+   * Delete a directory git has stopped recognising, retrying once. Returns null on success,
+   * or git-free filesystem error text.
+   *
+   * Separate from {@link removeWorktreeChecked} because there is no worktree left to ask git
+   * to remove — the admin record went with the `.git` file — so this is a plain `rm -rf`.
+   * The retry is the shared part, and it is the point: the lock that produces this state is
+   * held by a process on its way out.
+   */
+  private async removeDebris(appPath: string): Promise<string | null> {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        rmSync(appPath, { recursive: true, force: true });
+        return null;
+      } catch (err) {
+        if (attempt === 1) return (err as Error).message ?? String(err);
+        await delay(WORKTREE_REMOVE_RETRY_MS);
+      }
+    }
+    return null;
   }
 
   /**
