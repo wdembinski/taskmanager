@@ -1778,6 +1778,9 @@ a control that cannot be pressed has to say why, and `disabled` alone is a dead 
 (`parentAttachments`, from `parentOfSelected`) — no new channel, no new fetch, and nothing at
 all for a card, which has no parent to inherit from.
 
+Gates: `pnpm typecheck` clean, `pnpm test` **1492 green** (no new cases — the rule this step
+leans on was pinned when it was written), `pnpm build` clean, `pnpm format` applied.
+
 ### Staging files in the Add dialog
 
 A screenshot is on the clipboard at the moment somebody thinks of the card, not ten minutes
@@ -1830,9 +1833,6 @@ Gates: `pnpm typecheck` clean, `pnpm test` **1498 green**, `pnpm build` clean, `
 applied. That a staged file actually lands on the new card needs the app running — owed to
 step 11 with the rest.
 
-Gates: `pnpm typecheck` clean, `pnpm test` **1492 green** (no new cases — the rule this step
-leans on was pinned when it was written), `pnpm build` clean, `pnpm format` applied.
-
 ### Handing the legend to the agent
 
 The point of the phase, and it is four lines of prompt. `@shot.png` in a brief means nothing
@@ -1884,6 +1884,92 @@ Gates: `pnpm typecheck` clean, `pnpm test` **1506 green** (8 new cases), `pnpm b
 `pnpm format` applied. That a real WSL agent opens the file needs a live run — owed to step
 11 with the rest.
 
+### Sequencing
+
+The order the seven building steps land in, and — the part that actually matters — what each
+one may assume already exists. Written as a **partial** order, because two of them do not
+depend on each other and pretending they did would have hidden the one interesting fact in
+this phase's shape:
+
+```
+3 → 4 → { 5, 6 } → 7 → 8 → 9
+```
+
+(Steps 1 and 2 are this entry and its audit; they precede everything by construction and gate
+nothing but each other. Step 10 is this section, 11 verifies, 12 releases.)
+
+**What each step may assume.**
+
+- **3 — the contract and the store.** Assumes nothing. It is first because *everything* else
+  in the phase names `TaskAttachment`, and because the five channels have to be declared
+  before either side of the boundary compiles against them (Conventions, *contract first*).
+  It also carries the pure rules — `attachmentName`, `parseAttachmentRefs`,
+  `attachmentsInScope` — which is what lets steps 6, 8 and 9 each answer "what is this file
+  called" without three answers.
+- **4 — the bytes.** Assumes 3's rows and `attachmentName`, nothing else. It cannot be first:
+  the row is written after the copy, and there is no row to write yet.
+- **5 — the protocol.** Assumes 3 (the handler resolves an id *through the store*) and 4
+  (`attachmentFile` is how it turns a row into a path). It assumes no UI at all — the scheme
+  serves bytes to whoever asks, and until step 6 nobody does.
+- **6 — the card details.** Assumes 3 and 4. **Not 5.** This is the branch point and it is
+  worth stating plainly: everything the strip *does* — pick, drop, chip, remove, open, cite
+  at the caret — is channels from 3 and 4, and works with no scheme registered at all.
+  Exactly one line of it depends on step 5, the inline `<img src={attachmentUrl(id)}>`, and
+  its failure mode is already handled: `onError` drops the id into `gone` and the strip falls
+  back to the chip it would have shown anyway. So 5 and 6 are genuinely concurrent, and if
+  the protocol had turned out to be a fight the pane would still have shipped.
+- **7 — the step brief.** Assumes 6, and only 6: it is the same `AttachmentStrip` against a
+  step's row, plus `attachmentsInScope` from 3. Nothing new crosses the boundary, which is
+  why this step added no channel and no test — the union-and-shadowing rule it leans on was
+  pinned when it was written, in 3.
+- **8 — the Add dialog.** Assumes 3 and 4. **Not 6 or 7**, despite looking like more of the
+  same UI: it deliberately does not reuse `AttachmentStrip`, which is built around a `taskId`
+  the dialog does not have yet, and it needs no preview for the same reason. Its correctness
+  rests on one thing from 3 — that the renderer's provisional name and main's assigned name
+  are the same pure function over the same empty taken-list.
+- **9 — the legend.** Assumes 3 (`attachmentsInScope`) and 4 (`attachmentFile`). **Not 5, 6,
+  7 or 8** — a prompt does not care which surface put the row there. It is last because it is
+  the only step with nothing to show for itself until something upstream can attach a file,
+  and because it is the point of the phase: the seven before it are plumbing, and running it
+  earlier would have meant handing an agent a legend of an empty table.
+
+**Two ordering constraints that are not about code.**
+
+- The worktree has **no `node_modules`**, so step 3 — the first to touch `src/` — pays for a
+  `pnpm install` before any gate can say anything. Steps 1 and 2 change only this file and so
+  have no gate to run; every step from 3 on runs `typecheck` / `test` / `build` / `format`.
+- Every step bumps the version inside its own commit ([`CONTRIBUTING.md`](../../CONTRIBUTING.md)
+  §4), but **none of them tags**: [`RELEASE.md`](../../RELEASE.md) rule 5 forbids releasing
+  from a feature branch, and a pushed tag cannot be moved. The MINOR the phase ships as is
+  reached by those per-commit bumps and cut when the branch lands.
+
+**What actually happened.** One commit per step, in a strict linearization of the order above
+— the concurrency at `{5, 6}` was available and not spent, since a single session runs the
+steps one at a time anyway:
+
+| Step | Commit | Version |
+|-----:|--------|---------|
+| 1 | `c680fd7` the shape of the design | 0.57.1 |
+| 2 | `28edeaa` verify the facts | 0.57.2 |
+| 3 | `ebf35b5` the contract and the store | 0.58.0 |
+| 4 | `ad54b88` copy the bytes into app data | 0.59.0 |
+| 5 | `54a08c5` serve images over a protocol | 0.60.0 |
+| 6 | `88f8a94` attach files from the card details | 0.61.0 |
+| 7 | `38612be` attach files to a step brief | 0.62.0 |
+| 8 | `e12f77e` stage files in the add dialog | 0.63.0 |
+| 9 | `fe69e9f` hand the legend to agents | 0.64.0 |
+
+Steps 3 and 4 are MINOR rather than PATCH despite shipping no visible behaviour: they are
+`feat` commits under §4's rule that the *type* picks the bump, not the visibility.
+
+**One thing the order got right by accident, recorded so it is not undone.** Step 2's audit
+found the `syncTasksFromPlan` delete-and-reinsert, and step 3 fixed it in the same commit
+that created the table. Had the audit been folded into step 3 rather than run as its own step
+before it, the table would have shipped first and the fix would have been a later patch — and
+in between, every save of a plan file would have deleted that project's attachment rows and
+orphaned the bytes. Auditing the citations *before* building on them is the whole argument
+for step 2 existing, and this is the case that paid for it.
+
 ### Deliverables
 
 - [x] **1 — The shape of the design.** This entry: the four decisions above, each named
@@ -1929,7 +2015,10 @@ Gates: `pnpm typecheck` clean, `pnpm test` **1506 green** (8 new cases), `pnpm b
       is listed rather than only the cited ones, "do not copy them into the repository" is a
       line the prompt cannot lose, and the WSL translation stays in the scheduler so the
       prompt builder itself remains pure.
-- [ ] **10 — Sequencing.** The order the above lands in, and what each step may assume.
+- [x] **10 — Sequencing.** The order the above lands in, and what each step may assume. See
+      above: `3 → 4 → {5, 6} → 7 → 8 → 9`, written as a partial order because the protocol and
+      the pane are genuinely independent — every chip, pick, drop and citation works with no
+      scheme registered, and only the inline thumbnail depends on step 5.
 - [ ] **11 — Verification.** `pnpm format`, `pnpm typecheck`, `pnpm test`, `pnpm build`,
       plus whatever can be driven headlessly — never by launching the app on this machine.
 - [ ] **12 — Release.**
