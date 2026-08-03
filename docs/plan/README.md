@@ -1481,7 +1481,7 @@ validation. That preserves the rule already stated at
 bytes over IPC, main reads and uploads them — and extends it in the direction that was left
 open: the paths JIRA's draft carries come from main's own picker (`jira:pickAttachments`,
 `ipc.ts:696`), never typed by the renderer, and here not even that much is handed back. The
-window is `contextIsolation: true` with `nodeIntegration: false` (`index.ts:50`), which is
+window is `contextIsolation: true` with `nodeIntegration: false` (`index.ts:72-74`), which is
 the same posture; a custom scheme is how a locked-down renderer is *allowed* to see a local
 file, and it has to be registered as privileged before the app is ready.
 
@@ -1493,14 +1493,82 @@ live somewhere a sync cannot reach, and be replaced whole rather than patched.
 `MyTasks.tsx:229-236` already seeds five whole-board lists in one `Promise.all`; this is a
 sixth, and costs one more entry in an array.
 
+### Verified facts this rests on
+
+Every claim above was re-read against this worktree before anything was built on it. What
+follows is the audit, plus the platform facts the later steps need and cannot check for
+themselves — the worktree has no `node_modules`, so the Electron typings quoted here were
+read from the main checkout at `C:\Repositories\task-manager`, which is on the same lockfile.
+
+**The citations hold, with three corrections.** `store.ts:420` is `db.pragma('foreign_keys =
+ON')`; `store.ts:625` is `CREATE TABLE IF NOT EXISTS task_links` with both indexes at 633-634
+and `UNIQUE (fromTaskId, toTaskId)` at 631; `store.ts:925` is `insertTask`, whose column list
+runs 927-934 and does now carry `projectTagId` (933), so the v0.57.0 bug is fixed and the
+citation is about how it happened, not a live defect. `ipc.ts:642` is `'chain:links'`,
+`:813` is `'chain:changed'`, `:680` is the "renderer never ships bytes over IPC" sentence in
+`jira:addComment`'s doc comment, and `:696` is `'jira:pickAttachments'`. Corrected: the
+`adoptTaskId` **field** is at `ipc.ts:723` (its explanation runs 712-716), not 718; and
+`contextIsolation`/`nodeIntegration` are set at `index.ts:72-74` — line 50 is the SECURITY
+NOTE comment that describes them. Both are fixed above. `MyTasks.tsx` is right as a range,
+though the five `invoke`s are 231-235 and the comment above them at 227 still says "all three
+channels" — stale since two were added, and worth a word when step 8 edits that block.
+
+**Electron is 33.4.11.** `package.json:40` declares `^33.2.0`; the lockfile resolves 33.4.11
+(`pnpm-lock.yaml:1594`) and that is what is installed. This decides three things:
+
+- **`File.path` is gone.** Electron 32 removed it, so a dropped file's path is reachable only
+  through `webUtils.getPathForFile` (`electron.d.ts:17709`), which lives in the privileged
+  world. This is the one and only reason `src/preload/index.ts` — 51 lines that expose nothing
+  but `invoke` and `on` — stops being generic and has to be touched. Nothing else in this
+  phase may add to it.
+- **A trap the compiler will not catch.** `electron.d.ts:24099-24104` *still* declares
+  `interface File { path: string }`, globally and undeprecated, three versions after the
+  runtime property was removed. Written in a file that sees those typings, `file.path`
+  type-checks clean and is `undefined` at run time. We are safe only by accident:
+  `tsconfig.web.json:10` and `tsconfig.node.json:9` both pin `"types": ["node"]`, so Electron's
+  ambient declarations are not in scope and `file.path` is a compile error in both projects.
+  Do not add `"electron"` to either `types` array to "fix" a drag-and-drop type — that would
+  swap a loud failure for a silent one.
+- **`protocol.handle` is the right API** (`electron.d.ts:10302`). `registerFileProtocol` is
+  explicitly `@deprecated` in the shipped typings (10391-10394). `registerSchemesAsPrivileged`
+  (10443) must run at module scope before ready, and `src/main/index.ts` already has that
+  slot proven: the occlusion switch at :30 and `setUsePlainTextEncryption` at :45 both sit
+  above `app.whenReady()` at :133, each commented that it must. There is no `protocol.` call
+  anywhere in `src/main` today, so step 5 is new ground rather than an edit.
+
+**The CSP is one token.** `src/renderer/index.html:12` is a meta tag reading `default-src
+'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src
+'self' data:`. Serving previews needs `vipper-attachment:` added to `img-src` and nothing else.
+
+**WSL reaches `userData` for free.** `WslExecHost.toNative` is `windowsToLinux`
+(`exec/wslHost.ts:225-227`, against the interface at `exec/types.ts:92`), and
+`windowsToLinux` (`shared/wslPath.ts:60-75`) maps `C:\x` to `/mnt/c/x`. `userData` is an
+ordinary drive path, so automount reaches it — the same mechanism `claudeSession.ts:316` uses
+for the MCP config (written under `userData/mcp`, `ipc.ts:312` and `:322`) and `:338` for the
+contract file. Step 9 can hand a WSL agent an attachment path the same way, with no new
+translation. The three existing `userData` joins to copy are `ipc.ts:165`, `:260` and `:312`.
+
+**A real trap: `syncTasksFromPlan` deletes and re-inserts.** `store.ts:1819-1841` replaces a
+plan project's whole task set in one transaction — `deleteTasks.run(projectId)` at 1832, then
+`insertTask` for each kept row at 1833 **with the same ids**. Anything hanging off `tasks` by
+foreign key is cascaded away by that DELETE and does not come back on its own. Chain links
+survive only because they are explicitly read out first (1829-1831) and re-inserted after
+(1834-1837), skipping any whose ends the plan dropped. `task_attachments` is the same shape
+and needs the same treatment inside the same transaction, or every save of a plan file
+silently deletes that project's attachment rows — leaving the bytes orphaned on disk, since
+the cascade cannot reach them. Step 3 owns this; it is not optional and it is not obvious from
+reading the table definition.
+
 ### Deliverables
 
 - [x] **1 — The shape of the design.** This entry: the four decisions above, each named
       against the thing in the codebase it copies, written before anything is built so the
       later steps are implementing a decision rather than taking one.
-- [ ] **2 — Verified facts this rests on.** The file:line claims above, re-read and
+- [x] **2 — Verified facts this rests on.** The file:line claims above, re-read and
       confirmed against the working tree — the design is only as good as the precedents it
-      cites, and a stale line number is a decision nobody actually checked.
+      cites, and a stale line number is a decision nobody actually checked. Three were stale
+      and are corrected; the `File.path` typing hole and the `syncTasksFromPlan` cascade are
+      what the audit turned up that the design had not accounted for.
 - [ ] **3 — The contract and the store.** `TaskAttachment` in `src/shared/` before either
       side uses it (Conventions, *contract first*), the `task_attachments` table and its
       index, and the store methods over them.
@@ -1516,7 +1584,7 @@ sixth, and costs one more entry in an array.
       already allows for free.
 - [ ] **8 — Stage attachments in the Add dialog.** Files chosen before the card exists, so
       they land the moment it does — the same problem the dialog's ticket already solves by
-      writing the card first (`ipc.ts:718`, `adoptTaskId`).
+      writing the card first (`ipc.ts:723`, `adoptTaskId`).
 - [ ] **9 — Hand the attachment legend to the agent.** The prompt says what is attached and
       where, so `@name` in a brief resolves to a file the agent can actually open. This is
       the point of the phase; everything above it is plumbing.
