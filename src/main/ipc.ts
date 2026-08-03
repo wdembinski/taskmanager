@@ -870,6 +870,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     if (!task) throw new Error('Task not found.');
     store.recordStatusChange(task.projectId, taskId, from, status);
     send('task:changed', { task, runId: null });
+    // Closing the card answers everything it was asking. See `task:move` for the reasoning.
+    if (restingStatus(task) === 'done') scheduler.dismissAttentionForCard(taskId);
     // Back in To Do re-asks the chain (Phase 21). `pending` is the ONE status a release may
     // start a card from, so arriving at it can be the last thing a card was waiting for —
     // and it is a change to the CARD, which no landing or arrow will ever mention again.
@@ -904,6 +906,47 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
   handle('attention:list', async () => scheduler.listAttention());
   handle('attention:answer', async (itemId, answer) => scheduler.answerAttention(itemId, answer));
+
+  /**
+   * Hush a card that is shouting but is NOT done — you have read the comment, you know the
+   * pipeline is red, and you are getting to it.
+   *
+   * Every driver of the ring is silenced in one call, because "stop telling me about this"
+   * is one decision: the inbox items on the card and its steps, the ticket's unread marker,
+   * and each merge request filed under either. Silencing them one control at a time was the
+   * only way to do this, and it meant knowing which of the five was ringing.
+   *
+   * Both markers on an MR, not just `lastReadAt`: `mrNeedsAttention` also fires on an
+   * unseen EVENT (a failed pipeline, changes requested, ready-to-merge), so marking only
+   * the notes read would leave a card that was shouting about a pipeline shouting about it.
+   */
+  handle('task:dismissAttention', async (taskId) => {
+    const existing = store.getTask(taskId);
+    if (!existing) throw new Error('Task not found.');
+
+    scheduler.dismissAttentionForCard(taskId);
+
+    const stepIds = new Set([taskId, ...store.getSubtasks(taskId).map((s) => s.id)]);
+    const now = Date.now();
+    let touchedMrs = false;
+    for (const mr of store.listMergeRequests()) {
+      if (!mr.taskId || !stepIds.has(mr.taskId)) continue;
+      store.markMergeRequestRead(mr.id, now);
+      store.markMergeRequestEventsSeen(mr.id, now);
+      touchedMrs = true;
+    }
+    if (touchedMrs) send('gitlab:mergeRequestsChanged', store.listMergeRequests());
+
+    // The same rule as `jira:markRead`: the newest comment we know of becomes the one you
+    // have read. `now` only as a fallback, so a card with no comment at all is still quiet.
+    const task =
+      existing.externalSource === 'jira'
+        ? (store.updateTask(taskId, { lastReadCommentAt: existing.latestCommentAt ?? now }) ??
+          existing)
+        : existing;
+    send('task:changed', { task, runId: null });
+    return task;
+  });
 
   handle('limit:current', async () => scheduler.currentLimit());
   handle('limit:resumeNow', async () => scheduler.resumeLimitNow());
@@ -1859,6 +1902,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     if (!task) throw new Error('Task not found.');
     store.recordStatusChange(task.projectId, taskId, restingStatus(existing), move.localStatus);
     send('task:changed', { task, runId: null });
+    // Dropped into DONE: the human is finished with this card, so nothing it was asking is
+    // still a live question. The ring goes quiet by itself (`chainNeedsAttention` overrides
+    // a closed card), but the INBOX is a list of its own — an item left behind outlives the
+    // ring, cannot be acted on any more, and keeps counting in the nav rail's badge.
+    if (restingStatus(task) === 'done') scheduler.dismissAttentionForCard(taskId);
     // Dragged back to TO DO re-asks the chain (Phase 21) — the path a drag actually takes,
     // and the one that matters: a card released while it sat in Blocked was told "Ready to
     // start … start it whenever you like", and dropping it in To Do is how a human says so.

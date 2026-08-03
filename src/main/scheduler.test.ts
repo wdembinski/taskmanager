@@ -3248,3 +3248,140 @@ describe('Scheduler — which runs owe a plan', () => {
     expect(run?.expectsPlan).toBe(true);
   });
 });
+
+/**
+ * Closing a card clears what it was asking.
+ *
+ * The engine half of "a done card does not demand attention": the ring goes quiet by
+ * itself (`chainNeedsAttention` overrides a closed card), but the INBOX is a list of its
+ * own — an item left behind outlives the ring, cannot be acted on any more, and keeps
+ * counting in the nav rail's badge. `task:setStatus` / `task:move` call this the moment a
+ * card comes to rest in `done`; the detail pane's **Dismiss** calls the same method for a
+ * card that is shouting and is NOT done.
+ */
+describe('dismissAttentionForCard', () => {
+  const mkTask = (over: Partial<Task>): Task =>
+    ({
+      id: 'c1',
+      projectId: 'agent-p',
+      phase: '',
+      title: 'card',
+      status: 'done',
+      sessionId: null,
+      order: 0,
+      source: 'adhoc',
+      dependsOn: [],
+      isContract: false,
+      isScaffold: false,
+      ...over,
+    }) as Task;
+
+  const item = (over: Record<string, unknown>): Record<string, unknown> => ({
+    id: 'i1',
+    runId: 'r1',
+    taskId: 'c1',
+    projectId: 'agent-p',
+    taskTitle: 'card',
+    kind: 'question',
+    prompt: 'which one?',
+    options: [],
+    toolName: null,
+    reason: null,
+    createdAt: 0,
+    ...over,
+  });
+
+  function setup(items: Array<Record<string, unknown>>): {
+    scheduler: Scheduler;
+    resolved: ReturnType<typeof vi.fn>;
+    open: () => string[];
+  } {
+    const card = mkTask({ id: 'c1' });
+    const steps = [
+      mkTask({ id: 's1', parentTaskId: 'c1', title: 'step 1' }),
+      mkTask({ id: 's2', parentTaskId: 'c1', title: 'step 2' }),
+    ];
+    const all = [card, ...steps, mkTask({ id: 'other', title: 'someone else' })];
+    const store = {
+      getTask: (id: string) => all.find((t) => t.id === id),
+      getTasks: () => all,
+      getSubtasks: (parentId: string) => steps.filter((s) => s.parentTaskId === parentId),
+      updateTask: (id: string, patch: Partial<Task>) => {
+        const t = all.find((x) => x.id === id);
+        if (t) Object.assign(t, patch);
+        return t;
+      },
+      getSettings: () => ({ limitJitterMs: 0, concurrency: 1, maxAutoRetries: 0 }),
+      saveLimitGate: () => undefined,
+      ...INERT_ATTENTION_STORE,
+    } as unknown as Store;
+    const resolved = vi.fn();
+    const scheduler = new Scheduler(
+      store,
+      { start: vi.fn(), stop: vi.fn(), send: vi.fn() } as unknown as SessionManager,
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      resolved,
+      vi.fn(),
+    );
+    const map = (scheduler as unknown as { attention: Map<string, unknown> }).attention;
+    for (const i of items) map.set(i.id as string, i);
+    return { scheduler, resolved, open: () => [...map.keys()] };
+  }
+
+  it('clears the card AND its steps, and leaves other cards alone', () => {
+    const { scheduler, resolved, open } = setup([
+      item({ id: 'i1', taskId: 'c1' }),
+      item({ id: 'i2', taskId: 's1', kind: 'permission' }),
+      item({ id: 'i3', taskId: 's2', kind: 'plan-approval' }),
+      item({ id: 'i4', taskId: 'other' }),
+    ]);
+
+    expect(scheduler.dismissAttentionForCard('c1')).toBe(3);
+    // A chain's asks are filed against its STEPS — a card running a plan holds no session
+    // of its own — so sweeping only the card id would clear almost nothing.
+    expect(open()).toEqual(['i4']);
+    for (const id of ['i1', 'i2', 'i3']) expect(resolved).toHaveBeenCalledWith(id);
+    expect(resolved).not.toHaveBeenCalledWith('i4');
+  });
+
+  it('releases the tool a held decision was blocking, denied', () => {
+    const { scheduler } = setup([item({ id: 'i1', kind: 'permission' })]);
+    const resolve = vi.fn();
+    (scheduler as unknown as { pendingDecisions: Map<string, unknown> }).pendingDecisions.set(
+      'i1',
+      { runId: 'r1', input: {}, resolve },
+    );
+
+    scheduler.dismissAttentionForCard('c1');
+
+    // Dropping the item without this leaves the CLI process parked on its HTTP request
+    // until the app exits. Denied, because nobody approved anything.
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(resolve.mock.calls[0][0]).toMatchObject({ behavior: 'deny' });
+    expect(
+      (scheduler as unknown as { pendingDecisions: Map<string, unknown> }).pendingDecisions.size,
+    ).toBe(0);
+  });
+
+  it('refuses to dismiss a merge conflict — its answer is what finishes the rebase', () => {
+    const { scheduler, resolved, open } = setup([
+      item({ id: 'i1', kind: 'merge-conflict' }),
+      item({ id: 'i2', taskId: 's1' }),
+    ]);
+
+    expect(scheduler.dismissAttentionForCard('c1')).toBe(1);
+    // A rebase stopped halfway with markers in a worktree is not a card shouting; hiding
+    // it would strand the repo with no control left that could finish the job.
+    expect(open()).toEqual(['i1']);
+    expect(resolved).toHaveBeenCalledWith('i2');
+    expect(resolved).not.toHaveBeenCalledWith('i1');
+  });
+
+  it('is a no-op for a card with nothing parked on it', () => {
+    const { scheduler, resolved } = setup([item({ id: 'i4', taskId: 'other' })]);
+    expect(scheduler.dismissAttentionForCard('c1')).toBe(0);
+    expect(resolved).not.toHaveBeenCalled();
+  });
+});

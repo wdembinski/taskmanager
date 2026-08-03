@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { PERSONAL_PROJECT_ID, type Task } from './model';
+import type { MergeRequest } from './mergeRequest';
 import {
   categoryFromKey,
   categoryToColumn,
@@ -212,6 +213,77 @@ describe('parkedStep / chainNeedsAttention', () => {
     it('still falls back to the inferred signals when no set is given', () => {
       // Main-process callers have no inbox to consult; they must behave as before.
       expect(chainNeedsAttention(card, [step('s1', 'failed')])).toBe(true);
+    });
+  });
+
+  describe('a card the human has closed', () => {
+    // The complaint this closes: a card dragged to DONE went on wearing the orange ring
+    // and went on sorting to the top of the column, because the thing that raised it —
+    // an old comment, a step that fell over on the way, an MR left open — was still true.
+    // Marking the card done IS the answer to all of them.
+    const closed = ['done', 'cancelled', 'stopped'] as const;
+    const shoutingMr = {
+      state: 'opened',
+      latestNoteAt: 200,
+      lastReadAt: 100,
+      lastEventAt: null,
+      lastEventSeenAt: null,
+    } as unknown as MergeRequest;
+
+    it('is silent about an unread ticket comment', () => {
+      for (const status of closed) {
+        const t = task({ id: 'c1', status, latestCommentAt: 200, lastReadCommentAt: null });
+        expect(hasUnreadJira(t)).toBe(true); // the driver is still true…
+        expect(chainNeedsAttention(t, [])).toBe(false); // …and deliberately overruled
+      }
+    });
+
+    it('is silent about a step that failed on the way', () => {
+      for (const status of closed) {
+        const t = task({ id: 'c1', status });
+        expect(chainNeedsAttention(t, [step('s1', 'failed')])).toBe(false);
+        expect(chainNeedsAttention(t, [step('s1', 'waiting-input')])).toBe(false);
+      }
+    });
+
+    it('is silent about an inbox item nobody ever answered', () => {
+      for (const status of closed) {
+        const t = task({ id: 'c1', status });
+        expect(chainNeedsAttention(t, [], [], new Set(['c1']))).toBe(false);
+        expect(chainNeedsAttention(t, [step('s1', 'done')], [], new Set(['s1']))).toBe(false);
+      }
+    });
+
+    it('is silent about a merge request still shouting on its branch', () => {
+      for (const status of closed) {
+        const t = task({ id: 'c1', status });
+        expect(chainNeedsAttention(t, [], [shoutingMr])).toBe(false);
+      }
+    });
+
+    it('is silent while its own run is parked, having been closed under it', () => {
+      // `waiting-input` with the human's choice parked in `preRunStatus`: the card RESTS
+      // in Done, which is the state this override is about.
+      const t = task({ id: 'c1', status: 'waiting-input', preRunStatus: 'done' });
+      expect(needsAgentInput(t)).toBe(true);
+      expect(chainNeedsAttention(t, [])).toBe(false);
+    });
+
+    it('still shouts when the card FAILED — nobody chose that', () => {
+      // The one terminal status deliberately left out: a card that fell over is over, but
+      // no human decided it was, and that is precisely when you want to be told.
+      const t = task({ id: 'c1', status: 'failed', latestCommentAt: 200 });
+      expect(chainNeedsAttention(t, [])).toBe(true);
+      expect(
+        chainNeedsAttention(task({ id: 'c1', status: 'failed' }), [], [], new Set(['c1'])),
+      ).toBe(true);
+    });
+
+    it('still shouts while the card is merely in progress or in review', () => {
+      for (const status of ['in-progress', 'in-review', 'blocked'] as const) {
+        const t = task({ id: 'c1', status, latestCommentAt: 200 });
+        expect(chainNeedsAttention(t, [])).toBe(true);
+      }
     });
   });
 });

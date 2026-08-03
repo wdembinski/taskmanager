@@ -211,6 +211,14 @@ export function parkedStep(subtasks: Task[]): Task | null {
 }
 
 /**
+ * The statuses that mean **the human has closed this card**. A deliberately smaller set
+ * than {@link TERMINAL} below, which also counts `failed`: a failed card is over, but
+ * nobody decided it was — and a card that fell over is exactly the kind that should still
+ * be shouting.
+ */
+const CLOSED_BY_HUMAN: ReadonlySet<TaskStatus> = new Set(['done', 'cancelled', 'stopped']);
+
+/**
  * Whether a card should wear the orange "wants you" frame: an unread ticket comment,
  * its own agent asking, a parked step, **or a merge request that wants you** — a red
  * pipeline, a review comment, changes requested. One helper so the board card, the
@@ -226,6 +234,9 @@ export function parkedStep(subtasks: Task[]): Task | null {
  * also flipping the task to `waiting-input` drew no ring, which is why cards sometimes
  * sat there silently wanting you. Defaulted for the main-process callers, which have no
  * inbox to consult and rely on the status.
+ *
+ * A card the human has CLOSED is silent, whichever of the five drivers below is still
+ * true — see the override at the top of the body.
  */
 export function chainNeedsAttention(
   task: Task,
@@ -233,6 +244,20 @@ export function chainNeedsAttention(
   mergeRequests: readonly MergeRequest[] = [],
   attentionTaskIds?: ReadonlySet<string>,
 ): boolean {
+  // **A closed card does not shout.** Deliberately an override of signals that are still
+  // perfectly true: an unread ticket comment, a step that failed on the way, an inbox item
+  // nobody ever answered, an MR left open on the branch — every one of them can outlive
+  // the decision to be done with the card, and none of them is a reason to keep ringing
+  // about work nobody is going to do. Marking a card done IS the human answering.
+  //
+  // Here rather than at the two call sites, so the ring (`TaskCard`) and the ordering
+  // (`sortCards`) cannot disagree — a done card sorted to the top of its column without a
+  // ring, or ringed there, means they already had.
+  //
+  // `restingStatus` and not `status`, for the usual reason: a run borrows that field, and
+  // where the HUMAN left the card is the whole subject of this override.
+  if (CLOSED_BY_HUMAN.has(restingStatus(task))) return false;
+
   if (attentionTaskIds?.has(task.id)) return true;
   if (attentionTaskIds && subtasks.some((s) => attentionTaskIds.has(s.id))) return true;
   return (

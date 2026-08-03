@@ -529,6 +529,25 @@ export interface IpcApi {
   'attention:answer': (itemId: string, answer: AttentionAnswer) => Promise<void>;
 
   /**
+   * **Hush a card that is shouting.** Everything the inbox holds for it and its steps is
+   * dropped, its ticket comments are marked read and its merge requests are marked read
+   * and seen — one call, because "stop telling me about this" is one decision and a human
+   * should not have to hunt down each of the five things that could be saying it.
+   *
+   * Closing a card does this by itself (`task:setStatus` / `task:move` to Done); this is
+   * the way to do it for a card that is still OPEN — you have read the comment, you know
+   * about the pipeline, and you are getting to it.
+   *
+   * Not the same as answering. An agent still parked on a question is told the human
+   * dismissed it and to stop rather than being left holding the tool; a **merge conflict**
+   * is deliberately not dismissable, since its answer is what finishes the rebase.
+   *
+   * Returns the task, whose read markers may have moved. The inbox and the merge-request
+   * list announce themselves on `attention:resolved` / `gitlab:mergeRequestsChanged`.
+   */
+  'task:dismissAttention': (taskId: string) => Promise<Task>;
+
+  /**
    * The active usage-limit gate (Phase 5), or `null` if no limit is in force —
    * used to seed the countdown banner when a view mounts. Live changes arrive on
    * the `limit:changed` event.

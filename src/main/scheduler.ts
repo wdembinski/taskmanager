@@ -116,6 +116,16 @@ const DEFAULT_DENY_MESSAGE =
   'The human declined this action. Do not perform it — find a safer approach, or stop and explain.';
 
 /**
+ * Sent to Claude when the human DISMISSES the ask instead of answering it (closing the
+ * card, or pressing Dismiss on one that is shouting). The held tool has to be released
+ * either way — a CLI process parked on that HTTP request never exits on its own — and a
+ * deny is the only honest release: nobody approved anything.
+ */
+const DISMISSED_MESSAGE =
+  'The human dismissed this request without answering it — they are done with this task. ' +
+  'Do not perform the action, and do not ask again: stop and explain where you got to.';
+
+/**
  * Sent back to a planning session when the human APPROVES its plan (Phase 11). The
  * held `ExitPlanMode` is denied on purpose: approval means the orchestrator takes the
  * plan over and runs it as subtasks, one fresh session per step, so the session that
@@ -1877,6 +1887,52 @@ export class Scheduler {
     if (!this.hasPendingAttention(item.runId)) {
       this.updateTask(item.taskId, { status: 'running' }, item.runId);
     }
+  }
+
+  /**
+   * Drop everything the inbox is holding for a card **and its steps**, without answering
+   * any of it. Returns how many items went.
+   *
+   * Two callers, one meaning — "the human is finished with this card": closing it (a drop
+   * into DONE, or the status dropdown) and the detail pane's **Dismiss**. The ring already
+   * goes quiet on a closed card (`chainNeedsAttention`), but the inbox is a list of its
+   * own: an ask that outlives the ring is a dead item nobody can act on, sitting in the
+   * nav rail's badge for ever.
+   *
+   * The card's STEPS are swept with it because that is where a chain's asks actually live
+   * — a card executing an approved plan holds no session of its own, so every item raised
+   * under it is filed against a step.
+   *
+   * Two deliberate exceptions to "just delete it":
+   *
+   *  - **A held tool is released, not abandoned.** `pendingDecisions` holds the broker's
+   *    `resolve` for a permission / plan-approval / agent-question; deleting the item
+   *    without calling it leaves the CLI process blocked on that request until the app
+   *    exits. Denied, because nobody decided (see {@link DISMISSED_MESSAGE}).
+   *  - **`merge-conflict` items are never dropped.** That item is not a card shouting, it
+   *    is a rebase stopped halfway with markers in a worktree, and its answer is what
+   *    finishes or abandons the integration. Dismissing it would strand the repo with no
+   *    control left that could finish the job.
+   */
+  dismissAttentionForCard(taskId: string): number {
+    if (this.disposed) return 0;
+    const ids = new Set([taskId, ...this.store.getSubtasks(taskId).map((s) => s.id)]);
+    let dropped = 0;
+    // Snapshotted: `resolveAttention` mutates the map we would otherwise be iterating.
+    for (const item of [...this.attention.values()]) {
+      if (!ids.has(item.taskId) || item.kind === 'merge-conflict') continue;
+      const pending = this.pendingDecisions.get(item.id);
+      if (pending) {
+        this.pendingDecisions.delete(item.id);
+        pending.resolve({ behavior: 'deny', message: DISMISSED_MESSAGE });
+      }
+      // The stored context behind a parked failure goes with its item; leaving it would
+      // keep a resolution alive for an item no one can reach any more.
+      this.pendingFailures.delete(item.id);
+      this.resolveAttention(item.id);
+      dropped++;
+    }
+    return dropped;
   }
 
   /**

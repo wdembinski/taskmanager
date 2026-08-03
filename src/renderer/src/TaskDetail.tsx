@@ -37,10 +37,14 @@ import type { MergeRequest } from '@shared/mergeRequest';
 import type { TaskAttachment } from '@shared/attachments';
 import type { TaskLink } from '@shared/taskChain';
 import type { SessionEvent } from '@shared/session';
-import { chatTarget } from '@shared/board';
+import { chainNeedsAttention, chatTarget } from '@shared/board';
 import type { StatusKeyword } from '@shared/statusKeywords';
 import type { PriorityDisplay } from '@shared/settings';
-import { ChevronLeftRegular, CollectionsEmptyRegular } from '@fluentui/react-icons';
+import {
+  ChevronLeftRegular,
+  CollectionsEmptyRegular,
+  AlertOffRegular,
+} from '@fluentui/react-icons';
 import { runningSubAgents } from './agentActivity';
 import { stepPosition } from './board/boardColumns';
 import { typeIcon } from './board/TaskCard';
@@ -117,6 +121,15 @@ const useStyles = makeStyles({
     overflowY: 'auto',
     padding: '10px 12px',
   },
+  /**
+   * **Dismiss**, immediately above the State dropdown it belongs beside. Only ever drawn
+   * for a card that is actually shouting, so it is not a control you have to learn — it
+   * appears exactly when there is something to hush, and goes when there isn't.
+   *
+   * Right-aligned and subtle: this silences signals, it does not change the card, and it
+   * must not compete with the state controls under it.
+   */
+  dismissRow: { display: 'flex', justifyContent: 'flex-end' },
   /** The live run, pinned between the conversation and the composer. */
   runState: { display: 'flex', flexDirection: 'column', gap: '4px' },
   running: { display: 'flex', alignItems: 'center', gap: '8px' },
@@ -573,7 +586,35 @@ export function TaskDetail({
     await loadActivity();
   }
 
+  /**
+   * Stop this card asking. One call silences every driver of the ring at once — the inbox
+   * items on the card and its steps, the ticket's unread comments, its merge requests —
+   * because "I have seen it" is one decision and the human should not have to work out
+   * which of the five was ringing.
+   */
+  async function dismissAttention(): Promise<void> {
+    if (!task) return;
+    setBusy(true);
+    setError(null);
+    try {
+      onStatusChanged?.(await window.api.invoke('task:dismissAttention', task.id));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const isStep = Boolean(task.parentTaskId);
+  /**
+   * Whether this card is shouting — the board's own predicate, so the button appears for
+   * exactly the cards that wear the ring and never for one that does not.
+   *
+   * No "and it isn't done" test of its own: `chainNeedsAttention` already returns false
+   * for a card the human has closed, which is the point of this round's other half. A
+   * second copy of that rule here is how the two would come to disagree.
+   */
+  const wantsAttention = chainNeedsAttention(task, subtasks, mergeRequests, attention?.taskIds);
   const position = isStep ? stepPosition(subtasks, task.id) : null;
   // Chatting with a card whose step is working talks to the step; say which one, since
   // otherwise the message would seem to go to the card you are looking at.
@@ -663,6 +704,24 @@ export function TaskDetail({
           />
         ) : (
           <>
+            {/* Beside the state controls, because it is the other half of the same
+                sentence: closing a card hushes it automatically, and this is how you
+                hush one you are NOT closing — you have read the comment, you know the
+                pipeline is red, and you are getting to it. */}
+            {wantsAttention && (
+              <div className={styles.dismissRow}>
+                <Button
+                  size="small"
+                  appearance="subtle"
+                  icon={<AlertOffRegular />}
+                  disabled={busy}
+                  title="Stop this card asking — clears its inbox items, unread comments and merge-request alerts"
+                  onClick={() => void dismissAttention()}
+                >
+                  Dismiss
+                </Button>
+              </div>
+            )}
             <TaskDetailsCell
               task={task}
               agentProjects={agentProjects}
