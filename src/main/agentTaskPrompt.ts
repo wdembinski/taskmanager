@@ -85,6 +85,43 @@ function planHeadingLines(): string[] {
 }
 
 /**
+ * What a step may BE — the other half of {@link planHeadingLines}.
+ *
+ * Headings do not just get titles, they get *sessions*: every one becomes a task that a
+ * separate agent runs, in this worktree, on this branch. A plan written as a document
+ * therefore gets executed as if its table of contents were a work breakdown, and two kinds
+ * of heading cost a full session while producing nothing.
+ *
+ * Both were observed on one card. Its plan opened with "Shape of the design", "Verified
+ * facts this rests on" and "Sequencing" — prose sections, each of which then burned an agent
+ * run restating the plan — and closed with "Release", which could not release: a step runs
+ * on the feature branch, and releasing from anything but the integration branch is exactly
+ * what a release procedure forbids. That step spent seven minutes re-running the gates and
+ * handed the job back, and two seconds after the merge the orchestrator did it properly.
+ *
+ * Unconditional, deliberately. Whether auto-release is switched on decides who releases and
+ * when — never whether a STEP can, and the answer to that is always no.
+ */
+function planScopeLines(): string[] {
+  return [
+    `Each heading also becomes a separate agent SESSION, run in this worktree. So every`,
+    `heading has to be a piece of work someone could do here. Two things therefore do not`,
+    `belong in the plan at all:`,
+    '',
+    `- **Merging or releasing.** The orchestrator merges this branch once the last step`,
+    `  finishes, and runs the release itself afterwards, from the project's own checkout.`,
+    `  A step cannot do either — it is on a feature branch, which is the one place a`,
+    `  release must never be cut from. Plan the work; the tool ships it.`,
+    `- **Sections that are not work.** Context, the design rationale, the facts you`,
+    `  checked, the order things land in — that is the plan's prose, not steps. As a step`,
+    `  each one spends a whole session restating what the plan already says.`,
+    '',
+    `Verification IS work and does belong, if there is something to verify.`,
+    '',
+  ];
+}
+
+/**
  * The worktree paragraph.
  *
  * Naming the working directory explicitly is not decoration. When a task's changes
@@ -209,7 +246,7 @@ export function buildAgentTaskPrompt(
     '',
     // Worktree mode: the same rule plan tasks get — the orchestrator owns integration.
     ...(branch ? worktreeLines(branch, worktreePath, projectPath) : []),
-    ...(options.planMode ? planHeadingLines() : []),
+    ...(options.planMode ? [...planHeadingLines(), ...planScopeLines()] : []),
     // Never write to the tracker: that is a hard product decision, not a preference.
     ...(key
       ? [
@@ -258,8 +295,10 @@ export function buildAgentTaskPrompt(
  *  3. **That it must finish with `ExitPlanMode`.** Nothing becomes a step otherwise: a
  *     plan written as prose in the reply is exactly the failure this feature fixes.
  *
- * The heading rule is shared verbatim with the first-round prompt — these titles land in
- * the same list as the existing ones, so they have to read the same way.
+ * The heading and scope rules are shared verbatim with the first-round prompt — these steps
+ * land in the same list as the existing ones, so they have to read the same way and be the
+ * same kind of thing. A later round is if anything MORE prone to proposing a release, since
+ * by then the work looks finished.
  */
 export function buildReplanPrompt(
   taskTitle: string,
@@ -288,6 +327,7 @@ export function buildReplanPrompt(
     `out. If nothing meaningful is left to do, say so plainly instead of inventing work.`,
     '',
     ...planHeadingLines(),
+    ...planScopeLines(),
     `When the plan is ready, call ExitPlanMode with it. That is what puts the steps on the`,
     `card for the human to approve — a plan written out in your reply reaches nobody.`,
   ]

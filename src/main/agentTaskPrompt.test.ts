@@ -4,7 +4,11 @@
  * rule, and the question sentinel — is checkable without a process or a DB.
  */
 import { describe, expect, it } from 'vitest';
-import { buildAgentSubtaskPrompt, buildAgentTaskPrompt } from './agentTaskPrompt';
+import {
+  buildAgentSubtaskPrompt,
+  buildAgentTaskPrompt,
+  buildReplanPrompt,
+} from './agentTaskPrompt';
 import { NEEDS_INPUT_SENTINEL } from './attention';
 import type { Task } from '@shared/model';
 
@@ -367,6 +371,51 @@ describe('the attachment legend', () => {
   it('omits a step’s legend when neither it nor its card carries a file', () => {
     const prompt = buildAgentSubtaskPrompt('Checkout service', jiraTask, step, stepBase);
     expect(prompt).not.toContain('Files attached');
+    expect(prompt).not.toContain('\n\n\n');
+  });
+});
+
+/**
+ * What a plan may contain. Every heading becomes a step, and every step becomes its own
+ * agent session in the card's worktree — so a plan written as a document gets executed as
+ * if its table of contents were a work breakdown.
+ *
+ * One real card's plan opened with "Shape of the design", "Verified facts this rests on" and
+ * "Sequencing" — three prose sections that each burned a full session restating the plan —
+ * and closed with "Release", which spent seven minutes re-running the gates and then
+ * correctly refused, because a step is on the feature branch and that is the one place a
+ * release must not be cut from. Two seconds after the merge the orchestrator released it
+ * properly, which is what should have happened alone.
+ */
+describe('the plan scope rules', () => {
+  const planned = () => buildAgentTaskPrompt('Checkout service', jiraTask, { planMode: true });
+
+  it('tells a planning run that merging and releasing are the tool’s, not a step’s', () => {
+    const prompt = planned();
+    expect(prompt).toMatch(/Merging or releasing/);
+    expect(prompt).toMatch(/orchestrator merges this branch/);
+    expect(prompt).toMatch(/Plan the work; the tool ships it/);
+  });
+
+  it('tells it that prose sections are not steps, while verification still is', () => {
+    const prompt = planned();
+    expect(prompt).toMatch(/Sections that are not work/);
+    expect(prompt).toMatch(/Verification IS work and does belong/);
+  });
+
+  it('says none of it to an ordinary run — only a planning turn writes steps', () => {
+    const prompt = buildAgentTaskPrompt('Checkout service', jiraTask, { branch: 'orch/abc' });
+    expect(prompt).not.toMatch(/Merging or releasing/);
+    expect(prompt).not.toMatch(/Sections that are not work/);
+    expect(prompt).not.toContain('\n\n\n');
+  });
+
+  it('repeats the rules for a re-plan, where finished work most invites a release step', () => {
+    const prompt = buildReplanPrompt('Fix the export dialog', ['Add the guard'], {
+      slotsLeft: 3,
+    });
+    expect(prompt).toMatch(/Merging or releasing/);
+    expect(prompt).toMatch(/Sections that are not work/);
     expect(prompt).not.toContain('\n\n\n');
   });
 });
