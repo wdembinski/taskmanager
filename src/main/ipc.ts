@@ -15,6 +15,7 @@ import {
   ipcMain,
   safeStorage,
   screen,
+  shell,
   type BrowserWindow,
   type Rectangle,
 } from 'electron';
@@ -71,6 +72,14 @@ import {
 } from './gitlab/gitlabSync';
 import { mrIsSettled, type MergeRequest } from '@shared/mergeRequest';
 import { canLink, isLinkGate, type LinkResult, type TaskLink } from '@shared/taskChain';
+import type { TaskAttachment } from '@shared/attachments';
+import {
+  addAttachments,
+  deleteAttachmentFile,
+  deleteTaskAttachments,
+  sweepOrphanAttachments,
+} from './attachments';
+import { attachmentFile } from './attachmentPaths';
 import type { ServiceSyncState, SyncServiceId, SyncState } from '@shared/sync';
 import { hostFor, listWslDistros, readinessFor, statusForTargets } from './exec';
 import { gitPreflight } from './git';
@@ -161,8 +170,22 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // The engine pushes normalized session events to the UI over 'session:event'.
   const sessions = new SessionManager((envelope) => send('session:event', envelope));
 
-  // One SQLite file per user, under Electron's managed userData directory.
-  const store = createStore(join(app.getPath('userData'), 'orchestrator.db'));
+  // One SQLite file per user, under Electron's managed userData directory. The same
+  // directory holds the attachment bytes (`attachments/<taskId>/<name>`), which is why the
+  // root is hoisted into a name rather than joined inline as it was.
+  const userData = app.getPath('userData');
+  const store = createStore(join(userData, 'orchestrator.db'));
+
+  // Attachment rows cascade away with a deleted task; their FILES cannot — no cascade
+  // reaches outside the database. Deleting a PROJECT is the path that proves one handler
+  // is not enough: it takes its tasks with it (store.ts:446) without `task:delete` ever
+  // running, and so does a crash between the copy and the insert. One pass at boot removes
+  // every attachment directory no row names, which covers both, plus whatever later path
+  // forgets. Not awaited — nothing that follows depends on it, and a slow disk must not
+  // hold the window up.
+  void sweepOrphanAttachments(store, userData).catch((e) =>
+    logMain('Sweeping orphaned attachments failed', e),
+  );
 
   // ---------------------------------------------------------------------------
   // Window geometry.
@@ -659,9 +682,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       throw new Error('Stop the task before deleting it.');
     }
     // Deleting a card takes its steps with it, so a live step blocks the delete too.
-    if (
-      store.getSubtasks(taskId).some((s) => s.status === 'running' || s.status === 'waiting-input')
-    ) {
+    // Read once and kept: the same ids name the attachment directories to remove below,
+    // and after `deleteTask` there is nothing left to ask.
+    const steps = store.getSubtasks(taskId);
+    if (steps.some((s) => s.status === 'running' || s.status === 'waiting-input')) {
       throw new Error('Stop the running step before deleting this task.');
     }
     store.deleteTask(taskId);
@@ -673,6 +697,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // arrow left drawn to a card that is gone is the exact failure the cascade prevents
     // in the database and this prevents on screen.
     pushChainLinks();
+    // Its attachment rows went the same way, and the same argument applies to the chips.
+    pushAttachments();
+    // The BYTES did not: no cascade reaches outside the database. After `deleteTask` has
+    // returned, never inside its transaction — a throw in there would roll the row
+    // deletion back and leave a card half-deleted, which is worse than either half alone.
+    // `deleteTaskAttachments` never throws for that reason; what it cannot unlink, the
+    // next boot's sweep will.
+    await deleteTaskAttachments(userData, [taskId, ...steps.map((s) => s.id)]);
   });
   handle('task:subtasks', async (parentTaskId) => store.getSubtasks(parentTaskId));
   handle('task:addSubtask', async (parentTaskId, input) => {
@@ -1496,6 +1528,70 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // is holding everything" is something to tell the human, not an error — the same reasoning
   // as `LinkResult`.
   handle('chain:releaseNow', async (taskId) => scheduler.releaseChainNow(taskId));
+  // ---------------------------------------------------------------------------
+
+  // --- Attachments -----------------------------------------------------------
+  /**
+   * Push the whole attachment list at the UI. Returns it, so handlers can reply with it.
+   *
+   * The whole list rather than one task's, exactly as `pushChainLinks` does and for the
+   * reason `attachment:changed` gives: a card's chips and a step's chips are two views of
+   * one list, and the pane that changed it is not the only screen showing it.
+   */
+  function pushAttachments(): TaskAttachment[] {
+    const attachments = store.listAttachments();
+    send('attachment:changed', attachments);
+    return attachments;
+  }
+
+  handle('attachment:list', async () => store.listAttachments());
+
+  handle('attachment:pick', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Attach files',
+      properties: ['openFile', 'multiSelections'],
+    });
+    return result.canceled ? [] : result.filePaths;
+  });
+
+  handle('attachment:add', async (taskId, paths) => {
+    // The foreign key would refuse an unknown task anyway, but silently — and by then the
+    // bytes are already copied into a directory nothing will ever name.
+    if (!store.getTask(taskId)) throw new Error('Task not found.');
+    const { failed } = await addAttachments(store, userData, taskId, paths);
+    // Push what landed BEFORE complaining about what did not. Some of a multi-file pick
+    // can succeed, and those chips are not the human's to reconcile against an error
+    // message: they see four files appear and one sentence about the fifth.
+    const all = pushAttachments();
+    if (failed.length > 0) {
+      const detail = failed.map((f) => `${basename(f.path)} (${f.reason})`).join(', ');
+      throw new Error(`Could not attach ${detail}.`);
+    }
+    return all;
+  });
+
+  handle('attachment:remove', async (id) => {
+    // The row first, the bytes second — the order `task:delete` uses, and for the same
+    // reason. A file removed under a row that survived is a chip pointing at nothing; a
+    // row removed above a file that survived is bytes the boot sweep collects.
+    const removed = store.deleteAttachment(id);
+    if (removed) await deleteAttachmentFile(userData, removed);
+    return pushAttachments();
+  });
+
+  handle('attachment:open', async (id) => {
+    const attachment = store.getAttachment(id);
+    // By id, so the only path that reaches the filesystem is one main built out of a row
+    // that exists. Nothing the renderer typed gets here.
+    if (!attachment) throw new Error('That attachment is no longer there.');
+    // `shell.openPath` hands back the OS's complaint, or '' when it opened — which is why
+    // the channel resolves to a string-or-null rather than rejecting. NOT `openExternal`
+    // (index.ts:83): that one is for URLs, and would push a local path at the browser.
+    const failure = await shell.openPath(
+      attachmentFile(userData, attachment.taskId, attachment.name),
+    );
+    return failure || null;
+  });
   // ---------------------------------------------------------------------------
 
   /**

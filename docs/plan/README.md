@@ -1598,6 +1598,52 @@ attachments *and* its steps' with it, a repeated name is refused in either case,
 task is refused by the foreign key, `deleteAttachment` hands the row back so the bytes can be
 unlinked, and a plan re-sync keeps what it kept and drops what it dropped.
 
+### Copying the bytes into app data
+
+Two modules, split along the line that decides what can be tested. `attachmentPaths.ts` is
+the arithmetic — `attachmentsRoot`/`attachmentDir`/`attachmentFile` and `mimeForExtension`,
+taking the root as an argument the way `createStore(dbPath)` does, so a plain `vitest` run
+can hold it to its rules without Electron, a store or a disk. `attachments.ts` is the `fs`:
+`mkdir -p`, `copyFile`, `stat` for the size, the unlinks, and the sweep.
+
+**Both path segments go through `attachmentName` on the way in**, even though every caller
+today holds a name the store already sanitized. Not distrust of the callers: it makes "an
+attachment cannot escape its task's directory" a property of the module rather than of
+every call site, and `attachmentName` is idempotent on a name it produced (and on a UUID),
+so no honest path changes while `..`, `C:\Windows\win.ini` and `/etc/passwd` all collapse to
+one segment inside the directory above. That is what `attachmentPaths.test.ts` pins.
+
+Per file, **the bytes are copied first and the row written second**. The reverse leaves a
+chip pointing at nothing if the copy then fails; this way the worst case is bytes nobody
+named, which is exactly what the sweep exists to remove. A file that cannot be attached is
+*collected*, not thrown — a pick of five where the fourth is locked attaches four and says
+so — and the handler pushes what landed before reporting what did not.
+
+**Deletion is in three places, because one is not enough.** The rows cascade for free off
+the foreign key; the bytes never do, since no cascade reaches outside the database.
+`attachment:remove` unlinks the one file. `task:delete` removes the card's directory and
+its steps' — *after* `store.deleteTask` returns, never inside the transaction, where a
+failed unlink would roll the row deletion back and leave a card half-deleted; the step ids
+are the ones already read to check for a running step. And the **boot sweep is the real
+backstop**: deleting a PROJECT cascades its tasks (`store.ts:446`) without `task:delete`
+ever running, and so does a crash between the copy and the insert. One pass over
+`attachments/*` removes every directory no row names — which is "not a live task id", one
+notch tighter, since a live task with no rows has nothing worth keeping either. The rows are
+re-read per candidate rather than snapshotted, so a file attached while the sweep walks
+cannot be caught by a stale list.
+
+`attachment:open` is the codebase's first `shell.openPath` — it answers with the OS's
+complaint or `''` when it opened, which is why the channel resolves to a string-or-null
+instead of rejecting. Not `openExternal` (`index.ts:83`): that one is for URLs and would
+hand a local path to the browser.
+
+Beyond `pnpm typecheck` / `test` (1478) / `build`, the copy itself was driven headlessly
+(esbuild bundle, `ELECTRON_RUN_AS_NODE=1 electron`) against a real store and a scratch
+root — 24 checks, all green. The one that matters most: two files both called `shot.png`,
+picked in one gesture, land as `shot.png` and `shot-2.png` with their own bytes intact.
+Also confirmed there: a step keeps its own directory beside its parent's, a project delete
+leaves bytes the sweep then collects, and a second sweep finds nothing to do.
+
 ### Deliverables
 
 - [x] **1 — The shape of the design.** This entry: the four decisions above, each named
@@ -1613,10 +1659,12 @@ unlinked, and a plan re-sync keeps what it kept and drops what it dropped.
       index, and the store methods over them. See above: the name/ref rules ship with it,
       because the store's `UNIQUE (taskId, name)` is only unambiguous if one policy decides
       what a name is; and `syncTasksFromPlan` restores attachments as it does links.
-- [ ] **4 — Copy the bytes into app data.** Main picks the files, copies them under
+- [x] **4 — Copy the bytes into app data.** Main picks the files, copies them under
       `userData/attachments/<taskId>/`, and writes the row. A copy, not a reference: the
       file the human picked can be moved, renamed or deleted the minute after they picked
       it, and a brief that points at a file that is gone is worse than one that never had it.
+      See above: the pure arithmetic is split from the `fs` so the traversal promise can be
+      unit-tested, and deletion lands in three places because the bytes do not cascade.
 - [ ] **5 — Serve attachment images over a protocol.** The `vipper-attachment` scheme,
       registered privileged before the app is ready, resolving `a/<id>` through the store.
 - [ ] **6 — Attach from the card details.** The pane grows the list, the picker, the
