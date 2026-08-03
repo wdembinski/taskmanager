@@ -1970,6 +1970,73 @@ in between, every save of a plan file would have deleted that project's attachme
 orphaned the bytes. Auditing the citations *before* building on them is the whole argument
 for step 2 existing, and this is the case that paid for it.
 
+### Verification
+
+The four gates, on the whole worktree: `pnpm format` (a fixpoint — a second run changes
+nothing), `pnpm typecheck`, `pnpm test` (**1506 passed, 2 skipped, 80 files**) and
+`pnpm build`.
+
+`pnpm format` also reflowed **47 files this phase never touched**. That is not drift this
+phase introduced: the repository had fallen out of step with its own `printWidth: 100`, and
+`format` globs all of `src/**` rather than the diff, so the very first gate any step ran was
+always going to surface it. Confirmed as pure reflow before committing — every one of the 47
+was byte-identical to Prettier's output for its own `HEAD` version — and committed
+separately, so the phase's diff stays readable.
+
+**What ran headlessly, and why it had to.** Everything pure is already in `vitest`
+(`attachments.test.ts`, `attachmentPaths.test.ts`). What `vitest` cannot reach is anything
+that needs a real `better-sqlite3`, because the addon only loads against Electron's ABI. So
+`scripts/verify-attachments.mjs` bundles the modules with Vite (stubbing `electron`, whose
+`protocol` and `app` are never called on this path) and runs them under
+`ELECTRON_RUN_AS_NODE`, against scratch databases in the temp directory. **42 checks, all
+passing**, over the six things the design claims and no test could hold it to:
+
+- the table on a **fresh** database — its seven columns, `mimeType` the only nullable
+  non-key one, the foreign key onto `tasks` as `ON DELETE CASCADE`, `COLLATE NOCASE`, and
+  `UNIQUE (taskId, name)` as one index with `taskId` leftmost (which is the claim that "a
+  separate index on `taskId` would be dead weight" rests on);
+- the table on a **v0.57.0** database — written by v0.57.0's own `createStore`, extracted
+  with `git archive`, because a schema built by today's code minus one table would prove
+  nothing about the migration. The old project and card read back intact afterwards;
+- `DELETE FROM tasks` taking the attachment rows with it, a repeated name refused
+  case-insensitively, an unknown task refused by the foreign key, and — the path
+  `task:delete` never sees — a deleted **project** cascading through its tasks to their
+  attachments;
+- a card delete removing the **files**, its steps' included, and the dedupe landing
+  `shot.png` and `shot-2.png` with the extension intact and the bytes copied whole;
+- the boot sweep removing both kinds of orphan (a directory whose rows cascaded away, and a
+  copy that never got its row) while leaving a live one alone, and a profile that never
+  attached anything sweeping to zero without creating the directory;
+- `syncTasksFromPlan` carrying attachments across its delete-and-reinsert **ids and all**,
+  so a `vipper-attachment://a/<id>` an open pane is showing stays valid — and a task the
+  plan dropped losing its rows to a genuine cascade, its bytes left for the sweep.
+
+Three traps, recorded so the next person does not re-find them: `readModuleAbi` takes the
+addon's **bytes**, not its path; `tar` reads a leading `C:\` as a remote host, so the archive
+and the extraction must both be relative; and the store mints a built-in **Personal** project
+on every open, so "one project" is never the right thing to count.
+
+Statically confirmed, since the runtime half cannot be: `vipper-attachment` is a valid CSP
+`scheme-source` (`ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`), the widened `img-src` survives
+into `out/renderer/index.html`, and `registerSchemesAsPrivileged` is in the built main bundle
+at module scope. That the browser then *matches* it is not something a grep can say.
+
+**Owed to a human — the app was never launched** ([`RELEASE.md`](../../RELEASE.md) rule 6:
+there is no single-instance lock, and a second instance killed a live session on
+2026-08-02). These are stated as owed, not as passing:
+
+1. **The protocol actually serving bytes** — the privileged-scheme timing, whether Chromium
+   matches `img-src vipper-attachment:` at request time, and whether the thumbnail renders.
+   A CSP refusal is silent apart from a console error. Fall back to step 5's note if not.
+2. **Drag-and-drop end to end** — that `webUtils.getPathForFile` returns a real path across
+   the bridge, that the drop zone wins over the board's card and chain drags, and that a
+   stray drop no longer navigates the frameless window away.
+3. **Every visual** — chip layout, thumbnail size, the strip inside `FoldToggle`, and how it
+   all sits in the narrow Add-task dialog.
+4. **`shell.openPath`** for an extension with no registered handler, and on a UNC profile.
+5. **The WSL leg** — that a real `/mnt/c/.../AppData/Roaming/...` legend path is readable
+   from inside the distro during an actual run.
+
 ### Deliverables
 
 - [x] **1 — The shape of the design.** This entry: the four decisions above, each named
@@ -2019,8 +2086,12 @@ for step 2 existing, and this is the case that paid for it.
       above: `3 → 4 → {5, 6} → 7 → 8 → 9`, written as a partial order because the protocol and
       the pane are genuinely independent — every chip, pick, drop and citation works with no
       scheme registered, and only the inline thumbnail depends on step 5.
-- [ ] **11 — Verification.** `pnpm format`, `pnpm typecheck`, `pnpm test`, `pnpm build`,
-      plus whatever can be driven headlessly — never by launching the app on this machine.
+- [x] **11 — Verification.** All four gates green, and the store, the cascade, the bytes,
+      the sweep and the plan re-sync driven headlessly under `ELECTRON_RUN_AS_NODE` against
+      scratch databases — 42 checks in `scripts/verify-attachments.mjs`, including a real
+      v0.57.0 database written by v0.57.0's own code. See above: the app was never launched,
+      so the protocol serving bytes, drag-and-drop, every visual, `shell.openPath` and the
+      WSL leg are **owed to a human** rather than claimed.
 - [ ] **12 — Release.**
 
 ### Done when
