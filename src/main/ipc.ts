@@ -145,6 +145,17 @@ function ensureAligned(store: Store, project: Project, hasMarkers: boolean): Pro
   return { ...project, planAligned: true };
 }
 
+/**
+ * How long an archived card is kept before the boot sweep destroys it for good.
+ *
+ * Not a setting, and not `JiraSettings.doneRetentionDays` either — that one decides how long a
+ * FINISHED card stays visible in the Done column, which is a matter of taste. This is the point
+ * at which the app stops holding a row nobody has looked at in half a year, and the only tuning
+ * anybody wants on it is "longer".
+ */
+const ARCHIVE_RETENTION_DAYS = 180;
+const ARCHIVE_RETENTION_MS = ARCHIVE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+
 /** What registerIpcHandlers hands back so the app can shut resources down cleanly. */
 export interface Engine {
   sessions: SessionManager;
@@ -189,6 +200,21 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   void sweepOrphanAttachments(store, userData).catch((e) =>
     logMain('Sweeping orphaned attachments failed', e),
   );
+
+  // A card taken off the board keeps its row forever unless something eventually lets go, and
+  // "forever" is the wrong answer for a board that removes cards every sync. So one pass at
+  // boot, beside the attachment sweep above: anything archived longer ago than
+  // ARCHIVE_RETENTION_MS is destroyed exactly as `task:delete` would destroy it.
+  //
+  // Half a year, and generous on purpose. This is the one place the app throws away work
+  // nobody asked it to throw away, so the number has to be long past the point where somebody
+  // might still say "wait, where did that go" — and an archived card costs a row, not a
+  // column. Logged rather than silent for the same reason.
+  {
+    const removed = store.pruneArchivedBefore(Date.now() - ARCHIVE_RETENTION_MS);
+    if (removed > 0)
+      logMain(`Pruned ${removed} card(s) archived over ${ARCHIVE_RETENTION_DAYS} days ago`);
+  }
 
   // Serve `vipper-attachment://a/<id>` — how the window shows an image it is never told
   // the path of. Here rather than in `index.ts` beside the scheme's privileges, because
@@ -1180,7 +1206,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     }
   };
 
-  /** The board's keys and the cards behind them, for matching MRs to tasks. */
+  /**
+   * The board's keys and the cards behind them, for matching MRs to tasks.
+   *
+   * The archived-excluding read, deliberately: an MR is matched to a card so the card can show
+   * it, and a card that is off the board has nowhere to show anything. Including archived rows
+   * here would have a removed card silently claim a live merge request, which then appears
+   * nowhere at all — worse than the orphan an unmatched MR already handles.
+   */
   const boardKeyIndex = (): { knownKeys: string[]; taskIdByKey: Map<string, string> } => {
     const taskIdByKey = new Map<string, string>();
     for (const task of store.getPersonalTasks()) {
@@ -1543,6 +1576,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     return task;
   });
 
+  // What the board asks for when it draws itself — so, by definition, the cards on it.
   handle('board:tasks', async () => store.getPersonalTasks());
 
   // --- The chain of execution ------------------------------------------------
@@ -1774,7 +1808,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     const jql = jira.currentSprintOnly ? withCurrentSprint(jira.jql) : jira.jql;
     const extraFields = [epicField, sprintField].filter((f): f is string => f !== null);
     const issues = await client.search(jql, 100, extraFields);
-    const personal = store.getPersonalTasks();
+    // The ONE read that includes archived cards (see `Store.getPersonalTasksForSync`). The
+    // reconciler is deciding what each of JIRA's issues corresponds to, and a card that was
+    // taken off the board still corresponds to its ticket — invisible to it, the sync would
+    // mirror that ticket back in as a brand-new card and lose everything the old row carried.
+    const personalForSync = store.getPersonalTasksForSync();
 
     /**
      * Re-read the cards the board is keeping past the query, by key.
@@ -1788,7 +1826,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
      * Failure leaves `rechecked: null`, which the reconciler reads as "not asked" and keeps
      * every retained card. A network blip must not empty the Done column.
      */
-    const keys = retainedKeys(personal, issues);
+    const keys = retainedKeys(personalForSync, issues);
     let rechecked: JiraIssue[] | null = keys.length ? null : [];
     if (keys.length) {
       rechecked = await client
@@ -1800,7 +1838,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     }
 
     const epicNames = await fetchEpicNames(client, [...issues, ...(rechecked ?? [])], epicField);
-    const { upserts, deleteIds } = reconcileJiraTasks(personal, issues, {
+    const { upserts, deleteIds } = reconcileJiraTasks(personalForSync, issues, {
       baseUrl: jira.baseUrl,
       overrides: jira.statusCategoryOverrides,
       learned: jira.learnedStatusColumns,

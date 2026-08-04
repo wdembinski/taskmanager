@@ -560,6 +560,28 @@ export interface Task {
    * about a card that the tracker knows nothing about, carried across every sync.
    */
   retainedSince?: number | null;
+  /**
+   * Epoch ms this card was **taken off the board**, or null while it is on it.
+   *
+   * A card that stops matching the query leaves the BOARD, not the database. The row carries
+   * things JIRA has never heard of and can never give back — the timeline you wrote on it, the
+   * files you attached, the arrows drawn to and from it, the branch its agent ran on, the
+   * transcript of that run — so a query that stops mentioning a ticket is not permission to
+   * destroy any of that. It is only evidence about what belongs in the columns.
+   *
+   * So the sync archives instead of deleting: the row stays whole and every read that draws the
+   * board (`getPersonalTasks`) skips it. Restoring it is one write of `null`, and the card comes
+   * back with the same id and everything still hanging off it. `retainedSince` above is the
+   * milder version of the same idea — keep showing a finished card for a while — and this is
+   * what happens when that clock finally runs out.
+   *
+   * `task:delete` — the human saying so, in as many words — stays a real delete. Nobody else
+   * gets to.
+   *
+   * Null on every card that predates the field, which reads as "on the board": true of
+   * everything already there when the app starts.
+   */
+  archivedAt?: number | null;
   /** Epoch ms of the newest tracker comment the user has read (unread-badge marker). */
   lastReadCommentAt?: number | null;
   /** Epoch ms of the newest tracker comment seen at the last sync (drives unread). */

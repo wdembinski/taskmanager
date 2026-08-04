@@ -104,6 +104,8 @@ interface TaskRow {
   preRunStatus: string | null;
   /** When this card started being kept past the JQL. See `Task.retainedSince`. */
   retainedSince: number | null;
+  /** When this card was taken off the board, the row surviving. See `Task.archivedAt`. */
+  archivedAt: number | null;
   lastReadCommentAt: number | null;
   latestCommentAt: number | null;
   /** The project this card is filed under — what it is ABOUT. NULL when unfiled. */
@@ -173,6 +175,16 @@ export interface Store {
   setPlanAligned(id: string, aligned: boolean): void;
   /** Edit a project's name/plan/model/mode/write-back (Phase 8); returns the updated project. */
   updateProject(id: string, patch: ProjectPatch): Project | undefined;
+  /**
+   * Every task of a project, in order — **including archived ones**, deliberately.
+   *
+   * The asymmetry with `getPersonalTasks` below is the point. Archiving is a Personal-board
+   * concept: it exists because a board is a QUERY over an external tracker and the query is
+   * allowed to stop mentioning a ticket. A plan project's tasks are a QUEUE parsed from a file
+   * the human owns, where nothing external ever removes a row and the reconciler in
+   * `syncTasksFromPlan` has to see every task it already has or it would re-create it. Filtering
+   * here would mean a queue that silently skipped work.
+   */
   getTasks(projectId: string): Task[];
   getTask(id: string): Task | undefined;
   /** Patch a task's live fields (status/sessionId/external linkage); returns the updated task. */
@@ -216,8 +228,46 @@ export interface Store {
       >
     >,
   ): Task | undefined;
-  /** All tasks on the built-in Personal board (JIRA + internal ad-hoc), ordered. */
+  /**
+   * The Personal board (JIRA + internal ad-hoc), ordered — the cards that are ON it.
+   *
+   * Archived cards are excluded, and that is what makes this the safe default: every caller
+   * that draws the board, matches a merge request to a card, or counts what is in a column
+   * wants what a human can see. See `Task.archivedAt`.
+   */
   getPersonalTasks(): Task[];
+  /**
+   * The same rows **plus the archived ones** — the input to JIRA reconciliation, and nothing
+   * else.
+   *
+   * Named for its one caller rather than for what it returns, on purpose: a name like
+   * `getAllPersonalTasks` would read as a harmless superset at every call site, and the one
+   * place it is a superset SAFELY is the reconciler, which needs to recognise a ticket it has
+   * already archived instead of mirroring it in as a brand-new card. Anywhere else it means a
+   * card the human removed coming back — claiming a merge request, filling a column, answering
+   * a count. If you are reaching for this and you are not the JIRA sync, you want
+   * `getPersonalTasks`.
+   */
+  getPersonalTasksForSync(): Task[];
+  /** Archived cards, most recently archived first — what a "removed" list is drawn from. */
+  getArchivedTasks(): Task[];
+  /**
+   * Take a card off the board at `at`, keeping the row and everything hanging off it: its
+   * timeline, its attachments, its transcript, and the chain arrows at both ends. Its steps go
+   * with it — a step is only ever shown under its parent.
+   *
+   * Returns the archived card, or undefined for an unknown id, for a card that is already
+   * archived, or for a STEP: a step is not on the board, so it cannot leave it on its own.
+   */
+  archiveTask(id: string, at: number): Task | undefined;
+  /** Put one back, steps and all, with the same id it left under. Undefined if unknown. */
+  unarchiveTask(id: string): Task | undefined;
+  /**
+   * Destroy every card archived before `cutoff`, exactly as `deleteTask` would — the retention
+   * backstop, so a board that archives forever does not grow forever. Returns how many cards
+   * went (steps are taken with their card and are not counted separately).
+   */
+  pruneArchivedBefore(cutoff: number): number;
   /** Insert a new JIRA-sourced task, or update the existing one with the same key. */
   upsertJiraTask(task: Task): Task;
   /**
@@ -504,6 +554,7 @@ export function createStore(dbPath: string): Store {
       preBlockStatus         TEXT,
       preRunStatus           TEXT,
       retainedSince          INTEGER,
+      archivedAt             INTEGER,
       lastReadCommentAt      INTEGER,
       latestCommentAt        INTEGER,
       projectTagId           TEXT,
@@ -885,6 +936,10 @@ export function createStore(dbPath: string): Store {
     // this card", which follows its project and, through it, the app-wide setting — so an
     // upgrade merges exactly as often as the install did the day before.
     ['autoIntegrate', 'INTEGER'],
+    // When this card was taken off the board without being destroyed. NULL on every
+    // pre-existing row = "it is on the board", which is true of everything already there —
+    // so an upgrade hides nothing, and the column stays empty until something archives.
+    ['archivedAt', 'INTEGER'],
   ] as Array<[string, string]>) {
     if (!taskColumns.some((c) => c.name === name)) {
       db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
@@ -988,6 +1043,20 @@ export function createStore(dbPath: string): Store {
   const updateWriteBack = db.prepare(`UPDATE projects SET writeBackPlan = ? WHERE id = ?`);
   const updatePlanAligned = db.prepare(`UPDATE projects SET planAligned = ? WHERE id = ?`);
   const selectTasks = db.prepare(`SELECT * FROM tasks WHERE projectId = ? ORDER BY "order"`);
+  // The Personal board's own reads. Three statements rather than one `selectTasks` filtered
+  // in JS: the board read is the hottest query in the app (every sync, every card edit and
+  // every window that comes back pushes the whole board), so `archivedAt IS NULL` belongs in
+  // SQLite where the row never has to be built at all.
+  //
+  // `selectTasks` above is deliberately NOT filtered — see `getTasks` for why archiving is a
+  // board concept and a plan project's queue must keep seeing every row it has.
+  const selectBoardTasks = db.prepare(
+    `SELECT * FROM tasks WHERE projectId = ? AND archivedAt IS NULL ORDER BY "order"`,
+  );
+  const selectArchivedBoardTasks = db.prepare(
+    `SELECT * FROM tasks WHERE projectId = ? AND archivedAt IS NOT NULL
+     ORDER BY archivedAt DESC, "order"`,
+  );
   const selectTask = db.prepare(`SELECT * FROM tasks WHERE id = ?`);
   const deleteTasks = db.prepare(`DELETE FROM tasks WHERE projectId = ?`);
   const insertTask = db.prepare<[TaskRow]>(
@@ -997,7 +1066,7 @@ export function createStore(dbPath: string): Store {
         externalSource, externalKey, externalId, externalUrl, externalStatus, externalStatusCategory,
         externalPriority, externalType, externalLabel, externalParentKey, externalEpicName, externalSprint,
         externalDescription,
-        preBlockStatus, preRunStatus, retainedSince, lastReadCommentAt, latestCommentAt,
+        preBlockStatus, preRunStatus, retainedSince, archivedAt, lastReadCommentAt, latestCommentAt,
         projectTagId, agentProjectId, agentMode, agentModel,
         agentPlan, agentBranch, planRound, landedAt, autoRelease, autoIntegrate)
      VALUES
@@ -1006,7 +1075,7 @@ export function createStore(dbPath: string): Store {
         @externalSource, @externalKey, @externalId, @externalUrl, @externalStatus, @externalStatusCategory,
         @externalPriority, @externalType, @externalLabel, @externalParentKey, @externalEpicName, @externalSprint,
         @externalDescription,
-        @preBlockStatus, @preRunStatus, @retainedSince, @lastReadCommentAt, @latestCommentAt,
+        @preBlockStatus, @preRunStatus, @retainedSince, @archivedAt, @lastReadCommentAt, @latestCommentAt,
         -- The filing column was added after this INSERT was written and only ever set by
         -- an UPDATE, so a card created already filed (the Add-task dialog's Project
         -- picker) used to lose its project between the form and the row.
@@ -1014,6 +1083,26 @@ export function createStore(dbPath: string): Store {
         @agentPlan, @agentBranch, @planRound, @landedAt, @autoRelease, @autoIntegrate)`,
   );
   const deleteTask = db.prepare(`DELETE FROM tasks WHERE id = ?`);
+  // Archiving is one column, written by id. Both statements take the card AND its steps in
+  // one go (`parentTaskId = @id`): a step has no board presence of its own — the board hangs
+  // it under its parent — so a step left behind by an archived card is a row nothing can
+  // reach and nothing can restore.
+  const archiveTaskStmt = db.prepare(
+    `UPDATE tasks SET archivedAt = @at WHERE (id = @id OR parentTaskId = @id) AND archivedAt IS NULL`,
+  );
+  const unarchiveTaskStmt = db.prepare(
+    `UPDATE tasks SET archivedAt = NULL WHERE id = @id OR parentTaskId = @id`,
+  );
+  // The ids the retention sweep is allowed to destroy. Selected rather than deleted in one
+  // statement so each goes out through the same `deleteTaskDeep` an explicit delete uses, and
+  // takes its timeline and transcript with it — a bare DELETE would strand both.
+  //
+  // Cards only (`parentTaskId IS NULL`), because `deleteTaskDeep` already takes a card's steps
+  // with it and a step is only ever archived by its own card's cascade — counting the steps
+  // would report four removals for one card and then delete three rows that were already gone.
+  const selectArchivedBefore = db.prepare(
+    `SELECT id FROM tasks WHERE archivedAt IS NOT NULL AND archivedAt < ? AND parentTaskId IS NULL`,
+  );
   const selectSubtasks = db.prepare(
     `SELECT * FROM tasks WHERE parentTaskId = ? ORDER BY "order", rowid`,
   );
@@ -1517,6 +1606,7 @@ export function createStore(dbPath: string): Store {
       preBlockStatus: task.preBlockStatus ?? null,
       preRunStatus: task.preRunStatus ?? null,
       retainedSince: task.retainedSince ?? null,
+      archivedAt: task.archivedAt ?? null,
       lastReadCommentAt: task.lastReadCommentAt ?? null,
       latestCommentAt: task.latestCommentAt ?? null,
       projectTagId: task.projectTagId ?? null,
@@ -1578,6 +1668,7 @@ export function createStore(dbPath: string): Store {
       preBlockStatus: (r.preBlockStatus as Task['preBlockStatus']) ?? null,
       preRunStatus: (r.preRunStatus as Task['preRunStatus']) ?? null,
       retainedSince: r.retainedSince ?? null,
+      archivedAt: r.archivedAt ?? null,
       lastReadCommentAt: r.lastReadCommentAt,
       latestCommentAt: r.latestCommentAt,
       projectTagId: r.projectTagId,
@@ -1610,6 +1701,25 @@ export function createStore(dbPath: string): Store {
     const row = selectTask.get(id) as TaskRow | undefined;
     return row ? rowToTask(row) : undefined;
   }
+
+  /**
+   * Destroy a task, its steps, and their timelines and transcripts, in one transaction.
+   *
+   * Shared by `deleteTask` (the human said so) and `pruneArchivedBefore` (the retention clock
+   * ran out), so the two cannot drift into deleting different amounts of a card. The plan-sync
+   * path deliberately does NOT come through here — it replaces rows wholesale and must leave
+   * plan history alone.
+   */
+  const deleteTaskDeep = db.transaction((taskId: string) => {
+    // Deleting a card takes its steps with it — an orphaned step has no board column of its
+    // own and would otherwise be unreachable in the UI.
+    const children = (selectSubtaskIds.all(taskId) as Array<{ id: string }>).map((r) => r.id);
+    for (const childId of [...children, taskId]) {
+      deleteActivityForTask.run(childId);
+      deleteEventsForTask.run(childId);
+      deleteTask.run(childId);
+    }
+  });
 
   return {
     addProject(input) {
@@ -1846,7 +1956,37 @@ export function createStore(dbPath: string): Store {
     },
 
     getPersonalTasks() {
+      return (selectBoardTasks.all(PERSONAL_PROJECT_ID) as TaskRow[]).map(rowToTask);
+    },
+
+    getPersonalTasksForSync() {
       return getTasks(PERSONAL_PROJECT_ID);
+    },
+
+    getArchivedTasks() {
+      return (selectArchivedBoardTasks.all(PERSONAL_PROJECT_ID) as TaskRow[]).map(rowToTask);
+    },
+
+    archiveTask(id, at) {
+      const task = getTask(id);
+      // A step is not on the board — it is drawn under its parent — so it has no independent
+      // way off it. Archiving one would leave a row `getArchivedTasks` shows with no card to
+      // restore it through, and which the retention sweep (cards only) would never collect.
+      if (!task || task.parentTaskId || task.archivedAt != null) return undefined;
+      archiveTaskStmt.run({ id, at });
+      return getTask(id);
+    },
+
+    unarchiveTask(id) {
+      if (!getTask(id)) return undefined;
+      unarchiveTaskStmt.run({ id });
+      return getTask(id);
+    },
+
+    pruneArchivedBefore(cutoff) {
+      const ids = (selectArchivedBefore.all(cutoff) as Array<{ id: string }>).map((r) => r.id);
+      for (const id of ids) deleteTaskDeep(id);
+      return ids.length;
     },
 
     upsertJiraTask(task) {
@@ -1859,6 +1999,13 @@ export function createStore(dbPath: string): Store {
         // re-sync refreshes tracker fields only and must never clear a human's agent
         // assignment, the branch it runs on, the plan that assignment produced, the steps
         // derived from it, or what they last said about where the card is.
+        //
+        // `archivedAt` is absent for the same reason and one sharper still: whether a card is
+        // on the board is not a tracker field at all — JIRA has never heard of it, so a row
+        // built from an issue carries `archivedAt: null` whether or not the card is archived,
+        // and listing it here would mean any sync that so much as touched a removed card put
+        // it silently back on the board. Archiving and restoring go through `archiveTask` /
+        // `unarchiveTask`, which write that column and nothing else.
         db.prepare(
           `UPDATE tasks SET
              phase = @phase, title = @title, status = @status, "order" = @order, source = @source,
@@ -1959,19 +2106,11 @@ export function createStore(dbPath: string): Store {
     },
 
     deleteTask(id) {
-      // Explicit delete (ad-hoc task): also drop its timeline + transcript. (The
-      // plan-sync path never calls this, so plan history is unaffected.)
-      // Deleting a card takes its steps with it — an orphaned step has no board
-      // column of its own and would otherwise be unreachable in the UI.
-      const clear = db.transaction((taskId: string) => {
-        const children = (selectSubtaskIds.all(taskId) as Array<{ id: string }>).map((r) => r.id);
-        for (const childId of [...children, taskId]) {
-          deleteActivityForTask.run(childId);
-          deleteEventsForTask.run(childId);
-          deleteTask.run(childId);
-        }
-      });
-      clear(id);
+      // Explicit delete (the human said so): also drops its timeline + transcript, and its
+      // steps. The one path that is still a real delete — see `Task.archivedAt` for why a
+      // sync no longer takes this one. (The plan-sync path never calls it either, so plan
+      // history is unaffected.)
+      deleteTaskDeep(id);
     },
 
     syncTasksFromPlan(projectId, parsed) {
