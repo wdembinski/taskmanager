@@ -12,6 +12,17 @@
  * four with it. That difference IS the feature; asserting it against a mock would assert
  * nothing. And `better-sqlite3` is built for Electron's ABI, not the Node that runs the suite.
  *
+ * Section 8 closes the loop the other seven leave open. They call `archiveTask` and
+ * `unarchiveTask` by hand, which proves the store keeps its promises but says nothing about
+ * whether the SYNC ever keeps them — so the last section drives the round trip through the
+ * REAL `reconcileJiraTasks`: a JIRA card carrying a step, a timeline, a file and an arrow,
+ * taken off the board by a decision the reconciler made, absent from `board:tasks`, then
+ * returned by the query and put back under the same id with all of it still attached. The
+ * decision half of that is unit-tested end to end in `src/main/jira/jiraSync.integration.test.ts`
+ * (300 issues over a mocked, paged `fetch`); what only a real database can show is that the row
+ * survives it, and that exactly ONE card exists for the ticket afterwards rather than the old
+ * one plus a fresh copy.
+ *
  * The app is NEVER launched (RELEASE.md rule 6 — there is no single-instance lock, and a
  * second instance killed a live session on 2026-08-02). This drives `store.ts` directly under
  * `ELECTRON_RUN_AS_NODE`, against scratch databases under `.verify-jira-archive/`. It never
@@ -220,6 +231,9 @@ const SCENARIOS = String.raw`
 import { mkdirSync, rmSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import { createStore } from '__REPO__/src/main/store';
+// The real reconciler, for section 8 — the round trip has to be driven by the thing that
+// really decides, or it would only prove that this script can call archiveTask.
+import { issueToBoardTask, reconcileJiraTasks } from '__REPO__/src/main/jira/jiraSync';
 
 let failures = 0;
 function check(label, condition, detail) {
@@ -573,6 +587,138 @@ check(
 );
 check('and there is now nothing archived at all', store.getArchivedTasks().length === 0);
 check('while the board still has every card that was on it', store.getPersonalTasks().length === liveBefore);
+
+// ---------------------------------------------------------------------------
+section('8. The whole round trip, driven by the sync rather than by hand');
+
+// Everything above calls archiveTask and unarchiveTask directly, which proves the store keeps
+// its promises but says nothing about whether the SYNC ever keeps them. This is the trip the
+// user actually takes: a real JIRA card, carrying a step, a timeline, a file and an arrow,
+// taken off the board by a decision reconcileJiraTasks made, gone from board:tasks, and then
+// put back — under the same id, with all of it still attached — because the query returned it
+// again. The reconciler is the real one; only the network is absent.
+
+const TICKET = 'ROUND-42';
+const ticket = {
+  id: '90210',
+  key: TICKET,
+  fields: {
+    summary: 'the card that goes round the whole loop',
+    status: { name: 'In Progress', statusCategory: { key: 'indeterminate', name: 'In Progress' } },
+    priority: { name: 'High' },
+    project: { key: 'ROUND', name: 'Round Trip' },
+  },
+};
+const jiraOpts = { baseUrl: 'https://jira.example.com' };
+const SYNC_AT = 9_000_000;
+
+// The card exactly as the app really writes one — through issueToBoardTask, not a hand-built
+// lookalike. It is the "Add task with a linked ticket" path deliberately: that lands the issue
+// on a row the store had already generated an id for, so the id is NOT the reconciler's own
+// fallback ('jira-' + issue.id). Adopting that fallback here would make every "same row" check
+// below pass by coincidence — the id a lost card is re-created under would be the id it was
+// meant to keep — and the duplicate check at the end could never fire.
+const local = store.createTask(PERSONAL, { title: 'raised locally, then linked to a ticket' });
+const synced = store.upsertJiraTask(issueToBoardTask(ticket, local, jiraOpts));
+check('the sync put a JIRA card on the board', Boolean(synced) && synced.externalKey === TICKET);
+check(
+  'and its id is its own, not the one a re-created card would land on',
+  synced.id === local.id && synced.id !== 'jira-' + ticket.id,
+  synced.id,
+);
+const syncedStep = furnish(store, synced);
+store.addTaskLink(synced.id, neighbour.id, 'after-merge');
+const syncedBefore = census(synced.id);
+check(
+  'carrying a step, an arrow, a file, three timeline entries and a transcript',
+  JSON.stringify(syncedBefore) ===
+    JSON.stringify({ task: 1, steps: 1, links: 1, attachments: 1, activity: 3, events: 1 }),
+  JSON.stringify(syncedBefore),
+);
+
+// --- the sync takes it off the board ---------------------------------------
+// The read that includes archived cards, exactly as ipc.ts does it. An empty issue list is the
+// query no longer returning the ticket; queryChecked/queryMatches is JIRA having been ASKED
+// about this key and having said no, which is the only thing that makes a removal legal.
+const removalRun = reconcileJiraTasks(store.getPersonalTasksForSync(), [], {
+  ...jiraOpts,
+  queryChecked: [TICKET],
+  queryMatches: [],
+  truncated: false,
+  now: SYNC_AT,
+});
+check('the reconciler decided to let it go', removalRun.removals.length === 1, JSON.stringify(removalRun.removals));
+check('naming the ticket, the title and the reason',
+  removalRun.removals[0] &&
+    removalRun.removals[0].key === TICKET &&
+    removalRun.removals[0].taskId === synced.id &&
+    removalRun.removals[0].reason === 'left-query',
+  JSON.stringify(removalRun.removals[0]),
+);
+check('and refused nothing — one card is well under the guard', removalRun.refused.length === 0);
+// Applied the way ipc.ts applies it: archiveTask, never deleteTask.
+for (const r of removalRun.removals) store.archiveTask(r.taskId, SYNC_AT, r.reason);
+
+// board:tasks IS getPersonalTasks — the handler is a one-liner over it (see ipc.ts).
+const boardAfterSync = store.getPersonalTasks().map((t) => t.id);
+check('board:tasks no longer shows it', !boardAfterSync.includes(synced.id));
+check('nor its step', !boardAfterSync.includes(syncedStep.id));
+check('the neighbour it points at is untouched', boardAfterSync.includes(neighbour.id));
+check(
+  'the Removed-cards list has it, and says why',
+  store.getArchivedTasks().find((t) => t.id === synced.id)?.archivedReason === 'left-query',
+);
+check(
+  'NOTHING it carried was destroyed by the sync',
+  JSON.stringify(census(synced.id)) === JSON.stringify(syncedBefore),
+  JSON.stringify(census(synced.id)),
+);
+
+// --- the query returns it, and the sync puts it back -----------------------
+// The next poll, with the ticket back in the answer. Nothing else changes — this is the whole
+// mechanism by which a card the sync removed comes back on its own.
+const restoreRun = reconcileJiraTasks(store.getPersonalTasksForSync(), [ticket], {
+  ...jiraOpts,
+  now: SYNC_AT + DAY,
+});
+check('the reconciler asks for it to be restored', JSON.stringify(restoreRun.restoreIds) === JSON.stringify([synced.id]), JSON.stringify(restoreRun.restoreIds));
+check('and removes nothing on the way back', restoreRun.removals.length === 0);
+check(
+  'the upsert lands on the SAME row rather than bringing a second card',
+  restoreRun.upserts.length === 1 && restoreRun.upserts[0].id === synced.id,
+  JSON.stringify(restoreRun.upserts.map((t) => t.id)),
+);
+// Restore first, then upsert — the order ipc.ts uses, so the ticket lands on its own card
+// rather than beside the archived one.
+for (const id of restoreRun.restoreIds) store.unarchiveTask(id);
+for (const t of restoreRun.upserts) store.upsertJiraTask(t);
+
+const backOnBoardAfterSync = store.getPersonalTasks().map((t) => t.id);
+check('it is on the board again, under the id it left with', backOnBoardAfterSync.includes(synced.id));
+check('and its step came back with it', backOnBoardAfterSync.includes(syncedStep.id));
+check('the Removed-cards list is empty again', store.getArchivedTasks().length === 0);
+check('archivedAt is cleared', store.getTask(synced.id).archivedAt === null);
+check('and so is the reason', store.getTask(synced.id).archivedReason === null);
+// The assertion the whole archive-instead-of-delete design exists for.
+check(
+  'it still carries exactly what it carried before the sync ever touched it',
+  JSON.stringify(census(synced.id)) === JSON.stringify(syncedBefore),
+  JSON.stringify(census(synced.id)),
+);
+check(
+  'the timeline entry is the same one, not a replacement',
+  store.getTaskActivity(synced.id).some((e) => e.kind === 'comment' && e.body === 'what I worked out about this one'),
+);
+check('the transcript survived the round trip', store.getTaskHistory(synced.id).length === 1);
+check('the attachment still names the same file', store.attachmentsForTask(synced.id).map((a) => a.name).join(',') === 'a.png');
+check('the arrow to its neighbour is still drawn', store.listTaskLinks().some((l) => l.fromTaskId === synced.id && l.toTaskId === neighbour.id));
+// The failure this replaces: a sync blind to archived rows mirrors the ticket back in as a
+// brand-new card, and everything above is stranded on a row nobody can see.
+check(
+  'and there is exactly ONE card for the ticket, not the old one plus a fresh copy',
+  raw.prepare('SELECT COUNT(*) AS n FROM tasks WHERE externalKey = ?').get(TICKET).n === 1,
+  String(raw.prepare('SELECT COUNT(*) AS n FROM tasks WHERE externalKey = ?').get(TICKET).n),
+);
 
 raw.close();
 store.close();
