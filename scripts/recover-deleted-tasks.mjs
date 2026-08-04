@@ -1173,6 +1173,10 @@ Scavenge deleted cards out of an orchestrator.db.
   --force             proceed even though the database looks like a live profile
   --skip-dangling     do not insert children whose card is not (yet) back
   --keep              leave the working copy behind
+  --self-test         prove the scavenger works, on scratch databases, and exit
+
+Without a database argument it does nothing; --self-test is the one exception, since it
+builds its own.
 `;
 
 function parseArgs(argv) {
@@ -1185,6 +1189,7 @@ function parseArgs(argv) {
     skipDangling: false,
     keep: false,
     help: false,
+    selfTest: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -1194,6 +1199,7 @@ function parseArgs(argv) {
     else if (arg === '--force') options.force = true;
     else if (arg === '--skip-dangling') options.skipDangling = true;
     else if (arg === '--keep') options.keep = true;
+    else if (arg === '--self-test') options.selfTest = true;
     else if (arg === '--help' || arg === '-h') options.help = true;
     else if (arg.startsWith('--')) throw new Error(`unknown option ${arg}`);
     else if (options.source === null) options.source = arg;
@@ -1227,8 +1233,30 @@ function looksLive(dbPath) {
   return null;
 }
 
+/**
+ * `--self-test` runs `scripts/verify-recovery.mjs`, which seeds a database, deletes a card out
+ * of it, scavenges it back and asserts every part of it returned — on scratch databases under
+ * `.verify-recovery/`, never a real profile.
+ *
+ * It lives in that file rather than this one because it needs a bundler and Electron to seed
+ * (see its header), while this script's whole point is to run under plain `node`. But the
+ * command to prove this script works should be discoverable FROM this script, not only from
+ * whoever remembers the other filename — so the flag is here and forwards.
+ */
+function runSelfTest() {
+  const harness = join(repo, 'scripts', 'verify-recovery.mjs');
+  if (!existsSync(harness)) throw new Error(`the self-test harness is missing: ${harness}`);
+  const result = spawnSync(process.execPath, [harness], {
+    stdio: 'inherit',
+    // Under an Electron relaunch `process.execPath` is Electron, which needs telling to be Node.
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+  });
+  process.exit(result.status ?? 1);
+}
+
 function main() {
   const options = parseArgs(process.argv.slice(2));
+  if (options.selfTest) runSelfTest();
   if (options.help || !options.source) {
     log(USAGE.trim());
     process.exit(options.source ? 0 : 1);
