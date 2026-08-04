@@ -174,6 +174,27 @@ it researches the ticket and ends by proposing a plan (an `ExitPlanMode` call). 
 delegate a card this way when we want a human to see the approach before any code is
 written. See [doc 03](03-how-orchestration-works.md#plan-first-then-execute-in-steps).
 
+### Planning model / steps execution model
+
+The two models a project names. The **steps execution model** (`defaultModel`) is what
+work runs on; the **planning model** (`planningModel`) is what a planning turn runs on,
+and `null` — *Same as execution* — means the project does not split them, which is how
+every project behaves until someone sets it. Planning is judgement about a repo the
+agent has not seen; a step is handed a brief that already says what to do, so they need
+not cost the same. See
+[doc 03](03-how-orchestration-works.md#two-models-one-to-plan-with-one-to-execute).
+
+### Project default (a card's model)
+
+The empty value of a card's or step's `agentModel`: *follow the agent project*, so a
+planning turn and a step of that card can resolve to different models. Naming a model on
+the card instead pins **every** run of it, planning included. The full ladder is
+`resolveRunModel` in `src/shared/model.ts`:
+`task.agentModel ?? (planning ? project.planningModel : null) ?? project.defaultModel`.
+"Planning" here means the turn was *asked* for a plan (`run.expectsPlan &&
+run.permissionMode === 'plan'`) — a chat reply or a post-chain review that merely
+inherited plan mode from its card is not planning.
+
 ### Plan approval
 
 The Attention item a plan-mode run produces: the plan markdown plus the steps it
@@ -188,7 +209,9 @@ at the card and the plan section as its **brief** (`description`). Steps run
 **one at a time, each in its own session** — the point of the feature, since a step
 then pays only for its own context. All the steps of a card share one git worktree
 and one branch; only the last one merges it back, and the parent card is never
-auto-completed. You can also write steps by hand instead of planning.
+auto-completed. A step inherits where its parent runs but **not** the model its parent
+was planned on — it follows the project's execution model unless set individually. You
+can also write steps by hand instead of planning.
 
 ### Chat (with an agent)
 

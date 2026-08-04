@@ -162,8 +162,9 @@ ticket or an in-app task), hand it to Claude, and it works that one thing.
 
 A card on My Tasks belongs to the built-in *Personal* board, which has no folder,
 so there is nowhere to run. You give it one by creating an **agent project** in
-**Settings → Agents**: a name, a **repo folder**, optional **JIRA epic keys**, and
-a default model and permission mode.
+**Settings → Agents**: a name, a **repo folder**, optional **JIRA epic keys**, a
+permission mode, and its two models — a **steps execution model** and an optional
+**planning model** (see [Two models](#two-models-one-to-plan-with-one-to-execute)).
 
 An agent project is stored as a normal project row with `kind: 'agent'`, so
 worktrees, auto-merge, usage attribution and the limit gate all treat it like any
@@ -190,6 +191,12 @@ its id once, caches it, and falls back to the issue's `parent` — and then to y
 picking manually.) You also choose the model, the permission mode, and optional
 extra instructions, which are recorded as a comment on the task so they survive a
 re-run and show up in the timeline.
+
+The model dropdown offers **Project default** as well as the three models, and that
+is what most cards want: it leaves the card following its project's pair, so a
+planning turn and a step of the same card can cost different things. Naming a model
+here pins *every* run of this card to it, planning included — see
+[Two models](#two-models-one-to-plan-with-one-to-execute).
 
 The card keeps its place on the Personal board — only the **run** happens in the
 agent project. That is what keeps this per-card: the queue scheduler never sees
@@ -407,6 +414,47 @@ the plan, so the steps are full-auto.
   never reset/rebase/merge/switch). The JIRA comment thread is **not** included — it is
   the context a step should not pay for. As always, nothing is written back to JIRA.
 
+### Two models: one to plan with, one to execute
+
+Planning is the one run whose whole output is judgement — it reads a repo it has
+never seen and decides what the work *is* — while a step is handed a brief that
+already says what to do. They do not have to cost the same. A project therefore
+names **two** models, in **Settings → Agents** (and in the Projects tab's dialog):
+
+- **Steps execution model** — what work runs on. The field that has always been
+  there (`defaultModel` in the schema); only its label changed.
+- **Planning model** — what a planning turn runs on. Leave it at *Same as
+  execution* — the default, and what every project that predates the split carries
+  — and nothing about that project changes: both halves use the execution model.
+
+A card or a step may still overrule both, from the assign dialog, the composer
+strip, or the step's own controls. The whole ladder is one pure function
+(`resolveRunModel`, `src/shared/model.ts`):
+
+```
+task.agentModel                                 // this card's / this step's own choice
+  ?? (planning ? project.planningModel : null)  // "Same as execution" puts nothing here
+  ?? project.defaultModel                       // the steps execution model
+```
+
+**What counts as planning is the turn, not the mode.** A run is billed as planning
+only when it was *asked* for a plan and is held to it: the first `plan`-mode run of
+a card, and a **re-plan**. A card assigned Plan mode also *chats* in Plan mode, and
+is briefed on its finished chain in Plan mode, and neither of those is planning —
+they are conversations that merely may not write, and they use the execution model.
+(`run.expectsPlan && run.permissionMode === 'plan'` is the pair that decides, the
+same pair the mode itself is read from.)
+
+**Steps carry no model of their own.** Approving a plan creates steps that inherit
+where they run and the forced `bypassPermissions`, but *not* the model their parent
+was planned on — inheriting it would silently bill the whole chain at the planning
+rate. A step's model is empty, meaning *Project default*, and a step that genuinely
+needs a better one is set one step at a time.
+
+**The ladder is read once, when the run starts,** and the answer is captured on the
+run. Changing a model — the card's, the step's or the project's — therefore decides
+the **next** run and can never move one already in flight.
+
 ### Writing the steps yourself
 
 You don't need a planning round. Every card's detail sidebar has a **Steps** box: add
@@ -617,9 +665,13 @@ sight.
 
 Under the box, a muted strip names who runs this card — *"Run by Claude in Demo Agent
 Repo"* — with the **model** and **permission mode** editable right there. They are what
-you most want to change just before you say something. Changing either restarts nothing: a
-live run captured its model and mode when it started, so the choice applies to the **next**
-run. (Reassigning the card is still what you want if you mean "start over with these.")
+you most want to change just before you say something. The model list includes **Project
+default**, which hands the card back to its project's planning/execution pair rather than
+pinning it to one model; picking a named model pins every run of this card, planning
+included (see [Two models](#two-models-one-to-plan-with-one-to-execute)). Changing either
+restarts nothing: a live run captured its model and mode when it started, so the choice
+applies to the **next** run. (Reassigning the card is still what you want if you mean
+"start over with these.")
 
 Where the message goes:
 

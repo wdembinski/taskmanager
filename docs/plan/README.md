@@ -46,7 +46,7 @@ plan the orchestrator could one day run on its own repo.
 | 21 | Starting the next card automatically (the re-ask, and what a merge is holding) | ✅ shipped (v0.55.1) |
 | — | Interim releases v0.56–v0.57 (a Stop button everywhere, the Add-task dialog's options) | ✅ shipped, not tracked here |
 | 22 | Attachments in the task and its steps | ✅ complete (v0.64.4) — tag and draft cut once it lands on `development` |
-| 23 | One model for planning, another for the steps | 🚧 in progress on `feat/setting-ai-agent-models-for-planning` |
+| 23 | One model for planning, another for the steps | ✅ complete on `feat/setting-ai-agent-models-for-planning` — tag and draft cut once it lands on `development` |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -2288,7 +2288,7 @@ Each of these was read in this worktree, not remembered.
 - [x] **1 — The assumptions, written down.** This entry: the two readings above, the
       ladder, and the traps, so the five steps after it share one source of truth and a
       reviewer can see what was assumed rather than asked.
-- [ ] **2 — The planning model on projects and in settings.** The nullable `planningModel`
+- [x] **2 — The planning model on projects and in settings.** The nullable `planningModel`
       column, added the way every later `projects` column was — one guarded
       `ALTER TABLE projects` beside `kind`, `target` and `instructions`
       ([`store.ts:694-716`](../../src/main/store.ts)), with no `NOT NULL DEFAULT`, since
@@ -2296,16 +2296,69 @@ Each of these was read in this worktree, not remembered.
       `ProjectPatch` ([`model.ts:282`](../../src/shared/model.ts)), `AddProjectInput`
       ([`model.ts:247`](../../src/shared/model.ts)) and the app-level seed beside
       `defaultModel` ([`settings.ts:225`](../../src/shared/settings.ts)).
-- [ ] **3 — Pick the model by what the run is.** The pure ladder, unit-tested, replacing
+- [x] **3 — Pick the model by what the run is.** The pure ladder, unit-tested, replacing
       the one-line resolution at [`scheduler.ts:2066`](../../src/main/scheduler.ts).
-- [ ] **4 — Both models in the settings screens.** `ProjectDialog`, `AgentProjects` and
+- [x] **4 — Both models in the settings screens.** `ProjectDialog`, `AgentProjects` and
       `Settings`, with `defaultModel` relabelled *Steps execution model* and the planning
       field offering "same as execution".
-- [ ] **5 — Let a card or step follow its project.** The explicit *Project default* choice
+- [x] **5 — Let a card or step follow its project.** The explicit *Project default* choice
       in both dropdowns, plus the one-time migration from assumption 2.
-- [ ] **6 — Verify the split and refresh the docs.** [`docs/03`](../03-how-orchestration-works.md),
-      the glossary, and a headless check that a planning run and a step run on one card
-      resolve different models.
+- [x] **6 — Verify the split and refresh the docs.** A new *Two models* section in
+      [`docs/03`](../03-how-orchestration-works.md#two-models-one-to-plan-with-one-to-execute),
+      two glossary entries, and `scripts/verify-model-split.mjs` — a headless scenario in the
+      shape of `verify-round.mjs`, but with a **stub `claude` on PATH** so the assertion is
+      the CLI's own argv rather than a request object one link short of it. It walks one card
+      through the whole split against a real SQLite store, the real `Scheduler` and the real
+      `SessionManager`: 26 checks over 8 spawns, no app launched and no repository touched.
+      See *How the split was verified* below.
+
+### How the split was verified
+
+`resolveRunModel` is pure and unit-tested, and `scheduler.test.ts` proves a run born in
+`startTask` carries what the ladder chose. Neither answers the only question a human
+actually has — *does the CLI get `--model opus`?* — because that answer is four things
+joined end to end: the ladder, the run's captured model, `buildClaudeArgs`, and the spawn.
+A fake `SessionManager` recording a `StartSessionRequest` stops one link short of the
+argument being asserted.
+
+So `scripts/verify-model-split.mjs` puts a stub `claude` on PATH (the technique from Phase
+21) and asserts on its **argv**. Everything above it is the app's own code: a real
+`better-sqlite3` store, the real `Scheduler`, the real `SessionManager`, `hostFor`'s local
+host and its `shell: true` spawn. The stub records its arguments, then behaves like the
+CLI — a `plan`-mode run calls `ExitPlanMode` with a plan, any other run reports a `result`,
+but only once the driver drops a `proceed-N` file, so every assertion is made while its run
+is still open and nothing races on a timer. One card is walked through the whole split:
+
+| # | The run | Asserted |
+|--:|---------|----------|
+| 1 | the card's planning turn | `--model opus --permission-mode plan` |
+| 2 | step 1, after **Approve plan** | `--model haiku --permission-mode bypassPermissions`, and all three steps created with `agentModel` NULL |
+| 3 | step 2, overridden mid-chain | `--model sonnet` |
+| 4 | step 3, untouched | `--model haiku` — one step changed, not the chain |
+| 5 | a chat reply on a `plan`-mode card | `--permission-mode plan --resume …` but `--model haiku` |
+| 6 | a **re-plan** on a `plan`-mode card | `--model opus` — same mode, different turn |
+| 7 | a project with no planning model | `--model sonnet`, its execution model |
+| 8 | a step whose parent is pinned to `sonnet` | `--model haiku` — steps do not inherit the parent's model |
+
+26 checks, all green. Runs 5 and 6 are the pair that makes the rule visible: identical
+cards, identical mode, and the model differs only because one of them was *asked* for a
+plan.
+
+Two things it deliberately does not reach. The post-chain **review** run only exists on the
+worktree path (`settle` returns before `finishParentChain` when a run has no branch), so
+its "plan mode inherited, execution model used" case is covered by the chat run above and
+by `scheduler.test.ts`; and `project:alignPlan`'s `planningModel ?? defaultModel` lives
+behind an `ipcMain.handle` only the renderer calls.
+
+Proved able to fail, by three mutations, each reverted and confirmed byte-identical
+afterwards:
+
+- `resolveRunModel` reduced to the pre-phase `task.agentModel ?? project.defaultModel` →
+  **3 red** (both planning runs).
+- `addSubtask` restored to `agentModel: parent.agentModel ?? null` → **2 red** (the step
+  inherits `sonnet`).
+- `expectsPlan &&` dropped from `startTask`'s call → **1 red** (the chat reply is billed as
+  planning).
 
 ### Done when
 
