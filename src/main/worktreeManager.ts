@@ -18,7 +18,7 @@
  * Non-git projects (or projects with worktrees disabled) transparently fall back to
  * the shared-directory behavior, which keeps existing setups working unchanged.
  */
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Project, Task } from '@shared/model';
@@ -29,6 +29,7 @@ import {
   addWorktree,
   blobSha,
   branchExists,
+  checkoutOurs,
   commitAll,
   commitsAhead,
   conflictedFiles,
@@ -40,6 +41,7 @@ import {
   gitPreflight,
   hasCommits,
   hasConflicts,
+  hasStagedChanges,
   isClean,
   isRepo,
   listBranches,
@@ -50,15 +52,48 @@ import {
   rebaseOnto,
   removeUntracked,
   removeWorktree,
+  restoreConflicted,
+  skipRebase,
+  stagePaths,
   workingFileSha,
 } from './git';
 
 /**
  * Purely additive text files that are safe to auto-merge with git's `union` driver during a
  * rebase (concatenate both sides instead of conflicting). Scoped to config/list files whose
- * ordering doesn't matter — never source. Lockfiles and code go to the AI/human rungs instead.
+ * ordering doesn't matter — never source. Code goes to the AI/human rungs instead; a lockfile
+ * (and a `package.json` that conflicts only on its version) is handled a rung further down, by
+ * {@link WorktreeManager.resolveMechanically} — union-concatenating a lockfile would produce a
+ * file no package manager could read.
  */
 const UNION_MERGE_FILES = ['.gitignore', 'pnpm-workspace.yaml', '.npmrc'];
+
+/**
+ * Lockfiles Rung 1.5 knows how to rebuild, and the command that rebuilds each one from
+ * `package.json` ALONE — no `node_modules`, no lifecycle scripts. Which package manager a
+ * project uses is read off the lockfile that conflicted, so there is no new setting to get
+ * wrong and a repo with two of them resolves each correctly.
+ */
+const LOCKFILE_REGEN: ReadonlyMap<string, readonly string[]> = new Map([
+  ['pnpm-lock.yaml', ['pnpm', 'install', '--lockfile-only']],
+  ['package-lock.json', ['npm', 'install', '--package-lock-only']],
+  ['yarn.lock', ['yarn', 'install', '--mode', 'update-lockfile']],
+]);
+
+/**
+ * How long a lockfile rebuild may take before it is abandoned (and the conflict escalated as
+ * though this rung had never run). Generous: the resolver talks to a registry, and a large
+ * workspace is not quick. Bounded all the same — an integration must never hang on it.
+ */
+const LOCKFILE_REGEN_TIMEOUT_MS = 5 * 60_000;
+
+/**
+ * How many times the rebase may stop, be resolved mechanically, and be continued before we
+ * stop trying. Every round consumes one commit of the branch, so this can only be reached by
+ * a branch with more conflicting commits than anyone rebases by hand — and a bound is what
+ * keeps a rung that drives `rebase --continue` in a loop from being able to spin.
+ */
+const MAX_MECHANICAL_ROUNDS = 20;
 
 /**
  * How long to wait before retrying a worktree removal that git refused. Long enough for an
@@ -88,6 +123,100 @@ function withUnionAttributes(): { file: string; cleanup: () => void } {
       }
     },
   };
+}
+
+// Conflict markers, matched at the start of a line. `|||||||` only appears under the `diff3`
+// conflict styles; it is recognised (and its section discarded) so the parser below doesn't
+// depend on the human's `merge.conflictStyle`.
+const MARK_OURS = /^<{7}(?:\s|$)/;
+const MARK_ORIGINAL = /^\|{7}(?:\s|$)/;
+const MARK_SPLIT = /^={7}(?:\s|$)/;
+const MARK_THEIRS = /^>{7}(?:\s|$)/;
+
+/** A `"version": "1.2.3"` entry, with or without its trailing comma. Nothing else. */
+const VERSION_LINE = /^"version"\s*:\s*"[^"]*"\s*,?$/;
+
+/**
+ * Resolve a conflicted `package.json` by taking BASE's side of every conflict — but ONLY when
+ * every conflict is inside the `version` field. Returns the resolved text, or `null` when
+ * anything else conflicted, in which case the caller must leave the file alone.
+ *
+ * This is the one `package.json` collision with an answer that needs no judgement: a release
+ * bumped the version on base while the branch was out, so base's number is by definition the
+ * newer one and the branch's is a stale copy of what base used to say. Any *other* hunk —
+ * a dependency, a script, an export map — is a real disagreement about the project and
+ * belongs to a rung that can read the code.
+ *
+ * Deliberately a text operation, not a JSON round-trip: reformatting a file the human owns
+ * (key order, indentation, trailing newline) to resolve one line would be its own diff.
+ */
+export function resolveVersionOnlyConflict(text: string): string | null {
+  const lines = text.split('\n');
+  const out: string[] = [];
+  let hunks = 0;
+
+  for (let i = 0; i < lines.length;) {
+    const line = lines[i];
+    if (!MARK_OURS.test(line)) {
+      // A closing marker with nothing open means this file is not shaped the way git writes
+      // one. Guessing at it is exactly what this rung must not do.
+      if (MARK_ORIGINAL.test(line) || MARK_SPLIT.test(line) || MARK_THEIRS.test(line)) return null;
+      out.push(line);
+      i++;
+      continue;
+    }
+
+    i++;
+    const ours: string[] = [];
+    const theirs: string[] = [];
+    let side: 'ours' | 'original' | 'theirs' = 'ours';
+    let closed = false;
+    for (; i < lines.length; i++) {
+      const l = lines[i];
+      if (MARK_OURS.test(l)) return null; // nested markers: not ours to interpret
+      if (MARK_ORIGINAL.test(l)) {
+        if (side !== 'ours') return null;
+        side = 'original';
+      } else if (MARK_SPLIT.test(l)) {
+        if (side === 'theirs') return null;
+        side = 'theirs';
+      } else if (MARK_THEIRS.test(l)) {
+        closed = true;
+        i++;
+        break;
+      } else if (side === 'ours') {
+        ours.push(l);
+      } else if (side === 'theirs') {
+        theirs.push(l);
+      }
+      // The `original` section is the common ancestor git prints for context — never part of
+      // a resolution, but its contents still have to pass the version-only test below, or a
+      // hunk that merely *mentions* a version would qualify on the strength of its ancestor.
+    }
+    if (!closed) return null;
+    // BOTH sides, so "the branch replaced the version block with something else" cannot pass.
+    if (![...ours, ...theirs].every(isVersionOnly)) return null;
+    hunks++;
+    out.push(...ours); // ours == base, because a rebase replays the branch ON TOP of base
+  }
+
+  // No markers at all in a file git calls conflicted: something else is going on (a binary
+  // merge, a custom driver). Escalate rather than "resolve" it into a no-op.
+  return hunks > 0 ? out.join('\n') : null;
+}
+
+/** True for a line that is only a `version` entry (or blank) — the test the hunks must pass. */
+function isVersionOnly(line: string): boolean {
+  const trimmed = line.trim();
+  return trimmed === '' || VERSION_LINE.test(trimmed);
+}
+
+/** Split a git-reported path (always `/`-separated) into its directory and file name. */
+function splitPath(path: string): { dir: string; name: string } {
+  const slash = path.lastIndexOf('/');
+  return slash === -1
+    ? { dir: '', name: path }
+    : { dir: path.slice(0, slash), name: path.slice(slash + 1) };
 }
 
 /**
@@ -150,6 +279,14 @@ export type IntegrationResult =
        * named on the timeline can be dealt with; a silent one poisons the next run instead.
        */
       cleanupFailed?: string;
+      /**
+       * Files the rebase conflicted on that were resolved WITHOUT an agent (Rung 1.5): a
+       * regenerated lockfile, a `package.json` whose only conflict was a release bump.
+       *
+       * Reported because it is a write into the human's branch that nobody asked for. The
+       * merge succeeded either way, so this is a note and never a problem.
+       */
+      autoResolved?: string[];
     }
   /**
    * There was nothing to land, so no merge was attempted: the branch is already contained
@@ -494,14 +631,42 @@ export class WorktreeManager {
       }
 
       // Rung 1 (mechanical): rebase with union merge for additive config files, so
-      // `.gitignore`/workspace-list churn auto-resolves instead of conflicting. Anything
-      // left conflicted is a real conflict → returned as `conflict` for the AI/human rungs.
+      // `.gitignore`/workspace-list churn auto-resolves instead of conflicting.
       const attrs = withUnionAttributes();
       // The attributes file is written on the app's filesystem, so git must be told
       // the name its OWN machine knows it by.
       const attrsPath = host.toNative(attrs.file);
       try {
-        const rebased = await rebaseOnto(worktree, base, attrsPath, host);
+        let rebased = await rebaseOnto(worktree, base, attrsPath, host);
+
+        // Rung 1.5 (mechanical, scripted): a conflict git's merge drivers can't touch but
+        // that still has ONE right answer nobody needs to read code to find — a lockfile, a
+        // version line a release bumped. Resolving it here is worth a rung of its own because
+        // the alternative is Rung 2, and Rung 2 costs a whole agent session to run a command
+        // this can run itself. Lockfile collisions are far and away the commonest thing
+        // parallel worktrees conflict on.
+        //
+        // Looped, because a rebase stops once per conflicting COMMIT: resolving the first one
+        // and handing the second to an agent would spend the session this rung exists to save.
+        // Each round consumes one commit, so the bound can only be hit by a pathological branch.
+        const autoResolved: string[] = [];
+        for (let round = 0; rebased.code !== 0 && round < MAX_MECHANICAL_ROUNDS; round++) {
+          if (!(await hasConflicts(worktree, host))) break;
+          const fixed = await this.resolveMechanically(worktree, host);
+          // `null` = something here needs judgement. The work tree is exactly as git left it
+          // (see `resolveMechanically`), so the AI/human rung below gets the real conflict —
+          // never a tree this rung had already half-resolved and made to look clean.
+          if (!fixed) break;
+          autoResolved.push(...fixed);
+          // A resolution that reproduces what base already has empties the patch, and
+          // `--continue` refuses an empty one. That commit's content IS in base, so skipping
+          // is not a loss — it is the same outcome the rebase would have reached alone.
+          rebased = (await hasStagedChanges(worktree, host))
+            ? await continueRebase(worktree, attrsPath, host)
+            : await skipRebase(worktree, host);
+        }
+
+        // Anything still conflicted is a real conflict → `conflict`, for the AI/human rungs.
         if (rebased.code !== 0) {
           if (await hasConflicts(worktree, host)) {
             return { status: 'conflict', worktree, branch, base };
@@ -509,7 +674,9 @@ export class WorktreeManager {
           await abortRebase(worktree, host);
           return { status: 'error', message: rebased.stderr || 'rebase failed' };
         }
-        return this.fastForward(project, branch, base, worktree);
+        const done = await this.fastForward(project, branch, base, worktree);
+        if (done.status !== 'merged' || autoResolved.length === 0) return done;
+        return { ...done, autoResolved: [...new Set(autoResolved)] };
       } finally {
         attrs.cleanup();
       }
@@ -633,6 +800,98 @@ export class WorktreeManager {
   async listConflicts(project: Project, worktree: string): Promise<string[]> {
     const { host } = await this.workspaceFor(project);
     return conflictedFiles(worktree, host);
+  }
+
+  /**
+   * Rung 1.5: resolve the conflicts a rebase is stopped on WITHOUT an agent, or touch nothing.
+   *
+   * Returns the paths it resolved and staged, or `null` — and `null` means the work tree is
+   * byte-for-byte as git left it, conflict markers and all. That all-or-nothing contract is
+   * the point of the whole method: a partially resolved tree handed to the AI rung looks
+   * clean, so the agent stages what it finds, the orchestrator continues the rebase, and a
+   * lockfile nobody ever regenerated lands in base. Hence the two phases below — every file
+   * is *classified* before any file is *written*, and nothing is staged until every write
+   * has succeeded.
+   *
+   * What it can answer, and nothing else:
+   *   - a lockfile → take base's copy and rebuild it from the merged `package.json`
+   *     ({@link LOCKFILE_REGEN}); the branch's copy is a resolution of a dependency graph
+   *     that no longer exists, so merging its text is meaningless in a way editing it isn't.
+   *   - a `package.json` whose only conflict is its `version` → base's number wins
+   *     ({@link resolveVersionOnlyConflict}).
+   */
+  private async resolveMechanically(worktree: string, host: ExecHost): Promise<string[] | null> {
+    const files = await conflictedFiles(worktree, host);
+    if (files.length === 0) return null;
+
+    // Phase 1 — classify. Reads only, so an unresolvable file found on the last path still
+    // leaves the work tree exactly as it was.
+    const locks: { path: string; command: readonly string[]; dir: string }[] = [];
+    const rewrites: { path: string; text: string }[] = [];
+    for (const path of files) {
+      const { dir, name } = splitPath(path);
+      const command = LOCKFILE_REGEN.get(name);
+      if (command) {
+        locks.push({ path, command, dir });
+        continue;
+      }
+      if (name !== 'package.json') return null;
+      const current = this.readWorktreeFile(worktree, path, host);
+      const resolved = current === null ? null : resolveVersionOnlyConflict(current);
+      if (resolved === null) return null;
+      rewrites.push({ path, text: resolved });
+    }
+
+    // Phase 2 — write. Nothing is staged yet, so the index still holds git's unmerged stages
+    // and `restoreConflicted` can put every marker back if any step below fails.
+    const touched: string[] = [];
+    const giveUp = async (): Promise<null> => {
+      await restoreConflicted(worktree, touched, host);
+      return null;
+    };
+    for (const { path, text } of rewrites) {
+      try {
+        writeFileSync(this.appPath(worktree, path, host), text);
+      } catch {
+        return giveUp();
+      }
+      touched.push(path);
+    }
+    for (const { path, command, dir } of locks) {
+      const took = await checkoutOurs(worktree, [path], host);
+      if (took.code !== 0) return giveUp();
+      touched.push(path);
+      // Run where the lockfile lives, not at the worktree root: that is the package manager's
+      // own idea of the project, and a monorepo can hold more than one.
+      const cwd = dir === '' ? worktree : hostJoin(worktree, ...dir.split('/'));
+      const ran = await host.exec(cwd, command[0], [...command.slice(1)], {
+        // Windows resolves `pnpm`/`npm`/`yarn` through a `.cmd` shim, which only a shell finds.
+        resolveViaShell: true,
+        timeoutMs: LOCKFILE_REGEN_TIMEOUT_MS,
+        maxBuffer: 32 * 1024 * 1024,
+      });
+      // The package manager missing, offline, or unhappy with the manifest is not something
+      // to paper over: escalate, and the AI rung runs it again with a human behind it.
+      if (ran.code !== 0) return giveUp();
+    }
+
+    const staged = await stagePaths(worktree, touched, host);
+    if (staged.code !== 0) return giveUp();
+    return touched;
+  }
+
+  /** A work-tree-relative git path as a name THIS process can hand to `fs`. */
+  private appPath(worktree: string, path: string, host: ExecHost): string {
+    return host.toApp(hostJoin(worktree, ...path.split('/')));
+  }
+
+  /** Read a work-tree file, or null if it can't be read (binary/gone is not this rung's problem). */
+  private readWorktreeFile(worktree: string, path: string, host: ExecHost): string | null {
+    try {
+      return readFileSync(this.appPath(worktree, path, host), 'utf8');
+    } catch {
+      return null;
+    }
   }
 
   /** Advance base to the (already rebased) branch, then clean up the worktree. */

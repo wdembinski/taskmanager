@@ -243,6 +243,75 @@ export async function continueRebase(
   );
 }
 
+/**
+ * Drop the patch a rebase is stopped on and move to the next one.
+ *
+ * Needed by any *automatic* conflict resolution: when the resolution turns out to reproduce
+ * what base already has, the patch becomes empty and `rebase --continue` refuses with "No
+ * changes - did you forget to use 'git add'?". That is not a failure — the commit's content
+ * is already in base — so the right move is to skip it. See {@link hasStagedChanges} for how
+ * the two cases are told apart.
+ */
+export async function skipRebase(worktreePath: string, host?: ExecHost): Promise<GitResult> {
+  return git(worktreePath, ['rebase', '--skip'], host);
+}
+
+/**
+ * True when the index differs from `HEAD` — i.e. there is still something for the next commit
+ * to record. Mid-rebase that answers "does this patch still have content after resolution?".
+ *
+ * `diff --quiet` exits 1 for "differences" and 0 for "none"; any *other* code is an error, and
+ * is deliberately reported as `false` rather than assumed — see `skipRebase`.
+ */
+export async function hasStagedChanges(dir: string, host?: ExecHost): Promise<boolean> {
+  const res = await git(dir, ['diff', '--cached', '--quiet', 'HEAD'], host);
+  return res.code === 1;
+}
+
+/**
+ * Replace the conflicted work-tree copy of each path with **our** side of the merge, unstaged.
+ *
+ * During a REBASE "ours" is the branch being rebased *onto* — the base — because a rebase
+ * replays the branch's commits on top of it. That inversion is the whole reason this wrapper
+ * exists rather than a bare `--ours` at the call site.
+ */
+export async function checkoutOurs(
+  dir: string,
+  paths: string[],
+  host?: ExecHost,
+): Promise<GitResult> {
+  if (paths.length === 0) return { code: 0, stdout: '', stderr: '' };
+  return git(dir, ['checkout', '--ours', '--', ...paths], host);
+}
+
+/**
+ * Put the conflict markers back for paths whose work-tree copy was overwritten — the undo for
+ * {@link checkoutOurs} and for any file an automatic resolution rewrote.
+ *
+ * Only works while the index still holds the unmerged stages, i.e. *before* the path is staged.
+ * That constraint is load-bearing: an automatic resolution must stage nothing until it knows
+ * every file it touched succeeded, so that a failure half-way can hand git's own conflicted
+ * tree to the next rung untouched.
+ */
+export async function restoreConflicted(
+  dir: string,
+  paths: string[],
+  host?: ExecHost,
+): Promise<GitResult> {
+  if (paths.length === 0) return { code: 0, stdout: '', stderr: '' };
+  return git(dir, ['checkout', '--merge', '--', ...paths], host);
+}
+
+/** Stage specific paths (marking conflicted ones resolved). Paths only — never the whole tree. */
+export async function stagePaths(
+  dir: string,
+  paths: string[],
+  host?: ExecHost,
+): Promise<GitResult> {
+  if (paths.length === 0) return { code: 0, stdout: '', stderr: '' };
+  return git(dir, ['add', '--', ...paths], host);
+}
+
 /** Work-tree paths left with merge conflicts (unmerged, `U`) — NUL-delimited. */
 export async function conflictedFiles(dir: string, host?: ExecHost): Promise<string[]> {
   const res = await git(dir, ['diff', '-z', '--name-only', '--diff-filter=U'], host);

@@ -3396,6 +3396,14 @@ export class Scheduler {
               `"${result.preserved.stashRef}" before merging (${summarizeFiles(result.preserved.files)}). ` +
               `Restore with \`git stash apply ${result.preserved.stashRef}\` in ${project.path} if needed.`
             : `Merged branch "${ctx.branch}" into ${ctx.base}.`;
+        // Rung 1.5 rewrote files on this branch to get the rebase through, and a write nobody
+        // asked for belongs on the timeline even when it worked — that is the only place the
+        // human can see that the lockfile in base was rebuilt rather than merged.
+        const resolved = result.autoResolved?.length
+          ? ` ${result.autoResolved.length} conflict(s) were resolved automatically, with no ` +
+            `agent (${summarizeFiles(result.autoResolved)}): a lockfile is rebuilt from the ` +
+            `merged package.json, and a version-only clash takes ${ctx.base}'s number.`
+          : '';
         // A cleanup that failed does not change what happened to the work — the merge
         // landed — so it is appended to the same note rather than raised as a problem of
         // its own. Said at all, though: an unremoved worktree used to be invisible, and the
@@ -3404,7 +3412,9 @@ export class Scheduler {
           project.id,
           ctx.taskId,
           ctx.runId,
-          result.cleanupFailed ? `${note} Note: ${result.cleanupFailed}` : note,
+          result.cleanupFailed
+            ? `${note}${resolved} Note: ${result.cleanupFailed}`
+            : note + resolved,
         );
         // This line runs for BOTH a plain card and the final step of a chain, and the two
         // want different things. A STEP must reach `done` or the chain machinery breaks:

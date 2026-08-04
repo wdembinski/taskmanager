@@ -11,7 +11,12 @@ import { join } from 'node:path';
 import type { Project, Task } from '@shared/model';
 import { LOCAL_TARGET } from '@shared/execTarget';
 import { git } from './git';
-import { classifyUntrackedCollisions, taskBranch, WorktreeManager } from './worktreeManager';
+import {
+  classifyUntrackedCollisions,
+  resolveVersionOnlyConflict,
+  taskBranch,
+  WorktreeManager,
+} from './worktreeManager';
 
 let root = '';
 let repo = '';
@@ -163,6 +168,191 @@ describe('WorktreeManager.integrate — conflict ladder Rung 1 (mechanical)', ()
     expect(res.status === 'conflict' && (await wtm.listConflicts(project(), wt))).toContain(
       'src.txt',
     );
+  });
+});
+
+/**
+ * Rung 1.5 (mechanical, scripted) — the rung that exists so a lockfile collision, far and away
+ * the commonest thing parallel worktrees conflict on, does not cost an agent session to fix by
+ * running one command. The contract these pin: it resolves everything or it touches nothing.
+ */
+describe('WorktreeManager.integrate — conflict ladder Rung 1.5 (scripted)', () => {
+  /** What `pnpm install --lockfile-only` writes for a manifest with no dependencies. */
+  const REAL_LOCK =
+    "lockfileVersion: '9.0'\n\nsettings:\n  autoInstallPeers: true\n" +
+    '  excludeLinksFromLockfile: false\n\nimporters:\n\n  .: {}\n';
+
+  const manifest = (version: string, build = 'tsc'): string =>
+    `{\n  "name": "fixture",\n  "version": "${version}",\n  "private": true,\n` +
+    `  "scripts": {\n    "build": "${build}"\n  },\n  "dependencies": {}\n}\n`;
+
+  /** Commit `files` on the base branch (advancing it). */
+  async function commitOnBase(files: Record<string, string>, msg: string) {
+    for (const [file, content] of Object.entries(files)) writeFileSync(join(repo, file), content);
+    await git(repo, ['add', '-A']);
+    await git(repo, ['commit', '--no-verify', '-m', msg]);
+  }
+
+  /** A worktree on `branch`, cut from base, with `files` written and committed. */
+  async function branchCommitting(branch: string, files: Record<string, string>): Promise<string> {
+    const wt = join(root, `wt-${branch.replace(/\W/g, '_')}`);
+    await git(repo, ['worktree', 'add', '-b', branch, wt, base]);
+    for (const [file, content] of Object.entries(files)) writeFileSync(join(wt, file), content);
+    await git(wt, ['add', '-A']);
+    await git(wt, ['commit', '--no-verify', '-m', `branch: ${branch}`]);
+    return wt;
+  }
+
+  it('rebuilds a conflicting lockfile and merges, with no escalation', async () => {
+    const wtm = new WorktreeManager(root);
+    // A seeded lockfile both sides then edit at the same spot — the shape of every "two cards
+    // each added a dependency" collision, minus the dependencies.
+    await commitOnBase(
+      { 'package.json': manifest('1.0.0'), 'pnpm-lock.yaml': `${REAL_LOCK}# SEED\n` },
+      'seed manifest + lock',
+    );
+    const wt = await branchCommitting('orch/lock1', {
+      'pnpm-lock.yaml': `${REAL_LOCK}# STALE-BRANCH\n`,
+      'feature.txt': 'branch work\n',
+    });
+    await commitOnBase({ 'pnpm-lock.yaml': `${REAL_LOCK}# STALE-BASE\n` }, 'base lock churn');
+
+    const res = await wtm.integrate(project(), 'orch/lock1', base, wt, 'integrate lock1');
+
+    expect(res.status).toBe('merged');
+    expect(res.status === 'merged' && res.autoResolved).toEqual(['pnpm-lock.yaml']);
+    // The branch's real work landed...
+    expect((await git(repo, ['show', `HEAD:feature.txt`])).stdout).toBe('branch work\n');
+    // ...and the lockfile in base is the one pnpm regenerated, not either side's stale text.
+    const lock = (await git(repo, ['show', 'HEAD:pnpm-lock.yaml'])).stdout;
+    expect(lock).toContain('lockfileVersion');
+    expect(lock).not.toContain('STALE-BRANCH');
+    expect(lock).not.toContain('STALE-BASE');
+    expect(lock).not.toContain('<<<<<<<');
+  }, 120_000);
+
+  it('takes base’s version when package.json conflicts only on the release bump', async () => {
+    const wtm = new WorktreeManager(root);
+    await commitOnBase({ 'package.json': manifest('1.0.0') }, 'seed manifest');
+    const wt = await branchCommitting('orch/ver1', {
+      'package.json': manifest('1.0.1'),
+      'feature.txt': 'branch work\n',
+    });
+    // A release ran on base while this branch was out — its number is the newer one.
+    await commitOnBase({ 'package.json': manifest('1.1.0') }, 'release 1.1.0');
+
+    const res = await wtm.integrate(project(), 'orch/ver1', base, wt, 'integrate ver1');
+
+    expect(res.status).toBe('merged');
+    expect(res.status === 'merged' && res.autoResolved).toEqual(['package.json']);
+    const merged = (await git(repo, ['show', 'HEAD:package.json'])).stdout;
+    expect(merged).toContain('"version": "1.1.0"');
+    expect(merged).not.toContain('<<<<<<<');
+    // The rest of the manifest is untouched — this rung rewrites one line, not the file.
+    expect(merged).toContain('"build": "tsc"');
+    expect((await git(repo, ['show', `HEAD:feature.txt`])).stdout).toBe('branch work\n');
+  }, 60_000);
+
+  it('escalates a package.json that also conflicts somewhere other than the version', async () => {
+    const wtm = new WorktreeManager(root);
+    await commitOnBase({ 'package.json': manifest('1.0.0') }, 'seed manifest');
+    const wt = await branchCommitting('orch/ver2', { 'package.json': manifest('1.0.1', 'vite') });
+    await commitOnBase({ 'package.json': manifest('1.1.0', 'rollup') }, 'base changes build');
+
+    const res = await wtm.integrate(project(), 'orch/ver2', base, wt, 'integrate ver2');
+
+    expect(res.status).toBe('conflict');
+    expect(await wtm.listConflicts(project(), wt)).toContain('package.json');
+    // Untouched: the markers git wrote are still there for the rung that can read code.
+    expect(readFileSync(join(wt, 'package.json'), 'utf8')).toContain('<<<<<<<');
+  }, 60_000);
+
+  it('leaves a plain source conflict to the rungs above, resolving nothing', async () => {
+    const wtm = new WorktreeManager(root);
+    await commitOnBase({ 'src.txt': 'original\n' }, 'seed src');
+    const wt = await branchCommitting('orch/src1', { 'src.txt': 'BRANCH-EDIT\n' });
+    await commitOnBase({ 'src.txt': 'BASE-EDIT\n' }, 'base edits src');
+
+    const res = await wtm.integrate(project(), 'orch/src1', base, wt, 'integrate src1');
+
+    expect(res.status).toBe('conflict');
+    expect(readFileSync(join(wt, 'src.txt'), 'utf8')).toContain('<<<<<<<');
+  }, 60_000);
+
+  /**
+   * The one that matters most: a partially resolved tree handed upwards LOOKS clean, so the AI
+   * rung stages what it finds, the orchestrator continues the rebase, and a lockfile nobody
+   * regenerated lands in base. All-or-nothing is the whole contract.
+   */
+  it('escalates a mixed lockfile + source conflict without half-resolving the lockfile', async () => {
+    const wtm = new WorktreeManager(root);
+    await commitOnBase(
+      {
+        'package.json': manifest('1.0.0'),
+        'pnpm-lock.yaml': `${REAL_LOCK}# SEED\n`,
+        'src.txt': 'original\n',
+      },
+      'seed all three',
+    );
+    const wt = await branchCommitting('orch/mix1', {
+      'pnpm-lock.yaml': `${REAL_LOCK}# STALE-BRANCH\n`,
+      'src.txt': 'BRANCH-EDIT\n',
+    });
+    await commitOnBase(
+      { 'pnpm-lock.yaml': `${REAL_LOCK}# STALE-BASE\n`, 'src.txt': 'BASE-EDIT\n' },
+      'base edits both',
+    );
+
+    const res = await wtm.integrate(project(), 'orch/mix1', base, wt, 'integrate mix1');
+
+    expect(res.status).toBe('conflict');
+    // BOTH files are still conflicted — the lockfile was never taken, regenerated, or staged.
+    const conflicts = await wtm.listConflicts(project(), wt);
+    expect(conflicts).toContain('pnpm-lock.yaml');
+    expect(conflicts).toContain('src.txt');
+    expect(readFileSync(join(wt, 'pnpm-lock.yaml'), 'utf8')).toContain('<<<<<<<');
+    // Nothing is staged: the index still holds git's unmerged stages, so the next rung sees
+    // exactly the tree git left rather than a half-resolved one.
+    expect(
+      (await git(wt, ['diff', '--cached', '--name-only', '--diff-filter=M'])).stdout.trim(),
+    ).toBe('');
+  }, 120_000);
+});
+
+describe('resolveVersionOnlyConflict', () => {
+  const conflicted = (ours: string, theirs: string, extra = ''): string =>
+    `{\n  "name": "x",\n<<<<<<< HEAD\n  "version": "${ours}",\n=======\n  "version": ` +
+    `"${theirs}",\n>>>>>>> branch\n${extra}  "private": true\n}\n`;
+
+  it('takes our (base) side when every conflict is a version line', () => {
+    const out = resolveVersionOnlyConflict(conflicted('2.0.0', '1.9.9'));
+    expect(out).toBe('{\n  "name": "x",\n  "version": "2.0.0",\n  "private": true\n}\n');
+  });
+
+  it('handles the diff3 conflict style, discarding the ancestor section', () => {
+    const text =
+      '{\n<<<<<<< HEAD\n  "version": "2.0.0",\n||||||| base\n  "version": "1.0.0",\n' +
+      '=======\n  "version": "1.9.9",\n>>>>>>> branch\n}\n';
+    expect(resolveVersionOnlyConflict(text)).toBe('{\n  "version": "2.0.0",\n}\n');
+  });
+
+  it('refuses a conflict that touches anything else', () => {
+    const text =
+      '{\n<<<<<<< HEAD\n  "version": "2.0.0",\n  "main": "base.js"\n=======\n' +
+      '  "version": "1.9.9",\n  "main": "branch.js"\n>>>>>>> branch\n}\n';
+    expect(resolveVersionOnlyConflict(text)).toBeNull();
+  });
+
+  it('refuses a second, non-version hunk even when the first one qualifies', () => {
+    const text =
+      conflicted('2.0.0', '1.9.9') +
+      '<<<<<<< HEAD\n  "build": "tsc"\n=======\n  "build": "vite"\n>>>>>>> branch\n';
+    expect(resolveVersionOnlyConflict(text)).toBeNull();
+  });
+
+  it('refuses a file with no markers, and one whose markers never close', () => {
+    expect(resolveVersionOnlyConflict('{\n  "version": "1.0.0"\n}\n')).toBeNull();
+    expect(resolveVersionOnlyConflict('<<<<<<< HEAD\n  "version": "1.0.0",\n')).toBeNull();
   });
 });
 
