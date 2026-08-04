@@ -38,7 +38,13 @@ import {
   type ProjectWithTasks,
   type Task,
 } from '@shared/model';
-import { categoryFromKey, columnForStatus, restingStatus } from '@shared/board';
+import {
+  ARCHIVE_RETENTION_DAYS,
+  categoryFromKey,
+  columnForStatus,
+  JIRA_BOARD_LIMIT,
+  restingStatus,
+} from '@shared/board';
 import { assignmentStatusPatch, humanStatusPatch } from './cardStatusGuard';
 import { resolveStatusColumn } from '@shared/statusResolve';
 import type { AppSettings } from '@shared/settings';
@@ -159,8 +165,10 @@ function ensureAligned(store: Store, project: Project, hasMarkers: boolean): Pro
  * FINISHED card stays visible in the Done column, which is a matter of taste. This is the point
  * at which the app stops holding a row nobody has looked at in half a year, and the only tuning
  * anybody wants on it is "longer".
+ *
+ * The number itself lives in `@shared/board` because Settings states it to the human, and a
+ * bound stated in one place and enforced in another drifts.
  */
-const ARCHIVE_RETENTION_DAYS = 180;
 const ARCHIVE_RETENTION_MS = ARCHIVE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 
 /** What registerIpcHandlers hands back so the app can shut resources down cleanly. */
@@ -1586,6 +1594,29 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // What the board asks for when it draws itself — so, by definition, the cards on it.
   handle('board:tasks', async () => store.getPersonalTasks());
 
+  // And the cards that are NOT on it — the same rows, the other side of `archivedAt`.
+  handle('board:archived', async () => store.getArchivedTasks());
+
+  handle('task:restore', async (taskId) => {
+    const task = store.getTask(taskId);
+    if (!task) throw new Error('That card is no longer there.');
+    // A card that was never removed has nothing to restore, and saying so is the point: a
+    // Restore that quietly did nothing looks exactly like one that worked.
+    if (task.archivedAt == null) throw new Error('That card is already on the board.');
+    store.unarchiveTask(taskId);
+    const tasks = store.getPersonalTasks();
+    send('project:tasksChanged', { projectId: PERSONAL_PROJECT_ID, tasks });
+    // The rows never went anywhere — a link and an attachment both survive their card being
+    // archived, exactly as they survive nothing at all. But the RENDERER's copies were
+    // filtered against a board this card was not on: the chain overlay drops an arrow whose
+    // endpoint it cannot find, and the pane's chips are sliced by task id. So both lists are
+    // pushed again, for the same reason `task:delete` pushes them — the card's own state did
+    // not change, its place on the board did, and nothing else would say so.
+    pushChainLinks();
+    pushAttachments();
+    return tasks;
+  });
+
   // --- The chain of execution ------------------------------------------------
   /** Push the whole link list at the board. Returns it, so handlers can also reply with it. */
   function pushChainLinks(): TaskLink[] {
@@ -1804,17 +1835,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     return names;
   };
 
-  /**
-   * How many issues a sync will read before it gives up and calls the answer partial.
-   *
-   * Not a page size — `searchAll` pages to the end — but a ceiling on how big a board this
-   * app will try to hold, and the point at which it says so rather than pretending. The old
-   * limit was one page of 100, which is why a board of three hundred lost two hundred cards:
-   * a search that stops short is indistinguishable, from the issues alone, from a board that
-   * shrank. Past this, `truncated` is set and nothing is removed at all.
-   */
-  const JIRA_BOARD_LIMIT = 1000;
-
   // One JIRA sync: fetch issues, reconcile into the store, push the fresh board.
   // Shared by the manual `jira:sync` handler and the background poller below.
   const syncJira = async (): Promise<Task[]> => {
@@ -1933,7 +1953,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // one names the ticket and the reason, because a card that vanished with nothing in the
     // log is exactly the bug this whole change exists to end.
     for (const r of removals) {
-      store.archiveTask(r.taskId, now);
+      // The reason goes onto the ROW as well as into the log: the log answers "what happened
+      // last Tuesday", the row answers "why is this card not on my board", and only one of
+      // those questions gets asked by someone looking at the Removed-cards list.
+      store.archiveTask(r.taskId, now, r.reason);
       logMain(`JIRA sync: archived ${r.key} — ${r.reason} (${r.title})`);
     }
     for (const r of refused) {

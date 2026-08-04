@@ -665,6 +665,23 @@ export interface IpcApi {
   'jira:statuses': () => Promise<JiraStatusList>;
   /** Every task on the standalone Personal board (JIRA tickets + internal ad-hoc). */
   'board:tasks': () => Promise<Task[]>;
+  /**
+   * The cards that have been taken OFF that board and not destroyed — most recently removed
+   * first. The complement of `board:tasks`, and the list "Removed cards" is drawn from.
+   *
+   * Every one still has its timeline, its files, its arrows and its transcript; `archivedAt`
+   * says when it left and `archivedReason` says which question's answer took it. They are kept
+   * for `ARCHIVE_RETENTION_DAYS` and then destroyed by the boot sweep.
+   */
+  'board:archived': () => Promise<Task[]>;
+  /**
+   * Put a removed card back on the board, with the same id and everything hanging off it.
+   * Returns the fresh board, so the caller does not have to ask for it again.
+   *
+   * Rejects for an unknown id, and for a card that was never off the board — a Restore that
+   * silently did nothing would be indistinguishable from one that worked.
+   */
+  'task:restore': (taskId: string) => Promise<Task[]>;
 
   // --- The chain of execution (see `@shared/taskChain`) ---------------------
   /**

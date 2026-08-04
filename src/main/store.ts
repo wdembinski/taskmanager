@@ -21,6 +21,7 @@ import {
   type ProjectPatch,
   type Task,
   type TaskActivityEntry,
+  type TaskArchiveReason,
   type TaskStatus,
   type TaskType,
 } from '@shared/model';
@@ -106,6 +107,8 @@ interface TaskRow {
   retainedSince: number | null;
   /** When this card was taken off the board, the row surviving. See `Task.archivedAt`. */
   archivedAt: number | null;
+  /** Which answer took it off the board. See `Task.archivedReason`. */
+  archivedReason: string | null;
   lastReadCommentAt: number | null;
   latestCommentAt: number | null;
   /** The project this card is filed under — what it is ABOUT. NULL when unfiled. */
@@ -256,11 +259,19 @@ export interface Store {
    * timeline, its attachments, its transcript, and the chain arrows at both ends. Its steps go
    * with it — a step is only ever shown under its parent.
    *
+   * `reason` is the question whose answer took it off — recorded on the row so the
+   * Removed-cards list can say *why*, which is the only thing that list is for. Omitted
+   * (null) reads as "an earlier version removed this", which is the truth for every row
+   * archived before the column existed.
+   *
    * Returns the archived card, or undefined for an unknown id, for a card that is already
    * archived, or for a STEP: a step is not on the board, so it cannot leave it on its own.
    */
-  archiveTask(id: string, at: number): Task | undefined;
-  /** Put one back, steps and all, with the same id it left under. Undefined if unknown. */
+  archiveTask(id: string, at: number, reason?: TaskArchiveReason | null): Task | undefined;
+  /**
+   * Put one back, steps and all, with the same id it left under — and with its reason
+   * cleared, since it no longer describes anything. Undefined if unknown.
+   */
   unarchiveTask(id: string): Task | undefined;
   /**
    * Destroy every card archived before `cutoff`, exactly as `deleteTask` would — the retention
@@ -568,6 +579,7 @@ export function createStore(dbPath: string): Store {
       preRunStatus           TEXT,
       retainedSince          INTEGER,
       archivedAt             INTEGER,
+      archivedReason         TEXT,
       lastReadCommentAt      INTEGER,
       latestCommentAt        INTEGER,
       projectTagId           TEXT,
@@ -953,6 +965,10 @@ export function createStore(dbPath: string): Store {
     // pre-existing row = "it is on the board", which is true of everything already there —
     // so an upgrade hides nothing, and the column stays empty until something archives.
     ['archivedAt', 'INTEGER'],
+    // Which answer took it off. NULL on every pre-existing row — including one archived by
+    // the version that added `archivedAt` and nothing else — which the Removed-cards list
+    // reads as "removed by an earlier version" rather than inventing a reason for it.
+    ['archivedReason', 'TEXT'],
   ] as Array<[string, string]>) {
     if (!taskColumns.some((c) => c.name === name)) {
       db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
@@ -1079,7 +1095,7 @@ export function createStore(dbPath: string): Store {
         externalSource, externalKey, externalId, externalUrl, externalStatus, externalStatusCategory,
         externalPriority, externalType, externalLabel, externalParentKey, externalEpicName, externalSprint,
         externalDescription,
-        preBlockStatus, preRunStatus, retainedSince, archivedAt, lastReadCommentAt, latestCommentAt,
+        preBlockStatus, preRunStatus, retainedSince, archivedAt, archivedReason, lastReadCommentAt, latestCommentAt,
         projectTagId, agentProjectId, agentMode, agentModel,
         agentPlan, agentBranch, planRound, landedAt, autoRelease, autoIntegrate)
      VALUES
@@ -1088,7 +1104,7 @@ export function createStore(dbPath: string): Store {
         @externalSource, @externalKey, @externalId, @externalUrl, @externalStatus, @externalStatusCategory,
         @externalPriority, @externalType, @externalLabel, @externalParentKey, @externalEpicName, @externalSprint,
         @externalDescription,
-        @preBlockStatus, @preRunStatus, @retainedSince, @archivedAt, @lastReadCommentAt, @latestCommentAt,
+        @preBlockStatus, @preRunStatus, @retainedSince, @archivedAt, @archivedReason, @lastReadCommentAt, @latestCommentAt,
         -- The filing column was added after this INSERT was written and only ever set by
         -- an UPDATE, so a card created already filed (the Add-task dialog's Project
         -- picker) used to lose its project between the form and the row.
@@ -1101,10 +1117,14 @@ export function createStore(dbPath: string): Store {
   // it under its parent — so a step left behind by an archived card is a row nothing can
   // reach and nothing can restore.
   const archiveTaskStmt = db.prepare(
-    `UPDATE tasks SET archivedAt = @at WHERE (id = @id OR parentTaskId = @id) AND archivedAt IS NULL`,
+    `UPDATE tasks SET archivedAt = @at, archivedReason = @reason
+     WHERE (id = @id OR parentTaskId = @id) AND archivedAt IS NULL`,
   );
+  // The reason is cleared with the timestamp: it describes an ABSENCE, and a card that is
+  // back on the board has none. Leaving it behind would have the next removal's list show a
+  // stale sentence for a card removed for some other reason entirely.
   const unarchiveTaskStmt = db.prepare(
-    `UPDATE tasks SET archivedAt = NULL WHERE id = @id OR parentTaskId = @id`,
+    `UPDATE tasks SET archivedAt = NULL, archivedReason = NULL WHERE id = @id OR parentTaskId = @id`,
   );
   // The ids the retention sweep is allowed to destroy. Selected rather than deleted in one
   // statement so each goes out through the same `deleteTaskDeep` an explicit delete uses, and
@@ -1623,6 +1643,7 @@ export function createStore(dbPath: string): Store {
       preRunStatus: task.preRunStatus ?? null,
       retainedSince: task.retainedSince ?? null,
       archivedAt: task.archivedAt ?? null,
+      archivedReason: task.archivedReason ?? null,
       lastReadCommentAt: task.lastReadCommentAt ?? null,
       latestCommentAt: task.latestCommentAt ?? null,
       projectTagId: task.projectTagId ?? null,
@@ -1685,6 +1706,7 @@ export function createStore(dbPath: string): Store {
       preRunStatus: (r.preRunStatus as Task['preRunStatus']) ?? null,
       retainedSince: r.retainedSince ?? null,
       archivedAt: r.archivedAt ?? null,
+      archivedReason: (r.archivedReason as Task['archivedReason']) ?? null,
       lastReadCommentAt: r.lastReadCommentAt,
       latestCommentAt: r.latestCommentAt,
       projectTagId: r.projectTagId,
@@ -1983,13 +2005,13 @@ export function createStore(dbPath: string): Store {
       return (selectArchivedBoardTasks.all(PERSONAL_PROJECT_ID) as TaskRow[]).map(rowToTask);
     },
 
-    archiveTask(id, at) {
+    archiveTask(id, at, reason = null) {
       const task = getTask(id);
       // A step is not on the board — it is drawn under its parent — so it has no independent
       // way off it. Archiving one would leave a row `getArchivedTasks` shows with no card to
       // restore it through, and which the retention sweep (cards only) would never collect.
       if (!task || task.parentTaskId || task.archivedAt != null) return undefined;
-      archiveTaskStmt.run({ id, at });
+      archiveTaskStmt.run({ id, at, reason });
       return getTask(id);
     },
 
@@ -2016,12 +2038,13 @@ export function createStore(dbPath: string): Store {
         // assignment, the branch it runs on, the plan that assignment produced, the steps
         // derived from it, or what they last said about where the card is.
         //
-        // `archivedAt` is absent for the same reason and one sharper still: whether a card is
-        // on the board is not a tracker field at all — JIRA has never heard of it, so a row
-        // built from an issue carries `archivedAt: null` whether or not the card is archived,
-        // and listing it here would mean any sync that so much as touched a removed card put
-        // it silently back on the board. Archiving and restoring go through `archiveTask` /
-        // `unarchiveTask`, which write that column and nothing else.
+        // `archivedAt` and `archivedReason` are absent for the same reason and one sharper
+        // still: whether a card is on the board is not a tracker field at all — JIRA has never
+        // heard of it, so a row built from an issue carries `archivedAt: null` whether or not
+        // the card is archived, and listing them here would mean any sync that so much as
+        // touched a removed card put it silently back on the board. Archiving and restoring go
+        // through `archiveTask` / `unarchiveTask`, which write those two columns and nothing
+        // else.
         db.prepare(
           `UPDATE tasks SET
              phase = @phase, title = @title, status = @status, "order" = @order, source = @source,

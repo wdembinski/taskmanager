@@ -38,6 +38,30 @@ const RUN_STATUSES: ReadonlySet<TaskStatus> = new Set([
  */
 export const MAX_PLAN_STEPS = 200;
 
+/**
+ * How many issues one JIRA sync will read before it calls the answer partial.
+ *
+ * Not a page size — the client pages to the end — but a ceiling on how big a board this app
+ * will try to hold, and the point at which it says so instead of pretending. Past it the
+ * fetch is marked truncated and the sync removes **nothing at all**, because a search that
+ * stopped short is indistinguishable, from the issues alone, from a board that shrank.
+ *
+ * Lives in `shared` for the same reason {@link MAX_PLAN_STEPS} does: the sync enforces it and
+ * Settings states it, and a number the human is told that is not the number the engine uses
+ * is worse than not telling them. There is deliberately **no setting** for it — a knob that
+ * can be set wrong will be, and setting it too low here means losing cards.
+ */
+export const JIRA_BOARD_LIMIT = 1000;
+
+/**
+ * How long a card that has left the board is kept before the boot sweep destroys it.
+ *
+ * The backstop under archiving: a board that removes cards forever would otherwise grow
+ * forever. Long enough that a card removed by a sync you were not watching is still there
+ * when you go looking; also stated in Settings, hence `shared`.
+ */
+export const ARCHIVE_RETENTION_DAYS = 180;
+
 /** Whether `status` is one a live run put there. See {@link RUN_STATUSES}. */
 export function isRunStatus(status: TaskStatus): boolean {
   return RUN_STATUSES.has(status);

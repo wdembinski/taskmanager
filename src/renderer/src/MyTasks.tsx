@@ -29,6 +29,7 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import {
+  ArchiveRegular,
   ArrowRoutingRegular,
   BranchForkRegular,
   EyeRegular,
@@ -54,6 +55,12 @@ import {
   type TaskLink,
 } from '@shared/taskChain';
 import { AddTaskDialog } from './AddTaskDialog';
+import {
+  ArchivedCardsDialog,
+  archivedCards,
+  archivedCountLabel,
+  archivedCountTitle,
+} from './ArchivedCardsDialog';
 import { GitGraphPane } from './GitGraphPane';
 import { PaneLoading } from './PaneLoading';
 import { TaskDetail } from './TaskDetail';
@@ -202,6 +209,26 @@ export function MyTasks(): JSX.Element {
   const [notice, setNotice] = useState<IpcEvents['board:notice'] | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+  /**
+   * The cards that have LEFT the board — held here rather than fetched when the dialog opens,
+   * because the toolbar button is only offered when there are some, and a count that only
+   * became true once you clicked it would be no count at all.
+   */
+  const [archived, setArchived] = useState<Task[]>([]);
+  /**
+   * The removed CARDS. `board:archived` answers with rows, and a card's steps were archived
+   * with it — see `archivedCards`, which is also why the toolbar's count is derived rather
+   * than being `archived.length`.
+   */
+  const removedCards = useMemo(() => archivedCards(archived), [archived]);
+  /**
+   * When the Removed-cards dialog was opened, or null while it is closed.
+   *
+   * The timestamp rather than a boolean because the list's labels are relative ("yesterday")
+   * and take `now` as an argument — read once, on opening, so the rows cannot re-word
+   * themselves under the pointer on an unrelated re-render.
+   */
+  const [archivedOpenedAt, setArchivedOpenedAt] = useState<number | null>(null);
   // Merge requests for the WHOLE board in one array, not hung off each Task: a JIRA
   // sync rebuilds every task literal, so an array living there would be clobbered on
   // every poll. See the `gitlab:mergeRequests` contract.
@@ -267,13 +294,14 @@ export function MyTasks(): JSX.Element {
   // One seed load for every channel the board reads, so a failure in any of them is
   // reported rather than leaving the board on its spinner.
   const seed = useCallback(async () => {
-    const [board, appSettings, repos, mrs, chain, files] = await Promise.all([
+    const [board, appSettings, repos, mrs, chain, files, gone] = await Promise.all([
       window.api.invoke('board:tasks'),
       window.api.invoke('settings:get'),
       window.api.invoke('agentProject:list'),
       window.api.invoke('gitlab:mergeRequests'),
       window.api.invoke('chain:links'),
       window.api.invoke('attachment:list'),
+      window.api.invoke('board:archived'),
     ]);
     setTasks(board);
     setSettings(appSettings);
@@ -281,7 +309,26 @@ export function MyTasks(): JSX.Element {
     setMergeRequests(mrs);
     setLinks(chain);
     setAttachments(files);
+    setArchived(gone);
   }, []);
+
+  /**
+   * Re-read the removed list. Cheap — one indexed query over a table the board has just been
+   * read from anyway — and there is nothing to push it: a card leaves the board on a POLL, so
+   * "the board changed" is the only signal there is that something might have left it.
+   */
+  const refreshArchived = useCallback(async () => {
+    setArchived(await window.api.invoke('board:archived'));
+  }, []);
+
+  /** Put a removed card back, and take it out of the list it came from. */
+  const restoreCard = useCallback(
+    async (taskId: string) => {
+      setTasks(await window.api.invoke('task:restore', taskId));
+      await refreshArchived();
+    },
+    [refreshArchived],
+  );
 
   const initial = useInitialLoad(seed);
 
@@ -297,7 +344,12 @@ export function MyTasks(): JSX.Element {
   useEffect(() => {
     const offTask = window.api.on('task:changed', ({ task }) => patchTask(task));
     const offTasks = window.api.on('project:tasksChanged', ({ projectId, tasks: next }) => {
-      if (projectId === PERSONAL_PROJECT_ID) setTasks(next);
+      if (projectId !== PERSONAL_PROJECT_ID) return;
+      setTasks(next);
+      // A card leaving the board is a whole-board change and nothing else — there is no
+      // per-card event for it, because from the card's own point of view nothing happened.
+      // So the removed list is re-read alongside: it is the one moment it can have changed.
+      void refreshArchived();
     });
     const offSettings = window.api.on('settings:changed', (next) => {
       setSettings((prev) =>
@@ -333,7 +385,7 @@ export function MyTasks(): JSX.Element {
       offAttachments();
       offNotice();
     };
-  }, [patchTask]);
+  }, [patchTask, refreshArchived]);
 
   const selectedTask = useMemo(
     () => tasks?.find((t) => t.id === selectedTaskId) ?? null,
@@ -896,6 +948,25 @@ export function MyTasks(): JSX.Element {
             aria-pressed={showDetail}
             onClick={() => setShowDetail(!showDetail)}
           />
+          {/* What is NOT on the board. Rendered only when something has left it: on a healthy
+              board this is an empty list, and a permanent button for an empty list is a
+              permanent invitation to check whether anything has gone missing.
+
+              The bare count, because the archive glyph beside it already supplies the noun —
+              and no colour, no badge: these are cards that are not moving, and a count that
+              demanded attention would make an ordinary sync look like an incident. */}
+          {removedCards.length > 0 && (
+            <Button
+              size="small"
+              appearance="subtle"
+              icon={<ArchiveRegular />}
+              title={archivedCountTitle(removedCards.length)}
+              aria-label={archivedCountTitle(removedCards.length)}
+              onClick={() => setArchivedOpenedAt(Date.now())}
+            >
+              {archivedCountLabel(removedCards.length)}
+            </Button>
+          )}
           {/* One button for every enabled service — it was called "Sync JIRA" while also
               refreshing GitLab, which made the merge-request rows look stale on purpose. */}
           {(jiraEnabled || gitlabEnabled) && (
@@ -1140,6 +1211,17 @@ export function MyTasks(): JSX.Element {
         // A link that would not draw is reported HERE: the card exists by then, and the
         // dialog it was refused in is already closing.
         onNotice={setError}
+      />
+
+      <ArchivedCardsDialog
+        open={archivedOpenedAt !== null}
+        archived={removedCards}
+        // Read once, when it opened — see `archivedOpenedAt`.
+        now={archivedOpenedAt ?? 0}
+        onClose={() => setArchivedOpenedAt(null)}
+        // Left open on purpose: restoring one card of five is a normal thing to do, and the
+        // list shortens under you as each goes back. It closes when you close it.
+        onRestore={restoreCard}
       />
     </div>
   );

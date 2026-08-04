@@ -359,6 +359,22 @@ export function resolveRunModel(
  */
 export type TaskType = 'bug' | 'feature';
 
+/**
+ * Why a card was taken off the board — see {@link Task.archivedReason}.
+ *
+ * Each one names a question JIRA answered, because that is the rule the sync enforces: no
+ * card leaves the board unless it was asked about by key and answered (`reconcileJiraTasks`).
+ * Lives here rather than beside the sync so the Removed-cards list can spell them out to the
+ * human without the renderer importing anything from main.
+ */
+export type TaskArchiveReason =
+  /** JIRA was asked whether this key still matches the board's query, and said no. */
+  | 'left-query'
+  /** A finished card kept past the query, until `doneRetentionDays` ran out. */
+  | 'retention-expired'
+  /** Asked for by key, and JIRA does not have it: deleted, or invisible to this token. */
+  | 'gone-from-jira';
+
 /** One unit of work, parsed from a plan or added ad-hoc, owned by the app's DB. */
 export interface Task {
   /** Stable app-assigned id (UUID). */
@@ -582,6 +598,22 @@ export interface Task {
    * everything already there when the app starts.
    */
   archivedAt?: number | null;
+  /**
+   * Which question's answer took this card off the board, or null on a card that is on it
+   * (and on every row archived before this column existed).
+   *
+   * Stored rather than derived, because the Removed-cards list exists to answer exactly one
+   * question — *why is this not on my board?* — and the row alone cannot answer it. A card
+   * dropped for `retention-expired` and one dropped for `gone-from-jira` are the same row in
+   * every other respect (both were retained, both have a `retainedSince`), and they mean
+   * opposite things to the human: one is the app's own clock running out on a card you
+   * finished, the other is the ticket having been deleted or hidden from your token. A list
+   * that guessed between them would be worse than one that said nothing.
+   *
+   * Cleared by `unarchiveTask` along with `archivedAt` — the reason describes an absence, and
+   * a card that is back has none.
+   */
+  archivedReason?: TaskArchiveReason | null;
   /** Epoch ms of the newest tracker comment the user has read (unread-badge marker). */
   lastReadCommentAt?: number | null;
   /** Epoch ms of the newest tracker comment seen at the last sync (drives unread). */

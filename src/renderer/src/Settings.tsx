@@ -55,6 +55,7 @@ import { MODELS, type BoardColumn } from '@shared/model';
 import type { AppInfo, JiraConfigStatus, JiraStatusOption, JiraTestResult } from '@shared/ipc';
 import { describeUpdate, type UpdateState } from '@shared/update';
 import { isCloudHost } from '@shared/jiraUrl';
+import { ARCHIVE_RETENTION_DAYS, JIRA_BOARD_LIMIT } from '@shared/board';
 import { COLUMN_META, statusForColumn } from './board/boardColumns';
 import { STATUS_LABEL } from './taskStatus';
 import { MAPPABLE_COLUMNS, rowsToStatusMap, statusMapToRows, type StatusMapRow } from './statusMap';
@@ -1119,7 +1120,7 @@ export function Settings(): JSX.Element {
 
             <Field
               label="Keep finished cards for (days)"
-              hint="Most JQL (`resolution = Unresolved`) stops matching an issue the moment you finish it, which would empty the Done column as fast as you filled it. A finished card is kept this long past the query instead, and re-read by key each sync — so moving the ticket back out of Done in JIRA still moves the card. 0 = drop it as soon as the query does."
+              hint="Most JQL (`resolution = Unresolved`) stops matching an issue the moment you finish it, which would empty the Done column as fast as you filled it. A finished card is kept this long past the query instead, and re-read by key each sync — so moving the ticket back out of Done in JIRA still moves the card. 0 = take it off the board as soon as the query drops it."
             >
               <SpinButton
                 min={0}
@@ -1131,6 +1132,25 @@ export function Settings(): JSX.Element {
                     patchJira({ doneRetentionDays: Math.max(0, Math.round(n as number)) });
                 }}
               />
+            </Field>
+
+            {/* What a card past that window actually goes THROUGH, and the bound on the fetch
+                that decides it. Both are read-only: the retention sweep is not a matter of
+                taste, and the fetch limit is a number that can only be set wrong — too low and
+                a big board reads as a shrinking one. Stated here because the alternative to
+                telling people is their finding out. */}
+            <Field label="What happens after that">
+              <Caption1 className={styles.hint}>
+                The card is <strong>removed from the board, not deleted</strong>. Its timeline, its
+                files, the chain arrows drawn to and from it and any agent transcript stay exactly
+                where they are, and it sits under <strong>Removed cards</strong> in the
+                My&nbsp;Tasks toolbar — one click puts it back on the board with the same id. It is
+                destroyed only after {ARCHIVE_RETENTION_DAYS} days there.
+                <br />
+                Each sync reads up to {JIRA_BOARD_LIMIT} issues. Above that the sync fetches what it
+                can and <strong>removes nothing</strong> — a search that stopped short looks exactly
+                like a board that shrank, so it is not treated as evidence that anything left.
+              </Caption1>
             </Field>
 
             <Field

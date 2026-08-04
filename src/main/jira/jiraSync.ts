@@ -18,7 +18,12 @@
  * {@link reconcileJiraTasks}: **no card leaves the board unless JIRA was asked about it by
  * key and answered.**
  */
-import { PERSONAL_PROJECT_ID, type BoardColumn, type Task } from '@shared/model';
+import {
+  PERSONAL_PROJECT_ID,
+  type BoardColumn,
+  type Task,
+  type TaskArchiveReason,
+} from '@shared/model';
 import {
   categoryFromKey,
   columnForTask,
@@ -140,14 +145,15 @@ function asSet(keys: KeySet | null | undefined): ReadonlySet<string> | null {
   return keys instanceof Set ? keys : new Set(keys as readonly string[]);
 }
 
-/** Why the board is letting go of a card. Each one is a different question having answered. */
-export type JiraRemovalReason =
-  /** JIRA was asked whether this key still matches the query, and said no. */
-  | 'left-query'
-  /** A retained card that has been kept for longer than the retention window. */
-  | 'retention-expired'
-  /** Asked for by key, and JIRA does not have it: deleted, or invisible to this token. */
-  | 'gone-from-jira';
+/**
+ * Why the board is letting go of a card. Each one is a different question having answered.
+ *
+ * The same union the row stores and the Removed-cards list spells out — `TaskArchiveReason`
+ * in `@shared/model` — because the reason a card left is carried all the way from this
+ * decision to the sentence the human reads, and two vocabularies that had to be kept in step
+ * would eventually not be.
+ */
+export type JiraRemovalReason = TaskArchiveReason;
 
 /**
  * One card the board is letting go of. Carries the key and the title as well as the id,

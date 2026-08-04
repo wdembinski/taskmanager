@@ -1,6 +1,8 @@
 /**
  * Headless verification for `tasks.archivedAt` — the column that lets a card leave the BOARD
- * without leaving the database.
+ * without leaving the database — and `tasks.archivedReason` beside it, which records WHICH
+ * question's answer sent it, since that is the one thing the Removed-cards list cannot work
+ * out from the row.
  *
  * There is nothing here `vitest` could take over. Every claim being made is a claim about a
  * real SQLite file: that the column appears on a fresh profile AND on one written by v0.68.1,
@@ -262,6 +264,18 @@ check(
   archived[0] && JSON.stringify({ notnull: archived[0].notnull, dflt: archived[0].dflt_value }),
 );
 
+// Its companion, added with the Removed-cards list: WHICH question's answer took the card off.
+// TEXT and nullable for the same migration reason — a row archived by the version that had only
+// the timestamp records no reason, and the list says exactly that rather than guessing one.
+const reasonCol = info.filter((c) => c.name === 'archivedReason');
+check('tasks has exactly one archivedReason column', reasonCol.length === 1, String(reasonCol.length));
+check('it is TEXT, holding the reason union verbatim', reasonCol[0] && reasonCol[0].type === 'TEXT', reasonCol[0] && reasonCol[0].type);
+check(
+  'nullable, with no default — NULL is "nobody recorded why"',
+  reasonCol[0] && reasonCol[0].notnull === 0 && reasonCol[0].dflt_value === null,
+  reasonCol[0] && JSON.stringify({ notnull: reasonCol[0].notnull, dflt: reasonCol[0].dflt_value }),
+);
+
 const brandNew = store.createTask(PERSONAL, { title: 'a brand new card' });
 // Read back rather than trusting what createTask handed over: like retainedSince and landedAt
 // beside it, that literal simply omits the field, and the column is what the board is drawn
@@ -289,6 +303,10 @@ const oldAfter = new Database('__OLD_DB__', { readonly: true });
 check(
   'opening it with the current code adds archivedAt',
   oldAfter.prepare('PRAGMA table_info(tasks)').all().filter((c) => c.name === 'archivedAt').length === 1,
+);
+check(
+  'and archivedReason beside it',
+  oldAfter.prepare('PRAGMA table_info(tasks)').all().filter((c) => c.name === 'archivedReason').length === 1,
 );
 check(
   'the card and its comment survived the open',
@@ -389,9 +407,26 @@ check(
 );
 
 const AT = 5_000_000;
-const archivedCard = store.archiveTask(keeper.id, AT);
+const archivedCard = store.archiveTask(keeper.id, AT, 'gone-from-jira');
 check('archiveTask hands back the card it archived', Boolean(archivedCard) && archivedCard.id === keeper.id);
 check('stamped with the time it was given', archivedCard && archivedCard.archivedAt === AT, archivedCard && String(archivedCard.archivedAt));
+// The one thing the Removed-cards list cannot work out for itself: a card dropped because its
+// ticket is gone and one dropped because a retention clock expired are the same row otherwise.
+check('and with the reason it was given', archivedCard && archivedCard.archivedReason === 'gone-from-jira', archivedCard && String(archivedCard.archivedReason));
+check(
+  'which reads back off the archived list, not just off the return value',
+  store.getArchivedTasks().find((t) => t.id === keeper.id)?.archivedReason === 'gone-from-jira',
+);
+check(
+  'archiving without one records no reason rather than inventing a default',
+  (() => {
+    const nameless = store.createTask(PERSONAL, { title: 'archived by a caller that said nothing' });
+    const done = store.archiveTask(nameless.id, AT);
+    const ok = done && done.archivedReason === null;
+    store.deleteTask(nameless.id);
+    return ok;
+  })(),
+);
 
 const board = store.getPersonalTasks().map((t) => t.id);
 check('the card is off the board', !board.includes(keeper.id));
@@ -453,6 +488,9 @@ const restored = store.unarchiveTask(keeper.id);
 check('unarchiveTask hands the card back', Boolean(restored));
 check('with the SAME id it left under', restored && restored.id === keeper.id);
 check('and archivedAt cleared', restored && restored.archivedAt === null, restored && String(restored.archivedAt));
+// The reason describes an ABSENCE. Left behind, it would still be sitting there the next time
+// this card left the board for some entirely different reason.
+check('and the reason cleared with it', restored && restored.archivedReason === null, restored && String(restored.archivedReason));
 
 const backOnBoard = store.getPersonalTasks().map((t) => t.id);
 check('it is on the board again', backOnBoard.includes(keeper.id));
