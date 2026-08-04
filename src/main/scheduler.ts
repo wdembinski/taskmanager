@@ -264,6 +264,55 @@ export function shouldAutoRetry(attemptsSpent: number, maxAutoRetries: number): 
 }
 
 /**
+ * The failure reasons a second attempt cannot change, matched against the text `settle`
+ * produced (the CLI's `terminalReason`/`stopReason`, `describeEmptyOutcome`'s verdict, or
+ * the app's own wording). Case-insensitive, and deliberately never global — a `g` flag
+ * makes `RegExp.test` stateful across calls, which would make this classifier alternate.
+ */
+const UNRETRYABLE_FAILURE_PATTERNS: readonly RegExp[] = [
+  // The CLI could not be started at all: not installed, not on PATH, or the spawn itself
+  // failed. `ENOENT` covers both the binary and the directory case below.
+  /failed to start claude/i,
+  /command not found/i,
+  /is not recognized as an internal/i,
+  /\bENOENT\b/,
+  /not found on your path/i,
+  // Nothing to authenticate with. A retry sends the same credentials to the same wall.
+  /not logged in/i,
+  /\bunauthori[sz]ed\b/i,
+  /authentication[_ -]?error/i,
+  /invalid api key/i,
+  // A usage limit. The gate (`limitGate`) is what resumes this work at the reset; burning
+  // an auto-retry against a closed window only costs a launch and parks the card sooner.
+  /usage limit/i,
+  /rate[_ -]?limit/i,
+  // The working directory is gone — a worktree deleted under the run, or a project path
+  // that has moved. Nothing about a second launch into the same missing path differs.
+  /no such file or directory/i,
+  /worktree preparation error/i,
+  // `describeEmptyOutcome`: the model was never called. The session started and died, so
+  // the second attempt is not a second chance at the work — it is the same dead start.
+  /without running a turn/i,
+];
+
+/**
+ * Whether a failed run is worth launching again as-is (token audit, S3).
+ *
+ * `handleRunFailure` used to re-run the identical prompt `maxAutoRetries` times with no
+ * notion of *why* it failed, so a deterministic cause — no CLI, no login, a usage limit, a
+ * directory that no longer exists — bought a full second session at ~$3 and then parked
+ * anyway. Retryability is a property of the reason text, so this is pure and testable.
+ *
+ * The default is TRUE: an unrecognised reason keeps today's behaviour (a run that failed
+ * once may well be transient — a dead process, a flaky tool call), and only the causes we
+ * can name are refused. Being wrong in that direction costs one retry; being wrong the
+ * other way silently stops retrying work that would have succeeded.
+ */
+export function isRetryableFailure(reason: string): boolean {
+  return !UNRETRYABLE_FAILURE_PATTERNS.some((pattern) => pattern.test(reason));
+}
+
+/**
  * The permission mode a RELEASE run gets (see `@shared/release`).
  *
  * Everything else about a release run inherits the card, but not this: `plan` mode may
@@ -3239,11 +3288,20 @@ export class Scheduler {
    * worktree/session so partial work and context are kept), then park it in the
    * inbox for the human. The retry re-queues the task to `pending` and records it in
    * `retryQueue`, so the `exited` handler relaunches it even for an idle/ad-hoc queue.
+   *
+   * Two things bound the cost of that retry (token audit, S3):
+   *
+   *  1. A failure whose cause a retry cannot change (`isRetryableFailure`) skips the
+   *     branch entirely and parks on attempt 1, with the same options it would have got
+   *     after burning every attempt.
+   *  2. The retry that does happen is *informed*: the reason is queued as this task's fix
+   *     note, so the next launch says what went wrong instead of repeating the first
+   *     attempt verbatim. On a resumed session that costs a short note, not a re-brief.
    */
   private handleRunFailure(run: Run, reason: string): void {
     const attempted = this.attempts.get(run.taskId) ?? 0;
     const max = Math.max(0, this.store.getSettings().maxAutoRetries);
-    if (shouldAutoRetry(attempted, max)) {
+    if (isRetryableFailure(reason) && shouldAutoRetry(attempted, max)) {
       this.attempts.set(run.taskId, attempted + 1);
       this.noteRun(
         run.projectId,
@@ -3251,6 +3309,9 @@ export class Scheduler {
         run.runId,
         `Attempt failed (${reason}). Auto-retrying (${attempted + 1}/${max})…`,
       );
+      // The note is consumed by the next launch (`launch` reads and deletes it), so this
+      // never accumulates; the freshest failure is what the next attempt needs to hear.
+      this.fixNotes.set(run.taskId, reason);
       this.retryQueue.add(run.taskId);
       this.updateTask(run.taskId, { status: 'pending' }, null);
       return;

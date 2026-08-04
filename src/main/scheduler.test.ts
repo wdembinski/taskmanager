@@ -15,6 +15,7 @@ import {
   Scheduler,
   selectNextPending,
   shouldAutoRetry,
+  isRetryableFailure,
   describeEmptyOutcome,
   releaseMode,
   type Schedulable,
@@ -859,6 +860,60 @@ describe('failure decision helpers (pure)', () => {
     expect(shouldAutoRetry(0, -3)).toBe(false); // negative cap clamps to 0
   });
 
+  /**
+   * Token audit, S3: a second identical attempt at a deterministic failure costs a whole
+   * session (~$3) and parks anyway. The classifier reads the reason text `settle` built,
+   * so these are the strings the app and the CLI actually produce.
+   */
+  it('refuses a retry for a cause the retry cannot change', () => {
+    // The CLI could not be started at all.
+    expect(isRetryableFailure('Failed to start Claude: spawn claude ENOENT')).toBe(false);
+    expect(isRetryableFailure('claude: command not found')).toBe(false);
+    expect(
+      isRetryableFailure("'claude' is not recognized as an internal or external command"),
+    ).toBe(false);
+    // Nothing to authenticate with.
+    expect(isRetryableFailure('Claude is installed but not logged in')).toBe(false);
+    expect(isRetryableFailure('authentication_error: invalid API key')).toBe(false);
+    expect(isRetryableFailure('401 Unauthorized')).toBe(false);
+    // A closed usage window — the limit gate resumes this, not a retry.
+    expect(isRetryableFailure('usage limit reached')).toBe(false);
+    expect(isRetryableFailure('rate_limit_error')).toBe(false);
+    // The directory the run needs is gone.
+    expect(isRetryableFailure('ENOENT: no such file or directory, chdir C:/w/wt-t1')).toBe(false);
+    expect(isRetryableFailure('Worktree preparation error: bad object HEAD')).toBe(false);
+    // `describeEmptyOutcome`'s dead-session verdict, verbatim.
+    expect(
+      isRetryableFailure(
+        'the session ended without running a turn — nothing was sent to the model',
+      ),
+    ).toBe(false);
+  });
+
+  /**
+   * The default is "retry". An unrecognised reason keeps the old behaviour, because being
+   * wrong that way costs one attempt, while being wrong the other way silently stops
+   * retrying work that would have succeeded.
+   */
+  it('still retries the transient and the unrecognised', () => {
+    expect(isRetryableFailure('the process exited with code 1')).toBe(true);
+    expect(isRetryableFailure('the session ended without success')).toBe(true);
+    expect(isRetryableFailure('error')).toBe(true);
+    // The most common failure in the audit window — and genuinely worth a second go.
+    expect(
+      isRetryableFailure('the planning session ended without presenting a plan. If it stopped…'),
+    ).toBe(true);
+  });
+
+  // `RegExp.test` with a `g` flag alternates between calls; the same reason must classify
+  // the same way every time it is asked.
+  it('is stable when asked repeatedly', () => {
+    for (let i = 0; i < 3; i++) {
+      expect(isRetryableFailure('spawn claude ENOENT')).toBe(false);
+      expect(isRetryableFailure('the process exited with code 1')).toBe(true);
+    }
+  });
+
   it('offers retry/fix/cleanup actions for a run failure', () => {
     const actions = failureActionsFor('run');
     expect(actions).toEqual([
@@ -971,6 +1026,39 @@ describe('Scheduler run-failure handling', () => {
     // The failed run exits; the idle-queue retry path relaunches it once.
     fire(exited);
     expect(start).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Token audit, S3. `maxAutoRetries` is 1 here, so the old code re-launched a whole
+   * session — the CLI is still missing, the second attempt dies the same way — and parked
+   * afterwards. It now parks on attempt 1, with exactly the options it would have got.
+   */
+  it('parks an unretryable failure immediately instead of spending an attempt', () => {
+    const { task, start, emitAttention, fire } = setup(1);
+
+    fire({ ...failResult, terminalReason: 'Failed to start Claude: spawn claude ENOENT' });
+
+    expect(emitAttention).toHaveBeenCalledTimes(1);
+    const item = emitAttention.mock.calls[0][0] as { kind: string; options: string[] };
+    expect(item.kind).toBe('task-failed');
+    expect(item.options).toEqual(failureActionsFor('run')); // the same way out as before
+    expect(task.status).toBe('waiting-input'); // parked, not re-queued
+    fire(exited);
+    expect(start).not.toHaveBeenCalled(); // and no second session was ever launched
+  });
+
+  /**
+   * The other half of S3: the retry that IS worth making must not be the first attempt
+   * again. The reason is queued as the task's fix note, which `launch` turns into the
+   * "previous attempt failed / diagnose it" prompt (a short note on a resumed session).
+   */
+  it('hands the failure reason to the retry it queues', () => {
+    const { scheduler, fire } = setup(1);
+
+    fire({ ...failResult, terminalReason: 'the tests failed: 3 red in scheduler.test.ts' });
+
+    const fixNotes = (scheduler as unknown as { fixNotes: Map<string, string> }).fixNotes;
+    expect(fixNotes.get('t1')).toBe('the tests failed: 3 red in scheduler.test.ts');
   });
 
   it('parks for the human once auto-retries are exhausted', () => {
