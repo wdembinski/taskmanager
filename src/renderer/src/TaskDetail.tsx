@@ -553,9 +553,14 @@ export function TaskDetail({
     }
   }
 
-  /** Model / permission mode for the NEXT run (a live run keeps what it started with). */
+  /**
+   * Model / permission mode for the NEXT run (a live run keeps what it started with).
+   *
+   * `model: null` is passed straight through: it hands the card back to its agent project's
+   * models, which is a different answer from "don't change the model" (`undefined`).
+   */
   async function setAgentOptions(options: {
-    model?: ClaudeModel;
+    model?: ClaudeModel | null;
     mode?: PermissionMode;
   }): Promise<void> {
     if (!task) return;

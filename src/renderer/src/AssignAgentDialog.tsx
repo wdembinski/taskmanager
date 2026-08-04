@@ -31,7 +31,9 @@ import {
 } from '@fluentui/react-components';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
+import { MODELS } from '@shared/model';
 import type { Project, Task } from '@shared/model';
+import { cardModelFromOption, projectDefaultLabel, PROJECT_DEFAULT } from './modelChoice';
 import {
   BRANCH_TYPES,
   buildBranchName,
@@ -91,7 +93,6 @@ const useStyles = makeStyles({
   ticket: { color: tokens.colorNeutralForeground2 },
 });
 
-const MODELS: ClaudeModel[] = ['haiku', 'sonnet', 'opus'];
 const MODES: PermissionMode[] = ['acceptEdits', 'plan', 'manual', 'bypassPermissions'];
 
 export interface AssignAgentDialogProps {
@@ -114,7 +115,8 @@ export function AssignAgentDialog({
 }: AssignAgentDialogProps): JSX.Element {
   const styles = useStyles();
   const [projectId, setProjectId] = useState<string>('');
-  const [model, setModel] = useState<ClaudeModel>('sonnet');
+  // Null = "follow the agent project", and the dialog's default. See the seeding below.
+  const [model, setModel] = useState<ClaudeModel | null>(null);
   const [mode, setMode] = useState<PermissionMode>('acceptEdits');
   const [notes, setNotes] = useState('');
   // The branch, and the Conventional Commits type it is proposed from. `branchTouched`
@@ -138,7 +140,14 @@ export function AssignAgentDialog({
     setNotes('');
     const resolved = resolveAgentProject(card, projects) ?? projects[0] ?? null;
     setProjectId(resolved?.id ?? '');
-    setModel(card.agentModel ?? resolved?.defaultModel ?? 'sonnet');
+    // The card's own model ONLY: reading the project's in as a seed made a fresh assignment
+    // save an override nobody asked for, pinning the card to the repo's execution model and
+    // quietly excluding it from the repo's planning one. An untouched field now stores null,
+    // and the card follows the project the way an unopened dialog would have left it.
+    //
+    // The one-shot in `store.ts` let go of the overrides this dialog had already written;
+    // this line is what stops it writing them again.
+    setModel(card.agentModel ?? null);
     setMode(card.agentMode ?? resolved?.defaultPermissionMode ?? 'acceptEdits');
     setBranchTouched(false);
     const type = inferBranchType(card.title, card.externalType);
@@ -178,14 +187,18 @@ export function AssignAgentDialog({
     );
   }
 
-  /** Switching repo also switches to that repo's defaults — they're per-project settings. */
+  /**
+   * Switching repo also switches to that repo's defaults — they're per-project settings.
+   *
+   * The model is the exception, and deliberately: it is already "follow the project" unless
+   * the human overrode it, so it follows the NEW project by doing nothing. Copying the
+   * repo's model in here would turn every project switch into an override — and one that
+   * names the execution model, silently opting the card out of the planning one.
+   */
   function pickProject(id: string): void {
     setProjectId(id);
     const picked = agentProjects.find((p) => p.id === id);
-    if (picked) {
-      setModel(picked.defaultModel);
-      setMode(picked.defaultPermissionMode);
-    }
+    if (picked) setMode(picked.defaultPermissionMode);
   }
 
   async function assign(start: boolean): Promise<void> {
@@ -196,7 +209,9 @@ export function AssignAgentDialog({
       const updated = await window.api.invoke('task:assignAgent', task.id, {
         agentProjectId: projectId,
         mode,
-        model,
+        // Omitted rather than null: `task:assignAgent` maps a missing model to null, which
+        // is the same "follow the project" this dialog means by it.
+        model: model ?? undefined,
         notes: notes.trim() || undefined,
         branch: branch.trim() || undefined,
         start,
@@ -266,13 +281,23 @@ export function AssignAgentDialog({
                   </Field>
 
                   <div className={styles.row}>
-                    <Field label="Model" className={styles.grow}>
+                    {/* Left alone, this card runs on whatever the repo above resolves to —
+                        including its planning model when the run is a planning one. Picking
+                        a name here overrides BOTH, for every run of this card. */}
+                    <Field
+                      label="Model"
+                      className={styles.grow}
+                      hint={model ? 'Overrides the project, planning included.' : undefined}
+                    >
                       <Dropdown
                         className={styles.dropdown}
-                        value={model}
-                        selectedOptions={[model]}
-                        onOptionSelect={(_e, d) => setModel(d.optionValue as ClaudeModel)}
+                        value={model ?? projectDefaultLabel(selected)}
+                        selectedOptions={[model ?? PROJECT_DEFAULT]}
+                        onOptionSelect={(_e, d) => setModel(cardModelFromOption(d.optionValue))}
                       >
+                        <Option value={PROJECT_DEFAULT} text={projectDefaultLabel(selected)}>
+                          {projectDefaultLabel(selected)}
+                        </Option>
                         {MODELS.map((m) => (
                           <Option key={m} value={m}>
                             {m}

@@ -29,9 +29,11 @@ import {
 import { AgentsRegular, AttachRegular, FlagRegular, SendRegular } from '@fluentui/react-icons';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
+import { MODELS } from '@shared/model';
 import type { Project, Task } from '@shared/model';
 import type { JiraUserOption } from '@shared/ipc';
 import type { ChatAvailability } from '../taskChat';
+import { cardModelFromOption, projectDefaultLabel, PROJECT_DEFAULT } from '../modelChoice';
 import { MentionPicker } from './MentionPicker';
 import {
   findMentionQuery,
@@ -41,7 +43,6 @@ import {
   type MentionQuery,
 } from './mentions';
 
-const MODELS: ClaudeModel[] = ['haiku', 'sonnet', 'opus'];
 const MODES: PermissionMode[] = ['acceptEdits', 'plan', 'manual', 'bypassPermissions'];
 
 const useStyles = makeStyles({
@@ -84,7 +85,12 @@ const useStyles = makeStyles({
   footer: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', padding: 0 },
   glyph: { color: tokens.colorBrandForeground1, display: 'flex' },
   muted: { color: tokens.colorNeutralForeground3 },
-  picker: { minWidth: '108px' },
+  /**
+   * A ceiling as well as a floor: the model picker's empty choice names what it defers to
+   * ("Project default · opus planning · sonnet steps" on a split project), and without one
+   * that single option would set the width of the whole footer strip.
+   */
+  picker: { minWidth: '108px', maxWidth: '220px' },
   blocked: { color: tokens.colorPaletteYellowForeground1 },
   chips: { display: 'flex', flexWrap: 'wrap', gap: '4px' },
   chipX: {
@@ -121,8 +127,12 @@ export interface ComposerProps {
   /** File the text as the card's progress note — the one line the board shows. */
   onPostStatus: () => void;
   onAddJiraComment: () => void;
-  /** Persist a model / permission-mode change for the next run. */
-  onAgentOptions: (options: { model?: ClaudeModel; mode?: PermissionMode }) => void;
+  /**
+   * Persist a model / permission-mode change for the next run. `model: null` is a real
+   * choice — "follow the agent project" — not an absence, which is why it is nullable and
+   * not merely optional.
+   */
+  onAgentOptions: (options: { model?: ClaudeModel | null; mode?: PermissionMode }) => void;
 }
 
 export function Composer({
@@ -145,8 +155,12 @@ export function Composer({
   const styles = useStyles();
   const canChat = chat?.offered === true && chat.can;
   const empty = !value.text.trim();
-  // The effective settings: this card's override, else the agent project's default.
-  const model = task.agentModel ?? agentProject?.defaultModel ?? 'sonnet';
+  // The card's own model, or `null` while it follows its agent project — which is offered
+  // here as a choice of its own rather than resolved away. A project now plans and executes
+  // on different models, so showing its execution model as if the card had picked it would
+  // make every card that merely inherits look pinned to one half of the split.
+  const model = task.agentModel ?? null;
+  const projectDefault = projectDefaultLabel(agentProject);
   const mode = task.agentMode ?? agentProject?.defaultPermissionMode ?? 'acceptEdits';
   const live = task.status === 'running' || task.status === 'waiting-input';
 
@@ -394,13 +408,22 @@ export function Composer({
           className={styles.picker}
           size="small"
           appearance="underline"
-          value={model}
-          selectedOptions={[model]}
-          title={live ? 'Applies to the next run — this one keeps its model' : 'Model'}
-          onOptionSelect={(_e, d) =>
-            d.optionValue && onAgentOptions({ model: d.optionValue as ClaudeModel })
+          value={model ?? projectDefault}
+          selectedOptions={[model ?? PROJECT_DEFAULT]}
+          title={
+            live
+              ? 'Applies to the next run — this one keeps its model'
+              : model
+                ? 'Model — this card overrides its project'
+                : `Model — ${projectDefault}`
           }
+          onOptionSelect={(_e, d) => onAgentOptions({ model: cardModelFromOption(d.optionValue) })}
         >
+          {/* First, and naming what it defers to: a card that has never been told otherwise
+              is already on this option, so it has to say what that costs. */}
+          <Option value={PROJECT_DEFAULT} text={projectDefault}>
+            {projectDefault}
+          </Option>
           {MODELS.map((m) => (
             <Option key={m} value={m}>
               {m}

@@ -41,6 +41,7 @@ import { PERMISSION_MODE_LABELS } from '@shared/session';
 import { AssignAgentDialog } from './AssignAgentDialog';
 import { stepPosition } from './board/boardColumns';
 import { draftKey, useDraft } from './drafts';
+import { cardModelCaption } from './modelChoice';
 import { STATUS_LABEL } from './taskStatus';
 import { AgentQuestionForm } from './AgentQuestionForm';
 import { Markdown } from './chat/MarkdownView';
@@ -620,7 +621,7 @@ export function TaskAgentPanel({
       {task.agentProjectId && (
         <Caption1 className={styles.hint}>
           {task.agentBranch ? `${task.agentBranch} · ` : ''}
-          {task.agentModel ?? assigned?.defaultModel ?? 'project default'} ·{' '}
+          {cardModelCaption(task, assigned)} ·{' '}
           {
             PERMISSION_MODE_LABELS[
               task.agentMode ?? assigned?.defaultPermissionMode ?? 'acceptEdits'

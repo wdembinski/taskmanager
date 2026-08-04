@@ -54,6 +54,7 @@ import { describeGitPreflight } from '@shared/gitPreflight';
 import { useGitPreflight } from './useGitPreflight';
 import { BaseBranchField } from './BaseBranchField';
 import { ColorSwatches } from './ColorSwatches';
+import { modelCaption } from './modelChoice';
 import { PaneLoading } from './PaneLoading';
 import { PlanningModelField } from './PlanningModelField';
 import { useInitialLoad } from './useInitialLoad';
@@ -87,18 +88,6 @@ const useStyles = makeStyles({
 });
 
 const MODES: PermissionMode[] = ['acceptEdits', 'plan', 'manual', 'bypassPermissions'];
-
-/**
- * How a project's models read in the list. One name while planning follows execution —
- * which is every project until someone splits them — and both, labelled, once they differ,
- * since at that point "sonnet" alone would be a half-truth about what this repo costs.
- */
-export function modelCaption(project: Pick<Project, 'defaultModel' | 'planningModel'>): string {
-  const planning = project.planningModel;
-  return !planning || planning === project.defaultModel
-    ? project.defaultModel
-    : `${planning} planning · ${project.defaultModel} steps`;
-}
 
 /** Split a free-text epic list ("ABC-1, ABC-2") into keys; the engine normalizes them. */
 function parseEpicKeys(text: string): string[] {
