@@ -200,7 +200,141 @@ describe('JiraClient.search', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     await expect(cloudClient().search('assignee = currentUser()')).resolves.toEqual([]);
-    expect(fetchMock).toHaveBeenCalledTimes(20);
+    expect(fetchMock).toHaveBeenCalledTimes(40);
+  });
+});
+
+describe('JiraClient.searchAll', () => {
+  const issue = (key: string): { id: string; key: string; fields: object } => ({
+    id: key,
+    key,
+    fields: {},
+  });
+  const issues = (
+    from: number,
+    count: number,
+  ): Array<{ id: string; key: string; fields: object }> =>
+    Array.from({ length: count }, (_, i) => issue(`AB-${from + i}`));
+  const startAtOf = (call: unknown[]): string | null =>
+    new URL(String(call[0])).searchParams.get('startAt');
+
+  // The classic paging bug: the server caps the page below what we asked for, and an
+  // offset advanced by the REQUESTED size skips every issue in the gap.
+  it('v2 pages by startAt, advancing by what the server returned rather than what we asked', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ issues: issues(1, 50), total: 120 }))
+      .mockResolvedValueOnce(jsonResponse({ issues: issues(51, 50), total: 120 }))
+      .mockResolvedValueOnce(jsonResponse({ issues: issues(101, 20), total: 120 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await serverClient().searchAll('project = AB', { limit: 300 });
+    expect(result.issues).toHaveLength(120);
+    expect(result.issues[119].key).toBe('AB-120');
+    expect(result.truncated).toBe(false);
+    // Asked for 100, given 50 — the next window starts at 50, not at 100.
+    expect(startAtOf(fetchMock.mock.calls[0])).toBe('0');
+    expect(startAtOf(fetchMock.mock.calls[1])).toBe('50');
+    expect(startAtOf(fetchMock.mock.calls[2])).toBe('100');
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  // Every pre-paging mock (and some proxies) answer without `total`. With no claim to
+  // contradict it, one page IS the answer — otherwise every existing caller would start
+  // making a second, pointless request.
+  it('v2 stops after one call when the response carries no total', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ issues: issues(1, 2) }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await serverClient().searchAll('project = AB');
+    expect(result).toEqual({ issues: [issue('AB-1'), issue('AB-2')], truncated: false });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('v2 reports truncated when the limit cuts the answer short, and not when it just fits', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(jsonResponse({ issues: issues(1, 50), total: 120 })),
+    );
+    const cut = await serverClient().searchAll('project = AB', { limit: 50 });
+    expect(cut.issues).toHaveLength(50);
+    expect(cut.truncated).toBe(true);
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(jsonResponse({ issues: issues(1, 50), total: 50 })),
+    );
+    const whole = await serverClient().searchAll('project = AB', { limit: 50 });
+    expect(whole.issues).toHaveLength(50);
+    expect(whole.truncated).toBe(false);
+  });
+
+  // An offset loop that trusts `total` over the issues in hand never terminates.
+  it('v2 stops on an empty page even when total claims there is more', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ issues: issues(1, 10), total: 500 }))
+      .mockResolvedValue(jsonResponse({ issues: [], total: 500 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await serverClient().searchAll('project = AB', { limit: 300 });
+    expect(result.issues).toHaveLength(10);
+    // The answer was short of what the server itself claimed — the caller must not read
+    // the 490 missing issues as 490 deletions.
+    expect(result.truncated).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('v3 follows tokens past the 100-issue page, up to the limit', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ issues: issues(1, 100), nextPageToken: 'tok-2' }))
+      .mockResolvedValueOnce(jsonResponse({ issues: issues(101, 100), nextPageToken: 'tok-3' }))
+      .mockResolvedValueOnce(jsonResponse({ issues: issues(201, 20), isLast: true }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await cloudClient().searchAll('project = AB', { limit: 300 });
+    expect(result.issues).toHaveLength(220);
+    expect(result.truncated).toBe(false);
+    expect(new URL(String(fetchMock.mock.calls[1][0])).searchParams.get('nextPageToken')).toBe(
+      'tok-2',
+    );
+  });
+
+  it('v3 reports truncated when it stops at the limit with a token still in hand', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ issues: issues(1, 100), nextPageToken: 'more' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await cloudClient().searchAll('project = AB', { limit: 100 });
+    expect(result.issues).toHaveLength(100);
+    expect(result.truncated).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  // The page cap is the only thing that ends this, and reaching it is a truncation:
+  // there is a token in hand and no way to know what is behind it.
+  it('v3 gives up at the page cap when the server hands out tokens forever', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ issues: [], nextPageToken: 'tok' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await cloudClient().searchAll('project = AB', { limit: 300 });
+    expect(result.issues).toEqual([]);
+    expect(result.truncated).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(40);
+  });
+
+  it('carries the extra fields through, exactly as search does', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ issues: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await serverClient().searchAll('project = AB', { extraFields: ['customfield_10008', ' '] });
+    const fields = (
+      new URL(String(fetchMock.mock.calls[0][0])).searchParams.get('fields') ?? ''
+    ).split(',');
+    expect(fields).toContain('customfield_10008');
+    expect(fields).not.toContain('');
   });
 });
 

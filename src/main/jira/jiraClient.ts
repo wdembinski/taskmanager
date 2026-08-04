@@ -111,6 +111,20 @@ export interface JiraAttachment {
   url: string | null;
 }
 
+/**
+ * A JQL search and the one thing a single page cannot tell you: whether it was the
+ * WHOLE answer.
+ *
+ * `truncated` exists for the reconciler. "JIRA returned 100 issues" and "JIRA returned
+ * the 100 issues that still match" are indistinguishable from the issues alone, and the
+ * difference is a board that quietly deletes every card past the hundredth. A truncated
+ * result is a partial view of reality and nothing may be removed on the strength of it.
+ */
+export interface JiraSearchResult {
+  issues: JiraIssue[];
+  truncated: boolean;
+}
+
 export interface JiraComment {
   id: string;
   /** `accountId` is Cloud-only; Server/DC identifies people by display name alone. */
@@ -146,6 +160,13 @@ export function commentBodyToText(body: unknown): string {
  */
 const ISSUE_FIELDS =
   'summary,status,priority,project,issuetype,labels,updated,comment,description,parent';
+
+/**
+ * How many pages one search will ever fetch. A backstop against a server that never
+ * says "last page", not a size limit — at the 100-issue page both endpoints serve, it
+ * is four thousand issues, well past any board `limit` a caller would ask for.
+ */
+const SEARCH_PAGE_CAP = 40;
 
 export class JiraError extends Error {
   constructor(
@@ -199,35 +220,93 @@ export class JiraClient {
   }
 
   /**
-   * Search issues by JQL, returning the fields the board needs. `extraFields` carries
-   * per-instance fields the caller discovered at runtime — currently the "Epic Link"
-   * custom field id (`customfield_NNNNN`), which cannot be named up front.
-   *
-   * Two different endpoints, because Atlassian removed the Cloud one. `/search` still
-   * serves Server/DC, but on Cloud it now answers with a "migrate to
-   * /rest/api/3/search/jql" error — so Cloud goes to the enhanced search instead. That
-   * endpoint pages by opaque cursor rather than `startAt`, drops `total` entirely, and
-   * hands back short pages whenever it feels like it, so a single request is NOT the
-   * whole answer: we follow `nextPageToken` until the board's cap is filled.
+   * Search issues by JQL, returning just the issues. A thin wrapper over
+   * {@link searchAll} for the callers that genuinely cannot be short-changed by a
+   * partial answer — a `key in (...)` lookup of a handful of known keys, say. Anything
+   * that decides what to REMOVE from the board must use `searchAll` and read
+   * `truncated`.
    */
   async search(jql: string, maxResults = 100, extraFields: string[] = []): Promise<JiraIssue[]> {
-    const fields = [ISSUE_FIELDS, ...extraFields.filter((f) => f.trim())].join(',');
+    const { issues } = await this.searchAll(jql, { limit: maxResults, extraFields });
+    return issues;
+  }
+
+  /**
+   * Search issues by JQL, paging until the query is exhausted or `limit` is reached,
+   * and say which of the two happened. `extraFields` carries per-instance fields the
+   * caller discovered at runtime — currently the "Epic Link" and "Sprint" custom field
+   * ids (`customfield_NNNNN`), which cannot be named up front.
+   *
+   * Two different endpoints, because Atlassian removed the Cloud one, and they page in
+   * two different ways:
+   *
+   * **v2 (Server/DC)** takes an offset. The rule that matters is that `startAt` advances
+   * by the number of issues the server RETURNED, never by the `maxResults` we asked for:
+   * instances cap page size below the request (a `jira.search.views.default.max` of 50
+   * against our 100 is common), and advancing by the request would skip every issue in
+   * the gap — or, if the server answered with more than we asked, loop forever.
+   *
+   * **v3 (Cloud)** pages by opaque cursor instead, drops `total` entirely, and hands
+   * back short pages whenever it feels like it — so a single request is never the whole
+   * answer; we follow `nextPageToken` to the end.
+   *
+   * Both are bounded by a page cap, because an empty page WITH a continuation is a
+   * documented Cloud quirk and nothing else would stop a server handing out cursors
+   * forever. Hitting that cap is itself a truncation, and says so.
+   */
+  async searchAll(
+    jql: string,
+    opts: { limit?: number; extraFields?: readonly string[] } = {},
+  ): Promise<JiraSearchResult> {
+    const limit = Math.max(0, opts.limit ?? 100);
+    const fields = [ISSUE_FIELDS, ...(opts.extraFields ?? []).filter((f) => f.trim())].join(',');
+    const issues: JiraIssue[] = [];
+    let truncated = false;
 
     if (this.config.apiVersion !== '3') {
-      const params = new URLSearchParams({ jql, maxResults: String(maxResults), fields });
-      const data = await this.request<{ issues: JiraIssue[] }>(`/search?${params.toString()}`);
-      return data.issues ?? [];
+      let startAt = 0;
+      for (let page = 0; ; page++) {
+        if (page >= SEARCH_PAGE_CAP) {
+          truncated = true;
+          break;
+        }
+        const params = new URLSearchParams({
+          jql,
+          startAt: String(startAt),
+          maxResults: String(Math.min(100, limit - issues.length)),
+          fields,
+        });
+        const data = await this.request<{ issues?: JiraIssue[]; total?: number }>(
+          `/search?${params.toString()}`,
+        );
+        const got = data.issues ?? [];
+        const total = typeof data.total === 'number' ? data.total : null;
+        issues.push(...got);
+        startAt += got.length;
+        // Two ways to stop short: the server ran out of issues to give, or we ran out of
+        // room. Either way, only `total` can tell us whether that was the whole answer —
+        // an instance that reports none (the pre-paging mocks, and some proxies) leaves
+        // us with a single page and no reason to doubt it.
+        if (got.length === 0 || issues.length >= limit) {
+          truncated = total !== null && total > issues.length;
+          break;
+        }
+        if (total === null || startAt >= total) break;
+      }
+      return { issues: issues.slice(0, limit), truncated };
     }
 
-    const issues: JiraIssue[] = [];
     let nextPageToken: string | undefined;
-    // A page cap, because an empty page WITH a token is a documented quirk of this
-    // endpoint — "no issues" alone can't be the stop condition, and nothing else here
-    // would stop a server that keeps handing out tokens forever.
-    for (let page = 0; page < 20; page++) {
+    for (let page = 0; ; page++) {
+      if (page >= SEARCH_PAGE_CAP) {
+        // Only reachable with a token still in hand — the loop stops the moment one
+        // isn't handed back — so there is more out there than we are returning.
+        truncated = true;
+        break;
+      }
       const params = new URLSearchParams({
         jql,
-        maxResults: String(Math.min(100, maxResults - issues.length)),
+        maxResults: String(Math.min(100, limit - issues.length)),
         fields,
       });
       if (nextPageToken) params.set('nextPageToken', nextPageToken);
@@ -238,9 +317,13 @@ export class JiraClient {
       }>(`/search/jql?${params.toString()}`);
       issues.push(...(data.issues ?? []));
       nextPageToken = data.isLast ? undefined : data.nextPageToken;
-      if (!nextPageToken || issues.length >= maxResults) break;
+      if (!nextPageToken) break;
+      if (issues.length >= limit) {
+        truncated = true;
+        break;
+      }
     }
-    return issues.slice(0, maxResults);
+    return { issues: issues.slice(0, limit), truncated };
   }
 
   /** GET /field — the instance's field metadata (used to discover the Epic Link field). */
