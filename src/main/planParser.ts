@@ -49,7 +49,7 @@ export interface ParsedTask {
 }
 
 /** A parsed task plus the 0-based index of the line its checkbox started on. */
-interface LocatedTask extends ParsedTask {
+export interface LocatedTask extends ParsedTask {
   line: number;
 }
 
@@ -218,6 +218,16 @@ function locate(markdown: string): LocatedTask[] {
  */
 export function parsePlan(markdown: string): ParsedTask[] {
   return locate(markdown).map(({ line: _line, ...task }) => task);
+}
+
+/**
+ * The same parse, but keeping the source line each task's checkbox started on — for edits
+ * that have to put a new line in the right place (`planAlign.ts` inserts a milestone's
+ * `@contract` task above its first task). Exported so such an edit reuses THIS grammar
+ * instead of re-implementing the scan and drifting from it.
+ */
+export function locatePlanTasks(markdown: string): LocatedTask[] {
+  return locate(markdown);
 }
 
 /**

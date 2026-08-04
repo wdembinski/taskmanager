@@ -292,11 +292,19 @@ export interface IpcApi {
    */
   'git:graph': (projectId: string, limit?: number) => Promise<GitGraph>;
   /**
-   * Launch an AI pass that reads the plan and adds `@needs:` dependency annotations,
-   * writing the file back for the user to review. Returns the run id so the UI can
-   * show its live transcript; the plan watcher re-syncs once the file changes.
+   * Prepare the plan for parallel work, in two halves.
+   *
+   * The app does the mechanical half itself, before returning: it inserts the `@contract`
+   * task into every milestone that fans out, and scaffolds `CONTRACT.md`. `contractPhases`
+   * names the milestones it edited (empty when there was nothing to insert).
+   *
+   * Only the dependency judgement is worth a model, so an AI pass that adds `@needs:`
+   * annotations starts ONLY when there is judgement left to make. `runId` is that run — for
+   * the UI to show its live transcript — or `null` when no session was started at all.
+   *
+   * Either way the plan watcher re-syncs once the file changes.
    */
-  'project:alignPlan': (id: string) => Promise<{ runId: string }>;
+  'project:alignPlan': (id: string) => Promise<{ runId: string | null; contractPhases: string[] }>;
 
   /**
    * List the agent projects — repo directories a My Tasks card can be delegated to

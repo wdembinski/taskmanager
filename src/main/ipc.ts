@@ -7,7 +7,7 @@
  * makes each registration type-safe against the shared `IpcApi` interface, so a
  * handler whose return type doesn't match the contract won't compile.
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import {
   app,
@@ -106,6 +106,7 @@ import { RELEASE_DOC } from '@shared/release';
 import { logMain } from './log';
 import { parsePlan } from './planParser';
 import { planHasAlignmentMarkers, validatePlan } from './planValidate';
+import { buildContractScaffold, CONTRACT_DOC, insertContractTasks } from './planAlign';
 import { buildAlignPrompt } from './alignPrompt';
 import { PermissionBroker } from './permissionBroker';
 import { writePermissionServer } from './permissionServerSource';
@@ -577,6 +578,40 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('project:alignPlan', async (id) => {
     const project = store.getProject(id);
     if (!project) throw new Error(`Cannot align: project ${id} not found`);
+
+    const planPath = appPlanPath(project);
+    let markdown = '';
+    try {
+      markdown = readFileSync(planPath, 'utf8');
+    } catch {
+      markdown = '';
+    }
+
+    // Whether there is any dependency judgement left is decided on the plan AS THE HUMAN
+    // WROTE IT — before our own edit below, which would otherwise count as an alignment
+    // marker and talk us out of the one thing the agent is actually for. Same predicate as
+    // the validator's "no dependencies declared" advisory, so Align answers the nudge that
+    // asked for it, and nothing else.
+    const written = parsePlan(markdown);
+    const needsJudgement = written.length >= 2 && !planHasAlignmentMarkers(written);
+
+    // The mechanical half, in code: the `@contract` task is a literal line, and the phases
+    // that want one are the ones `planValidate` already names. Deterministic, instant, free
+    // — and the plan watcher re-syncs on the write, same as any hand edit.
+    const { markdown: aligned, phases } = insertContractTasks(markdown);
+    if (phases.length > 0) {
+      writeFileSync(planPath, aligned, 'utf8');
+      const contractPath = appProjectFile(project, CONTRACT_DOC);
+      // Never overwrite a contract someone already wrote — this is a scaffold, and the
+      // contract tasks flesh it out in place from here on.
+      if (!existsSync(contractPath)) {
+        writeFileSync(contractPath, buildContractScaffold(phases), 'utf8');
+      }
+    }
+
+    // Nothing to judge: the whole run was the mechanical half, and it is already done.
+    if (!needsJudgement) return { runId: null, contractPhases: phases };
+
     // A one-shot, user-initiated run that edits the user's plan.md. Routed through the
     // scheduler (not sessions.start directly) so it's registered under the project and
     // Stop — scheduler:stop — actually terminates it. Ungated and in acceptEdits so it
@@ -591,7 +626,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       model: project.planningModel ?? project.defaultModel,
       permissionMode: 'acceptEdits',
     });
-    return { runId };
+    return { runId, contractPhases: phases };
   });
 
   // --- Agent projects -------------------------------------------------------

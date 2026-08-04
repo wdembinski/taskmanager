@@ -1,11 +1,14 @@
 /**
  * The prompt for the AI-assisted "Align plan" run (Phase C).
  *
- * Kept pure and separate so it reads clearly and can be unit-tested. It instructs
- * Claude to annotate an existing plan with `@needs:` dependency clauses AND, for
- * milestones that fan out into parallel work, a `@contract` task plus a scaffolded
- * `CONTRACT.md` — all in the exact grammar the parser understands (`planParser.ts`),
- * editing the user's files in place for them to review.
+ * Kept pure and separate so it reads clearly and can be unit-tested. It asks Claude for
+ * ONE thing: the `@needs:` dependency clauses, in the exact grammar the parser understands
+ * (`planParser.ts`), edited into the user's plan in place for them to review.
+ *
+ * It used to also ask for the `@contract` task and a scaffolded `CONTRACT.md`. Those are a
+ * literal line and a skeleton file, into milestones the app itself picks out, so the app now
+ * writes them before this run starts (`planAlign.ts`) — and when the plan needs no dependency
+ * judgement either, this prompt is never built and no session is started at all.
  */
 
 /**
@@ -19,17 +22,9 @@ export function buildAlignPrompt(planPath: string, projectPath: string): string 
     `Edit the plan file "${rel}" in place to prepare it for an orchestrator that runs`,
     `tasks in parallel, in isolated git worktrees, as a coordinated team.`,
     ``,
-    `HOW TO EDIT — IMPORTANT: use your file-editing tools (read the file, then make`,
-    `small targeted edits to the specific lines that change). Do NOT shell out to`,
-    `text-processing tools — no awk, sed, perl, or PowerShell (Set-Content, Out-File,`,
-    `-replace, here-strings, [IO.File]::WriteAllText, etc.). This environment may run`,
-    `the shell in a restricted / ConstrainedLanguage mode and deny sandbox overrides,`,
-    `so those transforms fail and waste time. Edit the file directly instead.`,
-    ``,
     `The plan uses Markdown headings as phases/milestones and "- [ ] ..." checkboxes as`,
-    `tasks. Do two things:`,
+    `tasks. Do one thing: DECLARE DEPENDENCIES.`,
     ``,
-    `1) DECLARE DEPENDENCIES.`,
     `- Add a dependency by appending "@needs: <Task title>, <Task title>" to the END`,
     `  of a task's checkbox line, naming the EXACT titles of tasks it depends on.`,
     `  Example: "- [ ] Build the API @needs: Set up the database".`,
@@ -38,26 +33,14 @@ export function buildAlignPrompt(planPath: string, projectPath: string): string 
     `  independent so they can run in parallel.`,
     `- Reference titles EXACTLY as written (so they resolve); never introduce a cycle.`,
     ``,
-    `2) ADD A SHARED CONTRACT to each milestone whose tasks fan out into parallel work`,
-    `   touching shared interfaces, types, or files (skip milestones that are a single`,
-    `   task or a strictly sequential chain):`,
-    `- Insert, as the FIRST task under that milestone's heading, a new line exactly:`,
-    `      - [ ] Define shared contract in CONTRACT.md @contract`,
-    `  That one inserted line is all this step requires. The orchestrator automatically`,
-    `  treats a @contract task as a prerequisite of every other task under the SAME`,
-    `  heading, so you do NOT need to append "@needs: Define shared contract…" to each`,
-    `  sibling — skip that to keep the edit small. (Section 1's real dependencies still`,
-    `  apply.)`,
-    `- Create a "CONTRACT.md" file at the repository root (next to the plan) if one does`,
-    `  not already exist, scaffolding the shared interfaces/types/decisions and a`,
-    `  "## File ownership" section mapping files or areas to the milestone's tasks. Keep`,
-    `  it concise; the contract task will flesh it out when it runs.`,
+    `A task line ending in "@contract" is already there: the orchestrator treats it as a`,
+    `prerequisite of every other task under the SAME heading, so never append`,
+    `"@needs: Define shared contract…" to its siblings, and leave that line alone.`,
     ``,
     `Otherwise do NOT add, remove, reorder, rename, or re-check existing tasks or any`,
-    `other text. Only append "@needs:" clauses, insert the "@contract" task lines, and`,
-    `create CONTRACT.md. Preserve formatting and line endings.`,
+    `other text. Only append "@needs:" clauses. Preserve formatting and line endings.`,
     ``,
-    `When finished, briefly summarize the dependencies and contract tasks you added.`,
+    `When finished, briefly summarize the dependencies you added.`,
   ].join('\n');
 }
 
