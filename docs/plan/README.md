@@ -46,6 +46,7 @@ plan the orchestrator could one day run on its own repo.
 | 21 | Starting the next card automatically (the re-ask, and what a merge is holding) | ✅ shipped (v0.55.1) |
 | — | Interim releases v0.56–v0.57 (a Stop button everywhere, the Add-task dialog's options) | ✅ shipped, not tracked here |
 | 22 | Attachments in the task and its steps | ✅ complete (v0.64.4) — tag and draft cut once it lands on `development` |
+| 23 | One model for planning, another for the steps | 🚧 in progress on `feat/setting-ai-agent-models-for-planning` |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -2160,6 +2161,175 @@ there is no single-instance lock, and a second instance killed a live session on
 - The worktree this plan runs in has **no `node_modules`** — the first step that touches
   `src/` pays for a `pnpm install` before any gate can be run. Steps 1 and 2 change only
   this file, so there is nothing for a gate to say about them.
+
+---
+
+## Phase 23 — One model for planning, another for the steps
+
+**Goal.** Let a project say "plan with the expensive model, execute with the cheap one".
+Planning is the one run whose whole output is judgement — it reads a repo it has never
+seen and decides what the work *is* — while a step is handed a brief that already says
+what to do. They are paid for identically today: `startTask` resolves one model,
+`task.agentModel ?? project.defaultModel` ([`scheduler.ts:2066`](../../src/main/scheduler.ts)),
+and every run of that card gets it. A human who wants the planner smarter has to change
+the project before the plan and change it back before the steps, on every card.
+
+### The two assumptions this plan rests on
+
+The human was asked to settle both before anything was built. The prompt timed out with no
+answer, so the work went ahead on the readings below. They are recorded here, in the plan
+of record rather than in a commit message, because a later reader has to be able to tell a
+decision from a guess — and because either one is cheap to reverse *now* and expensive to
+reverse after the migration in deliverable 2 has run on a real database.
+
+**1. One override per card, and it wins over both project models.** The ticket asks for a
+per-step model as well as a per-project one. A step **is** a task row — `parentTaskId` is
+the only thing that distinguishes it ([`model.ts`](../../src/shared/model.ts), Phase 11) —
+so the `agentModel` column the card already has *is* the per-step override, reachable from
+the step's own controls. What the card/step dropdown gains is the one choice it cannot
+currently express: an explicit **Project default**, i.e. writing NULL. A concrete choice
+governs whatever that card runs next, planning or not.
+
+The rejected alternative is a second per-card field, `agentPlanningModel`, so a single card
+could plan on one model and execute on another *against* its project's pair. It doubles
+every model dropdown in the app — the assign dialog
+([`AssignAgentDialog.tsx:141`](../../src/renderer/src/AssignAgentDialog.tsx)), the composer
+strip ([`Composer.tsx:149`](../../src/renderer/src/chat/Composer.tsx)) and the step editor —
+and doubles the column, the patch type and the resolution ladder, to serve a case that
+arises when one card disagrees with its project about planning specifically. A human who
+wants that today can set the card's one override before approving the plan and change it
+after; the same two clicks the project-level pair removes for the common case.
+
+**2. Only the overrides that were never deliberate get cleared on upgrade.** A one-time
+migration sets `agentModel = NULL` on every task whose value equals its owning project's
+`defaultModel`, and leaves every other value alone.
+
+This is not tidying — without it the feature does nothing for any card that already exists.
+The schema's own comment says NULL means "use the project default"
+([`store.ts:833-835`](../../src/main/store.ts)), and every *pre-existing* row honoured that.
+The assign dialog then broke it: it seeds its dropdown from
+`card.agentModel ?? resolved?.defaultModel ?? 'sonnet'`
+([`AssignAgentDialog.tsx:141`](../../src/renderer/src/AssignAgentDialog.tsx)) and always
+submits a concrete value, which `task:assignAgent` writes verbatim
+(`agentModel: input.model ?? null`, [`ipc.ts:647`](../../src/main/ipc.ts)). So every
+delegated card carries an override, whether or not a human ever opened that dropdown — and
+a card whose override equals the project default is **indistinguishable** from a card that
+never chose. Left in place, those rows would out-rank `planningModel` on the ladder below
+and the new setting would appear to be ignored on precisely the cards people use.
+
+The cost of guessing wrong is bounded and one-sided: the only rows touched are ones whose
+effective model does not change today, and the only way to notice is to set a planning
+model and find that a card follows it. A card whose model genuinely diverges from its
+project — the deliberate `opus` on a hard ticket — keeps it, because that is the one signal
+of intent the data carries.
+
+`agentMode` has exactly the same history and is deliberately **not** touched. Permission
+mode is not what this ticket is about, and `plan` mode carries meaning the model does not
+(see [`scheduler.ts:238`](../../src/main/scheduler.ts) — a card assigned `plan` needs a
+mode ladder of its own for release runs). One column, one migration.
+
+### The resolution ladder
+
+One pure function, mirroring `releaseMode` ([`scheduler.ts:238-245`](../../src/main/scheduler.ts))
+in shape and in why it is pure — a ladder that decides what a run costs should be testable
+without a CLI:
+
+```
+task.agentModel                                  // explicit per-card / per-step choice
+  ?? (planning ? project.planningModel : null)   // NULL = "same as execution"
+  ?? project.defaultModel                        // the steps-execution model
+```
+
+`planning` is `run.expectsPlan && run.permissionMode === 'plan'` — the same pair the
+codebase already uses to tell "come back with a plan" from "this card may merely not write"
+([`scheduler.ts:2065-2073`](../../src/main/scheduler.ts), whose comment states the
+distinction). A chat reply or a post-chain review that only *inherited* plan mode from its
+card is not planning and keeps the execution model.
+
+`Project.defaultModel` ([`model.ts:133`](../../src/shared/model.ts)) keeps its column, its
+name in the code and its meaning as the model work runs on; only its **label** changes, to
+*Steps execution model*. `planningModel` is a new nullable column where `NULL` means "same
+as execution", so every existing project behaves exactly as it does today until a human
+sets it, and no back-fill is needed for projects at all — only for the cards above.
+
+### Traps the later steps must not walk into
+
+Each of these was read in this worktree, not remembered.
+
+- **The migration must run *after* the project-tag back-fill.** `wasDelegated` counts
+  `agentModel` as evidence that a card was really delegated rather than merely filed
+  ([`projectTagMigration.ts:35`](../../src/main/projectTagMigration.ts)), and its one-shot
+  guard `migration.projectTagSplit` ([`store.ts:1089`](../../src/main/store.ts), block at
+  [`:1329-1344`](../../src/main/store.ts)) means a database upgrading from before that
+  split still has it pending. Null the models first and a filed-and-delegated card loses
+  its delegation. Place the new block below that one, with its own `app_state` guard key.
+- **Steps hold their own copy.** `addSubtask` writes `agentModel: parent.agentModel ?? null`
+  ([`store.ts:1865`](../../src/main/store.ts)), so nulling a parent does not reach the steps
+  already created under it. The migration is a single `UPDATE` over `tasks`, which covers
+  both, but it must compare each row against the project that would actually *run* it —
+  `agentProjectId`, resolved the way `runProjectFor` resolves it
+  ([`scheduler.ts:1450`](../../src/main/scheduler.ts)) — not `task.projectId`.
+- **Two surfaces write this field, and both need the new choice.** `task:assignAgent`
+  ([`ipc.ts:647`](../../src/main/ipc.ts)) and `task:setAgentOptions`
+  ([`ipc.ts:843`](../../src/main/ipc.ts)) both write `agentModel`; the pane also *renders*
+  the fallback as the words "project default" already
+  ([`TaskAgentPanel.tsx:623`](../../src/renderer/src/TaskAgentPanel.tsx)). If deliverable 5
+  ships only one of the two dropdowns, the first assign or the first options edit re-writes
+  what the migration cleared, and the bug returns one card at a time.
+- **The ladder is evaluated once, at launch.** The run captures its model
+  ([`scheduler.ts:2066`](../../src/main/scheduler.ts)) precisely so nothing re-derives it
+  later; a mid-run change decides the *next* run, which is the documented behaviour of
+  `task:setAgentOptions` and must stay true.
+- **`??`, never `||`.** Both new values are nullable and the empty string is a real value
+  in this schema's idiom (`baseBranch`); a `||` ladder would read a stored `''` as unset.
+
+### Deliverables
+
+- [x] **1 — The assumptions, written down.** This entry: the two readings above, the
+      ladder, and the traps, so the five steps after it share one source of truth and a
+      reviewer can see what was assumed rather than asked.
+- [ ] **2 — The planning model on projects and in settings.** The nullable `planningModel`
+      column, added the way every later `projects` column was — one guarded
+      `ALTER TABLE projects` beside `kind`, `target` and `instructions`
+      ([`store.ts:694-716`](../../src/main/store.ts)), with no `NOT NULL DEFAULT`, since
+      NULL is the value that means "same as execution" — plus the shared type,
+      `ProjectPatch` ([`model.ts:282`](../../src/shared/model.ts)), `AddProjectInput`
+      ([`model.ts:247`](../../src/shared/model.ts)) and the app-level seed beside
+      `defaultModel` ([`settings.ts:225`](../../src/shared/settings.ts)).
+- [ ] **3 — Pick the model by what the run is.** The pure ladder, unit-tested, replacing
+      the one-line resolution at [`scheduler.ts:2066`](../../src/main/scheduler.ts).
+- [ ] **4 — Both models in the settings screens.** `ProjectDialog`, `AgentProjects` and
+      `Settings`, with `defaultModel` relabelled *Steps execution model* and the planning
+      field offering "same as execution".
+- [ ] **5 — Let a card or step follow its project.** The explicit *Project default* choice
+      in both dropdowns, plus the one-time migration from assumption 2.
+- [ ] **6 — Verify the split and refresh the docs.** [`docs/03`](../03-how-orchestration-works.md),
+      the glossary, and a headless check that a planning run and a step run on one card
+      resolve different models.
+
+### Done when
+
+- A project can name a planning model, and a card planned in that project plans on it and
+  runs its steps on the other one.
+- A project that names no planning model behaves exactly as it does today.
+- A card or step can be set back to *Project default*, and an existing card that never
+  really chose already is.
+- A chat reply and a post-chain review on a `plan`-mode card use the execution model.
+- `pnpm typecheck`, `pnpm test` and `pnpm build` are green.
+
+**Notes.**
+
+- The phase ships as a **MINOR** bump, reached through the per-commit bumps each step makes
+  ([`CONTRIBUTING.md`](../../CONTRIBUTING.md) §4). This first step is `docs` only, so it
+  takes the **PATCH** its own change is worth (**v0.65.1**); the deliverable that adds the
+  column takes the minor.
+- **No tag and no release on this branch** — [`RELEASE.md`](../../RELEASE.md) rule 5, the
+  same standing rule as Phases 21 and 22. The tag is cut when this lands on `development`.
+- Every step of this plan shares the one branch `feat/setting-ai-agent-models-for-planning`,
+  so each step's session reads this entry to find what the previous one left it.
+- The worktree this plan runs in has **no `node_modules`**, so the first step that touches
+  `src/` pays for a `pnpm install` before any gate can run. This step changes only this
+  file; there is nothing for a gate to say about it.
 
 ---
 
