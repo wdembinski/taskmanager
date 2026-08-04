@@ -51,7 +51,7 @@ const PRIORITY_DISPLAY_LABELS: Record<PriorityDisplay, string> = {
   mono: 'Rank glyph (no colour)',
   off: 'Don’t show it',
 };
-import type { BoardColumn } from '@shared/model';
+import { MODELS, type BoardColumn } from '@shared/model';
 import type { AppInfo, JiraConfigStatus, JiraStatusOption, JiraTestResult } from '@shared/ipc';
 import { describeUpdate, type UpdateState } from '@shared/update';
 import { isCloudHost } from '@shared/jiraUrl';
@@ -68,6 +68,7 @@ import {
 import { AgentProjects } from './AgentProjects';
 import { ColorSwatches, PALETTE } from './ColorSwatches';
 import { PaneLoading } from './PaneLoading';
+import { PlanningModelField } from './PlanningModelField';
 import { ReadinessPanel } from './ReadinessPanel';
 import { StatusMapViewer } from './StatusMapViewer';
 import { BASE_FONT_PX, FONT_SIZE_OPTIONS } from './theme';
@@ -129,7 +130,6 @@ function readinessTargets(defaultTarget: ExecTarget, inUse: ExecTarget[]): ExecT
 /** Where an install that can't update itself goes to fetch a new build by hand. */
 const RELEASES_URL = 'https://github.com/wdembinski/taskmanager/releases';
 
-const MODELS: ClaudeModel[] = ['haiku', 'sonnet', 'opus'];
 const MODES: PermissionMode[] = ['acceptEdits', 'plan', 'manual', 'bypassPermissions'];
 
 /**
@@ -601,7 +601,18 @@ export function Settings(): JSX.Element {
               </Dropdown>
             </Field>
 
-            <Field label="Default model for new projects">
+            {/* Both are seeds for the NEXT project added — changing either leaves every
+                existing project exactly as it is, which is why they say "for new projects"
+                where the project dialogs simply say "model". */}
+            <PlanningModelField
+              label="Default planning model for new projects"
+              value={settings.defaultPlanningModel}
+              executionModel={settings.defaultModel}
+              onChange={(m) => patch({ defaultPlanningModel: m })}
+              hint="Planning is the run whose whole output is judgement: it reads a repo and decides what the work is, where a step is handed a brief that already says what to do. Leave it following execution to keep planning priced exactly as it is today."
+            />
+
+            <Field label="Default steps-execution model for new projects">
               <Dropdown
                 value={settings.defaultModel}
                 selectedOptions={[settings.defaultModel]}

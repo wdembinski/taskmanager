@@ -1629,7 +1629,15 @@ export function createStore(dbPath: string): Store {
         defaultModel: input.defaultModel ?? defaults.defaultModel,
         // Seeded from the app-wide default like `defaultModel`, and null all the way down
         // unless someone has set one — a new project plans on what it executes on.
-        planningModel: input.planningModel ?? defaults.defaultPlanningModel ?? null,
+        //
+        // `undefined` and `null` part company here, unlike every other field on this
+        // object: the add dialogs offer "Same as steps execution" as a real choice and
+        // submit it as `null`, so `??` would quietly hand that project the app-wide seed
+        // the human just declined. Only a caller that omits the key gets the seed.
+        planningModel:
+          input.planningModel !== undefined
+            ? input.planningModel
+            : (defaults.defaultPlanningModel ?? null),
         defaultPermissionMode: input.defaultPermissionMode ?? defaults.defaultPermissionMode,
         concurrency: Math.max(1, Math.round(input.concurrency ?? defaults.concurrency)),
         useWorktrees: isAgent ? true : (input.useWorktrees ?? true),

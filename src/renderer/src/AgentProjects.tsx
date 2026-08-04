@@ -40,7 +40,7 @@ import {
 import { DismissRegular } from '@fluentui/react-icons';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
-import type { Project } from '@shared/model';
+import { MODELS, type Project } from '@shared/model';
 import { RELEASE_DOC } from '@shared/release';
 import {
   execTargetLabel,
@@ -55,6 +55,7 @@ import { useGitPreflight } from './useGitPreflight';
 import { BaseBranchField } from './BaseBranchField';
 import { ColorSwatches } from './ColorSwatches';
 import { PaneLoading } from './PaneLoading';
+import { PlanningModelField } from './PlanningModelField';
 import { useInitialLoad } from './useInitialLoad';
 
 const useStyles = makeStyles({
@@ -85,8 +86,19 @@ const useStyles = makeStyles({
   mono: { fontFamily: 'ui-monospace, Consolas, monospace' },
 });
 
-const MODELS: ClaudeModel[] = ['haiku', 'sonnet', 'opus'];
 const MODES: PermissionMode[] = ['acceptEdits', 'plan', 'manual', 'bypassPermissions'];
+
+/**
+ * How a project's models read in the list. One name while planning follows execution —
+ * which is every project until someone splits them — and both, labelled, once they differ,
+ * since at that point "sonnet" alone would be a half-truth about what this repo costs.
+ */
+export function modelCaption(project: Pick<Project, 'defaultModel' | 'planningModel'>): string {
+  const planning = project.planningModel;
+  return !planning || planning === project.defaultModel
+    ? project.defaultModel
+    : `${planning} planning · ${project.defaultModel} steps`;
+}
 
 /** Split a free-text epic list ("ABC-1, ABC-2") into keys; the engine normalizes them. */
 function parseEpicKeys(text: string): string[] {
@@ -171,7 +183,7 @@ export function AgentProjects(): JSX.Element {
                     </div>
                     <Caption1 className={styles.path}>{project.path}</Caption1>
                     <Caption1 className={styles.hint}>
-                      {project.defaultModel} ·{' '}
+                      {modelCaption(project)} ·{' '}
                       {PERMISSION_MODE_LABELS[project.defaultPermissionMode]}
                     </Caption1>
                   </div>
@@ -242,6 +254,8 @@ function AgentProjectDialog({
    */
   const [appAutoIntegrate, setAppAutoIntegrate] = useState(false);
   const [model, setModel] = useState<ClaudeModel>('sonnet');
+  /** `null` = plan on the execution model, which is what a repo that never ruled does. */
+  const [planningModel, setPlanningModel] = useState<ClaudeModel | null>(null);
   const [permMode, setPermMode] = useState<PermissionMode>('acceptEdits');
   const [target, setTarget] = useState<ExecTarget>(LOCAL_TARGET);
   const [distros, setDistros] = useState<string[]>([]);
@@ -270,6 +284,7 @@ function AgentProjectDialog({
       setAutoRelease(project.autoRelease);
       setAutoIntegrate(project.autoIntegrate);
       setModel(project.defaultModel);
+      setPlanningModel(project.planningModel);
       setPermMode(project.defaultPermissionMode);
       setTarget(project.target);
     } else {
@@ -282,6 +297,7 @@ function AgentProjectDialog({
       setAutoIntegrate(null); // and merging follows the app until this repo says otherwise
       void window.api.invoke('settings:get').then((s) => {
         setModel(s.defaultModel);
+        setPlanningModel(s.defaultPlanningModel);
         setPermMode(s.defaultPermissionMode);
         setTarget(s.defaultExecTarget);
       });
@@ -326,6 +342,7 @@ function AgentProjectDialog({
           path,
           name: name.trim() || undefined,
           defaultModel: model,
+          planningModel,
           defaultPermissionMode: permMode,
           jiraEpicKeys: parseEpicKeys(epics),
           color,
@@ -339,6 +356,7 @@ function AgentProjectDialog({
           path,
           name: name.trim() || undefined,
           defaultModel: model,
+          planningModel,
           defaultPermissionMode: permMode,
           jiraEpicKeys: parseEpicKeys(epics),
           color,
@@ -520,8 +538,18 @@ function AgentProjectDialog({
             />
           </Field>
 
+          {/* Same pair, and the same reason for no hints inside the row, as the
+              plan-project dialog: planning is the run that reads this repo and decides
+              what the work is, execution the one that carries out a brief. */}
           <div className={styles.row}>
-            <Field label="Default model" className={styles.grow}>
+            <PlanningModelField
+              label="Planning model"
+              className={styles.grow}
+              value={planningModel}
+              executionModel={model}
+              onChange={setPlanningModel}
+            />
+            <Field label="Steps execution model" className={styles.grow}>
               <Dropdown
                 value={model}
                 selectedOptions={[model]}
@@ -534,20 +562,21 @@ function AgentProjectDialog({
                 ))}
               </Dropdown>
             </Field>
-            <Field label="Default permission mode" className={styles.grow}>
-              <Dropdown
-                value={PERMISSION_MODE_LABELS[permMode]}
-                selectedOptions={[permMode]}
-                onOptionSelect={(_e, d) => setPermMode(d.optionValue as PermissionMode)}
-              >
-                {MODES.map((m) => (
-                  <Option key={m} value={m}>
-                    {PERMISSION_MODE_LABELS[m]}
-                  </Option>
-                ))}
-              </Dropdown>
-            </Field>
           </div>
+
+          <Field label="Default permission mode">
+            <Dropdown
+              value={PERMISSION_MODE_LABELS[permMode]}
+              selectedOptions={[permMode]}
+              onOptionSelect={(_e, d) => setPermMode(d.optionValue as PermissionMode)}
+            >
+              {MODES.map((m) => (
+                <Option key={m} value={m}>
+                  {PERMISSION_MODE_LABELS[m]}
+                </Option>
+              ))}
+            </Dropdown>
+          </Field>
 
           <Body1 className={styles.hint}>
             Each assigned card runs on its own git branch in a separate worktree, merged back into

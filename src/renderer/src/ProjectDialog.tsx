@@ -30,7 +30,7 @@ import {
 } from '@fluentui/react-components';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
-import type { Project } from '@shared/model';
+import { MODELS, type Project } from '@shared/model';
 import { RELEASE_DOC } from '@shared/release';
 import {
   execTargetLabel,
@@ -43,6 +43,7 @@ import { distroFromWindowsPath, windowsToLinux } from '@shared/wslPath';
 import { describeGitPreflight } from '@shared/gitPreflight';
 import { useGitPreflight } from './useGitPreflight';
 import { BaseBranchField } from './BaseBranchField';
+import { PlanningModelField } from './PlanningModelField';
 
 const useStyles = makeStyles({
   form: { display: 'flex', flexDirection: 'column', gap: '12px', minWidth: '420px' },
@@ -51,7 +52,6 @@ const useStyles = makeStyles({
   mono: { fontFamily: 'ui-monospace, Consolas, monospace' },
 });
 
-const MODELS: ClaudeModel[] = ['haiku', 'sonnet', 'opus'];
 const MODES: PermissionMode[] = ['acceptEdits', 'plan', 'manual', 'bypassPermissions'];
 
 export interface ProjectDialogProps {
@@ -76,6 +76,8 @@ export function ProjectDialog({
   const [planPath, setPlanPath] = useState('');
   const [name, setName] = useState('');
   const [model, setModel] = useState<ClaudeModel>('sonnet');
+  /** `null` = plan on the execution model, which is what a project that never ruled does. */
+  const [planningModel, setPlanningModel] = useState<ClaudeModel | null>(null);
   const [permMode, setPermMode] = useState<PermissionMode>('acceptEdits');
   const [concurrency, setConcurrency] = useState(1);
   const [useWorktrees, setUseWorktrees] = useState(true);
@@ -122,6 +124,7 @@ export function ProjectDialog({
       setPlanPath(project.planPath);
       setName(project.name);
       setModel(project.defaultModel);
+      setPlanningModel(project.planningModel);
       setPermMode(project.defaultPermissionMode);
       setConcurrency(project.concurrency);
       setUseWorktrees(project.useWorktrees);
@@ -142,6 +145,7 @@ export function ProjectDialog({
       setAutoIntegrate(null); // and merging follows the app until this project says otherwise
       void window.api.invoke('settings:get').then((s) => {
         setModel(s.defaultModel);
+        setPlanningModel(s.defaultPlanningModel);
         setPermMode(s.defaultPermissionMode);
         setConcurrency(s.concurrency);
         setWriteBack(s.writeBackPlan);
@@ -193,6 +197,7 @@ export function ProjectDialog({
           name: name.trim() || undefined,
           planPath: planPath.trim() || undefined,
           defaultModel: model,
+          planningModel,
           defaultPermissionMode: permMode,
           concurrency,
           useWorktrees,
@@ -208,6 +213,7 @@ export function ProjectDialog({
           name: name.trim() || undefined,
           planPath: planPath.trim() || undefined,
           defaultModel: model,
+          planningModel,
           defaultPermissionMode: permMode,
           concurrency,
           useWorktrees,
@@ -310,8 +316,20 @@ export function ProjectDialog({
                 />
               </Field>
 
+              {/* The two models side by side, because the left one is only meaningful
+                  against the right: planning reads the repo and decides what the work IS,
+                  where a step is handed a brief that already says what to do. Neither
+                  hints — the "Same as steps execution (…)" option says it, and a hint in
+                  one half of a `row` would leave the two dropdowns on different lines. */}
               <div className={styles.row}>
-                <Field label="Model" className={styles.grow}>
+                <PlanningModelField
+                  label="Planning model"
+                  className={styles.grow}
+                  value={planningModel}
+                  executionModel={model}
+                  onChange={setPlanningModel}
+                />
+                <Field label="Steps execution model" className={styles.grow}>
                   <Dropdown
                     value={model}
                     selectedOptions={[model]}
@@ -324,20 +342,21 @@ export function ProjectDialog({
                     ))}
                   </Dropdown>
                 </Field>
-                <Field label="Permission mode" className={styles.grow}>
-                  <Dropdown
-                    value={PERMISSION_MODE_LABELS[permMode]}
-                    selectedOptions={[permMode]}
-                    onOptionSelect={(_e, d) => setPermMode(d.optionValue as PermissionMode)}
-                  >
-                    {MODES.map((m) => (
-                      <Option key={m} value={m}>
-                        {PERMISSION_MODE_LABELS[m]}
-                      </Option>
-                    ))}
-                  </Dropdown>
-                </Field>
               </div>
+
+              <Field label="Permission mode">
+                <Dropdown
+                  value={PERMISSION_MODE_LABELS[permMode]}
+                  selectedOptions={[permMode]}
+                  onOptionSelect={(_e, d) => setPermMode(d.optionValue as PermissionMode)}
+                >
+                  {MODES.map((m) => (
+                    <Option key={m} value={m}>
+                      {PERMISSION_MODE_LABELS[m]}
+                    </Option>
+                  ))}
+                </Dropdown>
+              </Field>
 
               <Field
                 label="Concurrency"
