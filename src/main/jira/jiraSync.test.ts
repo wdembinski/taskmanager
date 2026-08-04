@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { PERSONAL_PROJECT_ID, type Task } from '@shared/model';
-import { issueToBoardTask, reconcileJiraTasks, retainedKeys } from './jiraSync';
+import {
+  guardRemovals,
+  issueToBoardTask,
+  reconcileJiraTasks,
+  removalCandidateKeys,
+  retainedKeys,
+  type JiraRemoval,
+} from './jiraSync';
 import type { JiraIssue } from './jiraClient';
 
 const issue = (
@@ -41,6 +48,15 @@ const jiraTask = (over: Partial<Task>): Task => ({
 });
 
 const opts = { baseUrl: 'https://jira.co' };
+
+/**
+ * The confirm pass having asked about these keys and been told **none of them still match**
+ * — the only thing that makes a card leaving the query removable at all.
+ */
+const asked = (...keys: string[]) => ({ queryChecked: keys, queryMatches: [] as string[] });
+
+/** The ids a result would take off the board, in order. */
+const removedIds = (r: { removals: JiraRemoval[] }): string[] => r.removals.map((x) => x.taskId);
 
 describe('issueToBoardTask — a ticket raised for a card that already exists', () => {
   /** The card the Add-task dialog wrote locally a moment ago, before the ticket existed. */
@@ -168,8 +184,8 @@ describe('reconcileJiraTasks — sprint', () => {
 
 describe('reconcileJiraTasks', () => {
   it('creates a new task for a fetched issue with a stable id and deep link', () => {
-    const { upserts, deleteIds } = reconcileJiraTasks([], [issue('1', 'PROJ-1', 'new')], opts);
-    expect(deleteIds).toEqual([]);
+    const { upserts, removals } = reconcileJiraTasks([], [issue('1', 'PROJ-1', 'new')], opts);
+    expect(removals).toEqual([]);
     expect(upserts).toHaveLength(1);
     expect(upserts[0]).toMatchObject({
       id: 'jira-1',
@@ -235,7 +251,8 @@ describe('reconcileJiraTasks', () => {
 
   it('does NOT delete a blocked task whose agent is running when it leaves the JQL', () => {
     const existing = jiraTask({ status: 'running', preRunStatus: 'blocked' });
-    expect(reconcileJiraTasks([existing], [], opts).deleteIds).toEqual([]);
+    const result = reconcileJiraTasks([existing], [], { ...opts, ...asked('PROJ-1') });
+    expect(result.removals).toEqual([]);
   });
 
   it('keeps the task id (and thus history) stable for an existing issue', () => {
@@ -245,17 +262,19 @@ describe('reconcileJiraTasks', () => {
     expect(upserts[0].lastReadCommentAt).toBe(555);
   });
 
-  it('deletes a JIRA task that dropped out of the JQL result', () => {
+  it('removes a JIRA task JIRA has confirmed no longer matches the query', () => {
     const existing = jiraTask({ status: 'in-progress' });
-    const { deleteIds, upserts } = reconcileJiraTasks([existing], [], opts);
-    expect(upserts).toEqual([]);
-    expect(deleteIds).toEqual(['jira-1']);
+    const result = reconcileJiraTasks([existing], [], { ...opts, ...asked('PROJ-1') });
+    expect(result.upserts).toEqual([]);
+    expect(result.removals).toEqual([
+      { taskId: 'jira-1', key: 'PROJ-1', title: 'Do a thing', reason: 'left-query' },
+    ]);
   });
 
   it('does NOT delete a blocked task missing from the JQL result', () => {
     const existing = jiraTask({ status: 'blocked' });
-    const { deleteIds } = reconcileJiraTasks([existing], [], opts);
-    expect(deleteIds).toEqual([]);
+    const result = reconcileJiraTasks([existing], [], { ...opts, ...asked('PROJ-1') });
+    expect(result.removals).toEqual([]);
   });
 
   it('maps the epic custom field and description onto the task', () => {
@@ -365,9 +384,9 @@ describe('reconcileJiraTasks', () => {
       externalKey: null,
       externalId: null,
     });
-    const { upserts, deleteIds } = reconcileJiraTasks([adhoc], [], opts);
+    const { upserts, removals } = reconcileJiraTasks([adhoc], [], opts);
     expect(upserts).toEqual([]);
-    expect(deleteIds).toEqual([]);
+    expect(removals).toEqual([]);
   });
 });
 
@@ -470,69 +489,73 @@ describe('retainedKeys / reconcileJiraTasks — a finished card outlives the que
   });
 
   it('keeps the card in DONE instead of deleting it out of the column it was dropped in', () => {
-    const { upserts, deleteIds } = reconcileJiraTasks([doneCard()], [], {
+    const result = reconcileJiraTasks([doneCard()], [], {
       ...opts,
       ...KEEP,
       rechecked: [doneIssue],
     });
-    expect(deleteIds).toEqual([]);
-    expect(upserts[0].status).toBe('done');
-    expect(upserts[0].retainedSince).toBe(NOW);
+    expect(result.removals).toEqual([]);
+    expect(result.upserts[0].status).toBe('done');
+    expect(result.upserts[0].retainedSince).toBe(NOW);
   });
 
   it('follows the ticket back OUT of Done when JIRA moves it, query or no query', () => {
     // The whole point of the by-key re-read: `resolution = Unresolved` never matches this
     // issue again if the workflow did not clear the resolution, so the query alone would
     // leave the card frozen in DONE for ever.
-    const { upserts, deleteIds } = reconcileJiraTasks(
-      [doneCard({ retainedSince: NOW - DAY })],
-      [],
-      { ...opts, ...KEEP, rechecked: [reopened] },
-    );
-    expect(deleteIds).toEqual([]);
-    expect(upserts[0].status).toBe('in-progress');
+    const result = reconcileJiraTasks([doneCard({ retainedSince: NOW - DAY })], [], {
+      ...opts,
+      ...KEEP,
+      rechecked: [reopened],
+    });
+    expect(result.removals).toEqual([]);
+    expect(result.upserts[0].status).toBe('in-progress');
     // The clock keeps running from when it started, not from this sync.
-    expect(upserts[0].retainedSince).toBe(NOW - DAY);
+    expect(result.upserts[0].retainedSince).toBe(NOW - DAY);
   });
 
   it('retires a card JIRA no longer returns at all', () => {
-    const { upserts, deleteIds } = reconcileJiraTasks([doneCard()], [], {
+    const result = reconcileJiraTasks([doneCard()], [], {
       ...opts,
       ...KEEP,
       rechecked: [],
     });
-    expect(deleteIds).toEqual(['jira-1']);
-    expect(upserts).toEqual([]);
+    expect(removedIds(result)).toEqual(['jira-1']);
+    expect(result.removals[0].reason).toBe('gone-from-jira');
+    expect(result.upserts).toEqual([]);
   });
 
   it('retires a card that has been retained longer than the window', () => {
-    const { deleteIds } = reconcileJiraTasks([doneCard({ retainedSince: NOW - 15 * DAY })], [], {
+    const result = reconcileJiraTasks([doneCard({ retainedSince: NOW - 15 * DAY })], [], {
       ...opts,
       ...KEEP,
       rechecked: [doneIssue],
     });
-    expect(deleteIds).toEqual(['jira-1']);
+    expect(removedIds(result)).toEqual(['jira-1']);
+    expect(result.removals[0].reason).toBe('retention-expired');
   });
 
   it('keeps every retained card when the re-read could not run', () => {
     // A network blip must not empty the Done column: `rechecked: null` is "nobody asked",
     // which is a different answer from "JIRA says it is gone".
-    const { upserts, deleteIds } = reconcileJiraTasks([doneCard({ retainedSince: NOW })], [], {
+    const result = reconcileJiraTasks([doneCard({ retainedSince: NOW })], [], {
       ...opts,
       ...KEEP,
       rechecked: null,
     });
-    expect(deleteIds).toEqual([]);
-    expect(upserts).toEqual([]);
+    expect(result.removals).toEqual([]);
+    expect(result.upserts).toEqual([]);
   });
 
-  it('still deletes an unfinished card the query dropped', () => {
-    const { deleteIds } = reconcileJiraTasks([jiraTask({ status: 'pending' })], [], {
+  it('still removes an unfinished card, once JIRA has confirmed it left the query', () => {
+    const result = reconcileJiraTasks([jiraTask({ status: 'pending' })], [], {
       ...opts,
       ...KEEP,
+      ...asked('PROJ-1'),
       rechecked: [],
     });
-    expect(deleteIds).toEqual(['jira-1']);
+    expect(removedIds(result)).toEqual(['jira-1']);
+    expect(result.removals[0].reason).toBe('left-query');
   });
 
   it('clears the retention marker the moment the query returns the issue again', () => {
@@ -544,7 +567,234 @@ describe('retainedKeys / reconcileJiraTasks — a finished card outlives the que
   });
 
   it('with a retention of zero, behaves exactly as it did before retention existed', () => {
-    const { deleteIds } = reconcileJiraTasks([doneCard()], [], { ...opts, rechecked: [doneIssue] });
-    expect(deleteIds).toEqual(['jira-1']);
+    const result = reconcileJiraTasks([doneCard()], [], { ...opts, rechecked: [doneIssue] });
+    expect(removedIds(result)).toEqual(['jira-1']);
+  });
+});
+
+describe('a card the human closed without finishing it', () => {
+  // The DONE column holds four statuses, and the retention rule only ever knew one of them.
+  // So the poll deleted the card you had just decided not to do — out of the column you had
+  // just dropped it in. Read off the column now, so the two cannot drift apart again.
+  for (const status of ['cancelled', 'stopped', 'failed'] as const) {
+    it(`survives the query dropping a ${status} card, and is asked about by key`, () => {
+      const card = jiraTask({ status });
+      expect(retainedKeys([card], [])).toEqual(['PROJ-1']);
+      // ...and it is NOT a removal candidate: retention, not the confirm pass, holds it.
+      expect(removalCandidateKeys([card], [])).toEqual([]);
+      const result = reconcileJiraTasks([card], [], {
+        ...opts,
+        ...asked('PROJ-1'),
+        now: 1_000,
+        retentionMs: 14 * 24 * 60 * 60 * 1000,
+        rechecked: [issue('1', 'PROJ-1', 'done')],
+      });
+      expect(result.removals).toEqual([]);
+      expect(result.upserts[0].id).toBe('jira-1');
+    });
+  }
+});
+
+describe('removalCandidateKeys — what the confirm pass has to ask about', () => {
+  it('asks about the cards the query dropped, and nothing else', () => {
+    const dropped = jiraTask({ id: 'jira-2', externalKey: 'PROJ-2', externalId: '2' });
+    const returned = jiraTask({ externalKey: 'PROJ-1' });
+    const keys = removalCandidateKeys([returned, dropped], [issue('1', 'PROJ-1', 'new')]);
+    expect(keys).toEqual(['PROJ-2']);
+  });
+
+  it('never asks about a blocked, archived or ad-hoc card', () => {
+    const blocked = jiraTask({ id: 'jira-2', externalKey: 'PROJ-2', status: 'blocked' });
+    const archived = jiraTask({ id: 'jira-3', externalKey: 'PROJ-3', archivedAt: 5 });
+    const adhoc = jiraTask({ id: 'a-1', source: 'adhoc', externalKey: null, externalSource: null });
+    expect(removalCandidateKeys([blocked, archived, adhoc], [])).toEqual([]);
+  });
+});
+
+describe('reconcileJiraTasks — no card leaves without JIRA answering about it', () => {
+  /** `n` ordinary TO DO cards, `PROJ-1`…`PROJ-n`. */
+  const board = (n: number): Task[] =>
+    Array.from({ length: n }, (_, i) =>
+      jiraTask({
+        id: `jira-${i + 1}`,
+        externalId: String(i + 1),
+        externalKey: `PROJ-${i + 1}`,
+        status: 'pending',
+      }),
+    );
+
+  /** The query's answer, for the given keys. */
+  const returned = (keys: string[]): JiraIssue[] =>
+    keys.map((k) => issue(k.split('-')[1], k, 'new'));
+
+  it('removes nothing when the confirm pass never ran, however many left the query', () => {
+    // The whole defect in one assertion: absence from a paged search is not evidence.
+    const result = reconcileJiraTasks(board(10), returned(['PROJ-1']), {
+      ...opts,
+      queryChecked: null,
+    });
+    expect(result.removals).toEqual([]);
+    expect(result.refused).toEqual([]);
+  });
+
+  it('removes a card the confirm pass asked about and JIRA said no longer matches', () => {
+    const result = reconcileJiraTasks(board(4), returned(['PROJ-1', 'PROJ-2', 'PROJ-3']), {
+      ...opts,
+      queryChecked: ['PROJ-4'],
+      queryMatches: [],
+    });
+    expect(result.removals).toEqual([
+      { taskId: 'jira-4', key: 'PROJ-4', title: 'Do a thing', reason: 'left-query' },
+    ]);
+  });
+
+  it('KEEPS a card the search left out that the query still returns — the paging artifact', () => {
+    // The case that was eating the board: the card never stopped matching, the answer was
+    // just short. Counted in the warning, because that count is what names the cause.
+    const result = reconcileJiraTasks(board(4), returned(['PROJ-1', 'PROJ-2']), {
+      ...opts,
+      queryChecked: ['PROJ-3', 'PROJ-4'],
+      queryMatches: ['PROJ-3', 'PROJ-4'],
+    });
+    expect(result.removals).toEqual([]);
+    expect(result.warning).toMatch(/2 cards missing from the search still match the query/);
+    expect(result.warning).toMatch(/paging artifact/);
+  });
+
+  it('keeps a candidate whose confirm batch failed — one dead key 400s the fifty with it', () => {
+    const result = reconcileJiraTasks(board(3), returned(['PROJ-1']), {
+      ...opts,
+      // Only PROJ-2's batch came back. PROJ-3 was never answered for.
+      queryChecked: ['PROJ-2'],
+      queryMatches: [],
+    });
+    expect(removedIds(result)).toEqual(['jira-2']);
+  });
+
+  it('removes nothing at all when the search was truncated', () => {
+    const result = reconcileJiraTasks(board(4), returned(['PROJ-1']), {
+      ...opts,
+      queryChecked: ['PROJ-2', 'PROJ-3', 'PROJ-4'],
+      queryMatches: [],
+      truncated: true,
+    });
+    expect(result.removals).toEqual([]);
+    expect(result.warning).toMatch(/did not return the whole query/);
+  });
+
+  it('keeps a retained card whose by-key batch failed, even though `rechecked` came back', () => {
+    // Regression lock: `rechecked` is per-batch, so a key whose chunk errored is missing
+    // from it for a reason that has nothing to do with JIRA having lost the issue.
+    const done = jiraTask({ status: 'done', externalKey: 'PROJ-9', id: 'jira-9' });
+    const result = reconcileJiraTasks([done], [], {
+      ...opts,
+      now: 1_000,
+      retentionMs: 14 * 24 * 60 * 60 * 1000,
+      rechecked: [], // the other chunk answered; PROJ-9's did not
+      recheckedKeys: [],
+    });
+    expect(result.removals).toEqual([]);
+
+    // ...and with the key actually asked for, the same empty answer DOES retire it.
+    const answered = reconcileJiraTasks([done], [], {
+      ...opts,
+      now: 1_000,
+      retentionMs: 14 * 24 * 60 * 60 * 1000,
+      rechecked: [],
+      recheckedKeys: ['PROJ-9'],
+    });
+    expect(answered.removals[0]).toMatchObject({ taskId: 'jira-9', reason: 'gone-from-jira' });
+  });
+});
+
+describe('reconcileJiraTasks — a card comes back', () => {
+  it('restores an archived card whose issue is in the query again, on the same row', () => {
+    const archived = jiraTask({
+      archivedAt: 1_700,
+      projectTagId: 'p-billing',
+      agentProjectId: 'agent-1',
+      lastReadCommentAt: 555,
+    });
+    const result = reconcileJiraTasks([archived], [issue('1', 'PROJ-1', 'indeterminate')], opts);
+    expect(result.restoreIds).toEqual(['jira-1']);
+    expect(result.upserts).toHaveLength(1);
+    // The same row, with everything JIRA has never heard of still on it.
+    expect(result.upserts[0]).toMatchObject({
+      id: 'jira-1',
+      projectTagId: 'p-billing',
+      agentProjectId: 'agent-1',
+      lastReadCommentAt: 555,
+      status: 'in-progress',
+    });
+  });
+
+  it('says nothing about an archived card the query still does not return', () => {
+    const archived = jiraTask({ archivedAt: 1_700 });
+    const result = reconcileJiraTasks([archived], [], { ...opts, ...asked('PROJ-1') });
+    expect(result).toMatchObject({ upserts: [], removals: [], restoreIds: [], refused: [] });
+  });
+});
+
+describe('guardRemovals — a bound on how wrong one sync may be', () => {
+  const removal = (n: number): JiraRemoval => ({
+    taskId: `jira-${n}`,
+    key: `PROJ-${n}`,
+    title: 'Do a thing',
+    reason: 'left-query',
+  });
+  const many = (n: number): JiraRemoval[] => Array.from({ length: n }, (_, i) => removal(i + 1));
+
+  it('refuses 12 removals off a 30-card board — all of them, not some', () => {
+    const guarded = guardRemovals(many(12), 30);
+    expect(guarded.removals).toEqual([]);
+    expect(guarded.refused).toHaveLength(12);
+    expect(guarded.warning).toMatch(/more than 25% of the board/);
+  });
+
+  it('stands down when the question itself changed — a sprint roll is meant to empty it', () => {
+    const guarded = guardRemovals(many(12), 30, { queryChanged: true });
+    expect(guarded.removals).toHaveLength(12);
+    expect(guarded.refused).toEqual([]);
+    expect(guarded.warning).toBeNull();
+  });
+
+  it('lets 2 off a 4-card board through — on a small board every removal is a big share', () => {
+    const guarded = guardRemovals(many(2), 4);
+    expect(guarded.removals).toHaveLength(2);
+    expect(guarded.warning).toBeNull();
+  });
+
+  it('is applied inside the reconciler, where the caller cannot forget it', () => {
+    const board = Array.from({ length: 30 }, (_, i) =>
+      jiraTask({
+        id: `jira-${i + 1}`,
+        externalId: String(i + 1),
+        externalKey: `PROJ-${i + 1}`,
+        status: 'pending',
+      }),
+    );
+    const issues = board
+      .slice(0, 18)
+      .map((t) => issue(t.externalId as string, t.externalKey as string, 'new'));
+    const dropped = board.slice(18).map((t) => t.externalKey as string);
+
+    const refused = reconcileJiraTasks(board, issues, {
+      ...opts,
+      queryChecked: dropped,
+      queryMatches: [],
+    });
+    expect(refused.removals).toEqual([]);
+    expect(refused.refused).toHaveLength(12);
+    expect(refused.warning).toMatch(/Nothing was removed/);
+
+    // The same sync, after the human changed the JQL: the turnover is the point.
+    const allowed = reconcileJiraTasks(board, issues, {
+      ...opts,
+      queryChecked: dropped,
+      queryMatches: [],
+      queryChanged: true,
+    });
+    expect(allowed.removals).toHaveLength(12);
+    expect(allowed.refused).toEqual([]);
   });
 });

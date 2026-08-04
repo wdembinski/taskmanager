@@ -13,9 +13,19 @@
  * instant you finish it, so dragging a card into DONE used to delete it out of the column
  * you had just dropped it in. Those cards are retained instead, and re-read by key so they
  * keep following their ticket even while the query cannot see them. See {@link retainedKeys}.
+ *
+ * Above all of that sits the rule this module now exists to enforce — see
+ * {@link reconcileJiraTasks}: **no card leaves the board unless JIRA was asked about it by
+ * key and answered.**
  */
 import { PERSONAL_PROJECT_ID, type BoardColumn, type Task } from '@shared/model';
-import { categoryFromKey, isRunStatus, restingStatus, statusForColumn } from '@shared/board';
+import {
+  categoryFromKey,
+  columnForTask,
+  isRunStatus,
+  restingStatus,
+  statusForColumn,
+} from '@shared/board';
 import { resolveStatusColumn } from '@shared/statusResolve';
 import { commentBodyToText, type JiraIssue } from './jiraClient';
 import { authorIsMe, type JiraIdentityCache } from './identity';
@@ -66,6 +76,50 @@ export interface JiraSyncOptions {
    * card must never be deleted on the strength of a question nobody put.
    */
   rechecked?: JiraIssue[] | null;
+  /**
+   * The keys of {@link rechecked}'s question that were actually **asked and answered** —
+   * the same discipline as `rechecked: null`, but per key.
+   *
+   * The re-read is chunked (a `key in (…)` of three hundred keys finds your instance's URL
+   * limit), and one dead key 400s the whole batch it is in. Without this, a batch that
+   * failed is indistinguishable from a batch that came back empty, and every card in it is
+   * retired on a question that errored. Absent/null keeps the old whole-or-nothing reading:
+   * `rechecked` answers for every key that was asked for.
+   */
+  recheckedKeys?: KeySet | null;
+  /**
+   * The keys the **confirm pass** put to JIRA — "of these cards, which still match the
+   * board's query?" — or null when that pass did not run.
+   *
+   * The companion of {@link queryMatches}, and deliberately a separate set from it, because
+   * "asked, and JIRA said no" and "never asked" are different answers and only the first is
+   * grounds for taking a card off the board. A key missing from here is kept.
+   */
+  queryChecked?: KeySet | null;
+  /**
+   * The subset of {@link queryChecked} that JIRA said **still matches** the query.
+   *
+   * Every key in here is a card the paged search left out of its answer while the query
+   * itself still returns it — a paging artifact, and the thing that was eating the board.
+   * They are kept, and counted into {@link JiraSyncResult.warning}.
+   */
+  queryMatches?: KeySet | null;
+  /**
+   * Whether the search that produced `issues` stopped short of the end (see
+   * `jiraClient.searchAll`). A short answer looks exactly like a shrunken board, so a
+   * truncated one removes nothing at all.
+   */
+  truncated?: boolean;
+  /**
+   * Whether the question itself changed since the last sync — the sprint rolled over, the
+   * JQL was edited in Settings. Cards leaving is then expected, so {@link guardRemovals}
+   * stands down; the guard is there to catch a board shrinking while the question held still.
+   */
+  queryChanged?: boolean;
+  /** Share of the board that may leave in one sync before the guard refuses. Default 0.25. */
+  maxRemovalFraction?: number;
+  /** Removals below this count are never guarded — small boards are noisy. Default 5. */
+  minGuardedRemovals?: number;
   /** Now, in epoch ms — when a card's retention clock starts, and what prunes it. */
   now?: number;
   /**
@@ -77,12 +131,66 @@ export interface JiraSyncOptions {
   retentionMs?: number;
 }
 
+/** A set of issue keys, however the caller happens to be holding them. */
+export type KeySet = ReadonlySet<string> | readonly string[];
+
+/** Normalise a {@link KeySet} option; null/undefined stays null — "nobody asked". */
+function asSet(keys: KeySet | null | undefined): ReadonlySet<string> | null {
+  if (keys == null) return null;
+  return keys instanceof Set ? keys : new Set(keys as readonly string[]);
+}
+
+/** Why the board is letting go of a card. Each one is a different question having answered. */
+export type JiraRemovalReason =
+  /** JIRA was asked whether this key still matches the query, and said no. */
+  | 'left-query'
+  /** A retained card that has been kept for longer than the retention window. */
+  | 'retention-expired'
+  /** Asked for by key, and JIRA does not have it: deleted, or invisible to this token. */
+  | 'gone-from-jira';
+
+/**
+ * One card the board is letting go of. Carries the key and the title as well as the id,
+ * because the caller has to be able to *tell the human what left* — an id alone is not
+ * something anybody can check against JIRA.
+ */
+export interface JiraRemoval {
+  taskId: string;
+  key: string;
+  title: string;
+  reason: JiraRemovalReason;
+}
+
 export interface JiraSyncResult {
   /** JIRA tasks to insert or update (new + changed issues). */
   upserts: Task[];
-  /** Ids of JIRA tasks to delete (no longer in the JQL result and not blocked). */
-  deleteIds: string[];
+  /**
+   * Cards to take off the board — every one of them confirmed by a question JIRA answered.
+   *
+   * Deliberately not called `deleteIds`: that name invited `store.deleteTask`, and a card
+   * leaving the board is not the human deleting it. See `store.archiveTask`.
+   */
+  removals: JiraRemoval[];
+  /** Ids of archived cards whose issue is back in the query — put them back on the board. */
+  restoreIds: string[];
+  /** Removals {@link guardRemovals} would not let through. Nothing was done to these. */
+  refused: JiraRemoval[];
+  /** What the human should be told about this sync, or null when there is nothing to say. */
+  warning: string | null;
 }
+
+/** What {@link guardRemovals} made of a removal set: what may go, what may not, and why. */
+export interface JiraRemovalGuard {
+  removals: JiraRemoval[];
+  refused: JiraRemoval[];
+  warning: string | null;
+}
+
+/** Share of the board that may leave in one sync before the guard refuses the lot. */
+export const DEFAULT_MAX_REMOVAL_FRACTION = 0.25;
+
+/** Below this many removals the guard never fires — a four-card board is all fractions. */
+export const DEFAULT_MIN_GUARDED_REMOVALS = 5;
 
 /**
  * Newest comment time (epoch ms) from an issue's inline comments, **ignoring your own**,
@@ -227,9 +335,15 @@ export function issueToBoardTask(
  * has to keep counting even after the ticket moves back out of Done. That second clause is
  * what makes reopening a ticket in JIRA visible on the board: without it a retained card
  * would be retired by the very sync that discovered it had come back to life.
+ *
+ * "Finished" is read off the **column**, not a hand-copied list of statuses, so it cannot
+ * drift from what the board shows. That is not a tidy-up: `restingStatus(task) === 'done'`
+ * missed `cancelled`, `stopped` and `failed`, all of which sit in the DONE column — so the
+ * poll deleted the card you had just decided not to do, out of the column you had just
+ * dropped it in, and the only trace was that it was gone.
  */
 function isRetained(task: Task): boolean {
-  return task.retainedSince != null || restingStatus(task) === 'done';
+  return task.retainedSince != null || columnForTask(task) === 'done';
 }
 
 /** JIRA tasks on the board, keyed by issue key. */
@@ -259,6 +373,7 @@ export function retainedKeys(existing: readonly Task[], issues: readonly JiraIss
   for (const task of existing) {
     if (task.source !== 'jira' || task.externalKey == null) continue;
     if (returned.has(task.externalKey)) continue;
+    if (task.archivedAt != null) continue; // already off the board; nothing left to decide
     if (restingStatus(task) === 'blocked') continue; // never consulted; never deleted
     if (isRetained(task)) keys.push(task.externalKey);
   }
@@ -266,16 +381,116 @@ export function retainedKeys(existing: readonly Task[], issues: readonly JiraIss
 }
 
 /**
+ * The issue keys the sync must **confirm** before any of their cards may leave the board —
+ * the cards the query did not return and that nothing else is keeping.
+ *
+ * The companion of {@link retainedKeys}, and its complement: that one asks about cards the
+ * board is keeping *anyway*, this one about cards the board would otherwise drop. Together
+ * they cover every card the query left out.
+ *
+ * The point is the direction of the question. Asking the JQL and seeing what comes back
+ * cannot distinguish "this ticket no longer matches" from "this page was short", and the
+ * board pays for the difference by the card. Asking `(<the query>) AND key in (…)` about a
+ * bounded, board-sized list has an answer that can be trusted in the negative — see
+ * `jiraJql.withKeysIn`.
+ *
+ * Bounded by the **board** rather than the query: at most one key per card already on it,
+ * however many issues the instance holds.
+ */
+export function removalCandidateKeys(
+  existing: readonly Task[],
+  issues: readonly JiraIssue[],
+): string[] {
+  const returned = new Set(issues.map((i) => i.key));
+  const keys: string[] = [];
+  for (const task of existing) {
+    if (task.source !== 'jira' || task.externalKey == null) continue;
+    if (returned.has(task.externalKey)) continue;
+    if (task.archivedAt != null) continue; // already off the board
+    if (restingStatus(task) === 'blocked') continue; // never consulted; never removed
+    if (isRetained(task)) continue; // {@link retainedKeys} asks about these, by key
+    keys.push(task.externalKey);
+  }
+  return keys;
+}
+
+/**
+ * Refuse a removal set that is too big a share of the board to believe.
+ *
+ * Every removal below has an answer from JIRA behind it, so this is not a second opinion on
+ * any one card — it is a bound on how wrong one sync is allowed to be. A credential that
+ * silently narrowed, a filter someone half-edited, an instance answering a query with
+ * something odd: the failure mode they share is *many cards at once*, and taking a third of
+ * a board off in one poll is the kind of thing to stop and report rather than do and log.
+ *
+ * Two dials, and the second matters as much as the first: on a four-card board every honest
+ * removal is a quarter of it, so nothing under {@link DEFAULT_MIN_GUARDED_REMOVALS} is
+ * guarded at all.
+ *
+ * It stands down entirely when `queryChanged` — a new sprint, an edited JQL. The board is
+ * *meant* to turn over then, and a guard that fires on the one expected mass removal would
+ * be teaching the human to ignore it.
+ *
+ * All or nothing: a partial removal would leave the board in a state no question produced.
+ */
+export function guardRemovals(
+  removals: readonly JiraRemoval[],
+  boardCount: number,
+  opts: {
+    maxRemovalFraction?: number;
+    minGuardedRemovals?: number;
+    queryChanged?: boolean;
+  } = {},
+): JiraRemovalGuard {
+  const allowed: JiraRemovalGuard = { removals: [...removals], refused: [], warning: null };
+  if (opts.queryChanged) return allowed;
+
+  const fraction = opts.maxRemovalFraction ?? DEFAULT_MAX_REMOVAL_FRACTION;
+  const floor = opts.minGuardedRemovals ?? DEFAULT_MIN_GUARDED_REMOVALS;
+  if (removals.length < floor) return allowed;
+  if (removals.length <= boardCount * fraction) return allowed;
+
+  const pct = Math.round(fraction * 100);
+  return {
+    removals: [],
+    refused: [...removals],
+    warning:
+      `Kept ${removals.length} of ${boardCount} JIRA cards that JIRA says have left the ` +
+      `query — more than ${pct}% of the board in one sync. Nothing was removed. Check the ` +
+      `board's JQL and that JIRA is answering it in full.`,
+  };
+}
+
+/**
  * Reconcile the JQL result against the current Personal-board tasks. Ad-hoc tasks are
- * never touched. Returns the JIRA upserts and the ids of stale (removable) JIRA tasks.
+ * never touched.
  *
- * A card the query dropped meets one of four fates:
+ * **The rule this function exists to enforce: no card leaves the board unless JIRA was
+ * asked about it by key and answered.** A short page, a failed batch, a question nobody
+ * put — every one of them means *keep*. Absence from the query is a hint, never a verdict:
+ * the search is paged, it is capped, and an instance that answers with ninety issues
+ * instead of three hundred is indistinguishable, from here, from a board that shrank to
+ * ninety. That mistake is not symmetric — a card wrongly kept is a stale row you can drag
+ * away, a card wrongly removed is work the human can no longer see.
  *
- *   1. **blocked** — left exactly as it is. An internal-only state JIRA is never asked about.
- *   2. **not retained** — deleted, as it always was: the query is the board.
- *   3. **retained and re-read** — upserted from the re-read issue, so it shows the ticket's
- *      real status and column while keeping its retention clock running.
- *   4. **retained too long, or JIRA no longer returns it** — deleted.
+ * So every fate below names the question behind it:
+ *
+ *   1. **blocked** — untouched. An internal-only state JIRA is never asked about.
+ *   2. **archived** — already off the board. Back in the query ⇒ it returns (`restoreIds`);
+ *      still absent ⇒ nothing to say.
+ *   3. **the search was truncated** — everything is kept, whatever else is true of it.
+ *   4. **never asked about** (`queryChecked` has no such key) — kept.
+ *   5. **asked, and JIRA says it still matches** (`queryMatches`) — kept, and counted: this
+ *      is a *paging artifact*, the case that was eating the board, and the count is the most
+ *      diagnostic number this function produces.
+ *   6. **asked, and JIRA says it no longer matches** — `left-query`.
+ *   7. **retained past its window** — `retention-expired`.
+ *   8. **retained, its batch failed** (`recheckedKeys` has no such key) — kept.
+ *   9. **retained, asked for by key, and JIRA does not have it** — `gone-from-jira`.
+ *  10. otherwise — upserted from the re-read issue, with its retention clock preserved.
+ *
+ * Whatever survives all that is then put to {@link guardRemovals}, **here** rather than in
+ * the caller: a guard the caller can forget to apply is not a guard.
  */
 export function reconcileJiraTasks(
   existing: Task[],
@@ -284,42 +499,112 @@ export function reconcileJiraTasks(
 ): JiraSyncResult {
   const existingByKey = jiraTasksByKey(existing);
   const seen = new Set<string>();
+  const restoreIds: string[] = [];
 
   const upserts = issues.map((issue, i) => {
     seen.add(issue.key);
-    return issueToTask(issue, existingByKey.get(issue.key), opts, i);
+    const prior = existingByKey.get(issue.key);
+    // Archived, and the query returns it again: the ticket matches, so the card comes back
+    // to the board — the same row, with the timeline, files and links it left with.
+    if (prior?.archivedAt != null) restoreIds.push(prior.id);
+    return issueToTask(issue, prior, opts, i);
   });
 
   const rechecked = opts.rechecked ? new Map(opts.rechecked.map((i) => [i.key, i])) : null;
-  const deleteIds: string[] = [];
+  const recheckedKeys = asSet(opts.recheckedKeys);
+  const queryChecked = asSet(opts.queryChecked);
+  const queryMatches = asSet(opts.queryMatches);
+  const truncated = opts.truncated === true;
+
+  const candidates: JiraRemoval[] = [];
+  /** Cards the query left out that JIRA says still match it — a short page, not a removal. */
+  let pagingArtifacts = 0;
+
+  /**
+   * The one funnel every removal goes through, so `truncated` cannot be forgotten in a
+   * branch: a search we know was short removes nothing, for any reason.
+   */
+  const drop = (task: Task, reason: JiraRemovalReason): void => {
+    if (truncated) return;
+    candidates.push({
+      taskId: task.id,
+      key: task.externalKey as string,
+      title: task.title,
+      reason,
+    });
+  };
 
   for (const task of existing) {
     if (task.source !== 'jira' || task.externalKey == null || seen.has(task.externalKey)) continue;
+    // Already off the board, and the query has not brought it back: say nothing about it.
+    if (task.archivedAt != null) continue;
     // Keep blocked tickets even if they left the JQL — and read where the card RESTS, so one
-    // whose agent is mid-run isn't deleted out from under the session.
+    // whose agent is mid-run isn't removed out from under the session.
     if (restingStatus(task) === 'blocked') continue;
+
     if (!isRetained(task)) {
-      deleteIds.push(task.id);
+      // Nobody put the question: the confirm pass did not run, or did not cover this key
+      // (its batch failed, or the key was added after the pass was built).
+      if (queryChecked === null || !queryChecked.has(task.externalKey)) continue;
+      // Asked, and JIRA says the query DOES still return it — so the search that left it
+      // out was short, not authoritative. Keeping it is the fix; counting it is the
+      // evidence that this is what has been happening.
+      if (queryMatches?.has(task.externalKey)) {
+        pagingArtifacts++;
+        continue;
+      }
+      drop(task, 'left-query');
       continue;
     }
+
     const now = opts.now ?? Date.now();
     const since = task.retainedSince ?? now;
     // `>=`, so a retention of 0 retires the card on the very sync that dropped it.
     if (now - since >= (opts.retentionMs ?? 0)) {
-      deleteIds.push(task.id);
+      drop(task, 'retention-expired');
       continue;
     }
     // The re-read didn't run (or failed). Keep the card untouched rather than retire it on
     // a question nobody put — its clock simply starts on the next sync that does ask.
     if (rechecked === null) continue;
+    // Same rule one level finer: this key's own batch errored, so `rechecked` not listing
+    // it says nothing at all. One dead key 400s the fifty around it.
+    if (recheckedKeys !== null && !recheckedKeys.has(task.externalKey)) continue;
     const issue = rechecked.get(task.externalKey);
     // JIRA answered and does not have it: deleted, or no longer visible to this token.
     if (!issue) {
-      deleteIds.push(task.id);
+      drop(task, 'gone-from-jira');
       continue;
     }
     upserts.push(issueToTask(issue, task, opts, task.order, since));
   }
 
-  return { upserts, deleteIds };
+  // The denominator is the BOARD — the cards a human can see — not the query's answer,
+  // which is the very thing under suspicion when this guard matters.
+  const boardCount = existing.filter(
+    (t) => t.source === 'jira' && t.externalKey != null && t.archivedAt == null,
+  ).length;
+  const guarded = guardRemovals(candidates, boardCount, opts);
+
+  const notes: string[] = [];
+  if (truncated) {
+    notes.push(
+      'JIRA did not return the whole query, so no card was removed from the board this sync.',
+    );
+  }
+  if (pagingArtifacts > 0) {
+    notes.push(
+      `${pagingArtifacts} card${pagingArtifacts === 1 ? '' : 's'} missing from the search ` +
+        `still match the query — a paging artifact, not a removal. They were kept.`,
+    );
+  }
+  if (guarded.warning) notes.push(guarded.warning);
+
+  return {
+    upserts,
+    removals: guarded.removals,
+    restoreIds,
+    refused: guarded.refused,
+    warning: notes.length ? notes.join(' ') : null,
+  };
 }

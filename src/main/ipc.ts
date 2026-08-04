@@ -1838,7 +1838,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     }
 
     const epicNames = await fetchEpicNames(client, [...issues, ...(rechecked ?? [])], epicField);
-    const { upserts, deleteIds } = reconcileJiraTasks(personalForSync, issues, {
+    const { upserts, removals } = reconcileJiraTasks(personalForSync, issues, {
       baseUrl: jira.baseUrl,
       overrides: jira.statusCategoryOverrides,
       learned: jira.learnedStatusColumns,
@@ -1851,7 +1851,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       retentionMs: Math.max(0, jira.doneRetentionDays) * 24 * 60 * 60 * 1000,
     });
     for (const t of upserts) store.upsertJiraTask(t);
-    for (const id of deleteIds) store.deleteTask(id);
+    // Still a delete, and still unconfirmed — the confirm pass, the archive and the report
+    // of what left are the next step's. Without `queryChecked` the reconciler now refuses
+    // to name a card that merely went missing from the search, so what reaches here is the
+    // retention paths alone.
+    for (const r of removals) store.deleteTask(r.taskId);
     const tasks = store.getPersonalTasks();
     send('project:tasksChanged', { projectId: PERSONAL_PROJECT_ID, tasks });
     // The board just changed shape, so an MR whose ticket has appeared should attach
