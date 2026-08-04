@@ -68,6 +68,10 @@ Start at the top:
 5. [`docs/05-glossary.md`](docs/05-glossary.md) — every unfamiliar word, defined.
 6. [`docs/06-licensing.md`](docs/06-licensing.md) — the MIT/Apache-only rule and
    how to keep the app commercially usable.
+7. [`docs/07-packaging-and-release.md`](docs/07-packaging-and-release.md) — how to
+   build an installer and cut a versioned release.
+8. [`docs/08-token-usage-audit.md`](docs/08-token-usage-audit.md) — what the app
+   spends on the model, and the rule about what should never be an agent.
 
 Then, before your first commit, read [`CONTRIBUTING.md`](CONTRIBUTING.md) — how
 commit messages are written here, and the rule that every change bumps and tags
