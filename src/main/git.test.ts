@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   addWorktree,
+  changedInBranch,
   commitAll,
   createRootCommit,
   currentBranch,
@@ -143,6 +144,22 @@ describe('git helpers', () => {
 
     // The checked-out branch is refused rather than forced — `git merge` is the tool for that.
     expect((await fastForwardRef(repo, 'orch/t3', base)).code).not.toBe(0);
+
+    await removeWorktree(repo, wt);
+  });
+
+  it('lists every path a branch touched, additions and edits alike', async () => {
+    const wt = join(repo, '..', `wtd-${Date.now()}`);
+    await addWorktree(repo, wt, 'orch/t4', base);
+    writeFileSync(join(wt, 'a.txt'), 'edited\n'); // modifies a file already in base
+    writeFileSync(join(wt, 'b.txt'), 'new\n'); // adds a new one
+    await commitAll(wt, 'edit a, add b');
+
+    expect(await changedInBranch(repo, base, 'orch/t4')).toEqual(
+      expect.arrayContaining(['a.txt', 'b.txt']),
+    );
+    // A ref that doesn't exist fails soft to an empty list rather than throwing.
+    expect(await changedInBranch(repo, base, 'no-such-branch')).toEqual([]);
 
     await removeWorktree(repo, wt);
   });

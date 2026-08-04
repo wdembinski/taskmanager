@@ -131,6 +131,8 @@ interface TaskRow {
   autoIntegrate: number | null;
   /** Epoch ms this card's work landed; NULL = it has not. See `Task.landedAt`. */
   landedAt: number | null;
+  /** One-shot review marker; NULL once unset or never set. See `Task.chainLandedAt`. */
+  chainLandedAt: number | null;
 }
 
 /** A project row as stored; `writeBackPlan` is a 0/1 INTEGER (SQLite has no boolean). */
@@ -226,6 +228,7 @@ export interface Store {
         | 'agentPlan'
         | 'agentBranch'
         | 'landedAt'
+        | 'chainLandedAt'
         | 'autoRelease'
         | 'autoIntegrate'
       >
@@ -601,6 +604,7 @@ export function createStore(dbPath: string): Store {
       agentBranch            TEXT,
       planRound              INTEGER,
       landedAt               INTEGER,
+      chainLandedAt          INTEGER,
       autoRelease            INTEGER,
       autoIntegrate          INTEGER
     );
@@ -964,6 +968,10 @@ export function createStore(dbPath: string): Store {
     // row = "it has not", which holds nothing back: no card is chained until a human
     // draws an arrow, and the next merge of a chained card fills it in.
     ['landedAt', 'INTEGER'],
+    // One-shot marker a finished chain leaves for `startTask` (review, not new work). NULL
+    // on every pre-existing row = "nothing to consume", which is exactly true: no chain
+    // finished mid-upgrade with a human waiting to talk to it.
+    ['chainLandedAt', 'INTEGER'],
     // The card's auto-release override. NULL on every pre-existing row = "nobody has ruled
     // on this card", which follows the project's (also new, also off) preference — so no
     // upgraded install starts releasing anything by itself.
@@ -1108,7 +1116,7 @@ export function createStore(dbPath: string): Store {
         externalDescription,
         preBlockStatus, preRunStatus, retainedSince, archivedAt, archivedReason, lastReadCommentAt, latestCommentAt,
         projectTagId, agentProjectId, agentMode, agentModel,
-        agentPlan, agentBranch, planRound, landedAt, autoRelease, autoIntegrate)
+        agentPlan, agentBranch, planRound, landedAt, chainLandedAt, autoRelease, autoIntegrate)
      VALUES
        (@id, @projectId, @phase, @title, @status, @sessionId, @order, @source, @dependsOn, @isContract, @isScaffold, @type,
         @parentTaskId, @description, @statusNote, @statusNoteAt,
@@ -1120,7 +1128,7 @@ export function createStore(dbPath: string): Store {
         -- an UPDATE, so a card created already filed (the Add-task dialog's Project
         -- picker) used to lose its project between the form and the row.
         @projectTagId, @agentProjectId, @agentMode, @agentModel,
-        @agentPlan, @agentBranch, @planRound, @landedAt, @autoRelease, @autoIntegrate)`,
+        @agentPlan, @agentBranch, @planRound, @landedAt, @chainLandedAt, @autoRelease, @autoIntegrate)`,
   );
   const deleteTask = db.prepare(`DELETE FROM tasks WHERE id = ?`);
   // Archiving is one column, written by id. Both statements take the card AND its steps in
@@ -1665,6 +1673,7 @@ export function createStore(dbPath: string): Store {
       agentBranch: task.agentBranch ?? null,
       planRound: task.planRound ?? null,
       landedAt: task.landedAt ?? null,
+      chainLandedAt: task.chainLandedAt ?? null,
       // Three states in one column: 1 = release, 0 = don't, NULL = follow the project.
       autoRelease:
         task.autoRelease === null || task.autoRelease === undefined
@@ -1731,6 +1740,7 @@ export function createStore(dbPath: string): Store {
       // group the very rows the grouping exists for.
       planRound: r.planRound ?? 1,
       landedAt: r.landedAt ?? null,
+      chainLandedAt: r.chainLandedAt ?? null,
       // NULL stays null — it is a real third state ("this card has not ruled"), not a
       // missing false, and collapsing it here would pin every card to whatever the
       // project's preference was the first time it was read.
@@ -1979,6 +1989,7 @@ export function createStore(dbPath: string): Store {
         'agentPlan',
         'agentBranch',
         'landedAt',
+        'chainLandedAt',
       ] as const;
       for (const col of columns) {
         const value = (patch as Record<string, unknown>)[col];

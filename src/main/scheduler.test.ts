@@ -1584,6 +1584,26 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
     expect(filed).toContain('move it to Done yourself');
   });
 
+  // Token audit S5: a chain landing used to spawn a whole fresh session just to comment on
+  // its own summary. Now it only files the comment and leaves a one-shot marker — the
+  // review session starts (if ever) on the human's own first chat message.
+  it('clears the session and marks the chain landed, without starting a review run', async () => {
+    const { parent, children, comments, seedRun, fire, start } = setup();
+    // The stopped planner's session — must not be left resumable.
+    parent.sessionId = 'planner-session';
+    children[0].status = 'done';
+    seedRun('r2', 's2');
+    fire('r2', okResult);
+    await flush();
+
+    expect(comments.join(' ')).toContain('Plan complete');
+    expect(parent.sessionId).toBeNull();
+    expect((parent as unknown as { chainLandedAt: number | null }).chainLandedAt).not.toBeNull();
+    // Nothing was started to seed a review — `start` only ever fires from `startTask`, and
+    // this whole flow never called it (the step's own run was seeded directly, above).
+    expect(start).not.toHaveBeenCalled();
+  });
+
   it('holds the finished branch for a human when autoIntegrate is off (Phase 17)', async () => {
     const { parent, children, integrated, comments, seedRun, fire } = setup(undefined, {
       autoIntegrate: false,
@@ -3410,26 +3430,29 @@ describe('Scheduler — which runs owe a plan', () => {
     expect(run?.model).toBe('opus');
   });
 
-  // The exact run that was parked twice: the session a finished chain seeds so the card can
-  // be talked to about what it built.
+  // The exact run that was parked twice: the review conversation a chat reply starts once a
+  // finished chain's `chainLandedAt` marker flags the next run on the card as one.
   it('does not make the post-chain review owe a plan', () => {
-    const { scheduler, card } = setup();
+    const { scheduler, card, runFor } = setup();
+    // What `finishParentChain` leaves behind once the chain lands: no session to resume,
+    // and the one-shot marker `startTask` reads as "the next run is a review".
+    card.sessionId = null as unknown as string;
+    (card as unknown as { chainLandedAt: number }).chainLandedAt = 1700000000000;
 
-    (
-      scheduler as unknown as { seedParentReviewSession: (t: Task, s: string) => void }
-    ).seedParentReviewSession(card, 'all eight steps done');
+    const sent = scheduler.chatWithAgent('t1', 'how did it go?');
 
-    const runs = [
-      ...(
-        scheduler as unknown as {
-          runs: Map<string, { reviewSeed?: boolean; expectsPlan?: boolean; model?: string }>;
-        }
-      ).runs.values(),
-    ];
-    expect(runs).toHaveLength(1);
-    expect(runs[0].reviewSeed).toBe(true);
-    expect(runs[0].expectsPlan).toBe(false);
-    expect(runs[0].model).toBe('sonnet'); // a review reads code; it does not plan
+    expect(sent.status).toBe('resumed');
+    if (sent.status === 'refused') throw new Error(sent.reason);
+    const run = runFor(sent.runId) as unknown as {
+      reviewSeed?: boolean;
+      expectsPlan?: boolean;
+      model?: string;
+    };
+    expect(run.reviewSeed).toBe(true);
+    expect(run.expectsPlan).toBe(false);
+    expect(run.model).toBe('sonnet'); // a review reads code; it does not plan
+    // Consumed, not left behind — a second run on this card must not also read as a review.
+    expect(card.chainLandedAt).toBeNull();
   });
 
   it('still makes an ordinary run on a plan-mode card owe a plan', () => {

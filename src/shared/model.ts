@@ -702,6 +702,19 @@ export interface Task {
    * is chained yet either, so nothing is held back by it.
    */
   landedAt?: number | null;
+  /**
+   * Epoch ms this card's chain last finished, or null. A one-shot marker, not a record like
+   * {@link Task.landedAt}: `finishParentChain` sets it in the same beat it clears
+   * `sessionId`, and `startTask` clears it the moment it is read.
+   *
+   * What it's for: the card's session is gone (see `sessionId` above), so the human's next
+   * chat message starts a genuinely fresh run — and `startTask` needs to know that fresh run
+   * is a REVIEW of work already merged, not new work, so it runs in the project directory
+   * instead of cutting a worktree off a branch the chain's own integration already deleted.
+   * `reviewSeed` on the run is exactly that flag; this column is what tells `startTask` to
+   * set it on a run nothing else marked as one.
+   */
+  chainLandedAt?: number | null;
 }
 
 /** What the assign-to-an-agent action sends: where to run, how, and an optional brief. */

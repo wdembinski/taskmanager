@@ -91,7 +91,7 @@ import {
 import { guardCardStatus, humanStatusPatch } from './cardStatusGuard';
 import { ChainRunner, type ChainTrigger } from './chainRunner';
 import type { PermissionGate } from './claudeSession';
-import { buildChainHandbackPrompt, buildChainSummary } from './chainSummary';
+import { buildChainSummary } from './chainSummary';
 import { shouldSurfaceEvent } from './eventNoise';
 import { isBlockingLimitStatus, LimitGate } from './limitGate';
 import type { PermissionRequest, PermissionDecisionResult } from './permissionBroker';
@@ -109,6 +109,7 @@ import {
 } from './planToSubtasks';
 import type { SessionManager } from './sessionManager';
 import { hostFor } from './exec';
+import { changedInBranch } from './git';
 import { appPlanPath, appProjectFile, planRelPath } from './projectPaths';
 import type { Store } from './store';
 import { taskBranch } from './worktreeManager';
@@ -677,11 +678,15 @@ interface Run {
    */
   chatPrompt?: string;
   /**
-   * (Phase 17) This run only exists to brief the card after its plan finished, so it must
+   * (Phase 17) This is the first run started on a card since its plan finished, so it must
    * skip both halves of the worktree lifecycle: there is nothing to integrate (the chain's
    * branch was merged and deleted) and nothing to isolate (it reads code already in base).
    * Without the flag, `settle` would try to merge a branch that no longer exists and
    * `prepare` would cut a brand-new one for a card whose work is already landed.
+   *
+   * Set by `startTask` off `task.chainLandedAt` (`finishParentChain`'s one-shot marker),
+   * not chosen by the caller — the card gets no session of its own back when its chain
+   * lands, only this flag waiting for whichever run actually starts next.
    */
   reviewSeed?: boolean;
   /**
@@ -1350,10 +1355,11 @@ export class Scheduler {
    *   - it forces `plan` mode for this ONE turn, whatever the card is assigned, without
    *     touching `task.agentMode` — which would otherwise make every later run a planner.
    *
-   * A live run on the card (normally the review session `finishParentChain` seeded, i.e.
-   * exactly the conversation the human is typing into) is stopped first and the planner
-   * deferred until its process is gone — same reason `chainStarts` exists: both runs share
-   * the card's worktree, and `--resume` against a session still shutting down is a race.
+   * A live run on the card (normally the review conversation a chat reply started once its
+   * chain landed, i.e. exactly the conversation the human is typing into) is stopped first
+   * and the planner deferred until its process is gone — same reason `chainStarts` exists:
+   * both runs share the card's worktree, and `--resume` against a session still shutting
+   * down is a race.
    */
   replanCard(taskId: string, note?: string): ChatSendResult {
     const refused = (reason: ChatRefusal): ChatSendResult => ({
@@ -2140,20 +2146,28 @@ export class Scheduler {
     // permissions above all — judges the run the human actually authorized, and so the
     // one-turn override never outlives its turn.
     const permissionMode = opts.permissionMode ?? task.agentMode ?? project.defaultPermissionMode;
+    // A card whose chain just landed carries `chainLandedAt` as a one-shot marker
+    // (`finishParentChain`): the very next run started on it — whichever caller that turns
+    // out to be, a chat reply above all — is the review conversation, not new work, so it
+    // must be flagged exactly as a caller-requested `reviewSeed` would be. Consumed here,
+    // not left for the caller, so it fires exactly once regardless of which path resumes
+    // the card first.
+    const reviewSeed = opts.reviewSeed ?? Boolean(task.chainLandedAt);
+    if (task.chainLandedAt) this.updateTask(task.id, { chainLandedAt: null }, null);
     // Read off the SAME two inputs the mode is, and that symmetry is the point: `plan`
     // asked for on this turn means "come back with a plan", while `plan` inherited from
     // the card means only "this card may not write". A conversation — a chat reply, a
     // post-chain review — is judged as a conversation unless the caller says otherwise.
     const expectsPlan =
       opts.permissionMode === 'plan' ||
-      !(opts.chatPrompt !== undefined || opts.reviewSeed || opts.releaseSeed);
+      !(opts.chatPrompt !== undefined || reviewSeed || opts.releaseSeed);
     const run: Run = {
       taskId: task.id,
       projectId: project.id,
       runId,
       settled: false,
       chatPrompt: opts.chatPrompt,
-      reviewSeed: opts.reviewSeed,
+      reviewSeed,
       releaseSeed: opts.releaseSeed,
       permissionMode,
       // Planning costs what the project says planning costs. The two flags together are
@@ -3438,10 +3452,12 @@ export class Scheduler {
         this.chain.landed(finished?.parentTaskId ?? ctx.taskId);
         // Auto-release, if this card asked for it (see `@shared/release`). BEFORE
         // `finishParentChain`, and that ordering is the whole coordination between the
-        // two: starting the release reserves the card, and `seedParentReviewSession`
-        // already declines to seed a card that is in flight. So a released card gets ONE
-        // session — the release run, which ends by reporting what it shipped — instead of
-        // a review conversation and a release talking over each other in the same thread.
+        // two: `finishParentChain` sets `chainLandedAt`, a ONE-SHOT marker the next run
+        // started on this card consumes as "this is the review". Starting the release run
+        // first means it starts before that marker exists, so it is never mistaken for the
+        // review itself — started the other way round, the release run would consume the
+        // flag and the human's actual review, later, would cut a fresh worktree for a
+        // branch that is already merged.
         this.startReleaseRun(project, finished?.parentTaskId ?? ctx.taskId, {
           branch: ctx.branch,
           base: ctx.base,
@@ -4093,10 +4109,17 @@ export class Scheduler {
    *
    *  1. a summary of what every step actually did is filed on the parent's timeline, so
    *     the Details Panel reads as one story rather than N disconnected transcripts; and
-   *  2. the card gets a live thread of its own again, via a fresh session briefed with
-   *     that summary. We deliberately do NOT resume the planner — `approvePlan` told it to
-   *     stop, its context predates every line the steps wrote, and it is the most
-   *     expensive session in the chain (see `chainSummary.ts`).
+   *  2. the card's own session is cleared, so the human's NEXT chat message starts a fresh
+   *     one instead of resuming the planner. We deliberately do NOT resume it —
+   *     `approvePlan` told it to stop, its context predates every line the steps wrote, and
+   *     it is the most expensive session in the chain (see `chainSummary.ts`). Clearing
+   *     `sessionId` sends that first message down `resumeForChat`'s "nothing to resume"
+   *     branch, which builds a fresh full brief off the card's `taskNotes` — and the
+   *     summary just filed is now part of those notes. `chainLandedAt` marks that first run
+   *     as the review, not new work; `startTask` reads it and clears it once used.
+   *
+   * No session is started here — unlike the seeded-session design this replaced, a chain
+   * landing spends nothing more than the comment until someone actually talks to the card.
    *
    * The card stays **In Progress**. Only the human moves a card to Done.
    */
@@ -4124,6 +4147,19 @@ export class Scheduler {
     const unseen = summarized ? steps.filter((s) => !summarized.has(s.id)) : steps;
     const reported = unseen.length > 0 ? unseen : steps;
     this.summarizedSteps.set(parent.id, new Set(steps.map((s) => s.id)));
+    // The files the chain actually wrote, read straight from git rather than asked of any
+    // one step's own account — this is what a seeded review session used to spend a whole
+    // extra turn establishing by reading the branch itself.
+    const chainProject = this.runProjectFor(parent);
+    const files =
+      branchInfo?.branch && branchInfo.base && chainProject
+        ? await changedInBranch(
+            chainProject.path,
+            branchInfo.base,
+            branchInfo.branch,
+            hostFor(chainProject.target),
+          )
+        : [];
     const summary = buildChainSummary(
       parent.title,
       reported.map((step, i) => ({
@@ -4135,14 +4171,14 @@ export class Scheduler {
       branchInfo?.branch ?? null,
       branchInfo?.base ?? null,
       branchInfo?.merged ?? true,
+      files,
     );
     this.store.addComment(parent.projectId, parent.id, summary);
     if (parent.status !== 'in-progress') {
       this.updateTask(parent.id, { status: 'in-progress' }, null);
     }
+    this.updateTask(parent.id, { sessionId: null, chainLandedAt: Date.now() }, null);
     this.tasksChanged?.(parent.projectId);
-
-    this.seedParentReviewSession(parent, summary);
   }
 
   /** A task's own closing words: the `resultText` of its LAST `result` event, or ''. */
@@ -4153,28 +4189,6 @@ export class Scheduler {
       if (event.kind === 'result' && event.resultText.trim()) return event.resultText;
     }
     return '';
-  }
-
-  /**
-   * Give a card whose chain just finished a session to talk to.
-   *
-   * A real run, so it settles like any other — but flagged `reviewSeed`, which does two
-   * things `settle` and the worktree layer would otherwise get wrong: the chain's branch
-   * has already been merged AND DELETED, so there is nothing to integrate, and preparing a
-   * worktree would cut a brand-new branch for a card whose work is already in base. A
-   * review conversation reads merged code, so it runs on the shared directory.
-   */
-  private seedParentReviewSession(parent: Task, summary: string): void {
-    if (this.disposed || this.limitGate.active) return;
-    // A card that never had an agent has nothing to seed; and one already running (a human
-    // got in first) must not be interrupted.
-    if (!parent.agentProjectId || this.inFlight.has(parent.id)) return;
-    const project = this.runProjectFor(parent);
-    if (!project) return;
-    this.startTask(project, parent, {
-      chatPrompt: buildChainHandbackPrompt(parent.title, summary),
-      reviewSeed: true,
-    });
   }
 
   /**
@@ -4631,7 +4645,9 @@ export class Scheduler {
 
   private updateTask(
     taskId: string,
-    patch: Partial<Pick<Task, 'status' | 'sessionId' | 'agentPlan' | 'preRunStatus'>>,
+    patch: Partial<
+      Pick<Task, 'status' | 'sessionId' | 'agentPlan' | 'preRunStatus' | 'chainLandedAt'>
+    >,
     runId: string | null,
   ): void {
     const before = patch.status !== undefined ? this.store.getTask(taskId) : undefined;

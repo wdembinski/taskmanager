@@ -373,6 +373,22 @@ export async function addedInBranch(
 }
 
 /**
+ * Every path `branch` touched relative to `base` — added, modified, deleted, renamed. Unlike
+ * {@link addedInBranch} this carries no `--diff-filter`: it exists to describe the whole of a
+ * finished chain's work for a human reading a summary, where an edit is exactly as worth
+ * naming as a new file. NUL-delimited for the same reason as `addedInBranch`.
+ */
+export async function changedInBranch(
+  dir: string,
+  base: string,
+  branch: string,
+  host?: ExecHost,
+): Promise<string[]> {
+  const res = await git(dir, ['diff', '-z', '--name-only', `${base}..${branch}`], host);
+  return res.code === 0 ? splitZ(res.stdout) : [];
+}
+
+/**
  * How many commits `branch` has that `base` does not.
  *
  * `0` means merging it would be a no-op: everything on it is already contained in base,

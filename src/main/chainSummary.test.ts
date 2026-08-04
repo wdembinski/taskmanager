@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildChainHandbackPrompt, buildChainSummary, type ChainStepSummary } from './chainSummary';
+import { buildChainSummary, type ChainStepSummary } from './chainSummary';
 
 const step = (over: Partial<ChainStepSummary> & { index: number }): ChainStepSummary => ({
   title: `Step ${over.index}`,
@@ -87,24 +87,31 @@ describe('buildChainSummary', () => {
     expect(md).toContain('0 of 0 steps');
     expect(md).toContain('no steps to run');
   });
-});
 
-describe('buildChainHandbackPrompt', () => {
-  const prompt = buildChainHandbackPrompt('Add SSO', '- [x] **1. Add the auth guard**');
-
-  it('carries the card and the summary', () => {
-    expect(prompt).toContain('“Add SSO”');
-    expect(prompt).toContain('Add the auth guard');
+  it('names the files the branch touched', () => {
+    const md = buildChainSummary(
+      'Add SSO',
+      [step({ index: 1 })],
+      'wd/feat/abc-1/add-sso',
+      'main',
+      true,
+      ['src/auth/guard.ts', 'src/auth/callback.ts'],
+    );
+    expect(md).toContain('**Files touched:**');
+    expect(md).toContain('`src/auth/guard.ts`');
+    expect(md).toContain('`src/auth/callback.ts`');
   });
 
-  it('says the work is already done and this turn is a review', () => {
-    // Without this a fresh agent handed a plan summary reads it as a BRIEF and starts
-    // building the thing that was just built.
-    // "already written", not "already merged": since Phase 17 the branch usually has NOT
-    // been merged when the chain ends, and a prompt that says otherwise would have the
-    // review agent looking for the work on the base branch.
-    expect(prompt).toContain('already written');
-    expect(prompt).toContain('not to implement anything');
-    expect(prompt).toContain('Do not start new work unless they ask');
+  it('says nothing about files when there are none to name', () => {
+    const md = buildChainSummary('Add SSO', [step({ index: 1 })], null, null);
+    expect(md).not.toContain('Files touched');
+  });
+
+  it('folds a long file list into "and N more" instead of listing every path', () => {
+    const files = Array.from({ length: 25 }, (_, i) => `src/file-${i}.ts`);
+    const md = buildChainSummary('Add SSO', [step({ index: 1 })], 'br', 'main', true, files);
+    expect(md).toContain('`src/file-0.ts`');
+    expect(md).toContain('and 5 more');
+    expect(md).not.toContain('`src/file-24.ts`');
   });
 });
