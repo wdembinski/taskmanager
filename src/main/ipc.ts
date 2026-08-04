@@ -540,10 +540,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // scheduler (not sessions.start directly) so it's registered under the project and
     // Stop — scheduler:stop — actually terminates it. Ungated and in acceptEdits so it
     // can write the file; the plan watcher re-syncs on the change.
+    //
+    // Rewriting the plan IS planning, so it takes the planning model — falling back to
+    // the execution one, which is what NULL means there. No card is involved, so there is
+    // no per-card override to out-rank it and no `resolveRunModel` call to make.
     const { runId } = scheduler.startAuxiliarySession(project.id, {
       prompt: buildAlignPrompt(project.planPath, project.path),
       cwd: project.path,
-      model: project.defaultModel,
+      model: project.planningModel ?? project.defaultModel,
       permissionMode: 'acceptEdits',
     });
     return { runId };

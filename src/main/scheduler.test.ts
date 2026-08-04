@@ -531,7 +531,10 @@ describe('Scheduler — a card delegated to an agent project', () => {
    * with the per-assignment model/mode. No worktree manager here, so the run launches
    * synchronously in the shared directory.
    */
-  function makeAgentScheduler(overrides: Partial<Task> = {}) {
+  function makeAgentScheduler(
+    overrides: Partial<Task> = {},
+    projectOverrides: Partial<Project> = {},
+  ) {
     const personal = { id: 'personal', name: 'Personal', path: '', planPath: '', kind: 'plan' };
     const agentProject = {
       id: 'agent-1',
@@ -540,8 +543,11 @@ describe('Scheduler — a card delegated to an agent project', () => {
       planPath: '',
       kind: 'agent',
       defaultModel: 'sonnet',
+      // Null is the shipped default: "plan on whatever the work runs on".
+      planningModel: null,
       defaultPermissionMode: 'acceptEdits',
       concurrency: 1,
+      ...projectOverrides,
     };
     const task = {
       id: 't1',
@@ -613,6 +619,47 @@ describe('Scheduler — a card delegated to an agent project', () => {
       model: 'sonnet',
       permissionMode: 'acceptEdits',
     });
+  });
+
+  it('plans on the project’s planning model and works on its execution one', () => {
+    // The whole point of the split, on ONE card: what changes the model is what the turn
+    // is, not which card it is. Planning here is "assigned plan mode and asked for a plan".
+    const planning = makeAgentScheduler({ agentModel: null }, { planningModel: 'opus' });
+    planning.scheduler.runTask('t1');
+    expect(planning.start.mock.calls[0][0]).toMatchObject({
+      model: 'opus',
+      permissionMode: 'plan',
+    });
+
+    const work = makeAgentScheduler(
+      { agentModel: null, agentMode: 'bypassPermissions' },
+      { planningModel: 'opus' },
+    );
+    work.scheduler.runTask('t1');
+    expect(work.start.mock.calls[0][0]).toMatchObject({
+      model: 'sonnet', // the steps-execution model, untouched by the planning one
+      permissionMode: 'bypassPermissions',
+    });
+  });
+
+  it('lets the card’s own model out-rank both of the project’s', () => {
+    const { scheduler, start } = makeAgentScheduler(
+      { agentModel: 'haiku' },
+      { planningModel: 'opus' },
+    );
+    scheduler.runTask('t1');
+    expect(start.mock.calls[0][0]).toMatchObject({ model: 'haiku' });
+  });
+
+  it('runs a step of an approved plan on the execution model, not the parent’s', () => {
+    // A step carries no model of its own — `addSubtask` stopped copying the parent's, so a
+    // card planned on the expensive model does not bill every step at it.
+    const { scheduler, start } = makeAgentScheduler(
+      { agentModel: null, agentMode: 'bypassPermissions', parentTaskId: 'card-1' },
+      { planningModel: 'opus' },
+    );
+    scheduler.runTask('t1');
+    expect(start.mock.calls[0][0]).toMatchObject({ model: 'sonnet' });
   });
 
   it('resumes an agent task in the agent project after a usage limit clears', () => {
@@ -3132,6 +3179,9 @@ describe('Scheduler — which runs owe a plan', () => {
       useWorktrees: false,
       defaultPermissionMode: 'bypassPermissions',
       defaultModel: 'sonnet',
+      // The same distinction decides the model, so these runs are the ones that prove a
+      // conversation is not billed as planning.
+      planningModel: 'opus',
       instructions: '',
     } as unknown as Project;
     // Assigned `plan` in the assign dialog — the setting that leaks into every later run.
@@ -3181,7 +3231,7 @@ describe('Scheduler — which runs owe a plan', () => {
     const runFor = (runId: string) =>
       (
         scheduler as unknown as {
-          runs: Map<string, { permissionMode?: string; expectsPlan?: boolean }>;
+          runs: Map<string, { permissionMode?: string; expectsPlan?: boolean; model?: string }>;
         }
       ).runs.get(runId);
     return { scheduler, card, runFor };
@@ -3199,6 +3249,8 @@ describe('Scheduler — which runs owe a plan', () => {
     // the VERDICT that changes, not the permissions.
     expect(run?.permissionMode).toBe('plan');
     expect(run?.expectsPlan).toBe(false);
+    // …and not the price either: answering a question is not planning.
+    expect(run?.model).toBe('sonnet');
   });
 
   it('still makes a re-plan owe a plan — that turn asked for one', () => {
@@ -3211,6 +3263,8 @@ describe('Scheduler — which runs owe a plan', () => {
     const run = runFor(sent.runId);
     expect(run?.permissionMode).toBe('plan');
     expect(run?.expectsPlan).toBe(true);
+    // A turn that asks for a plan switches model as well as mode.
+    expect(run?.model).toBe('opus');
   });
 
   // The exact run that was parked twice: the session a finished chain seeds so the card can
@@ -3225,13 +3279,14 @@ describe('Scheduler — which runs owe a plan', () => {
     const runs = [
       ...(
         scheduler as unknown as {
-          runs: Map<string, { reviewSeed?: boolean; expectsPlan?: boolean }>;
+          runs: Map<string, { reviewSeed?: boolean; expectsPlan?: boolean; model?: string }>;
         }
       ).runs.values(),
     ];
     expect(runs).toHaveLength(1);
     expect(runs[0].reviewSeed).toBe(true);
     expect(runs[0].expectsPlan).toBe(false);
+    expect(runs[0].model).toBe('sonnet'); // a review reads code; it does not plan
   });
 
   it('still makes an ordinary run on a plan-mode card owe a plan', () => {

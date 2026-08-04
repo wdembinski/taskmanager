@@ -242,10 +242,11 @@ export interface Store {
   getSubtasks(parentId: string): Task[];
   /**
    * Append one step to a card (Phase 11). The step lives on the parent's board and
-   * inherits its delegation (agent project + model) so the chain runs in the parent's
-   * repo, but always in `bypassPermissions` — the human approved the plan, so the
-   * steps run unattended. Returns the created step, or undefined if the parent is
-   * unknown, is itself a step, or the title is blank.
+   * inherits the parent's agent project so the chain runs in the parent's repo, but
+   * always in `bypassPermissions` — the human approved the plan, so the steps run
+   * unattended — and with no model of its own, so it follows the project's execution
+   * model rather than whatever the parent was planned on. Returns the created step, or
+   * undefined if the parent is unknown, is itself a step, or the title is blank.
    *
    * `round` says which planning round the step belongs to (Phase 18), and only
    * `approvePlan` passes it — everyone else joins the round already in progress.
@@ -1928,9 +1929,13 @@ export function createStore(dbPath: string): Store {
         type: parent.type ?? null,
         parentTaskId: parentId,
         description,
-        // Inherit where and how the parent runs; the mode is forced, see the interface.
+        // Inherit where the parent runs; the mode is forced, see the interface.
         agentProjectId: parent.agentProjectId ?? null,
-        agentModel: parent.agentModel ?? null,
+        // But NOT its model. A parent is usually the card that was planned, and planning
+        // is the expensive half of the split — inheriting that model would silently bill
+        // every step at it. NULL means "follow the project's execution model", and a step
+        // that genuinely needs a different one is overridden one step at a time.
+        agentModel: null,
         agentMode: 'bypassPermissions',
         // A caller that knows which planning round it is filling (`approvePlan`) says so;
         // everyone else — the "Add step…" form above all — joins the round already in

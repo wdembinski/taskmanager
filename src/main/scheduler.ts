@@ -34,6 +34,7 @@ import type {
   TaskActivityEntry,
   TaskStatus,
 } from '@shared/model';
+import { resolveRunModel } from '@shared/model';
 import { chainInFlight, chatTarget, parkedStep } from '@shared/board';
 import { attachmentsInScope, type PromptAttachment } from '@shared/attachments';
 import type { SchedulerState, TaskChange, SchedulerChange, ActiveRun } from '@shared/scheduler';
@@ -2049,6 +2050,19 @@ export class Scheduler {
     } = {},
   ): string {
     const runId = randomUUID();
+    // A per-TURN override (a re-plan, which must run in `plan` mode whatever the card is
+    // assigned) beats a per-assignment override (chosen in the assign dialog), which
+    // beats the project default. Captured on the run so every later decision —
+    // permissions above all — judges the run the human actually authorized, and so the
+    // one-turn override never outlives its turn.
+    const permissionMode = opts.permissionMode ?? task.agentMode ?? project.defaultPermissionMode;
+    // Read off the SAME two inputs the mode is, and that symmetry is the point: `plan`
+    // asked for on this turn means "come back with a plan", while `plan` inherited from
+    // the card means only "this card may not write". A conversation — a chat reply, a
+    // post-chain review — is judged as a conversation unless the caller says otherwise.
+    const expectsPlan =
+      opts.permissionMode === 'plan' ||
+      !(opts.chatPrompt !== undefined || opts.reviewSeed || opts.releaseSeed);
     const run: Run = {
       taskId: task.id,
       projectId: project.id,
@@ -2057,20 +2071,15 @@ export class Scheduler {
       chatPrompt: opts.chatPrompt,
       reviewSeed: opts.reviewSeed,
       releaseSeed: opts.releaseSeed,
-      // A per-TURN override (a re-plan, which must run in `plan` mode whatever the card is
-      // assigned) beats a per-assignment override (chosen in the assign dialog), which
-      // beats the project default. Captured on the run so every later decision —
-      // permissions above all — judges the run the human actually authorized, and so the
-      // one-turn override never outlives its turn.
-      permissionMode: opts.permissionMode ?? task.agentMode ?? project.defaultPermissionMode,
-      model: task.agentModel ?? project.defaultModel,
-      // Read off the SAME two inputs the mode is, and that symmetry is the point: `plan`
-      // asked for on this turn means "come back with a plan", while `plan` inherited from
-      // the card means only "this card may not write". A conversation — a chat reply, a
-      // post-chain review — is judged as a conversation unless the caller says otherwise.
-      expectsPlan:
-        opts.permissionMode === 'plan' ||
-        !(opts.chatPrompt !== undefined || opts.reviewSeed || opts.releaseSeed),
+      permissionMode,
+      // Planning costs what the project says planning costs. The two flags together are
+      // what "this run is planning" means — a turn that was ASKED for a plan and is held
+      // to it — so a re-plan turn now switches model as well as mode, while a chat reply
+      // or a review that merely inherited `plan` from its card keeps the execution model.
+      // Resolved once, here: the run captures its model so an edit of the card's (or the
+      // project's) model decides the NEXT run and can never change this one mid-flight.
+      model: resolveRunModel(task, project, expectsPlan && permissionMode === 'plan'),
+      expectsPlan,
     };
     this.runs.set(runId, run);
     this.inFlight.add(task.id);
