@@ -41,6 +41,7 @@ import {
   type AppSettings,
   type BoardDisplaySettings,
 } from '@shared/settings';
+import type { IpcEvents } from '@shared/ipc';
 import type { MergeRequest } from '@shared/mergeRequest';
 import type { TaskAttachment } from '@shared/attachments';
 import {
@@ -195,6 +196,10 @@ export function MyTasks(): JSX.Element {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Separate from `error` on purpose. A notice is the engine reporting a decision it took to
+  // protect the board — "JIRA answered short, so nothing was removed" — not a failure. Shown
+  // in its own bar because a warning dressed as an error is a bar people stop reading.
+  const [notice, setNotice] = useState<IpcEvents['board:notice'] | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   // Merge requests for the WHOLE board in one array, not hung off each Task: a JIRA
@@ -316,6 +321,9 @@ export function MyTasks(): JSX.Element {
     // Ditto, and one more reason on top: an attachment also vanishes when its CARD is
     // deleted and the row cascades away, which no per-file patch would hear about.
     const offAttachments = window.api.on('attachment:changed', setAttachments);
+    // Pushed by a sync that kept cards it could not confirm had left. It arrives from the
+    // POLLER as often as from the button, so it cannot be the return value of `sync()`.
+    const offNotice = window.api.on('board:notice', setNotice);
     return () => {
       offTask();
       offTasks();
@@ -323,6 +331,7 @@ export function MyTasks(): JSX.Element {
       offMrs();
       offLinks();
       offAttachments();
+      offNotice();
     };
   }, [patchTask]);
 
@@ -521,6 +530,10 @@ export function MyTasks(): JSX.Element {
   const sync = useCallback(async () => {
     setSyncing(true);
     setError(null);
+    // The last sync's notice describes the last sync. This one will push its own if the
+    // condition is still there, so clearing it here is what stops a warning about a
+    // truncated fetch outliving the fetch that was truncated.
+    setNotice(null);
     try {
       const [jira, gitlab] = await Promise.allSettled([
         jiraEnabled ? window.api.invoke('jira:sync') : Promise.resolve(null),
@@ -900,6 +913,17 @@ export function MyTasks(): JSX.Element {
             <MessageBarBody>{error}</MessageBarBody>
             <MessageBarActions>
               <Button size="small" appearance="transparent" onClick={() => setError(null)}>
+                Dismiss
+              </Button>
+            </MessageBarActions>
+          </MessageBar>
+        )}
+
+        {notice && (
+          <MessageBar intent={notice.intent}>
+            <MessageBarBody>{notice.text}</MessageBarBody>
+            <MessageBarActions>
+              <Button size="small" appearance="transparent" onClick={() => setNotice(null)}>
                 Dismiss
               </Button>
             </MessageBarActions>

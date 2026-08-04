@@ -49,7 +49,14 @@ import { explainJiraFailure } from './jira/jiraDiagnostics';
 import { commentBodyToText, type JiraClient, type JiraIssue } from './jira/jiraClient';
 import { blocksToText, parseAdf } from './jira/adf';
 import { normalizeIssueTypes, normalizeProjects } from './jira/createMeta';
-import { issueToBoardTask, reconcileJiraTasks, retainedKeys } from './jira/jiraSync';
+import {
+  issueToBoardTask,
+  reconcileJiraTasks,
+  removalCandidateKeys,
+  retainedKeys,
+} from './jira/jiraSync';
+import { confirmStillMatching, recheckByKey } from './jira/jiraConfirm';
+import { chunkKeys, keysInJql } from './jira/jiraJql';
 import { discoverEpicFieldId, epicKeyFromIssue, epicNameFromIssue } from './jira/epicField';
 import { discoverSprintFieldId, withCurrentSprint } from './jira/jiraSprint';
 import { authorIsMe, identityFrom, type JiraIdentityCache } from './jira/identity';
@@ -1763,6 +1770,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
    *
    * Fails soft: the name is decoration (the card falls back to the key), and a board that
    * refused to sync because an epic lookup 400'd would be a far worse trade.
+   *
+   * Batched and validated like every other `key in (...)` here (see `jiraJql.ts`): a board
+   * spanning three hundred epics would otherwise build one query long enough to find the
+   * instance's URL limit, and one deleted epic would cost every name in it.
    */
   const fetchEpicNames = async (
     client: JiraClient,
@@ -1776,18 +1787,33 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       const key = epicKeyFromIssue(issue, epicField);
       if (key) wanted.add(key);
     }
-    if (wanted.size === 0) return names;
-    try {
-      const epics = await client.search(`key in (${[...wanted].join(',')})`, wanted.size, []);
-      for (const epic of epics) {
-        const summary = epic.fields.summary?.trim();
-        if (summary) names.set(epic.key.toUpperCase(), summary);
+    for (const batch of chunkKeys([...wanted])) {
+      const jql = keysInJql(batch);
+      if (!jql) continue; // nothing in this batch is shaped like an issue key
+      try {
+        const epics = await client.search(jql, batch.length, []);
+        for (const epic of epics) {
+          const summary = epic.fields.summary?.trim();
+          if (summary) names.set(epic.key.toUpperCase(), summary);
+        }
+      } catch {
+        // Each batch stands alone: the cards in this one fall back to their epic key,
+        // and the rest of the board still gets its names.
       }
-    } catch {
-      // Leave the map empty — every card falls back to its epic key.
     }
     return names;
   };
+
+  /**
+   * How many issues a sync will read before it gives up and calls the answer partial.
+   *
+   * Not a page size — `searchAll` pages to the end — but a ceiling on how big a board this
+   * app will try to hold, and the point at which it says so rather than pretending. The old
+   * limit was one page of 100, which is why a board of three hundred lost two hundred cards:
+   * a search that stops short is indistinguishable, from the issues alone, from a board that
+   * shrank. Past this, `truncated` is set and nothing is removed at all.
+   */
+  const JIRA_BOARD_LIMIT = 1000;
 
   // One JIRA sync: fetch issues, reconcile into the store, push the fresh board.
   // Shared by the manual `jira:sync` handler and the background poller below.
@@ -1805,57 +1831,121 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // Who the PAT belongs to, so a comment the user wrote in the JIRA web UI does not
     // light their own card orange on the way back in. Cached per site; null is fine.
     const identity = await jiraIdentity(jira.baseUrl, client);
+    // The EFFECTIVE query: the user's filter with `openSprints()` already folded in. Every
+    // question below is asked against this one, and it is the string the confirm pass has to
+    // use too — confirming against the raw JQL would keep every card the sprint filter hides.
     const jql = jira.currentSprintOnly ? withCurrentSprint(jira.jql) : jira.jql;
     const extraFields = [epicField, sprintField].filter((f): f is string => f !== null);
-    const issues = await client.search(jql, 100, extraFields);
+    // Whether the question itself changed since last time — a sprint rolling over counts,
+    // which is why this compares the effective JQL rather than the setting. Null means we
+    // have never recorded one, and that is read as *unchanged*: the board was kept tight
+    // against the query by every version before this one, so there is no backlog of stale
+    // cards for the removal guard to trip over on the first sync after an upgrade.
+    const lastQuery = store.loadJiraLastQuery();
+    const queryChanged = lastQuery !== null && lastQuery !== jql;
+    // The whole query, paged to the end — see `searchAll`. `truncated` is the one fact that
+    // separates a short answer from a small board, and everything below turns on it.
+    const { issues, truncated } = await client.searchAll(jql, {
+      limit: JIRA_BOARD_LIMIT,
+      extraFields,
+    });
+    if (truncated) {
+      logMain(
+        `JIRA sync: the search returned ${issues.length} issues without reaching the end of ` +
+          `the query (limit ${JIRA_BOARD_LIMIT}) — nothing will be removed from the board ` +
+          `this sync. Query: ${jql}`,
+      );
+    }
     // The ONE read that includes archived cards (see `Store.getPersonalTasksForSync`). The
     // reconciler is deciding what each of JIRA's issues corresponds to, and a card that was
     // taken off the board still corresponds to its ticket — invisible to it, the sync would
     // mirror that ticket back in as a brand-new card and lose everything the old row carried.
     const personalForSync = store.getPersonalTasksForSync();
 
-    /**
-     * Re-read the cards the board is keeping past the query, by key.
-     *
-     * A finished card is retained rather than deleted (see `jiraSync.ts`), and this is what
-     * stops it freezing there: the query that dropped it will very likely never mention it
-     * again — `resolution = Unresolved` does not match a ticket whose resolution was never
-     * cleared on the way back out of Done — so asking for it by key is the only way the card
-     * can follow its ticket into IN PROGRESS.
-     *
-     * Failure leaves `rechecked: null`, which the reconciler reads as "not asked" and keeps
-     * every retained card. A network blip must not empty the Done column.
-     */
-    const keys = retainedKeys(personalForSync, issues);
-    let rechecked: JiraIssue[] | null = keys.length ? null : [];
-    if (keys.length) {
-      rechecked = await client
-        .search(`key in (${keys.join(',')})`, keys.length, extraFields)
-        .catch((e: unknown) => {
-          logMain('JIRA re-read of retained cards failed', e);
-          return null;
-        });
-    }
-
-    const epicNames = await fetchEpicNames(client, [...issues, ...(rechecked ?? [])], epicField);
-    const { upserts, removals } = reconcileJiraTasks(personalForSync, issues, {
-      baseUrl: jira.baseUrl,
-      overrides: jira.statusCategoryOverrides,
-      learned: jira.learnedStatusColumns,
-      epicFieldId: epicField,
-      epicNames,
-      sprintFieldId: sprintField,
-      identity,
-      rechecked,
-      now: Date.now(),
-      retentionMs: Math.max(0, jira.doneRetentionDays) * 24 * 60 * 60 * 1000,
+    /** One place to log a batch nobody got an answer out of, so both passes read the same. */
+    const batchLog = (pass: string) => ({
+      onBatchFailed: (batchKeys: readonly string[], e: unknown) =>
+        logMain(`JIRA sync: ${pass} batch failed for ${batchKeys.join(', ')} — kept`, e),
+      onBatchTruncated: (batchKeys: readonly string[]) =>
+        logMain(`JIRA sync: ${pass} batch came back truncated for ${batchKeys.join(', ')} — kept`),
     });
+
+    // Re-read the cards the board is keeping PAST the query, by key. A finished card is
+    // retained rather than removed (see `jiraSync.ts`), and this is what stops it freezing
+    // there: the query that dropped it will very likely never mention it again, so asking
+    // by key is the only way it can follow its ticket back into IN PROGRESS.
+    const { checked: recheckedKeys, issues: rechecked } = await recheckByKey(
+      client,
+      retainedKeys(personalForSync, issues),
+      { extraFields, ...batchLog('re-read') },
+    );
+
+    // Confirm, by key, that the cards the search left out really have left the query.
+    //
+    // "Isn't this expensive?" — no: on a healthy board it is ZERO extra requests. Only cards
+    // the search failed to return are candidates, and when the search returned everything
+    // there are none. It costs one request per fifty candidates, and a board producing
+    // candidates every sync is a board that was quietly losing cards before this existed.
+    //
+    // Skipped entirely when the fetch was truncated: the reconciler removes nothing on a
+    // short answer anyway, so the question would be paid for and thrown away.
+    const candidates = removalCandidateKeys(personalForSync, issues);
+    const confirmed =
+      candidates.length > 0 && !truncated
+        ? await confirmStillMatching(client, jql, candidates, {
+            extraFields,
+            ...batchLog('confirm'),
+          })
+        : null;
+
+    const epicNames = await fetchEpicNames(client, [...issues, ...rechecked], epicField);
+    const now = Date.now();
+    // Recorded before the reconcile rather than after: the applies below cannot throw a
+    // network error, so this is the last point at which "the query we just ran" is true.
+    store.saveJiraLastQuery(jql);
+    const { upserts, removals, restoreIds, refused, warning } = reconcileJiraTasks(
+      personalForSync,
+      issues,
+      {
+        baseUrl: jira.baseUrl,
+        overrides: jira.statusCategoryOverrides,
+        learned: jira.learnedStatusColumns,
+        epicFieldId: epicField,
+        epicNames,
+        sprintFieldId: sprintField,
+        identity,
+        rechecked,
+        recheckedKeys,
+        queryChecked: confirmed?.checked ?? null,
+        queryMatches: confirmed?.matching ?? null,
+        truncated,
+        queryChanged,
+        now,
+        retentionMs: Math.max(0, jira.doneRetentionDays) * 24 * 60 * 60 * 1000,
+      },
+    );
+    // Restore first: a ticket that has come back into the query lands on its own card again,
+    // rather than beside the archived one it used to be.
+    for (const id of restoreIds) store.unarchiveTask(id);
     for (const t of upserts) store.upsertJiraTask(t);
-    // Still a delete, and still unconfirmed — the confirm pass, the archive and the report
-    // of what left are the next step's. Without `queryChecked` the reconciler now refuses
-    // to name a card that merely went missing from the search, so what reaches here is the
-    // retention paths alone.
-    for (const r of removals) store.deleteTask(r.taskId);
+    // ARCHIVED, not deleted. A card leaving the board is not the human deleting it — the row
+    // keeps its timeline, its files and its links, and "Removed cards" can put it back. Each
+    // one names the ticket and the reason, because a card that vanished with nothing in the
+    // log is exactly the bug this whole change exists to end.
+    for (const r of removals) {
+      store.archiveTask(r.taskId, now);
+      logMain(`JIRA sync: archived ${r.key} — ${r.reason} (${r.title})`);
+    }
+    for (const r of refused) {
+      logMain(`JIRA sync: REFUSED to remove ${r.key} (${r.title}) — ${warning ?? 'guarded'}`);
+    }
+    // The paging-artifact count, every guard trip and every truncation are all in here.
+    if (warning) {
+      logMain(`JIRA sync: ${warning}`);
+      // Its own bar, not the error bar: nothing failed, and a warning that reads as an
+      // error teaches people to dismiss both.
+      send('board:notice', { text: warning, intent: 'warning' });
+    }
     const tasks = store.getPersonalTasks();
     send('project:tasksChanged', { projectId: PERSONAL_PROJECT_ID, tasks });
     // The board just changed shape, so an MR whose ticket has appeared should attach

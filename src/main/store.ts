@@ -462,6 +462,19 @@ export interface Store {
   /** The cached JIRA identity, or null if it has never been fetched. */
   loadJiraIdentity(): JiraIdentityCache | null;
   /**
+   * Remember the **effective** JQL a sync ran — the user's filter with `openSprints()`
+   * already folded in, since a sprint rolling over changes the question without anybody
+   * editing a setting.
+   *
+   * Read by the next sync for one purpose: the removal guard stands down when the question
+   * itself changed (see `jiraSync.guardRemovals`). A board is *meant* to turn over when the
+   * sprint rolls, and a guard that fires on the one expected mass removal would teach the
+   * human to ignore it.
+   */
+  saveJiraLastQuery(jql: string): void;
+  /** The effective JQL of the last sync, or null if none has been recorded. */
+  loadJiraLastQuery(): string | null;
+  /**
    * Remember the main window's geometry so the next launch opens where the last one
    * closed. Written on a debounce while the window moves, so it stays cheap.
    */
@@ -1182,6 +1195,9 @@ export function createStore(dbPath: string): Store {
 
   /** The single row key caching `GET /myself` for the configured site. */
   const JIRA_IDENTITY_KEY = 'jira.identity';
+
+  /** The effective JQL the last sync ran, so the next one can tell the question changed. */
+  const JIRA_LAST_QUERY_KEY = 'jira.lastQuery';
 
   /** Where the main window was, and whether it was maximized, when we last looked. */
   const WINDOW_STATE_KEY = 'window.state';
@@ -2574,6 +2590,15 @@ export function createStore(dbPath: string): Store {
       } catch {
         return null; // corrupt value — re-fetch
       }
+    },
+
+    saveJiraLastQuery(jql) {
+      upsertState.run(JIRA_LAST_QUERY_KEY, jql);
+    },
+
+    loadJiraLastQuery() {
+      const row = selectState.get(JIRA_LAST_QUERY_KEY) as { value: string } | undefined;
+      return row?.value ?? null;
     },
 
     saveWindowState(state) {

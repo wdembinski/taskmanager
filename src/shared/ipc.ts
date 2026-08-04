@@ -866,6 +866,17 @@ export interface IpcEvents {
    */
   'project:tasksChanged': { projectId: string; tasks: Task[] };
   /**
+   * Something happened during a sync that the human should know about but that did not fail
+   * anything: JIRA answered a query short so nothing was removed, cards the search left out
+   * turned out to still match it, a removal set too big to believe was refused.
+   *
+   * Its own channel rather than the board's error bar, and that is the point. None of these
+   * is an error — the sync worked, the board is intact, and the message is describing a
+   * decision the engine took to protect it. Showing that in red beside "Could not reach
+   * JIRA" trains people to dismiss both without reading either.
+   */
+  'board:notice': { text: string; intent: 'warning' | 'error' };
+  /**
    * The merge-request list changed — a GitLab sync landed, or a read marker moved.
    * Mirrors `project:tasksChanged`: the whole list, so the board replaces rather than
    * patches.
