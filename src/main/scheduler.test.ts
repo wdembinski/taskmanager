@@ -681,6 +681,61 @@ describe('Scheduler — a card delegated to an agent project', () => {
     expect(start.mock.calls[0][1]).toMatchObject({ resumeSessionId: 's1' });
   });
 
+  it('tells a resumed retry only what is new — the failure note, not the ticket again', () => {
+    // "AI fix & retry" on a card whose session survived. The conversation being rejoined
+    // already contains the brief, so re-sending it bought nothing and re-paid for all of
+    // it (token audit, S2).
+    const { scheduler, start } = makeAgentScheduler({
+      status: 'failed',
+      sessionId: 's1',
+      externalDescription: 'The export dialog closes before the file is written.',
+    });
+    (scheduler as unknown as { fixNotes: Map<string, string> }).fixNotes.set(
+      't1',
+      'the build broke',
+    );
+    scheduler.runTask('t1');
+    const [request, opts] = start.mock.calls[0] as [
+      { prompt: string },
+      { resumeSessionId?: string },
+    ];
+    expect(opts.resumeSessionId).toBe('s1');
+    // What is new travels…
+    expect(request.prompt).toContain('the build broke');
+    // …and what the conversation already holds does not.
+    expect(request.prompt).not.toContain('The export dialog closes before the file is written.');
+    expect(request.prompt).not.toContain('ONE ticket');
+    expect(request.prompt).not.toContain('Start with the file-picker path.');
+    // Consumed: the note applies to this retry only.
+    expect((scheduler as unknown as { fixNotes: Map<string, string> }).fixNotes.has('t1')).toBe(
+      false,
+    );
+  });
+
+  it('still briefs a retry in full when there is no session to resume', () => {
+    // "Retry fresh" discarded the session (as does a card that never started): nothing has
+    // been said to this agent yet, so it needs the whole thing — note included.
+    const { scheduler, start } = makeAgentScheduler({
+      status: 'failed',
+      sessionId: null,
+      externalDescription: 'The export dialog closes before the file is written.',
+    });
+    (scheduler as unknown as { fixNotes: Map<string, string> }).fixNotes.set(
+      't1',
+      'the build broke',
+    );
+    scheduler.runTask('t1');
+    const [request, opts] = start.mock.calls[0] as [
+      { prompt: string },
+      { resumeSessionId?: string },
+    ];
+    expect(opts.resumeSessionId).toBe(undefined);
+    expect(request.prompt).toContain('ONE ticket');
+    expect(request.prompt).toContain('ABC-42');
+    expect(request.prompt).toContain('The export dialog closes before the file is written.');
+    expect(request.prompt).toContain('the build broke');
+  });
+
   it('stopTask ends that task’s run and leaves the card where its human left it', () => {
     const { scheduler, stop, task } = makeAgentScheduler();
     scheduler.runTask('t1');

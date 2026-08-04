@@ -163,6 +163,24 @@ const RESUME_NUDGE =
   'A usage limit interrupted you and it has now reset. Continue the task where you left off.';
 
 /**
+ * Sent to a session we RESUME for a retry that carries a failure note — an "AI fix &
+ * retry" resolution, or a rebase conflict the agent is asked to resolve (Rung 2).
+ *
+ * The conversation being rejoined already holds the ticket, its thread and the human's
+ * notes, so the full brief re-sent all of it to say one new thing (token audit, S2). The
+ * note IS the only new thing; the framing matches the `failureNote` block the full brief
+ * would have rendered, so an agent reads the same instruction either way.
+ */
+function resumeWithNotePrompt(note: string): string {
+  return [
+    'The previous attempt at this task failed. The reported reason was:',
+    `"${note}"`,
+    'Diagnose why it failed and fix the underlying cause, then carry on from where you',
+    'left off — you already have this task and its context in this conversation.',
+  ].join('\n');
+}
+
+/**
  * How many times the orchestrator lets the AGENT try to resolve a branch's rebase
  * conflicts (team-orchestrator conflict ladder, Rung 2) before parking it for a human
  * (Rung 3). Mechanical union-merge (Rung 1) runs first, inside the integration itself.
@@ -2231,10 +2249,10 @@ export class Scheduler {
     // The plan file's path relative to the project dir, so a shared-dir agent can
     // edit it. Worktree agents get the isolated (no-plan-edit) prompt instead.
     const planRel = planRelPath(project);
-    // An "AI fix & retry" resolution queued a failure note for this task's next run:
-    // build a full fix-prompt (even when resuming) so the agent gets the failure
-    // context, and consume it so it applies only once. A chat run deliberately leaves
-    // it queued: the human asking a question is not the retry that note was written for.
+    // An "AI fix & retry" resolution queued a failure note for this task's next run: the
+    // agent has to be told why the last attempt failed, and the note is consumed so it
+    // applies only once. A chat run deliberately leaves it queued: the human asking a
+    // question is not the retry that note was written for.
     const failureNote = run.chatPrompt ? undefined : this.fixNotes.get(task.id);
     if (!run.chatPrompt) this.fixNotes.delete(task.id);
     const branch = prep.mode === 'worktree' ? prep.branch : undefined;
@@ -2242,12 +2260,18 @@ export class Scheduler {
     // project's main checkout (which would compile unmodified source and succeed).
     const worktreePath = prep.mode === 'worktree' ? prep.cwd : undefined;
     // What the session is told to do, in order of specificity: the human's own words
-    // (Phase 12 chat), else a nudge to carry on an existing conversation, else the full
-    // brief for a fresh run.
+    // (Phase 12 chat), else — when there is a conversation to rejoin — just what is new
+    // in it (a failure note, or nothing but a nudge), else the full brief.
+    //
+    // The full brief is reserved for a run with NO session to resume ("Retry fresh", or a
+    // card that never started): nothing has been said to that agent yet, so it genuinely
+    // needs the whole thing.
     const prompt =
       run.chatPrompt ??
-      (resumeSessionId && !failureNote
-        ? RESUME_NUDGE
+      (resumeSessionId
+        ? failureNote
+          ? resumeWithNotePrompt(failureNote)
+          : RESUME_NUDGE
         : this.buildPrompt(project, task, {
             branch,
             planRel,
