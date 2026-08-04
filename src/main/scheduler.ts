@@ -81,6 +81,13 @@ import {
   type AgentPromptComment,
 } from './agentTaskPrompt';
 import { attachmentFile } from './attachmentPaths';
+import {
+  NOTES_CHAR_BUDGET,
+  TICKET_COMMENT_CHAR_BUDGET,
+  boundEntries,
+  boundHistory,
+  type BoundedHistory,
+} from './promptHistory';
 import { guardCardStatus, humanStatusPatch } from './cardStatusGuard';
 import { ChainRunner, type ChainTrigger } from './chainRunner';
 import type { PermissionGate } from './claudeSession';
@@ -140,6 +147,16 @@ const PLAN_HANDOVER_MESSAGE =
 const PLAN_REJECTED_MESSAGE =
   'The human rejected this plan. Revise it — reconsider the approach and the breakdown ' +
   'into steps — then call ExitPlanMode again with the new plan.';
+
+/**
+ * No ticket thread at all — a step of a plan, an internal card, a tracker that was down.
+ * Distinct from "a thread we trimmed": `omitted` is 0, so no prompt claims history it never
+ * had. Frozen because it is shared by every such run.
+ */
+const NO_COMMENTS: BoundedHistory<AgentPromptComment> = Object.freeze({
+  kept: [] as AgentPromptComment[],
+  omitted: 0,
+});
 
 /** The nudge sent to a session we resume after a usage limit clears (Phase 5). */
 const RESUME_NUDGE =
@@ -2172,16 +2189,23 @@ export class Scheduler {
    * owns the JIRA client), the card is delegated, and this is a FRESH run — a resume
    * continues an existing conversation that already has the context. A tracker that is
    * down or misconfigured must never block a run, so failures degrade to no comments.
+   *
+   * Bounded here as well as in the prompt (token audit, S1): a 100-comment thread is ~70 KB
+   * and there is no reason to carry the 54 KB of it that will never be rendered. What must
+   * survive the trip is the COUNT — a brief that drops half a thread and says nothing has
+   * told the agent a partial thread is the whole thread.
    */
-  private async collectTicketComments(task: Task): Promise<AgentPromptComment[]> {
+  private async collectTicketComments(task: Task): Promise<BoundedHistory<AgentPromptComment>> {
     // A step of a plan is briefed on its step, not on the ticket thread — that omission
     // IS the token saving (and a step carries no ticket key of its own anyway).
-    if (task.parentTaskId) return [];
-    if (!this.ticketComments || !task.agentProjectId || task.sessionId) return [];
+    if (task.parentTaskId) return NO_COMMENTS;
+    if (!this.ticketComments || !task.agentProjectId || task.sessionId) return NO_COMMENTS;
     try {
-      return await this.ticketComments(task);
+      return boundEntries(await this.ticketComments(task), (c) => `${c.author}: ${c.body}`.length, {
+        maxChars: TICKET_COMMENT_CHAR_BUDGET,
+      });
     } catch {
-      return [];
+      return NO_COMMENTS;
     }
   }
 
@@ -2191,7 +2215,7 @@ export class Scheduler {
     task: Task,
     run: Run,
     prep: LaunchTarget,
-    comments: AgentPromptComment[] = [],
+    comments: BoundedHistory<AgentPromptComment> = NO_COMMENTS,
   ): void {
     // A release run is deliberately a FRESH conversation. The card's saved session was
     // recorded against the worktree it ran in — a directory integration has just deleted —
@@ -2265,7 +2289,7 @@ export class Scheduler {
       branch?: string;
       planRel: string;
       failureNote?: string;
-      comments: AgentPromptComment[];
+      comments: BoundedHistory<AgentPromptComment>;
       worktreePath?: string;
       /** The RUN's mode, which may be a one-turn override of the task's. See {@link Run}. */
       permissionMode?: PermissionMode;
@@ -2289,11 +2313,14 @@ export class Scheduler {
       if (subtaskPrompt) return subtaskPrompt;
     }
     if (task.agentProjectId) {
+      const notes = this.taskNotes(task.id);
       return buildAgentTaskPrompt(project.name, task, {
         branch,
         failureNote,
-        comments,
-        notes: this.taskNotes(task.id),
+        comments: comments.kept,
+        commentsOmitted: comments.omitted,
+        notes: notes.kept,
+        notesOmitted: notes.omitted,
         // A plan-mode run's headings become this card's step titles, so it is told how
         // they will be read. Read off the RUN, not the task: a re-plan turn is plan-mode
         // for this turn only, and asking the task would tell it the opposite.
@@ -2335,12 +2362,15 @@ export class Scheduler {
     if (!parent) return null;
     const siblings = this.store.getSubtasks(parent.id);
     const index = siblings.findIndex((s) => s.id === task.id);
+    // The human's instructions live on the CARD, so every step of the chain sees them —
+    // which is exactly why they are bounded (S1): the card's history is re-paid per step.
+    const notes = this.taskNotes(parent.id);
     return buildAgentSubtaskPrompt(project.name, parent, task, {
       stepNumber: index >= 0 ? index + 1 : 1,
       stepCount: Math.max(siblings.length, 1),
       stepTitles: siblings.map((s) => s.title),
-      // The human's instructions live on the CARD, so every step of the chain sees them.
-      notes: this.taskNotes(parent.id),
+      notes: notes.kept,
+      notesOmitted: notes.omitted,
       branch: opts.branch,
       failureNote: opts.failureNote,
       instructions: opts.instructions,
@@ -2395,15 +2425,21 @@ export class Scheduler {
    * agent has never run IS an instruction, and it must reach the brief that starts it.
    * Their previous absence also meant a retry silently dropped everything the human had
    * said mid-run, which was a bug rather than a saving.
+   *
+   * Bounded by recency (token audit, S1): every step of a chain re-reads the card's whole
+   * history, so a long-running card pays for its oldest chat message ~9 times. The newest
+   * notes are also the relevant ones — the assign-dialog instructions, the answer to the
+   * last question. The dropped count travels with them so the brief can say so.
    */
-  private taskNotes(taskId: string): string[] {
-    return this.store
+  private taskNotes(taskId: string): BoundedHistory {
+    const bodies = this.store
       .getTaskActivity(taskId)
       .filter(
         (e): e is Extract<TaskActivityEntry, { kind: 'comment' | 'chat' }> =>
           e.kind === 'comment' || e.kind === 'chat',
       )
       .map((entry) => entry.body);
+    return boundHistory(bodies, { maxChars: NOTES_CHAR_BUDGET });
   }
 
   /**

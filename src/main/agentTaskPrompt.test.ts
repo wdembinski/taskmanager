@@ -10,6 +10,7 @@ import {
   buildReplanPrompt,
 } from './agentTaskPrompt';
 import { NEEDS_INPUT_SENTINEL } from './attention';
+import { NOTES_CHAR_BUDGET, TICKET_COMMENT_CHAR_BUDGET } from './promptHistory';
 import type { Task } from '@shared/model';
 
 const jiraTask = {
@@ -371,6 +372,101 @@ describe('the attachment legend', () => {
   it('omits a step’s legend when neither it nor its card carries a file', () => {
     const prompt = buildAgentSubtaskPrompt('Checkout service', jiraTask, step, stepBase);
     expect(prompt).not.toContain('Files attached');
+    expect(prompt).not.toContain('\n\n\n');
+  });
+});
+
+/**
+ * The history cap (token audit, S1). Notes and the ticket thread are the two blocks of a
+ * brief that grow without limit and are re-read on every launch — a chain averages 8.6
+ * steps, so a card's history is re-paid once per step.
+ *
+ * What is checked here is the honesty of the cap rather than its arithmetic (that is
+ * `promptHistory.test.ts`): the entries that survive are the newest, and the brief SAYS the
+ * older ones are gone. Silently handing an agent half a thread it then treats as the whole
+ * thread is the failure mode the whole change exists to avoid.
+ */
+describe('the notes and comments cap', () => {
+  /** `n` notes of ~`size` chars each, numbered so which ones survived is checkable. */
+  const notes = (n: number, size: number): string[] =>
+    Array.from({ length: n }, (_, i) => `note-${i} `.padEnd(size, 'x'));
+
+  const stepBase = { stepNumber: 1, stepCount: 2, stepTitles: ['Do it', 'Test it'] };
+
+  it('drops the OLDEST notes and keeps the newest, which are about this run', () => {
+    const many = notes(20, NOTES_CHAR_BUDGET / 4);
+    const prompt = buildAgentTaskPrompt('Checkout service', jiraTask, { notes: many });
+    expect(prompt).toContain(`- ${many[19]}`);
+    expect(prompt).toContain(`- ${many[18]}`);
+    expect(prompt).not.toContain('- note-0 ');
+    expect(prompt).not.toContain('- note-9 ');
+  });
+
+  it('says how many notes it dropped, and that they can be asked for', () => {
+    const prompt = buildAgentTaskPrompt('Checkout service', jiraTask, {
+      notes: notes(20, NOTES_CHAR_BUDGET / 4),
+    });
+    expect(prompt).toContain('_(16 earlier notes omitted — ask if you need them.)_');
+    // Under the heading, because the kept entries render oldest-first.
+    expect(prompt.indexOf('Notes from the human')).toBeLessThan(prompt.indexOf('earlier notes'));
+    expect(prompt.indexOf('earlier notes')).toBeLessThan(prompt.indexOf('- note-19'));
+  });
+
+  it('bounds the ticket thread the same way, and says so', () => {
+    // Rendered as `Ada: <body>`, so a quarter of the budget is the body minus that prefix —
+    // the cap measures the line the prompt writes, not the body alone.
+    const thread = Array.from({ length: 20 }, (_, i) => ({
+      author: 'Ada',
+      body: `c${i} `.padEnd(TICKET_COMMENT_CHAR_BUDGET / 4 - 'Ada: '.length, 'x'),
+    }));
+    const prompt = buildAgentTaskPrompt('Checkout service', jiraTask, { comments: thread });
+    expect(prompt).toContain(`- Ada: ${thread[19]!.body}`);
+    expect(prompt).not.toContain('- Ada: c0 ');
+    expect(prompt).toContain('_(16 earlier comments omitted — ask if you need them.)_');
+  });
+
+  it('says nothing about omissions when nothing was dropped', () => {
+    const prompt = buildAgentTaskPrompt('Checkout service', jiraTask, {
+      notes: ['Start with the file-picker path.'],
+      comments: [{ author: 'Ada', body: 'Only on Windows.' }],
+    });
+    expect(prompt).not.toContain('omitted');
+    expect(prompt).not.toContain('\n\n\n');
+  });
+
+  it('adds what the CALLER already dropped to what it drops itself', () => {
+    // The scheduler bounds at source so it is not hauling a 70 KB thread around; the count
+    // has to survive that trip or the total the agent is told is a lie.
+    const prompt = buildAgentTaskPrompt('Checkout service', jiraTask, {
+      notes: notes(20, NOTES_CHAR_BUDGET / 4),
+      notesOmitted: 80,
+      comments: [{ author: 'Ada', body: 'Only on Windows.' }],
+      commentsOmitted: 7,
+    });
+    expect(prompt).toContain('_(96 earlier notes omitted');
+    expect(prompt).toContain('_(7 earlier comments omitted');
+  });
+
+  it('still renders the block when the caller kept nothing but dropped something', () => {
+    const prompt = buildAgentTaskPrompt('Checkout service', jiraTask, {
+      notes: [],
+      notesOmitted: 3,
+    });
+    expect(prompt).toContain('Notes from the human who assigned this');
+    expect(prompt).toContain('_(3 earlier notes omitted');
+    expect(prompt).not.toContain('\n\n\n');
+  });
+
+  it('caps a step’s copy of the parent card’s notes too — every step re-pays them', () => {
+    const many = notes(20, NOTES_CHAR_BUDGET / 4);
+    const prompt = buildAgentSubtaskPrompt('Checkout service', jiraTask, internalTask, {
+      ...stepBase,
+      notes: many,
+      notesOmitted: 5,
+    });
+    expect(prompt).toContain(`- ${many[19]}`);
+    expect(prompt).not.toContain('- note-0 ');
+    expect(prompt).toContain('_(21 earlier notes omitted — ask if you need them.)_');
     expect(prompt).not.toContain('\n\n\n');
   });
 });

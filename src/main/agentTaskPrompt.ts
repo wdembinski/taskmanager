@@ -21,6 +21,13 @@
 import type { Task } from '@shared/model';
 import type { PromptAttachment } from '@shared/attachments';
 import { NEEDS_INPUT_SENTINEL } from './attention';
+import {
+  NOTES_CHAR_BUDGET,
+  TICKET_COMMENT_CHAR_BUDGET,
+  boundEntries,
+  boundHistory,
+  omissionLine,
+} from './promptHistory';
 
 /** One comment handed to the agent as context (author + plain-text body). */
 export interface AgentPromptComment {
@@ -37,6 +44,17 @@ export interface AgentTaskPromptOptions {
    * instructions typed when the card was assigned (they are stored as a comment).
    */
   notes?: string[];
+  /**
+   * How many comments/notes the CALLER already dropped before handing the rest over.
+   *
+   * The scheduler bounds at source (`collectTicketComments`, `taskNotes`) so it is not
+   * hauling a 70 KB thread around to render 16 KB of it, and this prompt bounds again on
+   * whatever it is given — the cap belongs to the prompt, not to one caller. The two counts
+   * are added, so the omission line states the true total however the work was split. See
+   * {@link ./promptHistory}.
+   */
+  commentsOmitted?: number;
+  notesOmitted?: number;
   /** (Worktree mode) the isolated branch the agent commits on. */
   branch?: string;
   /** (AI-assisted retry) why the previous attempt failed. */
@@ -203,8 +221,19 @@ export function buildAgentTaskPrompt(
   options: AgentTaskPromptOptions = {},
 ): string {
   const { branch, failureNote, worktreePath, projectPath } = options;
-  const comments = (options.comments ?? []).filter((c) => clean(c.body));
-  const notes = (options.notes ?? []).map(clean).filter(Boolean);
+  // Bounded by recency: an uncapped ticket thread is the one part of this brief that can
+  // grow to tens of thousands of tokens, re-paid on every launch. Blank entries are dropped
+  // BEFORE bounding — they are nothing, not omitted history.
+  const comments = boundEntries(
+    (options.comments ?? []).filter((c) => clean(c.body)),
+    (c) => `${c.author}: ${clean(c.body)}`.length,
+    { maxChars: TICKET_COMMENT_CHAR_BUDGET },
+  );
+  const commentsOmitted = (options.commentsOmitted ?? 0) + comments.omitted;
+  const notes = boundHistory((options.notes ?? []).map(clean).filter(Boolean), {
+    maxChars: NOTES_CHAR_BUDGET,
+  });
+  const notesOmitted = (options.notesOmitted ?? 0) + notes.omitted;
   const key = clean(task.externalKey);
   const url = clean(task.externalUrl);
   const description = clean(task.externalDescription);
@@ -226,17 +255,21 @@ export function buildAgentTaskPrompt(
     // Straight after the words that cite them — a legend read before the brief is a list
     // of paths with nothing to resolve.
     ...attachmentLines(TASK_FILES_HEADING, options.attachments ?? []),
-    ...(comments.length > 0
+    // The omission line sits under the heading, not after the list: the entries render
+    // oldest-first, so what was dropped is always the older end.
+    ...(comments.kept.length > 0 || commentsOmitted > 0
       ? [
           `Comments on the ticket (oldest first):`,
-          ...comments.map((c) => `- ${c.author}: ${c.body}`),
+          ...omissionLine(commentsOmitted, 'comment'),
+          ...comments.kept.map((c) => `- ${c.author}: ${c.body}`),
           '',
         ]
       : []),
-    ...(notes.length > 0
+    ...(notes.kept.length > 0 || notesOmitted > 0
       ? [
           `Notes from the human who assigned this (oldest first):`,
-          ...notes.map((n) => `- ${n}`),
+          ...omissionLine(notesOmitted, 'note'),
+          ...notes.kept.map((n) => `- ${n}`),
           '',
         ]
       : []),
@@ -367,6 +400,12 @@ export interface AgentSubtaskPromptOptions {
   stepTitles?: string[];
   /** The human's own notes on the parent card, oldest first (assign-dialog instructions). */
   notes?: string[];
+  /**
+   * How many of the parent's notes the caller already dropped — added to whatever this
+   * prompt drops itself. See {@link AgentTaskPromptOptions.notesOmitted}; every step of a
+   * chain re-pays the card's history, so this is the block the budget exists for.
+   */
+  notesOmitted?: number;
   /** (Worktree mode) the branch this step commits on — the PARENT's shared branch. */
   branch?: string;
   /** (AI-assisted retry) why the previous attempt at this step failed. */
@@ -405,7 +444,10 @@ export function buildAgentSubtaskPrompt(
 ): string {
   const { stepNumber, stepCount, branch, failureNote, worktreePath, projectPath } = options;
   const stepTitles = (options.stepTitles ?? []).map(clean).filter(Boolean);
-  const notes = (options.notes ?? []).map(clean).filter(Boolean);
+  const notes = boundHistory((options.notes ?? []).map(clean).filter(Boolean), {
+    maxChars: NOTES_CHAR_BUDGET,
+  });
+  const notesOmitted = (options.notesOmitted ?? 0) + notes.omitted;
   const key = clean(parent.externalKey);
   const brief = clean(subtask.description);
   const instructions = clean(options.instructions);
@@ -430,10 +472,11 @@ export function buildAgentSubtaskPrompt(
           '',
         ]
       : []),
-    ...(notes.length > 0
+    ...(notes.kept.length > 0 || notesOmitted > 0
       ? [
           `Notes from the human who assigned this (oldest first):`,
-          ...notes.map((n) => `- ${n}`),
+          ...omissionLine(notesOmitted, 'note'),
+          ...notes.kept.map((n) => `- ${n}`),
           '',
         ]
       : []),
