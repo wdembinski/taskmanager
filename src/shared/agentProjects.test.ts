@@ -10,6 +10,7 @@ const project = (over: Partial<Project>): Project => ({
   path: 'C:/repos/repo',
   planPath: '',
   defaultModel: 'sonnet',
+  planningModel: null,
   defaultPermissionMode: 'acceptEdits',
   concurrency: 1,
   useWorktrees: true,

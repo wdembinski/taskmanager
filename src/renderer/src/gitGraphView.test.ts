@@ -55,6 +55,7 @@ const project = (id: string): Project => ({
   path: `/repos/${id}`,
   planPath: '',
   defaultModel: 'sonnet',
+  planningModel: null,
   defaultPermissionMode: 'acceptEdits',
   concurrency: 1,
   useWorktrees: true,

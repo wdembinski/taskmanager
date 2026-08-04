@@ -223,6 +223,14 @@ export const DEFAULT_BOARD_DISPLAY: BoardDisplaySettings = {
 export interface AppSettings {
   /** Model applied to a newly added project (its tasks run with this unless changed). */
   defaultModel: ClaudeModel;
+  /**
+   * Planning model applied to a newly added project. A seed only, exactly like
+   * `defaultModel`: changing it never touches a project that already exists.
+   *
+   * `null` — the default — means a new project plans on whatever it executes on, so out of
+   * the box nothing about any run changes. See `Project.planningModel`.
+   */
+  defaultPlanningModel: ClaudeModel | null;
   /** Permission mode applied to a newly added project. */
   defaultPermissionMode: PermissionMode;
   /** Max tasks a single project runs at once (scheduler concurrency; 1 = sequential). */
@@ -323,6 +331,9 @@ export interface AppSettings {
 /** The out-of-the-box settings, also used to fill any field missing from storage. */
 export const DEFAULT_SETTINGS: AppSettings = {
   defaultModel: 'sonnet',
+  // No planning model out of the box: a fresh install plans on what it executes on, which
+  // is what every install did before there were two.
+  defaultPlanningModel: null,
   defaultPermissionMode: 'acceptEdits',
   concurrency: 1,
   // Two minutes: the faster of the pair this replaced, so no integration polls less often

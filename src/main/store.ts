@@ -135,6 +135,8 @@ interface ProjectRow {
   path: string;
   planPath: string;
   defaultModel: string;
+  /** The planning model; NULL (pre-migration, and the default) = "same as execution". */
+  planningModel: string | null;
   defaultPermissionMode: string;
   concurrency: number;
   useWorktrees: number;
@@ -452,6 +454,7 @@ export function createStore(dbPath: string): Store {
       path                  TEXT NOT NULL,
       planPath              TEXT NOT NULL,
       defaultModel          TEXT NOT NULL,
+      planningModel         TEXT,
       defaultPermissionMode TEXT NOT NULL,
       concurrency           INTEGER NOT NULL DEFAULT 1,
       useWorktrees          INTEGER NOT NULL DEFAULT 1,
@@ -743,6 +746,13 @@ export function createStore(dbPath: string): Store {
     db.exec(`ALTER TABLE projects ADD COLUMN autoIntegrate INTEGER`);
   }
 
+  // Migrate databases created before a project could plan on a different model than it runs
+  // on. Deliberately no `NOT NULL DEFAULT`: NULL is the value that means "same as execution",
+  // so every existing project plans exactly as it did until a human names a model.
+  if (!projectColumns.some((c) => c.name === 'planningModel')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN planningModel TEXT`);
+  }
+
   // Migrate databases created before per-stage pipeline detail. NULL reads back as [], and
   // the UI falls back to the single overall status for those rows — exactly how every MR
   // looked before. The next sync of an MR fills its stages in.
@@ -889,13 +899,14 @@ export function createStore(dbPath: string): Store {
   // createdAt = 0 keeps the seed deterministic (no Date.now at open).
   db.prepare(
     `INSERT INTO projects
-       (id, name, path, planPath, defaultModel, defaultPermissionMode,
+       (id, name, path, planPath, defaultModel, planningModel, defaultPermissionMode,
         concurrency, useWorktrees, writeBackPlan, planAligned, createdAt)
-     VALUES (@id, 'Personal', '', '', @defaultModel, @defaultPermissionMode, 1, 0, 0, 1, 0)
+     VALUES (@id, 'Personal', '', '', @defaultModel, @planningModel, @defaultPermissionMode, 1, 0, 0, 1, 0)
      ON CONFLICT(id) DO NOTHING`,
   ).run({
     id: PERSONAL_PROJECT_ID,
     defaultModel: DEFAULT_SETTINGS.defaultModel,
+    planningModel: DEFAULT_SETTINGS.defaultPlanningModel,
     defaultPermissionMode: DEFAULT_SETTINGS.defaultPermissionMode,
   });
 
@@ -967,8 +978,8 @@ export function createStore(dbPath: string): Store {
   }
 
   const insertProject = db.prepare<[ProjectRow]>(
-    `INSERT INTO projects (id, name, path, planPath, defaultModel, defaultPermissionMode, concurrency, useWorktrees, baseBranch, writeBackPlan, autoRelease, autoIntegrate, planAligned, kind, jiraEpicKeys, target, instructions, color, createdAt)
-     VALUES (@id, @name, @path, @planPath, @defaultModel, @defaultPermissionMode, @concurrency, @useWorktrees, @baseBranch, @writeBackPlan, @autoRelease, @autoIntegrate, @planAligned, @kind, @jiraEpicKeys, @target, @instructions, @color, @createdAt)`,
+    `INSERT INTO projects (id, name, path, planPath, defaultModel, planningModel, defaultPermissionMode, concurrency, useWorktrees, baseBranch, writeBackPlan, autoRelease, autoIntegrate, planAligned, kind, jiraEpicKeys, target, instructions, color, createdAt)
+     VALUES (@id, @name, @path, @planPath, @defaultModel, @planningModel, @defaultPermissionMode, @concurrency, @useWorktrees, @baseBranch, @writeBackPlan, @autoRelease, @autoIntegrate, @planAligned, @kind, @jiraEpicKeys, @target, @instructions, @color, @createdAt)`,
   );
   const selectProjects = db.prepare(`SELECT * FROM projects ORDER BY createdAt`);
   const selectProject = db.prepare(`SELECT * FROM projects WHERE id = ?`);
@@ -1087,6 +1098,9 @@ export function createStore(dbPath: string): Store {
 
   /** Guard for the one-shot `agentProjectId` → `projectTagId` back-fill below. */
   const PROJECT_TAG_SPLIT_KEY = 'migration.projectTagSplit';
+
+  /** Guard for the one-shot release of cards pinned to their project's model, below. */
+  const PINNED_MODEL_RELEASE_KEY = 'migration.pinnedModelRelease';
 
   /** The GitLab PAT ciphertext, and the cached `GET /user` for the configured instance. */
   const GITLAB_TOKEN_KEY = 'gitlab.pat';
@@ -1343,6 +1357,47 @@ export function createStore(dbPath: string): Store {
   }
   // ---------------------------------------------------------------------------
 
+  // ---------------------------------------------------------------------------
+  // One-shot: let go of the model overrides the DIALOG wrote, not the human.
+  //
+  // NULL has always meant "use the project default" for `agentModel`, and every card
+  // written before the assign dialog existed honoured that. The dialog then seeded its
+  // dropdown from the project's own default and submitted it verbatim, so a card carries
+  // an override whether or not anyone opened that dropdown — and a card whose override
+  // EQUALS its project's default is indistinguishable from one that never chose.
+  //
+  // Left in place those rows outrank `projects.planningModel`, and the whole planning
+  // model would appear to be ignored on precisely the cards people use. So the ones that
+  // merely echo their project let go; a card whose model genuinely diverges (the deliberate
+  // `opus` on a hard ticket) keeps it, because that is the one signal of intent the data
+  // carries. Nothing about what those rows run today changes either way.
+  //
+  // Compared against the project that would actually RUN the card (`agentProjectId`, the
+  // way `runProjectFor` resolves it) — not `task.projectId`, which for a board card is the
+  // Personal board. A NULL subquery (no delegation, or one pointing somewhere that is not
+  // an agent project) never matches, so those rows are left alone.
+  //
+  // Guarded like the split above, and for the same reason: a second pass would clear a
+  // choice a human made deliberately after the first, one card at a time.
+  //
+  // `agentMode` has exactly the same history and is deliberately NOT touched — permission
+  // mode is not what this is about, and `plan` mode carries meaning a model does not.
+  if (!selectState.get(PINNED_MODEL_RELEASE_KEY)) {
+    db.transaction(() => {
+      const result = db
+        .prepare(
+          `UPDATE tasks SET agentModel = NULL
+            WHERE agentModel IS NOT NULL
+              AND agentModel = (SELECT defaultModel FROM projects
+                                 WHERE projects.id = tasks.agentProjectId
+                                   AND projects.kind = 'agent')`,
+        )
+        .run();
+      upsertState.run(PINNED_MODEL_RELEASE_KEY, JSON.stringify({ tasks: result.changes }));
+    })();
+  }
+  // ---------------------------------------------------------------------------
+
   /** Read app settings, merging any stored fields over the built-in defaults. */
   function getSettings(): AppSettings {
     const row = selectState.get(SETTINGS_KEY) as { value: string } | undefined;
@@ -1373,6 +1428,10 @@ export function createStore(dbPath: string): Store {
       path: r.path,
       planPath: r.planPath,
       defaultModel: r.defaultModel as Project['defaultModel'],
+      // NULL stays null — it is the value that means "plan on whatever you execute on",
+      // not a missing model. Collapsing it to `defaultModel` here would read back as an
+      // explicit choice and the dropdown would stop being able to say "same as execution".
+      planningModel: (r.planningModel as Project['planningModel']) ?? null,
       defaultPermissionMode: r.defaultPermissionMode as Project['defaultPermissionMode'],
       concurrency: r.concurrency,
       useWorktrees: r.useWorktrees !== 0,
@@ -1567,6 +1626,9 @@ export function createStore(dbPath: string): Store {
         // joining it on Windows would produce `/home/you/repo\plan.md`.
         planPath: isAgent ? '' : (input.planPath ?? hostJoin(input.path, 'plan.md')),
         defaultModel: input.defaultModel ?? defaults.defaultModel,
+        // Seeded from the app-wide default like `defaultModel`, and null all the way down
+        // unless someone has set one — a new project plans on what it executes on.
+        planningModel: input.planningModel ?? defaults.defaultPlanningModel ?? null,
         defaultPermissionMode: input.defaultPermissionMode ?? defaults.defaultPermissionMode,
         concurrency: Math.max(1, Math.round(input.concurrency ?? defaults.concurrency)),
         useWorktrees: isAgent ? true : (input.useWorktrees ?? true),
@@ -1642,6 +1704,12 @@ export function createStore(dbPath: string): Store {
       if (patch.defaultModel !== undefined) {
         sets.push(`defaultModel = @defaultModel`);
         params.defaultModel = patch.defaultModel;
+      }
+      // `null` is a value the caller may really mean ("plan on the execution model again"),
+      // so this too is tested against `undefined` rather than falsiness.
+      if (patch.planningModel !== undefined) {
+        sets.push(`planningModel = @planningModel`);
+        params.planningModel = patch.planningModel ?? null;
       }
       if (patch.defaultPermissionMode !== undefined) {
         sets.push(`defaultPermissionMode = @defaultPermissionMode`);

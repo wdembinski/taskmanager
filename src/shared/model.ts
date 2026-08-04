@@ -129,8 +129,22 @@ export interface Project {
   path: string;
   /** Absolute path to the plan file we parse into tasks (usually `<path>/plan.md`). */
   planPath: string;
-  /** Which model this project's tasks run with unless overridden. */
+  /**
+   * Which model this project's tasks **run** with unless overridden — the steps-execution
+   * model. Keeps its name and its meaning; only its label in the UI says "execution", now
+   * that {@link Project.planningModel} sits beside it.
+   */
   defaultModel: ClaudeModel;
+  /**
+   * Which model this project **plans** with — the one run whose whole output is judgement:
+   * it reads a repo it has never seen and decides what the work *is*, where a step is handed
+   * a brief that already says what to do.
+   *
+   * `null` — the default, and every project that predates the field — means "same as
+   * execution", so nothing about an existing project changes until a human sets it. A card's
+   * own `agentModel` still outranks both; see {@link resolveRunModel}.
+   */
+  planningModel: ClaudeModel | null;
   /** Permission mode this project's tasks run with unless overridden. */
   defaultPermissionMode: PermissionMode;
   /**
@@ -245,6 +259,9 @@ export interface AddProjectInput {
   name?: string;
   planPath?: string;
   defaultModel?: ClaudeModel;
+  /** Model for planning runs; omitted (or `null`) = the app-wide seed, and then "same as
+   *  execution". See {@link Project.planningModel}. */
+  planningModel?: ClaudeModel | null;
   defaultPermissionMode?: PermissionMode;
   concurrency?: number;
   useWorktrees?: boolean;
@@ -280,6 +297,7 @@ export type ProjectPatch = Partial<
     | 'path'
     | 'planPath'
     | 'defaultModel'
+    | 'planningModel'
     | 'defaultPermissionMode'
     | 'concurrency'
     | 'useWorktrees'
@@ -294,6 +312,44 @@ export type ProjectPatch = Partial<
     | 'color'
   >
 >;
+
+/**
+ * Every model a run may be launched on, cheapest first — the one list the dropdowns and
+ * the ladder below share.
+ *
+ * It lives here rather than in `session.ts` (where {@link ClaudeModel} is declared) because
+ * `model.ts` already imports from there, and a project's models are the reason the list is
+ * needed at all. Six renderer files each carried their own copy of it before this.
+ */
+export const MODELS: readonly ClaudeModel[] = ['haiku', 'sonnet', 'opus'];
+
+/**
+ * Which model a run costs: the card's own choice, else the project's model **for that kind
+ * of run**, else the project's execution model.
+ *
+ * ```
+ * task.agentModel                                 // explicit per-card / per-step choice
+ *   ?? (planning ? project.planningModel : null)  // null = "same as execution"
+ *   ?? project.defaultModel                       // the steps-execution model
+ * ```
+ *
+ * `planning` is decided by the caller from what the run IS ("come back with a plan"), not
+ * from the permission mode alone — a chat reply or a review that merely inherited `plan`
+ * mode from its card is not planning and keeps the execution model.
+ *
+ * Pure, and here rather than in the scheduler, for the same reason `releaseMode` is: a
+ * ladder that decides what a run costs should be testable without a CLI. `??` throughout,
+ * never `||` — both new values are nullable and this schema treats `''` as a real value.
+ */
+export function resolveRunModel(
+  task: Pick<Task, 'agentModel'>,
+  project: Pick<Project, 'defaultModel' | 'planningModel'>,
+  planning: boolean,
+): ClaudeModel {
+  return (
+    task.agentModel ?? (planning ? (project.planningModel ?? null) : null) ?? project.defaultModel
+  );
+}
 
 /**
  * The kind of an internal (non-JIRA) task, chosen by the user when adding it and
