@@ -82,8 +82,10 @@ import { useIntegratingTasks } from './useIntegratingTasks';
 import {
   COLUMN_META,
   columnForTask,
+  focusAnchorId,
   focusCards,
   groupSubtasks,
+  hiddenDoneSummary,
   isRunStatus,
   sortCards,
   statusForColumn,
@@ -420,7 +422,17 @@ export function MyTasks(): JSX.Element {
   }, [mergeRequests]);
 
   /**
-   * The ids focus mode allows through — the selected card, everything upstream of it and
+   * The card focus is drawn around — the selection itself, or the parent of a selected
+   * STEP, which is the only card a step's work is ever part of. See `focusAnchorId`:
+   * selecting a step and turning focus on used to empty the whole board.
+   */
+  const focusAnchor = useMemo(
+    () => focusAnchorId(tasks ?? [], selectedTaskId),
+    [tasks, selectedTaskId],
+  );
+
+  /**
+   * The ids focus mode allows through — the anchor card, everything upstream of it and
    * everything downstream — or null when the board is showing everything.
    *
    * Null rather than "every id on the board": the filter below is then a no-op in the
@@ -435,8 +447,8 @@ export function MyTasks(): JSX.Element {
    * and its cards sit exactly where their status puts them.
    */
   const focusIds = useMemo(
-    () => (chainFocus && selectedTaskId ? chainComponent(links, selectedTaskId) : null),
-    [chainFocus, selectedTaskId, links],
+    () => (chainFocus && focusAnchor ? chainComponent(links, focusAnchor) : null),
+    [chainFocus, focusAnchor, links],
   );
 
   const cardsByColumn = useMemo(() => {
@@ -460,6 +472,32 @@ export function MyTasks(): JSX.Element {
       map[col] = sortCards(map[col], attention.taskIds);
     return map;
   }, [tasks, mrsByTask, attention.taskIds, focusIds]);
+
+  /**
+   * What the "Show Done" switch says while the column is shut: the bare count on the label,
+   * the sentence in the tooltip — the same division {@link archivedCountLabel} makes, and
+   * for the same reason.
+   *
+   * Counted off `cardsByColumn.done`, so it is the cards this board would show and not the
+   * cards that exist: with chain focus on, a count that included the rest would be pointing
+   * at cards opening the column still wouldn't reveal.
+   */
+  const hiddenDone = useMemo(() => hiddenDoneSummary(cardsByColumn.done), [cardsByColumn]);
+  const hiddenDoneLabel =
+    !showDone && hiddenDone.total > 0 ? `Show Done (${hiddenDone.total})` : 'Show Done';
+  const hiddenDoneTitle = useMemo(() => {
+    if (showDone || hiddenDone.total === 0) return null;
+    const { total, notMarkedDone } = hiddenDone;
+    if (total === 1) {
+      return notMarkedDone === 0
+        ? '1 finished card is hidden'
+        : '1 finished card is hidden — it was cancelled, stopped or failed rather than done';
+    }
+    const opening = `${total} finished cards are hidden`;
+    return notMarkedDone === 0
+      ? opening
+      : `${opening} — ${notMarkedDone} of them cancelled, stopped or failed rather than done`;
+  }, [showDone, hiddenDone]);
 
   /**
    * Where every card is, for the chain overlay's arrows — plus which card the pointer is
@@ -843,8 +881,15 @@ export function MyTasks(): JSX.Element {
     <div className={styles.root}>
       <div className={styles.board}>
         <div className={styles.toolbar}>
+          {/* The count is the toggle's whole job while it is off: DONE is the one column a
+              card can reach without anybody dragging it there, so a card that failed, or
+              whose ticket moved to a Done status, used to leave the board with nothing said
+              anywhere. The column stays shut until you open it — a board that opens its own
+              columns cannot be reasoned about — but the numeral makes it impossible to
+              mistake a hidden card for a lost one. */}
           <Switch
-            label="Show Done"
+            label={hiddenDoneLabel}
+            title={hiddenDoneTitle ?? undefined}
             checked={showDone}
             onChange={(_e, d) => setShowDone(d.checked)}
           />
@@ -868,15 +913,20 @@ export function MyTasks(): JSX.Element {
 
               `disabledFocusable` rather than `disabled`: focus follows the selection, so
               with nothing selected the control has something to SAY, and a plainly
-              disabled button can be neither hovered for its tooltip nor tabbed to. */}
+              disabled button can be neither hovered for its tooltip nor tabbed to.
+
+              Keyed on the ANCHOR, not on `selectedTaskId`: the two differ for a selected
+              step, and the button has to be live in exactly the cases focus does something
+              — offering it for a selection that resolves to no card is how the board went
+              blank in the first place. */}
           <ToggleButton
             size="small"
             appearance="subtle"
             icon={<ArrowRoutingRegular />}
             checked={chainFocus}
-            disabledFocusable={!selectedTaskId}
+            disabledFocusable={!focusAnchor}
             title={
-              !selectedTaskId
+              !focusAnchor
                 ? 'Pick a card first — focus follows the selected card’s chain'
                 : chainFocus
                   ? 'Showing this card’s chain only — click for the whole board'

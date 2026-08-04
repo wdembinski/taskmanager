@@ -4,7 +4,7 @@
  * the renderer-only concerns: display metadata and the "Show Done" toggle.
  */
 import type { BoardColumn, Task } from '@shared/model';
-import { chainNeedsAttention } from '@shared/board';
+import { chainNeedsAttention, columnForStatus, restingStatus } from '@shared/board';
 import { priorityRank } from '@shared/priority';
 import type { MergeRequest } from '@shared/mergeRequest';
 
@@ -78,6 +78,74 @@ export function groupSubtasks(
 }
 
 /**
+ * What the DONE column is holding while it is closed: how many cards are in it, and how
+ * many of those the human never actually marked done (`failed`, `stopped`, `cancelled`).
+ *
+ * This exists because "Show Done" is off by default, so the one column a card can arrive in
+ * without anybody dragging it there is also the column nobody is looking at — a card that
+ * fails, or whose JIRA status maps into DONE, simply stops existing as far as the board
+ * says. The count is the whole fix. The toggle still hides the column: a board that opens
+ * its own columns cannot be reasoned about, and the complaint was never "the column was
+ * closed", it was "nothing anywhere told me the cards were there". A numeral answers that
+ * completely, and costs no colour — colour is for things that move, and a closed card is
+ * the least-moving thing on the board.
+ *
+ * `notMarkedDone` is counted apart because those are the ones worth a second look:
+ * "finished" and "gave up" land in the same column, and a card that failed is far more
+ * likely to be the one you are hunting for.
+ *
+ * Reads {@link restingStatus}, like everything else that asks where a card sits — a card
+ * whose agent is running this second, parked over the `cancelled` its human left it in,
+ * is in the DONE column and is just as hidden as the rest.
+ */
+export function hiddenDoneSummary(cards: readonly BoardCard[]): {
+  total: number;
+  notMarkedDone: number;
+} {
+  let total = 0;
+  let notMarkedDone = 0;
+  for (const card of cards) {
+    const status = restingStatus(card.task);
+    if (columnForStatus(status) !== 'done') continue;
+    total += 1;
+    if (status !== 'done') notMarkedDone += 1;
+  }
+  return { total, notMarkedDone };
+}
+
+/**
+ * The card chain focus should be drawn around, for whatever the user has SELECTED — the
+ * selection itself when it is a card, and its **parent** when it is a step.
+ *
+ * The anchor is the fix for a board that emptied itself: open a step in the detail pane
+ * (clicking one selects the step, not the card it lives in), turn Chain focus on, and the
+ * component was computed for an id no card on the board has. Steps are never chained —
+ * `canLink` refuses one at either end — so the component came back as that step alone, and
+ * `focusCards` matched nothing: every card gone, including the one you were reading.
+ *
+ * Fixed here rather than in {@link focusCards}, which is right to test card ids and only
+ * card ids: a card's steps travel with it, so admitting step ids to the filter would be
+ * the wrong repair. It is the ANCHOR that was wrong. A step's chain is its parent's chain,
+ * because that is the only thing a step's work is ever part of.
+ *
+ * An orphaned step — parent not on this board — anchors to itself, matching
+ * {@link groupSubtasks}, which promotes exactly those steps to cards of their own. Null
+ * for nothing selected and for an id the board doesn't have (a deleted card can still be
+ * the selection), which reads through focus as "no filter" rather than as an empty board.
+ */
+export function focusAnchorId(
+  tasks: readonly Task[],
+  selectedTaskId: string | null,
+): string | null {
+  if (!selectedTaskId) return null;
+  const selected = tasks.find((t) => t.id === selectedTaskId);
+  if (!selected) return null;
+  const parentId = selected.parentTaskId;
+  if (!parentId) return selected.id;
+  return tasks.some((t) => t.id === parentId) ? parentId : selected.id;
+}
+
+/**
  * Chain focus mode: the cards the board shows when it is narrowed to one chain.
  *
  * `focusIds` is the chain's component (see `chainComponent`) or **null** for "show
@@ -89,6 +157,11 @@ export function groupSubtasks(
  * (`canLink` refuses one at either end), so a card whose step id somehow appeared in the
  * set would still be the wrong thing to keep, and filtering the steps themselves would
  * empty a card of its work.
+ *
+ * Which is exactly why a selected STEP has to be resolved to its parent BEFORE the
+ * component is built, and not rescued here: see {@link focusAnchorId}. Take the anchor
+ * from the raw selection instead and focus hands this function a component of one step id,
+ * it correctly matches no card, and the board goes blank.
  */
 export function focusCards(
   cards: readonly BoardCard[],

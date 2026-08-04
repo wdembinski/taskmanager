@@ -7,8 +7,10 @@ import {
   COLUMN_META,
   columnForStatus,
   columnForTask,
+  focusAnchorId,
   focusCards,
   groupSubtasks,
+  hiddenDoneSummary,
   sortCards,
   statusForColumn,
   stepPosition,
@@ -96,6 +98,90 @@ describe('visibleColumns', () => {
       'blocked',
       'done',
     ]);
+  });
+});
+
+describe('hiddenDoneSummary', () => {
+  it('counts every card the DONE column holds, and the ones nobody marked done apart', () => {
+    // All four statuses land in DONE. Only the first is the human saying "finished"; the
+    // other three are the ones worth a second look, which is why they are counted apart.
+    const cards = groupSubtasks([
+      card('finished', { status: 'done' }),
+      card('gave-up', { status: 'cancelled' }),
+      card('halted', { status: 'stopped' }),
+      card('broke', { status: 'failed' }),
+    ]);
+    expect(hiddenDoneSummary(cards)).toEqual({ total: 4, notMarkedDone: 3 });
+  });
+
+  it('ignores the cards that are still on the open columns', () => {
+    const cards = groupSubtasks([
+      card('todo', { status: 'pending' }),
+      card('doing', { status: 'in-progress' }),
+      card('review', { status: 'in-review' }),
+      card('stuck', { status: 'blocked' }),
+      card('finished', { status: 'done' }),
+    ]);
+    expect(hiddenDoneSummary(cards)).toEqual({ total: 1, notMarkedDone: 0 });
+  });
+
+  it('counts a running card by where it RESTS, not by the status its run borrowed', () => {
+    // The run has `status`; `preRunStatus` is where the human left it. A card parked over
+    // `cancelled` sits in DONE and is just as hidden as one that is not running.
+    const cards = groupSubtasks([
+      card('running-over-cancelled', { status: 'running', preRunStatus: 'cancelled' }),
+      card('running-over-todo', { status: 'running', preRunStatus: 'pending' }),
+    ]);
+    expect(hiddenDoneSummary(cards)).toEqual({ total: 1, notMarkedDone: 1 });
+  });
+
+  it('is silent about a board with nothing behind the toggle', () => {
+    expect(hiddenDoneSummary([])).toEqual({ total: 0, notMarkedDone: 0 });
+    expect(hiddenDoneSummary(groupSubtasks([card('todo')]))).toEqual({
+      total: 0,
+      notMarkedDone: 0,
+    });
+  });
+
+  it('counts CARDS, not the steps travelling inside them', () => {
+    // A finished step is not a hidden card — it renders inside its parent, which is sitting
+    // in IN PROGRESS in plain view.
+    const cards = groupSubtasks([
+      card('parent', { status: 'in-progress' }),
+      card('s1', { parentTaskId: 'parent', order: 0, status: 'done' }),
+      card('s2', { parentTaskId: 'parent', order: 1, status: 'failed' }),
+    ]);
+    expect(hiddenDoneSummary(cards)).toEqual({ total: 0, notMarkedDone: 0 });
+  });
+});
+
+describe('focusAnchorId', () => {
+  const tasks = [
+    card('parent'),
+    card('s1', { parentTaskId: 'parent', order: 0 }),
+    card('plain'),
+    card('orphan', { parentTaskId: 'gone' }),
+  ];
+
+  it('anchors a selected STEP to its parent card', () => {
+    // The bug this exists for: a step is never chained, so a component built from its own
+    // id matched no card and focus emptied the board.
+    expect(focusAnchorId(tasks, 's1')).toBe('parent');
+  });
+
+  it('anchors an ordinary card to itself', () => {
+    expect(focusAnchorId(tasks, 'plain')).toBe('plain');
+    expect(focusAnchorId(tasks, 'parent')).toBe('parent');
+  });
+
+  it('anchors an orphaned step to itself — the board promotes it to a card', () => {
+    expect(focusAnchorId(tasks, 'orphan')).toBe('orphan');
+  });
+
+  it('is null for nothing selected, and for an id the board does not have', () => {
+    expect(focusAnchorId(tasks, null)).toBeNull();
+    expect(focusAnchorId(tasks, 'deleted')).toBeNull();
+    expect(focusAnchorId([], 'plain')).toBeNull();
   });
 });
 
@@ -214,6 +300,21 @@ describe('focusCards — chain focus mode', () => {
     const focused = focusCards(withSteps, chainComponent(links, '2'));
     expect(focused.map((c) => c.task.id)).toEqual(['1', '2']);
     expect(focused[1].subtasks.map((s) => s.id)).toEqual(['s1', 's2']);
+  });
+
+  it('keeps the parent’s chain when a STEP is what is selected', () => {
+    // The regression, composed exactly as MyTasks composes it: selecting a step (clicking
+    // one selects the step, not its card) and turning focus on used to build the component
+    // from the step's own id — which no card matches — and every card vanished, the one
+    // being read included. The anchor is what fixes it, and it is what is under test here.
+    const tasks = [card('1'), card('2'), card('s1', { parentTaskId: '2', order: 0 }), card('solo')];
+    const withSteps = groupSubtasks(tasks);
+    const anchor = focusAnchorId(tasks, 's1');
+    expect(anchor).toBe('2');
+    const ids = focusCards(withSteps, chainComponent(links, anchor as string)).map(
+      (c) => c.task.id,
+    );
+    expect(ids).toEqual(['1', '2']);
   });
 
   it('does not mutate the board it was given', () => {
