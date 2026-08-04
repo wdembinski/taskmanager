@@ -152,6 +152,16 @@ The personal Kanban board: your own tasks and your synced JIRA tickets as cards,
 independent of the plan-driven **Board**. Its cards live on the built-in
 *Personal* project.
 
+### Removed card (archived)
+
+A My Tasks card that is **off the board but not deleted** — its row, timeline,
+attachments, chain arrows and transcript are all still there, and **Removed cards** in
+the board toolbar puts it back with the same id. The sync archives rather than deletes,
+and only ever after JIRA has been asked about the ticket by key and answered; a card
+nobody could get an answer about is kept on the board. Archived cards are destroyed after
+180 days, or when you delete the card yourself. See
+[The My Tasks board is a query](03-how-orchestration-works.md#the-my-tasks-board-is-a-query).
+
 ### Agent project
 
 A **repo folder plus the JIRA epics it owns** — the target you delegate a My Tasks

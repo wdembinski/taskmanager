@@ -17,6 +17,28 @@
  * not make the answer unknowable for the forty-nine batched with it, so a batch that throws,
  * or comes back truncated, contributes to *neither* set and leaves its cards untouched.
  *
+ * ## The card that can never be confirmed, and why nobody should "fix" it
+ *
+ * That rule has one permanent consequence, and it is a feature: **a ticket someone deleted in
+ * JIRA can never be confirmed, so its card stays on the board forever.** Its key 400s the
+ * batch it is in, every sync, for as long as the card exists — the batch contributes to
+ * neither set, and a key the reconciler never hears an answer about is kept. The card simply
+ * sits there, and `task:delete` — the human saying so — is what removes it.
+ *
+ * That is the correct direction. A stale card is a nuisance you can see and drag away; a
+ * destroyed card is a timeline, an attachment set, a transcript and a branch nobody can get
+ * back. This whole module exists because the app used to make the second mistake.
+ *
+ * So the tempting repair — when a batch 400s, bisect it, find the key JIRA rejects, and treat
+ * *that* key as gone — is the one thing not to do. JIRA answers a key it cannot show this
+ * token exactly the way it answers a key that does not exist: a project whose permissions
+ * changed for an afternoon, a token rotated to a narrower scope, an instance mid-migration all
+ * produce the same 400 as a deletion, and a bisect would read every one of them as "delete the
+ * card". The cost of not bisecting is bounded and visible: the dead key pins its batch, so up
+ * to forty-nine other candidates go unconfirmed alongside it and stay on the board too — all
+ * of them named in the `onBatchFailed` log line, none of them at risk of anything worse than
+ * being stale.
+ *
  * Written against an injected {@link IssueSearcher} rather than a `JiraClient` — the
  * `discoverSprintFieldId` pattern — so the batching, the composition and the failure
  * discipline are all testable against a fake that counts calls.

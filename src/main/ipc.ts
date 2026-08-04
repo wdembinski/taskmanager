@@ -1865,6 +1865,22 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     const queryChanged = lastQuery !== null && lastQuery !== jql;
     // The whole query, paged to the end — see `searchAll`. `truncated` is the one fact that
     // separates a short answer from a small board, and everything below turns on it.
+    //
+    // **The first sync on this version is the noisy one, and that is expected.** What ran here
+    // before asked for one page of 100 and treated it as the whole query, so on any board
+    // whose query matches more than that, every issue past the hundredth was never fetched —
+    // and the reconciler, seeing no issue for those cards, deleted them. They arrive in this
+    // one answer and the board can visibly grow, by hundreds, in a single poll.
+    //
+    // The direction is the reassuring part: the first sync ADDS. The old cap could only ever
+    // hide a ticket the query still matched, never invent one it didn't, so nothing coming
+    // back here is spurious. Departures still leave — that is the point of the confirm pass
+    // below — but each is confirmed by key, archived rather than deleted, logged by key, and
+    // listed under **Removed cards**. If the number is large enough to be alarming it is
+    // `guardRemovals` that decides, not this comment: past a quarter of the board in one sync
+    // nothing is removed at all and the human is told instead. It settles from the second sync
+    // on, and Phase 5's Removed-cards list is what makes the first one inspectable rather than
+    // merely survivable — which is why the two shipped together.
     const { issues, truncated } = await client.searchAll(jql, {
       limit: JIRA_BOARD_LIMIT,
       extraFields,
@@ -1909,6 +1925,22 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     //
     // Skipped entirely when the fetch was truncated: the reconciler removes nothing on a
     // short answer anyway, so the question would be paid for and thrown away.
+    //
+    // The case where that "zero extra requests" stops being true, stated so nobody discovers it
+    // as a mystery: a query that is **permanently wrong** — someone saves a JQL that matches
+    // nothing, or narrows a filter and leaves it there. Every card on the board is then a
+    // candidate on every poll, the guard refuses the removal (it is far past a quarter of the
+    // board), the warning bar comes back, and the confirm pass is paid for again — one request
+    // per fifty cards, at the sync interval, by default every two minutes. Nothing is lost and
+    // nothing is removed; it is steady noise plus request volume until the query is fixed.
+    //
+    // Deliberately not mitigated here. The obvious mitigation is real and written down rather
+    // than built: after a refusal, skip the confirm pass on the next sync unless the query
+    // changed. It is cheap, and it is also a way to make the app slower to notice a board that
+    // has genuinely turned over — the refusal is a *guess* that something is wrong, and paying
+    // a request per fifty cards to keep re-checking that guess is the right trade until someone
+    // is actually being hurt by it. If it ever bites, that is the fix; `queryChanged` above is
+    // already the signal it would key on.
     const candidates = removalCandidateKeys(personalForSync, issues);
     const confirmed =
       candidates.length > 0 && !truncated

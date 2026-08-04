@@ -152,6 +152,69 @@ to an existing plan for you to review.
 
 ---
 
+## The My Tasks board is a query
+
+A plan project's tasks are a **queue**: rows the app owns, which nothing outside it can
+take away. The **My Tasks** board is the other thing — it is whatever your JQL returns,
+redrawn every sync (default: every two minutes). That is what makes it useful, and it is
+also the whole difficulty. *A ticket missing from an answer* and *a ticket that has left
+the query* look identical from here, and the app used to treat the first as the second and
+delete the card.
+
+It no longer does. The rule the sync now enforces:
+
+> **No card leaves the board unless JIRA was asked about it by key and answered.**
+
+A short page, a failed batch, a question nobody put — every one of them means *keep*.
+When JIRA does answer, and answers no, the card is **removed from the board, not
+deleted**: the row keeps its timeline, its attachments, its chain arrows and any agent
+transcript, it appears under **Removed cards** in the My Tasks toolbar with the reason it
+left, and one click puts it back with the same id. Only two things destroy a card — you
+saying so, and the 180-day sweep over cards that have sat in that list untouched.
+
+### Risks, stated up front
+
+Everything below is a known consequence of that design, not an open bug.
+
+- **The first sync after upgrading is noisy.** The old sync read one page of 100 issues
+  and treated it as the whole query, so on a board matching more than that, every issue
+  past the hundredth was invisible — and cards for them were deleted for not coming back.
+  Now the query is paged to the end, so they all return at once and the board can grow by
+  hundreds in one poll. The direction is the reassuring part: that first sync *adds*. It
+  settles from the second sync on, and **Removed cards** is there to make it inspectable.
+
+- **A permanently wrong JQL costs you a confirmation every sync.** Save a query that
+  matches nothing (or narrow a filter and forget), and every card on the board becomes a
+  removal candidate on every poll: the guard refuses to remove more than a quarter of a
+  board at once, the warning bar comes back, and the confirmation costs one request per
+  fifty cards every two minutes. Nothing is removed and nothing is lost — it is noise and
+  request volume until the query is fixed. If it ever becomes a real problem, the fix is
+  written down in `ipc.ts` beside the pass: skip the confirmation on the sync after a
+  refusal unless the query itself changed.
+
+- **A ticket deleted in JIRA leaves its card on the board forever.** Asking about a
+  deleted key fails the whole batch it travels in, so the card is never confirmed — and an
+  unconfirmed card is kept, by the rule above. Deleting it is your call — **Delete task**, in
+  the card's details. This is on purpose and should stay: JIRA answers a ticket it cannot show
+  your token exactly as it answers one that does not exist, so a smarter guess here would
+  delete live cards during a permissions blip. A stale card is a nuisance you can see; a
+  destroyed card is work you cannot get back.
+
+- **Removed cards accumulate, and the 180-day sweep is a real delete.** They cost a row
+  each and are hidden from every board read, so the pile is cheap — but it has no ceiling
+  until the sweep at startup, which destroys a card archived longer ago than that exactly
+  as **Delete** would, timeline and transcript included. The bound is the card's age rather
+  than a maximum count on purpose: a "keep the newest N" rule would prune hardest precisely
+  when a board had started losing cards, which is when you most want to look.
+
+- **Recovery of already-deleted cards is best-effort.** `scripts/recover-deleted-tasks.mjs`
+  digs cards that were deleted by older versions back out of SQLite's free pages and WAL,
+  and its odds fall with every minute the app keeps running afterwards. It is for the
+  damage done before this landed. Nothing in the sync depends on it, and nothing should:
+  no code may delete a card on the assumption that the scavenger could dig it out.
+
+---
+
 ## Delegating one task to an agent
 
 Plans are the batch mode: a queue of tasks the scheduler works through. There is

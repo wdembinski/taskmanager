@@ -40,6 +40,13 @@
  * says so at the bottom of every report, because that is the one thing a person reading a
  * recovery report has to believe.
  *
+ * So this is **best-effort, and it gets worse with time** — which is why nothing else in the
+ * fix depends on it. It is not a backstop, and it must never be treated as one: no code path
+ * may delete a card on the reasoning that this could dig it out again. Everything that keeps
+ * a board honest (`archivedAt`, the confirm pass, the removal guard, the retention sweep) is
+ * built to need no recovery at all, and this script exists for the one population they cannot
+ * help — the cards that were already gone before any of it shipped.
+ *
  * ## Running it
  *
  *   node scripts/recover-deleted-tasks.mjs <path/to/orchestrator.db>          # report only

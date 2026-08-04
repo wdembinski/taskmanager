@@ -277,6 +277,17 @@ export interface Store {
    * Destroy every card archived before `cutoff`, exactly as `deleteTask` would — the retention
    * backstop, so a board that archives forever does not grow forever. Returns how many cards
    * went (steps are taken with their card and are not counted separately).
+   *
+   * **This is the one real delete on the archiving path, and it cascades.** Everywhere else a
+   * removed card is a row going quiet; here the row, its steps, its activity timeline and its
+   * transcript go for good, and nothing puts them back but
+   * `scripts/recover-deleted-tasks.mjs` and luck. That is the deliberate trade against the
+   * other direction — archived rows accumulate at the rate the board loses cards, one row plus
+   * its history apiece, with no ceiling — and the bound chosen is the age of the card rather
+   * than the size of the pile. A "keep the newest N" cap prunes oldest-first exactly when the
+   * pile is growing fastest, so a board that had just started haemorrhaging cards would
+   * destroy the very rows somebody was about to go looking for. Six months of nobody looking
+   * is a defensible reason to let go of a card; "four hundred others left after it" is not.
    */
   pruneArchivedBefore(cutoff: number): number;
   /** Insert a new JIRA-sourced task, or update the existing one with the same key. */
