@@ -764,6 +764,27 @@ interface PendingFailure {
   worktree?: string;
 }
 
+/**
+ * The inbox kinds that stay answerable after the run that raised them is gone.
+ *
+ * A `permission` is a promise held inside a socket handler, and a `question` is text
+ * pushed back into a live conversation: when the process dies, both die with it, and
+ * `clearRunAttention` is right to drop them. A parked FAILURE and a merge CONFLICT are
+ * the opposite — `applyFailureChoice` and the conflict resolution work entirely off
+ * stored context (a reason, a branch, a worktree on disk), which is why
+ * `rehydrateAttention` can restore exactly these two to full working order after a
+ * restart.
+ *
+ * The distinction had to become code because the two run-failure kinds are raised from
+ * INSIDE the sequence that ends the run: `result` → `settle` → `handleRunFailure` →
+ * `raiseTaskFailed` → `sessions.stop` → `exited` → `clearRunAttention`. The park and its
+ * deletion were about 100ms apart, so every ad-hoc run failure left its task
+ * `waiting-input` with nothing in the inbox to answer — and a card executing a plan then
+ * had a step no one could resolve holding its whole chain (`chainInFlight`), which is
+ * what "the task is locked and I cannot resume it" looks like from the board.
+ */
+const OUTLIVES_ITS_RUN: ReadonlySet<AttentionKind> = new Set(['task-failed', 'merge-conflict']);
+
 /** One affected teammate's stance in an in-flight proposal round (Phase D). */
 interface ProposalSibling {
   taskId: string;
@@ -3106,6 +3127,10 @@ export class Scheduler {
    * Drop (and notify) every open item for a run — used when the run ends. Any
    * permission decision still held open is released as a DENY so the broker's HTTP
    * call returns instead of hanging (the process is dying anyway).
+   *
+   * Except the two kinds that were never about the run (see {@link OUTLIVES_ITS_RUN}).
+   * Those are kept, with their dead `runId` blanked exactly as `rehydrateAttention`
+   * blanks it, so nothing later mistakes them for something a live session can answer.
    */
   private clearRunAttention(runId: string): void {
     for (const [itemId, pending] of [...this.pendingDecisions.entries()]) {
@@ -3114,11 +3139,21 @@ export class Scheduler {
       this.pendingDecisions.delete(itemId);
     }
     for (const item of [...this.attention.values()]) {
-      if (item.runId === runId) {
-        this.pendingIntegrations.delete(item.id); // drop any parked conflict for this run
-        this.pendingFailures.delete(item.id); // …and any parked failure
-        this.resolveAttention(item.id);
+      if (item.runId !== runId) continue;
+      if (OUTLIVES_ITS_RUN.has(item.kind)) {
+        const revived: AttentionItem = { ...item, runId: '' };
+        this.attention.set(revived.id, revived);
+        // Re-saved so the row matches the map; NOT re-emitted, because the UI counts
+        // `attention:new` and would double-count (and re-toast) an item it already has.
+        this.store.saveAttention(
+          revived,
+          this.pendingFailures.get(item.id) ?? this.pendingIntegrations.get(item.id) ?? null,
+        );
+        continue;
       }
+      this.pendingIntegrations.delete(item.id); // drop any parked conflict for this run
+      this.pendingFailures.delete(item.id); // …and any parked failure
+      this.resolveAttention(item.id);
     }
     // Negotiations touching this run (Phase D): if it was the PROPOSER, the round
     // can't continue — cancel it. If it was a voting SIBLING that has now ended, drop

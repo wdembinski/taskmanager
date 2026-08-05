@@ -978,11 +978,16 @@ describe('Scheduler run-failure handling', () => {
       appendTaskEvent: vi.fn(),
       getSettings: () => ({ maxAutoRetries, limitJitterMs: 0, concurrency: 1 }),
       ...INERT_ATTENTION_STORE,
+      // Spied rather than inert: whether the parked failure's ROW survives its run's exit
+      // is half of what the regression below is about (the map is the other half).
+      saveAttention: vi.fn(),
+      deleteAttention: vi.fn(),
     } as unknown as Store;
     const start = vi.fn((_req: unknown, _opts: unknown) => ({ runId: 'r2' }));
     const stop = vi.fn();
     const sessions = { start, stop } as unknown as SessionManager;
     const emitAttention = vi.fn();
+    const emitResolved = vi.fn();
     const emitTask = vi.fn();
     const scheduler = new Scheduler(
       store,
@@ -990,7 +995,7 @@ describe('Scheduler run-failure handling', () => {
       emitTask,
       vi.fn(),
       emitAttention,
-      vi.fn(),
+      emitResolved,
       vi.fn(),
     );
     // Seed a live run for the task (as the scheduler would have on start).
@@ -1006,7 +1011,7 @@ describe('Scheduler run-failure handling', () => {
         'r1',
         event,
       );
-    return { scheduler, task, start, emitAttention, emitTask, fire };
+    return { scheduler, store, task, start, emitAttention, emitResolved, emitTask, fire };
   }
 
   const failResult = {
@@ -1070,6 +1075,44 @@ describe('Scheduler run-failure handling', () => {
     const item = emitAttention.mock.calls[0][0] as { kind: string; options: string[] };
     expect(item.kind).toBe('task-failed');
     expect(item.options).toEqual(failureActionsFor('run'));
+  });
+
+  /**
+   * The park has to survive the exit that always follows it.
+   *
+   * `result` → `settle` → `handleRunFailure` → `raiseTaskFailed` → `sessions.stop` →
+   * `exited`, all inside one sequence: `clearRunAttention` was deleting the item its own
+   * caller had raised ~100ms earlier, from the map AND the table. The task stayed
+   * `waiting-input` with an empty inbox — unanswerable, and (as a step) holding its card's
+   * whole chain, which is what a user sees as "the task is locked and I cannot resume it".
+   */
+  it('keeps the parked failure answerable after its run exits', () => {
+    const { scheduler, store, task, emitResolved, fire } = setup(0);
+    fire(failResult);
+    const raised = scheduler.listAttention();
+    expect(raised).toHaveLength(1);
+
+    fire(exited); // the process the failure came from dies, as it always does
+
+    const kept = scheduler.listAttention();
+    expect(kept).toHaveLength(1);
+    expect(kept[0].id).toBe(raised[0].id);
+    // Blanked, as `rehydrateAttention` blanks it: the correlator is dead, and leaving it
+    // would let a live-session path think it can answer this in place.
+    expect(kept[0].runId).toBe('');
+    expect(store.deleteAttention).not.toHaveBeenCalled();
+    expect(store.saveAttention).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: raised[0].id, runId: '' }),
+      expect.objectContaining({ kind: 'run', taskId: 't1' }),
+    );
+    // Not re-announced — the UI counts `attention:new`, and the item never left the inbox.
+    expect(emitResolved).not.toHaveBeenCalled();
+    expect(task.status).toBe('waiting-input');
+
+    // And the stored context is still there, so a choice actually applies.
+    scheduler.answerAttention(raised[0].id, { decision: 'reply', text: FAILURE_ACTION.markDone });
+    expect(scheduler.listAttention()).toHaveLength(0);
+    expect(task.status).toBe('done');
   });
 
   /**
