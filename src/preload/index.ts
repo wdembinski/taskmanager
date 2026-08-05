@@ -22,15 +22,28 @@
  */
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { IpcApi, IpcEvents } from '@shared/ipc';
+import { ipcErrorMessage } from '@shared/ipcError';
 
 /** The typed API surface the renderer sees as `window.api`. */
 const api = {
-  /** Request/response call to a main-process handler. */
+  /**
+   * Request/response call to a main-process handler.
+   *
+   * A rejection is re-thrown with the engine's own sentence and nothing else. Electron
+   * prefixes a handler's `throw` with `Error invoking remote method '<channel>': Error: `
+   * on the way across, and the UI renders `e.message` directly — so a deliberate, helpful
+   * refusal reached the human looking like a stack trace with the useful half at the end.
+   * Unwrapped here rather than at each call site, because "remember to strip the prefix"
+   * is a rule that holds until the next panel is written (see `@shared/ipcError`).
+   */
   invoke<K extends keyof IpcApi>(
     channel: K,
     ...args: Parameters<IpcApi[K]>
   ): ReturnType<IpcApi[K]> {
-    return ipcRenderer.invoke(channel, ...args) as ReturnType<IpcApi[K]>;
+    return (ipcRenderer.invoke(channel, ...args) as Promise<unknown>).catch((err: unknown) => {
+      // `cause` keeps the original for the devtools console; the message is the human's.
+      throw new Error(ipcErrorMessage(err), { cause: err });
+    }) as ReturnType<IpcApi[K]>;
   },
 
   /**

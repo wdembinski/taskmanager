@@ -305,7 +305,16 @@ export function TaskAgentPanel({
 
   // The asks arrive as a prop; only the draft reply is local — and it is a draft, so
   // switching card parks it rather than clearing it (see `useDraft`).
+  //
+  // `error` and `busy` are cleared here for a reason worth keeping: this panel is not
+  // remounted per card (the pane renders one instance and swaps its `task` prop), so
+  // everything left in local state follows the selection. A refusal on one card was
+  // therefore shown on the next card, and the next — including a card just created, which
+  // opened already displaying a failure of something nobody had pressed on it. An error is
+  // a fact about one attempt on one card; it cannot outlive the card it happened to.
   useEffect(() => {
+    setError(null);
+    setBusy(false);
     setMergePressed(false);
     setMergingOther(null);
   }, [taskId]);
