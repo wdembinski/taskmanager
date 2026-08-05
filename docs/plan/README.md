@@ -47,7 +47,7 @@ plan the orchestrator could one day run on its own repo.
 | — | Interim releases v0.56–v0.57 (a Stop button everywhere, the Add-task dialog's options) | ✅ shipped, not tracked here |
 | 22 | Attachments in the task and its steps | ✅ complete (v0.64.4) — tag and draft cut once it lands on `development` |
 | 23 | One model for planning, another for the steps | ✅ complete on `feat/setting-ai-agent-models-for-planning` — tag and draft cut once it lands on `development` |
-| 24 | Projects and their tickets (a tracker of our own) | 🚧 in progress on `feat/support-projects-and-their-tickets` — **design landed**, build to come |
+| 24 | Projects and their tickets (a tracker of our own) | 🚧 in progress on `feat/support-projects-and-their-tickets` — **design and build steps landed**, code to come |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -2574,9 +2574,17 @@ Each of these was read in this worktree, not remembered.
   kind-test in the app is written as "not agent" — `project:list` hides
   `!isPersonalBoard(id) && kind !== 'agent'` ([`ipc.ts:535`](../../src/main/ipc.ts)) and
   the plan watcher skips `isPersonalBoard(id) || kind === 'agent'`
-  ([`planWatcher.ts:49`](../../src/main/planWatcher.ts)). So a ticket project would appear
-  on the legacy Projects tab and have a plan file watched for it. The read, the two
-  filters and the type widen **together, in one commit**.
+  ([`planWatcher.ts:49`](../../src/main/planWatcher.ts)). So a ticket project would be
+  listed by `project:list` as a plan project and have a plan file watched for it. The read,
+  the two filters and the type widen **together, in one commit**.
+  **Amended by the build-steps step:** of those two symptoms only the watcher is live.
+  **No renderer calls `project:list`** — the legacy Projects tab was retired by the Phase 13
+  workspace refresh, `TabId` is `'mytasks' | 'performance' | 'attention' | 'settings' |
+  'scratch'` ([`App.tsx:194`](../../src/renderer/src/App.tsx)), and the only caller left of
+  `project:add` / `project:update` / `project:syncPlan` is `ProjectDialog.tsx`, which
+  nothing imports. The filter still widens — the channel is the contract's answer to "what
+  is a plan project", and build step 4 gives it a renderer again — but a session that goes
+  looking for a Projects tab to check the bug against will not find one.
 - **`addProject` forces the plan-less fields off a single `isAgent` boolean**
   ([`store.ts:1780`](../../src/main/store.ts)), and its `planPath` fallback is
   `hostJoin(input.path, 'plan.md')`. A ticket project needs the same forcing (`planPath:
@@ -2632,6 +2640,219 @@ tell a decision from a guess.
   **v0.70.0**. Bumping `0.69.1` would name a version that has been superseded and would
   read as a *downgrade* when this branch lands. So this step takes **v0.70.1** — the PATCH
   after the released line — and each later step bumps from there.
+
+### Build steps
+
+Each phase below is **one session**, leaves `pnpm typecheck` + `pnpm test` green, and
+carries its own version bump in its own commit per
+[`CONTRIBUTING.md`](../../CONTRIBUTING.md) §4. They are ordered by dependency: none can be
+reordered without a later one reaching for a type, a channel or a component the earlier one
+has not created yet.
+
+**The version ladder.** D3 took **v0.70.1** for the design step; this section and the two
+remaining planning steps each take the PATCH their own docs change is worth. The first
+build step is a `feat`, so it lands on **0.71.0** whichever patch precedes it — which is
+why every number below sits one minor line above the draft this section was written from
+(that draft opened at `0.70.0`, a version the released line has already used). If a step
+picks up unplanned work it bumps for what it actually did and the rest shift with it: the
+ladder is a consequence of §4, not a schedule to be honoured against it.
+
+- [ ] **1** — Add ticket schema and store methods · `feat` → 0.71.0
+- [ ] **2** — Expose ticket IPC and handlers · `feat` → 0.72.0
+- [ ] **3** — Verify ticket schema against SQLite · `test` → 0.72.1
+- [ ] **4** — Add Projects screen with backlog table · `feat` → 0.73.0
+- [ ] **5** — Build ticket drawer, labels and milestones · `feat` → 0.74.0
+- [ ] **6** — Scope the Kanban board to a project · `feat` → 0.75.0
+- [ ] **7** — Draw the Gantt timeline read-only · `feat` → 0.76.0
+- [ ] **8** — Drag Gantt bars to reschedule · `feat` → 0.77.0
+- [ ] **9** — Verify ticket flows and document the model · `test` → 0.77.1
+
+#### 1 — Add ticket schema and store methods · `feat` → 0.71.0
+
+- `src/shared/model.ts`: widen `ProjectKind` ([`:119`](../../src/shared/model.ts)) and
+  `Task['source']` ([`:413`](../../src/shared/model.ts)); add the twelve `Task` fields —
+  `ticketKey`, `ticketNumber`, `issueType`, `epicTaskId`, `milestoneId`, `assigneeId`,
+  `reporterId`, `labels`, `storyPoints`, `estimateDays`, `startAt`, `dueAt`; add
+  `ticketPrefix` to `Project` / `AddProjectInput` / `ProjectPatch` (and **not** `ticketSeq`,
+  which is an allocator — see the key-allocation section above); add `Person`, `Milestone`,
+  `TicketLabel`, `TicketLink`, `IssueType`, `TicketInput`, `TicketPatch`.
+- New `src/shared/tickets.ts` and `src/shared/ticketKey.ts`, both with a `.test.ts`.
+- `src/shared/board.ts`: widen `isBoardCard` ([`:80`](../../src/shared/board.ts)); extend
+  `board.test.ts`.
+- `src/main/store.ts`: the four new tables — `ticket_links`, `ticket_labels`, `milestones`,
+  `people` — and their indexes in the `db.exec` block beside the existing ten
+  ([`store.ts:537-772`](../../src/main/store.ts)); the two `projects` ALTERs
+  (`ticketPrefix`, `ticketSeq`) and twelve `tasks` ALTERs in the PRAGMA-guarded section
+  ([`store.ts:874-990`](../../src/main/store.ts)), with every partial unique index created
+  *after* its ALTER, the way `idx_tasks_parent` already is; the `createTicketTx` allocator;
+  `getBoardTasks` / `getArchivedTasksFor`, with the Personal three
+  (`getPersonalTasks`, `getPersonalTasksForSync` ([`store.ts:2011`](../../src/main/store.ts)),
+  `getArchivedTasks`) reduced to wrappers over them; CRUD for people, labels, milestones and
+  ticket links, each nulling its dependents in the same transaction.
+- Fix the four places that currently mean "plan project" by *elimination* and would
+  therefore adopt a ticket project:
+  - [`store.ts:1584`](../../src/main/store.ts) — `kind: r.kind === 'agent' ? 'agent' :
+    'plan'`, so a ticket project silently reads back as `plan`. Make it an explicit
+    whitelist, not a widened ternary: the next kind added must fail loudly rather than
+    become a plan project too.
+  - [`store.ts:1780`](../../src/main/store.ts) — `addProject`'s `isAgent` branch. A ticket
+    project needs the same forcing, or `planPath` becomes
+    `hostJoin(input.path, 'plan.md')` joined onto an empty path.
+  - [`planWatcher.ts:49`](../../src/main/planWatcher.ts) — or a plan file is polled for a
+    project that has none. This is the one symptom of the four that bites today.
+  - [`ipc.ts:463`](../../src/main/ipc.ts) (`targetsInUse` counts every non-Personal project's
+    exec target — a pathless ticket project would vote on WSL readiness it knows nothing
+    about), [`:523`](../../src/main/ipc.ts) (`project:add`'s parse-and-watch early return)
+    and [`:535`](../../src/main/ipc.ts) (`project:list`'s filter).
+
+**Each new task column must be touched in all seven places in `store.ts`**: the
+`CREATE TABLE` block, the ALTER list, `TaskRow`, `taskToRow`, `rowToTask`, `insertTask`'s
+column *and* value lists, and `updateTask`'s allowlist. Miss `insertTask` and a field set at
+creation is silently dropped — the file already carries the comment left by that happening
+to `projectTagId` ([`store.ts:1121-1123`](../../src/main/store.ts)). `labels` needs
+`parseStringArray` on read ([`store.ts:1594`](../../src/main/store.ts)); `isMe` must be
+encoded 0/1 by hand, since better-sqlite3 refuses to bind a boolean.
+
+#### 2 — Expose ticket IPC and handlers · `feat` → 0.72.0
+
+Contract first ([`docs/04`](../04-contributing-guide.md) Recipe A) — `src/shared/ipc.ts`
+before either side:
+
+- `ticketProject:list|add|update|remove`, modelled on the `agentProject:*` four
+  ([`ipc.ts:306-315`](../../src/shared/ipc.ts)); `board:scopes`.
+- `board:tasks` / `board:archived` ([`ipc.ts:667,676`](../../src/shared/ipc.ts)) widen to
+  take an **optional** `projectId` — optional, or
+  [`App.tsx:286`](../../src/renderer/src/App.tsx)'s argument-free call and the four in
+  `MyTasks.tsx` ([`:293,300,306,323`](../../src/renderer/src/MyTasks.tsx)) all break. This
+  is decision **D1** above.
+- `ticket:create` (allocates the key) / `ticket:update`. No `ticket:backlog` channel: the
+  Projects screen calls `board:tasks(projectId)`, so there is one truth about what is on a
+  board.
+- `person:list|add|update|remove|setMe`; `label:list|save|remove`;
+  `milestone:list|save|remove` — one `save` each rather than add+update, matching
+  `settings:save` ([`ipc.ts:596`](../../src/shared/ipc.ts)).
+- `ticketLink:list|add|remove`, with `TicketLinkResult` returning refusals as data like
+  `LinkResult` ([`ipc.ts:55,701`](../../src/shared/ipc.ts)).
+- Events: `ticketProject:changed`, `ticketLink:changed`, `person:changed`, `label:changed`,
+  `milestone:changed`. Existing `project:tasksChanged` is reused for ticket rows — it
+  already carries `projectId`, so live board updates come free.
+- `src/main/ipc.ts`: handlers and guards — unknown or non-ticket project, blank title,
+  malformed or taken prefix, epic-of-epic, epic in another project, link to an unknown task,
+  `setMe` clearing the previous Me. Preload needs no change (`invoke`/`on` are generic).
+- New `src/shared/ticketLinks.ts` + `.test.ts`.
+
+#### 3 — Verify ticket schema against SQLite · `test` → 0.72.1
+
+`scripts/verify-tickets.mjs`, modelled line-for-line on
+[`scripts/verify-attachments.mjs`](../../scripts/verify-attachments.mjs) — Vite-bundle the
+scenario with `electron` aliased to a throwing stub, run it under `ELECTRON_RUN_AS_NODE`,
+scratch dir inside the repo and wiped on entry *and* exit. This comes before any UI because
+it is the only thing that can prove steps 1–2 at all: **no Vitest test in this repo can open
+SQLite** — the addon is built for Electron's ABI, not the Node that runs Vitest.
+
+It must prove:
+
+- the fresh schema, including that the three partial unique indexes really are partial;
+- **key allocation is atomic** — 500 creates yield `TM-1..TM-500` with no gaps; delete
+  `TM-500` and the next is `TM-501`, not a reused key; a refused create does not advance the
+  counter; a raw-SQL duplicate `ticketKey` is refused;
+- independent per-project counters, and a duplicate prefix refused by `COLLATE NOCASE`;
+- a prefix rename rewriting every key and no `ticketNumber`;
+- **cascade vs non-cascade** — deleting an epic, milestone or person leaves the tickets alive
+  and nulled; deleting the project takes everything;
+- `isMe` uniqueness across two `setMe` calls;
+- **migration from `v0.69.0`** via `git archive`, asserting every old row survives and that
+  `PRAGMA foreign_key_list(tasks)` on the migrated DB is *identical* to the fresh one;
+- **JIRA isolation** — `getPersonalTasksForSync()` returns none of a ticket project's rows.
+
+#### 4 — Add Projects screen with backlog table · `feat` → 0.73.0
+
+- `App.tsx`: `TabId` ([`:194`](../../src/renderer/src/App.tsx)) gains `'projects'` and `NAV`
+  ([`:197`](../../src/renderer/src/App.tsx)) an entry — a *new* destination, not a revival:
+  there is no Projects tab on the rail today (see the amended trap above). It is
+  document-shaped, so it takes `styles.bodyPadded`, which the existing ternary
+  ([`:374`](../../src/renderer/src/App.tsx)) gives every tab but My Tasks — no change to the
+  `tab === 'mytasks'` special case.
+- New `src/renderer/src/projects/`: `Projects.tsx` (shell — `useInitialLoad` +
+  `Promise.all(['ticketProject:list', 'person:list'])`, `PaneLoading shape="rows"`,
+  subscriptions: the opening of
+  [`AgentProjects.tsx`](../../src/renderer/src/AgentProjects.tsx) verbatim),
+  `BacklogTable.tsx`, `backlogView.ts` + `.test.ts` (`filterTickets` / `groupTickets` /
+  `sortBacklog` — the app's first search and grouping, all of it pure so it is testable
+  without React), `ProjectAdmin.tsx` with the add/edit `OverlayDrawer`.
+- Reuse `ColorSwatches` (already the app's one palette), `useInitialLoad`, `PaneLoading`, and
+  `theme.ts`'s `MONO` / `fontPx` ([`theme.ts:26,85`](../../src/renderer/src/theme.ts)). Do
+  **not** import `ProjectDialog.tsx` — nothing has imported it since Phase 17 and it is the
+  retired tab's dialog; `AgentProjects.tsx` is the live idiom. Do not reuse
+  `BaseBranchField` — a ticket project has no repo (**D2**).
+
+#### 5 — Build ticket drawer, labels and milestones · `feat` → 0.74.0
+
+`projects/TicketDrawer.tsx` with `ticketFields.ts` + `.test.ts` (points/days parsing, label
+splitting, date round-trip); `TicketLinksEditor.tsx` rendering through `linksFor()`;
+`LabelRegistry.tsx`; `MilestoneList.tsx`; `PeopleSettings.tsx` + `PersonAvatar.tsx`, wired as
+a new `'people'` section in `Settings.tsx` alongside the existing five
+([`Settings.tsx:145`](../../src/renderer/src/Settings.tsx)) — app-wide, where a roster
+belongs. After this every field of a ticket has a place to be edited.
+
+Every text field goes through `useDraft` ([`drafts.ts:101`](../../src/renderer/src/drafts.ts)),
+keyed on the ticket id — the rule `TaskDetail` already follows, so switching rows never eats
+half-typed text.
+
+#### 6 — Scope the Kanban board to a project · `feat` → 0.75.0
+
+- `MyTasks.tsx`: a scope `Dropdown` fed by `board:scopes`, persisted as
+  `AppSettings.boardScopeId` so the board comes back where you left it; the four
+  `PERSONAL_PROJECT_ID` sites at [`:338`](../../src/renderer/src/MyTasks.tsx),
+  [`:349`](../../src/renderer/src/MyTasks.tsx),
+  [`:1248`](../../src/renderer/src/MyTasks.tsx) and the `board:tasks` seed.
+- The subscription filter must read a **ref**, not a dependency. That effect is set up once
+  with `[patchTask, refreshArchived]`; putting `scopeId` in `patchTask`'s deps would tear
+  down and rebuild seven subscriptions on every scope change, possibly mid-drag.
+- `TaskCard.tsx`: five additive branches, each drawing nothing when its field is null — key
+  badge (monospace, no JIRA mark and no `href`, since there is nowhere to go), epic line
+  (reusing the existing `display.showEpicName` slot,
+  [`settings.ts:207`](../../src/shared/settings.ts) /
+  [`TaskCard.tsx:1184`](../../src/renderer/src/board/TaskCard.tsx), with the name passed down
+  as a prop the way `projectName` already is), label chips, assignee avatar, points chip.
+  `BoardDisplaySettings` gains `showAssignee` / `showPoints` in the existing Display menu.
+
+**Acceptance: with no ticket project in the database, the board is byte-identical to today.**
+
+#### 7 — Draw the Gantt timeline read-only · `feat` → 0.76.0
+
+`projects/ganttLayout.ts` + `ganttLayout.test.ts` — the bulk of the work: range padding and
+the minimum-span floor, `msOf(xOf(t)) === t`, tick counts across a DST boundary and a 31-day
+month, a collapsed epic's rolled-up bar, an undated ticket returning `null`, marker label
+stacking, `todayX` outside the range. Plus `TimelinePane.tsx` and `GanttHeader.tsx`: scale
+switch, epic rollup rows, an unscheduled tray, milestone markers, today line, `blocks`
+dependency arrows, click a bar → `TicketDrawer`.
+
+Computed dimensions go in `style={{}}`, never `makeStyles` — there is no Griffel build-time
+plugin in this repo and `theme.ts` depends on that. The Gantt does not reuse `useCardAnchors`
+([`board/useCardAnchors.ts`](../../src/renderer/src/board/useCardAnchors.ts)), which measures
+in the board's coordinate space; `chainArrows.ts` is the style reference for routing, not a
+dependency.
+
+#### 8 — Drag Gantt bars to reschedule · `feat` → 0.77.0
+
+`rescheduleTo` plus native pointer handlers (move and both resize edges), a keyboard nudge
+for accessibility, and an optimistic `ticket:update` with rollback in the shape `moveTask`
+already uses ([`MyTasks.tsx:657`](../../src/renderer/src/MyTasks.tsx)). Extends
+`ganttLayout.test.ts` with snapping and the refusal to invert start/due. Split from step 7 so
+the first Gantt lands green; this is the Gantt's own gesture in its own coordinate space and
+must not touch `chainDrag.ts`.
+
+#### 9 — Verify ticket flows and document the model · `test` → 0.77.1
+
+Extend `scripts/verify-tickets.mjs` with the scenarios only expressible once the UI paths
+exist: a project carrying epics, milestones, labels, links and dated tickets round-tripping
+through the real store; a prefix rename across 500 tickets in one transaction; an epic
+deleted out from under a Gantt-visible child; a person removed while assigned across two
+projects. Add a `docs/` page describing the ticket model — schema, key allocation, the link
+vocabulary and its inverses, and the JIRA-isolation guarantee — and a
+[`docs/04-contributing-guide.md`](../04-contributing-guide.md) recipe for adding a ticket
+field.
 
 ### Done when (the design's own gates)
 
