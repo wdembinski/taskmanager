@@ -47,7 +47,7 @@ plan the orchestrator could one day run on its own repo.
 | — | Interim releases v0.56–v0.57 (a Stop button everywhere, the Add-task dialog's options) | ✅ shipped, not tracked here |
 | 22 | Attachments in the task and its steps | ✅ complete (v0.64.4) — tag and draft cut once it lands on `development` |
 | 23 | One model for planning, another for the steps | ✅ complete on `feat/setting-ai-agent-models-for-planning` — tag and draft cut once it lands on `development` |
-| 24 | Projects and their tickets (a tracker of our own) | 🚧 in progress on `feat/support-projects-and-their-tickets` — **design, build steps and verification plan landed**, code to come |
+| 24 | Projects and their tickets (a tracker of our own) | 🚧 in progress on `feat/support-projects-and-their-tickets` — **the whole plan is written** (design, build steps, verification, critical files); build step 1 is next |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -2400,9 +2400,10 @@ the agent already have.
 The whole design rests on one decision — a native ticket project is **a `projects` row**,
 and a ticket is **a `tasks` row** — so nothing below is a second copy of the board.
 
-This entry is the design, written before any code. The build phases and the verification plan
-have since been added by the later steps of this plan; the critical-files list is added by
-the last of them. Each runs as its own session on this same branch.
+This entry is the design, written before any code. The build phases, the verification plan and
+the critical-files list were each added by a later step of this plan, every one of them its own
+session on this same branch. With the last of them the entry is complete: **everything below is
+written, and none of it is built yet.**
 
 ### A native ticket project is a `projects` row with `kind: 'ticket'`
 
@@ -2641,6 +2642,256 @@ tell a decision from a guess.
   read as a *downgrade* when this branch lands. So this step takes **v0.70.1** — the PATCH
   after the released line — and each later step bumps from there.
 
+### Critical files
+
+The nine steps below touch a good deal of the app, but they *live* in ten files. Each is named
+here with the shape it already has, because in every one of them that shape decides what the step
+touching it is allowed to do — and none of that is legible from a deliverable list. Every line
+below was opened in this worktree, and where the reading contradicts an earlier section of this
+entry it says so rather than leaving the two to disagree.
+
+#### `src/main/store.ts` — the schema, the migrations, the allocator, all CRUD
+
+2,656 lines, and the single largest thing this phase does. Step 1 is almost entirely this file;
+steps 3 and 9 exist to prove what it did.
+
+Its layout is fixed, and **a new column enters at seven stops or it is silently dropped**: the
+`db.exec` block that creates today's ten tables ([`:537-772`](../../src/main/store.ts)); the
+PRAGMA-guarded ALTER loops, one for `projects` ([`:785`](../../src/main/store.ts)) and one for
+`tasks` ([`:872`](../../src/main/store.ts), whose list already carries 35 entries); then
+`TaskRow` ([`:61`](../../src/main/store.ts)), `taskToRow`
+([`:1621`](../../src/main/store.ts)), `rowToTask` ([`:1685`](../../src/main/store.ts)),
+`insertTask`'s parallel column *and* value lists ([`:1102-1124`](../../src/main/store.ts)) and
+`updateTask`'s allowlist ([`:1951-1982`](../../src/main/store.ts)). The comment sitting inside
+that INSERT ([`:1119-1121`](../../src/main/store.ts)) is the scar from the last time one was
+missed.
+
+Three readings that change what step 1 has to write:
+
+- **`getBoardTasks` is nearly free.** `selectBoardTasks` and `selectArchivedBoardTasks`
+  ([`:1093-1099`](../../src/main/store.ts)) are already parameterised on `projectId`; only the
+  three exported methods pin it — `getPersonalTasks` ([`:2007`](../../src/main/store.ts)),
+  `getPersonalTasksForSync` ([`:2011`](../../src/main/store.ts)) and `getArchivedTasks`
+  ([`:2015`](../../src/main/store.ts)) — one line of body each. **D1** is therefore an
+  exposure, not a new query, and the "reduced to wrappers" in step 1 is literal.
+- **The allocator's counter-example is already in the file.** `nextOrder`
+  ([`:1154`](../../src/main/store.ts)) is `COALESCE(MAX("order"), -1) + 1` — exactly the shape
+  `ticketSeq` must **not** take, for the reason the key-allocation section gives. Reading the
+  two side by side is the clearest statement of why one is right for an ordering and fatal for
+  a name.
+- **`db.transaction()` has three precedents to copy** — [`:1487`](../../src/main/store.ts),
+  [`:1523`](../../src/main/store.ts) and `deleteTaskDeep`
+  ([`:1762`](../../src/main/store.ts)), which is the model for "delete this row and null its
+  dependents in the same transaction".
+
+And one line no gate will ever look at: the `TaskRow`-side doc comment saying `kind` is
+`'plan' | 'agent'` ([`:156`](../../src/main/store.ts)).
+
+#### `src/shared/model.ts`, `src/shared/board.ts` — the domain vocabulary
+
+891 and 569 lines, both already carrying a `.test.ts`. Everything else in the phase is
+downstream of the three edits here: `ProjectKind` ([`:119`](../../src/shared/model.ts)),
+`Task['source']` ([`:413`](../../src/shared/model.ts)) and the `Task` interface itself
+([`:379`](../../src/shared/model.ts), 46 fields before this phase adds twelve).
+
+Both unions are **prose-documented above their declaration** — `ProjectKind`'s comment
+enumerates the two kinds and what each one is for
+([`:107-118`](../../src/shared/model.ts)) — which is the second doc block, after
+`store.ts:156`, that widening silently falsifies. Widening a type is a one-word edit; keeping
+its documentation true is the rest of the work.
+
+`isBoardCard` is three lines ([`:80-82`](../../src/shared/board.ts)) under a ten-line comment
+saying precisely why it excludes what it excludes ([`:70-79`](../../src/shared/board.ts)) — a
+plan project's queue and a step of an approved plan. A native ticket is neither, which is what
+makes the widen correct; the comment has to say so, because the trap list already notes that
+widening this enlists tickets in `guardCardStatus` and `preRunStatus` as well.
+
+#### `src/shared/ipc.ts` → `src/main/ipc.ts` — the contract, in that order
+
+`IpcApi` holds **111 channels** ([`:201-836`](../../src/shared/ipc.ts)) and `IpcEvents`
+**17** ([`:843-936`](../../src/shared/ipc.ts)); `src/main/ipc.ts` registers **exactly 111**
+`handle(` calls. That one-to-one is the invariant step 2 has to leave standing: a channel
+declared with no handler type-checks perfectly and rejects at run time, in the renderer, with
+the channel name in the message. Contract first is not a style preference here — it is the only
+ordering in which the compiler helps at all.
+
+The three shapes to copy, all of them read rather than remembered:
+
+- The `agentProject:*` four ([`:306-315`](../../src/shared/ipc.ts)) — list / add / update /
+  remove, with the comment on `list` explaining why it is *separate* from `project:list`.
+  `ticketProject:*` is the same argument a second time.
+- `board:tasks` ([`:667`](../../src/shared/ipc.ts)) and `board:archived`
+  ([`:676`](../../src/shared/ipc.ts)), the two that widen under **D1**.
+- `LinkResult` on `chain:link` ([`:701`](../../src/shared/ipc.ts)) — refusals as data, which
+  `ticketLink:add` repeats.
+
+The handler idiom, read at `task:setProject` ([`ipc.ts:829-843`](../../src/main/ipc.ts)): fetch
+the row, `throw new Error` with a sentence a human can read, write through `store.updateTask`,
+`send` the event, return the row. `task:assignAgent` ([`:662-671`](../../src/main/ipc.ts)) is
+the same shape with the guards step 2 needs most — unknown target, wrong `kind`, a run already
+live. The three plan-project filters step 1 fixes are all in this file too:
+`targetsInUse` ([`:460-466`](../../src/main/ipc.ts)), `project:add`'s early return
+([`:520-527`](../../src/main/ipc.ts)) and `project:list`'s filter
+([`:529-543`](../../src/main/ipc.ts)).
+
+The preload needs no change, and the reason is one line: `invoke<K extends keyof IpcApi>`
+([`preload/index.ts:29`](../../src/preload/index.ts)) is generic over the contract, so a new
+channel is reachable the moment it is declared.
+
+#### `src/renderer/src/MyTasks.tsx`, `src/renderer/src/board/TaskCard.tsx` — board scoping
+
+1,278 and 1,388 lines; step 6 is the only step that edits them, and its acceptance is that a
+database with no ticket project renders a byte-identical board.
+
+`MyTasks` seeds itself with one `Promise.all` over seven channels
+([`:298-315`](../../src/renderer/src/MyTasks.tsx)) and subscribes **seven** events in one effect
+depending on `[patchTask, refreshArchived]` ([`:346-390`](../../src/renderer/src/MyTasks.tsx)).
+That is the count behind step 6's ref rule, and it is worth stating as a number: putting
+`scopeId` into `patchTask`'s empty dependency array
+([`:337-340`](../../src/renderer/src/MyTasks.tsx)) would tear down and rebuild all seven on
+every scope change. Of step 6's four `PERSONAL_PROJECT_ID` sites, two are the comparisons that
+decide whether an incoming row belongs to this board — inside `patchTask`
+([`:338`](../../src/renderer/src/MyTasks.tsx)), which the effect depends on, and inside the
+`project:tasksChanged` handler ([`:349`](../../src/renderer/src/MyTasks.tsx)), which is in the
+effect itself. Those two are the ones the scope has to reach without becoming a dependency of
+either; the third is a prop on `AddTaskDialog`
+([`:1248`](../../src/renderer/src/MyTasks.tsx)) and the fourth is the seed call. `moveTask`
+([`:657-672`](../../src/renderer/src/MyTasks.tsx)) is the optimistic-then-roll-back shape step
+8's drag copies: paint the guess, await the channel, paint what came back, and on a throw paint
+the row you kept and surface the message.
+
+On the card, three of step 6's five branches have an existing neighbour to sit beside: the epic
+slot ([`:1184-1191`](../../src/renderer/src/board/TaskCard.tsx)), which already falls back from
+name to key and is where the native epic line goes; the chip row
+([`:1151-1162`](../../src/renderer/src/board/TaskCard.tsx)), where label chips join the JIRA
+label and the sprint; and the footer's ticket badge
+([`:1198`](../../src/renderer/src/board/TaskCard.tsx)), which is an `<a href>` — the native key
+badge is deliberately not, because there is nowhere to go. `projectName` arrives as a prop
+([`:744`](../../src/renderer/src/board/TaskCard.tsx)) and is rendered at
+[`:1178-1180`](../../src/renderer/src/board/TaskCard.tsx); the epic name follows it.
+
+`typeIcon` ([`:674-688`](../../src/renderer/src/board/TaskCard.tsx)) already resolves two
+vocabularies — the internal `type` and JIRA's `externalType` — and it is exported for a reason
+that is about to matter a third time: the detail pane imports it from the board card
+([`TaskDetail.tsx:50`](../../src/renderer/src/TaskDetail.tsx), used at
+[`:641`](../../src/renderer/src/TaskDetail.tsx)) rather than repeating the mapping. `issueType`
+enters *here*, through `typeIconKeyFor`, or the card
+([`:1072`](../../src/renderer/src/board/TaskCard.tsx)), the pane and the backlog table each
+learn it separately and disagree.
+
+#### `src/renderer/src/AgentProjects.tsx` — the live drawer/form idiom
+
+586 lines, and the pane step 4 is modelled on: `useState<Project[] | null>(null)` plus a
+`useCallback` refresh ([`:106-108`](../../src/renderer/src/AgentProjects.tsx)) handed to
+`useInitialLoad` ([`:110`](../../src/renderer/src/AgentProjects.tsx)), a `PaneLoading
+shape="rows"` early return carrying that hook's error and retry
+([`:122-131`](../../src/renderer/src/AgentProjects.tsx)), then a list of `Card`s and one local
+add/edit component ([`:224`](../../src/renderer/src/AgentProjects.tsx)) rendered as an
+`OverlayDrawer position="end" size="medium"`
+([`:378-382`](../../src/renderer/src/AgentProjects.tsx)). The form seeds itself in an effect
+keyed on `open` — from the project when editing, from the app's defaults when adding
+([`:262-294`](../../src/renderer/src/AgentProjects.tsx)) — and `save`
+([`:321-365`](../../src/renderer/src/AgentProjects.tsx)) branches on `project ? update : add`,
+holds a `saving` flag, surfaces the failure in the drawer rather than throwing, and calls
+`onSaved()` then `onClose()`.
+
+**One correction to step 4.** It says the shell copies "`useInitialLoad` + `Promise.all` …
+subscriptions: the opening of `AgentProjects.tsx` verbatim". There are **no subscriptions to
+copy**: this file contains zero `window.api.on` calls. It stays current by re-reading after its
+own writes — `refresh()` from `remove`
+([`:116`](../../src/renderer/src/AgentProjects.tsx)) and from the drawer's `onSaved`
+([`:209`](../../src/renderer/src/AgentProjects.tsx)) — which is sufficient for a pane nothing
+else writes to. A `ticketProject:changed` subscription is therefore **new code**, and the pane
+to copy one *from* is `MyTasks.tsx` above. Also confirmed while reading: the design's "do not
+reuse `BaseBranchField`" is a real exclusion — this file imports it
+([`:55`](../../src/renderer/src/AgentProjects.tsx)), so copying the form wholesale would hand a
+repo-less project a base-branch field (**D2**).
+
+#### `src/renderer/src/gitGraphView.ts`, `board/chainArrows.ts` — the Gantt's pattern
+
+196 and 416 lines, both pure, both with a `.test.ts`, and between them the whole of what steps 7
+and 8 are asked to imitate. `gitGraphView`'s header states the split and names `chainArrows` as
+the same split for the same reason ([`:1-11`](../../src/renderer/src/gitGraphView.ts)) — so this
+is an established pattern in the repo, not a rule invented for the Gantt.
+
+The two are the two rungs of it. `gitGraphView` is constants then arithmetic: `ROW_HEIGHT`,
+`LANE_WIDTH`, `LANE_ORIGIN`, `DOT_RADIUS`
+([`:23-32`](../../src/renderer/src/gitGraphView.ts)), then `laneX`
+([`:35`](../../src/renderer/src/gitGraphView.ts)) / `rowY`
+([`:40`](../../src/renderer/src/gitGraphView.ts)) / `gutterWidth`
+([`:50`](../../src/renderer/src/gitGraphView.ts)) mapping an index to a pixel, then `edgePath`
+([`:73`](../../src/renderer/src/gitGraphView.ts)) returning an SVG path *string*. `chainArrows`
+goes one rung further: `buildChainDrawing` ([`:347`](../../src/renderer/src/board/chainArrows.ts))
+returns an entire `ChainDrawing` ([`:99`](../../src/renderer/src/board/chainArrows.ts)) and the
+component only maps it to elements. `ganttLayout.ts`'s exported list belongs at the second rung.
+
+Three details the `.tsx` half must match:
+
+- **Both `<svg>`s take a width and a height in pixels and carry no `viewBox`** —
+  [`GitGraphPane.tsx:338-344`](../../src/renderer/src/GitGraphPane.tsx) and
+  [`ChainOverlay.tsx:276-283`](../../src/renderer/src/board/ChainOverlay.tsx). The design's
+  "deliberately not `preserveAspectRatio`" is therefore the house habit rather than a new rule;
+  the only `viewBox` on the board is on an arrowhead `<marker>`
+  ([`ChainOverlay.tsx:184`](../../src/renderer/src/board/ChainOverlay.tsx)).
+- **Computed dimensions go in `style={{}}`**
+  ([`GitGraphPane.tsx:336`](../../src/renderer/src/GitGraphPane.tsx) and
+  [`:375`](../../src/renderer/src/GitGraphPane.tsx)) while everything static stays in
+  `makeStyles` ([`:58`](../../src/renderer/src/GitGraphPane.tsx)).
+- **One constant, shared by the drawing and the rows.** `ROW_HEIGHT` is exported and the row
+  list sets its height from it, which is what keeps a dot on its own row
+  ([`gitGraphView.ts:15-23`](../../src/renderer/src/gitGraphView.ts)). A Gantt bar and its
+  header tick are the same relationship.
+
+#### `scripts/verify-attachments.mjs` — the template for `verify-tickets.mjs`
+
+531 lines, and steps 3 and 9 should follow it in order rather than reinvent it, because most of
+its length is traps already paid for:
+
+- **ABI preflight first, alone** ([`:126-142`](../../scripts/verify-attachments.mjs)), via
+  `./native-abi.mjs` — every scenario fails identically and unhelpfully when this is wrong.
+- **The work directory is inside the repo** — `join(repo, '.verify-attachments')`
+  ([`:47`](../../scripts/verify-attachments.mjs)), wiped on entry
+  ([`:122`](../../scripts/verify-attachments.mjs)) and in a `finally`
+  ([`:206`](../../scripts/verify-attachments.mjs)), with `--keep`
+  ([`:205`](../../scripts/verify-attachments.mjs)) as the only way to inspect a failure
+  afterwards. The file's own header still says "system temp dir"
+  ([`:13-14`](../../scripts/verify-attachments.mjs)); the Verification section already flags
+  that as stale, and `verify-tickets.mjs` should not copy the sentence along with the code.
+- **`bundle()`** ([`:80-102`](../../scripts/verify-attachments.mjs)) — a Vite `ssr` build with
+  `@shared` aliased and `electron` aliased to a stub that **throws** rather than returning
+  plausible values ([`:59-77`](../../scripts/verify-attachments.mjs)), keeping
+  `better-sqlite3` external ([`:95-98`](../../scripts/verify-attachments.mjs)) so the addon
+  stays a real run-time `import`.
+- **`runUnderElectron()`** ([`:105-117`](../../scripts/verify-attachments.mjs)) — spawn with
+  `ELECTRON_RUN_AS_NODE=1`, trying `electron.exe` then the POSIX name
+  ([`:52-53`](../../scripts/verify-attachments.mjs)).
+- **The migration leg is `git archive`, never a checkout**
+  ([`:144-161`](../../scripts/verify-attachments.mjs)) — for exactly this plan's reason, stated
+  in that file about its own: the worktree is shared and must not move off its branch. Its two
+  companions: the tar invocation must be *relative* because tar reads a leading `C:\` as a
+  remote host ([`:153-157`](../../scripts/verify-attachments.mjs)), and the old tree's own
+  `createStore` writes the old database — a schema hand-cut from today's code minus a table
+  would prove nothing ([`:22-25`](../../scripts/verify-attachments.mjs)).
+- **The scenarios are a `String.raw` template with `__PLACEHOLDER__` substitution**
+  ([`:214`](../../scripts/verify-attachments.mjs), substituted at
+  [`:192-196`](../../scripts/verify-attachments.mjs)), so no backtick and no `${}` may appear
+  anywhere inside them, and `check` / `section` / a `failures` counter ending in
+  `process.exit(1)` are what turn assertions into an exit code.
+
+Step 3's `OLD_TAG` is **`v0.69.0`** per its own scenario list, not this file's `v0.57.0`.
+
+#### What is deliberately not on this list
+
+Naming the critical files invites editing what sits next to them, so the exclusions are as
+load-bearing as the inclusions. `sortCards`, `groupSubtasks`, `focusCards` and `columnForTask`
+are untouched — that is why `epicTaskId` is a new column.
+[`jiraSync.ts`](../../src/main/jira/jiraSync.ts) is untouched — the isolation is structural,
+through `source`, and a filter added there would be a second, weaker guarantee.
+[`chainDrag.ts`](../../src/renderer/src/board/chainDrag.ts) and
+[`useCardAnchors.ts`](../../src/renderer/src/board/useCardAnchors.ts) are untouched — the Gantt
+has its own gesture in its own coordinate space. `ProjectDialog.tsx` is untouched because
+nothing imports it. And `src/preload/index.ts` is untouched because it is already generic.
+
 ### Build steps
 
 Each phase below is **one session**, leaves `pnpm typecheck` + `pnpm test` green, and
@@ -2709,7 +2960,7 @@ ladder is a consequence of §4, not a schedule to be honoured against it.
 `CREATE TABLE` block, the ALTER list, `TaskRow`, `taskToRow`, `rowToTask`, `insertTask`'s
 column *and* value lists, and `updateTask`'s allowlist. Miss `insertTask` and a field set at
 creation is silently dropped — the file already carries the comment left by that happening
-to `projectTagId` ([`store.ts:1121-1123`](../../src/main/store.ts)). `labels` needs
+to `projectTagId` ([`store.ts:1119-1121`](../../src/main/store.ts)). `labels` needs
 `parseStringArray` on read ([`store.ts:1594`](../../src/main/store.ts)); `isMe` must be
 encoded 0/1 by hand, since better-sqlite3 refuses to bind a boolean.
 
@@ -2978,6 +3229,10 @@ the `pnpm licenses list` check that file prescribes.
 - Every gate each build step owes is named before the first of them runs, and so is every
   claim no gate on this branch can reach — stated as owed rather than implied by a green
   suite.
+- Every file the nine steps live in is named with the shape it already has, including what
+  that shape forbids, and the files they must **not** edit are named too. Where reading one
+  of them contradicts an earlier section, the entry is corrected in place rather than left
+  holding two answers.
 
 **Notes.**
 
