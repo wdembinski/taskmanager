@@ -27,6 +27,7 @@ import {
 } from '@shared/model';
 import { formatExecTarget, parseExecTarget } from '@shared/execTarget';
 import { hostJoin } from '@shared/wslPath';
+import type { AuthState } from '@shared/auth';
 import type { LimitState } from '@shared/limit';
 import type { SessionEvent } from '@shared/session';
 import type { UsageSample } from '@shared/usage';
@@ -385,6 +386,14 @@ export interface Store {
   saveLimitGate(state: LimitState | null): void;
   /** Load a persisted usage-limit gate, or null if none is in force. */
   loadLimitGate(): LimitState | null;
+  /**
+   * Persist the sign-in gate (`null` clears it). A dead credential outlives the process
+   * that found it, so a restart must come back holding work rather than discovering the
+   * same failure again one card at a time.
+   */
+  saveAuthGate(state: AuthState | null): void;
+  /** Load a persisted sign-in gate, or null if the sign-in was believed good. */
+  loadAuthGate(): AuthState | null;
   /** Current app settings, with any unset field filled from `DEFAULT_SETTINGS` (Phase 6). */
   getSettings(): AppSettings;
   /** Persist the full app settings object. */
@@ -1220,6 +1229,8 @@ export function createStore(dbPath: string): Store {
 
   /** The single row key under which the usage-limit gate is persisted. */
   const LIMIT_GATE_KEY = 'limitGate';
+  /** …and the one under which the sign-in gate is (see `@shared/auth`). */
+  const AUTH_GATE_KEY = 'authGate';
   /** The single row key under which app settings are persisted. */
   const SETTINGS_KEY = 'settings';
 
@@ -2373,6 +2384,21 @@ export function createStore(dbPath: string): Store {
     saveLimitGate(state) {
       if (state === null) deleteState.run(LIMIT_GATE_KEY);
       else upsertState.run(LIMIT_GATE_KEY, JSON.stringify(state));
+    },
+
+    saveAuthGate(state) {
+      if (state === null) deleteState.run(AUTH_GATE_KEY);
+      else upsertState.run(AUTH_GATE_KEY, JSON.stringify(state));
+    },
+
+    loadAuthGate() {
+      const row = selectState.get(AUTH_GATE_KEY) as { value: string } | undefined;
+      if (!row) return null;
+      try {
+        return JSON.parse(row.value) as AuthState;
+      } catch {
+        return null; // corrupt/legacy value — treat as signed in, and let a run say otherwise
+      }
     },
 
     loadLimitGate() {

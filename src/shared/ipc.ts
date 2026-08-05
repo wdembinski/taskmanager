@@ -50,6 +50,7 @@ import type { GitGraph } from './gitGraph';
 import type { ExecTarget, TargetReadiness } from './execTarget';
 import type { ActiveRun, SchedulerChange, TaskChange } from './scheduler';
 import type { AttentionAnswer, AttentionItem } from './attention';
+import type { AuthState } from './auth';
 import type { LimitState } from './limit';
 import type { MergeRequest } from './mergeRequest';
 import type { LinkGate, LinkResult, TaskLink } from './taskChain';
@@ -585,6 +586,29 @@ export interface IpcApi {
   'limit:resumeNow': () => Promise<void>;
 
   /**
+   * The active sign-in gate (`@shared/auth`), or `null` when the sign-in is believed
+   * good — seeds the banner and the status bar's dot on mount. Live changes arrive on
+   * the `auth:changed` event.
+   */
+  'auth:current': () => Promise<AuthState | null>;
+
+  /**
+   * Open an interactive `claude` session so the user can sign in. There is no headless
+   * form of that flow — it wants a browser and a terminal — so the app's whole job here
+   * is to put the right window in front of the user. Resolves with `false` when it could
+   * not open one (a remote exec host, a machine with no terminal), which is the banner's
+   * cue to show the command instead of pretending the button worked.
+   */
+  'auth:signIn': () => Promise<boolean>;
+
+  /**
+   * The user says they have signed in: lift the gate and resume everything it held.
+   * Nothing is verified first — if the credential is still dead the first resumed run
+   * says so in about 150ms and the gate goes straight back up.
+   */
+  'auth:signedIn': () => Promise<void>;
+
+  /**
    * The rolled-up token usage for a range (Performance dashboard): totals, the
    * per-source (task vs orchestrator) split, the project → task drill-down, live
    * burn rate, cost, and running-low state. `sinceMs` is the range start (epoch ms);
@@ -876,6 +900,14 @@ export interface IpcEvents {
    * clears and work resumes. Drives the global countdown banner.
    */
   'limit:changed': LimitState | null;
+  /**
+   * The account-wide sign-in gate changed: an `AuthState` when the CLI proves it cannot
+   * authenticate, or `null` when it can again and parked work resumes. Drives the
+   * sign-in banner AND the status bar — a run's failure is harder evidence than
+   * `claude:getStatus`'s check that a credentials file exists, which was true the whole
+   * time the token inside it was expired.
+   */
+  'auth:changed': AuthState | null;
   /**
    * A token-usage sample was just recorded (Performance dashboard): one turn's spend
    * from a task or the orchestrator. The dashboard appends it to its live buffer and

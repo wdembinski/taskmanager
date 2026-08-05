@@ -768,6 +768,13 @@ export type ChatRefusal =
   /** A usage limit is holding all work; the message would go nowhere. */
   | 'limit'
   /**
+   * The `claude` CLI cannot authenticate, so every run dies on spawn. A distinct reason
+   * from `limit` because the fix is distinct: a limit ends by itself and this one ends
+   * only when a human signs in, and telling them to wait would be telling them to wait
+   * for ever.
+   */
+  | 'signed-out'
+  /**
    * (Re-planning, Phase 18) The target is a STEP, not a card. A step is one unit of an
    * approved plan and cannot own a plan of its own — re-plan its parent instead.
    */

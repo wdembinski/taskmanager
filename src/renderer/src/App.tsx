@@ -39,9 +39,11 @@ import {
   SettingsRegular,
   TaskListSquareLtrRegular,
 } from '@fluentui/react-icons';
+import type { AuthState } from '@shared/auth';
 import type { AppInfo, ClaudeStatus } from '@shared/ipc';
 import { describeUpdate, type UpdateState } from '@shared/update';
 import { Attention } from './Attention';
+import { AuthBanner } from './AuthBanner';
 import { LimitBanner } from './LimitBanner';
 import { MyTasks } from './MyTasks';
 import { currentSprintName } from './board/currentSprint';
@@ -217,6 +219,15 @@ export function App(): JSX.Element {
   const styles = useStyles();
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [claude, setClaude] = useState<ClaudeStatus | null>(null);
+  /**
+   * The account-wide sign-in gate, which OUTRANKS `claude` in the status bar.
+   *
+   * `claude:getStatus` answers "does a credentials file exist", which stayed true for the
+   * whole outage that made this necessary — the file was there and the token inside it had
+   * expired. A gate is a real run's verdict, so while one is up the bar reads signed out
+   * however cheerful the file check is.
+   */
+  const [auth, setAuth] = useState<AuthState | null>(null);
   const [tab, setTab] = useState<TabId>('mytasks');
   // How many tasks are waiting on a human, shown as a badge on the Attention tab.
   const [attentionCount, setAttentionCount] = useState(0);
@@ -274,6 +285,7 @@ export function App(): JSX.Element {
     void Promise.all([
       window.api.invoke('app:getInfo').then(setInfo),
       window.api.invoke('claude:getStatus').then(setClaude),
+      window.api.invoke('auth:current').then(setAuth),
       window.api.invoke('attention:list').then((items) => setAttentionCount(items.length)),
       window.api.invoke('update:get').then(setUpdate),
       window.api.invoke('sync:state').then(setSyncState),
@@ -300,6 +312,12 @@ export function App(): JSX.Element {
       setAttentionCount((n) => Math.max(0, n - 1)),
     );
     const offUpdate = window.api.on('update:changed', setUpdate);
+    // Signing back in re-reads the CLI too: the gate lifting means the credential is
+    // believed good again, and the version/API-key half of the bar may have moved with it.
+    const offAuth = window.api.on('auth:changed', (state) => {
+      setAuth(state);
+      if (!state) void window.api.invoke('claude:getStatus').then(setClaude);
+    });
     // Fires when a sync starts, finishes or fails — the ring's own countdown between those
     // moments is a local timer inside `SyncRings`, so this is only the resets.
     const offSync = window.api.on('sync:changed', setSyncState);
@@ -311,13 +329,17 @@ export function App(): JSX.Element {
       offNew();
       offResolved();
       offUpdate();
+      offAuth();
       offSync();
       offTasks();
       offSettings();
     };
   }, []);
 
-  const claudeOk = claude?.installed && claude?.authenticated && !claude?.apiKeyDetected;
+  // A live gate is hard evidence and beats every part of the file check below it.
+  const signedOut = auth !== null;
+  const claudeOk =
+    !signedOut && claude?.installed && claude?.authenticated && !claude?.apiKeyDetected;
 
   return (
     <div className={styles.shell}>
@@ -360,12 +382,19 @@ export function App(): JSX.Element {
               </MessageBar>
             )}
 
-            {/* Surface a Claude problem prominently; when all is well the footer suffices. */}
-            {claude && !claudeOk && (
+            {/* Surface a Claude problem prominently; when all is well the footer suffices.
+                Suppressed while the sign-in gate is up: `AuthBanner` above is saying the
+                same thing with the button that fixes it, and two red bars reporting one
+                outage reads as two outages. */}
+            {claude && !claudeOk && !signedOut && (
               <MessageBar intent="warning">
                 <MessageBarBody>{claude.message}</MessageBarBody>
               </MessageBar>
             )}
+
+            {/* Account-wide sign-in gate: all work is held until a human signs in. Above
+                the limit banner because it is the one with an action on it. */}
+            <AuthBanner />
 
             {/* Global usage-limit gate (Phase 5): a countdown while work is parked. */}
             <LimitBanner />
@@ -397,9 +426,15 @@ export function App(): JSX.Element {
           <>
             <span className={`${styles.dot} ${claudeOk ? styles.ok : styles.bad}`} />
             <Caption1>
-              {claude.installed
-                ? `Claude ${claude.version ?? '?'}${claude.authenticated ? ' · logged in' : ' · not logged in'}`
-                : 'Claude CLI not found'}
+              {/* `signedOut` first: a run has PROVEN the credential is dead, so saying
+                  "logged in" because the file is still on disk would be the bar's most
+                  confidently wrong moment — which is exactly what it did during the
+                  outage this reports. */}
+              {signedOut
+                ? `Claude ${claude.version ?? '?'} · signed out — work is held`
+                : claude.installed
+                  ? `Claude ${claude.version ?? '?'}${claude.authenticated ? ' · logged in' : ' · not logged in'}`
+                  : 'Claude CLI not found'}
               {claude.apiKeyDetected && ' · ANTHROPIC_API_KEY set'}
             </Caption1>
           </>

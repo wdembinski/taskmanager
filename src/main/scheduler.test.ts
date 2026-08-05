@@ -976,6 +976,10 @@ describe('Scheduler run-failure handling', () => {
         return task;
       },
       appendTaskEvent: vi.fn(),
+      getSubtasks: () => [],
+      listTaskLinks: () => [],
+      saveAuthGate: vi.fn(),
+      loadAuthGate: () => null,
       getSettings: () => ({ maxAutoRetries, limitJitterMs: 0, concurrency: 1 }),
       ...INERT_ATTENTION_STORE,
       // Spied rather than inert: whether the parked failure's ROW survives its run's exit
@@ -1075,6 +1079,51 @@ describe('Scheduler run-failure handling', () => {
     const item = emitAttention.mock.calls[0][0] as { kind: string; options: string[] };
     expect(item.kind).toBe('task-failed');
     expect(item.options).toEqual(failureActionsFor('run'));
+  });
+
+  /**
+   * A dead sign-in is the account's problem, not the card's.
+   *
+   * The CLI reports it as `terminalReason: "api_error"` with the real sentence in
+   * `resultText`, so before this it read as a transient blip: worth an auto-retry, then
+   * parked against the card as an unexplained failure — and then the queue handed the same
+   * wall to the next card, and the next.
+   */
+  it('holds all work behind the sign-in gate instead of blaming the card', () => {
+    const { scheduler, task, start, emitAttention, fire } = setup(1);
+
+    fire({
+      ...failResult,
+      resultText: 'Failed to authenticate: OAuth session expired and could not be refreshed',
+      terminalReason: 'api_error',
+      usage: { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0 },
+    });
+
+    const gate = scheduler.currentAuth();
+    expect(gate?.reason).toBe(
+      'Failed to authenticate: OAuth session expired and could not be refreshed',
+    );
+    expect(gate?.parkedTaskIds).toEqual(['t1']);
+    // Not an auto-retry (which would spend a launch on the same credential) and not an
+    // inbox item (which would file an account outage as this one card's failure).
+    expect(emitAttention).not.toHaveBeenCalled();
+    expect(task.status).toBe('pending');
+    fire(exited);
+    expect(start).not.toHaveBeenCalled();
+    // …and nothing else may start either, however it is asked.
+    expect(scheduler.runTask('t1')).toBeNull();
+  });
+
+  it('resumes what it held the moment the human signs in', () => {
+    const { scheduler, start, fire } = setup(1);
+    fire({ ...failResult, resultText: 'Failed to authenticate: token expired' });
+    fire(exited);
+    expect(start).not.toHaveBeenCalled();
+
+    scheduler.signedIn();
+
+    expect(scheduler.currentAuth()).toBeNull();
+    expect(start).toHaveBeenCalledTimes(1); // the parked task, resumed by its session id
   });
 
   /**

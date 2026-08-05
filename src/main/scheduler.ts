@@ -57,6 +57,7 @@ import {
   isAskUserQuestionTool,
   parseAskUserQuestion,
 } from './askUserQuestion';
+import type { AuthState } from '@shared/auth';
 import type { LimitState } from '@shared/limit';
 import type { UsageSample, UsageSource } from '@shared/usage';
 import {
@@ -93,6 +94,7 @@ import { ChainRunner, type ChainTrigger } from './chainRunner';
 import type { PermissionGate } from './claudeSession';
 import { buildChainSummary } from './chainSummary';
 import { shouldSurfaceEvent } from './eventNoise';
+import { AuthGate, detectAuthFailure, isAuthFailureText } from './authGate';
 import { isBlockingLimitStatus, LimitGate } from './limitGate';
 import type { PermissionRequest, PermissionDecisionResult } from './permissionBroker';
 import { EXIT_PLAN_MODE_TOOL, evaluateToolUse } from './permissionPolicy';
@@ -312,6 +314,11 @@ const UNRETRYABLE_FAILURE_PATTERNS: readonly RegExp[] = [
  * other way silently stops retrying work that would have succeeded.
  */
 export function isRetryableFailure(reason: string): boolean {
+  // The sign-in classifier's own wording counts too. Nearly every auth failure is caught
+  // upstream now (`detectAuthFailure` diverts it before it can settle), but a reason can
+  // still reach here by another road — a worktree preflight, a restored gate's note — and
+  // a retry against a credential that cannot authenticate is a launch spent on nothing.
+  if (isAuthFailureText(reason)) return false;
   return !UNRETRYABLE_FAILURE_PATTERNS.some((pattern) => pattern.test(reason));
 }
 
@@ -1009,6 +1016,10 @@ export class Scheduler {
    * held; when its timer fires, every parked task resumes by its saved session id.
    */
   private readonly limitGate: LimitGate;
+  /** The account-wide sign-in hold (`@shared/auth`). */
+  private readonly authGate: AuthGate;
+  /** Push the sign-in gate's state (or null when it lifts) to the UI. Wired by `ipc`. */
+  private emitAuth?: (state: AuthState | null) => void;
   /**
    * The chain of execution's engine (`@shared/taskChain`): what happens to the NEXT card
    * when this one's work lands. Owned the way `worktrees` is — this class tells it when the
@@ -1057,6 +1068,11 @@ export class Scheduler {
       onResumeDue: (state) => this.resumeParked(state),
       onChanged: (state) => this.onLimitChanged(state),
     });
+    this.authGate = new AuthGate({
+      now: () => Date.now(),
+      onResumeDue: (state) => this.resumeAfterSignIn(state),
+      onChanged: (state) => this.onAuthChanged(state),
+    });
     this.chain = new ChainRunner({
       // Every dependency is a thunk onto this scheduler's own machinery, so a release is
       // reserved, gated and settled exactly as any other run — there is no second way in.
@@ -1081,7 +1097,7 @@ export class Scheduler {
         const task = this.store.updateTask(id, humanStatusPatch(before, 'in-progress'));
         if (task) this.emitTask({ task, runId: null });
       },
-      limitActive: () => this.limitGate.active,
+      limitActive: () => this.workIsHeld,
       inFlight: (id) => this.inFlight.has(id),
       branchOf: (task) => this.branchFor(task),
       now: () => Date.now(),
@@ -1112,6 +1128,15 @@ export class Scheduler {
    */
   setTasksChangedNotifier(notify: (projectId: string) => void): void {
     this.tasksChanged = notify;
+  }
+
+  /**
+   * Wire the sign-in banner's feed. A setter rather than a tenth constructor argument:
+   * every unit test builds this class positionally, and the gate is not something they
+   * need to know about to test anything else.
+   */
+  setAuthNotifier(notify: (state: AuthState | null) => void): void {
+    this.emitAuth = notify;
   }
 
   /** Wire the "these branches are mid-merge" notifier (see {@link Scheduler.integrating}). */
@@ -1197,6 +1222,15 @@ export class Scheduler {
       this.resolveAttention(itemId);
       this.updateTask(failure.taskId, { status: 'stopped' }, null);
     }
+    // Anything this project had parked behind the sign-in gate is cancelled too, for the
+    // same reason the limit's parked set is below: otherwise it comes back to life the
+    // moment someone signs in, after the human said stop. Driven off the GATE's ids, not
+    // the project's tasks: with no gate up there is nothing to cancel, and asking the
+    // store anyway would make every Stop pay for a full task read.
+    const authParkedHere = (this.authGate.state?.parkedTaskIds ?? []).filter(
+      (id) => this.store.getTask(id)?.projectId === projectId,
+    );
+    if (authParkedHere.length > 0) this.authGate.unpark(authParkedHere);
     // Abandon any in-flight proposal negotiations for this project (Phase D): cancel
     // the round timer and drop its human item. The proposer/sibling runs are handled
     // by the `runs` loop above (marked stopped), so no task status to set here.
@@ -1252,8 +1286,9 @@ export class Scheduler {
    */
   runTask(taskId: string): { runId: string } | null {
     if (this.disposed) return null;
-    // A usage limit holds everything account-wide — don't start ad-hoc work either.
-    if (this.limitGate.active) return null;
+    // A usage limit or a dead sign-in holds everything account-wide — don't start ad-hoc
+    // work either. Pressing Run against an expired credential only reproduces the failure.
+    if (this.workIsHeld) return null;
     // Already reserved or running: starting a second session for one task would give it
     // two agents in one worktree. (Reachable from the UI: a parked step offers "Run this
     // step", and a stale card can be clicked twice.)
@@ -1396,6 +1431,7 @@ export class Scheduler {
     // A step cannot own a plan: it IS one unit of its parent's.
     if (card.parentTaskId) return refused('not-a-card');
     if (!card.agentProjectId) return refused('never-ran');
+    if (this.authGate.active) return refused('signed-out');
     if (this.limitGate.active || card.status === 'blocked-by-limit') return refused('limit');
 
     const steps = this.store.getSubtasks(card.id);
@@ -1456,6 +1492,7 @@ export class Scheduler {
       reason,
     });
     if (this.disposed) return refused('not-running');
+    if (this.authGate.active) return refused('signed-out');
     if (this.limitGate.active || target.status === 'blocked-by-limit') return refused('limit');
 
     // An assigned-but-not-started card (Phase 17) has no conversation to continue — but it
@@ -1517,8 +1554,15 @@ export class Scheduler {
     }
     // A task parked behind the usage-limit gate has no live run and no inbox item, but
     // it IS pending work the user is entitled to cancel — otherwise it would come back
-    // to life at reset time.
+    // to life at reset time. A task parked behind the SIGN-IN gate is the same case, and
+    // is only visible in the gate: it was put back to plain `pending`, so the status
+    // cannot answer this and the gate has to.
     if (this.store.getTask(taskId)?.status === 'blocked-by-limit') stopped = true;
+    const authParked = new Set(this.authGate.state?.parkedTaskIds ?? []);
+    if ([...owned].some((id) => authParked.has(id))) {
+      this.authGate.unpark([...owned]);
+      stopped = true;
+    }
     // A card whose plan is approved but whose first step hasn't started yet is still
     // stoppable: there is queued work even though nothing is running. A step held behind
     // the usage-limit gate counts for the same reason as a parked card does — it would
@@ -1643,9 +1687,54 @@ export class Scheduler {
     return [...this.attention.values()].sort((a, b) => a.createdAt - b.createdAt);
   }
 
+  /**
+   * Whether any account-wide gate is holding work: a usage limit, or a dead sign-in.
+   *
+   * Both are properties of the ACCOUNT, not of a task, so both have to stop scheduling
+   * everywhere rather than be discovered per card. They are asked as one question at
+   * every start point; where the two need different words for the human — a countdown
+   * versus a Sign in button — the call sites ask the gates apart.
+   */
+  private get workIsHeld(): boolean {
+    return this.limitGate.active || this.authGate.active;
+  }
+
   /** The active usage-limit gate, or null — seeds the countdown banner on load. */
   currentLimit(): LimitState | null {
     return this.limitGate.state;
+  }
+
+  /** The active sign-in gate, or null — seeds the sign-in banner on load. */
+  currentAuth(): AuthState | null {
+    return this.authGate.state;
+  }
+
+  /**
+   * The human says they have signed in (the banner's button, or the CLI rewriting its
+   * credentials file): lift the gate and resume everything it held.
+   *
+   * Nothing is verified first, deliberately. The only free way to test a credential is to
+   * use it, which is exactly what the resumed work is about to do — and if it is still
+   * bad, the first run says so in ~150ms for $0.00 and the gate goes straight back up with
+   * the same parked set. A probe would spend a session to learn that a moment earlier.
+   */
+  signedIn(): void {
+    if (this.disposed) return;
+    this.authGate.lift();
+  }
+
+  /**
+   * Re-raise a sign-in gate that was in force when the app last closed.
+   *
+   * A dead credential outlives the process that found it: without this, launch #2 would
+   * rediscover it the same way launch #1 did — one failed run per card, each parked as an
+   * unexplained `api_error`. Restored gates are marked `restored` so the banner can say it
+   * has not been re-confirmed this session.
+   */
+  restoreAuthGate(): void {
+    if (this.disposed) return;
+    const saved = this.store.loadAuthGate();
+    if (saved) this.authGate.restore(saved);
   }
 
   /**
@@ -2084,6 +2173,9 @@ export class Scheduler {
     // Tear down the limit timer WITHOUT resuming, and leave its persisted state
     // intact so the gate is restored (and the resume still happens) on next launch.
     this.limitGate.dispose();
+    // Same contract for the sign-in gate: forget it in memory, keep it on disk, so the
+    // next launch comes back still holding work instead of rediscovering the failure.
+    this.authGate.dispose();
     // Release any tools the CLI is still blocked on so their relays don't hang.
     for (const pending of this.pendingDecisions.values()) {
       pending.resolve({ behavior: 'deny', message: 'orchestrator is shutting down' });
@@ -2113,8 +2205,8 @@ export class Scheduler {
   /** Fill this project's free concurrency slots with its next pending tasks. */
   private pump(projectId: string): void {
     if (this.disposed || !this.activeProjects.has(projectId)) return;
-    // A usage limit is account-wide: hold ALL scheduling until it resets (Phase 5).
-    if (this.limitGate.active) return;
+    // A usage limit or a dead sign-in is account-wide: hold ALL scheduling until it lifts.
+    if (this.workIsHeld) return;
     const project = this.store.getProject(projectId);
     if (!project) return;
     // Concurrency is a live, PER-PROJECT setting: read it fresh so edits take effect.
@@ -2801,6 +2893,18 @@ export class Scheduler {
         if (this.hasPendingAttention(runId)) break;
         run.settled = true;
         {
+          // A dead sign-in is not this task's failure, it is the account's — so it must not
+          // be filed against the card. Left to `settle`, it became one parked `api_error`
+          // per task while the queue fed fresh cards into the same wall, each costing a
+          // launch and telling the human nothing about the one thing actually wrong.
+          const authReason = event.success ? null : detectAuthFailure(event);
+          if (authReason !== null) {
+            this.engageAuthFailure(run, authReason);
+            this.sessions.stop(runId);
+            break;
+          }
+        }
+        {
           // The two ways the CLI reports "success" about a run that achieved nothing.
           // Both were filed as wins before Phase 18, which is exactly what made them so
           // hard to see: the card said "Finished on branch…" and the human found nothing.
@@ -2921,6 +3025,19 @@ export class Scheduler {
    */
   private resumeParked(state: LimitState): void {
     if (this.disposed) return;
+    // The limit lifted, but the sign-in is still dead: hand the whole parked set to the
+    // other gate rather than starting it. Two account-wide gates can be up at once, and
+    // whichever lifts first must not walk its tasks into the one still standing — that is
+    // how a parked set gets emptied by one gate and forgotten by the other.
+    if (this.authGate.active) {
+      for (const taskId of state.parkedTaskIds) {
+        const task = this.store.getTask(taskId);
+        if (task?.status === 'blocked-by-limit')
+          this.updateTask(taskId, { status: 'pending' }, null);
+      }
+      this.authGate.park(state.parkedTaskIds);
+      return;
+    }
     /** Cards that yielded to their chain above — advanced after the loop, once per card. */
     const chains = new Set<string>();
     for (const taskId of state.parkedTaskIds) {
@@ -2979,10 +3096,88 @@ export class Scheduler {
     this.updateTask(task.id, { status: task.parentTaskId ? 'failed' : 'pending' }, null);
   }
 
+  /**
+   * A run proved the CLI can no longer authenticate: raise the account-wide gate and park
+   * every run behind it, exactly as a usage limit does.
+   *
+   * Parked tasks go back to `pending` rather than to a status of their own. `pending` is
+   * already the engine's word for "this will run again" — it is what an auto-retry sets —
+   * and inventing an eighth status to mean the same thing would cost a migration, a board
+   * column, a colour and five status maps to say something the banner says better once.
+   * What makes it honest is the note: each card's timeline records why it stopped.
+   */
+  private engageAuthFailure(failing: Run, reason: string): void {
+    const casualties = [...this.runs.values()];
+    // Only the FIRST failure gets the timeline entries. The queue drains into this wall
+    // within seconds, and one note per card per attempt would bury the run's real history.
+    const first = !this.authGate.active;
+    this.authGate.engage(reason, [failing.taskId, ...casualties.map((r) => r.taskId)]);
+    for (const run of casualties) {
+      run.settled = true; // its imminent exit is expected — not a failure of its own
+      // A question or a permission dies with its process; a parked failure or conflict
+      // outlives it (see `OUTLIVES_ITS_RUN`) and is left exactly where it was.
+      this.clearRunAttention(run.runId);
+      if (run.runId !== failing.runId) this.sessions.stop(run.runId);
+      this.updateTask(run.taskId, { status: 'pending' }, null);
+      if (first) {
+        this.noteRun(
+          run.projectId,
+          run.taskId,
+          run.runId,
+          `Stopped because Claude could not authenticate: ${reason}. All work is held until ` +
+            `you sign in again — nothing was lost, and this picks up where it left off.`,
+        );
+      }
+    }
+  }
+
+  /**
+   * The sign-in gate lifted: put back to work everything it held.
+   *
+   * Deliberately the same shape as {@link Scheduler.resumeParked}, minus the
+   * `blocked-by-limit` filter — an auth-parked task is plain `pending`, so the check that
+   * it is still ours to start is "the human has not closed it since" instead. A card whose
+   * steps are the work hands back to its chain rather than running beside them, and a
+   * chain stopped at a parked step is left alone: signing in is not a human resolving it.
+   */
+  private resumeAfterSignIn(state: AuthState): void {
+    if (this.disposed) return;
+    /** Statuses that mean this is over — restarting one would undo somebody's decision. */
+    const closed: ReadonlySet<TaskStatus> = new Set(['done', 'cancelled', 'stopped', 'failed']);
+    const chains = new Set<string>();
+    for (const taskId of state.parkedTaskIds) {
+      const task = this.store.getTask(taskId);
+      if (!task || closed.has(task.status)) continue;
+      if (!task.parentTaskId && chainInFlight(this.store.getSubtasks(task.id))) {
+        chains.add(task.id);
+        continue;
+      }
+      // Something live already owns it — a human pressed Run as the gate lifted.
+      if (this.hasLiveRunFor([task])) continue;
+      const project = this.runProjectFor(task);
+      if (!project) continue;
+      this.startTask(project, task); // resumes by task.sessionId when there is one
+    }
+    for (const parentId of chains) {
+      if (parkedStep(this.store.getSubtasks(parentId))) continue;
+      this.advanceSubtasks(parentId);
+    }
+    for (const projectId of this.activeProjects) this.pump(projectId);
+    // Last, for the reason `resumeParked` documents at length: by now everything the gate
+    // held has re-reserved its slot, so the chain cannot start one of them a second time.
+    this.chain.reconsider('limit-lifted');
+  }
+
   /** Persist the gate (so a limit survives a restart) and mirror it to the UI. */
   private onLimitChanged(state: LimitState | null): void {
     this.store.saveLimitGate(state);
     this.emitLimit(state);
+  }
+
+  /** The same, for the sign-in gate. */
+  private onAuthChanged(state: AuthState | null): void {
+    this.store.saveAuthGate(state);
+    this.emitAuth?.(state);
   }
 
   /** Raise one Attention-inbox item for a run, park its task, and return the item. */
@@ -4098,6 +4293,12 @@ export class Scheduler {
       this.parkStepForLimit(next);
       return;
     }
+    // Same rule, other gate: nothing else re-enters a chain, so a step the sign-in gate
+    // stops has to be parked IN the gate or the card sits at 2/4 for good.
+    if (this.authGate.active) {
+      this.authGate.park([next.id]);
+      return;
+    }
     const project = this.runProjectFor(next);
     if (!project) return;
     this.startTask(project, next);
@@ -4256,7 +4457,7 @@ export class Scheduler {
     const card = this.store.getTask(cardId);
     if (!card) return false;
     if (!autoReleaseOn(card, project)) return false;
-    if (this.disposed || this.limitGate.active) return false;
+    if (this.disposed || this.workIsHeld) return false;
     // Something is already talking on this card (a human sent a message, a chain is
     // mid-flight). Say why the release did not start rather than dropping it.
     if (this.inFlight.has(card.id)) {

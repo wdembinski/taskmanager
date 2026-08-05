@@ -112,6 +112,7 @@ import { buildContractScaffold, CONTRACT_DOC, insertContractTasks } from './plan
 import { buildAlignPrompt } from './alignPrompt';
 import { PermissionBroker } from './permissionBroker';
 import { writePermissionServer } from './permissionServerSource';
+import { openInteractiveSignIn, watchForSignIn } from './signIn';
 import { PlanWatcher } from './planWatcher';
 import { SyncPoller } from './syncPoller';
 import { validateBranchName } from '@shared/branchName';
@@ -360,6 +361,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // to say it is happening at all — otherwise pressing Merge looks like pressing nothing.
   scheduler.setIntegratingNotifier((taskIds) => send('task:integrating', taskIds));
 
+  // The sign-in gate drives both the banner and the status bar's dot, so it goes out on
+  // its own channel rather than being folded into `claude:getStatus` — that one answers
+  // "is there a credentials file", which stayed true for the whole outage this exists for.
+  scheduler.setAuthNotifier((state) => send('auth:changed', state));
+
   // Phase 22: where the attached bytes live, so a prompt can hand the agent real paths.
   // `app.getPath` is Electron's, and the scheduler is unit-tested without it — so the root
   // is injected here, exactly as the store's own path is.
@@ -386,6 +392,15 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   );
   watcher.watchAll();
 
+  // A successful `claude` login rewrites the credentials file, which is the one signal
+  // that the gate can lift WITHOUT the human coming back to tell us — so the common path
+  // is: banner appears, they press Sign in, they log in, work resumes on its own. Guarded
+  // on the gate being up so an unrelated credential refresh never nudges the scheduler.
+  const stopSignInWatch = watchForSignIn(() => {
+    if (scheduler.currentAuth()) scheduler.signedIn();
+  });
+  mainWindow.on('close', () => stopSignInWatch());
+
   // The permission broker gives the scheduler a TRUE pre-execution veto: the CLI
   // asks it (via an MCP relay) before running each tool, and the scheduler either
   // auto-approves per policy or parks the task until a human answers. Materialize
@@ -407,9 +422,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     .catch((err) => {
       logMain('Permission broker failed to start; task runs will be ungated', err);
     })
-    // Restore any usage-limit gate left in force by a previous run AFTER the broker
-    // is wired (so tasks resumed at reset are still gated). Runs on both branches.
-    .then(() => scheduler.restoreLimitGate());
+    // Restore any gate left in force by a previous run AFTER the broker is wired (so
+    // tasks resumed at reset are still gated). Runs on both branches. The sign-in gate
+    // goes first: it starts nothing, and a limit restoring into a dead credential should
+    // find the other gate already up rather than walk its parked set into it.
+    .then(() => {
+      scheduler.restoreAuthGate();
+      scheduler.restoreLimitGate();
+    });
 
   /**
    * Moving a project to another machine retires its per-task run state.
@@ -1053,6 +1073,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
   handle('limit:current', async () => scheduler.currentLimit());
   handle('limit:resumeNow', async () => scheduler.resumeLimitNow());
+  handle('auth:current', async () => scheduler.currentAuth());
+  handle('auth:signedIn', async () => scheduler.signedIn());
+  handle('auth:signIn', async () => openInteractiveSignIn());
 
   // Performance dashboard: roll the rolling-5h-window samples into a summary, and
   // serve the time-bucketed series for the live chart. All computed by the app from

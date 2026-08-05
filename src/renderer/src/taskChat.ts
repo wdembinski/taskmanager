@@ -86,6 +86,9 @@ export const REFUSAL_HINT: Record<ChatRefusal, string> = {
   'chain-busy':
     'This card’s plan is still running — open the step that is working and talk to it there.',
   limit: 'A usage limit is holding all agent work; this card resumes when the limit resets.',
+  'signed-out':
+    'Claude is signed out, so nothing can run. Sign in from the banner at the top — this ' +
+    'card resumes by itself once you do.',
   'not-a-card': 'A step cannot be planned — re-plan the card it belongs to instead.',
   'chain-full': `This card already carries ${MAX_PLAN_STEPS} steps — the most one card can hold.`,
   'unknown-task': 'This card no longer exists.',
