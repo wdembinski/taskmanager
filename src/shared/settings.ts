@@ -31,6 +31,18 @@ export interface JiraSettings {
   /** Account email — required only for `cloud` (Basic auth); ignored for `server`. */
   cloudEmail: string;
   /**
+   * Where REST calls go, when that is NOT the site URL. Empty for every ordinary install.
+   *
+   * Atlassian's scoped API tokens (the kind id.atlassian.com now offers by default) are
+   * rejected with a bare `401` against `https://<site>.atlassian.net/rest/...` and only
+   * work through the tenant gateway, `https://api.atlassian.com/ex/jira/<cloudId>`. That
+   * is a transport detail, not a choice anyone should have to know about, so it is
+   * discovered and written here by the "Test connection" probe rather than typed — and
+   * cleared the moment the site or the deployment changes, since it belongs to neither
+   * any more. `baseUrl` stays the SITE, because that is what issue links are built from.
+   */
+  apiBaseUrl?: string;
+  /**
    * REST API version: `2` for server, `3` for cloud.
    *
    * DERIVED, not authoritative — `jira/jiraConfig.ts` computes it from `deployment` on

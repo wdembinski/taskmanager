@@ -359,6 +359,12 @@ export function Settings(): JSX.Element {
       // edited-but-unsaved form would report on the previous configuration.
       await save();
       setTestResult(await window.api.invoke('jira:testConnection'));
+      // The test is allowed to CHANGE the configuration: on a 401 it goes looking for the
+      // setup this token does work with, and writes it if it finds one (the Deployment
+      // dropdown, or Atlassian's tenant gateway for a scoped token). Re-read, or the form
+      // would keep showing the broken configuration and save it back over the fix.
+      setSettings(await window.api.invoke('settings:get'));
+      setJiraStatus(await window.api.invoke('jira:getConfigStatus'));
     } finally {
       setTesting(false);
     }
@@ -942,6 +948,21 @@ export function Settings(): JSX.Element {
                 onChange={(_e, d) => patchJira({ baseUrl: d.value.trim() })}
               />
             </Field>
+
+            {/* Only ever set by the Test-connection probe, and only for a scoped Atlassian
+                token, which the site itself refuses with a bare 401. Shown because an app
+                quietly talking to a host nobody typed is worse than an odd-looking line —
+                and because the way to undo it is right here: change the URL above. */}
+            {jira.apiBaseUrl?.trim() && (
+              <Field label="API endpoint">
+                <Caption1 className={styles.hint}>
+                  Requests go to <code>{jira.apiBaseUrl}</code> — Atlassian&rsquo;s tenant gateway,
+                  which is the only host that accepts a <strong>scoped</strong> API token. Issue
+                  links still use the base URL above. Changing the base URL or the deployment clears
+                  this and the next test rediscovers it.
+                </Caption1>
+              </Field>
+            )}
 
             {jira.deployment === 'cloud' && (
               <Field

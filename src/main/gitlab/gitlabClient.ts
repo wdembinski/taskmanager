@@ -7,6 +7,7 @@
  * and project access tokens.
  */
 import type { MergeRequestState, PipelineStatus } from '@shared/mergeRequest';
+import { sanitizeToken } from '@shared/secretToken';
 
 export interface GitLabClientConfig {
   /** Instance root, e.g. `https://gitlab.com`. No trailing slash required. */
@@ -135,7 +136,9 @@ export class GitLabClient {
   /** One request. Returns the parsed body and the response, so pagination can read headers. */
   private async raw(path: string): Promise<{ body: unknown; res: Response }> {
     const res = await fetch(this.url(path), {
-      headers: { 'PRIVATE-TOKEN': this.config.token, Accept: 'application/json' },
+      // Cleaned at the point of use, not just where it was saved — a token stored with a
+      // pasted newline on it is already in the store, and nothing about it looks wrong.
+      headers: { 'PRIVATE-TOKEN': sanitizeToken(this.config.token), Accept: 'application/json' },
     });
     if (!res.ok) {
       const text = await res.text().catch(() => '');

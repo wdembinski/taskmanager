@@ -39,6 +39,18 @@ describe('authHeader', () => {
     const expected = `Basic ${Buffer.from('me@x.com:tok').toString('base64')}`;
     expect(authHeader({ mode: 'basic', token: 'tok', email: 'me@x.com' })).toBe(expected);
   });
+
+  // The 401 nobody can see: a token pasted with a newline is stored with the newline, and
+  // a password field shows the same dots either way. Cleaned on the way OUT, so a token
+  // already sitting in the store is repaired without anyone retyping it.
+  it('strips whitespace a paste dragged in with the Bearer token', () => {
+    expect(authHeader({ mode: 'bearer', token: ' abc\n' })).toBe('Bearer abc');
+  });
+
+  it('strips it inside the Basic credential too, where base64 would hide it', () => {
+    const expected = `Basic ${Buffer.from('me@x.com:tok').toString('base64')}`;
+    expect(authHeader({ mode: 'basic', token: 'tok\n', email: ' me@x.com ' })).toBe(expected);
+  });
 });
 
 describe('buildClientConfig', () => {
@@ -73,6 +85,29 @@ describe('buildClientConfig', () => {
     expect(cfg.baseUrl).toBe('https://acme.atlassian.net');
     // A stray space around the email would corrupt the base64 Basic credential.
     expect(cfg.auth).toMatchObject({ email: 'a@b' });
+  });
+
+  it('sends requests to the discovered gateway when one is set, PATH and all', () => {
+    const cfg = buildClientConfig(
+      {
+        ...DEFAULT_JIRA_SETTINGS,
+        deployment: 'cloud',
+        baseUrl: 'https://acme.atlassian.net',
+        cloudEmail: 'a@b',
+        apiBaseUrl: 'https://api.atlassian.com/ex/jira/cloud-id/',
+      },
+      'tok',
+    );
+    // The tenant is the path; taking the origin here would talk to nobody's JIRA.
+    expect(cfg.baseUrl).toBe('https://api.atlassian.com/ex/jira/cloud-id');
+  });
+
+  it('ignores an empty gateway, which is what every ordinary install has', () => {
+    const cfg = buildClientConfig(
+      { ...DEFAULT_JIRA_SETTINGS, baseUrl: 'https://jira.company.com', apiBaseUrl: '  ' },
+      'pat',
+    );
+    expect(cfg.baseUrl).toBe('https://jira.company.com');
   });
 });
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isCloudHost, normalizeBaseUrl } from './jiraUrl';
+import { isCloudHost, normalizeApiBaseUrl, normalizeBaseUrl } from './jiraUrl';
 
 describe('normalizeBaseUrl', () => {
   it('leaves a clean origin alone', () => {
@@ -36,6 +36,29 @@ describe('normalizeBaseUrl', () => {
 
   it('returns unparseable input untouched, so the caller reports it', () => {
     expect(normalizeBaseUrl('https://')).toBe('https://');
+  });
+});
+
+describe('normalizeApiBaseUrl', () => {
+  it('KEEPS the path — the cloudId is the tenant, and the origin alone is nobody', () => {
+    expect(normalizeApiBaseUrl('https://api.atlassian.com/ex/jira/abc-123')).toBe(
+      'https://api.atlassian.com/ex/jira/abc-123',
+    );
+    // The distinction this whole function exists for.
+    expect(normalizeBaseUrl('https://api.atlassian.com/ex/jira/abc-123')).toBe(
+      'https://api.atlassian.com',
+    );
+  });
+
+  it('still trims, adds https and drops trailing slashes', () => {
+    expect(normalizeApiBaseUrl('  api.atlassian.com/ex/jira/abc-123//  ')).toBe(
+      'https://api.atlassian.com/ex/jira/abc-123',
+    );
+  });
+
+  it('maps empty input to empty output, so the site URL is used instead', () => {
+    expect(normalizeApiBaseUrl('')).toBe('');
+    expect(normalizeApiBaseUrl('   ')).toBe('');
   });
 });
 

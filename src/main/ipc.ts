@@ -50,9 +50,11 @@ import { resolveStatusColumn } from '@shared/statusResolve';
 import type { AppSettings } from '@shared/settings';
 import { sameExecTarget, type ExecTarget } from '@shared/execTarget';
 import { normalizeBaseUrl } from '@shared/jiraUrl';
+import { sanitizeToken, tokenHadNoise } from '@shared/secretToken';
 import { createJiraClient } from './jira/jiraConfig';
 import { explainJiraFailure } from './jira/jiraDiagnostics';
-import { commentBodyToText, type JiraClient, type JiraIssue } from './jira/jiraClient';
+import { probeJiraAuth } from './jira/jiraAuthProbe';
+import { commentBodyToText, JiraError, type JiraClient, type JiraIssue } from './jira/jiraClient';
 import { blocksToText, parseAdf } from './jira/adf';
 import { normalizeIssueTypes, normalizeProjects } from './jira/createMeta';
 import {
@@ -1088,12 +1090,26 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // Normalize the JIRA URL once, on the way in, so every consumer sees the same
     // origin — the client, the epic-field and identity caches (both keyed by baseUrl),
     // and the issue links written onto cards.
+    const stored = store.getSettings().jira;
+    const baseUrl = normalizeBaseUrl(settings.jira.baseUrl);
+    // The discovered API gateway belongs to ONE site and ONE deployment mode, and it is
+    // never typed — the probe writes it (see `JiraSettings.apiBaseUrl`). Two rules follow.
+    // Point the settings at a different site, or flip the dropdown, and it is stale, so it
+    // goes. Otherwise it survives a form the renderer read BEFORE the probe found it —
+    // which is every save that follows a Test connection, and losing it there would undo
+    // the fix on the next click.
+    const gatewayStillApplies =
+      baseUrl === normalizeBaseUrl(stored.baseUrl) &&
+      settings.jira.deployment === stored.deployment;
     store.saveSettings({
       ...settings,
       jira: {
         ...settings.jira,
-        baseUrl: normalizeBaseUrl(settings.jira.baseUrl),
+        baseUrl,
         cloudEmail: settings.jira.cloudEmail.trim(),
+        apiBaseUrl: gatewayStillApplies
+          ? settings.jira.apiBaseUrl?.trim() || stored.apiBaseUrl || ''
+          : '',
       },
     });
     // Pick up a changed poll interval (or enable/disable) without a restart.
@@ -1110,10 +1126,36 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   const usesPlainTextStorage = (): boolean =>
     process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text';
 
-  // Build a JIRA client from current settings + the decrypted token, or throw a
-  // user-facing error explaining what's missing. The token never leaves the main
-  // process: it's stored encrypted and decrypted here on demand.
-  const buildJiraClient = (): JiraClient => {
+  /**
+   * Read a stored secret back out. Split from the client builders because the failure it
+   * has to name is the same for both, and it is one nobody guesses: `decryptString`
+   * throws whenever the ciphertext was written by a different OS user, a different
+   * machine, or (on Linux) a different `safeStorage` backend — a settings folder restored
+   * from a backup, say. The raw message is "Error while decrypting the ciphertext
+   * provided to safeStorage.decryptString", which reads like a bug in the app rather than
+   * a token that has to be pasted again.
+   */
+  const decryptSecret = (cipher: string, label: string): string => {
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new Error('OS secure storage is unavailable, so the saved token cannot be read.');
+    }
+    try {
+      return safeStorage.decryptString(Buffer.from(cipher, 'base64'));
+    } catch {
+      throw new Error(
+        `The stored ${label} token could not be decrypted on this machine — it was encrypted ` +
+          `by a different OS user, machine, or keyring. Paste the token again in Settings.`,
+      );
+    }
+  };
+
+  /**
+   * Current JIRA settings + the decrypted token, or a user-facing error saying what is
+   * missing. The token never leaves the main process: it is stored encrypted and
+   * decrypted here on demand. Returned rather than swallowed into a client so the
+   * Test-connection probe can retry the SAME token against another configuration.
+   */
+  const jiraCredentials = (): { jira: AppSettings['jira']; token: string } => {
     const { jira } = store.getSettings();
     if (!jira.baseUrl.trim()) throw new Error('Set the JIRA base URL in Settings first.');
     // Cloud authenticates as email + API token. Without the email we'd send
@@ -1127,10 +1169,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     }
     const cipher = store.loadJiraToken();
     if (!cipher) throw new Error('No JIRA token saved — add one in Settings.');
-    if (!safeStorage.isEncryptionAvailable()) {
-      throw new Error('OS secure storage is unavailable, so the saved token cannot be read.');
-    }
-    const token = safeStorage.decryptString(Buffer.from(cipher, 'base64'));
+    return { jira, token: decryptSecret(cipher, 'JIRA') };
+  };
+
+  const buildJiraClient = (): JiraClient => {
+    const { jira, token } = jiraCredentials();
     return createJiraClient(jira, token);
   };
 
@@ -1157,12 +1200,18 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
         message: 'OS secure storage is unavailable, so the token was not saved.',
       };
     }
-    store.saveJiraToken(safeStorage.encryptString(pat).toString('base64'));
+    // Stored clean, so a paste that arrived with a newline on it never becomes a 401 that
+    // reads as "your token was rejected". Said out loud rather than fixed silently: the
+    // same copy will produce the same stray character next time. See `@shared/secretToken`.
+    const noise = tokenHadNoise(pat);
+    store.saveJiraToken(safeStorage.encryptString(sanitizeToken(pat)).toString('base64'));
     return {
       ok: true,
       message: usesPlainTextStorage()
         ? 'Token saved — but this machine has no keyring, so it is only obfuscated on disk.'
-        : 'Token saved.',
+        : noise
+          ? 'Token saved — whitespace came with the paste and was stripped.'
+          : 'Token saved.',
     };
   });
 
@@ -1175,7 +1224,27 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     } catch (e) {
       // Keep the full error (including `cause`) in the log; show the diagnosis on screen.
       logMain('JIRA test connection failed', e);
-      return { ok: false, message: explainJiraFailure(e, store.getSettings().jira) };
+      const { jira } = store.getSettings();
+      // A 401 is the one failure where the error text and the truth routinely disagree —
+      // it says "credential refused" and everyone reads "bad token". This is the moment to
+      // stop guessing and go and find out: the user asked for a test and is waiting, so a
+      // couple more requests are cheap. Only a probe that came back 200 is acted on.
+      if (e instanceof JiraError && e.status === 401) {
+        const probe = await (async () => {
+          try {
+            return await probeJiraAuth(jira, jiraCredentials().token);
+          } catch (probeErr) {
+            logMain('JIRA auth probe failed', probeErr);
+            return null;
+          }
+        })();
+        if (probe?.outcome === 'connected') {
+          store.saveSettings({ ...store.getSettings(), jira: { ...jira, ...probe.patch } });
+          return { ok: true, displayName: probe.displayName, message: probe.message };
+        }
+        if (probe) return { ok: false, message: probe.message };
+      }
+      return { ok: false, message: explainJiraFailure(e, jira) };
     }
   });
 
@@ -1187,11 +1256,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     if (!gitlab.baseUrl.trim()) throw new Error('Set the GitLab URL in Settings first.');
     const cipher = store.loadGitLabToken();
     if (!cipher) throw new Error('No GitLab token saved — add one in Settings.');
-    if (!safeStorage.isEncryptionAvailable()) {
-      throw new Error('OS secure storage is unavailable, so the saved token cannot be read.');
-    }
-    const token = safeStorage.decryptString(Buffer.from(cipher, 'base64'));
-    return new GitLabClient({ baseUrl: gitlab.baseUrl, token });
+    return new GitLabClient({ baseUrl: gitlab.baseUrl, token: decryptSecret(cipher, 'GitLab') });
   };
 
   handle('gitlab:getConfigStatus', async () => {
@@ -1219,12 +1284,16 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
         message: 'OS secure storage is unavailable, so the token was not saved.',
       };
     }
-    store.saveGitLabToken(safeStorage.encryptString(token).toString('base64'));
+    // Same paste hygiene as the JIRA token above.
+    const noise = tokenHadNoise(token);
+    store.saveGitLabToken(safeStorage.encryptString(sanitizeToken(token)).toString('base64'));
     return {
       ok: true,
       message: usesPlainTextStorage()
         ? 'Token saved — but this machine has no keyring, so it is only obfuscated on disk.'
-        : 'Token saved.',
+        : noise
+          ? 'Token saved — whitespace came with the paste and was stripped.'
+          : 'Token saved.',
     };
   });
 
@@ -2045,16 +2114,27 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     return tasks;
   };
 
-  // Rethrow with the diagnosis attached, so the board's error bar explains a bad
-  // deployment/credential the same way the Settings "Test connection" button does.
-  handle('jira:sync', async () => {
+  /**
+   * `syncJira`, with the diagnosis attached to whatever it throws — so the board's error
+   * bar explains a bad deployment/credential the same way the Settings "Test connection"
+   * button does.
+   *
+   * INSIDE `trackSync`, deliberately. The status bar keeps the message of the error that
+   * reached it, and the background poller reaches it by a different route from the button;
+   * diagnosing outside meant a background 401 left "JIRA 401 Unauthorized" in the tooltip
+   * with none of the advice, which is precisely the failure a user then reports as "my
+   * token is valid and it still says 401".
+   */
+  const syncJiraDiagnosed = async (): Promise<Task[]> => {
     try {
-      return await trackSync('jira', syncJira);
+      return await syncJira();
     } catch (e) {
       logMain('JIRA sync failed', e);
       throw new Error(explainJiraFailure(e, store.getSettings().jira));
     }
-  });
+  };
+
+  handle('jira:sync', async () => trackSync('jira', syncJiraDiagnosed));
 
   /**
    * Remember that a JIRA status means the column the user just dropped a card into.
@@ -2364,7 +2444,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     {
       id: 'jira',
       isEnabled: (s) => s.getSettings().jira.enabled,
-      run: () => trackSync('jira', syncJira),
+      run: () => trackSync('jira', syncJiraDiagnosed),
     },
     {
       id: 'gitlab',

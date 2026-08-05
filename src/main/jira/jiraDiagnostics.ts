@@ -82,10 +82,30 @@ function statusHint(err: JiraError, jira: JiraSettings): string | null {
       );
     }
     if (jira.deployment === 'cloud') {
+      // The mirror image of the case above, and just as invisible: an email address is
+      // meaningless to a Server/DC instance, so its own PAT gets a 401 the moment the
+      // dropdown says Cloud.
+      if (!isCloudHost(jira.baseUrl)) {
+        return (
+          `${jira.baseUrl} doesn't look like an Atlassian Cloud site, but Deployment is set ` +
+          `to "Cloud", which signs in with an email plus token. If this is a self-hosted ` +
+          `Server / Data Center instance, set Deployment to "Server / Data Center" — its ` +
+          `Personal Access Tokens are sent on their own, with no email. Use "Test ` +
+          `connection", which tries the alternatives for you.`
+        );
+      }
+      if (!jira.cloudEmail.includes('@')) {
+        return (
+          `"${jira.cloudEmail}" is not an email address, and Cloud signs in with the ` +
+          `account EMAIL plus an API token — a username is rejected as a plain 401.`
+        );
+      }
       return (
         `Cloud signs in with your account email plus an API token, and both must belong ` +
         `to the same account. Check the email, and that the token was created at ` +
-        `id.atlassian.com/manage-profile/security/api-tokens for this site.`
+        `id.atlassian.com/manage-profile/security/api-tokens for this site. If it is a ` +
+        `SCOPED token, this site refuses it outright — those only work through Atlassian's ` +
+        `gateway, which "Test connection" will find and switch to for you.`
       );
     }
     return (

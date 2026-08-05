@@ -5,6 +5,7 @@
  * client serves self-hosted Server/Data Center (PAT `Bearer`, REST v2) and Atlassian
  * Cloud (email + API token `Basic`, REST v3).
  */
+import { sanitizeToken } from '@shared/secretToken';
 import {
   blocksToText,
   buildAdf,
@@ -134,10 +135,19 @@ export interface JiraComment {
   created: string;
 }
 
-/** Build the `Authorization` header value for either auth mode. Pure/testable. */
+/**
+ * Build the `Authorization` header value for either auth mode. Pure/testable.
+ *
+ * The token is cleaned HERE, at the point of use, not only where it was saved: a token
+ * that went into the store with a pasted newline on it is already there, and its owner
+ * has no way to see the difference between it and the good token they copied. Cleaning on
+ * the way out repairs those without asking anyone to retype anything. See
+ * `@shared/secretToken` for why stripping whitespace from a token is safe.
+ */
 export function authHeader(auth: JiraAuth): string {
-  if (auth.mode === 'bearer') return `Bearer ${auth.token}`;
-  const basic = Buffer.from(`${auth.email ?? ''}:${auth.token}`).toString('base64');
+  const token = sanitizeToken(auth.token);
+  if (auth.mode === 'bearer') return `Bearer ${token}`;
+  const basic = Buffer.from(`${auth.email?.trim() ?? ''}:${token}`).toString('base64');
   return `Basic ${basic}`;
 }
 

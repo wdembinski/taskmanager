@@ -31,6 +31,26 @@ export function normalizeBaseUrl(raw: string): string {
 }
 
 /**
+ * Normalize a REST base URL that is allowed to carry a PATH.
+ *
+ * {@link normalizeBaseUrl} takes the ORIGIN, which is right for a site root and fatal
+ * here: Atlassian's API gateway is `https://api.atlassian.com/ex/jira/<cloudId>`, and the
+ * path IS the tenant — take the origin and every request goes to nobody's JIRA. So this
+ * one only trims, supplies a scheme, and drops trailing slashes.
+ */
+export function normalizeApiBaseUrl(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return '';
+  const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    const url = new URL(withScheme);
+    return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
+  } catch {
+    return trimmed.replace(/\/+$/, '');
+  }
+}
+
+/**
  * Does this URL point at an Atlassian Cloud site? Cloud rejects the `Bearer` PATs that
  * Server/Data Center issues, so getting the deployment wrong is a guaranteed 401 — and
  * `*.atlassian.net` is the one case we can recognize without asking the user.

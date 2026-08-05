@@ -33,6 +33,33 @@ describe('explainJiraFailure — the Cloud/Server mix-up', () => {
     expect(msg).not.toContain('does not accept Bearer tokens');
   });
 
+  it('names the dropdown the other way round too: a self-hosted host set to Cloud', () => {
+    const msg = explainJiraFailure(new JiraError('JIRA 401 Unauthorized', 401), {
+      ...DEFAULT_JIRA_SETTINGS,
+      baseUrl: 'https://jira.company.com',
+      deployment: 'cloud',
+      cloudEmail: 'me@company.com',
+    });
+    expect(msg).toContain("doesn't look like an Atlassian Cloud site");
+    expect(msg).toContain('Server / Data Center');
+  });
+
+  it('says outright that a username is not an email', () => {
+    const msg = explainJiraFailure(
+      new JiraError('JIRA 401 Unauthorized', 401),
+      cloudSite({ deployment: 'cloud', cloudEmail: 'ada' }),
+    );
+    expect(msg).toContain('not an email address');
+  });
+
+  it('raises the scoped-token trap, which no 401 body ever mentions', () => {
+    const msg = explainJiraFailure(
+      new JiraError('JIRA 401 Unauthorized', 401),
+      cloudSite({ deployment: 'cloud', cloudEmail: 'me@nextbase.com' }),
+    );
+    expect(msg).toContain('SCOPED');
+  });
+
   it('does not claim Cloud for a self-hosted host', () => {
     const msg = explainJiraFailure(new JiraError('JIRA 401 Unauthorized', 401), {
       ...DEFAULT_JIRA_SETTINGS,
