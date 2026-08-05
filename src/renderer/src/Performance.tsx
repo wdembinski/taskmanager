@@ -36,6 +36,7 @@ import { PaneLoading } from './PaneLoading';
 import { useInitialLoad } from './useInitialLoad';
 import { TokenChart } from './TokenChart';
 import { formatCountdown } from './LimitBanner';
+import { UsageQuotaBars, useUsageQuotas } from './UsageQuotaBars';
 import { formatCost, formatPct, formatTokens, niceCeil } from './usageFormat';
 
 /**
@@ -262,6 +263,9 @@ export function Performance(): JSX.Element {
   const [series, setSeries] = useState<UsageSeriesPoint[]>([]);
   const [now, setNow] = useState(() => Date.now());
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  // The two metered windows. Their own live reading, on their own cadence: they are
+  // fixed windows and deliberately ignore the range selector below them.
+  const quotas = useUsageQuotas();
   // Sticky peak burn so the gauge's full-scale doesn't jump around second to second.
   const peakBurn = useRef(0);
   const [gaugeMax, setGaugeMax] = useState(50);
@@ -355,6 +359,17 @@ export function Performance(): JSX.Element {
           ))}
         </div>
       </div>
+
+      {/* How much of each metered window is gone. Above everything else because it is the
+          one question the screen answers that has a ceiling — the totals below say what
+          was spent, these two say how much of the allowance that was. They do NOT follow
+          the range selector: a session is 5 hours and a week is 7 days regardless. */}
+      {quotas && (
+        <div className={styles.section}>
+          <span className={styles.sectionTitle}>Usage against budget</span>
+          <UsageQuotaBars quotas={quotas} />
+        </div>
+      )}
 
       <div className={styles.main}>
         {/* Left rail: the Tasks-vs-Orchestrator split (orchestrator called out on its own). */}

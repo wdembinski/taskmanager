@@ -121,5 +121,58 @@ export interface UsageSeriesPoint {
 
 /** The trailing rolling usage window: 5 hours, in ms. */
 export const USAGE_WINDOW_MS = 5 * 60 * 60 * 1000;
+/** The weekly cap's window: 7 days, in ms — the other limit Claude enforces. */
+export const WEEKLY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 /** Default trailing window for the live burn-rate reading, in seconds. */
 export const BURN_WINDOW_SEC = 60;
+
+/**
+ * The two windows Claude actually meters an account against, and the two the app
+ * draws a bar for: the current **session** (the rolling 5 hours) and the **week**.
+ */
+export type UsageQuotaId = 'session' | 'weekly';
+
+/**
+ * How much of one metered window has been spent — the model behind a progress bar.
+ *
+ * `limit` is the user's own budget for that window (Settings → Token budgets), not a
+ * number Claude reports: the CLI tells us *that* a window is close to its cap and *when*
+ * it resets, never how many tokens are left in it. So the percentage is honest about what
+ * it measures — measured spend against a budget the human set — which is the shape
+ * doc 08 says a budget feature has to take: built on `token_usage`, never on a guess.
+ */
+export interface UsageQuota {
+  id: UsageQuotaId;
+  /** Window bounds (epoch ms). Anchored to `resetAt` when the CLI has told us one. */
+  windowStart: number;
+  windowEnd: number;
+  /** When this window rolls over (epoch ms), if the CLI has said so; else null. */
+  resetAt: number | null;
+  /** Tokens spent inside the window. */
+  tokens: number;
+  /** The budget the percentage is measured against, in tokens. 0 = no budget set. */
+  limit: number;
+  /**
+   * Spend as a percent of `limit`. **Not clamped** — a window that ran past its budget
+   * says 130% rather than quietly reading full. 0 when no budget is set.
+   */
+  pct: number;
+}
+
+/** Both metered windows, as one push/response payload. */
+export interface UsageQuotas {
+  session: UsageQuota;
+  weekly: UsageQuota;
+}
+
+/**
+ * Out-of-the-box budgets, in tokens, from the audit's own measurement rather than
+ * from a plan's published limits (Claude publishes none in tokens).
+ *
+ * Doc 08 measured 1.82 billion tokens over 5.3 days of real work — 96% of it cache
+ * reads — which is ~2.4B a week and ~72M in any 5-hour stretch. These are the next
+ * round numbers up, so a heavy week lands near full rather than off the end, and both
+ * are editable in Settings for an account that spends nothing like this one.
+ */
+export const DEFAULT_SESSION_TOKEN_BUDGET = 100_000_000;
+export const DEFAULT_WEEKLY_TOKEN_BUDGET = 2_500_000_000;

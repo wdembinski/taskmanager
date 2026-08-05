@@ -53,6 +53,7 @@ import { Performance } from './Performance';
 import { Settings } from './Settings';
 import { SessionRunner } from './SessionRunner';
 import { TitleBar } from './TitleBar';
+import { UsageQuotaStatus, useUsageQuotas } from './UsageQuotaBars';
 import { ACCENT, TOASTER_ID, fontPx } from './theme';
 import type { AttentionItem } from '@shared/attention';
 
@@ -281,6 +282,14 @@ export function App(): JSX.Element {
   // that nothing else on screen will load either.
   const [bootError, setBootError] = useState<string | null>(null);
 
+  /**
+   * How much of the session (5h) and weekly windows is spent, for the status bar's pair
+   * of bars. Held here for the same reason `sprint` and `syncState` are: the bar is the
+   * shell's, and the answer has to be true with the Performance tab closed — which is
+   * exactly when you most want to know it.
+   */
+  const quotas = useUsageQuotas();
+
   useEffect(() => {
     void Promise.all([
       window.api.invoke('app:getInfo').then(setInfo),
@@ -480,6 +489,11 @@ export function App(): JSX.Element {
             </button>
           </Caption1>
         )}
+        {/* How much of the two metered windows is gone. Same right-hand group as the sync
+            rings, and for the same reason: ambient state you glance at, never a decision.
+            The full numbers and the reset countdown are in each one's tooltip, and the
+            Performance tab draws the same pair at full size. */}
+        <UsageQuotaStatus quotas={quotas} />
         {/* How stale the mirror is, and how long until the next refresh. On the right,
             beside the version: it is ambient state, not something that wants a decision. */}
         <SyncRing state={syncState} />

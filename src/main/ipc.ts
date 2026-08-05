@@ -122,7 +122,7 @@ import { Scheduler } from './scheduler';
 import { SessionManager } from './sessionManager';
 import { createStore, type Store } from './store';
 import { Updater } from './updater';
-import { bucketSeries, rollupWindow } from './usageRollup';
+import { bucketSeries, rollupQuotas, rollupWindow } from './usageRollup';
 import { WorktreeManager } from './worktreeManager';
 
 /**
@@ -1117,6 +1117,26 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('usage:series', async (sinceMs, bucketMs) =>
     bucketSeries(store.getUsageSamples(sinceMs), sinceMs, bucketMs, Date.now()),
   );
+
+  // The two metered windows, as percentages of the budgets in Settings. Deliberately
+  // separate from `usage:summary`: those totals follow the range selector, while these
+  // two windows are fixed — a session is 5 hours and a week is 7 days no matter what
+  // the dashboard is showing, and the status bar reads them with no dashboard at all.
+  handle('usage:quotas', async () => {
+    const settings = store.getSettings();
+    const pressure = scheduler.getUsagePressure();
+    // The CLI reports resetsAt in Unix SECONDS, and one event carries only one window's
+    // reset — `limitType` says which, so a weekly reset never anchors the session bar.
+    const resetMs = pressure.resetsAt != null ? pressure.resetsAt * 1000 : null;
+    return rollupQuotas({
+      now: Date.now(),
+      sessionLimit: settings.sessionTokenBudget,
+      weeklyLimit: settings.weeklyTokenBudget,
+      sessionReset: pressure.limitType === 'rolling' ? resetMs : null,
+      weeklyReset: pressure.limitType === 'weekly' ? resetMs : null,
+      tokensIn: (from, to) => store.getWindowTokens(from, to),
+    });
+  });
 
   handle('settings:get', async () => store.getSettings());
   handle('settings:save', async (settings) => {

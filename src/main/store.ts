@@ -431,6 +431,13 @@ export interface Store {
   appendTokenUsage(sample: UsageSample & { costUsd?: number | null }): void;
   /** Every usage sample with `createdAt >= sinceMs`, oldest first (for the rollup/series). */
   getUsageSamples(sinceMs: number): UsageSample[];
+  /**
+   * Total tokens recorded in `[fromMs, toMs)` — one SUM, not the rows.
+   *
+   * The quota bars ask this twice a tick and would otherwise drag a week of samples
+   * across the IPC boundary to add up four numbers per row in the renderer.
+   */
+  getWindowTokens(fromMs: number, toMs: number): number;
   /** Total cost (USD) recorded since `sinceMs`, from the runs' `result` rows. */
   getWindowCost(sinceMs: number): number;
   /** Append a human progress comment to a task (Phase 9); returns the created entry. */
@@ -1530,6 +1537,12 @@ export function createStore(dbPath: string): Store {
   );
   const selectUsageCostSince = db.prepare(
     `SELECT COALESCE(SUM(costUsd), 0) AS cost FROM token_usage WHERE createdAt >= ?`,
+  );
+  // Half-open [from, to), so two adjacent windows can never double-count a sample on
+  // their shared edge. Served by `idx_token_usage_time`.
+  const selectUsageTokensBetween = db.prepare(
+    `SELECT COALESCE(SUM(totalTokens), 0) AS tokens
+     FROM token_usage WHERE createdAt >= ? AND createdAt < ?`,
   );
   const insertActivity = db.prepare(
     `INSERT INTO task_activity (projectId, taskId, kind, body, fromStatus, toStatus, createdAt)
@@ -2984,6 +2997,11 @@ export function createStore(dbPath: string): Store {
     getWindowCost(sinceMs) {
       const row = selectUsageCostSince.get(sinceMs) as { cost: number } | undefined;
       return row?.cost ?? 0;
+    },
+
+    getWindowTokens(fromMs, toMs) {
+      const row = selectUsageTokensBetween.get(fromMs, toMs) as { tokens: number } | undefined;
+      return row?.tokens ?? 0;
     },
 
     addComment(projectId, taskId, body) {

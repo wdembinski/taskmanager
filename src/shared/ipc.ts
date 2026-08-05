@@ -57,7 +57,7 @@ import type { LinkGate, LinkResult, TaskLink } from './taskChain';
 import type { AppSettings } from './settings';
 import type { SyncState } from './sync';
 import type { UpdateState } from './update';
-import type { UsageSample, UsageSeriesPoint, UsageSummary } from './usage';
+import type { UsageQuotas, UsageSample, UsageSeriesPoint, UsageSummary } from './usage';
 
 /** Result of checking whether the local `claude` CLI is installed and logged in. */
 export interface ClaudeStatus {
@@ -621,6 +621,13 @@ export interface IpcApi {
    * `bucketMs` windows from `sinceMs` to now. Used to seed the chart on mount.
    */
   'usage:series': (sinceMs: number, bucketMs: number) => Promise<UsageSeriesPoint[]>;
+  /**
+   * How much of each metered window has been spent — the current session (the rolling
+   * 5 hours) and the current week — against the budgets in Settings. Two SUMs over
+   * `token_usage`, not the rows, because both the status bar and the Performance screen
+   * poll this. Live changes arrive via the same `usage:sample` event.
+   */
+  'usage:quotas': () => Promise<UsageQuotas>;
 
   /** The current global app settings (Phase 6). */
   'settings:get': () => Promise<AppSettings>;

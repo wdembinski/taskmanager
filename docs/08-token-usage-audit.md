@@ -251,6 +251,28 @@ compare windows. If a budget-style feature is ever wanted (refuse to start a run
 week's spend passes a threshold), it should be built on `token_usage` — measured history —
 not on a guess about a prompt.
 
+### The budget bars are that shape, and stop where the evidence does
+
+Two progress bars now say how much of each metered window is gone — the **current session**
+(the rolling 5 hours) and the **week** — in the status bar and again at the top of the
+Performance screen ([`usageQuota`](../src/main/usageRollup.ts),
+[`UsageQuotaBars.tsx`](../src/renderer/src/UsageQuotaBars.tsx)). They are built exactly as
+the paragraph above requires: two `SUM`s over `token_usage`, measured after the fact.
+
+What they deliberately are not is a claim about Claude's own caps. The CLI's
+`rate_limit_event` reports _that_ a window is under pressure and _when_ it resets; it never
+reports how many tokens the cap is or how many are left. So the denominator is the user's
+own budget (Settings → session/weekly token budget, defaulted from the 1.82B-per-5.3-days
+measured above), and the percentage means "of the allowance you set", not "of your plan".
+Nothing is refused when a bar fills: the app has no authority it could enforce, and a
+progress bar that quietly stopped work on a number the user typed would be the estimator
+this section just argued against, wearing a different hat.
+
+The one signal Claude _does_ give is used where it is authoritative: a reported reset time
+anchors its window, so the session bar covers the five hours actually ending at the reset
+rather than the five trailing "now" — and `limitType` keeps a weekly reset from anchoring
+the session bar.
+
 ---
 
 Next: [Development roadmap](plan/README.md) — the phases this app was built in, and

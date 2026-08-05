@@ -12,6 +12,7 @@ import { LOCAL_TARGET, type ExecTarget } from './execTarget';
 import type { ClaudeModel, PermissionMode } from './session';
 import type { BoardColumn } from './model';
 import type { StatusKeyword } from './statusKeywords';
+import { DEFAULT_SESSION_TOKEN_BUDGET, DEFAULT_WEEKLY_TOKEN_BUDGET } from './usage';
 
 /**
  * Non-secret JIRA connection config (the PAT itself is stored separately, encrypted
@@ -266,6 +267,15 @@ export interface AppSettings {
    * before resuming, so many parked apps don't all retry the same instant (Phase 5).
    */
   limitJitterMs: number;
+  /**
+   * The token budget one **session** — the rolling 5-hour window — is measured against,
+   * for the Performance screen's usage bars and the status bar's pair. Purely a
+   * denominator: nothing refuses to start a run when it is passed, because the app has
+   * no authority over the account's real cap (see `UsageQuota`). 0 turns the bar off.
+   */
+  sessionTokenBudget: number;
+  /** The same, for the rolling 7-day window Claude's weekly cap covers. 0 = off. */
+  weeklyTokenBudget: number;
   /** Whether newly added projects tick completed checkboxes back into their plan file. */
   writeBackPlan: boolean;
   /**
@@ -353,6 +363,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // learn about ten minutes late has already cost you the context to fix it.
   syncIntervalMinutes: 2,
   limitJitterMs: 60_000,
+  sessionTokenBudget: DEFAULT_SESSION_TOKEN_BUDGET,
+  weeklyTokenBudget: DEFAULT_WEEKLY_TOKEN_BUDGET,
   writeBackPlan: false,
   maxAutoRetries: 1,
   defaultExecTarget: LOCAL_TARGET,

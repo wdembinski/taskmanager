@@ -697,6 +697,44 @@ export function Settings(): JSX.Element {
               />
             </Field>
 
+            {/* The denominators behind the two usage bars (status bar + Performance).
+                In millions, because the honest unit here is enormous: 96% of the bill is
+                cache reads, so a busy week is billions of tokens and a SpinButton stepping
+                in ones would be unusable. 0 turns a bar off rather than dividing by zero. */}
+            <Field
+              label="Session token budget (millions)"
+              hint="What the current-session bar measures against: the tokens you consider a full 5-hour window. It is your number, not Claude's — the CLI reports when a window resets, never how much of it is left. 0 hides the bar."
+            >
+              <SpinButton
+                min={0}
+                max={100_000}
+                step={10}
+                value={Math.round(settings.sessionTokenBudget / 1_000_000)}
+                onChange={(_e, d) => {
+                  const n = d.value ?? Number(d.displayValue);
+                  if (Number.isFinite(n))
+                    patch({ sessionTokenBudget: Math.max(0, Math.round(n as number)) * 1_000_000 });
+                }}
+              />
+            </Field>
+
+            <Field
+              label="Weekly token budget (millions)"
+              hint="The same, for the rolling 7 days the weekly cap covers. The default is the measured spend of a heavy week (see docs/08); set it to whatever a week of your own work looks like."
+            >
+              <SpinButton
+                min={0}
+                max={1_000_000}
+                step={100}
+                value={Math.round(settings.weeklyTokenBudget / 1_000_000)}
+                onChange={(_e, d) => {
+                  const n = d.value ?? Number(d.displayValue);
+                  if (Number.isFinite(n))
+                    patch({ weeklyTokenBudget: Math.max(0, Math.round(n as number)) * 1_000_000 });
+                }}
+              />
+            </Field>
+
             <Field label="Plan write-back">
               <Switch
                 checked={settings.writeBackPlan}

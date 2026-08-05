@@ -65,7 +65,7 @@ import {
   parseAskUserQuestion,
 } from './askUserQuestion';
 import type { AuthState } from '@shared/auth';
-import type { LimitState } from '@shared/limit';
+import type { LimitState, LimitType } from '@shared/limit';
 import type { UsageSample, UsageSource } from '@shared/usage';
 import {
   AGREE_SENTINEL,
@@ -102,7 +102,7 @@ import type { PermissionGate } from './claudeSession';
 import { buildChainSummary } from './chainSummary';
 import { shouldSurfaceEvent } from './eventNoise';
 import { AuthGate, detectAuthFailure, isAuthFailureText } from './authGate';
-import { isBlockingLimitStatus, LimitGate } from './limitGate';
+import { classifyLimit, isBlockingLimitStatus, LimitGate } from './limitGate';
 import type { PermissionRequest, PermissionDecisionResult } from './permissionBroker';
 import { EXIT_PLAN_MODE_TOOL, evaluateToolUse } from './permissionPolicy';
 import { tickPlanCheckbox } from './planParser';
@@ -1041,7 +1041,11 @@ export class Scheduler {
    * blocking one), so the Performance dashboard can show whether the account is
    * approaching a usage limit and when the window resets. Purely informational.
    */
-  private lastRateLimit: { status: string; resetsAt: number | null } | null = null;
+  private lastRateLimit: {
+    status: string;
+    rateLimitType: string;
+    resetsAt: number | null;
+  } | null = null;
 
   constructor(
     private readonly store: Store,
@@ -2783,12 +2787,23 @@ export class Scheduler {
 
   /**
    * Current usage pressure for the Performance summary: the last rate-limit status the
-   * CLI reported, its reset time, and whether the account-wide gate is engaged.
+   * CLI reported, its reset time, WHICH window that reset belongs to, and whether the
+   * account-wide gate is engaged.
+   *
+   * `limitType` is what stops the quota bars anchoring the 5-hour window to a weekly
+   * cap's reset — the CLI reports both through the same event, and a weekly reset used
+   * as a session anchor would move the session's window by up to seven days.
    */
-  getUsagePressure(): { status: string | null; resetsAt: number | null; limitActive: boolean } {
+  getUsagePressure(): {
+    status: string | null;
+    resetsAt: number | null;
+    limitType: LimitType | null;
+    limitActive: boolean;
+  } {
     return {
       status: this.lastRateLimit?.status ?? null,
       resetsAt: this.lastRateLimit?.resetsAt ?? null,
+      limitType: this.lastRateLimit ? classifyLimit(this.lastRateLimit.rateLimitType) : null,
       limitActive: this.limitGate.active,
     };
   }
@@ -2922,7 +2937,11 @@ export class Scheduler {
       case 'rate-limit':
         // Remember the latest signal (any status) so the Performance dashboard can show
         // whether we're approaching a limit and when the window resets.
-        this.lastRateLimit = { status: event.status, resetsAt: event.resetsAt };
+        this.lastRateLimit = {
+          status: event.status,
+          rateLimitType: event.rateLimitType,
+          resetsAt: event.resetsAt,
+        };
         // A usage limit signal (Phase 5). Only a HARD rejection parks work — an
         // `allowed`/`allowed_warning` (approaching the cap) or an empty status must
         // NOT engage the gate, or a mere warning falsely parks everything for a full

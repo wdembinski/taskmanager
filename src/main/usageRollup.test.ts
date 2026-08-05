@@ -3,10 +3,18 @@
  * just samples in, summary/series out, so the app's accounting is pinned down.
  */
 import { describe, expect, it } from 'vitest';
-import type { UsageSample } from '@shared/usage';
-import { bucketSeries, burnRate, rollupWindow } from './usageRollup';
+import { type UsageSample, USAGE_WINDOW_MS, WEEKLY_WINDOW_MS } from '@shared/usage';
+import {
+  bucketSeries,
+  burnRate,
+  rollupQuotas,
+  rollupWindow,
+  type TokensIn,
+  usageQuota,
+} from './usageRollup';
 
 const MIN = 60_000;
+const HOUR = 60 * MIN;
 
 /** Build a usage sample with sensible defaults; totalTokens is derived if omitted. */
 function sample(partial: Partial<UsageSample> & { createdAt: number }): UsageSample {
@@ -205,5 +213,139 @@ describe('bucketSeries', () => {
     expect(series[0].tokens).toBe(150); // first two samples share the earliest bucket
     expect(series[2].tokens).toBe(200);
     expect(series[3].tokens).toBe(0); // current (empty) bucket keeps the chart scrolling
+  });
+});
+
+describe('usageQuota', () => {
+  const now = 100 * HOUR;
+  /** A `tokensIn` that records what window it was asked about and answers a fixed number. */
+  function reader(tokens: number): { fn: TokensIn; calls: Array<[number, number]> } {
+    const calls: Array<[number, number]> = [];
+    return {
+      fn: (from, to) => {
+        calls.push([from, to]);
+        return tokens;
+      },
+      calls,
+    };
+  }
+
+  it('measures spend against the budget as a percent', () => {
+    const quota = usageQuota({
+      id: 'session',
+      now,
+      windowMs: USAGE_WINDOW_MS,
+      resetAt: null,
+      limit: 200,
+      tokensIn: reader(50).fn,
+    });
+    expect(quota.tokens).toBe(50);
+    expect(quota.pct).toBe(25);
+    expect(quota.limit).toBe(200);
+  });
+
+  it('trails "now" when the CLI has never reported a reset', () => {
+    const { fn, calls } = reader(0);
+    const quota = usageQuota({
+      id: 'session',
+      now,
+      windowMs: USAGE_WINDOW_MS,
+      resetAt: null,
+      limit: 100,
+      tokensIn: fn,
+    });
+    expect(quota.windowStart).toBe(now - USAGE_WINDOW_MS);
+    expect(quota.windowEnd).toBe(now);
+    expect(quota.resetAt).toBeNull();
+    expect(calls[0][0]).toBe(now - USAGE_WINDOW_MS);
+  });
+
+  it('anchors the window to a known reset, and never sums past now', () => {
+    const resetAt = now + HOUR; // 4 hours in, 1 to go
+    const { fn, calls } = reader(0);
+    const quota = usageQuota({
+      id: 'session',
+      now,
+      windowMs: USAGE_WINDOW_MS,
+      resetAt,
+      limit: 100,
+      tokensIn: fn,
+    });
+    expect(quota.windowStart).toBe(resetAt - USAGE_WINDOW_MS);
+    expect(quota.windowEnd).toBe(resetAt);
+    expect(quota.resetAt).toBe(resetAt);
+    // The window ends in the future; the SUM must stop at the present moment.
+    expect(calls[0][1]).toBe(now + 1);
+  });
+
+  it('falls back to the trailing window when the reset has already passed', () => {
+    // A stale signal from before the last rollover must not pin the window in the past.
+    const quota = usageQuota({
+      id: 'session',
+      now,
+      windowMs: USAGE_WINDOW_MS,
+      resetAt: now - HOUR,
+      limit: 100,
+      tokensIn: reader(10).fn,
+    });
+    expect(quota.windowEnd).toBe(now);
+    expect(quota.resetAt).toBeNull();
+  });
+
+  it('reports over-budget honestly rather than clamping at 100%', () => {
+    const quota = usageQuota({
+      id: 'weekly',
+      now,
+      windowMs: WEEKLY_WINDOW_MS,
+      resetAt: null,
+      limit: 100,
+      tokensIn: reader(130).fn,
+    });
+    expect(quota.pct).toBe(130);
+  });
+
+  it('is 0% (not NaN) when no budget is set', () => {
+    const quota = usageQuota({
+      id: 'weekly',
+      now,
+      windowMs: WEEKLY_WINDOW_MS,
+      resetAt: null,
+      limit: 0,
+      tokensIn: reader(500).fn,
+    });
+    expect(quota.pct).toBe(0);
+    expect(quota.tokens).toBe(500);
+  });
+});
+
+describe('rollupQuotas', () => {
+  const now = 100 * HOUR;
+
+  it('measures the two windows separately, each against its own budget', () => {
+    const quotas = rollupQuotas({
+      now,
+      sessionLimit: 1000,
+      weeklyLimit: 10_000,
+      // Answer by window width, so each bar is provably reading its own range.
+      tokensIn: (from, to) => (to - from > USAGE_WINDOW_MS + 1 ? 2500 : 400),
+    });
+    expect(quotas.session.pct).toBe(40);
+    expect(quotas.weekly.pct).toBe(25);
+    expect(quotas.session.windowStart).toBe(now - USAGE_WINDOW_MS);
+    expect(quotas.weekly.windowStart).toBe(now - WEEKLY_WINDOW_MS);
+  });
+
+  it('anchors only the window the reported reset belongs to', () => {
+    const resetAt = now + HOUR;
+    const quotas = rollupQuotas({
+      now,
+      sessionLimit: 100,
+      weeklyLimit: 100,
+      sessionReset: resetAt,
+      weeklyReset: null,
+      tokensIn: () => 0,
+    });
+    expect(quotas.session.windowEnd).toBe(resetAt);
+    expect(quotas.weekly.windowEnd).toBe(now);
   });
 });
