@@ -291,9 +291,11 @@ const UNRETRYABLE_FAILURE_PATTERNS: readonly RegExp[] = [
   // that has moved. Nothing about a second launch into the same missing path differs.
   /no such file or directory/i,
   /worktree preparation error/i,
-  // `describeEmptyOutcome`: the model was never called. The session started and died, so
-  // the second attempt is not a second chance at the work — it is the same dead start.
-  /without running a turn/i,
+  // Deliberately ABSENT: `describeEmptyOutcome`'s dead start ("ended without running a turn").
+  // It reads like an omission, so: it was measured as transient — 6 events on 4 cards, a
+  // process that spawned and died before the model was ever called — and it is the one empty
+  // outcome a second launch is a genuine second chance at. Unlike every pattern above, parking
+  // it early saves no tokens either: the run never reached the model, so it cost none.
 ];
 
 /**

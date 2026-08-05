@@ -882,12 +882,6 @@ describe('failure decision helpers (pure)', () => {
     // The directory the run needs is gone.
     expect(isRetryableFailure('ENOENT: no such file or directory, chdir C:/w/wt-t1')).toBe(false);
     expect(isRetryableFailure('Worktree preparation error: bad object HEAD')).toBe(false);
-    // `describeEmptyOutcome`'s dead-session verdict, verbatim.
-    expect(
-      isRetryableFailure(
-        'the session ended without running a turn — nothing was sent to the model',
-      ),
-    ).toBe(false);
   });
 
   /**
@@ -902,6 +896,14 @@ describe('failure decision helpers (pure)', () => {
     // The most common failure in the audit window — and genuinely worth a second go.
     expect(
       isRetryableFailure('the planning session ended without presenting a plan. If it stopped…'),
+    ).toBe(true);
+    // `describeEmptyOutcome`'s dead start, verbatim: a process that spawned and died before
+    // the model was called. Measured as transient (6 events on 4 cards), and it burned no
+    // tokens, so refusing it would remove self-healing from a flaky spawn and save nothing.
+    expect(
+      isRetryableFailure(
+        'the session ended without running a turn — nothing was sent to the model',
+      ),
     ).toBe(true);
   });
 

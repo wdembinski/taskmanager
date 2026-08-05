@@ -117,7 +117,9 @@ smoothed over.
 
 What the window also showed, outside this audit's scope but measured and worth someone's
 attention: **13 planning runs ended without ever presenting a plan** (~$33), and 6 runs
-ended without running a turn at all.
+ended without running a turn at all. Neither is a cause S3's classifier refuses — it names
+only the four walls a second attempt provably meets again (no CLI, no credentials, a closed
+usage window, a missing directory); both of these are transient, and still buy their retry.
 
 ---
 
