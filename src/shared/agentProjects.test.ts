@@ -21,6 +21,7 @@ const project = (over: Partial<Project>): Project => ({
   planAligned: true,
   kind: 'agent',
   jiraEpicKeys: [],
+  ticketPrefix: '',
   target: LOCAL_TARGET,
   instructions: '',
   color: '',

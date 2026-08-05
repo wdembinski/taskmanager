@@ -2908,7 +2908,7 @@ why every number below sits one minor line above the draft this section was writ
 picks up unplanned work it bumps for what it actually did and the rest shift with it: the
 ladder is a consequence of §4, not a schedule to be honoured against it.
 
-- [ ] **1** — Add ticket schema and store methods · `feat` → 0.71.0
+- [x] **1** — Add ticket schema and store methods · `feat` → 0.71.0
 - [ ] **2** — Expose ticket IPC and handlers · `feat` → 0.72.0
 - [ ] **3** — Verify ticket schema against SQLite · `test` → 0.72.1
 - [ ] **4** — Add Projects screen with backlog table · `feat` → 0.73.0

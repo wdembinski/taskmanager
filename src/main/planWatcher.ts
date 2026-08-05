@@ -16,7 +16,7 @@
  * polling is robust across all of them, and a ~1s latency is fine for this.
  */
 import { readFileSync, unwatchFile, watchFile, type Stats } from 'node:fs';
-import { isPersonalBoard, type Project, type Task } from '@shared/model';
+import { isPlanProject, type Project, type Task } from '@shared/model';
 import { parsePlan } from './planParser';
 import { appPlanPath } from './projectPaths';
 import type { Store } from './store';
@@ -43,10 +43,15 @@ export class PlanWatcher {
 
   /** Watch (or re-watch) a single project's plan file. Idempotent. */
   watch(project: Project): void {
-    // Neither the built-in Personal board nor an agent project has a plan file (both
-    // carry an empty planPath); never watch them, or an empty-plan re-sync would wipe
-    // the Personal board's JIRA/ad-hoc tasks.
-    if (isPersonalBoard(project.id) || project.kind === 'agent') return;
+    // Only a plan project has a plan file — the Personal board, an agent project and a
+    // ticket project all carry an empty planPath. Never watch the others, or an empty-plan
+    // re-sync would wipe the Personal board's JIRA/ad-hoc tasks (and, now, a ticket
+    // project's tickets).
+    //
+    // Asked as `isPlanProject`, not as "not personal and not agent": that elimination was
+    // correct only while `plan` and `agent` were the only two kinds, and it would have
+    // adopted ticket projects the day a third appeared.
+    if (!isPlanProject(project)) return;
     this.unwatch(project.id);
     // Named the way THIS process can open it: a WSL project's plan is on the distro's
     // filesystem, reachable from Windows only through the UNC share.

@@ -29,7 +29,8 @@ import type {
 } from '@shared/ipc';
 import {
   isManualStatus,
-  isPersonalBoard,
+  isPlanProject,
+  isRepoProject,
   PERSONAL_PROJECT_ID,
   type BoardColumn,
   type JiraStatusCategory,
@@ -483,7 +484,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   const targetsInUse = (): ExecTarget[] => {
     const targets = store
       .listProjects()
-      .filter((project) => !isPersonalBoard(project.id))
+      // `isRepoProject`, not "not the Personal board": a ticket project has no directory
+      // either, so its target is only whatever the default was the day it was created, and
+      // counting it would resurrect the very warning this filter exists to suppress.
+      .filter(isRepoProject)
       .map((project) => project.target);
     return targets.length > 0 ? targets : [store.getSettings().defaultExecTarget];
   };
@@ -542,8 +546,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
   handle('project:add', async (input) => {
     const project = store.addProject(input);
-    // An agent project has no plan file: nothing to parse, nothing to watch.
-    if (project.kind === 'agent') return { project, tasks: [] };
+    // Only a plan project has a plan file: for an agent or a ticket project there is
+    // nothing to parse and nothing to watch. Asked as `isPlanProject` rather than as
+    // `kind === 'agent'`, so a fourth kind cannot inherit the plan-parsing path by default.
+    if (!isPlanProject(project)) return { project, tasks: [] };
     const result = syncProjectPlan(store, project);
     watcher.watch(project); // pick up future edits to its plan file live
     return result;
@@ -552,10 +558,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('project:list', async () =>
     store
       .listProjects()
-      // Hide the built-in Personal board — it's the standalone My Tasks board, not a
-      // code project, so it must never appear on the Projects tab. Agent projects are
-      // hidden too: they belong to My Tasks (managed in Settings), not to this tab.
-      .filter((project) => !isPersonalBoard(project.id) && project.kind !== 'agent')
+      // Only plan projects belong on the Projects tab. The built-in Personal board is the
+      // standalone My Tasks board rather than a code project; agent projects belong to My
+      // Tasks (managed in Settings); a ticket project has its own surface. Stated as the
+      // kind we WANT — the old `!personal && kind !== 'agent'` would have listed every new
+      // kind on this tab by default.
+      .filter(isPlanProject)
       .map((project) => {
         const tasks = store.getTasks(project.id);
         // A stored `dependsOn` is the persisted form of a plan `@needs:` marker, so a

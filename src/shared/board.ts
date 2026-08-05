@@ -68,17 +68,27 @@ export function isRunStatus(status: TaskStatus): boolean {
 }
 
 /**
- * Whether this task's state belongs to the human alone — a top-level card of the
- * Personal board, the thing you drag between columns.
+ * Whether this task's state belongs to the human alone — a top-level card of the Personal
+ * board or a **native ticket**, the thing you drag between columns.
  *
  * Its two exclusions are the whole point. A **plan project's** tasks are a queue the
  * orchestrator drains, where `pending → running → done` IS the feature. A **step** of an
  * approved plan is not a card at all — it renders inside its parent, and the chain reads
  * its `done`/`failed` to know whether to advance. Both must keep the lifecycle they have;
  * only a card the human files by hand is protected from the agent.
+ *
+ * A native ticket (Phase 24) is the second kind of card that qualifies, and enlisting it
+ * here is a **choice, not a side effect**: this predicate also drives `guardCardStatus` and
+ * `preRunStatus`, so widening it means an agent run on a ticket borrows `status` rather than
+ * moving the ticket between columns. That is exactly right — a ticket's column is the
+ * human's, the same way a board card's is — but it had to be decided rather than discovered.
+ *
+ * Keyed on `task.source` rather than on its project's `kind`, so this stays a pure function
+ * of `Task` alone and every existing call site (none of which has a `Project` to hand)
+ * compiles unchanged.
  */
 export function isBoardCard(task: Task): boolean {
-  return isPersonalBoard(task.projectId) && !task.parentTaskId;
+  return (isPersonalBoard(task.projectId) || task.source === 'ticket') && !task.parentTaskId;
 }
 
 /**

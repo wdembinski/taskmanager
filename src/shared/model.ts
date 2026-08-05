@@ -115,8 +115,39 @@ export function isPersonalBoard(projectId: string): boolean {
  *   an agent. Agent projects are hidden from the Projects tab and skipped by the
  *   plan watcher; they exist as `projects` rows so worktrees, integration, usage
  *   attribution and the usage-limit gate all work on them unchanged.
+ * - `ticket` — a **native ticket project** (Phase 24): a key prefix (`TM`) and a set of
+ *   tickets the app itself owns, rather than mirrors from somebody else's tracker. It
+ *   has no repo directory and no plan file at all (see {@link Project.ticketPrefix});
+ *   its tickets are `tasks` rows with `source: 'ticket'`, so the board, the timeline,
+ *   the attachments and the chain of execution all work on them unchanged.
  */
-export type ProjectKind = 'plan' | 'agent';
+export type ProjectKind = 'plan' | 'agent' | 'ticket';
+
+/**
+ * Whether a project is the **legacy plan-driven kind** — the one the Projects tab lists,
+ * the plan watcher watches, and the scheduler drains a queue for.
+ *
+ * Deliberately a whitelist. Every one of these tests used to be written by *elimination*
+ * (`!isPersonalBoard(id) && kind !== 'agent'`), which is only correct while `plan` and
+ * `agent` are the only two kinds there are: the moment a third exists every one of them
+ * silently adopts it, and a ticket project would appear on the Projects tab with a plan
+ * file watched for a directory it does not have. Naming the kind you mean cannot do that.
+ */
+export function isPlanProject(project: Pick<Project, 'id' | 'kind'>): boolean {
+  return !isPersonalBoard(project.id) && project.kind === 'plan';
+}
+
+/**
+ * Whether a project is **a directory on a machine** — the kinds for which `path` and
+ * `target` mean something, so git, worktrees and "which distro does this run on" apply.
+ *
+ * The Personal board and a ticket project are both card lists rather than codebases: their
+ * `path` is `''` and their `target` is only whatever the default happened to be the day
+ * they were created. See {@link isPlanProject} for why this is a whitelist too.
+ */
+export function isRepoProject(project: Pick<Project, 'id' | 'kind'>): boolean {
+  return !isPersonalBoard(project.id) && (project.kind === 'plan' || project.kind === 'agent');
+}
 
 /** A project the app orchestrates: a directory plus the plan that drives it. */
 export interface Project {
@@ -221,6 +252,23 @@ export interface Project {
    */
   jiraEpicKeys: string[];
   /**
+   * For a **ticket project**: the key prefix its tickets are named with — `'TM'`, giving
+   * `TM-1`, `TM-2`, … See `@shared/ticketKey` for the canonical form (upper-case, no
+   * punctuation, never a bare number).
+   *
+   * `''` means the project has none, which is true of every project that is not a ticket
+   * project and of a ticket project nobody has named yet. Unique across the app,
+   * case-blind, enforced by a partial unique index over the non-empty ones — `TM` and `tm`
+   * are the same project's key to everyone but SQLite.
+   *
+   * The allocator behind the numbers (`ticketSeq`) is deliberately NOT on this type. It is
+   * a counter, not a property: it is stale the moment anyone creates a ticket, so a copy of
+   * it in an optimistic renderer would be wrong more often than right, and exposing it here
+   * would let a patch write it. It is read and bumped inside the store, by the one function
+   * that allocates a key, and by nothing else.
+   */
+  ticketPrefix: string;
+  /**
    * Which machine this project's work runs on: the Claude session, `git`, its
    * worktrees and its plan file. Defaults to `local` — the machine showing the
    * window — so a project that predates this field behaves exactly as before.
@@ -273,9 +321,18 @@ export interface AddProjectInput {
   /** Merge a finished card's branch by itself; defaults to `null` = follow the app setting. */
   autoIntegrate?: boolean | null;
   planAligned?: boolean;
-  /** Defaults to `plan`. `agent` forces a plan-less, worktree-isolated project. */
+  /**
+   * Defaults to `plan`. `agent` forces a plan-less, worktree-isolated project; `ticket`
+   * forces a project with no repo at all (`path`/`planPath` both `''`).
+   */
   kind?: ProjectKind;
   jiraEpicKeys?: string[];
+  /**
+   * The ticket key prefix, for `kind: 'ticket'`. Normalized on the way in and ignored for
+   * every other kind. Omitted (or unusable) leaves the project prefix-less, which simply
+   * means it cannot allocate a key yet — see {@link Project.ticketPrefix}.
+   */
+  ticketPrefix?: string;
   /** Defaults to the global `defaultExecTarget`. */
   target?: ExecTarget;
   instructions?: string;
@@ -307,6 +364,9 @@ export type ProjectPatch = Partial<
     | 'autoIntegrate'
     | 'planAligned'
     | 'jiraEpicKeys'
+    // Renaming a prefix re-keys every ticket the project owns, in the same transaction —
+    // the numbers are the durable part, the key is denormalised for display.
+    | 'ticketPrefix'
     | 'target'
     | 'instructions'
     | 'color'
@@ -360,6 +420,30 @@ export function resolveRunModel(
 export type TaskType = 'bug' | 'feature';
 
 /**
+ * The kind of a **native ticket** (Phase 24) — a third type field beside {@link TaskType}
+ * (the legacy ad-hoc `bug|feature`) and `Task.externalType` (JIRA's own, a free string).
+ *
+ * Three of them because they answer for three different owners and none can speak for the
+ * others: JIRA's is whatever that instance calls its issue types, the ad-hoc one is what a
+ * human picked in the Add-task dialog, and this is a closed set this app defines and can
+ * therefore reason about (`epic` is the one that has children). `typeIconKeyFor` in
+ * `@shared/tickets` is the single resolver over all three, so no two surfaces can disagree
+ * about what a card is.
+ */
+export type IssueType = 'epic' | 'story' | 'task' | 'bug' | 'subtask';
+
+/**
+ * How two tickets are related, as documentation — **not** as a gate.
+ *
+ * Deliberately apart from `LinkGate` in `@shared/taskChain`, which is the chain of
+ * execution: an arrow there decides *when a run may start*. One of these decides nothing at
+ * all. Conflating them would mean marking a ticket "duplicates" another and having the
+ * scheduler refuse to start it.
+ */
+export type TicketLinkType =
+  'blocks' | 'duplicates' | 'relates' | 'implements' | 'causes' | 'clones';
+
+/**
  * Why a card was taken off the board — see {@link Task.archivedReason}.
  *
  * Each one names a question JIRA answered, because that is the rule the sync enforces: no
@@ -409,8 +493,14 @@ export interface Task {
    *   - `jira`  : mirrored from a JIRA issue on the Personal board. A JIRA re-sync
    *               refreshes it, but its internal-only state (e.g. `blocked`) is
    *               preserved (see `jiraSync`).
+   *   - `ticket`: a **native ticket** of a `kind: 'ticket'` project (Phase 24) — this app
+   *               is the tracker, so nothing external ever refreshes or removes it.
+   *
+   * `ticket` is a value of its own rather than a flag beside `adhoc`, and that is the
+   * *structural* guarantee that `reconcileJiraTasks` can never adopt, rewrite or archive a
+   * native ticket: the reconciler filters on `source === 'jira'` in both directions.
    */
-  source: 'plan' | 'adhoc' | 'jira';
+  source: 'plan' | 'adhoc' | 'jira' | 'ticket';
   /**
    * True when this task authors the milestone's shared `CONTRACT.md` (team
    * orchestration, Phase C) — declared with a trailing `@contract` marker in the
@@ -687,6 +777,72 @@ export interface Task {
    */
   autoIntegrate?: boolean | null;
 
+  // --- Native tickets (Phase 24). All null/empty unless `source === 'ticket'`. ---
+  /**
+   * The ticket's permanent name — `'TM-123'`. Denormalised for display: the card, the
+   * backlog row, the Gantt gutter and the link picker all read it with no project lookup,
+   * exactly as {@link Task.externalKey} works for a JIRA issue.
+   *
+   * A key is a **name**, so it is never re-issued: deleting `TM-500` must not make the next
+   * ticket `TM-500` again, or every note, branch and link that ever mentioned it becomes a
+   * lie. That is why the number below comes from the project's own allocator and never from
+   * `MAX(ticketNumber)`. Null for everything that is not a native ticket.
+   */
+  ticketKey?: string | null;
+  /**
+   * The durable half of the key: the ordinal the project's allocator issued. Stored beside
+   * `ticketKey` so a prefix rename is one `UPDATE` over the project's rows rather than a
+   * re-numbering — the number is what the ticket IS, the key is how it reads.
+   */
+  ticketNumber?: number | null;
+  /** What kind of ticket this is; see {@link IssueType}. Null for non-tickets. */
+  issueType?: IssueType | null;
+  /**
+   * The **epic** this ticket hangs under — a task row of its own with
+   * `issueType: 'epic'` — or null.
+   *
+   * Deliberately NOT `parentTaskId`, which already means "step of an approved plan":
+   * `groupSubtasks` renders such children *inside* the parent card and `chainRunner`
+   * executes them in order, so reusing it would silently turn every story under an epic
+   * into an executable step of it.
+   */
+  epicTaskId?: string | null;
+  /** The milestone this ticket is planned for (a `milestones` row), or null. */
+  milestoneId?: string | null;
+  /**
+   * The ticket's labels, **by name** — the chips on the card, and what the label filter
+   * matches on.
+   *
+   * Names rather than ids, and denormalised onto the row rather than kept in a join table,
+   * for the same two reasons: the board read is the hottest query in the app and a join
+   * would add a second query plus a per-render regroup to it, and deleting a label should
+   * degrade a chip to grey rather than dangle. `dependsOn` sets the precedent for the
+   * encoding — a JSON array of strings in one column.
+   *
+   * Undefined on a row that predates the field; read back as `[]`.
+   */
+  labels?: string[];
+  /**
+   * Estimated size in story points, or null for **not estimated**.
+   *
+   * Nullable rather than 0-defaulted on purpose: "nobody has estimated this" is a real
+   * state, and `0` cannot express it because 0 points is itself a legitimate estimate. A
+   * fractional number because half-points exist. Independent of `estimateDays` — the app
+   * invents no conversion between the two.
+   */
+  storyPoints?: number | null;
+  /** Estimated effort in days; null for not estimated. Fractional — half a day is the
+   *  commonest estimate there is. See {@link Task.storyPoints}. */
+  estimateDays?: number | null;
+  /** Epoch ms the work is planned to start — the left edge of the Gantt bar. Null = unplanned. */
+  startAt?: number | null;
+  /** Epoch ms the work is due — the right edge of the Gantt bar. Null = no date. */
+  dueAt?: number | null;
+  /** The {@link Person} this ticket is assigned to, by id, or null for unassigned. */
+  assigneeId?: string | null;
+  /** The {@link Person} who raised it, by id, or null. */
+  reporterId?: string | null;
+
   // --- The chain of execution (see `@shared/taskChain`). ---
   /**
    * Epoch ms this card's work **landed** — integration merged its branch, or a merge
@@ -716,6 +872,190 @@ export interface Task {
    */
   chainLandedAt?: number | null;
 }
+
+/**
+ * Somebody a ticket can be assigned to or reported by (Phase 24).
+ *
+ * **App-wide, not per project**, because a person works across projects: filing the same
+ * human once per project would make "assigned to me" a question with several answers.
+ */
+export interface Person {
+  id: string;
+  /** Display name, as typed. The only required field — everything else is decoration. */
+  name: string;
+  /** Their email, or `''`. Only ever a label here; the app sends nobody anything. */
+  email: string;
+  /**
+   * The two or three letters on the avatar — **stored, not derived**. Two "Anna K"s need
+   * different initials and only a human can say which is which; a deriver would give them
+   * the same ones forever.
+   */
+  initials: string;
+  /** Avatar colour as a hex string (`#0091FF`), or `''` for the default. */
+  color: string;
+  /**
+   * True for **you**. At most one person may carry it — a partial unique index enforces
+   * that, and setting it on somebody else clears it from whoever had it, in the same
+   * transaction. It is what lets a board filter say "mine" without asking.
+   */
+  isMe: boolean;
+  createdAt: number;
+}
+
+/** What a person is created/edited with. `name` is the only thing a caller must supply. */
+export interface PersonInput {
+  name: string;
+  email?: string;
+  /** Omitted (or blank) leaves the store to seed them from the name; edit them after. */
+  initials?: string;
+  color?: string;
+  isMe?: boolean;
+}
+
+/** The editable half of a {@link Person} — everything but its id and `createdAt`. */
+export type PersonPatch = Partial<Pick<Person, 'name' | 'email' | 'initials' | 'color' | 'isMe'>>;
+
+/**
+ * A dated goal a project's tickets are planned against — "Beta", "1.0" (Phase 24).
+ *
+ * A real table rather than a string on the ticket, because a milestone is drawn on the
+ * timeline **whether or not any ticket points at it**: a date nobody has planned work for
+ * yet is exactly the one worth seeing.
+ */
+export interface Milestone {
+  id: string;
+  /** The ticket project it belongs to. Cascades with it. */
+  projectId: string;
+  name: string;
+  description: string;
+  /** Epoch ms it is due, or null while it has no date. */
+  dueAt: number | null;
+  /** Hex colour for its marker on the timeline, or `''`. */
+  color: string;
+  /** Closed milestones stay on record but drop out of the pickers. */
+  closed: boolean;
+  createdAt: number;
+}
+
+/** What a milestone is created/edited with; only `name` is required. */
+export interface MilestoneInput {
+  name: string;
+  description?: string;
+  dueAt?: number | null;
+  color?: string;
+  closed?: boolean;
+}
+
+/** The editable half of a {@link Milestone}. Its project is fixed once created. */
+export type MilestonePatch = Partial<
+  Pick<Milestone, 'name' | 'description' | 'dueAt' | 'color' | 'closed'>
+>;
+
+/**
+ * A label a project's tickets may wear (Phase 24) — the registry that gives a label its
+ * colour and the filter dropdown its list.
+ *
+ * The tickets themselves carry label **names** (`Task.labels`), not ids, so deleting one of
+ * these degrades a chip to grey rather than leaving a dangling reference. Names are unique
+ * per project and matched case-blind, for the reason `task_attachments.name` is: the
+ * sameness a human means is case-blind, whatever SQLite thinks.
+ */
+export interface TicketLabel {
+  id: string;
+  projectId: string;
+  name: string;
+  /** Hex colour for the chip, or `''` for the default grey. */
+  color: string;
+  createdAt: number;
+}
+
+/** What a label is created/edited with; only `name` is required. */
+export interface TicketLabelInput {
+  name: string;
+  color?: string;
+}
+
+/** The editable half of a {@link TicketLabel}. Renaming it renames the chips too. */
+export type TicketLabelPatch = Partial<Pick<TicketLabel, 'name' | 'color'>>;
+
+/**
+ * One documented relationship between two tickets — "TM-4 blocks TM-9" (Phase 24).
+ *
+ * **One row per link, directed, read from either end**, rather than a row per direction:
+ * two rows would double every write and make "delete this link" ambiguous. Both ends are
+ * indexed, so the inward query is as cheap as the outward one, and `@shared/tickets` owns
+ * the phrasing that turns one row into the sentence each end reads.
+ *
+ * Gates nothing — see {@link TicketLinkType}.
+ */
+export interface TicketLink {
+  id: string;
+  /** The ticket the relationship is stated FROM: `from` *blocks* `to`. */
+  fromTaskId: string;
+  toTaskId: string;
+  type: TicketLinkType;
+  createdAt: number;
+}
+
+/**
+ * What creating a native ticket sends. Everything but the title is optional, because a
+ * ticket typed into a backlog in five seconds is the common case and every other field is
+ * something a human fills in later.
+ *
+ * The key is deliberately absent: it is the project's allocator's to issue, and a caller
+ * that could name a ticket could re-issue one.
+ */
+export interface TicketInput {
+  title: string;
+  /** The ticket's own brief. Lands in `externalDescription`, the field every surface
+   *  already reads a card's description from (`Task.description` is a step's brief). */
+  description?: string | null;
+  /** Defaults to `task`. */
+  issueType?: IssueType | null;
+  epicTaskId?: string | null;
+  milestoneId?: string | null;
+  labels?: string[];
+  storyPoints?: number | null;
+  estimateDays?: number | null;
+  startAt?: number | null;
+  dueAt?: number | null;
+  assigneeId?: string | null;
+  reporterId?: string | null;
+  /**
+   * The priority name ("High"). Native tickets reuse `externalPriority` rather than adding
+   * a column: `priorityRank`, the priority glyph and `sortCards` all read that field
+   * already, and `task:setPriority`'s JIRA write-back branch is keyed on
+   * `externalSource === 'jira'` — which a native ticket is not — so the same channel is
+   * local-only for it without a line of new code.
+   */
+  priority?: string | null;
+  /** The heading it files under, as on any other task. Defaults to `''`. */
+  phase?: string;
+}
+
+/**
+ * The ticket-specific fields a human may edit afterwards.
+ *
+ * `ticketKey` and `ticketNumber` are absent, and that is the point: a key is a permanent
+ * name. Renaming the project's prefix re-keys its tickets in one transaction (see
+ * `ProjectPatch`); nothing else may touch them. Title, description and priority keep going
+ * through the channels every other card already uses.
+ */
+export type TicketPatch = Partial<
+  Pick<
+    Task,
+    | 'issueType'
+    | 'epicTaskId'
+    | 'milestoneId'
+    | 'labels'
+    | 'storyPoints'
+    | 'estimateDays'
+    | 'startAt'
+    | 'dueAt'
+    | 'assigneeId'
+    | 'reporterId'
+  >
+>;
 
 /** What the assign-to-an-agent action sends: where to run, how, and an optional brief. */
 export interface AssignAgentInput {

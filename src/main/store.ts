@@ -16,15 +16,30 @@ import { basename } from 'node:path';
 import Database from 'better-sqlite3';
 import {
   type AddProjectInput,
+  type Milestone,
+  type MilestoneInput,
+  type MilestonePatch,
   PERSONAL_PROJECT_ID,
+  type Person,
+  type PersonInput,
+  type PersonPatch,
   type Project,
+  type ProjectKind,
   type ProjectPatch,
   type Task,
   type TaskActivityEntry,
   type TaskArchiveReason,
   type TaskStatus,
   type TaskType,
+  type TicketInput,
+  type TicketLabel,
+  type TicketLabelInput,
+  type TicketLabelPatch,
+  type TicketLink,
+  type TicketLinkType,
 } from '@shared/model';
+import { isIssueType, isTicketLinkType, normalizeLabels, seedInitials } from '@shared/tickets';
+import { formatTicketKey, normalizeTicketPrefix } from '@shared/ticketKey';
 import { formatExecTarget, parseExecTarget } from '@shared/execTarget';
 import { hostJoin } from '@shared/wslPath';
 import type { AuthState } from '@shared/auth';
@@ -134,6 +149,31 @@ interface TaskRow {
   landedAt: number | null;
   /** One-shot review marker; NULL once unset or never set. See `Task.chainLandedAt`. */
   chainLandedAt: number | null;
+  // Native tickets (Phase 24). NULL on everything that is not one.
+  /** The ticket's permanent name, `'TM-123'`. Partial-unique over the non-NULL rows. */
+  ticketKey: string | null;
+  /** The ordinal the project's allocator issued. See `Task.ticketNumber`. */
+  ticketNumber: number | null;
+  /** 'epic' | 'story' | 'task' | 'bug' | 'subtask'; validated on read, never trusted. */
+  issueType: string | null;
+  /** The epic this ticket hangs under — a task id, deliberately NOT `parentTaskId`. */
+  epicTaskId: string | null;
+  /** The milestone it is planned for; plain TEXT with no foreign key. See below. */
+  milestoneId: string | null;
+  /** JSON array of label NAMES (like `dependsOn`); NULL pre-migration, read as []. */
+  labels: string | null;
+  /** Story points as a REAL; NULL means "not estimated", which 0 cannot express. */
+  storyPoints: number | null;
+  /** Estimated days as a REAL; NULL means not estimated. */
+  estimateDays: number | null;
+  /** Epoch ms the work is planned to start; NULL = unplanned. */
+  startAt: number | null;
+  /** Epoch ms the work is due; NULL = no date. */
+  dueAt: number | null;
+  /** The assignee's `people` id; plain TEXT, nulled explicitly when the person goes. */
+  assigneeId: string | null;
+  /** The reporter's `people` id. Same treatment as `assigneeId`. */
+  reporterId: string | null;
 }
 
 /** A project row as stored; `writeBackPlan` is a 0/1 INTEGER (SQLite has no boolean). */
@@ -156,10 +196,24 @@ interface ProjectRow {
   /** The project's auto-merge preference as 0/1; NULL = follow the app-wide setting. */
   autoIntegrate: number | null;
   planAligned: number;
-  /** 'plan' | 'agent'; NULL is impossible (NOT NULL DEFAULT 'plan'), but old rows read back as 'plan'. */
+  /** 'plan' | 'agent' | 'ticket'; validated on read by `toProjectKind`, never trusted raw. */
   kind: string;
   /** JSON array of JIRA epic keys owned by an agent project; null for plan projects. */
   jiraEpicKeys: string | null;
+  /**
+   * The ticket key prefix, or NULL for a project that has none — which is every project
+   * that is not a ticket project. NULL rather than `''` because the uniqueness is enforced
+   * by a PARTIAL unique index (`WHERE ticketPrefix IS NOT NULL`), and `''` would collide
+   * across every existing row the moment the index was created.
+   */
+  ticketPrefix: string | null;
+  /**
+   * The key allocator: the highest ordinal this project has ever issued.
+   *
+   * Deliberately absent from `Project` — see `Project.ticketPrefix` for why. Read and
+   * bumped inside `createTicketTx` and nowhere else, so a `ProjectPatch` can never write it.
+   */
+  ticketSeq: number;
   /** Serialized ExecTarget: 'local' or 'wsl:<distro>'. */
   target: string;
   /** Standing per-project instructions; null for projects that predate the field. */
@@ -232,9 +286,34 @@ export interface Store {
         | 'chainLandedAt'
         | 'autoRelease'
         | 'autoIntegrate'
+        // Native tickets. `ticketKey`/`ticketNumber` are deliberately NOT patchable — a key
+        // is a permanent name, and the only thing allowed to rewrite one is a prefix rename
+        // (`updateProject`), which re-keys every ticket of the project at once.
+        | 'issueType'
+        | 'epicTaskId'
+        | 'milestoneId'
+        | 'labels'
+        | 'storyPoints'
+        | 'estimateDays'
+        | 'startAt'
+        | 'dueAt'
+        | 'assigneeId'
+        | 'reporterId'
       >
     >,
   ): Task | undefined;
+  /**
+   * The cards ON a board, in order — the general form of `getPersonalTasks` below, which is
+   * now a wrapper on it.
+   *
+   * "A board" is any project whose tasks are cards a human arranges: the built-in Personal
+   * board and, since Phase 24, a ticket project. Archived rows are excluded, for the same
+   * reason they are there: every caller that draws a board wants what a human can see.
+   */
+  getBoardTasks(projectId: string): Task[];
+  /** The archived cards of one board, most recently archived first. The general form of
+   *  `getArchivedTasks`. */
+  getArchivedTasksFor(projectId: string): Task[];
   /**
    * The Personal board (JIRA + internal ad-hoc), ordered — the cards that are ON it.
    *
@@ -420,6 +499,69 @@ export interface Store {
   /** Change what "after" means for one arrow, without redrawing it. */
   setTaskLinkGate(id: string, gate: LinkGate): TaskLink | undefined;
 
+  // --- Native tickets (Phase 24). ---
+  /**
+   * Create a ticket in a ticket project, allocating its key.
+   *
+   * The bump of the project's counter and the INSERT are ONE transaction, so a refused
+   * create never burns a number. The next number comes from the counter and **never** from
+   * `MAX(ticketNumber)`: deleting `TM-500` must not make the next ticket `TM-500` again,
+   * because a key is a permanent name.
+   *
+   * Undefined when the title is blank, the project is unknown or is not a ticket project,
+   * or it has no prefix to name the ticket with — all four are "no ticket", not exceptions,
+   * exactly as `addTaskLink` treats its own refusals.
+   */
+  createTicket(projectId: string, input: TicketInput): Task | undefined;
+
+  /** Everyone the app knows about, oldest first. App-wide, not per project. */
+  listPeople(): Person[];
+  /** Add a person. Undefined when the name is blank. Setting `isMe` clears it elsewhere. */
+  addPerson(input: PersonInput): Person | undefined;
+  /** Edit one. Undefined for an unknown id. Setting `isMe` clears it from whoever had it. */
+  updatePerson(id: string, patch: PersonPatch): Person | undefined;
+  /**
+   * Forget a person, and null every `assigneeId`/`reporterId` that pointed at them **in the
+   * same transaction**.
+   *
+   * Explicitly, rather than through an `ON DELETE SET NULL` cascade, because a real cascade
+   * would change task rows with no IPC event behind it: this renderer refreshes on
+   * `project:tasksChanged`/`task:changed` and nothing polls, so the tickets would keep
+   * showing a person the database has forgotten until something unrelated redrew them.
+   */
+  deletePerson(id: string): void;
+
+  /** A project's milestones, earliest due first (undated last). */
+  listMilestones(projectId: string): Milestone[];
+  /** Add one. Undefined when the name is blank or the project is unknown. */
+  addMilestone(projectId: string, input: MilestoneInput): Milestone | undefined;
+  updateMilestone(id: string, patch: MilestonePatch): Milestone | undefined;
+  /** Delete it and null the `milestoneId` of every ticket that pointed at it, in one
+   *  transaction — see `deletePerson` for why this is not a cascade. */
+  deleteMilestone(id: string): void;
+
+  /** A project's label registry, oldest first — what gives a chip its colour. */
+  listTicketLabels(projectId: string): TicketLabel[];
+  /** Add one. Undefined when the name is blank, the project is unknown, or the name is
+   *  already taken in that project (the unique index, matched case-blind). */
+  addTicketLabel(projectId: string, input: TicketLabelInput): TicketLabel | undefined;
+  /** Edit one. A RENAME rewrites the name on every ticket wearing it, in the same
+   *  transaction — the tickets carry names, not ids. */
+  updateTicketLabel(id: string, patch: TicketLabelPatch): TicketLabel | undefined;
+  /** Delete it and strip the name from every ticket wearing it, in one transaction. */
+  deleteTicketLabel(id: string): void;
+
+  /** Every ticket link, oldest first. Small enough to hand over whole, like `listTaskLinks`. */
+  listTicketLinks(): TicketLink[];
+  /**
+   * Document a relationship between two tickets. Undefined when either end is unknown, the
+   * two are the same ticket, or that exact link already exists — the last is the UNIQUE
+   * constraint rather than a second opinion, as with `addTaskLink`.
+   */
+  addTicketLink(fromTaskId: string, toTaskId: string, type: TicketLinkType): TicketLink | undefined;
+  /** Erase one. No-op when it is already gone. */
+  deleteTicketLink(id: string): void;
+
   // --- Attachments (see `@shared/attachments`). ---
   /** Every attachment on the board, oldest first — the whole list `attachment:list` hands over. */
   listAttachments(): TaskAttachment[];
@@ -537,6 +679,22 @@ function normalizeEpicKeys(keys: string[] | undefined): string[] {
 }
 
 /**
+ * The stored `kind` as a {@link ProjectKind}, by **explicit whitelist**.
+ *
+ * This used to be `r.kind === 'agent' ? 'agent' : 'plan'`, inline in `rowToProject`, and
+ * that ternary is a trap the moment a third kind exists: a `'ticket'` row written by this
+ * very build would read back as a **plan project**, and every kind-test in the app that is
+ * written as "not agent" would then adopt it — the Projects tab would list it and the plan
+ * watcher would watch a plan file for a directory it does not have. A whitelist degrades an
+ * unknown value to `plan` exactly as before, but only values nobody has heard of.
+ */
+function toProjectKind(raw: string): ProjectKind {
+  if (raw === 'agent') return 'agent';
+  if (raw === 'ticket') return 'ticket';
+  return 'plan';
+}
+
+/**
  * Open (or create) the database at `dbPath` and return the store API.
  * `join(app.getPath('userData'), 'orchestrator.db')` is the production path.
  */
@@ -563,6 +721,13 @@ export function createStore(dbPath: string): Store {
       planAligned           INTEGER NOT NULL DEFAULT 0,
       kind                  TEXT NOT NULL DEFAULT 'plan',
       jiraEpicKeys          TEXT,
+      -- A ticket project's key prefix ('TM'), NULL for every other kind. COLLATE NOCASE
+      -- for the reason task_attachments.name has it: the uniqueness a human means by "that
+      -- prefix is taken" is case-blind, and TM and tm are the same project's key to
+      -- everyone but SQLite. Its partial unique index is created after the ALTERs below.
+      ticketPrefix          TEXT COLLATE NOCASE,
+      -- The key allocator. Not a field on Project — see ProjectRow.ticketSeq.
+      ticketSeq             INTEGER NOT NULL DEFAULT 0,
       target                TEXT NOT NULL DEFAULT 'local',
       instructions          TEXT,
       color                 TEXT,
@@ -615,7 +780,25 @@ export function createStore(dbPath: string): Store {
       landedAt               INTEGER,
       chainLandedAt          INTEGER,
       autoRelease            INTEGER,
-      autoIntegrate          INTEGER
+      autoIntegrate          INTEGER,
+      -- Native tickets (Phase 24). epicTaskId / milestoneId / assigneeId / reporterId are
+      -- plain TEXT with NO foreign key, exactly as parentTaskId already is: foreign_keys is
+      -- ON above, so a declared cascade really fires, and one here would change task rows
+      -- with no IPC event behind it. Their owners null them explicitly instead.
+      ticketKey              TEXT,
+      ticketNumber           INTEGER,
+      issueType              TEXT,
+      epicTaskId             TEXT,
+      milestoneId            TEXT,
+      labels                 TEXT,
+      -- REAL, not INTEGER: half-points exist and "half a day" is the commonest estimate
+      -- there is. Nullable and never 0-defaulted — see Task.storyPoints.
+      storyPoints            REAL,
+      estimateDays           REAL,
+      startAt                INTEGER,
+      dueAt                  INTEGER,
+      assigneeId             TEXT,
+      reporterId             TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(projectId, "order");
     CREATE TABLE IF NOT EXISTS app_state (
@@ -792,6 +975,82 @@ export function createStore(dbPath: string): Store {
       createdAt INTEGER NOT NULL,
       UNIQUE (taskId, name)
     );
+    -- Native tickets (Phase 24). Four NEW tables, so nothing to migrate.
+    --
+    -- People are APP-WIDE, not per project: a person works across projects, and filing the
+    -- same human once per project would make "assigned to me" a question with several
+    -- answers. No foreign key from tasks — see the tasks block above for why.
+    --
+    -- The partial unique index is what makes "me" singular. It covers only the rows where
+    -- isMe = 1, so the many zeroes never collide; setting it on somebody new clears it from
+    -- whoever had it, in the same transaction, or this index refuses the write.
+    CREATE TABLE IF NOT EXISTS people (
+      id        TEXT PRIMARY KEY,
+      name      TEXT NOT NULL,
+      email     TEXT,
+      -- Stored, not derived: two "Anna K"s need different initials and only a human can
+      -- say which is which.
+      initials  TEXT NOT NULL,
+      color     TEXT,
+      isMe      INTEGER NOT NULL DEFAULT 0,
+      createdAt INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_people_me ON people(isMe) WHERE isMe = 1;
+    -- A dated goal a project's tickets are planned against. A real table rather than a
+    -- string on the ticket, because a milestone is drawn on the timeline whether or not any
+    -- ticket points at it — a date nobody has planned work for yet is exactly the one worth
+    -- seeing. Cascades with its project, which is one of the two places a real cascade is
+    -- kept: the renderer re-reads the whole list when a project goes.
+    CREATE TABLE IF NOT EXISTS milestones (
+      id          TEXT PRIMARY KEY,
+      projectId   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name        TEXT NOT NULL,
+      description TEXT,
+      dueAt       INTEGER,
+      color       TEXT,
+      closed      INTEGER NOT NULL DEFAULT 0,
+      createdAt   INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_milestones_project ON milestones(projectId, dueAt);
+    -- The label registry: what gives a label its colour and the filter dropdown its list.
+    -- The TICKETS carry names rather than ids (tasks.labels, a JSON array), so deleting a
+    -- row here degrades a chip to grey instead of dangling — and so the board read, the
+    -- hottest query in the app, needs no join and no per-render regroup.
+    --
+    -- COLLATE NOCASE on the name for the same reason the prefix has it: Backend and backend
+    -- are one label to everybody but SQLite, and a ticket wearing both would draw two chips
+    -- and survive exactly one of the two deletes.
+    CREATE TABLE IF NOT EXISTS ticket_labels (
+      id        TEXT PRIMARY KEY,
+      projectId TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name      TEXT NOT NULL COLLATE NOCASE,
+      color     TEXT,
+      createdAt INTEGER NOT NULL,
+      UNIQUE (projectId, name)
+    );
+    -- Documented relationships between tickets, named APART from task_links on purpose.
+    -- task_links is the chain of execution — an arrow there gates when a run may start
+    -- (see shared/taskChain.ts). One of these gates nothing at all. Conflating them would
+    -- mean marking a ticket "duplicates" another and having the scheduler refuse to start
+    -- it.
+    --
+    -- One row per link, DIRECTED, with an inverse lookup — not two rows. Two would double
+    -- every write and make "delete this link" ambiguous. Both ends are indexed, exactly as
+    -- task_links indexes both, so the inward query is as cheap as the outward one.
+    --
+    -- The cascade to tasks is the second place a real one is kept: a deleted ticket must
+    -- not leave an arrow pointing at nothing, and the renderer re-reads the whole link list
+    -- when a card goes anyway.
+    CREATE TABLE IF NOT EXISTS ticket_links (
+      id         TEXT PRIMARY KEY,
+      fromTaskId TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      toTaskId   TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      type       TEXT NOT NULL DEFAULT 'relates',
+      createdAt  INTEGER NOT NULL,
+      UNIQUE (fromTaskId, toTaskId, type)
+    );
+    CREATE INDEX IF NOT EXISTS idx_ticket_links_from ON ticket_links(fromTaskId);
+    CREATE INDEX IF NOT EXISTS idx_ticket_links_to   ON ticket_links(toTaskId);
   `);
 
   // Migrate databases created before Phase 3 added the write-back column.
@@ -853,6 +1112,25 @@ export function createStore(dbPath: string): Store {
   if (!projectColumns.some((c) => c.name === 'planningModel')) {
     db.exec(`ALTER TABLE projects ADD COLUMN planningModel TEXT`);
   }
+
+  // Migrate databases created before native ticket projects (Phase 24). NULL on every
+  // existing row — no project had a key prefix, and NULL rather than '' is what lets the
+  // partial unique index below ignore them all instead of finding one collision per row.
+  // The allocator starts at 0, so the first ticket any project ever issues is number 1.
+  if (!projectColumns.some((c) => c.name === 'ticketPrefix')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN ticketPrefix TEXT COLLATE NOCASE`);
+  }
+  if (!projectColumns.some((c) => c.name === 'ticketSeq')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN ticketSeq INTEGER NOT NULL DEFAULT 0`);
+  }
+  // Created after the ALTER, not in the schema block above, for the reason
+  // `idx_tasks_parent` is: on an older database the column does not exist until the ALTER
+  // has run. PARTIAL, so the projects with no prefix — which is every existing one — do not
+  // all collide on NULL.
+  db.exec(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_ticket_prefix
+       ON projects(ticketPrefix) WHERE ticketPrefix IS NOT NULL`,
+  );
 
   // Migrate databases created before per-stage pipeline detail. NULL reads back as [], and
   // the UI falls back to the single overall status for those rows — exactly how every MR
@@ -997,6 +1275,23 @@ export function createStore(dbPath: string): Store {
     // the version that added `archivedAt` and nothing else — which the Removed-cards list
     // reads as "removed by an earlier version" rather than inventing a reason for it.
     ['archivedReason', 'TEXT'],
+    // Native tickets (Phase 24). NULL on every pre-existing row, which is exactly "this is
+    // not a ticket" — nothing about those cards changes, and the twelve columns stay empty
+    // until a ticket project exists to fill them.
+    ['ticketKey', 'TEXT'],
+    ['ticketNumber', 'INTEGER'],
+    ['issueType', 'TEXT'],
+    ['epicTaskId', 'TEXT'],
+    ['milestoneId', 'TEXT'],
+    ['labels', 'TEXT'],
+    // REAL on purpose, and nullable: NULL means "not estimated", which 0 cannot express
+    // because 0 points is itself a legitimate estimate. See `Task.storyPoints`.
+    ['storyPoints', 'REAL'],
+    ['estimateDays', 'REAL'],
+    ['startAt', 'INTEGER'],
+    ['dueAt', 'INTEGER'],
+    ['assigneeId', 'TEXT'],
+    ['reporterId', 'TEXT'],
   ] as Array<[string, string]>) {
     if (!taskColumns.some((c) => c.name === name)) {
       db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
@@ -1005,6 +1300,17 @@ export function createStore(dbPath: string): Store {
   // Created after the migration above, not in the schema block: on a pre-Phase-11 database
   // the column does not exist until the ALTER has run.
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parentTaskId, "order")`);
+  // Same position, same reason. The unique one is the schema-level backstop under the
+  // promise that a key is never re-issued: whatever a caller does, two rows can never wear
+  // one name. PARTIAL, so every non-ticket row's NULL is ignored rather than colliding.
+  db.exec(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_ticket_key
+       ON tasks(ticketKey) WHERE ticketKey IS NOT NULL`,
+  );
+  // An epic's children and a milestone's tickets are both read by the id they point at —
+  // the Gantt groups by the first and the timeline markers by the second.
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_epic ON tasks(epicTaskId, "order")`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_milestone ON tasks(milestoneId)`);
 
   // Seed the built-in Personal board project (idempotent). It hosts the standalone
   // My Tasks board (JIRA tickets + internal ad-hoc tasks); it has no repo/plan, so
@@ -1091,8 +1397,8 @@ export function createStore(dbPath: string): Store {
   }
 
   const insertProject = db.prepare<[ProjectRow]>(
-    `INSERT INTO projects (id, name, path, planPath, defaultModel, planningModel, defaultPermissionMode, concurrency, useWorktrees, baseBranch, writeBackPlan, autoRelease, autoIntegrate, planAligned, kind, jiraEpicKeys, target, instructions, color, createdAt)
-     VALUES (@id, @name, @path, @planPath, @defaultModel, @planningModel, @defaultPermissionMode, @concurrency, @useWorktrees, @baseBranch, @writeBackPlan, @autoRelease, @autoIntegrate, @planAligned, @kind, @jiraEpicKeys, @target, @instructions, @color, @createdAt)`,
+    `INSERT INTO projects (id, name, path, planPath, defaultModel, planningModel, defaultPermissionMode, concurrency, useWorktrees, baseBranch, writeBackPlan, autoRelease, autoIntegrate, planAligned, kind, jiraEpicKeys, ticketPrefix, ticketSeq, target, instructions, color, createdAt)
+     VALUES (@id, @name, @path, @planPath, @defaultModel, @planningModel, @defaultPermissionMode, @concurrency, @useWorktrees, @baseBranch, @writeBackPlan, @autoRelease, @autoIntegrate, @planAligned, @kind, @jiraEpicKeys, @ticketPrefix, @ticketSeq, @target, @instructions, @color, @createdAt)`,
   );
   const selectProjects = db.prepare(`SELECT * FROM projects ORDER BY createdAt`);
   const selectProject = db.prepare(`SELECT * FROM projects WHERE id = ?`);
@@ -1125,7 +1431,9 @@ export function createStore(dbPath: string): Store {
         externalDescription,
         preBlockStatus, preRunStatus, retainedSince, archivedAt, archivedReason, lastReadCommentAt, latestCommentAt,
         projectTagId, agentProjectId, agentMode, agentModel,
-        agentPlan, agentBranch, planRound, landedAt, chainLandedAt, autoRelease, autoIntegrate)
+        agentPlan, agentBranch, planRound, landedAt, chainLandedAt, autoRelease, autoIntegrate,
+        ticketKey, ticketNumber, issueType, epicTaskId, milestoneId, labels,
+        storyPoints, estimateDays, startAt, dueAt, assigneeId, reporterId)
      VALUES
        (@id, @projectId, @phase, @title, @status, @sessionId, @order, @source, @dependsOn, @isContract, @isScaffold, @type,
         @parentTaskId, @description, @statusNote, @statusNoteAt,
@@ -1137,7 +1445,15 @@ export function createStore(dbPath: string): Store {
         -- an UPDATE, so a card created already filed (the Add-task dialog's Project
         -- picker) used to lose its project between the form and the row.
         @projectTagId, @agentProjectId, @agentMode, @agentModel,
-        @agentPlan, @agentBranch, @planRound, @landedAt, @chainLandedAt, @autoRelease, @autoIntegrate)`,
+        @agentPlan, @agentBranch, @planRound, @landedAt, @chainLandedAt, @autoRelease, @autoIntegrate,
+        -- The twelve ticket columns are listed HERE as well as in the column list above,
+        -- and that is the whole discipline: a column added to the table, the row type and
+        -- the writer but not to this statement is silently dropped at creation. That is
+        -- exactly what happened to projectTagId (see the comment above it), and a ticket
+        -- that lost its epic or its due date between the form and the row would be the
+        -- same bug wearing a different name.
+        @ticketKey, @ticketNumber, @issueType, @epicTaskId, @milestoneId, @labels,
+        @storyPoints, @estimateDays, @startAt, @dueAt, @assigneeId, @reporterId)`,
   );
   const deleteTask = db.prepare(`DELETE FROM tasks WHERE id = ?`);
   // Archiving is one column, written by id. Both statements take the card AND its steps in
@@ -1445,6 +1761,166 @@ export function createStore(dbPath: string): Store {
   const deleteTaskLinkStmt = db.prepare(`DELETE FROM task_links WHERE id = ?`);
   const updateTaskLinkGate = db.prepare(`UPDATE task_links SET gate = ? WHERE id = ?`);
 
+  // --- Native tickets (Phase 24). ---------------------------------------------------
+
+  /** How many keys a project has issued — asked before a prefix is allowed to be cleared. */
+  const countProjectTickets = db.prepare(
+    `SELECT COUNT(*) AS n FROM tasks WHERE projectId = ? AND ticketNumber IS NOT NULL`,
+  );
+  // Re-key a project's tickets after a prefix rename. `||` concatenates, and SQLite coerces
+  // the INTEGER ordinal to text — so this is the whole rename, in one statement, with the
+  // numbers (the durable half) untouched.
+  const rekeyProjectTickets = db.prepare(
+    `UPDATE tasks SET ticketKey = @prefix || '-' || ticketNumber
+       WHERE projectId = @id AND ticketNumber IS NOT NULL`,
+  );
+  // The two halves of key allocation, deliberately not one RETURNING statement: they only
+  // ever run inside `createTicketTx`, where the transaction is what makes them atomic, and
+  // two obvious statements beat one clever one in the place where being wrong renames a
+  // ticket somebody else has already written down.
+  const bumpTicketSeq = db.prepare(`UPDATE projects SET ticketSeq = ticketSeq + 1 WHERE id = ?`);
+  const readTicketSeq = db.prepare(`SELECT ticketSeq FROM projects WHERE id = ?`);
+
+  interface PersonRow {
+    id: string;
+    name: string;
+    email: string | null;
+    initials: string;
+    color: string | null;
+    isMe: number;
+    createdAt: number;
+  }
+
+  function rowToPerson(r: PersonRow): Person {
+    return {
+      id: r.id,
+      name: r.name,
+      email: r.email ?? '',
+      initials: r.initials,
+      color: r.color ?? '',
+      isMe: r.isMe !== 0,
+      createdAt: r.createdAt,
+    };
+  }
+
+  const selectPeople = db.prepare(`SELECT * FROM people ORDER BY createdAt, rowid`);
+  const selectPerson = db.prepare(`SELECT * FROM people WHERE id = ?`);
+  const insertPerson = db.prepare<[PersonRow]>(
+    `INSERT INTO people (id, name, email, initials, color, isMe, createdAt)
+     VALUES (@id, @name, @email, @initials, @color, @isMe, @createdAt)`,
+  );
+  const deletePersonStmt = db.prepare(`DELETE FROM people WHERE id = ?`);
+  // What makes "me" singular in practice; the partial unique index is the backstop under it.
+  const clearIsMe = db.prepare(`UPDATE people SET isMe = 0 WHERE isMe = 1`);
+  const clearAssignee = db.prepare(`UPDATE tasks SET assigneeId = NULL WHERE assigneeId = ?`);
+  const clearReporter = db.prepare(`UPDATE tasks SET reporterId = NULL WHERE reporterId = ?`);
+
+  interface MilestoneRow {
+    id: string;
+    projectId: string;
+    name: string;
+    description: string | null;
+    dueAt: number | null;
+    color: string | null;
+    closed: number;
+    createdAt: number;
+  }
+
+  function rowToMilestone(r: MilestoneRow): Milestone {
+    return {
+      id: r.id,
+      projectId: r.projectId,
+      name: r.name,
+      description: r.description ?? '',
+      dueAt: r.dueAt ?? null,
+      color: r.color ?? '',
+      closed: r.closed !== 0,
+      createdAt: r.createdAt,
+    };
+  }
+
+  // Earliest due first, and the undated LAST rather than first — SQLite sorts NULL before
+  // everything, and a milestone nobody has dated is the one least worth the top of the list.
+  const selectMilestones = db.prepare(
+    `SELECT * FROM milestones WHERE projectId = ?
+     ORDER BY dueAt IS NULL, dueAt, createdAt`,
+  );
+  const selectMilestone = db.prepare(`SELECT * FROM milestones WHERE id = ?`);
+  const insertMilestone = db.prepare<[MilestoneRow]>(
+    `INSERT INTO milestones (id, projectId, name, description, dueAt, color, closed, createdAt)
+     VALUES (@id, @projectId, @name, @description, @dueAt, @color, @closed, @createdAt)`,
+  );
+  const deleteMilestoneStmt = db.prepare(`DELETE FROM milestones WHERE id = ?`);
+  const clearMilestoneOnTasks = db.prepare(
+    `UPDATE tasks SET milestoneId = NULL WHERE milestoneId = ?`,
+  );
+
+  interface TicketLabelRow {
+    id: string;
+    projectId: string;
+    name: string;
+    color: string | null;
+    createdAt: number;
+  }
+
+  function rowToTicketLabel(r: TicketLabelRow): TicketLabel {
+    return {
+      id: r.id,
+      projectId: r.projectId,
+      name: r.name,
+      color: r.color ?? '',
+      createdAt: r.createdAt,
+    };
+  }
+
+  const selectTicketLabels = db.prepare(
+    `SELECT * FROM ticket_labels WHERE projectId = ? ORDER BY createdAt, rowid`,
+  );
+  const selectTicketLabel = db.prepare(`SELECT * FROM ticket_labels WHERE id = ?`);
+  const insertTicketLabel = db.prepare<[TicketLabelRow]>(
+    `INSERT INTO ticket_labels (id, projectId, name, color, createdAt)
+     VALUES (@id, @projectId, @name, @color, @createdAt)
+     ON CONFLICT DO NOTHING`,
+  );
+  const updateTicketLabelStmt = db.prepare(
+    `UPDATE ticket_labels SET name = @name, color = @color WHERE id = @id`,
+  );
+  const deleteTicketLabelStmt = db.prepare(`DELETE FROM ticket_labels WHERE id = ?`);
+  // The rows a label rename or delete has to visit. Scoped to the label's own project,
+  // because a label is per-project and two projects may perfectly well both have "backend".
+  const selectLabelledTasks = db.prepare(
+    `SELECT id, labels FROM tasks WHERE projectId = ? AND labels IS NOT NULL`,
+  );
+  const writeTaskLabels = db.prepare(`UPDATE tasks SET labels = @labels WHERE id = @id`);
+
+  interface TicketLinkRow {
+    id: string;
+    fromTaskId: string;
+    toTaskId: string;
+    type: string;
+    createdAt: number;
+  }
+
+  /** An unknown `type` degrades to `relates` — the weakest true thing — rather than
+   *  dropping the link, exactly as `rowToTaskLink` degrades an unknown gate. */
+  function rowToTicketLink(r: TicketLinkRow): TicketLink {
+    return {
+      id: r.id,
+      fromTaskId: r.fromTaskId,
+      toTaskId: r.toTaskId,
+      type: isTicketLinkType(r.type) ? r.type : 'relates',
+      createdAt: r.createdAt,
+    };
+  }
+
+  const selectTicketLinks = db.prepare(`SELECT * FROM ticket_links ORDER BY createdAt, rowid`);
+  const insertTicketLink = db.prepare<[TicketLinkRow]>(
+    `INSERT INTO ticket_links (id, fromTaskId, toTaskId, type, createdAt)
+     VALUES (@id, @fromTaskId, @toTaskId, @type, @createdAt)
+     ON CONFLICT DO NOTHING`,
+  );
+  const deleteTicketLinkStmt = db.prepare(`DELETE FROM ticket_links WHERE id = ?`);
+
   const selectAttachments = db.prepare(`SELECT * FROM task_attachments ORDER BY createdAt, rowid`);
   const selectAttachmentsForTask = db.prepare(
     `SELECT * FROM task_attachments WHERE taskId = ? ORDER BY createdAt, rowid`,
@@ -1600,8 +2076,13 @@ export function createStore(dbPath: string): Store {
       autoIntegrate:
         r.autoIntegrate === null || r.autoIntegrate === undefined ? null : r.autoIntegrate !== 0,
       planAligned: r.planAligned !== 0,
-      kind: r.kind === 'agent' ? 'agent' : 'plan',
+      kind: toProjectKind(r.kind),
       jiraEpicKeys: parseStringArray(r.jiraEpicKeys),
+      // NULL — "this project has no prefix" — presents as '' for the same reason `color`
+      // and `baseBranch` do: the renderer's absent value is an empty string, and the NULL
+      // exists only so the partial unique index can ignore the rows that have none.
+      // `ticketSeq` is deliberately NOT read out: it is the allocator, not a property.
+      ticketPrefix: r.ticketPrefix ?? '',
       target: parseExecTarget(r.target),
       instructions: r.instructions ?? '',
       color: r.color ?? '',
@@ -1699,6 +2180,21 @@ export function createStore(dbPath: string): Store {
           : task.autoIntegrate
             ? 1
             : 0,
+      // Native tickets. All plain values except `labels`, which is a JSON array of names in
+      // one column — the same encoding `dependsOn` uses above, read back by
+      // `parseStringArray`.
+      ticketKey: task.ticketKey ?? null,
+      ticketNumber: task.ticketNumber ?? null,
+      issueType: task.issueType ?? null,
+      epicTaskId: task.epicTaskId ?? null,
+      milestoneId: task.milestoneId ?? null,
+      labels: JSON.stringify(normalizeLabels(task.labels)),
+      storyPoints: task.storyPoints ?? null,
+      estimateDays: task.estimateDays ?? null,
+      startAt: task.startAt ?? null,
+      dueAt: task.dueAt ?? null,
+      assigneeId: task.assigneeId ?? null,
+      reporterId: task.reporterId ?? null,
     };
   }
 
@@ -1760,11 +2256,37 @@ export function createStore(dbPath: string): Store {
       // Ditto — see `@shared/integrate` for why the null must survive the round trip.
       autoIntegrate:
         r.autoIntegrate === null || r.autoIntegrate === undefined ? null : r.autoIntegrate !== 0,
+      ticketKey: r.ticketKey ?? null,
+      ticketNumber: r.ticketNumber ?? null,
+      // Validated rather than cast, the way `rowToTaskLink` validates its gate: an issue
+      // type written by a newer build reads back as "no type" — the neutral icon — instead
+      // of being asserted into a union it is not in.
+      issueType: r.issueType && isIssueType(r.issueType) ? r.issueType : null,
+      epicTaskId: r.epicTaskId ?? null,
+      milestoneId: r.milestoneId ?? null,
+      labels: parseStringArray(r.labels),
+      storyPoints: r.storyPoints ?? null,
+      estimateDays: r.estimateDays ?? null,
+      startAt: r.startAt ?? null,
+      dueAt: r.dueAt ?? null,
+      assigneeId: r.assigneeId ?? null,
+      reporterId: r.reporterId ?? null,
     };
   }
 
   function getTasks(projectId: string): Task[] {
     return (selectTasks.all(projectId) as TaskRow[]).map(rowToTask);
+  }
+
+  /** The cards ON one board, archived rows excluded. See the interface for what "a board"
+   *  means now that the Personal one is not the only kind. */
+  function getBoardTasks(projectId: string): Task[] {
+    return (selectBoardTasks.all(projectId) as TaskRow[]).map(rowToTask);
+  }
+
+  /** The archived cards of one board, most recently archived first. */
+  function getArchivedTasksFor(projectId: string): Task[] {
+    return (selectArchivedBoardTasks.all(projectId) as TaskRow[]).map(rowToTask);
   }
 
   function getTask(id: string): Task | undefined {
@@ -1791,6 +2313,125 @@ export function createStore(dbPath: string): Store {
     }
   });
 
+  /**
+   * Allocate a key and insert a ticket, atomically.
+   *
+   * The bump and the insert are one transaction so that a refused create never burns a
+   * number, and the number comes from the project's own counter and **never** from
+   * `MAX(ticketNumber)`: deleting `TM-500` must not make the next ticket `TM-500` again,
+   * because a key is a permanent name and re-issuing one makes every note, branch and link
+   * that ever mentioned it a lie. This is the first place in this app where skipping a
+   * transaction would corrupt a *name* rather than a row.
+   *
+   * Every refusal is checked BEFORE the bump, so it costs nothing. The one that cannot be
+   * (another project holding this prefix, caught by the partial unique index) throws out of
+   * the statement and rolls the counter back with it.
+   */
+  const createTicketTx = db.transaction(
+    (projectId: string, input: TicketInput): Task | undefined => {
+      const title = input.title.trim();
+      if (!title) return undefined;
+      const projectRow = selectProject.get(projectId) as ProjectRow | undefined;
+      if (!projectRow) return undefined;
+      const project = rowToProject(projectRow);
+      // Only a ticket project has an allocator, and only a prefixed one can name what it
+      // allocates. Both are "no ticket" rather than an exception, as with `addTaskLink`.
+      if (project.kind !== 'ticket') return undefined;
+      const prefix = normalizeTicketPrefix(project.ticketPrefix);
+      if (!prefix) return undefined;
+
+      bumpTicketSeq.run(projectId);
+      const ticketNumber = (readTicketSeq.get(projectId) as { ticketSeq: number }).ticketSeq;
+
+      const task: Task = {
+        id: randomUUID(),
+        projectId,
+        phase: input.phase?.trim() ?? '',
+        title,
+        status: 'pending',
+        sessionId: null,
+        order: (nextOrder.get(projectId) as { next: number }).next,
+        // Its own value, not `adhoc`: this is the structural guarantee that the JIRA
+        // reconciler — which filters on `source === 'jira'` in both directions — can never
+        // adopt, rewrite or archive a ticket this app owns.
+        source: 'ticket',
+        dependsOn: [],
+        isContract: false,
+        isScaffold: false,
+        // The card's brief goes where every other surface already reads one from
+        // (`Task.description` is a step's brief, which a ticket is not).
+        externalDescription: input.description?.trim() || null,
+        // Native tickets reuse the priority column JIRA cards use — see `TicketInput.priority`.
+        externalPriority: input.priority?.trim() || null,
+        ticketKey: formatTicketKey(prefix, ticketNumber),
+        ticketNumber,
+        issueType: input.issueType ?? 'task',
+        epicTaskId: input.epicTaskId ?? null,
+        milestoneId: input.milestoneId ?? null,
+        labels: normalizeLabels(input.labels),
+        storyPoints: input.storyPoints ?? null,
+        estimateDays: input.estimateDays ?? null,
+        startAt: input.startAt ?? null,
+        dueAt: input.dueAt ?? null,
+        assigneeId: input.assigneeId ?? null,
+        reporterId: input.reporterId ?? null,
+      };
+      insertTask.run(taskToRow(task));
+      return getTask(task.id);
+    },
+  );
+
+  /** Delete a person and null every ticket that pointed at them, in one transaction — see
+   *  the interface for why this is not an `ON DELETE SET NULL` cascade. */
+  const deletePersonTx = db.transaction((id: string) => {
+    clearAssignee.run(id);
+    clearReporter.run(id);
+    deletePersonStmt.run(id);
+  });
+
+  /** The same shape one level down: the milestone goes, and its tickets lose the pointer. */
+  const deleteMilestoneTx = db.transaction((id: string) => {
+    clearMilestoneOnTasks.run(id);
+    deleteMilestoneStmt.run(id);
+  });
+
+  /**
+   * Rewrite one label name across a project's tickets — `from` → `to`, or `to = null` to
+   * strip it.
+   *
+   * In JS rather than SQL because the column is a JSON array and the edit is per-row; the
+   * transaction is what makes it one change. Matched **case-blind**, mirroring the registry's
+   * `COLLATE NOCASE`: a ticket wearing `Backend` when the registry says `backend` is wearing
+   * that label, and a rename that missed it would leave an orphan chip nothing can remove.
+   */
+  const rewriteLabelOnTasks = (projectId: string, from: string, to: string | null): void => {
+    const wanted = from.trim().toLowerCase();
+    if (!wanted) return;
+    const rows = selectLabelledTasks.all(projectId) as Array<{ id: string; labels: string | null }>;
+    for (const row of rows) {
+      const labels = parseStringArray(row.labels);
+      if (!labels.some((name) => name.trim().toLowerCase() === wanted)) continue;
+      const next =
+        to === null
+          ? labels.filter((name) => name.trim().toLowerCase() !== wanted)
+          : labels.map((name) => (name.trim().toLowerCase() === wanted ? to : name));
+      writeTaskLabels.run({ id: row.id, labels: JSON.stringify(normalizeLabels(next)) });
+    }
+  };
+
+  const updateTicketLabelTx = db.transaction((next: TicketLabelRow, previousName: string) => {
+    updateTicketLabelStmt.run(next);
+    // Only a RENAME touches the tickets — a colour change is the registry's business alone.
+    if (next.name.trim().toLowerCase() !== previousName.trim().toLowerCase()) {
+      rewriteLabelOnTasks(next.projectId, previousName, next.name);
+    }
+  });
+
+  const deleteTicketLabelTx = db.transaction((row: TicketLabelRow) => {
+    deleteTicketLabelStmt.run(row.id);
+    rewriteLabelOnTasks(row.projectId, row.name, null);
+  });
+
   return {
     addProject(input) {
       // Unspecified project fields inherit the user's global defaults (Phase 6).
@@ -1798,14 +2439,26 @@ export function createStore(dbPath: string): Store {
       // An agent project is a bare repo directory: there is no plan file to parse or
       // tick checkboxes in, and each assigned card runs on its own branch, so those
       // three fields are forced rather than taken from the caller/global defaults.
-      const isAgent = input.kind === 'agent';
+      const kind = toProjectKind(input.kind ?? 'plan');
+      const isAgent = kind === 'agent';
+      // A TICKET project is not a repo at all (D2 in the phase entry): it is a key prefix
+      // and a set of tickets, with nowhere on disk to be. `''` is already a real value for
+      // both path fields — the Personal board is seeded with exactly that — so the fix is
+      // to force them, not to invent a directory. Without this branch the `planPath`
+      // fallback below would hand it `hostJoin('', 'plan.md')`, a plan file at the root of
+      // whichever machine it was pointed at.
+      const isTicket = kind === 'ticket';
+      const noRepo = isAgent || isTicket;
+      const ticketPrefix = isTicket ? (normalizeTicketPrefix(input.ticketPrefix ?? '') ?? '') : '';
       const project: Project = {
         id: randomUUID(),
-        name: input.name?.trim() || basename(input.path),
-        path: input.path,
+        // A ticket project has no folder to be named after, so its prefix is the fallback:
+        // `basename('')` is `''`, and a nameless project is unfindable in every list.
+        name: input.name?.trim() || (isTicket ? ticketPrefix : basename(input.path)),
+        path: isTicket ? '' : input.path,
         // `hostJoin`, not `path.join`: for a WSL project the path is a Linux one, and
         // joining it on Windows would produce `/home/you/repo\plan.md`.
-        planPath: isAgent ? '' : (input.planPath ?? hostJoin(input.path, 'plan.md')),
+        planPath: noRepo ? '' : (input.planPath ?? hostJoin(input.path, 'plan.md')),
         defaultModel: input.defaultModel ?? defaults.defaultModel,
         // Seeded from the app-wide default like `defaultModel`, and null all the way down
         // unless someone has set one — a new project plans on what it executes on.
@@ -1820,9 +2473,12 @@ export function createStore(dbPath: string): Store {
             : (defaults.defaultPlanningModel ?? null),
         defaultPermissionMode: input.defaultPermissionMode ?? defaults.defaultPermissionMode,
         concurrency: Math.max(1, Math.round(input.concurrency ?? defaults.concurrency)),
-        useWorktrees: isAgent ? true : (input.useWorktrees ?? true),
-        baseBranch: input.baseBranch?.trim() ?? '',
-        writeBackPlan: isAgent ? false : (input.writeBackPlan ?? defaults.writeBackPlan),
+        // A ticket project has no repo, so it has no worktrees either — and its tickets are
+        // delegated to a real AGENT project when somebody wants one worked, which is where
+        // the branch is actually cut.
+        useWorktrees: isTicket ? false : isAgent ? true : (input.useWorktrees ?? true),
+        baseBranch: isTicket ? '' : (input.baseBranch?.trim() ?? ''),
+        writeBackPlan: noRepo ? false : (input.writeBackPlan ?? defaults.writeBackPlan),
         // Off unless asked for, on both kinds of project: releasing is the one thing a
         // human is entitled to have never happen by accident.
         autoRelease: input.autoRelease ?? false,
@@ -1833,8 +2489,9 @@ export function createStore(dbPath: string): Store {
         // the migration above. A plan carrying `@needs:`/`@contract` is also confirmed
         // aligned on its next sync (see ipc `syncProjectPlan`).
         planAligned: input.planAligned ?? true,
-        kind: isAgent ? 'agent' : 'plan',
+        kind,
         jiraEpicKeys: normalizeEpicKeys(input.jiraEpicKeys),
+        ticketPrefix,
         target: input.target ?? defaults.defaultExecTarget,
         instructions: input.instructions?.trim() ?? '',
         color: input.color?.trim() ?? '',
@@ -1848,6 +2505,11 @@ export function createStore(dbPath: string): Store {
         autoIntegrate: project.autoIntegrate === null ? null : project.autoIntegrate ? 1 : 0,
         planAligned: project.planAligned ? 1 : 0,
         jiraEpicKeys: JSON.stringify(project.jiraEpicKeys),
+        // '' goes in as NULL: the partial unique index ignores NULLs, and every project
+        // that is not a ticket project would otherwise collide with the next one on ''.
+        ticketPrefix: project.ticketPrefix || null,
+        // The allocator starts at zero, so the first key this project ever issues is `-1`.
+        ticketSeq: 0,
         target: formatExecTarget(project.target),
       });
       return project;
@@ -1950,8 +2612,36 @@ export function createStore(dbPath: string): Store {
         sets.push(`color = @color`);
         params.color = patch.color.trim();
       }
+      // The prefix is the one patch field that rewrites OTHER rows: every ticket carries a
+      // denormalised `ticketKey`, so renaming `TM` to `PLAT` has to re-key them or the
+      // board would go on showing a prefix the project no longer has. The numbers are
+      // untouched — those are what a ticket durably IS.
+      //
+      // Clearing it is refused rather than obeyed once the project has issued keys: a key
+      // is a permanent name, and there is no way to write "no prefix" onto `TM-14` that
+      // leaves it still called anything. The returned project says what actually stuck.
+      const before = selectProject.get(id) as ProjectRow | undefined;
+      let rekeyTo: string | null = null;
+      if (before && patch.ticketPrefix !== undefined) {
+        const wanted = normalizeTicketPrefix(patch.ticketPrefix);
+        const issued = (countProjectTickets.get(id) as { n: number }).n;
+        if (wanted !== null || issued === 0) {
+          if (wanted !== (before.ticketPrefix ?? null)) {
+            sets.push(`ticketPrefix = @ticketPrefix`);
+            params.ticketPrefix = wanted;
+            rekeyTo = wanted;
+          }
+        }
+      }
       if (sets.length > 0) {
-        db.prepare(`UPDATE projects SET ${sets.join(', ')} WHERE id = @id`).run(params);
+        const write = db.prepare(`UPDATE projects SET ${sets.join(', ')} WHERE id = @id`);
+        // One transaction, so a rename that collides with another project's prefix (the
+        // partial unique index) leaves the tickets under the name they already had rather
+        // than half re-keyed.
+        db.transaction(() => {
+          write.run(params);
+          if (rekeyTo !== null) rekeyProjectTickets.run({ id, prefix: rekeyTo });
+        })();
       }
       const row = selectProject.get(id) as ProjectRow | undefined;
       return row ? rowToProject(row) : undefined;
@@ -2001,6 +2691,19 @@ export function createStore(dbPath: string): Store {
         'agentBranch',
         'landedAt',
         'chainLandedAt',
+        // Native tickets. `ticketKey`/`ticketNumber` are deliberately absent, for the same
+        // kind of reason `parentTaskId` is: a key is a permanent name, and the only thing
+        // allowed to rewrite one is a prefix rename, which re-keys the whole project at
+        // once. `labels` is absent too, but only because it needs encoding — see below.
+        'issueType',
+        'epicTaskId',
+        'milestoneId',
+        'storyPoints',
+        'estimateDays',
+        'startAt',
+        'dueAt',
+        'assigneeId',
+        'reporterId',
       ] as const;
       for (const col of columns) {
         const value = (patch as Record<string, unknown>)[col];
@@ -2020,14 +2723,29 @@ export function createStore(dbPath: string): Store {
         sets.push(`autoIntegrate = @autoIntegrate`);
         params.autoIntegrate = patch.autoIntegrate === null ? null : patch.autoIntegrate ? 1 : 0;
       }
+      // Apart from the loop for the other reason a column can be: it is a JSON array in one
+      // column, not a scalar, so the loop above would bind an Array and better-sqlite3
+      // refuses anything that is not a number, string, bigint, Buffer or null.
+      if (patch.labels !== undefined) {
+        sets.push(`labels = @labels`);
+        params.labels = JSON.stringify(normalizeLabels(patch.labels));
+      }
       if (sets.length > 0) {
         db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = @id`).run(params);
       }
       return getTask(id);
     },
 
+    getBoardTasks,
+
+    getArchivedTasksFor,
+
+    // The Personal three, now wrappers on the general form above. They stay hard-wired to
+    // PERSONAL_PROJECT_ID rather than growing an argument, and that is what keeps the JIRA
+    // sync structurally unable to see a ticket project: it calls
+    // `getPersonalTasksForSync()`, which cannot be pointed anywhere else.
     getPersonalTasks() {
-      return (selectBoardTasks.all(PERSONAL_PROJECT_ID) as TaskRow[]).map(rowToTask);
+      return getBoardTasks(PERSONAL_PROJECT_ID);
     },
 
     getPersonalTasksForSync() {
@@ -2035,7 +2753,7 @@ export function createStore(dbPath: string): Store {
     },
 
     getArchivedTasks() {
-      return (selectArchivedBoardTasks.all(PERSONAL_PROJECT_ID) as TaskRow[]).map(rowToTask);
+      return getArchivedTasksFor(PERSONAL_PROJECT_ID);
     },
 
     archiveTask(id, at, reason = null) {
@@ -2466,6 +3184,192 @@ export function createStore(dbPath: string): Store {
       updateTaskLinkGate.run(gate, id);
       const row = selectTaskLink.get(id) as TaskLinkRow | undefined;
       return row ? rowToTaskLink(row) : undefined;
+    },
+
+    // --- Native tickets (Phase 24). ---
+
+    createTicket(projectId, input) {
+      return createTicketTx(projectId, input);
+    },
+
+    listPeople() {
+      return (selectPeople.all() as PersonRow[]).map(rowToPerson);
+    },
+
+    addPerson(input) {
+      const name = input.name.trim();
+      if (!name) return undefined;
+      const person: Person = {
+        id: randomUUID(),
+        name,
+        email: input.email?.trim() ?? '',
+        // Seeded from the name when none was given, and editable from that moment on —
+        // `initials` is stored precisely because a deriver cannot tell two "Anna K"s apart.
+        initials: input.initials?.trim() || seedInitials(name),
+        color: input.color?.trim() ?? '',
+        isMe: input.isMe ?? false,
+        createdAt: Date.now(),
+      };
+      // Clearing the old "me" in the same transaction is not politeness — the partial
+      // unique index refuses the insert otherwise, and the person would simply not appear.
+      db.transaction(() => {
+        if (person.isMe) clearIsMe.run();
+        insertPerson.run({
+          ...person,
+          email: person.email || null,
+          color: person.color || null,
+          // By hand, and this is the one that bites: better-sqlite3 refuses to bind a
+          // boolean at all, so a `true` here throws rather than storing a 1.
+          isMe: person.isMe ? 1 : 0,
+        });
+      })();
+      return person;
+    },
+
+    updatePerson(id, patch) {
+      const existing = selectPerson.get(id) as PersonRow | undefined;
+      if (!existing) return undefined;
+      const next: PersonRow = {
+        ...existing,
+        name: patch.name !== undefined ? patch.name.trim() || existing.name : existing.name,
+        email: patch.email !== undefined ? patch.email.trim() || null : existing.email,
+        initials:
+          patch.initials !== undefined
+            ? patch.initials.trim() || existing.initials
+            : existing.initials,
+        color: patch.color !== undefined ? patch.color.trim() || null : existing.color,
+        isMe: patch.isMe !== undefined ? (patch.isMe ? 1 : 0) : existing.isMe,
+      };
+      db.transaction(() => {
+        if (next.isMe === 1) clearIsMe.run();
+        db.prepare(
+          `UPDATE people SET name = @name, email = @email, initials = @initials,
+             color = @color, isMe = @isMe WHERE id = @id`,
+        ).run(next);
+      })();
+      const row = selectPerson.get(id) as PersonRow | undefined;
+      return row ? rowToPerson(row) : undefined;
+    },
+
+    deletePerson(id) {
+      deletePersonTx(id);
+    },
+
+    listMilestones(projectId) {
+      return (selectMilestones.all(projectId) as MilestoneRow[]).map(rowToMilestone);
+    },
+
+    addMilestone(projectId, input) {
+      const name = input.name.trim();
+      if (!name) return undefined;
+      if (!selectProject.get(projectId)) return undefined;
+      const milestone: Milestone = {
+        id: randomUUID(),
+        projectId,
+        name,
+        description: input.description?.trim() ?? '',
+        dueAt: input.dueAt ?? null,
+        color: input.color?.trim() ?? '',
+        closed: input.closed ?? false,
+        createdAt: Date.now(),
+      };
+      insertMilestone.run({
+        ...milestone,
+        description: milestone.description || null,
+        color: milestone.color || null,
+        closed: milestone.closed ? 1 : 0,
+      });
+      return milestone;
+    },
+
+    updateMilestone(id, patch) {
+      const existing = selectMilestone.get(id) as MilestoneRow | undefined;
+      if (!existing) return undefined;
+      const next: MilestoneRow = {
+        ...existing,
+        name: patch.name !== undefined ? patch.name.trim() || existing.name : existing.name,
+        description:
+          patch.description !== undefined ? patch.description.trim() || null : existing.description,
+        // `null` is a value the caller may really mean here ("this milestone has no date
+        // again"), so it is tested against `undefined` rather than falsiness.
+        dueAt: patch.dueAt !== undefined ? patch.dueAt : existing.dueAt,
+        color: patch.color !== undefined ? patch.color.trim() || null : existing.color,
+        closed: patch.closed !== undefined ? (patch.closed ? 1 : 0) : existing.closed,
+      };
+      db.prepare(
+        `UPDATE milestones SET name = @name, description = @description, dueAt = @dueAt,
+           color = @color, closed = @closed WHERE id = @id`,
+      ).run(next);
+      const row = selectMilestone.get(id) as MilestoneRow | undefined;
+      return row ? rowToMilestone(row) : undefined;
+    },
+
+    deleteMilestone(id) {
+      deleteMilestoneTx(id);
+    },
+
+    listTicketLabels(projectId) {
+      return (selectTicketLabels.all(projectId) as TicketLabelRow[]).map(rowToTicketLabel);
+    },
+
+    addTicketLabel(projectId, input) {
+      const name = input.name.trim();
+      if (!name) return undefined;
+      if (!selectProject.get(projectId)) return undefined;
+      const label: TicketLabel = {
+        id: randomUUID(),
+        projectId,
+        name,
+        color: input.color?.trim() ?? '',
+        createdAt: Date.now(),
+      };
+      const { changes } = insertTicketLabel.run({ ...label, color: label.color || null });
+      // The unique (projectId, name) index said this project already has that label. A
+      // refusal, not an error — the caller wanted a label of that name and there is one.
+      return changes > 0 ? label : undefined;
+    },
+
+    updateTicketLabel(id, patch) {
+      const existing = selectTicketLabel.get(id) as TicketLabelRow | undefined;
+      if (!existing) return undefined;
+      const next: TicketLabelRow = {
+        ...existing,
+        name: patch.name !== undefined ? patch.name.trim() || existing.name : existing.name,
+        color: patch.color !== undefined ? patch.color.trim() || null : existing.color,
+      };
+      updateTicketLabelTx(next, existing.name);
+      const row = selectTicketLabel.get(id) as TicketLabelRow | undefined;
+      return row ? rowToTicketLabel(row) : undefined;
+    },
+
+    deleteTicketLabel(id) {
+      const row = selectTicketLabel.get(id) as TicketLabelRow | undefined;
+      if (!row) return;
+      deleteTicketLabelTx(row);
+    },
+
+    listTicketLinks() {
+      return (selectTicketLinks.all() as TicketLinkRow[]).map(rowToTicketLink);
+    },
+
+    addTicketLink(fromTaskId, toTaskId, type) {
+      // A ticket cannot be related to itself, and both ends must exist — the foreign keys
+      // would refuse the second anyway, but as a throw rather than as an answer.
+      if (fromTaskId === toTaskId) return undefined;
+      if (!selectTask.get(fromTaskId) || !selectTask.get(toTaskId)) return undefined;
+      const link: TicketLink = {
+        id: randomUUID(),
+        fromTaskId,
+        toTaskId,
+        type: isTicketLinkType(type) ? type : 'relates',
+        createdAt: Date.now(),
+      };
+      const { changes } = insertTicketLink.run(link);
+      return changes > 0 ? link : undefined;
+    },
+
+    deleteTicketLink(id) {
+      deleteTicketLinkStmt.run(id);
     },
 
     // The seven columns ARE `TaskAttachment`, in order, so these rows need no mapper —

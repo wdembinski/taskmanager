@@ -13,6 +13,7 @@ import {
   parkedStep,
   hasUnreadJira,
   isAgentAssigned,
+  isBoardCard,
   isAgentRunning,
   needsAgentInput,
   cardRunLabel,
@@ -609,5 +610,31 @@ describe('canStopWork', () => {
   it('never reads a settled task out of the live-run snapshot', () => {
     expect(canStopWork(card({ status: 'done' }), [], new Set(['c1']))).toBe(false);
     expect(canStopWork(card(), [step('s1', 'done')], new Set(['s1']))).toBe(false);
+  });
+});
+
+describe('isBoardCard', () => {
+  it('is true for a top-level card of the Personal board', () => {
+    expect(isBoardCard(task({ projectId: PERSONAL_PROJECT_ID }))).toBe(true);
+  });
+
+  // Phase 24: the second kind of card whose column belongs to the human. Keyed on
+  // `source`, so this stays a pure function of `Task` with no project to hand.
+  it('is true for a native ticket, whatever project it lives in', () => {
+    expect(isBoardCard(task({ projectId: 'tickets-1', source: 'ticket' }))).toBe(true);
+  });
+
+  it('is false for a plan project\u2019s task \u2014 that is a queue, not a board', () => {
+    expect(isBoardCard(task({ projectId: 'p1', source: 'plan' }))).toBe(false);
+    expect(isBoardCard(task({ projectId: 'p1', source: 'adhoc' }))).toBe(false);
+  });
+
+  // A step renders inside its parent and the chain reads its done/failed to advance, so it
+  // must keep the lifecycle it has \u2014 on either kind of board.
+  it('is false for a step, on the Personal board and on a ticket project alike', () => {
+    expect(isBoardCard(task({ projectId: PERSONAL_PROJECT_ID, parentTaskId: 'c1' }))).toBe(false);
+    expect(
+      isBoardCard(task({ projectId: 'tickets-1', source: 'ticket', parentTaskId: 'c1' })),
+    ).toBe(false);
   });
 });

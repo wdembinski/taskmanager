@@ -66,6 +66,7 @@ const project = (id: string): Project => ({
   planAligned: true,
   kind: 'agent',
   jiraEpicKeys: [],
+  ticketPrefix: '',
   target: LOCAL_TARGET,
   instructions: '',
   color: '',
