@@ -47,6 +47,7 @@ plan the orchestrator could one day run on its own repo.
 | — | Interim releases v0.56–v0.57 (a Stop button everywhere, the Add-task dialog's options) | ✅ shipped, not tracked here |
 | 22 | Attachments in the task and its steps | ✅ complete (v0.64.4) — tag and draft cut once it lands on `development` |
 | 23 | One model for planning, another for the steps | ✅ complete on `feat/setting-ai-agent-models-for-planning` — tag and draft cut once it lands on `development` |
+| 24 | Projects and their tickets (a tracker of our own) | 🚧 in progress on `feat/support-projects-and-their-tickets` — **design landed**, build to come |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -2383,6 +2384,276 @@ afterwards:
 - The worktree this plan runs in has **no `node_modules`**, so the first step that touches
   `src/` pays for a `pnpm install` before any gate can run. This step changes only this
   file; there is nothing for a gate to say about it.
+
+---
+
+## Phase 24 — Projects and their tickets
+
+**Goal.** Let the app *be* a tracker, not only mirror one. Today a card either comes from a
+plan file, is typed in by hand, or is mirrored from JIRA — and everything that makes a
+tracker a tracker (a permanent key, epics, issue links, labels, milestones, estimates,
+start/due dates, a timeline you can see them on) belongs to somebody else's instance. This
+phase adds **native ticket projects**: a project with its own key prefix, its own tickets
+(`TM-123`), and a Gantt to plan them on, sharing every mechanism the board, the chain and
+the agent already have.
+
+The whole design rests on one decision — a native ticket project is **a `projects` row**,
+and a ticket is **a `tasks` row** — so nothing below is a second copy of the board.
+
+This entry is the design, written before any code. The build phases, the verification plan
+and the critical-files list are added by the later steps of this plan, which run as their
+own sessions on this same branch.
+
+### A native ticket project is a `projects` row with `kind: 'ticket'`
+
+`ProjectKind` ([`model.ts:119`](../../src/shared/model.ts)) widens to
+`'plan' | 'agent' | 'ticket'`. Reusing the table is the whole point: `tasks.projectId`
+already cascades from `projects` ([`store.ts:561`](../../src/main/store.ts)), and
+`task_events`, `task_activity`, `task_links` and `task_attachments` all key off
+`projectId`/`taskId`. A separate table would mean rebuilding every one of those
+relationships — and the timeline, the attachments and the chain arrows with them.
+
+Two new `projects` columns: `ticketPrefix TEXT COLLATE NOCASE` (`'TM'`) under a **partial
+unique index** (`WHERE ticketPrefix IS NOT NULL`, so the projects that have no prefix — every
+existing one — do not collide on NULL), and `ticketSeq INTEGER NOT NULL DEFAULT 0`.
+
+`ticketSeq` is deliberately **not** a field on `Project`. It is an allocator, not a
+property: exposing it would put a counter that is stale the moment anyone creates a ticket
+into every optimistic renderer copy, and it would let `updateProject`'s `sets` builder
+([`store.ts:1858`](../../src/main/store.ts)) write it from a patch. It is read and bumped
+inside the store, by the one function that allocates a key, and by nothing else.
+
+`COLLATE NOCASE` on the prefix for the reason `task_attachments.name` has it
+([`store.ts:772`](../../src/main/store.ts)): the uniqueness a human means by "the prefix is
+taken" is case-blind, and `TM` and `tm` are the same project's key to everyone but SQLite.
+
+### Key allocation
+
+`ticketKey` (`'TM-123'`, denormalised for display) **and** `ticketNumber` (the durable
+ordinal) both live on `tasks`. Storing both means the card, the backlog row, the Gantt
+gutter and the link picker read `task.ticketKey` with no project lookup — exactly how
+`externalKey` works today ([`model.ts:487`](../../src/shared/model.ts)) — while a prefix
+rename stays one `UPDATE` over the project's rows.
+
+The bump and the insert are **one `db.transaction()`**, so a refused create never burns a
+number. The next key comes from `ticketSeq`, **never** `MAX(ticketNumber)`: deleting
+`TM-500` must not make the next ticket `TM-500` again, because a key is a permanent name
+and re-issuing it makes every note, branch and link that ever mentioned it a lie. A partial
+unique index on `tasks(ticketKey)` is the schema-level backstop under that promise.
+
+New pure module `src/shared/ticketKey.ts`: `formatTicketKey`, `parseTicketKey`,
+`normalizeTicketPrefix` — upper-cases, strips punctuation, refuses empty, and refuses a
+pure number, so `12-3` can never be a key that `parseTicketKey` would have to guess at.
+
+### Epics, links, and the two things they must not be confused with
+
+**Epics** are a task row with `issueType: 'epic'`, and children carry `epicTaskId`. An epic
+needs a status, an assignee, a description, comments, attachments, a Gantt bar and a place
+in a column — all of which already hang off `tasks`, and none of which a lookup table
+would have.
+
+`epicTaskId` is a **new** column and deliberately not `parentTaskId`, because
+`parentTaskId` already means "step of an approved plan":
+`groupSubtasks` ([`boardColumns.ts:57`](../../src/renderer/src/board/boardColumns.ts))
+renders such children *inside* the parent card, and `chainRunner` executes them in order
+([`chainRunner.ts:385`](../../src/main/chainRunner.ts)). Reusing it would silently turn
+every story under an epic into an executable step of it.
+
+**Issue links** go in a new `ticket_links` table, named apart from `task_links` on purpose.
+`task_links` is the chain of execution — an arrow that *gates when a run may start*
+([`taskChain.ts`](../../src/shared/taskChain.ts), `linkSatisfied`/`blockedBy`).
+`ticket_links` documents a relationship and gates nothing. Conflating them would mean
+marking a ticket "duplicates" another and having the scheduler refuse to start it.
+
+One row per link, **directed, with an inverse lookup** — not two rows. Two rows double
+every write and make "delete this link" ambiguous. Both ends are indexed, exactly as
+`task_links` indexes both ([`store.ts:750-751`](../../src/main/store.ts)), so the inward
+query is as cheap as the outward one.
+
+`src/shared/ticketLinks.ts` owns the vocabulary — `blocks`, `duplicates`, `relates`,
+`implements`, `causes`, `clones` — each with `outward`/`inward` phrasings and a `symmetric`
+flag; `linksFor(links, taskId)` phrases every link from that ticket's point of view, so no
+two surfaces can word an inverse differently; and `canLinkTickets` returns refusals **as
+data**, the `canLink` / `LINK_REFUSAL_MESSAGE` shape `taskChain.ts` already uses
+([`taskChain.ts:91-108`](../../src/shared/taskChain.ts)).
+
+### The rest of the schema
+
+- **Labels** — a `ticket_labels` registry (per project; it is what gives a label its colour
+  and the filter dropdown its list) **plus** `tasks.labels` as a JSON array of *names*.
+  `board:tasks` is the hottest query in the app and a join table would add a second query
+  and a per-render regroup to it; `parseStringArray` already exists
+  ([`store.ts:1594`](../../src/main/store.ts)) and `dependsOn` sets the precedent. Names,
+  not ids, so deleting a label degrades a chip to grey rather than dangling.
+- **Milestones** — a `milestones` table (name, `dueAt`, colour, open/closed) plus
+  `tasks.milestoneId`. A real table, because a milestone is drawn on the timeline whether
+  or not any ticket points at it.
+- **Estimation** — `storyPoints REAL`, `estimateDays REAL`. `REAL` because half-points
+  exist and "half a day" is the commonest estimate there is. **Nullable, never
+  0-defaulted**: "not estimated" is a real state that `0` cannot express, since 0 points is
+  itself a legitimate estimate. Independent of each other — the app invents no conversion
+  between them.
+- **Dates** — `startAt` / `dueAt` as epoch ms, matching every other date in this schema
+  (`statusNoteAt`, `landedAt`, `archivedAt`). Date strings would guarantee a timezone bug
+  at the first comparison.
+- **People** — a `people` table (app-wide, not per project: a person works across projects)
+  with a partial unique index on `isMe`, plus `tasks.assigneeId` / `tasks.reporterId`.
+  `initials` and colour are **stored, not derived** — two "Anna K"s need different initials
+  and only a human can say which.
+- **Priority is not a new column.** Native tickets reuse `externalPriority`: `priorityRank`,
+  `PriorityGlyph` and `sortCards` all read it already
+  ([`boardColumns.ts:191`](../../src/renderer/src/board/boardColumns.ts)), and
+  `task:setPriority`'s write-back branch is keyed on
+  `existing.externalSource === 'jira' && existing.externalKey`
+  ([`ipc.ts:871`](../../src/main/ipc.ts)) — which a native ticket is not, so the same
+  channel is local-only for it without a line of new code.
+- **`issueType`** (`epic|story|task|bug|subtask`) is a third field beside `tasks.type` (the
+  legacy ad-hoc `bug|feature`, [`model.ts:437`](../../src/shared/model.ts)) and
+  `externalType` (JIRA's). One resolver, `typeIconKeyFor(task)` in `src/shared/tickets.ts`,
+  picks the icon by precedence, so three surfaces cannot disagree about what a card is.
+
+**No `ON DELETE SET NULL`.** `epicTaskId`, `milestoneId`, `assigneeId` and `reporterId` are
+plain `TEXT` with no foreign key, exactly as `parentTaskId` already is. `foreign_keys = ON`
+is set at open ([`store.ts:534`](../../src/main/store.ts)), so a declared cascade really
+fires — and a cascade here would change task rows **with no IPC event**, while this renderer
+only refreshes on `project:tasksChanged` / `task:changed` and nothing polls. So a milestone
+delete nulls its tickets in an explicit `UPDATE` inside the same transaction, followed by an
+explicit push. Real cascades stay only where the renderer re-reads the whole list anyway:
+`ticket_links` → `tasks`, and `ticket_labels` / `milestones` → `projects`.
+
+### Coexisting with the JIRA board
+
+`Task['source']` ([`model.ts:413`](../../src/shared/model.ts)) gains `'ticket'`. `source`
+already answers "who owns this row", and the JIRA reconciler filters on it in both
+directions — `t.source === 'jira' && t.externalKey`
+([`jiraSync.ts:359`](../../src/main/jira/jiraSync.ts) and
+[`:591`](../../src/main/jira/jiraSync.ts)) — so a dedicated value is the *structural*
+guarantee that `reconcileJiraTasks` can never adopt, rewrite or archive a native ticket.
+
+`isBoardCard` ([`board.ts:80`](../../src/shared/board.ts)) currently reads
+`isPersonalBoard(task.projectId) && !task.parentTaskId`, and gates whether dragging a card
+means anything. It widens to also accept `task.source === 'ticket'`, staying a pure
+function of `Task` alone.
+
+Store reads: `getPersonalTasks` / `getPersonalTasksForSync` / `getArchivedTasks` stay
+hard-wired to `PERSONAL_PROJECT_ID`, and new `getBoardTasks(projectId)` /
+`getArchivedTasksFor(projectId)` sit under them as the general form. The JIRA sync keeps
+calling `getPersonalTasksForSync()` and therefore structurally cannot see a ticket project.
+
+`sortCards`, `groupSubtasks`, `focusCards` and `columnForTask` are **untouched** — which is
+precisely why `epicTaskId` had to be a new column.
+
+### The Gantt
+
+Hand-rolled SVG, following `gitGraphView.ts` + `GitGraphPane.tsx` and `chainArrows.ts` +
+`ChainOverlay.tsx`: **all arithmetic in a pure module, a thin `.tsx` that only emits
+elements.** There is no chart or date library in this repo and never has been — the only
+runtime dependencies are `better-sqlite3` and `electron-updater`
+([`package.json`](../../package.json)) — and none is added.
+
+`ganttLayout.ts` exports `ganttRange`, `ganttScale` (a **linear** ms→px scale — the month
+band is drawn from tick positions, so DST and 31-day months can never desynchronise bars
+from headers), `ganttTicks`, `ganttRows` (epics → their tickets; a *collapsed* epic
+contributes one row whose bar is the union of its children's dates), `ganttBar`,
+`ganttMarkers`, `ganttDependencyPath`, `todayX` and `rescheduleTo`.
+
+Milestones are vertical markers with labels in the header, **not rows** — a milestone is an
+instant, and a row per date wastes a lane.
+
+Deliberately **not** `preserveAspectRatio="none"`. `TokenChart` may stretch because it is a
+shape ([`TokenChart.tsx:78`](../../src/renderer/src/TokenChart.tsx)); a Gantt must stay
+1px = 1px or its bars stop lining up with its own header.
+
+### Traps the later steps must not walk into
+
+Each of these was read in this worktree, not remembered.
+
+- **`rowToProject` coerces every unknown kind to `plan`** — `kind: r.kind === 'agent' ?
+  'agent' : 'plan'` ([`store.ts:1584`](../../src/main/store.ts)). A `'ticket'` row written
+  before that ternary is widened reads back as a **plan project**, and every other
+  kind-test in the app is written as "not agent" — `project:list` hides
+  `!isPersonalBoard(id) && kind !== 'agent'` ([`ipc.ts:535`](../../src/main/ipc.ts)) and
+  the plan watcher skips `isPersonalBoard(id) || kind === 'agent'`
+  ([`planWatcher.ts:49`](../../src/main/planWatcher.ts)). So a ticket project would appear
+  on the legacy Projects tab and have a plan file watched for it. The read, the two
+  filters and the type widen **together, in one commit**.
+- **`addProject` forces the plan-less fields off a single `isAgent` boolean**
+  ([`store.ts:1780`](../../src/main/store.ts)), and its `planPath` fallback is
+  `hostJoin(input.path, 'plan.md')`. A ticket project needs the same forcing (`planPath:
+  ''`, `writeBackPlan: false`) or it is handed a plan file it does not have. It may also
+  legitimately have **no path at all**: it is not a repo. `''` is already a real value
+  here — the Personal board is seeded with `path: ''` and `planPath: ''`
+  ([`store.ts:996`](../../src/main/store.ts)).
+- **`project:add` parses and watches unless the project is an agent one**
+  ([`ipc.ts:520-526`](../../src/main/ipc.ts)). Ticket projects take the same early return.
+- **`board:tasks` takes no argument.** It is declared `() => Promise<Task[]>`
+  ([`ipc.ts:667`](../../src/shared/ipc.ts)) and handled as `store.getPersonalTasks()`
+  ([`ipc.ts:1595`](../../src/main/ipc.ts)); `board:archived` is its complement. Both are
+  read by `MyTasks.tsx` and `App.tsx`, which refresh on `project:tasksChanged`. See
+  decision **D1** below for what they become.
+- **Widening `isBoardCard` is not a board-only change.** It also enlists native tickets in
+  `guardCardStatus` and `preRunStatus` ([`cardStatusGuard.ts:58,94`](../../src/main/cardStatusGuard.ts)),
+  which is exactly what we want — a ticket's column is the human's, and an agent run must
+  borrow `status` rather than move the card — but it must be *chosen*, not discovered.
+- **A ticket project is never a run target.** `resolveAgentProject` filters
+  `kind === 'agent'` ([`agentProjects.ts:19`](../../src/shared/agentProjects.ts)), and
+  `task:assignAgent` / `task:setProject` refuse a target that is not an agent project
+  ([`ipc.ts:669,745,834`](../../src/main/ipc.ts)). A native ticket delegated to an agent
+  still points `agentProjectId` at an *agent* project. Nothing to change here — and nothing
+  to "fix", either.
+- **New columns are added by the PRAGMA loops, and an index on one comes after its ALTER.**
+  The task/project column loops live at [`store.ts:874-990`](../../src/main/store.ts), and
+  `idx_tasks_parent` is created *after* them with the comment saying why
+  ([`store.ts:988-990`](../../src/main/store.ts)): on an older database the column does not
+  exist until the ALTER has run. Every partial unique index this design adds is in the same
+  position.
+- **`db.transaction()` is the existing idiom** ([`store.ts:1487`](../../src/main/store.ts)),
+  and key allocation is the first place in this app where skipping it corrupts a *name*
+  rather than a row.
+
+### Decisions taken without the human
+
+Recorded here, in the plan of record rather than in a commit message, so a later reader can
+tell a decision from a guess.
+
+- **D1 — `board:tasks` gains an optional `projectId`; no second channel.** It becomes
+  `(projectId?: string) => Promise<Task[]>`, defaulting to `PERSONAL_PROJECT_ID` and
+  backed by the new `getBoardTasks(projectId)`, with `board:archived` following it. One
+  channel, one handler, one refresh path — a parallel `board:ticketTasks` would double the
+  event wiring for a query that differs by a `WHERE`, and the two would drift the first
+  time one of them learned something the other did not. Every existing call site compiles
+  unchanged because the argument is optional.
+- **D2 — a ticket project has no repo path.** `path` and `planPath` are `''`, as they are
+  for the Personal board. If a ticket project ever needs a repo, it is because somebody
+  wants to delegate its tickets — and that already works today, through the card's
+  `agentProjectId` pointing at a real agent project.
+- **D3 — the version this branch bumps from.** This worktree's `package.json` says
+  `0.69.0`, but `HEAD` is an ancestor of `development`, which has since released
+  **v0.70.0**. Bumping `0.69.1` would name a version that has been superseded and would
+  read as a *downgrade* when this branch lands. So this step takes **v0.70.1** — the PATCH
+  after the released line — and each later step bumps from there.
+
+### Done when (the design's own gates)
+
+- The schema, the module boundaries and the vocabulary above are written down before any
+  of them exists in code, and every claim about today's code carries the file and line it
+  was read from.
+- Nothing in this entry requires a new runtime dependency.
+
+**Notes.**
+
+- This step is **docs only** — no `src/` change, so `pnpm typecheck` and `pnpm test` have
+  nothing to say about it, and the worktree is deliberately not `pnpm install`ed for it.
+  The first step that touches `src/` pays for the install.
+- The phase ships as a **MINOR** bump overall, reached through the per-commit bumps each
+  step makes ([`CONTRIBUTING.md`](../../CONTRIBUTING.md) §4). This step takes the **PATCH**
+  its own change is worth (**v0.70.1**, see D3); the deliverable that adds the columns takes
+  the minor.
+- **No tag and no release on this branch** — [`RELEASE.md`](../../RELEASE.md) rule 5, the
+  same standing rule as Phases 21, 22 and 23. The tag is cut when this lands on
+  `development`.
+- Every step of this plan shares the one branch `feat/support-projects-and-their-tickets`,
+  so each step's session reads this entry to find what the previous one left it.
 
 ---
 
