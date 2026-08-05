@@ -37,7 +37,14 @@ import type {
 import { resolveRunModel } from '@shared/model';
 import { chainInFlight, chatTarget, parkedStep } from '@shared/board';
 import { attachmentsInScope, type PromptAttachment } from '@shared/attachments';
-import type { SchedulerState, TaskChange, SchedulerChange, ActiveRun } from '@shared/scheduler';
+import type {
+  SchedulerState,
+  TaskChange,
+  SchedulerChange,
+  ActiveRun,
+  RunOutcome,
+  RunRefusal,
+} from '@shared/scheduler';
 import type {
   ClaudeModel,
   PermissionMode,
@@ -1268,50 +1275,92 @@ export class Scheduler {
   /**
    * Run a single task ad-hoc, regardless of whether its project's queue is active.
    *
-   * **A card with steps runs its CHAIN, not itself.** Steps written by hand were being
-   * ignored by this: starting the card started the card's own session with the whole ticket
-   * as its brief, so one agent did all the work in one go while the steps sat `pending`
-   * forever — the board showed `0/4` for something that had already been built. Approving a
-   * plan handed over to the chain correctly (`approvePlan`), so a card broken into steps
-   * behaved completely differently depending on who had written them down.
+   * The boolean-ish form, for the chain of execution and every other caller that only needs
+   * to know whether a slot was taken. {@link Scheduler.startTaskNow} is the same call with
+   * the reason attached; anything that shows a human why nothing happened wants that one.
    *
-   * Steps ARE the card's work once they exist, however they got there. So the first pending
-   * one is what starts, and each subsequent one follows as its predecessor finishes
-   * (`advanceSubtasks`) — one session each, which is the whole point of writing steps.
+   * Steps ARE the card's work once they exist, however they got there, so a card with a step
+   * waiting runs THAT (see {@link Scheduler.nextRunnableStep}) — one session each, which is
+   * the whole point of writing steps.
+   */
+  runTask(taskId: string): { runId: string } | null {
+    const outcome = this.startTaskNow(taskId);
+    return 'runId' in outcome ? outcome : null;
+  }
+
+  /**
+   * {@link Scheduler.runTask}, but saying **why** when it does not start — see
+   * {@link RunRefusal}.
+   *
+   * Every refusal used to be one `null`, which `task:run` reported as *"it is already
+   * running, or a usage limit is holding all work"*. That sentence names two causes out of
+   * six, and the one it omits is the one a human hits most: a dead sign-in raises the AUTH
+   * gate, so the app blamed a usage limit that did not exist and never mentioned the fix.
+   *
+   * Two things about the ORDER here are load-bearing:
+   *
+   *  - The gates are asked LAST, after the run target and its project have resolved. The
+   *    check is cheaper first, but then a gate would answer for a card that could never
+   *    have run anyway, and the human would sign in to find it still going nowhere.
+   *  - A gate does not merely refuse, it **parks** — `parkForLimit`/`authGate.park`. A gate
+   *    is the only thing that remembers work across the pause, so a Start swallowed by one
+   *    and left `pending` is a card that waits for a resume that will never name it. This
+   *    is the same rule `advanceSubtasks` follows for a step, and it is what lets the
+   *    refusal promise the card starts by itself.
+   */
+  startTaskNow(taskId: string): RunOutcome {
+    if (this.disposed) return { refused: 'shutting-down' };
+    // Already reserved or running: starting a second session for one task would give it
+    // two agents in one worktree. (Reachable from the UI: a parked step offers "Run this
+    // step", and a stale card can be clicked twice.)
+    if (this.inFlight.has(taskId)) return { refused: 'already-running' };
+    const task = this.store.getTask(taskId);
+    if (!task) return { refused: 'unknown-task' };
+
+    // Which task would actually run: the first step waiting its turn, or the card itself.
+    // Resolved before anything is parked, because parking the CARD when its STEP is the
+    // work would resume the wrong one — the card's own session, beside its chain.
+    const target = this.nextRunnableStep(task) ?? task;
+    const project = this.runProjectFor(target);
+    // No project resolves (for the step, so none would for the card either) — say so by
+    // failing rather than quietly running the card and doing the work the wrong way.
+    if (!project) return { refused: 'no-project' };
+
+    // A usage limit or a dead sign-in holds everything account-wide, so this cannot start
+    // now — but it is what the human asked for, so it waits in the gate rather than being
+    // dropped. Pressing Start against an expired credential would only reproduce the
+    // failure that raised the gate in the first place.
+    if (this.limitGate.active) {
+      this.parkForLimit(target);
+      return { refused: 'limit' };
+    }
+    if (this.authGate.active) {
+      this.parkForSignIn(target);
+      return { refused: 'signed-out' };
+    }
+    return { runId: this.startTask(project, target) };
+  }
+
+  /**
+   * The step of `task`'s approved plan that a Start should run, if there is one.
+   *
+   * **A card with steps runs its CHAIN, not itself.** Steps written by hand were being
+   * ignored: starting the card started the card's own session with the whole ticket as its
+   * brief, so one agent did all the work in one go while the steps sat `pending` for ever —
+   * the board showed `0/4` for something already built. Approving a plan handed over
+   * correctly (`approvePlan`), so a card broken into steps behaved completely differently
+   * depending on who had written them down.
    *
    * The fall-through matters as much as the hand-over: a chain with nothing left `pending`
    * is finished (or parked at a step that needs a human), and then the card's own session is
    * the right thing to start again — that is how the post-chain review conversation is
-   * resumed. Only a step actually waiting to run diverts this.
+   * resumed. Only a step actually waiting to run diverts a Start.
    */
-  runTask(taskId: string): { runId: string } | null {
-    if (this.disposed) return null;
-    // A usage limit or a dead sign-in holds everything account-wide — don't start ad-hoc
-    // work either. Pressing Run against an expired credential only reproduces the failure.
-    if (this.workIsHeld) return null;
-    // Already reserved or running: starting a second session for one task would give it
-    // two agents in one worktree. (Reachable from the UI: a parked step offers "Run this
-    // step", and a stale card can be clicked twice.)
-    if (this.inFlight.has(taskId)) return null;
-    const task = this.store.getTask(taskId);
-    if (!task) return null;
-
-    if (!task.parentTaskId) {
-      const next = this.store
-        .getSubtasks(taskId)
-        .find((s) => s.status === 'pending' && !this.inFlight.has(s.id));
-      if (next) {
-        const stepProject = this.runProjectFor(next);
-        // No project resolves for the step (so none would for the card either) — say so by
-        // failing rather than quietly running the card and doing the work the wrong way.
-        if (!stepProject) return null;
-        return { runId: this.startTask(stepProject, next) };
-      }
-    }
-
-    const project = this.runProjectFor(task);
-    if (!project) return null;
-    return { runId: this.startTask(project, task) };
+  private nextRunnableStep(task: Task): Task | undefined {
+    if (task.parentTaskId) return undefined; // a step has no steps of its own
+    return this.store
+      .getSubtasks(task.id)
+      .find((s) => s.status === 'pending' && !this.inFlight.has(s.id));
   }
 
   /**
@@ -4290,13 +4339,13 @@ export class Scheduler {
     const next = steps.find((t) => t.status === 'pending');
     if (!next) return;
     if (this.limitGate.active) {
-      this.parkStepForLimit(next);
+      this.parkForLimit(next);
       return;
     }
     // Same rule, other gate: nothing else re-enters a chain, so a step the sign-in gate
     // stops has to be parked IN the gate or the card sits at 2/4 for good.
     if (this.authGate.active) {
-      this.authGate.park([next.id]);
+      this.parkForSignIn(next);
       return;
     }
     const project = this.runProjectFor(next);
@@ -4305,22 +4354,48 @@ export class Scheduler {
   }
 
   /**
-   * Hold one step behind the usage-limit gate until the reset (see `advanceSubtasks`).
+   * Hold one task behind the usage-limit gate until the reset.
    *
-   * Said on the step's own timeline as well as in its status, because the alternative —
-   * a card that quietly stops between steps — is indistinguishable from a card that has
-   * finished. If no gate is up (a race: it lifted between the check and here) nothing is
-   * parked and the step is left `pending` for the caller's next pass.
+   * Two callers, one rule: the next step of a chain that came up while the gate was in
+   * force (`advanceSubtasks`), and a card whose Start a human pressed against it
+   * (`startTaskNow`). Both would otherwise be left `pending` and forgotten — `resumeParked`
+   * walks the gate's set and nothing else, so work not parked IN the gate is work no reset
+   * will ever name.
+   *
+   * Said on the task's own timeline as well as in its status, because the alternative —
+   * something that quietly stops — is indistinguishable from something that has finished.
+   * If no gate is up (a race: it lifted between the check and here) nothing is parked and
+   * the task is left `pending` for the caller's next pass.
    */
-  private parkStepForLimit(step: Task): void {
-    if (this.limitGate.park([step.id]).length === 0) return;
-    this.updateTask(step.id, { status: 'blocked-by-limit' }, null);
+  private parkForLimit(task: Task): void {
+    if (this.limitGate.park([task.id]).length === 0) return;
+    this.updateTask(task.id, { status: 'blocked-by-limit' }, null);
     this.noteRun(
-      step.projectId,
-      step.id,
+      task.projectId,
+      task.id,
       'limit',
-      'A usage limit was in force when this step came up, so it is waiting for the reset. ' +
+      'A usage limit was in force when this came up, so it is waiting for the reset. ' +
         'It starts by itself when the limit clears — nothing to do.',
+    );
+  }
+
+  /**
+   * The same hold, behind the sign-in gate — for work that wanted to start while the
+   * credential was dead and so never got a run of its own to fail.
+   *
+   * No status of its own, unlike the limit: an auth-parked task stays plain `pending`,
+   * which is already the engine's word for "this will run again", and `resumeAfterSignIn`
+   * matches on that. The note is what makes it honest, and it is the only reason a human
+   * looking at the card tomorrow can tell "waiting for you to sign in" from "idle".
+   */
+  private parkForSignIn(task: Task): void {
+    if (this.authGate.park([task.id]).length === 0) return;
+    this.noteRun(
+      task.projectId,
+      task.id,
+      'auth',
+      'Claude was signed out when this came up, so it is waiting. It starts by itself once ' +
+        'you sign in again — nothing else to press.',
     );
   }
 

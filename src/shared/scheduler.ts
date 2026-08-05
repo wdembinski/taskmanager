@@ -44,3 +44,58 @@ export interface ActiveRun {
   taskId: string;
   runId: string;
 }
+
+/**
+ * Why pressing **Start** could not start anything.
+ *
+ * `Scheduler.runTask` used to answer every one of these with the same `null`, and
+ * `task:run` turned that `null` into one sentence naming two causes — *"it is already
+ * running, or a usage limit is holding all work"*. Both halves were wrong for the case
+ * that actually reaches a human most often: an expired sign-in raises the **auth** gate
+ * (`@shared/auth`), not the usage-limit one, so the app told people to wait out a limit
+ * that did not exist while the fix — sign in again — went unmentioned. A card with no
+ * repository behind it got the same sentence, and so did a card that had been deleted.
+ *
+ * So the refusal is now a value, in the spirit of `ChatRefusal`: the engine says which
+ * wall it hit and one place turns that into words. Getting this wrong is expensive in a
+ * specific way — the human's next action is chosen entirely from this sentence.
+ */
+export type RunRefusal =
+  /** The card is gone (deleted or archived since the pane was drawn). */
+  | 'unknown-task'
+  /** A run is already reserved or live for it — a second would put two agents in one worktree. */
+  | 'already-running'
+  /** Nothing resolves a directory to run in: the card is not delegated to an agent project. */
+  | 'no-project'
+  /** A usage limit holds all work account-wide. The card is parked and resumes at the reset. */
+  | 'limit'
+  /** The `claude` CLI cannot authenticate. The card is parked and resumes when a human signs in. */
+  | 'signed-out'
+  /** The engine is shutting down; nothing new starts. */
+  | 'shutting-down';
+
+/** What an ad-hoc start did: a live run, or a reason there is none. */
+export type RunOutcome = { runId: string } | { refused: RunRefusal };
+
+/**
+ * One sentence per refusal — what is wrong, and what the human does about it.
+ *
+ * Both gate messages promise a resume because the engine now makes that promise good:
+ * a Start refused by a gate parks the card *in* that gate, which is the only thing that
+ * remembers work across the pause. Saying "press Start again later" instead would be
+ * asking someone to remember, per card, what the app already knows.
+ */
+export const RUN_REFUSAL_MESSAGE: Record<RunRefusal, string> = {
+  'unknown-task': 'This card no longer exists — it may have been deleted or archived.',
+  'already-running':
+    'An agent is already working on this card. Stop it first if you want to start again.',
+  'no-project':
+    'This card has no repository to run in — assign it to an agent project before starting it.',
+  limit:
+    'A usage limit is holding all agent work. This card is now waiting behind it and starts ' +
+    'by itself when the limit resets — there is nothing else to press.',
+  'signed-out':
+    'Claude is signed out, so nothing can run. Sign in from the banner at the top of the ' +
+    'window; this card is waiting behind it and starts by itself once you do.',
+  'shutting-down': 'The app is shutting down, so nothing new can be started.',
+};

@@ -25,6 +25,7 @@ import { MAX_PLAN_STEPS } from '@shared/board';
 import type { PermissionMode } from '@shared/session';
 import type { Project, Task } from '@shared/model';
 import type { LimitState } from '@shared/limit';
+import { RUN_REFUSAL_MESSAGE } from '@shared/scheduler';
 import type { SessionManager } from './sessionManager';
 import type { Store } from './store';
 import type { WorktreeManager } from './worktreeManager';
@@ -3698,5 +3699,211 @@ describe('dismissAttentionForCard', () => {
     const { scheduler, resolved } = setup([item({ id: 'i4', taskId: 'other' })]);
     expect(scheduler.dismissAttentionForCard('c1')).toBe(0);
     expect(resolved).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Why a Start did nothing — {@link Scheduler.startTaskNow}.
+ *
+ * The reported bug: two cards were unblocked, Start was pressed, and each answered
+ * "Cannot start this task now — it is already running, or a usage limit is holding all
+ * work." Neither half was true. `runTask` collapsed six distinct refusals into one `null`
+ * and `task:run` guessed at the two it thought likeliest, so the one that had actually
+ * happened — a dead sign-in — was never named and the action that fixes it never offered.
+ *
+ * The second half of the same bug is that a gate's refusal used to be the end of it: the
+ * card stayed `pending` OUTSIDE the gate, so signing in resumed everything except the
+ * cards a human had asked for by hand.
+ */
+describe('Scheduler.startTaskNow — the reason a Start was refused', () => {
+  function setup(opts: { steps?: Task[]; authGate?: boolean } = {}): {
+    scheduler: Scheduler;
+    card: Task;
+    start: ReturnType<typeof vi.fn>;
+    notes: { taskId: string; body: string }[];
+  } {
+    const project = {
+      id: 'p',
+      path: 'C:/w',
+      planPath: 'C:/w/plan.md',
+      name: 'P',
+      concurrency: 1,
+      defaultModel: 'sonnet',
+      defaultPermissionMode: 'acceptEdits',
+    } as Project;
+    const card = {
+      id: 't1',
+      projectId: 'p',
+      phase: '',
+      title: 'Switching from Python to NestJS/TypeScript in the backend',
+      status: 'pending',
+      sessionId: null,
+      order: 0,
+      source: 'board',
+      dependsOn: [],
+      isContract: false,
+      isScaffold: false,
+      agentProjectId: null,
+    } as unknown as Task;
+    const steps = opts.steps ?? [];
+    const byId = new Map<string, Task>([[card.id, card], ...steps.map((s) => [s.id, s] as const)]);
+    const notes: { taskId: string; body: string }[] = [];
+    const store = {
+      getTask: (id: string) => byId.get(id),
+      getTasks: () => [card, ...steps],
+      getProject: (id: string) => (id === 'p' ? project : undefined),
+      getSubtasks: (id: string) => (id === 't1' ? steps : []),
+      updateTask: (id: string, patch: Partial<Task>) => {
+        const found = byId.get(id);
+        if (found) Object.assign(found, patch);
+        return found;
+      },
+      listProjects: () => [project],
+      listTaskLinks: () => [],
+      appendTaskEvent: vi.fn(
+        (_p: string, taskId: string, _runId: string, event: { text?: string }) => {
+          notes.push({ taskId, body: event.text ?? '' });
+        },
+      ),
+      getSettings: () => ({ maxAutoRetries: 0, limitJitterMs: 0, concurrency: 1 }),
+      saveLimitGate: vi.fn(),
+      loadLimitGate: () => null,
+      saveAuthGate: vi.fn(),
+      loadAuthGate: () =>
+        opts.authGate
+          ? {
+              since: 1,
+              reason: 'Failed to authenticate: OAuth session expired',
+              source: 'run',
+              parkedTaskIds: [],
+            }
+          : null,
+      ...INERT_ATTENTION_STORE,
+    } as unknown as Store;
+    const start = vi.fn(() => ({ runId: 'r1' }));
+    const sessions = { start, stop: vi.fn() } as unknown as SessionManager;
+    const scheduler = new Scheduler(store, sessions, vi.fn(), vi.fn(), vi.fn(), vi.fn(), vi.fn());
+    // Through the public restore path, so the gate is raised the way a relaunch raises it.
+    if (opts.authGate) scheduler.restoreAuthGate();
+    return { scheduler, card, start, notes };
+  }
+
+  /** Raise the usage-limit gate the way a `rate-limit` event from the CLI raises it. */
+  function engageLimit(scheduler: Scheduler): void {
+    (scheduler as unknown as { engageLimit: (e: unknown) => void }).engageLimit({
+      kind: 'rate-limit',
+      status: 'limited',
+      rateLimitType: 'rolling',
+      resetsAt: null,
+    });
+  }
+
+  it('starts the card and reports the run when nothing is in the way', () => {
+    const { scheduler, start } = setup();
+    const outcome = scheduler.startTaskNow('t1');
+    expect(outcome).toEqual({ runId: expect.any(String) });
+    expect(start).toHaveBeenCalledTimes(1);
+  });
+
+  it('names the SIGN-IN gate instead of blaming a usage limit', () => {
+    const { scheduler, start } = setup({ authGate: true });
+
+    expect(scheduler.startTaskNow('t1')).toEqual({ refused: 'signed-out' });
+    expect(start).not.toHaveBeenCalled();
+    // The sentence a human reads has to carry the one action that fixes this, and must not
+    // send them off to wait for a reset that is never coming.
+    expect(RUN_REFUSAL_MESSAGE['signed-out']).toContain('Sign in');
+    expect(RUN_REFUSAL_MESSAGE['signed-out']).not.toContain('usage limit');
+  });
+
+  /**
+   * A gate is the only thing that remembers work across the pause, so a Start it swallowed
+   * has to be parked IN it. Without this the two cards in the report would still have been
+   * sitting there untouched after signing in.
+   */
+  it('parks the card in the sign-in gate so it starts by itself on the way back', () => {
+    const { scheduler, card, start, notes } = setup({ authGate: true });
+
+    scheduler.startTaskNow('t1');
+
+    expect(scheduler.currentAuth()?.parkedTaskIds).toEqual(['t1']);
+    // Plain `pending`, not a status of its own — the note is what makes the wait legible.
+    expect(card.status).toBe('pending');
+    expect(notes.at(-1)?.body).toContain('sign in');
+
+    scheduler.signedIn();
+    expect(start).toHaveBeenCalledTimes(1);
+  });
+
+  it('names the usage limit when THAT is the gate, and parks behind it', () => {
+    const { scheduler, card } = setup();
+    engageLimit(scheduler);
+
+    expect(scheduler.startTaskNow('t1')).toEqual({ refused: 'limit' });
+    expect(scheduler.currentLimit()?.parkedTaskIds).toContain('t1');
+    expect(card.status).toBe('blocked-by-limit');
+  });
+
+  it('says "already running" only when the task really is in flight', () => {
+    const { scheduler } = setup();
+    (scheduler as unknown as { inFlight: Set<string> }).inFlight.add('t1');
+    expect(scheduler.startTaskNow('t1')).toEqual({ refused: 'already-running' });
+  });
+
+  it('says the card is gone rather than blaming a gate for it', () => {
+    const { scheduler } = setup();
+    expect(scheduler.startTaskNow('nope')).toEqual({ refused: 'unknown-task' });
+  });
+
+  /**
+   * A card with no project behind it resolves no directory to run in. It used to get the
+   * usage-limit sentence too, which sent people off to wait for a reset that would change
+   * nothing — and it is asked BEFORE the gates for exactly that reason: a gate must not
+   * answer for a card that could never have run anyway.
+   */
+  it('says there is no repository when no project resolves', () => {
+    const { scheduler } = setup({ authGate: true });
+    (scheduler as unknown as { store: { getProject: () => undefined } }).store.getProject = () =>
+      undefined;
+    expect(scheduler.startTaskNow('t1')).toEqual({ refused: 'no-project' });
+    expect(scheduler.currentAuth()?.parkedTaskIds).toEqual([]);
+  });
+
+  it('refuses everything once the engine is shutting down', () => {
+    const { scheduler } = setup();
+    scheduler.dispose();
+    expect(scheduler.startTaskNow('t1')).toEqual({ refused: 'shutting-down' });
+  });
+
+  /**
+   * A gate parks the task that WOULD have run, which for a card executing a plan is its
+   * step. Parking the card instead would resume the card's own session beside its chain —
+   * two agents in one worktree, the thing the reservation scheme exists to prevent.
+   */
+  it('parks the STEP, not the card, when the card hands over to its chain', () => {
+    const step = {
+      id: 's1',
+      parentTaskId: 't1',
+      projectId: 'p',
+      phase: '',
+      title: 'step one',
+      status: 'pending',
+      sessionId: null,
+      order: 0,
+      source: 'plan',
+      dependsOn: [],
+      isContract: false,
+      isScaffold: false,
+    } as unknown as Task;
+    const { scheduler } = setup({ steps: [step], authGate: true });
+
+    expect(scheduler.startTaskNow('t1')).toEqual({ refused: 'signed-out' });
+    expect(scheduler.currentAuth()?.parkedTaskIds).toEqual(['s1']);
+  });
+
+  /** `runTask` keeps its old shape, for the chain of execution and every other caller. */
+  it('still answers runTask with a plain null', () => {
+    const { scheduler } = setup({ authGate: true });
+    expect(scheduler.runTask('t1')).toBeNull();
   });
 });

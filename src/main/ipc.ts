@@ -106,6 +106,7 @@ import { listClaudeSessions } from './claudeSessions';
 import { sanitizeWindowState } from './windowState';
 import { appPlanPath, appProjectFile } from './projectPaths';
 import { RELEASE_DOC } from '@shared/release';
+import { RUN_REFUSAL_MESSAGE } from '@shared/scheduler';
 import { logMain } from './log';
 import { parsePlan } from './planParser';
 import { planHasAlignmentMarkers, validatePlan } from './planValidate';
@@ -693,15 +694,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('scheduler:states', async () => scheduler.schedulerStates());
   handle('scheduler:integrating', async () => scheduler.integratingTaskIds());
   handle('task:run', async (taskId) => {
-    const started = scheduler.runTask(taskId);
-    // `runTask` returns null for every "not now" as well as "not found", so say both:
-    // the commonest cause by far is the account-wide usage-limit gate.
-    if (!started) {
-      throw new Error(
-        'Cannot start this task now — it is already running, or a usage limit is holding all work.',
-      );
-    }
-    return started;
+    const outcome = scheduler.startTaskNow(taskId);
+    // The engine names the wall it hit; one map turns that into the sentence the human
+    // reads. This used to guess — "already running, or a usage limit" — for all six
+    // reasons at once, which meant a signed-out account was reported as a usage limit and
+    // the one action that would fix it (sign in) went unsaid.
+    if ('refused' in outcome) throw new Error(RUN_REFUSAL_MESSAGE[outcome.refused]);
+    return outcome;
   });
   handle('task:integrate', async (taskId) => {
     const refusal = await scheduler.integrateNow(taskId);
@@ -783,13 +782,16 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       return task;
     }
 
-    const started = scheduler.runTask(taskId);
-    if (!started) {
-      throw new Error(
-        'Could not start the agent — a usage limit may be holding all work. Try again after it resets.',
-      );
+    const outcome = scheduler.startTaskNow(taskId);
+    if ('refused' in outcome) {
+      // The assignment itself stuck — the card IS delegated now, and if a gate refused the
+      // start it is parked behind that gate and will begin by itself. Say so before
+      // throwing, or the board would keep drawing an undelegated card and the human would
+      // assign it a second time.
+      send('task:changed', { task, runId: null });
+      throw new Error(RUN_REFUSAL_MESSAGE[outcome.refused]);
     }
-    send('task:changed', { task, runId: started.runId });
+    send('task:changed', { task, runId: outcome.runId });
     return task;
   });
 
