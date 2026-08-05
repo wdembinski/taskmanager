@@ -47,7 +47,7 @@ plan the orchestrator could one day run on its own repo.
 | — | Interim releases v0.56–v0.57 (a Stop button everywhere, the Add-task dialog's options) | ✅ shipped, not tracked here |
 | 22 | Attachments in the task and its steps | ✅ complete (v0.64.4) — tag and draft cut once it lands on `development` |
 | 23 | One model for planning, another for the steps | ✅ complete on `feat/setting-ai-agent-models-for-planning` — tag and draft cut once it lands on `development` |
-| 24 | Projects and their tickets (a tracker of our own) | 🚧 in progress on `feat/support-projects-and-their-tickets` — **design and build steps landed**, code to come |
+| 24 | Projects and their tickets (a tracker of our own) | 🚧 in progress on `feat/support-projects-and-their-tickets` — **design, build steps and verification plan landed**, code to come |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -2400,9 +2400,9 @@ the agent already have.
 The whole design rests on one decision — a native ticket project is **a `projects` row**,
 and a ticket is **a `tasks` row** — so nothing below is a second copy of the board.
 
-This entry is the design, written before any code. The build phases, the verification plan
-and the critical-files list are added by the later steps of this plan, which run as their
-own sessions on this same branch.
+This entry is the design, written before any code. The build phases and the verification plan
+have since been added by the later steps of this plan; the critical-files list is added by
+the last of them. Each runs as its own session on this same branch.
 
 ### A native ticket project is a `projects` row with `kind: 'ticket'`
 
@@ -2854,12 +2854,130 @@ vocabulary and its inverses, and the JIRA-isolation guarantee — and a
 [`docs/04-contributing-guide.md`](../04-contributing-guide.md) recipe for adding a ticket
 field.
 
+### Verification
+
+Written before any of the nine steps runs, so each of them knows what it owes rather than
+deciding afterwards. Every claim below about the gates was read in this worktree.
+
+**The gates, per step, in order: `pnpm format` → `pnpm typecheck` → `pnpm test`.** That is
+[`CONTRIBUTING.md`](../../CONTRIBUTING.md)'s own pre-commit checklist, not a convention
+invented here. Four things about them are load-bearing for this phase:
+
+- **`format` does not glob this file.** It is `prettier --write "src/**/*.{ts,tsx}"
+  "*.{json,md}"` ([`package.json`](../../package.json)) — root-level markdown only. So
+  `docs/**` and `scripts/*.mjs` are outside it: `verify-tickets.mjs` will never be
+  reformatted by the gate and has to be written at `printWidth: 100`
+  ([`.prettierrc.json`](../../.prettierrc.json)) by hand. It is also why the three planning
+  steps had no `format` to run.
+- **`typecheck` is two passes chained with `&&`** — `typecheck:node` (`tsconfig.node.json`)
+  then `typecheck:web` (`tsconfig.web.json`) — and `src/shared` is in **both** `include`
+  lists. Step 1's `model.ts` change is therefore checked twice, under two different `lib`
+  sets (`ES2022` vs `ES2022 + DOM`). The `&&` also means one node-side error hides *every*
+  renderer error, so steps 4–8 should run `pnpm typecheck:web` directly while iterating and
+  the full `pnpm typecheck` before committing.
+- **`pnpm test` is `vitest run` with no `include` override**, so the default glob also picks
+  up `scripts/native-abi.test.mjs` and `scripts/update-feed.test.mjs`. The corollary matters:
+  `scripts/verify-tickets.mjs` must **never** be named `*.test.mjs`. Vitest would then run it
+  under plain Node, where the addon cannot load — see the ABI note below.
+- **`pnpm build` is a fourth gate, owed by steps 4–8** even though the checklist names three.
+  `typecheck:web` type-checks the renderer but never runs Vite, so an alias that fails to
+  resolve, or a `makeStyles` call given a computed value (there is no Griffel build-time
+  plugin here — the Gantt's note in step 7), compiles cleanly and breaks at build or paint
+  time. Phase 22 ran it as a fourth gate for the same reason.
+
+**The worktree has no `node_modules`.** No gate can say anything until build step 1 pays for
+`pnpm install`, whose `postinstall` (`electron-builder install-app-deps`) is also what makes
+the Electron-ABI addon the verification script needs.
+
+#### The gate that will not fire
+
+The draft this section was written from said that widening `ProjectKind` and `Task['source']`
+would turn every exhaustive `switch` into a compile error — that this is the feature, and that
+`typecheck` would enumerate the call sites so nobody had to grep for them. **It will not.**
+Read in this worktree:
+
+- `src/` holds 33 `switch` statements outside its tests and **not one** of them switches on
+  `ProjectKind` or on `Task['source']`. Every kind-test and source-test in the app is an `if`
+  or a `filter` with `===`/`!==`:
+  [`ipc.ts:523,535,603,610,669,745,834`](../../src/main/ipc.ts),
+  [`planWatcher.ts:49`](../../src/main/planWatcher.ts),
+  [`agentProjects.ts:19`](../../src/shared/agentProjects.ts),
+  [`jiraSync.ts:359,380,413,544,591`](../../src/main/jira/jiraSync.ts),
+  [`taskReconcile.ts:54,91`](../../src/main/taskReconcile.ts).
+- There is no `never`-exhaustiveness idiom anywhere in `src/` — `: never` appears three
+  times, all of them prose in comments.
+- Widening a union whose members are only ever *compared* produces no errors at all:
+  `x === 'plan'` stays legal for every member of a wider union. The two places that narrow
+  keep compiling while meaning the wrong thing — `rowToProject`'s ternary
+  ([`store.ts:1584`](../../src/main/store.ts)) yields a value still assignable to the wider
+  type, and `rowToTask`'s `as Task['source']` ([`store.ts:1694`](../../src/main/store.ts)) is
+  a cast, which is the point of a cast.
+
+So the compiler is silent in exactly the places this design most needs a reader, and the
+**Traps** list above is not optional background — it is the substitute for the gate. Build
+step 1 finds its four fixes by grepping `kind ===`, `kind !==`, `source ===` and `source !==`
+over `src/`, and by widening the doc comment at
+[`store.ts:156`](../../src/main/store.ts) (`'plan' | 'agent'`), which no gate can see at all.
+
+#### What only `scripts/verify-tickets.mjs` can prove
+
+**No Vitest test in this repo can open SQLite.** `better-sqlite3`'s addon is rebuilt for
+Electron's ABI by `postinstall`, not for the Node that runs Vitest. Every claim this design
+makes about the schema, key allocation, the cascades and the JIRA isolation is therefore
+proved by `pnpm exec node scripts/verify-tickets.mjs` — steps 3 and 9, whose contents are
+listed above — and by nothing else. Two consequences the steps must not let slide:
+
+- The script is checked by **neither gate**. Neither tsconfig includes `scripts/`, and
+  `format` does not glob it. It proves something only when it is actually *run*, so any step
+  that changes the store runs it rather than trusting that it was green two steps ago.
+- Its work directory goes **inside the repo**, under `/.verify-*/`, which
+  [`.gitignore`](../../.gitignore) already covers and explains: the bundles keep
+  `better-sqlite3` external and so need `node_modules` on the resolution path. Note that
+  `verify-attachments.mjs`'s own header still says "system temp dir" — stale prose in the
+  file step 3 is modelled on. Follow the `.gitignore` entry and the code, as
+  `verify-model-split.mjs` does.
+
+#### What nothing on this branch can reach: the rendering
+
+**The app is never launched** — not `pnpm dev`, not the packaged exe, not even with a
+throwaway `--user-data-dir`. [`RELEASE.md`](../../RELEASE.md) rule 6: `src/main/index.ts`
+takes no single-instance lock, and a boot smoke test killed the user's live session on
+2026-08-02. This phase's entire visual surface therefore ships unlooked-at, and these are
+owed to a human rather than claimed as passing:
+
+1. **The Gantt** (steps 7–8) — bars lining up with their own header, the month band across a
+   DST boundary and a 31-day month, marker label stacking, `blocks` arrows, and whether a
+   drag actually lands where the pointer is.
+2. **The Projects screen and backlog table** (step 4) — grouping, search, and the add/edit
+   drawer.
+3. **The new card lines** (step 6) — key badge, epic line, label chips, assignee avatar,
+   points chip, and step 6's own acceptance that a database with no ticket project renders a
+   byte-identical board. A screenshot settles that; no test in this repo can.
+4. **The ticket drawer, label registry, milestone list and people settings** (step 5).
+
+Each step states this in its own `Tested:` trailer rather than implying otherwise. A
+`Tested:` line is a claim about what was actually run
+([`CONTRIBUTING.md`](../../CONTRIBUTING.md) §2), so "typecheck + test green, not looked at"
+is the honest form — the same way Phases 10–13's live E2Es are recorded as owed above.
+
+#### No new runtime dependency
+
+`dependencies` is `better-sqlite3` and `electron-updater`, and nothing else
+([`package.json`](../../package.json)) — which is why the Gantt is hand-rolled SVG. If a
+later step concludes it genuinely needs one, it would be the first added since
+`better-sqlite3`, and it clears [`docs/06`](../06-licensing.md) *before* it is installed:
+MIT / Apache-2.0 / BSD / ISC only, never GPL / AGPL / LGPL / MPL / EPL / CDDL, confirmed with
+the `pnpm licenses list` check that file prescribes.
+
 ### Done when (the design's own gates)
 
 - The schema, the module boundaries and the vocabulary above are written down before any
   of them exists in code, and every claim about today's code carries the file and line it
   was read from.
 - Nothing in this entry requires a new runtime dependency.
+- Every gate each build step owes is named before the first of them runs, and so is every
+  claim no gate on this branch can reach — stated as owed rather than implied by a green
+  suite.
 
 **Notes.**
 
