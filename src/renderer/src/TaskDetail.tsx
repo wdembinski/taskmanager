@@ -42,6 +42,7 @@ import type { StatusKeyword } from '@shared/statusKeywords';
 import type { PriorityDisplay } from '@shared/settings';
 import {
   ChevronLeftRegular,
+  ChevronDownRegular,
   CollectionsEmptyRegular,
   AlertOffRegular,
 } from '@fluentui/react-icons';
@@ -112,15 +113,33 @@ const useStyles = makeStyles({
     overflowY: 'auto',
   },
   /**
+   * Wraps the scrolling conversation so the "new messages" pill (below) can be
+   * positioned against it without affecting layout — the pill floats over the
+   * conversation, it does not take a row of its own.
+   */
+  scrollWrap: { position: 'relative', flex: 1, minHeight: 0 },
+  /**
    * The conversation: unframed, on the pane's own surface, and the ONLY thing that
    * scrolls — the details band above and the composer below stay put however long the
    * chat gets.
    */
   scroll: {
-    flex: 1,
-    minHeight: 0,
+    height: '100%',
     overflowY: 'auto',
     padding: '10px 12px',
+  },
+  /**
+   * Teams-style "new messages" pill: appears only once a message has landed while the
+   * reader was scrolled up reading something older, so it never nags someone who is
+   * already caught up. Floats over the conversation's bottom edge rather than pushing
+   * the composer around.
+   */
+  newMessages: {
+    position: 'absolute',
+    bottom: '10px',
+    left: '50%',
+    transform: 'translateX(-50%)',
+    boxShadow: tokens.shadow8,
   },
   /**
    * **Dismiss**, immediately above the State dropdown it belongs beside. Only ever drawn
@@ -431,12 +450,49 @@ export function TaskDetail({
     [attention, task?.id, subtasks],
   );
 
-  // Keep the newest turn in view as output streams (same rule as the Transcript pane).
+  // Keep the newest turn in view as output streams — but only while the reader is
+  // already at the bottom. Scrolled up to read something older, a jump would yank
+  // them away from it; instead the pill below offers to go there on request (Teams'
+  // rule for the same problem).
   const scrollRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
+  // Updated by `onScroll` below on every user scroll; read (not subscribed to) by the
+  // turns effect so scrolling itself never re-renders the pane.
+  const atBottomRef = useRef(true);
+  const [hasNewMessages, setHasNewMessages] = useState(false);
+  const prevTaskIdRef = useRef<string | null>(null);
+  const prevTurnCountRef = useRef(0);
+
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
     const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [turns, subAgents]);
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior });
+    atBottomRef.current = true;
+    setHasNewMessages(false);
+  }, []);
+
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    // A few px of slack: "at the bottom" shouldn't require pixel-perfect scrolling.
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 48;
+    atBottomRef.current = atBottom;
+    if (atBottom) setHasNewMessages(false);
+  }, []);
+
+  useEffect(() => {
+    // Switching cards always jumps to the newest turn — there is nothing "older" to
+    // protect the reader from on a pane they just opened.
+    const switchedTask = prevTaskIdRef.current !== taskId;
+    prevTaskIdRef.current = taskId;
+    const grew = turns.length > prevTurnCountRef.current;
+    prevTurnCountRef.current = turns.length;
+
+    if (switchedTask || atBottomRef.current) {
+      scrollToBottom();
+    } else if (grew) {
+      setHasNewMessages(true);
+    }
+  }, [turns, subAgents, taskId, scrollToBottom]);
 
   if (!task) {
     return (
@@ -757,17 +813,32 @@ export function TaskDetail({
         </div>
       )}
 
-      <div className={styles.scroll} ref={scrollRef}>
-        {turns.length === 0 && !managedByAI ? (
-          <Caption1 className={styles.empty}>
-            Nothing said yet — write a note, or send the agent a message.
-          </Caption1>
-        ) : (
-          <ChatTurns
-            turns={turns}
-            statusKeywords={statusKeywords}
-            onDeleteNote={(id) => void deleteComment(id)}
-          />
+      <div className={styles.scrollWrap}>
+        <div className={styles.scroll} ref={scrollRef} onScroll={handleScroll}>
+          {turns.length === 0 && !managedByAI ? (
+            <Caption1 className={styles.empty}>
+              Nothing said yet — write a note, or send the agent a message.
+            </Caption1>
+          ) : (
+            <ChatTurns
+              turns={turns}
+              statusKeywords={statusKeywords}
+              onDeleteNote={(id) => void deleteComment(id)}
+            />
+          )}
+        </div>
+        {hasNewMessages && (
+          <Button
+            className={styles.newMessages}
+            size="small"
+            shape="rounded"
+            appearance="primary"
+            icon={<ChevronDownRegular />}
+            iconPosition="after"
+            onClick={() => scrollToBottom('smooth')}
+          >
+            New messages
+          </Button>
         )}
       </div>
 
