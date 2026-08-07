@@ -117,6 +117,7 @@ import { writePermissionServer } from './permissionServerSource';
 import { openInteractiveSignIn, watchForSignIn } from './signIn';
 import { PlanWatcher } from './planWatcher';
 import { SyncPoller } from './syncPoller';
+import { ClaudeUsagePoller } from './claudeUsage';
 import { validateBranchName } from '@shared/branchName';
 import { Scheduler } from './scheduler';
 import { SessionManager } from './sessionManager';
@@ -186,6 +187,8 @@ export interface Engine {
   watcher: PlanWatcher;
   /** The one background timer that refreshes every integration. */
   syncPoller: SyncPoller;
+  /** Keeps the CLI's own `/usage` reading fresh for the two quota bars. */
+  claudeUsagePoller: ClaudeUsagePoller;
   updater: Updater;
   /** Flushes the window geometry — must be disposed BEFORE the store closes. */
   windowTracker: { dispose(): void };
@@ -1135,6 +1138,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       sessionReset: pressure.limitType === 'rolling' ? resetMs : null,
       weeklyReset: pressure.limitType === 'weekly' ? resetMs : null,
       tokensIn: (from, to) => store.getWindowTokens(from, to),
+      claudeUsage: claudeUsagePoller.current(),
     });
   });
 
@@ -2507,6 +2511,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   ]);
   syncPoller.reschedule();
 
+  // The two quota bars' one real signal: `/usage` read straight from the CLI, on its
+  // own clock (see `claudeUsage.ts` for why this never costs a token or a turn).
+  const claudeUsagePoller = new ClaudeUsagePoller();
+  claudeUsagePoller.start();
+
   // Same reasoning: the updater's first feed request is scheduled here, once every
   // channel is live, so a network stall can never delay handler registration.
   updater.start();
@@ -2518,6 +2527,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     broker,
     watcher,
     syncPoller,
+    claudeUsagePoller,
     updater,
     windowTracker,
   };

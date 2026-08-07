@@ -316,6 +316,48 @@ describe('usageQuota', () => {
     expect(quota.pct).toBe(0);
     expect(quota.tokens).toBe(500);
   });
+
+  it('reports the budget estimate as the pct source when no Claude reading is given', () => {
+    const quota = usageQuota({
+      id: 'session',
+      now,
+      windowMs: USAGE_WINDOW_MS,
+      resetAt: null,
+      limit: 200,
+      tokensIn: reader(50).fn,
+    });
+    expect(quota.pctSource).toBe('budget');
+  });
+
+  it("prefers Claude's own reading over the budget estimate, but still reports the app's own spend", () => {
+    const quota = usageQuota({
+      id: 'session',
+      now,
+      windowMs: USAGE_WINDOW_MS,
+      resetAt: null,
+      limit: 200,
+      tokensIn: reader(50).fn, // would be 25% by the budget estimate
+      claudePct: 19,
+    });
+    expect(quota.pct).toBe(19);
+    expect(quota.pctSource).toBe('claude');
+    expect(quota.tokens).toBe(50);
+    expect(quota.limit).toBe(200);
+  });
+
+  it("trusts a Claude reading of 0 rather than falling back to the budget estimate", () => {
+    const quota = usageQuota({
+      id: 'session',
+      now,
+      windowMs: USAGE_WINDOW_MS,
+      resetAt: null,
+      limit: 200,
+      tokensIn: reader(50).fn,
+      claudePct: 0,
+    });
+    expect(quota.pct).toBe(0);
+    expect(quota.pctSource).toBe('claude');
+  });
 });
 
 describe('rollupQuotas', () => {
@@ -347,5 +389,32 @@ describe('rollupQuotas', () => {
     });
     expect(quotas.session.windowEnd).toBe(resetAt);
     expect(quotas.weekly.windowEnd).toBe(now);
+  });
+
+  it("passes Claude's own reading to each window independently", () => {
+    const quotas = rollupQuotas({
+      now,
+      sessionLimit: 1000,
+      weeklyLimit: 10_000,
+      tokensIn: () => 400, // would read as a nonzero % from the budget estimate too
+      claudeUsage: { sessionPct: 19, weeklyPct: 3 },
+    });
+    expect(quotas.session.pct).toBe(19);
+    expect(quotas.session.pctSource).toBe('claude');
+    expect(quotas.weekly.pct).toBe(3);
+    expect(quotas.weekly.pctSource).toBe('claude');
+  });
+
+  it('falls back to the budget estimate for a window the CLI reading left null', () => {
+    const quotas = rollupQuotas({
+      now,
+      sessionLimit: 1000,
+      weeklyLimit: 10_000,
+      tokensIn: (from, to) => (to - from > USAGE_WINDOW_MS + 1 ? 2500 : 400),
+      claudeUsage: { sessionPct: 19, weeklyPct: null },
+    });
+    expect(quotas.session.pctSource).toBe('claude');
+    expect(quotas.weekly.pctSource).toBe('budget');
+    expect(quotas.weekly.pct).toBe(25);
   });
 });

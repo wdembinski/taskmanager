@@ -19,14 +19,15 @@ that one is the working.
 
 ---
 
-## The whole surface is four sites
+## The whole surface is five sites
 
-You can audit this app's token spend exhaustively, because there are only four places it
+You can audit this app's token spend exhaustively, because there are only five places it
 runs the `claude` binary at all, and only three of them talk to a model:
 
 | Site                                                                      | What it starts                                                                      | Costs tokens?                          |
 | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | -------------------------------------- |
 | [`claudeStatus.ts:26`](../src/main/claudeStatus.ts)                       | `claude --version`, to see whether the CLI is installed and on which host           | **No** — no model call                 |
+| [`claudeUsage.ts:48`](../src/main/claudeUsage.ts)                        | `claude -p "/usage"`, polled every 10 minutes, to read the two quota bars           | **No** — a local meta-command, not a turn |
 | [`ipc.ts:434`](../src/main/ipc.ts) (`session:start`)                      | the manual Session view: the human types a prompt and watches it                    | Yes, human-initiated                   |
 | [`scheduler.ts:1469`](../src/main/scheduler.ts) (`startAuxiliarySession`) | the one-shot "Align plan" run                                                       | Yes, human-initiated                   |
 | [`scheduler.ts:2243`](../src/main/scheduler.ts) (`Scheduler.launch`)      | **every** task run: fresh, resumed, chat, retry, conflict fix, release, review seed | Yes — and most of it **app**-initiated |
@@ -39,9 +40,12 @@ the architecture (see [doc 02](02-architecture.md) and the licensing reason in
 [doc 06](06-licensing.md)), and the audit benefits from it: nothing can be leaking
 somewhere unlisted.
 
-The fourth row is worth its line in the table precisely because it is free. A reader
-scanning for "where do we call the model" should be able to dismiss it in a second rather
-than re-derive that a `--version` probe is harmless.
+The other two rows are worth their lines in the table precisely because they are free. A
+reader scanning for "where do we call the model" should be able to dismiss both in a second
+rather than re-derive that a `--version` probe or an unauthenticated `/usage` read is
+harmless — the second one specifically because `claude -p "/usage"` answers with
+`total_cost_usd: 0` and `num_turns: 0`: it is intercepted before it would ever become a
+model turn, the same way `/help` or `/cost` would be.
 
 ### The one system prompt
 
@@ -253,25 +257,34 @@ not on a guess about a prompt.
 
 ### The budget bars are that shape, and stop where the evidence does
 
-Two progress bars now say how much of each metered window is gone — the **current session**
+Two progress bars say how much of each metered window is gone — the **current session**
 (the rolling 5 hours) and the **week** — in the status bar and again at the top of the
 Performance screen ([`usageQuota`](../src/main/usageRollup.ts),
-[`UsageQuotaBars.tsx`](../src/renderer/src/UsageQuotaBars.tsx)). They are built exactly as
-the paragraph above requires: two `SUM`s over `token_usage`, measured after the fact.
+[`UsageQuotaBars.tsx`](../src/renderer/src/UsageQuotaBars.tsx)).
 
-What they deliberately are not is a claim about Claude's own caps. The CLI's
-`rate_limit_event` reports _that_ a window is under pressure and _when_ it resets; it never
-reports how many tokens the cap is or how many are left. So the denominator is the user's
-own budget (Settings → session/weekly token budget, defaulted from the 1.82B-per-5.3-days
-measured above), and the percentage means "of the allowance you set", not "of your plan".
-Nothing is refused when a bar fills: the app has no authority it could enforce, and a
-progress bar that quietly stopped work on a number the user typed would be the estimator
-this section just argued against, wearing a different hat.
+The first version of this measured spend over a budget the user typed in Settings, because
+the CLI's `rate_limit_event` — the only signal a running session streams — reports _that_ a
+window is under pressure and _when_ it resets, never how many tokens the cap is or how many
+are left. That made the percentage honest about what it measured, but it also meant it could
+never agree with what a human sees running `/usage` themselves — a different number,
+answering a different question, and the mismatch read as the bars being simply wrong.
 
-The one signal Claude _does_ give is used where it is authoritative: a reported reset time
-anchors its window, so the session bar covers the five hours actually ending at the reset
-rather than the five trailing "now" — and `limitType` keeps a weekly reset from anchoring
-the session bar.
+They no longer have to guess. `/usage` is not a session — typed at the CLI outside of one, it
+is answered by the CLI itself, `total_cost_usd: 0` and `num_turns: 0`, because it never
+reaches the model. [`claudeUsage.ts`](../src/main/claudeUsage.ts) runs exactly that —
+`claude -p "/usage" --output-format json` — on its own ten-minute clock and reads the two
+percentages back out of the reply text. That reading is what the bars draw whenever it is
+available (`UsageQuota.pctSource === 'claude'`); the token-budget estimate only still runs as
+the fallback for the gap before the first poll lands, or if the CLI can't be reached, and the
+tooltip says which one a bar is showing rather than letting the two look interchangeable.
+
+Nothing is refused when a bar fills either way: the app has no authority it could enforce, and
+a progress bar that quietly stopped work on a number it read would be the estimator this
+section argued against, wearing a different hat. The one signal a running session's own
+`rate_limit_event` streams is still used where it is authoritative for timing: a reported
+reset anchors its window, so the session bar covers the five hours actually ending at the
+reset rather than the five trailing "now" — and `limitType` keeps a weekly reset from
+anchoring the session bar.
 
 ---
 

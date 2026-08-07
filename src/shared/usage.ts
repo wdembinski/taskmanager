@@ -135,11 +135,14 @@ export type UsageQuotaId = 'session' | 'weekly';
 /**
  * How much of one metered window has been spent — the model behind a progress bar.
  *
- * `limit` is the user's own budget for that window (Settings → Token budgets), not a
- * number Claude reports: the CLI tells us *that* a window is close to its cap and *when*
- * it resets, never how many tokens are left in it. So the percentage is honest about what
- * it measures — measured spend against a budget the human set — which is the shape
- * doc 08 says a budget feature has to take: built on `token_usage`, never on a guess.
+ * `pct` is, whenever it can be, the number Claude's own `/usage` command reports —
+ * read straight from the CLI (see `claudeUsage.ts`), the same figure the human would
+ * see typing `/usage` themselves. That reading needs the CLI to be reachable and can
+ * lag a few minutes behind (it is polled, not pushed), so `pctSource` says which shape
+ * `pct` actually is: `'claude'` when it is that real reading, `'budget'` when the app
+ * fell back to measured spend against the user's own Settings budget because no CLI
+ * reading has landed yet — the shape doc 08 said a budget feature has to take when
+ * there is nothing better: built on `token_usage`, never on a guess.
  */
 export interface UsageQuota {
   id: UsageQuotaId;
@@ -148,15 +151,18 @@ export interface UsageQuota {
   windowEnd: number;
   /** When this window rolls over (epoch ms), if the CLI has said so; else null. */
   resetAt: number | null;
-  /** Tokens spent inside the window. */
+  /** Tokens spent inside the window, by this app's own sessions. */
   tokens: number;
-  /** The budget the percentage is measured against, in tokens. 0 = no budget set. */
+  /** The budget `tokens` is compared against in the fallback, in tokens. 0 = none set. */
   limit: number;
   /**
-   * Spend as a percent of `limit`. **Not clamped** — a window that ran past its budget
-   * says 130% rather than quietly reading full. 0 when no budget is set.
+   * Spend as a percent of the window. **Not clamped** in the `'budget'` fallback — a
+   * window that ran past its budget says 130% rather than quietly reading full. 0 when
+   * `pctSource` is `'budget'` and no budget is set.
    */
   pct: number;
+  /** Whether `pct` is Claude's own reading or the local budget-spend estimate. */
+  pctSource: 'claude' | 'budget';
 }
 
 /** Both metered windows, as one push/response payload. */

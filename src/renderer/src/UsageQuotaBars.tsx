@@ -10,11 +10,12 @@
  *   - {@link UsageQuotaStatus} — the same two numbers as ambient furniture in the status
  *     bar, beside the sync rings, so the answer is on screen without opening a tab.
  *
- * The percentage is **measured spend against a budget the human set** (Settings → Token
- * budgets), never a number Claude reports: the CLI says *that* a window is close to its
- * cap and *when* it resets, never how much of it is left. That honesty is the whole
- * design constraint — see `UsageQuota` and doc 08's rule that a budget feature is built
- * on `token_usage`, not on a guess.
+ * The percentage is, whenever the CLI has one to give, **Claude's own `/usage` reading**
+ * — the exact number the human would see typing `/usage` themselves (see
+ * `claudeUsage.ts`). Until that first reading lands (or if the CLI is unreachable), the
+ * bar falls back to measured spend against a budget the human set in Settings, and says
+ * so — see `UsageQuota.pctSource` and doc 08's rule that a fallback has to be built on
+ * `token_usage`, not on a guess.
  *
  * The standard live-data idiom, at a gentler cadence than the dashboard's: seed via
  * `invoke`, then refresh on the `usage:sample` push plus a slow tick (the windows are
@@ -104,19 +105,24 @@ function barValue(quota: UsageQuota): number {
 }
 
 /**
- * "12.3M of 100M tokens · 12%", plus the reset when the CLI has told us one.
+ * "19% used (from Claude) · this app spent 12.3M of 100M tokens", plus the reset when
+ * the CLI has told us one.
  *
  * Read at render rather than off a ticking clock: it is a tooltip and a screen-reader
  * label, both of which are read the moment they appear, and the pair re-renders on every
  * refresh anyway. A second ticker per bar would buy a countdown nobody is watching.
  */
 function describeQuota(quota: UsageQuota): string {
-  const head =
+  const spend =
     quota.limit > 0
-      ? `${QUOTA_LABEL[quota.id]}: ${formatTokens(quota.tokens)} of ${formatTokens(
-          quota.limit,
-        )} tokens · ${formatPct(quota.pct)}`
-      : `${QUOTA_LABEL[quota.id]}: ${formatTokens(quota.tokens)} tokens · no budget set`;
+      ? `this app spent ${formatTokens(quota.tokens)} of ${formatTokens(quota.limit)} tokens`
+      : `this app spent ${formatTokens(quota.tokens)} tokens · no budget set`;
+  const head =
+    quota.pctSource === 'claude'
+      ? `${QUOTA_LABEL[quota.id]}: ${formatPct(quota.pct)} used (from Claude) · ${spend}`
+      : `${QUOTA_LABEL[quota.id]}: ${spend}${
+          quota.limit > 0 ? ` · ${formatPct(quota.pct)} (estimate, no Claude reading yet)` : ''
+        }`;
   const now = Date.now();
   if (quota.resetAt == null || quota.resetAt <= now) return head;
   return `${head} · window resets in ${formatCountdown(quota.resetAt - now)}`;
@@ -150,21 +156,25 @@ export function useUsageQuotas(): UsageQuotas | null {
 /** One labelled row of the Performance screen's pair. */
 function QuotaRow({ quota }: { quota: UsageQuota }): JSX.Element {
   const styles = useStyles();
+  // A Claude reading always has a percentage to draw; the budget fallback only does
+  // once a budget is set, so an unset budget with no reading yet reads empty rather
+  // than pretending to a denominator nobody gave it.
+  const hasReading = quota.pctSource === 'claude' || quota.limit > 0;
   return (
     <div className={styles.row}>
       <span className={styles.rowLabel}>{QUOTA_LABEL[quota.id]}</span>
       <span className={styles.rowNums}>
-        {quota.limit > 0
-          ? `${formatTokens(quota.tokens)} / ${formatTokens(quota.limit)} · ${formatPct(quota.pct)}`
-          : `${formatTokens(quota.tokens)} · no budget set`}
+        {quota.pctSource === 'claude'
+          ? `${formatPct(quota.pct)} used`
+          : quota.limit > 0
+            ? `${formatTokens(quota.tokens)} / ${formatTokens(quota.limit)} · ${formatPct(quota.pct)} (est.)`
+            : `${formatTokens(quota.tokens)} · no budget set`}
       </span>
       <div className={styles.rowBar}>
         <ProgressBar
           thickness="large"
           max={1}
-          // An unset budget has no percentage to draw, so the bar reads empty rather
-          // than pretending to a denominator nobody gave it.
-          value={quota.limit > 0 ? barValue(quota) : 0}
+          value={hasReading ? barValue(quota) : 0}
           color={quotaColor(quota.pct)}
           aria-label={describeQuota(quota)}
         />
@@ -212,13 +222,16 @@ function StatusQuota({ quota }: { quota: UsageQuota }): JSX.Element {
 }
 
 /**
- * The status bar's pair. Nothing at all until a budget is set, because "0%" against a
- * budget nobody chose is two items of furniture saying nothing.
+ * The status bar's pair. Nothing at all until there is something to say: a real Claude
+ * reading, or (until one lands) a budget the human set — "0%" against a budget nobody
+ * chose is two items of furniture saying nothing.
  */
 export function UsageQuotaStatus({ quotas }: { quotas: UsageQuotas | null }): JSX.Element | null {
   const styles = useStyles();
   if (!quotas) return null;
-  const shown = [quotas.session, quotas.weekly].filter((q) => q.limit > 0);
+  const shown = [quotas.session, quotas.weekly].filter(
+    (q) => q.pctSource === 'claude' || q.limit > 0,
+  );
   if (shown.length === 0) return null;
   return (
     <div className={styles.status}>

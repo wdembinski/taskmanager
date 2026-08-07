@@ -697,13 +697,16 @@ export function Settings(): JSX.Element {
               />
             </Field>
 
-            {/* The denominators behind the two usage bars (status bar + Performance).
-                In millions, because the honest unit here is enormous: 96% of the bill is
-                cache reads, so a busy week is billions of tokens and a SpinButton stepping
-                in ones would be unusable. 0 turns a bar off rather than dividing by zero. */}
+            {/* The denominators behind the two usage bars' FALLBACK reading (status bar +
+                Performance). The bars now show Claude's own `/usage` percentage whenever
+                the CLI has one; these only matter before the first reading lands, or if
+                the CLI can't be reached. In millions, because the honest unit here is
+                enormous: 96% of the bill is cache reads, so a busy week is billions of
+                tokens and a SpinButton stepping in ones would be unusable. 0 turns the
+                fallback off rather than dividing by zero. */}
             <Field
               label="Session token budget (millions)"
-              hint="What the current-session bar measures against: the tokens you consider a full 5-hour window. It is your number, not Claude's — the CLI reports when a window resets, never how much of it is left. 0 hides the bar."
+              hint="Fallback for the current-session bar, used only until the CLI's own /usage reading lands: the tokens you consider a full 5-hour window. 0 hides the fallback."
             >
               <SpinButton
                 min={0}
@@ -720,7 +723,7 @@ export function Settings(): JSX.Element {
 
             <Field
               label="Weekly token budget (millions)"
-              hint="The same, for the rolling 7 days the weekly cap covers. The default is the measured spend of a heavy week (see docs/08); set it to whatever a week of your own work looks like."
+              hint="The same fallback, for the rolling 7 days the weekly bar covers. The default is the measured spend of a heavy week (see docs/08); set it to whatever a week of your own work looks like."
             >
               <SpinButton
                 min={0}
