@@ -48,6 +48,7 @@ plan the orchestrator could one day run on its own repo.
 | 22 | Attachments in the task and its steps | ✅ complete (v0.64.4) — tag and draft cut once it lands on `development` |
 | 23 | One model for planning, another for the steps | ✅ complete on `feat/setting-ai-agent-models-for-planning` — tag and draft cut once it lands on `development` |
 | 24 | Projects and their tickets (a tracker of our own) | 🚧 in progress on `feat/support-projects-and-their-tickets` — **the whole plan is written** (design, build steps, verification, critical files); build step 1 is next |
+| 25 | Cloud service (a hosted counterpart, sharing domain logic and UI) | 🚧 in progress on `feat/cloud-service` — target layout written; restructuring, verification, an Azure cost estimate and the plan's risks are each a later step |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -3248,6 +3249,209 @@ the `pnpm licenses list` check that file prescribes.
   `development`.
 - Every step of this plan shares the one branch `feat/support-projects-and-their-tickets`,
   so each step's session reads this entry to find what the previous one left it.
+
+---
+
+## Phase 25 — Cloud service
+
+**Goal.** Give the app a hosted counterpart: a NestJS/SQL Server backend and a
+browser client, so a task can be opened from a phone or a teammate's browser as
+the same task the desktop app already models — not a second product that happens
+to look similar. The phase starts from a **monorepo restructuring**: today the
+app is one `pnpm` package (root `package.json`, flat `src/main` / `src/preload` /
+`src/renderer` / `src/shared`); before a server or a web client can exist, the
+pieces that will be shared across three runtimes — desktop, server, browser —
+need package boundaries a workspace can reason about.
+
+This entry is written incrementally, one step of this plan per session on this
+branch, the same shape Phase 24 used above: the design goes down first, each
+later step adds its own section below it. **This step is the target layout
+only** — where every existing file ends up and what each new package is for.
+Turning that layout into a real `pnpm-workspace.yaml` and moved files is the next
+step; what proves the move (typecheck/test/build across every workspace, plus a
+packaged `apps/client` install) is the step after that; an Azure cost estimate
+and the plan's risks and open assumptions each get their own section too.
+
+The stack for `apps/server` and `apps/web` is not a new choice for this
+codebase's owner: it matches `vipper.iam` (`C:\Repositories\vipper.iam`), a
+sibling repo reviewed for this phase — NestJS + TypeORM + `mssql` on the
+backend, Vite + React + Fluent UI on the frontend, `@scope/*` workspace packages
+built with `tsup` (dual ESM/CJS `exports`), a `turbo.json` pipeline, and one root
+`tsconfig.base.json` that every package's own `tsconfig.json` extends
+(`vipper.iam/tsconfig.base.json:3`: "Each package extends this…" — the same line
+already written, almost verbatim, at this repo's own
+[`tsconfig.base.json:3`](../../tsconfig.base.json)). Reusing that shape means
+`apps/server` and `apps/web` are unsurprising to anyone who has touched
+`vipper.iam`, not a second set of conventions to hold in your head. `vipper.iam`
+scopes its packages `@iam/*`; this repo's equivalent scope is `@tm/*`.
+
+### Two constraints the move must not break
+
+Both are called out in this repo's own
+[`electron-builder.yml:5-10`](../../electron-builder.yml):
+
+- **`appId: network.vipper.claude-orchestrator`**
+  ([`electron-builder.yml:11`](../../electron-builder.yml)) is how NSIS
+  recognises an already-installed app. Renaming it would install the
+  restructured build **alongside** the old one and move the updater's cache
+  directory with it — every user who upgrades would get two apps instead of one.
+- **`package.json`'s `"name": "claude-orchestrator"`**
+  ([`package.json:2`](../../package.json), today the root package; after the
+  move, `apps/client/package.json`) is what Electron derives
+  `app.getPath('userData')` from — the folder holding every project, task and
+  setting on the machine. Renaming it orphans that folder: the app looks in a
+  new place and finds nothing there.
+
+Neither may change, in this step or any later one, without a deliberate
+migration nobody has asked for. `apps/client/package.json` also stays the app's
+**version of record**: it is what `app.getVersion()` reads at runtime, and what
+electron-builder's `artifactName: ${name}-${version}-setup.${ext}` names the
+installer from. The root `package.json` stops being versioned meaningfully — it
+becomes a workspace manifest, the way `vipper.iam`'s own root `package.json` is
+(`private: true`, `"version": "0.0.0"`, only `turbo run …` scripts). `@tm/server`
+and `@tm/web` are bumped to match `apps/client`'s version **in the same commit**
+the restructuring lands in, so every package in the workspace names the same
+release even though only `apps/client` ships an installer today.
+
+### Target layout
+
+```
+apps/
+  client/                the Electron app — package.json name "claude-orchestrator", MUST NOT change
+    build/                 app icons, NSIS/AppImage resources          (was /build)
+    scripts/                check-native-abi.mjs, ensure-native-abi.mjs,
+                            check-update-feed.mjs                       (was /scripts)
+    src/
+      main/                 the orchestration engine                    (was src/main)
+      preload/               the IPC bridge                             (was src/preload)
+      renderer/               desktop-only UI: shell, screens, dialogs,
+                              hooks — everything not moved to @tm/ui     (was src/renderer, minus
+                                                                          board/, chat/, TaskDetail.tsx)
+    electron.vite.config.ts                                             (was /electron.vite.config.ts)
+    electron-builder.yml                                                (was /electron-builder.yml)
+    package.json            name: claude-orchestrator (unchanged), the version of record
+    tsconfig.node.json, tsconfig.web.json, tsconfig.json                (was at repo root)
+  server/                @tm/server — NestJS + TypeORM + SQL Server     (new)
+    src/
+    nest-cli.json, package.json, tsconfig.json
+  web/                   @tm/web — Vite + React + Fluent UI,
+                          "VIPPER Task Manager Cloud"                   (new)
+    src/
+    index.html, vite.config.ts, package.json, tsconfig.json
+packages/
+  shared/                @tm/shared — domain types (Project, Task, …),
+                          pure logic (parsers, policies, schedulers),
+                          the IpcApi contract                           (was src/shared)
+  ui/                    @tm/ui — board, TaskCard, TaskDetail, chat —
+                          consumed by client + web                      (was src/renderer/src/board,
+                                                                          src/renderer/src/chat,
+                                                                          src/renderer/src/TaskDetail.tsx)
+  protocol/              @tm/protocol — cloud wire contract: socket
+                          events, DTOs, command envelope                (new — nothing to move)
+turbo.json                                                              (new — mirrors vipper.iam)
+pnpm-workspace.yaml       packages: apps/*, packages/*
+tsconfig.base.json        unchanged in spirit; every package's tsconfig extends it
+docs/
+RELEASE.md
+package.json              becomes the workspace root manifest — private, turbo scripts only,
+                           no longer the version of record
+```
+
+`pnpm-lock.yaml`, `.prettierrc.json`, `.gitattributes`, `.gitignore` and
+`vitest.config.ts` stay at the root, as they already govern the whole tree today.
+`seed-chain.cjs` / `seed-demo.cjs` seed `apps/client`'s local SQLite database, not
+anything server-side — the next step decides whether they move under
+`apps/client/scripts/` or stay at the root; either is mechanical.
+
+### `@tm/shared` can leave the renderer's world — checked, not assumed
+
+`src/shared/**` has zero imports of `'electron'` and no third-party runtime
+dependency beyond internal cross-references (confirmed by reading every
+`import` in the directory). It is plain TypeScript today only because
+`tsconfig.node.json`/`tsconfig.web.json` both `include` it directly and
+`electron.vite.config.ts` path-aliases it as `@shared`
+([`electron.vite.config.ts:29,35,44`](../../electron.vite.config.ts)) — nothing
+in its own code assumes Electron or the DOM. That is what makes turning it into
+a real package NestJS can also depend on a move, not a rewrite: `@tm/shared`
+built with `tsup` (mirroring `packages/shared-types` in `vipper.iam`) gives
+`apps/server`, `apps/client` and `apps/web` the same `Project`/`Task`/`IpcApi`
+types and the same pure parsers/policies from one source, instead of the server
+duplicating a second copy of logic the desktop app already tests.
+
+### `@tm/ui` is scoped by what the layout above names, not "everything in renderer/"
+
+Only `board/`, `chat/` and `TaskDetail.tsx` are named for the move. That is a
+narrower cut than "all renderer components" on purpose: `App.tsx`, `Settings.tsx`,
+`MyTasks.tsx`, `TitleBar.tsx`, the dialogs (`AddTaskDialog.tsx`,
+`AssignAgentDialog.tsx`, `ProjectDialog.tsx`, …) and most of the hooks are
+desktop-shell specific today — they call native pickers, read `app_state`
+through IPC, or otherwise assume the Electron main process is on the other end
+of the preload bridge — and `apps/web` does not exist yet to prove which of them
+also make sense in a browser. `board/` and `chat/` carry same-directory helpers
+today (`boardColumns.ts`, `chainArrows.ts`, `chainDrag.ts`, `currentSprint.ts`,
+`useCardAnchors.ts` under `board/`; `turns.ts`, `markdown.ts`, `mentions.ts`
+under `chat/`) that are package-internal and move with their components
+unchanged. Two files the next step has to place by judgment rather than by this
+list: `TaskDetailsCell.tsx`, which `TaskDetail.tsx` renders but which is not
+itself named above, and `theme.ts`/`color.ts`, which both `@tm/ui` and the rest
+of `apps/client/src/renderer` will need — either duplicated by import, or
+promoted into `@tm/shared` if they are as framework-agnostic as `src/shared`
+already is.
+
+### `@tm/protocol` is scaffolding, not a move
+
+Nothing in the codebase today talks to a server — there is no socket layer, no
+DTOs, no command envelope, because there is no server. `packages/protocol` is an
+empty package this step reserves a place for; a later phase (after the server
+and web app exist enough to need one) defines and fills it. Naming it now means
+`apps/server` and `apps/web` are never tempted to invent their own ad-hoc wire
+format while waiting for the "real" one.
+
+### What this step deliberately leaves open, and to whom
+
+- **The exact pnpm workspace mechanics** (`pnpm-workspace.yaml` globs,
+  `workspace:*` protocol for internal deps, whether `apps/client`'s
+  `onlyBuiltDependencies`/`allowBuilds` entries for `better-sqlite3` / `electron`
+  / `esbuild` move to the root or stay package-scoped) — the next step, which
+  actually runs `pnpm install` against the new tree.
+- **`@tm/server`'s test runner.** `vipper.iam/apps/backend` uses `jest`
+  (the NestJS-generated default); every other package in both repos uses
+  `vitest`. Carrying that split into `@tm/server` (Nest convention) while
+  `apps/client`, `apps/web`, `@tm/shared` and `@tm/ui` stay on `vitest` (today's
+  convention here) is the working assumption; the next step confirms it against
+  what `@nestjs/cli`'s own scaffold generates.
+- **`packageManager` version.** This repo pins `pnpm@11.11.0`
+  ([`package.json:57`](../../package.json)); `vipper.iam` pins `pnpm@9.15.9`.
+  The restructuring keeps this repo's own pin — a monorepo does not need to
+  match a *different* repo's pnpm version, only be internally consistent.
+- **SQL Server hosting** (local dev container vs. an Azure instance) and the
+  actual `@tm/protocol` contract are out of scope for the target layout; the
+  former is closer to the verification step, the latter to a phase after this
+  one.
+
+### Done when (this step's own gate)
+
+- Every path and package named above is grounded in a file or line this session
+  actually read (`electron-builder.yml`, `package.json`, the `tsconfig*.json`
+  files, `electron.vite.config.ts`, the `src/` tree, and `vipper.iam`'s own
+  `apps/`, `packages/`, `package.json`, `turbo.json`, `tsconfig.base.json`) —
+  not guessed from the parent task's description alone.
+- The two identity constraints (`appId`, `apps/client/package.json`'s `name`)
+  are stated with the file and line they come from, and the layout has no path
+  that would touch either.
+- Every directory in the tree above says what today's files (if any) become it,
+  so the next step can execute the move without re-deriving this design.
+
+**Notes.**
+
+- This step is **docs only** — no `src/` change, so `pnpm typecheck` and
+  `pnpm test` have nothing to say about it, and the worktree is deliberately not
+  `pnpm install`ed for it, the same as Phase 24's first step.
+- Per [`CONTRIBUTING.md` §4](../../CONTRIBUTING.md), a `docs`-only commit still
+  bumps **PATCH** in the same commit; no annotated tag and no release on this
+  branch (`RELEASE.md` rule 5) — the tag is cut once this lands on `development`.
+- Every step of this plan shares the one branch `feat/cloud-service`, so each
+  step's session reads this entry to find what the previous one left it.
 
 ---
 
