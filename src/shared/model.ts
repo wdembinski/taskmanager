@@ -474,8 +474,32 @@ export interface Task {
   /**
    * The Claude session id, captured the moment a session starts, so the task can
    * be resumed after a limit reset or app restart. Null until it has run.
+   *
+   * **A resume handle, and nothing more.** It is deliberately CLEARED in places where the
+   * conversation is over but the work is not — `finishParentChain` above all — so it must
+   * never be read as "this card has run". {@link Task.workedAt} is that fact; see
+   * `hasAgentWorked` in `@shared/board`.
    */
   sessionId: string | null;
+  /**
+   * Epoch ms an agent session last STARTED on this card — or on one of its steps, since a
+   * plan's steps run on the card's branch and the work is the card's either way. Null on a
+   * card no agent has ever run.
+   *
+   * A durable, monotonic fact, and the only honest answer to "is there a branch here to
+   * merge". `sessionId` used to stand in for it, which broke the moment a card's chain
+   * finished: `finishParentChain` clears the session on purpose (the planner's context is
+   * spent and the next message must open a fresh conversation), and every predicate that
+   * had borrowed it — the Details Panel's **Merge branch** button, both auto-merge and
+   * auto-release switches, the composer, the `stacked` chain gate — read a finished card
+   * as one that had never started. The merge note tells the human to press Merge in the
+   * same beat that the button disappears; this is the field that keeps it there.
+   *
+   * Never cleared, not even by a re-assignment: the branch a previous attempt wrote does
+   * not un-write itself, and the one thing a human then wants is the button that merges or
+   * discards it.
+   */
+  workedAt?: number | null;
   /** Ordering within the project (phase order, then position in the plan). */
   order: number;
   /**

@@ -18,6 +18,7 @@ import {
   needsAgentInput,
   cardRunLabel,
   canStopWork,
+  hasAgentWorked,
   runPhase,
   type RunState,
 } from './board';
@@ -137,6 +138,36 @@ describe('isAgentAssigned', () => {
   it('is false when unassigned', () => {
     expect(isAgentAssigned(task({}))).toBe(false);
     expect(isAgentAssigned(task({ agentProjectId: null }))).toBe(false);
+  });
+});
+
+/**
+ * The predicate behind the Merge button, both auto-merge/auto-release switches and the
+ * `stacked` chain gate. Each of them used to ask `sessionId`, and each of them therefore
+ * said "this card has never run" the moment its plan finished — see `Task.workedAt`.
+ */
+describe('hasAgentWorked', () => {
+  const step = (id: string, over: Partial<Task> = {}): Task =>
+    task({ id, parentTaskId: 't', status: 'done', ...over });
+
+  it('is false for a card nothing has ever run', () => {
+    expect(hasAgentWorked(task({ agentProjectId: 'p1' }))).toBe(false);
+    expect(hasAgentWorked(task({ agentProjectId: 'p1' }), [step('s1')])).toBe(false);
+  });
+
+  it('is true while the card holds a session', () => {
+    expect(hasAgentWorked(task({ sessionId: 'sess-1' }))).toBe(true);
+  });
+
+  it('survives the session being cleared when a chain lands', () => {
+    // Exactly what `finishParentChain` leaves behind: no session, work on the branch.
+    expect(hasAgentWorked(task({ sessionId: null, workedAt: 1 }))).toBe(true);
+  });
+
+  it('reads a card through its steps, which run on the card’s own branch', () => {
+    const card = task({ sessionId: null, workedAt: null, agentProjectId: 'p1' });
+    expect(hasAgentWorked(card, [step('s1'), step('s2', { sessionId: 'sess-2' })])).toBe(true);
+    expect(hasAgentWorked(card, [step('s1', { workedAt: 9 })])).toBe(true);
   });
 });
 
@@ -462,6 +493,13 @@ describe('runPhase', () => {
   it('says an assigned card was never started', () => {
     const t = task({ status: 'pending', agentProjectId: 'agent' });
     expect(runPhase(t)).toMatchObject({ phase: 'idle', label: 'Assigned — not started' });
+  });
+
+  it('does not call a card that ran and was dragged back to To Do "not started"', () => {
+    // The session is gone (its plan finished — `finishParentChain`), but the card has
+    // worked, and saying otherwise on a card with a branch full of commits is a lie.
+    const t = task({ status: 'pending', agentProjectId: 'agent', workedAt: 5 });
+    expect(runPhase(t)).toMatchObject({ phase: 'idle', label: '' });
   });
 
   it('says nothing about a card assigned somewhere other than TO DO', () => {

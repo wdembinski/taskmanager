@@ -35,7 +35,7 @@ import type {
   TaskStatus,
 } from '@shared/model';
 import { resolveRunModel } from '@shared/model';
-import { chainInFlight, chatTarget, parkedStep } from '@shared/board';
+import { chainInFlight, chatTarget, hasAgentWorked, parkedStep } from '@shared/board';
 import { attachmentsInScope, type PromptAttachment } from '@shared/attachments';
 import type {
   SchedulerState,
@@ -2921,17 +2921,30 @@ export class Scheduler {
         // release, not to the card, and writing it here would hand the card's chat a resume
         // handle pointing at a one-turn publishing conversation instead of at the work. The
         // spinner is still wanted, so only the id is dropped.
+        //
+        // `workedAt` is stamped here for the reason `sessionId` cannot be trusted with the
+        // job (see `Task.workedAt`): it is the durable record that an agent ran, and unlike
+        // the session id nothing ever clears it. Stamped even for a settled run and even for
+        // a release run — both only ever happen on a card that has demonstrably worked.
         this.updateTask(
           run.taskId,
           run.releaseSeed
             ? run.settled
-              ? {}
-              : { status: 'running' }
+              ? { workedAt: Date.now() }
+              : { status: 'running', workedAt: Date.now() }
             : run.settled
-              ? { sessionId: event.sessionId }
-              : { status: 'running', sessionId: event.sessionId },
+              ? { sessionId: event.sessionId, workedAt: Date.now() }
+              : { status: 'running', sessionId: event.sessionId, workedAt: Date.now() },
           runId,
         );
+        // A step's work is the CARD's work — steps share the parent's branch and the whole
+        // plan merges once — so the card is what carries the fact. Without this a card that
+        // handed everything to an approved plan would still look like one that never ran,
+        // which is precisely how the Merge button went missing when a chain finished.
+        {
+          const owner = this.store.getTask(run.taskId)?.parentTaskId;
+          if (owner) this.updateTask(owner, { workedAt: Date.now() }, null);
+        }
         break;
 
       case 'rate-limit':
@@ -3924,7 +3937,10 @@ export class Scheduler {
     const task = this.store.getTask(taskId);
     if (!task || !task.agentProjectId || task.status === 'running') return false;
     const project = this.store.getProject(task.agentProjectId);
-    return Boolean(project?.useWorktrees) && Boolean(task.sessionId);
+    // `hasAgentWorked`, not `task.sessionId` — a card whose plan has finished no longer
+    // holds a session (`finishParentChain`) and would answer "no branch" about the branch
+    // its six steps just wrote. Its steps are passed for the same reason.
+    return Boolean(project?.useWorktrees) && hasAgentWorked(task, this.store.getSubtasks(task.id));
   }
 
   private parkIntegrationFailure(
@@ -4449,6 +4465,13 @@ export class Scheduler {
    *     branch, which builds a fresh full brief off the card's `taskNotes` — and the
    *     summary just filed is now part of those notes. `chainLandedAt` marks that first run
    *     as the review, not new work; `startTask` reads it and clears it once used.
+   *
+   * Clearing `sessionId` is why {@link Task.workedAt} exists. Nothing else in the app nulls
+   * a session that belongs to finished work, and for a long time every "has this card run"
+   * test read that field — so this line, which is about a CONVERSATION being over, silently
+   * announced that the card had never worked: no Merge button, no auto-merge/auto-release
+   * switches, a composer claiming the card "has never run", and a `stacked` successor that
+   * would never be released. Whatever else is added here, it must not un-say `workedAt`.
    *
    * No session is started here — unlike the seeded-session design this replaced, a chain
    * landing spends nothing more than the comment until someone actually talks to the card.
@@ -4978,7 +5001,10 @@ export class Scheduler {
   private updateTask(
     taskId: string,
     patch: Partial<
-      Pick<Task, 'status' | 'sessionId' | 'agentPlan' | 'preRunStatus' | 'chainLandedAt'>
+      Pick<
+        Task,
+        'status' | 'sessionId' | 'agentPlan' | 'preRunStatus' | 'chainLandedAt' | 'workedAt'
+      >
     >,
     runId: string | null,
   ): void {

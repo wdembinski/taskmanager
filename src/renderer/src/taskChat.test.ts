@@ -71,10 +71,32 @@ describe('chatAvailability', () => {
     expect(a.hint).toMatch(/new run/i);
   });
 
-  it('refuses a card that has never run', () => {
-    const a = chatAvailability(task({ status: 'pending', sessionId: null }), [], null);
+  it('refuses a card with no session that no agent owns', () => {
+    const a = chatAvailability(
+      task({ status: 'pending', sessionId: null, agentProjectId: null }),
+      [],
+      null,
+    );
     expect(a.can).toBe(false);
     expect(a.hint).toBe(REFUSAL_HINT['never-ran']);
+  });
+
+  // `resumeForChat` starts a FRESH run for a delegated card with no session — that is how a
+  // staged card is begun, and how a card whose plan has finished is talked to at all
+  // (`finishParentChain` clears its session on purpose). Refusing it here made that card
+  // unreachable and told the human it had "never run" right after it ran six steps.
+  it('opens a fresh conversation on a delegated card with no session', () => {
+    const a = chatAvailability(task({ status: 'pending', sessionId: null }), [], null);
+    expect(a.can).toBe(true);
+    expect(a.hint).toMatch(/fresh conversation/i);
+  });
+
+  it('still talks to a card whose chain has landed and cleared its session', () => {
+    const steps = [step('s1', 'done'), step('s2', 'done')];
+    const landed = task({ status: 'in-progress', sessionId: null, chainLandedAt: 123 });
+    const a = chatAvailability(landed, steps, null);
+    expect(a.can).toBe(true);
+    expect(a.hint).toMatch(/fresh conversation/i);
   });
 
   it('refuses a limit-parked card', () => {

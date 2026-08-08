@@ -63,7 +63,13 @@ export function chatAvailability(
   if (target.status === 'blocked-by-limit') {
     return { ...base, can: false, hint: REFUSAL_HINT.limit };
   }
-  if (!target.sessionId) {
+  // No session to resume. That is only a dead end for a card no agent owns: `resumeForChat`
+  // starts a FRESH run for a delegated one, brief and all, which is how a staged card is
+  // begun and — the case this got wrong — how you talk to a card whose plan has finished.
+  // `finishParentChain` clears that card's session on purpose so the next message opens a
+  // new conversation; refusing it here made the card unreachable and told the human it had
+  // "never run", two steps after it ran six of them.
+  if (!target.sessionId && !isAgentAssigned(target)) {
     return { ...base, can: false, hint: REFUSAL_HINT['never-ran'] };
   }
   // A card that handed over to an approved plan holds only its planner's session.
@@ -73,7 +79,9 @@ export function chatAvailability(
   return {
     ...base,
     can: true,
-    hint: 'Resumes the last session with your message — this starts a new run, so it is not instant.',
+    hint: target.sessionId
+      ? 'Resumes the last session with your message — this starts a new run, so it is not instant.'
+      : 'Starts a fresh conversation with your message — this starts a new run, so it is not instant.',
   };
 }
 

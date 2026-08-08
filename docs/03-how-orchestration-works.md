@@ -308,6 +308,13 @@ the card offers a **Merge branch** button. Nothing is discarded on either path. 
 an approved plan are never asked — they share the card's branch and the whole plan merges
 once, so the card's answer governs.
 
+That button, and the two switches above it, are offered on one condition: an agent has
+actually **run** on the card, in a repo that uses worktrees. "Has run" is a stored fact
+about the card (`Task.workedAt`), deliberately not "does it hold a Claude session" — a
+card whose plan finishes has its session cleared on purpose, and reading that as "this
+card never ran" is what once made all three controls vanish at the exact moment the
+card's own timeline said *review it, then choose Merge on the card*.
+
 The switch is read when the run **finishes**, not when it starts, so you can change your
 mind while the agent is still working.
 
@@ -745,8 +752,12 @@ Where the message goes:
   your text as the prompt instead of the usual continue-nudge. That is a **real run** —
   it reserves a slot, prepares the card's worktree and settles (and integrates) like any
   other — so it is not instant, and it appears in the timeline as a run.
-- **A card that has never run** is not chattable. Chat continues a conversation; it does
-  not start one. *Assign to an agent* does that.
+- **A delegated card with no session to resume** gets a *fresh* conversation, opened with
+  your message and the card's full brief. Two cards look like this: one assigned without
+  being started, and one whose approved plan has just finished — a finished chain clears
+  the card's session on purpose, because the planner's context predates every line its
+  steps wrote and resuming it is the most expensive thing in the chain.
+- **A card no agent owns** is not chattable at all. *Assign to an agent* comes first.
 
 Anything that cannot work says so above the box before you press anything: a run held on
 an **approve/deny** (free text cannot approve a tool call — answer the request first), a

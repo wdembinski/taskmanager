@@ -233,6 +233,28 @@ export function isAgentAssigned(task: Task): boolean {
 }
 
 /**
+ * Whether an agent has ever actually **run** on this card — the one question behind
+ * "is there a branch here", which is behind the Merge button, both auto-merge/auto-release
+ * switches, the composer's opening line and the `stacked` chain gate.
+ *
+ * Every one of those used to ask `task.sessionId`, and every one of them was wrong in the
+ * same way. A session id is a *resume handle*: `finishParentChain` clears it the moment a
+ * plan's last step finishes — deliberately, so the next message opens a fresh conversation
+ * instead of resuming a spent planner — and a card that had just done six steps of work
+ * then read as one that had never started. The Merge button vanished in the same beat the
+ * timeline said "review it, then choose Merge on the card".
+ *
+ * {@link Task.workedAt} is the durable fact, and it is never cleared. `sessionId` stays in
+ * the test as a fallback for rows written by a build that predates the column and were
+ * somehow missed by its backfill, and `subtasks` for the same belt-and-braces reason: a
+ * plan's steps run on the card's branch, so a step that has run is a card that has worked.
+ */
+export function hasAgentWorked(task: Task, subtasks: readonly Task[] = []): boolean {
+  if (task.workedAt || task.sessionId) return true;
+  return subtasks.some((s) => Boolean(s.workedAt || s.sessionId));
+}
+
+/**
  * The step that has stopped a card's chain, or null while it is healthy (Phase 12).
  *
  * Steps run strictly one at a time, so a step that is parked on a question or has
@@ -491,9 +513,11 @@ export function runPhase(
   // An agent is on the card but nothing is moving and nothing ever ran: it was assigned
   // and not started. Saying so is the whole point of offering a Start button.
   //
-  // `sessionId` is what makes "never ran" mean it: a card whose run is over goes back to
-  // the status its human left it in (see `restingStatus`), which is very often `pending`
+  // `hasAgentWorked` is what makes "never ran" mean it: a card whose run is over goes back
+  // to the status its human left it in (see `restingStatus`), which is very often `pending`
   // — and a finished card claiming it had never started was the first thing that broke.
+  // Asked of that helper rather than of `sessionId` directly, because a card whose plan has
+  // finished no longer holds one (see `hasAgentWorked`) and would say it here.
   //
   // Still keyed on `pending`, and deliberately, now that assignment no longer drags a card
   // into TO DO (`assignmentStatusPatch`): a card assigned while it rests in IN REVIEW or
@@ -501,7 +525,7 @@ export function runPhase(
   // only column that means queued is TO DO — on any other, where the card sits already says
   // what it is, and the words would be contradicting it rather than adding to it. The Start
   // button is offered from the card either way; this is only what the card SAYS.
-  if (isAgentAssigned(task) && task.status === 'pending' && !task.sessionId) {
+  if (isAgentAssigned(task) && task.status === 'pending' && !hasAgentWorked(task, subtasks)) {
     return { phase: 'idle', label: 'Assigned — not started', spinner: false };
   }
 

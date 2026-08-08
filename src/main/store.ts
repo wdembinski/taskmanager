@@ -149,6 +149,8 @@ interface TaskRow {
   landedAt: number | null;
   /** One-shot review marker; NULL once unset or never set. See `Task.chainLandedAt`. */
   chainLandedAt: number | null;
+  /** Epoch ms an agent last started on this card or a step of it. See `Task.workedAt`. */
+  workedAt: number | null;
   // Native tickets (Phase 24). NULL on everything that is not one.
   /** The ticket's permanent name, `'TM-123'`. Partial-unique over the non-NULL rows. */
   ticketKey: string | null;
@@ -284,6 +286,7 @@ export interface Store {
         | 'agentBranch'
         | 'landedAt'
         | 'chainLandedAt'
+        | 'workedAt'
         | 'autoRelease'
         | 'autoIntegrate'
         // Native tickets. `ticketKey`/`ticketNumber` are deliberately NOT patchable — a key
@@ -786,6 +789,7 @@ export function createStore(dbPath: string): Store {
       planRound              INTEGER,
       landedAt               INTEGER,
       chainLandedAt          INTEGER,
+      workedAt               INTEGER,
       autoRelease            INTEGER,
       autoIntegrate          INTEGER,
       -- Native tickets (Phase 24). epicTaskId / milestoneId / assigneeId / reporterId are
@@ -1266,6 +1270,10 @@ export function createStore(dbPath: string): Store {
     // on every pre-existing row = "nothing to consume", which is exactly true: no chain
     // finished mid-upgrade with a human waiting to talk to it.
     ['chainLandedAt', 'INTEGER'],
+    // When an agent last STARTED on this card (or a step of it). NULL on every pre-existing
+    // row, and backfilled immediately below — a NULL here would hide the Merge button on
+    // every card that had already run, which is the exact bug this column exists to fix.
+    ['workedAt', 'INTEGER'],
     // The card's auto-release override. NULL on every pre-existing row = "nobody has ruled
     // on this card", which follows the project's (also new, also off) preference — so no
     // upgraded install starts releasing anything by itself.
@@ -1304,6 +1312,28 @@ export function createStore(dbPath: string): Store {
       db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
     }
   }
+  // Backfill `workedAt` (see `Task.workedAt`). Unlike every other column above, NULL here is
+  // not harmless: it is read as "no agent has run this card", which hides the Merge button
+  // and both auto-merge/auto-release switches — so an upgrade would inherit the very bug the
+  // column fixes, on exactly the cards that have work waiting to be merged.
+  //
+  // A card has demonstrably run when it holds a session, when its chain has landed, or when
+  // any of its STEPS holds one (a plan's steps run on the card's branch). The instant is
+  // recovered from its event trail where there is one; `1` is the honest fallback — a real
+  // epoch nobody will mistake for a run time, meaning "before this column existed".
+  //
+  // Idempotent by the `workedAt IS NULL` guard, so it costs one no-op scan per open.
+  db.exec(`
+    UPDATE tasks
+       SET workedAt = COALESCE(
+             (SELECT MIN(e.createdAt) FROM task_events e WHERE e.taskId = tasks.id),
+             chainLandedAt, landedAt, 1)
+     WHERE workedAt IS NULL
+       AND (sessionId IS NOT NULL
+            OR chainLandedAt IS NOT NULL
+            OR id IN (SELECT s.parentTaskId FROM tasks s
+                       WHERE s.parentTaskId IS NOT NULL AND s.sessionId IS NOT NULL))
+  `);
   // Created after the migration above, not in the schema block: on a pre-Phase-11 database
   // the column does not exist until the ALTER has run.
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parentTaskId, "order")`);
@@ -1438,7 +1468,7 @@ export function createStore(dbPath: string): Store {
         externalDescription,
         preBlockStatus, preRunStatus, retainedSince, archivedAt, archivedReason, lastReadCommentAt, latestCommentAt,
         projectTagId, agentProjectId, agentMode, agentModel,
-        agentPlan, agentBranch, planRound, landedAt, chainLandedAt, autoRelease, autoIntegrate,
+        agentPlan, agentBranch, planRound, landedAt, chainLandedAt, workedAt, autoRelease, autoIntegrate,
         ticketKey, ticketNumber, issueType, epicTaskId, milestoneId, labels,
         storyPoints, estimateDays, startAt, dueAt, assigneeId, reporterId)
      VALUES
@@ -1452,7 +1482,7 @@ export function createStore(dbPath: string): Store {
         -- an UPDATE, so a card created already filed (the Add-task dialog's Project
         -- picker) used to lose its project between the form and the row.
         @projectTagId, @agentProjectId, @agentMode, @agentModel,
-        @agentPlan, @agentBranch, @planRound, @landedAt, @chainLandedAt, @autoRelease, @autoIntegrate,
+        @agentPlan, @agentBranch, @planRound, @landedAt, @chainLandedAt, @workedAt, @autoRelease, @autoIntegrate,
         -- The twelve ticket columns are listed HERE as well as in the column list above,
         -- and that is the whole discipline: a column added to the table, the row type and
         -- the writer but not to this statement is silently dropped at creation. That is
@@ -2179,6 +2209,7 @@ export function createStore(dbPath: string): Store {
       planRound: task.planRound ?? null,
       landedAt: task.landedAt ?? null,
       chainLandedAt: task.chainLandedAt ?? null,
+      workedAt: task.workedAt ?? null,
       // Three states in one column: 1 = release, 0 = don't, NULL = follow the project.
       autoRelease:
         task.autoRelease === null || task.autoRelease === undefined
@@ -2261,6 +2292,7 @@ export function createStore(dbPath: string): Store {
       planRound: r.planRound ?? 1,
       landedAt: r.landedAt ?? null,
       chainLandedAt: r.chainLandedAt ?? null,
+      workedAt: r.workedAt ?? null,
       // NULL stays null — it is a real third state ("this card has not ruled"), not a
       // missing false, and collapsing it here would pin every card to whatever the
       // project's preference was the first time it was read.
@@ -2704,6 +2736,7 @@ export function createStore(dbPath: string): Store {
         'agentBranch',
         'landedAt',
         'chainLandedAt',
+        'workedAt',
         // Native tickets. `ticketKey`/`ticketNumber` are deliberately absent, for the same
         // kind of reason `parentTaskId` is: a key is a permanent name, and the only thing
         // allowed to rewrite one is a prefix rename, which re-keys the whole project at

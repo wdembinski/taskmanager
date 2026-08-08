@@ -33,7 +33,7 @@ import {
 import { RecordStopRegular } from '@fluentui/react-icons';
 import { AgentGlyph } from './AgentGlyph';
 import type { AttentionAnswer, AttentionItem } from '@shared/attention';
-import { canStopWork, parkedStep } from '@shared/board';
+import { canStopWork, hasAgentWorked, parkedStep } from '@shared/board';
 import type { Project, Task } from '@shared/model';
 import { autoIntegrateOn, projectAutoIntegrate } from '@shared/integrate';
 import { autoReleaseOn, RELEASE_DOC } from '@shared/release';
@@ -263,9 +263,10 @@ export function TaskAgentPanel({
   );
   const assigned = agentProjects.find((p) => p.id === task.agentProjectId) ?? null;
   // An agent is on the card, nothing is running, and nothing ever ran: it was assigned
-  // without being started. `sessionId` is the test rather than the status, because a
+  // without being started. "Has it run" is the test rather than the status, because a
   // staged card and a queued one are both `pending`.
-  const staged = Boolean(task.agentProjectId) && !task.sessionId && task.status === 'pending';
+  const staged =
+    Boolean(task.agentProjectId) && !hasAgentWorked(task, ownSteps) && task.status === 'pending';
   /**
    * Whether to offer Merge: a delegated card that has actually run, in a repo that uses
    * worktrees. Derived here rather than asked of the engine, which would mean an async
@@ -273,9 +274,17 @@ export function TaskAgentPanel({
    *
    * Optimistic on purpose — if the branch turns out to be gone, `task:integrate` says so
    * in one line, which beats hiding the only button that can finish the job.
+   *
+   * `hasAgentWorked` and NOT `task.sessionId`, which is the bug this panel is best known
+   * for: a card that finishes an approved plan has its session cleared on purpose
+   * (`finishParentChain`), so all three controls below — Merge, "Merge when finished",
+   * "Release after merge" — disappeared at exactly the moment the card's own timeline said
+   * "review it, then choose Merge on the card". The branch was still sitting there.
    */
   const canIntegrate =
-    Boolean(task.agentProjectId) && Boolean(task.sessionId) && Boolean(assigned?.useWorktrees);
+    Boolean(task.agentProjectId) &&
+    hasAgentWorked(task, ownSteps) &&
+    Boolean(assigned?.useWorktrees);
   /**
    * What happens when this card's branch merges: the card's own answer when it has one,
    * else the agent project's preference (`@shared/release`).

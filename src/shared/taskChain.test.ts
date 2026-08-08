@@ -192,6 +192,23 @@ describe('linkSatisfied — stacked', () => {
   it('holds a card that is merely sitting in To Do', () => {
     expect(linkSatisfied(gate, task({ id: 'a' }))).toBe(false);
   });
+
+  /**
+   * The state `finishParentChain` leaves behind: six steps done, a branch full of work, and
+   * NO session — it is cleared on purpose so the next message opens a fresh conversation.
+   * While this test asked `sessionId`, that card read as one that had never run, and a
+   * `stacked` successor of it waited for a merge its gate had never asked for.
+   */
+  it('releases a card whose plan finished and cleared its session', () => {
+    const landed = task({
+      id: 'a',
+      status: 'in-progress',
+      sessionId: null,
+      workedAt: 1_700_000_000_000,
+      agentBranch: 'chain/a',
+    });
+    expect(linkSatisfied(gate, landed)).toBe(true);
+  });
 });
 
 describe('readyToRelease', () => {

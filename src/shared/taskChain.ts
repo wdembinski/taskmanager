@@ -17,7 +17,7 @@
  * by TITLE within one project's parsed plan and re-derived from the file on every sync.
  * These are edges between arbitrary cards, drawn by a human, that survive a re-sync.
  */
-import { isRunStatus, restingStatus } from './board';
+import { hasAgentWorked, isRunStatus, restingStatus } from './board';
 import type { Task, TaskStatus } from './model';
 
 /**
@@ -220,9 +220,13 @@ const WORK_WRITTEN: ReadonlySet<TaskStatus> = new Set<TaskStatus>(['in-review', 
  * `stacked` asks whether there is a branch to stack on and whether anything is still
  * rewriting it. A live run never satisfies it, however far along it looks. Otherwise the
  * work counts as written when the card reached in-review/done, or — the escape hatch for
- * a run that stopped or failed part-way — when the card has actually run (`sessionId`) and
- * has a branch of its own. That last case is genuinely useful and genuinely risky, which
- * is exactly why `after-merge` is the default gate.
+ * a run that stopped or failed part-way — when the card has actually run
+ * ({@link hasAgentWorked}) and has a branch of its own. That last case is genuinely useful
+ * and genuinely risky, which is exactly why `after-merge` is the default gate.
+ *
+ * That last test used to be `fromTask.sessionId`, which a predecessor loses the instant its
+ * own plan finishes (`finishParentChain`) — so a `stacked` successor of a plan-driven card
+ * stalled forever the moment anything re-asked the question after that beat.
  *
  * An unknown predecessor is NOT satisfied. It should be impossible (the link rows cascade
  * away with their cards), and if it ever happens the safe reading is "keep waiting".
@@ -232,7 +236,7 @@ export function linkSatisfied(link: TaskLink, fromTask: Task | undefined): boole
   if (link.gate === 'after-merge') return fromTask.landedAt != null;
   if (isRunStatus(fromTask.status)) return false;
   if (WORK_WRITTEN.has(restingStatus(fromTask))) return true;
-  return Boolean(fromTask.sessionId && fromTask.agentBranch);
+  return hasAgentWorked(fromTask) && Boolean(fromTask.agentBranch);
 }
 
 /**

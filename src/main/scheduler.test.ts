@@ -483,15 +483,21 @@ describe('Scheduler.onRunEvent — a late `started` must not resurrect a settled
     expect(updateTask).toHaveBeenCalledTimes(1);
     const patch = updateTask.mock.calls[0][1];
     // The session id is still worth recording — it is a resume handle. The claim that
-    // work is moving is the only part that is wrong.
-    expect(patch).toEqual({ sessionId: 's-1' });
+    // work is moving is the only part that is wrong. `workedAt` rides along for the same
+    // reason: a settled run still ran, and that fact is what the Merge button reads.
+    expect(patch).toMatchObject({ sessionId: 's-1' });
+    expect(patch.workedAt).toBeTypeOf('number');
     expect(patch).not.toHaveProperty('status');
   });
 
   it('still marks a genuinely starting run as running', () => {
     const { fire, updateTask } = makeScheduler(false);
     fire('run1', started);
-    expect(updateTask.mock.calls[0][1]).toEqual({ status: 'running', sessionId: 's-1' });
+    const patch = updateTask.mock.calls[0][1];
+    expect(patch).toMatchObject({ status: 'running', sessionId: 's-1' });
+    // The durable "an agent ran here" fact (`Task.workedAt`), stamped the moment a session
+    // starts — never cleared, unlike the session id beside it.
+    expect(patch.workedAt).toBeTypeOf('number');
   });
 });
 
