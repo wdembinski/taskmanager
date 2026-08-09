@@ -10,6 +10,7 @@ import type { CadenceDirective } from '@tm/protocol/cadence';
 import type { ManualStatus } from '@tm/shared/model';
 import type { CloudAuth } from '../auth/cloudAuth';
 import type { WebConfig } from '../env';
+import { createPresenceFocusSignal, PresenceHeartbeat } from '../presence';
 import { BoardPoller } from './BoardPoller';
 import { createBrowserFocusSignal } from './browserFocusSignal';
 import { getOrCreateClientId } from './clientId';
@@ -79,6 +80,16 @@ export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi
     });
     void poller.tick(); // load immediately rather than waiting a full cadence interval
     return () => poller.dispose();
+  }, [auth, config.cloudApiBase, clientId]);
+
+  useEffect(() => {
+    const heartbeat = new PresenceHeartbeat({
+      apiBase: config.cloudApiBase,
+      clientId,
+      focus: createPresenceFocusSignal(),
+      getAccessToken: () => auth.getAccessToken(),
+    });
+    return () => heartbeat.dispose();
   }, [auth, config.cloudApiBase, clientId]);
 
   useEffect(() => {
