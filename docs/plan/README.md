@@ -48,7 +48,7 @@ plan the orchestrator could one day run on its own repo.
 | 22 | Attachments in the task and its steps | ✅ complete (v0.64.4) — tag and draft cut once it lands on `development` |
 | 23 | One model for planning, another for the steps | ✅ complete on `feat/setting-ai-agent-models-for-planning` — tag and draft cut once it lands on `development` |
 | 24 | Projects and their tickets (a tracker of our own) | 🚧 in progress on `feat/support-projects-and-their-tickets` — **the whole plan is written** (design, build steps, verification, critical files); build step 1 is next |
-| 25 | Cloud service (a hosted counterpart, sharing domain logic and UI) | 🚧 in progress on `feat/cloud-service` — target layout written, `apps/client`+`packages/shared` restructured, verified (found and fixed a broken per-package test run), Azure cost estimated, risks and open assumptions recorded; `apps/server`/`apps/web`/`packages/ui`/`packages/protocol` still unscaffolded |
+| 25 | Cloud service (a hosted counterpart, sharing domain logic and UI) | 🚧 in progress on `feat/cloud-service` — target layout written, `apps/client`+`packages/shared` restructured, verified (found and fixed a broken per-package test run), Azure cost estimated, risks and open assumptions recorded, no-realtime-service/adaptive-polling design written; `apps/server`/`apps/web`/`packages/ui`/`packages/protocol` still unscaffolded |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -3752,6 +3752,84 @@ one instead of discovering it mid-build.
   restructuring → verification → cost estimate → risks); scaffolding
   `apps/server`, `apps/web`, `packages/ui` and `packages/protocol` themselves
   is later work this plan hands off to, not part of this entry.
+
+### No realtime service — adaptive polling
+
+The [Azure cost estimate](#azure-cost-estimate) above still prices row 1 of
+the [realtime cost comparison](azure-realtime-cost-comparison.md) — socket.io
+over Container Apps. This section changes that before any of `apps/server`,
+`packages/protocol`, or `apps/web` gets scaffolded: v1 ships **no dedicated
+realtime channel at all** — row 6 of that comparison, plain polling, with an
+adaptive cadence layered on top of it (its own new row 7, "Adaptive
+polling"). Row 4, Web PubSub, was the comparison's earlier recommendation;
+it's now recorded there as considered and not taken. The reasoning:
+
+- **No dedicated realtime channel.** No socket.io, no Web PubSub, no Azure
+  SignalR, no Redis backplane. `apps/server` exposes plain REST poll
+  endpoints; the only lever left for "how fresh is this data" is how often a
+  Client asks for it.
+- **Cadence is server-decided, not client-decided.** A Client reports its own
+  focus state on every poll (a heartbeat, not a separate round trip); the
+  server reads that back through presence and hands back the interval the
+  Client should use for its *next* poll. Policy lives in one place — the
+  server — so it can change without shipping a new Client build. Step 5 of
+  this plan ("Serve presence-driven cadence from the server") is where this
+  lands; steps 7 and 11 are the desktop and web sides that report focus and
+  obey the interval they're given.
+- **Presence lives in server memory, not SQL.** A map from `clientId` to
+  `{ focused, lastSeen }`, read and written on every poll, never touches the
+  database — no query, no write amplification, no migration, and it's cheap
+  enough to do on every single request.
+
+#### The cadence model
+
+Two tiers in v1:
+
+| Tier | Interval | When |
+|---|---|---|
+| **Focused** | ~2.5 s | The Client reports itself as the foreground window (desktop) or visible tab (web) |
+| **Idle** | ~25 s | The Client is open but not foreground — backgrounded desktop app, blurred/hidden web tab |
+
+A Client that stops polling altogether (closed, machine asleep) isn't a third
+tier — it just stops sending heartbeats, and its presence entry ages out (see
+the TTL below). Two tiers is enough to represent what both Clients can
+actually observe about their own focus state (the desktop app's window focus
+event, the web client's tab-visibility signal) without a third state the two
+runtimes would have to keep in sync.
+
+#### The presence-in-memory / one-replica constraint
+
+Keeping presence as an in-process map instead of a shared store (Redis, SQL)
+is the same trade already made for [Scenario B](#scenario-b--small-team-25-clients-ha)
+in the cost estimate: **stay on one replica until HA is actually needed.** A
+second `apps/server` replica would hold its own, disjoint presence map — a
+Client polling replica A would get cadence advice that ignores what replica B
+knows about the same resource. Nothing in this plan needs presence to survive
+a replica restart or be visible cross-replica, so it isn't built that way. If
+Scenario B's HA shape is ever adopted, presence has to move to a shared store
+first — new work this plan doesn't schedule.
+
+#### Two latencies this design cannot avoid
+
+Polling without push means both directions of "the world changed" have a
+floor, and no amount of implementation care removes either:
+
+- **Speeding up.** If a Client is on the idle tier when something it cares
+  about changes, it doesn't find out until its next poll fires — up to one
+  idle interval, **~25 s**, after the change happened. There is no push to
+  shorten this.
+- **Slowing down.** If a Client stops being focused (backgrounded, tab
+  closed), the server doesn't know until that Client's presence entry
+  expires — the **~90 s** TTL — unless the departing Client says so itself.
+  A web tab's `pagehide`/`visibilitychange` handler firing a
+  `navigator.sendBeacon` release notice on the way out makes this direction
+  immediate instead of TTL-bound; that release is a later step's work
+  (11, "Send focus heartbeats from the web client"), not this one's.
+
+A third, "warm" cadence tier between focused and idle (say, ~10 s) could
+roughly halve the first number without touching the second — the obvious
+next lever if ~25 s of staleness turns out to matter in practice. v1 ships
+with two tiers; that's a scope cut made on purpose, not an oversight.
 
 ---
 
