@@ -693,6 +693,26 @@ export interface Store {
   /** The opaque server cursor from the last successful `/v1/sync`, or null before the first one. */
   loadCloudCursor(): string | null;
   saveCloudCursor(cursor: string): void;
+  /**
+   * Has this relayed command (by `CommandEnvelope.id`) already been applied? `cloudCommands.ts`
+   * checks this before mapping a command to a `Store` mutation, so a redelivery — at-least-once
+   * is all the poll loop guarantees — cannot apply the same edit twice.
+   */
+  isCloudCommandApplied(id: string): boolean;
+  /** Record a relayed command as applied, and pending an ack on the next `/v1/sync`. */
+  markCloudCommandApplied(id: string): void;
+  /** Ids applied (or rejected) since the last successful ack — goes out as the next
+   *  `SyncRequest.ackedCommandIds`. */
+  getPendingCloudAcks(): string[];
+  /** Mark ids as acked once a `/v1/sync` carrying them has succeeded. */
+  markCloudAcksSent(ids: readonly string[]): void;
+  /**
+   * Run `fn` inside one `better-sqlite3` transaction, committing its return value or rolling
+   * every write in it back on a throw. `cloudCommands.ts` uses this to apply a whole batch of
+   * relayed commands — in `seq` order — as one atomic unit per poll tick, exactly as the
+   * schema comment above `cloud_applied_commands` describes.
+   */
+  runInTransaction<T>(fn: () => T): T;
   close(): void;
 }
 
@@ -1113,6 +1133,20 @@ export function createStore(dbPath: string): Store {
       at       INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_cloud_outbox_entity ON cloud_outbox(entity, entityId);
+    -- The client's incoming half (Phase 25's "Apply queued cloud commands on the client"):
+    -- one row per CommandEnvelope.id this Client has applied, so a redelivered command —
+    -- at-least-once delivery is the only guarantee cloudPoller.ts's poll loop gives — is
+    -- a no-op the second time rather than a double edit. appliedAt and ackedAt are two
+    -- different moments: applying happens inside the SAME transaction as the Store mutation
+    -- it maps to (cloudCommands.ts), but the ack only reaches the server on the NEXT
+    -- /v1/sync call, so ackedAt is null for however long that takes. Rows are kept, not
+    -- pruned, once acked — the ledger is small (one row per command ever relayed to this
+    -- Client) and an audit trail of what landed costs nothing to keep.
+    CREATE TABLE IF NOT EXISTS cloud_applied_commands (
+      id        TEXT PRIMARY KEY,
+      appliedAt INTEGER NOT NULL,
+      ackedAt   INTEGER
+    );
   `);
 
   // Migrate databases created before Phase 3 added the write-back column.
@@ -2609,6 +2643,21 @@ export function createStore(dbPath: string): Store {
   );
   const deleteCloudOutboxThrough = db.prepare(`DELETE FROM cloud_outbox WHERE seq <= ?`);
 
+  // The cloud mirror's applied-command ledger (Phase 25's "Apply queued cloud commands on
+  // the client") — see the schema comment above `cloud_applied_commands`.
+  const selectCloudCommandApplied = db.prepare(
+    `SELECT 1 FROM cloud_applied_commands WHERE id = ?`,
+  );
+  const insertCloudCommandApplied = db.prepare(
+    `INSERT OR IGNORE INTO cloud_applied_commands (id, appliedAt, ackedAt) VALUES (?, ?, NULL)`,
+  );
+  const selectPendingCloudAcks = db.prepare(
+    `SELECT id FROM cloud_applied_commands WHERE ackedAt IS NULL`,
+  );
+  const markCloudAckSent = db.prepare(
+    `UPDATE cloud_applied_commands SET ackedAt = ? WHERE id = ?`,
+  );
+
   return {
     addProject(input) {
       // Unspecified project fields inherit the user's global defaults (Phase 6).
@@ -3813,6 +3862,30 @@ export function createStore(dbPath: string): Store {
 
     pruneCloudOutbox(throughSeq) {
       deleteCloudOutboxThrough.run(throughSeq);
+    },
+
+    isCloudCommandApplied(id) {
+      return selectCloudCommandApplied.get(id) !== undefined;
+    },
+
+    markCloudCommandApplied(id) {
+      insertCloudCommandApplied.run(id, Date.now());
+    },
+
+    getPendingCloudAcks() {
+      return (selectPendingCloudAcks.all() as Array<{ id: string }>).map((row) => row.id);
+    },
+
+    markCloudAcksSent(ids) {
+      if (ids.length === 0) return;
+      const ackedAt = Date.now();
+      db.transaction(() => {
+        for (const id of ids) markCloudAckSent.run(ackedAt, id);
+      })();
+    },
+
+    runInTransaction(fn) {
+      return db.transaction(fn)();
     },
 
     close() {

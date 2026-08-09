@@ -78,6 +78,7 @@ import {
 import { iamSignInConfig } from './iamConfig';
 import { signIn as runIamSignIn } from './iamSignIn';
 import { refreshTokens } from '@shared/iamPkce';
+import { applyCloudCommands } from './cloudCommands';
 import { CloudPoller } from './cloudPoller';
 import { FocusTracker } from './focusTracker';
 import { GitLabClient } from './gitlab/gitlabClient';
@@ -2618,11 +2619,34 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     focus: focusTracker,
     getSettings: () => store.getSettings().cloud,
     getAccessToken: getCloudAccessToken,
-    // Applying a relayed command is Phase 25's next step ("Apply queued cloud commands on
-    // the client") — until then, a command that arrives is logged rather than silently
-    // dropped, so its absence from the board is at least visible somewhere.
-    onCommands: (commands) =>
-      logMain(`cloud: ${commands.length} command(s) received, not yet applied`),
+    // Phase 25's "Apply queued cloud commands on the client": map every relayed command to
+    // the `Store` mutation `cloudCommands.ts` picks for it, then push the same UI events the
+    // matching IPC handler would — a command from the web app has to look, to an open
+    // desktop window, exactly like the edit it stands in for. Acking happens for free: the
+    // batch is committed (and each id recorded) inside `applyCloudCommands` itself, and the
+    // next tick's `SyncRequest.ackedCommandIds` reads straight off that ledger.
+    onCommands: (commands) => {
+      const outcomes = applyCloudCommands(store, commands);
+      const changedProjects = new Set<string>();
+      for (const outcome of outcomes) {
+        if (!outcome.ok) {
+          logMain(`cloud: command ${outcome.id} rejected — ${outcome.reason}`);
+          continue;
+        }
+        if (outcome.projectId) changedProjects.add(outcome.projectId);
+        if (!outcome.taskId) continue;
+        const task = store.getTask(outcome.taskId);
+        if (!task) continue;
+        send('task:changed', { task, runId: null });
+        // Same two follow-ups `task:setStatus` makes for a human's own move — see its own
+        // comments in this file for why each one exists.
+        if (restingStatus(task) === 'done') scheduler.dismissAttentionForCard(task.id);
+        if (task.status === 'pending') scheduler.reconsiderChains('card-changed');
+      }
+      for (const projectId of changedProjects) {
+        send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) });
+      }
+    },
     runTracked: (run) => trackSync('cloud', run),
   });
   cloudPoller.reschedule();

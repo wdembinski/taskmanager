@@ -28,6 +28,14 @@ export interface SyncRequest {
   cursor: string | null;
   focused: boolean;
   deltas: MirrorDelta;
+  /**
+   * Ids of commands this Client applied (or rejected) since its last sync — see
+   * `CommandEnvelope`. At-least-once delivery is the only guarantee a poll loop can give,
+   * so a command is not the caller's problem to retry once its id shows up here; this is
+   * how the Client closes the loop on what `SyncResponse.commands` handed it, whether or
+   * not that command survived the applying Client's own validation.
+   */
+  ackedCommandIds: string[];
 }
 
 /** Response to `POST /v1/sync` — the world's changes since `cursor`, plus what to do next. */

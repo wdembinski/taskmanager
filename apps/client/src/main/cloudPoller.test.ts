@@ -38,6 +38,8 @@ function fakeStore(outbox: CloudOutboxRow[] = []): Store {
     },
     getTask: () => undefined,
     getProject: () => undefined,
+    getPendingCloudAcks: () => [],
+    markCloudAcksSent: () => {},
   } as unknown as Store;
 }
 
@@ -201,6 +203,31 @@ describe('CloudPoller', () => {
     const { poller } = makePoller({ onCommands, fetchImpl: fetchImpl as unknown as typeof fetch });
     await poller.tick();
     expect(onCommands).toHaveBeenCalledWith([command]);
+  });
+
+  it('sends pending acks and clears them once the sync succeeds', async () => {
+    const markCloudAcksSent = vi.fn();
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, json: async () => response() });
+    const { poller } = makePoller({
+      store: {
+        getCloudDelta: () => [],
+        pruneCloudOutbox: () => {},
+        loadCloudClientId: () => 'client-1',
+        loadCloudCursor: () => null,
+        saveCloudCursor: () => {},
+        getTask: () => undefined,
+        getProject: () => undefined,
+        getPendingCloudAcks: () => ['cmd-1', 'cmd-2'],
+        markCloudAcksSent,
+      } as unknown as Store,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    await poller.tick();
+    const body = JSON.parse(fetchImpl.mock.calls[0]![1].body);
+    expect(body.ackedCommandIds).toEqual(['cmd-1', 'cmd-2']);
+    expect(markCloudAcksSent).toHaveBeenCalledWith(['cmd-1', 'cmd-2']);
   });
 
   it('does not run once disposed', async () => {

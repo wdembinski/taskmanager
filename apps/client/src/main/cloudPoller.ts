@@ -38,8 +38,10 @@ export interface CloudPollerDeps {
   /** A bearer access token for this tick, or null when not signed in — the tick then
    * fails like any other network error (counted, backed off, retried next time). */
   getAccessToken: () => Promise<string | null>;
-  /** Commands the server relayed for this client this tick. Applying them is later work
-   * (Phase 25's "Apply queued cloud commands on the client") — this only hands them off. */
+  /** Commands the server relayed for this client this tick. `CloudPoller` only hands them
+   * off — applying them (`cloudCommands.ts`, wired in `ipc.ts`) is the caller's job, and
+   * acking them back (`Store`'s applied-command ledger) is what feeds the next tick's
+   * `SyncRequest.ackedCommandIds` above. */
   onCommands: (commands: CommandEnvelope[]) => void;
   /** Wraps one tick so the status bar can watch it, exactly as `trackSync` wraps JIRA/GitLab. */
   runTracked: <T>(run: () => Promise<T>) => Promise<T>;
@@ -140,11 +142,16 @@ export class CloudPoller {
     if (!token) throw new Error('Not signed in to vipper.iam.');
 
     const rows = this.deps.store.getCloudDelta(0, OUTBOX_LIMIT);
+    // Commands applied (or rejected) since the last successful sync — see
+    // `cloudCommands.ts`'s own header for why acking happens here rather than the moment a
+    // command is applied: this is the only place a "the server heard back" round trip exists.
+    const ackedCommandIds = this.deps.store.getPendingCloudAcks();
     const request: SyncRequest = {
       clientId: this.deps.store.loadCloudClientId(),
       cursor: this.deps.store.loadCloudCursor(),
       focused: this.deps.focus.isFocused(),
       deltas: buildMirrorDelta(rows, this.deps.store.getTask, this.deps.store.getProject),
+      ackedCommandIds,
     };
 
     const fetchImpl = this.deps.fetchImpl ?? fetch;
@@ -162,6 +169,7 @@ export class CloudPoller {
     if (rows.length > 0) {
       this.deps.store.pruneCloudOutbox(Math.max(...rows.map((r) => r.seq)));
     }
+    if (ackedCommandIds.length > 0) this.deps.store.markCloudAcksSent(ackedCommandIds);
     this.deps.store.saveCloudCursor(body.cursor);
     this.lastServerIntervalMs = body.cadence.intervalMs;
     if (body.commands.length > 0) this.deps.onCommands(body.commands);
