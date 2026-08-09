@@ -3537,6 +3537,157 @@ not from running the built exe.
 - Per `RELEASE.md` rule 5, this branch is not released from; the tag lands
   once this reaches `development`.
 
+### Azure cost estimate
+
+**Basis.** List prices, pay-as-you-go, no reservations, USD, ex-VAT, primary
+region West Europe (Poland Central checked as the alternative named in this
+plan's brief). Infrastructure-as-code for either region is out of scope here —
+`vipper.iam`'s Terraform lives in the separate `C:\Repositories\infrastructure`
+repo, and this service's would too. Every figure below was checked against the
+**Azure Retail Prices API** (`prices.azure.com/api/retail/prices`, the same
+data the interactive calculator reads, queried directly by service name and
+`armRegionName` on 2026-08-09) rather than typed from memory — the pricing
+*pages* render their tables client-side and return literal `"$-"` placeholders
+to anything that isn't a browser, so the API was the only way to get real
+numbers without the interactive calculator. List prices move; re-check before
+budgeting against these.
+
+#### The two levers that decide the bill
+
+**1. WebSockets removed scale-to-zero — but only partly.** `vipper.iam`'s
+backend can idle at zero replicas because it is a request/response admin
+console. A socket a Client holds open is a long-running request, so any
+replica with a connected Client is billed at Container Apps' *active* rate,
+not the *idle* rate — and with `min-replicas: 0`, a replica with no Client
+connected isn't idle, it's gone, so idle billing never applies at all. The
+saving grace: Clients only connect while the desktop app is actually running.
+With `min-replicas: 0`, the bill tracks roughly the hours someone is working —
+call it ~200 h/month, not 730. That's a 3.6× difference in connected-hours,
+and it costs nothing to get; it just means accepting a 5–20 s cold start on
+the first reconnect of the day, which a background agent with backoff absorbs
+invisibly.
+
+**2. Azure SQL serverless is the wrong shape here, and it isn't close.**
+Serverless General Purpose bills a flat **$0.5218/vCore-hour**, and only
+auto-pauses when the database is genuinely idle. A 30 s heartbeat from a
+connected Client means it never pauses, so the 0.5-vCore floor alone runs
+0.5 × $0.5218 × 730 h ≈ **$190/month** — more than everything else in
+Scenario A combined. A provisioned **S0 (10 DTU, 250 GB)** at
+$0.4839/day × 30.44 ≈ **$15/month** carries a mirror of a few machines
+comfortably. Batch the telemetry writes (flush every few minutes rather than
+per heartbeat) and the database *could* idle overnight under serverless, but
+S0's flat rate wins outright at this scale regardless of batching.
+
+#### Scenario A — personal / small fleet (1–5 Clients), single replica
+
+| Resource | Configuration | Est. USD/mo |
+|---|---|---|
+| Container Apps (Consumption) | 0.5 vCPU / 1 GiB, `min-replicas: 0`, ~200 active h/mo | **$8** |
+| Azure SQL Database | S0, 10 DTU, 250 GB | **$15** |
+| Static Web Apps | Free tier (100 GB egress, free TLS, 2 custom domains) | **$0** |
+| Key Vault | Standard, secrets read at startup ($0.03/10K operations) | **<$1** |
+| Log Analytics | ACA console + system logs, likely under the free grant at this volume | **$0–3** |
+| Container registry | GHCR, as `vipper.iam` already uses | **$0** |
+| Egress | first 100 GB/mo free; deltas and heartbeats are KB-scale | **$0** |
+| **Total** | | **≈ $24–28/mo** |
+
+Container Apps' West Europe active rate is $0.000034/vCPU-second and
+$0.000004/GiB-second (Standard vCPU/Memory Active Usage meters), against a
+free monthly grant of 180,000 vCPU-seconds and 360,000 GiB-seconds per
+subscription: 0.5 vCPU × 200 h and 1 GiB × 200 h clears the grant and leaves
+≈ $7.56 billable — the $8 above.
+
+Same shape but pinned always-on (`min-replicas: 1`, so Container Apps bills
+the *active* rate for the full 730 h/mo rather than only the ~200 h a Client
+is actually connected) costs ≈ **$48/mo** for Container Apps alone instead of
+$8 → **≈ $64–70/mo** total. (Whether the idle hours would actually qualify
+for Container Apps' cheaper idle rate — same $0.000004/vCPU-s as memory,
+an 8.5× discount off the $0.000034 active rate — depends on whether a
+periodic health probe or backplane check keeps network traffic above the
+idle-eligibility threshold; the $48 figure is the conservative case where it
+doesn't, matching what the calculator shows for a flat "730 hours" input.)
+
+#### Scenario B — small team (~25 Clients), HA
+
+| Resource | Configuration | Est. USD/mo |
+|---|---|---|
+| Container Apps | 2 × 1 vCPU / 2 GiB, always-on | **$213** |
+| Azure Cache for Redis | Basic C0, 250 MB — the socket.io backplane | **$16** |
+| Azure SQL Database | S2, 50 DTU | **$74** |
+| Static Web Apps | Standard (SLA, 5 custom domains) | **$9** |
+| Key Vault + Log Analytics | | **~$11** |
+| **Total** | | **≈ $323/mo** |
+
+The jump is mostly the second replica, and it drags Redis in with it:
+socket.io across two replicas needs a backplane for cross-replica broadcasts
+plus session affinity, or a web session subscribed to a Client lands on the
+wrong replica and sees nothing. **Stay on one replica until HA is actually
+needed** — it keeps the architecture simpler and the bill roughly 5× lower.
+The cost of that choice is a few seconds of dropped sockets during a deploy,
+which the client's reconnect already handles.
+
+#### A cheaper alternative worth knowing about
+
+Container Apps' headline advantage is scale-to-zero, and persistent sockets
+blunt it. **App Service Linux B1** (1 core / 1.75 GB, $0.018/hour × 730 h ≈
+**$13/mo**, WebSockets and Always On both supported) plus SQL S0 plus SWA
+Free lands at **≈ $28–30/mo** flat, with no cold starts and a simpler
+deployment. The reason to stay on Container Apps anyway is consistency:
+`vipper.iam`'s CI already builds to GHCR and deploys with
+`az containerapp update`, including the migrations-job-before-app-update
+ordering, and copying a working pipeline is worth more than a few dollars a
+month.
+
+#### West Europe vs. Poland Central
+
+The two regions are not priced the same, and the difference doesn't run one
+way:
+
+- **Container Apps is materially cheaper in Poland Central** — active vCPU
+  usage is $0.000024/vCPU-s there against $0.000034/vCPU-s in West Europe
+  (29% less), memory and requests are cheaper too ($0.000003 vs $0.000004
+  GiB-s, $0.40 vs $0.56 per million requests). That's the ~$2/mo difference
+  in Scenario A and the ~$60/mo difference in Scenario B's always-on Container
+  Apps line.
+- **Azure SQL Database is priced identically in both** — S0 and S2 DTU rates
+  are the same $0.4839/day and $2.42/day in West Europe and Poland Central.
+  App Service B1 is a rounding error apart ($0.018/hr vs $0.01802/hr).
+- **Static Web Apps isn't offered in Poland Central at all** — the Retail
+  Prices API returns zero SKUs for that service in that region. Whatever
+  region hosts the compute, the web client has to sit somewhere that has SWA
+  (West Europe does).
+
+Because SWA already anchors part of the stack to West Europe, and the
+Container Apps saving is ~$2/mo in Scenario A — noise — splitting the
+deployment across two regions only starts to pay for itself at Scenario B's
+scale, and even there it trades a single-region deploy for cross-region
+latency between the web client and the API. Recommendation: everything in
+West Europe for v1; revisit Poland Central for just the compute/DB tier if
+Scenario B's traffic actually materializes.
+
+#### What is *not* in these numbers
+
+`vipper.iam` itself (already running, no incremental cost); the `claude` CLI
+(runs on each Client's own subscription — no server-side inference and, per
+`docs/06-licensing.md`, never an `ANTHROPIC_API_KEY`); attachment blob storage
+(v1 keeps bytes on the Client's disk deliberately, per Phase 22); and any
+non-production environment, which would roughly double whichever scenario is
+picked unless staging shares the SQL server.
+
+**Notes.**
+
+- This step is **docs only** — no `src/` change, so `pnpm typecheck` and
+  `pnpm test` have nothing to say about it, the same as this phase's first
+  step.
+- Per `CONTRIBUTING.md` §4, a `docs`-only commit still bumps **PATCH** in the
+  same commit; no annotated tag and no release on this branch (`RELEASE.md`
+  rule 5) — the tag is cut once this lands on `development`.
+- The Container Apps consumption rates, the free monthly grants, and the
+  active/idle billing rules above are cited from Microsoft Learn's own
+  [Container Apps billing article](https://learn.microsoft.com/en-us/azure/container-apps/billing)
+  and the Retail Prices API, not the marketing pricing page (which, fetched
+  outside a browser, shows only `"$-"` placeholders).
+
 ---
 
 ## Conventions for every phase
