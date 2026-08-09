@@ -55,6 +55,7 @@ import {
   resolveSyncInterval,
 } from '@shared/settings';
 import { mergeActivity } from './activityMerge';
+import { type CloudOutboxRow, shapeCloudDelta } from './cloudDelta';
 import type { JiraEpicFieldCache } from './jira/epicField';
 import type { JiraSprintFieldCache } from './jira/jiraSprint';
 import type { JiraIdentityCache } from './jira/identity';
@@ -670,6 +671,14 @@ export interface Store {
    * more, so `sanitizeWindowState` is what turns this into something to apply.
    */
   loadWindowState(): unknown;
+  /**
+   * The next batch of local `tasks`/`projects` changes for the cloud mirror (Phase 25),
+   * shaped by `shapeCloudDelta` — collapsed to one row per entity, capped, deletes last.
+   * `sinceSeq` is the cursor from the caller's last call (0 for a first sync).
+   */
+  getCloudDelta(sinceSeq: number, limit: number): CloudOutboxRow[];
+  /** Drop outbox rows through `throughSeq` once the server has acked them. */
+  pruneCloudOutbox(throughSeq: number): void;
   close(): void;
 }
 
@@ -741,7 +750,12 @@ export function createStore(dbPath: string): Store {
       target                TEXT NOT NULL DEFAULT 'local',
       instructions          TEXT,
       color                 TEXT,
-      createdAt             INTEGER NOT NULL
+      createdAt             INTEGER NOT NULL,
+      -- Bumped by a trigger on every write (see below), never by a call site — the
+      -- point of the cloud mirror (Phase 25): a delta reader needs "what moved" and
+      -- a ~90-method Store interface is exactly the kind of surface a manual touch
+      -- gets forgotten on.
+      updatedAt             INTEGER
     );
     CREATE TABLE IF NOT EXISTS tasks (
       id                     TEXT PRIMARY KEY,
@@ -809,7 +823,9 @@ export function createStore(dbPath: string): Store {
       startAt                INTEGER,
       dueAt                  INTEGER,
       assigneeId             TEXT,
-      reporterId             TEXT
+      reporterId             TEXT,
+      -- Same trigger-touched column as projects.updatedAt above, for the same reason.
+      updatedAt              INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(projectId, "order");
     CREATE TABLE IF NOT EXISTS app_state (
@@ -1062,6 +1078,27 @@ export function createStore(dbPath: string): Store {
     );
     CREATE INDEX IF NOT EXISTS idx_ticket_links_from ON ticket_links(fromTaskId);
     CREATE INDEX IF NOT EXISTS idx_ticket_links_to   ON ticket_links(toTaskId);
+    -- The client's outgoing half of the cloud mirror (Phase 25): one row per write to
+    -- tasks/projects, append-only, filled by triggers rather than by any of the
+    -- ~90 Store methods that touch those tables (see the triggers below). A NEW
+    -- table, so nothing to migrate.
+    --
+    -- seq is the client's own sync cursor — getCloudDelta(sinceSeq, ...) reads
+    -- forward from it and pruneCloudOutbox drops what the server has acked.
+    --
+    -- No deletedAt column anywhere, and none needed: a row with op = 'delete' IS
+    -- the tombstone, including the ones a projects -> tasks cascade produces —
+    -- SQLite fires a table's own AFTER DELETE triggers for a cascaded delete exactly
+    -- as it would for an explicit one, so no call site has to know the cascade
+    -- happened for the mirror to hear about it.
+    CREATE TABLE IF NOT EXISTS cloud_outbox (
+      seq      INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity   TEXT    NOT NULL,   -- 'task' | 'project'
+      entityId TEXT    NOT NULL,
+      op       TEXT    NOT NULL,   -- 'insert' | 'update' | 'delete'
+      at       INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_cloud_outbox_entity ON cloud_outbox(entity, entityId);
   `);
 
   // Migrate databases created before Phase 3 added the write-back column.
@@ -1142,6 +1179,13 @@ export function createStore(dbPath: string): Store {
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_ticket_prefix
        ON projects(ticketPrefix) WHERE ticketPrefix IS NOT NULL`,
   );
+
+  // Migrate databases created before the cloud mirror (Phase 25). NULL on every
+  // pre-existing row until its first write after upgrade — the triggers created
+  // below fill it from there, exactly as `createdAt` was never backfilled either.
+  if (!projectColumns.some((c) => c.name === 'updatedAt')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN updatedAt INTEGER`);
+  }
 
   // Migrate databases created before per-stage pipeline detail. NULL reads back as [], and
   // the UI falls back to the single overall status for those rows — exactly how every MR
@@ -1312,6 +1356,11 @@ export function createStore(dbPath: string): Store {
       db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
     }
   }
+  // Migrate databases created before the cloud mirror (Phase 25). Same NULL-until-next-write
+  // reasoning as `projects.updatedAt` above.
+  if (!taskColumns.some((c) => c.name === 'updatedAt')) {
+    db.exec(`ALTER TABLE tasks ADD COLUMN updatedAt INTEGER`);
+  }
   // Backfill `workedAt` (see `Task.workedAt`). Unlike every other column above, NULL here is
   // not harmless: it is read as "no agent has run this card", which hides the Merge button
   // and both auto-merge/auto-release switches — so an upgrade would inherit the very bug the
@@ -1348,6 +1397,60 @@ export function createStore(dbPath: string): Store {
   // the Gantt groups by the first and the timeline markers by the second.
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_epic ON tasks(epicTaskId, "order")`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_milestone ON tasks(milestoneId)`);
+
+  // Created down here, not in the schema block above: on a pre-Phase-25 database
+  // `tasks.updatedAt`/`projects.updatedAt` do not exist until the ALTERs above have run,
+  // and a trigger body is resolved against the table's live column set at CREATE TRIGGER
+  // time. `cloud_outbox` itself IS in the schema block — it is a new table, not migrated.
+  //
+  // One trigger per write kind, each doing two things: touch `updatedAt` (a bare
+  // `UPDATE ... SET status = ...` never sets it itself, and there is no caller left out —
+  // see `cloud_outbox` above) and append the outbox row. Combined into one body rather
+  // than split across two triggers deliberately: SQLite still fires a DIFFERENT trigger
+  // reached via a nested statement even with `recursive_triggers` off (its default here —
+  // that pragma only stops a trigger from re-firing ITSELF), so two separate AFTER UPDATE
+  // triggers would have the touch trigger's own nested `UPDATE` cross-fire the outbox
+  // trigger a second time and double-log every edit, forever. Folded into one trigger,
+  // the nested touch can only ever cross-fire that SAME trigger, which recursive_triggers
+  // = off does block — confirmed against a real in-memory database before relying on it.
+  //
+  // The `WHERE updatedAt IS OLD.updatedAt` / `WHERE updatedAt IS NULL` guards on the
+  // nested UPDATE avoid clobbering a value a caller DID set on purpose — the one future
+  // caller being command apply (Phase 25, later), which will want to stamp the server's
+  // own `updatedAt` rather than have this trigger immediately overwrite it with "now".
+  // The outbox INSERT itself is deliberately unconditional (no such guard): every real
+  // write gets logged even if the row's own `updatedAt` was already current.
+  //
+  // A fresh INSERT still costs two outbox rows (an 'insert' plus one 'update' echo from
+  // the touch's nested UPDATE crossing into the update trigger) — a one-time cost per
+  // entity, not per edit, and exactly what `shapeCloudDelta`'s collapse-to-last-row exists
+  // to absorb.
+  const nowMs = `CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)`;
+  for (const table of ['tasks', 'projects'] as const) {
+    const entity = table === 'tasks' ? 'task' : 'project';
+    db.exec(`
+      CREATE TRIGGER IF NOT EXISTS trg_${table}_after_insert
+      AFTER INSERT ON ${table}
+      BEGIN
+        INSERT INTO cloud_outbox (entity, entityId, op, at)
+        VALUES ('${entity}', NEW.id, 'insert', ${nowMs});
+        UPDATE ${table} SET updatedAt = ${nowMs} WHERE id = NEW.id AND updatedAt IS NULL;
+      END;
+      CREATE TRIGGER IF NOT EXISTS trg_${table}_after_update
+      AFTER UPDATE ON ${table}
+      BEGIN
+        INSERT INTO cloud_outbox (entity, entityId, op, at)
+        VALUES ('${entity}', NEW.id, 'update', ${nowMs});
+        UPDATE ${table} SET updatedAt = ${nowMs} WHERE id = NEW.id AND updatedAt IS OLD.updatedAt;
+      END;
+      CREATE TRIGGER IF NOT EXISTS trg_${table}_after_delete
+      AFTER DELETE ON ${table}
+      BEGIN
+        INSERT INTO cloud_outbox (entity, entityId, op, at)
+        VALUES ('${entity}', OLD.id, 'delete', ${nowMs});
+      END;
+    `);
+  }
 
   // Seed the built-in Personal board project (idempotent). It hosts the standalone
   // My Tasks board (JIRA tickets + internal ad-hoc tasks); it has no repo/plan, so
@@ -2476,6 +2579,15 @@ export function createStore(dbPath: string): Store {
     deleteTicketLabelStmt.run(row.id);
     rewriteLabelOnTasks(row.projectId, row.name, null);
   });
+
+  // The cloud mirror's outbox reader (Phase 25). Reads a raw window well past `limit` so
+  // `shapeCloudDelta` has enough repeated rows to actually collapse — a card edited five
+  // times between syncs must still cost the caller one entity, not five.
+  const OUTBOX_READ_MULTIPLE = 8;
+  const selectCloudOutboxSince = db.prepare(
+    `SELECT seq, entity, entityId, op, at FROM cloud_outbox WHERE seq > ? ORDER BY seq LIMIT ?`,
+  );
+  const deleteCloudOutboxThrough = db.prepare(`DELETE FROM cloud_outbox WHERE seq <= ?`);
 
   return {
     addProject(input) {
@@ -3639,6 +3751,18 @@ export function createStore(dbPath: string): Store {
       } catch {
         return null; // corrupt value — sanitizeWindowState would reject it anyway
       }
+    },
+
+    getCloudDelta(sinceSeq, limit) {
+      const rows = selectCloudOutboxSince.all(
+        sinceSeq,
+        Math.max(limit, 0) * OUTBOX_READ_MULTIPLE,
+      ) as CloudOutboxRow[];
+      return shapeCloudDelta(rows, limit);
+    },
+
+    pruneCloudOutbox(throughSeq) {
+      deleteCloudOutboxThrough.run(throughSeq);
     },
 
     close() {
