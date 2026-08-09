@@ -45,7 +45,9 @@ export function parseClaudeUsageText(text: string): CliUsageReading {
  * missing, logged out, offline, or mid-upgrade just means "no reading yet", the same
  * shape `getClaudeStatus` uses for the same reasons.
  */
-export async function readClaudeUsage(host: ExecHost = localHost()): Promise<CliUsageReading | null> {
+export async function readClaudeUsage(
+  host: ExecHost = localHost(),
+): Promise<CliUsageReading | null> {
   const { code, stdout } = await host.exec(
     process.cwd(),
     'claude',

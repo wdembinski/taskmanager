@@ -48,7 +48,7 @@ plan the orchestrator could one day run on its own repo.
 | 22 | Attachments in the task and its steps | ✅ complete (v0.64.4) — tag and draft cut once it lands on `development` |
 | 23 | One model for planning, another for the steps | ✅ complete on `feat/setting-ai-agent-models-for-planning` — tag and draft cut once it lands on `development` |
 | 24 | Projects and their tickets (a tracker of our own) | 🚧 in progress on `feat/support-projects-and-their-tickets` — **the whole plan is written** (design, build steps, verification, critical files); build step 1 is next |
-| 25 | Cloud service (a hosted counterpart, sharing domain logic and UI) | 🚧 in progress on `feat/cloud-service` — target layout written; restructuring, verification, an Azure cost estimate and the plan's risks are each a later step |
+| 25 | Cloud service (a hosted counterpart, sharing domain logic and UI) | 🚧 in progress on `feat/cloud-service` — target layout written, `apps/client`+`packages/shared` restructured, verified (found and fixed a broken per-package test run); `apps/server`/`apps/web`/`packages/ui`/`packages/protocol` still unscaffolded; an Azure cost estimate and the plan's risks are each a later step |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -3452,6 +3452,90 @@ format while waiting for the "real" one.
   branch (`RELEASE.md` rule 5) — the tag is cut once this lands on `development`.
 - Every step of this plan shares the one branch `feat/cloud-service`, so each
   step's session reads this entry to find what the previous one left it.
+
+### Verification — what this step found
+
+The restructuring commit (`29c5477`) moved `apps/client` and `packages/shared`
+into place, but the target layout above also names `apps/server`, `apps/web`,
+`packages/ui` and `packages/protocol` — three of them marked `(new)`, meaning
+nothing to move, only to scaffold. None of the four exist on this branch: no
+`apps/server`, no `apps/web`, no `packages/ui`, no `packages/protocol`, no
+`docker-compose.yml`. Scaffolding a NestJS backend and a Vite/React frontend
+is not verification, and doing it here would mean starting later phases from
+inside this step, so the checks below cover what actually exists —
+`apps/client` and `packages/shared` — and the Server / Web / End-to-end
+sections of this step's brief are recorded as **not yet runnable**, not as
+passed or skipped, so the gap is visible to whichever step scaffolds them.
+
+Root gates, from the repo root:
+
+- `pnpm format` — clean, nothing rewritten.
+- `pnpm typecheck` — green (`turbo run typecheck`, both `apps/client` and
+  `packages/shared`).
+- `pnpm test` — 99 test files passed, 1 pre-existing failure
+  (`apps/client/src/main/exec/wslHost.test.ts`, asserts this machine's real
+  WSL login-shell PATH contains `/.local/bin`; environmental, unrelated to
+  the restructuring — the same single failure `29c5477`'s own testing
+  reported), 1 skipped file. 1904 tests passed, 3 skipped.
+- `pnpm licenses list | grep -iE 'GPL|AGPL|LGPL|MPL|EPL|CDDL'` — the only
+  hits are substring false positives (`expand-template`, `simple-get`, …
+  matching `MPL` inside `teMPLate`/`siMPLe`, all themselves MIT/WTFPL). No
+  copyleft dependency in the tree. No new dependency was added this step, so
+  this is an audit, not a gate that had anything to block.
+
+Client, per this step's own brief:
+
+- `pnpm --filter claude-orchestrator test` **failed on first run**: 40 of 77
+  test files errored resolving `@shared/model` and other runtime (not
+  type-only) imports from `@shared/*`. The root `vitest.config.ts` that makes
+  the aggregated `pnpm test` work mirrors `@shared`/`@renderer` as path
+  aliases, but only applies when vitest's cwd is the repo root; `pnpm
+  --filter` runs `apps/client`'s own `test` script with cwd set to
+  `apps/client`, where that root config is never loaded. This is a real gap
+  the restructuring left behind — before `29c5477`, `apps/client` **was** the
+  root package, so the two invocations were the same command. Fixed by adding
+  `apps/client/vitest.config.ts`, mirroring the same two aliases resolved
+  from `apps/client` instead of the repo root (see the file for why); the
+  root config's comment is updated to say both exist and when each applies.
+  Re-run: 75 of 77 files passed, the same one pre-existing `wslHost.test.ts`
+  failure, 1 skipped — and the aggregated root `pnpm test` still reports the
+  same 99/101 files passed, confirming the new config didn't change what the
+  root run collects.
+- `pnpm --filter claude-orchestrator check:abi` — passed (`ABI check OK:
+  better_sqlite3.node and Electron both at ABI 130`).
+- `pnpm --filter claude-orchestrator package:local` — `electron-vite build`,
+  `install-app-deps` and `ensure:abi` all pass; `dist/win-unpacked/VIPPER Task
+  Manager.exe` is produced. The final NSIS link fails with `!include: could
+  not find … StdUtils.nsh`, and that path is 279 characters — the same
+  Windows `MAX_PATH` (260) failure `29c5477`'s own testing hit and attributed
+  to this session's worktree path plus pnpm's `.pnpm` store naming, not a
+  code problem; confirmed again here on the same worktree.
+- `pnpm --filter claude-orchestrator check:feed` — reports "no packaged
+  bundle under `apps/client/dist`", because the NSIS step above never
+  produced one to check. Downstream of the same environmental failure, not
+  evidence of anything wrong with `check:feed` itself.
+
+Server / Web / End-to-end — not yet runnable, per the gap noted above:
+`pnpm --filter @tm/server test`, `docker compose up -d`, `pnpm --filter
+@tm/server db:migrate`, `curl localhost:3000/api/v1/health`, `pnpm --filter
+@tm/web test` and `pnpm test:e2e` all name packages or files that do not
+exist on this branch yet.
+
+No path in this step uses `ANTHROPIC_API_KEY` (`docs/06`) — nothing added a
+new dependency or API path at all, this step only added one config file. The
+packaged app was never launched (`RELEASE.md` rule 6); `check:feed`'s
+"no bundle" result and the NSIS failure above were read from command output,
+not from running the built exe.
+
+**Notes.**
+
+- Not docs-only: `apps/client/vitest.config.ts` is new, and
+  `vitest.config.ts`'s header comment changed to describe it — a `fix`
+  (`apps/client`'s own `test` script was broken), so `apps/client/package.json`
+  and `packages/shared/package.json` both bump PATCH in this commit,
+  matching the sibling-version convention `29c5477` set.
+- Per `RELEASE.md` rule 5, this branch is not released from; the tag lands
+  once this reaches `development`.
 
 ---
 

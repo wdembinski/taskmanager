@@ -1,6 +1,6 @@
 {
   "name": "@tm/shared",
-  "version": "0.74.5",
+  "version": "0.74.6",
   "description": "Domain types and pure logic shared across the desktop client, the cloud server and the web client — the IpcApi contract, Task/Project models, parsers and policies.",
   "license": "UNLICENSED",
   "private": true,

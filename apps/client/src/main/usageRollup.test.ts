@@ -345,7 +345,7 @@ describe('usageQuota', () => {
     expect(quota.limit).toBe(200);
   });
 
-  it("trusts a Claude reading of 0 rather than falling back to the budget estimate", () => {
+  it('trusts a Claude reading of 0 rather than falling back to the budget estimate', () => {
     const quota = usageQuota({
       id: 'session',
       now,

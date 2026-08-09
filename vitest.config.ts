@@ -1,11 +1,12 @@
 /**
- * Vitest configuration.
- *
- * This is the one vitest instance for the whole workspace (all 99+ test files, across
- * apps/client and packages/shared) — deliberately NOT split per-package like apps/client's
- * own typecheck/build are. `pnpm test` at the repo root runs `vitest run` directly rather
- * than going through turbo, so it stays a single run the way it was before the workspace
- * restructuring.
+ * Vitest configuration for the aggregated `pnpm test` at the repo root (all
+ * 99+ test files, across apps/client and packages/shared), run as one
+ * `vitest run` rather than through turbo, the way it worked before the
+ * workspace restructuring. apps/client also carries its own
+ * apps/client/vitest.config.ts with the same aliases, for
+ * `pnpm --filter claude-orchestrator test` — cwd is apps/client there, so
+ * this root config never comes into play; without its own config, any
+ * standalone run fails to resolve `@shared/*`.
  *
  * The app is built by electron-vite (see apps/client/electron.vite.config.ts), which
  * defines the `@shared` / `@renderer` path aliases per bundle. Vitest doesn't read that
