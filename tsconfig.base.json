@@ -17,6 +17,7 @@
     "baseUrl": ".",
     "paths": {
       "@shared/*": ["packages/shared/src/*"],
+      "@protocol/*": ["packages/protocol/src/*"],
       "@renderer/*": ["apps/client/src/renderer/src/*"]
     }
   }

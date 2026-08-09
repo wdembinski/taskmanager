@@ -14,6 +14,9 @@
  * (not just a type) from `@shared/*` fails to resolve. Type-only `@shared` imports are
  * erased and never needed this, which is why it only surfaced once real constants moved
  * into shared.
+ *
+ * `@protocol` mirrors the same deal for packages/protocol, added alongside `@shared` in
+ * tsconfig.base.json — see that file's `paths`.
  */
 import { resolve } from 'node:path';
 import { defineConfig } from 'vitest/config';
@@ -22,6 +25,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@shared': resolve('packages/shared/src'),
+      '@protocol': resolve('packages/protocol/src'),
       '@renderer': resolve('apps/client/src/renderer/src'),
     },
   },
