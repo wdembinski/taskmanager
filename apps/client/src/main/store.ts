@@ -49,6 +49,7 @@ import type { UsageSample } from '@shared/usage';
 import {
   type AppSettings,
   DEFAULT_BOARD_DISPLAY,
+  DEFAULT_CLOUD_SETTINGS,
   DEFAULT_GITLAB_SETTINGS,
   DEFAULT_JIRA_SETTINGS,
   DEFAULT_SETTINGS,
@@ -683,6 +684,15 @@ export interface Store {
   getCloudDelta(sinceSeq: number, limit: number): CloudOutboxRow[];
   /** Drop outbox rows through `throughSeq` once the server has acked them. */
   pruneCloudOutbox(throughSeq: number): void;
+  /**
+   * Stable per-installation id sent as `SyncRequest.clientId` (Phase 25) — generated with
+   * `randomUUID` on first read and persisted from then on, so presence and commands can
+   * address this machine the same way across restarts. Never regenerated.
+   */
+  loadCloudClientId(): string;
+  /** The opaque server cursor from the last successful `/v1/sync`, or null before the first one. */
+  loadCloudCursor(): string | null;
+  saveCloudCursor(cursor: string): void;
   close(): void;
 }
 
@@ -1730,6 +1740,8 @@ export function createStore(dbPath: string): Store {
 
   /** The vipper.iam refresh token ciphertext — see `../iamSignIn.ts` and `ipc.ts`'s `iam:*` handlers. */
   const IAM_REFRESH_TOKEN_KEY = 'iam.refreshToken';
+  const CLOUD_CLIENT_ID_KEY = 'cloud.clientId';
+  const CLOUD_CURSOR_KEY = 'cloud.cursor';
 
   /** An attention_items row: `options`/`steps`/`questions`/`context` are JSON text. */
   interface AttentionRow {
@@ -2198,6 +2210,7 @@ export function createStore(dbPath: string): Store {
         ...parsed,
         jira: { ...DEFAULT_JIRA_SETTINGS, ...(parsed.jira ?? {}) },
         gitlab: { ...DEFAULT_GITLAB_SETTINGS, ...(parsed.gitlab ?? {}) },
+        cloud: { ...DEFAULT_CLOUD_SETTINGS, ...(parsed.cloud ?? {}) },
         board: { ...DEFAULT_BOARD_DISPLAY, ...(parsed.board ?? {}) },
       };
     } catch {
@@ -3701,6 +3714,23 @@ export function createStore(dbPath: string): Store {
 
     clearIamRefreshToken() {
       deleteState.run(IAM_REFRESH_TOKEN_KEY);
+    },
+
+    loadCloudClientId() {
+      const row = selectState.get(CLOUD_CLIENT_ID_KEY) as { value: string } | undefined;
+      if (row) return row.value;
+      const id = randomUUID();
+      upsertState.run(CLOUD_CLIENT_ID_KEY, id);
+      return id;
+    },
+
+    loadCloudCursor() {
+      const row = selectState.get(CLOUD_CURSOR_KEY) as { value: string } | undefined;
+      return row?.value ?? null;
+    },
+
+    saveCloudCursor(cursor) {
+      upsertState.run(CLOUD_CURSOR_KEY, cursor);
     },
 
     saveJiraEpicField(cache) {

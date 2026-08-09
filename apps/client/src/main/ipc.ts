@@ -77,6 +77,9 @@ import {
 } from './jira/jiraMove';
 import { iamSignInConfig } from './iamConfig';
 import { signIn as runIamSignIn } from './iamSignIn';
+import { refreshTokens } from '@shared/iamPkce';
+import { CloudPoller } from './cloudPoller';
+import { FocusTracker } from './focusTracker';
 import { GitLabClient } from './gitlab/gitlabClient';
 import { gitlabIdentityFrom, type GitLabIdentityCache } from './gitlab/identity';
 import { describeMergeRequest } from './gitlab/describeMergeRequest';
@@ -189,6 +192,12 @@ export interface Engine {
   watcher: PlanWatcher;
   /** The one background timer that refreshes every integration. */
   syncPoller: SyncPoller;
+  /** The cloud mirror's own timer — seconds-scale, server-directed, and separate from
+   * `syncPoller` on purpose; see `cloudPoller.ts`'s own header. */
+  cloudPoller: CloudPoller;
+  /** The `BrowserWindow` focus/idle signal `cloudPoller` polls on — its listeners outlive
+   * the window's own close handlers, so it is disposed alongside every other timer. */
+  focusTracker: FocusTracker;
   /** Keeps the CLI's own `/usage` reading fresh for the two quota bars. */
   claudeUsagePoller: ClaudeUsagePoller;
   updater: Updater;
@@ -285,6 +294,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     manualBounds = null;
     pushMaximized();
   });
+
+  // The cloud mirror's one local presence signal (Phase 25) — is a human looking at this
+  // window right now. Wired here, beside the maximize/unmaximize pair above, for the same
+  // reason they are: both are raw `BrowserWindow` events this module is already listening
+  // to. `cloudPoller` (constructed near `syncPoller`, below) is the only consumer.
+  const focusTracker = new FocusTracker(mainWindow);
 
   // Reopen where the last run closed. `createWindow()` runs before the store exists, so
   // this is the first moment the saved value is readable — but the window is still
@@ -1170,9 +1185,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
           ? settings.jira.apiBaseUrl?.trim() || stored.apiBaseUrl || ''
           : '',
       },
+      cloud: { ...settings.cloud, baseUrl: normalizeBaseUrl(settings.cloud.baseUrl) },
     });
     // Pick up a changed poll interval (or enable/disable) without a restart.
     syncPoller.reschedule();
+    // Same reason, on the cloud mirror's own clock — an edit to `cloud.enabled`/`baseUrl`
+    // takes effect at once rather than waiting for whatever tick was already in flight.
+    cloudPoller.reschedule();
     // The countdown is drawn from the interval, so a changed one has to reach the bar or
     // the ring would keep draining at the old rate until the next sync landed.
     pushSyncState();
@@ -1399,7 +1418,49 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     }
   });
 
-  handle('iam:signOut', async () => store.clearIamRefreshToken());
+  handle('iam:signOut', async () => {
+    cloudAccessToken = null;
+    store.clearIamRefreshToken();
+  });
+
+  /**
+   * The cloud mirror's own access token — minted from the stored refresh token, cached in
+   * memory until it's close to expiry rather than reminted on every poll (the active tier
+   * is 2.5s; a mint-per-tick would cost `apps/server` a vipper.iam round trip every request
+   * for nothing a cache doesn't already answer). vipper.iam rotates the refresh token on
+   * every use, so a successful mint re-encrypts and re-saves it, exactly as `iam:signIn`
+   * does with the first one. Returns null — never throws — whenever there is nothing to
+   * mint from: `cloudPoller` treats that exactly like any other failed tick (counted,
+   * backed off, retried next time), not a special case.
+   */
+  let cloudAccessToken: { value: string; expiresAt: number } | null = null;
+  const getCloudAccessToken = async (): Promise<string | null> => {
+    if (cloudAccessToken && cloudAccessToken.expiresAt > Date.now() + 5_000) {
+      return cloudAccessToken.value;
+    }
+    const cipher = store.loadIamRefreshToken();
+    if (!cipher || !safeStorage.isEncryptionAvailable()) return null;
+    try {
+      const refreshToken = decryptSecret(cipher, 'vipper.iam');
+      // `redirectUri` is part of `IamPkceConfig`'s shape but only read for the
+      // authorization-code grant `signIn()` uses — the refresh-token grant never sends it,
+      // so an empty placeholder is fine here.
+      const tokens = await refreshTokens({ ...iamSignInConfig(), redirectUri: '' }, refreshToken);
+      if (tokens.refresh_token) {
+        store.saveIamRefreshToken(
+          safeStorage.encryptString(sanitizeToken(tokens.refresh_token)).toString('base64'),
+        );
+      }
+      cloudAccessToken = {
+        value: tokens.access_token,
+        expiresAt: Date.now() + tokens.expires_in * 1000,
+      };
+      return cloudAccessToken.value;
+    } catch (e) {
+      logMain('vipper.iam access token refresh failed', e);
+      return null;
+    }
+  };
 
   /** The account behind the GitLab token, cached per instance. Fails soft to null. */
   const gitlabIdentity = async (
@@ -1452,6 +1513,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   > = {
     jira: { lastSyncAt: null, syncing: false, error: null },
     gitlab: { lastSyncAt: null, syncing: false, error: null },
+    cloud: { lastSyncAt: null, syncing: false, error: null },
   };
 
   const syncState = (): SyncState => {
@@ -1459,6 +1521,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     const services: ServiceSyncState[] = [
       { id: 'jira', label: 'JIRA', enabled: settings.jira.enabled, ...syncClock.jira },
       { id: 'gitlab', label: 'GitLab', enabled: settings.gitlab.enabled, ...syncClock.gitlab },
+      { id: 'cloud', label: 'Cloud', enabled: settings.cloud.enabled, ...syncClock.cloud },
     ];
     // The NEWEST of the services' clocks, so a sweep in which one tracker failed still
     // counts as having happened for the ones that did not — the ring would otherwise sit
@@ -2546,6 +2609,24 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   ]);
   syncPoller.reschedule();
 
+  // The cloud mirror's own poller — same `trackSync` wrapping as JIRA/GitLab above, so the
+  // status bar's ring reacts to it identically, but its own seconds-scale, self-scheduling
+  // timer rather than a slot on `syncPoller`'s shared one. See `cloudPoller.ts`'s header for
+  // why the two must not share a clock.
+  const cloudPoller = new CloudPoller({
+    store,
+    focus: focusTracker,
+    getSettings: () => store.getSettings().cloud,
+    getAccessToken: getCloudAccessToken,
+    // Applying a relayed command is Phase 25's next step ("Apply queued cloud commands on
+    // the client") — until then, a command that arrives is logged rather than silently
+    // dropped, so its absence from the board is at least visible somewhere.
+    onCommands: (commands) =>
+      logMain(`cloud: ${commands.length} command(s) received, not yet applied`),
+    runTracked: (run) => trackSync('cloud', run),
+  });
+  cloudPoller.reschedule();
+
   // The two quota bars' one real signal: `/usage` read straight from the CLI, on its
   // own clock (see `claudeUsage.ts` for why this never costs a token or a turn).
   const claudeUsagePoller = new ClaudeUsagePoller();
@@ -2562,6 +2643,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     broker,
     watcher,
     syncPoller,
+    cloudPoller,
+    focusTracker,
     claudeUsagePoller,
     updater,
     windowTracker,

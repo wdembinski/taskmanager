@@ -40,7 +40,13 @@ import {
 import { AddRegular, DismissRegular } from '@fluentui/react-icons';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
-import type { AppSettings, GitLabSettings, JiraSettings, PriorityDisplay } from '@shared/settings';
+import type {
+  AppSettings,
+  CloudSettings,
+  GitLabSettings,
+  JiraSettings,
+  PriorityDisplay,
+} from '@shared/settings';
 
 /**
  * The three priority indicators, in the order they are offered. Keyed by the stored value,
@@ -52,7 +58,14 @@ const PRIORITY_DISPLAY_LABELS: Record<PriorityDisplay, string> = {
   off: 'Don’t show it',
 };
 import { MODELS, type BoardColumn } from '@shared/model';
-import type { AppInfo, JiraConfigStatus, JiraStatusOption, JiraTestResult } from '@shared/ipc';
+import type {
+  AppInfo,
+  IamConfigStatus,
+  IamSignInResult,
+  JiraConfigStatus,
+  JiraStatusOption,
+  JiraTestResult,
+} from '@shared/ipc';
 import { describeUpdate, type UpdateState } from '@shared/update';
 import { isCloudHost } from '@shared/jiraUrl';
 import { ARCHIVE_RETENTION_DAYS, JIRA_BOARD_LIMIT } from '@shared/board';
@@ -142,7 +155,7 @@ const COLUMN_LABEL: Record<BoardColumn, string> = Object.fromEntries(
   COLUMN_META.map((c) => [c.column, STATUS_LABEL[statusForColumn(c.column)]]),
 ) as Record<BoardColumn, string>;
 
-type SettingsSection = 'general' | 'board' | 'jira' | 'gitlab' | 'agents';
+type SettingsSection = 'general' | 'board' | 'jira' | 'gitlab' | 'cloud' | 'agents';
 
 export function Settings(): JSX.Element {
   const styles = useStyles();
@@ -177,6 +190,12 @@ export function Settings(): JSX.Element {
   const [gitlabToken, setGitlabToken] = useState('');
   const [gitlabMsg, setGitlabMsg] = useState<string | null>(null);
   const [gitlabTest, setGitlabTest] = useState<JiraTestResult | null>(null);
+  // Cloud: the poller (`cloudPoller.ts`) needs `enabled` + `baseUrl` from this pane, plus a
+  // vipper.iam sign-in — everything the poller actually authenticates with, not a form
+  // field, so only the signed-in/out state and a couple of buttons live here.
+  const [iamStatus, setIamStatus] = useState<IamConfigStatus | null>(null);
+  const [iamResult, setIamResult] = useState<IamSignInResult | null>(null);
+  const [iamBusy, setIamBusy] = useState(false);
 
   // Only offer targets that exist here: with no WSL installed the control never
   // appears, so the screen stays exactly as it was.
@@ -200,12 +219,35 @@ export function Settings(): JSX.Element {
     setStatusRows(statusMapToRows(appSettings.jira.statusCategoryOverrides));
     setJiraStatus(status);
     setGitlabStatus(await window.api.invoke('gitlab:getConfigStatus'));
+    setIamStatus(await window.api.invoke('iam:getConfigStatus'));
     void loadJiraStatuses();
   }, []);
 
   function patchGitLab(change: Partial<GitLabSettings>): void {
     setSettings((prev) => (prev ? { ...prev, gitlab: { ...prev.gitlab, ...change } } : prev));
     setSaved(false);
+  }
+
+  function patchCloud(change: Partial<CloudSettings>): void {
+    setSettings((prev) => (prev ? { ...prev, cloud: { ...prev.cloud, ...change } } : prev));
+    setSaved(false);
+  }
+
+  async function signInToCloud(): Promise<void> {
+    setIamBusy(true);
+    setIamResult(null);
+    try {
+      setIamResult(await window.api.invoke('iam:signIn'));
+      setIamStatus(await window.api.invoke('iam:getConfigStatus'));
+    } finally {
+      setIamBusy(false);
+    }
+  }
+
+  async function signOutOfCloud(): Promise<void> {
+    await window.api.invoke('iam:signOut');
+    setIamResult({ ok: true, message: 'Signed out.' });
+    setIamStatus(await window.api.invoke('iam:getConfigStatus'));
   }
 
   async function saveGitLabToken(): Promise<void> {
@@ -376,6 +418,7 @@ export function Settings(): JSX.Element {
 
   const jira = settings.jira;
   const gitlab = settings.gitlab;
+  const cloud = settings.cloud;
   // An *.atlassian.net site configured as Server/DC is the one misconfiguration we can
   // spot for certain, and it fails as a bare 401 that reads like a bad token. Warn on
   // the field rather than silently overriding the dropdown — a vanity-domain Cloud site
@@ -394,6 +437,7 @@ export function Settings(): JSX.Element {
         <Tab value="board">Board</Tab>
         <Tab value="jira">JIRA</Tab>
         <Tab value="gitlab">GitLab</Tab>
+        <Tab value="cloud">Cloud</Tab>
         <Tab value="agents">Agents</Tab>
       </TabList>
 
@@ -931,6 +975,77 @@ export function Settings(): JSX.Element {
           {gitlabTest && (
             <MessageBar intent={gitlabTest.ok ? 'success' : 'error'}>
               <MessageBarBody>{gitlabTest.message}</MessageBarBody>
+            </MessageBar>
+          )}
+        </div>
+      ) : section === 'cloud' ? (
+        <div className={styles.pane}>
+          <Subtitle2>Cloud</Subtitle2>
+          <Body1 className={styles.hint}>
+            Mirrors your tasks and projects to a hosted server, so they can be opened from the web
+            or another machine. Polls faster while this window is focused, and backs off
+            automatically while it isn’t or while the server can’t be reached.
+          </Body1>
+
+          <div className={styles.grid}>
+            <Field label="Enable cloud sync">
+              <Switch
+                checked={cloud.enabled}
+                onChange={(_e, d) => patchCloud({ enabled: d.checked })}
+              />
+            </Field>
+
+            <Field
+              label="Server URL"
+              hint="The @tm/server root, e.g. https://taskmanager-api.example.com"
+            >
+              <Input
+                value={cloud.baseUrl}
+                placeholder="https://taskmanager-api.example.com"
+                onChange={(_e, d) => patchCloud({ baseUrl: d.value })}
+              />
+            </Field>
+
+            <Field
+              label="vipper.iam account"
+              hint={
+                iamStatus?.encryptionAvailable === false
+                  ? 'The OS secure store is unavailable, so a sign-in cannot be saved on this machine.'
+                  : iamStatus?.signedIn
+                    ? 'Signed in.'
+                    : 'Sign in to authorize this machine.'
+              }
+            >
+              <div className={styles.actions}>
+                <Button
+                  appearance="primary"
+                  disabled={iamBusy || iamStatus?.encryptionAvailable === false}
+                  onClick={() => void signInToCloud()}
+                >
+                  {iamStatus?.signedIn ? 'Sign in again' : 'Sign in'}
+                </Button>
+                <Button
+                  appearance="secondary"
+                  disabled={!iamStatus?.signedIn}
+                  onClick={() => void signOutOfCloud()}
+                >
+                  Sign out
+                </Button>
+                {iamBusy && <Spinner size="tiny" />}
+              </div>
+            </Field>
+          </div>
+
+          <div className={styles.actions}>
+            <Button appearance="primary" onClick={() => void save()}>
+              Save
+            </Button>
+            {saved && <Caption1 className={styles.saved}>Saved.</Caption1>}
+          </div>
+
+          {iamResult && (
+            <MessageBar intent={iamResult.ok ? 'success' : 'error'}>
+              <MessageBarBody>{iamResult.message}</MessageBarBody>
             </MessageBar>
           )}
         </div>

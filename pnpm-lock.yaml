@@ -36,6 +36,9 @@ importers:
       '@fluentui/react-icons':
         specifier: ^2.0.270
         version: 2.0.331(react@18.3.1)
+      '@tm/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
       '@tm/shared':
         specifier: workspace:*
         version: link:../../packages/shared

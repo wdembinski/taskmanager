@@ -3,7 +3,8 @@
  * collapse/cap/order rules `getCloudDelta` relies on.
  */
 import { describe, expect, it } from 'vitest';
-import { type CloudOutboxRow, shapeCloudDelta } from './cloudDelta';
+import type { Project, Task } from '@shared/model';
+import { buildMirrorDelta, type CloudOutboxRow, shapeCloudDelta } from './cloudDelta';
 
 function row(partial: Partial<CloudOutboxRow> & Pick<CloudOutboxRow, 'seq'>): CloudOutboxRow {
   return {
@@ -18,11 +19,7 @@ function row(partial: Partial<CloudOutboxRow> & Pick<CloudOutboxRow, 'seq'>): Cl
 describe('shapeCloudDelta', () => {
   it('collapses repeated rows for one entity to its last write', () => {
     const result = shapeCloudDelta(
-      [
-        row({ seq: 1, op: 'insert' }),
-        row({ seq: 2, op: 'update' }),
-        row({ seq: 3, op: 'update' }),
-      ],
+      [row({ seq: 1, op: 'insert' }), row({ seq: 2, op: 'update' }), row({ seq: 3, op: 'update' })],
       10,
     );
     expect(result).toEqual([row({ seq: 3, op: 'update' })]);
@@ -61,7 +58,11 @@ describe('shapeCloudDelta', () => {
 
   it('caps the batch to the least-progressed entities, preserving seq order', () => {
     const result = shapeCloudDelta(
-      [row({ seq: 1, entityId: 'a' }), row({ seq: 2, entityId: 'b' }), row({ seq: 3, entityId: 'c' })],
+      [
+        row({ seq: 1, entityId: 'a' }),
+        row({ seq: 2, entityId: 'b' }),
+        row({ seq: 3, entityId: 'c' }),
+      ],
       2,
     );
     expect(result.map((r) => r.entityId)).toEqual(['a', 'b']);
@@ -69,5 +70,71 @@ describe('shapeCloudDelta', () => {
 
   it('returns nothing for an empty outbox', () => {
     expect(shapeCloudDelta([], 10)).toEqual([]);
+  });
+});
+
+describe('buildMirrorDelta', () => {
+  const t1 = { id: 't1', title: 'Fix export' } as Task;
+  const p1 = { id: 'p1', name: 'Widgets' } as Project;
+  const getTask = (id: string): Task | undefined => (id === 't1' ? t1 : undefined);
+  const getProject = (id: string): Project | undefined => (id === 'p1' ? p1 : undefined);
+
+  it('resolves an insert/update row to the entity the lookup returns', () => {
+    const result = buildMirrorDelta(
+      [row({ seq: 1, entity: 'task', entityId: 't1', op: 'update' })],
+      getTask,
+      getProject,
+    );
+    expect(result).toEqual({
+      tasks: [t1],
+      projects: [],
+      deletedTaskIds: [],
+      deletedProjectIds: [],
+    });
+  });
+
+  it('sends a delete row as an id, with no lookup', () => {
+    const result = buildMirrorDelta(
+      [row({ seq: 1, entity: 'project', entityId: 'gone', op: 'delete' })],
+      getTask,
+      getProject,
+    );
+    expect(result).toEqual({
+      tasks: [],
+      projects: [],
+      deletedTaskIds: [],
+      deletedProjectIds: ['gone'],
+    });
+  });
+
+  it('folds an insert/update lookup MISS into a delete — the entity is gone either way', () => {
+    const result = buildMirrorDelta(
+      [row({ seq: 1, entity: 'task', entityId: 'vanished', op: 'insert' })],
+      getTask,
+      getProject,
+    );
+    expect(result).toEqual({
+      tasks: [],
+      projects: [],
+      deletedTaskIds: ['vanished'],
+      deletedProjectIds: [],
+    });
+  });
+
+  it('sorts tasks and projects into their own arrays from one mixed batch', () => {
+    const result = buildMirrorDelta(
+      [
+        row({ seq: 1, entity: 'task', entityId: 't1', op: 'insert' }),
+        row({ seq: 2, entity: 'project', entityId: 'p1', op: 'insert' }),
+      ],
+      getTask,
+      getProject,
+    );
+    expect(result).toEqual({
+      tasks: [t1],
+      projects: [p1],
+      deletedTaskIds: [],
+      deletedProjectIds: [],
+    });
   });
 });

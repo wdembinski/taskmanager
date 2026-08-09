@@ -7,7 +7,15 @@
  * Ids are never reused (every entity is a fresh `randomUUID`), so once a row for an
  * id is a `delete` no later row for that same id can exist — collapsing to the
  * LAST row per entity is therefore always correct, not just an approximation.
+ *
+ * `buildMirrorDelta` is the one further step `shapeCloudDelta`'s own docstring names
+ * but doesn't take: turning a shaped ROW (entity + id + op) into the actual `Task`/
+ * `Project` `@tm/protocol/wire`'s `MirrorDelta` wants, via lookup callbacks rather than
+ * a `Store` — `cloudPoller.ts` is the only caller, and it already has `store.getTask`/
+ * `store.getProject` to pass in directly.
  */
+import type { MirrorDelta } from '@protocol/wire';
+import type { Project, Task } from '@shared/model';
 
 export type CloudEntity = 'task' | 'project';
 export type CloudOp = 'insert' | 'update' | 'delete';
@@ -30,10 +38,7 @@ export interface CloudOutboxRow {
  * highest `seq` — the cap below therefore keeps the entities that made the least
  * progress toward the caller's cursor, so no entity is starved across calls.
  */
-export function shapeCloudDelta(
-  rows: readonly CloudOutboxRow[],
-  limit: number,
-): CloudOutboxRow[] {
+export function shapeCloudDelta(rows: readonly CloudOutboxRow[], limit: number): CloudOutboxRow[] {
   const lastByEntity = new Map<string, CloudOutboxRow>();
   for (const row of rows) {
     lastByEntity.set(`${row.entity}:${row.entityId}`, row);
@@ -45,4 +50,42 @@ export function shapeCloudDelta(
   const upserts = capped.filter((row) => row.op !== 'delete');
   const deletes = capped.filter((row) => row.op === 'delete');
   return [...upserts, ...deletes];
+}
+
+/**
+ * Resolve a shaped outbox batch into the full-entity batch `POST /v1/sync` wants: an
+ * insert/update row is looked up by id and sent as the real row the caller's own copy
+ * currently holds; a delete row needs no lookup — the id IS the message. A lookup MISS on
+ * an insert/update (the entity was deleted again since the outbox row was written, and the
+ * later delete hasn't reached this batch — see `shapeCloudDelta`'s cap) is folded into a
+ * delete too, since "gone" is the true current state either way and the receiving side has
+ * no use for a row that no longer exists.
+ */
+export function buildMirrorDelta(
+  rows: readonly CloudOutboxRow[],
+  getTask: (id: string) => Task | undefined,
+  getProject: (id: string) => Project | undefined,
+): MirrorDelta {
+  const tasks: Task[] = [];
+  const projects: Project[] = [];
+  const deletedTaskIds: string[] = [];
+  const deletedProjectIds: string[] = [];
+
+  for (const row of rows) {
+    if (row.op === 'delete') {
+      (row.entity === 'task' ? deletedTaskIds : deletedProjectIds).push(row.entityId);
+      continue;
+    }
+    if (row.entity === 'task') {
+      const task = getTask(row.entityId);
+      if (task) tasks.push(task);
+      else deletedTaskIds.push(row.entityId);
+    } else {
+      const project = getProject(row.entityId);
+      if (project) projects.push(project);
+      else deletedProjectIds.push(row.entityId);
+    }
+  }
+
+  return { tasks, projects, deletedTaskIds, deletedProjectIds };
 }

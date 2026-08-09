@@ -19,7 +19,7 @@
  */
 
 /** Which tracker a row describes. Extend as integrations are added. */
-export type SyncServiceId = 'jira' | 'gitlab';
+export type SyncServiceId = 'jira' | 'gitlab' | 'cloud';
 
 export interface ServiceSyncState {
   id: SyncServiceId;

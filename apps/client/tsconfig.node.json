@@ -8,5 +8,11 @@
     "lib": ["ES2022"],
     "types": ["node"]
   },
-  "include": ["src/main", "src/preload", "../../packages/shared/src", "electron.vite.config.ts"]
+  "include": [
+    "src/main",
+    "src/preload",
+    "../../packages/shared/src",
+    "../../packages/protocol/src",
+    "electron.vite.config.ts"
+  ]
 }

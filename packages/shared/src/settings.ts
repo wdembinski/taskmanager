@@ -188,6 +188,40 @@ export const DEFAULT_GITLAB_SETTINGS: GitLabSettings = {
 };
 
 /**
+ * The desktop client's own cloud-mirror config (Phase 25). Deliberately separate from
+ * `syncIntervalMinutes`: JIRA and GitLab share one minutes-scale timer (`syncPoller.ts`),
+ * but the cloud mirror polls on a seconds-scale, server-directed cadence of its own
+ * (`cloudPoller.ts`) — putting it on the same clock as the trackers would either starve
+ * it behind their far slower interval or drag them down to match it.
+ */
+export interface CloudSettings {
+  /** Master switch — when off, the poller never runs and nothing is sent or received. */
+  enabled: boolean;
+  /** The `@tm/server` root, e.g. `https://taskmanager-api.example.com` (no trailing slash). */
+  baseUrl: string;
+  /**
+   * The interval assumed for the FIRST poll, before any server directive has been heard
+   * back — after that, `SyncResponse.cadence.intervalMs` from the previous tick is what
+   * `nextPollDelayMs` actually mins against; this is only ever the seed. Matches
+   * `@tm/protocol/cadence`'s own `CADENCE_MS.active` out of the box.
+   */
+  activeIntervalMs: number;
+  /** Same seed, for when this window is not the focused one. Matches `CADENCE_MS.idle`. */
+  idleIntervalMs: number;
+  /** How much random jitter `nextPollDelayMs` adds to the idle tier — see its own docstring. */
+  jitterRatio: number;
+}
+
+/** Off, with the seed intervals matching `@tm/protocol/cadence`'s `CADENCE_MS`. */
+export const DEFAULT_CLOUD_SETTINGS: CloudSettings = {
+  enabled: false,
+  baseUrl: '',
+  activeIntervalMs: 2_500,
+  idleIntervalMs: 25_000,
+  jitterRatio: 0.1,
+};
+
+/**
  * Which of a card's optional context lines the board draws (Phase 17).
  *
  * All three are pure noise on a board where every card shares the same project, and
@@ -348,6 +382,8 @@ export interface AppSettings {
   jira: JiraSettings;
   /** GitLab integration config — merge requests on the cards their ticket lives on. */
   gitlab: GitLabSettings;
+  /** The cloud mirror's own config — see {@link CloudSettings}. */
+  cloud: CloudSettings;
 }
 
 /** The out-of-the-box settings, also used to fill any field missing from storage. */
@@ -378,4 +414,5 @@ export const DEFAULT_SETTINGS: AppSettings = {
   board: DEFAULT_BOARD_DISPLAY,
   jira: DEFAULT_JIRA_SETTINGS,
   gitlab: DEFAULT_GITLAB_SETTINGS,
+  cloud: DEFAULT_CLOUD_SETTINGS,
 };

@@ -1,6 +1,6 @@
 {
   "name": "claude-orchestrator",
-  "version": "0.76.0",
+  "version": "0.77.0",
   "description": "Desktop app that orchestrates the Claude CLI across many projects/tasks â€” runs one session per task, auto-respawns when usage limits reset, advances through a plan.md, and surfaces Claude's questions in a dashboard.",
   "private": true,
   "author": "Wojciech Dembinski",
@@ -31,6 +31,7 @@
   },
   "devDependencies": {
     "@fluentui/react-components": "^9.54.0",
+    "@tm/protocol": "workspace:*",
     "@tm/shared": "workspace:*",
     "@fluentui/react-icons": "^2.0.270",
     "@types/better-sqlite3": "^7.6.12",
