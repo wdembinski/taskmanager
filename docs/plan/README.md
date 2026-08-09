@@ -48,7 +48,7 @@ plan the orchestrator could one day run on its own repo.
 | 22 | Attachments in the task and its steps | ✅ complete (v0.64.4) — tag and draft cut once it lands on `development` |
 | 23 | One model for planning, another for the steps | ✅ complete on `feat/setting-ai-agent-models-for-planning` — tag and draft cut once it lands on `development` |
 | 24 | Projects and their tickets (a tracker of our own) | 🚧 in progress on `feat/support-projects-and-their-tickets` — **the whole plan is written** (design, build steps, verification, critical files); build step 1 is next |
-| 25 | Cloud service (a hosted counterpart, sharing domain logic and UI) | 🚧 in progress on `feat/cloud-service` — target layout written, `apps/client`+`packages/shared` restructured, verified (found and fixed a broken per-package test run); `apps/server`/`apps/web`/`packages/ui`/`packages/protocol` still unscaffolded; an Azure cost estimate and the plan's risks are each a later step |
+| 25 | Cloud service (a hosted counterpart, sharing domain logic and UI) | 🚧 in progress on `feat/cloud-service` — target layout written, `apps/client`+`packages/shared` restructured, verified (found and fixed a broken per-package test run), Azure cost estimated, risks and open assumptions recorded; `apps/server`/`apps/web`/`packages/ui`/`packages/protocol` still unscaffolded |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -3687,6 +3687,71 @@ picked unless staging shares the SQL server.
   [Container Apps billing article](https://learn.microsoft.com/en-us/azure/container-apps/billing)
   and the Retail Prices API, not the marketing pricing page (which, fetched
   outside a browser, shows only `"$-"` placeholders).
+
+### Risks and open assumptions
+
+This plan carries four things forward as stated assumptions rather than
+verified facts. Writing them down here means a later phase can *check* each
+one instead of discovering it mid-build.
+
+- **`@vipper/iam-connector` resolvability.** The package
+  (`C:\Repositories\vipper.iam\packages\iam-connector\package.json`) publishes
+  to a private registry — `"publishConfig": { "registry":
+  "https://npm.vipper.network/" }` — and this repo has no `.npmrc` today, so
+  nothing here is currently configured to reach it. The plan assumes it will
+  resolve once that registry is configured; it is not yet proven. The phase
+  **"Guard the cloud API with vipper.iam"** verifies resolvability first, and
+  if the package can't be installed, falls back to a small local `IamClient`
+  hitting the same two endpoints the connector documents in its own README:
+  `POST ${apiBase}/authorize` (a bearer-token allow/deny decision, keyed by
+  `resourceType`/`identifier`/`action`) and the RFC 7662 introspection at
+  `${apiBase}/oauth/introspect`. That fallback is small because the connector
+  itself is, by its own description, "No NestJS, no React, no server
+  dependencies — just native `fetch`" — there is no framework glue to
+  reimplement, only two HTTP calls. Because the fallback speaks the identical
+  wire contract, nothing downstream of `apps/server`'s auth guard needs to
+  know which of the two paths is live; **this does not block anything else in
+  the plan.**
+- **The two client refactors.** `EngineApi` and `ApiClient` — the desktop
+  app's two existing HTTP/IPC call surfaces that grow a cloud-aware path —
+  touch **2534 lines** and **179 call sites** respectively. Both refactors are
+  mechanical (threading a new transport through call sites that already
+  compile against a stable interface) and **behaviour-preserving** — no call
+  site's observable result is meant to change. Each is scoped to its own
+  phase specifically so that if one goes wrong, the failure is isolated to
+  that phase's commits rather than tangled into a broader change, and so the
+  test suite that gates each phase is still testing one coherent thing
+  instead of two refactors' worth of incidental churn at once.
+- **GitHub Projects v2 is GraphQL-only.** GitHub sunset the classic REST
+  Projects endpoints; any "which column is this issue in" read has to go
+  through the GraphQL API specifically; there is no REST fallback for that
+  one piece the way there is for issues, labels, and comments. The issue sync
+  is designed around that: it works over plain REST without a project
+  attached at all, and only *enriches* the column when a project is attached
+  and the token has `read:project`. A project that is missing, unattached, or
+  reachable but unpermitted is a **degradation** — issues keep syncing,
+  columns are just absent — never a hard failure of the sync.
+- **Scope.** This single ticket bundles three products: GitHub integration,
+  this cloud service, and a shared UI extraction (`@tm/ui`, named in the
+  target layout above). That is wide scope for one ticket, so the phases are
+  deliberately ordered — the same discipline this phase's own four steps
+  already followed, each landing as its own gated commit — so that **stopping
+  after any phase still leaves a working, releasable desktop app.** No phase
+  in this plan is allowed to leave `apps/client` mid-refactor or
+  non-buildable at its own "Done when" gate.
+
+**Notes.**
+
+- This step is **docs only** — no `src/` change, so `pnpm typecheck` and
+  `pnpm test` have nothing to say about it, the same as this phase's earlier
+  steps.
+- Per `CONTRIBUTING.md` §4, a `docs`-only commit still bumps **PATCH** in the
+  same commit; no annotated tag and no release on this branch (`RELEASE.md`
+  rule 5) — the tag is cut once this lands on `development`.
+- This closes out Phase 25's own plan-writing steps (target layout →
+  restructuring → verification → cost estimate → risks); scaffolding
+  `apps/server`, `apps/web`, `packages/ui` and `packages/protocol` themselves
+  is later work this plan hands off to, not part of this entry.
 
 ---
 
