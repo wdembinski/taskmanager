@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { resolveCadence } from '@tm/protocol/cadence';
 import type { CadenceDirective, CadenceTier } from '@tm/protocol/cadence';
+import type { ClientPresence } from '@tm/protocol/wire';
 import { PresenceRegistry, type PresenceBeat } from './presence.registry';
 
 /**
@@ -27,6 +28,20 @@ export class PresenceService {
     const directive = resolveCadence(this.registry.sessions(accountId, now), now);
     this.logTransition(accountId, directive);
     return directive;
+  }
+
+  /**
+   * The desktop Clients (never web sessions — see `ClientPresence`'s own docstring) live on
+   * this account right now, most recently seen first. Backs `GET /v1/board`'s `clients`
+   * field: apps/web reads this to pick a `targetClientId` for `POST /v1/commands` and to
+   * decide whether the "no Client has polled recently" banner is honest to show.
+   */
+  clients(accountId: string, now: number): ClientPresence[] {
+    return this.registry
+      .sessions(accountId, now)
+      .filter((session) => session.source === 'client')
+      .map((session) => ({ id: session.clientId, lastSeen: session.lastSeen }))
+      .sort((a, b) => b.lastSeen - a.lastSeen);
   }
 
   /**

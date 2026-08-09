@@ -135,6 +135,7 @@ export class MirrorService {
         deletedTaskIds: [],
         deletedProjectIds: [],
       },
+      clients: this.presence.clients(accountId, now),
     };
   }
 

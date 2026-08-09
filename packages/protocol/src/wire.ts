@@ -65,10 +65,30 @@ export interface PresenceResponse {
 export const BOARD_FOCUS_HEADER = 'X-TM-Focus';
 export const BOARD_CLIENT_HEADER = 'X-TM-Client-Id';
 
+/**
+ * One desktop Client's presence, as the web app needs it: which id to send a command to
+ * (`CommandRequest.targetClientId`), and how long ago it last polled — the honesty check
+ * behind the "no Client has polled recently" banner (apps/web's own step in
+ * docs/plan/README.md Phase 25). Deliberately narrower than `PresenceBeat`: a web session's
+ * own presence isn't a target for anything, and `focused` doesn't matter here — an idle-tier
+ * desktop Client still polls (just slower) and is still a valid command target.
+ */
+export interface ClientPresence {
+  id: string;
+  /** Epoch ms this Client's presence entry last beat — see `PRESENCE_TTL_MS`. */
+  lastSeen: number;
+}
+
 export interface BoardResponse {
   cursor: string;
   cadence: CadenceDirective;
   deltas: MirrorDelta;
+  /**
+   * Every desktop Client on this account currently within `PRESENCE_TTL_MS`, most recently
+   * seen first. Empty means no desktop Client is polling right now — a command queued via
+   * `POST /v1/commands` would have nowhere to be delivered to and nobody to apply it.
+   */
+  clients: ClientPresence[];
 }
 
 /** Body of `POST /v1/commands` — one Client asking the server to relay an action to another. */
