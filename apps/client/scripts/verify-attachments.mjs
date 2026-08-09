@@ -37,6 +37,8 @@ import { build } from 'vite';
 
 const require = createRequire(import.meta.url);
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+/** `@shared` now lives in the packages/shared workspace package, not under this app. */
+const sharedSrc = join(repo, '..', '..', 'packages', 'shared', 'src');
 
 /**
  * Everything this script writes lives here, INSIDE the repo rather than in the temp dir,
@@ -196,7 +198,7 @@ console.log('  wrote a ${OLD_TAG} database: project ' + project.id + ', task ' +
     'utf8',
   );
   log('\nRunning the scenarios against the current code...');
-  runUnderElectron(await bundle(newEntry, join(work, 'out-new'), join(repo, 'src', 'shared')));
+  runUnderElectron(await bundle(newEntry, join(work, 'out-new'), sharedSrc));
 
   log('\nAll scenarios passed.');
 } finally {

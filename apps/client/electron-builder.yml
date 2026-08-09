@@ -1,7 +1,7 @@
 # electron-builder configuration — how the app is packaged into an installer.
-# Windows: NSIS installer (`pnpm package`). Linux/Ubuntu: AppImage + .deb
-# (`pnpm package:linux`, must run on Linux — e.g. WSL — so the native
-# better-sqlite3 binary is compiled for Linux).
+# Windows: NSIS installer (`pnpm --filter claude-orchestrator package`). Linux/Ubuntu:
+# AppImage + .deb (`pnpm --filter claude-orchestrator package:linux`, must run on
+# Linux — e.g. WSL — so the native better-sqlite3 binary is compiled for Linux).
 # `appId` is NOT renamed with the product, and must not be: NSIS matches an installed app by
 # it, so changing it would install the rebranded build ALONGSIDE the old one instead of
 # upgrading it, and would move the updater's cache directory with it. Same for `package.json`'s

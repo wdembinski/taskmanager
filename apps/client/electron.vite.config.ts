@@ -26,13 +26,17 @@ export default defineConfig({
     // as external `require`s instead of bundling them — required for native modules.
     plugins: [externalizeDepsPlugin()],
     resolve: {
-      alias: { '@shared': resolve('src/shared') },
+      // @shared points at packages/shared's SOURCE, not its tsup dist/ — electron-vite
+      // bundles it directly, same as any other file in this app. The package build
+      // (dist + dual ESM/CJS exports) exists for apps/server and apps/web, which cannot
+      // resolve a bare path alias into a sibling package's sources.
+      alias: { '@shared': resolve('../../packages/shared/src') },
     },
   },
   preload: {
     plugins: [externalizeDepsPlugin()],
     resolve: {
-      alias: { '@shared': resolve('src/shared') },
+      alias: { '@shared': resolve('../../packages/shared/src') },
     },
   },
   renderer: {
@@ -41,7 +45,7 @@ export default defineConfig({
     resolve: {
       alias: {
         '@renderer': resolve('src/renderer/src'),
-        '@shared': resolve('src/shared'),
+        '@shared': resolve('../../packages/shared/src'),
       },
     },
     plugins: [react()],

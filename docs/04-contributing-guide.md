@@ -38,7 +38,7 @@ anything with a visible effect — you've run `pnpm dev` and seen it work. We ke
 Say you want the UI to fetch the list of projects. You'll touch three files, in
 this order — always start at the **contract**:
 
-1. **Declare the channel** in `src/shared/ipc.ts`:
+1. **Declare the channel** in `packages/shared/src/ipc.ts`:
 
    ```ts
    export interface IpcApi {
@@ -47,7 +47,7 @@ this order — always start at the **contract**:
    }
    ```
 
-2. **Implement it in the engine** in `src/main/ipc.ts`:
+2. **Implement it in the engine** in `apps/client/src/main/ipc.ts`:
 
    ```ts
    handle('projects:list', () => projectStore.listAll());
@@ -72,7 +72,7 @@ contract, so you don't touch it for a normal request/response.
 When the engine needs to *notify* the UI (e.g. new Claude output), use an **event**
 channel instead:
 
-1. Add its payload type to `IpcEvents` in `src/shared/ipc.ts`.
+1. Add its payload type to `IpcEvents` in `packages/shared/src/ipc.ts`.
 2. In the engine, send it: `window.webContents.send('session:output', payload)`.
 3. In the UI, subscribe and clean up:
 
@@ -87,7 +87,7 @@ channel instead:
 
 ## Recipe C: add a UI screen
 
-Renderer code lives in `src/renderer/src/`. Build screens from **Fluent UI v9**
+Renderer code lives in `apps/client/src/renderer/src/`. Build screens from **Fluent UI v9**
 components (`@fluentui/react-components`) and icons (`@fluentui/react-icons`) — the
 same toolkit as `vipper-iam`. Style with `makeStyles` (as in `App.tsx`), not
 inline CSS, so the design tokens (light/dark, spacing) stay consistent.
@@ -98,7 +98,7 @@ inline CSS, so the design tokens (light/dark, spacing) stay consistent.
 
 - **Unit tests** (Vitest) live next to the code as `*.test.ts`. Prefer testing
   **pure functions** — logic with no side effects. See
-  `src/main/claudeStatus.test.ts`: we split the file-system/`spawn` parts away
+  `apps/client/src/main/claudeStatus.test.ts`: we split the file-system/`spawn` parts away
   from a pure `summarizeClaudeStatus()` and test the pure part. Do the same with
   your logic (plan parsing, limit detection, scheduling decisions).
 - Run `pnpm test` (once) or `pnpm test:watch` (while developing).
@@ -121,11 +121,11 @@ logical change.
 
 ## Where to look when you're stuck
 
-| I want to…                              | Look in…                              |
-| --------------------------------------- | ------------------------------------- |
-| Change what the UI looks like           | `src/renderer/src/`                   |
-| Change how Claude is run                | `src/main/` (session runner, engine)  |
-| Add/adjust data crossing UI↔engine      | `src/shared/ipc.ts` first             |
-| Understand the security boundary        | `src/preload/index.ts` + doc 02       |
-| Understand sessions/limits/questions    | doc 03                                |
-| Look up a term                          | [Glossary](05-glossary.md)            |
+| I want to…                              | Look in…                                     |
+| --------------------------------------- | --------------------------------------------- |
+| Change what the UI looks like           | `apps/client/src/renderer/src/`               |
+| Change how Claude is run                | `apps/client/src/main/` (session runner, engine) |
+| Add/adjust data crossing UI↔engine      | `packages/shared/src/ipc.ts` first            |
+| Understand the security boundary        | `apps/client/src/preload/index.ts` + doc 02   |
+| Understand sessions/limits/questions    | doc 03                                        |
+| Look up a term                          | [Glossary](05-glossary.md)                    |

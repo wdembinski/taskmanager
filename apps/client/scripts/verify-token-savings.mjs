@@ -60,6 +60,8 @@ import { build } from 'vite';
 
 const require = createRequire(import.meta.url);
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+/** `@shared` now lives in the packages/shared workspace package, not under this app. */
+const sharedSrc = join(repo, '..', '..', 'packages', 'shared', 'src');
 
 /**
  * Everything this script writes lives here, INSIDE the repo rather than in the temp dir,
@@ -101,7 +103,7 @@ async function bundle(entry, outDir) {
   await build({
     configFile: false,
     logLevel: 'error',
-    resolve: { alias: { '@shared': join(repo, 'src', 'shared'), electron: stub } },
+    resolve: { alias: { '@shared': sharedSrc, electron: stub } },
     build: {
       ssr: entry,
       outDir,
