@@ -38,7 +38,7 @@ import {
 import { ArrowClockwiseRegular } from '@fluentui/react-icons';
 import type { GitGraph } from '@shared/gitGraph';
 import type { Project, Task } from '@shared/model';
-import { GRAPH_INK, MONO, fontPx } from './theme';
+import { GRAPH_INK, MONO, fontPx } from '@ui/theme';
 import {
   DOT_RADIUS,
   ROW_HEIGHT,

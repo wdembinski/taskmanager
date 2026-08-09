@@ -16,23 +16,17 @@
  *      so two round-trips and two subscriptions held independent state that could disagree.
  *
  * One subscription, one truth, and `taskIds` is what the ring and the sort order both read.
+ *
+ * `AttentionIndex` itself lives in `@tm/ui` (`attentionIndex.ts`) — `TaskDetail` takes one
+ * as a prop, so the type has to be visible on that side of the package boundary too. This
+ * hook is the only thing that BUILDS one, and it stays here: it talks to `window.api`
+ * directly, which is exactly the thing `@tm/ui` components no longer do.
  */
 import { useEffect, useMemo, useState } from 'react';
 import type { AttentionItem } from '@shared/attention';
+import type { AttentionIndex } from '@ui/attentionIndex';
 
-export interface AttentionIndex {
-  /** Items per task id, newest last. Only tasks with at least one item appear. */
-  byTask: ReadonlyMap<string, AttentionItem[]>;
-  /** Every task id the inbox is holding something for — the ring's authoritative signal. */
-  taskIds: ReadonlySet<string>;
-  /** Total open items, for the nav rail's badge. */
-  count: number;
-  /**
-   * The items parked on any of `ids`, in the order the ids were given, so a card's own
-   * ask outranks a step's. The replacement for `usePendingAttention`'s single item.
-   */
-  itemsFor: (ids: readonly (string | null | undefined)[]) => AttentionItem[];
-}
+export type { AttentionIndex };
 
 export function useAttentionIndex(): AttentionIndex {
   const [items, setItems] = useState<readonly AttentionItem[]>([]);

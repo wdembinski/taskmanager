@@ -69,8 +69,8 @@ import type {
 import { describeUpdate, type UpdateState } from '@shared/update';
 import { isCloudHost } from '@shared/jiraUrl';
 import { ARCHIVE_RETENTION_DAYS, JIRA_BOARD_LIMIT } from '@shared/board';
-import { COLUMN_META, statusForColumn } from './board/boardColumns';
-import { STATUS_LABEL } from './taskStatus';
+import { COLUMN_META, statusForColumn } from '@ui/board/boardColumns';
+import { STATUS_LABEL } from '@ui/taskStatus';
 import { MAPPABLE_COLUMNS, rowsToStatusMap, statusMapToRows, type StatusMapRow } from './statusMap';
 import {
   execTargetLabel,
@@ -85,7 +85,7 @@ import { PaneLoading } from './PaneLoading';
 import { PlanningModelField } from './PlanningModelField';
 import { ReadinessPanel } from './ReadinessPanel';
 import { StatusMapViewer } from './StatusMapViewer';
-import { BASE_FONT_PX, FONT_SIZE_OPTIONS } from './theme';
+import { BASE_FONT_PX, FONT_SIZE_OPTIONS } from '@ui/theme';
 import { validateBranchName } from '@shared/branchName';
 import { useInitialLoad } from './useInitialLoad';
 

@@ -33,6 +33,7 @@
     "@fluentui/react-components": "^9.54.0",
     "@tm/protocol": "workspace:*",
     "@tm/shared": "workspace:*",
+    "@tm/ui": "workspace:*",
     "@fluentui/react-icons": "^2.0.270",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.9.0",

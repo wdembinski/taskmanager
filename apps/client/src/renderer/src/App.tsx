@@ -46,7 +46,7 @@ import { Attention } from './Attention';
 import { AuthBanner } from './AuthBanner';
 import { LimitBanner } from './LimitBanner';
 import { MyTasks } from './MyTasks';
-import { currentSprintName } from './board/currentSprint';
+import { currentSprintName } from '@ui/board/currentSprint';
 import { SyncRing } from './SyncRing';
 import type { SyncState } from '@shared/sync';
 import { Performance } from './Performance';
@@ -54,7 +54,7 @@ import { Settings } from './Settings';
 import { SessionRunner } from './SessionRunner';
 import { TitleBar } from './TitleBar';
 import { UsageQuotaStatus, useUsageQuotas } from './UsageQuotaBars';
-import { ACCENT, TOASTER_ID, fontPx } from './theme';
+import { ACCENT, TOASTER_ID, fontPx } from '@ui/theme';
 import type { AttentionItem } from '@shared/attention';
 
 const useStyles = makeStyles({

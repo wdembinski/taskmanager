@@ -54,7 +54,7 @@ import { describeGitPreflight } from '@shared/gitPreflight';
 import { useGitPreflight } from './useGitPreflight';
 import { BaseBranchField } from './BaseBranchField';
 import { ColorSwatches } from './ColorSwatches';
-import { modelCaption } from './modelChoice';
+import { modelCaption } from '@ui/modelChoice';
 import { PaneLoading } from './PaneLoading';
 import { PlanningModelField } from './PlanningModelField';
 import { useInitialLoad } from './useInitialLoad';

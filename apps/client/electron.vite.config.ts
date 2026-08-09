@@ -50,6 +50,11 @@ export default defineConfig({
       alias: {
         '@renderer': resolve('src/renderer/src'),
         '@shared': resolve('../../packages/shared/src'),
+        // @ui points at packages/ui's SOURCE, not its tsup dist/ — same deal as @shared/
+        // @protocol above: electron-vite bundles it directly, and the package build
+        // exists for apps/web, which cannot resolve a bare path alias into a sibling
+        // package's sources.
+        '@ui': resolve('../../packages/ui/src'),
       },
     },
     plugins: [react()],

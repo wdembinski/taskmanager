@@ -14,9 +14,10 @@ import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import { FluentProvider, Toaster, webDarkTheme, type Theme } from '@fluentui/react-components';
 import { App } from './App';
-import { isFileDrag } from './AttachmentStrip';
+import { isFileDrag } from '@ui/AttachmentStrip';
 import { RootErrorBoundary } from './RootErrorBoundary';
-import { BASE_FONT_PX, TOASTER_ID, scaleTheme, useGlobalStyles } from './theme';
+import { BASE_FONT_PX, TOASTER_ID, scaleTheme, useGlobalStyles } from '@ui/theme';
+import { TransportProvider } from '@ui/transport';
 import './index.css';
 
 /**
@@ -109,7 +110,13 @@ function ThemedApp(): JSX.Element {
       {/* A render crash used to blank the window with no explanation. Inside the provider
           so the fallback still gets the theme's tokens. */}
       <RootErrorBoundary>
-        <App />
+        {/* @tm/ui's board/chat/TaskDetail reach the engine through this rather than
+            `window.api` directly, so the same components also work in apps/web behind
+            an HTTP client. `window.api` already has the invoke/on/pathForFile shape
+            `Transport` wants — see packages/ui/src/transport.tsx. */}
+        <TransportProvider transport={window.api}>
+          <App />
+        </TransportProvider>
       </RootErrorBoundary>
       {/* One surface for the whole app, so any screen can dispatch into it. Absent
           entirely when toasts are off — everything they say is also on screen. */}

@@ -20,6 +20,7 @@ export default defineConfig({
     alias: {
       '@shared': resolve('../../packages/shared/src'),
       '@protocol': resolve('../../packages/protocol/src'),
+      '@ui': resolve('../../packages/ui/src'),
       '@renderer': resolve('src/renderer/src'),
     },
   },

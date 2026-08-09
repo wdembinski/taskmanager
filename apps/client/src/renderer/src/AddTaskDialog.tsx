@@ -55,7 +55,7 @@ import type { Project, Task, TaskType } from '@shared/model';
 import type { JiraIssueTypeOption, JiraProjectOption } from '@shared/ipc';
 import { attachmentName, insertAttachmentRef } from '@shared/attachments';
 import { LINK_GATE_LABEL, LINK_REFUSAL_MESSAGE } from '@shared/taskChain';
-import { isFileDrag } from './AttachmentStrip';
+import { isFileDrag } from '@ui/AttachmentStrip';
 
 /** The task types offered in the picker, with their display labels. */
 const TASK_TYPES: Array<{ value: TaskType; label: string }> = [

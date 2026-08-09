@@ -63,19 +63,19 @@ import {
 } from './ArchivedCardsDialog';
 import { GitGraphPane } from './GitGraphPane';
 import { PaneLoading } from './PaneLoading';
-import { TaskDetail } from './TaskDetail';
+import { TaskDetail } from '@ui/TaskDetail';
 import { useInitialLoad } from './useInitialLoad';
-import { KanbanColumn } from './board/KanbanColumn';
-import { ChainOverlay } from './board/ChainOverlay';
-import { ChainLinkPopover } from './board/ChainLinkPopover';
-import { arrowRoute } from './board/chainArrows';
+import { KanbanColumn } from '@ui/board/KanbanColumn';
+import { ChainOverlay } from '@ui/board/ChainOverlay';
+import { ChainLinkPopover } from '@ui/board/ChainLinkPopover';
+import { arrowRoute } from '@ui/board/chainArrows';
 import {
   isChainLinkDrag,
   linkDropStates,
   taskIdUnder,
   type LinkDragState,
-} from './board/chainDrag';
-import { useCardAnchors } from './board/useCardAnchors';
+} from '@ui/board/chainDrag';
+import { useCardAnchors } from '@ui/board/useCardAnchors';
 import { useAttentionIndex } from './useAttentionIndex';
 import { useActiveRuns } from './useActiveRuns';
 import { useIntegratingTasks } from './useIntegratingTasks';
@@ -90,8 +90,8 @@ import {
   sortCards,
   statusForColumn,
   visibleColumns,
-} from './board/boardColumns';
-import type { BoardCard, BoardColumn } from './board/boardColumns';
+} from '@ui/board/boardColumns';
+import type { BoardCard, BoardColumn } from '@ui/board/boardColumns';
 
 const useStyles = makeStyles({
   // No gap: the detail pane's own surface runs to the board's edge, and the change of

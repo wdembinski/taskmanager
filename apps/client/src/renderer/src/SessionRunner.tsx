@@ -31,7 +31,7 @@ import { ChevronDownRegular, ChevronRightRegular, DeleteRegular } from '@fluentu
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode, SessionEvent, SessionStatus } from '@shared/session';
 import { Transcript } from './Transcript';
-import { MONO } from './theme';
+import { MONO } from '@ui/theme';
 
 const useStyles = makeStyles({
   root: { display: 'flex', flexDirection: 'column', gap: '12px', minHeight: 0, flex: 1 },

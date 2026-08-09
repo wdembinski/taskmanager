@@ -9,5 +9,10 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": ["node"]
   },
-  "include": ["src/renderer/src", "../../packages/shared/src", "src/preload/index.d.ts"]
+  "include": [
+    "src/renderer/src",
+    "../../packages/shared/src",
+    "../../packages/ui/src",
+    "src/preload/index.d.ts"
+  ]
 }

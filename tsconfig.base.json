@@ -18,6 +18,7 @@
     "paths": {
       "@shared/*": ["packages/shared/src/*"],
       "@protocol/*": ["packages/protocol/src/*"],
+      "@ui/*": ["packages/ui/src/*"],
       "@renderer/*": ["apps/client/src/renderer/src/*"]
     }
   }

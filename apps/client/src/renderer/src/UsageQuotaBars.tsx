@@ -26,7 +26,7 @@ import { useEffect, useState } from 'react';
 import { makeStyles, ProgressBar, Tooltip, tokens } from '@fluentui/react-components';
 import type { UsageQuota, UsageQuotas } from '@shared/usage';
 import { formatCountdown } from './LimitBanner';
-import { ACCENT } from './theme';
+import { ACCENT } from '@ui/theme';
 import { formatPct, formatTokens } from './usageFormat';
 
 /** How often the pair re-reads its two sums when nothing is being spent. */

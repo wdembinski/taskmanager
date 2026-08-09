@@ -13,7 +13,7 @@
 import type { BoardColumn } from '@shared/model';
 import type { JiraStatusOption } from '@shared/ipc';
 import { resolveStatusColumn, type StatusReason } from '@shared/statusResolve';
-import { visibleColumns } from './board/boardColumns';
+import { visibleColumns } from '@ui/board/boardColumns';
 
 export interface StatusMapViewRow {
   name: string;

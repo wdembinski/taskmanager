@@ -25,8 +25,8 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import type { AttentionAnswer, AttentionItem } from '@shared/attention';
-import { AgentQuestionForm } from './AgentQuestionForm';
-import { Markdown } from './chat/MarkdownView';
+import { AgentQuestionForm } from '@ui/AgentQuestionForm';
+import { Markdown } from '@ui/chat/MarkdownView';
 import { PaneLoading } from './PaneLoading';
 import { useInitialLoad } from './useInitialLoad';
 
