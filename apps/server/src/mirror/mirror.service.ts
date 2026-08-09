@@ -9,7 +9,6 @@ import { TaskMirror } from '../entities/taskMirror.entity';
 import { PresenceService } from '../presence/presence.service';
 import { applyMirrorDelta } from './applyMirrorDelta';
 import { toCommandEnvelope } from './commandMapping';
-import { DEV_ACCOUNT_ID } from './devAccount';
 import {
   cursorToRowVersion,
   maxRowVersion,
@@ -45,15 +44,15 @@ export class MirrorService {
    * costs no extra round trip, and the resulting cadence rides back on this
    * same response.
    */
-  async sync(request: SyncRequest): Promise<SyncResponse> {
+  async sync(accountId: string, request: SyncRequest): Promise<SyncResponse> {
     const commands = await this.dataSource.transaction(async (manager) => {
-      await manager.upsert(Client, { id: request.clientId, accountId: DEV_ACCOUNT_ID }, ['id']);
+      await manager.upsert(Client, { id: request.clientId, accountId }, ['id']);
 
-      await applyMirrorDelta(manager, DEV_ACCOUNT_ID, request.deltas);
+      await applyMirrorDelta(manager, accountId, request.deltas);
 
       const queued = await manager.find(Command, {
         where: {
-          accountId: DEV_ACCOUNT_ID,
+          accountId,
           targetClientId: request.clientId,
           deliveredAt: IsNull(),
         },
@@ -69,24 +68,24 @@ export class MirrorService {
       return queued;
     });
 
-    const cadence = this.presence.beat(DEV_ACCOUNT_ID, request.clientId, {
+    const cadence = this.presence.beat(accountId, request.clientId, {
       kind: 'client',
       focused: request.focused,
       at: Date.now(),
     });
 
     return {
-      cursor: rowVersionToCursor(await this.currentRowVersion()),
+      cursor: rowVersionToCursor(await this.currentRowVersion(accountId)),
       cadence,
       commands: commands.map(toCommandEnvelope),
     };
   }
 
   /** Enqueues one command for delivery on the target Client's next sync. */
-  async enqueueCommand(request: CommandRequest): Promise<void> {
+  async enqueueCommand(accountId: string, request: CommandRequest): Promise<void> {
     await this.dataSource.manager.insert(Command, {
       id: request.command.id,
-      accountId: DEV_ACCOUNT_ID,
+      accountId,
       targetClientId: request.targetClientId,
       issuedAt: String(request.command.issuedAt),
       issuedBy: request.command.issuedBy,
@@ -108,6 +107,7 @@ export class MirrorService {
    * key a beat on, so this just resolves the account's current cadence instead.
    */
   async board(
+    accountId: string,
     since: string | undefined,
     clientId: string | undefined,
     focused: boolean,
@@ -116,15 +116,15 @@ export class MirrorService {
     const now = Date.now();
 
     const [taskRows, projectRows] = await Promise.all([
-      this.rowsSince(this.taskMirrors, sinceBuffer),
-      this.rowsSince(this.projectMirrors, sinceBuffer),
+      this.rowsSince(this.taskMirrors, accountId, sinceBuffer),
+      this.rowsSince(this.projectMirrors, accountId, sinceBuffer),
     ]);
 
     const newest = maxRowVersion(lastRowVersion(taskRows), lastRowVersion(projectRows));
 
     const cadence = clientId
-      ? this.presence.beat(DEV_ACCOUNT_ID, clientId, { kind: 'web', focused, at: now })
-      : this.presence.cadence(DEV_ACCOUNT_ID, now);
+      ? this.presence.beat(accountId, clientId, { kind: 'web', focused, at: now })
+      : this.presence.cadence(accountId, now);
 
     return {
       cursor: rowVersionToCursor(newest ?? sinceBuffer ?? ZERO_ROWVERSION),
@@ -140,27 +140,28 @@ export class MirrorService {
 
   private rowsSince<T extends { rowVersion: Buffer }>(
     repository: Repository<T>,
+    accountId: string,
     since: Buffer | null,
   ): Promise<T[]> {
     const qb = repository
       .createQueryBuilder('mirror')
-      .where('mirror.accountId = :accountId', { accountId: DEV_ACCOUNT_ID })
+      .where('mirror.accountId = :accountId', { accountId })
       .orderBy('mirror.rowVersion', 'ASC');
     if (since) qb.andWhere('mirror.rowVersion > :since', { since });
     return qb.getMany();
   }
 
-  private async currentRowVersion(): Promise<Buffer> {
+  private async currentRowVersion(accountId: string): Promise<Buffer> {
     const [latestTask, latestProject] = await Promise.all([
       this.taskMirrors
         .createQueryBuilder('mirror')
-        .where('mirror.accountId = :accountId', { accountId: DEV_ACCOUNT_ID })
+        .where('mirror.accountId = :accountId', { accountId })
         .orderBy('mirror.rowVersion', 'DESC')
         .limit(1)
         .getOne(),
       this.projectMirrors
         .createQueryBuilder('mirror')
-        .where('mirror.accountId = :accountId', { accountId: DEV_ACCOUNT_ID })
+        .where('mirror.accountId = :accountId', { accountId })
         .orderBy('mirror.rowVersion', 'DESC')
         .limit(1)
         .getOne(),

@@ -1,7 +1,7 @@
 import { Body, Controller, Post, UseGuards } from '@nestjs/common';
 import type { PresenceRequest, PresenceResponse } from '@tm/protocol/wire';
-import { DEV_ACCOUNT_ID } from '../mirror/devAccount';
-import { DevNoAuthGuard } from '../mirror/devNoAuth.guard';
+import { AccountId } from '../iam/accountId.decorator';
+import { IamAuthGuard } from '../iam/iamAuth.guard';
 import { PresenceService } from './presence.service';
 
 /**
@@ -10,17 +10,16 @@ import { PresenceService } from './presence.service';
  * `GET /v1/board` already record a beat on every call; this route exists only for the one
  * signal neither of those carries: "I'm gone," fired outside the normal poll loop.
  *
- * Guarded by {@link DevNoAuthGuard} until "Guard the cloud API with vipper.iam" lands, same
- * as the mirror routes.
+ * Guarded by {@link IamAuthGuard}, same as the mirror routes.
  */
 @Controller('v1/presence')
-@UseGuards(DevNoAuthGuard)
+@UseGuards(IamAuthGuard)
 export class PresenceController {
   constructor(private readonly presence: PresenceService) {}
 
   @Post()
-  beat(@Body() body: PresenceRequest): PresenceResponse {
-    const cadence = this.presence.beat(DEV_ACCOUNT_ID, body.clientId, {
+  beat(@AccountId() accountId: string, @Body() body: PresenceRequest): PresenceResponse {
+    const cadence = this.presence.beat(accountId, body.clientId, {
       kind: 'web',
       focused: body.focused,
       at: Date.now(),

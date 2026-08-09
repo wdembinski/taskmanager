@@ -10,9 +10,8 @@ import { TaskMirror } from '../entities/taskMirror.entity';
  * contract's own docstring: "the mirror is disposable state"), so they're a
  * plain `DELETE ... WHERE id IN (...)`, not a tombstone write.
  *
- * Every statement is scoped to `accountId` — today there is only
- * {@link DEV_ACCOUNT_ID}, but scoping now means a later account never has to
- * be retrofitted onto these queries.
+ * Every statement is scoped to `accountId`, the authenticated caller's real account id
+ * (see `../iam/iamAuth.guard.ts`) outside `CLOUD_DEV_NO_AUTH=1`.
  */
 export async function applyMirrorDelta(
   manager: EntityManager,

@@ -3,11 +3,10 @@ import { Column, CreateDateColumn, Entity, PrimaryColumn } from 'typeorm';
 /**
  * A tenant boundary every mirror row, Client and Command is scoped to.
  *
- * v1 has exactly one row — {@link DEV_ACCOUNT_ID} in ../mirror/devAccount.ts,
- * seeded by the initial migration — because there is no auth yet to derive a
- * real account from (see ../config/devAuthGate.ts). The table exists now so
- * "Guard the cloud API with vipper.iam" only has to change how accountId is
- * resolved, not add the column to every mirror table after the fact.
+ * Outside `CLOUD_DEV_NO_AUTH=1` (whose one row is {@link DEV_ACCOUNT_ID} in
+ * ../mirror/devAccount.ts, seeded by the initial migration), a row is created lazily by
+ * `../iam/ensureAccount.ts` the first time `IamAuthGuard` sees a given IAM subject — there is
+ * no separate account-provisioning flow to run first.
  */
 @Entity('accounts')
 export class Account {

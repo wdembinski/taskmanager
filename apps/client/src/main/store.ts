@@ -625,6 +625,10 @@ export interface Store {
   loadJiraToken(): string | null;
   /** Remove the stored JIRA token. */
   clearJiraToken(): void;
+  /** The vipper.iam refresh token ciphertext, alongside the JIRA/GitLab pair. */
+  saveIamRefreshToken(value: string): void;
+  loadIamRefreshToken(): string | null;
+  clearIamRefreshToken(): void;
   /**
    * Cache the result of JIRA "Epic Link" field discovery so `/field` is queried once
    * per site rather than on every sync (see `jira/epicField.ts`).
@@ -1723,6 +1727,9 @@ export function createStore(dbPath: string): Store {
   /** The GitLab PAT ciphertext, and the cached `GET /user` for the configured instance. */
   const GITLAB_TOKEN_KEY = 'gitlab.pat';
   const GITLAB_IDENTITY_KEY = 'gitlab.identity';
+
+  /** The vipper.iam refresh token ciphertext — see `../iamSignIn.ts` and `ipc.ts`'s `iam:*` handlers. */
+  const IAM_REFRESH_TOKEN_KEY = 'iam.refreshToken';
 
   /** An attention_items row: `options`/`steps`/`questions`/`context` are JSON text. */
   interface AttentionRow {
@@ -3681,6 +3688,19 @@ export function createStore(dbPath: string): Store {
 
     clearJiraToken() {
       deleteState.run(JIRA_TOKEN_KEY);
+    },
+
+    saveIamRefreshToken(value) {
+      upsertState.run(IAM_REFRESH_TOKEN_KEY, value);
+    },
+
+    loadIamRefreshToken() {
+      const row = selectState.get(IAM_REFRESH_TOKEN_KEY) as { value: string } | undefined;
+      return row?.value ?? null;
+    },
+
+    clearIamRefreshToken() {
+      deleteState.run(IAM_REFRESH_TOKEN_KEY);
     },
 
     saveJiraEpicField(cache) {

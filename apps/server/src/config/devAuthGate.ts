@@ -1,16 +1,14 @@
 /**
- * The mirror API (POST /v1/sync, POST /v1/commands, GET /v1/board) ships with no
- * real auth yet — that lands in the "Guard the cloud API with vipper.iam" phase,
- * this ticket's one externally-blocked dependency (it needs a registry
- * configured before `@vipper/iam-connector` can resolve). Until then, the
- * routes work only when `CLOUD_DEV_NO_AUTH=1` is set (see {@link DevNoAuthGuard}
- * in ../mirror/devNoAuth.guard.ts) — an explicit opt-in rather than an
- * implicit "no guard configured yet" gap.
+ * The mirror API (POST /v1/sync, POST /v1/commands, GET /v1/board, POST /v1/presence) is
+ * guarded by `IamAuthGuard` (../iam/iamAuth.guard.ts) — real auth, not a placeholder.
+ * `@vipper/iam-connector` itself never resolved (`npm.vipper.network` 401s without a registry
+ * token this repo has no way to obtain — see the root `.npmrc`), so the guard talks to IAM
+ * over `../iam/iam.client.ts`'s small `fetch`-based fallback instead.
  *
- * That opt-in must never reach a production deploy: this is the one check that
- * keeps it off the critical path (docs/plan/README.md Phase 25's "risks and open
- * assumptions") without also keeping the rest of the phase's work blocked on
- * auth landing first.
+ * `CLOUD_DEV_NO_AUTH=1` still exists as a local-dev convenience — `IamAuthGuard` short-circuits
+ * to `DEV_ACCOUNT_ID` when it's set, same as before — but it is no longer a *separate* guard
+ * standing in for the whole API; it's one branch inside the real one. This function is what
+ * keeps that convenience from ever reaching a production deploy.
  */
 export function assertDevAuthGateSafe(env: NodeJS.ProcessEnv): void {
   if (env.NODE_ENV === 'production' && env.CLOUD_DEV_NO_AUTH === '1') {
@@ -21,7 +19,7 @@ export function assertDevAuthGateSafe(env: NodeJS.ProcessEnv): void {
   }
 }
 
-/** Whether the mirror API's dev-only auth bypass is active. See {@link assertDevAuthGateSafe}. */
+/** Whether the mirror API's dev-only auth bypass is active. See {@link assertDevAuthGateSafe} and IamAuthGuard. */
 export function devNoAuthEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.CLOUD_DEV_NO_AUTH === '1';
 }

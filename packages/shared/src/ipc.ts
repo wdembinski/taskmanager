@@ -182,6 +182,20 @@ export interface JiraTestResult {
   message: string;
 }
 
+/** Snapshot of the vipper.iam cloud sign-in state (for the Settings UI). */
+export interface IamConfigStatus {
+  /** Whether a refresh token has been stored (never the token itself). */
+  signedIn: boolean;
+  /** Whether the OS secure store is available to encrypt the token. */
+  encryptionAvailable: boolean;
+}
+
+/** Result of one `iam:signIn` attempt. */
+export interface IamSignInResult {
+  ok: boolean;
+  message: string;
+}
+
 /** Basic facts about the running app, shown in the UI footer / About. */
 export interface AppInfo {
   version: string;
@@ -666,6 +680,19 @@ export interface IpcApi {
    * `Map<taskId, MergeRequest[]>`, exactly as it does for `board:tasks`.
    */
   'gitlab:mergeRequests': () => Promise<MergeRequest[]>;
+
+  // --- vipper.iam cloud sign-in (Phase 25) -----------------------------------
+  /** Whether a refresh token is stored and the OS secure store can encrypt one. */
+  'iam:getConfigStatus': () => Promise<IamConfigStatus>;
+  /**
+   * Runs one authorization-code + PKCE sign-in: opens the system browser, waits for the
+   * loopback redirect, then stores the resulting refresh token encrypted (same path as the
+   * JIRA/GitLab PATs). `ok:false` on cancel, timeout, or an unavailable secure store —
+   * never persists a token in plaintext.
+   */
+  'iam:signIn': () => Promise<IamSignInResult>;
+  /** Remove the stored refresh token. */
+  'iam:signOut': () => Promise<void>;
 
   // --- Sync freshness (the status bar's countdown rings) --------------------
   /**

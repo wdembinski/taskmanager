@@ -75,6 +75,8 @@ import {
   TARGET_LABEL,
   type JiraTransitionTarget,
 } from './jira/jiraMove';
+import { iamSignInConfig } from './iamConfig';
+import { signIn as runIamSignIn } from './iamSignIn';
 import { GitLabClient } from './gitlab/gitlabClient';
 import { gitlabIdentityFrom, type GitLabIdentityCache } from './gitlab/identity';
 import { describeMergeRequest } from './gitlab/describeMergeRequest';
@@ -1365,6 +1367,39 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       return { ok: false, message: e instanceof Error ? e.message : String(e) };
     }
   });
+
+  // -------------------------------------------------------------------------
+  // vipper.iam cloud sign-in (Phase 25's "Guard the cloud API with vipper.iam"). The refresh
+  // token is the one credential of the three (JIRA/GitLab/IAM) this app itself is a party to
+  // minting, but it still goes through the exact same encrypt-and-store path as the other two.
+  handle('iam:getConfigStatus', async () => ({
+    signedIn: store.loadIamRefreshToken() !== null,
+    encryptionAvailable: safeStorage.isEncryptionAvailable(),
+  }));
+
+  handle('iam:signIn', async () => {
+    if (!safeStorage.isEncryptionAvailable()) {
+      return {
+        ok: false,
+        message: 'OS secure storage is unavailable, so the sign-in was not saved.',
+      };
+    }
+    try {
+      const tokens = await runIamSignIn(iamSignInConfig(), (url) => shell.openExternal(url));
+      if (!tokens.refresh_token) {
+        return { ok: false, message: 'vipper.iam did not return a refresh token.' };
+      }
+      store.saveIamRefreshToken(
+        safeStorage.encryptString(sanitizeToken(tokens.refresh_token)).toString('base64'),
+      );
+      return { ok: true, message: 'Signed in.' };
+    } catch (e) {
+      logMain('IAM sign-in failed', e);
+      return { ok: false, message: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  handle('iam:signOut', async () => store.clearIamRefreshToken());
 
   /** The account behind the GitLab token, cached per instance. Fails soft to null. */
   const gitlabIdentity = async (
