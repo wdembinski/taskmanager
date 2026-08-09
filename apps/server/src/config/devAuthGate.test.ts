@@ -1,0 +1,32 @@
+import { describe, expect, it } from 'vitest';
+import { assertDevAuthGateSafe, devNoAuthEnabled } from './devAuthGate';
+
+describe('assertDevAuthGateSafe', () => {
+  it('throws when the dev bypass is set alongside NODE_ENV=production', () => {
+    expect(() => assertDevAuthGateSafe({ NODE_ENV: 'production', CLOUD_DEV_NO_AUTH: '1' })).toThrow(
+      /CLOUD_DEV_NO_AUTH/,
+    );
+  });
+
+  it('allows the dev bypass outside production', () => {
+    expect(() =>
+      assertDevAuthGateSafe({ NODE_ENV: 'development', CLOUD_DEV_NO_AUTH: '1' }),
+    ).not.toThrow();
+  });
+
+  it('allows production when the dev bypass is not set', () => {
+    expect(() => assertDevAuthGateSafe({ NODE_ENV: 'production' })).not.toThrow();
+  });
+
+  it('allows an env with neither variable set', () => {
+    expect(() => assertDevAuthGateSafe({})).not.toThrow();
+  });
+});
+
+describe('devNoAuthEnabled', () => {
+  it('is true only for the exact string "1"', () => {
+    expect(devNoAuthEnabled({ CLOUD_DEV_NO_AUTH: '1' })).toBe(true);
+    expect(devNoAuthEnabled({ CLOUD_DEV_NO_AUTH: 'true' })).toBe(false);
+    expect(devNoAuthEnabled({})).toBe(false);
+  });
+});
