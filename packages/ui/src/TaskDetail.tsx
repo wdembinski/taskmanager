@@ -547,9 +547,7 @@ export function TaskDetail({
     setBusy(true);
     setError(null);
     try {
-      onStatusChanged?.(
-        await transport.invoke('task:setStatusNote', task.id, comment.text.trim()),
-      );
+      onStatusChanged?.(await transport.invoke('task:setStatusNote', task.id, comment.text.trim()));
       composer.reset();
       await loadActivity();
     } catch (e) {
@@ -799,9 +797,7 @@ export function TaskDetail({
               mergeRequests={mergeRequests}
               onMarkRead={(id) => void transport.invoke('gitlab:markRead', id)}
               onMarkEventsSeen={(id) => void transport.invoke('gitlab:markEventsSeen', id)}
-              onRename={(id, name) =>
-                void transport.invoke('gitlab:setMergeRequestName', id, name)
-              }
+              onRename={(id, name) => void transport.invoke('gitlab:setMergeRequestName', id, name)}
             />
           </>
         )}

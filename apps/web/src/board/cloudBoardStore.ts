@@ -50,7 +50,10 @@ export const EMPTY_BOARD_STATE: CloudBoardState = {
  *  reached a Client) rather than left "queued" on the card forever. */
 export const PENDING_STATUS_TIMEOUT_MS = 2 * 60_000;
 
-export function applyBoardResponse(state: CloudBoardState, response: BoardResponse): CloudBoardState {
+export function applyBoardResponse(
+  state: CloudBoardState,
+  response: BoardResponse,
+): CloudBoardState {
   const tasks = { ...state.tasks };
   for (const task of response.deltas.tasks) tasks[task.id] = task;
   for (const id of response.deltas.deletedTaskIds) delete tasks[id];
@@ -110,7 +113,10 @@ export function queuePendingStatusChange(
 /** Rolls back one pending change by its command id — used when `POST /v1/commands` itself
  *  fails (not signed in, no desktop Client, a network error): the edit never reached the
  *  wire, so there is nothing left to reconcile it against. */
-export function clearPendingStatusChange(state: CloudBoardState, commandId: string): CloudBoardState {
+export function clearPendingStatusChange(
+  state: CloudBoardState,
+  commandId: string,
+): CloudBoardState {
   if (!(commandId in state.pendingStatusChanges)) return state;
   const pendingStatusChanges = { ...state.pendingStatusChanges };
   delete pendingStatusChanges[commandId];

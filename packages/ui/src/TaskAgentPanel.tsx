@@ -347,9 +347,7 @@ export function TaskAgentPanel({
       .invoke('settings:get')
       .then((s) => alive && setAppAutoIntegrate(s.autoIntegrate))
       .catch(() => undefined);
-    const off = transport.on('settings:changed', (next) =>
-      setAppAutoIntegrate(next.autoIntegrate),
-    );
+    const off = transport.on('settings:changed', (next) => setAppAutoIntegrate(next.autoIntegrate));
     return () => {
       alive = false;
       off();

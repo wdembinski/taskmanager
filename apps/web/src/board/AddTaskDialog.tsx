@@ -31,7 +31,12 @@ export interface AddTaskDialogProps {
   disabledReason?: string;
 }
 
-export function AddTaskDialog({ projects, onCreate, disabled, disabledReason }: AddTaskDialogProps): JSX.Element {
+export function AddTaskDialog({
+  projects,
+  onCreate,
+  disabled,
+  disabledReason,
+}: AddTaskDialogProps): JSX.Element {
   const [open, setOpen] = useState(false);
   const [projectId, setProjectId] = useState<string>(projects[0]?.id ?? '');
   const [title, setTitle] = useState('');
@@ -69,7 +74,11 @@ export function AddTaskDialog({ projects, onCreate, disabled, disabledReason }: 
       }}
     >
       <DialogTrigger disableButtonEnhancement>
-        <Button icon={<AddRegular />} disabled={disabled} title={disabled ? disabledReason : undefined}>
+        <Button
+          icon={<AddRegular />}
+          disabled={disabled}
+          title={disabled ? disabledReason : undefined}
+        >
           New card
         </Button>
       </DialogTrigger>

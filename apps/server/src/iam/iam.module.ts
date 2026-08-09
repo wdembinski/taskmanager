@@ -16,7 +16,8 @@ import { IamAuthGuard } from './iamAuth.guard';
   providers: [
     {
       provide: IAM_CLIENT,
-      useFactory: (): IamClient => (devNoAuthEnabled() ? unreachableIamClient() : createIamClient(loadIamConfig())),
+      useFactory: (): IamClient =>
+        devNoAuthEnabled() ? unreachableIamClient() : createIamClient(loadIamConfig()),
     },
     IamAuthGuard,
   ],
@@ -27,7 +28,9 @@ export class IamModule {}
 /** Stands in for the real client while `CLOUD_DEV_NO_AUTH=1` — `IamAuthGuard` never calls it. */
 function unreachableIamClient(): IamClient {
   const fail = (): never => {
-    throw new Error('IAM client called while CLOUD_DEV_NO_AUTH=1 is set — this should be unreachable.');
+    throw new Error(
+      'IAM client called while CLOUD_DEV_NO_AUTH=1 is set — this should be unreachable.',
+    );
   };
   return { introspectToken: fail, authorize: fail };
 }

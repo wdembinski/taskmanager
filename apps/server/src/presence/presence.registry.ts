@@ -51,7 +51,12 @@ export class PresenceRegistry {
         sessions.delete(sessionId);
         continue;
       }
-      live.push({ clientId: sessionId, source: beat.kind, focused: beat.focused, lastSeen: beat.at });
+      live.push({
+        clientId: sessionId,
+        source: beat.kind,
+        focused: beat.focused,
+        lastSeen: beat.at,
+      });
     }
 
     if (sessions.size === 0) this.accounts.delete(accountId);

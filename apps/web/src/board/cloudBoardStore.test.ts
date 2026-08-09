@@ -37,7 +37,9 @@ describe('applyBoardResponse', () => {
   it('upserts tasks and projects by id', () => {
     const state = applyBoardResponse(
       EMPTY_BOARD_STATE,
-      boardResponse({ deltas: { tasks: [task()], projects: [], deletedTaskIds: [], deletedProjectIds: [] } }),
+      boardResponse({
+        deltas: { tasks: [task()], projects: [], deletedTaskIds: [], deletedProjectIds: [] },
+      }),
     );
     expect(state.tasks['t1']?.title).toBe('A task');
     expect(state.cursor).toBe('c1');
@@ -46,11 +48,15 @@ describe('applyBoardResponse', () => {
   it('drops deleted ids', () => {
     const seeded = applyBoardResponse(
       EMPTY_BOARD_STATE,
-      boardResponse({ deltas: { tasks: [task()], projects: [], deletedTaskIds: [], deletedProjectIds: [] } }),
+      boardResponse({
+        deltas: { tasks: [task()], projects: [], deletedTaskIds: [], deletedProjectIds: [] },
+      }),
     );
     const state = applyBoardResponse(
       seeded,
-      boardResponse({ deltas: { tasks: [], projects: [], deletedTaskIds: ['t1'], deletedProjectIds: [] } }),
+      boardResponse({
+        deltas: { tasks: [], projects: [], deletedTaskIds: ['t1'], deletedProjectIds: [] },
+      }),
     );
     expect(state.tasks['t1']).toBeUndefined();
   });
@@ -66,7 +72,14 @@ describe('applyBoardResponse', () => {
   it('drops a pending status change once the polled task matches what it asked for', () => {
     const seeded = applyBoardResponse(
       EMPTY_BOARD_STATE,
-      boardResponse({ deltas: { tasks: [task({ status: 'pending' })], projects: [], deletedTaskIds: [], deletedProjectIds: [] } }),
+      boardResponse({
+        deltas: {
+          tasks: [task({ status: 'pending' })],
+          projects: [],
+          deletedTaskIds: [],
+          deletedProjectIds: [],
+        },
+      }),
     );
     const withPending = queuePendingStatusChange(seeded, {
       commandId: 'cmd-1',
@@ -79,14 +92,28 @@ describe('applyBoardResponse', () => {
     // Poll comes back before the desktop Client has applied it — status unchanged, still pending.
     const stillPending = applyBoardResponse(
       withPending,
-      boardResponse({ deltas: { tasks: [task({ status: 'pending' })], projects: [], deletedTaskIds: [], deletedProjectIds: [] } }),
+      boardResponse({
+        deltas: {
+          tasks: [task({ status: 'pending' })],
+          projects: [],
+          deletedTaskIds: [],
+          deletedProjectIds: [],
+        },
+      }),
     );
     expect(isTaskPending(stillPending, 't1')).toBe(true);
 
     // Poll comes back after the desktop Client applied it — reconciled, no longer pending.
     const reconciled = applyBoardResponse(
       stillPending,
-      boardResponse({ deltas: { tasks: [task({ status: 'in-progress' })], projects: [], deletedTaskIds: [], deletedProjectIds: [] } }),
+      boardResponse({
+        deltas: {
+          tasks: [task({ status: 'in-progress' })],
+          projects: [],
+          deletedTaskIds: [],
+          deletedProjectIds: [],
+        },
+      }),
     );
     expect(isTaskPending(reconciled, 't1')).toBe(false);
   });
@@ -100,7 +127,14 @@ describe('applyBoardResponse', () => {
     });
     const state = applyBoardResponse(
       withPending,
-      boardResponse({ deltas: { tasks: [task({ id: 't2', status: 'done' })], projects: [], deletedTaskIds: [], deletedProjectIds: [] } }),
+      boardResponse({
+        deltas: {
+          tasks: [task({ id: 't2', status: 'done' })],
+          projects: [],
+          deletedTaskIds: [],
+          deletedProjectIds: [],
+        },
+      }),
     );
     expect(isTaskPending(state, 't1')).toBe(true);
   });

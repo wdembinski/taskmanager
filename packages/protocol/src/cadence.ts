@@ -86,9 +86,7 @@ export function nextPollDelayMs(input: {
   const base = Math.min(serverIntervalMs, localTierMs);
 
   const withBackoff =
-    consecutiveFailures > 0
-      ? Math.min(base * 2 ** consecutiveFailures, BACKOFF_CAP_MS)
-      : base;
+    consecutiveFailures > 0 ? Math.min(base * 2 ** consecutiveFailures, BACKOFF_CAP_MS) : base;
 
   if (base < CADENCE_MS.idle) return withBackoff;
 

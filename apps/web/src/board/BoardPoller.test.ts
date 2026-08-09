@@ -31,7 +31,9 @@ function response(overrides: Partial<BoardResponse> = {}): BoardResponse {
   };
 }
 
-function makePoller(overrides: Partial<BoardPollerDeps> & { focus?: ReturnType<typeof fakeFocus> } = {}): {
+function makePoller(
+  overrides: Partial<BoardPollerDeps> & { focus?: ReturnType<typeof fakeFocus> } = {},
+): {
   poller: BoardPoller;
   fetchImpl: ReturnType<typeof vi.fn>;
   focus: ReturnType<typeof fakeFocus>;
@@ -114,7 +116,9 @@ describe('BoardPoller', () => {
     });
     const slow = vi
       .fn()
-      .mockReturnValue(deferred.then(() => ({ ok: true, status: 200, json: async () => response() })));
+      .mockReturnValue(
+        deferred.then(() => ({ ok: true, status: 200, json: async () => response() })),
+      );
     const { poller } = makePoller({ fetchImpl: slow as unknown as typeof fetch });
     const first = poller.tick();
     const second = poller.tick();
@@ -125,7 +129,10 @@ describe('BoardPoller', () => {
 
   it('backs off with consecutive failures', async () => {
     const failing = vi.fn().mockResolvedValue({ ok: false, status: 500, statusText: 'err' });
-    const { poller } = makePoller({ fetchImpl: failing as unknown as typeof fetch, jitterRatio: 0 });
+    const { poller } = makePoller({
+      fetchImpl: failing as unknown as typeof fetch,
+      jitterRatio: 0,
+    });
 
     poller.reschedule();
     await vi.runOnlyPendingTimersAsync();

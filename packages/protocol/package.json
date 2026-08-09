@@ -1,6 +1,6 @@
 {
   "name": "@tm/protocol",
-  "version": "0.75.0",
+  "version": "0.75.1",
   "description": "The wire contract between apps/server, apps/web and apps/client's polling loop — /v1/sync, /v1/presence, /v1/board and /v1/commands request/response shapes, and the presence-driven adaptive cadence policy (CADENCE_MS, resolveCadence, nextPollDelayMs) every side implements identically.",
   "license": "UNLICENSED",
   "private": true,

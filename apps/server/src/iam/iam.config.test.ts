@@ -23,8 +23,8 @@ describe('loadIamConfig', () => {
   });
 
   it('throws when only one var is missing', () => {
-    expect(() =>
-      loadIamConfig({ CLOUD_IAM_API_BASE: 'x', CLOUD_IAM_CLIENT_ID: 'y' }),
-    ).toThrow(/CLOUD_IAM_CLIENT_SECRET/);
+    expect(() => loadIamConfig({ CLOUD_IAM_API_BASE: 'x', CLOUD_IAM_CLIENT_ID: 'y' })).toThrow(
+      /CLOUD_IAM_CLIENT_SECRET/,
+    );
   });
 });

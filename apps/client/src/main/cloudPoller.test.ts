@@ -193,13 +193,11 @@ describe('CloudPoller', () => {
       payload: { taskId: 't1', status: 'in-review' as const },
     };
     const onCommands = vi.fn();
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValue({
-        ok: true,
-        status: 200,
-        json: async () => response({ commands: [command] }),
-      });
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => response({ commands: [command] }),
+    });
     const { poller } = makePoller({ onCommands, fetchImpl: fetchImpl as unknown as typeof fetch });
     await poller.tick();
     expect(onCommands).toHaveBeenCalledWith([command]);

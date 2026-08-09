@@ -13,7 +13,10 @@ const LAST_KNOWN_CLIENT_KEY = 'tm.cloud.lastKnownDesktopClientId';
  * there is nowhere at all to send a command, and `BoardScreen` disables editing rather than
  * queue one with no addressee.
  */
-export function resolveTargetClientId(storage: Storage, clients: readonly ClientPresence[]): string | null {
+export function resolveTargetClientId(
+  storage: Storage,
+  clients: readonly ClientPresence[],
+): string | null {
   const mostRecent = clients[0]?.id;
   if (mostRecent) {
     storage.setItem(LAST_KNOWN_CLIENT_KEY, mostRecent);

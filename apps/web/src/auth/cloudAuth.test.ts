@@ -37,17 +37,31 @@ const config = {
 };
 
 function tokenResponse(overrides: Record<string, unknown> = {}): unknown {
-  return { access_token: 'at-1', refresh_token: 'rt-1', expires_in: 3600, token_type: 'Bearer', ...overrides };
+  return {
+    access_token: 'at-1',
+    refresh_token: 'rt-1',
+    expires_in: 3600,
+    token_type: 'Bearer',
+    ...overrides,
+  };
 }
 
 describe('CloudAuth', () => {
   it('is not signed in with no refresh token on file', () => {
-    const auth = new CloudAuth({ config, localStorage: fakeStorage(), sessionStorage: fakeStorage() });
+    const auth = new CloudAuth({
+      config,
+      localStorage: fakeStorage(),
+      sessionStorage: fakeStorage(),
+    });
     expect(auth.isSignedIn()).toBe(false);
   });
 
   it('has no access token when signed out', async () => {
-    const auth = new CloudAuth({ config, localStorage: fakeStorage(), sessionStorage: fakeStorage() });
+    const auth = new CloudAuth({
+      config,
+      localStorage: fakeStorage(),
+      sessionStorage: fakeStorage(),
+    });
     expect(await auth.getAccessToken()).toBeNull();
   });
 
@@ -83,15 +97,26 @@ describe('CloudAuth', () => {
   });
 
   it('ignores a URL that is not the callback path', async () => {
-    const auth = new CloudAuth({ config, localStorage: fakeStorage(), sessionStorage: fakeStorage() });
+    const auth = new CloudAuth({
+      config,
+      localStorage: fakeStorage(),
+      sessionStorage: fakeStorage(),
+    });
     expect(await auth.completeSignIn(new URL('https://app.example.com/'))).toBe(false);
   });
 
   it('mints a fresh access token from a stored refresh token', async () => {
     const local = fakeStorage();
     local.setItem('tm.cloud.refreshToken', 'rt-stored');
-    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, json: async () => tokenResponse({ access_token: 'at-2' }) });
-    const auth = new CloudAuth({ config, localStorage: local, sessionStorage: fakeStorage(), fetchImpl });
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue({ ok: true, json: async () => tokenResponse({ access_token: 'at-2' }) });
+    const auth = new CloudAuth({
+      config,
+      localStorage: local,
+      sessionStorage: fakeStorage(),
+      fetchImpl,
+    });
 
     expect(await auth.getAccessToken()).toBe('at-2');
     const body = new URLSearchParams(fetchImpl.mock.calls[0]![1].body as string);
@@ -102,8 +127,15 @@ describe('CloudAuth', () => {
   it('returns null rather than throwing when the refresh request fails', async () => {
     const local = fakeStorage();
     local.setItem('tm.cloud.refreshToken', 'rt-stored');
-    const fetchImpl = vi.fn().mockResolvedValue({ ok: false, status: 400, text: async () => 'invalid_grant' });
-    const auth = new CloudAuth({ config, localStorage: local, sessionStorage: fakeStorage(), fetchImpl });
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue({ ok: false, status: 400, text: async () => 'invalid_grant' });
+    const auth = new CloudAuth({
+      config,
+      localStorage: local,
+      sessionStorage: fakeStorage(),
+      fetchImpl,
+    });
 
     await expect(auth.getAccessToken()).resolves.toBeNull();
   });

@@ -2645,18 +2645,14 @@ export function createStore(dbPath: string): Store {
 
   // The cloud mirror's applied-command ledger (Phase 25's "Apply queued cloud commands on
   // the client") — see the schema comment above `cloud_applied_commands`.
-  const selectCloudCommandApplied = db.prepare(
-    `SELECT 1 FROM cloud_applied_commands WHERE id = ?`,
-  );
+  const selectCloudCommandApplied = db.prepare(`SELECT 1 FROM cloud_applied_commands WHERE id = ?`);
   const insertCloudCommandApplied = db.prepare(
     `INSERT OR IGNORE INTO cloud_applied_commands (id, appliedAt, ackedAt) VALUES (?, ?, NULL)`,
   );
   const selectPendingCloudAcks = db.prepare(
     `SELECT id FROM cloud_applied_commands WHERE ackedAt IS NULL`,
   );
-  const markCloudAckSent = db.prepare(
-    `UPDATE cloud_applied_commands SET ackedAt = ? WHERE id = ?`,
-  );
+  const markCloudAckSent = db.prepare(`UPDATE cloud_applied_commands SET ackedAt = ? WHERE id = ?`);
 
   return {
     addProject(input) {

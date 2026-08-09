@@ -44,7 +44,10 @@ export class MirrorController {
 
   @Post('commands')
   @HttpCode(HttpStatus.ACCEPTED)
-  async commands(@AccountId() accountId: string, @Body() body: CommandRequest): Promise<{ ok: true }> {
+  async commands(
+    @AccountId() accountId: string,
+    @Body() body: CommandRequest,
+  ): Promise<{ ok: true }> {
     await this.mirror.enqueueCommand(accountId, body);
     return { ok: true };
   }

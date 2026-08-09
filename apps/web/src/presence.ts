@@ -33,7 +33,10 @@ import type { FocusSignal } from './board/BoardPoller';
  * Stricter than `board/browserFocusSignal.ts`'s `createBrowserFocusSignal` — see this file's
  * own header for why presence needs `document.hasFocus()` on top of tab visibility.
  */
-export function createPresenceFocusSignal(doc: Document = document, win: Window = window): FocusSignal {
+export function createPresenceFocusSignal(
+  doc: Document = document,
+  win: Window = window,
+): FocusSignal {
   const listeners = new Set<(focused: boolean) => void>();
   let focused = doc.visibilityState === 'visible' && doc.hasFocus();
 

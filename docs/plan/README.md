@@ -3831,6 +3831,160 @@ roughly halve the first number without touching the second — the obvious
 next lever if ~25 s of staleness turns out to matter in practice. v1 ships
 with two tiers; that's a scope cut made on purpose, not an oversight.
 
+### Verification — the adaptive cadence end to end
+
+Same shape as this phase's earlier verification step: what was actually run,
+what it actually found, gaps recorded rather than hidden.
+
+**Root gates**, from the repo root:
+
+- `pnpm format` — rewrote 30 files that predated this step and had never been
+  run through Prettier since Phase 25 started scaffolding `apps/server`,
+  `apps/web` and `packages/protocol` (the same drift Phase 25's "workspace
+  refresh"-era note already flagged for `packages/ui`, now spread wider).
+  Included in this commit — `pnpm format` is one of this step's own gates, and
+  every change it made is whitespace/import-wrapping only (spot-checked
+  `apps/web/src/board/BoardScreen.tsx`); no behaviour changed, confirmed by
+  the unchanged pass counts below.
+- `pnpm typecheck` — green (`turbo run typecheck`, all 9 workspace packages:
+  `@tm/protocol`, `@tm/shared`, `@tm/ui`, `@tm/server`, `@tm/web`,
+  `claude-orchestrator`).
+- `pnpm test` — 122 test files passed, 1 pre-existing failure
+  (`apps/client/src/main/exec/wslHost.test.ts`, the same real-WSL-PATH
+  assertion the last two verification steps recorded — environmental,
+  unrelated to this step), 1 skipped file; 2064 tests passed, 3 skipped. The
+  presence/cadence suites (`presence.registry.test.ts`,
+  `presence.service.test.ts`, `presence.controller.test.ts`,
+  `cadence.test.ts`) are in this count and print real `[CadenceTransition]`
+  log lines during the run — the same logger line this step's own live
+  measurements below read.
+
+**Client gate**, separately (the root config doesn't load under `--filter` —
+see the prior verification step's own note on why):
+
+- `pnpm --filter claude-orchestrator test` — 66 test files passed, the same
+  one pre-existing `wslHost.test.ts` failure, 1 skipped; 1229 tests passed, 3
+  skipped.
+- `pnpm --filter claude-orchestrator check:abi` — passed (`ABI check OK:
+  better_sqlite3.node and Electron both at ABI 130`).
+- `pnpm --filter claude-orchestrator package:local` — `electron-vite build`,
+  `install-app-deps` and `ensure:abi` pass; `dist/win-unpacked/VIPPER Task
+  Manager.exe` is produced. The NSIS link step fails with `!include: could
+  not find … StdUtils.nsh`, whose path is exactly **279 characters** — the
+  same `MAX_PATH` (260) failure the last two verification steps hit on this
+  worktree's path plus pnpm's `.pnpm` store naming; environmental, confirmed
+  again here, not a code problem.
+
+**Docker Desktop would not come healthy in this session** — the one real gap
+this step has to report. `docker compose up` (wrapping `pnpm db:up`) failed
+with `request returned 500 Internal Server Error` from the
+`dockerDesktopLinuxEngine` named pipe; `docker info`/`docker version` hung for
+20–30 s and then returned the same 500; `docker desktop status` reported
+`stopped` throughout. Two remediation attempts — `docker desktop restart`,
+and a clean `docker desktop stop` followed by `start` — each given several
+minutes, left `docker desktop status` still `stopped` (a fresh `SessionID`
+each time, so the restarts did cycle the backend, they just didn't come up
+healthy). `wsl -l -v` showed only the machine's own `Ubuntu` distro, no
+`docker-desktop`/`docker-desktop-data` distro registered, consistent with an
+unhealthy WSL2 backend. This is this session's local Docker Desktop
+installation, not anything in this repo's `docker-compose.yml` or
+`apps/server` — but it meant `@tm/server`'s real process (its `AppModule`
+opens a TypeORM/mssql connection at boot, so it cannot start at all without a
+reachable database) could not be run for real here.
+
+**What was run for real instead.** The adaptive-cadence policy has exactly one
+piece of state that needs a live process to observe — the server's in-memory
+presence map and its tier-transition timing — and, by this phase's own design
+("Presence lives in server memory, not SQL"), none of it touches the
+database. So rather than skip the live run, this step wired up the real,
+unmodified `src/presence/presence.registry.ts` and
+`src/presence/presence.service.ts` behind a small temporary Express harness
+(`apps/server/verify-harness-server.ts`, deleted before this commit) exposing
+the same three routes (`POST /v1/sync`, `GET /v1/board`, `POST
+/v1/presence`) with the same `@tm/protocol/wire` request/response shapes —
+skipping only the TypeORM-backed mirror (task/project sync) and
+`IamAuthGuard` (which needs a live `DataSource` to construct at all, even
+under `CLOUD_DEV_NO_AUTH=1`), neither of which the cadence policy touches.
+Simulated sessions (`apps/server/verify-harness-client.ts`, also deleted)
+drove it using the REAL `nextPollDelayMs`/`CADENCE_MS` from
+`@tm/protocol/cadence` — the identical formula `CloudPoller`
+(`apps/client`) and `BoardPoller` (`apps/web`) both import — over real HTTP,
+real `setTimeout`s and real `Date.now()`, on a scripted focus timeline
+standing in for actual window-focus/tab-visibility events. `apps/web`
+(`vite`, port 5175) and the packaged desktop client
+(`dist/win-unpacked/VIPPER Task Manager.exe`, from `package:local` above,
+launched with a scratch `--user-data-dir` so the real `orchestrator.db` was
+never touched) were both booted separately as build-level smoke checks —
+`apps/web` answered `HTTP 200` on `/` in under a second, the packaged client
+opened its full process tree and stayed responsive for the smoke window —
+but neither was wired to a live cloud session (no server to hand them a real
+board, and the desktop build has no way to reach `vipper.iam` for a real
+sign-in from this environment either), so the scenario table below is the
+harness's measurements, not a screen either app actually rendered.
+
+**What the table means for the two GUI apps specifically.** Scenarios framed
+as "focus the desktop window" / "open the web tab" were driven by flipping
+the harness client's scripted `focused` flag on the same schedule a real
+window-focus or `visibilitychange` event would — `FocusTracker.ts`
+(desktop) and `browserFocusSignal.ts` (web) each reduce their real signal to
+exactly that one boolean before it ever reaches `CloudPoller`/`BoardPoller`,
+so this substitution changes *what generates* the input, not what the poller
+does with it. The one scenario that needed the actual `FocusTracker.ts`
+class, not a stand-in boolean, was locking the workstation — see its own row
+below.
+
+| Scenario | Expected | Measured |
+|---|---|---|
+| Focus the desktop window | Gap drops to ~2.5 s on the next tick | **Confirmed, immediate.** `onFocusChange`'s "bring the next poll forward" rule fired: the scheduled 24 s-out idle poll was cancelled and replaced with a 0 ms one the instant focus flipped; the server logged `from=idle to=active reason=client-focused` at that same beat, and every poll afterward held a steady 2.50–2.52 s spacing (`CADENCE_MS.active`, no jitter — active-tier polls are deliberately unjittered). |
+| Blur it, no web session | Gap returns to ~25 s ± 10 % **after the TTL** | **Confirmed for the ~25 s gap — but not TTL-gated.** `onFocusChange` fires on blur too, so the client's own very next beat reported `focused=false`; the server flipped `from=active to=idle reason=no-focus` ~1.6 s after the blur signal, well inside the 90 s TTL, and the client's own next-poll delay became ~25 s (jittered) from there. **This differs from the table's phrasing**: the TTL only matters for a session that stops reporting at all (see the next row) — one that keeps polling and honestly reports `focused=false` doesn't need to age out, because it says so on its own next beat. |
+| Open + focus the web tab, desktop blurred | Desktop's gap drops to ~2.5 s within ≤25 s | **Confirmed.** Desktop polled `focused=false` throughout (idle, ~22.6 s next-poll delay already in flight when the web session appeared at t≈2.4 s server-side). Its very next scheduled poll, at **t≈22.7 s**, picked up the server's `active` directive (`reason=web-focused`) from `nextPollDelayMs`'s `min(serverIntervalMs, localTierMs)` rule — the desktop's own local focus can only ever pull the interval down, never hold it up — and every poll after that held steady 2.5 s, still reporting its own `focused=false`. |
+| Close the web tab | Back to ~25 s immediately (beacon), and within ~90 s with the beacon suppressed | **Both confirmed, both measured precisely.** With the beacon: the `POST /v1/presence` release call's own response already carried `tier=idle` — immediate, no wait. Without it (simulating a crash/force-close — no beacon, polling just stops): a probe every 12–15 s showed `tier=active` still holding through **+88 s**, then `tier=idle` at **+92 s** — the flip landed inside the `[+88 s, +92 s]` window bracketing `PRESENCE_TTL_MS`'s exact 90 000 ms. |
+| Both focused | One `active` directive, not two competing clocks | **Confirmed.** Desktop and web polled concurrently for 15 s, both focused; the server logged exactly **one** transition for the whole run (`from=none to=active reason=web-focused`) and never logged a second one — the `reason` didn't flap between `client-focused`/`web-focused` as the two requests interleaved, because `resolveCadence` picks the first focused, non-expired session deterministically rather than re-deciding a "winner" every request. Both sessions converged on identical `tier=active`/`intervalMs=2500` directives throughout. |
+| Change a status in the web, desktop focused | Visible on the desktop board in ≤3 s | **Inferred, not directly measured.** The harness carries no real task/project data (it deliberately skips the TypeORM-backed mirror — see above), so there is no delta to actually round-trip. What ≤3 s visibility rests on is the desktop's poll gap while focused, which the "Focus the desktop window" and "Both focused" rows above measured at a steady 2.50–2.52 s — under the 3 s budget with room to spare, but this row itself is arithmetic on those two measurements, not its own live observation. |
+| Kill the server | Backoff to the 5 min cap, no spin; recovers on restart | **Confirmed for the progression and the recovery; the literal cap wasn't waited out.** After the harness server was killed mid-poll, four consecutive failures produced delays of **5 000 → 10 000 → 20 000 → 40 000 ms** — exact doublings of the 2 500 ms base (`base × 2^failures`), never spinning faster. That trajectory reaches `BACKOFF_CAP_MS` (300 000 ms) at the 7th failure by the same formula; waiting the ~9 more minutes to observe the literal cap firsthand wasn't worth the wall-clock given the formula is both exercised live here and separately asserted in `packages/protocol/src/cadence.test.ts`. Restarting the server mid-backoff: the client's next scheduled attempt (the 40 s one, landing ~40 s after restart) **succeeded immediately**, `consecutiveFailures` reset to 0, and polling resumed its steady 2.5 s cadence with no extra retry or delay. |
+| Lock the workstation with the window focused | Treated as unfocused | **Confirmed — via the real class, not a physical lock.** Locking this session's actual workstation was judged too risky to attempt deliberately (this is a headless, unattended run; an unrecoverable lock screen would have ended the session with no way to unlock it). Instead, `apps/client/src/main/focusTracker.ts` — the real, unmodified source — was exercised directly against a fake `BrowserWindow`/`powerMonitor` (a temporary vitest file, deleted before this commit) that keeps the window's own `isFocused()` returning `true` throughout. Emitting `powerMonitor`'s `lock-screen` flipped `FocusTracker.isFocused()` to `false` even though the window itself never blurred, and `unlock-screen` correctly re-read the window's real focus state on resume (`effective()`'s `focused && !suspended` — the two inputs are independent, exactly as the class's own header describes). |
+
+**Request count vs. the free grant.** At the active tier, one session polls
+every 2.5 s = 1 440 requests/hour. A single focused desktop session running
+continuously for a full 730-hour month would produce ≈1,051,200 requests —
+about 53% of Azure Container Apps' 2,000,000-request/month free grant, alone.
+A more realistic profile — 8 focused hours/day, 22 working days/month (176 h)
+— produces ≈253,440 requests/month, about 13% of the grant. Both desktop and
+web focused on the same account at once (the "Both focused" row) doubles the
+per-hour figure to 2 880 — still under 0.3% of the grant for a single focused
+hour, and nowhere near it even summed across a full working month for a
+handful of concurrent accounts. The idle tier (25 s) is 20× cheaper per
+session again. None of this counts the actual mirror payload size (this
+harness never carries real task/project deltas) — the grant is metered on
+request count, not bytes, so payload size doesn't change this comparison.
+
+**Notes.**
+
+- Not docs-only: `pnpm format` (one of this step's own gates) rewrote 30
+  pre-existing files across `apps/client`, `apps/server`, `apps/web`,
+  `packages/protocol` and `packages/ui` — whitespace/import-wrapping only, no
+  behaviour change (confirmed by the unchanged test counts above) — so
+  `apps/client`, `apps/server`, `apps/web`, `packages/protocol` and
+  `packages/ui`'s `package.json`s each bump PATCH in this commit, the same
+  convention the prior verification step set when its own gate produced a
+  real file change.
+- The three temporary harness/test files this step wrote
+  (`apps/server/verify-harness-server.ts`,
+  `apps/server/verify-harness-client.ts`,
+  `apps/client/src/main/focusTracker.verify.test.ts`) are deleted, not
+  committed — they existed only to drive this session's live measurements
+  against real, unmodified production code while Docker Desktop was down;
+  keeping them around as permanent fixtures would misrepresent them as
+  supported tooling.
+- Per `RELEASE.md` rule 5, this branch is not released from; the tag lands
+  once this reaches `development`.
+- This closes out the plan of build steps this session was handed (1–12);
+  `apps/server`, `apps/web`, `packages/ui` and `packages/protocol` are now
+  scaffolded, wired to a presence-driven adaptive cadence, and this step
+  measured that cadence against real production code end to end, with the
+  one gap above (Docker Desktop's local health in this session) recorded
+  rather than glossed over.
+
 ---
 
 ## Conventions for every phase

@@ -47,7 +47,10 @@ function fakeStore(seed: { tasks?: Task[]; projects?: Project[] } = {}): Store &
       tasks.set(id, next);
       return next;
     },
-    createTask: (projectId: string, input: { title: string; phase?: string; description?: string | null }) => {
+    createTask: (
+      projectId: string,
+      input: { title: string; phase?: string; description?: string | null },
+    ) => {
       const title = input.title.trim();
       if (!title) return undefined;
       const created = task({
@@ -71,7 +74,7 @@ function fakeStore(seed: { tasks?: Task[]; projects?: Project[] } = {}): Store &
     markCloudCommandApplied: (id: string) => {
       applied.add(id);
     },
-    runInTransaction: <T,>(fn: () => T) => fn(),
+    runInTransaction: <T>(fn: () => T) => fn(),
   } as unknown as Store & { comments: Array<{ taskId: string; body: string }> };
 }
 

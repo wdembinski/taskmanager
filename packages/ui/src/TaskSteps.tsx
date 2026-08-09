@@ -27,7 +27,11 @@ import {
 } from '@fluentui/react-components';
 import type { Task } from '@tm/shared/model';
 import { isAgentRunning } from '@tm/shared/board';
-import { attachmentsInScope, insertAttachmentRef, type TaskAttachment } from '@tm/shared/attachments';
+import {
+  attachmentsInScope,
+  insertAttachmentRef,
+  type TaskAttachment,
+} from '@tm/shared/attachments';
 import { AttachmentStrip } from './AttachmentStrip';
 import { subtaskProgress } from './board/boardColumns';
 import { draftKey, useDraft } from './drafts';

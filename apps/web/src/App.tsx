@@ -23,7 +23,14 @@ export function App(): JSX.Element {
   const { signedIn, error, signIn, signOut } = useCloudAuth(auth);
 
   return (
-    <AuthedApp auth={auth} config={config} signedIn={signedIn} error={error} signIn={signIn} signOut={signOut} />
+    <AuthedApp
+      auth={auth}
+      config={config}
+      signedIn={signedIn}
+      error={error}
+      signIn={signIn}
+      signOut={signOut}
+    />
   );
 }
 

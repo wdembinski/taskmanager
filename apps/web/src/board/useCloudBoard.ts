@@ -62,7 +62,8 @@ export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi
         apiBase: config.cloudApiBase,
         clientId,
         getAccessToken: () => auth.getAccessToken(),
-        getTargetClientId: () => resolveTargetClientId(window.localStorage, stateRef.current.clients),
+        getTargetClientId: () =>
+          resolveTargetClientId(window.localStorage, stateRef.current.clients),
       }),
     [auth, config.cloudApiBase, clientId],
   );
@@ -93,14 +94,19 @@ export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi
   }, [auth, config.cloudApiBase, clientId]);
 
   useEffect(() => {
-    const id = setInterval(() => setState((s) => expirePendingStatusChanges(s, Date.now())), EXPIRY_SWEEP_MS);
+    const id = setInterval(
+      () => setState((s) => expirePendingStatusChanges(s, Date.now())),
+      EXPIRY_SWEEP_MS,
+    );
     return () => clearInterval(id);
   }, []);
 
   const setStatus = useCallback(
     async (taskId: string, status: ManualStatus) => {
       const commandId = crypto.randomUUID();
-      setState((s) => queuePendingStatusChange(s, { commandId, taskId, status, issuedAt: Date.now() }));
+      setState((s) =>
+        queuePendingStatusChange(s, { commandId, taskId, status, issuedAt: Date.now() }),
+      );
       try {
         await transport.invoke('task:setStatus', taskId, status);
       } catch (e) {

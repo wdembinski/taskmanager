@@ -1,6 +1,6 @@
 {
   "name": "@tm/server",
-  "version": "0.76.0",
+  "version": "0.76.1",
   "description": "The cloud counterpart's backend — NestJS + TypeORM + mssql, matching vipper.iam's stack. POST /v1/sync and GET /v1/board mirror Task/Project rows by SQL Server rowversion; POST /v1/commands relays actions between Clients.",
   "license": "UNLICENSED",
   "private": true,

@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createPresenceFocusSignal, PresenceHeartbeat, type PresenceHeartbeatDeps } from './presence';
+import {
+  createPresenceFocusSignal,
+  PresenceHeartbeat,
+  type PresenceHeartbeatDeps,
+} from './presence';
 
 /** A minimal `Document`/`Window` pair a test can flip by hand — this repo runs vitest with no
  *  jsdom (see `board/clientId.test.ts`'s own fake-`Storage` pattern), so `document`/`window`
@@ -163,7 +167,9 @@ function fakeWin(): { win: Window; firePageHide(): void } {
   };
 }
 
-function makeHeartbeat(overrides: Partial<PresenceHeartbeatDeps> & { focus?: ReturnType<typeof fakeFocus> } = {}): {
+function makeHeartbeat(
+  overrides: Partial<PresenceHeartbeatDeps> & { focus?: ReturnType<typeof fakeFocus> } = {},
+): {
   heartbeat: PresenceHeartbeat;
   fetchImpl: ReturnType<typeof vi.fn>;
   sendBeacon: ReturnType<typeof vi.fn>;
@@ -171,8 +177,10 @@ function makeHeartbeat(overrides: Partial<PresenceHeartbeatDeps> & { focus?: Ret
   firePageHide(): void;
 } {
   const focus = overrides.focus ?? fakeFocus(false);
-  const fetchImpl = (overrides.fetchImpl as ReturnType<typeof vi.fn>) ?? vi.fn().mockResolvedValue({ ok: true });
-  const sendBeacon = (overrides.sendBeacon as ReturnType<typeof vi.fn>) ?? vi.fn().mockReturnValue(true);
+  const fetchImpl =
+    (overrides.fetchImpl as ReturnType<typeof vi.fn>) ?? vi.fn().mockResolvedValue({ ok: true });
+  const sendBeacon =
+    (overrides.sendBeacon as ReturnType<typeof vi.fn>) ?? vi.fn().mockReturnValue(true);
   const { win, firePageHide } = fakeWin();
 
   const deps: PresenceHeartbeatDeps = {
@@ -214,7 +222,10 @@ describe('PresenceHeartbeat', () => {
   });
 
   it('skips the beat when signed out, without calling fetch', async () => {
-    const { fetchImpl } = makeHeartbeat({ focus: fakeFocus(true), getAccessToken: async () => null });
+    const { fetchImpl } = makeHeartbeat({
+      focus: fakeFocus(true),
+      getAccessToken: async () => null,
+    });
     await Promise.resolve();
     await Promise.resolve();
     expect(fetchImpl).not.toHaveBeenCalled();

@@ -46,7 +46,10 @@ export interface HttpTransportDeps {
 export class HttpTransport implements Transport {
   constructor(private readonly deps: HttpTransportDeps) {}
 
-  invoke<K extends keyof IpcApi>(channel: K, ...args: Parameters<IpcApi[K]>): ReturnType<IpcApi[K]> {
+  invoke<K extends keyof IpcApi>(
+    channel: K,
+    ...args: Parameters<IpcApi[K]>
+  ): ReturnType<IpcApi[K]> {
     if (!SUPPORTED_CHANNELS.has(channel)) {
       return Promise.reject(
         new Error(
@@ -63,7 +66,10 @@ export class HttpTransport implements Transport {
     return this.createTask(projectId, input) as ReturnType<IpcApi[K]>;
   }
 
-  on<K extends keyof IpcEvents>(_channel: K, _callback: (payload: IpcEvents[K]) => void): () => void {
+  on<K extends keyof IpcEvents>(
+    _channel: K,
+    _callback: (payload: IpcEvents[K]) => void,
+  ): () => void {
     // No push channel in v1 (docs/plan/README.md's "No realtime service" section) — every
     // update reaches this app through the next board poll, never a pushed event.
     return () => {};
@@ -93,13 +99,21 @@ export class HttpTransport implements Transport {
       phase: input.phase,
       description: input.description,
     });
-    return { id: `pending:${this.mintId()}`, projectId, phase: input.phase ?? '', title: input.title, status: 'pending' } as Task;
+    return {
+      id: `pending:${this.mintId()}`,
+      projectId,
+      phase: input.phase ?? '',
+      title: input.title,
+      status: 'pending',
+    } as Task;
   }
 
   private async sendCommand(kind: CommandKind, payload: unknown): Promise<void> {
     const targetClientId = this.deps.getTargetClientId();
     if (!targetClientId) {
-      throw new Error('No desktop Client has ever synced this account — sign in from the desktop app first.');
+      throw new Error(
+        'No desktop Client has ever synced this account — sign in from the desktop app first.',
+      );
     }
     const token = await this.deps.getAccessToken();
     if (!token) throw new Error('Not signed in to vipper.iam.');

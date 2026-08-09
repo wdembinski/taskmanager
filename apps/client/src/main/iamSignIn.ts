@@ -90,11 +90,15 @@ function startCallbackListener(expectedState: string): Promise<CallbackListener>
       const code = url.searchParams.get('code');
       const error = url.searchParams.get('error');
       if (error || !code) {
-        res.writeHead(200, { 'content-type': 'text/plain' }).end('Sign-in failed — you can close this tab.');
+        res
+          .writeHead(200, { 'content-type': 'text/plain' })
+          .end('Sign-in failed — you can close this tab.');
         fail?.(new Error(error ?? 'vipper.iam redirected with no authorization code.'));
         return;
       }
-      res.writeHead(200, { 'content-type': 'text/plain' }).end('Signed in — you can close this tab.');
+      res
+        .writeHead(200, { 'content-type': 'text/plain' })
+        .end('Signed in — you can close this tab.');
       settle?.(code);
     });
 

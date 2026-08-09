@@ -1,6 +1,6 @@
 {
   "name": "@tm/ui",
-  "version": "0.77.0",
+  "version": "0.77.1",
   "description": "The board, chat and task-detail UI shared by apps/client and apps/web — Kanban board, chain overlay, chat turns/composer, and the task detail pane, talking to whichever engine is on the other end through a Transport passed in by the host app.",
   "license": "UNLICENSED",
   "private": true,

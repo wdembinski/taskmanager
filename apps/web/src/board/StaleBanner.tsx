@@ -12,7 +12,9 @@ export function StaleBanner({ everSeenClient }: { everSeenClient: boolean }): JS
     <MessageBar intent="warning" layout="singleline">
       <MessageBarBody>
         <MessageBarTitle>
-          {everSeenClient ? 'No desktop app has synced recently.' : 'No desktop app has ever synced this account.'}
+          {everSeenClient
+            ? 'No desktop app has synced recently.'
+            : 'No desktop app has ever synced this account.'}
         </MessageBarTitle>
         {everSeenClient
           ? 'Changes made here are queued and apply the next time it does.'

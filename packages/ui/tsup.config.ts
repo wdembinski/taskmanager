@@ -19,5 +19,11 @@ export default defineConfig({
   dts: true,
   clean: true,
   sourcemap: true,
-  external: ['react', 'react-dom', 'react/jsx-runtime', '@fluentui/react-components', '@fluentui/react-icons'],
+  external: [
+    'react',
+    'react-dom',
+    'react/jsx-runtime',
+    '@fluentui/react-components',
+    '@fluentui/react-icons',
+  ],
 });

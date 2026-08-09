@@ -74,7 +74,8 @@ function applyOne(store: Store, command: CommandEnvelope): CloudCommandOutcome {
   if (!result.ok && result.taskId) {
     const task = store.getTask(result.taskId);
     // Surfaced on the card, not only in the log — see the module docstring.
-    if (task) store.addComment(task.projectId, result.taskId, `Cloud edit rejected: ${result.reason}`);
+    if (task)
+      store.addComment(task.projectId, result.taskId, `Cloud edit rejected: ${result.reason}`);
   }
 
   return { id: command.id, ...result };

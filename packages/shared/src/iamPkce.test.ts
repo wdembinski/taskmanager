@@ -34,9 +34,7 @@ describe('createState', () => {
 
 describe('buildAuthorizeUrl', () => {
   it('points at <issuer>/auth with every required PKCE + OAuth param', () => {
-    const url = new URL(
-      buildAuthorizeUrl(CONFIG, { verifier: 'v', challenge: 'c' }, 'the-state'),
-    );
+    const url = new URL(buildAuthorizeUrl(CONFIG, { verifier: 'v', challenge: 'c' }, 'the-state'));
 
     expect(url.origin + url.pathname).toBe('https://iam.vipper.network/oidc/auth');
     expect(url.searchParams.get('response_type')).toBe('code');

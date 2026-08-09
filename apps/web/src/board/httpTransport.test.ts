@@ -5,7 +5,9 @@ function makeTransport(overrides: Partial<HttpTransportDeps> = {}): {
   transport: HttpTransport;
   fetchImpl: ReturnType<typeof vi.fn>;
 } {
-  const fetchImpl = (overrides.fetchImpl as ReturnType<typeof vi.fn>) ?? vi.fn().mockResolvedValue({ ok: true, status: 202 });
+  const fetchImpl =
+    (overrides.fetchImpl as ReturnType<typeof vi.fn>) ??
+    vi.fn().mockResolvedValue({ ok: true, status: 202 });
   const deps: HttpTransportDeps = {
     apiBase: 'https://api.example.com',
     clientId: 'web-1',
@@ -73,14 +75,18 @@ describe('HttpTransport', () => {
 
   it('refuses to send when signed out', async () => {
     const { transport, fetchImpl } = makeTransport({ getAccessToken: async () => null });
-    await expect(transport.invoke('task:setStatus', 't1', 'done')).rejects.toThrow(/not signed in/i);
+    await expect(transport.invoke('task:setStatus', 't1', 'done')).rejects.toThrow(
+      /not signed in/i,
+    );
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('surfaces a non-ok response as a rejection', async () => {
     const fetchImpl = vi.fn().mockResolvedValue({ ok: false, status: 500, statusText: 'err' });
     const { transport } = makeTransport({ fetchImpl: fetchImpl as unknown as typeof fetch });
-    await expect(transport.invoke('task:setStatus', 't1', 'done')).rejects.toThrow(/command failed/);
+    await expect(transport.invoke('task:setStatus', 't1', 'done')).rejects.toThrow(
+      /command failed/,
+    );
   });
 
   it('on() returns a no-op unsubscribe and never calls back', () => {

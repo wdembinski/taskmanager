@@ -19,10 +19,7 @@ import type { IpcApi, IpcEvents } from '@tm/shared/ipc';
 
 export interface Transport {
   /** Request/response call to whatever is on the other end of this channel name. */
-  invoke<K extends keyof IpcApi>(
-    channel: K,
-    ...args: Parameters<IpcApi[K]>
-  ): ReturnType<IpcApi[K]>;
+  invoke<K extends keyof IpcApi>(channel: K, ...args: Parameters<IpcApi[K]>): ReturnType<IpcApi[K]>;
   /** Subscribe to a pushed event; returns an unsubscribe function. */
   on<K extends keyof IpcEvents>(channel: K, callback: (payload: IpcEvents[K]) => void): () => void;
   /**
