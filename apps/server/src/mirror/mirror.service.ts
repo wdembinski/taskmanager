@@ -6,8 +6,8 @@ import { Client } from '../entities/client.entity';
 import { Command } from '../entities/command.entity';
 import { ProjectMirror } from '../entities/projectMirror.entity';
 import { TaskMirror } from '../entities/taskMirror.entity';
+import { PresenceService } from '../presence/presence.service';
 import { applyMirrorDelta } from './applyMirrorDelta';
-import { IDLE_CADENCE } from './cadence';
 import { toCommandEnvelope } from './commandMapping';
 import { DEV_ACCOUNT_ID } from './devAccount';
 import {
@@ -30,6 +30,7 @@ export class MirrorService {
     @InjectDataSource() private readonly dataSource: DataSource,
     @InjectRepository(TaskMirror) private readonly taskMirrors: Repository<TaskMirror>,
     @InjectRepository(ProjectMirror) private readonly projectMirrors: Repository<ProjectMirror>,
+    private readonly presence: PresenceService,
   ) {}
 
   /**
@@ -39,6 +40,10 @@ export class MirrorService {
    * transaction means a Client's push is never acknowledged (commands marked
    * delivered) without its own changes having actually landed, and vice
    * versa.
+   *
+   * `request.focused` doubles as this Client's presence beat — recording it
+   * costs no extra round trip, and the resulting cadence rides back on this
+   * same response.
    */
   async sync(request: SyncRequest): Promise<SyncResponse> {
     const commands = await this.dataSource.transaction(async (manager) => {
@@ -64,9 +69,15 @@ export class MirrorService {
       return queued;
     });
 
+    const cadence = this.presence.beat(DEV_ACCOUNT_ID, request.clientId, {
+      kind: 'client',
+      focused: request.focused,
+      at: Date.now(),
+    });
+
     return {
       cursor: rowVersionToCursor(await this.currentRowVersion()),
-      cadence: IDLE_CADENCE,
+      cadence,
       commands: commands.map(toCommandEnvelope),
     };
   }
@@ -90,9 +101,19 @@ export class MirrorService {
    * `since`, in rowVersion order. No `deletedTaskIds`/`deletedProjectIds` —
    * the mirror keeps no tombstones (see applyMirrorDelta.ts), so a row this
    * account deleted is simply absent from the result, not listed as removed.
+   *
+   * `focused`/`clientId` come off the `X-TM-Focus`/`X-TM-Client-Id` headers — a GET carries
+   * no body, so this is the read path's own presence beat. `clientId` is optional only
+   * because a caller predating that header shouldn't 500; without it there's no session to
+   * key a beat on, so this just resolves the account's current cadence instead.
    */
-  async board(since: string | undefined): Promise<BoardResponse> {
+  async board(
+    since: string | undefined,
+    clientId: string | undefined,
+    focused: boolean,
+  ): Promise<BoardResponse> {
     const sinceBuffer = since ? cursorToRowVersion(since) : null;
+    const now = Date.now();
 
     const [taskRows, projectRows] = await Promise.all([
       this.rowsSince(this.taskMirrors, sinceBuffer),
@@ -101,9 +122,13 @@ export class MirrorService {
 
     const newest = maxRowVersion(lastRowVersion(taskRows), lastRowVersion(projectRows));
 
+    const cadence = clientId
+      ? this.presence.beat(DEV_ACCOUNT_ID, clientId, { kind: 'web', focused, at: now })
+      : this.presence.cadence(DEV_ACCOUNT_ID, now);
+
     return {
       cursor: rowVersionToCursor(newest ?? sinceBuffer ?? ZERO_ROWVERSION),
-      cadence: IDLE_CADENCE,
+      cadence,
       deltas: {
         tasks: taskRows.map((row) => row.data),
         projects: projectRows.map((row) => row.data),

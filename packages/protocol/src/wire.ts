@@ -39,15 +39,23 @@ export interface SyncResponse {
 
 /** Body of `POST /v1/presence` — a bare focus beat between full syncs. */
 export interface PresenceRequest {
+  clientId: string;
   focused: boolean;
+}
+
+/** Response to `POST /v1/presence` — just the cadence, so a beat doubles as a cadence check. */
+export interface PresenceResponse {
+  cadence: CadenceDirective;
 }
 
 /**
  * `GET /v1/board?since=<rowversion>` — the web app's own read path; it keeps no local
  * mirror to carry a `/v1/sync` cursor for, so it hands back a SQL Server rowversion
- * instead. `X-TM-Focus` doubles as its presence beat: a GET carries no body to put one in.
+ * instead. `X-TM-Focus` and `X-TM-Client-Id` double as its presence beat: a GET carries no
+ * body to put one in.
  */
 export const BOARD_FOCUS_HEADER = 'X-TM-Focus';
+export const BOARD_CLIENT_HEADER = 'X-TM-Client-Id';
 
 export interface BoardResponse {
   cursor: string;

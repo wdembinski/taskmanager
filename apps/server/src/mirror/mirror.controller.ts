@@ -2,13 +2,21 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
   HttpCode,
   HttpStatus,
   Post,
   Query,
   UseGuards,
 } from '@nestjs/common';
-import type { BoardResponse, CommandRequest, SyncRequest, SyncResponse } from '@tm/protocol/wire';
+import {
+  BOARD_CLIENT_HEADER,
+  BOARD_FOCUS_HEADER,
+  type BoardResponse,
+  type CommandRequest,
+  type SyncRequest,
+  type SyncResponse,
+} from '@tm/protocol/wire';
 import { DevNoAuthGuard } from './devNoAuth.guard';
 import { MirrorService } from './mirror.service';
 
@@ -41,7 +49,11 @@ export class MirrorController {
   }
 
   @Get('board')
-  board(@Query('since') since?: string): Promise<BoardResponse> {
-    return this.mirror.board(since);
+  board(
+    @Query('since') since: string | undefined,
+    @Headers(BOARD_CLIENT_HEADER) clientId: string | undefined,
+    @Headers(BOARD_FOCUS_HEADER) focusHeader: string | undefined,
+  ): Promise<BoardResponse> {
+    return this.mirror.board(since, clientId, focusHeader === 'true');
   }
 }
