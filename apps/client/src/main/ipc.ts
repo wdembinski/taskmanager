@@ -6,6 +6,16 @@
  * send whatever it returns back as the reply." The small `handle()` helper below
  * makes each registration type-safe against the shared `IpcApi` interface, so a
  * handler whose return type doesn't match the contract won't compile.
+ *
+ * **There is no test harness for this file, and that is the design.** Standing up a
+ * `BrowserWindow`, a store and a fake `ipcMain` would test the wiring, and the bugs are
+ * never in the wiring. A decision that needs testing gets MOVED OUT instead, into a pure
+ * module with its own `.test.ts` — `resolveMove`, `pickTransition` and `shouldLearnStatus`
+ * in `jira/jiraMove.ts`, `needsBlockOwner` in `blockOwnerMigration.ts`, the status resolver
+ * in `@tm/shared`. `shouldLearnStatus` is the worked example: it lived inline here, where
+ * it could not be tested at all, until the drag-into-Blocked bug turned out to be inside
+ * it. What is meant to be left in a handler is a call, a `send` and a patch; a handler
+ * growing a rule it alone knows is the signal to extract, not to build the harness.
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';

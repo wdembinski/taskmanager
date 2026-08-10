@@ -4137,6 +4137,84 @@ are not visible in the diff, and that the next person editing these files will b
 
 ---
 
+## Fix — moving a card to IN PROGRESS blocked it in JIRA
+
+**Goal.** One reported bug, fixed across the whole path it travelled: dragging a card into
+IN PROGRESS transitioned the linked issue to **Blocked**, and the sync that followed then
+filed the card wherever that status's category pointed. Both halves were the same blind
+spot — the resolver had no way to read a status as blocked, so BLOCKED was a column the
+board could draw, a human could drag into, and nothing coming from JIRA could ever reach.
+A `Block` transition therefore looked to the picker like any other indeterminate step
+towards IN PROGRESS. BLOCKED is now a column like the other four: `isBlockedishStatus`
+reads it, Settings maps onto it, a drop into it transitions the ticket wherever the
+workflow can say so, and `preBlockStatus` records *who* owns the block so the sync knows
+which blocks are its to keep. Steps 1–6 above; step 7 retired the "blocked is
+internal-only" rule everywhere it was still written down (see Phase 15's note).
+
+### What is deliberately not in this fix
+
+Three things a reader of the diff will reach for. Each was considered and left out, and
+the reason is load-bearing in every case — two of them would make the fix *worse*, not
+merely larger.
+
+- **A migration that deletes poisoned `learnedStatusColumns` entries.** Every install that
+  hit the bug is carrying one: a drag that "succeeded" wrote `{"Blocked": "in-progress"}`
+  on the authority of a transition it should never have taken. The learned tier now refuses
+  to speak for a blocked-ish name at all (`resolveStatusColumn`), and `shouldLearnStatus`
+  stops new ones being written, so the entry is inert where it lies.
+
+  Deleting it buys nothing anyone can see. Settings' status table resolves through the very
+  same function, so a poisoned entry is not displayed as a learned mapping there either —
+  the row reads "Name says blocked", which is the truth. The only thing a migration would
+  tidy is the settings JSON. Against that, it would have to **guess**: `isBlockedishStatus`
+  needs the status's category, and the stored map is name→column with no category in it. At
+  migration time there may be no JIRA connection to ask, and guessing wrong deletes a
+  mapping the user's workflow legitimately meant — a `Blocked`-named status a scheme really
+  does file under Done, say. A read-time refusal cannot make that mistake, because it always
+  has the category in hand.
+
+  Contrast [`blockOwnerMigration.ts`](../../apps/client/src/main/blockOwnerMigration.ts),
+  which *was* written and is not the same kind of thing. There, a stored value changed
+  meaning: `preBlockStatus: null` used to mean "we never recorded a column" and now means
+  "the tracker owns this block". Old rows would be read as a claim they never made, and the
+  next sync would silently unblock them. A migration was the only way to say what those
+  rows meant — the fact was not recoverable at read time. Here it is.
+
+- **A "which transition would this drag use?" preview in Settings.** The obvious next column
+  for the status table, and it cannot be built there honestly. Transitions in JIRA are per
+  issue and per workflow: `client.getTransitions(issueKey)` answers for *one ticket in its
+  current status*, so the same board column can resolve to a different transition for two
+  cards on the same screen. There is no board-wide answer, and a table that showed one would
+  be inventing a certainty the API does not offer — the same class of lie this table was
+  built to end. Rendering it truthfully means one network round trip per row, on a screen
+  that currently opens instantly and offline.
+
+  What people actually get surprised by is narrower and already covered: an exact transition
+  name typed into Settings that lands somewhere other than the column they dragged to. That
+  is answered at the moment it happens, by the issue it happened to, with the status it
+  really reached — the `board:notice` warning in `transitionIssue`. A preview would have to
+  be right about every ticket; the notice only has to be right about the one that moved.
+
+- **A test harness for `registerIpcHandlers`.** Standing up a `BrowserWindow`, a store and a
+  fake `ipcMain` to exercise handlers would test the wiring, and the bug was never in the
+  wiring. The response was structural instead: every *decision* this fix touched was moved
+  out of [`ipc.ts`](../../apps/client/src/main/ipc.ts) into a pure module with its own tests
+  — `resolveStatusColumn`/`isBlockedishStatus` (`@tm/shared`), `resolveMove`,
+  `pickTransition` and `shouldLearnStatus` (`jira/jiraMove.ts`), `needsBlockOwner`
+  (`blockOwnerMigration.ts`). `shouldLearnStatus` was literally lifted out of the handler
+  that held it inline, where it could not be tested at all. What is left in `ipc.ts` is a
+  `getTransitions`, a `doTransition`, a `send` and a patch — and
+  [`verify-jira-move.mjs`](../../apps/client/scripts/verify-jira-move.mjs) already drives
+  that end of it over a real socket against a stub JIRA, which is the part a mocked
+  `ipcMain` would have faked.
+
+**Notes.**
+
+- No release step: this is a feature branch, and per `RELEASE.md` rule 5 the tag is cut once
+  it reaches `development`. The version ladder ran 0.78.13 → 0.78.17 across the fixing steps.
+
+---
+
 ## Conventions for every phase
 
 - **Contract first.** New data crossing the UI↔engine boundary gets its types in

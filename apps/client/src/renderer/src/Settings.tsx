@@ -1241,7 +1241,17 @@ export function Settings(): JSX.Element {
 
             {/* What the engine will actually do with the map above — including the
                 statuses nothing in it mentions. Shares the already-fetched status list
-                and the same resolver the sync runs, so it cannot drift from reality. */}
+                and the same resolver the sync runs, so it cannot drift from reality.
+
+                Deliberately NO "and this drag would take transition X" column, however
+                obvious a next step it looks. Transitions are per issue and per workflow
+                (`getTransitions(issueKey)` answers for one ticket in its current status),
+                so there is no board-wide answer to show — one would be inventing a
+                certainty the API does not offer, which is the exact lie this table exists
+                to end, and a truthful one costs a round trip per row on a screen that
+                opens offline. The case that actually surprises people — a transition name
+                typed below landing somewhere else — is answered when it happens, by the
+                issue it happened to: see the `board:notice` warning in `ipc.ts`. */}
             <Field
               label="How your statuses resolve"
               hint="Every status your instance defines, the column it lands in, and which rule decided. A row that says “Name says review” or “Name says blocked” is a guess the app made for you — pin it to make it yours."
