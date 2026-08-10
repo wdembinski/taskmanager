@@ -871,6 +871,12 @@ never moves its own text.
 
 - `blocked` stays internal-only throughout: it is never a valid map target, and moving
   to or from it still never touches the tracker (the ticket stays In Progress).
+  **Superseded** — the phase that fixed "moving a task to IN PROGRESS blocks it in JIRA"
+  ended this rule on both halves: a workflow's `Blocked` status resolves to the column
+  (`isBlockedishStatus`), the column is mappable, and a drop into it transitions the
+  ticket where the workflow can express it. The rule was the bug's hiding place: the
+  resolver could not read a Blocked status, so a card dragged into IN PROGRESS took a
+  `Block` transition and the sync then filed the result by category.
 - A JIRA re-sync must not clear what the human wrote, so `statusNote`/`statusNoteAt`
   join the agent-delegation and subtask columns that `upsertJiraTask` deliberately omits.
 - Shipped as **0.28.0** — a minor bump: this adds capability rather than fixing it.

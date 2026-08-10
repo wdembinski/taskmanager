@@ -520,8 +520,9 @@ export interface Task {
    *   - `adhoc` : created in the app (no plan line). Plan syncs never touch it, so
    *               plan-less projects and on-the-fly tasks survive re-parsing.
    *   - `jira`  : mirrored from a JIRA issue on the Personal board. A JIRA re-sync
-   *               refreshes it, but its internal-only state (e.g. `blocked`) is
-   *               preserved (see `jiraSync`).
+   *               refreshes it, but state the tracker has no say in is preserved — and
+   *               for `blocked` that now turns on WHO blocked it (`preBlockStatus`), since
+   *               a Blocked ticket is something JIRA can say for itself (see `jiraSync`).
    *   - `ticket`: a **native ticket** of a `kind: 'ticket'` project (Phase 24) — this app
    *               is the tracker, so nothing external ever refreshes or removes it.
    *

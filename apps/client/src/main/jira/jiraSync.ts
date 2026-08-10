@@ -396,7 +396,7 @@ export function retainedKeys(existing: readonly Task[], issues: readonly JiraIss
     if (task.source !== 'jira' || task.externalKey == null) continue;
     if (returned.has(task.externalKey)) continue;
     if (task.archivedAt != null) continue; // already off the board; nothing left to decide
-    if (restingStatus(task) === 'blocked') continue; // never consulted; never deleted
+    if (restingStatus(task) === 'blocked') continue; // never dropped, so never worth asking about
     if (isRetained(task)) keys.push(task.externalKey);
   }
   return keys;
@@ -429,7 +429,7 @@ export function removalCandidateKeys(
     if (task.source !== 'jira' || task.externalKey == null) continue;
     if (returned.has(task.externalKey)) continue;
     if (task.archivedAt != null) continue; // already off the board
-    if (restingStatus(task) === 'blocked') continue; // never consulted; never removed
+    if (restingStatus(task) === 'blocked') continue; // never removed; see {@link retainedKeys}
     if (isRetained(task)) continue; // {@link retainedKeys} asks about these, by key
     keys.push(task.externalKey);
   }
@@ -497,7 +497,10 @@ export function guardRemovals(
  *
  * So every fate below names the question behind it:
  *
- *   1. **blocked** — untouched. An internal-only state JIRA is never asked about.
+ *   1. **blocked** — untouched, whoever blocked it. Not because JIRA has nothing to say
+ *      about it any more (since `isBlockedishStatus`, a Blocked ticket is exactly what puts
+ *      a card here), but because the answer could not change the outcome: a blocked card is
+ *      never removed, so there is no question worth asking.
  *   2. **archived** — already off the board. Back in the query ⇒ it returns (`restoreIds`);
  *      still absent ⇒ nothing to say.
  *   3. **the search was truncated** — everything is kept, whatever else is true of it.
