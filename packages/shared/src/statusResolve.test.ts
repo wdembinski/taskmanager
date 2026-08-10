@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isReviewishStatus, resolveStatusColumn } from './statusResolve';
+import { isBlockedishStatus, isReviewishStatus, resolveStatusColumn } from './statusResolve';
 
 describe('isReviewishStatus', () => {
   it('recognises review statuses in the indeterminate middle', () => {
@@ -19,6 +19,42 @@ describe('isReviewishStatus', () => {
   it('is false for ordinary in-progress statuses', () => {
     expect(isReviewishStatus('In Progress', 'In Progress')).toBe(false);
     expect(isReviewishStatus('Development', 'In Progress')).toBe(false);
+  });
+});
+
+describe('isBlockedishStatus', () => {
+  it('recognises the names a workflow gives "this is stuck"', () => {
+    expect(isBlockedishStatus('Blocked', 'In Progress')).toBe(true);
+    expect(isBlockedishStatus('On Hold', 'In Progress')).toBe(true);
+    expect(isBlockedishStatus('Impediment', 'In Progress')).toBe(true);
+    expect(isBlockedishStatus('Waiting for customer', 'In Progress')).toBe(true);
+    expect(isBlockedishStatus('Paused', 'In Progress')).toBe(true);
+  });
+
+  it('is NOT gated to the indeterminate category — that is the To Do half of the bug', () => {
+    // Plenty of schemes file "Blocked" under To Do. A card dropped into IN PROGRESS
+    // transitioned the issue there and then snapped back to TO DO on the next sync.
+    expect(isBlockedishStatus('Blocked', 'To Do')).toBe(true);
+    expect(isBlockedishStatus('On Hold', 'To Do')).toBe(true);
+  });
+
+  it('lets review win — those transitions belong to IN REVIEW', () => {
+    expect(isBlockedishStatus('Waiting for review', 'In Progress')).toBe(false);
+    expect(isBlockedishStatus('Pending review', 'In Progress')).toBe(false);
+  });
+
+  it('does not match the name that means the opposite', () => {
+    expect(isBlockedishStatus('Unblocked', 'In Progress')).toBe(false);
+  });
+
+  it('is false for ordinary statuses', () => {
+    expect(isBlockedishStatus('In Progress', 'In Progress')).toBe(false);
+    expect(isBlockedishStatus('Backlog', 'To Do')).toBe(false);
+  });
+
+  it('is false once the ticket is resolved, whatever it is called', () => {
+    expect(isBlockedishStatus('Blocked', 'Done')).toBe(false);
+    expect(isBlockedishStatus('Cancelled — blocked', 'Done')).toBe(false);
   });
 });
 
@@ -83,6 +119,46 @@ describe('resolveStatusColumn', () => {
       reason: 'category',
     });
     expect(resolveStatusColumn('Reviewed', 'Done')).toEqual({ column: 'done', reason: 'category' });
+  });
+
+  // The second half of the same bug: BLOCKED was a column no JIRA status could reach, so
+  // a workflow's "Blocked" landed wherever its category pointed — IN PROGRESS or TO DO.
+  it('reaches Blocked by name with no map configured', () => {
+    expect(resolveStatusColumn('Blocked', 'In Progress')).toEqual({
+      column: 'blocked',
+      reason: 'heuristic',
+    });
+    expect(resolveStatusColumn('On Hold', 'To Do')).toEqual({
+      column: 'blocked',
+      reason: 'heuristic',
+    });
+  });
+
+  it('lets the review heuristic keep the statuses it already claimed', () => {
+    expect(resolveStatusColumn('Waiting for review', 'In Progress')).toEqual({
+      column: 'in-review',
+      reason: 'heuristic',
+    });
+  });
+
+  it('still lets the user map a blocked-ish status wherever they say', () => {
+    expect(resolveStatusColumn('Blocked', 'In Progress', { Blocked: 'in-progress' })).toEqual({
+      column: 'in-progress',
+      reason: 'explicit',
+    });
+  });
+
+  // Every installation that hit the bug is carrying this entry: a drag "succeeded" into
+  // Blocked and the app remembered the wrong meaning on the authority of that drag. The
+  // learned tier refuses to speak for a blocked-ish name rather than the map being migrated.
+  it('ignores a learned entry that speaks for a blocked-ish name', () => {
+    expect(
+      resolveStatusColumn('Blocked', 'In Progress', undefined, { Blocked: 'in-review' }),
+    ).toEqual({ column: 'blocked', reason: 'heuristic' });
+    expect(resolveStatusColumn('Blocked', 'To Do', undefined, { Blocked: 'in-progress' })).toEqual({
+      column: 'blocked',
+      reason: 'heuristic',
+    });
   });
 
   it('falls back to the category for everything else', () => {

@@ -86,8 +86,13 @@ export interface JiraSettings {
    * Names rather than categories, because JIRA has only three categories and every
    * review-ish status ("Review", "In Review", "Code Review") shares `In Progress`
    * with the status that means "being written" — so IN REVIEW is unreachable without
-   * this. Unmapped statuses still land by category, exactly as before. `blocked` is
-   * internal-only and is never a valid target.
+   * this. Unmapped statuses still land by category, exactly as before.
+   *
+   * `blocked` **is** a valid target. It was internal-only until a workflow's "Blocked"
+   * status was found resolving to whatever the category said (To Do or In Progress) while
+   * a drag happily transitioned issues INTO it — so the one column that could not be
+   * mapped was the one a tracker most needed to say. The name heuristic reaches it now
+   * (`isBlockedishStatus`); this map is how you correct it when the heuristic is wrong.
    */
   statusCategoryOverrides?: Record<string, BoardColumn>;
   /**
