@@ -537,6 +537,27 @@ describe('Scheduler.decidePermission — full auto (bypassPermissions)', () => {
           'agent-question',
         ]);
       });
+
+      // The other order, and the other half of the same claim: when the GATE won, the
+      // fallback must not raise a rival either. `plan-approval` has had this test since
+      // Phase 18 ("does not double-raise when the gate already holds the plan"); the
+      // question path never did, so nothing held the narrowed guard honest. It does now.
+      it('does not double-raise when the gate already holds the question', async () => {
+        const { scheduler, emitAttention, fire } = makeScheduler('acceptEdits');
+        const decision = scheduler.decidePermission(ask);
+        expect(emitAttention).toHaveBeenCalledTimes(1);
+
+        fire(askEvent);
+        expect(emitAttention).toHaveBeenCalledTimes(1); // suppressed — no second item
+
+        // …and the survivor is still the one holding the tool, so one answer releases it.
+        const item = emitAttention.mock.calls[0][0] as { id: string };
+        scheduler.answerAttention(item.id, { decision: 'answers', selections: [['SQLite']] });
+
+        const result = (await decision) as { behavior: string; message: string };
+        expect(result.behavior).toBe('deny');
+        expect(result.message).toContain('→ SQLite');
+      });
     });
   });
 });
