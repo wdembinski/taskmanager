@@ -6,6 +6,7 @@ import { Client } from './entities/client.entity';
 import { Command } from './entities/command.entity';
 import { ProjectMirror } from './entities/projectMirror.entity';
 import { TaskMirror } from './entities/taskMirror.entity';
+import { HealthModule } from './health/health.module';
 import { MirrorModule } from './mirror/mirror.module';
 import { PresenceModule } from './presence/presence.module';
 
@@ -18,6 +19,7 @@ import { PresenceModule } from './presence/presence.module';
       synchronize: false,
       logging: process.env.NODE_ENV === 'development',
     }),
+    HealthModule,
     PresenceModule,
     MirrorModule,
   ],

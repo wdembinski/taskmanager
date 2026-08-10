@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { assertDevAuthGateSafe } from './config/devAuthGate';
+import { corsOrigin } from './config/cors';
 import { loadSecretsFromKeyVault } from './config/secrets';
 
 async function bootstrap() {
@@ -14,7 +15,8 @@ async function bootstrap() {
   assertDevAuthGateSafe(process.env);
 
   const app = await NestFactory.create(AppModule);
-  app.enableCors();
+  // Named origins, not `*` — see config/cors.ts.
+  app.enableCors({ origin: corsOrigin(process.env) });
 
   const port = process.env.PORT ?? 3100;
   await app.listen(port);
