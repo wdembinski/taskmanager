@@ -5,6 +5,13 @@
  * {@link buildMssqlConnectionOptions}, so the two never drift.
  *
  * Usage: pnpm --filter @tm/server migration:run
+ *
+ * `dotenv` is a RUNTIME dependency, not a dev one, because `migrate.ts` imports this file
+ * and runs from the pruned production image — `pnpm deploy --prod` would strip a dev
+ * dependency and the migrate job would die on `Cannot find module 'dotenv'`. Neither
+ * `.env` nor `.env.example` exists in that image (both are excluded by `.dockerignore`);
+ * `dotenv.config` on a missing file is a no-op, and the real environment supplies
+ * everything there.
  */
 import 'reflect-metadata';
 import { join } from 'path';
