@@ -29,6 +29,22 @@ const issue = (
   },
 });
 
+/**
+ * An issue the workflow has actually blocked. Filed under `In Progress`, the category most
+ * schemes give it — so the NAME is the only thing that can put this card in BLOCKED, which
+ * is what `isBlockedishStatus` is for.
+ */
+const blockedIssue = (key = 'PROJ-1', id = '1'): JiraIssue => {
+  const base = issue(id, key, 'indeterminate');
+  return {
+    ...base,
+    fields: {
+      ...base.fields,
+      status: { name: 'Blocked', statusCategory: { key: 'indeterminate', name: 'X' } },
+    },
+  };
+};
+
 const jiraTask = (over: Partial<Task>): Task => ({
   id: 'jira-1',
   projectId: PERSONAL_PROJECT_ID,
@@ -205,6 +221,8 @@ describe('reconcileJiraTasks', () => {
   });
 
   it('preserves the blocked state and preBlockStatus across a re-sync', () => {
+    // OUR block: `preBlockStatus` is set, which is what `preBlockMarker` writes when JIRA
+    // could not be told. Nothing but this app will ever move the card out again.
     const existing = jiraTask({ status: 'blocked', preBlockStatus: 'in-progress' });
     // JIRA now reports the issue as In Progress, but the user blocked it locally.
     const { upserts } = reconcileJiraTasks(
@@ -216,6 +234,47 @@ describe('reconcileJiraTasks', () => {
     expect(upserts[0].preBlockStatus).toBe('in-progress');
     // The raw external status is still refreshed for display.
     expect(upserts[0].externalStatusCategory).toBe('In Progress');
+  });
+
+  it('lets the tracker unblock a card it blocked itself', () => {
+    // The SAME card with a null marker: the block is the tracker's (the drop transitioned
+    // the ticket), so unblocking the ticket in JIRA must take the card out of BLOCKED.
+    // Preserved unconditionally, as it used to be, the card would sit in BLOCKED forever
+    // while the ticket said In Progress.
+    const existing = jiraTask({ status: 'blocked', preBlockStatus: null });
+    const { upserts } = reconcileJiraTasks(
+      [existing],
+      [issue('1', 'PROJ-1', 'indeterminate')],
+      opts,
+    );
+    expect(upserts[0].status).toBe('in-progress');
+    expect(upserts[0].preBlockStatus).toBeNull();
+  });
+
+  it('lands a ticket JIRA calls Blocked in BLOCKED on the first sync', () => {
+    // No card existed, so nothing local can be preserving anything: this column is reached
+    // by reading the tracker, which is the whole point of `isBlockedishStatus`.
+    const { upserts } = reconcileJiraTasks([], [blockedIssue()], opts);
+    expect(upserts[0].status).toBe('blocked');
+    expect(upserts[0].externalStatus).toBe('Blocked');
+    // Null: the block is the tracker's, and the next sync re-asserts it from the status.
+    expect(upserts[0].preBlockStatus).toBeNull();
+  });
+
+  it('re-asserts a tracker block every sync without ever claiming it', () => {
+    const existing = jiraTask({ status: 'blocked', preBlockStatus: null });
+    const { upserts } = reconcileJiraTasks([existing], [blockedIssue()], opts);
+    expect(upserts[0].status).toBe('blocked');
+    expect(upserts[0].preBlockStatus).toBeNull();
+  });
+
+  it('parks a tracker block in preRunStatus rather than evicting a live run', () => {
+    // The run keeps `status`; the tracker still decides where the card comes to rest.
+    const existing = jiraTask({ status: 'running', preRunStatus: 'pending' });
+    const { upserts } = reconcileJiraTasks([existing], [blockedIssue()], opts);
+    expect(upserts[0].status).toBe('running');
+    expect(upserts[0].preRunStatus).toBe('blocked');
+    expect(upserts[0].preBlockStatus).toBeNull();
   });
 
   it('does not evict a live run from `status` — it re-aims where the run will land', () => {

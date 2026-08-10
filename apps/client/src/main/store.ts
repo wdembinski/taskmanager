@@ -72,6 +72,7 @@ import { isLinkGate, type LinkGate, type TaskLink } from '@shared/taskChain';
 import type { TaskAttachment } from '@shared/attachments';
 import type { ParsedTask } from './planParser';
 import { splitProjectTag } from './projectTagMigration';
+import { blockOwnerFor, needsBlockOwner } from './blockOwnerMigration';
 import type { SavedWindowState } from './windowState';
 import { reconcileTasks } from './taskReconcile';
 
@@ -1768,6 +1769,9 @@ export function createStore(dbPath: string): Store {
   /** Guard for the one-shot release of cards pinned to their project's model, below. */
   const PINNED_MODEL_RELEASE_KEY = 'migration.pinnedModelRelease';
 
+  /** Guard for the one-shot claim of blocks that predate `preBlockStatus` meaning ownership. */
+  const BLOCK_OWNER_KEY = 'migration.blockOwner';
+
   /** The GitLab PAT ciphertext, and the cached `GET /user` for the configured instance. */
   const GITLAB_TOKEN_KEY = 'gitlab.pat';
   const GITLAB_IDENTITY_KEY = 'gitlab.identity';
@@ -2225,6 +2229,44 @@ export function createStore(dbPath: string): Store {
         )
         .run();
       upsertState.run(PINNED_MODEL_RELEASE_KEY, JSON.stringify({ tasks: result.changes }));
+    })();
+  }
+  // ---------------------------------------------------------------------------
+
+  // ---------------------------------------------------------------------------
+  // One-shot: claim every existing block as OURS.
+  //
+  // `preBlockStatus` now says who owns a block, and the JIRA sync preserves BLOCKED only
+  // for the blocks that are ours — a tracker's own block arrives as a blocked status on
+  // every poll and needs no preserving. But that field was only ever written by a drag, so
+  // cards blocked any other way rest at `blocked` with a null marker, which the new rule
+  // reads as the tracker's and the next sync would silently unblock. See
+  // `blockOwnerMigration.ts` for why claiming them is the true answer and not just the
+  // careful one.
+  //
+  // The SQL narrows; the pure predicate decides. `restingStatus` cannot be written in SQL
+  // (a running card's block lives in `preRunStatus`), so this selects the superset both
+  // shapes fall in and lets `needsBlockOwner` reject the rest.
+  //
+  // Guarded, and load-bearing again: after this pass null MEANS "the tracker holds this",
+  // and a second one would overwrite that on every card JIRA has blocked since.
+  if (!selectState.get(BLOCK_OWNER_KEY)) {
+    const rows = db
+      .prepare(
+        `SELECT * FROM tasks
+          WHERE preBlockStatus IS NULL AND (status = 'blocked' OR preRunStatus = 'blocked')`,
+      )
+      .all() as TaskRow[];
+    const write = db.prepare(`UPDATE tasks SET preBlockStatus = @preBlockStatus WHERE id = @id`);
+    db.transaction(() => {
+      let claimed = 0;
+      for (const row of rows) {
+        const task = rowToTask(row);
+        if (!needsBlockOwner(task)) continue;
+        write.run({ id: row.id, preBlockStatus: blockOwnerFor(task) });
+        claimed++;
+      }
+      upsertState.run(BLOCK_OWNER_KEY, JSON.stringify({ tasks: claimed }));
     })();
   }
   // ---------------------------------------------------------------------------

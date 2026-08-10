@@ -4,9 +4,10 @@
  * returned upserts/deletes to the store. Keyed by issue key so a task keeps its id
  * (and thus its activity timeline + unread markers) across syncs.
  *
- * Internal-only state is preserved: a task the user moved to `blocked` stays blocked
- * (JIRA is never consulted for blocking), and blocked tasks that drop out of the JQL
- * result are NOT deleted, so a blocked ticket never silently vanishes.
+ * Internal-only state is preserved: a task the user moved to `blocked` **and JIRA could not
+ * be told about** stays blocked, and blocked tasks that drop out of the JQL result are NOT
+ * deleted, so a blocked ticket never silently vanishes. A block the tracker did take is the
+ * tracker's, and the sync follows it both ways — see {@link issueToTask}.
  *
  * The other thing that does not vanish is a **finished** card. The board is the JQL result,
  * and the commonest JQL there is — `resolution = Unresolved` — stops matching an issue the
@@ -237,12 +238,27 @@ function issueToTask(
   const column = resolveStatusColumn(rawStatus, category, opts.overrides, opts.learned).column;
   const derivedStatus = statusForColumn(column);
 
-  // `blocked` is an internal-only state — keep it (and its restore target) across syncs.
+  // A block is either OURS or the tracker's, and `preBlockStatus` is which — see
+  // `preBlockMarker` in `ipc.ts`: a drop into BLOCKED that JIRA accepted stores null,
+  // because the ticket itself now says Blocked; one JIRA could not take (an internal card,
+  // a workflow with no blocked status) stores the column to restore.
+  //
+  // Only OUR block is preserved here. Nothing but this app will ever move that card out
+  // again, so a poll must not do it. The tracker's block needs no preserving and must not
+  // get any: the issue really is in a blocked status, so it arrives as
+  // `derivedStatus === 'blocked'` and is re-asserted every sync — and unblocking the ticket
+  // in JIRA now pulls the card out of BLOCKED, which preserving it unconditionally never
+  // allowed. That was the half-truth in the old rule: `blocked` meant both "the human put
+  // it here" and "no tracker status stands behind it", and since `isBlockedishStatus` one
+  // does.
+  //
   // Read from where the card RESTS, not from `status`: a card whose agent is running has
   // lent that field to the run, and a blocked card that is running is still blocked.
-  const blocked = existing ? restingStatus(existing) === 'blocked' : false;
+  const localBlock = existing
+    ? restingStatus(existing) === 'blocked' && existing.preBlockStatus != null
+    : false;
   // Where the card should rest once the tracker has had its say.
-  const resting = blocked ? 'blocked' : derivedStatus;
+  const resting = localBlock ? 'blocked' : derivedStatus;
   // A live run owns `status` and a poll must not evict it — that would drop the card out
   // of "running" mid-session, and with it the spinner, the drag guard and the chat
   // target. The tracker still decides the COLUMN; it just writes it to the parked value
@@ -297,7 +313,7 @@ function issueToTask(
     // for the sprint field must not wipe a name we already knew.
     externalSprint: sprint ?? existing?.externalSprint ?? null,
     externalDescription: description ?? existing?.externalDescription ?? null,
-    preBlockStatus: blocked ? (existing?.preBlockStatus ?? null) : null,
+    preBlockStatus: localBlock ? (existing?.preBlockStatus ?? null) : null,
     preRunStatus: borrowed ? resting : null,
     // Null for an issue the JQL returned — it is an ordinary card, whatever it was before.
     retainedSince,
