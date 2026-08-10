@@ -1978,12 +1978,29 @@ export class Scheduler {
     // Rejected alternatives, so they are not re-litigated: deleting the fallback restores
     // the silent failure Phases 17 and 18 exist to end; debouncing the fallback on a timer
     // is strictly more machinery than adoption; resolving the fallback item and raising a
-    // fresh one swaps the form out from under the human's cursor. Correlating on the CLI's
-    // `tool_use` id would be airtight and would close the residual race the content check
-    // leaves open, but it means threading a field through `permissionServerSource.ts`,
-    // `PermissionRequest` and the item — three files and a shipped `.cjs` string — for a
-    // window narrower than human reaction time. That is the exit if this ever proves
-    // insufficient.
+    // fresh one swaps the form out from under the human's cursor.
+    //
+    // THE RESIDUAL, ACCEPTED. Adoption can only find an item that is still OPEN. If the
+    // human answers the fallback item in the gap before the gate's loopback POST lands,
+    // there is nothing left to adopt and a fresh item goes up — for that one interaction
+    // the double-ask is back. The gap is however long the CLI takes to reach the permission
+    // relay and that request to arrive here, raced against a human reading a question and
+    // clicking: narrow, and neither side of that race can be made to wait for the other.
+    //
+    // It is accepted because it DEGRADES rather than breaks. The first answer still reaches
+    // the session's input stream, the second item is the one holding the tool, and one more
+    // answer releases it. Nothing is stranded, nothing is silently decided for the human,
+    // and the cost is the extra click this branch exists to remove — no worse than before.
+    // `answers the same question twice when a human beats the gate` in scheduler.test.ts
+    // pins exactly that; it is a record of what we settled for, so a later fix will fail it
+    // on purpose rather than quietly change behaviour nobody wrote down.
+    //
+    // Only `tool_use`-id correlation actually closes it: match the gate's request to the
+    // event that raised the item rather than to whatever happens to be open, and an already
+    // ANSWERED id can be recognised instead of re-asked. That means threading a field
+    // through `permissionServerSource.ts`, `PermissionRequest` and `AttentionItem` — three
+    // files and a shipped `.cjs` string — so it stays the documented exit if this window
+    // ever proves wide enough to matter, not the fix taken here.
     if (isAskUserQuestionTool(request.toolName)) {
       const questions = parseAskUserQuestion(request.input);
       const open = this.openAttentionOfKind(request.runId, 'agent-question');
@@ -2021,6 +2038,12 @@ export class Scheduler {
     // comparison here: the item's `plan` is a pre-`capturePlan` snapshot, so comparing it
     // would defeat adoption entirely. A run has one plan at a time, so the kind alone is a
     // sufficient correlator.
+    //
+    // It carries the same accepted residual as the question branch — approve in the gap
+    // before the POST lands and a rival item goes up — but on this path it self-heals twice
+    // over: `approvePlan` has already stopped the planner, so the rival dies with the
+    // process (`plan-approval` is not in `OUTLIVES_ITS_RUN`), and `stepsToAppend` drops
+    // repeats by title, so approving it first would create no duplicate steps either.
     if (request.toolName === EXIT_PLAN_MODE_TOOL) {
       const open = this.openAttentionOfKind(request.runId, 'plan-approval');
       const adoptable = open && !this.pendingDecisions.has(open.id);

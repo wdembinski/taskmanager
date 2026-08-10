@@ -317,7 +317,10 @@ describe('Scheduler.decidePermission — full auto (bypassPermissions)', () => {
       appendTaskEvent: vi.fn(),
       ...INERT_ATTENTION_STORE,
     } as unknown as Store;
-    const sessions = {} as unknown as SessionManager;
+    // Answering an item that holds no tool pushes the reply into the live session instead
+    // (`deliverOrResume`), which the residual test below walks through.
+    const send = vi.fn();
+    const sessions = { send } as unknown as SessionManager;
     const scheduler = new Scheduler(
       store,
       sessions,
@@ -339,7 +342,7 @@ describe('Scheduler.decidePermission — full auto (bypassPermissions)', () => {
         'run1',
         event,
       );
-    return { scheduler, emitAttention, fire };
+    return { scheduler, emitAttention, fire, send };
   }
 
   const riskyPush = { runId: 'run1', toolName: 'Bash', input: { command: 'git push' } };
@@ -554,6 +557,43 @@ describe('Scheduler.decidePermission — full auto (bypassPermissions)', () => {
         const item = emitAttention.mock.calls[0][0] as { id: string };
         scheduler.answerAttention(item.id, { decision: 'answers', selections: [['SQLite']] });
 
+        const result = (await decision) as { behavior: string; message: string };
+        expect(result.behavior).toBe('deny');
+        expect(result.message).toContain('→ SQLite');
+      });
+
+      /**
+       * THE RESIDUAL, ACCEPTED — a record of what this fix settled for, not a wish.
+       *
+       * Adoption can only find an item that is still OPEN, so a human who answers the
+       * fallback item in the gap before the gate's loopback POST arrives leaves nothing to
+       * adopt, and the question is asked once more. The gap is relay latency against human
+       * reaction time; only `tool_use`-id correlation closes it, and that costs three files
+       * (see the note in `decidePermission`).
+       *
+       * It is accepted because it degrades to the OLD behaviour rather than to a broken
+       * one, which is what the assertions below pin: the first answer is not swallowed, the
+       * second item is the one holding the tool, and answering it releases the CLI. If a
+       * later change closes the race, this test fails — read the note, then delete it.
+       */
+      it('answers the same question twice when a human beats the gate', async () => {
+        const { scheduler, emitAttention, fire, send } = makeScheduler('acceptEdits');
+        fire(askEvent);
+        const first = emitAttention.mock.calls[0][0] as { id: string };
+
+        // Answered in the gap. No tool is held yet, so the reply goes into the input stream
+        // — the answer reaches the agent, it is just not the tool's result.
+        scheduler.answerAttention(first.id, { decision: 'answers', selections: [['SQLite']] });
+        expect(send).toHaveBeenCalledWith('run1', expect.stringContaining('→ SQLite'));
+
+        // …and now the POST lands with nothing open to adopt. Second item, second click.
+        const decision = scheduler.decidePermission(ask);
+        expect(emitAttention).toHaveBeenCalledTimes(2);
+
+        // The cost is that click and nothing more: the new item holds the tool, so the run
+        // is not stranded waiting on an item that was already answered.
+        const second = emitAttention.mock.calls[1][0] as { id: string };
+        scheduler.answerAttention(second.id, { decision: 'answers', selections: [['SQLite']] });
         const result = (await decision) as { behavior: string; message: string };
         expect(result.behavior).toBe('deny');
         expect(result.message).toContain('→ SQLite');
