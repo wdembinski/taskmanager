@@ -16,7 +16,11 @@ dist/
 # Headless verification work dirs (scripts/verify-*.mjs). Inside the repo because their
 # bundles keep better-sqlite3 external and so need node_modules on the resolution path;
 # removed on the way out, but `--keep` leaves one behind on purpose.
-/.verify-*/
+#
+# UNANCHORED: the scripts resolve their work dir relative to themselves, so since the
+# monorepo split every one of these lands under `apps/client/`, which a leading-slash
+# pattern does not reach — a `--keep` run left them showing up as untracked.
+.verify-*/
 
 # Local environment files (NEVER commit real secrets)
 .env
