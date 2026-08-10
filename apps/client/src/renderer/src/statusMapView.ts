@@ -53,15 +53,24 @@ export function buildStatusMapRows(
     .sort((a, b) => columnRank(a.column) - columnRank(b.column) || a.name.localeCompare(b.name));
 }
 
-/** The badge text for a row's tier. Sentence-shaped, because it answers "why?". */
-export function reasonLabel(reason: StatusReason): string {
+/**
+ * The badge text for a row's tier. Sentence-shaped, because it answers "why?".
+ *
+ * Takes the resolved COLUMN as well, because `heuristic` is one tier that says two
+ * different things: the name read as review, or the name read as blocked. They stayed
+ * one tier on purpose — `STATUS_REASONS` is iterated as precedence by the transition
+ * picker, so a fifth reason would silently reorder that loop — which makes the label
+ * the place the difference has to show. A row badged "Name says review" when the app
+ * actually guessed BLOCKED is the same kind of lie this whole table exists to end.
+ */
+export function reasonLabel(reason: StatusReason, column: BoardColumn): string {
   switch (reason) {
     case 'explicit':
       return 'Mapped by you';
     case 'learned':
       return 'Learned from a move';
     case 'heuristic':
-      return 'Name says review';
+      return column === 'blocked' ? 'Name says blocked' : 'Name says review';
     case 'category':
       return 'JIRA category';
   }

@@ -17,14 +17,21 @@ export interface StatusMapRow {
 }
 
 /**
- * The columns a JIRA status may be mapped to. `blocked` is deliberately absent — it
- * is an internal-only state the tracker never knows about, so mapping a JIRA status
- * onto it would create cards the next sync could not explain.
+ * The columns a JIRA status may be mapped to — every column the board has, in board
+ * order.
+ *
+ * `blocked` used to be absent, on the grounds that it was an internal-only state no
+ * tracker knew about. That was never true of the workflows people actually run: a
+ * scheme with a `Blocked` status says "this is stuck" as plainly as the board does,
+ * and the resolver now reads it that way. Leaving it out of this list would be the
+ * worse of the two failures — the engine would resolve a status to BLOCKED while the
+ * editor offered no way to see it, confirm it, or overrule it.
  */
 export const MAPPABLE_COLUMNS: readonly BoardColumn[] = [
   'todo',
   'in-progress',
   'in-review',
+  'blocked',
   'done',
 ];
 

@@ -111,7 +111,7 @@ export function StatusMapViewer({
                 <TableCell>{columnLabel[row.column]}</TableCell>
                 <TableCell className={styles.whyCell}>
                   <Badge appearance="tint" color={REASON_APPEARANCE[row.reason]}>
-                    {reasonLabel(row.reason)}
+                    {reasonLabel(row.reason, row.column)}
                   </Badge>
                 </TableCell>
                 <TableCell>

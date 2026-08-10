@@ -1158,8 +1158,8 @@ export function Settings(): JSX.Element {
               label="Status mapping"
               hint={
                 jiraStatuses.length
-                  ? `Which board column each JIRA workflow status means — ${jiraStatuses.length} statuses read from your instance, so pick rather than type. Matched on the name, ignoring case, so "Review" and "Code Review" can both land in In Review. Anything unmapped falls back to the issue's JIRA category; Blocked is internal-only and never comes from JIRA.`
-                  : 'Which board column each JIRA workflow status means. Save a working connection and this offers your instance\'s own statuses; until then, type the name. Matched ignoring case, so "Review" and "Code Review" can both land in In Review. Anything unmapped falls back to the issue\'s JIRA category; Blocked is internal-only and never comes from JIRA.'
+                  ? `Which board column each JIRA workflow status means — ${jiraStatuses.length} statuses read from your instance, so pick rather than type. Matched on the name, ignoring case, so "Review" and "Code Review" can both land in In Review. Anything unmapped falls back to a guess from the name and then to the issue's JIRA category. Blocked is a column like any other: map your workflow's "Blocked" or "On hold" onto it and a ticket in that status lands there.`
+                  : 'Which board column each JIRA workflow status means. Save a working connection and this offers your instance\'s own statuses; until then, type the name. Matched ignoring case, so "Review" and "Code Review" can both land in In Review. Anything unmapped falls back to a guess from the name and then to the issue\'s JIRA category. Blocked is a column like any other: map your workflow\'s "Blocked" or "On hold" onto it and a ticket in that status lands there.'
               }
             >
               <div className={styles.mapList}>
@@ -1244,7 +1244,7 @@ export function Settings(): JSX.Element {
                 and the same resolver the sync runs, so it cannot drift from reality. */}
             <Field
               label="How your statuses resolve"
-              hint="Every status your instance defines, the column it lands in, and which rule decided. A row that says “Name says review” is a guess the app made for you — pin it to make it yours."
+              hint="Every status your instance defines, the column it lands in, and which rule decided. A row that says “Name says review” or “Name says blocked” is a guess the app made for you — pin it to make it yours."
             >
               <StatusMapViewer
                 statuses={jiraStatuses}

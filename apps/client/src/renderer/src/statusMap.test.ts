@@ -46,9 +46,10 @@ describe('rowsToStatusMap', () => {
 });
 
 describe('MAPPABLE_COLUMNS', () => {
-  // Blocked is internal-only: a JIRA status mapped onto it would produce cards the
-  // next sync could not explain, so it must never be offered.
-  it('offers every column except blocked', () => {
-    expect(MAPPABLE_COLUMNS).toEqual(['todo', 'in-progress', 'in-review', 'done']);
+  // Blocked is mappable: the resolver can now land a status there off its name alone,
+  // and a column the engine can pick but the editor cannot offer is one the user has
+  // no way to confirm or overrule.
+  it('offers every column, in board order', () => {
+    expect(MAPPABLE_COLUMNS).toEqual(['todo', 'in-progress', 'in-review', 'blocked', 'done']);
   });
 });
