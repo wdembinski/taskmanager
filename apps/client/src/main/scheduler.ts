@@ -1398,7 +1398,10 @@ export class Scheduler {
    *    come.
    *  - **A parked question** → the message *is* the answer, so it goes through
    *    `answerAttention`: the item clears and the task goes back to `running`. Anything
-   *    else would leave a stale item pointing at a question already answered.
+   *    else would leave a stale item pointing at a question already answered. This
+   *    includes the CLI's own `AskUserQuestion` (`agent-question`), which is deliberately
+   *    NOT in the refusal above: unlike an approve/deny, prose genuinely *can* answer it,
+   *    and `answerAttention` hands the typed text back as the held tool's result.
    *  - Otherwise → straight into the live session's open input stream.
    *
    * The timeline entry is written BEFORE the send, so a session that dies mid-delivery
@@ -1426,7 +1429,8 @@ export class Scheduler {
     this.store.addChatMessage(target.projectId, target.id, text);
 
     const question = [...this.attention.values()].find(
-      (item) => item.runId === run.runId && item.kind === 'question',
+      (item) =>
+        item.runId === run.runId && (item.kind === 'question' || item.kind === 'agent-question'),
     );
     if (question) this.answerAttention(question.id, { decision: 'reply', text });
     else this.sessions.send(run.runId, text);

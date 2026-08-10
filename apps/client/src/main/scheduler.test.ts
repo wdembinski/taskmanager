@@ -2575,7 +2575,9 @@ describe('Scheduler.chatWithAgent (Phase 12)', () => {
       /** Seed a live run for this task id. */
       liveFor?: string;
       /** Seed an inbox item on the live run. */
-      parked?: 'question' | 'permission' | 'plan-approval';
+      parked?: 'question' | 'permission' | 'plan-approval' | 'agent-question';
+      /** What the CLI's own `AskUserQuestion` asked, for an `agent-question` item. */
+      questions?: Array<{ header: string; question: string; multiSelect: boolean; options: [] }>;
     } = {},
   ) {
     const card = {
@@ -2676,6 +2678,7 @@ describe('Scheduler.chatWithAgent (Phase 12)', () => {
         title: 'parked',
         detail: '',
         createdAt: 0,
+        ...(opts.questions ? { questions: opts.questions } : {}),
       });
     }
     return { scheduler, card, steps, send, start, chats, comments, resolved };
@@ -2716,6 +2719,50 @@ describe('Scheduler.chatWithAgent (Phase 12)', () => {
     // question the human has in fact just answered.
     expect(resolved).toHaveBeenCalledWith('i1');
     expect(card.status).toBe('running');
+  });
+
+  it('answers the CLI’s own AskUserQuestion with what the human typed', () => {
+    // The composer stays open under an `agent-question` and has always promised the message
+    // would be delivered; before this it was pushed into the input stream behind a held tool
+    // that nobody had answered, so it sat there unread.
+    const { scheduler, card, send, resolved } = setupChat({
+      card: { status: 'waiting-input' },
+      liveFor: 'c1',
+      parked: 'agent-question',
+      questions: [{ header: 'DB', question: 'Which database?', multiSelect: false, options: [] }],
+    });
+    const result = scheduler.chatWithAgent('c1', 'use postgres');
+    expect(result).toEqual({ status: 'sent', taskId: 'c1', runId: 'r1' });
+    expect(resolved).toHaveBeenCalledWith('i1');
+    expect(card.status).toBe('running');
+
+    // Unlike the sentinel `question` above, the agent is blocked on a TOOL: it gets the
+    // formatted answer, which names the question it answers and tells the model to treat
+    // it as the tool's result — raw prose would read as an unprompted aside.
+    const [runId, message] = send.mock.calls[0] as [string, string];
+    expect(runId).toBe('r1');
+    expect(message).not.toBe('use postgres');
+    expect(message).toContain('do NOT ask the same question again');
+    expect(message).toContain('1. Which database?');
+    expect(message).toContain('→ use postgres');
+  });
+
+  it('spends a typed answer on the first question and leaves the rest unanswered', () => {
+    // Accepted: one line of prose cannot answer three questions. The structured form is
+    // the good path — this is the fallback, and it must not silently invent the others.
+    const { scheduler, send } = setupChat({
+      card: { status: 'waiting-input' },
+      liveFor: 'c1',
+      parked: 'agent-question',
+      questions: [
+        { header: 'DB', question: 'Which database?', multiSelect: false, options: [] },
+        { header: 'Cache', question: 'Which cache?', multiSelect: false, options: [] },
+      ],
+    });
+    expect(scheduler.chatWithAgent('c1', 'use postgres').status).toBe('sent');
+    const message = send.mock.calls[0][1] as string;
+    expect(message).toContain('1. Which database?\n   → use postgres');
+    expect(message).toContain('2. Which cache?\n   → (no preference given)');
   });
 
   it('refuses while a permission request or a plan approval holds a tool', () => {
