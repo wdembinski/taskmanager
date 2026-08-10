@@ -1256,34 +1256,61 @@ export function Settings(): JSX.Element {
               />
             </Field>
 
+            {/* Each box gets its own label, not just a placeholder. Five boxes that look
+                identical, distinguishable only by grey text that vanishes the moment you
+                type in one, is how a name meant for In Review ends up filed under In
+                Progress — and a misfiled name here is applied verbatim, so the mistake
+                shows up as a drag moving a ticket somewhere nobody asked for. */}
             <Field
               label="Transition names (optional)"
-              hint="Only needed when your workflow's transition names can't be worked out from the status they lead to. Leave blank to auto-detect."
+              hint="Only needed when your workflow's transition names can't be worked out from the status they lead to. Leave blank to auto-detect. A name you enter is used verbatim — it wins over everything the app would work out for itself, including a transition the app would never have chosen, so check the spelling matches the button in JIRA exactly."
             >
               <div className={styles.mapList}>
                 {/* First, because it is the one workflows least agree on: moving a card
                     back to TO DO can be "Reopen", "Stop Progress" or "Back to backlog",
                     none of which name the status they lead to. */}
-                <Input
-                  value={jira.todoTransitionName ?? ''}
-                  placeholder="Move back to To Do — e.g. Reopen"
-                  onChange={(_e, d) => patchJira({ todoTransitionName: d.value })}
-                />
-                <Input
-                  value={jira.inProgressTransitionName ?? ''}
-                  placeholder="Move to In Progress — e.g. Start work"
-                  onChange={(_e, d) => patchJira({ inProgressTransitionName: d.value })}
-                />
-                <Input
-                  value={jira.inReviewTransitionName ?? ''}
-                  placeholder="Move to In Review — e.g. Submit for review"
-                  onChange={(_e, d) => patchJira({ inReviewTransitionName: d.value })}
-                />
-                <Input
-                  value={jira.doneTransitionName ?? ''}
-                  placeholder="Move to Done — e.g. Resolve"
-                  onChange={(_e, d) => patchJira({ doneTransitionName: d.value })}
-                />
+                <Field label="Move back to To Do" size="small">
+                  <Input
+                    value={jira.todoTransitionName ?? ''}
+                    aria-label="Move back to To Do — exact transition name"
+                    placeholder="e.g. Reopen"
+                    onChange={(_e, d) => patchJira({ todoTransitionName: d.value })}
+                  />
+                </Field>
+                <Field label="Move to In Progress" size="small">
+                  <Input
+                    value={jira.inProgressTransitionName ?? ''}
+                    aria-label="Move to In Progress — exact transition name"
+                    placeholder="e.g. Start work"
+                    onChange={(_e, d) => patchJira({ inProgressTransitionName: d.value })}
+                  />
+                </Field>
+                <Field label="Move to In Review" size="small">
+                  <Input
+                    value={jira.inReviewTransitionName ?? ''}
+                    aria-label="Move to In Review — exact transition name"
+                    placeholder="e.g. Submit for review"
+                    onChange={(_e, d) => patchJira({ inReviewTransitionName: d.value })}
+                  />
+                </Field>
+                <Field label="Move to Done" size="small">
+                  <Input
+                    value={jira.doneTransitionName ?? ''}
+                    aria-label="Move to Done — exact transition name"
+                    placeholder="e.g. Resolve"
+                    onChange={(_e, d) => patchJira({ doneTransitionName: d.value })}
+                  />
+                </Field>
+                {/* Last, and the only one that may legitimately have no answer: a workflow
+                    with no blocked status blocks the card here and leaves the ticket be. */}
+                <Field label="Move to Blocked" size="small">
+                  <Input
+                    value={jira.blockedTransitionName ?? ''}
+                    aria-label="Move to Blocked — exact transition name"
+                    placeholder="e.g. Raise impediment"
+                    onChange={(_e, d) => patchJira({ blockedTransitionName: d.value })}
+                  />
+                </Field>
               </div>
             </Field>
 

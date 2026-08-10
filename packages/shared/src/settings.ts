@@ -120,6 +120,16 @@ export interface JiraSettings {
   /** Optional exact transition name to use when moving into Done (else auto-detected). */
   doneTransitionName?: string;
   /**
+   * Optional exact transition name to use when moving a card into BLOCKED (else
+   * auto-detected from a blocked-ish destination status).
+   *
+   * The one target whose transition may legitimately not exist: a workflow with no blocked
+   * status simply cannot say "stuck", and the card blocks locally instead. Worth naming when
+   * yours expresses it as something the blocked-name heuristic will not read — "Impediment
+   * raised", "Send to triage" — or when several steps qualify and you want a particular one.
+   */
+  blockedTransitionName?: string;
+  /**
    * What the Add-task dialog last created a JIRA issue as, so the next one opens on the
    * same project and type. Written by the engine after a successful create and pushed on
    * `settings:changed`; a screen that saves the whole blob must not write over it.

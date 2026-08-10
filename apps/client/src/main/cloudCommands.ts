@@ -14,7 +14,10 @@
  * push (leaving the card wrong until a human happens to fix it from the desktop), a
  * `set-status` that would need one is rejected outright: `resolveMove` already only ever
  * names a `jiraTransition` for a JIRA-linked task moving to a real column, so this refusal
- * fires exactly there and nowhere else.
+ * fires exactly there and nowhere else. BLOCKED joined that set when a drop into it started
+ * transitioning the ticket — so blocking a JIRA-linked card from the web app is now refused
+ * rather than applied locally, which is the point: the local-only half is the disagreement
+ * between board and ticket the whole change exists to end.
  *
  * Applying writes through the SAME `Store` methods `ipc.ts` uses on the `tasks`/`projects`
  * tables, which is what makes the result mirror back out on the next poll "for free": the

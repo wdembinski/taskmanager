@@ -4,13 +4,20 @@
  * pre-block column, and whether the linked JIRA issue must be transitioned.
  *
  * The rules encode the product decisions:
- *   - Moving to/from BLOCKED is internal-only — JIRA is never touched, and the
- *     pre-block column is remembered so un-blocking restores it. BLOCKED is the app's
- *     own idea of where a card is; no tracker status stands behind it.
- *   - EVERY other column move transitions the linked issue, TO DO included: the board is
- *     a view of the ticket, so a column that disagrees with the tracker is a board that
+ *   - EVERY column move transitions the linked issue, BLOCKED and TO DO included: the board
+ *     is a view of the ticket, so a column that disagrees with the tracker is a board that
  *     lies. (Moving a card back to TO DO used to be local-only, on a "we don't reopen
  *     tickets" rule that made dragging a card leftwards silently meaningless.)
+ *   - BLOCKED was the last column exempt from that, on the rule that no tracker status
+ *     stands behind it. Workflows say otherwise — they have a Blocked status, the board now
+ *     READS it (`isBlockedishStatus`), and a column that a sync can put a card into but a
+ *     drag cannot must mean two different things depending on which side moved it. So a
+ *     drop into BLOCKED transitions too, and `preBlockStatus` is still recorded: whether it
+ *     is worth REMEMBERING depends on whether the transition happened, which only the caller
+ *     that attempts it knows. See `ipc.ts`.
+ *   - BLOCKED is also the one target a workflow is allowed not to have. A workflow with no
+ *     blocked status cannot express the concept, and the card must still block locally —
+ *     again the caller's decision, not this resolver's.
  *   - Internal (non-JIRA) tasks never transition anything.
  */
 import type { BoardColumn, JiraStatusCategory, Task, TaskStatus } from '@shared/model';
@@ -24,12 +31,19 @@ import {
 import type { JiraTransition } from './jiraClient';
 import type { JiraSettings } from '@shared/settings';
 
-export type JiraTransitionTarget = 'toTodo' | 'toInProgress' | 'toInReview' | 'toDone';
+export type JiraTransitionTarget =
+  'toTodo' | 'toInProgress' | 'toInReview' | 'toDone' | 'toBlocked';
 
 export interface MoveResolution {
   /** The task's new local status. */
   localStatus: TaskStatus;
-  /** The column to restore on un-block (set only when moving into Blocked), else null. */
+  /**
+   * The column to restore on un-block (set only when moving into Blocked), else null.
+   *
+   * A *candidate*: the caller keeps it only when the block stayed local. A block the
+   * tracker took is the tracker's to undo, and remembering a column for it would have the
+   * app restore one status while the next sync asserts another.
+   */
   preBlockStatus: TaskStatus | null;
   /** The JIRA transition to apply, or null when JIRA must not be touched. */
   jiraTransition: JiraTransitionTarget | null;
@@ -51,14 +65,14 @@ export function resolveMove(task: Task, toColumn: BoardColumn): MoveResolution {
     };
   }
 
-  // Into Blocked: internal-only. Remember where it came from; never touch JIRA.
-  // Where it came FROM is where the card rests — a card whose agent is mid-run is not
-  // "coming from" the run, and un-blocking must not restore it to a run state.
+  // Into Blocked: block the ticket too, and offer where it came from as the column to
+  // restore. Where it came FROM is where the card rests — a card whose agent is mid-run is
+  // not "coming from" the run, and un-blocking must not restore it to a run state.
   if (toColumn === 'blocked') {
     return {
       localStatus: 'blocked',
       preBlockStatus: restingStatus(task),
-      jiraTransition: null,
+      jiraTransition: isJira ? 'toBlocked' : null,
       noop: false,
     };
   }
@@ -75,13 +89,14 @@ export function resolveMove(task: Task, toColumn: BoardColumn): MoveResolution {
   return { localStatus, preBlockStatus: null, jiraTransition, noop: false };
 }
 
-/** The settings `pickTransition` consults — the three name overrides plus both status maps. */
+/** The settings `pickTransition` consults — one name override per target, plus both maps. */
 export type TransitionSettings = Pick<
   JiraSettings,
   | 'todoTransitionName'
   | 'inProgressTransitionName'
   | 'inReviewTransitionName'
   | 'doneTransitionName'
+  | 'blockedTransitionName'
   | 'statusCategoryOverrides'
   | 'learnedStatusColumns'
 >;
@@ -91,6 +106,7 @@ const NAME_OVERRIDE: Record<JiraTransitionTarget, keyof TransitionSettings> = {
   toInProgress: 'inProgressTransitionName',
   toInReview: 'inReviewTransitionName',
   toDone: 'doneTransitionName',
+  toBlocked: 'blockedTransitionName',
 };
 
 /** The board column each transition target is trying to reach. */
@@ -99,6 +115,7 @@ const TARGET_COLUMN: Record<JiraTransitionTarget, BoardColumn> = {
   toInProgress: 'in-progress',
   toInReview: 'in-review',
   toDone: 'done',
+  toBlocked: 'blocked',
 };
 
 /** What each target is called when a failure has to be explained to a human. */
@@ -107,6 +124,7 @@ export const TARGET_LABEL: Record<JiraTransitionTarget, string> = {
   toInProgress: 'In Progress',
   toInReview: 'In Review',
   toDone: 'Done',
+  toBlocked: 'Blocked',
 };
 
 /** How each board column reads inside a sentence written for a human. */
@@ -164,7 +182,9 @@ export interface TransitionChoice {
  * only when nothing is named that does declaration order get to break the tie.
  *
  * Returns null when nothing fits — the caller turns that into a readable error rather
- * than moving the card silently.
+ * than moving the card silently. `toBlocked` is the one target where the caller does NOT:
+ * a workflow with no blocked status cannot be made to have one, and the card blocks
+ * locally instead of the drag being refused.
  */
 export function pickTransition(
   transitions: JiraTransition[],

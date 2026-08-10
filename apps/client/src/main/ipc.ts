@@ -38,6 +38,7 @@ import {
   type ProjectPatch,
   type ProjectWithTasks,
   type Task,
+  type TaskStatus,
 } from '@shared/model';
 import {
   ARCHIVE_RETENTION_DAYS,
@@ -76,6 +77,7 @@ import {
   shouldLearnStatus,
   TARGET_LABEL,
   type JiraTransitionTarget,
+  type MoveResolution,
 } from './jira/jiraMove';
 import { iamSignInConfig } from './iamConfig';
 import { signIn as runIamSignIn } from './iamSignIn';
@@ -1009,12 +1011,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // cancelled card that came back reading "Done" would have lost the distinction the
     // user reached for the dropdown to make.
     const move = resolveMove(existing, columnForStatus(status));
+    const outcome = move.jiraTransition
+      ? await transitionIssue(existing, move.jiraTransition, columnForStatus(status))
+      : null;
     const patch: Parameters<Store['updateTask']>[1] = {
       ...humanStatusPatch(existing, status),
-      preBlockStatus: move.preBlockStatus,
-      ...(move.jiraTransition
-        ? await transitionIssue(existing, move.jiraTransition, columnForStatus(status))
-        : {}),
+      preBlockStatus: preBlockMarker(move, outcome),
+      ...(outcome?.patch ?? {}),
     };
 
     const task = store.updateTask(taskId, patch);
@@ -2327,6 +2330,33 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     send('settings:changed', next);
   };
 
+  /** What a transition attempt did: whether the tracker moved, and what to patch locally. */
+  interface TransitionOutcome {
+    /** True only when a transition was actually POSTed and accepted. */
+    applied: boolean;
+    /** The tracker fields to write onto the card. Empty when nothing was applied. */
+    patch: Parameters<Store['updateTask']>[1];
+  }
+
+  /**
+   * What to store in `preBlockStatus` — which is now a marker of WHO owns the block, not
+   * just a remembered column.
+   *
+   * A block that stayed local (an internal card, or a workflow with no blocked status) is
+   * the app's own: nothing else will ever move that card out again, so it must remember the
+   * column to restore. A block the tracker took is the tracker's: the ticket really is
+   * Blocked, the sync reads it as BLOCKED, and un-blocking happens by the issue leaving that
+   * status — a remembered column here would only compete with what the next sync says.
+   *
+   * Null therefore means "the tracker is holding this card blocked", which is exactly the
+   * fact the sync side needs, and it is stored rather than re-derived because a workflow's
+   * transitions can change between the drop and the sync.
+   */
+  const preBlockMarker = (
+    move: MoveResolution,
+    outcome: TransitionOutcome | null,
+  ): TaskStatus | null => (outcome?.applied ? null : move.preBlockStatus);
+
   /**
    * Transition the linked issue and hand back the tracker fields to patch locally.
    *
@@ -2334,17 +2364,27 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
    * tracker rejects the move (no such transition in this workflow, the token lacks the
    * permission) the card must not budge either, or the board would be showing a column
    * the ticket has never been in. The optimistic move in the UI rolls back on the throw.
+   *
+   * `toBlocked` is the single exception, and the only reason this returns an outcome rather
+   * than a bare patch. For every other target a null pick means the drag is impossible —
+   * there is no In Progress to move to, so pretending otherwise would be the lie above. But
+   * BLOCKED is a column the board has always had and plenty of workflows have no status
+   * for; "your workflow cannot say blocked" is not a reason to refuse a human marking a
+   * card stuck. So a missing blocked transition is soft: nothing is POSTed, `applied` is
+   * false, and the card blocks locally exactly as it did before this column reached JIRA.
+   * A real failure of the POST still throws, for `toBlocked` as for everything else.
    */
   const transitionIssue = async (
     task: Task,
     target: JiraTransitionTarget,
     toColumn: BoardColumn,
-  ): Promise<Parameters<Store['updateTask']>[1]> => {
-    if (task.externalSource !== 'jira' || !task.externalKey) return {};
+  ): Promise<TransitionOutcome> => {
+    if (task.externalSource !== 'jira' || !task.externalKey) return { applied: false, patch: {} };
     const client = buildJiraClient();
     const { jira } = store.getSettings();
     const transitions = await client.getTransitions(task.externalKey);
     const choice = pickTransition(transitions, target, jira);
+    if (!choice && target === 'toBlocked') return { applied: false, patch: {} };
     if (!choice) {
       // Name the blocked-ish step when the workflow has one. It is the transition this
       // picker used to take by accident, so a user looking at a "Block" button in JIRA
@@ -2381,7 +2421,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     }
     learnStatusColumn(picked.to.name, category, toColumn);
     // Reflect the new tracker status locally for display.
-    return { externalStatus: picked.to.name, externalStatusCategory: category };
+    return {
+      applied: true,
+      patch: { externalStatus: picked.to.name, externalStatusCategory: category },
+    };
   };
 
   handle('task:move', async (taskId, toColumn) => {
@@ -2393,12 +2436,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     const move = resolveMove(existing, toColumn);
     if (move.noop) return existing;
 
+    const outcome = move.jiraTransition
+      ? await transitionIssue(existing, move.jiraTransition, toColumn)
+      : null;
     const patch: Parameters<Store['updateTask']>[1] = {
       ...humanStatusPatch(existing, move.localStatus),
-      preBlockStatus: move.preBlockStatus,
-      ...(move.jiraTransition
-        ? await transitionIssue(existing, move.jiraTransition, toColumn)
-        : {}),
+      preBlockStatus: preBlockMarker(move, outcome),
+      ...(outcome?.patch ?? {}),
     };
 
     const task = store.updateTask(taskId, patch);

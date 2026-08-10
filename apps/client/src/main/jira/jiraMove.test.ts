@@ -36,12 +36,21 @@ describe('resolveMove', () => {
     });
   });
 
-  it('moving into Blocked never touches JIRA and remembers the pre-block status', () => {
+  it('moving into Blocked blocks the ticket too, and still offers the pre-block status', () => {
     const r = resolveMove(task({ status: 'in-progress' }), 'blocked');
     expect(r).toMatchObject({
       localStatus: 'blocked',
-      jiraTransition: null,
+      jiraTransition: 'toBlocked',
       preBlockStatus: 'in-progress',
+    });
+  });
+
+  it('an internal card blocks locally — there is no ticket to block', () => {
+    const r = resolveMove(task({ source: 'adhoc', externalSource: null }), 'blocked');
+    expect(r).toMatchObject({
+      localStatus: 'blocked',
+      jiraTransition: null,
+      preBlockStatus: 'pending',
     });
   });
 
@@ -62,7 +71,7 @@ describe('resolveMove', () => {
     expect(r).toMatchObject({ localStatus: 'pending', jiraTransition: 'toTodo' });
   });
 
-  it('un-blocking to TO DO transitions JIRA, since BLOCKED left the ticket where it was', () => {
+  it('un-blocking to TO DO transitions JIRA, which is where the ticket has to come back to', () => {
     const r = resolveMove(task({ status: 'blocked', preBlockStatus: 'pending' }), 'todo');
     expect(r).toMatchObject({ localStatus: 'pending', jiraTransition: 'toTodo' });
   });
@@ -286,6 +295,59 @@ describe('pickTransition', () => {
     it('falls back to declaration order when nothing is named after the column', () => {
       const neither = [doing, TX('42', 'Pick up', 'Active', 'indeterminate')];
       expect(pickTransition(neither, 'toInProgress', {})?.transition.id).toBe('41');
+    });
+  });
+
+  // The other direction of the same tie the workflow above lost: a drag into BLOCKED must
+  // reach the step that used to be taken only by accident.
+  describe('Blocked', () => {
+    const workflow = [
+      TX('11', 'Start Progress', 'In Progress', 'indeterminate'),
+      TX('61', 'Block', 'Blocked', 'indeterminate'),
+    ];
+
+    it('finds the blocked-ish destination', () => {
+      expect(pickTransition(workflow, 'toBlocked', {})).toMatchObject({
+        transition: { id: '61' },
+        via: 'heuristic',
+        destinationColumn: 'blocked',
+        mismatch: false,
+      });
+    });
+
+    // The one target allowed to come back empty: plenty of workflows have no way to say
+    // "stuck", and the caller blocks the card locally rather than refusing the drag.
+    it('returns null when the workflow has no blocked step', () => {
+      const plain = [T('11', 'Start Progress', 'indeterminate'), T('31', 'Resolve', 'done')];
+      expect(pickTransition(plain, 'toBlocked', {})).toBeNull();
+    });
+
+    // A workflow whose blocked step is named nothing like "blocked" is exactly what the
+    // name box is for — an "On Hold"-ish destination the heuristic cannot see.
+    it('honours blockedTransitionName', () => {
+      const custom = [
+        TX('11', 'Start Progress', 'In Progress', 'indeterminate'),
+        TX('71', 'Send to triage', 'Triage', 'new'),
+      ];
+      expect(
+        pickTransition(custom, 'toBlocked', { blockedTransitionName: 'Send to triage' }),
+      ).toMatchObject({ transition: { id: '71' }, via: 'name', destinationColumn: 'todo' });
+    });
+
+    it('takes the named transition over the one the heuristic would have found', () => {
+      expect(
+        pickTransition(workflow, 'toBlocked', { blockedTransitionName: 'Start Progress' }),
+      ).toMatchObject({ transition: { id: '11' }, via: 'name', mismatch: true });
+    });
+
+    it('lets the user map say which status means blocked', () => {
+      const custom = [
+        TX('11', 'Start Progress', 'In Progress', 'indeterminate'),
+        TX('71', 'Send to triage', 'Triage', 'new'),
+      ];
+      expect(
+        pickTransition(custom, 'toBlocked', { statusCategoryOverrides: { Triage: 'blocked' } }),
+      ).toMatchObject({ transition: { id: '71' }, via: 'explicit', destinationColumn: 'blocked' });
     });
   });
 

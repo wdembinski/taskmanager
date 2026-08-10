@@ -73,9 +73,14 @@ export function isManualStatus(status: TaskStatus): status is ManualStatus {
 /**
  * The columns of the My Tasks Kanban board. A board column is a *view* concept
  * derived from a task's status (and, for JIRA tasks, its external status
- * category) — it is not stored. `blocked` is an internal-only column that never
- * touches an external tracker. Shared by main and renderer so the drag-to-move
+ * category) — it is not stored. Shared by main and renderer so the drag-to-move
  * IPC (`task:move`) and the board UI agree on the vocabulary.
+ *
+ * `blocked` used to be the one column no tracker could reach, in either direction. It
+ * is now readable (a workflow's Blocked status resolves here) and writable (dropping a
+ * card here transitions the issue), because a column that means one thing when the sync
+ * fills it and another when you drag into it is not a column. It stays reachable for an
+ * internal card, and for a workflow with no blocked status of its own.
  *
  * `in-review` cannot be derived from a JIRA *category* (JIRA has only three, and
  * every review-ish status sits in `In Progress`), so it is reachable only through
@@ -647,8 +652,13 @@ export interface Task {
   externalDescription?: string | null;
   /**
    * The board column this task occupied *before* it was moved to `blocked`, so
-   * un-blocking restores it. Null whenever the task is not blocked. `blocked` is an
-   * internal-only state — moving to/from it never touches the tracker.
+   * un-blocking restores it. Null whenever the task is not blocked.
+   *
+   * Also null for a card the TRACKER is holding blocked — a drop into BLOCKED transitions
+   * the issue when the workflow can express it, and a ticket that really is Blocked leaves
+   * that status by being transitioned out of it, not by a column this app remembered. So a
+   * non-null value here means "this block is the app's own", which is the only case where
+   * there is anything to restore.
    */
   preBlockStatus?: TaskStatus | null;
   /**

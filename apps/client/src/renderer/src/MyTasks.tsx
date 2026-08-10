@@ -4,9 +4,9 @@
  * A board independent of code-projects: it holds your JIRA-synced tickets and
  * internal ad-hoc tasks side by side. Columns are To Do / In Progress / Blocked,
  * plus a toggleable Done. Drag a card between columns to change its status; for a
- * JIRA ticket that also transitions the real issue (TO DO → IN PROGRESS, or → Done),
- * while Blocked is internal-only and never touches JIRA. The selected card's status
- * and activity timeline show in the right pane (`TaskDetail`).
+ * JIRA ticket that also transitions the real issue — every column, Blocked included,
+ * where the workflow has a status for it. The selected card's status and activity
+ * timeline show in the right pane (`TaskDetail`).
  *
  * The chain of execution is drawn over the top of it: arrows between cards (`ChainOverlay`),
  * drawn by dragging a card's handle, and a **Chain** toggle in the toolbar that reduces the
