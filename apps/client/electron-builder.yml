@@ -1,0 +1,105 @@
+# electron-builder configuration — how the app is packaged into an installer.
+# Windows: NSIS installer (`pnpm --filter claude-orchestrator package`). Linux/Ubuntu:
+# AppImage + .deb (`pnpm --filter claude-orchestrator package:linux`, must run on
+# Linux — e.g. WSL — so the native better-sqlite3 binary is compiled for Linux).
+# `appId` is NOT renamed with the product, and must not be: NSIS matches an installed app by
+# it, so changing it would install the rebranded build ALONGSIDE the old one instead of
+# upgrading it, and would move the updater's cache directory with it. Same for `package.json`'s
+# `name` — Electron derives `app.getPath('userData')` from that, which is where every task,
+# project and setting on this machine lives. The rename is what a human reads; the identity
+# the OS and the updater match on stays put.
+appId: network.vipper.claude-orchestrator
+productName: VIPPER Task Manager
+copyright: © ${author}
+
+# Where the app looks for updates, and where `--publish` uploads them. electron-builder
+# writes a `latest.yml` (Windows) / `latest-linux.yml` feed next to the installers; the
+# in-app updater (src/main/updater.ts) reads it from the same GitHub release.
+#
+# Publishing from builder rather than by hand is not a convenience here, it is the fix:
+# `gh release create` rewrites spaces in uploaded asset names to dots, while `latest.yml`
+# records the name builder wrote — so a hand-uploaded "Claude Orchestrator-x.y.z-setup.exe"
+# became "Claude.Orchestrator-…" and the updater 404'd on the very file it was told to
+# fetch. The artifact names below are space-free for the same reason.
+publish:
+  provider: github
+  owner: wdembinski
+  repo: taskmanager
+
+directories:
+  # electron-builder packages the compiled output produced by electron-vite build.
+  output: dist
+  buildResources: build # app icon lives at build/icon.ico
+
+# What goes INSIDE the app bundle. electron-builder always adds the production
+# dependency tree (so better-sqlite3 ships); these globs cover our own compiled code.
+files:
+  - out/**/*
+  - package.json
+
+# better-sqlite3 is a NATIVE module: its .node binary cannot be require()'d from
+# inside the asar archive, so it must be unpacked to app.asar.unpacked. (The
+# permission relay is materialized to userData at runtime, so it needs no unpack.)
+asarUnpack:
+  - '**/*.node'
+  - '**/node_modules/better-sqlite3/**'
+
+win:
+  target:
+    - nsis
+  icon: build/icon.ico
+  # NOTHING here may set `publisherName` while the build is unsigned, and this flag says so
+  # out loud. electron-builder copies `publisherName` verbatim into the app-update.yml it
+  # bakes into the bundle — macros like ${author} are NOT expanded there — and
+  # electron-updater then runs Get-AuthenticodeSignature on every installer it downloads and
+  # rejects an unsigned one with ERR_UPDATER_INVALID_SIGNATURE. That silently broke every
+  # Windows auto-update up to v0.33.0: the download finished, verification refused it, and
+  # the app reported a "failed check" while the release page looked fine.
+  #
+  # When a certificate is added, set `signtoolOptions.publisherName` to the certificate's
+  # exact DN and drop this flag in the SAME commit — every installed client verifies the two
+  # against each other, so a mismatch is another release nobody can update to.
+  verifyUpdateCodeSignature: false
+  # `${name}` (claude-orchestrator), not `${productName}` (VIPPER Task Manager): see the
+  # publish block above — a space in the filename breaks the update feed. Keeping `${name}`
+  # through the rename also keeps every installed client's differential-update lookup working,
+  # since that is derived from the filename it was installed from.
+  artifactName: ${name}-${version}-setup.${ext}
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: VIPPER Task Manager
+
+linux:
+  # AppImage runs on any modern distro; deb is the native Ubuntu/Debian package.
+  target:
+    - AppImage
+    - deb
+  icon: build/icon.png
+  category: Development
+  synopsis: Orchestrate the Claude CLI across many projects and tasks
+  artifactName: ${name}-${version}.${ext}
+
+deb:
+  # Debian requires a maintainer; electron-builder otherwise derives it from
+  # the package.json author email (which is kept as a bare name for Windows'
+  # ${author} interpolation), so it is set explicitly here.
+  maintainer: Wojciech Dembinski <w.dembinski@live.com>
+  # better-sqlite3 loads a native .node at runtime; libc/stdc++ are the only
+  # system libs it needs beyond what Electron already depends on.
+  depends:
+    - libgtk-3-0
+    - libnotify4
+    - libnss3
+    - libxss1
+    - libxtst6
+    - xdg-utils
+    - libatspi2.0-0
+    - libsecret-1-0
+
+# The Claude CLI/SDK is used from the user's own machine (their subscription login),
+# so we do NOT bundle it — the app shells out to the `claude` already on PATH.

@@ -1,0 +1,36 @@
+{
+  "name": "@tm/protocol",
+  "version": "0.75.1",
+  "description": "The wire contract between apps/server, apps/web and apps/client's polling loop — /v1/sync, /v1/presence, /v1/board and /v1/commands request/response shapes, and the presence-driven adaptive cadence policy (CADENCE_MS, resolveCadence, nextPollDelayMs) every side implements identically.",
+  "license": "UNLICENSED",
+  "private": true,
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    "./*": {
+      "import": {
+        "types": "./dist/*.d.ts",
+        "default": "./dist/*.js"
+      },
+      "require": {
+        "types": "./dist/*.d.cts",
+        "default": "./dist/*.cjs"
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@tm/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "tsup": "^8.0.2",
+    "typescript": "^5.7.2"
+  }
+}

@@ -2,8 +2,8 @@
 
 **Audience: an agent, running unattended, on a branch that has just been merged.** This is
 the file the app's _Release after merge_ switch points a session at (see
-`src/shared/release.ts`). A human following it by hand will not be led astray, but every
-instruction is written for the case where nobody is watching.
+`packages/shared/src/release.ts`). A human following it by hand will not be led astray, but
+every instruction is written for the case where nobody is watching.
 
 The deep background — what packaging has to get right, why the ABI gate exists, how
 auto-update works — is [`docs/07-packaging-and-release.md`](docs/07-packaging-and-release.md).
@@ -30,8 +30,9 @@ This file is the _procedure_; that one is the _reasons_. Read it if a step surpr
 5. **Never release from a branch.** Only the integration branch (`development`, or whatever
    the project's base branch is) is releasable. If the checkout is on something else, say so
    and stop.
-6. **Never launch the app to check it.** Not `dist/win-unpacked/…exe`, not `pnpm dev`, not
-   `electron.exe .` — and not even with `--user-data-dir` pointed at a throwaway profile.
+6. **Never launch the app to check it.** Not `apps/client/dist/win-unpacked/…exe`, not
+   `pnpm dev`, not `electron.exe .` — and not even with `--user-data-dir` pointed at a
+   throwaway profile.
    This machine is the machine the user works on, and their copy of this app is very often
    open on it. Every check in this file is headless. If someone wants to look at the window,
    they will open it themselves.
@@ -50,7 +51,7 @@ git log --oneline "$(git describe --tags --abbrev=0)"..HEAD
 - A tag on `HEAD` is **expected**, not a stop — [`CONTRIBUTING.md`](CONTRIBUTING.md) has every
   commit bump and tag its own version. What tells you there is nothing to release is a
   `gh release view vX.Y.Z` that finds an already-**published** release for the version in
-  `package.json`. Say so and stop — that is a normal outcome, not a failure.
+  `apps/client/package.json`. Say so and stop — that is a normal outcome, not a failure.
 - The commit list is the release notes' raw material. Read it; it also tells you the bump.
 
 ## 1. Green gates
@@ -65,7 +66,8 @@ All three, in that order, all green. See rule 1.
 
 ## 2. The version
 
-`package.json`'s `version` **is** the release. The house rule
+`apps/client/package.json`'s `version` **is** the release — the root `package.json` is
+just the workspace manifest and stays at `0.0.0`. The house rule
 ([`CONTRIBUTING.md`](CONTRIBUTING.md)) is that the bump rides inside the commit that ships the
 change, so most of the time it is already correct and this step is a check, not an edit.
 
@@ -109,7 +111,8 @@ electron-builder uploads into.
 On Windows only:
 
 ```bash
-pnpm package        # build + install-app-deps + ensure:abi + electron-builder --win
+pnpm --filter claude-orchestrator package
+                    # build + install-app-deps + ensure:abi + electron-builder --win
                     #   --publish onTagOrDraft + check:feed
 ```
 
@@ -117,12 +120,13 @@ This uploads the installer, its blockmap and `latest.yml` to the draft. If it re
 `skipped publishing`, the release is not a draft any more — see rule 4 — and you must fix
 that before continuing.
 
-Then smoke-test what you built — **without launching it** (rule 6):
+Then smoke-test what you built — **without launching it** (rule 6). `dist/` is inside
+`apps/client`, since that is where the `package` script above runs:
 
 ```bash
-ELECTRON_RUN_AS_NODE=1 "dist/win-unpacked/VIPPER Task Manager.exe" -e "
+ELECTRON_RUN_AS_NODE=1 "apps/client/dist/win-unpacked/VIPPER Task Manager.exe" -e "
   const path = require('path');
-  const pkg = 'dist/win-unpacked/resources/app.asar/node_modules/better-sqlite3';
+  const pkg = 'apps/client/dist/win-unpacked/resources/app.asar/node_modules/better-sqlite3';
   const Database = require(path.resolve(pkg));
   const row = new Database(':memory:').prepare('select 1 as ok').get();
   console.log('packaged addon OK on ABI ' + process.versions.modules, row);
@@ -153,7 +157,7 @@ addon. If a human wants the window looked at, say in your report that it is owed
 
 ## 6. Linux — usually a hand-back, not a step
 
-`pnpm package:linux` **must run on Linux**, from a clone in the WSL-native home (never
+`pnpm --filter claude-orchestrator package:linux` **must run on Linux**, from a clone in the WSL-native home (never
 `/mnt/c`, whose `node_modules` holds win32 prebuilds). Unless you are already running there
 with a working Node 22 toolchain, do **not** try to improvise it.
 
@@ -218,7 +222,7 @@ Each of these cost a release. They are here so they cost nothing again.
   nobody can update to.
 - **A "boot smoke test" took down the app the user was working in** (2026-08-02). An agent
   ran `timeout 12 electron.exe .` to prove the app still started. The exact mechanism was
-  never pinned down, and that is the point: `src/main/index.ts` takes no
+  never pinned down, and that is the point: `apps/client/src/main/index.ts` takes no
   `requestSingleInstanceLock`, so a second instance is a second full engine — scheduler,
   watcher, sync poller, updater — with its own `before-quit` teardown calling
   `sessions.stopAll()`. Pointing it at a throwaway `--user-data-dir` does not make it safe;

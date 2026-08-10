@@ -1,0 +1,42 @@
+# Local development database for @tm/server.
+#
+# Production is Azure SQL Database (see docs/plan/README.md Phase 25's Azure cost
+# estimate). To keep local development faithful to production, we run the SAME
+# database engine locally in a container: Microsoft SQL Server 2022 (Developer
+# edition — free for non-production use). Mirrors vipper.iam's own
+# docker-compose.yml, the sibling repo this stack's shape was taken from.
+#
+# Start it with:   pnpm db:up      (wrapper around `docker compose up -d`)
+# Stop it with:    pnpm db:down
+# View logs with:  pnpm db:logs
+#
+# apps/server connects using the settings in apps/server/.env
+# (copy apps/server/.env.example to apps/server/.env first).
+
+services:
+  db:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: taskmanager-db
+    environment:
+      ACCEPT_EULA: 'Y'
+      # Local-only password. NEVER use this in production. It only has to
+      # satisfy SQL Server's complexity rules.
+      MSSQL_SA_PASSWORD: 'Local_Dev_Password_123!'
+      MSSQL_PID: 'Developer'
+    ports:
+      - '1433:1433'
+    volumes:
+      - taskmanager_mssql_data:/var/opt/mssql
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          '/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$$MSSQL_SA_PASSWORD" -C -Q ''SELECT 1'' || exit 1',
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+volumes:
+  taskmanager_mssql_data:

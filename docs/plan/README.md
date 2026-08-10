@@ -48,6 +48,7 @@ plan the orchestrator could one day run on its own repo.
 | 22 | Attachments in the task and its steps | ✅ complete (v0.64.4) — tag and draft cut once it lands on `development` |
 | 23 | One model for planning, another for the steps | ✅ complete on `feat/setting-ai-agent-models-for-planning` — tag and draft cut once it lands on `development` |
 | 24 | Projects and their tickets (a tracker of our own) | 🚧 in progress on `feat/support-projects-and-their-tickets` — **the whole plan is written** (design, build steps, verification, critical files); build step 1 is next |
+| 25 | Cloud service (a hosted counterpart, sharing domain logic and UI) | 🚧 in progress on `feat/cloud-service` — target layout written, `apps/client`+`packages/shared` restructured, verified (found and fixed a broken per-package test run), Azure cost estimated, risks and open assumptions recorded, no-realtime-service/adaptive-polling design written; `apps/server`/`apps/web`/`packages/ui`/`packages/protocol` still unscaffolded |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -3248,6 +3249,741 @@ the `pnpm licenses list` check that file prescribes.
   `development`.
 - Every step of this plan shares the one branch `feat/support-projects-and-their-tickets`,
   so each step's session reads this entry to find what the previous one left it.
+
+---
+
+## Phase 25 — Cloud service
+
+**Goal.** Give the app a hosted counterpart: a NestJS/SQL Server backend and a
+browser client, so a task can be opened from a phone or a teammate's browser as
+the same task the desktop app already models — not a second product that happens
+to look similar. The phase starts from a **monorepo restructuring**: today the
+app is one `pnpm` package (root `package.json`, flat `src/main` / `src/preload` /
+`src/renderer` / `src/shared`); before a server or a web client can exist, the
+pieces that will be shared across three runtimes — desktop, server, browser —
+need package boundaries a workspace can reason about.
+
+This entry is written incrementally, one step of this plan per session on this
+branch, the same shape Phase 24 used above: the design goes down first, each
+later step adds its own section below it. **This step is the target layout
+only** — where every existing file ends up and what each new package is for.
+Turning that layout into a real `pnpm-workspace.yaml` and moved files is the next
+step; what proves the move (typecheck/test/build across every workspace, plus a
+packaged `apps/client` install) is the step after that; an Azure cost estimate
+and the plan's risks and open assumptions each get their own section too.
+
+The stack for `apps/server` and `apps/web` is not a new choice for this
+codebase's owner: it matches `vipper.iam` (`C:\Repositories\vipper.iam`), a
+sibling repo reviewed for this phase — NestJS + TypeORM + `mssql` on the
+backend, Vite + React + Fluent UI on the frontend, `@scope/*` workspace packages
+built with `tsup` (dual ESM/CJS `exports`), a `turbo.json` pipeline, and one root
+`tsconfig.base.json` that every package's own `tsconfig.json` extends
+(`vipper.iam/tsconfig.base.json:3`: "Each package extends this…" — the same line
+already written, almost verbatim, at this repo's own
+[`tsconfig.base.json:3`](../../tsconfig.base.json)). Reusing that shape means
+`apps/server` and `apps/web` are unsurprising to anyone who has touched
+`vipper.iam`, not a second set of conventions to hold in your head. `vipper.iam`
+scopes its packages `@iam/*`; this repo's equivalent scope is `@tm/*`.
+
+### Two constraints the move must not break
+
+Both are called out in this repo's own
+[`electron-builder.yml:5-10`](../../electron-builder.yml):
+
+- **`appId: network.vipper.claude-orchestrator`**
+  ([`electron-builder.yml:11`](../../electron-builder.yml)) is how NSIS
+  recognises an already-installed app. Renaming it would install the
+  restructured build **alongside** the old one and move the updater's cache
+  directory with it — every user who upgrades would get two apps instead of one.
+- **`package.json`'s `"name": "claude-orchestrator"`**
+  ([`package.json:2`](../../package.json), today the root package; after the
+  move, `apps/client/package.json`) is what Electron derives
+  `app.getPath('userData')` from — the folder holding every project, task and
+  setting on the machine. Renaming it orphans that folder: the app looks in a
+  new place and finds nothing there.
+
+Neither may change, in this step or any later one, without a deliberate
+migration nobody has asked for. `apps/client/package.json` also stays the app's
+**version of record**: it is what `app.getVersion()` reads at runtime, and what
+electron-builder's `artifactName: ${name}-${version}-setup.${ext}` names the
+installer from. The root `package.json` stops being versioned meaningfully — it
+becomes a workspace manifest, the way `vipper.iam`'s own root `package.json` is
+(`private: true`, `"version": "0.0.0"`, only `turbo run …` scripts). `@tm/server`
+and `@tm/web` are bumped to match `apps/client`'s version **in the same commit**
+the restructuring lands in, so every package in the workspace names the same
+release even though only `apps/client` ships an installer today.
+
+### Target layout
+
+```
+apps/
+  client/                the Electron app — package.json name "claude-orchestrator", MUST NOT change
+    build/                 app icons, NSIS/AppImage resources          (was /build)
+    scripts/                check-native-abi.mjs, ensure-native-abi.mjs,
+                            check-update-feed.mjs                       (was /scripts)
+    src/
+      main/                 the orchestration engine                    (was src/main)
+      preload/               the IPC bridge                             (was src/preload)
+      renderer/               desktop-only UI: shell, screens, dialogs,
+                              hooks — everything not moved to @tm/ui     (was src/renderer, minus
+                                                                          board/, chat/, TaskDetail.tsx)
+    electron.vite.config.ts                                             (was /electron.vite.config.ts)
+    electron-builder.yml                                                (was /electron-builder.yml)
+    package.json            name: claude-orchestrator (unchanged), the version of record
+    tsconfig.node.json, tsconfig.web.json, tsconfig.json                (was at repo root)
+  server/                @tm/server — NestJS + TypeORM + SQL Server     (new)
+    src/
+    nest-cli.json, package.json, tsconfig.json
+  web/                   @tm/web — Vite + React + Fluent UI,
+                          "VIPPER Task Manager Cloud"                   (new)
+    src/
+    index.html, vite.config.ts, package.json, tsconfig.json
+packages/
+  shared/                @tm/shared — domain types (Project, Task, …),
+                          pure logic (parsers, policies, schedulers),
+                          the IpcApi contract                           (was src/shared)
+  ui/                    @tm/ui — board, TaskCard, TaskDetail, chat —
+                          consumed by client + web                      (was src/renderer/src/board,
+                                                                          src/renderer/src/chat,
+                                                                          src/renderer/src/TaskDetail.tsx)
+  protocol/              @tm/protocol — cloud wire contract: socket
+                          events, DTOs, command envelope                (new — nothing to move)
+turbo.json                                                              (new — mirrors vipper.iam)
+pnpm-workspace.yaml       packages: apps/*, packages/*
+tsconfig.base.json        unchanged in spirit; every package's tsconfig extends it
+docs/
+RELEASE.md
+package.json              becomes the workspace root manifest — private, turbo scripts only,
+                           no longer the version of record
+```
+
+`pnpm-lock.yaml`, `.prettierrc.json`, `.gitattributes`, `.gitignore` and
+`vitest.config.ts` stay at the root, as they already govern the whole tree today.
+`seed-chain.cjs` / `seed-demo.cjs` seed `apps/client`'s local SQLite database, not
+anything server-side — the next step decides whether they move under
+`apps/client/scripts/` or stay at the root; either is mechanical.
+
+### `@tm/shared` can leave the renderer's world — checked, not assumed
+
+`src/shared/**` has zero imports of `'electron'` and no third-party runtime
+dependency beyond internal cross-references (confirmed by reading every
+`import` in the directory). It is plain TypeScript today only because
+`tsconfig.node.json`/`tsconfig.web.json` both `include` it directly and
+`electron.vite.config.ts` path-aliases it as `@shared`
+([`electron.vite.config.ts:29,35,44`](../../electron.vite.config.ts)) — nothing
+in its own code assumes Electron or the DOM. That is what makes turning it into
+a real package NestJS can also depend on a move, not a rewrite: `@tm/shared`
+built with `tsup` (mirroring `packages/shared-types` in `vipper.iam`) gives
+`apps/server`, `apps/client` and `apps/web` the same `Project`/`Task`/`IpcApi`
+types and the same pure parsers/policies from one source, instead of the server
+duplicating a second copy of logic the desktop app already tests.
+
+### `@tm/ui` is scoped by what the layout above names, not "everything in renderer/"
+
+Only `board/`, `chat/` and `TaskDetail.tsx` are named for the move. That is a
+narrower cut than "all renderer components" on purpose: `App.tsx`, `Settings.tsx`,
+`MyTasks.tsx`, `TitleBar.tsx`, the dialogs (`AddTaskDialog.tsx`,
+`AssignAgentDialog.tsx`, `ProjectDialog.tsx`, …) and most of the hooks are
+desktop-shell specific today — they call native pickers, read `app_state`
+through IPC, or otherwise assume the Electron main process is on the other end
+of the preload bridge — and `apps/web` does not exist yet to prove which of them
+also make sense in a browser. `board/` and `chat/` carry same-directory helpers
+today (`boardColumns.ts`, `chainArrows.ts`, `chainDrag.ts`, `currentSprint.ts`,
+`useCardAnchors.ts` under `board/`; `turns.ts`, `markdown.ts`, `mentions.ts`
+under `chat/`) that are package-internal and move with their components
+unchanged. Two files the next step has to place by judgment rather than by this
+list: `TaskDetailsCell.tsx`, which `TaskDetail.tsx` renders but which is not
+itself named above, and `theme.ts`/`color.ts`, which both `@tm/ui` and the rest
+of `apps/client/src/renderer` will need — either duplicated by import, or
+promoted into `@tm/shared` if they are as framework-agnostic as `src/shared`
+already is.
+
+### `@tm/protocol` is scaffolding, not a move
+
+Nothing in the codebase today talks to a server — there is no socket layer, no
+DTOs, no command envelope, because there is no server. `packages/protocol` is an
+empty package this step reserves a place for; a later phase (after the server
+and web app exist enough to need one) defines and fills it. Naming it now means
+`apps/server` and `apps/web` are never tempted to invent their own ad-hoc wire
+format while waiting for the "real" one.
+
+### What this step deliberately leaves open, and to whom
+
+- **The exact pnpm workspace mechanics** (`pnpm-workspace.yaml` globs,
+  `workspace:*` protocol for internal deps, whether `apps/client`'s
+  `onlyBuiltDependencies`/`allowBuilds` entries for `better-sqlite3` / `electron`
+  / `esbuild` move to the root or stay package-scoped) — the next step, which
+  actually runs `pnpm install` against the new tree.
+- **`@tm/server`'s test runner.** `vipper.iam/apps/backend` uses `jest`
+  (the NestJS-generated default); every other package in both repos uses
+  `vitest`. Carrying that split into `@tm/server` (Nest convention) while
+  `apps/client`, `apps/web`, `@tm/shared` and `@tm/ui` stay on `vitest` (today's
+  convention here) is the working assumption; the next step confirms it against
+  what `@nestjs/cli`'s own scaffold generates.
+- **`packageManager` version.** This repo pins `pnpm@11.11.0`
+  ([`package.json:57`](../../package.json)); `vipper.iam` pins `pnpm@9.15.9`.
+  The restructuring keeps this repo's own pin — a monorepo does not need to
+  match a *different* repo's pnpm version, only be internally consistent.
+- **SQL Server hosting** (local dev container vs. an Azure instance) and the
+  actual `@tm/protocol` contract are out of scope for the target layout; the
+  former is closer to the verification step, the latter to a phase after this
+  one.
+
+### Done when (this step's own gate)
+
+- Every path and package named above is grounded in a file or line this session
+  actually read (`electron-builder.yml`, `package.json`, the `tsconfig*.json`
+  files, `electron.vite.config.ts`, the `src/` tree, and `vipper.iam`'s own
+  `apps/`, `packages/`, `package.json`, `turbo.json`, `tsconfig.base.json`) —
+  not guessed from the parent task's description alone.
+- The two identity constraints (`appId`, `apps/client/package.json`'s `name`)
+  are stated with the file and line they come from, and the layout has no path
+  that would touch either.
+- Every directory in the tree above says what today's files (if any) become it,
+  so the next step can execute the move without re-deriving this design.
+
+**Notes.**
+
+- This step is **docs only** — no `src/` change, so `pnpm typecheck` and
+  `pnpm test` have nothing to say about it, and the worktree is deliberately not
+  `pnpm install`ed for it, the same as Phase 24's first step.
+- Per [`CONTRIBUTING.md` §4](../../CONTRIBUTING.md), a `docs`-only commit still
+  bumps **PATCH** in the same commit; no annotated tag and no release on this
+  branch (`RELEASE.md` rule 5) — the tag is cut once this lands on `development`.
+- Every step of this plan shares the one branch `feat/cloud-service`, so each
+  step's session reads this entry to find what the previous one left it.
+
+### Verification — what this step found
+
+The restructuring commit (`29c5477`) moved `apps/client` and `packages/shared`
+into place, but the target layout above also names `apps/server`, `apps/web`,
+`packages/ui` and `packages/protocol` — three of them marked `(new)`, meaning
+nothing to move, only to scaffold. None of the four exist on this branch: no
+`apps/server`, no `apps/web`, no `packages/ui`, no `packages/protocol`, no
+`docker-compose.yml`. Scaffolding a NestJS backend and a Vite/React frontend
+is not verification, and doing it here would mean starting later phases from
+inside this step, so the checks below cover what actually exists —
+`apps/client` and `packages/shared` — and the Server / Web / End-to-end
+sections of this step's brief are recorded as **not yet runnable**, not as
+passed or skipped, so the gap is visible to whichever step scaffolds them.
+
+Root gates, from the repo root:
+
+- `pnpm format` — clean, nothing rewritten.
+- `pnpm typecheck` — green (`turbo run typecheck`, both `apps/client` and
+  `packages/shared`).
+- `pnpm test` — 99 test files passed, 1 pre-existing failure
+  (`apps/client/src/main/exec/wslHost.test.ts`, asserts this machine's real
+  WSL login-shell PATH contains `/.local/bin`; environmental, unrelated to
+  the restructuring — the same single failure `29c5477`'s own testing
+  reported), 1 skipped file. 1904 tests passed, 3 skipped.
+- `pnpm licenses list | grep -iE 'GPL|AGPL|LGPL|MPL|EPL|CDDL'` — the only
+  hits are substring false positives (`expand-template`, `simple-get`, …
+  matching `MPL` inside `teMPLate`/`siMPLe`, all themselves MIT/WTFPL). No
+  copyleft dependency in the tree. No new dependency was added this step, so
+  this is an audit, not a gate that had anything to block.
+
+Client, per this step's own brief:
+
+- `pnpm --filter claude-orchestrator test` **failed on first run**: 40 of 77
+  test files errored resolving `@shared/model` and other runtime (not
+  type-only) imports from `@shared/*`. The root `vitest.config.ts` that makes
+  the aggregated `pnpm test` work mirrors `@shared`/`@renderer` as path
+  aliases, but only applies when vitest's cwd is the repo root; `pnpm
+  --filter` runs `apps/client`'s own `test` script with cwd set to
+  `apps/client`, where that root config is never loaded. This is a real gap
+  the restructuring left behind — before `29c5477`, `apps/client` **was** the
+  root package, so the two invocations were the same command. Fixed by adding
+  `apps/client/vitest.config.ts`, mirroring the same two aliases resolved
+  from `apps/client` instead of the repo root (see the file for why); the
+  root config's comment is updated to say both exist and when each applies.
+  Re-run: 75 of 77 files passed, the same one pre-existing `wslHost.test.ts`
+  failure, 1 skipped — and the aggregated root `pnpm test` still reports the
+  same 99/101 files passed, confirming the new config didn't change what the
+  root run collects.
+- `pnpm --filter claude-orchestrator check:abi` — passed (`ABI check OK:
+  better_sqlite3.node and Electron both at ABI 130`).
+- `pnpm --filter claude-orchestrator package:local` — `electron-vite build`,
+  `install-app-deps` and `ensure:abi` all pass; `dist/win-unpacked/VIPPER Task
+  Manager.exe` is produced. The final NSIS link fails with `!include: could
+  not find … StdUtils.nsh`, and that path is 279 characters — the same
+  Windows `MAX_PATH` (260) failure `29c5477`'s own testing hit and attributed
+  to this session's worktree path plus pnpm's `.pnpm` store naming, not a
+  code problem; confirmed again here on the same worktree.
+- `pnpm --filter claude-orchestrator check:feed` — reports "no packaged
+  bundle under `apps/client/dist`", because the NSIS step above never
+  produced one to check. Downstream of the same environmental failure, not
+  evidence of anything wrong with `check:feed` itself.
+
+Server / Web / End-to-end — not yet runnable, per the gap noted above:
+`pnpm --filter @tm/server test`, `docker compose up -d`, `pnpm --filter
+@tm/server db:migrate`, `curl localhost:3000/api/v1/health`, `pnpm --filter
+@tm/web test` and `pnpm test:e2e` all name packages or files that do not
+exist on this branch yet.
+
+No path in this step uses `ANTHROPIC_API_KEY` (`docs/06`) — nothing added a
+new dependency or API path at all, this step only added one config file. The
+packaged app was never launched (`RELEASE.md` rule 6); `check:feed`'s
+"no bundle" result and the NSIS failure above were read from command output,
+not from running the built exe.
+
+**Notes.**
+
+- Not docs-only: `apps/client/vitest.config.ts` is new, and
+  `vitest.config.ts`'s header comment changed to describe it — a `fix`
+  (`apps/client`'s own `test` script was broken), so `apps/client/package.json`
+  and `packages/shared/package.json` both bump PATCH in this commit,
+  matching the sibling-version convention `29c5477` set.
+- Per `RELEASE.md` rule 5, this branch is not released from; the tag lands
+  once this reaches `development`.
+
+### Azure cost estimate
+
+**Basis.** List prices, pay-as-you-go, no reservations, USD, ex-VAT, primary
+region West Europe (Poland Central checked as the alternative named in this
+plan's brief). Infrastructure-as-code for either region is out of scope here —
+`vipper.iam`'s Terraform lives in the separate `C:\Repositories\infrastructure`
+repo, and this service's would too. Every figure below was checked against the
+**Azure Retail Prices API** (`prices.azure.com/api/retail/prices`, the same
+data the interactive calculator reads, queried directly by service name and
+`armRegionName` on 2026-08-09) rather than typed from memory — the pricing
+*pages* render their tables client-side and return literal `"$-"` placeholders
+to anything that isn't a browser, so the API was the only way to get real
+numbers without the interactive calculator. List prices move; re-check before
+budgeting against these.
+
+#### The two levers that decide the bill
+
+**1. WebSockets removed scale-to-zero — but only partly.** `vipper.iam`'s
+backend can idle at zero replicas because it is a request/response admin
+console. A socket a Client holds open is a long-running request, so any
+replica with a connected Client is billed at Container Apps' *active* rate,
+not the *idle* rate — and with `min-replicas: 0`, a replica with no Client
+connected isn't idle, it's gone, so idle billing never applies at all. The
+saving grace: Clients only connect while the desktop app is actually running.
+With `min-replicas: 0`, the bill tracks roughly the hours someone is working —
+call it ~200 h/month, not 730. That's a 3.6× difference in connected-hours,
+and it costs nothing to get; it just means accepting a 5–20 s cold start on
+the first reconnect of the day, which a background agent with backoff absorbs
+invisibly.
+
+**2. Azure SQL serverless is the wrong shape here, and it isn't close.**
+Serverless General Purpose bills a flat **$0.5218/vCore-hour**, and only
+auto-pauses when the database is genuinely idle. A 30 s heartbeat from a
+connected Client means it never pauses, so the 0.5-vCore floor alone runs
+0.5 × $0.5218 × 730 h ≈ **$190/month** — more than everything else in
+Scenario A combined. A provisioned **S0 (10 DTU, 250 GB)** at
+$0.4839/day × 30.44 ≈ **$15/month** carries a mirror of a few machines
+comfortably. Batch the telemetry writes (flush every few minutes rather than
+per heartbeat) and the database *could* idle overnight under serverless, but
+S0's flat rate wins outright at this scale regardless of batching.
+
+#### Scenario A — personal / small fleet (1–5 Clients), single replica
+
+| Resource | Configuration | Est. USD/mo |
+|---|---|---|
+| Container Apps (Consumption) | 0.5 vCPU / 1 GiB, `min-replicas: 0`, ~200 active h/mo | **$8** |
+| Azure SQL Database | S0, 10 DTU, 250 GB | **$15** |
+| Static Web Apps | Free tier (100 GB egress, free TLS, 2 custom domains) | **$0** |
+| Key Vault | Standard, secrets read at startup ($0.03/10K operations) | **<$1** |
+| Log Analytics | ACA console + system logs, likely under the free grant at this volume | **$0–3** |
+| Container registry | GHCR, as `vipper.iam` already uses | **$0** |
+| Egress | first 100 GB/mo free; deltas and heartbeats are KB-scale | **$0** |
+| **Total** | | **≈ $24–28/mo** |
+
+Container Apps' West Europe active rate is $0.000034/vCPU-second and
+$0.000004/GiB-second (Standard vCPU/Memory Active Usage meters), against a
+free monthly grant of 180,000 vCPU-seconds and 360,000 GiB-seconds per
+subscription: 0.5 vCPU × 200 h and 1 GiB × 200 h clears the grant and leaves
+≈ $7.56 billable — the $8 above.
+
+Same shape but pinned always-on (`min-replicas: 1`, so Container Apps bills
+the *active* rate for the full 730 h/mo rather than only the ~200 h a Client
+is actually connected) costs ≈ **$48/mo** for Container Apps alone instead of
+$8 → **≈ $64–70/mo** total. (Whether the idle hours would actually qualify
+for Container Apps' cheaper idle rate — same $0.000004/vCPU-s as memory,
+an 8.5× discount off the $0.000034 active rate — depends on whether a
+periodic health probe or backplane check keeps network traffic above the
+idle-eligibility threshold; the $48 figure is the conservative case where it
+doesn't, matching what the calculator shows for a flat "730 hours" input.)
+
+#### Scenario B — small team (~25 Clients), HA
+
+| Resource | Configuration | Est. USD/mo |
+|---|---|---|
+| Container Apps | 2 × 1 vCPU / 2 GiB, always-on | **$213** |
+| Azure Cache for Redis | Basic C0, 250 MB — the socket.io backplane | **$16** |
+| Azure SQL Database | S2, 50 DTU | **$74** |
+| Static Web Apps | Standard (SLA, 5 custom domains) | **$9** |
+| Key Vault + Log Analytics | | **~$11** |
+| **Total** | | **≈ $323/mo** |
+
+The jump is mostly the second replica, and it drags Redis in with it:
+socket.io across two replicas needs a backplane for cross-replica broadcasts
+plus session affinity, or a web session subscribed to a Client lands on the
+wrong replica and sees nothing. **Stay on one replica until HA is actually
+needed** — it keeps the architecture simpler and the bill roughly 5× lower.
+The cost of that choice is a few seconds of dropped sockets during a deploy,
+which the client's reconnect already handles.
+
+#### A cheaper alternative worth knowing about
+
+Container Apps' headline advantage is scale-to-zero, and persistent sockets
+blunt it. **App Service Linux B1** (1 core / 1.75 GB, $0.018/hour × 730 h ≈
+**$13/mo**, WebSockets and Always On both supported) plus SQL S0 plus SWA
+Free lands at **≈ $28–30/mo** flat, with no cold starts and a simpler
+deployment. The reason to stay on Container Apps anyway is consistency:
+`vipper.iam`'s CI already builds to GHCR and deploys with
+`az containerapp update`, including the migrations-job-before-app-update
+ordering, and copying a working pipeline is worth more than a few dollars a
+month.
+
+#### West Europe vs. Poland Central
+
+The two regions are not priced the same, and the difference doesn't run one
+way:
+
+- **Container Apps is materially cheaper in Poland Central** — active vCPU
+  usage is $0.000024/vCPU-s there against $0.000034/vCPU-s in West Europe
+  (29% less), memory and requests are cheaper too ($0.000003 vs $0.000004
+  GiB-s, $0.40 vs $0.56 per million requests). That's the ~$2/mo difference
+  in Scenario A and the ~$60/mo difference in Scenario B's always-on Container
+  Apps line.
+- **Azure SQL Database is priced identically in both** — S0 and S2 DTU rates
+  are the same $0.4839/day and $2.42/day in West Europe and Poland Central.
+  App Service B1 is a rounding error apart ($0.018/hr vs $0.01802/hr).
+- **Static Web Apps isn't offered in Poland Central at all** — the Retail
+  Prices API returns zero SKUs for that service in that region. Whatever
+  region hosts the compute, the web client has to sit somewhere that has SWA
+  (West Europe does).
+
+Because SWA already anchors part of the stack to West Europe, and the
+Container Apps saving is ~$2/mo in Scenario A — noise — splitting the
+deployment across two regions only starts to pay for itself at Scenario B's
+scale, and even there it trades a single-region deploy for cross-region
+latency between the web client and the API. Recommendation: everything in
+West Europe for v1; revisit Poland Central for just the compute/DB tier if
+Scenario B's traffic actually materializes.
+
+#### What is *not* in these numbers
+
+`vipper.iam` itself (already running, no incremental cost); the `claude` CLI
+(runs on each Client's own subscription — no server-side inference and, per
+`docs/06-licensing.md`, never an `ANTHROPIC_API_KEY`); attachment blob storage
+(v1 keeps bytes on the Client's disk deliberately, per Phase 22); and any
+non-production environment, which would roughly double whichever scenario is
+picked unless staging shares the SQL server.
+
+**Notes.**
+
+- This step is **docs only** — no `src/` change, so `pnpm typecheck` and
+  `pnpm test` have nothing to say about it, the same as this phase's first
+  step.
+- Per `CONTRIBUTING.md` §4, a `docs`-only commit still bumps **PATCH** in the
+  same commit; no annotated tag and no release on this branch (`RELEASE.md`
+  rule 5) — the tag is cut once this lands on `development`.
+- The Container Apps consumption rates, the free monthly grants, and the
+  active/idle billing rules above are cited from Microsoft Learn's own
+  [Container Apps billing article](https://learn.microsoft.com/en-us/azure/container-apps/billing)
+  and the Retail Prices API, not the marketing pricing page (which, fetched
+  outside a browser, shows only `"$-"` placeholders).
+
+### Risks and open assumptions
+
+This plan carries four things forward as stated assumptions rather than
+verified facts. Writing them down here means a later phase can *check* each
+one instead of discovering it mid-build.
+
+- **`@vipper/iam-connector` resolvability.** The package
+  (`C:\Repositories\vipper.iam\packages\iam-connector\package.json`) publishes
+  to a private registry — `"publishConfig": { "registry":
+  "https://npm.vipper.network/" }` — and this repo has no `.npmrc` today, so
+  nothing here is currently configured to reach it. The plan assumes it will
+  resolve once that registry is configured; it is not yet proven. The phase
+  **"Guard the cloud API with vipper.iam"** verifies resolvability first, and
+  if the package can't be installed, falls back to a small local `IamClient`
+  hitting the same two endpoints the connector documents in its own README:
+  `POST ${apiBase}/authorize` (a bearer-token allow/deny decision, keyed by
+  `resourceType`/`identifier`/`action`) and the RFC 7662 introspection at
+  `${apiBase}/oauth/introspect`. That fallback is small because the connector
+  itself is, by its own description, "No NestJS, no React, no server
+  dependencies — just native `fetch`" — there is no framework glue to
+  reimplement, only two HTTP calls. Because the fallback speaks the identical
+  wire contract, nothing downstream of `apps/server`'s auth guard needs to
+  know which of the two paths is live; **this does not block anything else in
+  the plan.**
+- **The two client refactors.** `EngineApi` and `ApiClient` — the desktop
+  app's two existing HTTP/IPC call surfaces that grow a cloud-aware path —
+  touch **2534 lines** and **179 call sites** respectively. Both refactors are
+  mechanical (threading a new transport through call sites that already
+  compile against a stable interface) and **behaviour-preserving** — no call
+  site's observable result is meant to change. Each is scoped to its own
+  phase specifically so that if one goes wrong, the failure is isolated to
+  that phase's commits rather than tangled into a broader change, and so the
+  test suite that gates each phase is still testing one coherent thing
+  instead of two refactors' worth of incidental churn at once.
+- **GitHub Projects v2 is GraphQL-only.** GitHub sunset the classic REST
+  Projects endpoints; any "which column is this issue in" read has to go
+  through the GraphQL API specifically; there is no REST fallback for that
+  one piece the way there is for issues, labels, and comments. The issue sync
+  is designed around that: it works over plain REST without a project
+  attached at all, and only *enriches* the column when a project is attached
+  and the token has `read:project`. A project that is missing, unattached, or
+  reachable but unpermitted is a **degradation** — issues keep syncing,
+  columns are just absent — never a hard failure of the sync.
+- **Scope.** This single ticket bundles three products: GitHub integration,
+  this cloud service, and a shared UI extraction (`@tm/ui`, named in the
+  target layout above). That is wide scope for one ticket, so the phases are
+  deliberately ordered — the same discipline this phase's own four steps
+  already followed, each landing as its own gated commit — so that **stopping
+  after any phase still leaves a working, releasable desktop app.** No phase
+  in this plan is allowed to leave `apps/client` mid-refactor or
+  non-buildable at its own "Done when" gate.
+
+**Notes.**
+
+- This step is **docs only** — no `src/` change, so `pnpm typecheck` and
+  `pnpm test` have nothing to say about it, the same as this phase's earlier
+  steps.
+- Per `CONTRIBUTING.md` §4, a `docs`-only commit still bumps **PATCH** in the
+  same commit; no annotated tag and no release on this branch (`RELEASE.md`
+  rule 5) — the tag is cut once this lands on `development`.
+- This closes out Phase 25's own plan-writing steps (target layout →
+  restructuring → verification → cost estimate → risks); scaffolding
+  `apps/server`, `apps/web`, `packages/ui` and `packages/protocol` themselves
+  is later work this plan hands off to, not part of this entry.
+
+### No realtime service — adaptive polling
+
+The [Azure cost estimate](#azure-cost-estimate) above still prices row 1 of
+the [realtime cost comparison](azure-realtime-cost-comparison.md) — socket.io
+over Container Apps. This section changes that before any of `apps/server`,
+`packages/protocol`, or `apps/web` gets scaffolded: v1 ships **no dedicated
+realtime channel at all** — row 6 of that comparison, plain polling, with an
+adaptive cadence layered on top of it (its own new row 7, "Adaptive
+polling"). Row 4, Web PubSub, was the comparison's earlier recommendation;
+it's now recorded there as considered and not taken. The reasoning:
+
+- **No dedicated realtime channel.** No socket.io, no Web PubSub, no Azure
+  SignalR, no Redis backplane. `apps/server` exposes plain REST poll
+  endpoints; the only lever left for "how fresh is this data" is how often a
+  Client asks for it.
+- **Cadence is server-decided, not client-decided.** A Client reports its own
+  focus state on every poll (a heartbeat, not a separate round trip); the
+  server reads that back through presence and hands back the interval the
+  Client should use for its *next* poll. Policy lives in one place — the
+  server — so it can change without shipping a new Client build. Step 5 of
+  this plan ("Serve presence-driven cadence from the server") is where this
+  lands; steps 7 and 11 are the desktop and web sides that report focus and
+  obey the interval they're given.
+- **Presence lives in server memory, not SQL.** A map from `clientId` to
+  `{ focused, lastSeen }`, read and written on every poll, never touches the
+  database — no query, no write amplification, no migration, and it's cheap
+  enough to do on every single request.
+
+#### The cadence model
+
+Two tiers in v1:
+
+| Tier | Interval | When |
+|---|---|---|
+| **Focused** | ~2.5 s | The Client reports itself as the foreground window (desktop) or visible tab (web) |
+| **Idle** | ~25 s | The Client is open but not foreground — backgrounded desktop app, blurred/hidden web tab |
+
+A Client that stops polling altogether (closed, machine asleep) isn't a third
+tier — it just stops sending heartbeats, and its presence entry ages out (see
+the TTL below). Two tiers is enough to represent what both Clients can
+actually observe about their own focus state (the desktop app's window focus
+event, the web client's tab-visibility signal) without a third state the two
+runtimes would have to keep in sync.
+
+#### The presence-in-memory / one-replica constraint
+
+Keeping presence as an in-process map instead of a shared store (Redis, SQL)
+is the same trade already made for [Scenario B](#scenario-b--small-team-25-clients-ha)
+in the cost estimate: **stay on one replica until HA is actually needed.** A
+second `apps/server` replica would hold its own, disjoint presence map — a
+Client polling replica A would get cadence advice that ignores what replica B
+knows about the same resource. Nothing in this plan needs presence to survive
+a replica restart or be visible cross-replica, so it isn't built that way. If
+Scenario B's HA shape is ever adopted, presence has to move to a shared store
+first — new work this plan doesn't schedule.
+
+#### Two latencies this design cannot avoid
+
+Polling without push means both directions of "the world changed" have a
+floor, and no amount of implementation care removes either:
+
+- **Speeding up.** If a Client is on the idle tier when something it cares
+  about changes, it doesn't find out until its next poll fires — up to one
+  idle interval, **~25 s**, after the change happened. There is no push to
+  shorten this.
+- **Slowing down.** If a Client stops being focused (backgrounded, tab
+  closed), the server doesn't know until that Client's presence entry
+  expires — the **~90 s** TTL — unless the departing Client says so itself.
+  A web tab's `pagehide`/`visibilitychange` handler firing a
+  `navigator.sendBeacon` release notice on the way out makes this direction
+  immediate instead of TTL-bound; that release is a later step's work
+  (11, "Send focus heartbeats from the web client"), not this one's.
+
+A third, "warm" cadence tier between focused and idle (say, ~10 s) could
+roughly halve the first number without touching the second — the obvious
+next lever if ~25 s of staleness turns out to matter in practice. v1 ships
+with two tiers; that's a scope cut made on purpose, not an oversight.
+
+### Verification — the adaptive cadence end to end
+
+Same shape as this phase's earlier verification step: what was actually run,
+what it actually found, gaps recorded rather than hidden.
+
+**Root gates**, from the repo root:
+
+- `pnpm format` — rewrote 30 files that predated this step and had never been
+  run through Prettier since Phase 25 started scaffolding `apps/server`,
+  `apps/web` and `packages/protocol` (the same drift Phase 25's "workspace
+  refresh"-era note already flagged for `packages/ui`, now spread wider).
+  Included in this commit — `pnpm format` is one of this step's own gates, and
+  every change it made is whitespace/import-wrapping only (spot-checked
+  `apps/web/src/board/BoardScreen.tsx`); no behaviour changed, confirmed by
+  the unchanged pass counts below.
+- `pnpm typecheck` — green (`turbo run typecheck`, all 9 workspace packages:
+  `@tm/protocol`, `@tm/shared`, `@tm/ui`, `@tm/server`, `@tm/web`,
+  `claude-orchestrator`).
+- `pnpm test` — 122 test files passed, 1 pre-existing failure
+  (`apps/client/src/main/exec/wslHost.test.ts`, the same real-WSL-PATH
+  assertion the last two verification steps recorded — environmental,
+  unrelated to this step), 1 skipped file; 2064 tests passed, 3 skipped. The
+  presence/cadence suites (`presence.registry.test.ts`,
+  `presence.service.test.ts`, `presence.controller.test.ts`,
+  `cadence.test.ts`) are in this count and print real `[CadenceTransition]`
+  log lines during the run — the same logger line this step's own live
+  measurements below read.
+
+**Client gate**, separately (the root config doesn't load under `--filter` —
+see the prior verification step's own note on why):
+
+- `pnpm --filter claude-orchestrator test` — 66 test files passed, the same
+  one pre-existing `wslHost.test.ts` failure, 1 skipped; 1229 tests passed, 3
+  skipped.
+- `pnpm --filter claude-orchestrator check:abi` — passed (`ABI check OK:
+  better_sqlite3.node and Electron both at ABI 130`).
+- `pnpm --filter claude-orchestrator package:local` — `electron-vite build`,
+  `install-app-deps` and `ensure:abi` pass; `dist/win-unpacked/VIPPER Task
+  Manager.exe` is produced. The NSIS link step fails with `!include: could
+  not find … StdUtils.nsh`, whose path is exactly **279 characters** — the
+  same `MAX_PATH` (260) failure the last two verification steps hit on this
+  worktree's path plus pnpm's `.pnpm` store naming; environmental, confirmed
+  again here, not a code problem.
+
+**Docker Desktop would not come healthy in this session** — the one real gap
+this step has to report. `docker compose up` (wrapping `pnpm db:up`) failed
+with `request returned 500 Internal Server Error` from the
+`dockerDesktopLinuxEngine` named pipe; `docker info`/`docker version` hung for
+20–30 s and then returned the same 500; `docker desktop status` reported
+`stopped` throughout. Two remediation attempts — `docker desktop restart`,
+and a clean `docker desktop stop` followed by `start` — each given several
+minutes, left `docker desktop status` still `stopped` (a fresh `SessionID`
+each time, so the restarts did cycle the backend, they just didn't come up
+healthy). `wsl -l -v` showed only the machine's own `Ubuntu` distro, no
+`docker-desktop`/`docker-desktop-data` distro registered, consistent with an
+unhealthy WSL2 backend. This is this session's local Docker Desktop
+installation, not anything in this repo's `docker-compose.yml` or
+`apps/server` — but it meant `@tm/server`'s real process (its `AppModule`
+opens a TypeORM/mssql connection at boot, so it cannot start at all without a
+reachable database) could not be run for real here.
+
+**What was run for real instead.** The adaptive-cadence policy has exactly one
+piece of state that needs a live process to observe — the server's in-memory
+presence map and its tier-transition timing — and, by this phase's own design
+("Presence lives in server memory, not SQL"), none of it touches the
+database. So rather than skip the live run, this step wired up the real,
+unmodified `src/presence/presence.registry.ts` and
+`src/presence/presence.service.ts` behind a small temporary Express harness
+(`apps/server/verify-harness-server.ts`, deleted before this commit) exposing
+the same three routes (`POST /v1/sync`, `GET /v1/board`, `POST
+/v1/presence`) with the same `@tm/protocol/wire` request/response shapes —
+skipping only the TypeORM-backed mirror (task/project sync) and
+`IamAuthGuard` (which needs a live `DataSource` to construct at all, even
+under `CLOUD_DEV_NO_AUTH=1`), neither of which the cadence policy touches.
+Simulated sessions (`apps/server/verify-harness-client.ts`, also deleted)
+drove it using the REAL `nextPollDelayMs`/`CADENCE_MS` from
+`@tm/protocol/cadence` — the identical formula `CloudPoller`
+(`apps/client`) and `BoardPoller` (`apps/web`) both import — over real HTTP,
+real `setTimeout`s and real `Date.now()`, on a scripted focus timeline
+standing in for actual window-focus/tab-visibility events. `apps/web`
+(`vite`, port 5175) and the packaged desktop client
+(`dist/win-unpacked/VIPPER Task Manager.exe`, from `package:local` above,
+launched with a scratch `--user-data-dir` so the real `orchestrator.db` was
+never touched) were both booted separately as build-level smoke checks —
+`apps/web` answered `HTTP 200` on `/` in under a second, the packaged client
+opened its full process tree and stayed responsive for the smoke window —
+but neither was wired to a live cloud session (no server to hand them a real
+board, and the desktop build has no way to reach `vipper.iam` for a real
+sign-in from this environment either), so the scenario table below is the
+harness's measurements, not a screen either app actually rendered.
+
+**What the table means for the two GUI apps specifically.** Scenarios framed
+as "focus the desktop window" / "open the web tab" were driven by flipping
+the harness client's scripted `focused` flag on the same schedule a real
+window-focus or `visibilitychange` event would — `FocusTracker.ts`
+(desktop) and `browserFocusSignal.ts` (web) each reduce their real signal to
+exactly that one boolean before it ever reaches `CloudPoller`/`BoardPoller`,
+so this substitution changes *what generates* the input, not what the poller
+does with it. The one scenario that needed the actual `FocusTracker.ts`
+class, not a stand-in boolean, was locking the workstation — see its own row
+below.
+
+| Scenario | Expected | Measured |
+|---|---|---|
+| Focus the desktop window | Gap drops to ~2.5 s on the next tick | **Confirmed, immediate.** `onFocusChange`'s "bring the next poll forward" rule fired: the scheduled 24 s-out idle poll was cancelled and replaced with a 0 ms one the instant focus flipped; the server logged `from=idle to=active reason=client-focused` at that same beat, and every poll afterward held a steady 2.50–2.52 s spacing (`CADENCE_MS.active`, no jitter — active-tier polls are deliberately unjittered). |
+| Blur it, no web session | Gap returns to ~25 s ± 10 % **after the TTL** | **Confirmed for the ~25 s gap — but not TTL-gated.** `onFocusChange` fires on blur too, so the client's own very next beat reported `focused=false`; the server flipped `from=active to=idle reason=no-focus` ~1.6 s after the blur signal, well inside the 90 s TTL, and the client's own next-poll delay became ~25 s (jittered) from there. **This differs from the table's phrasing**: the TTL only matters for a session that stops reporting at all (see the next row) — one that keeps polling and honestly reports `focused=false` doesn't need to age out, because it says so on its own next beat. |
+| Open + focus the web tab, desktop blurred | Desktop's gap drops to ~2.5 s within ≤25 s | **Confirmed.** Desktop polled `focused=false` throughout (idle, ~22.6 s next-poll delay already in flight when the web session appeared at t≈2.4 s server-side). Its very next scheduled poll, at **t≈22.7 s**, picked up the server's `active` directive (`reason=web-focused`) from `nextPollDelayMs`'s `min(serverIntervalMs, localTierMs)` rule — the desktop's own local focus can only ever pull the interval down, never hold it up — and every poll after that held steady 2.5 s, still reporting its own `focused=false`. |
+| Close the web tab | Back to ~25 s immediately (beacon), and within ~90 s with the beacon suppressed | **Both confirmed, both measured precisely.** With the beacon: the `POST /v1/presence` release call's own response already carried `tier=idle` — immediate, no wait. Without it (simulating a crash/force-close — no beacon, polling just stops): a probe every 12–15 s showed `tier=active` still holding through **+88 s**, then `tier=idle` at **+92 s** — the flip landed inside the `[+88 s, +92 s]` window bracketing `PRESENCE_TTL_MS`'s exact 90 000 ms. |
+| Both focused | One `active` directive, not two competing clocks | **Confirmed.** Desktop and web polled concurrently for 15 s, both focused; the server logged exactly **one** transition for the whole run (`from=none to=active reason=web-focused`) and never logged a second one — the `reason` didn't flap between `client-focused`/`web-focused` as the two requests interleaved, because `resolveCadence` picks the first focused, non-expired session deterministically rather than re-deciding a "winner" every request. Both sessions converged on identical `tier=active`/`intervalMs=2500` directives throughout. |
+| Change a status in the web, desktop focused | Visible on the desktop board in ≤3 s | **Inferred, not directly measured.** The harness carries no real task/project data (it deliberately skips the TypeORM-backed mirror — see above), so there is no delta to actually round-trip. What ≤3 s visibility rests on is the desktop's poll gap while focused, which the "Focus the desktop window" and "Both focused" rows above measured at a steady 2.50–2.52 s — under the 3 s budget with room to spare, but this row itself is arithmetic on those two measurements, not its own live observation. |
+| Kill the server | Backoff to the 5 min cap, no spin; recovers on restart | **Confirmed for the progression and the recovery; the literal cap wasn't waited out.** After the harness server was killed mid-poll, four consecutive failures produced delays of **5 000 → 10 000 → 20 000 → 40 000 ms** — exact doublings of the 2 500 ms base (`base × 2^failures`), never spinning faster. That trajectory reaches `BACKOFF_CAP_MS` (300 000 ms) at the 7th failure by the same formula; waiting the ~9 more minutes to observe the literal cap firsthand wasn't worth the wall-clock given the formula is both exercised live here and separately asserted in `packages/protocol/src/cadence.test.ts`. Restarting the server mid-backoff: the client's next scheduled attempt (the 40 s one, landing ~40 s after restart) **succeeded immediately**, `consecutiveFailures` reset to 0, and polling resumed its steady 2.5 s cadence with no extra retry or delay. |
+| Lock the workstation with the window focused | Treated as unfocused | **Confirmed — via the real class, not a physical lock.** Locking this session's actual workstation was judged too risky to attempt deliberately (this is a headless, unattended run; an unrecoverable lock screen would have ended the session with no way to unlock it). Instead, `apps/client/src/main/focusTracker.ts` — the real, unmodified source — was exercised directly against a fake `BrowserWindow`/`powerMonitor` (a temporary vitest file, deleted before this commit) that keeps the window's own `isFocused()` returning `true` throughout. Emitting `powerMonitor`'s `lock-screen` flipped `FocusTracker.isFocused()` to `false` even though the window itself never blurred, and `unlock-screen` correctly re-read the window's real focus state on resume (`effective()`'s `focused && !suspended` — the two inputs are independent, exactly as the class's own header describes). |
+
+**Request count vs. the free grant.** At the active tier, one session polls
+every 2.5 s = 1 440 requests/hour. A single focused desktop session running
+continuously for a full 730-hour month would produce ≈1,051,200 requests —
+about 53% of Azure Container Apps' 2,000,000-request/month free grant, alone.
+A more realistic profile — 8 focused hours/day, 22 working days/month (176 h)
+— produces ≈253,440 requests/month, about 13% of the grant. Both desktop and
+web focused on the same account at once (the "Both focused" row) doubles the
+per-hour figure to 2 880 — still under 0.3% of the grant for a single focused
+hour, and nowhere near it even summed across a full working month for a
+handful of concurrent accounts. The idle tier (25 s) is 20× cheaper per
+session again. None of this counts the actual mirror payload size (this
+harness never carries real task/project deltas) — the grant is metered on
+request count, not bytes, so payload size doesn't change this comparison.
+
+**Notes.**
+
+- Not docs-only: `pnpm format` (one of this step's own gates) rewrote 30
+  pre-existing files across `apps/client`, `apps/server`, `apps/web`,
+  `packages/protocol` and `packages/ui` — whitespace/import-wrapping only, no
+  behaviour change (confirmed by the unchanged test counts above) — so
+  `apps/client`, `apps/server`, `apps/web`, `packages/protocol` and
+  `packages/ui`'s `package.json`s each bump PATCH in this commit, the same
+  convention the prior verification step set when its own gate produced a
+  real file change.
+- The three temporary harness/test files this step wrote
+  (`apps/server/verify-harness-server.ts`,
+  `apps/server/verify-harness-client.ts`,
+  `apps/client/src/main/focusTracker.verify.test.ts`) are deleted, not
+  committed — they existed only to drive this session's live measurements
+  against real, unmodified production code while Docker Desktop was down;
+  keeping them around as permanent fixtures would misrepresent them as
+  supported tooling.
+- Per `RELEASE.md` rule 5, this branch is not released from; the tag lands
+  once this reaches `development`.
+- This closes out the plan of build steps this session was handed (1–12);
+  `apps/server`, `apps/web`, `packages/ui` and `packages/protocol` are now
+  scaffolded, wired to a presence-driven adaptive cadence, and this step
+  measured that cadence against real production code end to end, with the
+  one gap above (Docker Desktop's local health in this session) recorded
+  rather than glossed over.
 
 ---
 

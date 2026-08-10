@@ -1,0 +1,583 @@
+/**
+ * The card's **details cell** — the block above the conversation in the detail pane.
+ *
+ * Deliberately one shaded slab rather than a second tab: what a card *is* (status, the
+ * ticket text, its steps) is context you read **while** talking to the agent, not an
+ * alternative to it. The description folds away because on a JIRA card it is often
+ * twenty lines of reproduction steps you have already read.
+ *
+ * Editing the description edits the app's **copy**. That copy is what the agent's
+ * prompt quotes, so the edit is real work — but a JIRA sync will replace it with the
+ * issue's text, and nothing here writes back to the tracker (see `docs/03`).
+ *
+ * The card's **files** live in that same section rather than in one of their own, because
+ * they are not a separate list to browse: they are the parts of the brief that are not
+ * prose, and the description is where one is cited as `@name`.
+ */
+import { useEffect, useRef, useState } from 'react';
+import {
+  Button,
+  Caption1,
+  Dialog,
+  DialogActions,
+  DialogBody,
+  DialogContent,
+  DialogSurface,
+  DialogTitle,
+  Dropdown,
+  MessageBar,
+  MessageBarBody,
+  Option,
+  Text,
+  Textarea,
+  makeStyles,
+  tokens,
+} from '@fluentui/react-components';
+import { DeleteRegular, DismissRegular } from '@fluentui/react-icons';
+import type { ManualStatus, Project, Task } from '@tm/shared/model';
+import { restingStatus } from '@tm/shared/board';
+import { insertAttachmentRef, type TaskAttachment } from '@tm/shared/attachments';
+import { DEFAULT_PRIORITIES } from '@tm/shared/priority';
+import type { PriorityDisplay } from '@tm/shared/settings';
+import { AttachmentStrip } from './AttachmentStrip';
+import { draftKey, useDraft } from './drafts';
+import { PriorityGlyph } from './PriorityGlyph';
+import { MANUAL_STATUS_OPTIONS, STATUS_LABEL } from './taskStatus';
+import { FoldToggle } from './FoldToggle';
+import { useTransport } from './transport';
+
+/** The dropdown entry for "no priority" — a real option, since clearing must be possible. */
+const NO_PRIORITY = 'None';
+/** Ditto for "no project". A sentinel value, since a Dropdown option cannot carry null. */
+const NO_PROJECT = '__none__';
+
+const useStyles = makeStyles({
+  /** A section of the pane's details cell — the cell owns the shade and the border. */
+  cell: { display: 'flex', flexDirection: 'column', gap: '8px' },
+  row: { display: 'flex', alignItems: 'center', gap: '8px' },
+  grow: { flex: 1, minWidth: 0 },
+  hint: { color: tokens.colorNeutralForeground3 },
+  body: {
+    whiteSpace: 'pre-wrap',
+    maxHeight: '200px',
+    overflowY: 'auto',
+    padding: '8px 10px',
+    borderRadius: tokens.borderRadiusMedium,
+    // Recessed against the pane, so the ticket's own words read as quoted material.
+    backgroundColor: tokens.colorNeutralBackground2,
+    color: tokens.colorNeutralForeground2,
+    fontSize: '12px',
+  },
+  editRow: { display: 'flex', justifyContent: 'flex-end', gap: '8px' },
+  /**
+   * The PROJECT's colour, beside its dropdown. Priority used to share this style; it now
+   * comes from `PriorityGlyph`, which the board card uses too — a project colour is not a
+   * priority and had no business being drawn by the same rule.
+   */
+  projectSwatch: { width: '12px', height: '12px', borderRadius: '3px', flexShrink: 0 },
+  picker: { minWidth: '116px' },
+  /** The headline, clipped to one line — the full text is in the tooltip and the pane. */
+  noteText: {
+    flex: 1,
+    minWidth: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    color: tokens.colorNeutralForeground2,
+  },
+  /** State, priority and project side by side — three equal columns that can shrink. */
+  trio: { display: 'flex', alignItems: 'flex-end', gap: '8px' },
+  trioCell: { display: 'flex', flexDirection: 'column', gap: '2px', flex: 1, minWidth: 0 },
+  trioLabel: { display: 'flex', alignItems: 'center', gap: '5px' },
+  // `minWidth: 0` so a long project name shrinks the control rather than the row.
+  trioPicker: { minWidth: 0 },
+  /**
+   * The delete action, alone on the last row and pushed right — as far from the controls
+   * you use every day as the cell allows. Subtle, not a filled danger button: it is a rare
+   * action that should be findable, not one the eye lands on first.
+   */
+  deleteRow: { display: 'flex', justifyContent: 'flex-end' },
+  delete: { color: tokens.colorPaletteRedForeground1 },
+});
+
+export interface TaskDetailsCellProps {
+  task: Task;
+  /** The projects a card can be filed under (Settings → Agents). */
+  agentProjects?: Project[];
+  /**
+   * This card's files, sliced out of the board's list. Passed in rather than fetched here
+   * for the reason the list exists at all: a JIRA sync rewrites whole `Task` literals on
+   * every poll, so the attachments live beside the board's tasks and not on them.
+   */
+  attachments?: readonly TaskAttachment[];
+  /**
+   * How the board draws priority, so this pane draws it the same way. Defaults to the
+   * colour square — what every caller got before the setting existed.
+   */
+  priorityDisplay?: PriorityDisplay;
+  /** Called with the updated task after a status or description change. */
+  onTaskChanged: (task: Task) => void;
+  /** Called after a description edit, so the timeline/pane can refresh. */
+  onEdited?: () => void;
+}
+
+export function TaskDetailsCell({
+  task,
+  agentProjects = [],
+  attachments = [],
+  priorityDisplay = 'color',
+  onTaskChanged,
+  onEdited,
+}: TaskDetailsCellProps): JSX.Element {
+  const transport = useTransport();
+  const styles = useStyles();
+  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
+  /**
+   * The description being written, kept as a DRAFT (`./drafts`): opening another card to
+   * check something no longer throws away an edit in progress, and the pane being folded
+   * away does not either — the store outlives this component.
+   */
+  const description = useDraft(draftKey(task.id, 'description'), task.externalDescription ?? '');
+  const draft = description.value;
+  const setDraft = description.set;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [jiraPriorities, setJiraPriorities] = useState<string[]>([]);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  /** The description field, so an attachment can be cited where the caret actually is. */
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  /**
+   * Switching cards closes whatever was open on the previous one.
+   *
+   * Keyed on the card's ID **only**. It used to depend on the description text as well, so
+   * a background JIRA sync — which rewrites the whole `Task` on every poll — folded the
+   * section shut and wiped whatever was half-typed in it, for a card nobody had touched.
+   * The text is the draft's business now, and a draft is left alone by an external change:
+   * what you are writing wins until you save or cancel it.
+   */
+  useEffect(() => {
+    setOpen(false);
+    setEditing(false);
+    setError(null);
+    setConfirmDelete(false);
+  }, [task.id]);
+
+  /**
+   * Delete the card. The main process refuses while a run owns it (or one of its steps), so
+   * the failure a human can actually act on — "stop it first" — arrives as a message here
+   * rather than as a silently dropped click.
+   *
+   * Nothing is called back: the handler broadcasts `project:tasksChanged`, the board
+   * replaces its list, and the pane's selected task resolves to nothing — so the pane
+   * empties itself without this component having to know it is being unmounted.
+   */
+  async function remove(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      await transport.invoke('task:delete', task.id);
+      setConfirmDelete(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setConfirmDelete(false);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const isJira = task.externalSource === 'jira';
+
+  // A JIRA card may only be given a priority this instance actually has — anything
+  // else is rejected by the PUT. Main caches the list, so this costs one IPC round
+  // trip per pane; an empty answer (JIRA off, or the call failed) falls back to the
+  // built-in scale rather than leaving the dropdown unusable.
+  useEffect(() => {
+    if (!isJira) return;
+    let live = true;
+    void transport
+      .invoke('jira:priorities')
+      .then((names) => live && setJiraPriorities(names))
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [isJira]);
+
+  const priorities = (
+    isJira && jiraPriorities.length ? jiraPriorities : DEFAULT_PRIORITIES
+  ).slice();
+  const priority = task.externalPriority ?? null;
+  // The FILING, not the delegation — this dropdown says what the card is about.
+  const project = agentProjects.find((p) => p.id === task.projectTagId) ?? null;
+  const resting = restingStatus(task);
+
+  async function setStatus(next: ManualStatus): Promise<void> {
+    if (next === resting) return;
+    setError(null);
+    try {
+      onTaskChanged(await transport.invoke('task:setStatus', task.id, next));
+      onEdited?.();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  /** Take the headline off the card. The engine reads an empty note as "clear it". */
+  async function clearStatusNote(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      onTaskChanged(await transport.invoke('task:setStatusNote', task.id, ''));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function setPriority(next: string | null): Promise<void> {
+    if (next === priority) return;
+    setError(null);
+    setBusy(true);
+    try {
+      onTaskChanged(await transport.invoke('task:setPriority', task.id, next));
+      onEdited?.();
+    } catch (e) {
+      // The card keeps its old priority: main writes JIRA first and only then the row.
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** File the card under a project. Tagging only — this never starts an agent. */
+  async function setProject(next: string | null): Promise<void> {
+    if (next === (task.projectTagId ?? null)) return;
+    setError(null);
+    setBusy(true);
+    try {
+      onTaskChanged(await transport.invoke('task:setProject', task.id, next));
+      onEdited?.();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /**
+   * Write `@name` for each of `names` into the draft, where the caret is.
+   *
+   * Folded rather than looped through `setDraft`: every call reads the SAME `draft` from
+   * this render, so five separate inserts would each overwrite the last and only the fifth
+   * file would end up cited. The caret walks along with the text, so a pick of five reads
+   * as one phrase. With no textarea to ask (the field has not mounted yet), the refs go on
+   * the end — which is where they belong when nothing was being pointed at.
+   */
+  function insertRefs(names: readonly string[]): void {
+    let text = draft;
+    let caret = textareaRef.current?.selectionStart ?? draft.length;
+    for (const name of names) ({ text, caret } = insertAttachmentRef(text, caret, name));
+    setDraft(text);
+    // After React has written the new value, or the browser puts the caret back at the end
+    // of the old one and the next thing typed lands somewhere else entirely.
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(caret, caret);
+      }
+    });
+  }
+
+  async function save(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      onTaskChanged(await transport.invoke('task:setDescription', task.id, draft));
+      // Saved, so there is no longer a draft: the card now says this. Leaving one parked
+      // would have it restored over the card's own text the next time you came back.
+      description.commit();
+      setEditing(false);
+      onEdited?.();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className={styles.cell}>
+      <div className={styles.row}>
+        <Text weight="semibold">Details</Text>
+      </div>
+
+      {/* The card's headline, with a way to take it back off. It is set by posting a
+          status from the composer, and until now there was no way to CLEAR one — an
+          empty post was rejected by the UI, though the engine has always accepted one
+          and stored null. A stale headline on a card is worse than none. */}
+      {task.statusNote && (
+        <div className={styles.row}>
+          <Caption1 className={styles.hint}>Status</Caption1>
+          <Caption1 className={styles.noteText} title={task.statusNote}>
+            {task.statusNote}
+          </Caption1>
+          <Button
+            size="small"
+            appearance="subtle"
+            icon={<DismissRegular />}
+            disabled={busy}
+            title="Clear this status"
+            aria-label="Clear this status"
+            onClick={() => void clearStatusNote()}
+          />
+        </div>
+      )}
+
+      {/* State, priority and project on ONE row. Stacked, each was a full-width row
+          carrying a two-word label and a 116px control, so the three of them spent three
+          lines of a narrow pane to say what fits comfortably on one. */}
+      <div className={styles.trio}>
+        <div className={styles.trioCell}>
+          <Caption1 className={styles.hint}>State</Caption1>
+          {/* Where the card RESTS, not `status` — which a live run has borrowed, and
+              which would have this control announce "Running" as the card's state and
+              then quietly change it back. The run says so through the spinner and the run
+              strip above; this says where you filed the card, and only you move it.
+
+              Enabled during a run, for the same reason: the run borrowed the field, so the
+              state you pick is parked and handed back to the card when the run settles
+              (`humanStatusPatch`). Disabling it meant a delegated card's state was frozen
+              for as long as its agent worked. */}
+          <Dropdown
+            className={styles.trioPicker}
+            size="small"
+            value={STATUS_LABEL[resting]}
+            selectedOptions={[resting]}
+            title="Status"
+            onOptionSelect={(_e, d) => {
+              if (d.optionValue) void setStatus(d.optionValue as ManualStatus);
+            }}
+          >
+            {MANUAL_STATUS_OPTIONS.map((o) => (
+              <Option key={o.value} value={o.value}>
+                {o.label}
+              </Option>
+            ))}
+          </Dropdown>
+        </div>
+
+        {/* For a JIRA card this one really does leave the app: the issue is updated, and
+            a rejection leaves the card alone. */}
+        <div className={styles.trioCell}>
+          <div className={styles.trioLabel}>
+            <Caption1 className={styles.hint}>Priority</Caption1>
+            {/* The same indicator the cards wear. The dropdown beside it spells the name
+                out either way, so this is the redundant half — which is exactly why it is
+                the half that follows the board's setting. */}
+            <PriorityGlyph mode={priorityDisplay} priority={priority} size={16} />
+          </div>
+          <Dropdown
+            className={styles.trioPicker}
+            size="small"
+            value={priority ?? NO_PRIORITY}
+            selectedOptions={[priority ?? NO_PRIORITY]}
+            disabled={busy}
+            title={isJira ? 'Also updates the linked JIRA issue' : 'Priority'}
+            onOptionSelect={(_e, d) => {
+              if (d.optionValue)
+                void setPriority(d.optionValue === NO_PRIORITY ? null : d.optionValue);
+            }}
+          >
+            {priorities.map((p) => (
+              <Option key={p} value={p}>
+                {p}
+              </Option>
+            ))}
+            <Option value={NO_PRIORITY}>{NO_PRIORITY}</Option>
+          </Dropdown>
+        </div>
+
+        {/* Which project this card is about. Setting it files the card — starting an
+            agent on it is the separate act in the panel above. */}
+        {agentProjects.length > 0 && (
+          <div className={styles.trioCell}>
+            <div className={styles.trioLabel}>
+              <Caption1 className={styles.hint}>Project</Caption1>
+              {project?.color && (
+                <span className={styles.projectSwatch} style={{ backgroundColor: project.color }} />
+              )}
+            </div>
+            <Dropdown
+              className={styles.trioPicker}
+              size="small"
+              value={project?.name ?? 'None'}
+              selectedOptions={[task.projectTagId ?? NO_PROJECT]}
+              disabled={busy}
+              title="The repo this card is about — filing it here does not start an agent"
+              onOptionSelect={(_e, d) => {
+                if (d.optionValue)
+                  void setProject(d.optionValue === NO_PROJECT ? null : d.optionValue);
+              }}
+            >
+              {agentProjects.map((p) => (
+                <Option key={p.id} value={p.id} text={p.name}>
+                  {p.name}
+                </Option>
+              ))}
+              <Option value={NO_PROJECT} text="None">
+                None
+              </Option>
+            </Dropdown>
+          </div>
+        )}
+      </div>
+
+      {task.dependsOn?.length > 0 && (
+        <Caption1 className={styles.hint}>Depends on: {task.dependsOn.join(', ')}</Caption1>
+      )}
+
+      <div className={styles.row}>
+        {/* The fold's summary counts the FILES, not the words: a description you have read
+            is worth leaving shut, and the one thing you would still want to know about
+            what is behind it is whether the card is carrying something. */}
+        <FoldToggle
+          open={open}
+          onToggle={() => setOpen((v) => !v)}
+          summary={
+            attachments.length > 0
+              ? `${attachments.length} file${attachments.length === 1 ? '' : 's'}`
+              : undefined
+          }
+        >
+          <Caption1>Description</Caption1>
+        </FoldToggle>
+        <span className={styles.grow} />
+        {open && !editing && (
+          <Button size="small" appearance="subtle" onClick={() => setEditing(true)}>
+            Edit
+          </Button>
+        )}
+      </div>
+
+      {error && (
+        <MessageBar intent="error">
+          <MessageBarBody>{error}</MessageBarBody>
+        </MessageBar>
+      )}
+
+      {open && (
+        <>
+          {editing ? (
+            <>
+              <Textarea
+                value={draft}
+                resize="vertical"
+                textarea={{ ref: textareaRef }}
+                onChange={(_e, d) => setDraft(d.value)}
+                placeholder="What this card is, and what done means…"
+              />
+              {isJira && (
+                <Caption1 className={styles.hint}>
+                  Edits the app&apos;s copy — the agent reads this, but nothing is written back to
+                  JIRA and the next sync replaces it with the ticket&apos;s text.
+                </Caption1>
+              )}
+              <div className={styles.editRow}>
+                <Button
+                  size="small"
+                  disabled={busy}
+                  onClick={() => {
+                    // Abandoned: the card's own text comes back and the draft goes.
+                    description.reset();
+                    setEditing(false);
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  size="small"
+                  appearance="primary"
+                  disabled={busy}
+                  onClick={() => void save()}
+                >
+                  Save
+                </Button>
+              </div>
+            </>
+          ) : task.externalDescription ? (
+            <div className={styles.body}>{task.externalDescription}</div>
+          ) : (
+            <Caption1 className={styles.hint}>
+              No description yet — Edit adds one, and the agent&apos;s prompt quotes it.
+            </Caption1>
+          )}
+
+          {/* The files, under the words, inside the same fold — one section, because a
+              file here is a part of the brief and not a separate thing to browse.
+              `onInsertRefs` only while EDITING: the whole point of citing at the caret is
+              that there is a caret, and offering it against text nobody is typing would
+              write into a draft that Cancel then throws away. */}
+          <AttachmentStrip
+            taskId={task.id}
+            attachments={attachments}
+            disabled={busy}
+            onInsertRefs={editing ? insertRefs : undefined}
+          />
+        </>
+      )}
+
+      {/* Deleting is offered ONLY for a card this app owns. A JIRA card is a mirror of a
+          ticket: removing it here would delete the row and then the very next sync would
+          fetch it straight back, which is a button that lies about what it does. Take a
+          mirrored card off the board by changing the query, or delete the issue in JIRA. */}
+      {!isJira && (
+        <>
+          <div className={styles.deleteRow}>
+            <Button
+              size="small"
+              appearance="subtle"
+              icon={<DeleteRegular />}
+              className={styles.delete}
+              disabled={busy}
+              onClick={() => setConfirmDelete(true)}
+            >
+              Delete task
+            </Button>
+          </div>
+
+          {/* A dialog rather than an inline "are you sure": this takes the card's whole
+              timeline and every step with it, and there is no undo. */}
+          <Dialog open={confirmDelete} onOpenChange={(_e, d) => !d.open && setConfirmDelete(false)}>
+            <DialogSurface>
+              <DialogBody>
+                <DialogTitle>Delete this task?</DialogTitle>
+                <DialogContent>
+                  <Text>
+                    <b>{task.title}</b> and everything on it — its steps, its notes and its whole
+                    conversation — are removed. This cannot be undone.
+                  </Text>
+                </DialogContent>
+                <DialogActions>
+                  <Button
+                    appearance="secondary"
+                    disabled={busy}
+                    onClick={() => setConfirmDelete(false)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button appearance="primary" disabled={busy} onClick={() => void remove()}>
+                    {busy ? 'Deleting…' : 'Delete'}
+                  </Button>
+                </DialogActions>
+              </DialogBody>
+            </DialogSurface>
+          </Dialog>
+        </>
+      )}
+    </div>
+  );
+}

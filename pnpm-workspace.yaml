@@ -1,7 +1,19 @@
+# Workspace packages: the Electron app plus the packages it shares with the
+# (not-yet-built) cloud server and web client. See docs/plan/README.md Phase 25.
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
 # pnpm 11 requires the build scripts of native deps to be explicitly approved,
-# otherwise `pnpm install` exits non-zero and blocks `pnpm package`/`package:linux`.
+# otherwise `pnpm install` exits non-zero and blocks `apps/client`'s `package`/`package:linux`.
+# These are apps/client's native deps only, but pnpm only reads this list from the
+# workspace root, not from a member package's own config.
 # `allowBuilds` is the pnpm 11 form; `onlyBuiltDependencies` is kept for pnpm 10.
 allowBuilds:
+  # @nestjs/core's postinstall is only an OpenCollective donation nag (`opencollective
+  # || exit 0`) — nothing to build. Explicitly disallowed rather than left unapproved,
+  # so `pnpm install` stays clean instead of warning about an ignored build every run.
+  '@nestjs/core': false
   better-sqlite3: true
   electron: true
   esbuild: true

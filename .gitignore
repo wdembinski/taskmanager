@@ -1,9 +1,11 @@
 # Dependencies
 node_modules/
 
-# Build output (electron-vite compiles here; electron-builder packages from here)
+# Build output (electron-vite compiles here; electron-builder packages from here;
+# tsup writes packages/*/dist; turbo caches task output/logs under .turbo)
 out/
 dist/
+.turbo/
 *.tsbuildinfo
 
 # Local application data (SQLite database, transcripts, logs) — never commit

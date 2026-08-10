@@ -16,8 +16,10 @@
     "noEmit": true,
     "baseUrl": ".",
     "paths": {
-      "@shared/*": ["src/shared/*"],
-      "@renderer/*": ["src/renderer/src/*"]
+      "@shared/*": ["packages/shared/src/*"],
+      "@protocol/*": ["packages/protocol/src/*"],
+      "@ui/*": ["packages/ui/src/*"],
+      "@renderer/*": ["apps/client/src/renderer/src/*"]
     }
   }
 }

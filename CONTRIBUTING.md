@@ -18,7 +18,7 @@ Every commit that ships work:
 1. Has a **Conventional Commits** subject, 50 characters or fewer.
 2. Has a **plain-text body** wrapped at 72 characters, ending in a `Ticket ID:`
    (when there is one) and a `Tested:` line.
-3. **Bumps `version` in `package.json`**, in that same commit.
+3. **Bumps `version` in `apps/client/package.json`**, in that same commit.
 4. Is **tagged** `vX.Y.Z` with an annotated tag matching that version.
 
 Steps 3 and 4 are the part people forget. A commit that changes behaviour and
@@ -138,7 +138,7 @@ whole chain in the gate fixes three symptoms at once:
   runner still counted the parked one as busy
 
 Tested: pnpm test, plus a seeded chain driven through a forced
-        limit and a manual reset via scripts/unblock-limit.cjs.
+        limit and a manual reset via apps/client/scripts/unblock-limit.cjs.
 ```
 
 ### What a bad message looks like
@@ -158,9 +158,10 @@ could check.
 
 ## 4. Versioning
 
-The version lives in one place — `version` in `package.json` — and **it is the
-release**. Nothing else names the version; the installer, the update feed and the
-tag all derive from it.
+The version lives in one place — `version` in `apps/client/package.json` — and
+**it is the release**. Nothing else names the version; the installer, the update
+feed and the tag all derive from it. The root `package.json` is the workspace
+manifest and stays at `0.0.0`; it is never bumped.
 
 ### The rule
 
@@ -228,5 +229,5 @@ the change seen working. Then:
       continuations aligned.
 - [ ] `Ticket ID:` present if a ticket exists, omitted if not.
 - [ ] `Tested:` says what you actually ran.
-- [ ] `package.json` `version` bumped in this commit.
+- [ ] `apps/client/package.json` `version` bumped in this commit.
 - [ ] Annotated `vX.Y.Z` tag created for that version.

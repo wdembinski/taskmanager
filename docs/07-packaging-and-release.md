@@ -2,24 +2,25 @@
 
 How to turn the source into an installable Windows or Linux build, what the packaging
 has to get right, and the steps to cut a versioned release. Packaging config lives in
-[`electron-builder.yml`](../electron-builder.yml); the build itself is driven by
-electron-vite (see [`docs/02`](02-architecture.md) for the three-bundle layout).
+[`apps/client/electron-builder.yml`](../apps/client/electron-builder.yml); the build
+itself is driven by electron-vite (see [`docs/02`](02-architecture.md) for the
+three-bundle layout).
 
 ---
 
 ## Build & package
 
 ```bash
-pnpm install          # postinstall rebuilds better-sqlite3 for Electron's ABI
-pnpm build            # electron-vite build -> ./out (main / preload / renderer)
-pnpm package          # build + install-app-deps + ABI gate + electron-builder --win,
-                      #   publishing to GitHub on a tag or draft release (needs GH_TOKEN)
-pnpm package:linux    # same, --linux (AppImage + deb) — MUST run on Linux
-pnpm package:local    # --win, --publish never: build the installer, upload nothing
-pnpm check:abi        # the ABI gate on its own
+pnpm install                                    # postinstall rebuilds better-sqlite3 for Electron's ABI
+pnpm build                                      # turbo run build -> apps/client/out (main / preload / renderer)
+pnpm --filter claude-orchestrator package       # build + install-app-deps + ABI gate + electron-builder
+                                                # --win, publishing to GitHub on a tag or draft release (needs GH_TOKEN)
+pnpm --filter claude-orchestrator package:linux # same, --linux (AppImage + deb) — MUST run on Linux
+pnpm --filter claude-orchestrator package:local # --win, --publish never: build the installer, upload nothing
+pnpm --filter claude-orchestrator check:abi     # the ABI gate on its own
 ```
 
-`pnpm package` produces, in `dist/`:
+`pnpm --filter claude-orchestrator package` produces, in `apps/client/dist/`:
 
 - **`claude-orchestrator-<version>-setup.exe`** — the NSIS installer (per-user, lets
   the user choose the install directory), plus its `.blockmap`.
@@ -30,9 +31,10 @@ pnpm check:abi        # the ABI gate on its own
 > *Auto-update*. Releases up to v0.29.0 used `Claude Orchestrator-…`.
 
 For a fast check without building the installer, `npx electron-builder --win --dir`
-produces only `dist/win-unpacked/`.
+(run from `apps/client`) produces only `apps/client/dist/win-unpacked/`.
 
-> `dist/` is git-ignored; `build/icon.ico` is a tracked source asset.
+> `apps/client/dist/` is git-ignored; `apps/client/build/icon.ico` is a tracked source
+> asset.
 
 ---
 
@@ -54,9 +56,9 @@ Re-check these if the dependency or spawn model changes.
    opens, `createStore()` throws before the first `ipcMain.handle()`, and every screen
    sits on "Loading…" forever. v0.25.0 shipped exactly that on Linux.
 
-   `pnpm check:abi` (`scripts/check-native-abi.mjs`) compares the addon's
+   `check:abi` (`apps/client/scripts/check-native-abi.mjs`) compares the addon's
    `node_register_module_v*` symbol against `process.versions.modules` read from the
-   installed Electron. `pnpm ensure:abi` does the same check and, on a mismatch, forces
+   installed Electron. `ensure:abi` does the same check and, on a mismatch, forces
    a from-source rebuild against Electron's headers — both `package` scripts run it
    before electron-builder, and it fails the build if the rebuild doesn't take.
    **Never bypass this gate to get a release out.**
@@ -79,8 +81,8 @@ Re-check these if the dependency or spawn model changes.
    electron-updater reject every unsigned installer, and a `latest.yml` naming a file that
    wasn't on the release. Neither has a symptom until a user's app tries to update.
 
-   `pnpm check:feed` (`scripts/check-update-feed.mjs`) reads what electron-builder just
-   wrote into `dist/` and fails on an unexpanded `${…}` macro in `app-update.yml`, a
+   `check:feed` (`apps/client/scripts/check-update-feed.mjs`) reads what electron-builder
+   just wrote into `apps/client/dist/` and fails on an unexpanded `${…}` macro in `app-update.yml`, a
    `publisherName` with nothing signing the build, or a `latest*.yml` naming an artifact
    that isn't beside it. All three `package` scripts run it.
 
@@ -90,14 +92,14 @@ Re-check these if the dependency or spawn model changes.
 
 The app updates itself from its own GitHub Releases. `electron-builder` publishes the
 installers **and** a `latest.yml` / `latest-linux.yml` feed to the release;
-`src/main/updater.ts` (wrapping `electron-updater`) reads that feed, downloads a newer
+`apps/client/src/main/updater.ts` (wrapping `electron-updater`) reads that feed, downloads a newer
 build in the background, and applies it when the app quits. The status bar offers a
 "restart" shortcut once a build is ready; **Settings → General → Updates** shows the
 state, a *Check now* button and the download progress. A failure is never a dialog, but it
 is no longer silent either: the status bar shows *Update failed — see Settings*, and
 Settings names the electron-updater error code alongside a link to the releases page.
 
-**Not every install can update itself** (`src/main/updateSupport.ts`):
+**Not every install can update itself** (`apps/client/src/main/updateSupport.ts`):
 
 | Install | Mode | Why |
 | --- | --- | --- |
@@ -116,23 +118,25 @@ was invisible: the status bar only rendered the `downloaded` state, so the app l
 while the release page looked fine. Anyone on such a build has to download the installer
 from the releases page and click through SmartScreen (*More info → Run anyway*) once;
 from that build on, updates apply themselves. The cause is fixed in `electron-builder.yml`
-(`win.verifyUpdateCodeSignature: false`, no `publisherName`) and `pnpm check:feed` refuses
+(`win.verifyUpdateCodeSignature: false`, no `publisherName`) and `check:feed` refuses
 to let it return.
 
-**Publishing.** `pnpm package` runs `electron-builder --publish onTagOrDraft`, which
-uploads to a **draft** release when one exists (or when HEAD is a tag). Set a token
-first — a classic PAT with `repo` scope:
+**Publishing.** `pnpm --filter claude-orchestrator package` runs
+`electron-builder --publish onTagOrDraft`, which uploads to a **draft** release when
+one exists (or when HEAD is a tag). Set a token first — a classic PAT with `repo`
+scope:
 
 ```bash
-export GH_TOKEN=ghp_…            # PowerShell: $env:GH_TOKEN = 'ghp_…'
+export GH_TOKEN=ghp_…                            # PowerShell: $env:GH_TOKEN = 'ghp_…'
 gh release create v0.30.0 --draft --title "v0.30.0 — …" --notes-file notes.md
-pnpm package                     # uploads the exe, blockmap and latest.yml to the draft
-pnpm package:linux               # same, from WSL, for the AppImage/deb + latest-linux.yml
+pnpm --filter claude-orchestrator package        # uploads the exe, blockmap and latest.yml to the draft
+pnpm --filter claude-orchestrator package:linux  # same, from WSL, for the AppImage/deb + latest-linux.yml
 gh release edit v0.30.0 --draft=false
 ```
 
 Nothing is served to users until the draft is promoted, and un-publishing it rolls the
-release back. `pnpm package:local` is the escape hatch that uploads nothing.
+release back. `pnpm --filter claude-orchestrator package:local` is the escape hatch that
+uploads nothing.
 
 **Promote LAST — after every platform has uploaded.** `--publish onTagOrDraft` will only
 write to a *draft*, so once the release is published electron-builder refuses it:
@@ -155,12 +159,12 @@ wrote — so a hand-uploaded `Claude Orchestrator-x.y.z-setup.exe` arrived as
 `Claude.Orchestrator-…` and the updater 404'd on the exact file the feed named. The
 artifact names are now space-free as well, so the two can't diverge again.
 
-**Testing the feed without cutting a release.** Build two versions and serve `dist/`
-locally:
+**Testing the feed without cutting a release.** Build two versions and serve
+`apps/client/dist/` locally:
 
 ```bash
-pnpm package:local                       # with version bumped to e.g. 0.29.1
-npx http-server dist -p 8080
+pnpm --filter claude-orchestrator package:local   # with version bumped to e.g. 0.29.1
+npx http-server apps/client/dist -p 8080
 ```
 
 Then point an *installed* 0.29.0 at it. The updater honours `UPDATE_CONFIG_PATH`, so
@@ -197,7 +201,7 @@ file: with `publisherName` present the download completed and was then refused w
 
 Also useful when a local feed appears to do nothing at all: set `UPDATE_LOG_VERBOSE=1`
 alongside it. electron-updater reports "Skip checkForUpdates because application is not
-packed" and similar at `info`, which `src/main/updater.ts` silences by default, so an
+packed" and similar at `info`, which `apps/client/src/main/updater.ts` silences by default, so an
 entirely inert updater is otherwise indistinguishable from an up-to-date one.
 
 ---
@@ -213,7 +217,7 @@ the UI surfaces (footer status dot + a top warning bar when something is wrong):
 - `ANTHROPIC_API_KEY` is **not** set (that would bill the paid API instead of the
   subscription — we warn prominently).
 
-See `summarizeClaudeStatus` in `src/main/claudeStatus.ts`.
+See `summarizeClaudeStatus` in `apps/client/src/main/claudeStatus.ts`.
 
 ---
 
@@ -229,7 +233,7 @@ Existing projects are unaffected: the target defaults to `local`, which is the e
 behavior the app always had.
 
 **What a WSL project needs on the target machine** — reported in Settings rather than
-discovered when a task fails (`probeWslTarget` in `src/main/exec/wsl.ts`):
+discovered when a task fails (`probeWslTarget` in `apps/client/src/main/exec/wsl.ts`):
 
 - the distro responds,
 - `claude` is installed **and findable from a login shell** — commands run via
@@ -258,7 +262,7 @@ discovered when a task fails (`probeWslTarget` in `src/main/exec/wsl.ts`):
 Verify a real session end to end (costs tokens, needs a logged-in CLI in the distro):
 
 ```bash
-ORCH_E2E=1 pnpm vitest run src/main/exec/wslSession.e2e.test.ts
+ORCH_E2E=1 pnpm vitest run apps/client/src/main/exec/wslSession.e2e.test.ts
 ```
 
 ---
@@ -267,7 +271,7 @@ ORCH_E2E=1 pnpm vitest run src/main/exec/wslSession.e2e.test.ts
 
 Each shipped phase is a `feat:` commit; while pre-1.0 (`0.x`) a `feat` bumps **MINOR**,
 a `fix` bumps **PATCH**, and a breaking change (`feat!:` / `BREAKING CHANGE:`) bumps
-MINOR (or take the app to `1.0.0` when declaring it stable). `package.json`'s
+MINOR (or take the app to `1.0.0` when declaring it stable). `apps/client/package.json`'s
 `version` matches the tag on each release commit; tag the commit with an annotated
 `vX.Y.Z`.
 
@@ -295,7 +299,7 @@ electron-updater treats its presence as an instruction to verify the downloaded 
 Authenticode signature. Unsigned + `publisherName` set = every update refused with
 `ERR_UPDATER_INVALID_SIGNATURE`. That is the v0.30.0–v0.33.0 bug described under
 [Auto-update](#auto-update). Hence `win.verifyUpdateCodeSignature: false`, which also stops
-electron-builder writing the key at all, and `pnpm check:feed` as the gate.
+electron-builder writing the key at all, and `check:feed` as the gate.
 
 To sign later, in **one** commit:
 
@@ -314,7 +318,7 @@ same care.
 
 ## Building for Linux
 
-`pnpm package:linux` **must run on Linux** so `better-sqlite3` compiles for Linux —
+`pnpm --filter claude-orchestrator package:linux` **must run on Linux** so `better-sqlite3` compiles for Linux —
 WSL is the usual path. Build from a clone in the WSL-native home, never from `/mnt/c`:
 the Windows `node_modules` holds win32 prebuilds. Ubuntu's system `node` may be far too
 old for electron-builder, so source nvm and select Node 22 first, and rebuild `PATH` from
@@ -323,8 +327,8 @@ nvm's bin directory so `which pnpm` doesn't resolve to the Windows shim.
 Verify the artifacts before uploading anything:
 
 ```bash
-file dist/linux-unpacked/claude-orchestrator          # must say: ELF 64-bit
-readelf -Ws dist/linux-unpacked/resources/app.asar.unpacked/node_modules/\
+file apps/client/dist/linux-unpacked/claude-orchestrator          # must say: ELF 64-bit
+readelf -Ws apps/client/dist/linux-unpacked/resources/app.asar.unpacked/node_modules/\
 better-sqlite3/build/Release/better_sqlite3.node | grep node_register_module_v
                                                       # must say: v130 (Electron 33)
 ```
@@ -343,7 +347,7 @@ that is how a startup failure stayed invisible in v0.25.0:
 without a session bus; ignore them. What matters is that no `No handler registered for
 '…'` lines appear and every tab shows data. Since v0.25.1 a startup failure also raises
 an error dialog and writes `~/.config/claude-orchestrator/logs/main.log`. That path follows
-`package.json`'s `name`, not the product name — which is exactly why the rename to VIPPER Task
+`apps/client/package.json`'s `name`, not the product name — which is exactly why the rename to VIPPER Task
 Manager left `name` alone: it is where the database lives.
 
 Since v0.30.0 electron-builder uploads the Linux artifacts too (`--publish onTagOrDraft`,
@@ -362,19 +366,19 @@ self-update without it.
    ```
    (As of v0.8.0: only MIT / ISC / Apache-2.0 / BSD / WTFPL in the shipped tree — no
    GPL/AGPL/LGPL/MPL/EPL/CDDL.)
-3. Bump `package.json` `version` if the release commit hasn't; commit.
+3. Bump `apps/client/package.json` `version` if the release commit hasn't; commit.
 4. Create the **draft** release (`gh release create vX.Y.Z --draft …`) and export
    `GH_TOKEN`, so the packaging steps have somewhere to upload to.
-5. `pnpm package`; then smoke-test the build **headlessly** — see
+5. `pnpm --filter claude-orchestrator package`; then smoke-test the build **headlessly** — see
    [`RELEASE.md`](../RELEASE.md) step 5 for the exact command. Do **not** launch
-   `dist/win-unpacked/VIPPER Task Manager.exe` on a machine somebody is using: the app takes
+   `apps/client/dist/win-unpacked/VIPPER Task Manager.exe` on a machine somebody is using: the app takes
    no single-instance lock, and on 2026-08-02 doing this took down the copy the user had
    open. (Running the installer on a *clean* machine and taking one project end-to-end is
    still the ideal check — that is a different machine, and a human doing it.)
-6. For a Linux release, `pnpm package:linux` on Linux and run the artifact checks
+6. For a Linux release, `pnpm --filter claude-orchestrator package:linux` on Linux and run the artifact checks
    above. The ABI gate is not optional — a bundle that fails it is broken in a way
    that only shows up after install.
-7. `pnpm check:feed` — the packaging scripts already run it, so this is only needed after
+7. `pnpm --filter claude-orchestrator check:feed` — the packaging scripts already run it, so this is only needed after
    a hand-upload or a config change. It fails on an `app-update.yml` carrying an
    unexpanded macro or a `publisherName` with nothing signing the build, and on a
    `latest*.yml` naming a file that isn't there. It runs *after* the upload on purpose:

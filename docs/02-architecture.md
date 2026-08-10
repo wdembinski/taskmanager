@@ -30,7 +30,7 @@ those three parts is 80% of understanding this codebase.
         └─────────────────────────────────────────────────────────┘
 ```
 
-### 1. Main process — the "engine" (`src/main/`)
+### 1. Main process — the "engine" (`apps/client/src/main/`)
 
 This is a normal **Node.js** program. It has full access to the operating system:
 it can read files, open a SQLite database, and — most importantly — **spawn and
@@ -42,16 +42,16 @@ control Claude**. All the interesting logic lives here:
   reset),
 - **persistence** (remembering projects, tasks, and progress).
 
-There is exactly **one** main process. It starts first (`src/main/index.ts`).
+There is exactly **one** main process. It starts first (`apps/client/src/main/index.ts`).
 
-### 2. Renderer — the UI (`src/renderer/`)
+### 2. Renderer — the UI (`apps/client/src/renderer/`)
 
 This is a normal **React web app**, styled with **Fluent UI**. It runs inside a
 Chromium window — essentially a locked-down web browser. For safety, it has **no
 direct access** to Node, files, or the OS. It can only draw the interface and ask
 the engine to do things.
 
-### 3. Preload — the bridge (`src/preload/`)
+### 3. Preload — the bridge (`apps/client/src/preload/`)
 
 The renderer still needs *some* way to talk to the engine. The **preload** script
 is that doorway. It runs with special privileges and exposes a tiny, explicit API
@@ -78,19 +78,20 @@ There are two directions:
 ### The contract keeps both sides honest
 
 Every channel — its name, its arguments, and what it returns — is declared once in
-[`src/shared/ipc.ts`](../src/shared/ipc.ts). Both the engine and the UI import
-these types. If the engine changes what a channel returns, the UI **stops
-compiling** until it's updated. No guessing, no silent breakage.
+[`packages/shared/src/ipc.ts`](../packages/shared/src/ipc.ts). Both the engine and
+the UI import these types (the app's `@shared/*` alias points there). If the
+engine changes what a channel returns, the UI **stops compiling** until it's
+updated. No guessing, no silent breakage.
 
 ### A concrete round-trip (Phase 0 example)
 
-1. **UI** (`src/renderer/src/App.tsx`) runs
+1. **UI** (`apps/client/src/renderer/src/App.tsx`) runs
    `window.api.invoke('claude:getStatus')`.
-2. That crosses the **preload** bridge (`src/preload/index.ts`), which forwards it
-   over IPC.
-3. The **engine** handler (`src/main/ipc.ts`) receives it and calls
-   `getClaudeStatus()` (`src/main/claudeStatus.ts`), which runs `claude --version`
-   and checks the login.
+2. That crosses the **preload** bridge (`apps/client/src/preload/index.ts`), which
+   forwards it over IPC.
+3. The **engine** handler (`apps/client/src/main/ipc.ts`) receives it and calls
+   `getClaudeStatus()` (`apps/client/src/main/claudeStatus.ts`), which runs
+   `claude --version` and checks the login.
 4. The result travels back the same way, and React renders it.
 
 Follow that trail in the code — it's the pattern every future screen uses.
@@ -99,12 +100,15 @@ Follow that trail in the code — it's the pattern every future screen uses.
 
 ## Why this split matters to you as a contributor
 
-- **UI work?** You'll spend your time in `src/renderer/`. When you need data from
-  the engine, add a channel to the contract and call it via `window.api`.
+- **UI work?** You'll spend your time in `apps/client/src/renderer/`. When you
+  need data from the engine, add a channel to the contract and call it via
+  `window.api`.
 - **Engine work** (running Claude, scheduling, database)? You'll be in
-  `src/main/`. You expose your feature to the UI by registering an IPC handler.
-- **New data crossing the boundary?** Add its types to `src/shared/ipc.ts` first —
-  that's the seam that connects the two worlds.
+  `apps/client/src/main/`. You expose your feature to the UI by registering an
+  IPC handler.
+- **New data crossing the boundary?** Add its types to
+  `packages/shared/src/ipc.ts` first — that's the seam that connects the two
+  worlds.
 
 Next: [How orchestration works](03-how-orchestration-works.md) — the heart of the
 app, i.e. how we actually drive Claude.
