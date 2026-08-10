@@ -881,6 +881,10 @@ export function TaskAgentPanel({
               that, which is what made these unreadable. */}
           {item.kind === 'agent-question' && (item.questions?.length ?? 0) > 0 ? (
             <AgentQuestionForm
+              // Keyed to the ask: this slot shows one item at a time, and the form
+              // initialises its selections ONCE, so without a key the next ask inherits
+              // the previous one's answers.
+              key={item.id}
               questions={item.questions!}
               busy={busy}
               onAnswer={(a) => void answer(a)}
