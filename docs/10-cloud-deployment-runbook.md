@@ -10,6 +10,19 @@ the module reference. This file is the order to do them in.
 First run takes 60–90 minutes, most of it waiting on DNS and certificates. Running cost is
 roughly **$25–30/month**.
 
+**There is an executable version of this file**: [`scripts/Deploy-Cloud.ps1`](../scripts/Deploy-Cloud.ps1).
+Every phase below is a phase of that script, each one idempotent and separately runnable.
+Start with a dry run, which changes nothing but still reports the real current state:
+
+```powershell
+.\scripts\Deploy-Cloud.ps1 -DryRun     # walk the whole sequence
+.\scripts\Deploy-Cloud.ps1             # do it
+.\scripts\Deploy-Cloud.ps1 -From 3     # resume after the secrets are seeded
+.\scripts\Deploy-Cloud.ps1 -Phase 8    # just re-run the verification
+```
+
+Read this file for *why* each step is where it is; run the script to actually do it.
+
 ---
 
 ## 0. Before you start
