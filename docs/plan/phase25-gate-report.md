@@ -569,3 +569,202 @@ Recorded, not acted on:
 - **`package:local` still dies at the NSIS `MAX_PATH` link step.** `!include: could not find
   … StdUtils.nsh`, at a path 279 characters long against Windows' 260-character limit — a
   function of this worktree's path plus pnpm's `.pnpm` store naming, not of any code here.
+
+---
+
+## 8. Step 3 — independent verification
+
+Everything above was written by the step that *made* the fixes. This section is step 3 of the
+plan re-running the same commands against `2bc3936` without reusing any of step 2's results,
+so the report is confirmed by a run that had nothing invested in it being green.
+
+**One methodological finding came out of doing that, and it changes how §2–§6 should be read.**
+
+### 8.1 A cached gate is not a gate — NEW
+
+The first command of this step reproduced §6's typecheck result in 47 milliseconds:
+
+```
+$ pnpm typecheck
+ Tasks:    9 successful, 9 total
+Cached:    9 cached, 9 total
+  Time:    47ms >>> FULL TURBO
+  → exit 0
+```
+
+Nothing was typechecked. Turbo replayed step 2's stored stdout, exit code included, because
+the input hashes had not moved. A verification step that accepts this has verified that a
+previous run once passed — not that the tree passes now. It is the same class of mistake as
+[`noEmit` making `nest build` a no-op](#31-nest-build-succeeds-and-emits-nothing--new): a
+green exit code standing in for work that did not happen.
+
+So every turbo-routed gate below was re-run with `--force`, and `pnpm build` additionally had
+`apps/server/dist` deleted first so the emit had to be produced rather than found.
+
+### 8.2 The three root gates, forced, in RELEASE.md §1 order
+
+| # | Command | Exit | Result |
+|---|---------|------|--------|
+| 1 | `turbo run typecheck --force` | **0** | 9 successful, 9 total — **0 cached**, 22.291s |
+| 2 | `pnpm test` | **0** | 123 files passed, 1 skipped; 2057 passed, 11 skipped; 39.92s |
+| 3 | `turbo run build --force` | **0** | 6 successful, 6 total — **0 cached**, 24.129s, no turbo warning |
+
+`pnpm test` is not turbo-cached — the root script is `turbo run build --filter=./packages/* &&
+vitest run`, and `vitest run` executes every time — so it needed no `--force`.
+
+The build's emit, after `rm -rf apps/server/dist`:
+
+```
+$ ls apps/server/dist
+app.module.js  config  database  entities  iam  main.js  migrations  mirror  presence
+$ ls -l apps/server/dist/main.js
+-rw-r--r-- 1 wdemb 197609 1134 Aug 10 10:03 dist/main.js
+$ find apps/server/dist -name "*.test.js" | wc -l
+0
+```
+
+`dist/main.js` is produced from nothing, and no test file rides along into it. §5.1 holds.
+
+```
+$ pnpm --filter claude-orchestrator check:abi
+ABI check OK: better_sqlite3.node and Electron both at ABI 130.
+  → exit 0
+```
+
+### 8.3 The six standalone suites, and a stronger check than §5.2 made
+
+| Command | Exit | Files | Tests |
+|---------|------|-------|-------|
+| `pnpm --filter claude-orchestrator test` | 0 | 67 passed, 1 skipped (68) | 1222 passed, 11 skipped (1233) |
+| `pnpm --filter @tm/server test` | 0 | 10 passed | 44 passed |
+| `pnpm --filter @tm/web test` | 0 | 7 passed | 60 passed |
+| `pnpm --filter @tm/shared test` | 0 | 25 passed | 515 passed |
+| `pnpm --filter @tm/protocol test` | 0 | 1 passed | 12 passed |
+| `pnpm --filter @tm/ui test` | 0 | 13 passed | 204 passed |
+| | | **124** | **2068** |
+
+§5.2 summed the six **file** counts and got the aggregate's 124. Summing the six **test**
+counts as well gives 2068 — the aggregate's exact total, 2057 passed plus 11 skipped. That is
+the stronger statement: the two paths do not merely cover the same number of files, they run
+the same number of tests, so no suite is being collected by one path and quietly dropped by
+the other. All 11 skips resolve to `apps/client` (9 WSL + 2 e2e), which is where §5.3 and
+`ORCH_E2E` put them.
+
+### 8.4 Finding 3, proved by A/B rather than by one green run
+
+The clean-order check, in a throwaway clone outside this worktree, **no `pnpm typecheck`
+first**:
+
+```
+$ git clone --no-hardlinks . /c/tmp/tmverify3 && cd /c/tmp/tmverify3 && git checkout 2bc3936
+$ ls -d packages/*/dist apps/server/dist
+ls: cannot access 'packages/*/dist': No such file or directory
+ls: cannot access 'apps/server/dist': No such file or directory
+
+$ pnpm install
+  → exit 0 — "Done in 23.1s using pnpm v11.18.0"
+
+$ pnpm test
+ Tasks:    3 successful, 3 total
+ Test Files  123 passed | 1 skipped (124)
+      Tests  2057 passed | 11 skipped (2068)
+  → exit 0
+```
+
+**A green run here proves nothing on its own** — it is equally consistent with the fix
+working and with the check having stopped being able to fail. So the same procedure was run
+against `d790147`, the merge commit before the fixes, on the same machine, the same day, the
+same pnpm 11.18.0:
+
+```
+$ git clone --no-hardlinks . /c/tmp/tmprefix && cd /c/tmp/tmprefix && git checkout d790147
+$ pnpm install
+  → exit 0 — "Done in 23.5s using pnpm v11.18.0"
+$ pnpm test
+ Test Files  15 failed | 108 passed | 1 skipped (124)
+      Tests  1875 passed | 2 skipped (1877)
+  → exit 1
+```
+
+with the same six unresolvable specifiers §3.2 recorded:
+
+```
+Failed to load url @tm/protocol/cadence   … in apps/web/src/board/BoardPoller.test.ts
+Failed to load url @tm/shared/attachments … in packages/ui/src/AttachmentStrip.tsx
+Failed to load url @tm/shared/board       … in packages/ui/src/board/chainArrows.ts
+Failed to load url @tm/shared/iamPkce     … in apps/web/src/auth/cloudAuth.ts
+Failed to load url @tm/shared/model       … in packages/ui/src/modelChoice.ts
+Failed to load url @tm/shared/taskChain   … in packages/ui/src/board/boardColumns.test.ts
+```
+
+Red before, green after, one variable changed. Finding 3 is fixed, and the check that says so
+is one that demonstrably still knows how to fail.
+
+Note the four specifiers whose failing file is a **source** module, not a test — `.tsx`/`.ts`
+under `packages/ui` and `apps/web`. That is §3.2's point reproduced independently: the blast
+radius is the module graph, not the set of test files that name `@tm/*`.
+
+### 8.5 The remaining findings, re-checked
+
+**Finding 4** — by file list rather than by reading the config, which is the only way to see a
+check that is or isn't happening:
+
+```
+$ tsc --noEmit -p tsconfig.json       --listFiles | grep -c "apps/server/src.*\.test\.ts"
+10
+$ tsc         -p tsconfig.build.json  --listFiles | grep -c "apps/server/src.*\.test\.ts"
+0
+```
+
+Ten test files typechecked, zero compiled into the build. Both halves of §5.1's split confirmed.
+
+**Finding 2** — `apps/server/package.json` now names `-d src/database/dataSource.ts` in all
+three scripts, and `ls src/database/` shows `dataSource.ts` and `typeormOptions.ts`. Running it
+reproduces §5.1's outcome:
+
+```
+$ pnpm --filter @tm/server migration:run
+Error during migration run:
+ConnectionError: Failed to connect to localhost:1433 - Could not connect (sequence)
+  code: 'ESOCKET'
+```
+
+Failing for want of a database, not for want of a file. Unchanged from §5.1, and still
+un-closable here for the reason in §7.
+
+**Finding 6** — both directions, confirming the nine gated tests were parked and not lost:
+
+```
+$ pnpm exec vitest run src/main/exec/wslHost.test.ts                   # gate default
+      Tests  4 passed | 9 skipped (13)
+   Duration  462ms
+
+$ ORCH_WSL_TEST=1 pnpm exec vitest run src/main/exec/wslHost.test.ts   # on demand
+      Tests  13 passed (13)
+   Duration  2.60s
+```
+
+The nine still pass against the real Ubuntu-20.04 distro when asked. §5.3's 4841 ms → 5 ms
+claim reads as 462 ms here against a cold vitest start; the tests themselves report 5 ms.
+
+### 8.6 The two prohibitions
+
+- **The app was never launched.** No `pnpm dev`, no `electron`, no packaged binary. The only
+  Electron the step touched is `electron-builder install-app-deps` inside `pnpm install`, and
+  `check:abi`, which reads the module header off disk.
+- **No release was cut.** `git tag --contains origin/development..HEAD` is empty (73 tags in
+  the repo, none on this branch), and step 3 added no version bump. Worth recording for step 4:
+  the branch has already moved the version of record from a root `0.74.3` on `development` to
+  `apps/client` at `0.78.6`, with the root becoming a private `0.0.0` workspace — that
+  restructure arrived with the cloud branch, and whatever releases this eventually is has a
+  bump question to answer that this step deliberately did not.
+
+### 8.7 Verdict
+
+Every row of §6 reproduced, plus the negative control §6 did not run. The clean-clone check was
+run against `2bc3936`, the last commit on this branch that touches code or configuration; step 3
+adds documentation only, so no gate result above can be changed by the commit that records it.
+
+Nothing in §2–§4 is left unfixed or unexplained. The two items in §7 remain open, and neither
+is a test failure: `@tm/server` has still never been booted against a real SQL Server, and
+`package:local` still dies at the NSIS `MAX_PATH` limit.
