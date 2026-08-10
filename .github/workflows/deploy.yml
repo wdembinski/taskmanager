@@ -1,0 +1,205 @@
+# Continuous Deployment (CD) for the CLOUD service only.
+#
+# On every push to `development` (this repo's integration branch — there is no `main`),
+# this works out what changed and deploys only that:
+#   - @tm/server changed  -> build the image, push to GHCR, run migrations, then point
+#                            the Azure Container App at the new image.
+#   - @tm/web changed     -> build the Vite bundle and upload it to the Static Web App.
+# A change to a shared package (@tm/shared, @tm/protocol, @tm/ui) or the lockfile triggers
+# both, since either app could be affected.
+#
+# It does NOT touch the desktop app. apps/client is released by RELEASE.md's procedure —
+# tagged, packaged and published by hand from a Windows machine — and nothing here should
+# ever try to do that. A push containing only apps/client changes deploys nothing.
+#
+# ── One-time setup (repo Settings → Secrets and variables → Actions) ──
+#   AZURE_CLIENT_ID                   app registration (or user-assigned MI) client id
+#   AZURE_TENANT_ID                   Entra tenant id
+#   AZURE_SUBSCRIPTION_ID             the subscription holding the `taskmanager` RG
+#   AZURE_STATIC_WEB_APPS_API_TOKEN   az staticwebapp secrets list -n taskmanager-web \
+#                                       -g taskmanager --query properties.apiKey -o tsv
+#   VITE_CLOUD_IAM_CLIENT_ID          this web build's public vipper.iam client id
+#
+# Azure login uses OIDC — no stored credential. Create a federated credential on the app
+# registration and give its service principal a role on the `taskmanager` resource group:
+#   subject: repo:wdembinski/taskmanager:ref:refs/heads/development
+#   issuer:  https://token.actions.githubusercontent.com
+#   audience: api://AzureADTokenExchange
+#   role:    Contributor (or the narrower "Container Apps Contributor") on RG taskmanager
+#
+# Migrations run as an Azure Container Apps JOB (taskmanager-migrate, the infrastructure
+# repo's migrate-job.tf) executing the SAME image with `node dist/database/migrate.js`.
+# A job rather than a step here because Azure SQL's firewall admits Azure services, not
+# arbitrary runner IPs — and it runs BEFORE the app is repointed, so the schema is never
+# behind the code that expects it.
+
+name: Deploy
+
+on:
+  push:
+    branches: [development]
+  # Lets a failed deploy be retried, or the current commit be redeployed, without an
+  # empty commit.
+  workflow_dispatch:
+
+# Never cancel a deploy in flight — a half-finished one is worse than a slow one.
+concurrency:
+  group: deploy-development
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write # push the server image to GHCR
+  id-token: write # Azure OIDC login
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      server: ${{ steps.filter.outputs.server }}
+      web: ${{ steps.filter.outputs.web }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            server:
+              - 'apps/server/**'
+              - 'packages/shared/**'
+              - 'packages/protocol/**'
+              - 'pnpm-lock.yaml'
+              - '.dockerignore'
+              - '.github/workflows/deploy.yml'
+            web:
+              - 'apps/web/**'
+              - 'packages/shared/**'
+              - 'packages/protocol/**'
+              - 'packages/ui/**'
+              - 'pnpm-lock.yaml'
+              - '.github/workflows/deploy.yml'
+
+  # ── @tm/server → GHCR → migrate job → Container App ────────────────────────
+  server:
+    needs: changes
+    if: needs.changes.outputs.server == 'true'
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/taskmanager-server
+      RESOURCE_GROUP: taskmanager
+      CONTAINER_APP: taskmanager-api
+      MIGRATE_JOB: taskmanager-migrate
+    steps:
+      - uses: actions/checkout@v4
+
+      # The GHA build cache (cache-to: type=gha) can only be EXPORTED by the
+      # `docker-container` buildx driver; the runner's default `docker` driver rejects it.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/server/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Run database migrations (Container Apps job)
+        uses: azure/cli@v2
+        with:
+          azcliversion: latest
+          inlineScript: |
+            set -euo pipefail
+            IMG=${{ env.IMAGE }}:${{ github.sha }}
+            az containerapp job update \
+              --name ${{ env.MIGRATE_JOB }} --resource-group ${{ env.RESOURCE_GROUP }} --image "$IMG"
+            EXEC=$(az containerapp job start \
+              --name ${{ env.MIGRATE_JOB }} --resource-group ${{ env.RESOURCE_GROUP }} --query name -o tsv)
+            echo "Started migration execution: $EXEC"
+            # Poll up to ~10 min (60 × 10s); a cold start or a resuming DB can add a minute.
+            for _ in $(seq 1 60); do
+              STATUS=$(az containerapp job execution show \
+                --name ${{ env.MIGRATE_JOB }} --resource-group ${{ env.RESOURCE_GROUP }} \
+                --job-execution-name "$EXEC" --query properties.status -o tsv)
+              echo "migration status: $STATUS"
+              case "$STATUS" in
+                Succeeded) echo "Migrations applied."; exit 0 ;;
+                Failed|Degraded) echo "::error::Migration job failed ($STATUS)."; exit 1 ;;
+              esac
+              sleep 10
+            done
+            echo "::error::Timed out waiting for the migration job."; exit 1
+
+      - name: Point the Container App at the new image
+        uses: azure/cli@v2
+        with:
+          azcliversion: latest
+          inlineScript: |
+            az containerapp update \
+              --name ${{ env.CONTAINER_APP }} --resource-group ${{ env.RESOURCE_GROUP }} \
+              --image ${{ env.IMAGE }}:${{ github.sha }}
+
+  # ── @tm/web → Static Web App ───────────────────────────────────────────────
+  web:
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # These are compiled INTO the bundle by Vite at build time (env.ts reads
+      # import.meta.env), so they must be set here rather than on the Static Web App.
+      # Nothing secret: a browser bundle has nowhere to hide anything, and PKCE is what
+      # secures the sign-in — see apps/web/.env.example.
+      - name: Build the web client
+        env:
+          VITE_CLOUD_API_BASE: https://tasks-api.vipper.network
+          VITE_CLOUD_IAM_ISSUER: https://iam.vipper.network/oidc
+          VITE_CLOUD_IAM_CLIENT_ID: ${{ secrets.VITE_CLOUD_IAM_CLIENT_ID }}
+        # turbo builds @tm/shared, @tm/protocol and @tm/ui first (build.dependsOn ^build);
+        # @tm/web imports them through their `exports`, i.e. their dist/, which does not
+        # exist after a clean install.
+        run: pnpm exec turbo run build --filter=@tm/web
+
+      # Vite does not copy this (there is no public/ dir) and Static Web Apps only reads
+      # it from the uploaded folder — without it, a deep link 404s instead of serving the SPA.
+      - name: Include the Static Web Apps config
+        run: cp apps/web/staticwebapp.config.json apps/web/dist/
+
+      - name: Deploy to Static Web Apps
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+          action: upload
+          app_location: apps/web/dist
+          skip_app_build: true
+          skip_api_build: true
+          output_location: ''

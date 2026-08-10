@@ -12,6 +12,7 @@
     "test": "turbo run build --filter=./packages/* && vitest run",
     "test:watch": "turbo run build --filter=./packages/* && vitest",
     "format": "prettier --write \"apps/**/*.{ts,tsx}\" \"packages/**/*.{ts,tsx}\" \"*.{json,md}\"",
+    "format:check": "prettier --check \"apps/**/*.{ts,tsx}\" \"packages/**/*.{ts,tsx}\" \"*.{json,md}\"",
     "db:up": "docker compose up -d",
     "db:down": "docker compose down",
     "db:logs": "docker compose logs -f db"

@@ -1,0 +1,52 @@
+# What must NOT go into the @tm/server build context (apps/server/Dockerfile, built
+# from the repository root — see its header).
+#
+# Two reasons something is listed here: it would bloat the context (node_modules and
+# build output run to hundreds of megabytes, and the builder installs its own anyway),
+# or it must never reach an image at all (env files, local databases, signing material).
+
+# Dependencies and build output — reinstalled and rebuilt inside the image.
+node_modules
+**/node_modules
+dist
+**/dist
+out
+**/out
+.turbo
+**/.turbo
+*.tsbuildinfo
+
+# Secrets and local configuration. `.env.example` is excluded alongside `.env` on
+# purpose: `database/dataSource.ts` falls back to reading it, and its contents are
+# LOCAL dev defaults (CLOUD_DEV_NO_AUTH=1, the sa password) that must never be
+# available to fall back to in a deployed container.
+.env
+**/.env
+.env.*
+**/.env.*
+
+# The desktop app's local databases and any stray copies.
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+
+# Version control, editor and CI metadata — nothing in the image reads them.
+.git
+.gitignore
+.gitattributes
+.github
+.vscode
+.idea
+
+# Docs and desktop-only packaging inputs. apps/client is not part of the server
+# image's dependency subtree, but excluding its heaviest inputs keeps the context small.
+docs
+apps/client/build
+apps/client/dist
+**/*.md
+!README.md
+
+# Test artefacts and scratch space.
+coverage
+**/coverage

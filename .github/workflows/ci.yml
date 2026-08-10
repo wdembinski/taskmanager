@@ -1,0 +1,75 @@
+# Continuous Integration — the same gates RELEASE.md §1 makes a human run, enforced on
+# every pull request so a red tree cannot reach `development`.
+#
+# It runs on pull requests only, not on pushes: `development` is where releases are cut
+# from, and re-running the gates on a push that already passed as a PR just spends minutes.
+#
+# You can run the identical checks locally:
+#   pnpm install && pnpm format:check && pnpm typecheck && pnpm test && pnpm build
+
+name: CI
+
+on:
+  pull_request:
+    branches: [development]
+
+# A new push to the same PR cancels the run still in flight for the old commit.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # No `version:` here on purpose — pnpm's version is pinned by `packageManager`
+      # (pnpm@11.18.0) in the root package.json. Passing both makes action-setup fail with
+      # ERR_PNPM_BAD_PM_VERSION ("Multiple versions of pnpm specified").
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      # pnpm 11.18 refuses to run on Node older than 22.13 — see apps/server/Dockerfile,
+      # where a stale node:22.11 layer produced exactly that failure.
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Format check
+        run: pnpm format:check
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      # `pnpm test` builds packages/* first (see the root vitest.config.ts header): the
+      # `@tm/*` specifiers resolve through each package's `exports` to its built dist/,
+      # so a bare `vitest run` on a clean checkout cannot resolve them.
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+  # Proves the deployable artefact still builds — cheap here, and the alternative is
+  # finding out during a deploy. No push: nothing is published from a pull request.
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the server image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/server/Dockerfile
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
