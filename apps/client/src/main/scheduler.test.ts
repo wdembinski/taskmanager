@@ -312,6 +312,9 @@ describe('Scheduler.decidePermission — full auto (bypassPermissions)', () => {
       getTask: (id: string) => (id === 'task' ? task : undefined),
       updateTask: (_id: string, patch: Partial<Task>) => ({ ...task, ...patch }),
       getSettings: () => ({ limitJitterMs: 0 }),
+      // The event-stream tests below fire real `tool-use` events, and every surfaced event
+      // is written to the task's history first thing in `onRunEvent`.
+      appendTaskEvent: vi.fn(),
       ...INERT_ATTENTION_STORE,
     } as unknown as Store;
     const sessions = {} as unknown as SessionManager;
@@ -330,7 +333,13 @@ describe('Scheduler.decidePermission — full auto (bypassPermissions)', () => {
       runId: 'run1',
       settled: false,
     });
-    return { scheduler, emitAttention };
+    /** Feed the run's observer stream, as the SessionManager would. */
+    const fire = (event: unknown): void =>
+      (scheduler as unknown as { onRunEvent: (r: string, e: unknown) => void }).onRunEvent(
+        'run1',
+        event,
+      );
+    return { scheduler, emitAttention, fire };
   }
 
   const riskyPush = { runId: 'run1', toolName: 'Bash', input: { command: 'git push' } };
@@ -429,6 +438,105 @@ describe('Scheduler.decidePermission — full auto (bypassPermissions)', () => {
       // The agent still gets to decide — but only because a human said so, which is the
       // whole difference from the timeout this replaces.
       expect(result.message).toContain('chose not to pick an option');
+    });
+
+    /**
+     * Both orders the same ask can arrive in.
+     *
+     * The CLI emits the `tool-use` event and calls the permission gate for the very same
+     * tool, and nothing orders those two against each other. Each path raises an inbox item
+     * when it finds none open, so when the EVENT won the race the human ended up with two
+     * items for one question: answering the visible one left the other still holding the
+     * tool, the CLI asked again, and you clicked accept twice. The gate now adopts whatever
+     * is already open for this run instead of raising a rival.
+     */
+    describe('when the event stream raised the question first', () => {
+      /** The same ask, as it also arrives on the observer stream. */
+      const askEvent = { kind: 'tool-use', name: 'AskUserQuestion', id: 'tu-1', input: ask.input };
+
+      it('adopts the item the event stream already raised', async () => {
+        const { scheduler, emitAttention, fire } = makeScheduler('acceptEdits');
+        fire(askEvent);
+        expect(emitAttention).toHaveBeenCalledTimes(1);
+
+        const decision = scheduler.decidePermission(ask);
+        expect(emitAttention).toHaveBeenCalledTimes(1); // adopted — no second item
+
+        // …and the one item on screen is the one that releases the held tool. Before the
+        // fix this answer went to an item holding nothing, and the gate's own item was
+        // still parked with the question unanswered.
+        const item = emitAttention.mock.calls[0][0] as { id: string };
+        scheduler.answerAttention(item.id, { decision: 'answers', selections: [['Postgres']] });
+
+        const result = (await decision) as { behavior: string; message: string };
+        expect(result.behavior).toBe('deny');
+        expect(result.message).toContain('→ Postgres');
+      });
+
+      // Adoption must not swallow a SECOND real ask. One assistant message can carry
+      // parallel `tool_use` blocks, and an adopted item whose `resolve` was overwritten
+      // would strand the first tool call for the life of the process.
+      it('still gives a genuinely concurrent ask its own item', async () => {
+        const { scheduler, emitAttention } = makeScheduler('acceptEdits');
+        let firstSettled = false;
+        let secondSettled = false;
+        const first = scheduler.decidePermission(ask).then(() => {
+          firstSettled = true;
+        });
+        void scheduler.decidePermission(ask).then(() => {
+          secondSettled = true;
+        });
+
+        const ids = emitAttention.mock.calls.map((c) => (c[0] as { id: string }).id);
+        expect(ids).toHaveLength(2);
+        expect(new Set(ids).size).toBe(2);
+
+        scheduler.answerAttention(ids[0], { decision: 'deny' });
+        await first;
+        expect(firstSettled).toBe(true);
+        expect(secondSettled).toBe(false); // the second tool is still held, correctly
+      });
+
+      // The prompt comparison earns its keep here: answering "which database" must never be
+      // handed back as the result of the "which auth provider" tool call.
+      it('does not adopt an item asking something else', () => {
+        const { scheduler, emitAttention, fire } = makeScheduler('acceptEdits');
+        const askOther = {
+          runId: 'run1',
+          toolName: 'AskUserQuestion',
+          input: {
+            questions: [
+              {
+                header: 'Auth',
+                question: 'Which auth provider?',
+                multiSelect: false,
+                options: [{ label: 'OIDC' }, { label: 'SAML' }],
+              },
+            ],
+          },
+        };
+
+        fire(askEvent); // question A, off the stream
+        void scheduler.decidePermission(askOther); // question B, through the gate
+
+        expect(emitAttention.mock.calls.map((c) => (c[0] as { prompt: string }).prompt)).toEqual([
+          'Which database should this use?',
+          'Which auth provider?',
+        ]);
+      });
+
+      // The fallback's old guard was "is ANYTHING parked on this run?", so a risky Bash
+      // command waiting for approval suppressed the question entirely — it was never asked,
+      // which is the silent failure this whole path exists to end.
+      it('raises the question even while an unrelated permission is parked', () => {
+        const { scheduler, emitAttention, fire } = makeScheduler('acceptEdits');
+        void scheduler.decidePermission(riskyPush);
+        fire(askEvent);
+        expect(emitAttention.mock.calls.map((c) => (c[0] as { kind: string }).kind)).toEqual([
+          'permission',
+          'agent-question',
+        ]);
+      });
     });
   });
 });
@@ -2201,6 +2309,70 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
     expect(
       emitAttention.mock.calls.filter((c) => (c[0] as { kind: string }).kind === 'plan-approval'),
     ).toHaveLength(1);
+  });
+
+  /**
+   * The other order — the one that produced two Approve buttons for one plan. The test above
+   * covers gate-first (the fallback stands down); this covers event-first, where the gate has
+   * to adopt what the fallback already raised. Neither path can claim to be "the" raiser,
+   * because nothing orders the CLI's `tool-use` event against its permission request.
+   */
+  describe('when the event stream raised the plan first', () => {
+    const plan = '## Reproduce it\nfirst\n\n## Fix it\nsecond';
+
+    it('adopts the plan the event stream already raised', async () => {
+      const { scheduler, emitAttention, seedRun, fire } = setup([]);
+      seedRun('r0', 't1');
+      fire('r0', { kind: 'tool-use', name: 'ExitPlanMode', id: 'x', input: { plan } });
+      await Promise.resolve();
+
+      let decision: { behavior: string; message?: string } | undefined;
+      void scheduler
+        .decidePermission({ runId: 'r0', toolName: 'ExitPlanMode', input: { plan } } as never)
+        .then((d) => {
+          decision = d as { behavior: string; message?: string };
+        });
+      await Promise.resolve();
+
+      const raised = emitAttention.mock.calls.filter(
+        (c) => (c[0] as { kind: string }).kind === 'plan-approval',
+      );
+      expect(raised).toHaveLength(1);
+
+      // Answering the single item releases the held ExitPlanMode. Before the fix the gate's
+      // rival item still held it, so the plan came back for a second decision.
+      const item = raised[0][0] as { id: string };
+      scheduler.answerAttention(item.id, { decision: 'deny', note: 'Split the migration out.' });
+      await Promise.resolve();
+      expect(decision).toEqual({ behavior: 'deny', message: 'Split the migration out.' });
+    });
+
+    /**
+     * `describeEmptyOutcome` grades a plan-mode run on `run.planPresented`, so a run that
+     * loses the flag is reported as having achieved nothing. The raiser sets it and so does
+     * the adopt branch; clearing it between the two is what isolates the adopt branch's own
+     * line, which is otherwise invisible from outside.
+     */
+    it('keeps `planPresented` on the adopt path', async () => {
+      const { scheduler, seedRun, fire } = setup([]);
+      seedRun('r0', 't1');
+      const run = (
+        scheduler as unknown as { runs: Map<string, { planPresented?: boolean }> }
+      ).runs.get('r0')!;
+
+      fire('r0', { kind: 'tool-use', name: 'ExitPlanMode', id: 'x', input: { plan } });
+      await Promise.resolve();
+      expect(run.planPresented).toBe(true);
+
+      run.planPresented = false;
+      void scheduler.decidePermission({
+        runId: 'r0',
+        toolName: 'ExitPlanMode',
+        input: { plan },
+      } as never);
+      await Promise.resolve();
+      expect(run.planPresented).toBe(true);
+    });
   });
 });
 
