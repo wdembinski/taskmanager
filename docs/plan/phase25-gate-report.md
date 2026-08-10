@@ -498,7 +498,60 @@ discoverable from the same place.
 
 ## 6. The gates re-run on the fixed tree
 
-*(§6 is written by the re-run at the end of this step; see the numbers below.)*
+The whole of §2–§4's command set, re-run on `f66e3b5`.
+
+| Command | Before | After |
+|---------|--------|-------|
+| `pnpm typecheck` | 0 — 9/9 | **0 — 9/9**, now including 10 server test files |
+| `pnpm test` | 0 — 123 files, 2066 tests | **0 — 123 files, 2057 tests, 11 skipped** |
+| `pnpm build` | 0 — 6/6, `@tm/server` emitted nothing | **0 — 6/6, `dist/main.js` written**, no turbo warning |
+| `pnpm --filter claude-orchestrator test` | 0 — 68 files | **0 — 68 files** |
+| `pnpm --filter @tm/server test` | 0 — 10 files | **0 — 10 files** |
+| `pnpm --filter @tm/web test` | 0 — 7 files | **0 — 7 files** |
+| `pnpm --filter @tm/shared test` | 0 — *no script, nothing ran* | **0 — 25 files** |
+| `pnpm --filter @tm/protocol test` | 0 — *no script, nothing ran* | **0 — 1 file** |
+| `pnpm --filter @tm/ui test` | 0 — *no script, nothing ran* | **0 — 13 files** |
+| `pnpm --filter @tm/server migration:run` | 1 — `Cannot find module … data-source.ts` | **1 — `ESOCKET … localhost:1433`** |
+| clean clone, `pnpm install && pnpm test` | **1 — 15 files failed** | **0 — 124 files** |
+| `pnpm --filter claude-orchestrator check:abi` | 0 | **0 — ABI 130 both sides** |
+
+**The one number that moved is `pnpm test`'s test count, and it is not a regression.**
+2066 passed / 2 skipped became 2057 passed / 11 skipped — the same 2068 total. The nine that
+moved are exactly `wslHost.test.ts`'s real-distro cases, now behind `ORCH_WSL_TEST=1` (§5.3),
+where they still pass on demand. No test was deleted or weakened.
+
+The clean-clone run, which is the one that was red:
+
+```
+$ git clone --no-hardlinks . /c/tmp/tmclean3 && cd /c/tmp/tmclean3 && git checkout f66e3b5
+$ pnpm install
+  → exit 0
+$ pnpm test                             # no pnpm typecheck first
+ Tasks:    3 successful, 3 total
+ Test Files  123 passed | 1 skipped (124)
+      Tests  2057 passed | 11 skipped (2068)
+  → exit 0
+```
+
+Identical counts to the developed worktree, from an empty `node_modules` and no
+`packages/*/dist`, with the three commands in any order.
+
+### Every failure §2–§4 recorded, and what happened to it
+
+| Finding | Status |
+|---------|--------|
+| 1 — `nest build` fails for want of a tsconfig | Refuted by step 1; **but §3.1 found the real defect underneath it** — fixed (§5.1) |
+| 2 — `migration:*` scripts name a file that does not exist | Fixed (§5.1) |
+| 3 — `pnpm test` is order-coupled to `pnpm typecheck` | Fixed (§5.2), proved by clean-clone reproduction then repair |
+| 4 — no server test is typechecked | Fixed (§5.1); the ten files turned out type-clean |
+| 5 — `apps/web` has no vitest config | Fixed (§5.2), consistency only |
+| 6 — the WSL assertion cannot be green here | Refuted as stated; **gated anyway** (§5.3), with the reasoning recorded |
+| 7 — no `test` task, three packages with no `test` script | Fixed (§5.2) |
+| §3.1 — `nest build` emits nothing (new) | Fixed (§5.1) |
+| §3.3 — a missing `test` script exits 0 in silence (new) | Fixed (§5.2) |
+
+Nothing is left in the "environmental, leave it" column at the test level. The two items that
+genuinely cannot be closed on this machine are in §7, and neither is a test failure.
 
 ---
 

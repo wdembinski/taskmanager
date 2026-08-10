@@ -3483,6 +3483,14 @@ Root gates, from the repo root:
   copyleft dependency in the tree. No new dependency was added this step, so
   this is an audit, not a gate that had anything to block.
 
+> **Corrected later — see [the gate report](phase25-gate-report.md).** Two claims in this
+> list did not survive being re-run. **`pnpm build` was never run here**, so "root gates"
+> means two of RELEASE.md §1's three; it was still exiting 0 while `@tm/server` emitted
+> nothing at all. And `pnpm test` passing says less than it appears to: it passed **because**
+> `pnpm typecheck` ran first and built the packages it imports — run alone on a clean clone,
+> 15 files fail. The `wslHost.test.ts` failure recorded here as "environmental, unrelated" is
+> real but was normalised rather than fixed; it is now opt-in behind `ORCH_WSL_TEST=1`.
+
 Client, per this step's own brief:
 
 - `pnpm --filter claude-orchestrator test` **failed on first run**: 40 of 77
@@ -3859,6 +3867,16 @@ what it actually found, gaps recorded rather than hidden.
   log lines during the run — the same logger line this step's own live
   measurements below read.
 
+> **Corrected later — see [the gate report](phase25-gate-report.md).** `pnpm build` is
+> missing from this list too, and running it is what found that `nest build` exits 0 without
+> writing `apps/server/dist` at all — so "all 9 packages green" under `pnpm typecheck` was
+> true and still left the server unbuildable and unstartable. It also excluded every
+> `apps/server/**/*.test.ts` from that typecheck. `pnpm test`'s greenness here likewise
+> depended on `pnpm typecheck` having run first. The `wslHost.test.ts` failure is recorded
+> here for the third time as "pre-existing … environmental"; it **passes** on a later run of
+> the same machine with nothing changed but the environment, which is why it is now gated
+> rather than dismissed again.
+
 **Client gate**, separately (the root config doesn't load under `--filter` —
 see the prior verification step's own note on why):
 
@@ -3984,6 +4002,101 @@ request count, not bytes, so payload size doesn't change this comparison.
   measured that cadence against real production code end to end, with the
   one gap above (Docker Desktop's local health in this session) recorded
   rather than glossed over.
+
+### Verification — running the gates instead of reading them
+
+Same shape as this phase's earlier verification steps: what was actually run, what it
+actually found, gaps recorded rather than hidden. The difference is what it was pointed at.
+The two sections above verified *the step's own change*. This one verifies **the gates
+themselves** — the ticket "Cloud service — tests and analyze issues", whose whole subject is
+whether a green `pnpm typecheck` / `pnpm test` on this branch means what the previous two
+sections took it to mean.
+
+Full command-by-command detail, with exit codes and verbatim output, is in
+[`phase25-gate-report.md`](phase25-gate-report.md). The summary:
+
+**Step 1 read the branch and predicted seven failures.** Four were confirmed, two refuted, one
+confirmed weaker than stated. Those verdicts held up when run — the value of having done it is
+that no time went into the two refuted ones.
+
+**Running them found two things reading them could not.**
+
+- **`nest build` exits 0 and writes nothing.** `apps/server/tsconfig.json` extends
+  `tsconfig.base.json`, which sets `noEmit: true` because the whole workspace typechecks with
+  `tsc --noEmit`. The server overrides eleven compiler options — including `outDir` and
+  `emitDecoratorMetadata` — but not that one. So `apps/server/dist` has never existed, and
+  the package's own `"main": "dist/main.js"` and `"start": "node dist/main.js"` have never
+  been able to work. **This is only visible if you run `pnpm build`, which no verification
+  section in this phase had ever done.** Step 1's static read of the same files got as far as
+  correctly refuting "the build fails for want of a tsconfig", without reaching the fact that
+  resolving `tsconfig.json` is precisely what makes the build a no-op.
+- **A package with no `test` script makes `pnpm --filter <pkg> test` exit 0 in silence.** No
+  output, no warning. `packages/shared`, `packages/protocol` and `packages/ui` had no such
+  script, so a sweep across the workspace would have reported six green packages while running
+  tests in three.
+
+**And it found the order-coupling is five times wider than predicted.** Root `pnpm test` was a
+bare `vitest run` with no build step; it passed only because RELEASE.md §1 happens to list
+`pnpm typecheck` first and turbo's `typecheck` carries `dependsOn: ["^build"]`. Step 1
+predicted three files would fail without that. A clean clone of the merged commit, installed
+and tested with no `typecheck` first, failed **15 files across six specifiers** — mostly
+`@tm/shared/*` reached through `packages/ui`'s own sources, so most of the broken suites never
+mention `@tm/*` in their own text at all.
+
+**What was fixed.** `apps/server` got a `tsconfig.build.json` (which is also the filename
+`@nestjs/cli` probes for first, so `nest-cli.json` needed no change), freeing `tsconfig.json`
+to stop excluding the ten server test files from typechecking — they turn out to be
+type-clean, which is a result worth recording rather than a fix. The three `migration:*`
+scripts now name `dataSource.ts`, the file that exists, and get as far as failing to reach a
+database. The root `test` script builds the library packages itself and `turbo.json` gained a
+`test` task; all six packages now have a `test` script and an explicit `vitest.config.ts`, and
+their six file counts sum to 124 — exactly what the aggregated root run reports, so nothing
+falls between the two paths. `apps/web` got the `vitest.config.ts` its two siblings already
+had.
+
+**`wslHost.test.ts` is now opt-in behind `ORCH_WSL_TEST=1`**, matching
+`wslSession.e2e.test.ts`'s `ORCH_E2E`. Not because it fails — it passed in this session, which
+is exactly the problem. The two sections above recorded it failing across three earlier
+sessions and each time called it "pre-existing … environmental"; nothing changed between then
+and now but the machine's WSL state. Its assertion is right (the prelude appends
+`~/.local/bin` only `[ -d ]`, so a distro without that directory fails it for no defect), so
+the assertion is untouched and still runs on demand. Only its *gating* changed. The file's two
+pure blocks stay in the gate, and it drops from 4841 ms to 5 ms.
+
+**The gates on the fixed tree**, all from a clean clone as well as the developed worktree:
+
+- `pnpm typecheck` — 0, 9/9, now covering the server's ten test files.
+- `pnpm test` — 0, 123 files passed, 1 skipped. 2057 passed, 11 skipped of 2068: the nine that
+  moved from passed to skipped are `wslHost.test.ts`'s real-distro cases, behind the new flag.
+  No test was deleted or weakened.
+- `pnpm build` — 0, 6/6, and `apps/server/dist/main.js` exists for the first time. Turbo no
+  longer warns that `@tm/server` produced no output.
+- `pnpm install && pnpm test` on a clean clone, **with no `typecheck` first** — 0, 124 files.
+  This was the run that failed 15 files before.
+- All six packages under `pnpm --filter <pkg> test` — 0.
+- `pnpm --filter claude-orchestrator check:abi` — 0, ABI 130 both sides.
+
+**Two things this ticket could not close on this machine**, recorded rather than acted on:
+
+- **`@tm/server` has still never been booted against a real SQL Server.** Its `AppModule`
+  opens a TypeORM/mssql connection at boot, so nothing starts without a reachable database,
+  and the section above records Docker Desktop failing to come healthy here across two restart
+  attempts. `migration:run` now fails with `ESOCKET … localhost:1433` — for want of a
+  database rather than for want of a file, which is as far as this machine goes. Making
+  `dist/main.js` exist is a precondition for that boot, not a substitute for it.
+- **`package:local` still dies at the NSIS `MAX_PATH` link step** — `!include: could not find
+  … StdUtils.nsh` at a 279-character path against Windows' 260 limit, a function of this
+  worktree's path plus pnpm's `.pnpm` store naming, unchanged by anything here.
+
+**Notes.**
+
+- Not docs-only, and not one commit: the merge, the gate report, and the three fixes each
+  landed separately, each bumping the packages it touched per `CONTRIBUTING.md` §4.
+- The merge from `feat/cloud-service-implementation` was **not** the fast-forward the ticket
+  predicted — step 1's own commit had already moved `HEAD` off `origin/development`. It was
+  still conflict-free, on provably disjoint file sets.
+- Per `RELEASE.md` rule 5 there is no release step here; this is a feature branch, and the tag
+  is cut once it reaches `development`.
 
 ---
 
