@@ -4088,6 +4088,37 @@ pure blocks stay in the gate, and it drops from 4841 ms to 5 ms.
   … StdUtils.nsh` at a 279-character path against Windows' 260 limit, a function of this
   worktree's path plus pnpm's `.pnpm` store naming, unchanged by anything here.
 
+#### Critical files — the gate wiring, and the invariants it now rests on
+
+Full per-file detail is in [the gate report's §9](phase25-gate-report.md#9-critical-files).
+This ticket changed **no product code** — every file it touched is gate wiring, build wiring
+or the record — so a green `pnpm test` cannot confirm most of it. The five constraints that
+are not visible in the diff, and that the next person editing these files will be standing on:
+
+- **`turbo.json` — `dependsOn: ["^build"]` now sits on `typecheck` *and* `test`.** Finding 3
+  was not a missing dependency; it was the test gate borrowing `typecheck`'s by running after
+  it. Declaring it twice is what makes the two independent. (`turbo run test` is still
+  cacheable, so it can replay a stored green — use `--force` when treating it as verification.
+  The root gate does not route through it, so no release check can be fooled.)
+- **Root `vitest.config.ts` deliberately does not alias `@tm/*`, and this is the file most
+  likely to be "fixed" wrongly.** The next `Failed to load url @tm/shared/…` will look exactly
+  like a missing alias; adding one makes it go away *and* makes the clean-clone check unable to
+  fail again. The build prefix in the root `test` script is the fix. The header comment now
+  says so at the point of use.
+- **`apps/server`: the test exclusion belongs to the emitting config only, and `noEmit: false`
+  belongs nowhere else.** Move the exclusion into `tsconfig.json` and finding 4 returns
+  silently; move `noEmit: false` up and the typecheck config starts writing files.
+  `nest-cli.json` stays free of `tsConfigPath` — the filename probe *is* the wiring.
+- **`apps/web/vitest.config.ts` `mergeConfig`s `vite.config.ts` rather than being empty like
+  its siblings.** Making an implicit thing explicit means keeping what it implied — an empty
+  config would have been "consistent" and would have dropped the React plugin the discovery
+  fallback was supplying.
+- **A test goes behind a flag when its result depends on state this repo does not control** —
+  a real distro's `~/.local/bin`, a logged-in CLI, a reachable database. "Integration test" is
+  not the criterion: `jiraSync.integration.test.ts` is fully mocked, gated by nothing, and
+  correctly in the gate. This corrects the ticket's own brief, which named it as a precedent
+  for gating; `ORCH_E2E` is the only precedent, and `ORCH_WSL_TEST` was named to match it.
+
 **Notes.**
 
 - Not docs-only, and not one commit: the merge, the gate report, and the three fixes each

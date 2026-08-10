@@ -10,7 +10,8 @@ ANSI colour stripped and nothing else changed.
 
 This file is the deliverable of the step and the input to the ones after it. It is written
 twice: once with the numbers from the merged tree as it arrived (§2–§4), and once with the
-numbers after the fixes (§6).
+numbers after the fixes (§6). Step 3 then re-ran the whole command set independently (§8), and
+step 4 wrote up the files the fixes live in and the invariants they now rest on (§9).
 
 ---
 
@@ -768,3 +769,243 @@ adds documentation only, so no gate result above can be changed by the commit th
 Nothing in §2–§4 is left unfixed or unexplained. The two items in §7 remain open, and neither
 is a test failure: `@tm/server` has still never been booted against a real SQL Server, and
 `package:local` still dies at the NSIS `MAX_PATH` limit.
+
+---
+
+## 9. Critical files
+
+Step 4 of the plan. The ticket's fixes are small — a few dozen lines across thirteen files —
+but **what makes each of them right is a constraint that is not visible in the diff**. This
+section names every file the ticket touched or deliberately left alone, with the shape it now
+has and the invariant the next person editing it will be standing on. Every line below was
+re-read on this tree; where it corrects an earlier section or the plan's own brief it says so.
+
+The organising fact: this ticket changed **no product code**. Every file below is either gate
+wiring, build wiring, or the record. That is why a green `pnpm test` cannot confirm most of
+it — the checks that can are named per file.
+
+### 9.1 The gate wiring — `turbo.json`, root `package.json`, root `vitest.config.ts`
+
+#### `turbo.json` — 21 lines, four tasks
+
+`build`, `dev`, `typecheck`, and now `test` ([`:16-19`](../../turbo.json)) with
+`dependsOn: ["^build"]` and `outputs: []`.
+
+**The invariant: `^build` now appears on two tasks, and it has to.** Finding 3 was not "the
+test gate is missing a dependency"; it was "the test gate borrowed `typecheck`'s dependency by
+running after it". Declaring it on `test` as well is what makes the two independent. Deleting
+either one re-creates the coupling in the direction of whichever survives.
+
+**One hazard this file still carries, recorded rather than changed.** The `test` task is
+cacheable, so `turbo run test` can replay a stored green in milliseconds — the exact trap
+§8.1 documents for `typecheck`. It is left cacheable because the **root gate does not route
+through it** (see below), so no release check can be fooled by it; anyone using
+`turbo run test` *as verification* rather than as a convenience wants `--force`. Changing this
+to `cache: false` is defensible and was considered; it was not done here because §8's
+verification was run against a tree with caching on, and a wiring change made after the
+verifying step would leave the report describing a tree that no longer exists.
+
+#### Root `package.json` — the workspace manifest, permanently `0.0.0`
+
+```json
+"test":       "turbo run build --filter=./packages/* && vitest run",
+"test:watch": "turbo run build --filter=./packages/* && vitest",
+```
+
+([`:12-13`](../../package.json)). Three things about this line are load-bearing:
+
+- **`turbo run build`, not `turbo run test`.** §5.2 gives the reasoning; §3.3 is the evidence.
+  A fan-out's completeness depends on every package having a `test` script, and a package
+  without one exits 0 in silence. A single `vitest run` is *discovery-based* — it globs the
+  tree, so a package added tomorrow is covered by existing.
+- **`--filter=./packages/*` is a path glob, not a package list.** A new library under
+  `packages/` is built by this prefix automatically. A library placed anywhere else is not,
+  and its consumers' tests would fail exactly the way §3.2's fifteen files did.
+- **`version` stays `0.0.0` and `private: true`.** Per CONTRIBUTING §4 the version of record
+  is `apps/client`'s; the root is never bumped. Worth stating here because this branch is
+  where the root stopped being the version (§8.6).
+
+#### Root `vitest.config.ts` — four aliases, and four names deliberately missing
+
+`@shared`, `@protocol`, `@ui`, `@renderer` map to source. The `@tm/*` **package** names do
+not, and that absence is the load-bearing part: apps/server, apps/web and packages/ui consume
+those packages through their own `exports`, i.e. built `dist/`.
+
+**This is the file most likely to be "fixed" wrongly.** The next `Failed to load url
+@tm/shared/...` will look exactly like a missing alias, and adding one would make it go away
+— along with the ability of §8.4's clean-clone control to ever fail again. The build prefix in
+the root `test` script is the fix; the alias is the trap. Its header comment now says so, and
+that comment is the only place this reasoning lives at the point of use. The same edit
+corrected a stale claim in that header: it said the root run covers "apps/client,
+packages/shared and packages/ui", which was true before the cloud branch added three more
+packages to the workspace.
+
+### 9.2 `apps/server` — findings 1, 2, 4 and §3.1
+
+#### `tsconfig.json` + `tsconfig.build.json` — one pair, one rule each
+
+The split is the whole of §5.1, and it only works because each file says exactly one thing the
+other does not:
+
+| | `tsconfig.json` | `tsconfig.build.json` |
+|---|---|---|
+| Read by | `tsc --noEmit -p tsconfig.json` | `nest build` (by filename probe) |
+| `noEmit` | inherited `true` from the base | overridden to `false` ([`:6`](../../apps/server/tsconfig.build.json)) |
+| `**/*.test.ts` | **not** excluded — that is how the ten suites get checked | excluded ([`:8`](../../apps/server/tsconfig.build.json)) |
+
+**The invariant, stated as a rule: the test exclusion belongs to the emitting config only, and
+`noEmit: false` belongs nowhere else.** Move the exclusion up into `tsconfig.json` and finding
+4 returns silently. Move `noEmit: false` up into `tsconfig.json` and the typecheck config
+starts writing files. Both files carry a `"//"` comment saying which one they are, because the
+filenames alone do not distinguish a typecheck config from a build config.
+
+The check that proves it is a **file list, not an exit code** — there is no exit code for a
+check that is not happening (§8.5):
+
+```bash
+tsc --noEmit -p tsconfig.json      --listFiles | grep -c "apps/server/src.*\.test\.ts"   # 10
+tsc         -p tsconfig.build.json --listFiles | grep -c "apps/server/src.*\.test\.ts"   # 0
+```
+
+#### `nest-cli.json` — 8 lines, deliberately untouched
+
+`compilerOptions` holds `deleteOutDir: true` and nothing else — **no `tsConfigPath`**, and it
+must stay that way for the reason step 1 established: `@nestjs/cli` 10.4.9 probes for
+`tsconfig.build.json` first and falls back to `tsconfig.json`, so creating the file *is* the
+wiring. Setting `tsConfigPath` explicitly would also work and would be worse — it would make
+the build's config choice depend on two mechanisms instead of one, and the probe would then be
+invisible to whoever reads only this file.
+
+`deleteOutDir: true` is worth knowing separately: a build that emits nothing leaves an
+**absent** `dist/`, not a stale one. That is why §3.1's no-op was so quiet — there was never
+an old artifact sitting there to look suspicious.
+
+#### `apps/server/package.json` — the entry points and the three migration scripts
+
+`"main": "dist/main.js"` ([`:7`](../../apps/server/package.json)) and `"start": "node
+dist/main.js"` ([`:11`](../../apps/server/package.json)) are claims that only
+`tsconfig.build.json` can make true. They were false for the entire life of the branch.
+
+The three `migration:*` scripts ([`:15-17`](../../apps/server/package.json)) now name
+`-d src/database/dataSource.ts`. **The failure mode is a naming-convention seam, and it will
+recur**: TypeORM's own documentation writes `data-source.ts`, this repo writes `dataSource.ts`,
+and a script copied from upstream docs is wrong in a way that typechecks, lints and reviews
+clean. Nothing in `pnpm typecheck` / `pnpm test` / `pnpm build` reads these strings.
+
+#### `src/database/dataSource.ts` — 30 lines, and no gate touches it
+
+The file the scripts were failing to find. It builds its options through the shared
+`buildMssqlConnectionOptions()` so the CLI and `app.module.ts` cannot drift, loads `.env` then
+`.env.example`, and sets `synchronize: false` — migrations only.
+
+**The reason finding 2 survived unnoticed is a property of this file, not of the scripts**:
+it is imported by nothing in `src/`, only by a CLI invocation no gate runs. Its only exercise
+is `pnpm --filter @tm/server migration:run`, which now reaches `ESOCKET … localhost:1433` —
+as far as this machine goes (§7).
+
+### 9.3 Standalone runs — findings 5 and 7
+
+#### `apps/web/vitest.config.ts` (new) — the one that is *not* empty
+
+Its two siblings are `defineConfig({})`. This one is
+`mergeConfig(viteConfig, defineConfig({}))` ([`:18-23`](../../apps/web/vitest.config.ts)),
+and the difference is the point: `apps/web` previously worked *because* vitest fell back to
+discovering `vite.config.ts`, which carries the React plugin. An empty config here would have
+been "consistent" with the siblings and would have **removed** the plugin the fallback was
+supplying. Making an implicit thing explicit means keeping what it implied.
+
+#### `packages/{shared,protocol,ui}/package.json` + their `vitest.config.ts` (new)
+
+`test` / `test:watch` at `:26-27` in all three, and an explicit config in each.
+
+**What made this worth fixing is the failure mode, not the absence** (§3.3): `pnpm --filter
+@tm/protocol test` with no script exits **0, silently**. A workspace sweep reported six green
+packages while running tests in three. The standing check is the one §8.3 introduced — the six
+standalone runs sum to **124 files / 2068 tests**, exactly the aggregate. Equal file counts
+alone would not have shown a suite collected by one path and dropped by the other.
+
+`packages/ui/vitest.config.ts`'s header carries the one asymmetry: its sources import
+`@tm/shared/*` as a built dependency, so a bare `pnpm --filter @tm/ui test` outside turbo needs
+`@tm/shared` built first. `turbo.json`'s `test` task declares that; running the script directly
+does not get it for free.
+
+### 9.4 The gating precedent — finding 6
+
+#### `apps/client/src/main/exec/wslHost.test.ts` — 213 lines, three `describe`s, one gated
+
+`ENABLED` is `ORCH_WSL_TEST === '1' && platform === 'win32'`
+([`:33`](../../apps/client/src/main/exec/wslHost.test.ts)) and gates **only** the real-distro
+block ([`:48-155`](../../apps/client/src/main/exec/wslHost.test.ts)). The shell-prelude canary
+([`:157-166`](../../apps/client/src/main/exec/wslHost.test.ts)) and the relay/`WSLENV` wiring
+([`:168-209`](../../apps/client/src/main/exec/wslHost.test.ts)) are pure string assertions and
+stay in the gate unconditionally — gating those would be losing coverage for nothing.
+
+The `beforeAll` probe is skipped when disabled rather than merely ignored, which is where the
+4841 ms → 5 ms comes from: `listWslDistros()` shells out to `wsl.exe` and is the slowest thing
+in the file.
+
+#### `wslSession.e2e.test.ts` — the only precedent, and `jiraSync.integration.test.ts` is not one
+
+`ORCH_E2E === '1' && platform === 'win32'`
+([`:29`](../../apps/client/src/main/exec/wslSession.e2e.test.ts)) — the shape `ORCH_WSL_TEST`
+was named to match.
+
+**Correcting the plan's own brief a second time** (§5.3 corrected it once; it is repeated here
+because this is the section a later reader will search): `jiraSync.integration.test.ts` is
+**not** an instance of the opt-in pattern. It is 630 lines, gated by nothing, and correctly so
+— its own header says "No Electron and no SQLite", and its 300-issue board is mocked end to
+end. It belongs in the gate.
+
+The distinction those three files draw, which is the reusable rule:
+
+> **A test goes behind a flag when its result depends on state this repository does not
+> control** — a real distro's `~/.local/bin`, a logged-in CLI, a reachable database. "Integration
+> test" is not the criterion; a fully-mocked integration test is the *most* valuable thing in
+> the gate, because it is the seam where unit-tested parts fail.
+
+`docs/07-packaging-and-release.md` documents both flags side by side, which is the only place a
+reader who has not read this report will find them.
+
+### 9.5 The record — `docs/plan/README.md`, and this file
+
+Three layers, deliberately not merged:
+[`cloud-service-findings.md`](cloud-service-findings.md) is what static reading predicted
+(step 1, including the two predictions that were wrong); **this file** is what running it found
+and what was changed (steps 2–4); `docs/plan/README.md`'s Phase 25 entry is the phase's summary
+and the one a reader arrives at first.
+
+The Phase 25 entry contains **two earlier verification sections that this ticket contradicts**,
+and they were left in place with a correction note pointing here rather than edited into
+agreement. A verification section that quietly acquires the right answer afterwards is worth
+nothing; the value of those two is precisely that they show a green gate being trusted three
+times — including `wslHost.test.ts` being written off as "pre-existing … environmental" — which
+is the argument for this ticket existing at all.
+
+> Neither of these two files is inside `pnpm format`'s scope: the root `format` script globs
+> `apps/**`, `packages/**` and root-level `*.{json,md}` only, so `docs/**` is hand-formatted at
+> ~100 columns. Running prettier over them reflows every table in the file and buries the
+> change in 680 lines of churn. Step 4 did exactly that once and reverted it.
+
+#### `apps/client/package.json` — the version of record
+
+`version` here **is** the release (CONTRIBUTING §4), and every commit of this ticket bumped it,
+including the documentation-only ones. No tag: per RELEASE.md rule 5 this is a feature branch,
+the tag is cut when it reaches `development`, and §8.6 confirms the branch carries none.
+
+**The open question this ticket does not answer**, restated so it is not lost: the cloud branch
+moved the version of record from a root `0.74.3` on `development` to `apps/client` at `0.78.x`,
+with the root becoming a private `0.0.0`. Whatever release eventually carries this has a bump
+question to settle, and settling it was not this ticket's job.
+
+### 9.6 What is deliberately not on this list
+
+- **`tsconfig.base.json`.** `noEmit: true` stays. It is right for a workspace whose every
+  package typechecks with `tsc --noEmit`; the defect was `apps/server` having no config that
+  overrode it, not the base setting it.
+- **`apps/client/vitest.config.ts` and `apps/server/vitest.config.ts`.** Untouched, and both
+  already carried the header comment the three new ones were written to match.
+- **The ten `apps/server/src` test files.** Newly typechecked, and unchanged — they turned out
+  type-clean. That is a result, not a fix (§5.1).
+- **`docker-compose.yml`, and `apps/server/src/main.ts`.** Out of reach on this machine: the
+  server has never been booted (§7). Nothing here should be read as saying it works, only that
+  `dist/main.js` now exists to be booted.
