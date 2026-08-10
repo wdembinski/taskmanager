@@ -405,16 +405,60 @@ file. Getting past it needs Docker Desktop, which §7 records as out of reach he
 
 ### 5.2 The test gate — self-sufficient, and reachable per package
 
-- **`turbo.json`** gains a `test` task with `dependsOn: ["^build"]`.
-- **The root `test` script** routes through turbo (`turbo run test`), so the dependency is
-  declared rather than inherited from whatever ran before it. `pnpm install && pnpm test` on
-  a clean clone now builds the three library packages first. The root
-  `vitest.config.ts` is **not** aliased to source: `apps/web`/`apps/server` import `@tm/*` as
-  real packages and the gate keeps testing what they actually import.
-- **`packages/shared`, `packages/protocol`, `packages/ui`** each gain `test` and `test:watch`
-  scripts, plus a `vitest.config.ts` where one is needed to resolve their own imports.
-- **`apps/web/vitest.config.ts`** (new) — an explicit config with the same explanatory header
-  its two siblings carry.
+**`turbo.json`** gains a `test` task with `dependsOn: ["^build"]`, so
+`turbo run test` schedules the library builds ahead of every package's suite.
+
+**The root `test` script** becomes:
+
+```json
+"test": "turbo run build --filter=./packages/* && vitest run",
+```
+
+rather than routing the root gate itself through `turbo run test`. Both options were on the
+table and this one was chosen deliberately, because of §3.3: `turbo run test` fans out to each
+package's own `test` script, so the root gate's *completeness* would depend on all six
+packages having one — and a package that lacks it exits 0 in silence. That is the exact
+failure mode this report just documented. Keeping the root gate a single `vitest run` keeps it
+**discovery-based**: it globs the tree, so a new package's tests are picked up by existing,
+and cannot be silently omitted by a missing script. The `turbo run build` prefix supplies the
+one thing it was missing.
+
+The counts confirm the two paths agree rather than merely both being green — 124 files either
+way, so nothing falls between them:
+
+```
+$ pnpm test                       # root, aggregated
+ Tasks:    3 successful, 3 total  # the three library builds, first
+ Test Files  123 passed | 1 skipped (124)
+      Tests  2066 passed | 2 skipped (2068)
+  → exit 0
+
+$ pnpm exec turbo run test        # the new task, fanned out
+ Tasks:    9 successful, 9 total  # 6 test + 3 build
+```
+
+The root `vitest.config.ts` is **not** aliased to source. `apps/web` and `apps/server` import
+`@tm/*` as real packages resolved through `exports` to `dist/`, and aliasing would make the
+root run test code no consumer actually loads.
+
+**`packages/shared`, `packages/protocol`, `packages/ui`** each gain `test` and `test:watch`
+scripts and an explicit `vitest.config.ts`. All six packages now run standalone, and the six
+counts sum to the aggregate exactly:
+
+| Command | Exit | Files |
+|---------|------|-------|
+| `pnpm --filter claude-orchestrator test` | 0 | 67 passed, 1 skipped (68) |
+| `pnpm --filter @tm/server test` | 0 | 10 passed |
+| `pnpm --filter @tm/web test` | 0 | 7 passed |
+| `pnpm --filter @tm/shared test` | 0 | 25 passed |
+| `pnpm --filter @tm/protocol test` | 0 | 1 passed |
+| `pnpm --filter @tm/ui test` | 0 | 13 passed |
+| | | **124 = the aggregate** |
+
+**`apps/web/vitest.config.ts`** (new) — explicit, with the same explanatory header its two
+siblings carry. It `mergeConfig`s `./vite.config.ts` rather than replacing it, so the React
+plugin the old implicit discovery supplied is still there; the point is to stop relying on
+discovery order, not to drop what discovery was providing.
 
 ### 5.3 The WSL suite
 

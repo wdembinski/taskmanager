@@ -1,6 +1,6 @@
 {
   "name": "@tm/shared",
-  "version": "0.75.1",
+  "version": "0.75.2",
   "description": "Domain types and pure logic shared across the desktop client, the cloud server and the web client — the IpcApi contract, Task/Project models, parsers and policies.",
   "license": "UNLICENSED",
   "private": true,
@@ -23,6 +23,8 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
