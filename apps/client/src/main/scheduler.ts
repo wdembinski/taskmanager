@@ -1955,15 +1955,46 @@ export class Scheduler {
     // cover it and this must sit ABOVE the shortcut below. "Never ask me to approve tools"
     // is not "answer my questions for me" — and full-auto is precisely the mode in which
     // nobody is watching the agent quietly pick its own recommended option.
+    //
+    // ADOPT rather than raise a second time. The event-stream fallback below can raise the
+    // very same question first (the CLI emits `tool-use` and calls the gate in either
+    // order), and then the human answered one item while the other still held the tool —
+    // hence "I always need to click accept twice". So: if this run already has an OPEN
+    // `agent-question` for this same question, register the held tool against THAT item
+    // instead of raising a rival.
+    //
+    // Both extra conditions earn their place:
+    //   * `!pendingDecisions.has(open.id)` — two genuinely concurrent gated asks would
+    //     otherwise overwrite each other's `resolve`, stranding the first for ever.
+    //   * the prompt comparison — one assistant message can carry parallel `tool_use`
+    //     blocks, and without it the human's answer to Q1 could be returned as the result
+    //     of the Q2 tool call. Failing the check degrades to the old visible two-item
+    //     behaviour, which is the right way to fail.
+    //
+    // Rejected alternatives, so they are not re-litigated: deleting the fallback restores
+    // the silent failure Phases 17 and 18 exist to end; debouncing the fallback on a timer
+    // is strictly more machinery than adoption; resolving the fallback item and raising a
+    // fresh one swaps the form out from under the human's cursor. Correlating on the CLI's
+    // `tool_use` id would be airtight and would close the residual race the content check
+    // leaves open, but it means threading a field through `permissionServerSource.ts`,
+    // `PermissionRequest` and the item — three files and a shipped `.cjs` string — for a
+    // window narrower than human reaction time. That is the exit if this ever proves
+    // insufficient.
     if (isAskUserQuestionTool(request.toolName)) {
       const questions = parseAskUserQuestion(request.input);
-      const item = this.raiseAttention(run, {
-        kind: 'agent-question',
-        prompt: describeQuestions(questions),
-        toolName: request.toolName,
-        reason: null,
-        questions,
-      });
+      const open = this.openAttentionOfKind(request.runId, 'agent-question');
+      const adoptable =
+        open && !this.pendingDecisions.has(open.id) && open.prompt === describeQuestions(questions);
+      const item =
+        adoptable && open
+          ? open
+          : this.raiseAttention(run, {
+              kind: 'agent-question',
+              prompt: describeQuestions(questions),
+              toolName: request.toolName,
+              reason: null,
+              questions,
+            });
       return new Promise<PermissionDecisionResult>((resolve) => {
         this.pendingDecisions.set(item.id, { runId: request.runId, input: request.input, resolve });
       });
@@ -1979,8 +2010,25 @@ export class Scheduler {
     // mean, since `capturePlan` stored the markdown and the shortcut then allowed the call
     // with nothing ever raised, leaving a plan-mode full-auto card unable to gain a single
     // step. `ExitPlanMode` mutates nothing, so holding it costs a pause and no more.
+    //
+    // Adopts an already-open `plan-approval` for the same reason the question branch above
+    // does — the fallback at the `tool-use` event may have raised it first, and two Approve
+    // buttons for one plan is the double-click bug. There is deliberately NO prompt/plan
+    // comparison here: the item's `plan` is a pre-`capturePlan` snapshot, so comparing it
+    // would defeat adoption entirely. A run has one plan at a time, so the kind alone is a
+    // sufficient correlator.
     if (request.toolName === EXIT_PLAN_MODE_TOOL) {
-      const item = this.raisePlanApproval(run);
+      const open = this.openAttentionOfKind(request.runId, 'plan-approval');
+      const adoptable = open && !this.pendingDecisions.has(open.id);
+      let item: AttentionItem;
+      if (adoptable && open) {
+        item = open;
+        // Whoever raised the item already set this, but `describeEmptyOutcome` depends on
+        // it and one line keeps that fact local to the branch.
+        run.planPresented = true;
+      } else {
+        item = this.raisePlanApproval(run);
+      }
       return new Promise<PermissionDecisionResult>((resolve) => {
         this.pendingDecisions.set(item.id, { runId: request.runId, input: request.input, resolve });
       });
@@ -2848,7 +2896,7 @@ export class Scheduler {
     // `answerAttention` already tolerates an item with no held tool.
     if (event.kind === 'tool-use' && event.name === EXIT_PLAN_MODE_TOOL) {
       this.capturePlan(run.taskId, event.input);
-      if (!this.hasPendingAttention(runId)) this.raisePlanApproval(run);
+      if (!this.openAttentionOfKind(runId, 'plan-approval')) this.raisePlanApproval(run);
     }
 
     // The same belt-and-braces for `AskUserQuestion` (Phase 17). If the CLI ever declines
@@ -2856,11 +2904,18 @@ export class Scheduler {
     // never sees it and the question would go unasked — the exact silent failure this
     // whole path exists to end. Raising it here cannot BLOCK (the tool has already run),
     // but a question you can see and answer into the stream beats one you never knew
-    // about. Guarded on `hasPendingAttention` so the gated path doesn't double-raise.
+    // about.
+    //
+    // The guard is now narrow — only an open `agent-question` for this run suppresses it,
+    // not any parked item at all. Keeping the gated and fallback paths from both raising is
+    // no longer this guard's job: the gate ADOPTS whatever it finds open (see
+    // `decidePermission`). All this stops is the fallback repeating itself. Narrowing also
+    // closes a second bug: an unrelated parked `permission` on the same run used to
+    // suppress the question entirely, so it was never asked at all.
     if (
       event.kind === 'tool-use' &&
       isAskUserQuestionTool(event.name) &&
-      !this.hasPendingAttention(runId)
+      !this.openAttentionOfKind(runId, 'agent-question')
     ) {
       const questions = parseAskUserQuestion(event.input);
       if (questions.length > 0) {
@@ -3331,6 +3386,24 @@ export class Scheduler {
   private hasPendingAttention(runId: string): boolean {
     for (const item of this.attention.values()) if (item.runId === runId) return true;
     return false;
+  }
+
+  /**
+   * The open inbox item of ONE kind for this run, if there is one. The narrow sibling of
+   * {@link hasPendingAttention}: "any kind" is right where a human being parked at all is
+   * the fact that matters (do not settle a run under them), and wrong where the question
+   * is "did WE already ask this same thing?".
+   *
+   * The blank-`runId` guard is load-bearing, not defensive noise. `rehydrateAttention` and
+   * `clearRunAttention` blank `runId` on items whose process is gone; such an item holds no
+   * tool to release, so adopting one would tie a live run's decision to a dead ask.
+   */
+  private openAttentionOfKind(runId: string, kind: AttentionKind): AttentionItem | null {
+    if (!runId) return null;
+    for (const item of this.attention.values()) {
+      if (item.runId === runId && item.kind === kind) return item;
+    }
+    return null;
   }
 
   /** Remove one item and notify the UI. */
