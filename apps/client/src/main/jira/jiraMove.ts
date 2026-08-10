@@ -13,9 +13,14 @@
  *     tickets" rule that made dragging a card leftwards silently meaningless.)
  *   - Internal (non-JIRA) tasks never transition anything.
  */
-import type { BoardColumn, Task, TaskStatus } from '@shared/model';
+import type { BoardColumn, JiraStatusCategory, Task, TaskStatus } from '@shared/model';
 import { categoryFromKey, columnForTask, restingStatus, statusForColumn } from '@shared/board';
-import { STATUS_REASONS, resolveStatusColumn } from '@shared/statusResolve';
+import {
+  STATUS_REASONS,
+  isBlockedishStatus,
+  resolveStatusColumn,
+  type StatusReason,
+} from '@shared/statusResolve';
 import type { JiraTransition } from './jiraClient';
 import type { JiraSettings } from '@shared/settings';
 
@@ -104,6 +109,30 @@ export const TARGET_LABEL: Record<JiraTransitionTarget, string> = {
   toDone: 'Done',
 };
 
+/** How each board column reads inside a sentence written for a human. */
+export const COLUMN_LABEL: Record<BoardColumn, string> = {
+  todo: 'TO DO',
+  'in-progress': 'IN PROGRESS',
+  'in-review': 'IN REVIEW',
+  blocked: 'BLOCKED',
+  done: 'DONE',
+};
+
+/** The transition a move will apply, plus everything the caller needs to explain it. */
+export interface TransitionChoice {
+  /** The transition to POST. */
+  transition: JiraTransition;
+  /** Which tier chose it — or `'name'` for the user's exact-transition-name override. */
+  via: 'name' | StatusReason;
+  /** The column this transition's DESTINATION status resolves to. */
+  destinationColumn: BoardColumn;
+  /**
+   * True when that destination is not the column the drag was aiming at. Only the name
+   * override can produce this: every other path picks BY the destination's column.
+   */
+  mismatch: boolean;
+}
+
 /**
  * Choose which JIRA transition to apply for a target, in order of how much we know:
  *
@@ -125,6 +154,15 @@ export const TARGET_LABEL: Record<JiraTransitionTarget, string> = {
  * scan would take a category-guess that happened to be listed first over the status
  * the user explicitly mapped.
  *
+ * WITHIN a tier the same reasoning applies one level down, which is the bug this
+ * function was rewritten for. Every match in a tier is *equally* justified by the
+ * rules, so taking `matches[0]` hands the decision to the workflow's declaration
+ * order — and that is precisely how a workflow listing "Block" before "Start
+ * Progress" sent an IN PROGRESS drag to Blocked. So: collect the matches, and prefer
+ * the one whose destination is literally named after the column. A status called
+ * "In Progress" is the least surprising answer an IN PROGRESS drag can be given;
+ * only when nothing is named that does declaration order get to break the tie.
+ *
  * Returns null when nothing fits — the caller turns that into a readable error rather
  * than moving the card silently.
  */
@@ -132,25 +170,84 @@ export function pickTransition(
   transitions: JiraTransition[],
   target: JiraTransitionTarget,
   settings: TransitionSettings,
-): JiraTransition | null {
+): TransitionChoice | null {
+  const wantColumn = TARGET_COLUMN[target];
+  const resolve = (t: JiraTransition) =>
+    resolveStatusColumn(
+      t.to.name,
+      categoryFromKey(t.to.statusCategory.key),
+      settings.statusCategoryOverrides,
+      settings.learnedStatusColumns,
+    );
+
   const override = settings[NAME_OVERRIDE[target]];
   if (typeof override === 'string' && override) {
     const byName = transitions.find((t) => t.name.toLowerCase() === override.toLowerCase());
-    if (byName) return byName;
+    if (byName) {
+      // Reported, never refused. The name box is the escape hatch for a workflow whose
+      // statuses we cannot read, so a destination that disagrees with the target column
+      // may well be exactly what the user meant — but it is also how a typo goes
+      // unnoticed for months, so the caller is told and says so out loud.
+      const destinationColumn = resolve(byName).column;
+      return {
+        transition: byName,
+        via: 'name',
+        destinationColumn,
+        mismatch: destinationColumn !== wantColumn,
+      };
+    }
   }
 
-  const wantColumn = TARGET_COLUMN[target];
+  const wantName = TARGET_LABEL[target].trim().toLowerCase();
   for (const tier of STATUS_REASONS) {
-    const hit = transitions.find((t) => {
-      const resolved = resolveStatusColumn(
-        t.to.name,
-        categoryFromKey(t.to.statusCategory.key),
-        settings.statusCategoryOverrides,
-        settings.learnedStatusColumns,
-      );
+    const matches = transitions.filter((t) => {
+      const resolved = resolve(t);
       return resolved.reason === tier && resolved.column === wantColumn;
     });
-    if (hit) return hit;
+    if (!matches.length) continue;
+    const named = matches.find((t) => t.to.name.trim().toLowerCase() === wantName);
+    return {
+      transition: named ?? matches[0],
+      via: tier,
+      destinationColumn: wantColumn,
+      mismatch: false,
+    };
   }
   return null;
+}
+
+/**
+ * Whether a drag has taught us something worth writing into the learned status map.
+ *
+ * Lives here, next to the picker, rather than inline in the IPC handler that used to
+ * hold it: it is a pure decision about JIRA statuses, and inline in `ipc.ts` it could
+ * not be tested at all.
+ *
+ * Three of the four conditions came straight from there — a blank name says nothing, a
+ * status the user mapped in Settings outranks anything we could infer, and a status that
+ * already resolves to this column needs no entry (which is why the reported bug never
+ * poisoned the map for people whose "Blocked" already read as blocked).
+ *
+ * The fourth is new. A blocked-ish destination is the one the picker can most easily
+ * reach by accident, and the map is not a private cache — `StatusMapViewer` shows it to
+ * the user as a list of facts the app has learned. "Blocked means IN REVIEW" is not a
+ * fact; it is the app repeating its own mistake back at the person who has to correct it.
+ * They can still say so explicitly, and `statusCategoryOverrides` still wins.
+ */
+export function shouldLearnStatus(
+  statusName: string,
+  category: JiraStatusCategory,
+  column: BoardColumn,
+  settings: TransitionSettings,
+): boolean {
+  const name = statusName.trim();
+  if (!name) return false;
+  if (isBlockedishStatus(name, category)) return false;
+  const current = resolveStatusColumn(
+    name,
+    category,
+    settings.statusCategoryOverrides,
+    settings.learnedStatusColumns,
+  );
+  return current.reason !== 'explicit' && current.column !== column;
 }

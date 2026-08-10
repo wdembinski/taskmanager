@@ -47,7 +47,7 @@ import {
   restingStatus,
 } from '@shared/board';
 import { assignmentStatusPatch, humanStatusPatch } from './cardStatusGuard';
-import { resolveStatusColumn } from '@shared/statusResolve';
+import { isBlockedishStatus } from '@shared/statusResolve';
 import type { AppSettings } from '@shared/settings';
 import { sameExecTarget, type ExecTarget } from '@shared/execTarget';
 import { normalizeBaseUrl } from '@shared/jiraUrl';
@@ -70,8 +70,10 @@ import { discoverEpicFieldId, epicKeyFromIssue, epicNameFromIssue } from './jira
 import { discoverSprintFieldId, withCurrentSprint } from './jira/jiraSprint';
 import { authorIsMe, identityFrom, type JiraIdentityCache } from './jira/identity';
 import {
+  COLUMN_LABEL,
   pickTransition,
   resolveMove,
+  shouldLearnStatus,
   TARGET_LABEL,
   type JiraTransitionTarget,
 } from './jira/jiraMove';
@@ -2301,10 +2303,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
    * transition could be chosen by the name heuristic while the incoming sync read the
    * same status by its category, so the very next sync moved the card back.
    *
-   * Only ever *adds* — a name the user mapped in Settings is left alone, since an
-   * explicit answer outranks an inferred one. A status already resolving to this
-   * column needs no entry either, which keeps the learned map small and the Settings
-   * viewer readable.
+   * Only ever *adds*, and only when `shouldLearnStatus` says the drag actually taught us
+   * something — that decision lives in `jira/jiraMove.ts`, where it can be tested. All
+   * that is left here is the trim, the guard and the write.
    */
   const learnStatusColumn = (
     statusName: string,
@@ -2312,16 +2313,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     column: BoardColumn,
   ): void => {
     const name = statusName.trim();
-    if (!name) return;
     const settings = store.getSettings();
     const { jira } = settings;
-    const current = resolveStatusColumn(
-      name,
-      category,
-      jira.statusCategoryOverrides,
-      jira.learnedStatusColumns,
-    );
-    if (current.reason === 'explicit' || current.column === column) return;
+    if (!shouldLearnStatus(name, category, column, jira)) return;
     const next: AppSettings = {
       ...settings,
       jira: {
@@ -2350,15 +2344,41 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     const client = buildJiraClient();
     const { jira } = store.getSettings();
     const transitions = await client.getTransitions(task.externalKey);
-    const picked = pickTransition(transitions, target, jira);
-    if (!picked) {
+    const choice = pickTransition(transitions, target, jira);
+    if (!choice) {
+      // Name the blocked-ish step when the workflow has one. It is the transition this
+      // picker used to take by accident, so a user looking at a "Block" button in JIRA
+      // and an error here would otherwise conclude we simply cannot see it — rather than
+      // that we saw it, read it as BLOCKED, and refused to press it on their behalf.
+      const blocking = transitions.filter((t) =>
+        isBlockedishStatus(t.to.name, categoryFromKey(t.to.statusCategory.key)),
+      );
+      const aside = blocking.length
+        ? ` The closest this workflow offers is ${blocking
+            .map((t) => `"${t.name}" (→ ${t.to.name})`)
+            .join(', ')}, which reads as BLOCKED, not ${TARGET_LABEL[target]}.`
+        : '';
       throw new Error(
-        `No JIRA transition to ${TARGET_LABEL[target]} is available for ${task.externalKey}. ` +
+        `No JIRA transition to ${TARGET_LABEL[target]} is available for ${task.externalKey}.${aside} ` +
           `Set an exact transition name in Settings if your workflow uses a custom one.`,
       );
     }
+    const picked = choice.transition;
     await client.doTransition(task.externalKey, picked.id);
     const category = categoryFromKey(picked.to.statusCategory.key);
+    // The exact-name override took a transition that lands somewhere else. It was still
+    // applied — the box exists for workflows we cannot read — but this bar is the only
+    // surface that can tell someone their configured name is doing something they did
+    // not intend, which is exactly how a typo in it survives for months.
+    if (choice.mismatch) {
+      send('board:notice', {
+        intent: 'warning',
+        text:
+          `${task.externalKey}: the transition named "${picked.name}" in Settings lands on ` +
+          `"${picked.to.name}", which this board reads as ${COLUMN_LABEL[choice.destinationColumn]}, ` +
+          `not ${COLUMN_LABEL[toColumn]}. The move was applied as configured.`,
+      });
+    }
     learnStatusColumn(picked.to.name, category, toColumn);
     // Reflect the new tracker status locally for display.
     return { externalStatus: picked.to.name, externalStatusCategory: category };
