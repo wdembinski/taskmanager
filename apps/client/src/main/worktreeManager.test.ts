@@ -693,6 +693,42 @@ describe('WorktreeManager — a worktree that was already merged and cleaned up'
     expect((await git(repo, ['show', `${base}:left-behind.txt`])).stdout).toBe('real work\n');
   });
 
+  /**
+   * The other way a worktree stops having a branch, and the one that cost a whole card: a
+   * step left it stranded mid-rebase, so `HEAD` was detached. `rev-parse --abbrev-ref HEAD`
+   * answers the literal `HEAD` there — not empty — so the guard above sailed past it, the
+   * run was launched with `HEAD` recorded as its branch, and the merge afterwards looked for
+   * a branch by that name, found none, and reported `nothing-to-merge`. The work was fine and
+   * committed; nothing merged it, and the step span "Running" until a human noticed.
+   */
+  it('refuses a worktree whose HEAD is detached instead of calling the branch "HEAD"', async () => {
+    const wtm = new WorktreeManager(join(root, 'wtroot-detached'));
+    const task = { id: 'det1' } as unknown as Task;
+    const first = await wtm.prepare(worktreeProject(), task, task.id, 'feat/mid-rebase');
+    expect(first.mode).toBe('worktree');
+    if (first.mode !== 'worktree') return;
+
+    // Exactly what an interrupted `git rebase` leaves behind in that worktree.
+    writeFileSync(join(first.cwd, 'step.txt'), 'work\n');
+    await git(first.cwd, ['add', '-A']);
+    await git(first.cwd, ['commit', '--no-verify', '-m', 'step work']);
+    await git(first.cwd, ['checkout', '--detach', 'HEAD']);
+    expect((await git(first.cwd, ['rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim()).toBe(
+      'HEAD',
+    );
+
+    const again = await wtm.prepare(worktreeProject(), task, task.id, 'feat/mid-rebase');
+
+    expect(again.mode).toBe('failed');
+    // Never handed back as a working dir — a run there could not be merged afterwards.
+    expect(again).not.toHaveProperty('cwd');
+    // The reason has to name the state and a way out, or it is just "it broke".
+    expect(again.mode === 'failed' && again.reason).toMatch(/detached/i);
+    expect(again.mode === 'failed' && again.reason).toMatch(/rebase --abort/);
+    // And it touched nothing: the commit the stranded worktree holds is still there.
+    expect((await git(first.cwd, ['log', '--oneline'])).stdout).toContain('step work');
+  });
+
   it('inspect() reads what is there without creating a worktree or resurrecting a branch', async () => {
     const wtm = new WorktreeManager(join(root, 'wtroot-inspect'));
     const task = { id: 'insp1' } as unknown as Task;

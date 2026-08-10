@@ -42,10 +42,27 @@ export async function isRepo(dir: string, host?: ExecHost): Promise<boolean> {
   return res.code === 0 && res.stdout.trim() === 'true';
 }
 
-/** The current branch name (or 'HEAD' when detached). Empty on error. */
+/**
+ * The current branch name. **Empty when there isn't one** — on error, and equally when
+ * `HEAD` is detached.
+ *
+ * `git rev-parse --abbrev-ref HEAD` answers the literal string `HEAD` for a detached head,
+ * which is not a branch and is not a name any caller here can use. Passing it on is worse
+ * than saying nothing: a worktree left mid-rebase reported its branch as `HEAD`, the run
+ * worked on it perfectly well, and then the integrate step asked git to merge a branch
+ * called `HEAD`, found no such thing, and quietly recorded that no merge was needed — a
+ * whole step's work left unmerged, with a card that span "Running" to show for it.
+ *
+ * So the pseudo-name is collapsed into the empty answer every caller already handles as
+ * "git won't say which branch this is", and each of them refuses or falls back instead.
+ * `hasCommits` documents the other half of this contract: `''` must never reach git as a
+ * start-point.
+ */
 export async function currentBranch(dir: string, host?: ExecHost): Promise<string> {
   const res = await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD'], host);
-  return res.code === 0 ? res.stdout.trim() : '';
+  if (res.code !== 0) return '';
+  const name = res.stdout.trim();
+  return name === 'HEAD' ? '' : name;
 }
 
 /**

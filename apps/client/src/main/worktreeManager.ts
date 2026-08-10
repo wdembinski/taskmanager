@@ -472,15 +472,23 @@ export class WorktreeManager {
       // Past `isRepo`, an empty answer is a real anomaly rather than the ordinary "no
       // worktree yet", so it must not fall back to the name we were asked for — that
       // fallback is the exact shape of the bug above.
+      //
+      // A DETACHED head is empty here too (see `currentBranch`), and that is the case this
+      // guard was always describing without catching: a worktree stranded mid-rebase used
+      // to report its branch as the literal `HEAD`, which sailed past this check, ran a
+      // whole step, and then merged nothing because no branch by that name exists. Refusing
+      // costs one interrupted run; the alternative silently drops the work.
       const actual = await currentBranch(cwd, host);
       if (!actual) {
         return {
           mode: 'failed',
           reason:
-            `The worktree at ${cwd} is a git repository but git won't say which branch it ` +
-            `has checked out, so this task has no branch to work on or merge back. Check ` +
-            `\`git -C "${cwd}" status\` (a half-finished rebase or a broken HEAD does this). ` +
-            `The task was not run in the base tree (${project.path}) to avoid polluting it.`,
+            `The worktree at ${cwd} is a git repository but has no branch checked out, so ` +
+            `this task has no branch to work on or merge back. Check ` +
+            `\`git -C "${cwd}" status\` — a half-finished rebase or merge leaves a detached ` +
+            `HEAD, and \`git -C "${cwd}" rebase --abort\` (or "Retry fresh (discard ` +
+            `branch)" on the card, which rebuilds the worktree) clears it. The task was ` +
+            `not run in the base tree (${project.path}) to avoid polluting it.`,
         };
       }
       return { mode: 'worktree', cwd, branch: actual, base };

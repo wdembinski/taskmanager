@@ -1577,6 +1577,8 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       /** The CARD's override; `undefined` = it has not ruled either. */
       cardAutoIntegrate?: boolean | null;
       savedLimit?: LimitState | null;
+      /** What the merge reports back; `undefined` = it merged. */
+      integrateResult?: Record<string, unknown>;
     },
   ) {
     const agentProject = {
@@ -1693,7 +1695,7 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       },
       integrate: (_p: Project, branch: string, base: string) => {
         integrated.push({ branch, base });
-        return Promise.resolve({ status: 'merged' });
+        return Promise.resolve(opts?.integrateResult ?? { status: 'merged' });
       },
       cleanup: vi.fn(),
     } as unknown as WorktreeManager;
@@ -1852,6 +1854,53 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
     expect(filed).toContain('2. Step 2');
     expect(filed).toContain('Merged `orch/t1` into `main`');
     expect(filed).toContain('move it to Done yourself');
+  });
+
+  /**
+   * The reported bug: **a step that says "Running" for ever, with its own session visibly
+   * exited in the panel underneath it.**
+   *
+   * The final step finished, `settle` handed its branch to the merge, and the merge came
+   * back `nothing-to-merge` — that branch had already landed, or (as in the incident) the
+   * worktree was mid-rebase so its "branch" was the literal `HEAD` and no such ref exists.
+   * That outcome was written for the Merge button, where the card is resting and touching
+   * nothing is right; arriving from a run it left the step holding the `running` the run had
+   * borrowed, and nothing writes that field again — the `exited` a fraction of a second
+   * later is guarded on `!run.settled`, so it declined to.
+   *
+   * The spinner was the visible half. The costly half is `chainInFlight`, which reads
+   * `running` as "this plan is still going": the card could not be chatted to, re-planned or
+   * advanced, and stayed that way for 33 minutes until a human went looking.
+   */
+  it('gives a step its status back when the merge finds nothing to merge', async () => {
+    const { parent, children, comments, emitAttention, seedRun, fire } = setup(undefined, {
+      integrateResult: {
+        status: 'nothing-to-merge',
+        branch: 'orch/t1',
+        base: 'main',
+        reason: 'branch "orch/t1" no longer exists in C:/repos/checkout',
+      },
+    });
+    children[0].status = 'done';
+    children[1].status = 'running'; // what a live run always looks like when it settles
+    seedRun('r2', 's2');
+    fire('r2', okResult);
+    await flush();
+
+    // The whole bug in one line: the step is over, so it must not still claim to be working.
+    expect(children[1].status).toBe('done');
+    // …which is what lets the card be talked to again — `chainInFlight` is now false.
+    expect(children.some((c) => c.status === 'running')).toBe(false);
+    // Nothing is wrong, so nobody is interrupted.
+    expect(emitAttention).not.toHaveBeenCalled();
+    // The chain still hands back: the summary, and the marker the next run reads.
+    const filed = comments.join(' ');
+    expect(filed).toContain('Plan complete');
+    // But it must not claim a merge that did not happen, nor point at a Merge button that
+    // could only repeat this refusal — the timeline note above carries git's own reason.
+    expect(filed).not.toContain('Merged `orch/t1`');
+    expect(filed).not.toContain('NOT been merged');
+    expect((parent as unknown as { chainLandedAt: number | null }).chainLandedAt).not.toBeNull();
   });
 
   // Token audit S5: a chain landing used to spawn a whole fresh session just to comment on
@@ -3685,6 +3734,47 @@ describe('Scheduler — an integration with nothing to merge', () => {
     // And the timeline says why, so the human is not left guessing at a button that did nothing.
     expect(notes.some((n) => n.includes('No merge was needed'))).toBe(true);
     expect(notes.some((n) => n.includes('no longer exists'))).toBe(true);
+  });
+
+  /**
+   * The same outcome arriving from a RUN rather than from the Merge button, where "leave the
+   * card exactly as it was" meant leaving it `running` — the field a run borrows and this
+   * branch never gave back. Nothing writes it again afterwards: the run's `exited` is guarded
+   * on `!run.settled` and declines to touch a settled run's status.
+   */
+  it('releases a card the run had borrowed, back to the column the human left it in', async () => {
+    const { scheduler, card, store } = setup();
+    // What a card looks like the instant its run settles: `running`, with the human's own
+    // column parked behind it by `guardCardStatus`.
+    card.status = 'running';
+    (card as unknown as { preRunStatus: string }).preRunStatus = 'pending';
+
+    (
+      scheduler as unknown as {
+        applyIntegrationResult: (p: Project, c: unknown, r: unknown) => void;
+      }
+    ).applyIntegrationResult(
+      { id: 'agent-1', path: 'C:/repo' } as unknown as Project,
+      {
+        taskId: 't1',
+        runId: 'r1',
+        branch: 'feat/whitening',
+        base: 'development',
+        worktree: 'C:/wt/t1',
+      },
+      {
+        status: 'nothing-to-merge',
+        branch: 'feat/whitening',
+        base: 'development',
+        reason: 'branch "feat/whitening" no longer exists in C:/repo',
+      },
+    );
+    await settle();
+
+    // Back where the human put it — not spinning, and not moved for them either.
+    expect(card.status).toBe('pending');
+    // Still nothing wrong, so still no inbox item.
+    expect(store.saveAttention).not.toHaveBeenCalled();
   });
 
   it('refuses the Merge button without resurrecting the branch, when nothing is left to merge', async () => {

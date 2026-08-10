@@ -3881,10 +3881,10 @@ export class Scheduler {
         void this.finishParentChain(ctx.taskId, { branch: ctx.branch, base: ctx.base });
         break;
       }
-      case 'nothing-to-merge':
-        // Nothing happened and nothing is wrong, so the card is left exactly as it was: no
-        // status change, no inbox item, no `landedAt`, no chain release, no auto-release.
-        // Only a line on the timeline saying why the merge it was told about did not occur.
+      case 'nothing-to-merge': {
+        // Nothing happened to the REPO and nothing is wrong: no inbox item, no `landedAt`,
+        // no chain release, no auto-release. Only a line on the timeline saying why the
+        // merge it was told about did not occur.
         //
         // This is the case that used to arrive as `error`, which parked the card and
         // offered a "Retry integration" that re-ran the same impossible merge — a card
@@ -3898,7 +3898,41 @@ export class Scheduler {
           ctx.runId,
           `No merge was needed: ${result.reason}. Nothing was changed.`,
         );
+        // …but the RUN is over, and its status has to be given back — which is what this
+        // branch used to leave out, having been written for the Merge button (where the
+        // card is resting and "change nothing" is literally right). Arriving from `settle`
+        // the task is `running`, because a run always is when it settles, and nothing
+        // downstream ever writes that field again: the imminent `exited` is guarded on
+        // `!run.settled`, so it declines to touch it. A step then span "Running" for as
+        // long as the app lived with its session visibly exited in the panel below, and —
+        // worse than the spinner — `chainInFlight` stayed true, so the card could not be
+        // chatted to, re-planned, or advanced by its own chain.
+        //
+        // Same split, and the same reasons, as `merged` above: a STEP must reach `done` or
+        // the chain machinery breaks, while a CARD goes to `in-progress`, which
+        // `guardCardStatus` turns back into wherever the human left it. On the Merge-button
+        // path — a resting card, nothing borrowed — that guard makes this write a no-op,
+        // so "left exactly as it was" still holds where it was true to begin with.
+        const finished = this.store.getTask(ctx.taskId);
+        this.updateTask(
+          ctx.taskId,
+          { status: finished?.parentTaskId ? 'done' : 'in-progress' },
+          null,
+        );
+        // Only the LAST step of a chain ever reaches integration (earlier ones return
+        // before it), so getting here means the plan is over — hand the card back with its
+        // summary, as both other outcomes do. A no-op for a card, which is what the Merge
+        // button always passes.
+        //
+        // Deliberately WITHOUT branch info, which is the one thing the summary would get
+        // wrong here. It can say "merged into base" or "not merged — choose Merge on this
+        // card", and neither is true of a branch that no longer exists or holds nothing:
+        // the first claims a merge this call did not do, the second offers a button that
+        // can only repeat this refusal. What actually happened is on the timeline note
+        // directly above, in the reason git gave; the summary sticks to the steps.
+        void this.finishParentChain(ctx.taskId);
         break;
+      }
       case 'conflict':
         this.escalateConflict(project, ctx);
         break;

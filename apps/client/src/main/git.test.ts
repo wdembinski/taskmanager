@@ -166,6 +166,33 @@ describe('git helpers', () => {
 });
 
 /**
+ * A DETACHED head — what a half-finished rebase leaves behind, and the state that made a
+ * step run to completion and then merge nothing: `rev-parse --abbrev-ref HEAD` answers the
+ * literal string `HEAD`, which is not a branch, and the integrate step went looking for one
+ * by that name. Every caller of `currentBranch` already handles "git won't say", so the
+ * pseudo-name has to collapse into it.
+ */
+describe('git helpers — a detached HEAD', () => {
+  it('reports no branch at all, not the pseudo-name "HEAD"', async () => {
+    await commitFile(repo, 'b.txt', 'second\n', 'second');
+    // Straight to a commit: exactly what `rebase` does between picks.
+    await git(repo, ['checkout', '--detach', 'HEAD~1']);
+
+    // git's own answer, which is what used to be passed on as a branch name…
+    expect((await git(repo, ['rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim()).toBe('HEAD');
+    // …and what the helper reports instead.
+    expect(await currentBranch(repo)).toBe('');
+    // Still a perfectly good work tree with commits — which is why nothing else caught it.
+    expect(await isRepo(repo)).toBe(true);
+    expect(await hasCommits(repo)).toBe(true);
+
+    // Back on a branch, the name comes back.
+    await git(repo, ['checkout', base]);
+    expect(await currentBranch(repo)).toBe(base);
+  });
+});
+
+/**
  * An UNBORN repo: `git init` and nothing else. This is the state that produced
  * `fatal: not a valid object name: ''` — `isRepo` says yes, `currentBranch` fails and is
  * coerced to `''`, and that empty string reaches `git worktree add` as a start-point.
