@@ -21,7 +21,12 @@ import { IamAuthGuard } from './iamAuth.guard';
     },
     IamAuthGuard,
   ],
-  exports: [IamAuthGuard],
+  // IAM_CLIENT is exported alongside the guard, not just provided: `@UseGuards(IamAuthGuard)`
+  // makes Nest instantiate the guard in the *controller's* module context (MirrorModule,
+  // PresenceModule), so the token has to be resolvable from there too. Exporting only the
+  // guard class compiles and unit-tests fine — the guard's own tests construct it directly —
+  // and then fails at boot with "can't resolve dependencies of the IamAuthGuard".
+  exports: [IamAuthGuard, IAM_CLIENT],
 })
 export class IamModule {}
 
