@@ -1,6 +1,6 @@
 {
   "name": "@tm/server",
-  "version": "0.76.1",
+  "version": "0.76.2",
   "description": "The cloud counterpart's backend — NestJS + TypeORM + mssql, matching vipper.iam's stack. POST /v1/sync and GET /v1/board mirror Task/Project rows by SQL Server rowversion; POST /v1/commands relays actions between Clients.",
   "license": "UNLICENSED",
   "private": true,
@@ -12,9 +12,9 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "migration:run": "tsx ./node_modules/typeorm/cli.js migration:run -d src/database/data-source.ts",
-    "migration:generate": "tsx ./node_modules/typeorm/cli.js migration:generate -d src/database/data-source.ts",
-    "migration:revert": "tsx ./node_modules/typeorm/cli.js migration:revert -d src/database/data-source.ts"
+    "migration:run": "tsx ./node_modules/typeorm/cli.js migration:run -d src/database/dataSource.ts",
+    "migration:generate": "tsx ./node_modules/typeorm/cli.js migration:generate -d src/database/dataSource.ts",
+    "migration:revert": "tsx ./node_modules/typeorm/cli.js migration:revert -d src/database/dataSource.ts"
   },
   "dependencies": {
     "@azure/identity": "^4.13.1",

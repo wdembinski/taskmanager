@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "//": "The BUILD config, and the only one that emits. @nestjs/cli 10.4.9 probes for this exact filename first (lib/utils/get-default-tsconfig-path.js) and falls back to tsconfig.json, so `nest build` picks it up with no tsConfigPath in nest-cli.json. It exists because tsconfig.json inherits noEmit:true from tsconfig.base.json — the whole workspace typechecks with `tsc --noEmit`, so the base sets it — which made `nest build` exit 0 and write nothing at all: no dist/main.js, and this package's own \"main\" and \"start\" pointing at a file that was never produced. Overriding noEmit here rather than in tsconfig.json keeps the typecheck config honest about being a typecheck config. The test exclusion also lives here, and only here: tsconfig.json needs to SEE the test files (that is how they get typechecked) while the build must not emit them into dist/.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false
+  },
+  "exclude": ["node_modules", "dist", "**/*.test.ts"]
+}

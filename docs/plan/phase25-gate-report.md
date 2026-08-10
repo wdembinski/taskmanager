@@ -343,22 +343,65 @@ the assertion itself is untouched.
 
 ## 5. The fixes
 
-> **As of this commit, nothing in §5 has been done yet.** This section is the plan the
-> findings above justify; each entry is rewritten in the past tense, with its own commit, as
-> it lands. §6 stays empty until they all have.
+Each entry below is written once it has actually landed, with its own commit.
 
 ### 5.1 `apps/server` — the build, the migrations, the unchecked tests
 
-- **`apps/server/tsconfig.build.json`** (new) extends `tsconfig.json`, sets `noEmit: false`,
-  and carries the `exclude` for tests and `dist`. `@nestjs/cli` 10.4.9's
-  `getDefaultTsconfigPath()` probes for exactly this filename first, so `nest build` picks it
-  up with no change to `nest-cli.json`. `pnpm build` now writes `dist/main.js`.
-- **`apps/server/tsconfig.json`** drops `**/*.test.ts` from `exclude`, so `pnpm typecheck`
-  covers the ten server test suites. The build's exclusion now lives in `tsconfig.build.json`,
-  which is what keeps tests out of `dist/` — the concern finding 1 correctly raised.
-- **The three `migration:*` scripts** point at `-d src/database/dataSource.ts`. The stale
-  `data-source.ts` mentions in `src/database/typeormOptions.ts` and `src/app.module.ts`
-  comments are corrected to match.
+**`apps/server/tsconfig.build.json`** (new) extends `tsconfig.json`, sets `noEmit: false`, and
+carries the `exclude` for tests and `dist`. `@nestjs/cli` 10.4.9's `getDefaultTsconfigPath()`
+probes for exactly this filename first, so `nest build` picks it up with no change to
+`nest-cli.json`.
+
+```
+$ rm -rf dist && pnpm build          # in apps/server
+  → exit 0
+$ ls dist
+app.module.js  config  database  entities  iam  main.js  migrations  mirror  presence
+$ find dist -name "*.test.js"
+  → (nothing)
+```
+
+`dist/main.js` exists for the first time. `pnpm build` at the root no longer prints
+`WARNING  no output files found for task @tm/server#build`.
+
+**`apps/server/tsconfig.json`** drops `**/*.test.ts` from `exclude`, so `pnpm typecheck`
+covers the ten server test suites. Both halves verified by file list rather than by trusting
+the config:
+
+```
+$ tsc --noEmit -p tsconfig.json      --listFiles | grep -c "apps/server/src.*\.test\.ts"
+10
+$ tsc --noEmit -p tsconfig.build.json --listFiles | grep -c "apps/server/src.*\.test\.ts"
+0
+```
+
+**The ten newly-checked test files produced no type errors.** The step expected them to
+surface some — "that is the point, not a scope creep" — and they did not:
+
+```
+$ pnpm --filter @tm/server typecheck
+$ tsc --noEmit -p tsconfig.json
+  → exit 0
+```
+
+Recorded as a result, not as a fix. What was actually wrong was that nothing was looking; the
+ten suites turn out to be type-clean. The value of the change is that this is now true by
+check rather than by luck.
+
+**The three `migration:*` scripts** point at `-d src/database/dataSource.ts`. `app.module.ts`
+already said `database/dataSource.ts` correctly; the one genuinely stale comment was
+`src/database/typeormOptions.ts:4`, now corrected. The script now reaches the database layer
+and fails only for want of a server:
+
+```
+$ pnpm --filter @tm/server migration:run
+  → exit 1
+  code: 'ESOCKET',
+  originalError: ConnectionError: Failed to connect to localhost:1433 - Could not connect (sequence)
+```
+
+That is the step's "Done when" exactly: for want of a database rather than for want of a
+file. Getting past it needs Docker Desktop, which §7 records as out of reach here.
 
 ### 5.2 The test gate — self-sufficient, and reachable per package
 

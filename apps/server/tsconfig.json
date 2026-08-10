@@ -13,6 +13,7 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false
   },
+  "//": "The TYPECHECK config (`tsc --noEmit -p tsconfig.json`), which is why *.test.ts is NOT excluded here: the tests are source and get checked like the rest of it. Emitting is tsconfig.build.json's job, and that is where the test exclusion lives so dist/ stays free of them.",
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "**/*.test.ts"]
+  "exclude": ["node_modules", "dist"]
 }

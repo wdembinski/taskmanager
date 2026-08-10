@@ -1,7 +1,7 @@
 /**
  * Shared MSSQL connection options, matching vipper.iam's split between the
  * runtime NestJS module (app.module.ts) and the standalone TypeORM CLI data
- * source (data-source.ts, used by migrations) — one source of truth so the
+ * source (dataSource.ts, used by migrations) — one source of truth so the
  * two never drift.
  *
  * Password auth only for v1 (unlike vipper.iam, which also supports
