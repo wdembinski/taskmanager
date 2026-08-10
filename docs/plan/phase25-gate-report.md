@@ -462,9 +462,37 @@ discovery order, not to drop what discovery was providing.
 
 ### 5.3 The WSL suite
 
-`apps/client/src/main/exec/wslHost.test.ts` moves behind `ORCH_WSL_TEST=1`, the same shape as
-`wslSession.e2e.test.ts` (`ORCH_E2E=1`) and `jiraSync.integration.test.ts`
-(`ORCH_JIRA_TEST=1`). The assertions are unchanged.
+`apps/client/src/main/exec/wslHost.test.ts`'s real-distro block moves behind
+`ORCH_WSL_TEST=1`, the same shape as `wslSession.e2e.test.ts`'s `ORCH_E2E=1`.
+
+**A correction to the step's own framing.** It named
+`apps/client/src/main/jira/jiraSync.integration.test.ts` as a second instance of the existing
+opt-in pattern. It is not one — that file is fully mocked (its own header: "No Electron and no
+SQLite"), gated by nothing, and it runs in the normal gate correctly. `ORCH_E2E` is the only
+precedent in this repo, and `ORCH_WSL_TEST` is named to match it.
+
+**Only the real-distro block is gated.** The file's other two `describe`s — the shell
+prelude's syntax canary and the relay/`WSLENV` wiring — are pure string assertions that touch
+no distro, and they keep running in the gate unconditionally. Gating those would be losing
+coverage for nothing.
+
+The assertions themselves are untouched, and both directions were checked:
+
+```
+$ pnpm exec vitest run src/main/exec/wslHost.test.ts                    # gate default
+ ✓ src/main/exec/wslHost.test.ts (13 tests | 9 skipped) 5ms
+      Tests  4 passed | 9 skipped (13)
+
+$ ORCH_WSL_TEST=1 pnpm exec vitest run src/main/exec/wslHost.test.ts    # on demand
+      Tests  13 passed (13)
+   Duration  2.43s
+```
+
+The four pure tests still run, the nine real-WSL ones still pass against the real distro when
+asked, and the file's contribution to `pnpm test` drops from **4841 ms to 5 ms**.
+
+`docs/07-packaging-and-release.md` documents the new flag beside `ORCH_E2E`, so it is
+discoverable from the same place.
 
 ---
 

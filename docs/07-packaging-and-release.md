@@ -265,6 +265,17 @@ Verify a real session end to end (costs tokens, needs a logged-in CLI in the dis
 ORCH_E2E=1 pnpm vitest run apps/client/src/main/exec/wslSession.e2e.test.ts
 ```
 
+Exercise the host itself against a real distro — no tokens, but it does need WSL, and
+its PATH assertions are about the distro's state rather than this repo's, which is why
+it is opt-in rather than part of `pnpm test`:
+
+```bash
+ORCH_WSL_TEST=1 pnpm vitest run apps/client/src/main/exec/wslHost.test.ts
+```
+
+The same file's pure blocks (the shell prelude, the relay/`WSLENV` wiring) run in the
+normal gate with or without the flag.
+
 ---
 
 ## Versioning & tags (Conventional Commits → SemVer)
