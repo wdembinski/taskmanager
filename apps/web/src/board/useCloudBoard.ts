@@ -47,6 +47,8 @@ export interface CloudBoardApi {
    *  `packages/ui/src/transport.tsx`. */
   transport: HttpTransport;
   setStatus: (taskId: string, status: ManualStatus) => Promise<void>;
+  /** Record a status change the detail pane already sent — see the implementation. */
+  noteStatus: (taskId: string, status: ManualStatus) => void;
   createTask: (projectId: string, input: { title: string; phase?: string }) => Promise<void>;
 }
 
@@ -130,6 +132,24 @@ export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi
     [transport],
   );
 
+  /**
+   * The same optimistic overlay {@link setStatus} queues, for a change that has ALREADY been
+   * sent by someone else — the shared `TaskDetail`, whose State dropdown calls
+   * `task:setStatus` on the transport itself and then reports what came back. Sending a
+   * second, identical command from here would be the only other way to get the card to move
+   * before the next poll, and this is the honest half of that.
+   */
+  const noteStatus = useCallback((taskId: string, status: ManualStatus) => {
+    setState((s) =>
+      queuePendingStatusChange(s, {
+        commandId: crypto.randomUUID(),
+        taskId,
+        status,
+        issuedAt: Date.now(),
+      }),
+    );
+  }, []);
+
   const createTask = useCallback(
     async (projectId: string, input: { title: string; phase?: string }) => {
       await transport.invoke('task:create', projectId, input);
@@ -144,6 +164,7 @@ export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi
     targetClientId,
     transport,
     setStatus,
+    noteStatus,
     createTask,
   };
 }

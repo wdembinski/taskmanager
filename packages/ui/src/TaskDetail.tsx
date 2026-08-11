@@ -80,6 +80,12 @@ const useStyles = makeStyles({
   /** Everything below the band keeps the pane's own inset. */
   inset: { padding: '0 12px' },
   /**
+   * The read-only notice, ABOVE the band rather than below it: it qualifies everything in
+   * the pane, so it has to be read before any of it. Same inset, with its own top padding
+   * since nothing sits above it to provide one.
+   */
+  notice: { padding: '12px 12px 0' },
+  /**
    * The bottom band: the live-run rows and the composer, on the SAME surface and with
    * the same 12px inset as the details band at the top. The pane is one shape read
    * top-to-bottom — two fixed bands with the conversation scrolling between them — and
@@ -206,6 +212,20 @@ export interface TaskDetailProps {
   /** How the board draws priority, so this pane draws it the same way. */
   priorityDisplay?: PriorityDisplay;
   /**
+   * Why this pane's controls will not do anything, for a host that cannot back them — one
+   * sentence, drawn as a warning bar above the card (the web app's, whose transport relays
+   * only a status change and a new card; see `apps/web/src/board/httpTransport.ts`).
+   *
+   * A sentence rather than a `disabled` sweep because the pane degrades by prop ABSENCE
+   * already — a host that passes no merge requests, no chain and no attention index simply
+   * never renders those sections — and what is left looks live until it is pressed. That
+   * difference, between read-only and broken, is the whole job of this prop; the refusal a
+   * press earns is real, but it arrives too late to be an explanation.
+   *
+   * Absent on the desktop, which can do all of it.
+   */
+  readOnlyNotice?: string;
+  /**
    * The board's single attention index. Passed in rather than subscribed to here: this
    * pane and the agent panel inside it were each mounting their own subscription, holding
    * two copies of the same state that could disagree.
@@ -264,6 +284,7 @@ export function TaskDetail({
   parentAttachments = [],
   statusKeywords,
   priorityDisplay = 'color',
+  readOnlyNotice,
   attention,
   liveRunTaskIds,
   mergingTaskIds,
@@ -671,6 +692,15 @@ export function TaskDetail({
 
   return (
     <div className={styles.root}>
+      {/* Only over a card: on the empty pane there is no control to qualify, and a warning
+          bar hanging over a blank sidebar would be the first thing this app said. */}
+      {readOnlyNotice && (
+        <div className={styles.notice}>
+          <MessageBar intent="warning">
+            <MessageBarBody>{readOnlyNotice}</MessageBarBody>
+          </MessageBar>
+        </div>
+      )}
       <div className={styles.cell}>
         {/* The ticket's own identity heads the band: what this card IS, before what is
             being done about it. The type glyph is the board card's, so one symbol

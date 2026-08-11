@@ -23,9 +23,10 @@ import {
 } from '@tm/ui/board/boardColumns';
 import { columnForTask, statusForColumn } from '@tm/shared/board';
 import { KanbanColumn } from '@tm/ui/board/KanbanColumn';
+import { TaskDetail } from '@tm/ui/TaskDetail';
 import { useBoardLayoutStyles } from '@tm/ui/board/boardLayout';
 import { ArchivedCardsDialog, archivedCards } from '@tm/ui/board/ArchivedCardsDialog';
-import type { BoardColumn, ManualStatus, Task } from '@tm/shared/model';
+import { isManualStatus, type BoardColumn, type ManualStatus, type Task } from '@tm/shared/model';
 import { AddTaskDialog } from './AddTaskDialog';
 import { BoardToolbar } from './BoardToolbar';
 import { selectArchivedTasks, selectBoardTasks } from './boardSelectors';
@@ -35,9 +36,16 @@ import { loadBoardPrefs, saveBoardPrefs, type WebBoardPrefs } from './webPrefs';
 const useStyles = makeStyles({
   /** The empty state, in the board's own half of the screen rather than across all of it. */
   empty: { padding: '8px 4px' },
-  /** Step 6's pane, until step 6. See the placeholder below. */
-  pane: { padding: '16px', alignSelf: 'flex-start' },
 });
+
+/**
+ * The one sentence the pane wears (`TaskDetail`'s `readOnlyNotice`). It names what DOES
+ * work, because that is the part a reader cannot infer: everything else in the pane looks
+ * exactly as live as it does on the desktop.
+ */
+const READ_ONLY_NOTICE =
+  'Read-only here — moving a card and adding one are the only edits the web app can make. ' +
+  'Everything else is done from the desktop app.';
 
 const COLUMN_LABEL: Record<BoardColumn, string> = Object.fromEntries(
   COLUMN_META.map((c) => [c.column, c.label]),
@@ -47,6 +55,11 @@ export interface BoardScreenProps {
   state: CloudBoardState;
   everSeenClient: boolean;
   onSetStatus: (taskId: string, status: ManualStatus) => void;
+  /**
+   * A status change the DETAIL PANE has already sent for itself: record the same pending
+   * overlay a drag gets, without putting a second identical command on the wire.
+   */
+  onStatusNoted: (taskId: string, status: ManualStatus) => void;
   onCreateTask: (projectId: string, input: { title: string; phase?: string }) => Promise<void>;
 }
 
@@ -54,6 +67,7 @@ export function BoardScreen({
   state,
   everSeenClient,
   onSetStatus,
+  onStatusNoted,
   onCreateTask,
 }: BoardScreenProps): JSX.Element {
   const layout = useBoardLayoutStyles();
@@ -139,9 +153,30 @@ export function BoardScreen({
     return ids;
   }, [state]);
 
-  const selectedTask = useMemo(
-    () => (selectedTaskId ? (state.tasks[selectedTaskId] ?? null) : null),
-    [state.tasks, selectedTaskId],
+  /**
+   * The card the pane is showing — with the same pending overlay its column applies, so a
+   * card dragged to DONE does not read "In progress" in the pane beside it.
+   */
+  const selectedTask = useMemo(() => {
+    const task = selectedTaskId ? (state.tasks[selectedTaskId] ?? null) : null;
+    return task ? { ...task, status: displayStatus(state, task) } : null;
+  }, [state, selectedTaskId]);
+
+  /**
+   * The chain the pane needs: the selected card's own steps, or — when a STEP is selected,
+   * which `TaskSteps` makes reachable from the card above it — its siblings, which is what
+   * lets the pane say "step 2 of 5". `MyTasks.tsx`'s `chain`, over the mirrored rows.
+   */
+  const chain = useMemo(() => {
+    if (!selectedTask) return [];
+    const parentId = selectedTask.parentTaskId ?? selectedTask.id;
+    return boardTasks.filter((t) => t.parentTaskId === parentId).sort((a, b) => a.order - b.order);
+  }, [boardTasks, selectedTask]);
+
+  /** The card a shown step belongs to — the pane's breadcrumb back out of it. */
+  const parentOfSelected = useMemo(
+    () => (selectedTask?.parentTaskId ? (state.tasks[selectedTask.parentTaskId] ?? null) : null),
+    [state.tasks, selectedTask],
   );
 
   const disabledReason = everSeenClient
@@ -213,15 +248,30 @@ export function BoardScreen({
         )}
       </div>
 
-      {/* The pane the desktop keeps the selected card's detail in. Empty of everything but a
-          line of prose until the next step of this ticket fills it with the shared
-          `TaskDetail`, read-only — the shape is here now because the pane IS the board's
-          layout: a board that reflows when the pane arrives would be a second rebuild. */}
+      {/* The desktop's own pane, the same component, degraded by what is NOT passed to it:
+          with no agent projects, no merge requests, no attachments, no chain links, no
+          attention index and no live runs, the Chain, MR, attention and agent sections
+          never render at all — see `TaskDetail`'s props. What is left is the card, its
+          steps and its timeline, which is exactly what this app has. The notice is how a
+          reader tells that from a pane that is merely broken. */}
       {prefs.showDetail && (
         <div className={layout.right}>
-          <Caption1 className={styles.pane}>
-            {selectedTask ? selectedTask.title : 'Select a card to see its detail.'}
-          </Caption1>
+          <TaskDetail
+            task={selectedTask}
+            subtasks={chain}
+            parentTask={parentOfSelected}
+            priorityDisplay={prefs.display.priorityDisplay}
+            readOnlyNotice={READ_ONLY_NOTICE}
+            onOpenTask={setSelectedTaskId}
+            // The pane's State dropdown has already sent its own `task:setStatus` through
+            // the transport by the time this runs (`TaskDetailsCell`), so this only records
+            // the optimistic overlay a drag gets — it must not send a second command. The
+            // task it hands back is the transport's stub (`{ id, status }`), never a row
+            // worth merging into `state.tasks`; the next poll brings the real one.
+            onStatusChanged={(updated) => {
+              if (isManualStatus(updated.status)) onStatusNoted(updated.id, updated.status);
+            }}
+          />
         </div>
       )}
 

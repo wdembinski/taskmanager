@@ -5,15 +5,33 @@
  * `useTransport().invoke('task:setStatus', …)`, so the one write path this app has is the
  * same shape the desktop app's IPC calls are — not a second, web-only vocabulary.
  *
- * Only the channels `BoardScreen` actually calls are implemented: `task:setStatus` and
- * `task:create`, the two of `CommandEnvelope`'s three v1 kinds (`@tm/protocol/wire`) that
- * have a card on this board to show them on. `add-comment` has no read path here at all —
- * comments live in the desktop's own `task_activity` table, which `GET /v1/board` never
- * mirrors (only `Task`/`Project` rows do) — so there is nothing this app could show a
- * comment queued AGAINST, and it is left unimplemented rather than built to a surface that
- * cannot reconcile it. Every other IpcApi channel `@tm/ui`'s TaskDetail/chat/attachments
- * tree calls belongs to a pane this app does not render yet; each rejects with a message
- * that says so, rather than hanging or silently no-opping.
+ * Every channel falls in one of three tiers, and the rule that sorts a READ into the middle
+ * one or the last is this: **a read channel is stubbed when its result is only displayed; it
+ * is refused when its result is fed back into board state.** A stub is a claim this app makes
+ * about the world ("there are no live runs"), and a claim is only harmless while it stays
+ * inside the pane that asked.
+ *
+ *  1. **Relayed** — `task:setStatus` and `task:create`, two of `CommandEnvelope`'s three v1
+ *     kinds (`@tm/protocol/wire`): the ones that have a card on this board to show them on.
+ *     `add-comment` is deliberately NOT here even though the kind exists — comments live in
+ *     the desktop's own `task_activity` table, which `GET /v1/board` never mirrors (only
+ *     `Task`/`Project` rows do), so the comment would land in a pane that can never show it
+ *     arrived.
+ *  2. **Stubbed reads** ({@link STUBBED_READS}) — the mount-time reads the shared
+ *     `TaskDetail` tree makes for things this app has no mirror of. Each answers the empty
+ *     truth ("nothing here"), which is exactly what a browser with no engine behind it
+ *     should say. Rejecting instead would be worse than useless: `task:activity` is the one
+ *     mount read with no `.catch` at its call site (`TaskDetail.tsx`'s `loadActivity`), so a
+ *     rejection there is an unhandled rejection AND leaves the previously selected card's
+ *     timeline on screen under the new card's title.
+ *  3. **Refused** — everything else, with a message naming the desktop app. That includes
+ *     `jira:markRead`, which by the rule above is a read but returns a `Task` that goes
+ *     straight into `onStatusChanged`: a fabricated one would clobber the real card on the
+ *     board. Its call site already `.catch`es, so refusing is invisible there and safe.
+ *
+ * Every refused WRITE already lands in an existing `try/catch → setError` in the component
+ * that made it, so a control pressed in this pane fails loudly where it was pressed and
+ * harmlessly everywhere else.
  *
  * `POST /v1/commands` never writes the mirror itself (`MirrorService.enqueueCommand` only
  * queues a row) — the desktop Client is what actually applies it
@@ -25,9 +43,40 @@
 import type { CommandEnvelope, CommandKind, CommandRequest } from '@tm/protocol/wire';
 import type { IpcApi, IpcEvents } from '@tm/shared/ipc';
 import type { ManualStatus, Task } from '@tm/shared/model';
+import { DEFAULT_SETTINGS } from '@tm/shared/settings';
 import type { Transport } from '@tm/ui/transport';
 
-const SUPPORTED_CHANNELS = new Set<keyof IpcApi>(['task:setStatus', 'task:create']);
+/**
+ * Tier 2 — the reads that answer instead of rejecting, and what each answers. Typed against
+ * `IpcApi` itself, so a stub can never drift from the shape its callers destructure.
+ *
+ * Why each one is here rather than refused (the rule is in this file's header):
+ *
+ *  - `task:activity` — the timeline. The one mount read with no `.catch`.
+ *  - `scheduler:activeRuns` — used only to decide which live run's output to follow. There
+ *    are no runs to follow from a browser.
+ *  - `settings:get` — read for `autoIntegrate` alone, to label a switch. The desktop's own
+ *    defaults are the honest answer for an app that mirrors no settings.
+ *  - `project:hasReleaseDoc` — likewise a label, and its caller treats a FAILURE as "yes",
+ *    which would be the one answer this app cannot support.
+ *  - `jira:priorities` — the priority dropdown's options; the caller falls back to
+ *    `DEFAULT_PRIORITIES` when the list is empty.
+ *  - `jira:fetchComments` — live ticket comments, merged into the timeline for display.
+ *  - `gitlab:markRead` / `gitlab:markEventsSeen` — both are bare `void`s at their call site
+ *    (`TaskDetail.tsx`'s `MergeRequests`), and there are no merge requests here to mark.
+ */
+const STUBBED_READS: { [K in keyof IpcApi]?: () => Awaited<ReturnType<IpcApi[K]>> } = {
+  'task:activity': () => [],
+  'scheduler:activeRuns': () => [],
+  // A fresh object per call: `DEFAULT_SETTINGS` is a shared module-level literal, and a
+  // caller that edited what it was handed would be editing every other caller's copy.
+  'settings:get': () => ({ ...DEFAULT_SETTINGS }),
+  'project:hasReleaseDoc': () => false,
+  'jira:priorities': () => [],
+  'jira:fetchComments': () => [],
+  'gitlab:markRead': () => [],
+  'gitlab:markEventsSeen': () => [],
+};
 
 export interface HttpTransportDeps {
   apiBase: string;
@@ -50,20 +99,24 @@ export class HttpTransport implements Transport {
     channel: K,
     ...args: Parameters<IpcApi[K]>
   ): ReturnType<IpcApi[K]> {
-    if (!SUPPORTED_CHANNELS.has(channel)) {
-      return Promise.reject(
-        new Error(
-          `"${String(channel)}" isn't available from the web client yet — make this change from the desktop app.`,
-        ),
-      ) as ReturnType<IpcApi[K]>;
-    }
+    // Tier 1: the two relayed writes.
     if (channel === 'task:setStatus') {
       const [taskId, status] = args as Parameters<IpcApi['task:setStatus']>;
       return this.setStatus(taskId, status) as ReturnType<IpcApi[K]>;
     }
-    // The only other member of SUPPORTED_CHANNELS.
-    const [projectId, input] = args as Parameters<IpcApi['task:create']>;
-    return this.createTask(projectId, input) as ReturnType<IpcApi[K]>;
+    if (channel === 'task:create') {
+      const [projectId, input] = args as Parameters<IpcApi['task:create']>;
+      return this.createTask(projectId, input) as ReturnType<IpcApi[K]>;
+    }
+    // Tier 2: a read whose answer only ever gets displayed.
+    const stub = STUBBED_READS[channel];
+    if (stub) return Promise.resolve(stub()) as unknown as ReturnType<IpcApi[K]>;
+    // Tier 3: everything else.
+    return Promise.reject(
+      new Error(
+        `"${String(channel)}" isn't available from the web client yet — make this change from the desktop app.`,
+      ),
+    ) as ReturnType<IpcApi[K]>;
   }
 
   on<K extends keyof IpcEvents>(
