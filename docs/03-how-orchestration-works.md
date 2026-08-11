@@ -533,6 +533,15 @@ steps directly. On the board, a parent card shows its steps as rows under its bo
 with a `2/5` progress caption; selecting a step gives it a breadcrumb back to the
 parent and "Step N of M".
 
+**Folding the rows away.** A nine-step plan is most of a column on its own, so the
+card's **Steps** heading is also a fold: click it and the rows go, leaving the
+heading, its `2/9` and the counter in the card's title row. The fold is per card and
+it is **saved** — leaving the screen unmounts the board, and closing the app takes
+the window with it, so a fold you had to redo on every visit would not be worth
+making. Nothing ever unfolds a card for you: a running step, a step that has parked
+the chain, and a card that wants you all still ring, count and say what they are
+doing on the card's own body.
+
 ---
 
 ## Chaining cards

@@ -76,6 +76,7 @@ import {
   type LinkDragState,
 } from '@ui/board/chainDrag';
 import { useCardAnchors } from '@ui/board/useCardAnchors';
+import { foldedStepsSet, toggleFoldedSteps } from '@ui/board/foldedSteps';
 import { useAttentionIndex } from './useAttentionIndex';
 import { useActiveRuns } from './useActiveRuns';
 import { useIntegratingTasks } from './useIntegratingTasks';
@@ -597,6 +598,32 @@ export function MyTasks(): JSX.Element {
     });
   }, []);
 
+  /**
+   * Fold a card's steps away, or open them again — saved, so it survives leaving the screen
+   * (which unmounts this whole board) and closing the app.
+   *
+   * Written the same optimistic way the toolbar's switches are: the section folds on the
+   * click and the settings blob follows. The board's own task ids go along for the prune —
+   * see `toggleFoldedSteps`, which is where a fold for a card that has since left the board
+   * is dropped.
+   */
+  const foldedSteps = useMemo(() => foldedStepsSet(settings?.foldedStepCards), [settings]);
+  const toggleSteps = useCallback(
+    (taskId: string) => {
+      const onBoard = new Set((tasks ?? []).map((t) => t.id));
+      setSettings((prev) => {
+        if (!prev) return prev;
+        const next = {
+          ...prev,
+          foldedStepCards: toggleFoldedSteps(prev.foldedStepCards, taskId, onBoard),
+        };
+        void window.api.invoke('settings:save', next);
+        return next;
+      });
+    },
+    [tasks],
+  );
+
   /** The commit-graph pane, saved the same optimistic way the detail pane's fold is. */
   const setShowGraph = useCallback((value: boolean) => {
     setSettings((prev) => {
@@ -1117,6 +1144,10 @@ export function MyTasks(): JSX.Element {
               liveRunTaskIds={liveRuns}
               mergingTaskIds={merging}
               display={display}
+              // Which cards are showing their steps, and the one control that changes it.
+              // Saved rather than local, so it survives this board being unmounted.
+              foldedStepTaskIds={foldedSteps}
+              onToggleSteps={toggleSteps}
               anchorRef={anchors.anchorRef}
               linkDrag={linkDrag}
               onLinkStart={(taskId) => {

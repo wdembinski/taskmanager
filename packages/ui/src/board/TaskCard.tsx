@@ -45,6 +45,8 @@ import {
   BugRegular,
   CheckmarkCircleFilled,
   CheckmarkCircleRegular,
+  ChevronDownRegular,
+  ChevronRightRegular,
   CircleRegular,
   DismissCircleFilled,
   LinkRegular,
@@ -262,6 +264,38 @@ const useStyles = makeStyles({
     fontSize: '10px',
     fontWeight: 600,
   },
+  /**
+   * The Steps caption, once it also folds the section away.
+   *
+   * The heading IS the control — there is no separate chevron button — so the whole row is a
+   * `<button>` and the reset below is what stops it looking like one. Kept as a second class
+   * composed onto `sectionHead` rather than a copy of it, so the two headings on a card (Steps
+   * and Merge requests) cannot drift apart in weight, colour or inset.
+   *
+   * `width: 100%` because a button shrink-wraps its content: without it the target would stop
+   * at the word "Steps" and the count at the far end — the part of the header your eye is
+   * actually on when you decide to fold — would not be clickable.
+   */
+  sectionToggle: {
+    background: 'none',
+    border: 'none',
+    width: '100%',
+    fontFamily: 'inherit',
+    textAlign: 'left',
+    cursor: 'pointer',
+    ':hover': { color: tokens.colorNeutralForeground2 },
+  },
+  /**
+   * The chevron. Larger than the 10px caption it sits in — a glyph at caption size reads as a
+   * speck rather than as an affordance — and `flexShrink: 0` so it survives a long count.
+   */
+  sectionChevron: { fontSize: '12px', display: 'flex', flexShrink: 0 },
+  /**
+   * The heading's inset once it is the last thing in the card. `sectionHead`'s 2px bottom is
+   * the gap to the first STEP ROW, not a margin — with the rows folded away it left the
+   * caption sitting on the card's bottom edge, which read as a card that had been cut off.
+   */
+  sectionHeadAlone: { paddingBottom: '8px' },
   // No row border: the section owns the one hairline, and a rule per row turned a card
   // with four steps into a ledger.
   step: {
@@ -756,6 +790,24 @@ export interface TaskCardProps {
   /** This card's steps in execution order — rendered inside the card. */
   subtasks?: Task[];
   /**
+   * Whether the Steps section is folded away — the rows hidden, the heading and its counter
+   * kept. A card carrying a nine-step plan is most of a column on its own, and the steps are
+   * detail you have usually already read; the counter in the title row is what the fold
+   * leaves you with, and it is the part you actually scan for.
+   *
+   * Nothing here ever unfolds a card by itself, not even for a step that is running or one
+   * that has parked the chain: the card still rings, still counts and still says what it is
+   * doing, and a section that reopened on its own would be the app overruling a decision the
+   * human made about their own board.
+   */
+  stepsFolded?: boolean;
+  /**
+   * Fold or unfold this card's steps. **Absent means the section does not fold** — the
+   * heading stays a plain caption, which is what the web board (`@tm/ui` has no store of its
+   * own) still gets.
+   */
+  onToggleSteps?: () => void;
+  /**
    * The merge requests filed under this card. Rendered as rows beneath the steps, and
    * folded into `chainNeedsAttention` — so the ring and the card ordering agree.
    */
@@ -873,6 +925,8 @@ export function TaskCard({
   projectColor,
   showSprint = true,
   subtasks = [],
+  stepsFolded = false,
+  onToggleSteps,
   mergeRequests = [],
   statusKeywords,
   attentionTaskIds,
@@ -987,6 +1041,15 @@ export function TaskCard({
   );
   // Only the ticket badge carries the JIRA signal, so the ring's reason is legible.
   const jiraUnread = hasUnreadJira(task);
+  /**
+   * Whether the Steps heading is a control — and, therefore, whether `stepsFolded` counts.
+   *
+   * A fold with no way back would be a section that had simply disappeared, so a card handed
+   * the flag but no handler (there is no such caller today; there could be tomorrow) draws its
+   * steps rather than hiding them behind a chevron that does nothing.
+   */
+  const stepsFoldable = Boolean(onToggleSteps);
+  const stepsHidden = stepsFoldable && stepsFolded;
 
   return (
     <div
@@ -1231,64 +1294,108 @@ export function TaskCard({
 
       {subtasks.length > 0 && (
         <div className={styles.section}>
-          <div className={styles.sectionHead}>
-            <span>Steps</span>
-            <span className={styles.grow} />
-            <span>
-              {progress.done}/{progress.total}
-            </span>
-          </div>
-          {subtasks.map((step) => {
-            const stepRun = runPhase(step, [], liveRunTaskIds, mergingTaskIds);
-            const stepWants = attentionTaskIds?.has(step.id) ?? false;
-            return (
-              <div
-                key={step.id}
-                className={mergeClasses(
-                  styles.step,
-                  stepWants && styles.stepLoud,
-                  step.id === selectedTaskId && styles.stepSelected,
-                )}
-                title={`${step.title} · ${stepRun.label || STATUS_LABEL[step.status]}`}
-                // A step never travels on its own: a drag started on a row is cancelled
-                // rather than dragging the parent out from under the pointer.
-                onDragStart={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                }}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onSelectSubtask?.(step.id);
-                }}
-              >
-                {/* One dot, whatever the step is doing — it just blinks while the step is
+          {/* The heading, which is also the fold — see `sectionToggle`. It keeps the counter
+              whichever way it is pointing: the whole bargain of a fold is that the header
+              still tells you what is behind it, and `2/9` is exactly that. Rendered as a
+              plain caption where nothing can fold it, so a board without somewhere to save
+              the fold (the web one) is unchanged rather than wearing a dead chevron. */}
+          {stepsFoldable ? (
+            <button
+              type="button"
+              className={mergeClasses(
+                styles.sectionHead,
+                styles.sectionToggle,
+                stepsHidden && styles.sectionHeadAlone,
+              )}
+              aria-expanded={!stepsHidden}
+              title={
+                stepsHidden
+                  ? `Show this card's steps (${progress.done}/${progress.total} done)`
+                  : 'Fold the steps away — the card keeps its counter'
+              }
+              // The card is a drag source and a click target; its heading is neither. Without
+              // this, folding also selects the card, and a drag begun on the heading would
+              // move a card you were only trying to tidy.
+              draggable={false}
+              onDragStart={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+              }}
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleSteps?.();
+              }}
+            >
+              <span className={styles.sectionChevron}>
+                {stepsHidden ? <ChevronRightRegular /> : <ChevronDownRegular />}
+              </span>
+              <span>Steps</span>
+              <span className={styles.grow} />
+              <span>
+                {progress.done}/{progress.total}
+              </span>
+            </button>
+          ) : (
+            <div className={styles.sectionHead}>
+              <span>Steps</span>
+              <span className={styles.grow} />
+              <span>
+                {progress.done}/{progress.total}
+              </span>
+            </div>
+          )}
+          {!stepsHidden &&
+            subtasks.map((step) => {
+              const stepRun = runPhase(step, [], liveRunTaskIds, mergingTaskIds);
+              const stepWants = attentionTaskIds?.has(step.id) ?? false;
+              return (
+                <div
+                  key={step.id}
+                  className={mergeClasses(
+                    styles.step,
+                    stepWants && styles.stepLoud,
+                    step.id === selectedTaskId && styles.stepSelected,
+                  )}
+                  title={`${step.title} · ${stepRun.label || STATUS_LABEL[step.status]}`}
+                  // A step never travels on its own: a drag started on a row is cancelled
+                  // rather than dragging the parent out from under the pointer.
+                  onDragStart={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                  }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSelectSubtask?.(step.id);
+                  }}
+                >
+                  {/* One dot, whatever the step is doing — it just blinks while the step is
                     live. The slot keeps its fixed width so every row's title starts at the
                     same x. This used to be a spinner, which meant a card said "working" with
                     a turning arc here and with a blinking dot on the merge-request rows
                     below: two shapes for one fact, on one card. */}
-                <span className={styles.stepSlot}>
-                  <span
-                    className={mergeClasses(styles.stepDot, stepRun.spinner && styles.dotRunning)}
-                    // The keyframes own the colour while it blinks, so setting it here too
-                    // would only be the value they immediately override.
-                    style={
-                      stepRun.spinner
-                        ? undefined
-                        : { backgroundColor: STATUS_INDICATOR_COLOR[step.status] }
-                    }
-                  />
-                </span>
-                <Caption1
-                  className={mergeClasses(
-                    styles.stepTitle,
-                    step.status === 'done' && styles.stepDone,
-                  )}
-                >
-                  {step.title}
-                </Caption1>
-              </div>
-            );
-          })}
+                  <span className={styles.stepSlot}>
+                    <span
+                      className={mergeClasses(styles.stepDot, stepRun.spinner && styles.dotRunning)}
+                      // The keyframes own the colour while it blinks, so setting it here too
+                      // would only be the value they immediately override.
+                      style={
+                        stepRun.spinner
+                          ? undefined
+                          : { backgroundColor: STATUS_INDICATOR_COLOR[step.status] }
+                      }
+                    />
+                  </span>
+                  <Caption1
+                    className={mergeClasses(
+                      styles.stepTitle,
+                      step.status === 'done' && styles.stepDone,
+                    )}
+                  >
+                    {step.title}
+                  </Caption1>
+                </div>
+              );
+            })}
         </div>
       )}
 

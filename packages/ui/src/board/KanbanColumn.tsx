@@ -94,6 +94,17 @@ export interface KanbanColumnProps {
   /** Which optional context lines each card draws. */
   display?: BoardDisplaySettings;
   /**
+   * The cards whose Steps section is folded away. A set for the whole board rather than a
+   * flag per card, for the same reason `attentionTaskIds` is one: the answer is held in one
+   * place (a saved setting — see `foldedSteps.ts`) and every card asks the same copy of it.
+   */
+  foldedStepTaskIds?: ReadonlySet<string>;
+  /**
+   * Fold or unfold one card's steps. Absent on a board with nowhere to remember the fold, and
+   * that absence is also what keeps the heading a plain caption — see `TaskCard`.
+   */
+  onToggleSteps?: (taskId: string) => void;
+  /**
    * The chain overlay's measuring tap, handed to each card's root element. The column
    * only passes it through — it knows nothing about links, and the overlay is drawn once
    * over the whole board rather than per column (see `ChainOverlay`).
@@ -181,6 +192,8 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               projectColor={props.projectColorOf(task)}
               showSprint={props.showSprint}
               subtasks={subtasks}
+              stepsFolded={props.foldedStepTaskIds?.has(task.id)}
+              onToggleSteps={props.onToggleSteps && (() => props.onToggleSteps?.(task.id))}
               mergeRequests={mergeRequests}
               statusKeywords={props.statusKeywords}
               attentionTaskIds={props.attentionTaskIds}

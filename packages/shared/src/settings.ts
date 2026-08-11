@@ -393,6 +393,20 @@ export interface AppSettings {
   autoIntegrate: boolean;
   /** Which optional context lines the board's cards draw. */
   board: BoardDisplaySettings;
+  /**
+   * The board cards whose **Steps** section is folded away, by task id.
+   *
+   * A fold is a fact about one card rather than a preference about all of them — a plan of
+   * nine steps is worth folding on the card you have already read and worth leaving open on
+   * the one you are watching — so this is a list of ids and not a switch. It is persisted
+   * for the reason the fold exists at all: the board is unmounted every time you leave the
+   * screen, so component state would put every card back open on the way back, and a fold
+   * you have to redo on every visit is not a fold.
+   *
+   * Ids that have left the board are dropped as the list is written (see `foldedSteps.ts`),
+   * so it stays the size of the board rather than the size of everything ever folded.
+   */
+  foldedStepCards: string[];
   /** JIRA integration config for the Personal board (Phase B). */
   jira: JiraSettings;
   /** GitLab integration config — merge requests on the cards their ticket lives on. */
@@ -427,6 +441,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   toastsEnabled: true,
   autoIntegrate: false,
   board: DEFAULT_BOARD_DISPLAY,
+  // Nothing folded out of the box: a card that hid its own steps before you had asked it to
+  // would read as steps that had gone missing.
+  foldedStepCards: [],
   jira: DEFAULT_JIRA_SETTINGS,
   gitlab: DEFAULT_GITLAB_SETTINGS,
   cloud: DEFAULT_CLOUD_SETTINGS,
