@@ -1,9 +1,15 @@
 /**
- * A minimal "New card" dialog — the web board's own, not `@tm/ui`'s `AddTaskDialog`-shaped
+ * A minimal "Add task…" dialog — the web board's own, not `@tm/ui`'s `AddTaskDialog`-shaped
  * equivalent on the desktop (`apps/client/src/renderer/src/AddTaskDialog.tsx`), which offers
  * plan/adhoc/agent-project/parent-step options this app has no data for. This one asks only
  * what `CommandEnvelope`'s `create-task` kind can carry: which project, a title, and an
  * optional phase — see `@tm/protocol/wire`.
+ *
+ * The FIELDS differ from the desktop's and are meant to: the wire carries less. The TRIGGER
+ * does not — a small primary "Add task…", no icon, exactly as `MyTasks.tsx` renders it. It
+ * sits in a row of small controls, so a default-size button set this toolbar's height and made
+ * the two boards' toolbars visibly different; the icon made the same action read as a
+ * different control at a glance.
  */
 import { useState } from 'react';
 import {
@@ -21,7 +27,6 @@ import {
   Option,
   Spinner,
 } from '@fluentui/react-components';
-import { AddRegular } from '@fluentui/react-icons';
 import type { Project } from '@tm/shared/model';
 
 export interface AddTaskDialogProps {
@@ -75,16 +80,17 @@ export function AddTaskDialog({
     >
       <DialogTrigger disableButtonEnhancement>
         <Button
-          icon={<AddRegular />}
+          size="small"
+          appearance="primary"
           disabled={disabled}
           title={disabled ? disabledReason : undefined}
         >
-          New card
+          Add task…
         </Button>
       </DialogTrigger>
       <DialogSurface>
         <DialogBody>
-          <DialogTitle>New card</DialogTitle>
+          <DialogTitle>Add task</DialogTitle>
           <DialogContent>
             <Field label="Project" required>
               <Dropdown
