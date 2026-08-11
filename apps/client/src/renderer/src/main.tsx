@@ -12,11 +12,11 @@
  */
 import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom/client';
-import { FluentProvider, Toaster, webDarkTheme, type Theme } from '@fluentui/react-components';
+import { FluentProvider, Toaster } from '@fluentui/react-components';
 import { App } from './App';
 import { isFileDrag } from '@ui/AttachmentStrip';
 import { RootErrorBoundary } from './RootErrorBoundary';
-import { BASE_FONT_PX, TOASTER_ID, scaleTheme, useGlobalStyles } from '@ui/theme';
+import { appDarkTheme, BASE_FONT_PX, TOASTER_ID, scaleTheme, useGlobalStyles } from '@ui/theme';
 import { TransportProvider } from '@ui/transport';
 import './index.css';
 
@@ -44,25 +44,6 @@ for (const type of ['dragover', 'drop'] as const) {
     if (isFileDrag(event.dataTransfer?.types)) event.preventDefault();
   });
 }
-
-/**
- * The dark theme with **softer body text**.
- *
- * Fluent's dark theme sets `colorNeutralForeground1` to pure white, which is what a
- * code editor deliberately avoids: at this text density white-on-near-black glares and
- * every word reads as emphasis. The editor grey (#CCCCCC) is the reference the user
- * asked for — headings and semibold text still read as brighter because they gain
- * weight, not luminance. Everything else stays stock Fluent, so contrast ratios for
- * brand/danger/success surfaces are untouched.
- */
-const EDITOR_FOREGROUND = '#CCCCCC';
-const appTheme: Theme = {
-  ...webDarkTheme,
-  colorNeutralForeground1: EDITOR_FOREGROUND,
-  colorNeutralForeground1Hover: EDITOR_FOREGROUND,
-  colorNeutralForeground1Pressed: EDITOR_FOREGROUND,
-  colorNeutralForeground1Selected: EDITOR_FOREGROUND,
-};
 
 /**
  * The provider, sized to the user's font-size setting.
@@ -99,7 +80,7 @@ function ThemedApp(): JSX.Element {
 
   return (
     <FluentProvider
-      theme={scaleTheme(appTheme, fontSizePx)}
+      theme={scaleTheme(appDarkTheme, fontSizePx)}
       style={
         {
           height: '100vh',

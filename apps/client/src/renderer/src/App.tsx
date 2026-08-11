@@ -11,6 +11,11 @@
  * something is wrong; and a **status bar** runs the full width of the window at
  * the bottom — blue at rest, orange while anything is waiting on a human.
  *
+ * The frame itself — the flex shell, the rail, the status bar — is `@tm/ui/shell`, so the
+ * browser client draws the same one rather than a lookalike. What stays here is everything
+ * that is the *desktop's*: the title bar, the banners, the sync rings, the usage quotas,
+ * the attention subscription, and every `window.api` call behind them.
+ *
  * The pattern to notice: components read request/response data via
  * `window.api.invoke(...)` and consume pushed updates via `window.api.on(...)`.
  * Those two are the whole UI↔engine vocabulary.
@@ -23,13 +28,9 @@ import {
   MessageBar,
   MessageBarBody,
   Spinner,
-  Tab,
-  TabList,
   Toast,
   ToastBody,
   ToastTitle,
-  tokens,
-  Tooltip,
   useToastController,
 } from '@fluentui/react-components';
 import {
@@ -54,124 +55,18 @@ import { Settings } from './Settings';
 import { SessionRunner } from './SessionRunner';
 import { TitleBar } from './TitleBar';
 import { UsageQuotaStatus, useUsageQuotas } from './UsageQuotaBars';
-import { ACCENT, TOASTER_ID, fontPx } from '@ui/theme';
+import { AppShell } from '@ui/shell/AppShell';
+import { NavRail, type NavRailItem } from '@ui/shell/NavRail';
+import { StatusBar, StatusDot, StatusSpacer } from '@ui/shell/StatusBar';
+import { TOASTER_ID } from '@ui/theme';
 import type { AttentionItem } from '@shared/attention';
 
 const useStyles = makeStyles({
-  shell: {
-    display: 'flex',
-    flexDirection: 'column',
-    height: '100%',
-    overflow: 'hidden',
-    backgroundColor: tokens.colorNeutralBackground2,
-  },
-  /** Nav rail + content, side by side under the title bar. */
-  main: { display: 'flex', flex: 1, minHeight: 0 },
   /**
-   * A vertical rail of icons rather than a row of tabs across the top: the tab strip
-   * cost every screen a band of height at its most valuable point, and seven
-   * destinations with familiar glyphs need no words. Each tab keeps its label as a
-   * tooltip, which is also what a screen reader announces.
-   */
-  nav: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'stretch',
-    // ~1.5× the width an icon-only tab takes on its own, so the rail is a deliberate
-    // edge of the window rather than a thin strip of buttons.
-    width: '84px',
-    paddingTop: '8px',
-    flexShrink: 0,
-    // The same surface as the detail pane, so the window reads as content between two
-    // lighter edges rather than as three unrelated panels.
-    backgroundColor: tokens.colorNeutralBackground1,
-    // Square TILES, not wide short buttons: at 84 wide and ~40 tall each tab was a
-    // letterbox, and a rail of letterboxes reads as a toolbar rather than as the app's
-    // primary navigation. Square is also what makes the glyph the whole target.
-    '& button': {
-      justifyContent: 'center',
-      height: '84px',
-      minWidth: '84px',
-      borderRadius: tokens.borderRadiusMedium,
-    },
-    // Twice the 24px they started at. The tile grew with them, so the icon still sits in
-    // the same share of its tab rather than crowding the edges.
-    '& svg': { fontSize: '48px' },
-  },
-  /** No padding: each screen owns its own insets, so a pane can run to the window edge. */
-  content: {
-    display: 'flex',
-    flexDirection: 'column',
-    flex: 1,
-    minWidth: 0,
-    minHeight: 0,
-    boxSizing: 'border-box',
-  },
-  /**
-   * The banners are the only things that need breathing room of their own — and when
-   * neither is showing (the normal case) the row collapses, so no screen pays for it.
-   */
-  banners: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '8px',
-    padding: '8px 12px 0',
-    '&:empty': { display: 'none' },
-  },
-  body: { display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1 },
-  /**
-   * Every screen but My Tasks is a document and wants a margin. My Tasks is a
-   * two-panel workspace whose right pane runs to the window's edges, so it gets none
-   * and lays out its own insets.
-   */
-  bodyPadded: { padding: '12px 16px' },
-  /**
-   * A status bar, in the editor's sense: the full width of the window (the nav rail
-   * included), one line high, and **coloured** rather than bordered. Blue is the resting
-   * state; it turns the app's own "wants you" orange the moment something is waiting on
-   * a human, so the signal is visible from across a room even when the Attention screen
-   * is not open.
-   */
-  footer: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-    padding: '3px 12px',
-    flexShrink: 0,
-    backgroundColor: ACCENT.statusBlue,
-    color: '#ffffff',
-    // The bar is one line of small text on a saturated fill, which is exactly where
-    // Fluent's default weight goes muddy. A touch more size and weight, stated once here
-    // so every item in the bar gets it.
-    fontSize: fontPx(12),
-    fontWeight: 600,
-  },
-  /**
-   * The attention fill. Near-black ink rather than white: white on this orange is ~2.2:1,
-   * which is the "hard to read when it goes orange" complaint — #1b1b1b is ~8.6:1.
-   */
-  footerAttention: { backgroundColor: ACCENT.unread, color: ACCENT.unreadInk },
-  /**
-   * The live/dead dot, with a dark ring so it separates from BOTH fills it is ever drawn
-   * on. The ring matters because a single colour cannot have good contrast against a
-   * mid-blue and a bright orange at once.
-   */
-  dot: {
-    width: '9px',
-    height: '9px',
-    borderRadius: '50%',
-    flexShrink: 0,
-    boxShadow: '0 0 0 1.5px rgba(0, 0, 0, 0.45)',
-  },
-  // NOT `colorPaletteGreenBackground3` (#0e700e), which was the bug: ~1.6:1 against the
-  // bar's blue and ~3.2:1 against its orange — invisible on both.
-  ok: { backgroundColor: ACCENT.liveGreen },
-  bad: { backgroundColor: ACCENT.liveRed },
-  grow: { flex: 1 },
-  /**
-   * The "a new version is waiting" item. It inherits the bar's own colour rather than
-   * naming one, because the bar turns orange under attention and a fixed white would
-   * vanish against it. Underlined so it reads as the one clickable thing down here.
+   * The "a new version is waiting" item — the desktop's alone, so it stays here rather
+   * than in the shared `StatusBar`. It inherits the bar's own colour rather than naming
+   * one, because the bar turns orange under attention and a fixed white would vanish
+   * against it. Underlined so it reads as the one clickable thing down here.
    */
   update: {
     background: 'none',
@@ -197,7 +92,7 @@ const useStyles = makeStyles({
 type TabId = 'mytasks' | 'performance' | 'attention' | 'settings' | 'scratch';
 
 /** The rail, in order. The label is the tooltip and the accessible name. */
-const NAV: Array<{ id: TabId; label: string; icon: JSX.Element }> = [
+const NAV: ReadonlyArray<NavRailItem & { id: TabId }> = [
   { id: 'mytasks', label: 'My Tasks', icon: <TaskListSquareLtrRegular /> },
   { id: 'performance', label: 'Performance', icon: <DataTrendingRegular /> },
   { id: 'attention', label: 'Attention', icon: <AlertRegular /> },
@@ -351,158 +246,152 @@ export function App(): JSX.Element {
     !signedOut && claude?.installed && claude?.authenticated && !claude?.apiKeyDetected;
 
   return (
-    <div className={styles.shell}>
-      <TitleBar />
+    <AppShell
+      titleBar={<TitleBar />}
+      nav={
+        <NavRail
+          items={NAV.map((item) =>
+            // The only label the rail ever shows: a count that means "someone is waiting
+            // on you". Built per render rather than in `NAV` because it moves.
+            item.id === 'attention' && attentionCount > 0
+              ? {
+                  ...item,
+                  badge: (
+                    <CounterBadge
+                      count={attentionCount}
+                      color="danger"
+                      size="small"
+                      appearance="filled"
+                    />
+                  ),
+                }
+              : item,
+          )}
+          selected={tab}
+          onSelect={(id) => setTab(id as TabId)}
+        />
+      }
+      banners={
+        <>
+          {/* The engine is unreachable — every tab below will be empty, so say why once,
+              at the top, rather than leaving the user to guess from seven spinners. */}
+          {bootError && (
+            <MessageBar intent="error">
+              <MessageBarBody>
+                Can&apos;t reach the app&apos;s backend, so nothing will load: {bootError}
+              </MessageBarBody>
+            </MessageBar>
+          )}
 
-      <div className={styles.main}>
-        <TabList
-          vertical
-          size="large"
-          className={styles.nav}
-          selectedValue={tab}
-          onTabSelect={(_e, d) => setTab(d.value as TabId)}
-        >
-          {NAV.map((item) => (
-            <Tooltip key={item.id} content={item.label} relationship="label" positioning="after">
-              <Tab value={item.id} icon={item.icon}>
-                {/* The only label left: a count that means "someone is waiting on you". */}
-                {item.id === 'attention' && attentionCount > 0 && (
-                  <CounterBadge
-                    count={attentionCount}
-                    color="danger"
-                    size="small"
-                    appearance="filled"
-                  />
-                )}
-              </Tab>
-            </Tooltip>
-          ))}
-        </TabList>
+          {/* Surface a Claude problem prominently; when all is well the footer suffices.
+              Suppressed while the sign-in gate is up: `AuthBanner` above is saying the
+              same thing with the button that fixes it, and two red bars reporting one
+              outage reads as two outages. */}
+          {claude && !claudeOk && !signedOut && (
+            <MessageBar intent="warning">
+              <MessageBarBody>{claude.message}</MessageBarBody>
+            </MessageBar>
+          )}
 
-        <div className={styles.content}>
-          <div className={styles.banners}>
-            {/* The engine is unreachable — every tab below will be empty, so say why once,
-                at the top, rather than leaving the user to guess from seven spinners. */}
-            {bootError && (
-              <MessageBar intent="error">
-                <MessageBarBody>
-                  Can&apos;t reach the app&apos;s backend, so nothing will load: {bootError}
-                </MessageBarBody>
-              </MessageBar>
-            )}
+          {/* Account-wide sign-in gate: all work is held until a human signs in. Above
+              the limit banner because it is the one with an action on it. */}
+          <AuthBanner />
 
-            {/* Surface a Claude problem prominently; when all is well the footer suffices.
-                Suppressed while the sign-in gate is up: `AuthBanner` above is saying the
-                same thing with the button that fixes it, and two red bars reporting one
-                outage reads as two outages. */}
-            {claude && !claudeOk && !signedOut && (
-              <MessageBar intent="warning">
-                <MessageBarBody>{claude.message}</MessageBarBody>
-              </MessageBar>
-            )}
-
-            {/* Account-wide sign-in gate: all work is held until a human signs in. Above
-                the limit banner because it is the one with an action on it. */}
-            <AuthBanner />
-
-            {/* Global usage-limit gate (Phase 5): a countdown while work is parked. */}
-            <LimitBanner />
-          </div>
-
-          <div className={tab === 'mytasks' ? styles.body : `${styles.body} ${styles.bodyPadded}`}>
-            {tab === 'mytasks' ? (
-              <MyTasks />
-            ) : tab === 'performance' ? (
-              <Performance />
-            ) : tab === 'attention' ? (
-              <Attention />
-            ) : tab === 'settings' ? (
-              <Settings />
-            ) : (
-              <SessionRunner />
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Status bar: Claude readiness + app info, the full width of the window. */}
-      <div
-        className={
-          attentionCount > 0 ? `${styles.footer} ${styles.footerAttention}` : styles.footer
-        }
-      >
-        {claude ? (
-          <>
-            <span className={`${styles.dot} ${claudeOk ? styles.ok : styles.bad}`} />
+          {/* Global usage-limit gate (Phase 5): a countdown while work is parked. */}
+          <LimitBanner />
+        </>
+      }
+      // Every screen but My Tasks is a document and wants a margin. My Tasks is a
+      // two-panel workspace whose right pane runs to the window's edges.
+      padded={tab !== 'mytasks'}
+      /* Status bar: Claude readiness + app info, the full width of the window. */
+      status={
+        <StatusBar attention={attentionCount > 0}>
+          {claude ? (
+            <>
+              <StatusDot ok={Boolean(claudeOk)} />
+              <Caption1>
+                {/* `signedOut` first: a run has PROVEN the credential is dead, so saying
+                    "logged in" because the file is still on disk would be the bar's most
+                    confidently wrong moment — which is exactly what it did during the
+                    outage this reports. */}
+                {signedOut
+                  ? `Claude ${claude.version ?? '?'} · signed out — work is held`
+                  : claude.installed
+                    ? `Claude ${claude.version ?? '?'}${claude.authenticated ? ' · logged in' : ' · not logged in'}`
+                    : 'Claude CLI not found'}
+                {claude.apiKeyDetected && ' · ANTHROPIC_API_KEY set'}
+              </Caption1>
+            </>
+          ) : bootError ? (
+            <>
+              <StatusDot ok={false} />
+              <Caption1>Backend unavailable</Caption1>
+            </>
+          ) : (
+            <Spinner label="Checking Claude…" labelPosition="after" size="tiny" />
+          )}
+          {attentionCount > 0 && <Caption1>· {attentionCount} waiting on you</Caption1>}
+          {/* No colour of its own: the bar turns orange under attention, and a fixed
+              white would go unreadable exactly then. */}
+          {sprint && <Caption1>· {sprint}</Caption1>}
+          <StatusSpacer />
+          {/* A downloaded update installs itself on the next quit either way; this is
+              simply the offer to have it now, and the only notice the user ever gets. */}
+          {update?.status === 'downloaded' && (
             <Caption1>
-              {/* `signedOut` first: a run has PROVEN the credential is dead, so saying
-                  "logged in" because the file is still on disk would be the bar's most
-                  confidently wrong moment — which is exactly what it did during the
-                  outage this reports. */}
-              {signedOut
-                ? `Claude ${claude.version ?? '?'} · signed out — work is held`
-                : claude.installed
-                  ? `Claude ${claude.version ?? '?'}${claude.authenticated ? ' · logged in' : ' · not logged in'}`
-                  : 'Claude CLI not found'}
-              {claude.apiKeyDetected && ' · ANTHROPIC_API_KEY set'}
+              <button
+                type="button"
+                className={styles.update}
+                title="Restart now to finish installing. Otherwise it applies the next time you quit."
+                onClick={() => void window.api.invoke('update:install')}
+              >
+                Update {update.version ?? ''} ready — restart
+              </button>
             </Caption1>
-          </>
-        ) : bootError ? (
-          <>
-            <span className={`${styles.dot} ${styles.bad}`} />
-            <Caption1>Backend unavailable</Caption1>
-          </>
-        ) : (
-          <Spinner label="Checking Claude…" labelPosition="after" size="tiny" />
-        )}
-        {attentionCount > 0 && <Caption1>· {attentionCount} waiting on you</Caption1>}
-        {/* No colour of its own: the bar turns orange under attention, and a fixed
-            white would go unreadable exactly then. */}
-        {sprint && <Caption1>· {sprint}</Caption1>}
-        <span className={styles.grow} />
-        {/* A downloaded update installs itself on the next quit either way; this is
-            simply the offer to have it now, and the only notice the user ever gets. */}
-        {update?.status === 'downloaded' && (
-          <Caption1>
-            <button
-              type="button"
-              className={styles.update}
-              title="Restart now to finish installing. Otherwise it applies the next time you quit."
-              onClick={() => void window.api.invoke('update:install')}
-            >
-              Update {update.version ?? ''} ready — restart
-            </button>
-          </Caption1>
-        )}
-        {/* A failure used to be shown nowhere at all, which is how three releases' worth of
-            refused installs went unnoticed. Still not a dialog — one line that points at the
-            place where the actual reason is written down. */}
-        {update?.status === 'error' && (
-          <Caption1>
-            <button
-              type="button"
-              className={styles.update}
-              title={describeUpdate(update)}
-              onClick={() => setTab('settings')}
-            >
-              Update failed — see Settings
-            </button>
-          </Caption1>
-        )}
-        {/* How much of the two metered windows is gone. Same right-hand group as the sync
-            rings, and for the same reason: ambient state you glance at, never a decision.
-            The full numbers and the reset countdown are in each one's tooltip, and the
-            Performance tab draws the same pair at full size. */}
-        <UsageQuotaStatus quotas={quotas} />
-        {/* How stale the mirror is, and how long until the next refresh. On the right,
-            beside the version: it is ambient state, not something that wants a decision. */}
-        <SyncRing state={syncState} />
-        {info && (
-          <Caption1>
-            v{info.version} · electron {info.electron} · node {info.node}
-          </Caption1>
-        )}
-      </div>
-    </div>
+          )}
+          {/* A failure used to be shown nowhere at all, which is how three releases' worth of
+              refused installs went unnoticed. Still not a dialog — one line that points at the
+              place where the actual reason is written down. */}
+          {update?.status === 'error' && (
+            <Caption1>
+              <button
+                type="button"
+                className={styles.update}
+                title={describeUpdate(update)}
+                onClick={() => setTab('settings')}
+              >
+                Update failed — see Settings
+              </button>
+            </Caption1>
+          )}
+          {/* How much of the two metered windows is gone. Same right-hand group as the sync
+              rings, and for the same reason: ambient state you glance at, never a decision.
+              The full numbers and the reset countdown are in each one's tooltip, and the
+              Performance tab draws the same pair at full size. */}
+          <UsageQuotaStatus quotas={quotas} />
+          {/* How stale the mirror is, and how long until the next refresh. On the right,
+              beside the version: it is ambient state, not something that wants a decision. */}
+          <SyncRing state={syncState} />
+          {info && (
+            <Caption1>
+              v{info.version} · electron {info.electron} · node {info.node}
+            </Caption1>
+          )}
+        </StatusBar>
+      }
+    >
+      {tab === 'mytasks' ? (
+        <MyTasks />
+      ) : tab === 'performance' ? (
+        <Performance />
+      ) : tab === 'attention' ? (
+        <Attention />
+      ) : tab === 'settings' ? (
+        <Settings />
+      ) : (
+        <SessionRunner />
+      )}
+    </AppShell>
   );
 }

@@ -8,8 +8,7 @@
  * app).
  */
 import { useMemo, useState } from 'react';
-import { Body1, Button, Caption1, Title2, makeStyles, tokens } from '@fluentui/react-components';
-import { SignOutRegular } from '@fluentui/react-icons';
+import { Body1, Caption1, Title2, makeStyles, tokens } from '@fluentui/react-components';
 import { COLUMN_META, groupSubtasks, type BoardCard } from '@tm/ui/board/boardColumns';
 import { columnForTask, statusForColumn } from '@tm/shared/board';
 import { KanbanColumn } from '@tm/ui/board/KanbanColumn';
@@ -20,7 +19,9 @@ import { displayStatus, isTaskPending, type CloudBoardState } from './cloudBoard
 import { StaleBanner } from './StaleBanner';
 
 const useStyles = makeStyles({
-  root: { height: '100vh', display: 'flex', flexDirection: 'column', minHeight: 0 },
+  // Sized by the `AppShell` body it now sits in rather than by the viewport: a `100vh`
+  // screen inside a shell that also draws a status bar is one status bar too tall.
+  root: { flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 },
   header: {
     display: 'flex',
     alignItems: 'center',
@@ -46,7 +47,6 @@ export interface BoardScreenProps {
   everSeenClient: boolean;
   onSetStatus: (taskId: string, status: ManualStatus) => void;
   onCreateTask: (projectId: string, input: { title: string; phase?: string }) => Promise<void>;
-  onSignOut: () => void;
 }
 
 export function BoardScreen({
@@ -54,7 +54,6 @@ export function BoardScreen({
   everSeenClient,
   onSetStatus,
   onCreateTask,
-  onSignOut,
 }: BoardScreenProps): JSX.Element {
   const styles = useStyles();
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
@@ -112,9 +111,6 @@ export function BoardScreen({
           disabled={!everSeenClient || projects.length === 0}
           disabledReason={disabledReason}
         />
-        <Button icon={<SignOutRegular />} appearance="subtle" onClick={onSignOut}>
-          Sign out
-        </Button>
       </div>
 
       {!everSeenClient || state.clients.length === 0 ? (

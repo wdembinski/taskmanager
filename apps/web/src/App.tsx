@@ -1,4 +1,28 @@
-import { useMemo } from 'react';
+/**
+ * The browser client's shell.
+ *
+ * Structurally the desktop's, drawn by the same `@tm/ui/shell` pieces: nav rail on the
+ * left, screen in the middle, status bar across the bottom. The one slot left empty is
+ * `titleBar` — the desktop runs in a frameless window and has to paint its own drag region
+ * and min/max/close; a browser tab already has all three above the page.
+ *
+ * The rail carries all five desktop destinations even though only one of them is mirrored
+ * here. A rail with a single tile on it looks like a different application, and a tile
+ * that is present-but-off with "desktop only" in its tooltip is honest where a missing one
+ * is merely silent.
+ */
+import { useEffect, useMemo, useState } from 'react';
+import { Caption1, makeStyles } from '@fluentui/react-components';
+import {
+  AlertRegular,
+  DataTrendingRegular,
+  PlayRegular,
+  SettingsRegular,
+  TaskListSquareLtrRegular,
+} from '@fluentui/react-icons';
+import { AppShell } from '@tm/ui/shell/AppShell';
+import { NavRail, type NavRailItem } from '@tm/ui/shell/NavRail';
+import { StatusBar, StatusDot, StatusSpacer } from '@tm/ui/shell/StatusBar';
 import { TransportProvider } from '@tm/ui/transport';
 import { CloudAuth } from './auth/cloudAuth';
 import { SignInScreen } from './auth/SignInScreen';
@@ -6,6 +30,47 @@ import { useCloudAuth } from './auth/useCloudAuth';
 import { BoardScreen } from './board/BoardScreen';
 import { useCloudBoard } from './board/useCloudBoard';
 import { loadWebConfig } from './env';
+
+const useStyles = makeStyles({
+  /**
+   * Sign out, in the status bar rather than on the board's toolbar — which is what lets
+   * that toolbar hold the same things `MyTasks`'s does. Same treatment as the desktop's
+   * update link: no colour of its own (the bar can change fill under it), underlined so it
+   * reads as the one clickable thing down here.
+   */
+  linkButton: {
+    background: 'none',
+    border: 'none',
+    padding: 0,
+    font: 'inherit',
+    color: 'inherit',
+    cursor: 'pointer',
+    textDecoration: 'underline',
+  },
+});
+
+/** Why the four tiles that aren't the board are off. Appended to each one's tooltip. */
+const DESKTOP_ONLY = 'desktop only';
+
+/**
+ * The desktop's rail, in the desktop's order — see `apps/client/src/renderer/src/App.tsx`.
+ * Only My Tasks has anything behind it here: the board this app mirrors is that screen's.
+ */
+const NAV: readonly NavRailItem[] = [
+  { id: 'mytasks', label: 'My Tasks', icon: <TaskListSquareLtrRegular /> },
+  {
+    id: 'performance',
+    label: 'Performance',
+    icon: <DataTrendingRegular />,
+    unavailable: DESKTOP_ONLY,
+  },
+  { id: 'attention', label: 'Attention', icon: <AlertRegular />, unavailable: DESKTOP_ONLY },
+  { id: 'settings', label: 'Settings', icon: <SettingsRegular />, unavailable: DESKTOP_ONLY },
+  { id: 'scratch', label: 'Scratch run', icon: <PlayRegular />, unavailable: DESKTOP_ONLY },
+];
+
+/** How often the status bar's "synced Ns ago" recomputes between polls. */
+const AGE_TICK_MS = 5_000;
 
 export function App(): JSX.Element {
   const config = useMemo(loadWebConfig, []);
@@ -51,6 +116,8 @@ function AuthedApp({
 }): JSX.Element {
   // The board hook is only mounted once signed in — starting the poll loop with no access
   // token would just spend its whole backoff curve failing until a sign-in happens anyway.
+  // The shell goes with it: a rail and a status bar around a sign-in prompt would be five
+  // dead tiles and a dot reporting on a connection nobody has asked for yet.
   if (signedIn !== true) {
     return <SignInScreen loading={signedIn === null} error={error} onSignIn={signIn} />;
   }
@@ -68,17 +135,78 @@ function SignedInBoard({
    *  its own `signOut`. */
   onSignOut: () => void;
 }): JSX.Element {
+  const styles = useStyles();
   const board = useCloudBoard(auth, config);
+  const now = useTick(AGE_TICK_MS);
+
+  const online = board.state.clients.length > 0;
 
   return (
     <TransportProvider transport={board.transport}>
-      <BoardScreen
-        state={board.state}
-        everSeenClient={board.targetClientId !== null}
-        onSetStatus={(taskId, status) => void board.setStatus(taskId, status)}
-        onCreateTask={board.createTask}
-        onSignOut={onSignOut}
-      />
+      <AppShell
+        nav={
+          // Nothing to select: the four unavailable tiles refuse selection inside
+          // `NavRail`, and the fifth is already the one on screen.
+          <NavRail items={NAV} selected="mytasks" onSelect={() => undefined} />
+        }
+        status={
+          <StatusBar>
+            {/* The dot's question is the only one that decides whether an edit made here
+                goes anywhere: a command is delivered to a desktop Client, so with none
+                polling there is nothing to apply it. */}
+            <StatusDot ok={online} />
+            <Caption1>
+              {online
+                ? `Desktop app connected · ${board.state.clients.length} client${board.state.clients.length === 1 ? '' : 's'}`
+                : board.targetClientId !== null
+                  ? 'Desktop app offline — edits are queued'
+                  : 'No desktop app has ever synced this account'}
+            </Caption1>
+            {/* A poll that comes back proves this tab's own connection, whether or not it
+                carried any deltas — which is a different claim from the dot's. */}
+            <Caption1>
+              ·{' '}
+              {board.lastPolledAt === null
+                ? 'first sync pending'
+                : `synced ${describeAge(now - board.lastPolledAt)}`}
+            </Caption1>
+            <StatusSpacer />
+            <Caption1>
+              <button type="button" className={styles.linkButton} onClick={onSignOut}>
+                Sign out
+              </button>
+            </Caption1>
+            <Caption1>v{__APP_VERSION__}</Caption1>
+          </StatusBar>
+        }
+      >
+        <BoardScreen
+          state={board.state}
+          everSeenClient={board.targetClientId !== null}
+          onSetStatus={(taskId, status) => void board.setStatus(taskId, status)}
+          onCreateTask={board.createTask}
+        />
+      </AppShell>
     </TransportProvider>
   );
+}
+
+/** Re-renders on a slow interval, so an age in the status bar keeps counting up between
+ *  the events that actually change it. */
+function useTick(intervalMs: number): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(id);
+  }, [intervalMs]);
+  return now;
+}
+
+/** A duration in ms as the coarsest unit that still says something — `12s ago`, `3m ago`. */
+function describeAge(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  return `${Math.round(minutes / 60)}h ago`;
 }

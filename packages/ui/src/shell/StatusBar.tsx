@@ -1,0 +1,84 @@
+/**
+ * The status bar, in the editor's sense: the full width of the window (the nav rail
+ * included), one line high, and **coloured** rather than bordered.
+ *
+ * Only the bar itself is shared — its fill, its type, and the two atoms every host needs
+ * (a live/dead dot and the spacer that splits left from right). What goes *in* it is each
+ * host's own business: the desktop has a Claude version, sync rings and usage quotas, the
+ * browser has a poll age and a Sign out. Sharing the container and not the contents is
+ * what keeps this from becoming a component with one prop per item.
+ */
+import { makeStyles } from '@fluentui/react-components';
+import type { ReactNode } from 'react';
+import { ACCENT, fontPx } from '../theme';
+
+const useStyles = makeStyles({
+  /**
+   * Blue is the resting state; it turns the app's own "wants you" orange the moment
+   * something is waiting on a human, so the signal is visible from across a room even when
+   * the Attention screen is not open.
+   */
+  footer: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    padding: '3px 12px',
+    flexShrink: 0,
+    backgroundColor: ACCENT.statusBlue,
+    color: '#ffffff',
+    // The bar is one line of small text on a saturated fill, which is exactly where
+    // Fluent's default weight goes muddy. A touch more size and weight, stated once here
+    // so every item in the bar gets it.
+    fontSize: fontPx(12),
+    fontWeight: 600,
+  },
+  /**
+   * The attention fill. Near-black ink rather than white: white on this orange is ~2.2:1,
+   * which is the "hard to read when it goes orange" complaint — #1b1b1b is ~8.6:1.
+   */
+  footerAttention: { backgroundColor: ACCENT.unread, color: ACCENT.unreadInk },
+  /**
+   * The live/dead dot, with a dark ring so it separates from BOTH fills it is ever drawn
+   * on. The ring matters because a single colour cannot have good contrast against a
+   * mid-blue and a bright orange at once.
+   */
+  dot: {
+    width: '9px',
+    height: '9px',
+    borderRadius: '50%',
+    flexShrink: 0,
+    boxShadow: '0 0 0 1.5px rgba(0, 0, 0, 0.45)',
+  },
+  // NOT `colorPaletteGreenBackground3` (#0e700e), which was the bug: ~1.6:1 against the
+  // bar's blue and ~3.2:1 against its orange — invisible on both.
+  ok: { backgroundColor: ACCENT.liveGreen },
+  bad: { backgroundColor: ACCENT.liveRed },
+  grow: { flex: 1 },
+});
+
+export interface StatusBarProps {
+  /** True while something is waiting on a human — the whole bar goes orange. */
+  attention?: boolean;
+  children: ReactNode;
+}
+
+export function StatusBar({ attention, children }: StatusBarProps): JSX.Element {
+  const styles = useStyles();
+  return (
+    <div className={attention ? `${styles.footer} ${styles.footerAttention}` : styles.footer}>
+      {children}
+    </div>
+  );
+}
+
+/** The one indicator every host's bar starts with: is the thing we depend on alive? */
+export function StatusDot({ ok }: { ok: boolean }): JSX.Element {
+  const styles = useStyles();
+  return <span className={`${styles.dot} ${ok ? styles.ok : styles.bad}`} />;
+}
+
+/** Splits the bar into a left group (what is wrong) and a right one (ambient state). */
+export function StatusSpacer(): JSX.Element {
+  const styles = useStyles();
+  return <span className={styles.grow} />;
+}

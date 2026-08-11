@@ -13,7 +13,7 @@
  * process, and they are tested. Moving them here would trade a tested mapping for a
  * bag of hex.
  */
-import { makeStaticStyles, tokens, type Theme } from '@fluentui/react-components';
+import { makeStaticStyles, tokens, webDarkTheme, type Theme } from '@fluentui/react-components';
 import { UNREAD_ORANGE } from '@tm/shared/accent';
 import type { PipelineStatus } from '@tm/shared/mergeRequest';
 import type { TaskStatus } from '@tm/shared/model';
@@ -70,6 +70,32 @@ export const CODE_BORDER = '#26364a';
  * `TaskCard.cardSelected`), which is why `selected` is gone from here.
  */
 export const RING = { attention: 3 } as const;
+
+/**
+ * Body text. Fluent's dark theme sets `colorNeutralForeground1` to pure white, which is
+ * what a code editor deliberately avoids: at this text density white-on-near-black glares
+ * and every word reads as emphasis. The editor grey is the reference the user asked for —
+ * headings and semibold text still read as brighter because they gain weight, not
+ * luminance.
+ */
+export const EDITOR_FOREGROUND = '#CCCCCC';
+
+/**
+ * **The app's theme** — Fluent dark with softer body text, and the one both hosts mount.
+ *
+ * It lives here rather than in each `main.tsx` because it was duplicated in both, four
+ * tokens at a time, and a four-line copy is exactly the kind that drifts: the desktop
+ * window and the browser tab would have gone on rendering the same board in two different
+ * greys and nothing would have flagged it. Everything else stays stock Fluent, so contrast
+ * ratios for brand/danger/success surfaces are untouched.
+ */
+export const appDarkTheme: Theme = {
+  ...webDarkTheme,
+  colorNeutralForeground1: EDITOR_FOREGROUND,
+  colorNeutralForeground1Hover: EDITOR_FOREGROUND,
+  colorNeutralForeground1Pressed: EDITOR_FOREGROUND,
+  colorNeutralForeground1Selected: EDITOR_FOREGROUND,
+};
 
 /**
  * A px size that follows the user's font-size setting.
