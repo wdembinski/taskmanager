@@ -89,3 +89,96 @@ export function buildMirrorDelta(
 
   return { tasks, projects, deletedTaskIds, deletedProjectIds };
 }
+
+/**
+ * How many bytes of resolved entities one `/v1/sync` request may carry.
+ *
+ * `shapeCloudDelta`'s cap counts ENTITIES, and an entity has no fixed size: one full `Task`
+ * carries its description, its plan and its whole chat transcript, so 200 of them is
+ * anywhere from a few kilobytes to many megabytes. A count cap therefore bounds nothing
+ * that matters to the wire, which is how a backfill of a few hundred cards ends up past the
+ * server's body limit and 413s — forever, since the retry rebuilds the identical batch.
+ *
+ * Deliberately well under `DEFAULT_BODY_LIMIT` (8 MB, apps/server/src/config/bodyLimit.ts):
+ * the accounting below measures the entities, not the JSON framing, the acked-command ids
+ * or the headers around them, and the margin has to cover all of that plus any intermediary
+ * with a tighter idea of "too large" than the origin's.
+ */
+export const SYNC_BYTES_LIMIT = 1_000_000;
+
+export interface BoundedMirrorDelta {
+  delta: MirrorDelta;
+  /** Exactly the rows `delta` speaks for — what the caller may prune, and nothing more. */
+  sent: CloudOutboxRow[];
+}
+
+/**
+ * `buildMirrorDelta` under a byte budget: take rows in ascending `seq` until the next one
+ * would cross `maxBytes`, and report back which rows were actually taken.
+ *
+ * Three things this has to get right, each of which loses data if it doesn't:
+ *
+ *  - **ascending `seq`, re-sorted here.** `shapeCloudDelta` hands its result deletes-last,
+ *    and cutting a prefix off THAT order would leave a hole: the caller prunes the outbox
+ *    through `max(sent.seq)`, so a delete row sitting past the cut with a seq below that
+ *    point would be pruned having never been sent, and the card would live on in the cloud
+ *    forever. Sorting first makes "everything not sent has a higher seq than everything
+ *    sent" true again, which is the whole premise of pruning by a single number.
+ *  - **always at least one entity.** A single entity larger than the budget would otherwise
+ *    produce an empty batch every tick, prune nothing, and wedge the mirror behind it.
+ *    It goes out oversized instead; `cloudPoller.ts` logs that loudly.
+ *  - **deletes last within the taken set**, matching `shapeCloudDelta`'s own contract, so a
+ *    batch that creates and removes in one tick applies the creates first.
+ *
+ * Lookups are memoized because each row is resolved twice — once to measure, once to build.
+ */
+export function buildMirrorDeltaWithin(
+  rows: readonly CloudOutboxRow[],
+  getTask: (id: string) => Task | undefined,
+  getProject: (id: string) => Project | undefined,
+  maxBytes: number = SYNC_BYTES_LIMIT,
+): BoundedMirrorDelta {
+  const tasks = new Map<string, Task | undefined>();
+  const projects = new Map<string, Project | undefined>();
+  const lookupTask = (id: string): Task | undefined => {
+    if (!tasks.has(id)) tasks.set(id, getTask(id));
+    return tasks.get(id);
+  };
+  const lookupProject = (id: string): Project | undefined => {
+    if (!projects.has(id)) projects.set(id, getProject(id));
+    return projects.get(id);
+  };
+
+  const bySeq = [...rows].sort((a, b) => a.seq - b.seq);
+  const taken: CloudOutboxRow[] = [];
+  let bytes = 0;
+  for (const row of bySeq) {
+    const size = rowBytes(row, lookupTask, lookupProject);
+    if (taken.length > 0 && bytes + size > maxBytes) break;
+    taken.push(row);
+    bytes += size;
+  }
+
+  const upserts = taken.filter((row) => row.op !== 'delete');
+  const deletes = taken.filter((row) => row.op === 'delete');
+  const sent = [...upserts, ...deletes];
+  return { delta: buildMirrorDelta(sent, lookupTask, lookupProject), sent };
+}
+
+/**
+ * What this row costs on the wire. A delete is just its id; an insert/update is the entity
+ * the lookup returns, or — when it misses, exactly as `buildMirrorDelta` folds it — the id
+ * again. `+ 1` for the comma that joins it to its neighbours in the array.
+ */
+function rowBytes(
+  row: CloudOutboxRow,
+  getTask: (id: string) => Task | undefined,
+  getProject: (id: string) => Project | undefined,
+): number {
+  const value =
+    row.op === 'delete'
+      ? row.entityId
+      : ((row.entity === 'task' ? getTask(row.entityId) : getProject(row.entityId)) ??
+        row.entityId);
+  return Buffer.byteLength(JSON.stringify(value), 'utf8') + 1;
+}

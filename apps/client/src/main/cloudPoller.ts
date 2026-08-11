@@ -20,7 +20,7 @@
 import { CADENCE_MS, nextPollDelayMs } from '@protocol/cadence';
 import type { CommandEnvelope, SyncRequest, SyncResponse } from '@protocol/wire';
 import type { CloudSettings } from '@shared/settings';
-import { buildMirrorDelta } from './cloudDelta';
+import { SYNC_BYTES_LIMIT, buildMirrorDeltaWithin } from './cloudDelta';
 import { logMain } from './log';
 import type { Store } from './store';
 
@@ -49,7 +49,8 @@ export interface CloudPollerDeps {
   random?: () => number;
 }
 
-/** Outbox rows resolved to entities per request — same order of magnitude as `JIRA_BOARD_LIMIT`. */
+/** Outbox rows resolved to entities per request — same order of magnitude as `JIRA_BOARD_LIMIT`.
+ *  An upper bound on the COUNT only; `SYNC_BYTES_LIMIT` is what bounds the actual request. */
 const OUTBOX_LIMIT = 200;
 
 export class CloudPoller {
@@ -61,6 +62,17 @@ export class CloudPoller {
    * `computeDelay` seeds from the settings' own interval until one lands. */
   private lastServerIntervalMs: number | null = null;
   private lastPollAt = 0;
+  /**
+   * How many outbox rows this tick asks the store for. Normally `OUTBOX_LIMIT`, halved on
+   * every `413 Payload Too Large` and reset by any success.
+   *
+   * `SYNC_BYTES_LIMIT` already bounds a request against the SERVER's limit, but not against
+   * an intermediary's: a reverse proxy or an App Service front end with its own, tighter
+   * idea of "too large" would 413 a batch the origin would happily have taken, and every
+   * retry rebuilds the identical body. Halving is what turns that permanent wedge into a
+   * few wasted ticks, and it converges on the "at least one entity" floor rather than zero.
+   */
+  private batchLimit = OUTBOX_LIMIT;
   private readonly unsubscribeFocus: () => void;
 
   constructor(private readonly deps: CloudPollerDeps) {
@@ -141,33 +153,59 @@ export class CloudPoller {
     const token = await this.deps.getAccessToken();
     if (!token) throw new Error('Not signed in to vipper.iam.');
 
-    const rows = this.deps.store.getCloudDelta(0, OUTBOX_LIMIT);
+    const rows = this.deps.store.getCloudDelta(0, this.batchLimit);
     // Commands applied (or rejected) since the last successful sync — see
     // `cloudCommands.ts`'s own header for why acking happens here rather than the moment a
     // command is applied: this is the only place a "the server heard back" round trip exists.
     const ackedCommandIds = this.deps.store.getPendingCloudAcks();
+    const { delta, sent } = buildMirrorDeltaWithin(
+      rows,
+      this.deps.store.getTask,
+      this.deps.store.getProject,
+      SYNC_BYTES_LIMIT,
+    );
     const request: SyncRequest = {
       clientId: this.deps.store.loadCloudClientId(),
       cursor: this.deps.store.loadCloudCursor(),
       focused: this.deps.focus.isFocused(),
-      deltas: buildMirrorDelta(rows, this.deps.store.getTask, this.deps.store.getProject),
+      deltas: delta,
       ackedCommandIds,
     };
+
+    const payload = JSON.stringify(request);
+    const payloadBytes = Buffer.byteLength(payload, 'utf8');
+    if (payloadBytes > SYNC_BYTES_LIMIT) {
+      // Practically always `buildMirrorDeltaWithin`'s "always take at least one entity"
+      // rule: a single entity that does not fit the budget on its own. Sending it oversized
+      // is the lesser evil — skipping it would drop that card from the cloud permanently,
+      // and it would block every entity behind it in seq order while it did so. So it goes
+      // out, loudly, rather than silently: this line is the only trace it would ever leave.
+      logMain(
+        `cloud sync batch over the byte cap: ${sent.length} entit${sent.length === 1 ? 'y' : 'ies'}, ` +
+          `${payloadBytes} bytes (cap ${SYNC_BYTES_LIMIT}). Sending anyway.`,
+      );
+    }
 
     const fetchImpl = this.deps.fetchImpl ?? fetch;
     const res = await fetchImpl(`${settings.baseUrl.replace(/\/+$/, '')}/v1/sync`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-      body: JSON.stringify(request),
+      body: payload,
     });
-    if (!res.ok) throw new Error(`cloud sync failed (${res.status} ${res.statusText})`);
+    if (!res.ok) {
+      // 413 is the one failure the NEXT request can do something about — see `batchLimit`.
+      if (res.status === 413) this.batchLimit = Math.max(1, Math.floor(this.batchLimit / 2));
+      throw new Error(`cloud sync failed (${res.status} ${res.statusText})`);
+    }
+    this.batchLimit = OUTBOX_LIMIT;
     const body = (await res.json()) as SyncResponse;
 
-    // Only the rows actually SENT are acked — `rows` may be a capped prefix of a larger
-    // outbox (`shapeCloudDelta`'s cap), and every entity left out of it has a strictly
-    // higher seq than every one sent, so this can never prune an unsent write.
-    if (rows.length > 0) {
-      this.deps.store.pruneCloudOutbox(Math.max(...rows.map((r) => r.seq)));
+    // Only the rows actually SENT are acked — never `rows`, which `buildMirrorDeltaWithin`
+    // may have cut short under the byte cap. It walks ascending `seq`, so every entity left
+    // out has a strictly higher seq than every one sent, and pruning through this single
+    // number can therefore never drop an unsent write.
+    if (sent.length > 0) {
+      this.deps.store.pruneCloudOutbox(Math.max(...sent.map((r) => r.seq)));
     }
     if (ackedCommandIds.length > 0) this.deps.store.markCloudAcksSent(ackedCommandIds);
     this.deps.store.saveCloudCursor(body.cursor);

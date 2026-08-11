@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CADENCE_MS } from '@protocol/cadence';
 import type { SyncResponse } from '@protocol/wire';
+import type { Task } from '@shared/model';
 import { DEFAULT_CLOUD_SETTINGS, type CloudSettings } from '@shared/settings';
 import { CloudPoller, type CloudPollerDeps, type FocusSignal } from './cloudPoller';
 import type { CloudOutboxRow } from './cloudDelta';
@@ -226,6 +227,125 @@ describe('CloudPoller', () => {
     const body = JSON.parse(fetchImpl.mock.calls[0]![1].body);
     expect(body.ackedCommandIds).toEqual(['cmd-1', 'cmd-2']);
     expect(markCloudAcksSent).toHaveBeenCalledWith(['cmd-1', 'cmd-2']);
+  });
+
+  /** A store that remembers what each tick asked for and what it pruned. */
+  function recordingStore(outbox: CloudOutboxRow[] = []): {
+    store: Store;
+    limits: number[];
+    pruned: number[];
+  } {
+    const limits: number[] = [];
+    const pruned: number[] = [];
+    const store = {
+      getCloudDelta: (_sinceSeq: number, limit: number) => {
+        limits.push(limit);
+        return outbox.slice(0, limit);
+      },
+      pruneCloudOutbox: (throughSeq: number) => pruned.push(throughSeq),
+      loadCloudClientId: () => 'client-1',
+      loadCloudCursor: () => null,
+      saveCloudCursor: () => {},
+      getTask: (id: string) => ({ id, title: id }) as unknown as Task,
+      getProject: () => undefined,
+      getPendingCloudAcks: () => [],
+      markCloudAcksSent: () => {},
+    } as unknown as Store;
+    return { store, limits, pruned };
+  }
+
+  function outboxRows(count: number): CloudOutboxRow[] {
+    return Array.from({ length: count }, (_v, i) => ({
+      seq: i + 1,
+      entity: 'task' as const,
+      entityId: `t${i + 1}`,
+      op: 'update' as const,
+      at: i + 1,
+    }));
+  }
+
+  it('halves the batch after a 413, so a body some hop refuses is not retried forever', async () => {
+    const { store, limits } = recordingStore(outboxRows(5));
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue({ ok: false, status: 413, statusText: 'Payload Too Large' });
+    const { poller } = makePoller({ store, fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    await poller.tick();
+    await poller.tick();
+    await poller.tick();
+
+    expect(limits).toEqual([200, 100, 50]);
+  });
+
+  it('resets the batch limit once a sync succeeds', async () => {
+    const { store, limits } = recordingStore(outboxRows(5));
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 413, statusText: 'Payload Too Large' })
+      .mockResolvedValue({ ok: true, status: 200, json: async () => response() });
+    const { poller } = makePoller({ store, fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    await poller.tick(); // 413 — halves
+    await poller.tick(); // 200 — resets
+    await poller.tick();
+
+    expect(limits).toEqual([200, 100, 200]);
+  });
+
+  it('does not halve on an ordinary failure — only a 413 says anything about size', async () => {
+    const { store, limits } = recordingStore(outboxRows(5));
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: false, status: 500, statusText: 'err' });
+    const { poller } = makePoller({ store, fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    await poller.tick();
+    await poller.tick();
+
+    expect(limits).toEqual([200, 200]);
+  });
+
+  it('prunes nothing on a 413 — the rows were never accepted', async () => {
+    const { store, pruned } = recordingStore(outboxRows(5));
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue({ ok: false, status: 413, statusText: 'Payload Too Large' });
+    const { poller } = makePoller({ store, fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    await poller.tick();
+
+    expect(pruned).toEqual([]);
+  });
+
+  it('prunes only through the last row the byte cap let it send', async () => {
+    // Three cards too big to share one request: the tick sends the first and must leave the
+    // outbox holding the other two, rather than pruning through seq 3 and losing them.
+    const fat = 'x'.repeat(600_000);
+    const limits: number[] = [];
+    const pruned: number[] = [];
+    const store = {
+      getCloudDelta: (_s: number, limit: number) => {
+        limits.push(limit);
+        return outboxRows(3);
+      },
+      pruneCloudOutbox: (throughSeq: number) => pruned.push(throughSeq),
+      loadCloudClientId: () => 'client-1',
+      loadCloudCursor: () => null,
+      saveCloudCursor: () => {},
+      getTask: (id: string) => ({ id, title: fat }) as unknown as Task,
+      getProject: () => undefined,
+      getPendingCloudAcks: () => [],
+      markCloudAcksSent: () => {},
+    } as unknown as Store;
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, json: async () => response() });
+    const { poller } = makePoller({ store, fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    await poller.tick();
+
+    const body = JSON.parse(fetchImpl.mock.calls[0]![1].body);
+    expect(body.deltas.tasks.map((t: { id: string }) => t.id)).toEqual(['t1']);
+    expect(pruned).toEqual([1]);
   });
 
   it('does not run once disposed', async () => {
