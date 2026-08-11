@@ -63,12 +63,49 @@ interface CallbackListener {
 }
 
 /**
+ * The ports this listener may bind, in order, and every one of them has to be registered as a
+ * redirect URI on the `taskmanager-desktop` client.
+ *
+ * It used to bind port 0 — any free port — which is what RFC 8252 §7.3 tells a native app to
+ * do, and it tells the authorization server to accept any port on a loopback redirect for
+ * exactly that reason. vipper.iam runs node-oidc-provider, which compares `redirect_uri`
+ * against the registered list as an EXACT STRING and implements no such loopback rule, so a
+ * fresh port every attempt could never match anything anyone had registered:
+ *
+ *   error: invalid_redirect_uri — redirect_uri did not match any of the client's registered
+ *   redirect_uris
+ *
+ * A fixed port would be one line, but it makes sign-in fail outright whenever something else
+ * happens to hold that port. A short list keeps the registration finite (three URIs) while
+ * still surviving a collision. Deliberately high and unusual numbers, to make one unlikely.
+ *
+ * The spec-correct fix is in the authorization server — teach it that a `127.0.0.1` redirect
+ * matches regardless of port — and if that ever lands, this can go back to `listen(0)`.
+ */
+export const LOOPBACK_PORTS = [53682, 53683, 53684] as const;
+
+/**
  * Binds one loopback listener for one sign-in attempt. Fail-safe deny: a request whose `state`
  * doesn't match the one this attempt generated gets a 400 and settles nothing — it does not
  * count as either success or failure, because it isn't this flow's redirect at all (a stale
  * tab, a retried request, or someone probing the port).
  */
-function startCallbackListener(expectedState: string): Promise<CallbackListener> {
+async function startCallbackListener(expectedState: string): Promise<CallbackListener> {
+  let lastError: unknown = null;
+  for (const port of LOOPBACK_PORTS) {
+    try {
+      return await bindOn(port, expectedState);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw new Error(
+    `Could not bind a sign-in listener on any of ${LOOPBACK_PORTS.join(', ')} — something else ` +
+      `is using them. Close it and try again. (${String(lastError)})`,
+  );
+}
+
+function bindOn(port: number, expectedState: string): Promise<CallbackListener> {
   return new Promise((resolve, reject) => {
     let settle: ((code: string) => void) | null = null;
     let fail: ((err: Error) => void) | null = null;
@@ -109,8 +146,12 @@ function startCallbackListener(expectedState: string): Promise<CallbackListener>
     // `finally` well before this would fire in the normal case.
     timer.unref();
 
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
+    server.on('error', (error) => {
+      // A busy port lands here (EADDRINUSE); the caller moves on to the next candidate.
+      clearTimeout(timer);
+      reject(error);
+    });
+    server.listen(port, '127.0.0.1', () => {
       const address = server.address();
       if (address === null || typeof address === 'string') {
         reject(new Error('IAM sign-in listener failed to bind a TCP port'));

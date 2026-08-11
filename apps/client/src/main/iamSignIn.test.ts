@@ -5,7 +5,7 @@
  * exchange only (vipper.iam itself is not part of this test).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { signIn, type IamSignInConfig } from './iamSignIn';
+import { signIn, LOOPBACK_PORTS, type IamSignInConfig } from './iamSignIn';
 
 const CONFIG: IamSignInConfig = {
   issuer: 'https://auth.vipper.network/oidc',
@@ -43,6 +43,27 @@ describe('signIn', () => {
       expires_in: 3600,
       token_type: 'Bearer',
     });
+  });
+
+  it('redirects to a port that can actually be registered', async () => {
+    // vipper.iam compares redirect_uri as an exact string and has no loopback-port rule, so
+    // an ephemeral port can never match a registration and every sign-in dies with
+    // `invalid_redirect_uri`. The listener must therefore land on one of a known few.
+    let redirectUri = '';
+    const openExternal = async (authorizeUrl: string): Promise<void> => {
+      const url = new URL(authorizeUrl);
+      redirectUri = url.searchParams.get('redirect_uri')!;
+      const callback = new URL(redirectUri);
+      callback.searchParams.set('code', 'the-code');
+      callback.searchParams.set('state', url.searchParams.get('state')!);
+      await fetch(callback.toString());
+    };
+
+    await signIn(CONFIG, openExternal);
+
+    const port = Number(new URL(redirectUri).port);
+    expect(LOOPBACK_PORTS).toContain(port);
+    expect(new URL(redirectUri).pathname).toBe('/callback');
   });
 
   it('opens the authorize URL, catches the redirect, and exchanges the code for tokens', async () => {
