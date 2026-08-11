@@ -4366,10 +4366,89 @@ about say so in a line and stop.
 
 **Notes.**
 
-- The version ladder on this pass is `0.82.0` → `0.82.5`, one PATCH per commit
-  (`fix`, `fix`, `test`, `docs`, `docs`), each carried **in** the commit that earned it. That is
-  `CONTRIBUTING.md` §4 working as written, rather than the §2 fallback the first pass needed
-  — the branch is not the fifth in a row to reach its end with no version of its own.
+- The version ladder on this pass is `0.82.0` → `0.82.6`, one PATCH per commit
+  (`fix`, `fix`, `test`, `docs`, `docs`, `test`), each carried **in** the commit that earned it.
+  That is `CONTRIBUTING.md` §4 working as written, rather than the §2 fallback the first pass
+  needed — the branch is not the fifth in a row to reach its end with no version of its own.
+
+#### What was actually verified, and what a green gate does not mean
+
+The last step of the pass ran the gates and then went looking for the three things a gate
+cannot see. All four are green at the branch head and none of them was cached:
+`pnpm typecheck --force` (9/9, 0 cached), `pnpm build --force` (6/6, 0 cached),
+`pnpm format:check`, and `pnpm test` (136 files, 2244 passed, 11 skipped — seven more tests
+than the pass started with, which are the parity guard's).
+
+**The global rules survive the build — checked against the CSS, not against the source.**
+Moving them into `useGlobalStyles` was reasoned about from Griffel's implementation
+("`makeStaticStyles` compiles each key as a literal selector"), and an implementation detail
+believed is not an implementation detail checked. So the built `packages/ui/dist/theme.cjs` is
+now loaded with `makeStaticStyles` stubbed to capture the object it is handed, and that object
+is put through Griffel's own `resolveStaticStyleRules` — the same function the hook calls at
+runtime. Twelve selectors in, twelve rules out, nothing dropped, and every declaration that
+matters present in the emitted text: `color-scheme:dark`, `background-color:#1f1f1f`,
+`overflow:hidden`, `scrollbar-width:thin`, `scrollbar-color:transparent transparent`,
+`background-clip:padding-box`. `*::-webkit-scrollbar-thumb` and its three `:hover` states come
+out written exactly as they went in. The same strings are then present in both hosts' shipped
+bundles — `apps/web/dist/assets/index-*.js` and `apps/client/out/renderer/assets/index-*.js` —
+so nothing is lost at the app's own bundling step either.
+
+That check is [`packages/ui/scripts/verify-global-css.mjs`](../../packages/ui/scripts/verify-global-css.mjs)
+rather than a paragraph here, because a verification nobody can re-run is a claim. It is a
+hand-run script and deliberately **not** on `pnpm test`: it reads `dist`, and the guard that is
+on the gates (`test/shell-parity.test.ts`) reads sources and answers a different question. It
+was proved able to fail, both of its arms: deleting `*::-webkit-scrollbar-thumb` from
+[`theme.ts`](../../packages/ui/src/theme.ts) and rebuilding produces
+`missing selectors: *::-webkit-scrollbar-thumb`, and a selector that emits no rule produces
+`dropped by Griffel: …`. The second had to be simulated inside the checker — today's Griffel
+drops nothing, which is the whole reason the arm is there rather than something that can be
+staged.
+
+**The two toolbars, control by control.** `BoardToolbar.tsx` against
+[`MyTasks.tsx:855-968`](../../apps/client/src/renderer/src/MyTasks.tsx), in render order.
+Every control the web draws is the same Fluent component with the same `size`, the same
+`appearance`, the same icon and the same words — and the words are the same because both sides
+call the same helper (`doneSwitchLabel`/`doneSwitchTitle`, `archivedCountLabel`/
+`archivedCountTitle`), never a string of their own. Both toolbars are `layout.toolbar` with the
+same `layout.grow` spacer in the same position. The four absences are the four the header names
+— Current sprint, Chain, the commit graph, Sync — and each is an action a browser cannot
+perform.
+
+Two props differ and neither is a look:
+
+- The desktop passes `disabled={!settings}` to `BoardDisplayMenu` and the web passes nothing.
+  That prop reaches the **menu items**, never the trigger, which is `size="small"`
+  `appearance="subtle"` with the same eye glyph on both sides regardless. It guards the window
+  in which the desktop's settings have not come back over IPC yet, and toggling an item then
+  would save the default over what is on disk. The web has no such window: `loadBoardPrefs`
+  reads `localStorage` in the `useState` initialiser, so the prefs exist before the first paint.
+- The web's Add-task trigger carries `disabled`/`title` and the desktop's does not — "no desktop
+  app has ever synced this account", which is a fact about what this host can do. Same
+  `size="small"`, same `appearance="primary"`, same `Add task…`, still no icon.
+
+**Every assertion in the parity guard was broken and watched to fail.** Seventeen mutations,
+one per assertion per host, each applied as a single exact string replacement, run against the
+suite alone, and restored in a `finally` that re-reads the file to confirm the restore landed.
+All seventeen killed; the suite was green before the first and green after the last, and
+`git status` was clean. They covered each shell piece imported by name (`AppShell`, `NavRail`,
+`StatusBar`), the board frame's import and each of the frame rules re-declared locally, the two
+global rules re-declared in a host stylesheet, and every clause of the theme assertion
+separately — the import, `scaleTheme(appDarkTheme, …)` replaced by the raw palette, and the
+import kept while the **call** is removed, which is the one that matters and the one an unused
+import would hide.
+
+One of the seventeen had to be made in the test rather than in a host: the
+`hostFiles.length > 10` guard is about the test's own reach, so it was exercised by pointing
+`HOST_TREES` at a four-file directory. It failed with `found no host sources to scan`, which is
+the point of it — a tree that moves must read as a broken test and not as a clean board.
+
+**None of that is the check the ticket needs.** `apps/web` builds from this worktree and its
+bundle demonstrably carries the shared rules, and that is the end of what a headless session
+can say. The debt is unchanged and still owed to a human, in one sitting, with both open: the
+board, the rail, the status bar, a card selected in the detail pane, and a column scrolled far
+enough to show a scrollbar — which is the one thing this pass changed that only a screen can
+confirm. With it, still owed from before: the read-only pane's refusals actually pressed, and
+the back-fill run against a real board that predates the outbox triggers.
 
 ---
 
