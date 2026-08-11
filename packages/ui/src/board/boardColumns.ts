@@ -215,6 +215,72 @@ export function subtaskProgress(subtasks: readonly Task[]): { done: number; tota
   };
 }
 
+/** One step, with the place it holds in its card's WHOLE chain. */
+export interface StepEntry {
+  step: Task;
+  /** 0-based, across every round — see {@link groupStepsByRound}. */
+  index: number;
+}
+
+/** One planning round's steps, with the index each holds in the card's whole chain. */
+export interface StepRound {
+  round: number;
+  steps: StepEntry[];
+}
+
+/**
+ * Split a chain into its planning rounds, in order (Phase 18).
+ *
+ * The chain itself stays one sequence — `index` is the step's position across the WHOLE
+ * card, so the numbering the human reads never restarts and never disagrees with the
+ * card's `3/7` counter. Rounds only decide what can be folded away.
+ *
+ * Steps that predate re-planning carry no round at all, which `rowToTask` already reads
+ * as round 1; the `?? 1` here is the same answer for a task that never went through it.
+ *
+ * Lives here rather than beside the detail pane that first needed it because the CARD now
+ * groups by round too (it folds the earlier rounds away), and one rule read two ways is how
+ * the pane and the card end up disagreeing about where a bunch of steps begins.
+ */
+export function groupStepsByRound(subtasks: readonly Task[]): StepRound[] {
+  const rounds: StepRound[] = [];
+  subtasks.forEach((step, index) => {
+    const round = step.planRound ?? 1;
+    const last = rounds[rounds.length - 1];
+    // Grouped by ADJACENCY, not by collecting equal round numbers: steps are appended in
+    // round order, and a list that reordered them would put the chain's numbering out of
+    // step with the order it actually runs in.
+    if (last && last.round === round) last.steps.push({ step, index });
+    else rounds.push({ round, steps: [{ step, index }] });
+  });
+  return rounds;
+}
+
+/**
+ * A chain cut into **what came before** and **the newest bunch** — the split the card's
+ * automatic partial fold is drawn from.
+ *
+ * The boundary is the last planning round, because that is what "new steps arrived" means
+ * in the data: approving a plan files its steps under a round of their own, while a step
+ * typed by hand joins the round already in progress (`store.addSubtask`), which is right —
+ * a step written among the bunch you are watching belongs with it and must not fold the
+ * bunch away.
+ *
+ * A card that has only ever been planned once has no earlier steps at all, so nothing is
+ * hidden from it: the fold only ever appears on a card that has actually been re-planned.
+ */
+export function splitEarlierSteps(subtasks: readonly Task[]): {
+  earlier: StepEntry[];
+  latest: StepEntry[];
+} {
+  const rounds = groupStepsByRound(subtasks);
+  if (rounds.length < 2) return { earlier: [], latest: rounds[0]?.steps ?? [] };
+  return {
+    earlier: rounds.slice(0, -1).flatMap((r) => r.steps),
+    latest: rounds[rounds.length - 1].steps,
+  };
+}
+
 /**
  * A step's 1-based position among its siblings ("step 2 of 5"), or null when the
  * task isn't in the list — an orphan, or an ordinary card.

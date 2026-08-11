@@ -9,9 +9,11 @@ import {
   columnForTask,
   focusAnchorId,
   focusCards,
+  groupStepsByRound,
   groupSubtasks,
   hiddenDoneSummary,
   sortCards,
+  splitEarlierSteps,
   statusForColumn,
   stepPosition,
   subtaskProgress,
@@ -471,5 +473,86 @@ describe('sortCards', () => {
     const input = [c('b', 2, 'Low'), c('a', 1, 'Highest')];
     sortCards(input);
     expect(ids(input)).toEqual(['b', 'a']);
+  });
+});
+
+/**
+ * Grouping a card's chain into planning rounds (Phase 18).
+ *
+ * The rule under test is the one both folds depend on: rounds decide what can be collapsed,
+ * but they must never renumber the chain. A card re-planned twice still runs one ordered
+ * sequence, and the numbers the human reads have to match the card's own `done/total`
+ * counter — which counts every step, whatever round produced it.
+ */
+describe('groupStepsByRound', () => {
+  const step = (id: string, planRound?: number): Task => card(id, { planRound });
+
+  it('leaves a single-round chain as one group', () => {
+    const groups = groupStepsByRound([step('s1', 1), step('s2', 1)]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].round).toBe(1);
+    expect(groups[0].steps.map((s) => s.step.id)).toEqual(['s1', 's2']);
+  });
+
+  it('splits a re-planned chain into its rounds, in order', () => {
+    const groups = groupStepsByRound([step('s1', 1), step('s2', 1), step('s3', 2), step('s4', 2)]);
+    expect(groups.map((g) => g.round)).toEqual([1, 2]);
+    expect(groups[1].steps.map((s) => s.step.id)).toEqual(['s3', 's4']);
+  });
+
+  // The numbering is the card's, not the round's: round 2's first step is step 3 of 4, and
+  // showing it as "1." would contradict the counter on the card.
+  it('numbers steps across the WHOLE chain, never restarting per round', () => {
+    const groups = groupStepsByRound([step('s1', 1), step('s2', 1), step('s3', 2)]);
+    expect(groups.flatMap((g) => g.steps.map((s) => s.index))).toEqual([0, 1, 2]);
+    expect(groups[1].steps[0].index).toBe(2);
+  });
+
+  // Every step that predates the field came from the card's one and only approved plan.
+  it('treats steps with no round as round 1, so an upgraded card still groups', () => {
+    const groups = groupStepsByRound([step('s1'), step('s2'), step('s3', 2)]);
+    expect(groups.map((g) => g.round)).toEqual([1, 2]);
+    expect(groups[0].steps).toHaveLength(2);
+  });
+
+  it('is empty for a card with no steps', () => {
+    expect(groupStepsByRound([])).toEqual([]);
+  });
+});
+
+/**
+ * The card's automatic partial fold: everything up to the newest planning round is
+ * "earlier", and the newest round is the bunch you are meant to be watching.
+ */
+describe('splitEarlierSteps', () => {
+  const step = (id: string, planRound?: number): Task => card(id, { planRound });
+
+  it('hides nothing on a card that has only been planned once', () => {
+    const { earlier, latest } = splitEarlierSteps([step('s1', 1), step('s2', 1)]);
+    expect(earlier).toEqual([]);
+    expect(latest.map((s) => s.step.id)).toEqual(['s1', 's2']);
+  });
+
+  it('puts every round but the newest behind the fold', () => {
+    const { earlier, latest } = splitEarlierSteps([
+      step('s1', 1),
+      step('s2', 2),
+      step('s3', 2),
+      step('s4', 3),
+    ]);
+    expect(earlier.map((s) => s.step.id)).toEqual(['s1', 's2', 's3']);
+    expect(latest.map((s) => s.step.id)).toEqual(['s4']);
+  });
+
+  // The card numbers its steps across the whole chain, so an unfolded earlier step still
+  // says "1." and the newest bunch still starts where the counter says it does.
+  it('keeps every step in its place in the whole chain, on both sides', () => {
+    const { earlier, latest } = splitEarlierSteps([step('s1', 1), step('s2', 1), step('s3', 2)]);
+    expect(earlier.map((s) => s.index)).toEqual([0, 1]);
+    expect(latest.map((s) => s.index)).toEqual([2]);
+  });
+
+  it('has nothing on either side for a card with no steps', () => {
+    expect(splitEarlierSteps([])).toEqual({ earlier: [], latest: [] });
   });
 });

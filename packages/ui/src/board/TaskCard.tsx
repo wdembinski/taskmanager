@@ -76,7 +76,7 @@ import { statusNoteColor, type StatusKeyword } from '@tm/shared/statusKeywords';
 import { DEFAULT_BOARD_DISPLAY, type BoardDisplaySettings } from '@tm/shared/settings';
 import { AgentGlyph } from '../AgentGlyph';
 import { STATUS_COLOR, STATUS_LABEL } from '../taskStatus';
-import { columnForTask, statusForColumn, subtaskProgress } from './boardColumns';
+import { columnForTask, splitEarlierSteps, statusForColumn, subtaskProgress } from './boardColumns';
 import {
   CHAIN_LINK_MIME,
   TASK_ID_ATTR,
@@ -308,6 +308,20 @@ const useStyles = makeStyles({
     // explicitly, which was the same colour right up until selection changed it, and then
     // every step row stayed behind as an unlit band across the bottom of a lit card.
     backgroundColor: 'transparent',
+  },
+  /**
+   * The "4 earlier steps" row. A step row that happens to be a button, so a reset is all this
+   * class adds — the row's geometry and rhythm are the step rows' own, which is the point: it
+   * stands in for the rows behind it and should read as one of them.
+   */
+  earlierRow: {
+    background: 'none',
+    border: 'none',
+    width: '100%',
+    fontFamily: 'inherit',
+    textAlign: 'left',
+    color: tokens.colorNeutralForeground4,
+    ':hover': { color: tokens.colorNeutralForeground2 },
   },
   /**
    * A step row that is itself the selected task. Brighter than `cardSelected`, and it has to
@@ -808,6 +822,18 @@ export interface TaskCardProps {
    */
   onToggleSteps?: () => void;
   /**
+   * Whether the steps from **earlier planning rounds** are on screen. Default false, and that
+   * default is the feature: a card that has just been re-planned shows the bunch it was just
+   * given, with everything before it behind one quiet row.
+   */
+  earlierStepsShown?: boolean;
+  /**
+   * Show or hide those earlier rounds. **Absent means the card never hides them** — the whole
+   * chain renders, exactly as it did before there were rounds, which is what the web board
+   * (no store of its own to remember the answer) still gets.
+   */
+  onToggleEarlierSteps?: () => void;
+  /**
    * The merge requests filed under this card. Rendered as rows beneath the steps, and
    * folded into `chainNeedsAttention` — so the ring and the card ordering agree.
    */
@@ -927,6 +953,8 @@ export function TaskCard({
   subtasks = [],
   stepsFolded = false,
   onToggleSteps,
+  earlierStepsShown = false,
+  onToggleEarlierSteps,
   mergeRequests = [],
   statusKeywords,
   attentionTaskIds,
@@ -1050,6 +1078,38 @@ export function TaskCard({
    */
   const stepsFoldable = Boolean(onToggleSteps);
   const stepsHidden = stepsFoldable && stepsFolded;
+  /**
+   * The card's steps, cut at the newest planning round — and then the rows actually drawn.
+   *
+   * The **automatic** half of the fold: re-planning a card files its new steps under a round
+   * of their own, and everything before that round drops behind one row saying how much of it
+   * there is. It is a fold nobody had to press, because the moment new steps arrive is exactly
+   * the moment the old ones stop being what you are looking at. A step typed by hand joins the
+   * round in progress (`store.addSubtask`), so writing one never folds the bunch you wrote it
+   * into.
+   *
+   * Gated on the handler for the same reason the section fold is: a board with nowhere to
+   * remember the answer draws the whole chain rather than hiding half of it behind a control
+   * that cannot remember being pressed.
+   */
+  const { earlier, latest } = splitEarlierSteps(subtasks);
+  const earlierFoldable = Boolean(onToggleEarlierSteps) && earlier.length > 0;
+  const earlierHidden = earlierFoldable && !earlierStepsShown;
+  const stepRows = earlierHidden ? latest : [...earlier, ...latest];
+  const earlierDone = earlier.filter((s) => s.step.status === 'done').length;
+  /**
+   * What the folded row has to say on behalf of the rows behind it.
+   *
+   * A fold may hide detail; it may not hide a signal. Steps run in chain order, so an earlier
+   * round's unfinished step runs BEFORE the newest bunch — the row that is folded away can be
+   * the very one that is working, or the one that has parked the chain and is waiting for an
+   * answer. So the summary row takes the blinking dot and the attention tint itself, and
+   * opening it is one click from either.
+   */
+  const earlierRunning = earlier.some(
+    ({ step }) => runPhase(step, [], liveRunTaskIds, mergingTaskIds).spinner,
+  );
+  const earlierWants = earlier.some(({ step }) => attentionTaskIds?.has(step.id) ?? false);
 
   return (
     <div
@@ -1344,8 +1404,57 @@ export function TaskCard({
               </span>
             </div>
           )}
+          {/* The rounds before the newest, as one row. It reads as a step row on purpose —
+              same slot, same rhythm — because that is what is behind it, and it carries its
+              own `4/4` so a folded round still says whether it finished. Drawn above the
+              rows, which is where those steps actually are in the chain. */}
+          {!stepsHidden && earlierFoldable && (
+            <button
+              type="button"
+              className={mergeClasses(
+                styles.step,
+                styles.earlierRow,
+                earlierHidden && earlierWants && styles.stepLoud,
+              )}
+              aria-expanded={!earlierHidden}
+              title={
+                !earlierHidden
+                  ? 'Fold the earlier rounds away again'
+                  : earlierWants
+                    ? `One of the ${earlier.length} steps planned before this round needs you`
+                    : earlierRunning
+                      ? `One of the ${earlier.length} steps planned before this round is running`
+                      : `Show the ${earlier.length} steps planned before this round`
+              }
+              draggable={false}
+              onDragStart={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+              }}
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleEarlierSteps?.();
+              }}
+            >
+              <span className={styles.stepSlot}>
+                {earlierHidden ? <ChevronRightRegular /> : <ChevronDownRegular />}
+              </span>
+              <Caption1 className={styles.stepTitle}>
+                {earlier.length} earlier step{earlier.length === 1 ? '' : 's'}
+              </Caption1>
+              {/* The same blinking dot a running step row wears, because that is exactly what
+                  is behind this row when it blinks — the chain runs in order, so an unfinished
+                  earlier step runs before the newest bunch does. */}
+              {earlierHidden && earlierRunning && (
+                <span className={mergeClasses(styles.stepDot, styles.dotRunning)} />
+              )}
+              <Caption1 className={styles.progress}>
+                {earlierDone}/{earlier.length}
+              </Caption1>
+            </button>
+          )}
           {!stepsHidden &&
-            subtasks.map((step) => {
+            stepRows.map(({ step }) => {
               const stepRun = runPhase(step, [], liveRunTaskIds, mergingTaskIds);
               const stepWants = attentionTaskIds?.has(step.id) ?? false;
               return (

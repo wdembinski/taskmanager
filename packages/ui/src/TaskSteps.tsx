@@ -33,7 +33,7 @@ import {
   type TaskAttachment,
 } from '@tm/shared/attachments';
 import { AttachmentStrip } from './AttachmentStrip';
-import { subtaskProgress } from './board/boardColumns';
+import { groupStepsByRound, subtaskProgress } from './board/boardColumns';
 import { draftKey, useDraft } from './drafts';
 import { canReplan, REFUSAL_HINT } from './taskChat';
 import { STATUS_LABEL } from './taskStatus';
@@ -121,36 +121,6 @@ function isLive(task: Task): boolean {
  * already built, so anything added now would be added to nothing.
  */
 const LIVE_HINT = 'The step is running — its prompt is already built.';
-
-/** One planning round's steps, with the index each holds in the card's whole chain. */
-interface StepRound {
-  round: number;
-  steps: Array<{ step: Task; index: number }>;
-}
-
-/**
- * Split a chain into its planning rounds, in order (Phase 18).
- *
- * The chain itself stays one sequence — `index` is the step's position across the WHOLE
- * card, so the numbering the human reads never restarts and never disagrees with the
- * card's `3/7` counter. Rounds only decide what can be folded away.
- *
- * Steps that predate re-planning carry no round at all, which `rowToTask` already reads
- * as round 1; the `?? 1` here is the same answer for a task that never went through it.
- */
-export function groupStepsByRound(subtasks: Task[]): StepRound[] {
-  const rounds: StepRound[] = [];
-  subtasks.forEach((step, index) => {
-    const round = step.planRound ?? 1;
-    const last = rounds[rounds.length - 1];
-    // Grouped by ADJACENCY, not by collecting equal round numbers: steps are appended in
-    // round order, and a list that reordered them would put the chain's numbering out of
-    // step with the order it actually runs in.
-    if (last && last.round === round) last.steps.push({ step, index });
-    else rounds.push({ round, steps: [{ step, index }] });
-  });
-  return rounds;
-}
 
 export interface TaskStepsProps {
   /** The card whose chain this is (never a step itself). */

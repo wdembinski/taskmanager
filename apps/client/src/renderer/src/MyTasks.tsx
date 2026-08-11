@@ -76,7 +76,7 @@ import {
   type LinkDragState,
 } from '@ui/board/chainDrag';
 import { useCardAnchors } from '@ui/board/useCardAnchors';
-import { foldedStepsSet, toggleFoldedSteps } from '@ui/board/foldedSteps';
+import { foldedCardSet, toggleFoldedCard } from '@ui/board/foldedSteps';
 import { useAttentionIndex } from './useAttentionIndex';
 import { useActiveRuns } from './useActiveRuns';
 import { useIntegratingTasks } from './useIntegratingTasks';
@@ -599,15 +599,20 @@ export function MyTasks(): JSX.Element {
   }, []);
 
   /**
-   * Fold a card's steps away, or open them again — saved, so it survives leaving the screen
-   * (which unmounts this whole board) and closing the app.
+   * The two step folds a card can be in — saved, so they survive leaving the screen (which
+   * unmounts this whole board) and closing the app. See `foldedSteps.ts` for what each list
+   * means and why one records what is SHUT and the other what is OPEN.
    *
    * Written the same optimistic way the toolbar's switches are: the section folds on the
    * click and the settings blob follows. The board's own task ids go along for the prune —
-   * see `toggleFoldedSteps`, which is where a fold for a card that has since left the board
+   * see `toggleFoldedCard`, which is where a fold for a card that has since left the board
    * is dropped.
    */
-  const foldedSteps = useMemo(() => foldedStepsSet(settings?.foldedStepCards), [settings]);
+  const foldedSteps = useMemo(() => foldedCardSet(settings?.foldedStepCards), [settings]);
+  const shownEarlierSteps = useMemo(
+    () => foldedCardSet(settings?.shownEarlierStepCards),
+    [settings],
+  );
   const toggleSteps = useCallback(
     (taskId: string) => {
       const onBoard = new Set((tasks ?? []).map((t) => t.id));
@@ -615,7 +620,22 @@ export function MyTasks(): JSX.Element {
         if (!prev) return prev;
         const next = {
           ...prev,
-          foldedStepCards: toggleFoldedSteps(prev.foldedStepCards, taskId, onBoard),
+          foldedStepCards: toggleFoldedCard(prev.foldedStepCards, taskId, onBoard),
+        };
+        void window.api.invoke('settings:save', next);
+        return next;
+      });
+    },
+    [tasks],
+  );
+  const toggleEarlierSteps = useCallback(
+    (taskId: string) => {
+      const onBoard = new Set((tasks ?? []).map((t) => t.id));
+      setSettings((prev) => {
+        if (!prev) return prev;
+        const next = {
+          ...prev,
+          shownEarlierStepCards: toggleFoldedCard(prev.shownEarlierStepCards, taskId, onBoard),
         };
         void window.api.invoke('settings:save', next);
         return next;
@@ -1148,6 +1168,10 @@ export function MyTasks(): JSX.Element {
               // Saved rather than local, so it survives this board being unmounted.
               foldedStepTaskIds={foldedSteps}
               onToggleSteps={toggleSteps}
+              // And which of them are showing the rounds before their newest — the fold that
+              // happens by itself when a card is re-planned.
+              shownEarlierStepTaskIds={shownEarlierSteps}
+              onToggleEarlierSteps={toggleEarlierSteps}
               anchorRef={anchors.anchorRef}
               linkDrag={linkDrag}
               onLinkStart={(taskId) => {

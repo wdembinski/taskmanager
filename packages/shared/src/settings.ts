@@ -407,6 +407,20 @@ export interface AppSettings {
    * so it stays the size of the board rather than the size of everything ever folded.
    */
   foldedStepCards: string[];
+  /**
+   * The cards showing the steps from their **earlier planning rounds**, by task id.
+   *
+   * The exception rather than the rule, which is why the list records what is OPEN and not
+   * what is shut. A card that is re-planned folds its earlier rounds away by itself: the
+   * point of asking for more steps is the steps you just asked for, and a card that kept
+   * every round it has ever had on screen would grow without limit exactly when it is
+   * getting the most attention. This list is where that default is overridden, one card at
+   * a time — and it is saved for the same reason the other one is, since the board is
+   * unmounted the moment you look at anything else.
+   *
+   * A card planned only once has no earlier rounds, so it is never in here.
+   */
+  shownEarlierStepCards: string[];
   /** JIRA integration config for the Personal board (Phase B). */
   jira: JiraSettings;
   /** GitLab integration config — merge requests on the cards their ticket lives on. */
@@ -444,6 +458,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // Nothing folded out of the box: a card that hid its own steps before you had asked it to
   // would read as steps that had gone missing.
   foldedStepCards: [],
+  // Empty means every re-planned card shows its newest bunch of steps and folds the rounds
+  // before it away — the behaviour, not the exception. See the field.
+  shownEarlierStepCards: [],
   jira: DEFAULT_JIRA_SETTINGS,
   gitlab: DEFAULT_GITLAB_SETTINGS,
   cloud: DEFAULT_CLOUD_SETTINGS,

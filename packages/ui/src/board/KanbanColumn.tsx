@@ -105,6 +105,13 @@ export interface KanbanColumnProps {
    */
   onToggleSteps?: (taskId: string) => void;
   /**
+   * The cards showing the steps from their earlier planning rounds. The default — absent from
+   * this set — is that a re-planned card shows only its newest bunch; see `splitEarlierSteps`.
+   */
+  shownEarlierStepTaskIds?: ReadonlySet<string>;
+  /** Show or hide one card's earlier rounds. Absent = the card never hides them. */
+  onToggleEarlierSteps?: (taskId: string) => void;
+  /**
    * The chain overlay's measuring tap, handed to each card's root element. The column
    * only passes it through — it knows nothing about links, and the overlay is drawn once
    * over the whole board rather than per column (see `ChainOverlay`).
@@ -194,6 +201,10 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               subtasks={subtasks}
               stepsFolded={props.foldedStepTaskIds?.has(task.id)}
               onToggleSteps={props.onToggleSteps && (() => props.onToggleSteps?.(task.id))}
+              earlierStepsShown={props.shownEarlierStepTaskIds?.has(task.id)}
+              onToggleEarlierSteps={
+                props.onToggleEarlierSteps && (() => props.onToggleEarlierSteps?.(task.id))
+              }
               mergeRequests={mergeRequests}
               statusKeywords={props.statusKeywords}
               attentionTaskIds={props.attentionTaskIds}

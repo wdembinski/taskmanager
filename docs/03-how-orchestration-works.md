@@ -542,6 +542,19 @@ making. Nothing ever unfolds a card for you: a running step, a step that has par
 the chain, and a card that wants you all still ring, count and say what they are
 doing on the card's own body.
 
+**Re-planning folds the previous bunch by itself.** Ask a card for more steps and the
+new ones arrive as a planning round of their own; the card then shows that round and
+puts everything before it behind one row — `▸ 4 earlier steps · 4/4` — which opens
+them again when you click it, and stays open per card once you have. So a card
+re-planned three times is the size of its newest bunch rather than the sum of every
+bunch it has ever had. A step you type by hand joins the round in progress, so
+writing one never folds away the bunch you wrote it into.
+
+That summary row carries the signals of the rows behind it, because the chain runs in
+order and an unfinished earlier step runs *before* the newest bunch: it takes the
+blinking dot while one of them is running, and the orange tint while one of them
+wants you.
+
 ---
 
 ## Chaining cards
