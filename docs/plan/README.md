@@ -48,7 +48,7 @@ plan the orchestrator could one day run on its own repo.
 | 22 | Attachments in the task and its steps | ✅ complete (v0.64.4) — tag and draft cut once it lands on `development` |
 | 23 | One model for planning, another for the steps | ✅ complete on `feat/setting-ai-agent-models-for-planning` — tag and draft cut once it lands on `development` |
 | 24 | Projects and their tickets (a tracker of our own) | 🚧 in progress on `feat/support-projects-and-their-tickets` — **the whole plan is written** (design, build steps, verification, critical files); build step 1 is next |
-| 25 | Cloud service (a hosted counterpart, sharing domain logic and UI) | 🚧 in progress on `feat/cloud-service` — target layout written, `apps/client`+`packages/shared` restructured, verified (found and fixed a broken per-package test run), Azure cost estimated, risks and open assumptions recorded, no-realtime-service/adaptive-polling design written; `apps/server`/`apps/web`/`packages/ui`/`packages/protocol` still unscaffolded |
+| 25 | Cloud service (a hosted counterpart, sharing domain logic and UI) | 🚧 in progress on `feat/cloud-service` — target layout written, `apps/client`+`packages/shared` restructured, verified (found and fixed a broken per-package test run), Azure cost estimated, risks and open assumptions recorded, no-realtime-service/adaptive-polling design written; every package now scaffolded and the service deployed, with `apps/web` rebuilt on the desktop's own shell, board and detail pane (`feat/the-task-manager-web-should-look-like`, v0.82.0) — a human glance at the two UIs side by side is still owed |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -4134,6 +4134,115 @@ are not visible in the diff, and that the next person editing these files will b
   still conflict-free, on provably disjoint file sets.
 - Per `RELEASE.md` rule 5 there is no release step here; this is a feature branch, and the tag
   is cut once it reaches `development`.
+
+### The web client that looks exactly like the desktop
+
+**Goal.** `apps/web` drew a *lookalike* of the app: the same cards in a container of its own,
+a superset of the desktop's card set, and a right-hand pane that was the card's title in
+prose. Six steps on `feat/the-task-manager-web-should-look-like` make it the same UI — the
+same shell, the same board, the same detail pane — degraded only by what a browser genuinely
+cannot reach. The rule the whole ticket runs on: **shared where the component has no host in
+it, forked where sharing would mean a dozen optional props the web passes none of.**
+
+The per-step reasoning is in the six commit bodies (`42ceb11`, `b1d5cef`, `317e494`,
+`59bc9c9`, `9b32a67`, `01f833b`) and is not repeated here. What this section records is the
+shape of the whole, the ordering constraint between the two halves, and the conventions that
+applied to every step — the things no single commit is the right place for.
+
+#### The six steps, and what each one is for
+
+1. **Cap the sync batch by bytes.** `OUTBOX_LIMIT` counted *entities*, and an entity has no
+   fixed size. `SYNC_BYTES_LIMIT` (1 MB,
+   [`cloudDelta.ts:107`](../../apps/client/src/main/cloudDelta.ts)) is the cap that means
+   something; the server takes 8 MB
+   ([`bodyLimit.ts`](../../apps/server/src/config/bodyLimit.ts), `CLOUD_BODY_LIMIT`).
+2. **Back-fill the cloud outbox once.** `cloud_outbox` is trigger-filled, and a trigger only
+   hears about a *write* — so everything already on the board when the mirror was switched on
+   had never been queued and never would be. One guarded `INSERT … SELECT`
+   ([`cloudOutboxBackfill.ts`](../../apps/client/src/main/cloudOutboxBackfill.ts)) queues it.
+3. **Show only the desktop's card set.** The mirror carries every project's rows and the
+   archived ones too; `boardSelectors.ts` is the desktop's SQL said once in JS, read at render
+   rather than filtered at ingest — ingest cannot drop rows the Removed-cards dialog and
+   `reconcilePendingStatusChanges` still need.
+4. **Extract the app shell into `@tm/ui`.** `NavRail`, `StatusBar`, `AppShell` and
+   `appDarkTheme` move; both hosts render through them. Extracted, not copied — the only way
+   "the same shell" survives the next tweak.
+5. **Rebuild the board as My Tasks.** `boardLayout.ts`, `doneSwitchLabel.ts`,
+   `BoardDisplayMenu` and `ArchivedCardsDialog` move to `@tm/ui/board`; the *toolbar* stays
+   forked, and `webPrefs.ts` backs the Display toggles with `localStorage` instead of
+   `settings:save`.
+6. **Render the shared detail pane, read-only.** The desktop's `TaskDetail`, degraded by what
+   is *not* passed to it, over a transport whose channels are now tiered: **stubbed** when a
+   read's result is only displayed, **refused** when it is fed back into board state.
+
+#### Notes for every step
+
+Four things applied to all six sessions. They are recorded because each one is a trap that
+costs a session when it is missed, not because they were newly decided here.
+
+- **A fresh worktree has no `node_modules`, and `@tm/ui` must be *built*, not just present.**
+  Every session starts with `pnpm install`. `@tm/ui` publishes `./*` → `./dist/*`
+  ([`packages/ui/package.json`](../../packages/ui/package.json)), so a *new* shared file has
+  no `.d.ts` for `apps/web` to typecheck against until `tsup` has run. `turbo.json` puts
+  `dependsOn: ["^build"]` on `typecheck` **and** `test`, so `pnpm typecheck` handles this on
+  its own — a bare `tsc` inside `apps/web`, or an editor's language server, does not, and the
+  error it gives ("cannot find module `@tm/ui/shell/AppShell`") reads like a missing path
+  alias. It is a missing build. The same shape as the `vitest.config.ts` trap above.
+- **`RELEASE.md` §1's gates, in order, every time:** `pnpm typecheck` → `pnpm test` →
+  `pnpm build`, plus `pnpm format:check` (a `--check` failure is a red gate like any other,
+  and the only one of the four that a commit can trip without touching any logic). Pass
+  `--force` when the run is meant as *verification* rather than as a build — turbo will
+  otherwise replay a cached exit code in milliseconds and a cached gate is not a gate. New
+  pure-logic modules were checked **red-first** by mutating the code under them; step 5 found
+  its first `webPrefs` fixtures coerced to the same answer as the defaults, so the suite
+  passed against a mutant and proved nothing.
+- **`CONTRIBUTING.md` §4's version rule:** a step touching `apps/client` carries the
+  `apps/client/package.json` bump inside its own commit. This ticket did not manage it — all
+  six steps changed the product and none of them bumped, so the branch reached its last step
+  still naming `0.81.0`, the version `development` already ships. It is fixed the way
+  `RELEASE.md` §2 allows and no other way: the bump rides on the *last* commit of the branch
+  rather than being back-dated into six commits that are already written and must not be
+  rebased. The cost of missing it is not theoretical — it is the fourth branch in a row to
+  reach a release with no version of its own.
+- **Never launch the app.** Every check in this ticket is headless; the ordering constraint
+  below and the read-only pane are both reasoned about from the code and the tests, not from
+  a window. What is owed as a consequence is listed under **Notes**.
+
+#### The one ordering constraint between the halves
+
+Steps 1 and 2 are a client/server pair, and they deploy in an order:
+
+> **The server's 8 MB body limit must be live before a client carrying the back-fill reaches
+> a user.**
+
+The back-fill's whole point is a first sync far larger than any steady-state one. Against a
+server still on express's 100 kB default that batch comes back `413`, which the poller counts
+as a plain network error and retries with the identical body — forever. The mirror never
+catches up and nothing in the UI says why.
+
+The wrong order is *survivable* rather than fatal only because of what step 1 put on the
+client: the batch is capped at 1 MB of resolved entities before it is sent, and a `413` halves
+the next request's row count (any 2xx resets it). So an old server degrades the back-fill into
+a slow crawl instead of a wedge. That is a safety net, not a plan — deploy the server first.
+
+**Notes.**
+
+- Six `feat` commits, so the branch's bump is **MINOR**: `0.81.0` → `0.82.0`, carried by this
+  final commit per the third bullet above. Per `RELEASE.md` rule 5 the tag is cut once the
+  branch reaches `development`; there is no release step on the branch itself.
+- Gates at the branch head, all four green and all uncached:
+  `pnpm typecheck --force` (9/9), `pnpm test` (135 files, 2237 passed, 11 skipped),
+  `pnpm build --force` (6/6), `pnpm format:check`.
+- **A human still has to look at it.** Nothing in this ticket can be verified by a test: it is
+  a claim about whether two UIs look the same, and this repo has no DOM harness (no jsdom, no
+  `@testing-library`) — adding one is a workspace-wide call that was deliberately left outside
+  the ticket. Owed: the web client opened against a real deployment beside the desktop app,
+  and the read-only pane's refusals actually pressed.
+- Also owed: the back-fill run against a real board that predates the outbox triggers. It is
+  guarded twice — `NOT EXISTS` against the outbox *and* an `app_state` key, because either
+  guard alone fails (the first re-mirrors on every launch once `pruneCloudOutbox` has swept,
+  the second loses to a crash landing between the inserts and the guard) — and neither guard
+  has been exercised by anything but a recorder.
 
 ---
 
