@@ -15,6 +15,7 @@ import { columnForTask, statusForColumn } from '@tm/shared/board';
 import { KanbanColumn } from '@tm/ui/board/KanbanColumn';
 import type { BoardColumn, ManualStatus, Task } from '@tm/shared/model';
 import { AddTaskDialog } from './AddTaskDialog';
+import { selectBoardTasks } from './boardSelectors';
 import { displayStatus, isTaskPending, type CloudBoardState } from './cloudBoardStore';
 import { StaleBanner } from './StaleBanner';
 
@@ -66,12 +67,15 @@ export function BoardScreen({
     return color || undefined;
   };
 
+  /** The desktop's own card set — Personal, un-archived. See `boardSelectors.ts`. */
+  const boardTasks = useMemo(() => selectBoardTasks(state), [state]);
+
   const cardsByColumn = useMemo(() => {
     // Overlay any still-pending edit before grouping/columning, so a dragged card jumps to
     // its destination column the instant you let go — the same optimism
     // `MyTasks.tsx`'s own `optimisticMove` gives the desktop board, just computed from
     // `displayStatus` (`cloudBoardStore.ts`) instead of local SQLite state.
-    const displayTasks = Object.values(state.tasks).map((task) => ({
+    const displayTasks = boardTasks.map((task) => ({
       ...task,
       status: displayStatus(state, task),
     }));
@@ -83,7 +87,7 @@ export function BoardScreen({
       byColumn.get(column)?.push(card);
     }
     return byColumn;
-  }, [state]);
+  }, [boardTasks, state]);
 
   const pendingTaskIds = useMemo(() => {
     const ids = new Set<string>();
@@ -117,9 +121,16 @@ export function BoardScreen({
         <StaleBanner everSeenClient={everSeenClient} />
       ) : null}
 
-      {projects.length === 0 && Object.keys(state.tasks).length === 0 ? (
+      {/* The empty state is about the CARD SET, not the mirror: a board with a hundred rows
+          in other projects still has nothing to draw, and saying "no board data" there would
+          be a lie. Only when nothing at all has arrived is it a sync that hasn't happened. */}
+      {boardTasks.length === 0 ? (
         <Body1 style={{ padding: '16px' }}>
-          <Caption1>No board data yet — waiting on the first sync from your desktop app.</Caption1>
+          <Caption1>
+            {projects.length === 0 && Object.keys(state.tasks).length === 0
+              ? 'No board data yet — waiting on the first sync from your desktop app.'
+              : 'No cards on your Personal board.'}
+          </Caption1>
         </Body1>
       ) : (
         <div className={styles.columns}>
