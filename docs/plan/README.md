@@ -48,7 +48,7 @@ plan the orchestrator could one day run on its own repo.
 | 22 | Attachments in the task and its steps | ✅ complete (v0.64.4) — tag and draft cut once it lands on `development` |
 | 23 | One model for planning, another for the steps | ✅ complete on `feat/setting-ai-agent-models-for-planning` — tag and draft cut once it lands on `development` |
 | 24 | Projects and their tickets (a tracker of our own) | 🚧 in progress on `feat/support-projects-and-their-tickets` — **the whole plan is written** (design, build steps, verification, critical files); build step 1 is next |
-| 25 | Cloud service (a hosted counterpart, sharing domain logic and UI) | 🚧 in progress on `feat/cloud-service` — target layout written, `apps/client`+`packages/shared` restructured, verified (found and fixed a broken per-package test run), Azure cost estimated, risks and open assumptions recorded, no-realtime-service/adaptive-polling design written; every package now scaffolded and the service deployed, with `apps/web` rebuilt on the desktop's own shell, board and detail pane (`feat/the-task-manager-web-should-look-like`, v0.82.0) and its layout matched to the desktop's (`feat/match-web-layout-to-desktop-client`, v0.82.4 — shared global CSS, the toolbar's Add button, a drift guard) — a human glance at the two UIs side by side is still owed |
+| 25 | Cloud service (a hosted counterpart, sharing domain logic and UI) | 🚧 in progress on `feat/cloud-service` — target layout written, `apps/client`+`packages/shared` restructured, verified (found and fixed a broken per-package test run), Azure cost estimated, risks and open assumptions recorded, no-realtime-service/adaptive-polling design written; every package now scaffolded and the service deployed, with `apps/web` rebuilt on the desktop's own shell, board and detail pane (`feat/the-task-manager-web-should-look-like`, v0.82.0) and its layout matched to the desktop's (`feat/match-web-layout-to-desktop-client`, v0.82.5 — shared global CSS, the toolbar's Add button, a drift guard) — a human glance at the two UIs side by side is still owed |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -4324,10 +4324,50 @@ above, nothing in this ticket verifies anything by running the product. Owed wit
 unchanged: the read-only pane's refusals actually pressed, and the back-fill run against a
 real board that predates the outbox triggers.
 
+#### The conventions every step ran on
+
+The same four as **Notes for every step** above — a built `@tm/ui`, `RELEASE.md` §1's gates,
+`CONTRIBUTING.md` §4's version rule, and never launching the app — held for all of this pass's
+sessions too. The list is not repeated for its own sake: each bullet says only what this pass
+learned about that convention that the first one had not, and the two it learned nothing new
+about say so in a line and stop.
+
+- **A stale `@tm/ui` breaks a new _symbol_, not just a new file.** The first pass's version of
+  this was a new shared module with no `.d.ts` behind it, and an error
+  ("cannot find module `@tm/ui/shell/AppShell`") that reads like a missing path alias. The
+  narrower case is worse, because it does not look like a build problem at all: adding
+  `useGlobalStyles` to [`theme.ts`](../../packages/ui/src/theme.ts) — a module `apps/web`
+  **already** imports — leaves the export map resolving and `dist/theme.d.ts` present but a
+  build behind, so what comes back is _has no exported member `useGlobalStyles`_, which reads
+  as a typo or a bad merge. Same cause, same fix: `pnpm typecheck` runs `^build` first
+  (`turbo.json`), a bare `tsc` inside `apps/web` and an editor's language server do not.
+- **`--force` goes on `typecheck` and `build`, and on nothing else.** The root `test` script is
+  `turbo run build --filter=./packages/* && vitest run`: turbo is there only to rebuild the
+  workspace packages, so the flag reaches **vitest**, which exits on
+  _Unknown option `--force`_ before a single test runs. Nothing is lost by leaving it off —
+  that rebuild is unconditional and `vitest run` has no result cache, so `pnpm test` is already
+  the uncached gate `--force` has to make of the other two. `pnpm format:check` is not a turbo
+  task at all.
+- **If a gate refuses to run, `pnpm install` before reaching for flags.** Sessions on this
+  branch got the gates green by passing `--env-mode=loose` with
+  `npm_config_verify_deps_before_run=false`, and read the cause as the version bump sitting
+  modified in the tree. That diagnosis is wrong and the flags are not a convention. Checked at
+  this commit, with `apps/client/package.json` bumped and uncommitted and neither flag nor
+  setting anywhere in the environment or `.npmrc`: `pnpm typecheck --force` is green, 9/9, 0
+  cached. What the flags suppress is pnpm's pre-run check that `node_modules` matches the
+  lockfile — an _install-state_ fact about a worktree, which a fresh one has by not being
+  installed yet and which editing a manifest does not create. `pnpm install` fixes that state;
+  the flags only agree to ignore it.
+- **The version rule held**, one PATCH per commit — see the ladder in **Notes** below. It is
+  the only one of the four this pass did not have to learn anything new about.
+- **Never launch the app** (`RELEASE.md` rule 6) held for every session, which is precisely why
+  the debt above stays a debt: the one check that would settle the ticket's claim is the one
+  check nobody working here is allowed to run.
+
 **Notes.**
 
-- The version ladder on this pass is `0.82.0` → `0.82.4`, one PATCH per commit
-  (`fix`, `fix`, `test`, `docs`), each carried **in** the commit that earned it. That is
+- The version ladder on this pass is `0.82.0` → `0.82.5`, one PATCH per commit
+  (`fix`, `fix`, `test`, `docs`, `docs`), each carried **in** the commit that earned it. That is
   `CONTRIBUTING.md` §4 working as written, rather than the §2 fallback the first pass needed
   — the branch is not the fifth in a row to reach its end with no version of its own.
 
