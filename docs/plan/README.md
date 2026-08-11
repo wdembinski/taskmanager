@@ -48,7 +48,7 @@ plan the orchestrator could one day run on its own repo.
 | 22 | Attachments in the task and its steps | ✅ complete (v0.64.4) — tag and draft cut once it lands on `development` |
 | 23 | One model for planning, another for the steps | ✅ complete on `feat/setting-ai-agent-models-for-planning` — tag and draft cut once it lands on `development` |
 | 24 | Projects and their tickets (a tracker of our own) | 🚧 in progress on `feat/support-projects-and-their-tickets` — **the whole plan is written** (design, build steps, verification, critical files); build step 1 is next |
-| 25 | Cloud service (a hosted counterpart, sharing domain logic and UI) | 🚧 in progress on `feat/cloud-service` — target layout written, `apps/client`+`packages/shared` restructured, verified (found and fixed a broken per-package test run), Azure cost estimated, risks and open assumptions recorded, no-realtime-service/adaptive-polling design written; every package now scaffolded and the service deployed, with `apps/web` rebuilt on the desktop's own shell, board and detail pane (`feat/the-task-manager-web-should-look-like`, v0.82.0) — a human glance at the two UIs side by side is still owed |
+| 25 | Cloud service (a hosted counterpart, sharing domain logic and UI) | 🚧 in progress on `feat/cloud-service` — target layout written, `apps/client`+`packages/shared` restructured, verified (found and fixed a broken per-package test run), Azure cost estimated, risks and open assumptions recorded, no-realtime-service/adaptive-polling design written; every package now scaffolded and the service deployed, with `apps/web` rebuilt on the desktop's own shell, board and detail pane (`feat/the-task-manager-web-should-look-like`, v0.82.0) and its layout matched to the desktop's (`feat/match-web-layout-to-desktop-client`, v0.82.4 — shared global CSS, the toolbar's Add button, a drift guard) — a human glance at the two UIs side by side is still owed |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -4243,6 +4243,93 @@ a slow crawl instead of a wedge. That is a safety net, not a plan — deploy the
   guard alone fails (the first re-mirrors on every launch once `pruneCloudOutbox` has swept,
   the second loses to a crash landing between the inserts and the guard) — and neither guard
   has been exercised by anything but a recorder.
+
+#### The parity rule, and where the line sits now
+
+A second pass — `feat/match-web-layout-to-desktop-client`, three commits (`6a6ffa6`,
+`3009211`, `4ffb20f`) plus this one — closed the gaps the first pass left. The useful part
+is not the three fixes, which are in their own commit bodies; it is that the rule behind
+them is now written down in the user's own terms:
+
+> **The web looks the same as the desktop — styling, colours, theme, layout, components. It
+> differs only in _data and features_.**
+
+That one sentence decides every future case, and it cuts both ways. A control the web cannot
+act on is **dropped**: the Current-sprint switch re-runs a JQL only the desktop can run, the
+Chain toggle has no mirrored links to draw, the commit graph is a `git log` on a machine this
+app cannot reach, and Sync belongs to the desktop's poller
+([`BoardToolbar.tsx`](../../apps/web/src/board/BoardToolbar.tsx) records which and why). But
+**nothing the web _does_ draw gets a look of its own.** Where the two boards differed in
+appearance rather than in capability, the web was wrong by definition — its Add-task trigger
+was a default-size icon button reading "New card" against the desktop's small primary "Add
+task…", so it set the toolbar's height and the two toolbars sat at visibly different heights
+side by side, the same action reading as a different control at a glance. The dialog _behind_
+it still asks for less than the desktop's, and that stays: it asks what `CommandEnvelope`'s
+`create-task` kind can carry, which is a feature difference, not a styling one.
+
+**The web-only features already named** — a client-name badge on each card, a picker for
+which desktop Client's board is showing, or both — are the same rule read forwards rather
+than an exception to it. The web genuinely has data the desktop does not: the mirror carries
+more than one machine's rows, and
+[`targetClient.ts`](../../apps/web/src/board/targetClient.ts) already has to choose one
+Client to address a command to. Surfacing that is legitimate work. When it is done it is
+built from the shared components and tokens, in the desktop's visual language — a Fluent
+control the desktop would recognise, sized and coloured like its neighbours — not a web-only
+style admitted through the door a web-only feature opens. It is **separate work and not part
+of this ticket**; nothing above should be read as scheduling it.
+
+**Where the line between shared and forked now sits.** The share-vs-fork rule at the top of
+this section is unchanged — share a component with no host in it, fork it where sharing would
+mean a dozen optional props the web passes none of. What moved is one category that had been
+on the wrong side of it. The desktop renderer's `index.css` owned the rules that make this
+app _look like this app_ — the dark `color-scheme`, the `#1f1f1f` page background, a shell
+that never scrolls, the thin fade-in scrollbars — while `apps/web` had a smaller stylesheet
+of its own that agreed with none of them. Two files, one product, and nothing stopping either
+from drifting. They are now `useGlobalStyles` in
+[`@tm/ui/theme`](../../packages/ui/src/theme.ts), the `makeStaticStyles` both entry points
+already called for the spinner's cyan, and `apps/web/src/index.css` is deleted rather than
+emptied. No build change was needed: Griffel compiles each key as a literal selector, so
+`*::-webkit-scrollbar` survives intact — checked before the move, because the fallback was
+teaching `tsup` to emit CSS.
+
+One rule stayed behind, and it draws the line exactly: `.app-drag` / `.app-no-drag` in
+[`index.css`](../../apps/client/src/renderer/src/index.css). `-webkit-app-region` is how
+Chromium is told which parts of a frameless Electron window drag it — the app runs with no OS
+title bar, so our own bar is the handle — and in a browser tab the property does nothing. It
+is not styling the web declines to share; it is the one rule in the file with a **host** in
+it, sorted by the same test the components are.
+
+**What now guards this, and what still cannot.**
+[`test/shell-parity.test.ts`](../../test/shell-parity.test.ts) asserts the structural
+property that makes the claim true: both `App.tsx` files import `AppShell`/`NavRail`/
+`StatusBar` from the shared shell, both board screens use `useBoardLayoutStyles` and declare
+no root/board/columns/right rule of their own, neither host re-declares the global rules that
+moved, and both `main.tsx` files mount `appDarkTheme` through `scaleTheme` **and call**
+`useGlobalStyles()` — `makeStaticStyles` emits on first use, so an unused import emits nothing
+and raises no error either. It lives at the repo root beside `repo-invariants.test.ts`, the
+only place with both apps in scope.
+
+It proves the two hosts render through the **same modules**. It cannot see a rendered pixel:
+a divergence made _inside_ `@tm/ui` sails past all of it. What it catches is the realistic
+regression — someone adds a local `makeStyles` shell to one side, or re-declares the
+scrollbar CSS in one host's stylesheet, and the two drift one plausible commit at a time with
+nothing red anywhere.
+
+**So the debt carried forward from v0.82.0 is unchanged and still owed: a human has to open
+the two UIs side by side.** No test in this repo can check the ticket's actual claim — it is
+a claim about whether two UIs _look_ the same, this workspace has no DOM harness (no jsdom,
+no `@testing-library`), and adding one is a workspace-wide call both passes deliberately left
+outside their scope. Nor is it settled by opening a window here: per **Never launch the app**
+above, nothing in this ticket verifies anything by running the product. Owed with it, also
+unchanged: the read-only pane's refusals actually pressed, and the back-fill run against a
+real board that predates the outbox triggers.
+
+**Notes.**
+
+- The version ladder on this pass is `0.82.0` → `0.82.4`, one PATCH per commit
+  (`fix`, `fix`, `test`, `docs`), each carried **in** the commit that earned it. That is
+  `CONTRIBUTING.md` §4 working as written, rather than the §2 fallback the first pass needed
+  — the branch is not the fifth in a row to reach its end with no version of its own.
 
 ---
 
