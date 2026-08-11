@@ -683,6 +683,14 @@ export interface IpcApi {
 
   // --- vipper.iam cloud sign-in (Phase 25) -----------------------------------
   /** Whether a refresh token is stored and the OS secure store can encrypt one. */
+  /**
+   * Walk the cloud mirror's chain — address, sign-in, then an authenticated board read —
+   * and report the first rung that fails. `cloudPoller` is silent by design (a failed tick
+   * is counted and retried, never surfaced), so without this every misconfiguration looks
+   * the same from the app: an empty board and no explanation.
+   */
+  'cloud:testConnection': () => Promise<JiraTestResult>;
+
   'iam:getConfigStatus': () => Promise<IamConfigStatus>;
   /**
    * Runs one authorization-code + PKCE sign-in: opens the system browser, waits for the

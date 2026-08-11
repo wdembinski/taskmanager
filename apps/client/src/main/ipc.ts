@@ -94,6 +94,7 @@ import { signIn as runIamSignIn } from './iamSignIn';
 import { refreshTokens } from '@shared/iamPkce';
 import { applyCloudCommands } from './cloudCommands';
 import { CloudPoller } from './cloudPoller';
+import { testCloudConnection } from './cloudTestConnection';
 import { FocusTracker } from './focusTracker';
 import { GitLabClient } from './gitlab/gitlabClient';
 import { gitlabIdentityFrom, type GitLabIdentityCache } from './gitlab/identity';
@@ -1477,6 +1478,17 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       return null;
     }
   };
+
+  // Defined here rather than beside the other handlers because it needs
+  // `getCloudAccessToken`, which is declared just above.
+  handle('cloud:testConnection', async () => {
+    const result = await testCloudConnection({
+      settings: store.getSettings().cloud,
+      getAccessToken: getCloudAccessToken,
+    });
+    if (!result.ok) logMain('Cloud test connection failed', result.message);
+    return result;
+  });
 
   /** The account behind the GitLab token, cached per instance. Fails soft to null. */
   const gitlabIdentity = async (

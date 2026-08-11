@@ -167,6 +167,8 @@ export function Settings(): JSX.Element {
   const [tokenMsg, setTokenMsg] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<JiraTestResult | null>(null);
   const [testing, setTesting] = useState(false);
+  const [cloudTest, setCloudTest] = useState<JiraTestResult | null>(null);
+  const [cloudTesting, setCloudTesting] = useState(false);
   const [distros, setDistros] = useState<string[]>([]);
   const [targetsInUse, setTargetsInUse] = useState<ExecTarget[]>([]);
   // The status map is edited as an ordered list (see `statusMap.ts`) and serialised
@@ -391,6 +393,20 @@ export function Settings(): JSX.Element {
     await window.api.invoke('jira:clearCredentials');
     setTokenMsg('Token cleared.');
     setJiraStatus(await window.api.invoke('jira:getConfigStatus'));
+  }
+
+  async function testCloudConnection(): Promise<void> {
+    setCloudTesting(true);
+    setCloudTest(null);
+    try {
+      // Saved first, for the same reason the JIRA test does: the probe runs in main against
+      // STORED settings, so testing an edited-but-unsaved address would quietly report on
+      // the previous one — the single most confusing thing a test button can do.
+      await save();
+      setCloudTest(await window.api.invoke('cloud:testConnection'));
+    } finally {
+      setCloudTesting(false);
+    }
   }
 
   async function testConnection(): Promise<void> {
@@ -1034,6 +1050,31 @@ export function Settings(): JSX.Element {
                 {iamBusy && <Spinner size="tiny" />}
               </div>
             </Field>
+
+            {/* The poller never reports a failure — it counts the tick and retries — so
+                without this, a wrong address, a missing sign-in and a refused account all
+                look identical: an empty board. */}
+            <Field
+              label="Check it works"
+              hint="Walks the whole chain — address, sign-in, then reading your board — and says which part fails."
+            >
+              <div className={styles.actions}>
+                <Button
+                  appearance="secondary"
+                  disabled={cloudTesting}
+                  onClick={() => void testCloudConnection()}
+                >
+                  Test connection
+                </Button>
+                {cloudTesting && <Spinner size="tiny" />}
+              </div>
+            </Field>
+
+            {cloudTest && (
+              <MessageBar intent={cloudTest.ok ? 'success' : 'error'}>
+                <MessageBarBody>{cloudTest.message}</MessageBarBody>
+              </MessageBar>
+            )}
           </div>
 
           <div className={styles.actions}>
