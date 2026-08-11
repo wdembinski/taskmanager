@@ -57,6 +57,7 @@ import {
 } from '@shared/settings';
 import { mergeActivity } from './activityMerge';
 import { type CloudOutboxRow, shapeCloudDelta } from './cloudDelta';
+import { CLOUD_OUTBOX_BACKFILL_KEY, backfillCloudOutbox } from './cloudOutboxBackfill';
 import type { JiraEpicFieldCache } from './jira/epicField';
 import type { JiraSprintFieldCache } from './jira/jiraSprint';
 import type { JiraIdentityCache } from './jira/identity';
@@ -2267,6 +2268,28 @@ export function createStore(dbPath: string): Store {
         claimed++;
       }
       upsertState.run(BLOCK_OWNER_KEY, JSON.stringify({ tasks: claimed }));
+    })();
+  }
+  // ---------------------------------------------------------------------------
+
+  // ---------------------------------------------------------------------------
+  // One-shot: mirror the board that existed before the outbox triggers did.
+  //
+  // The triggers above only ever hear about a WRITE, so every project and card already on
+  // this board when the mirror was switched on has no outbox row and never will until
+  // somebody edits it — which is why the web app shows an empty board against a desktop full
+  // of tickets. See `cloudOutboxBackfill.ts` for the ordering (projects first, parents before
+  // steps) and for why both guards are needed: `NOT EXISTS` alone re-mirrors everything on
+  // every launch once `pruneCloudOutbox` has cleared the acked rows, and the key alone loses
+  // to a crash landing between the inserts and the guard.
+  //
+  // Last of the one-shots deliberately, and placed after every ALTER: the rows this queues
+  // are the ones the mirror will resolve and send, so they should be the final shape of the
+  // board rather than a state two migrations further up still intend to change.
+  if (!selectState.get(CLOUD_OUTBOX_BACKFILL_KEY)) {
+    db.transaction(() => {
+      const queued = backfillCloudOutbox(db, Date.now());
+      upsertState.run(CLOUD_OUTBOX_BACKFILL_KEY, JSON.stringify(queued));
     })();
   }
   // ---------------------------------------------------------------------------
