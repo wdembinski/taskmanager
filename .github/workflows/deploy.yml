@@ -182,7 +182,7 @@ jobs:
       - name: Build the web client
         env:
           VITE_CLOUD_API_BASE: https://tasks-api.vipper.network
-          VITE_CLOUD_IAM_ISSUER: https://iam.vipper.network/oidc
+          VITE_CLOUD_IAM_ISSUER: https://auth.vipper.network/oidc
           VITE_CLOUD_IAM_CLIENT_ID: ${{ secrets.VITE_CLOUD_IAM_CLIENT_ID }}
         # turbo builds @tm/shared, @tm/protocol and @tm/ui first (build.dependsOn ^build);
         # @tm/web imports them through their `exports`, i.e. their dist/, which does not

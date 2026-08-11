@@ -16,7 +16,7 @@
  */
 
 export interface IamClientConfig {
-  /** The IAM REST API base, e.g. `https://iam.vipper.network/api/v1` (trailing slash optional). */
+  /** The IAM REST API base, e.g. `https://auth.vipper.network/api/v1` (trailing slash optional). */
   apiBase: string;
   /** This resource server's own credentials — RFC 7662 requires the caller to authenticate. */
   clientId: string;

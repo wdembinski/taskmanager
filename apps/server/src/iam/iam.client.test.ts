@@ -21,7 +21,7 @@ describe('createIamClient', () => {
         aud: 'taskmanager',
       });
       const client = createIamClient({
-        apiBase: 'https://iam.vipper.network/api/v1/',
+        apiBase: 'https://auth.vipper.network/api/v1/',
         clientId: 'cid',
         clientSecret: 'csecret',
         fetch: fetchImpl,
@@ -30,7 +30,7 @@ describe('createIamClient', () => {
       const result = await client.introspectToken('vipr_abc');
 
       expect(fetchImpl).toHaveBeenCalledWith(
-        'https://iam.vipper.network/api/v1/oauth/introspect',
+        'https://auth.vipper.network/api/v1/oauth/introspect',
         expect.objectContaining({
           method: 'POST',
           headers: expect.objectContaining({
@@ -50,7 +50,7 @@ describe('createIamClient', () => {
 
     it('defaults missing optional fields to null/empty', async () => {
       const client = createIamClient({
-        apiBase: 'https://iam.vipper.network/api/v1',
+        apiBase: 'https://auth.vipper.network/api/v1',
         clientId: 'cid',
         clientSecret: 'csecret',
         fetch: fakeFetch(200, { active: false }),
@@ -69,7 +69,7 @@ describe('createIamClient', () => {
 
     it('throws on a non-2xx response', async () => {
       const client = createIamClient({
-        apiBase: 'https://iam.vipper.network/api/v1',
+        apiBase: 'https://auth.vipper.network/api/v1',
         clientId: 'cid',
         clientSecret: 'csecret',
         fetch: fakeFetch(500, { error: 'boom' }),
@@ -83,7 +83,7 @@ describe('createIamClient', () => {
     it('presents the caller token as the bearer and forwards the decision request', async () => {
       const fetchImpl = fakeFetch(200, { allowed: true, scopes: ['read'] });
       const client = createIamClient({
-        apiBase: 'https://iam.vipper.network/api/v1',
+        apiBase: 'https://auth.vipper.network/api/v1',
         clientId: 'cid',
         clientSecret: 'csecret',
         fetch: fetchImpl,
@@ -97,7 +97,7 @@ describe('createIamClient', () => {
       });
 
       expect(fetchImpl).toHaveBeenCalledWith(
-        'https://iam.vipper.network/api/v1/authorize',
+        'https://auth.vipper.network/api/v1/authorize',
         expect.objectContaining({
           method: 'POST',
           headers: expect.objectContaining({ Authorization: 'Bearer vipr_abc' }),
@@ -113,7 +113,7 @@ describe('createIamClient', () => {
 
     it('throws on a non-2xx response', async () => {
       const client = createIamClient({
-        apiBase: 'https://iam.vipper.network/api/v1',
+        apiBase: 'https://auth.vipper.network/api/v1',
         clientId: 'cid',
         clientSecret: 'csecret',
         fetch: fakeFetch(403, { error: 'denied' }),

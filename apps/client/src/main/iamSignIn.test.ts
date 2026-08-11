@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { signIn, type IamSignInConfig } from './iamSignIn';
 
 const CONFIG: IamSignInConfig = {
-  issuer: 'https://iam.vipper.network/oidc',
+  issuer: 'https://auth.vipper.network/oidc',
   clientId: 'desktop-client',
 };
 
@@ -59,7 +59,7 @@ describe('signIn', () => {
 
     const tokens = await signIn(CONFIG, openExternal);
 
-    expect(openedUrl!.origin + openedUrl!.pathname).toBe('https://iam.vipper.network/oidc/auth');
+    expect(openedUrl!.origin + openedUrl!.pathname).toBe('https://auth.vipper.network/oidc/auth');
     expect(tokens).toEqual({
       access_token: 'at',
       refresh_token: 'rt',

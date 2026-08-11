@@ -18,7 +18,7 @@ export function loadWebConfig(): WebConfig {
   const env = import.meta.env;
   return {
     cloudApiBase: (env.VITE_CLOUD_API_BASE ?? 'http://localhost:3100').replace(/\/+$/, ''),
-    iamIssuer: env.VITE_CLOUD_IAM_ISSUER ?? 'https://iam.vipper.network/oidc',
+    iamIssuer: env.VITE_CLOUD_IAM_ISSUER ?? 'https://auth.vipper.network/oidc',
     iamClientId: env.VITE_CLOUD_IAM_CLIENT_ID ?? 'taskmanager-web',
   };
 }

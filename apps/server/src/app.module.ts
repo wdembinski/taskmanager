@@ -12,12 +12,28 @@ import { PresenceModule } from './presence/presence.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forRoot({
-      ...buildMssqlConnectionOptions(),
-      entities: [Account, Client, Command, ProjectMirror, TaskMirror],
-      // Migrations, not synchronize — see database/dataSource.ts.
-      synchronize: false,
-      logging: process.env.NODE_ENV === 'development',
+    // `forRootAsync` + `useFactory`, NOT `forRoot`, and the difference is not stylistic.
+    //
+    // A `forRoot({...})` argument is part of the `@Module` decorator's object literal, which
+    // JavaScript evaluates when this file is IMPORTED — at the top of `main.ts`, before
+    // `bootstrap()` has run and therefore before `loadSecretsFromKeyVault()` has put
+    // `DB_PASSWORD` into `process.env`. The pool was built with the local-dev fallback
+    // password, Azure SQL refused the login, and the container crash-looped on every probe
+    // with `connection refused`. Nothing catches it locally, where the real value is already
+    // in the environment before import — it needs a deployment that fetches a secret at
+    // startup, which is exactly the case no test covers.
+    //
+    // A factory runs during module initialisation, i.e. inside `NestFactory.create`, which
+    // is after `bootstrap()` has awaited its secrets. Anything reading `process.env` for
+    // configuration belongs in here, not in the literal.
+    TypeOrmModule.forRootAsync({
+      useFactory: () => ({
+        ...buildMssqlConnectionOptions(),
+        entities: [Account, Client, Command, ProjectMirror, TaskMirror],
+        // Migrations, not synchronize — see database/dataSource.ts.
+        synchronize: false,
+        logging: process.env.NODE_ENV === 'development',
+      }),
     }),
     HealthModule,
     PresenceModule,

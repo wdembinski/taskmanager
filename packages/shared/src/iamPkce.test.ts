@@ -8,7 +8,7 @@ import {
 } from './iamPkce';
 
 const CONFIG = {
-  issuer: 'https://iam.vipper.network/oidc',
+  issuer: 'https://auth.vipper.network/oidc',
   clientId: 'desktop-client',
   redirectUri: 'http://127.0.0.1:54321/callback',
 };
@@ -36,7 +36,7 @@ describe('buildAuthorizeUrl', () => {
   it('points at <issuer>/auth with every required PKCE + OAuth param', () => {
     const url = new URL(buildAuthorizeUrl(CONFIG, { verifier: 'v', challenge: 'c' }, 'the-state'));
 
-    expect(url.origin + url.pathname).toBe('https://iam.vipper.network/oidc/auth');
+    expect(url.origin + url.pathname).toBe('https://auth.vipper.network/oidc/auth');
     expect(url.searchParams.get('response_type')).toBe('code');
     expect(url.searchParams.get('client_id')).toBe('desktop-client');
     expect(url.searchParams.get('redirect_uri')).toBe(CONFIG.redirectUri);
@@ -75,7 +75,7 @@ describe('exchangeCodeForTokens', () => {
     const tokens = await exchangeCodeForTokens(CONFIG, 'the-code', 'the-verifier', fetchImpl);
 
     expect(fetchImpl).toHaveBeenCalledWith(
-      'https://iam.vipper.network/oidc/token',
+      'https://auth.vipper.network/oidc/token',
       expect.objectContaining({
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },

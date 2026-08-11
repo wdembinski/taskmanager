@@ -13,7 +13,7 @@ import type { IamSignInConfig } from './iamSignIn';
  */
 export function iamSignInConfig(env: NodeJS.ProcessEnv = process.env): IamSignInConfig {
   return {
-    issuer: env.CLOUD_IAM_ISSUER ?? 'https://iam.vipper.network/oidc',
+    issuer: env.CLOUD_IAM_ISSUER ?? 'https://auth.vipper.network/oidc',
     clientId: env.CLOUD_IAM_CLIENT_ID ?? 'taskmanager-desktop',
     scope: 'openid offline_access',
   };

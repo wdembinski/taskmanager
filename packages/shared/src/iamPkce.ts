@@ -14,7 +14,7 @@
 
 /** Where to send the user and how to identify this app once they get back. */
 export interface IamPkceConfig {
-  /** The vipper.iam OIDC issuer, e.g. `https://iam.vipper.network/oidc`. */
+  /** The vipper.iam OIDC issuer, e.g. `https://auth.vipper.network/oidc`. */
   issuer: string;
   /** This app's registered public (no-secret) OAuth client id. */
   clientId: string;
