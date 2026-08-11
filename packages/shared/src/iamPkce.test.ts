@@ -46,6 +46,24 @@ describe('buildAuthorizeUrl', () => {
     expect(url.searchParams.get('scope')).toBe('openid offline_access');
   });
 
+  it('asks for consent whenever offline_access is requested', () => {
+    // Without this, node-oidc-provider drops offline_access from the request and issues no
+    // refresh token — /token still answers 200, so the sign-in "succeeds" and the app,
+    // which treats a stored refresh token as the definition of being signed in, drops the
+    // user straight back on the sign-in screen.
+    const url = new URL(buildAuthorizeUrl(CONFIG, { verifier: 'v', challenge: 'c' }, 's'));
+
+    expect(url.searchParams.get('prompt')).toBe('consent');
+  });
+
+  it('does not force a consent screen when offline access was not asked for', () => {
+    const url = new URL(
+      buildAuthorizeUrl({ ...CONFIG, scope: 'openid' }, { verifier: 'v', challenge: 'c' }, 's'),
+    );
+
+    expect(url.searchParams.get('prompt')).toBeNull();
+  });
+
   it('respects a custom scope', () => {
     const url = new URL(
       buildAuthorizeUrl({ ...CONFIG, scope: 'openid' }, { verifier: 'v', challenge: 'c' }, 's'),

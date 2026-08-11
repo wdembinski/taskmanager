@@ -52,14 +52,34 @@ export function createState(): string {
 
 /** The URL to send the user's browser to, e.g. via `shell.openExternal` or `window.location`. */
 export function buildAuthorizeUrl(config: IamPkceConfig, pkce: PkcePair, state: string): string {
+  const scope = config.scope ?? DEFAULT_SCOPE;
   const url = new URL(`${config.issuer.replace(/\/+$/, '')}/auth`);
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('client_id', config.clientId);
   url.searchParams.set('redirect_uri', config.redirectUri);
-  url.searchParams.set('scope', config.scope ?? DEFAULT_SCOPE);
+  url.searchParams.set('scope', scope);
   url.searchParams.set('state', state);
   url.searchParams.set('code_challenge', pkce.challenge);
   url.searchParams.set('code_challenge_method', 'S256');
+
+  // `prompt=consent` is what makes `offline_access` actually count.
+  //
+  // vipper.iam runs node-oidc-provider, which SILENTLY DROPS the `offline_access` scope
+  // from a request that does not ask for consent — the OIDC spec requires an authorization
+  // server to obtain consent before issuing offline access. Dropping it is not an error:
+  // the sign-in completes, `/token` answers 200, and the response simply has no
+  // `refresh_token` in it.
+  //
+  // That is invisible from the outside and lands somewhere confusing: `CloudAuth.isSignedIn`
+  // is "a refresh token is on file", so a completely successful sign-in looked exactly like
+  // never having signed in at all — consent approved, redirect handled, code exchanged, and
+  // then straight back to the sign-in screen.
+  //
+  // Only sent when offline_access is actually being asked for, so a caller that wants a
+  // session-only token is not made to click through a consent screen for nothing.
+  if (scope.split(/\s+/).includes('offline_access')) {
+    url.searchParams.set('prompt', 'consent');
+  }
   return url.toString();
 }
 
