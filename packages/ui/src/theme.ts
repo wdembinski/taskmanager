@@ -276,26 +276,112 @@ export const GRAPH_INK = {
 } as const;
 
 /**
- * Every spinner in the app, recoloured to {@link FLUO.cyan}.
+ * Everything about the app looking like *this app*, at the document level.
  *
- * Global rather than per-component because a spinner means one thing wherever it appears —
- * "this is moving right now" — and there are a dozen of them; a per-component version would
- * have to be remembered at each new one. Fluent's own is `colorBrandStroke1`, a mid blue that
- * at `extra-tiny` (16px, the size the board uses) is hard to pick out of the grey it spins
- * against.
+ * Here rather than in either host's `index.css` because both hosts want the identical thing
+ * and neither may change it alone: the desktop renderer and the browser tab are the same
+ * product, and a scrollbar or a page background that drifts between them is the drift this
+ * package exists to stop. Both entry points already call this hook — see
+ * `apps/client/src/renderer/src/main.tsx` and `apps/web/src/main.tsx` — so the rules land
+ * wherever the shell is mounted.
  *
- * Written here rather than in `index.css` so the colour has ONE definition: the agent glyph
- * animates in the same two values, and a third hardcoded copy of a hex is a colour that
- * drifts — the thing `accent.ts` exists to prevent.
- *
- * Both properties are needed and it is not obvious why: Fluent paints the moving arc as a
- * conic-gradient off `currentcolor` on the tail's pseudo-elements, so `color` is the arc,
- * and `background-color` is the track behind it.
+ * The one thing that stays behind is `.app-drag`/`.app-no-drag` in the client's `index.css`:
+ * `-webkit-app-region` is a frameless-Electron-window mechanism, and meaningless in a tab.
  */
 export const useGlobalStyles = makeStaticStyles({
+  /*
+   * Tell the engine (and native scrollbars/form controls) this is a dark surface,
+   * and paint the document background dark. Without a background here the DOM's
+   * default is white, which flashes for a frame when the window is restored from the
+   * taskbar before Fluent's dark UI repaints. #1f1f1f matches both the Electron
+   * window `backgroundColor` and Fluent's colorNeutralBackground2, so restore is
+   * seamless.
+   */
+  ':root': {
+    colorScheme: 'dark',
+  },
+  'html, body, #root': {
+    margin: 0,
+    padding: 0,
+    height: '100%',
+    backgroundColor: '#1f1f1f',
+  },
+
+  /* The shell never scrolls; inner panes manage their own overflow. */
+  body: {
+    overflow: 'hidden',
+  },
+
+  /**
+   * Every spinner in the app, recoloured to {@link FLUO.cyan}.
+   *
+   * Global rather than per-component because a spinner means one thing wherever it appears —
+   * "this is moving right now" — and there are a dozen of them; a per-component version would
+   * have to be remembered at each new one. Fluent's own is `colorBrandStroke1`, a mid blue that
+   * at `extra-tiny` (16px, the size the board uses) is hard to pick out of the grey it spins
+   * against.
+   *
+   * Written here rather than in `index.css` so the colour has ONE definition: the agent glyph
+   * animates in the same two values, and a third hardcoded copy of a hex is a colour that
+   * drifts — the thing `accent.ts` exists to prevent.
+   *
+   * Both properties are needed and it is not obvious why: Fluent paints the moving arc as a
+   * conic-gradient off `currentcolor` on the tail's pseudo-elements, so `color` is the arc,
+   * and `background-color` is the track behind it.
+   */
   '.fui-Spinner__spinnerTail': {
     color: FLUO.cyan,
     backgroundColor: FLUO.cyanDim,
+  },
+
+  /*
+   * Scrollbars: thin, rounded, no track, no arrows — and invisible until you are actually
+   * over the thing that scrolls.
+   *
+   * Done globally rather than per-pane because every scrolling surface in the app wants the
+   * same treatment, and a `makeStyles` version would have to be remembered at each new one.
+   *
+   * The thumb fades on hover of the SCROLLING ELEMENT, not of the scrollbar: a 8px target
+   * you must already be touching to make visible is not a target. `:hover` on the element
+   * and a transition on the thumb is the whole mechanism — Chromium animates
+   * `::-webkit-scrollbar-thumb` background like any other property.
+   *
+   * `scrollbar-gutter: stable` keeps the fade from reflowing text: without it the content
+   * would shift by the scrollbar's width every time the pointer entered a pane.
+   */
+  '*': {
+    scrollbarWidth: 'thin',
+    scrollbarColor: 'transparent transparent',
+  },
+  '*::-webkit-scrollbar': {
+    width: '8px',
+    height: '8px',
+  },
+  '*::-webkit-scrollbar-track, *::-webkit-scrollbar-corner': {
+    background: 'transparent',
+  },
+  '*::-webkit-scrollbar-thumb': {
+    backgroundColor: 'transparent',
+    borderRadius: '4px',
+    /* Inset by a transparent border so the visible thumb is 6px inside an 8px lane. */
+    border: '1px solid transparent',
+    backgroundClip: 'padding-box',
+    transition: 'background-color 160ms ease-in-out',
+  },
+  /* Chromium has no arrow buttons by default, but a stray platform theme can add them. */
+  '*::-webkit-scrollbar-button': {
+    display: 'none',
+    width: 0,
+    height: 0,
+  },
+  ':hover::-webkit-scrollbar-thumb': {
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+  },
+  ':hover::-webkit-scrollbar-thumb:hover': {
+    backgroundColor: 'rgba(255, 255, 255, 0.42)',
+  },
+  ':hover::-webkit-scrollbar-thumb:active': {
+    backgroundColor: 'rgba(255, 255, 255, 0.55)',
   },
 });
 

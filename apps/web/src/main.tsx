@@ -15,17 +15,23 @@
  *    the bar's type stops tracking the theme it sits in.
  *  - the single `<Toaster>` on `TOASTER_ID`, so any shared component that dispatches a
  *    toast has a surface to land in rather than failing silently.
+ *
+ * There is no `index.css` beside this file any more, and that is the point: the dark
+ * colour-scheme, the page background, the non-scrolling shell and the scrollbars are all in
+ * `useGlobalStyles` now, so the tab cannot quietly disagree with the desktop window about
+ * them. What was left once they moved was a `font-family` the desktop never set — Fluent's
+ * theme owns type here — so the file went with it.
  */
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { FluentProvider, Toaster } from '@fluentui/react-components';
 import { appDarkTheme, BASE_FONT_PX, TOASTER_ID, scaleTheme, useGlobalStyles } from '@tm/ui/theme';
 import { App } from './App';
-import './index.css';
 
 function ThemedApp(): JSX.Element {
-  // The app's global rules (the spinner's colour). Called here because this component always
-  // renders, and `makeStaticStyles` emits its CSS on first use.
+  // The app's global rules — dark colour-scheme, page background, scrollbars, spinner colour.
+  // Called here because this component always renders, and `makeStaticStyles` emits its CSS
+  // on first use.
   useGlobalStyles();
   return (
     <FluentProvider

@@ -58,8 +58,9 @@ for (const type of ['dragover', 'drop'] as const) {
  * `settings:changed` so the size takes effect as you pick it rather than on next launch.
  */
 function ThemedApp(): JSX.Element {
-  // The app's global rules (the spinner's colour). Called here because this component always
-  // renders, and `makeStaticStyles` emits its CSS on first use.
+  // The app's global rules — dark colour-scheme, page background, scrollbars, spinner colour.
+  // Called here because this component always renders, and `makeStaticStyles` emits its CSS
+  // on first use. `index.css` beside this file keeps only the window's drag regions.
   useGlobalStyles();
   const [fontSizePx, setFontSizePx] = useState(BASE_FONT_PX);
   const [toasts, setToasts] = useState(true);
