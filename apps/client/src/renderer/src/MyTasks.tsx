@@ -18,11 +18,6 @@ import {
   MessageBar,
   MessageBarActions,
   MessageBarBody,
-  Menu,
-  MenuItemCheckbox,
-  MenuList,
-  MenuPopover,
-  MenuTrigger,
   Switch,
   ToggleButton,
   makeStyles,
@@ -32,7 +27,6 @@ import {
   ArchiveRegular,
   ArrowRoutingRegular,
   BranchForkRegular,
-  EyeRegular,
   PanelRightContractRegular,
   PanelRightExpandRegular,
 } from '@fluentui/react-icons';
@@ -60,12 +54,15 @@ import {
   archivedCards,
   archivedCountLabel,
   archivedCountTitle,
-} from './ArchivedCardsDialog';
+} from '@ui/board/ArchivedCardsDialog';
 import { GitGraphPane } from './GitGraphPane';
 import { PaneLoading } from './PaneLoading';
 import { TaskDetail } from '@ui/TaskDetail';
 import { useInitialLoad } from './useInitialLoad';
 import { KanbanColumn } from '@ui/board/KanbanColumn';
+import { useBoardLayoutStyles } from '@ui/board/boardLayout';
+import { doneSwitchLabel, doneSwitchTitle } from '@ui/board/doneSwitchLabel';
+import { BoardDisplayMenu } from '@ui/board/BoardDisplayMenu';
 import { ChainOverlay } from '@ui/board/ChainOverlay';
 import { ChainLinkPopover } from '@ui/board/ChainLinkPopover';
 import { arrowRoute } from '@ui/board/chainArrows';
@@ -94,71 +91,13 @@ import {
 } from '@ui/board/boardColumns';
 import type { BoardCard, BoardColumn } from '@ui/board/boardColumns';
 
+/**
+ * The board's own frame — root, board, toolbar, grow, columns, right — is
+ * `useBoardLayoutStyles` in `@ui/board/boardLayout` now, so the browser client draws the
+ * same board rather than a lookalike of it. What is left here is the one pane only this
+ * host has.
+ */
 const useStyles = makeStyles({
-  // No gap: the detail pane's own surface runs to the board's edge, and the change of
-  // shade is the seam.
-  root: { display: 'flex', minHeight: 0, flex: 1 },
-  board: {
-    // `auto` rather than a 60% basis: with the graph pane open there are THREE panes in this
-    // row, and a board that insists on 60% of the window plus the detail pane's 40% plus the
-    // graph's own width adds up to more than there is — so something would be squeezed by
-    // whichever flex rule happened to lose. The board simply takes what the other two leave.
-    flex: '1 1 auto',
-    // The screen owns its insets now that the shell adds none, and only the board side
-    // needs them — the detail pane runs to the window's edges on purpose.
-    padding: '12px 16px 12px 12px',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '12px',
-    minHeight: 0,
-    minWidth: 0,
-  },
-  toolbar: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' },
-  grow: { flex: 1 },
-  // The whole board scrolls as one — not each column on its own — so the columns stay
-  // aligned with each other while you scroll. A grid (rather than a flex row) is what
-  // makes that work: the single auto row sizes to the *tallest* column, every column
-  // stretches to it (so a short column is still a full-height drop target), and this
-  // container is the only thing that scrolls.
-  columns: {
-    display: 'grid',
-    gridAutoFlow: 'column',
-    gridAutoColumns: 'minmax(0, 1fr)',
-    gap: '12px',
-    flex: 1,
-    minHeight: 0,
-    overflowY: 'auto',
-    // The containing block for the chain overlay (`ChainOverlay`), which is one `<svg>`
-    // laid over the whole board. It had none, and this is exactly why one overlay is
-    // possible at all: this is the ONLY scrolling element, so an absolutely-positioned
-    // child of it shares the cards' coordinate space and scrolls with them. It changes
-    // nothing about the columns themselves — an absolutely-positioned child of a grid
-    // container is out of flow and never becomes a track of its own.
-    position: 'relative',
-    // Breathing room above the first card. Its 3px project stripe and its 3px attention
-    // ring both live ON the card's top edge, and with the sticky header sitting directly
-    // on top of the list they had nothing to breathe into.
-    paddingTop: '4px',
-  },
-  right: {
-    // Exactly 40%, whatever the card holds. `1 1 40%` let the pane grow past its basis:
-    // a flex item's automatic minimum is its CONTENT's min-width, so a card with wide
-    // content (a long MR title, a full stage row, the three pickers side by side) widened
-    // the pane and squeezed the board — and the pane visibly changed size card to card.
-    // `minWidth: 0` drops that automatic minimum and `flex-shrink: 0` holds the basis.
-    flex: '0 0 40%',
-    minWidth: 0,
-    // Anything that still doesn't fit scrolls inside its own row (the chat, the code
-    // blocks, the details cell) rather than spilling over the board.
-    overflow: 'hidden',
-    display: 'flex',
-    minHeight: 0,
-    // No inset: the detail pane's top band is full-bleed (it is a section of the pane,
-    // not a card in it), so each of the pane's other rows carries its own padding.
-    // One surface for the whole pane, a step LIGHTER than the board — that contrast is
-    // what separates the two halves of the screen, so no dividing line is needed.
-    backgroundColor: tokens.colorNeutralBackground1,
-  },
   /**
    * The commit graph's pane. A fixed px basis rather than the detail pane's percentage: what
    * it holds is a fixed-width thing — a lane gutter, a subject, an author and a date — so a
@@ -198,6 +137,8 @@ function optimisticMove(task: Task, column: BoardColumn): Task {
 
 export function MyTasks(): JSX.Element {
   const styles = useStyles();
+  // The board's frame, shared with the browser client — see `boardLayout.ts`.
+  const layout = useBoardLayoutStyles();
   const [tasks, setTasks] = useState<Task[] | null>(null);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   // The repos a card can be delegated to — fetched once and shared by the cards
@@ -475,30 +416,14 @@ export function MyTasks(): JSX.Element {
   }, [tasks, mrsByTask, attention.taskIds, focusIds]);
 
   /**
-   * What the "Show Done" switch says while the column is shut: the bare count on the label,
-   * the sentence in the tooltip — the same division {@link archivedCountLabel} makes, and
-   * for the same reason.
+   * What the "Show Done" switch is counting while the column is shut — put into words by
+   * `doneSwitchLabel`/`doneSwitchTitle`, which the web board says the same way.
    *
    * Counted off `cardsByColumn.done`, so it is the cards this board would show and not the
    * cards that exist: with chain focus on, a count that included the rest would be pointing
    * at cards opening the column still wouldn't reveal.
    */
   const hiddenDone = useMemo(() => hiddenDoneSummary(cardsByColumn.done), [cardsByColumn]);
-  const hiddenDoneLabel =
-    !showDone && hiddenDone.total > 0 ? `Show Done (${hiddenDone.total})` : 'Show Done';
-  const hiddenDoneTitle = useMemo(() => {
-    if (showDone || hiddenDone.total === 0) return null;
-    const { total, notMarkedDone } = hiddenDone;
-    if (total === 1) {
-      return notMarkedDone === 0
-        ? '1 finished card is hidden'
-        : '1 finished card is hidden — it was cancelled, stopped or failed rather than done';
-    }
-    const opening = `${total} finished cards are hidden`;
-    return notMarkedDone === 0
-      ? opening
-      : `${opening} — ${notMarkedDone} of them cancelled, stopped or failed rather than done`;
-  }, [showDone, hiddenDone]);
 
   /**
    * Where every card is, for the chain overlay's arrows — plus which card the pointer is
@@ -925,9 +850,9 @@ export function MyTasks(): JSX.Element {
   }
 
   return (
-    <div className={styles.root}>
-      <div className={styles.board}>
-        <div className={styles.toolbar}>
+    <div className={layout.root}>
+      <div className={layout.board}>
+        <div className={layout.toolbar}>
           {/* The count is the toggle's whole job while it is off: DONE is the one column a
               card can reach without anybody dragging it there, so a card that failed, or
               whose ticket moved to a Done status, used to leave the board with nothing said
@@ -935,8 +860,8 @@ export function MyTasks(): JSX.Element {
               columns cannot be reasoned about — but the numeral makes it impossible to
               mistake a hidden card for a lost one. */}
           <Switch
-            label={hiddenDoneLabel}
-            title={hiddenDoneTitle ?? undefined}
+            label={doneSwitchLabel(showDone, hiddenDone)}
+            title={doneSwitchTitle(showDone, hiddenDone) ?? undefined}
             checked={showDone}
             onChange={(_e, d) => setShowDone(d.checked)}
           />
@@ -948,7 +873,7 @@ export function MyTasks(): JSX.Element {
               onChange={(_e, d) => void setCurrentSprintOnly(d.checked)}
             />
           )}
-          <span className={styles.grow} />
+          <span className={layout.grow} />
           {/* Focus the board on ONE route through it: the selected card, everything it
               waits for and everything waiting on it. A busy board is where a chain is
               hardest to follow and where you most need to — this reduces it to the piece
@@ -985,43 +910,10 @@ export function MyTasks(): JSX.Element {
           </ToggleButton>
           {/* The card's optional lines, switchable HERE as well as in Settings — this is
               where you actually notice the noise, and a trip to Settings to quiet a board
-              you are looking at is a trip most people won't make. */}
-          <Menu>
-            <MenuTrigger disableButtonEnhancement>
-              <Button size="small" appearance="subtle" icon={<EyeRegular />}>
-                Display
-              </Button>
-            </MenuTrigger>
-            <MenuPopover>
-              <MenuList
-                checkedValues={{
-                  display: [
-                    ...(display.showLabels ? ['labels'] : []),
-                    ...(display.showProjectName ? ['project'] : []),
-                    ...(display.showEpicName ? ['epic'] : []),
-                  ],
-                }}
-                onCheckedValueChange={(_e, { checkedItems }) =>
-                  void saveDisplay({
-                    ...display,
-                    showLabels: checkedItems.includes('labels'),
-                    showProjectName: checkedItems.includes('project'),
-                    showEpicName: checkedItems.includes('epic'),
-                  })
-                }
-              >
-                <MenuItemCheckbox name="display" value="labels" disabled={!settings}>
-                  JIRA labels
-                </MenuItemCheckbox>
-                <MenuItemCheckbox name="display" value="project" disabled={!settings}>
-                  Project name
-                </MenuItemCheckbox>
-                <MenuItemCheckbox name="display" value="epic" disabled={!settings}>
-                  Epic
-                </MenuItemCheckbox>
-              </MenuList>
-            </MenuPopover>
-          </Menu>
+              you are looking at is a trip most people won't make. Disabled until the
+              settings land: until then `display` is the default, and toggling one item
+              would save that default over what is on disk. */}
+          <BoardDisplayMenu display={display} onChange={saveDisplay} disabled={!settings} />
           {/* What actually happened in the repo, beside what the board believes about it.
               The same kind of control as the fold beside it — a view, not a filter — and off
               by default, because it costs a `git log` on the project it is pointed at. */}
@@ -1108,7 +1000,7 @@ export function MyTasks(): JSX.Element {
         */}
         <div
           ref={anchors.containerRef}
-          className={styles.columns}
+          className={layout.columns}
           onDragEnd={() => {
             setDraggingId(null);
             // Covers every way a link drag can end that is not a drop on a card: escaped,
@@ -1239,7 +1131,7 @@ export function MyTasks(): JSX.Element {
           which is cheap, and re-marks the selected card read — which is what you want
           the moment the pane comes back anyway. */}
       {showDetail && (
-        <div className={styles.right}>
+        <div className={layout.right}>
           <TaskDetail
             task={selectedTask}
             agentProjects={agentProjects}

@@ -1,46 +1,47 @@
 /**
- * The web board: `GET /v1/board`'s tasks/projects, rendered through the exact same
- * `KanbanColumn`/`TaskCard` the desktop app's My Tasks board uses (`@tm/ui/board`) — this
- * step's own brief, "into the same @tm/ui board the desktop renders". Editing is narrower
- * than the desktop's: dragging a card between columns and creating a card are the two
- * things `CommandEnvelope`'s v1 kinds can carry all the way to a rendered result here (see
- * `httpTransport.ts`'s own header for why `add-comment` isn't wired to anything in this
- * app).
+ * The web board: `GET /v1/board`'s tasks/projects, drawn as the desktop's My Tasks screen —
+ * the same frame (`useBoardLayoutStyles`), the same columns in the same order, the same
+ * cards (`KanbanColumn`/`TaskCard`), the same ordering rule (`sortCards`), the same toolbar
+ * minus the controls a browser cannot act on (`BoardToolbar`), and the same 40% detail pane
+ * down the right.
+ *
+ * Editing is narrower than the desktop's: dragging a card between columns and creating a
+ * card are the two things `CommandEnvelope`'s v1 kinds can carry all the way to a rendered
+ * result here (see `httpTransport.ts`'s own header for why `add-comment` isn't wired to
+ * anything in this app). Everything else is read — which is a statement about what this app
+ * can DO, and no reason at all for it to look like a different application.
  */
 import { useMemo, useState } from 'react';
-import { Body1, Caption1, Title2, makeStyles, tokens } from '@fluentui/react-components';
-import { COLUMN_META, groupSubtasks, type BoardCard } from '@tm/ui/board/boardColumns';
+import { Caption1, makeStyles } from '@fluentui/react-components';
+import {
+  COLUMN_META,
+  groupSubtasks,
+  hiddenDoneSummary,
+  sortCards,
+  visibleColumns,
+  type BoardCard,
+} from '@tm/ui/board/boardColumns';
 import { columnForTask, statusForColumn } from '@tm/shared/board';
 import { KanbanColumn } from '@tm/ui/board/KanbanColumn';
+import { useBoardLayoutStyles } from '@tm/ui/board/boardLayout';
+import { ArchivedCardsDialog, archivedCards } from '@tm/ui/board/ArchivedCardsDialog';
 import type { BoardColumn, ManualStatus, Task } from '@tm/shared/model';
 import { AddTaskDialog } from './AddTaskDialog';
-import { selectBoardTasks } from './boardSelectors';
+import { BoardToolbar } from './BoardToolbar';
+import { selectArchivedTasks, selectBoardTasks } from './boardSelectors';
 import { displayStatus, isTaskPending, type CloudBoardState } from './cloudBoardStore';
-import { StaleBanner } from './StaleBanner';
+import { loadBoardPrefs, saveBoardPrefs, type WebBoardPrefs } from './webPrefs';
 
 const useStyles = makeStyles({
-  // Sized by the `AppShell` body it now sits in rather than by the viewport: a `100vh`
-  // screen inside a shell that also draws a status bar is one status bar too tall.
-  root: { flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 },
-  header: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '12px',
-    padding: '12px 16px',
-    borderBottom: `1px solid ${tokens.colorNeutralStroke2}`,
-  },
-  grow: { flex: 1 },
-  columns: {
-    display: 'grid',
-    gridAutoFlow: 'column',
-    gridAutoColumns: 'minmax(240px, 1fr)',
-    gap: '12px',
-    flex: 1,
-    minHeight: 0,
-    overflow: 'auto',
-    padding: '12px 16px',
-  },
+  /** The empty state, in the board's own half of the screen rather than across all of it. */
+  empty: { padding: '8px 4px' },
+  /** Step 6's pane, until step 6. See the placeholder below. */
+  pane: { padding: '16px', alignSelf: 'flex-start' },
 });
+
+const COLUMN_LABEL: Record<BoardColumn, string> = Object.fromEntries(
+  COLUMN_META.map((c) => [c.column, c.label]),
+) as Record<BoardColumn, string>;
 
 export interface BoardScreenProps {
   state: CloudBoardState;
@@ -55,19 +56,51 @@ export function BoardScreen({
   onSetStatus,
   onCreateTask,
 }: BoardScreenProps): JSX.Element {
+  const layout = useBoardLayoutStyles();
   const styles = useStyles();
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
+  /**
+   * The toolbar's three switches, in `localStorage` — this app's stand-in for the desktop's
+   * `settings:save` round trip (see `webPrefs.ts`). Read once on mount: a preference that
+   * re-read the store on every render would still only ever change from in here.
+   */
+  const [prefs, setPrefs] = useState<WebBoardPrefs>(() => loadBoardPrefs(window.localStorage));
+  const savePrefs = (next: WebBoardPrefs): void => {
+    setPrefs(next);
+    saveBoardPrefs(window.localStorage, next);
+  };
+  /**
+   * When the Removed-cards dialog was opened, or null while it is shut — the timestamp
+   * rather than a boolean for the reason `MyTasks` holds one: the rows are labelled
+   * relatively ("yesterday") and must not re-word themselves on an unrelated render.
+   */
+  const [archivedOpenedAt, setArchivedOpenedAt] = useState<number | null>(null);
 
   const projects = useMemo(() => Object.values(state.projects), [state.projects]);
-  const projectNameOf = (task: Task): string | undefined => state.projects[task.projectId]?.name;
-  const projectColorOf = (task: Task): string | undefined => {
-    const color = state.projects[task.projectId]?.color;
-    return color || undefined;
-  };
+  /**
+   * The card's optional lines, read the desktop's way: `projectNameOf` is the JIRA project a
+   * ticket is filed under (`phase`), not the local project — every card on this board is in
+   * Personal, so that one would say the same word on all of them — and the stripe is the
+   * repo the card is tagged with, which is what the desktop colours it by.
+   */
+  const projectNameOf = (task: Task): string | undefined =>
+    task.externalSource === 'jira' ? task.phase || undefined : undefined;
+  const agentNameOf = (task: Task): string | undefined =>
+    task.agentProjectId ? state.projects[task.agentProjectId]?.name : undefined;
+  const projectColorOf = (task: Task): string | undefined =>
+    task.projectTagId ? state.projects[task.projectTagId]?.color || undefined : undefined;
 
   /** The desktop's own card set — Personal, un-archived. See `boardSelectors.ts`. */
   const boardTasks = useMemo(() => selectBoardTasks(state), [state]);
+
+  /**
+   * The cards that have LEFT this board. No fetch and no `board:archived` equivalent: the
+   * archived rows are already in `state.tasks` (the mirror carries them, and
+   * `boardSelectors.ts` says why ingest must not drop them), so this is the same list the
+   * desktop's dialog shows, minus the step rows `archivedCards` filters out.
+   */
+  const removedCards = useMemo(() => archivedCards(selectArchivedTasks(state)), [state]);
 
   const cardsByColumn = useMemo(() => {
     // Overlay any still-pending edit before grouping/columning, so a dragged card jumps to
@@ -78,15 +111,25 @@ export function BoardScreen({
       ...task,
       status: displayStatus(state, task),
     }));
-    const cards = groupSubtasks(displayTasks);
     const byColumn = new Map<BoardColumn, BoardCard[]>();
     for (const meta of COLUMN_META) byColumn.set(meta.column, []);
-    for (const card of cards) {
-      const column = columnForTask(card.task);
-      byColumn.get(column)?.push(card);
+    for (const card of groupSubtasks(displayTasks)) {
+      byColumn.get(columnForTask(card.task))?.push(card);
+    }
+    // The desktop's ordering, so the same board reads the same way in both places: cards
+    // that want you first, then priority, then `order`. No attention set to pass — the
+    // inbox is not mirrored — which leaves the priority ordering, and a card whose ring
+    // this app cannot draw is also one it cannot promote.
+    for (const meta of COLUMN_META) {
+      byColumn.set(meta.column, sortCards(byColumn.get(meta.column) ?? []));
     }
     return byColumn;
   }, [boardTasks, state]);
+
+  const hiddenDone = useMemo(
+    () => hiddenDoneSummary(cardsByColumn.get('done') ?? []),
+    [cardsByColumn],
+  );
 
   const pendingTaskIds = useMemo(() => {
     const ids = new Set<string>();
@@ -96,65 +139,101 @@ export function BoardScreen({
     return ids;
   }, [state]);
 
+  const selectedTask = useMemo(
+    () => (selectedTaskId ? (state.tasks[selectedTaskId] ?? null) : null),
+    [state.tasks, selectedTaskId],
+  );
+
   const disabledReason = everSeenClient
     ? undefined
     : 'No desktop app has ever synced this account — sign in and open it once first.';
 
   return (
-    <div className={styles.root}>
-      <div className={styles.header}>
-        <Title2>VIPPER Task Manager Cloud</Title2>
-        <div className={styles.grow} />
-        <AddTaskDialog
-          projects={projects}
-          onCreate={onCreateTask}
-          disabled={!everSeenClient || projects.length === 0}
-          disabledReason={disabledReason}
+    <div className={layout.root}>
+      <div className={layout.board}>
+        <BoardToolbar
+          showDone={prefs.showDone}
+          hiddenDone={hiddenDone}
+          onShowDoneChange={(showDone) => savePrefs({ ...prefs, showDone })}
+          display={prefs.display}
+          onDisplayChange={(display) => savePrefs({ ...prefs, display })}
+          showDetail={prefs.showDetail}
+          onShowDetailChange={(showDetail) => savePrefs({ ...prefs, showDetail })}
+          archivedCount={removedCards.length}
+          onOpenArchived={() => setArchivedOpenedAt(Date.now())}
+          addTask={
+            <AddTaskDialog
+              projects={projects}
+              onCreate={onCreateTask}
+              disabled={!everSeenClient || projects.length === 0}
+              disabledReason={disabledReason}
+            />
+          }
         />
-      </div>
 
-      {!everSeenClient || state.clients.length === 0 ? (
-        <StaleBanner everSeenClient={everSeenClient} />
-      ) : null}
-
-      {/* The empty state is about the CARD SET, not the mirror: a board with a hundred rows
-          in other projects still has nothing to draw, and saying "no board data" there would
-          be a lie. Only when nothing at all has arrived is it a sync that hasn't happened. */}
-      {boardTasks.length === 0 ? (
-        <Body1 style={{ padding: '16px' }}>
-          <Caption1>
+        {/* The empty state is about the CARD SET, not the mirror: a board with a hundred rows
+            in other projects still has nothing to draw, and saying "no board data" there would
+            be a lie. Only when nothing at all has arrived is it a sync that hasn't happened. */}
+        {boardTasks.length === 0 ? (
+          <Caption1 className={styles.empty}>
             {projects.length === 0 && Object.keys(state.tasks).length === 0
               ? 'No board data yet — waiting on the first sync from your desktop app.'
               : 'No cards on your Personal board.'}
           </Caption1>
-        </Body1>
-      ) : (
-        <div className={styles.columns}>
-          {COLUMN_META.map((meta) => (
-            <KanbanColumn
-              key={meta.column}
-              column={meta.column}
-              label={meta.label}
-              cards={cardsByColumn.get(meta.column) ?? []}
-              projectNameOf={projectNameOf}
-              agentNameOf={() => undefined}
-              projectColorOf={projectColorOf}
-              showSprint={false}
-              selectedTaskId={selectedTaskId}
-              draggingId={draggingId}
-              onSelectTask={setSelectedTaskId}
-              onDragStartTask={setDraggingId}
-              onDragEndTask={() => setDraggingId(null)}
-              onDropInColumn={(taskId, column) => {
-                setDraggingId(null);
-                if (!everSeenClient) return;
-                if (pendingTaskIds.has(taskId)) return; // one edit in flight at a time per card
-                onSetStatus(taskId, statusForColumn(column));
-              }}
-            />
-          ))}
+        ) : (
+          <div className={layout.columns}>
+            {visibleColumns(prefs.showDone).map((column) => (
+              <KanbanColumn
+                key={column}
+                column={column}
+                label={COLUMN_LABEL[column]}
+                cards={cardsByColumn.get(column) ?? []}
+                projectNameOf={projectNameOf}
+                agentNameOf={agentNameOf}
+                projectColorOf={projectColorOf}
+                display={prefs.display}
+                // The sprint chip earns its place here: this board has no sprint filter to
+                // put every card behind the same one, which is the only case the desktop
+                // hides it in.
+                showSprint
+                selectedTaskId={selectedTaskId}
+                draggingId={draggingId}
+                onSelectTask={setSelectedTaskId}
+                onDragStartTask={setDraggingId}
+                onDragEndTask={() => setDraggingId(null)}
+                onDropInColumn={(taskId, dropColumn) => {
+                  setDraggingId(null);
+                  if (!everSeenClient) return;
+                  if (pendingTaskIds.has(taskId)) return; // one edit in flight at a time per card
+                  onSetStatus(taskId, statusForColumn(dropColumn));
+                }}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* The pane the desktop keeps the selected card's detail in. Empty of everything but a
+          line of prose until the next step of this ticket fills it with the shared
+          `TaskDetail`, read-only — the shape is here now because the pane IS the board's
+          layout: a board that reflows when the pane arrives would be a second rebuild. */}
+      {prefs.showDetail && (
+        <div className={layout.right}>
+          <Caption1 className={styles.pane}>
+            {selectedTask ? selectedTask.title : 'Select a card to see its detail.'}
+          </Caption1>
         </div>
       )}
+
+      <ArchivedCardsDialog
+        open={archivedOpenedAt !== null}
+        archived={removedCards}
+        // Read once, when it opened — see `archivedOpenedAt`.
+        now={archivedOpenedAt ?? 0}
+        onClose={() => setArchivedOpenedAt(null)}
+        // No `onRestore`: a restore is a write to the desktop's own database and there is no
+        // command kind that carries one, so the list is read-only here. See the dialog.
+      />
     </div>
   );
 }

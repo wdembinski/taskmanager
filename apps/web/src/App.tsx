@@ -28,6 +28,7 @@ import { CloudAuth } from './auth/cloudAuth';
 import { SignInScreen } from './auth/SignInScreen';
 import { useCloudAuth } from './auth/useCloudAuth';
 import { BoardScreen } from './board/BoardScreen';
+import { StaleBanner } from './board/StaleBanner';
 import { useCloudBoard } from './board/useCloudBoard';
 import { loadWebConfig } from './env';
 
@@ -148,6 +149,12 @@ function SignedInBoard({
           // Nothing to select: the four unavailable tiles refuse selection inside
           // `NavRail`, and the fifth is already the one on screen.
           <NavRail items={NAV} selected="mytasks" onSelect={() => undefined} />
+        }
+        banners={
+          // The shell's own banner strip, which is where the desktop's outage bars go too —
+          // above the screen rather than inside it, so the board below is the board and
+          // nothing shifts the columns down but a thing that had to be said.
+          !online ? <StaleBanner everSeenClient={board.targetClientId !== null} /> : null
         }
         status={
           <StatusBar>

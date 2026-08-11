@@ -18,7 +18,7 @@ import type { BoardCard, BoardColumn } from './boardColumns';
 import { isChainLinkDrag, type LinkDragState } from './chainDrag';
 
 const useStyles = makeStyles({
-  // A grid item of the board's scroll container (`MyTasks.columns`): it stretches to
+  // A grid item of the board's scroll container (`boardLayout`'s `columns`): it stretches to
   // the tallest column, so the drop zone always reaches the bottom of the board.
   column: {
     display: 'flex',

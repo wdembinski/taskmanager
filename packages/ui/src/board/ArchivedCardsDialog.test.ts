@@ -10,7 +10,7 @@
  * The labels take `now`, in the same shape as `@shared/sync`'s, so there is no clock here.
  */
 import { describe, expect, it } from 'vitest';
-import { PERSONAL_PROJECT_ID, type Task, type TaskArchiveReason } from '@shared/model';
+import { PERSONAL_PROJECT_ID, type Task, type TaskArchiveReason } from '@tm/shared/model';
 import {
   archiveReasonText,
   archivedCards,

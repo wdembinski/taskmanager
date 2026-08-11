@@ -13,9 +13,16 @@
  * on the board is the least moving thing in the app. Buttons are neutral, the reasons are
  * prose, and the only emphasis is the key.
  *
- * The formatting is pure and takes `now`, in the same shape as `@shared/sync`'s labels: there
- * is no renderer test infrastructure, so anything with a rule in it lives in a function a
- * `.test.ts` can call without a DOM.
+ * The formatting is pure and takes `now`, in the same shape as `@tm/shared/sync`'s labels:
+ * there is no renderer test infrastructure, so anything with a rule in it lives in a function
+ * a `.test.ts` can call without a DOM.
+ *
+ * Shared with the browser client, which shows the same list for the same reason and can do
+ * nothing about it: restoring a card is a write to the board's own database, and there is no
+ * `restore` command kind on the wire. That is what {@link ArchivedCardsDialogProps.onRestore}
+ * being OPTIONAL means — absent, the rows carry no Restore button. A read-only list is the
+ * honest degrade: a card missing from the web board is missing there too, and "why" is the
+ * question this dialog answers whether or not the reader can undo it.
  */
 import { useState } from 'react';
 import {
@@ -33,8 +40,8 @@ import {
   Text,
   tokens,
 } from '@fluentui/react-components';
-import { ARCHIVE_RETENTION_DAYS } from '@shared/board';
-import type { Task, TaskArchiveReason } from '@shared/model';
+import { ARCHIVE_RETENTION_DAYS } from '@tm/shared/board';
+import type { Task, TaskArchiveReason } from '@tm/shared/model';
 
 /**
  * The CARDS among the archived rows — what the list shows and what the count counts.
@@ -145,8 +152,15 @@ export interface ArchivedCardsDialogProps {
   /** Now, in epoch ms — injected so the labels are pure and the tests need no clock. */
   now: number;
   onClose: () => void;
-  /** Put one back. Rejects with something worth showing; the dialog reports it. */
-  onRestore: (taskId: string) => Promise<void>;
+  /**
+   * Put one back. Rejects with something worth showing; the dialog reports it.
+   *
+   * **Optional**, and absent means the list is read-only: no Restore on a row, no Restore
+   * all in the footer. That is the browser client's case — a restore is a write to the
+   * board's own database and no command on the wire carries one — and a button that could
+   * only ever fail would be worse than the list simply saying what is not on the board.
+   */
+  onRestore?: (taskId: string) => Promise<void>;
 }
 
 export function ArchivedCardsDialog({
@@ -162,6 +176,7 @@ export function ArchivedCardsDialog({
   const [error, setError] = useState<string | null>(null);
 
   async function restore(taskId: string): Promise<void> {
+    if (!onRestore) return;
     setBusy(taskId);
     setError(null);
     try {
@@ -182,6 +197,7 @@ export function ArchivedCardsDialog({
    * "restore all" that also swallowed the reason would be the worse of the two outcomes.
    */
   async function restoreAll(): Promise<void> {
+    if (!onRestore) return;
     setBusy('all');
     setError(null);
     try {
@@ -202,9 +218,11 @@ export function ArchivedCardsDialog({
             <div className={styles.body}>
               <Caption1 className={styles.note}>
                 These cards are off the board but not deleted — their timeline, their files, the
-                arrows drawn to and from them and any transcript are all still here, and restoring
-                one brings it back with the same id. They are kept for {ARCHIVE_RETENTION_DAYS} days
-                and then removed for good.
+                arrows drawn to and from them and any transcript are all still here
+                {onRestore
+                  ? ', and restoring one brings it back with the same id'
+                  : ', and the desktop app can put any of them back'}
+                . They are kept for {ARCHIVE_RETENTION_DAYS} days and then removed for good.
               </Caption1>
 
               {error && (
@@ -228,14 +246,16 @@ export function ArchivedCardsDialog({
                         </Text>
                         <Caption1 className={styles.why}>{removedLine(task, now)}</Caption1>
                       </div>
-                      <Button
-                        size="small"
-                        appearance="secondary"
-                        disabled={busy !== null}
-                        onClick={() => void restore(task.id)}
-                      >
-                        Restore
-                      </Button>
+                      {onRestore && (
+                        <Button
+                          size="small"
+                          appearance="secondary"
+                          disabled={busy !== null}
+                          onClick={() => void restore(task.id)}
+                        >
+                          Restore
+                        </Button>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -243,7 +263,7 @@ export function ArchivedCardsDialog({
             </div>
           </DialogContent>
           <DialogActions>
-            {archived.length > 1 && (
+            {onRestore && archived.length > 1 && (
               <Button
                 appearance="secondary"
                 disabled={busy !== null}
