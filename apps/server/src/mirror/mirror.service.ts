@@ -18,6 +18,7 @@ import { TaskMirror } from '../entities/taskMirror.entity';
 import { Tombstone } from '../entities/tombstone.entity';
 import { PresenceService } from '../presence/presence.service';
 import { applyMirrorDelta } from './applyMirrorDelta';
+import { boardCursor } from './boardCursor';
 import { acknowledgeable, leaseCutoff } from './commandQueue';
 import { toCommandEnvelope } from './commandMapping';
 import {
@@ -200,9 +201,15 @@ export class MirrorService {
       this.rowsSince(this.tombstones, accountId, sinceBuffer),
     ]);
 
-    const newest = maxRowVersion(
-      maxRowVersion(lastRowVersion(tasks.rows), lastRowVersion(projects.rows)),
-      lastRowVersion(deletions.rows),
+    // NOT the maximum across the three streams. Each is paged on its own, so the highest
+    // rowversion any of them reached is a promise the others cannot keep — see
+    // `boardCursor.ts` for the hundred cards that used to fall through that gap.
+    const cursor = boardCursor(
+      [tasks, projects, deletions].map((page) => ({
+        last: lastRowVersion(page.rows),
+        hasMore: page.hasMore,
+      })),
+      sinceBuffer,
     );
 
     const cadence = clientId
@@ -210,7 +217,7 @@ export class MirrorService {
       : this.presence.cadence(accountId, now);
 
     return {
-      cursor: rowVersionToCursor(newest ?? sinceBuffer ?? ZERO_ROWVERSION),
+      cursor: rowVersionToCursor(cursor),
       cadence,
       protocolVersion: PROTOCOL_VERSION,
       hasMore: tasks.hasMore || projects.hasMore || deletions.hasMore,

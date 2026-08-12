@@ -38,3 +38,18 @@ export function maxRowVersion(a: Buffer | null, b: Buffer | null): Buffer | null
   if (b === null) return a;
   return Buffer.compare(a, b) >= 0 ? a : b;
 }
+
+/**
+ * The earlier (bytewise-lesser) of two rowversions, with the same `null` rule
+ * {@link maxRowVersion} uses — `null` is "nothing to compare", never a value.
+ *
+ * The mirror image, and it exists for the paged read: a cursor is safe only as
+ * far as the LEAST-read of the streams it summarises (see `boardCursor.ts`), so
+ * folding those together needs a min with exactly the same null handling as the
+ * max that folds the fully-read ones.
+ */
+export function minRowVersion(a: Buffer | null, b: Buffer | null): Buffer | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  return Buffer.compare(a, b) <= 0 ? a : b;
+}

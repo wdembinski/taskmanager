@@ -4661,6 +4661,21 @@ them atomic together, and rolling command #2 back because command #4 failed is n
 any caller asked for — they are separate clicks by a human. Each command stands alone now,
 and the only transaction left is the tiny synchronous one that records its outcome.
 
+And the trap itself is a **type** now rather than a docstring, which is the same bet
+`RELAY_POLICY` declined to make: a warning is read once by whoever writes the call and never
+again by whoever makes it async two years later. `runInTransaction`'s rest parameter is
+`SyncOnly<T>` — empty for a synchronous `fn`, and a one-element tuple nobody can supply for
+one that returns a promise, so the call does not compile and the tuple's label says why.
+
+Two shapes were tried and rejected first, and the reason is worth recording because both
+_look_ like they work. A second, refusing OVERLOAD is never selected at all: overload
+resolution checks arity before parameter types, so a one-argument call skips a two-parameter
+overload and lands on the permissive one. And a conditional in the RETURN position resolves
+to `never` silently rather than erroring, which is the same shape of invisible failure the
+gate exists to end. The ban has to ride on the signature that actually matches, after `T`
+has been inferred from `fn`. This is a failure that leaves nothing red at runtime, so it is
+caught at build time or not at all.
+
 Two smaller corrections came with it. The batch is no longer re-sorted by `issuedAt`, which
 is a *browser's* wall clock: the server already delivers `createdAt ASC` from a clock it owns,
 so there is one authority and it is monotonic. And the per-outcome event fan-out in `ipc.ts`
@@ -4713,6 +4728,24 @@ caches a failure and stays bounded.
   `SYNC_BYTES_LIMIT`; the read side had no `take` and no byte cap, so a first poll against a
   mature board asked for everything in one response. It pages now, with a `hasMore` the
   browser polls straight through rather than one page per cadence interval.
+
+  Paging it then created a subtler bug than the one it fixed, and
+  [`boardCursor.ts`](../../apps/server/src/mirror/boardCursor.ts) is where that rule lives
+  now. `GET /v1/board` reads THREE streams — task mirrors, project mirrors and tombstones —
+  pages each one separately, and returned the MAXIMUM rowversion across all three as the
+  cursor. A rowversion is database-global, so those streams interleave: an account whose
+  backfill wrote 600 tasks (rowversions 1..600) and then 3 projects (601..603) pages the
+  tasks at 500, reads the projects whole, and answers `max(500, 603) = 603`. The next poll
+  asks for everything past 603, and tasks 501..600 are never sent again — a hundred cards
+  simply missing from the web board, with `hasMore` having faithfully reported that there was
+  more, until somebody happens to edit each one and bump its rowversion.
+
+  A cursor is a promise that everything at or below it has been delivered, so a stream the
+  cap cut short imposes a ceiling at its own last row and the lowest ceiling wins. Re-sending
+  the rows above it on the next poll costs a duplicate upsert, which `applyBoardResponse`
+  absorbs; passing it loses rows outright, which nothing ever notices. Progress is still
+  guaranteed — a truncated stream's rows are all strictly past `since`, and it always keeps
+  at least one, so a ceiling is always higher than the `since` it clamps.
 
 ### What the board gained
 

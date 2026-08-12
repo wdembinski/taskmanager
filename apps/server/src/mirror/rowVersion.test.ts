@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   cursorToRowVersion,
   maxRowVersion,
+  minRowVersion,
   rowVersionToCursor,
   ZERO_ROWVERSION,
 } from './rowVersion';
@@ -36,6 +37,25 @@ describe('maxRowVersion', () => {
     expect(maxRowVersion(null, low)).toBe(low);
     expect(maxRowVersion(low, null)).toBe(low);
     expect(maxRowVersion(null, null)).toBeNull();
+  });
+});
+
+describe('minRowVersion', () => {
+  const low = Buffer.from([0, 0, 0, 0, 0, 0, 0, 1]);
+  const high = Buffer.from([0, 0, 0, 0, 0, 0, 0, 2]);
+
+  it('picks the bytewise-lesser of two buffers', () => {
+    expect(minRowVersion(low, high)).toBe(low);
+    expect(minRowVersion(high, low)).toBe(low);
+  });
+
+  it('treats null as "no value yet", the same way maxRowVersion does', () => {
+    // The null rule is the half that is easy to get backwards: a min that read null as the
+    // floor would answer null for every fold, and `boardCursor` would clamp every read to
+    // nothing at all.
+    expect(minRowVersion(null, high)).toBe(high);
+    expect(minRowVersion(high, null)).toBe(high);
+    expect(minRowVersion(null, null)).toBeNull();
   });
 });
 

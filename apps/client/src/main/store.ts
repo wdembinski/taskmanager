@@ -231,6 +231,23 @@ interface ProjectRow {
   createdAt: number;
 }
 
+/**
+ * The extra arguments a call must supply — none for a synchronous `fn`, and one nobody can
+ * produce for a `fn` that returns a promise. See {@link Store.runInTransaction}, which is
+ * the only thing this exists for.
+ *
+ * Spelled as a rest tuple rather than as a constraint on `T` because `T` has to be inferred
+ * from `fn` BEFORE the rule can be evaluated: a conditional in the parameter's own position
+ * blocks that inference, and a conditional in the return position produces `never` silently
+ * instead of an error. The label is what a reader sees when the call fails.
+ */
+export type SyncOnly<T> =
+  T extends PromiseLike<unknown>
+    ? [
+        error: 'better-sqlite3 transactions are synchronous: an async fn commits at its first await, and every write after that point runs untransacted',
+      ]
+    : [];
+
 /** The store's public surface. Constructed once in the main process. */
 export interface Store {
   addProject(input: AddProjectInput): Project;
@@ -734,15 +751,30 @@ export interface Store {
    * Run `fn` inside one `better-sqlite3` transaction, committing its return value or rolling
    * every write in it back on a throw.
    *
-   * **`fn` must be synchronous.** `better-sqlite3` transactions are, and handing this an
-   * `async` function silently does the wrong thing: it returns a Promise, the transaction
-   * commits at the first `await`, and every write after that point runs untransacted with
-   * nothing red anywhere. `applyCloudCommands` used to wrap its whole batch in one of these
-   * and could not become async without hitting exactly that; it now records each command's
-   * outcome in its own tiny synchronous transaction instead, and leaves the atomicity of the
-   * work itself to the handler that already chose it.
+   * **`fn` must be synchronous, and the compiler now says so.** `better-sqlite3` transactions
+   * are, and handing this an `async` function silently does the wrong thing: it returns a
+   * Promise, the transaction commits at the first `await`, and every write after that point
+   * runs untransacted with nothing red anywhere. `applyCloudCommands` used to wrap its whole
+   * batch in one of these and could not become async without hitting exactly that; it now
+   * records each command's outcome in its own tiny synchronous transaction instead, and
+   * leaves the atomicity of the work itself to the handler that already chose it.
+   *
+   * That trap was a docstring for one release, which is the same bet `RELAY_POLICY` declined
+   * to make: a warning is read once by whoever writes the call and never again by whoever
+   * makes it async two years later. So the rule is a type. `T` is inferred from `fn` first,
+   * and a `T` that turns out to be a promise gives the rest parameter a one-element tuple —
+   * an argument nobody can supply, so the call does not compile and the tuple's own label
+   * says why. A sync `fn` gives it `[]` and nothing changes at any existing call site.
+   *
+   * A second, refusing OVERLOAD would not have worked, which is worth recording: overload
+   * resolution checks arity before parameter types, so a one-argument call skips a
+   * two-parameter overload entirely and lands on the permissive one. The ban has to ride on
+   * the signature that actually matches.
+   *
+   * The failure this prevents leaves nothing red at runtime, so it is caught at build time
+   * or not at all.
    */
-  runInTransaction<T>(fn: () => T): T;
+  runInTransaction<T>(fn: () => T, ...betterSqlite3IsSynchronous: SyncOnly<T>): T;
   /**
    * Is the underlying handle still usable? Asked by the ONE caller that legitimately races
    * `close()` — the window-geometry flush, driven by an OS event whose timing we do not
@@ -4082,7 +4114,12 @@ export function createStore(dbPath: string): Store {
       })();
     },
 
-    runInTransaction(fn) {
+    // Annotated rather than inferred: a generic method gets no usable contextual type from
+    // the object literal's `Store` annotation here, so without this `fn` is an implicit
+    // `any` and the ban above would be guarding a signature that had quietly gone untyped.
+    // The rest parameter is `SyncOnly<T>` for assignability alone — it is never read, and
+    // by construction it is always empty in any call that compiles.
+    runInTransaction<T>(fn: () => T, ..._syncOnly: SyncOnly<T>): T {
       return db.transaction(fn)();
     },
 
