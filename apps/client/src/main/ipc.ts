@@ -837,6 +837,21 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     scheduler.stopTask(taskId); // no-op (false) when nothing is running for it
     return store.getTask(taskId) ?? existing;
   });
+
+  handle('task:resumeAgent', async (taskId) => {
+    const existing = store.getTask(taskId);
+    if (!existing) throw new Error('Task not found.');
+    const outcome = scheduler.resumeTask(taskId);
+    // Re-read either way: a resume re-queues stopped steps and clears `stoppedAt` BEFORE it
+    // tries to start, so even a refused one has changed the card — and a gate that refuses
+    // has parked it to start by itself. Announcing that before throwing is what keeps the
+    // board from drawing a card as still stopped while the engine is holding it. Same shape
+    // as `task:assignAgent` above, and the same refusal vocabulary as `task:run`.
+    const task = store.getTask(taskId) ?? existing;
+    send('task:changed', { task, runId: 'runId' in outcome ? outcome.runId : null });
+    if ('refused' in outcome) throw new Error(RUN_REFUSAL_MESSAGE[outcome.refused]);
+    return task;
+  });
   handle('task:chat', async (taskId, message) => scheduler.chatWithAgent(taskId, message));
   handle('task:replan', async (taskId, note) => scheduler.replanCard(taskId, note));
   handle('task:create', async (projectId, input) => {

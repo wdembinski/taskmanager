@@ -922,8 +922,70 @@ describe('Scheduler — a card delegated to an agent project', () => {
     // agent says nothing about whether the work is done — only the human moves a card.
     expect(task.status).toBe('pending');
     expect(task.preRunStatus).toBe(null);
+    // …which is exactly why the stop has to leave something that is NOT a status behind:
+    // from `status` alone this card is indistinguishable from one nobody ever started.
+    expect(typeof task.stoppedAt).toBe('number');
     // A task with nothing running is a no-op, not an error (and never re-marked).
     expect(scheduler.stopTask('unknown')).toBe(false);
+  });
+
+  /**
+   * Resume — the inverse of the Stop above. The claim under test is that "within the same
+   * session" costs no new code: it falls out of `startTask` resuming by `task.sessionId`.
+   */
+  describe('Scheduler.resumeTask', () => {
+    /** What `exited` does once a stopped process actually goes, so the slot is free again. */
+    const exit = (scheduler: Scheduler, runId: string): void =>
+      (scheduler as unknown as { onRunEvent: (r: string, e: unknown) => void }).onRunEvent(runId, {
+        kind: 'exited',
+        code: 0,
+      });
+
+    it('restarts a stopped card in the conversation it was stopped in', () => {
+      const { scheduler, start, task } = makeAgentScheduler({ sessionId: 's1' });
+      const first = scheduler.runTask('t1');
+      scheduler.stopTask('t1');
+      exit(scheduler, first!.runId);
+
+      expect(scheduler.resumeTask('t1')).toHaveProperty('runId');
+      expect(start).toHaveBeenCalledTimes(2);
+      const [request, opts] = start.mock.calls[1] as [
+        { prompt: string },
+        { resumeSessionId?: string },
+      ];
+      // The whole point: the agent is rejoined mid-conversation, not re-briefed.
+      expect(opts.resumeSessionId).toBe('s1');
+      expect(request.prompt).not.toContain('ONE ticket');
+      // …and told the truth about why it stopped. The default nudge opens by blaming a
+      // usage limit, which is a lie about a human pressing Stop.
+      expect(request.prompt).toBe('You were stopped. Continue the task where you left off.');
+      expect(request.prompt).not.toContain('usage limit');
+      // Nothing is stopped any more, so nothing offers to resume it again.
+      expect(task.stoppedAt).toBe(null);
+    });
+
+    it('refuses to resume work that is already moving', () => {
+      const { scheduler, start } = makeAgentScheduler({ sessionId: 's1' });
+      scheduler.runTask('t1');
+      // A stop that has been superseded by a fresh start is history; resuming here would
+      // put a second agent in the same worktree.
+      expect(scheduler.resumeTask('t1')).toEqual({ refused: 'already-running' });
+      expect(scheduler.resumeTask('nope')).toEqual({ refused: 'unknown-task' });
+      expect(start).toHaveBeenCalledTimes(1);
+    });
+
+    it('clears the stop mark whichever way the card starts again', () => {
+      // Not just Resume: a plain Start un-stops the card as truly, and a card that ran
+      // again would otherwise keep offering Resume for ever.
+      const { scheduler, task } = makeAgentScheduler({ sessionId: 's1' });
+      const first = scheduler.runTask('t1');
+      scheduler.stopTask('t1');
+      exit(scheduler, first!.runId);
+      expect(typeof task.stoppedAt).toBe('number');
+
+      scheduler.runTask('t1');
+      expect(task.stoppedAt).toBe(null);
+    });
   });
 });
 
@@ -2065,6 +2127,42 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
     expect(h.parent.status).toBe('pending');
   });
 
+  // ---- Stop, then Resume, on a card executing a plan ---------------------------
+  //
+  // Stop marks every queued step `stopped`, which leaves the chain with nothing runnable in
+  // it. Putting those steps back to `pending` is therefore not housekeeping — it IS the
+  // resume: it is the only thing that makes `nextRunnableStep` divert the start to the step
+  // that was interrupted instead of opening the card's own session beside its chain.
+  it('re-queues the stopped steps and restarts the chain at the stopped one', async () => {
+    const h = setup();
+    h.seedRun('r1', 's1');
+    expect(h.scheduler.stopTask('t1')).toBe(true);
+    expect(h.children.map((c) => c.status)).toEqual(['stopped', 'stopped']);
+    expect(typeof h.parent.stoppedAt).toBe('number');
+
+    // The stopped process goes, freeing the slot — as `exited` would have.
+    (h.scheduler as unknown as { runs: Map<string, unknown> }).runs.delete('r1');
+    (h.scheduler as unknown as { inFlight: Set<string> }).inFlight.delete('s1');
+
+    expect(h.scheduler.resumeTask('t1')).toHaveProperty('runId');
+    await flush();
+    expect(h.children[1].status).toBe('pending'); // re-queued, waiting its turn as before
+    // Step 1, in the parent's worktree — not the card, which would be a second agent on the
+    // same branch answering the whole ticket at once.
+    expect(h.prepared).toEqual([{ taskId: 's1', owner: 't1' }]);
+    expect(h.parent.stoppedAt).toBe(null);
+  });
+
+  it('leaves a chain nobody stopped exactly where it is', async () => {
+    // Resume only ever un-does a stop: a step that ran to completion must not be dragged
+    // back into the queue by a button pressed on the card above it.
+    const h = setup([{ id: 's1', status: 'done' }, { id: 's2' }]);
+    expect(h.scheduler.resumeTask('t1')).toHaveProperty('runId');
+    await flush();
+    expect(h.children[0].status).toBe('done');
+    expect(h.prepared).toEqual([{ taskId: 's2', owner: 't1' }]);
+  });
+
   // ---- a usage limit in the middle of a chain ----------------------------------
   //
   // The bug: a card stopped mid-plan when the account hit its limit and never started
@@ -2166,6 +2264,27 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       h.scheduler.resumeLimitNow();
       await flush();
       expect(h.prepared).toEqual([]); // it must not come back to life at the reset
+      gate.dispose();
+    });
+
+    it('parks a resume behind the gate instead of dropping it', async () => {
+      // The rule the gate exists for (`the-gate-is-the-only-memory`): a Resume refused by a
+      // limit must be REMEMBERED, or the human is left pressing a button that says nothing
+      // happened and nothing ever will.
+      const h = setup([
+        { id: 's1', status: 'stopped' },
+        { id: 's2', status: 'stopped' },
+      ]);
+      const gate = gateOf(h.scheduler);
+      gate.engage(limited, []);
+
+      expect(h.scheduler.resumeTask('t1')).toEqual({ refused: 'limit' });
+      expect(h.children[0].status).toBe('blocked-by-limit'); // parked, not left `pending`
+      expect(h.prepared).toEqual([]);
+
+      h.scheduler.resumeLimitNow();
+      await flush();
+      expect(h.prepared).toEqual([{ taskId: 's1', owner: 't1' }]);
       gate.dispose();
     });
 

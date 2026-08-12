@@ -168,9 +168,26 @@ const NO_COMMENTS: BoundedHistory<AgentPromptComment> = Object.freeze({
   omitted: 0,
 });
 
-/** The nudge sent to a session we resume after a usage limit clears (Phase 5). */
+/**
+ * The nudge sent to a session we resume after a usage limit clears (Phase 5), and the
+ * default for every other resume that has nothing more specific to say.
+ *
+ * It names the interruption, which is only honest when a limit was the interruption — see
+ * {@link STOP_RESUME_NUDGE} for the other one, and `Run.resumeNudge` for how a caller
+ * substitutes its own.
+ */
 const RESUME_NUDGE =
   'A usage limit interrupted you and it has now reset. Continue the task where you left off.';
+
+/**
+ * The nudge sent when a HUMAN's Stop is what interrupted this session — `resumeTask`.
+ *
+ * Its own sentence because {@link RESUME_NUDGE} opens by blaming a usage limit, and the
+ * agent rejoining this conversation was stopped by a person instead. Telling it a limit had
+ * reset would be the first false thing in a prompt whose whole job is to say what happened
+ * since it last spoke.
+ */
+const STOP_RESUME_NUDGE = 'You were stopped. Continue the task where you left off.';
 
 /**
  * Sent to a session we RESUME for a retry that carries a failure note — an "AI fix &
@@ -693,6 +710,15 @@ interface Run {
    * typed. Absent on every ordinary run.
    */
   chatPrompt?: string;
+  /**
+   * What to say to a session this run REJOINS, in place of the default nudge — see
+   * {@link RESUME_NUDGE} and {@link STOP_RESUME_NUDGE}.
+   *
+   * Only ever reaches a prompt when there is a session to resume: a run with none is briefed
+   * in full, and a full brief already says everything a nudge would have hinted at. Absent on
+   * every run that has nothing of its own to add about the pause.
+   */
+  resumeNudge?: string;
   /**
    * (Phase 17) This is the first run started on a card since its plan finished, so it must
    * skip both halves of the worktree lifecycle: there is nothing to integrate (the chain's
@@ -1311,8 +1337,13 @@ export class Scheduler {
    *    and left `pending` is a card that waits for a resume that will never name it. This
    *    is the same rule `advanceSubtasks` follows for a step, and it is what lets the
    *    refusal promise the card starts by itself.
+   *
+   * `opts.resumeNudge` is what a caller with a better sentence than the default wants said to
+   * a session this rejoins ({@link Scheduler.resumeTask}). Deliberately dropped when a gate
+   * parks the start instead: the run that eventually happens is the gate's resume, and by
+   * then a usage limit really is what the agent last waited on.
    */
-  startTaskNow(taskId: string): RunOutcome {
+  startTaskNow(taskId: string, opts: { resumeNudge?: string } = {}): RunOutcome {
     if (this.disposed) return { refused: 'shutting-down' };
     // Already reserved or running: starting a second session for one task would give it
     // two agents in one worktree. (Reachable from the UI: a parked step offers "Run this
@@ -1342,7 +1373,7 @@ export class Scheduler {
       this.parkForSignIn(target);
       return { refused: 'signed-out' };
     }
-    return { runId: this.startTask(project, target) };
+    return { runId: this.startTask(project, target, { resumeNudge: opts.resumeNudge }) };
   }
 
   /**
@@ -1650,8 +1681,51 @@ export class Scheduler {
     // A limit-parked task counts as stoppable too: drop it — and any step of its chain the
     // gate is holding — so nothing is resurrected when the limit resets.
     this.limitGate.unpark([taskId, ...queuedSteps.map((s) => s.id)]);
-    this.updateTask(taskId, { status: 'stopped' }, null);
+    // The status half of this write does not survive on a board card — `guardCardStatus`
+    // hands `status` straight back to the column the human left it in, which is the whole
+    // reason a stopped ticket in TO DO used to be indistinguishable from one nobody had ever
+    // started. `stoppedAt` is not a status, so it survives, and it is what Resume is offered
+    // from (`canResumeWork`). The same write, deliberately: a stop is one moment.
+    this.updateTask(taskId, { status: 'stopped', stoppedAt: Date.now() }, null);
     return true;
+  }
+
+  /**
+   * Put a stopped card back to work — the exact inverse of {@link Scheduler.stopTask}, and
+   * the engine behind the Resume button (`canResumeWork` in `@shared/board` decides whether
+   * it is offered).
+   *
+   * It un-does what Stop cancelled and then hands over to the ordinary start path rather than
+   * growing a second one. Two things follow from that, and both are the point:
+   *
+   *  - **Re-queueing the steps IS resuming the chain.** A stop marks every queued step
+   *    `stopped`, which leaves nothing runnable for `nextRunnableStep` to find; putting them
+   *    back to `pending`, in order, is what makes a Resume start the stopped STEP rather than
+   *    the card's own session beside it.
+   *  - **"Within the same session" is not new code.** `startTaskNow` resolves the target,
+   *    parks in the limit/sign-in gate rather than dropping the work, and lands in
+   *    `startTask`, which resumes by `task.sessionId` — so a stopped agent is rejoined
+   *    mid-conversation for free. All this adds is the sentence it is greeted with
+   *    ({@link STOP_RESUME_NUDGE}), because the default one blames a usage limit that never
+   *    happened.
+   *
+   * A card with nothing stopped re-queues nothing — a step that ran to completion is not
+   * dragged back into the queue by a button pressed on the card above it — but it still
+   * starts, which is what Resume means on a card whose work the human stopped between steps.
+   */
+  resumeTask(taskId: string): RunOutcome {
+    if (this.disposed) return { refused: 'shutting-down' };
+    const task = this.store.getTask(taskId);
+    if (!task) return { refused: 'unknown-task' };
+    // Asked before anything is un-done: a card already working is a card whose stop has been
+    // superseded, and re-queueing its steps under it would hand a live chain a second agent.
+    if (this.inFlight.has(taskId)) return { refused: 'already-running' };
+
+    for (const step of this.store.getSubtasks(taskId)) {
+      if (step.status === 'stopped') this.updateTask(step.id, { status: 'pending' }, null);
+    }
+    if (task.stoppedAt != null) this.updateTask(taskId, { stoppedAt: null }, null);
+    return this.startTaskNow(taskId, { resumeNudge: STOP_RESUME_NUDGE });
   }
 
   /**
@@ -2380,6 +2454,7 @@ export class Scheduler {
       reviewSeed?: boolean;
       releaseSeed?: boolean;
       permissionMode?: PermissionMode;
+      resumeNudge?: string;
     } = {},
   ): string {
     const runId = randomUUID();
@@ -2397,6 +2472,11 @@ export class Scheduler {
     // the card first.
     const reviewSeed = opts.reviewSeed ?? Boolean(task.chainLandedAt);
     if (task.chainLandedAt) this.updateTask(task.id, { chainLandedAt: null }, null);
+    // "Stopped" is a fact about RIGHT NOW (`Task.stoppedAt`), so it is cleared by work
+    // starting — whichever route started it. Resume clears it before it even gets here, but a
+    // plain Start, a chat reply and the limit gate's own resume all un-stop the card just as
+    // truly, and a card that ran again would otherwise keep offering Resume for ever.
+    if (task.stoppedAt != null) this.updateTask(task.id, { stoppedAt: null }, null);
     // Read off the SAME two inputs the mode is, and that symmetry is the point: `plan`
     // asked for on this turn means "come back with a plan", while `plan` inherited from
     // the card means only "this card may not write". A conversation — a chat reply, a
@@ -2410,6 +2490,7 @@ export class Scheduler {
       runId,
       settled: false,
       chatPrompt: opts.chatPrompt,
+      resumeNudge: opts.resumeNudge,
       reviewSeed,
       releaseSeed: opts.releaseSeed,
       permissionMode,
@@ -2567,7 +2648,7 @@ export class Scheduler {
     const worktreePath = prep.mode === 'worktree' ? prep.cwd : undefined;
     // What the session is told to do, in order of specificity: the human's own words
     // (Phase 12 chat), else — when there is a conversation to rejoin — just what is new
-    // in it (a failure note, or nothing but a nudge), else the full brief.
+    // in it (a failure note, the caller's own nudge, or the default one), else the full brief.
     //
     // The full brief is reserved for a run with NO session to resume ("Retry fresh", or a
     // card that never started): nothing has been said to that agent yet, so it genuinely
@@ -2577,7 +2658,7 @@ export class Scheduler {
       (resumeSessionId
         ? failureNote
           ? resumeWithNotePrompt(failureNote)
-          : RESUME_NUDGE
+          : (run.resumeNudge ?? RESUME_NUDGE)
         : this.buildPrompt(project, task, {
             branch,
             planRel,
@@ -5137,7 +5218,13 @@ export class Scheduler {
     patch: Partial<
       Pick<
         Task,
-        'status' | 'sessionId' | 'agentPlan' | 'preRunStatus' | 'chainLandedAt' | 'workedAt'
+        | 'status'
+        | 'sessionId'
+        | 'agentPlan'
+        | 'preRunStatus'
+        | 'chainLandedAt'
+        | 'workedAt'
+        | 'stoppedAt'
       >
     >,
     runId: string | null,

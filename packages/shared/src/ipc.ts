@@ -536,6 +536,17 @@ export interface IpcApi {
    */
   'task:stopAgent': (taskId: string) => Promise<Task>;
   /**
+   * The exact inverse of `task:stopAgent`: put a stopped card back to work, **in the session
+   * it was stopped in**. Its stopped steps are re-queued, so a card executing a plan carries
+   * on at the step that was interrupted rather than starting its own session beside the
+   * chain, and the agent is rejoined by `--resume` where there is a conversation to rejoin.
+   *
+   * Rejects with the reason it could not start (`RUN_REFUSAL_MESSAGE`) — the same six walls
+   * `task:run` names, including a gate, which parks the card and starts it by itself later.
+   * Returns the updated task either way, so a caller that catches still has the card.
+   */
+  'task:resumeAgent': (taskId: string) => Promise<Task>;
+  /**
    * Say something to the agent working this card (Phase 12) — the card's half of a
    * conversation, not an answer to a question it asked. The message is recorded on the
    * timeline as a `chat` entry and delivered to the live session's open input stream.

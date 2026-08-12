@@ -149,6 +149,10 @@ describe('HttpTransport', () => {
       { channel: 'task:addComment', call: () => t().invoke('task:addComment', 't1', 'hello') },
       { channel: 'task:chat', call: () => t().invoke('task:chat', 't1', 'hello') },
       { channel: 'task:run', call: () => t().invoke('task:run', 't1') },
+      // A browser has no engine to resume into, and the transport refuses every channel it
+      // does not list — so the mirror needed no code for this, only the assertion that it
+      // still says so by name.
+      { channel: 'task:resumeAgent', call: () => t().invoke('task:resumeAgent', 't1') },
       { channel: 'task:delete', call: () => t().invoke('task:delete', 't1') },
       { channel: 'task:integrate', call: () => t().invoke('task:integrate', 't1') },
       { channel: 'attachment:pick', call: () => t().invoke('attachment:pick') },
