@@ -148,16 +148,42 @@ flag, and kept in `$TEMP` because an untracked `.ts` under `apps/client` is a fi
 picks up:
 
 ```js
+// $TEMP/ci-runner-sim/runner-sim.mjs
 Object.defineProperty(process, 'platform', { value: 'linux' });
 process.execPath = '/usr/bin/node';
+console.log(`SIM platform=${process.platform} execPath=${process.execPath}`);
 ```
+
+```ts
+// $TEMP/ci-runner-sim/vitest.config.ts — the client's own config plus that file
+import base from '<abs>/apps/client/vitest.config.ts';
+import { mergeConfig, defineConfig } from 'vitest/config';
+export default mergeConfig(
+  base,
+  defineConfig({ test: { setupFiles: ['<abs>/$TEMP/ci-runner-sim/runner-sim.mjs'] } }),
+);
+```
+
+```bash
+pnpm --filter claude-orchestrator exec vitest run src/main/exec/wslHost.test.ts \
+  --config "$TEMP/ci-runner-sim/vitest.config.ts"
+```
+
+`--config`, not `--setupFiles`: that flag does not exist on `vitest` 2.1.9, and passing it dies
+with `CACError: Unknown option --setupFiles` **and exit 1** before a single test is collected —
+a red that reads like a failing assertion in a log and is nothing of the kind. Merge onto the
+client's config rather than writing a fresh one, or `@shared` stops resolving and the run fails
+for a reason of your own making.
 
 Use **both** lines. They do different jobs: `execPath` is what makes a path-shape assertion go
 red, while `platform` changes no result on its own — it is what makes a `process.platform`
 guard take the branch it takes on the runner. With only the first, a guarded test looks broken
 when it is not; with only the second, nothing moves at all. Then run it a third time with no
 setup file: a red that does not go green when the simulation is removed is a reproduction of
-something else.
+something else — and pin `--config` on that run too, because `vitest` searches _upward_ from
+its root for a config and will quietly find the harness one if it sits in a parent directory.
+The `SIM` line is the check that the stub arrived at all: a pass under a simulation that never
+applied is not evidence.
 
 The Windows-only jobs — `ci.yml`'s `package` and `release.yml`'s `windows` — package and smoke
 test the app, and prove nothing about unit tests. Nothing runs the unit suite on Windows in

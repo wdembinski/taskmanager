@@ -378,6 +378,52 @@ two fixes, measured rather than argued.
 `wslPath.ts` was restored from a `$TEMP` copy and confirmed byte-identical, the probe file and
 the whole harness were deleted, and the work tree was confirmed clean afterwards.
 
+### 7.2.2 The command, and the proof the stub arrives
+
+The plan spelled the reproduction as `vitest run … --setupFiles <that file>`. **There is no such
+flag.** On the `vitest` 2.1.9 this repository pins it dies at argument parsing:
+
+```
+CACError: Unknown option `--setupFiles`
+    at Command.checkUnknownOptions (…/vitest/dist/chunks/cac.CB_9Zo9Q.js:403:17)
+[ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL] Command failed with exit code 1
+```
+
+Worth stating in full because of the second line: **exit 1, before a single test is collected.**
+Piped into a log or a CI step that only reads the status, that is indistinguishable from the
+failing assertion you were trying to reproduce — a false red at exactly the moment you are
+hunting a real one. The working spelling routes the same thing through a config:
+
+```bash
+pnpm --filter claude-orchestrator exec vitest run src/main/exec/wslHost.test.ts \
+  --config "$TEMP/ci-runner-sim/vitest.config.ts"
+# → SIM platform=linux execPath=/usr/bin/node
+# → Test Files 1 passed (1) | Tests 4 passed | 9 skipped (13)
+```
+
+That config is `mergeConfig(base, { test: { setupFiles: [<abs>] } })` over
+`apps/client/vitest.config.ts` by absolute path, not a config of its own: the base carries the
+`@shared` / `@protocol` / `@ui` aliases, and without them the run fails to resolve rather than
+failing to assert.
+
+The recipe rests on one thing that reading cannot settle — whether a setup file's mutation is
+visible to the **test** module or only to the setup module's own scope. Measured, with a probe
+in `$TEMP` asserting both stubbed values directly:
+
+| Run                                              | Result                                       |
+| ------------------------------------------------ | -------------------------------------------- |
+| probe + harness config                           | ✅ `PROBE platform=linux execPath=/usr/bin/node` |
+| probe + `apps/client/vitest.config.ts` (control) | ❌ `setup 0ms`, expected `C:\nvm4w\…\node.exe` to be `/usr/bin/node` |
+
+So both lines cross into the test module, and the control proves the probe was measuring the
+setup file rather than agreeing with the machine by accident.
+
+One trap found while running that control: with `--root` pointed inside the harness directory
+and no `--config`, `vitest` searched **upward** and picked up the harness config anyway — the
+`SIM` line printed on a run that was supposed to have no setup file. A control has to pin
+`--config` explicitly, or read back the `SIM` line to confirm its absence. The harness lives
+outside the work tree and was deleted afterwards, tree confirmed clean.
+
 ### 7.3 The fix asserts the whole path, on every platform
 
 `process.execPath` is a plain writable, configurable property
