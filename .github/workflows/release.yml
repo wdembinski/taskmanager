@@ -1,0 +1,454 @@
+# Release — [`RELEASE.md`](../../RELEASE.md)'s procedure, run by a machine.
+#
+# Every push to `development` (this repo's integration branch — there is no `main`) tags a
+# version, drafts a GitHub release, packages the desktop app for Windows and Linux into that
+# draft, and then publishes it. The cloud service is NOT this workflow's business: the same
+# push runs `deploy.yml` in parallel, which is what the ticket asks for.
+#
+# The job order is RELEASE.md's section order, and each job is one of its rules:
+#
+#   gates    §1  nothing is tagged from a red tree (rule 1)
+#   version  §0  idempotence, §2 the version, §3 tag and push, §4 the DRAFT release
+#   windows  §5  package + upload into the draft, then the headless addon smoke test
+#   linux    §6  package + upload; docs/07's ELF and ABI-symbol checks
+#   promote  §7  publish the draft — always, even if Linux failed (rule 4)
+#
+# ── The two loop hazards, closed deliberately ──────────────────────────────────
+#
+# The `version` job pushes a commit to the branch this workflow triggers on, which is a
+# release that starts a release that starts a release. Two independent things stop that:
+#
+#  1. Pushes authenticated with the automatic `GITHUB_TOKEN` do not trigger workflows. This
+#     is GitHub's own loop guard and it is the one doing the work today.
+#  2. `gates` skips itself — and so the whole workflow, since everything needs it — when the
+#     head commit is a `chore(release):`. That covers the day someone swaps in a PAT to get
+#     the push signed or to trigger something downstream, at which point guard 1 evaporates
+#     silently.
+#
+# The bump commit also touches only `apps/client/package.json`, which matches no filter in
+# `deploy.yml` — so even if it did trigger, it would deploy nothing.
+#
+# ── What still needs a human ───────────────────────────────────────────────────
+#
+# The release notes are `--generate-notes`', i.e. the commit subjects. RELEASE.md §4 wants
+# them grouped by what a user would notice; reword them on the release page afterwards if
+# the version deserves it. And nothing here installs the build on a clean machine — that
+# check is still owed by a person, on a different machine.
+
+name: Release
+
+on:
+  push:
+    branches: [development]
+  # Re-run a release that failed halfway, without an empty commit. The `version` job is
+  # idempotent (§0), so a dispatch after a successful run stops instead of tagging twice.
+  workflow_dispatch:
+
+# Never cancel a release in flight. Half a release — a tag pushed with no artifacts, a draft
+# with an installer and no `latest.yml` — costs more to clean up than a slow queue.
+concurrency:
+  group: release-development
+  cancel-in-progress: false
+
+permissions:
+  contents: write # push the bump commit and the tag; create and edit the release
+
+jobs:
+  # ── §1 Green gates ─────────────────────────────────────────────────────────
+  # Deliberately the same steps as ci.yml's `gates`, not a reusable workflow: they are the
+  # same list for the same reason (RELEASE.md §1), but this one guards a tag and that one
+  # guards a merge, and coupling them means a change made for one silently changes the other.
+  # Keep them in step by hand; if they ever disagree, the one guarding the tag wins.
+  gates:
+    # The skip guard. `github.event.head_commit` does not exist on workflow_dispatch, where
+    # this evaluates to '' and the guard lets the run through — which is what you want from a
+    # deliberate re-run.
+    if: ${{ !startsWith(github.event.head_commit.message, 'chore(release):') }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # No `version:` here on purpose — pnpm's version is pinned by `packageManager`
+      # (pnpm@11.18.0) in the root package.json. Passing both makes action-setup fail with
+      # ERR_PNPM_BAD_PM_VERSION ("Multiple versions of pnpm specified").
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      # pnpm 11.18 refuses to run on Node older than 22.13 — see apps/server/Dockerfile,
+      # where a stale node:22.11 layer produced exactly that failure.
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Format check
+        run: pnpm format:check
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      # `pnpm test` builds packages/* first (see the root vitest.config.ts header): the
+      # `@tm/*` specifiers resolve through each package's `exports` to its built dist/,
+      # so a bare `vitest run` on a clean checkout cannot resolve them.
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+  # ── §0, §2, §3, §4 — the version, the tag, the draft ───────────────────────
+  version:
+    needs: gates
+    runs-on: ubuntu-latest
+    outputs:
+      # 'false' means "there is nothing to release" — an already-published release for this
+      # version. RELEASE.md §0 calls that a normal outcome, not a failure, so every later job
+      # skips and the run is green.
+      release: ${{ steps.decide.outputs.release }}
+      version: ${{ steps.next.outputs.version }}
+      tag: ${{ steps.next.outputs.tag }}
+
+    steps:
+      # RELEASE.md rule 5: only the integration branch is releasable. `push` can only be
+      # `development` (see `on:`), but workflow_dispatch offers every branch in the picker.
+      - name: Refuse to release from anything but development
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF_NAME" != "development" ]; then
+            echo "::error::Releases are cut from development only (RELEASE.md rule 5); this run is on $GITHUB_REF_NAME."
+            exit 1
+          fi
+
+      # fetch-depth: 0 for the tags. scripts/next-version.mjs reads them from the local repo,
+      # and a shallow checkout with no tags is indistinguishable from a repo that has never
+      # released — it would hand back the manifest version as-is and try to re-tag it.
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # No pnpm and no install: next-version.mjs has zero dependencies, on purpose.
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Emits version=, tag= and needsCommit=. The rule and every case it decides live in
+      # that file, next to its unit test — see its header for why not in YAML.
+      - name: Work out the next version
+        id: next
+        run: node scripts/next-version.mjs
+
+      # §0's "what tells you there is nothing to release": a `gh release view` that finds an
+      # already-PUBLISHED release for this version. A leftover draft is not that — it is a
+      # release that failed partway through, and this run continues into it.
+      - name: Is there anything to release?
+        id: decide
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.next.outputs.tag }}
+        run: |
+          set -euo pipefail
+          STATE=$(gh release view "$TAG" --json isDraft --jq '.isDraft' 2>/dev/null || echo missing)
+          case "$STATE" in
+            false)
+              echo "::notice::$TAG is already published — nothing to release. (RELEASE.md §0: a normal outcome, not a failure.)"
+              echo "release=false" >> "$GITHUB_OUTPUT"
+              echo "draftExists=false" >> "$GITHUB_OUTPUT"
+              ;;
+            true)
+              echo "$TAG already exists as a DRAFT — resuming into it rather than creating a second one."
+              echo "release=true" >> "$GITHUB_OUTPUT"
+              echo "draftExists=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "No release named $TAG yet."
+              echo "release=true" >> "$GITHUB_OUTPUT"
+              echo "draftExists=false" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+      # §2's fallback, reached when a merge dropped a branch's bump — which has happened here
+      # several times. The version of record is apps/client/package.json (CONTRIBUTING.md §4);
+      # the root package.json is the workspace manifest and stays at 0.0.0.
+      - name: Write the version into apps/client/package.json
+        if: steps.decide.outputs.release == 'true' && steps.next.outputs.needsCommit == 'true'
+        env:
+          VERSION: ${{ steps.next.outputs.version }}
+        run: |
+          set -euo pipefail
+          node -e '
+            const fs = require("fs");
+            const path = "apps/client/package.json";
+            const manifest = JSON.parse(fs.readFileSync(path, "utf8"));
+            manifest.version = process.env.VERSION;
+            fs.writeFileSync(path, JSON.stringify(manifest, null, 2) + "\n");
+          '
+          git diff --stat -- apps/client/package.json
+
+      # The one commit allowed to carry only a version (§2) — there is no work commit here
+      # for the bump to ride inside.
+      - name: Commit the bump
+        if: steps.decide.outputs.release == 'true' && steps.next.outputs.needsCommit == 'true'
+        env:
+          VERSION: ${{ steps.next.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add apps/client/package.json
+          git commit -m "chore(release): v$VERSION"
+
+      # §3: an ANNOTATED tag, never a lightweight one. next-version.mjs only ever proposes a
+      # version newer than every existing tag, so this cannot collide — the guard is there so
+      # that a re-run after a failed push is a no-op rather than an error.
+      - name: Tag and push
+        if: steps.decide.outputs.release == 'true'
+        env:
+          TAG: ${{ steps.next.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "$TAG already exists locally; reusing it."
+          else
+            git tag -a "$TAG" -m "$TAG — see the release notes on GitHub."
+          fi
+          # --follow-tags pushes the annotated tag along with the branch, in one round trip,
+          # so the branch is never briefly ahead of the tag that names it. This push is made
+          # with GITHUB_TOKEN and therefore does not re-trigger this workflow — see the header.
+          git push --follow-tags origin development
+
+      # §4. The release must exist as a DRAFT before packaging, because that is what
+      # electron-builder's `--publish onTagOrDraft` uploads into. If it were already
+      # published, builder would report "skipped publishing" and exit 0 — a green run with an
+      # empty release.
+      - name: Draft the GitHub release
+        if: steps.decide.outputs.release == 'true' && steps.decide.outputs.draftExists != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.next.outputs.tag }}
+        run: gh release create "$TAG" --draft --title "$TAG" --generate-notes
+
+  # ── §5 Windows ─────────────────────────────────────────────────────────────
+  windows:
+    needs: version
+    if: needs.version.outputs.release == 'true'
+    runs-on: windows-latest
+
+    steps:
+      # The tag, not the branch: the branch may have moved on, and what is being packaged has
+      # to be exactly what was tagged.
+      - name: Checkout the tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # `package` runs electron-vite directly and never goes through turbo, so it does not
+      # build packages/*. apps/client imports @tm/shared, @tm/protocol and @tm/ui through
+      # their `exports`, i.e. their dist/, which does not exist after a clean install — the
+      # bundle step fails to resolve them. Same idiom as the root `test` script.
+      - name: Build the shared packages
+        run: pnpm exec turbo run build --filter=./packages/*
+
+      # electron-vite build → install-app-deps → ensure:abi → electron-builder --win
+      # --publish onTagOrDraft → check:feed. Neither gate is bypassed (rule 2): ensure:abi is
+      # why v0.25.0's permanent "Loading…" cannot ship again, and check:feed is why an
+      # unsigned build cannot ship a publisherName that refuses every auto-update.
+      #
+      # GH_TOKEN is what --publish uses to upload the installer, its blockmap and latest.yml
+      # into the draft created above.
+      - name: Package the Windows installer
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: pnpm --filter claude-orchestrator package
+
+      # RELEASE.md §5's smoke test, adapted for CI in one way that matters: it writes its
+      # verdict to a FILE. The packaged binary is a GUI-subsystem executable, so on Windows it
+      # is detached from the console and prints nothing anyone can capture — a step that read
+      # stdout would pass on every build, healthy or not. So the script catches everything,
+      # writes PASS or FAIL, and the step fails unless the file says PASS.
+      #
+      # ELECTRON_RUN_AS_NODE runs it as plain Node: no window, no engine, nothing that could
+      # collide with a copy of the app somebody has open (rule 6).
+      #
+      # It is required through app.asar, NOT app.asar.unpacked. Only the compiled .node is
+      # unpacked; better-sqlite3's own dependencies — `bindings` above all — stay inside the
+      # archive, so requiring the unpacked directory dies with "Cannot find module 'bindings'"
+      # on a perfectly good build. Asking for the asar path is what the app itself does.
+      # This is a stronger check than opening the window: the addon loads lazily inside
+      # `new Database()`, which is exactly what fails when a build ships the wrong ABI.
+      - name: Smoke-test the packaged addon
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f smoke.txt
+          # The .exe is named after electron-builder.yml's `productName`.
+          ELECTRON_RUN_AS_NODE=1 "apps/client/dist/win-unpacked/VIPPER Task Manager.exe" -e '
+            const fs = require("fs");
+            const path = require("path");
+            try {
+              const pkg = "apps/client/dist/win-unpacked/resources/app.asar/node_modules/better-sqlite3";
+              const Database = require(path.resolve(pkg));
+              const row = new Database(":memory:").prepare("select 1 as ok").get();
+              fs.writeFileSync("smoke.txt",
+                "PASS packaged addon OK on ABI " + process.versions.modules + " " + JSON.stringify(row) + "\n");
+            } catch (err) {
+              fs.writeFileSync("smoke.txt", "FAIL " + ((err && err.stack) || err) + "\n");
+            }
+          ' || true
+          if [ ! -f smoke.txt ]; then
+            echo "::error::The packaged binary wrote no verdict at all — it did not reach the try/catch."
+            exit 1
+          fi
+          cat smoke.txt
+          grep -q '^PASS ' smoke.txt || {
+            echo "::error::The packaged better-sqlite3 addon failed to load — this build is bad (RELEASE.md §5)."
+            exit 1
+          }
+
+      # A backstop, not the delivery path: the artifacts that matter are already on the draft,
+      # uploaded by electron-builder under the exact names latest.yml records. This copy is
+      # what you reach for when a promotion goes wrong and the draft has to be rebuilt by hand.
+      - name: Keep a copy of the installer and the feed
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ needs.version.outputs.tag }}
+          path: |
+            apps/client/dist/*-setup.exe
+            apps/client/dist/latest.yml
+          if-no-files-found: error
+
+  # ── §6 Linux ───────────────────────────────────────────────────────────────
+  # RELEASE.md §6 calls this "usually a hand-back, not a step", because the machine releases
+  # were cut from could not build it. A runner can, so here it is a step — but the rule behind
+  # §6 is unchanged and lives in `promote`: a Linux build that fails does not hold the release.
+  linux:
+    needs: version
+    if: needs.version.outputs.release == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout the tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
+
+      # electron-builder shells out to fakeroot to build the .deb; without it the AppImage
+      # succeeds and the deb target dies.
+      - name: Install fakeroot
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fakeroot
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build the shared packages
+        run: pnpm exec turbo run build --filter=./packages/*
+
+      # Same chain as Windows, with --linux: AppImage + deb, plus latest-linux.yml, which an
+      # AppImage cannot self-update without.
+      - name: Package the Linux artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: pnpm --filter claude-orchestrator package:linux
+
+      # docs/07's "Building for Linux" checks. Both are about the same failure — a bundle
+      # carrying Windows-compiled native code, which is what a build from /mnt/c produces and
+      # what shipped as v0.25.0. `ensure:abi` has already run inside `package:linux`; these
+      # read the binaries that were actually written.
+      #
+      # NOTE the app.asar.unpacked path here is correct and is NOT the mistake §5 warns about:
+      # readelf reads the .node file, it does not require() it, and the unpacked copy is the
+      # only one on disk as a file.
+      - name: Check the artifacts are Linux binaries
+        run: |
+          set -euo pipefail
+          file apps/client/dist/linux-unpacked/claude-orchestrator
+          file apps/client/dist/linux-unpacked/claude-orchestrator | grep -q 'ELF 64-bit'
+
+          ADDON=apps/client/dist/linux-unpacked/resources/app.asar.unpacked/node_modules/better-sqlite3/build/Release/better_sqlite3.node
+          readelf -Ws "$ADDON" | grep node_register_module_v || true
+          # v130 is Electron 33's module ABI. Any other number is a bundle that boots to a
+          # permanent "Loading…" — the addon loads lazily, so nothing else catches it.
+          readelf -Ws "$ADDON" | grep -q 'node_register_module_v130'
+
+  # ── §7 Promote ─────────────────────────────────────────────────────────────
+  # Rule 4: promote the draft LAST — but DO promote it. Last, because electron-builder cannot
+  # write to a published release and says "skipped" while exiting 0. And do it, because four
+  # green drafts once piled up here unpublished, each waiting on a platform build that was
+  # never going to happen on its own.
+  #
+  # Hence `always()` and a condition on Windows alone. §6 is explicit that a platform this
+  # build cannot produce is not a reason to withhold a release: ship what you have and say
+  # what is owed. `continue-on-error` on the linux job would have expressed the same thing far
+  # less visibly — a failed Linux build should look failed, and be tolerated here, on purpose.
+  promote:
+    needs: [version, windows, linux]
+    if: always() && needs.version.outputs.release == 'true' && needs.windows.result == 'success'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.version.outputs.tag }}
+
+    steps:
+      # Without latest.yml beside the installers, no installed app will ever see this release:
+      # electron-updater reads the feed, not the release page.
+      - name: Confirm the update feed is on the release
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --json assets --jq '.assets[].name' | tee assets.txt
+          # -F and -x: a whole line, matched literally. Unanchored, `latest.yml` as a regex
+          # would also be satisfied by `latest-linux.yml`, which is the wrong feed entirely.
+          grep -qxF 'latest.yml' assets.txt || {
+            echo "::error::$TAG has no latest.yml — promoting it would publish a release nobody can update to."
+            exit 1
+          }
+          if [ "${{ needs.linux.result }}" = "success" ] && ! grep -qxF 'latest-linux.yml' assets.txt; then
+            echo "::error::The Linux build succeeded but latest-linux.yml is not on $TAG."
+            exit 1
+          fi
+
+      - name: Publish
+        run: |
+          set -euo pipefail
+          gh release edit "$TAG" --draft=false
+          echo "::notice::$TAG is published."
+
+      # Not a failure — a hand-back. RELEASE.md §6: publishing Windows-only means Linux
+      # artifacts for THIS version can no longer go up the normal way (builder cannot write to
+      # a published release), so the usual answer is to ship Linux in the next version.
+      - name: Say what is owed
+        if: needs.linux.result != 'success'
+        run: |
+          echo "::warning::$TAG was published WITHOUT Linux artifacts — the linux job ended '${{ needs.linux.result }}'. Linux users get the next version; attaching them to this one now would need gh release upload, which mangles filenames (RELEASE.md §6)."
