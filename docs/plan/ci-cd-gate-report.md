@@ -326,7 +326,57 @@ The red reproduced CI's failure at the same file, the same line and the same ass
 which is what makes it a reproduction rather than a resemblance. The control row is what
 makes it a reproduction of the **runner**: the same pre-fix test, same command, setup file
 removed, passes on this box. The two lines of simulation are the entire difference between
-green here and red there, which is the bug stated as an experiment.
+green here and red there, which is the bug stated as an experiment — and §7.2.1 takes them
+apart, because they do not do the same job.
+
+### 7.2.1 What each of the two lines does
+
+The simulation is two lines, and it is worth knowing which one carries the red. They were run
+separately against a throwaway probe holding all three historical spellings of the assertion
+side by side — `A` the `/mnt/` prefix (`b7d79d2`, the one CI failed on), `B` the equality plus
+`process.platform === 'win32'` guard (`2fc8676`, which released `v0.83.1`), and `C` the stub
+that is on the branch now (`0bf436f`). Same file, same command, four environments:
+
+| Setup file                       | `platform` | `execPath`              | A      | B      | C      |
+| -------------------------------- | ---------- | ----------------------- | ------ | ------ | ------ |
+| none — this box                  | `win32`    | `C:\nvm4w\nodejs\node.exe` | ✅ | ✅ | ✅ |
+| `Object.defineProperty` **only** | `linux`    | `C:\nvm4w\nodejs\node.exe` | ✅ | ✅ | ✅ |
+| `process.execPath` **only**      | `win32`    | `/usr/bin/node`         | ❌     | ❌     | ✅     |
+| both — the runner                | `linux`    | `/usr/bin/node`         | ❌     | ✅     | ✅     |
+
+Every run printed the environment it ran in (`SIM platform=… execPath=…`) before asserting
+anything, because "3 passed" under a stub that silently failed to apply is not evidence.
+
+- **`process.execPath` is the line that carries the red.** It alone reproduces CI's failure of
+  `A`. On its own it is also too red: it fails `B` as well, and `B` is the commit that actually
+  turned the pipeline green. Without the platform line the `win32` guard still fires on this
+  box, so `B`'s shape check runs against `/usr/bin/node` and a simulation of the runner
+  condemns the fix that shipped from it.
+- **`Object.defineProperty(process, 'platform', …)` changes no result in this file by itself.**
+  Its only reader here is `ENABLED` at
+  [`wslHost.test.ts:33`](../../apps/client/src/main/exec/wslHost.test.ts), which is already
+  false because `ORCH_WSL_TEST` is unset — the counts are 4 passed, 9 skipped with it and
+  without it, on the committed file as well as the probe. It is not decoration all the same: it
+  is the only way to make a platform guard behave here the way it behaves there, and therefore
+  the only way to _observe_ a guarded branch not running.
+
+That observation is what it was for. §7.3's claim that the shipped guard "deletes the shape
+check from CI" is a statement about a branch not taken, which reading cannot settle. Dropping
+`toLowerCase()` from `windowsToLinux`'s drive letter again, this time under each half of the
+simulation:
+
+| Environment                             | A   | B                    | C   |
+| --------------------------------------- | --- | -------------------- | --- |
+| `execPath` only — Windows, runner's node | ❌  | ❌ catches it        | ❌  |
+| both — the runner                       | ❌  | ✅ **misses it**     | ❌  |
+
+`B` catches a mangled drive letter on Windows and misses it on the runner: the check is present
+exactly where a Windows-shaped path is exercised by half the suite anyway, and absent exactly
+where nothing else exercises one. `C` catches it in both. That is the difference between the
+two fixes, measured rather than argued.
+
+`wslPath.ts` was restored from a `$TEMP` copy and confirmed byte-identical, the probe file and
+the whole harness were deleted, and the work tree was confirmed clean afterwards.
 
 ### 7.3 The fix asserts the whole path, on every platform
 

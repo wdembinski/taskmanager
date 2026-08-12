@@ -142,6 +142,23 @@ there. The run after the fix published `v0.83.1` end to end.
 [`docs/plan/ci-cd-gate-report.md` §7](plan/ci-cd-gate-report.md#7-added-after-this-report--the-first-real-run-and-what-it-caught)
 has both runs, the reproduction and the fix.
 
+To check a suspect test against the runner without pushing, stand the runner up locally — a
+setup file, wired in through a throwaway config because `vitest` 2.1.9 has no `--setupFiles`
+flag, and kept in `$TEMP` because an untracked `.ts` under `apps/client` is a file `typecheck`
+picks up:
+
+```js
+Object.defineProperty(process, 'platform', { value: 'linux' });
+process.execPath = '/usr/bin/node';
+```
+
+Use **both** lines. They do different jobs: `execPath` is what makes a path-shape assertion go
+red, while `platform` changes no result on its own — it is what makes a `process.platform`
+guard take the branch it takes on the runner. With only the first, a guarded test looks broken
+when it is not; with only the second, nothing moves at all. Then run it a third time with no
+setup file: a red that does not go green when the simulation is removed is a reproduction of
+something else.
+
 The Windows-only jobs — `ci.yml`'s `package` and `release.yml`'s `windows` — package and smoke
 test the app, and prove nothing about unit tests. Nothing runs the unit suite on Windows in
 CI at all.
