@@ -519,7 +519,7 @@ passed in isolation — 36 of 36 — and did not recur on the two runs after it.
 out to `git` in temporary repositories, so contention under a loaded parallel run is the
 likely cause, but "likely" is the accurate word: it has been seen to fail once, on this
 machine, and nobody has explained it. If it starts failing on the runner, this is the first
-sighting.
+sighting. — It has since been seen a second time and measured; §8.3 explains it and bounds it.
 
 ### 7.6 The run after it, which is the proof §4 said could not be written
 
@@ -569,3 +569,131 @@ version of a fix that already shipped. Two consequences worth stating plainly:
   `scripts/next-version.mjs` answers `0.83.2 / needsCommit=true`. Rather than leave the
   release to §2's fallback, `apps/client/package.json` is bumped to `0.83.2` here, which puts
   the resolver back on `needsCommit=false` and makes the next release deterministic.
+
+---
+
+## 8. The green runs, and the gates on the commit that merges
+
+§7.2's table was filled in as the fix was made. This section is the same two runs performed
+again on the finished branch — `4b5ed55`, work tree clean, nothing of the harness left in it —
+because a green recorded mid-edit describes a tree that no longer exists. Everything below was
+measured on that commit.
+
+### 8.1 The same command, twice
+
+The harness is §7.2.2's, rebuilt from the recipe in
+[`docs/11`](../11-ci-cd-pipeline.md#the-gates-run-on-linux) rather than from memory, which is
+also the first check that the recipe as written works: two files in `$TEMP`, the setup file and
+a config that merges it onto `apps/client/vitest.config.ts` by absolute path.
+
+| Run                                       | `--config`                 | Result                                                    |
+| ----------------------------------------- | -------------------------- | --------------------------------------------------------- |
+| **GREEN** — the simulated ubuntu runner   | the `$TEMP` harness        | ✅ exit 0, `1 passed`, **4 passed / 9 skipped**, `setup 16ms` |
+| **GREEN** — no setup file at all          | `apps/client/vitest.config.ts` | ✅ exit 0, `1 passed`, **4 passed / 9 skipped**, `setup 0ms`  |
+
+```
+$ pnpm --filter claude-orchestrator exec vitest run src/main/exec/wslHost.test.ts \
+    --config "$TEMP/ci-runner-sim-step14/vitest.config.ts"
+stdout | src/main/exec/wslHost.test.ts
+SIM platform=linux execPath=/usr/bin/node
+ ✓ src/main/exec/wslHost.test.ts (13 tests | 9 skipped) 5ms
+      Tests  4 passed | 9 skipped (13)
+```
+
+Both halves of the reading matter and neither is the pass/fail line:
+
+- **`SIM platform=linux execPath=/usr/bin/node`** on the first run. The stub arrived; a green
+  under a simulation that silently failed to apply would be this box agreeing with itself.
+- **No `SIM` line, and `setup 0ms`,** on the second. That is the check §7.2.2's trap demands —
+  `vitest` searches _upward_ for a config, so "I passed no `--config`" is not evidence that no
+  setup file ran. Here the client's own config is pinned and the silence is read back.
+
+The assertion under test is therefore identical in both environments — a Windows binary stubbed
+into `process.execPath`, the whole translated string asserted — which is the entire claim
+`0bf436f` makes. On this box `process.platform=win32` and the real `execPath` is
+`C:\nvm4w\nodejs\node.exe`; under the harness they read `linux` and `/usr/bin/node`; the test
+does not notice either way.
+
+Both `$TEMP` files were deleted afterwards and the work tree confirmed clean with
+`git status --porcelain` — empty. One thing worth recording about that claim: §7.2's harness
+directory from the earlier steps was **still on disk** when this step started, despite having
+been reported deleted. It was outside the work tree and so could not affect any gate or any
+commit, but "deleted afterwards" is only true if someone looks. It has been removed.
+
+### 8.2 The gates, on the finished branch
+
+RELEASE.md §1 in full, forced, in order:
+
+| Gate                                    | Exit | Result                                          |
+| --------------------------------------- | ---- | ----------------------------------------------- |
+| `pnpm install --frozen-lockfile`        | 0    | already up to date, 621ms                       |
+| `pnpm format:check`                     | 0    | all matched files clean                         |
+| `pnpm exec turbo run typecheck --force` | 0    | 9 tasks, **0 cached**, 28.912s                  |
+| `pnpm test`                             | 1    | **2280 passed, 11 skipped**; 2 files red — §8.3 |
+| `pnpm exec turbo run build --force`     | 0    | 6 tasks, **0 cached**, 35.569s                  |
+
+The documentation added by this step cannot move any of them: `format:check` covers
+`apps/**`, `packages/**` and **root-level** `*.{json,md}` only, so nothing under `docs/**` is
+matched by it or by any other gate. That is also why `pnpm format` must not be pointed at
+`docs/**` — it would reformat files no check ever reads, which step 5 of the original plan did
+once and reverted.
+
+### 8.3 Both reds are this machine's, and the second one is now explained
+
+**`apps/server/src/config/secrets.test.ts`** — unchanged from §7.5. Fails at collection on the
+`@azure/identity` ESM/CJS interop error, reproduces without any change from this branch, and is
+green on the runner. Not in the release path, and not touched.
+
+**`apps/client/src/main/worktreeManager.test.ts`** — §7.5 recorded two cases in this file
+failing once, passing in isolation, and nobody explaining it. It has now happened a second
+time, on a **different** case (`preserves a differing untracked file: merges taking the branch
+version, base version stashed`), and this time the failure names its own cause:
+
+```
+Error: Test timed out in 5000ms.
+```
+
+Not an assertion. The file passes 36 of 36 in isolation, and the numbers say why it does not
+always survive a full parallel run **here**:
+
+| Where            | All 36 tests | Slowest single case  | Against vitest's default `testTimeout` |
+| ---------------- | ------------ | -------------------- | -------------------------------------- |
+| this Windows box | **45.5s**    | 5.2s                 | 5000ms — already over it, alone         |
+| ubuntu runner (31608982908) | **7.1s** | —          | 6× of headroom                         |
+
+The whole file on the runner finishes faster than one case takes here. This is Windows process
+spawn: every case in it shells out to `git` several times in a temporary repository, and under
+a loaded parallel run a case that normally takes 1–4s crosses 5s and is killed. So it is a
+**local** flake with a measured cause, not a lurking CI flake — and the run that published
+`v0.83.1` shows the file green in 7110ms.
+
+It is still worth someone's time, and is written here rather than fixed because it is outside
+this plan: the honest fix is an explicit `testTimeout` on that file sized for the machine that
+is slowest, not a retry. What must not be concluded from it is that a red `pnpm test` is
+routine. It is not, and rule 1 of RELEASE.md is unchanged.
+
+The summary of §8.2 is §7.4's: **every gate CI runs is green, and both local failures are ones
+CI demonstrably does not have** — 31608982908 ran the same 139 files and reported
+`137 passed | 2 skipped`, with both of these among the passes.
+
+### 8.4 What CI has done since, which is nothing
+
+Checked rather than assumed, because this step's whole subject is a claim that was true
+locally and false on a runner:
+
+```
+$ gh run list --workflow=Release --limit 5
+completed  success  test(exec): assert the relay command where it holds  development  push  31608982908  5m7s
+completed  failure  docs(ci): the workflow permission is set             development  push  31602231983  1m43s
+
+$ gh release list --limit 3
+v0.83.1  Latest  2026-08-12T14:55:18Z
+```
+
+Two runs, both already in §7, and `v0.83.1` still the latest release. **The third run is the
+merge of this branch**, which will cut `v0.83.2` — `scripts/next-version.mjs` answers
+`version=0.83.2 tag=v0.83.2 needsCommit=false` on this HEAD, so the resolver takes the manifest
+as it stands and no version-bump commit is pushed back. Nothing here was released by hand, and
+nothing should be: the merge is the release. The one thing that can still spoil it is the app's
+_Release after merge_ switch, which is **on** — see
+[the handoff's §5](ci-cd-handoff.md#5-the-apps-release-after-merge-switch--required).

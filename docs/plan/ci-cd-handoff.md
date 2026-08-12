@@ -209,6 +209,13 @@ Three things the runs settled that no local gate could:
 - **The value of running gates somewhere other than the author's machine.** A test that had
   been green locally for months went red on the first honest run.
 
+**The next merge is the branch carrying this paragraph, and it will cut `v0.83.2`** — checked
+rather than assumed: `node scripts/next-version.mjs` answers
+`version=0.83.2 tag=v0.83.2 needsCommit=false`, and `gh run list --workflow=Release` still
+shows only the two runs above. So the click is owed _again_, before that merge, and this time
+the version it protects has a name. If `v0.83.2` appears with the switch left on, look at which
+releaser got there: the run's own log, or an orchestrator session that followed `RELEASE.md`.
+
 ---
 
 ## The order
