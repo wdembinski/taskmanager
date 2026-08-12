@@ -309,17 +309,24 @@ process.execPath = '/usr/bin/node';
 ```
 
 `vitest 2.1.9` has no `--setupFiles` CLI flag, so it was wired in through a throwaway config
-beside `apps/client/vitest.config.ts` that merged `setupFiles` onto the real one — also
-deleted afterwards, and the work tree confirmed clean.
+that merges `setupFiles` onto `apps/client/vitest.config.ts` by absolute path. That config
+sits in `$TEMP` as well rather than beside the real one: an untracked `.ts` inside
+`apps/client` is a file `typecheck` would pick up, so the entire harness stays outside the
+work tree and is invoked as `--config $TEMP/ci-runner-sim/vitest.config.ts` with cwd
+`apps/client`. Both files deleted afterwards, and the work tree confirmed clean.
 
 | Step                                                  | Result                                                            |
 | ----------------------------------------------------- | ----------------------------------------------------------------- |
 | **RED** — the pre-fix test, simulated runner          | ❌ `wslHost.test.ts:185:46`, _expected false to be true_          |
+| **CONTROL** — the pre-fix test, no setup file         | ✅ 4 passed, 9 skipped                                            |
 | **GREEN** — after the fix, simulated runner           | ✅ 4 passed, 9 skipped                                            |
 | **GREEN** — after the fix, this Windows box, no setup | ✅ 4 passed, 9 skipped                                            |
 
 The red reproduced CI's failure at the same file, the same line and the same assertion —
-which is what makes it a reproduction rather than a resemblance.
+which is what makes it a reproduction rather than a resemblance. The control row is what
+makes it a reproduction of the **runner**: the same pre-fix test, same command, setup file
+removed, passes on this box. The two lines of simulation are the entire difference between
+green here and red there, which is the bug stated as an experiment.
 
 ### 7.3 The fix asserts the whole path, on every platform
 
