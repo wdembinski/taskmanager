@@ -174,6 +174,10 @@ see the cloud sign-in notes in [`docs/09`](09-deploying-the-cloud-service.md).
 Neither of these lives in a file, so neither shows up in a diff — and each fails in a way
 that looks like a bug in the workflow.
 
+What is actually set on this repository today, read back from the API rather than assumed, is
+in [`docs/plan/ci-cd-handoff.md`](plan/ci-cd-handoff.md) — along with the app switch below.
+This section is what the settings _are_; that one is the checklist of what still needs a click.
+
 **1. Settings → Actions → General → Workflow permissions → _Read and write permissions_.**
 
 `release.yml` declares `permissions: contents: write`, but a workflow's `permissions:` block
@@ -183,8 +187,10 @@ both fail with a 403 that reads like a bad credential rather than a repository s
 
 **2. `development`'s branch protection must let `github-actions[bot]` push.**
 
-The `version` job pushes the bump commit and the tag directly to `development`. Any
-protection rule that stops a direct push stops the release:
+_There is no protection rule on `development` today_ — so this is currently nothing to do,
+and is written down for the day someone adds one. The `version` job pushes the bump commit
+and the tag directly to `development`. Any protection rule that stops a direct push stops the
+release:
 
 - _Require a pull request before merging_ — add `github-actions[bot]` to the bypass list.
 - _Require status checks to pass_ — the bump commit has no PR and therefore no checks, so
@@ -285,7 +291,15 @@ correct: the file is still this project's release procedure, and it is still wha
 should follow when a release has to be cut by hand. The feature is unchanged and remains
 right for every _other_ repository the orchestrator drives — a project without a pipeline is
 exactly what it was built for. Only this repo's switch should be off, and turning it off is
-a click, not a commit.
+a click, not a commit: **Settings → the _Task Manager_ project → _Release after merge by
+default_**.
+
+One click is enough here, but that is a fact about this database rather than a general one. A
+card carries a nullable _override_ of the project's preference, and an override of `true`
+still wins after the project switch goes off — so a repo where any card had set one would need
+those cleared too. None has;
+[`docs/plan/ci-cd-handoff.md`](plan/ci-cd-handoff.md#5-the-apps-release-after-merge-switch--required)
+records the check and the rest of the handoff.
 
 ---
 

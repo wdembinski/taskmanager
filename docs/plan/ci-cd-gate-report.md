@@ -221,3 +221,17 @@ runs" a fact rather than an intention.
 §3's list was re-run in full on top of this step, forced as it explains: `format:check` clean,
 `typecheck` 9/9 with 0 cached, `pnpm test` **2280 passed, 11 skipped** across 138 files, and
 `build` 6/6 with 0 cached. The two extra tests against §3's 2278 are the two above.
+
+---
+
+## 6. Added after this report — step 9's settings check
+
+§4 above says a release end to end is unprovable until this lands. The settings it would land
+_onto_ are provable now, and step 9 checked them:
+[`ci-cd-handoff.md`](ci-cd-handoff.md) records what every repository setting and secret the
+pipeline depends on actually reads today, with the command that read it.
+
+Two of the five need a human click, and one of them is a genuine red rather than a formality:
+the repository's default workflow permission is `read`, which would fail the `version` job's
+push. Neither is a code change, and neither could have been caught by any gate in this
+report — which is the reason that file exists.
