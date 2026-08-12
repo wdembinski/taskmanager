@@ -62,6 +62,7 @@ import {
 } from '@fluentui/react-icons';
 import type { Task } from '@tm/shared/model';
 import {
+  canResumeWork,
   canStopWork,
   cardRunLabel,
   chainNeedsAttention,
@@ -414,12 +415,17 @@ const useStyles = makeStyles({
    */
   runLabel: { color: tokens.colorNeutralForeground3, flexShrink: 0 },
   /**
-   * The Stop button on a working card: icon only, the height of the title line, and no
-   * wider than its glyph. Subtle by default so it does not compete with the title — a card
-   * has one loud thing at a time and that is the ring — and it comes up to full contrast on
-   * hover, which is where a button that ends a run ought to look like one.
+   * The button that starts or ends a run on the card — Stop while it works, Resume once it
+   * has stopped. Icon only, the height of the title line, and no wider than its glyph.
+   * Subtle by default so it does not compete with the title — a card has one loud thing at
+   * a time and that is the ring — and it comes up to full contrast on hover, which is where
+   * a button that moves a run ought to look like one.
+   *
+   * One class for both because the two are mutually exclusive (`canResumeWork` is never
+   * true where `canStopWork` is): the slot in the title row holds one of them or neither,
+   * and never changes size when the run does.
    */
-  stopButton: {
+  runButton: {
     flexShrink: 0,
     minWidth: '20px',
     maxWidth: '20px',
@@ -922,6 +928,16 @@ export interface TaskCardProps {
    * no button at all (see `canStopWork`). One click, from the place you noticed.
    */
   onStop?: () => void;
+  /**
+   * Pick this card's stopped work back up — absent on a board that does not offer it, which
+   * is also what hides the button.
+   *
+   * Here for the same reason `onStop` is: the card is where you notice a run has stopped —
+   * the counter says "3/5 · stopped" from across the board — and until this existed the only
+   * way to act on that was to select the card and find a button in a panel. Stopping and
+   * restarting are one gesture apart, so they belong in one place.
+   */
+  onResume?: () => void;
   draggable: boolean;
   onSelect: () => void;
   /** Open a step in the detail pane (the row never drags or moves the card). */
@@ -973,6 +989,7 @@ export function TaskCard({
   onLinkTo,
   onLinkArm,
   onStop,
+  onResume,
   draggable,
   onSelect,
   onSelectSubtask,
@@ -1067,6 +1084,17 @@ export function TaskCard({
   const stopsChain = subtasks.some(
     (s) => s.status === 'running' || s.status === 'waiting-input' || s.status === 'pending',
   );
+  /**
+   * Whether this card has stopped work a click could pick back up — `canResumeWork`, the
+   * mirror of the call above and asked with the same three arguments, so the card and the
+   * detail pane can no more disagree about Resume than they can about Stop.
+   *
+   * Never true at the same time as {@link stoppable} (the predicate says so), which is what
+   * lets both share one slot in the title row.
+   */
+  const resumable = Boolean(onResume) && canResumeWork(task, subtasks, liveRunTaskIds);
+  /** Whether that click also re-queues the card's PLAN, which the tooltip should say. */
+  const resumesChain = subtasks.some((s) => s.status === 'stopped');
   // Only the ticket badge carries the JIRA signal, so the ring's reason is legible.
   const jiraUnread = hasUnreadJira(task);
   /**
@@ -1253,7 +1281,7 @@ export function TaskCard({
               }
             >
               <Button
-                className={styles.stopButton}
+                className={styles.runButton}
                 size="small"
                 appearance="subtle"
                 icon={<RecordStopRegular />}
@@ -1265,6 +1293,38 @@ export function TaskCard({
                 onClick={(e) => {
                   e.stopPropagation();
                   onStop?.();
+                }}
+              />
+            </Tooltip>
+          )}
+          {/* Stop's inverse, in Stop's place. A stopped card is the one the board is worst
+              at: nothing is happening, nothing is going to happen, and the card looks like
+              any other in its column apart from a word beside its counter. This is the
+              click that answers it, from the place you read it.
+
+              The tooltip says what "Resume" cannot: the agent rejoins the conversation it
+              was in rather than starting over. */}
+          {resumable && (
+            <Tooltip
+              relationship="label"
+              content={
+                resumesChain
+                  ? "Pick the work up in the same conversation: the agent carries on from where it stopped, in this card's worktree, and the steps queued behind it are queued again."
+                  : "Pick the work up in the same conversation: the agent carries on from where it stopped, in this card's worktree."
+              }
+            >
+              <Button
+                className={styles.runButton}
+                size="small"
+                appearance="subtle"
+                icon={<PlayCircleRegular />}
+                // Same two guards as Stop, for the same two reasons: the card underneath is
+                // a click target and a drag source, and this button is neither.
+                draggable={false}
+                onDragStart={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onResume?.();
                 }}
               />
             </Tooltip>

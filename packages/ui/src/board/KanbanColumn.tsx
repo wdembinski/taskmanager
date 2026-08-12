@@ -143,6 +143,12 @@ export interface KanbanColumnProps {
    * button is drawn — the card asks `canStopWork` for that.
    */
   onStopTask?: (id: string) => void;
+  /**
+   * Pick a card's stopped work back up, from the card itself. Passed through exactly as
+   * `onStopTask` is, and for the same reason: the column decides nothing about the button
+   * — the card asks `canResumeWork`.
+   */
+  onResumeTask?: (id: string) => void;
   onSelectTask: (id: string) => void;
   onDragStartTask: (id: string) => void;
   onDragEndTask: () => void;
@@ -222,6 +228,7 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               onLinkTo={(fromTaskId) => props.onLinkTo?.(fromTaskId, task.id)}
               onLinkArm={() => props.onLinkArm?.(task.id)}
               onStop={props.onStopTask && (() => props.onStopTask?.(task.id))}
+              onResume={props.onResumeTask && (() => props.onResumeTask?.(task.id))}
               waitingOn={props.chainStateOf?.(task)?.waitingOn}
               mergeHeld={props.chainStateOf?.(task)?.mergeHeld}
               chainReady={props.chainStateOf?.(task)?.ready}

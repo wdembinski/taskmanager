@@ -667,6 +667,29 @@ export function MyTasks(): JSX.Element {
   );
 
   /**
+   * Pick a card's stopped work back up, from the card itself — `stopTask` run backwards, and
+   * deliberately the same shape as it.
+   *
+   * Not optimistic either, and rather more so: a resume rejoins a session, re-queues the
+   * steps that were cancelled behind it, and can be refused outright by the usage gate. The
+   * task that comes back is the truth about all of that, and `task:changed` brings the steps.
+   * A refusal lands in `error`, where the board already shows what went wrong.
+   *
+   * One call covers the whole card, exactly as one Stop did.
+   */
+  const resumeTask = useCallback(
+    async (taskId: string) => {
+      setError(null);
+      try {
+        patchTask(await window.api.invoke('task:resumeAgent', taskId));
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [patchTask],
+  );
+
+  /**
    * Draw an arrow — `toTaskId` runs after `fromTaskId`.
    *
    * The same confirm-free optimistic shape `moveTask` uses: the arrow appears the instant
@@ -1084,6 +1107,7 @@ export function MyTasks(): JSX.Element {
               selectedTaskId={selectedTaskId}
               draggingId={draggingId}
               onStopTask={(taskId) => void stopTask(taskId)}
+              onResumeTask={(taskId) => void resumeTask(taskId)}
               onSelectTask={selectTask}
               onDragStartTask={setDraggingId}
               onDragEndTask={() => setDraggingId(null)}
