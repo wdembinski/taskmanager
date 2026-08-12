@@ -15,7 +15,7 @@
  *     would fail at run time, which is a worse place to find out than this form.
  */
 import { Dropdown, Field, Option } from '@fluentui/react-components';
-import type { GitPreflight } from '@shared/model';
+import type { GitPreflight } from '@tm/shared/model';
 
 /**
  * The option value standing for "don't pin one" — Dropdown can't carry an empty string.

@@ -52,12 +52,12 @@ import {
 import { distroFromWindowsPath, pathSuitsHost, windowsToLinux } from '@shared/wslPath';
 import { describeGitPreflight } from '@shared/gitPreflight';
 import { useGitPreflight } from './useGitPreflight';
-import { BaseBranchField } from './BaseBranchField';
-import { ColorSwatches } from './ColorSwatches';
+import { BaseBranchField } from '@ui/BaseBranchField';
+import { ColorSwatches } from '@ui/ColorSwatches';
 import { modelCaption } from '@ui/modelChoice';
-import { PaneLoading } from './PaneLoading';
-import { PlanningModelField } from './PlanningModelField';
-import { useInitialLoad } from './useInitialLoad';
+import { PaneLoading } from '@ui/PaneLoading';
+import { PlanningModelField } from '@ui/PlanningModelField';
+import { useInitialLoad } from '@ui/useInitialLoad';
 
 const useStyles = makeStyles({
   pane: {

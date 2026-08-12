@@ -12,8 +12,8 @@
  * field next to it.
  */
 import { Dropdown, Field, Option } from '@fluentui/react-components';
-import { MODELS } from '@shared/model';
-import type { ClaudeModel } from '@shared/session';
+import { MODELS } from '@tm/shared/model';
+import type { ClaudeModel } from '@tm/shared/session';
 
 /**
  * The option value standing for `null` — Dropdown can't carry one. The leading `..` keeps

@@ -25,9 +25,9 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import { PinRegular } from '@fluentui/react-icons';
-import type { BoardColumn } from '@shared/model';
-import type { JiraStatusOption } from '@shared/ipc';
-import type { StatusReason } from '@shared/statusResolve';
+import type { BoardColumn } from '@tm/shared/model';
+import type { JiraStatusOption } from '@tm/shared/ipc';
+import type { StatusReason } from '@tm/shared/statusResolve';
 import { buildStatusMapRows, reasonLabel } from './statusMapView';
 
 const useStyles = makeStyles({

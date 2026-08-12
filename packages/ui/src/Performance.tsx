@@ -30,12 +30,13 @@ import type {
   UsageSeriesPoint,
   UsageSlice,
   UsageSummary,
-} from '@shared/usage';
+} from '@tm/shared/usage';
 import { BurnRateGauge } from './BurnRateGauge';
 import { PaneLoading } from './PaneLoading';
+import { useTransport } from './transport';
 import { useInitialLoad } from './useInitialLoad';
 import { TokenChart } from './TokenChart';
-import { formatCountdown } from './LimitBanner';
+import { formatCountdown } from './countdown';
 import { UsageQuotaBars, useUsageQuotas } from './UsageQuotaBars';
 import { formatCost, formatPct, formatTokens, niceCeil } from './usageFormat';
 
@@ -262,6 +263,7 @@ export function Performance(): JSX.Element {
   const [summary, setSummary] = useState<UsageSummary | null>(null);
   const [series, setSeries] = useState<UsageSeriesPoint[]>([]);
   const [now, setNow] = useState(() => Date.now());
+  const transport = useTransport();
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   // The two metered windows. Their own live reading, on their own cadence: they are
   // fixed windows and deliberately ignore the range selector below them.
@@ -275,15 +277,15 @@ export function Performance(): JSX.Element {
     const rangeMs = RANGES.find((r) => r.id === range)?.ms ?? 0;
     const sinceMs = rangeMs > 0 ? at - rangeMs : 0; // 0 = all-time
     const [s, pts] = await Promise.all([
-      window.api.invoke('usage:summary', sinceMs),
-      window.api.invoke('usage:series', at - CHART_WINDOW_MS, BUCKET_MS),
+      transport.invoke('usage:summary', sinceMs),
+      transport.invoke('usage:series', at - CHART_WINDOW_MS, BUCKET_MS),
     ]);
     setSummary(s);
     setSeries(pts);
     // Gauge scale tracks the per-second peak (sticky) so the needle stays comparable.
     peakBurn.current = Math.max(peakBurn.current, s.burn.perSecond);
     setGaugeMax(niceCeil(Math.max(peakBurn.current * 1.15, 50)));
-  }, [range]);
+  }, [range, transport]);
 
   const initial = useInitialLoad(refresh);
 
@@ -293,7 +295,10 @@ export function Performance(): JSX.Element {
     // otherwise raise an unhandled rejection per tick, and the seed already said so.
     const again = (): void => void refresh().catch(() => undefined);
     // A new sample landed — refresh right away so the chart/gauge feel live.
-    const off = window.api.on('usage:sample', again);
+    // Desktop only: a browser's `PolledEventBus` does not reproduce `usage:sample` (see
+    // its `UNREPRODUCIBLE_EVENTS`), so there the one-second tick below drives the redraw
+    // and the per-second gauge is as live as the poll allows rather than as live as the CLI.
+    const off = transport.on('usage:sample', again);
     // A steady tick keeps the burn rate, the scrolling chart, and the reset
     // countdown current even while nothing is running.
     const id = setInterval(() => {
@@ -304,7 +309,7 @@ export function Performance(): JSX.Element {
       off();
       clearInterval(id);
     };
-  }, [refresh]);
+  }, [refresh, transport]);
 
   const toggle = useCallback((key: string) => {
     setCollapsed((prev) => {

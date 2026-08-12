@@ -56,9 +56,9 @@ import {
   archivedCountTitle,
 } from '@ui/board/ArchivedCardsDialog';
 import { GitGraphPane } from './GitGraphPane';
-import { PaneLoading } from './PaneLoading';
+import { PaneLoading } from '@ui/PaneLoading';
 import { TaskDetail } from '@ui/TaskDetail';
-import { useInitialLoad } from './useInitialLoad';
+import { useInitialLoad } from '@ui/useInitialLoad';
 import { KanbanColumn } from '@ui/board/KanbanColumn';
 import { useBoardLayoutStyles } from '@ui/board/boardLayout';
 import { doneSwitchLabel, doneSwitchTitle } from '@ui/board/doneSwitchLabel';

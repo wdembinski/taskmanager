@@ -42,8 +42,8 @@ import {
 import { distroFromWindowsPath, windowsToLinux } from '@shared/wslPath';
 import { describeGitPreflight } from '@shared/gitPreflight';
 import { useGitPreflight } from './useGitPreflight';
-import { BaseBranchField } from './BaseBranchField';
-import { PlanningModelField } from './PlanningModelField';
+import { BaseBranchField } from '@ui/BaseBranchField';
+import { PlanningModelField } from '@ui/PlanningModelField';
 
 const useStyles = makeStyles({
   form: { display: 'flex', flexDirection: 'column', gap: '12px', minWidth: '420px' },

@@ -20,6 +20,7 @@ import {
   MessageBarBody,
   MessageBarTitle,
 } from '@fluentui/react-components';
+import { formatCountdown } from '@ui/countdown';
 import type { LimitState } from '@shared/limit';
 
 const useStyles = makeStyles({
@@ -32,19 +33,10 @@ const LIMIT_LABEL: Record<LimitState['limitType'], string> = {
   weekly: 'Weekly usage cap reached',
 };
 
-/** Format a millisecond gap as a compact countdown (e.g. "1d 03:12:45", "04:59"). */
-export function formatCountdown(ms: number): string {
-  if (ms <= 0) return 'now';
-  const total = Math.floor(ms / 1000);
-  const days = Math.floor(total / 86_400);
-  const hours = Math.floor((total % 86_400) / 3600);
-  const minutes = Math.floor((total % 3600) / 60);
-  const seconds = total % 60;
-  const pad = (n: number): string => String(n).padStart(2, '0');
-  if (days > 0) return `${days}d ${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
-  if (hours > 0) return `${hours}:${pad(minutes)}:${pad(seconds)}`;
-  return `${pad(minutes)}:${pad(seconds)}`;
-}
+// The countdown itself lives in `@tm/ui` — the shared usage bars and the shared
+// Performance screen both write one, and two spellings of "1d 03:12:45" would drift.
+// Re-exported here so the call sites that always imported it from this file still can.
+export { formatCountdown };
 
 export function LimitBanner(): JSX.Element | null {
   const styles = useStyles();

@@ -8,7 +8,7 @@
  * change. These two functions are that translation, kept pure so the round trip is
  * testable without a DOM.
  */
-import type { BoardColumn } from '@shared/model';
+import type { BoardColumn } from '@tm/shared/model';
 
 /** One row of the editor: a JIRA status name and the column it means. */
 export interface StatusMapRow {

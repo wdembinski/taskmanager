@@ -8,7 +8,7 @@
  * so the line stays crisp and un-stretched at any width.
  */
 import { makeStyles, tokens } from '@fluentui/react-components';
-import type { UsageSeriesPoint } from '@shared/usage';
+import type { UsageSeriesPoint } from '@tm/shared/usage';
 import { formatTokens } from './usageFormat';
 
 const VIEW_W = 1000;

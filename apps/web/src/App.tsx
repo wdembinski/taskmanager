@@ -21,6 +21,8 @@ import {
   TaskListSquareLtrRegular,
 } from '@fluentui/react-icons';
 import { AppShell } from '@tm/ui/shell/AppShell';
+import { Attention } from '@tm/ui/Attention';
+import { Performance } from '@tm/ui/Performance';
 import { NavRail, type NavRailItem } from '@tm/ui/shell/NavRail';
 import { StatusBar, StatusDot, StatusSpacer } from '@tm/ui/shell/StatusBar';
 import { TransportProvider } from '@tm/ui/transport';
@@ -28,6 +30,7 @@ import { CloudAuth } from './auth/cloudAuth';
 import { SignInScreen } from './auth/SignInScreen';
 import { useCloudAuth } from './auth/useCloudAuth';
 import { BoardScreen } from './board/BoardScreen';
+import { SettingsScreen } from './settings/SettingsScreen';
 import { StaleBanner } from './board/StaleBanner';
 import { useCloudBoard } from './board/useCloudBoard';
 import { loadWebConfig } from './env';
@@ -50,25 +53,28 @@ const useStyles = makeStyles({
   },
 });
 
-/** Why the four tiles that aren't the board are off. Appended to each one's tooltip. */
+/** Why a tile that isn't here is off. Appended to its tooltip. */
 const DESKTOP_ONLY = 'desktop only';
 
 /**
  * The desktop's rail, in the desktop's order — see `apps/client/src/renderer/src/App.tsx`.
- * Only My Tasks has anything behind it here: the board this app mirrors is that screen's.
+ *
+ * Four of the five are live now. Attention and Performance moved into `@tm/ui` whole (they
+ * had no host in them at all, only `window.api` calls that are `useTransport()` now), and
+ * Settings is a fork: nine of its twenty-one channels are host-bound, so the shell is this
+ * app's and the host-free sections are shared. Scratch run stays off — it drives a live
+ * `session:start`, which is host-only by policy (`@tm/shared/ipcRelay`).
  */
 const NAV: readonly NavRailItem[] = [
   { id: 'mytasks', label: 'My Tasks', icon: <TaskListSquareLtrRegular /> },
-  {
-    id: 'performance',
-    label: 'Performance',
-    icon: <DataTrendingRegular />,
-    unavailable: DESKTOP_ONLY,
-  },
-  { id: 'attention', label: 'Attention', icon: <AlertRegular />, unavailable: DESKTOP_ONLY },
-  { id: 'settings', label: 'Settings', icon: <SettingsRegular />, unavailable: DESKTOP_ONLY },
+  { id: 'performance', label: 'Performance', icon: <DataTrendingRegular /> },
+  { id: 'attention', label: 'Attention', icon: <AlertRegular /> },
+  { id: 'settings', label: 'Settings', icon: <SettingsRegular /> },
   { id: 'scratch', label: 'Scratch run', icon: <PlayRegular />, unavailable: DESKTOP_ONLY },
 ];
+
+/** The rail's destinations that this app actually renders. */
+type Screen = 'mytasks' | 'performance' | 'attention' | 'settings';
 
 /** How often the status bar's "synced Ns ago" recomputes between polls. */
 const AGE_TICK_MS = 5_000;
@@ -139,6 +145,7 @@ function SignedInBoard({
   const styles = useStyles();
   const board = useCloudBoard(auth, config);
   const now = useTick(AGE_TICK_MS);
+  const [screen, setScreen] = useState<Screen>('mytasks');
 
   const online = board.state.clients.length > 0;
 
@@ -146,9 +153,9 @@ function SignedInBoard({
     <TransportProvider transport={board.transport}>
       <AppShell
         nav={
-          // Nothing to select: the four unavailable tiles refuse selection inside
-          // `NavRail`, and the fifth is already the one on screen.
-          <NavRail items={NAV} selected="mytasks" onSelect={() => undefined} />
+          // Scratch run refuses selection inside `NavRail` (it is the one tile still marked
+          // unavailable), so anything that reaches here is a real destination.
+          <NavRail items={NAV} selected={screen} onSelect={(id) => setScreen(id as Screen)} />
         }
         banners={
           // The shell's own banner strip, which is where the desktop's outage bars go too —
@@ -187,13 +194,21 @@ function SignedInBoard({
           </StatusBar>
         }
       >
-        <BoardScreen
-          state={board.state}
-          everSeenClient={board.targetClientId !== null}
-          onSetStatus={(taskId, status) => void board.setStatus(taskId, status)}
-          onStatusNoted={board.noteStatus}
-          onCreateTask={board.createTask}
-        />
+        {/* Each screen is unmounted rather than hidden when you leave it — every one of
+            them polls, and a Performance pane nobody is looking at should not be relaying a
+            `usage:summary` every second. The desktop's own `App` folds them the same way. */}
+        {screen === 'mytasks' && (
+          <BoardScreen
+            state={board.state}
+            everSeenClient={board.targetClientId !== null}
+            onSetStatus={(taskId, status) => void board.setStatus(taskId, status)}
+            onStatusNoted={board.noteStatus}
+            onCreateTask={board.createTask}
+          />
+        )}
+        {screen === 'performance' && <Performance />}
+        {screen === 'attention' && <Attention />}
+        {screen === 'settings' && <SettingsScreen />}
       </AppShell>
     </TransportProvider>
   );

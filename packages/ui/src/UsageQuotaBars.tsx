@@ -24,9 +24,10 @@
  */
 import { useEffect, useState } from 'react';
 import { makeStyles, ProgressBar, Tooltip, tokens } from '@fluentui/react-components';
-import type { UsageQuota, UsageQuotas } from '@shared/usage';
-import { formatCountdown } from './LimitBanner';
-import { ACCENT } from '@ui/theme';
+import type { UsageQuota, UsageQuotas } from '@tm/shared/usage';
+import { formatCountdown } from './countdown';
+import { useTransport } from './transport';
+import { ACCENT } from './theme';
 import { formatPct, formatTokens } from './usageFormat';
 
 /** How often the pair re-reads its two sums when nothing is being spent. */
@@ -136,19 +137,22 @@ function describeQuota(quota: UsageQuota): string {
  * status bar that turned into an error report would be the fourth voice saying it.
  */
 export function useUsageQuotas(): UsageQuotas | null {
+  const transport = useTransport();
   const [quotas, setQuotas] = useState<UsageQuotas | null>(null);
 
   useEffect(() => {
-    const read = (): void =>
-      void window.api.invoke('usage:quotas').then(setQuotas, () => undefined);
+    const read = (): void => void transport.invoke('usage:quotas').then(setQuotas, () => undefined);
     read();
-    const off = window.api.on('usage:sample', read);
+    // On the desktop this is a pushed event; in a browser `PolledEventBus` cannot
+    // reproduce `usage:sample` at all (it is a per-second sample against a 2.5s poll), so
+    // there the interval below is the whole refresh. Same code, honestly degraded.
+    const off = transport.on('usage:sample', read);
     const id = setInterval(read, REFRESH_MS);
     return () => {
       off();
       clearInterval(id);
     };
-  }, []);
+  }, [transport]);
 
   return quotas;
 }

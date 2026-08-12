@@ -10,10 +10,10 @@
  * its own copy of the rules is a viewer that can lie, which is the failure we are fixing.
  * Pure, so the ordering and grouping are testable without a DOM.
  */
-import type { BoardColumn } from '@shared/model';
-import type { JiraStatusOption } from '@shared/ipc';
-import { resolveStatusColumn, type StatusReason } from '@shared/statusResolve';
-import { visibleColumns } from '@ui/board/boardColumns';
+import type { BoardColumn } from '@tm/shared/model';
+import type { JiraStatusOption } from '@tm/shared/ipc';
+import { resolveStatusColumn, type StatusReason } from '@tm/shared/statusResolve';
+import { visibleColumns } from './board/boardColumns';
 
 export interface StatusMapViewRow {
   name: string;

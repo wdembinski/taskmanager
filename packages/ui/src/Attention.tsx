@@ -24,10 +24,11 @@ import {
   Textarea,
   tokens,
 } from '@fluentui/react-components';
-import type { AttentionAnswer, AttentionItem } from '@shared/attention';
-import { AgentQuestionForm } from '@ui/AgentQuestionForm';
-import { Markdown } from '@ui/chat/MarkdownView';
+import type { AttentionAnswer, AttentionItem } from '@tm/shared/attention';
+import { AgentQuestionForm } from './AgentQuestionForm';
+import { Markdown } from './chat/MarkdownView';
 import { PaneLoading } from './PaneLoading';
+import { useTransport } from './transport';
 import { useInitialLoad } from './useInitialLoad';
 
 const useStyles = makeStyles({
@@ -294,19 +295,23 @@ function InboxItem({
 
 export function Attention(): JSX.Element {
   const styles = useStyles();
+  const transport = useTransport();
   const [items, setItems] = useState<AttentionItem[] | null>(null);
 
-  const seed = useCallback(async () => setItems(await window.api.invoke('attention:list')), []);
+  const seed = useCallback(
+    async () => setItems(await transport.invoke('attention:list')),
+    [transport],
+  );
   const initial = useInitialLoad(seed);
 
   useEffect(() => {
-    const offNew = window.api.on('attention:new', (item) => {
+    const offNew = transport.on('attention:new', (item) => {
       setItems((prev) => {
         const rest = (prev ?? []).filter((i) => i.id !== item.id);
         return [...rest, item].sort((a, b) => a.createdAt - b.createdAt);
       });
     });
-    const offResolved = window.api.on('attention:resolved', ({ id }) => {
+    const offResolved = transport.on('attention:resolved', ({ id }) => {
       setItems((prev) => (prev ? prev.filter((i) => i.id !== id) : prev));
     });
 
@@ -314,10 +319,10 @@ export function Attention(): JSX.Element {
       offNew();
       offResolved();
     };
-  }, []);
+  }, [transport]);
 
   const answer = async (id: string, a: AttentionAnswer): Promise<void> => {
-    await window.api.invoke('attention:answer', id, a);
+    await transport.invoke('attention:answer', id, a);
     // The engine will also emit `attention:resolved`; remove now for a snappy UI.
     setItems((prev) => (prev ? prev.filter((i) => i.id !== id) : prev));
   };

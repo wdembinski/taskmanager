@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { JiraStatusOption } from '@shared/ipc';
+import type { JiraStatusOption } from '@tm/shared/ipc';
 import { buildStatusMapRows, reasonLabel } from './statusMapView';
 
 const STATUSES: JiraStatusOption[] = [

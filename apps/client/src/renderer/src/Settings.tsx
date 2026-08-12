@@ -71,7 +71,12 @@ import { isCloudHost } from '@shared/jiraUrl';
 import { ARCHIVE_RETENTION_DAYS, JIRA_BOARD_LIMIT } from '@shared/board';
 import { COLUMN_META, statusForColumn } from '@ui/board/boardColumns';
 import { STATUS_LABEL } from '@ui/taskStatus';
-import { MAPPABLE_COLUMNS, rowsToStatusMap, statusMapToRows, type StatusMapRow } from './statusMap';
+import {
+  MAPPABLE_COLUMNS,
+  rowsToStatusMap,
+  statusMapToRows,
+  type StatusMapRow,
+} from '@ui/statusMap';
 import {
   execTargetLabel,
   formatExecTarget,
@@ -80,14 +85,14 @@ import {
   type ExecTarget,
 } from '@shared/execTarget';
 import { AgentProjects } from './AgentProjects';
-import { ColorSwatches, PALETTE } from './ColorSwatches';
-import { PaneLoading } from './PaneLoading';
-import { PlanningModelField } from './PlanningModelField';
+import { ColorSwatches, PALETTE } from '@ui/ColorSwatches';
+import { PaneLoading } from '@ui/PaneLoading';
+import { PlanningModelField } from '@ui/PlanningModelField';
 import { ReadinessPanel } from './ReadinessPanel';
-import { StatusMapViewer } from './StatusMapViewer';
+import { StatusMapViewer } from '@ui/StatusMapViewer';
 import { BASE_FONT_PX, FONT_SIZE_OPTIONS } from '@ui/theme';
 import { validateBranchName } from '@shared/branchName';
-import { useInitialLoad } from './useInitialLoad';
+import { useInitialLoad } from '@ui/useInitialLoad';
 
 const useStyles = makeStyles({
   // Vertical nav on the left, scrollable content pane on the right.

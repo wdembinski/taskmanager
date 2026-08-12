@@ -8,7 +8,7 @@
  */
 import { makeStyles, tokens } from '@fluentui/react-components';
 import { ArrowUpRegular, ArrowDownRegular, ArrowRightRegular } from '@fluentui/react-icons';
-import type { BurnRate } from '@shared/usage';
+import type { BurnRate } from '@tm/shared/usage';
 import { formatTokens } from './usageFormat';
 
 const CX = 100;
