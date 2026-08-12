@@ -706,6 +706,11 @@ export interface IpcApi {
   'github:clearCredentials': () => Promise<void>;
   /** Verify base URL + token by calling `/user`; returns the login. */
   'github:testConnection': () => Promise<JiraTestResult>;
+  /**
+   * Fetch GitHub's pull requests and reconcile them onto the board. Returns the full list —
+   * every provider's, exactly as `gitlab:sync` does, since one board list holds them all.
+   */
+  'github:sync': () => Promise<MergeRequest[]>;
 
   // --- Merge requests, whichever forge they came from -----------------------
   /**

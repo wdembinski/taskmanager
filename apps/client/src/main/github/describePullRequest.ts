@@ -47,6 +47,40 @@ export function repoRefFromApiUrl(url: string | undefined): { owner: string; rep
   return { owner: match?.[1] ?? '', repo: match?.[2] ?? '' };
 }
 
+/**
+ * A detail response, dressed as the search row it never came from.
+ *
+ * For the one call that does not start at the search endpoint: a pull request that dropped
+ * out of the open list is re-read **by number**, so that its ending is a fact rather than
+ * an inference from its absence. {@link describePullRequest} is still the single place that
+ * decides what a fetched PR looks like, and it takes a listing — so the detail is shaped
+ * into one rather than the field mapping being written out a second time in the IPC layer.
+ *
+ * `pull_request.merged_at` is the field that carries the whole point of the re-read:
+ * GitHub reports a landed PR as `closed`, and only `merged_at` tells "this shipped" apart
+ * from "this was thrown away". See `toPullRequestState`.
+ */
+export function listedFromDetail(
+  detail: GitHubPullRequest,
+  owner: string,
+  repo: string,
+): GitHubSearchIssueItem {
+  return {
+    id: detail.id,
+    number: detail.number,
+    title: detail.title,
+    body: detail.body ?? null,
+    state: detail.state,
+    draft: detail.draft,
+    html_url: detail.html_url,
+    // Only ever read back through `repoRefFromApiUrl`, which wants the trailing
+    // `/repos/{owner}/{repo}` and nothing else.
+    repository_url: `/repos/${owner}/${repo}`,
+    updated_at: detail.updated_at ?? '',
+    pull_request: { merged_at: detail.merged_at ?? null },
+  };
+}
+
 export interface DescribePullRequestOptions {
   /** Whether this PR changed since the last sync and is worth spending its calls on. */
   stale: boolean;

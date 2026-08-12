@@ -100,10 +100,15 @@ import { CloudPoller } from './cloudPoller';
 import { testCloudConnection } from './cloudTestConnection';
 import { FocusTracker } from './focusTracker';
 import { GitLabClient } from './gitlab/gitlabClient';
-import { GitHubClient } from './github/githubClient';
+import { GitHubClient, type GitHubSearchIssueItem } from './github/githubClient';
 import { githubIdentityFrom } from './github/identity';
 import { gitlabIdentityFrom, type GitLabIdentityCache } from './gitlab/identity';
 import { describeMergeRequest } from './gitlab/describeMergeRequest';
+import {
+  describePullRequest,
+  listedFromDetail,
+  repoRefFromApiUrl,
+} from './github/describePullRequest';
 import {
   landedTaskIds,
   mergeRequestId,
@@ -112,6 +117,7 @@ import {
   rematchMergeRequests,
   type FetchedMergeRequest,
 } from './gitlab/gitlabSync';
+import { reconcilePullRequests, rematchPullRequests } from './github/githubPrSync';
 import { mrIsSettled, type MergeRequest } from '@shared/mergeRequest';
 import { canLink, isLinkGate, type LinkResult, type TaskLink } from '@shared/taskChain';
 import type { TaskAttachment } from '@shared/attachments';
@@ -1597,7 +1603,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   const boardKeyIndex = (): { knownKeys: string[]; taskIdByKey: Map<string, string> } => {
     const taskIdByKey = new Map<string, string>();
     for (const task of store.getPersonalTasks()) {
-      if (task.externalSource === 'jira' && task.externalKey) {
+      // Any tracker's key, not JIRA's alone: a GitHub pull request names its issue as
+      // `owner/repo#123`, which is the same kind of fact about the same kind of card. The
+      // upper-casing is what makes the lookup case-insensitive on both spellings.
+      if (task.externalSource && task.externalKey) {
         taskIdByKey.set(task.externalKey.toUpperCase(), task.id);
       }
     }
@@ -1693,7 +1702,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     if (!gitlab.enabled) return store.listMergeRequests();
     const client = buildGitLabClient();
     const identity = await gitlabIdentity(gitlab.baseUrl, client);
-    const stored = store.listMergeRequests();
+    // This forge's rows only. One table holds both, and everything below — the "dropped out
+    // of the list, so read it back" pass, and the reconciler's delete of anything the fetch
+    // did not return — reads an absence as an ending. A GitHub pull request is absent from
+    // every GitLab fetch there will ever be.
+    const stored = store.listMergeRequests().filter((mr) => mr.provider === 'gitlab');
     const priorById = new Map(stored.map((mr) => [mr.id, mr]));
     const list = await client.listMyMergeRequests();
 
@@ -1757,11 +1770,129 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     }
   });
 
-  /** Re-file stored MRs against the board as it is now. Cheap, and no network. */
+  /**
+   * One GitHub sync: list your open PRs, re-read detail only for the ones that moved,
+   * reconcile, push. `syncGitLab` above, one forge over, and every decision it makes for a
+   * stated reason is made here for the same one.
+   *
+   * The N+1 is deliberate and bounded, and *worse* than GitLab's: the search endpoint is the
+   * only thing that answers "across every repository" in one call, and it is the thinnest
+   * payload GitHub has — no branches, no head SHA, no `mergeable_state`, not even the
+   * repository id. Everything attention depends on needs the detail endpoints, so those are
+   * spent only on PRs `needsDetailRefresh` calls stale, at a concurrency of 4.
+   */
+  const syncGitHubPullRequests = async (): Promise<MergeRequest[]> => {
+    const { github } = store.getSettings();
+    if (!github.enabled) return store.listMergeRequests();
+    const client = buildGitHubClient();
+    // This forge's rows only — see the same line in `syncGitLab`.
+    const stored = store.listMergeRequests().filter((mr) => mr.provider === 'github');
+    const list = await client.listMyPullRequests();
+
+    /**
+     * How a listed PR and a stored one are recognised as the same thing: `owner/repo#number`.
+     *
+     * Not the row id, and that is not an oversight: the id is `gh-{repoId}-{number}` and
+     * GitHub's numeric repository id is **only on the detail response**, so a search row
+     * cannot spell its own id. The repo path is the one identity a listing always carries.
+     */
+    const prRef = (projectPath: string, number: number): string =>
+      `${projectPath.toLowerCase()}#${number}`;
+    const listedRef = (item: GitHubSearchIssueItem): string => {
+      const { owner, repo } = repoRefFromApiUrl(item.repository_url);
+      return prRef(`${owner}/${repo}`, item.number);
+    };
+    const priorByRef = new Map(stored.map((mr) => [prRef(mr.projectPath, mr.number), mr]));
+
+    const detailed: FetchedMergeRequest[] = [];
+    const queue = [...list];
+    const worker = async (): Promise<void> => {
+      for (let item = queue.shift(); item; item = queue.shift()) {
+        const prior = priorByRef.get(listedRef(item));
+        const updatedAt = Date.parse(item.updated_at) || 0;
+        const stale = needsDetailRefresh(prior, updatedAt);
+        detailed.push(await describePullRequest(client, item, { stale, prior }));
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(4, queue.length) }, worker));
+
+    /**
+     * Read back the open PRs that dropped out of the list, so their ENDING is a fact.
+     *
+     * The search asks for `is:open`, so a PR that landed simply stops being returned — and
+     * GitHub reports a landed one as `closed` with `merged_at` set, which is the difference
+     * between "this shipped" and "this was thrown away". Deleting on absence would lose both
+     * at once; asking costs one call per PR, once, because the answer is terminal and the
+     * guard below never asks again.
+     *
+     * `stale: false` keeps the checks and approvals we already hold — none of them can move
+     * now, and re-reading four endpoints to learn nothing would be waste.
+     */
+    const listedRefs = new Set(list.map(listedRef));
+    for (const prior of stored) {
+      if (listedRefs.has(prRef(prior.projectPath, prior.number)) || mrIsSettled(prior)) continue;
+      const [owner, repo] = prior.projectPath.split('/');
+      if (!owner || !repo) continue;
+      const detail = await client.getPullRequest(owner, repo, prior.number).catch(() => null);
+      // Unreadable or gone: leave it out, and the reconciler deletes it as it always did.
+      if (detail) {
+        detailed.push(
+          await describePullRequest(client, listedFromDetail(detail, owner, repo), {
+            stale: false,
+            prior,
+          }),
+        );
+      }
+    }
+
+    const { knownKeys, taskIdByKey } = boardKeyIndex();
+    const { upserts, deleteIds } = reconcilePullRequests(stored, detailed, {
+      knownKeys,
+      taskIdByKey,
+      now: Date.now(),
+    });
+    for (const mr of upserts) store.upsertMergeRequest(mr);
+    store.deleteMergeRequests(deleteIds);
+    // The same hand-off GitLab's sync makes, and the reason `after-merge` chain gates work on
+    // a GitHub repository at all: nobody here ran the merge, so a merged PR is this app's
+    // only way of learning that a reviewed branch landed (see `Task.landedAt`).
+    for (const taskId of landedTaskIds(upserts)) scheduler.noteWorkLanded(taskId);
+    const all = store.listMergeRequests();
+    send('mergeRequests:changed', all);
+    return all;
+  };
+
+  handle('github:sync', async () => {
+    try {
+      return await trackSync('github', syncGitHubPullRequests);
+    } catch (e) {
+      logMain('GitHub sync failed', e);
+      throw new Error(e instanceof Error ? e.message : String(e));
+    }
+  });
+
+  /**
+   * Re-file stored MRs against the board as it is now. Cheap, and no network.
+   *
+   * Split by forge, because "which card is this for" is the one question the two answer
+   * differently: a GitHub pull request can name its issue with a closing reference, which
+   * `rematchMergeRequests` has never heard of. Running GitLab's rule over a GitHub row would
+   * have a re-match file a PR under a different card from the one its own sync just chose.
+   */
   function rematchStoredMergeRequests(): void {
     const stored = store.listMergeRequests();
     if (!stored.length) return;
-    const changed = rematchMergeRequests(stored, boardKeyIndex());
+    const index = boardKeyIndex();
+    const changed = [
+      ...rematchMergeRequests(
+        stored.filter((mr) => mr.provider === 'gitlab'),
+        index,
+      ),
+      ...rematchPullRequests(
+        stored.filter((mr) => mr.provider === 'github'),
+        index,
+      ),
+    ];
     if (!changed.length) return;
     for (const mr of changed) store.upsertMergeRequest(mr);
     send('mergeRequests:changed', store.listMergeRequests());
@@ -2772,6 +2903,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       id: 'gitlab',
       isEnabled: (s) => s.getSettings().gitlab.enabled,
       run: () => trackSync('gitlab', syncGitLab),
+    },
+    {
+      id: 'github',
+      isEnabled: (s) => s.getSettings().github.enabled,
+      run: () => trackSync('github', syncGitHubPullRequests),
     },
   ]);
   syncPoller.reschedule();

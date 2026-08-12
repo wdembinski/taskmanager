@@ -225,6 +225,7 @@ export function MyTasks(): JSX.Element {
   const jiraEnabled = settings?.jira.enabled ?? false;
   const currentSprintOnly = settings?.jira.currentSprintOnly ?? false;
   const gitlabEnabled = settings?.gitlab.enabled ?? false;
+  const githubEnabled = settings?.github.enabled ?? false;
   const display = settings?.board ?? DEFAULT_BOARD_DISPLAY;
   const showDetail = settings?.showTaskDetail ?? true;
   // Off until the settings land, unlike the detail pane: the graph costs a `git log` on the
@@ -597,20 +598,24 @@ export function MyTasks(): JSX.Element {
     // truncated fetch outliving the fetch that was truncated.
     setNotice(null);
     try {
-      const [jira, gitlab] = await Promise.allSettled([
+      const [jira, gitlab, github] = await Promise.allSettled([
         jiraEnabled ? window.api.invoke('jira:sync') : Promise.resolve(null),
         gitlabEnabled ? window.api.invoke('gitlab:sync') : Promise.resolve(null),
+        githubEnabled ? window.api.invoke('github:sync') : Promise.resolve(null),
       ]);
       if (jira.status === 'fulfilled' && jira.value) setTasks(jira.value);
+      // Both forges return the WHOLE list, so the later one wins and neither can lose the
+      // other's rows — see `gitlab:sync` in the contract.
       if (gitlab.status === 'fulfilled' && gitlab.value) setMergeRequests(gitlab.value);
-      const failures = [jira, gitlab]
+      if (github.status === 'fulfilled' && github.value) setMergeRequests(github.value);
+      const failures = [jira, gitlab, github]
         .flatMap((r) => (r.status === 'rejected' ? [r.reason] : []))
         .map((e) => (e instanceof Error ? e.message : String(e)));
       if (failures.length > 0) setError(failures.join(' · '));
     } finally {
       setSyncing(false);
     }
-  }, [jiraEnabled, gitlabEnabled]);
+  }, [jiraEnabled, gitlabEnabled, githubEnabled]);
 
   // Unlike "Show Done", which only hides a column that is already loaded, this one
   // changes the JQL the next fetch runs — so the board is re-synced immediately,
@@ -981,7 +986,7 @@ export function MyTasks(): JSX.Element {
           )}
           {/* One button for every enabled service — it was called "Sync JIRA" while also
               refreshing GitLab, which made the merge-request rows look stale on purpose. */}
-          {(jiraEnabled || gitlabEnabled) && (
+          {(jiraEnabled || gitlabEnabled || githubEnabled) && (
             <Button size="small" disabled={syncing} onClick={() => void sync()}>
               {syncing ? 'Syncing…' : 'Sync'}
             </Button>
