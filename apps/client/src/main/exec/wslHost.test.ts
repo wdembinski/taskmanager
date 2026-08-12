@@ -182,7 +182,15 @@ describe('WslExecHost path and relay wiring', () => {
       serverScriptPath: script,
     });
     // The COMMAND is a Linux path: WSL's loader has to find and exec the binary.
-    expect(spec.command.startsWith('/mnt/')).toBe(true);
+    // It is `toNative(process.execPath)`, so its SHAPE depends on where this suite
+    // runs, not on the code under test: only on Windows is `execPath` a `C:\…` path
+    // that translates to `/mnt/…`. On a Linux runner it is `/usr/…`, translates to
+    // itself, and a bare `/mnt/` assertion fails a perfectly healthy build — which
+    // is what it did to the release pipeline's first run and cost v0.83.0.
+    expect(spec.command).toBe(host.toNative(process.execPath));
+    if (process.platform === 'win32') {
+      expect(spec.command.startsWith('/mnt/')).toBe(true);
+    }
     // The ARGUMENT stays a Windows path: argv crosses verbatim, and a Linux path
     // would be resolved against the process's UNC working directory instead
     // ("Cannot find module \\wsl.localhost\<distro>\mnt\c\…").
