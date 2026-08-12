@@ -3,8 +3,9 @@
  *
  * Everything a human does with a delegated card lives here: assign it to an agent
  * project (or reassign it, which restarts the run with fresh settings), START it when it
- * was assigned without being started, stop it, and — while a run is parked — **answer it
- * inline**, without a detour to the Attention inbox.
+ * was assigned without being started, stop it, RESUME it afterwards — same conversation,
+ * same worktree — and, while a run is parked, **answer it inline**, without a detour to
+ * the Attention inbox.
  *
  * The parked asks arrive as a prop from the board's single `useAttentionIndex`, oldest
  * first. One is shown at a time and answering it reveals the next, because the index
@@ -30,10 +31,10 @@ import {
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
-import { RecordStopRegular } from '@fluentui/react-icons';
+import { PlayCircleRegular, RecordStopRegular } from '@fluentui/react-icons';
 import { AgentGlyph } from './AgentGlyph';
 import type { AttentionAnswer, AttentionItem } from '@tm/shared/attention';
-import { canStopWork, hasAgentWorked, parkedStep } from '@tm/shared/board';
+import { canResumeWork, canStopWork, hasAgentWorked, parkedStep } from '@tm/shared/board';
 import type { Project, Task } from '@tm/shared/model';
 import { autoIntegrateOn, projectAutoIntegrate } from '@tm/shared/integrate';
 import { autoReleaseOn, RELEASE_DOC } from '@tm/shared/release';
@@ -263,12 +264,36 @@ export function TaskAgentPanel({
   const stopsChain = ownSteps.some(
     (s) => s.status === 'running' || s.status === 'waiting-input' || s.status === 'pending',
   );
+  /**
+   * Is there stopped work here to pick back up? Asked of {@link canResumeWork}, the mirror of
+   * the call above and given the same three arguments — the same `ownSteps`, so a step is
+   * judged on its own stop rather than on whichever sibling was stopped last.
+   *
+   * Mutually exclusive with {@link stoppable} by construction, which is why both can sit in
+   * one header row without either of them having to know about the other.
+   */
+  const resumable = canResumeWork(task, ownSteps, liveRunTaskIds);
+  /**
+   * Whether pressing Resume re-queues the card's PLAN as well as rejoining the session — the
+   * half of what the button does that the tooltip would otherwise leave unsaid, since a
+   * stopped chain has nothing runnable in it until those steps go back to `pending`.
+   */
+  const resumesChain = ownSteps.some((s) => s.status === 'stopped');
   const assigned = agentProjects.find((p) => p.id === task.agentProjectId) ?? null;
   // An agent is on the card, nothing is running, and nothing ever ran: it was assigned
   // without being started. "Has it run" is the test rather than the status, because a
   // staged card and a queued one are both `pending`.
+  //
+  // Not while Resume is offered, which is the one case both can be true at once: a card
+  // stopped so early that nothing was written to `workedAt` still reads as never-started,
+  // and the row would then hold two primary buttons each claiming to begin the work.
+  // Resume wins — it rejoins the session if there is one and falls through to the ordinary
+  // start path if there is not, so it is Start plus what Start forgets.
   const staged =
-    Boolean(task.agentProjectId) && !hasAgentWorked(task, ownSteps) && task.status === 'pending';
+    Boolean(task.agentProjectId) &&
+    !hasAgentWorked(task, ownSteps) &&
+    task.status === 'pending' &&
+    !resumable;
   /**
    * Whether to offer Merge: a delegated card that has actually run, in a repo that uses
    * worktrees. Derived here rather than asked of the engine, which would mean an async
@@ -534,6 +559,27 @@ export function TaskAgentPanel({
     }
   }
 
+  /**
+   * Pick stopped work back up — the inverse of {@link stop}, and the same shape as it.
+   *
+   * The returned task is handed on even though the engine also emits `task:changed`: exactly
+   * as Stop does, so the card the human is looking at is right on the next paint rather than
+   * on the next event. A refusal from the gate arrives as a throw and lands in `error` below,
+   * and `task:resumeAgent` has already announced the card by then — so a resume the limit
+   * parks reads as "held", not as "nothing happened".
+   */
+  async function resume(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      onTaskChanged(await transport.invoke('task:resumeAgent', taskId));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className={styles.box}>
       <div className={styles.head}>
@@ -573,6 +619,33 @@ export function TaskAgentPanel({
             onClick={() => void stop()}
           >
             Stop
+          </Button>
+        )}
+        {/* Stop's inverse, in Stop's place — the two are mutually exclusive by construction
+            (see `canResumeWork`), so the slot only ever holds one of them and the row does
+            not shuffle when work starts or ends.
+
+            The tooltip says the thing the word "Resume" cannot: this is not a fresh start.
+            The agent rejoins the conversation it was in, in the worktree it left, and so it
+            already knows what it had done — which is exactly what makes pressing this
+            different from pressing Start, and worth saying before the click. */}
+        {resumable && (
+          <Button
+            size="small"
+            appearance="primary"
+            icon={<PlayCircleRegular />}
+            disabled={busy}
+            title={
+              resumesChain
+                ? 'Pick the work up in the same conversation: the agent carries on from where ' +
+                  "it stopped, in this card's worktree, and the steps queued behind it are " +
+                  'queued again.'
+                : 'Pick the work up in the same conversation: the agent carries on from where ' +
+                  "it stopped, in this card's worktree."
+            }
+            onClick={() => void resume()}
+          >
+            Resume
           </Button>
         )}
         {/* Assigned but never started (Phase 17). The affordance for a staged card —
