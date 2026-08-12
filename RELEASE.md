@@ -1,9 +1,30 @@
 # How to release this project
 
-**Audience: an agent, running unattended, on a branch that has just been merged.** This is
-the file the app's _Release after merge_ switch points a session at (see
-`packages/shared/src/release.ts`). A human following it by hand will not be led astray, but
-every instruction is written for the case where nobody is watching.
+**The pipeline releases this project now. This file is the fallback — and the
+specification the pipeline was built from.**
+
+Every push to `development` runs
+[`.github/workflows/release.yml`](.github/workflows/release.yml), which performs every step
+below — gates, version, tag, draft, Windows, Linux, promote — and publishes the result.
+An ordinary release needs nobody to open this file.
+[`docs/11-ci-cd-pipeline.md`](docs/11-ci-cd-pipeline.md) is that pipeline described end to
+end: what triggers what, the secrets it needs, and how to re-run one that failed halfway.
+
+Read _this_ file when:
+
+- **the pipeline went red**, and you need to know what the step that failed was protecting;
+- **a release has to be cut by hand** — Actions is down, the runner cannot build something,
+  or the commit cannot go through `development` at all;
+- **you are changing `release.yml`**, in which case the rules below are what it has to keep
+  being true.
+
+**Audience: an agent, running unattended, on a branch that has just been merged.** That is
+the by-hand case, and it is what every instruction here is written for. This is also the
+file the app's _Release after merge_ switch points a session at (see
+`packages/shared/src/release.ts`) — but for **this** repo that switch should now be **off**,
+because the pipeline already does it and two releasers racing over one tag is worse than
+either alone. See [`docs/11`](docs/11-ci-cd-pipeline.md#the-apps-release-after-merge-switch).
+A human following this file by hand will not be led astray either.
 
 The deep background — what packaging has to get right, why the ABI gate exists, how
 auto-update works — is [`docs/07-packaging-and-release.md`](docs/07-packaging-and-release.md).
@@ -37,6 +58,18 @@ This file is the _procedure_; that one is the _reasons_. Read it if a step surpr
    open on it. Every check in this file is headless. If someone wants to look at the window,
    they will open it themselves.
 
+These six are unchanged by the pipeline, because they are **why** it is shaped the way it
+is. Each one is now also mechanised:
+
+| Rule                     | Where CI keeps it                                                                                                                                                                                          |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 A failing gate ends it | `gates` is a `needs:` of everything. Nothing is tagged from a red tree, and no job retries one.                                                                                                            |
+| 2 Never bypass the gates | `windows` and `linux` run the real `package` scripts, which run `ensure:abi` and `check:feed` inside themselves. There is no flag here that skips them.                                                    |
+| 3 Stop and ask           | A workflow cannot ask, so it must never reach a question. `scripts/next-version.mjs` decides the version by rule instead of by judgement, and the one credential is `GITHUB_TOKEN`, which is issued to it. |
+| 4 Promote last, and do   | `promote` runs `if: always()` and needs only `windows` — a failed Linux build cannot hold the release, it only earns a `::warning`. It is the last job, so every upload precedes it.                       |
+| 5 Never from a branch    | **Structural now.** The workflow's only push trigger is `branches: [development]`; the `version` job's first step fails the run if a `workflow_dispatch` was aimed at anything else.                       |
+| 6 Never launch the app   | No job starts the app. The smoke test runs the packaged binary under `ELECTRON_RUN_AS_NODE` — as plain Node, no window — the same way §5 does, and on a runner with nobody's copy open in the first place. |
+
 ---
 
 ## 0. Know what you are releasing
@@ -54,6 +87,11 @@ git log --oneline "$(git describe --tags --abbrev=0)"..HEAD
   `apps/client/package.json`. Say so and stop — that is a normal outcome, not a failure.
 - The commit list is the release notes' raw material. Read it; it also tells you the bump.
 
+> **CI does this** — `release.yml`'s `version` job, in its _Is there anything to release?_
+> step. Same question, same verdict: a published release for the tag ends the run green with
+> a `::notice`, and every later job skips. A leftover **draft** is not that — it is a release
+> that failed partway through, and the run continues into it rather than creating a second.
+
 ## 1. Green gates
 
 ```bash
@@ -63,6 +101,12 @@ pnpm build
 ```
 
 All three, in that order, all green. See rule 1.
+
+> **CI does this** — `release.yml`'s `gates` job, which everything else `needs:`, plus
+> `pnpm format:check` ahead of them. The same list runs on every pull request in
+> [`ci.yml`](.github/workflows/ci.yml), deliberately duplicated rather than shared: one
+> guards a merge and one guards a tag, and a change made for one must not silently change
+> the other.
 
 ## 2. The version
 
@@ -80,6 +124,14 @@ change, so most of the time it is already correct and this step is a check, not 
   stop and ask. Somebody has released it and you are about to overwrite history. A tag on
   `HEAD` naming that same version is the normal case — the work commit put it there.
 
+> **CI does this** — [`scripts/next-version.mjs`](scripts/next-version.mjs), called by the
+> `version` job. It is a script with a unit test rather than a `${{ }}` expression because
+> version arithmetic nobody can run before pushing is only ever debugged by tagging the wrong
+> thing. It honours a manifest version newer than every tag, and otherwise applies the
+> fallback above by patch-bumping the highest **released** version — not the manifest's,
+> which may be behind. `node scripts/next-version.mjs` locally tells you what a release would
+> do right now without doing any of it.
+
 ## 3. Tag and push
 
 ```bash
@@ -90,6 +142,13 @@ git push --follow-tags origin <integration-branch>
 
 An **annotated** tag (`-a`), never a lightweight one. If the push is rejected, stop —
 fetching and rebasing a release commit under a tag is not an unattended operation.
+
+> **CI does this** — the `version` job's _Tag and push_ step, as `github-actions[bot]`, with
+> the same `--follow-tags` so the branch is never briefly ahead of the tag naming it. Two
+> things stop the bump commit from starting another release: pushes authenticated with
+> `GITHUB_TOKEN` do not trigger workflows, and `gates` skips itself when the head commit is a
+> `chore(release):`. `development`'s branch protection, if any, has to let that bot push —
+> see [`docs/11`](docs/11-ci-cd-pipeline.md#one-time-repository-settings).
 
 ## 4. Draft the GitHub release
 
@@ -105,6 +164,12 @@ changed for someone using the app. Delete `notes.md` afterwards — it is not a 
 
 The release must exist as a **draft** before packaging, because that is what
 electron-builder uploads into.
+
+> **CI does this** — the `version` job's _Draft the GitHub release_ step, with
+> `--generate-notes`. That is the one place the pipeline is worse than a person: generated
+> notes are the commit subjects, not the grouping this section asks for. **Reword them on
+> the release page** when a version deserves it; the release is already published by then,
+> and editing its notes is safe.
 
 ## 5. Package Windows
 
@@ -155,7 +220,28 @@ What it does not cover is whether the window renders. Nothing headless can, and 
 acceptable gap: every renderer failure this project has actually shipped came through the
 addon. If a human wants the window looked at, say in your report that it is owed.
 
-## 6. Linux — usually a hand-back, not a step
+> **CI does this** — `release.yml`'s `windows` job, on a `windows-latest` runner, against a
+> checkout of **the tag** rather than the branch. Two adaptations, both forced by the runner:
+> it runs `pnpm exec turbo run build --filter=./packages/*` first, because `package` never
+> goes through turbo and a clean install has no `packages/*/dist` for the bundler to resolve;
+> and the smoke test writes `PASS`/`FAIL` to a **file** instead of printing, because the
+> packaged binary is a GUI-subsystem executable, detached from the console, so a step reading
+> stdout would pass on every build, healthy or not.
+>
+> [`ci.yml`](.github/workflows/ci.yml) runs the same package-and-smoke-test on any pull
+> request touching `apps/client`, `packages/**` or the lockfile, with `package:local`
+> (`--publish never`). Since a merge into `development` is now the thing that tags, an ABI
+> break is much better caught on the PR than after the tag exists.
+
+## 6. Linux — built by the `linux` job
+
+> **CI does this** — `release.yml`'s `linux` job, on `ubuntu-latest`: `fakeroot` (which the
+> `.deb` target shells out to), the shared packages, `package:linux`, then
+> [`docs/07`](docs/07-packaging-and-release.md#building-for-linux)'s two artifact checks —
+> the ELF check and the `node_register_module_v130` symbol check. A runner is a real Linux
+> machine, so what this section used to call a hand-back is now just a job.
+
+Everything below is the by-hand case, and the rule the `promote` job still enforces.
 
 `pnpm --filter claude-orchestrator package:linux` **must run on Linux**, from a clone in the WSL-native home (never
 `/mnt/c`, whose `node_modules` holds win32 prebuilds). Unless you are already running there
@@ -168,17 +254,14 @@ later version.
 This used to say the opposite — leave it a draft until Linux is up — and the result was four
 green releases nobody could install, because the Linux pass never came. An unattended run
 holding a finished release hostage to a build it cannot perform is not caution, it is a
-release that silently never happened.
+release that silently never happened. **This is why `promote` needs `windows` and not
+`linux`**: a failed Linux job leaves a `::warning` saying what is owed, and publishes.
 
 Publishing Windows-only does cost something, so know what you are choosing: electron-builder
 cannot upload into a published release, so Linux artifacts for **that version** can no longer
 go up the normal way. Attaching them afterwards means `gh release upload`, which mangles
 filenames containing spaces — check the name against `latest-linux.yml` if you try it. The
 usual answer is simply to ship Linux in the next version instead.
-
-If you _are_ on Linux, follow the artifact checks in
-[`docs/07`](docs/07-packaging-and-release.md#building-for-linux) — the ELF check and the
-`node_register_module_v130` symbol check are both required before the upload counts.
 
 ## 7. Promote
 
@@ -196,12 +279,24 @@ The only ways to finish without publishing are a failed gate (rule 1) or a decis
 to stop and ask about (rule 3). Both are reportable outcomes. "Left as a draft because
 something else is owed" is not — say what is owed in your report instead.
 
+> **CI does this** — `release.yml`'s `promote` job, which checks the feed is on the release
+> before it publishes: `latest.yml` matched as a whole line (`grep -qxF`, because
+> `latest-linux.yml` also contains the string `latest.yml` and is the wrong feed entirely),
+> and `latest-linux.yml` too whenever the `linux` job succeeded. A published release with no
+> feed beside it is invisible to every installed app, so this fails rather than promotes.
+
 ## 8. Report
 
 Finish with, in one short paragraph: the version, the tag, whether the release is published
 or still a draft, which platforms' artifacts are on it, and anything still owed (a Linux
 build, a clean-machine install test, notes a human should reword). If you stopped early, say
 exactly which step and why — that is more useful than a summary of the steps that worked.
+
+> **CI does this** — as annotations on the run: a `::notice` when the tag is published or
+> when there was nothing to release, and a `::warning` naming what is owed when Linux did
+> not build. What no workflow can report is the part that was always owed to a person —
+> installing the build on a **clean machine** and taking one project end to end. Nothing in
+> the pipeline does that, and nothing in it pretends to.
 
 ---
 
@@ -227,3 +322,8 @@ Each of these cost a release. They are here so they cost nothing again.
   watcher, sync poller, updater — with its own `before-quit` teardown calling
   `sessions.stopAll()`. Pointing it at a throwaway `--user-data-dir` does not make it safe;
   that isolates the database and nothing else. This is why rule 6 exists.
+- **Two releasers, one tag.** The pipeline and the app's _Release after merge_ switch both
+  follow this file, and both would tag. Leave that switch **off** for this repo
+  ([`docs/11`](docs/11-ci-cd-pipeline.md#the-apps-release-after-merge-switch)); the agent it
+  starts would either race the workflow for the tag or find the release already published
+  and stop, and only one of those two outcomes is harmless.

@@ -6,8 +6,9 @@ unattended.** This file is the contract for two things a commit must get right:
 
 The wider "how do I make a change" material — recipes, where code lives, the
 security boundary — lives in [`docs/04-contributing-guide.md`](docs/04-contributing-guide.md).
-The release procedure lives in [`RELEASE.md`](RELEASE.md). This file sits between
-them: it governs the commit itself.
+The release procedure lives in [`RELEASE.md`](RELEASE.md), and the pipeline that
+now performs it in [`docs/11-ci-cd-pipeline.md`](docs/11-ci-cd-pipeline.md). This
+file sits between them: it governs the commit itself.
 
 ---
 
@@ -18,11 +19,14 @@ Every commit that ships work:
 1. Has a **Conventional Commits** subject, 50 characters or fewer.
 2. Has a **plain-text body** wrapped at 72 characters, ending in a `Ticket ID:`
    (when there is one) and a `Tested:` line.
-3. **Bumps `version` in `apps/client/package.json`**, in that same commit.
-4. Is **tagged** `vX.Y.Z` with an annotated tag matching that version.
+3. **Bumps `version` in `apps/client/package.json`**, in that same commit —
+   when you know what the change is worth.
 
-Steps 3 and 4 are the part people forget. A commit that changes behaviour and
-leaves the version alone is not finished.
+The tag used to be step 4. It is not yours any more: pushing to `development`
+runs [`.github/workflows/release.yml`](.github/workflows/release.yml), which tags,
+packages and publishes. Bump if you can — the pipeline honours the version it
+finds — and if you don't, it patch-bumps for you. Either way the release happens.
+See §4.
 
 ---
 
@@ -165,11 +169,29 @@ manifest and stays at `0.0.0`; it is never bumped.
 
 ### The rule
 
-**Every commit that changes the product bumps the version, and the bump rides
-inside that same commit.** Not a follow-up commit, not a batch at release time.
-The commit that introduces the change and the commit that names its version are
-one commit, so `git log` can never show you a change without telling you which
+**A commit that changes the product bumps the version, and the bump rides inside
+that same commit.** Not a follow-up commit, not a batch at release time. The
+commit that introduces the change and the commit that names its version are one
+commit, so `git log` can never show you a change without telling you which
 version it landed in.
+
+That is still how it should read. What has changed is the consequence of
+forgetting. The bump is no longer the last thing standing between a merge and a
+release: **the pipeline reads the version, and supplies one if the range has
+none.** `scripts/next-version.mjs` takes a manifest version newer than every
+existing tag as the answer, and otherwise patch-bumps the highest **released**
+version and commits that as `chore(release): vX.Y.Z`. So:
+
+- **You bumped.** The pipeline uses your number exactly, including a MINOR bump
+  it would never have chosen for itself. This is why bumping still matters —
+  only you know a `feat` when you write one.
+- **You didn't.** The release is a PATCH and nothing is lost. It used to be a
+  release that silently never happened, which is why this section once said a
+  commit that leaves the version alone "is not finished".
+
+The one thing that is still yours alone is choosing MINOR. A feature that ships
+as a patch is a wrong version number, not a missing release, and no script can
+tell the difference after the fact.
 
 ### Choosing the bump
 
@@ -187,7 +209,13 @@ are splitting work across several commits, each one bumps — that is the point.
 
 ### Tagging
 
-A commit that bumps the version gets an **annotated** tag naming it:
+**Do not tag.** The pipeline does, as `github-actions[bot]`, on the merge commit —
+and a tag pushed from a laptop for a version the pipeline is about to compute is
+a collision nobody enjoys resolving. Tag by hand only when you are releasing by
+hand, which means Actions is unavailable and you are following
+[`RELEASE.md`](RELEASE.md) §3 deliberately.
+
+The shape of a tag is unchanged, and the pipeline obeys all of it:
 
 ```bash
 git tag -a v0.53.1 -m "v0.53.1 - <one line saying what changed>"
@@ -200,16 +228,22 @@ git tag -a v0.53.1 -m "v0.53.1 - <one line saying what changed>"
 - Push with `git push --follow-tags`, so the tag and the commit travel together.
   A tag pushed without its commit points at nothing anybody else can see.
 - **Never move or re-point a tag that has been pushed.** If a tagged version is
-  wrong, bump again and tag the correction.
+  wrong, bump again and tag the correction. This one outlives the pipeline: it is
+  why `next-version.mjs` only ever proposes a version newer than every tag it can
+  see, rather than trusting the manifest.
 
 ### How this meets the release procedure
 
-Because the bump and the tag ride with the work, [`RELEASE.md`](RELEASE.md)'s
-version and tag steps are **checks, not edits** — by the time a release runs, the
-version is already correct and the tag already exists. The release reads the tag
-it finds; it does not create one. The single exception RELEASE.md allows is a
-range that somehow contains no bump at all, which it fixes with a lone
-`chore(release): vX.Y.Z` commit.
+Your commit's job is now the **version**, and only the version.
+[`.github/workflows/release.yml`](.github/workflows/release.yml) does the rest on
+every push to `development`, following [`RELEASE.md`](RELEASE.md) section by
+section — see [`docs/11-ci-cd-pipeline.md`](docs/11-ci-cd-pipeline.md). A bump that
+rides inside the work commit is honoured as the release's version; a range with no
+bump gets the lone `chore(release): vX.Y.Z` commit RELEASE.md §2 always allowed,
+except that the pipeline writes it rather than a person.
+
+RELEASE.md is still the procedure of record. It is what you follow when the
+pipeline cannot run, and it is the specification the pipeline is checked against.
 
 ---
 
@@ -229,5 +263,7 @@ the change seen working. Then:
       continuations aligned.
 - [ ] `Ticket ID:` present if a ticket exists, omitted if not.
 - [ ] `Tested:` says what you actually ran.
-- [ ] `apps/client/package.json` `version` bumped in this commit.
-- [ ] Annotated `vX.Y.Z` tag created for that version.
+- [ ] `apps/client/package.json` `version` bumped in this commit — and bumped
+      MINOR if this is a `feat` or a break, which is the one call the pipeline
+      cannot make for you.
+- [ ] No tag. The pipeline cuts it when this lands on `development` (§4).

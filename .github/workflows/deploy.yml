@@ -8,9 +8,9 @@
 # A change to a shared package (@tm/shared, @tm/protocol, @tm/ui) or the lockfile triggers
 # both, since either app could be affected.
 #
-# It does NOT touch the desktop app. apps/client is released by RELEASE.md's procedure —
-# tagged, packaged and published by hand from a Windows machine — and nothing here should
-# ever try to do that. A push containing only apps/client changes deploys nothing.
+# It does NOT touch the desktop app. apps/client is released by release.yml, which runs off
+# the same push and follows RELEASE.md's procedure — and nothing here should ever try to do
+# that. A push containing only apps/client changes deploys nothing.
 #
 # ── One-time setup (repo Settings → Secrets and variables → Actions) ──
 #   AZURE_CLIENT_ID                   app registration (or user-assigned MI) client id

@@ -1,8 +1,10 @@
 # Deploying the cloud service
 
-The desktop app is released by [`RELEASE.md`](../RELEASE.md) — tagged, packaged and
-published by hand. The cloud service is the opposite: nothing about it is manual after the
-first stand-up. Push to `development`, and `@tm/server` and `@tm/web` deploy themselves.
+Nothing about the cloud service is manual after the first stand-up. Push to `development`,
+and `@tm/server` and `@tm/web` deploy themselves. The desktop app releases itself off the
+same push, but through a different workflow that shares nothing with this one — see
+[`11-ci-cd-pipeline.md`](11-ci-cd-pipeline.md), which covers all three workflows, the
+secrets and the one-time repository settings.
 
 This file is the app repo's half. The Azure resources live in the separate
 `infrastructure` repo under `taskmanager/`, and its README carries the one-time steps —

@@ -369,6 +369,13 @@ self-update without it.
 
 ## Release checklist
 
+> A push to `development` now does all of this in
+> [`.github/workflows/release.yml`](../.github/workflows/release.yml) — see
+> [`docs/11`](11-ci-cd-pipeline.md). What follows is the by-hand procedure, kept because it
+> is what you follow when the pipeline cannot run, and what the pipeline is checked against.
+> [`RELEASE.md`](../RELEASE.md) is the same list written for an unattended agent, with the
+> rules that outrank it.
+
 1. Green gate: `pnpm typecheck` && `pnpm test` && `pnpm build`.
 2. Confirm the dependency tree is still permissive — no copyleft
    ([`docs/06`](06-licensing.md)):
