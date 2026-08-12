@@ -142,20 +142,32 @@ export class HttpTransport implements Transport {
 
   pathForFile(_file: File): string {
     // No such thing as a filesystem path for a file picked in a browser — see Transport's
-    // own docstring, and `attachmentUrl` below for the half that DOES have an answer.
+    // own docstring, and `attachmentUrl` below for the other half of the same problem.
     return '';
   }
 
   /**
-   * Where a browser fetches an attachment's bytes from.
+   * Where a browser fetches an attachment's bytes from — and the honest answer today is
+   * NOWHERE, so this returns `''`.
    *
    * The desktop answers `vipper-attachment://a/<id>`, a custom scheme registered only in
-   * Electron; a browser cannot resolve it, so every `<img src>` in the shared attachment
-   * strip was broken here. This is the host-supplied resolver that fixes it — the shared
-   * component asks the transport instead of hardcoding a host fact.
+   * Electron. A browser cannot resolve it, so every `<img src>` in the shared attachment
+   * strip was pointed at a URL that could never load. That is the bug this resolver exists
+   * to end: the shared component asks the HOST where the bytes are instead of hardcoding
+   * one host's answer.
+   *
+   * Making the web's answer a real URL needs the bytes to be on the server, and they are
+   * not: the mirror carries `Task` and `Project` rows, and `attachment:add` takes paths by
+   * explicit design (an attachment can be a 30 MB video). Building that — an upload route,
+   * a desktop-side handler that writes the blob under `userData/attachments/`, and a
+   * download that streams it back — is written up as owed in docs/plan/README.md Phase 26.
+   *
+   * Until then `''`, which the strip reads as "this host cannot show a preview" and answers
+   * with the chip alone. Returning a plausible URL to a route that 404s would look exactly
+   * the same on screen and be a claim that was not true.
    */
-  attachmentUrl(id: string): string {
-    return `${this.deps.apiBase}/v1/attachments/${encodeURIComponent(id)}`;
+  attachmentUrl(): string {
+    return '';
   }
 
   /** Stop the result poll and fail everything still waiting. Called when the tab tears down. */

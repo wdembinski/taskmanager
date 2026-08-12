@@ -361,9 +361,12 @@ describe('HttpTransport: preconditions', () => {
     expect(transport.pathForFile({} as File)).toBe('');
   });
 
-  it('resolves an attachment to a URL a browser can actually fetch', () => {
-    // The desktop answers `vipper-attachment://a/<id>`, a scheme only Electron registers.
+  it('says it cannot serve attachment bytes, rather than naming a route that 404s', () => {
+    // The desktop answers `vipper-attachment://a/<id>`, a scheme only Electron registers,
+    // and the bytes are not on the server yet (docs/plan/README.md Phase 26, "what this
+    // leaves owed"). `''` makes the shared strip show the chip and skip the thumbnail; a
+    // plausible URL would look the same on screen and be a claim that was not true.
     const { transport } = makeTransport();
-    expect(transport.attachmentUrl('a1')).toBe('https://api.example.com/v1/attachments/a1');
+    expect(transport.attachmentUrl()).toBe('');
   });
 });

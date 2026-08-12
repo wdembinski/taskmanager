@@ -34,10 +34,14 @@ export interface Transport {
    * Electron answers `vipper-attachment://a/<id>`, a custom scheme registered by the main
    * process (`ipc.ts`) so a locked-down window can show an image it is never told the path
    * of. That scheme does not exist in a browser, so every `<img src>` in the shared
-   * attachment strip was simply broken there; the web answers an HTTP download URL instead.
+   * attachment strip was simply broken there.
    *
    * Optional so a host that has not implemented it yet still satisfies `Transport`; callers
    * fall back to `@tm/shared/attachments`'s `attachmentUrl`, which is the Electron answer.
+   *
+   * `''` means "this host cannot serve these bytes", and is a real answer rather than a
+   * failure: the strip shows the chip and skips the thumbnail. A host that pointed at a URL
+   * it could not actually serve would look identical on screen and be a lie in the code.
    */
   attachmentUrl?(id: string): string;
 }

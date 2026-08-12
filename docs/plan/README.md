@@ -4777,10 +4777,13 @@ relayable, and making the drain fire-and-forget each turn it red.
   full AI transcript, so the per-entity byte budget matters there more than anywhere.
 - **Attachment BYTES do not cross.** `Transport.attachmentUrl` is in place, so the shared
   strip asks the host where to fetch a preview from instead of hardcoding Electron's custom
-  scheme — but the endpoints behind the web's answer are not built, and `attachment:add`
-  takes paths by explicit design, so adding a file from a browser still needs an upload
-  route, a desktop-side handler that writes the blob under `userData/attachments/`, and a
-  download that streams it back.
+  scheme — and the web's honest answer today is `''`, which drops the thumbnail and keeps
+  the chip. Making it a real URL needs an upload route, a desktop-side handler that writes
+  the blob under `userData/attachments/<taskId>/` and then calls the existing path-based
+  `attachment:add` (which takes paths, never bytes, by explicit design — an attachment can
+  be a 30 MB video), and a download that streams it back. Adding a file FROM a browser needs
+  the same three. Until then, attachments are a desktop act that the web can see the chips
+  of.
 - **The server has not been deployed with this schema.** `CommandResults1786800000000` adds
   `commands.ackedAt`, `command_results` and `tombstones`, and has only been read, not run.
 

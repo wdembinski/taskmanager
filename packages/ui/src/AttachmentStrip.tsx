@@ -263,10 +263,16 @@ export function AttachmentStrip({
     else void open(attachment.id);
   }
 
-  const images = attachments.filter((a) => a.mimeType?.startsWith('image/') && !gone.has(a.id));
-
-  /** The host's URL for an attachment, falling back to Electron's custom scheme. */
+  /**
+   * The host's URL for an attachment, falling back to Electron's custom scheme for a host
+   * that does not answer at all. `''` is a deliberate answer meaning "I cannot serve these
+   * bytes" — see `Transport.attachmentUrl` — and the previews below are dropped for it,
+   * rather than pointed at something that will 404.
+   */
   const imageSrc = (id: string): string => transport.attachmentUrl?.(id) ?? attachmentUrl(id);
+  const images = attachments.filter(
+    (a) => a.mimeType?.startsWith('image/') && !gone.has(a.id) && imageSrc(a.id) !== '',
+  );
 
   return (
     <div
