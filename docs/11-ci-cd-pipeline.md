@@ -69,6 +69,50 @@ flight for the old commit.
 
 ---
 
+## The files it is made of
+
+Three files _are_ the pipeline. The rest are what it reads, what guards it, and — the longest
+list — what it deliberately did not rewrite.
+
+**New:**
+
+| File                                                                      | What it owns                                                                                                                                                                                                                                                             |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [`.github/workflows/release.yml`](../.github/workflows/release.yml)       | Every section of `RELEASE.md`, as five jobs. The only file in this repository that pushes a tag or publishes a release.                                                                                                                                                  |
+| [`scripts/next-version.mjs`](../scripts/next-version.mjs)                 | The one decision the workflow would otherwise have had to make in YAML — which version the next release carries, and whether the manifest has to be committed first. No dependencies, so the `version` job runs it without a `pnpm install`.                             |
+| [`scripts/next-version.test.mjs`](../scripts/next-version.test.mjs)       | 25 cases over that rule: the bump, the reuse, the first release, the manifest left behind by a merge, and `'0.8.0' > '0.82.6'` — which is what a string compare gets wrong and both of whose tags exist here.                                                            |
+| [`test/workflow-invariants.test.ts`](../test/workflow-invariants.test.ts) | 11 assertions over all three workflows: the toolchain every job installs, the promote ordering, that the gates cannot drift from `RELEASE.md` §1, and that this section's own map still names files that exist. The only thing in the repo that reads a workflow at all. |
+| [`docs/11-ci-cd-pipeline.md`](11-ci-cd-pipeline.md)                       | This file — what runs when, the secrets, the settings that live outside every diff, and how to re-run a release that failed halfway.                                                                                                                                     |
+
+**Changed:**
+
+| File                                                              | The change, and what stayed                                                                                                                                                                                 |
+| ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)         | Gained the `changes` path filter and the Windows `package` job. `gates` and `docker` are untouched: they were already right, and the new job answers a question that only exists now that a merge tags.     |
+| [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml) | Gained the wait for the new revision to actually run, the `/health` poll and the 401 check on `/v1/board`. **What it deploys did not change** — only whether it believes itself.                            |
+| [`RELEASE.md`](../RELEASE.md)                                     | Still the procedure, and still what an agent follows when a release is cut by hand. Each section now also names the job that performs it. §1's fenced block is the specification the gate-drift test reads. |
+| [`CONTRIBUTING.md`](../CONTRIBUTING.md)                           | §4 now says what the pipeline does with the version — and what happens to a branch that forgets to bump one, which is `scripts/next-version.mjs`'s fallback rather than a lost release.                     |
+| [`apps/client/package.json`](../apps/client/package.json)         | The version, bumped as any change bumps it (§4). Its `scripts` are untouched — see below.                                                                                                                   |
+| [`package.json`](../package.json)                                 | `yaml` as a root devDependency. `test/workflow-invariants.test.ts` parses the workflows rather than approximating a parse with regexes, which would be the same class of bug it is guarding against.        |
+
+**Reused unchanged** — and this is the part worth reading, because each one is a place the
+pipeline could have grown a second, subtly different copy of something:
+
+| File                                                                                                       | Why the runner calls it rather than restating it                                                                                                                                                                                                                                                                                                     |
+| ---------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `package` / `package:linux` / `package:local` in [`apps/client/package.json`](../apps/client/package.json) | Each is already the whole chain — `electron-vite build` → `install-app-deps` → `ensure:abi` → `electron-builder` → `check:feed`. Spelling those steps out as separate workflow steps would let CI package by a route no human has ever used, and would make `--publish` a workflow decision rather than a script one. The jobs call one script each. |
+| [`apps/client/scripts/ensure-native-abi.mjs`](../apps/client/scripts/ensure-native-abi.mjs)                | The v0.25.0 gate: rebuild `better-sqlite3` against Electron's headers if the ABI is wrong, and fail if it still is. It runs _inside_ `package`, so the runner cannot skip it and no workflow step had to invoke it.                                                                                                                                  |
+| [`apps/client/scripts/check-update-feed.mjs`](../apps/client/scripts/check-update-feed.mjs)                | Refuses an update feed no installed client could act on — unexpanded macros, a `publisherName` with nothing signing, a `latest*.yml` naming files that are not there. Also inside `package`, and it runs after the upload deliberately: the upload goes to a **draft**, so failing here still stops it reaching anyone.                              |
+| [`apps/client/electron-builder.yml`](../apps/client/electron-builder.yml)                                  | The build's own configuration, including the `productName` the smoke test names the `.exe` by. `--publish onTagOrDraft` is passed on the command line by the `package` script, so nothing about publishing had to move into this file.                                                                                                               |
+
+The rule those four are an instance of: **the runner runs the scripts a human runs.** What the
+workflows express in their own right is only the part a human never had to be told — the
+tagging, the drafting, the ordering, the promotion. That is also what keeps
+[`docs/plan/ci-cd-gate-report.md`](plan/ci-cd-gate-report.md) meaningful: gates run locally and
+gates run on the runner are the same commands, not two lists that resemble each other.
+
+---
+
 ## The two loop hazards in `release.yml`
 
 The `version` job pushes a commit to the branch the workflow triggers on. That is a release

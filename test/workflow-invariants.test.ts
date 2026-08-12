@@ -26,6 +26,13 @@
  *     other. Duplication is the right call there and it is also how three lists quietly stop
  *     agreeing. This is the guard that makes "keep them in step by hand" a checkable claim.
  *
+ * A fifth group was added afterwards and is a different kind of claim: not a mistake anyone
+ * has made here yet, but the one part of `docs/11-ci-cd-pipeline.md` that can go wrong
+ * silently. Its "The files it is made of" section is a map of every file the pipeline is
+ * made of, and a map is exactly the sort of prose that survives a rename unchanged. So the
+ * paths in it are read back and required to exist, and every workflow on disk is required to
+ * appear — the same idea as reading §1's list out of RELEASE.md rather than restating it.
+ *
  * Lives at the repo root beside `repo-invariants.test.ts` and `shell-parity.test.ts` for the
  * reason those do: the root `vitest.config.ts` sets no `include`, so vitest's default glob
  * collects it, which puts the guard inside `pnpm test` — and `pnpm test` is on every gate
@@ -50,7 +57,7 @@
  * it was relied on.
  */
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
@@ -355,5 +362,80 @@ describe('the CI gates cannot drift from RELEASE.md §1', () => {
         'pass CI and be tagged by a weaker set of checks, or fail the release after passing ' +
         "the merge — see release.yml's comment on why they are duplicated rather than shared.",
     ).toEqual(gateCommands('ci.yml'));
+  });
+});
+
+describe("docs/11's map of the pipeline's files stays true", () => {
+  /**
+   * The `## The files it is made of` section, which lists every file the pipeline is made of
+   * — the new ones, the changed ones, and the four it reuses unchanged.
+   */
+  function fileMap(): string {
+    const md = readFileSync(join(repoRoot, 'docs', '11-ci-cd-pipeline.md'), 'utf8');
+    const section = md.split(/^## /m).find((part) => part.startsWith('The files it is made of'));
+    expect(
+      section,
+      'docs/11-ci-cd-pipeline.md has no "## The files it is made of" section any more. If it ' +
+        'was renamed, rename it here too; if it was deleted, delete this group with it.',
+    ).toBeDefined();
+    return section as string;
+  }
+
+  /**
+   * A repo-relative path, and only that: a bare `X/Y.ext` or `X.ext` in a code span. Scripts
+   * (`package:local`), identifiers (`publisherName`) and globs (`latest*.yml`) are all
+   * excluded by shape, so the section can go on naming them in prose.
+   */
+  const PATH = /^[\w.@-]+(?:\/[\w.@-]+)*\.(?:md|mjs|ts|yml|json)$/;
+
+  function pathsNamedInTheMap(): string[] {
+    const spans = [...fileMap().matchAll(/`([^`\n]+)`/g)].map((match) => match[1]);
+    return [...new Set(spans.filter((span) => PATH.test(span)))];
+  }
+
+  it('names files that are all still there', () => {
+    const paths = pathsNamedInTheMap();
+
+    // The vacuity guard. A section that stops matching the code-span shape would otherwise
+    // pass this group while checking nothing at all.
+    expect(
+      paths,
+      'The file map names almost nothing. Either its tables stopped putting paths in code ' +
+        'spans, or the PATH shape above no longer describes them — and every assertion in ' +
+        'this group is now vacuous.',
+    ).toEqual(expect.arrayContaining(['scripts/next-version.mjs', 'RELEASE.md']));
+    expect(paths.length).toBeGreaterThan(10);
+
+    for (const path of paths) {
+      expect(
+        existsSync(join(repoRoot, path)),
+        `docs/11's file map names \`${path}\`, which does not exist. A map of the pipeline is ` +
+          'prose that survives a rename unmoved, so it is checked rather than trusted: move ' +
+          'the entry, or drop it if the file is genuinely gone.',
+      ).toBe(true);
+    }
+  });
+
+  it('accounts for every workflow on disk', () => {
+    const onDisk = readdirSync(join(repoRoot, '.github', 'workflows'))
+      .filter((name) => name.endsWith('.yml') || name.endsWith('.yaml'))
+      .sort();
+
+    expect(
+      onDisk,
+      'A workflow was added or removed. This file judges the ones in FILES, so one it does ' +
+        'not know about is one nothing checks — add it there (and to docs/11) rather than ' +
+        'relaxing this.',
+    ).toEqual([...FILES].sort());
+
+    const map = fileMap();
+    for (const name of onDisk) {
+      expect(
+        map.includes(`.github/workflows/${name}`),
+        `docs/11's file map never mentions .github/workflows/${name}. The map claims to be ` +
+          'every file the pipeline is made of; a workflow missing from it is the one thing ' +
+          'nobody reading that section would think to look for.',
+      ).toBe(true);
+    }
   });
 });

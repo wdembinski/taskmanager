@@ -13,14 +13,14 @@ the pipeline itself; this is only the evidence that it holds together.
 
 ## Summary
 
-| What                          | Result                                                                    |
-| ----------------------------- | ------------------------------------------------------------------------- |
-| Version resolver              | ✅ `v0.83.0`, `needsCommit=false` — and correct on all 89 real tags       |
-| Workflows parse and hold      | ✅ 34 tests; **8 of 8 mutations caught**                                   |
-| Whole tree green              | ✅ `format:check`, `typecheck`, `test`, `build` — all forced, none cached  |
-| Workflow → script references  | ✅ every `pnpm` script the three files call exists                         |
-| Packaging path                | ⏳ deferred to step 3's PR job by design — not run locally                 |
-| Release end to end            | ⏳ unprovable until this lands; the first real run is the merge itself     |
+| What                         | Result                                                                    |
+| ---------------------------- | ------------------------------------------------------------------------- |
+| Version resolver             | ✅ `v0.83.0`, `needsCommit=false` — and correct on all 89 real tags       |
+| Workflows parse and hold     | ✅ 34 tests; **8 of 8 mutations caught**                                  |
+| Whole tree green             | ✅ `format:check`, `typecheck`, `test`, `build` — all forced, none cached |
+| Workflow → script references | ✅ every `pnpm` script the three files call exists                        |
+| Packaging path               | ⏳ deferred to step 3's PR job by design — not run locally                |
+| Release end to end           | ⏳ unprovable until this lands; the first real run is the merge itself    |
 
 Nothing here went red that was not made to.
 
@@ -96,16 +96,16 @@ a claim about work already done, and unverifiable by reading. So it was re-check
 mechanically: break one invariant, run the suite, require red, restore the file. The harness
 lived in `$TEMP`, never in the work tree, and the tree was confirmed clean afterwards.
 
-| Mutation                                                        | Caught by                                       |
-| --------------------------------------------------------------- | ----------------------------------------------- |
-| `version: 9` added to `pnpm/action-setup`                       | never passes a version                          |
-| a runner moved to `node-version: 20`                            | installs Node 22 everywhere                     |
-| `promote` no longer `needs:` `linux`                            | runs promote after both package jobs            |
-| `promote` gated on `needs.linux.result == 'success'`            | does not let a failed Linux build hold the release |
-| `gh release create` without `--draft`                           | creates the release as a draft                  |
-| `--draft=false` removed, so nothing publishes                   | publishes in the promote job and nowhere else   |
-| a CI gate stubbed to `echo`                                     | runs RELEASE.md §1's list                       |
-| a gate added to **RELEASE.md §1** that CI does not run          | runs RELEASE.md §1's list                       |
+| Mutation                                               | Caught by                                          |
+| ------------------------------------------------------ | -------------------------------------------------- |
+| `version: 9` added to `pnpm/action-setup`              | never passes a version                             |
+| a runner moved to `node-version: 20`                   | installs Node 22 everywhere                        |
+| `promote` no longer `needs:` `linux`                   | runs promote after both package jobs               |
+| `promote` gated on `needs.linux.result == 'success'`   | does not let a failed Linux build hold the release |
+| `gh release create` without `--draft`                  | creates the release as a draft                     |
+| `--draft=false` removed, so nothing publishes          | publishes in the promote job and nowhere else      |
+| a CI gate stubbed to `echo`                            | runs RELEASE.md §1's list                          |
+| a gate added to **RELEASE.md §1** that CI does not run | runs RELEASE.md §1's list                          |
 
 **8 of 8 caught.** The last two are a pair worth separating: the drift guard reads §1 out of
 `RELEASE.md` rather than restating it, so it fails from _either_ side — a workflow that drops
@@ -125,12 +125,12 @@ minutes of setup. All three `--filter claude-orchestrator` targets — `package`
 
 RELEASE.md §1's list, plus the `format:check` CI adds ahead of it:
 
-| Gate               | Exit | Tasks         | Time     |
-| ------------------ | ---- | ------------- | -------- |
-| `pnpm format:check` | 0    | —             | —        |
-| `pnpm typecheck`   | 0    | 9, **0 cached** | 22.285s |
-| `pnpm test`        | 0    | 138 files passed, 1 skipped | 34.09s |
-| `pnpm build`       | 0    | 6, **0 cached** | 27.732s |
+| Gate                | Exit | Tasks                       | Time    |
+| ------------------- | ---- | --------------------------- | ------- |
+| `pnpm format:check` | 0    | —                           | —       |
+| `pnpm typecheck`    | 0    | 9, **0 cached**             | 22.285s |
+| `pnpm test`         | 0    | 138 files passed, 1 skipped | 34.09s  |
+| `pnpm build`        | 0    | 6, **0 cached**             | 27.732s |
 
 `pnpm test`: **2278 passed, 11 skipped (2289)**.
 
@@ -176,3 +176,48 @@ Both of these are deferred by the plan's own design, not skipped.
 A clean-machine install remains owed to a person, as
 [`docs/11`](../11-ci-cd-pipeline.md#what-still-needs-a-human) already says. Nothing in this
 step changes that.
+
+---
+
+## 5. Added after this report — step 8's file map
+
+Everything above is pinned to `295c5fa` and its numbers are left as they were measured. Step
+8 then added [`docs/11`'s _The files it is made of_](../11-ci-cd-pipeline.md#the-files-it-is-made-of)
+— the map of every file the pipeline is made of, including the four it reuses unchanged — and
+a fifth group in `test/workflow-invariants.test.ts` that reads that map back. So two numbers
+in §2 have moved:
+
+```
+$ pnpm exec vitest run test/workflow-invariants.test.ts scripts/next-version.test.mjs
+Test Files  2 passed (2)
+     Tests  36 passed (36)          # was 34: 11 workflow invariants (was 9) + 25 version cases
+```
+
+Checked the same way, by mutation:
+
+| Mutation                                                               | Caught by                                            |
+| ---------------------------------------------------------------------- | ---------------------------------------------------- |
+| a mapped path renamed (`scripts/next-version.mjs` → `nextversion.mjs`) | names files that are all still there                 |
+| `deploy.yml` no longer named anywhere in the map                       | both assertions                                      |
+| the `## The files it is made of` heading renamed                       | both assertions — the section lookup is not optional |
+| a fourth workflow added to `.github/workflows/`                        | accounts for every workflow on disk                  |
+
+**4 of 4 caught**, with the mutated file restored from a copy in `$TEMP` each time and the
+work tree confirmed clean afterwards. The third is the one worth keeping: a guard that reads a
+document section has to fail when the section is gone, not quietly find nothing and pass.
+
+The reuse claim the map makes is checkable directly, and was:
+
+```
+$ git diff --name-status development...HEAD -- apps/client/scripts apps/client/electron-builder.yml
+(no output)
+```
+
+`apps/client/package.json` is the one file in that group with a diff, and it is one line — the
+version. Its `package`, `package:linux` and `package:local` scripts are byte-for-byte what they
+were before the pipeline existed, which is what makes "the runner runs the scripts a human
+runs" a fact rather than an intention.
+
+§3's list was re-run in full on top of this step, forced as it explains: `format:check` clean,
+`typecheck` 9/9 with 0 cached, `pnpm test` **2280 passed, 11 skipped** across 138 files, and
+`build` 6/6 with 0 cached. The two extra tests against §3's 2278 are the two above.
