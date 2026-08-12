@@ -6,6 +6,14 @@
 #
 # You can run the identical checks locally:
 #   pnpm install && pnpm format:check && pnpm typecheck && pnpm test && pnpm build
+#   pnpm exec turbo run build --filter=./packages/*
+#   pnpm --filter claude-orchestrator package:local
+#
+# The last two are the `package` job below, and they are here for one reason: `development`
+# is now released automatically by release.yml, so the merge that lands a PR is the merge
+# that tags. An ABI break is invisible to typecheck and test — it surfaces only when the
+# packaged addon is loaded — and one has shipped before (v0.25.0 booted to a permanent
+# "Loading…"). Catching it on the PR beats catching it after the tag exists.
 
 name: CI
 
@@ -18,7 +26,37 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  # dorny/paths-filter asks the API which files a pull request touches, rather than
+  # diffing two refs a shallow checkout may not both have.
+  pull-requests: read
+
 jobs:
+  # Which halves of the monorepo this PR touches. Same shape as deploy.yml's `changes`,
+  # but a different question: that one decides what to deploy, this one decides whether a
+  # ~15-minute Windows packaging run is worth starting. A PR that only touches
+  # apps/server or apps/web cannot break the desktop bundle.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      client: ${{ steps.filter.outputs.client }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            client:
+              - 'apps/client/**'
+              # Every packages/* is a dependency of apps/client — @tm/shared, @tm/protocol
+              # and @tm/ui are all bundled into the app — so the whole directory counts.
+              - 'packages/**'
+              # A dependency change is the usual cause of an ABI break: better-sqlite3 or
+              # electron moving is exactly what ensure:abi exists to catch.
+              - 'pnpm-lock.yaml'
+              - '.github/workflows/ci.yml'
+
   gates:
     runs-on: ubuntu-latest
 
@@ -73,3 +111,99 @@ jobs:
           push: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # The desktop app's equivalent of `docker`: prove the artefact still builds, and prove the
+  # native addon inside it loads. Windows because that is the platform releases are cut for —
+  # release.yml publishes on Windows alone and hands Linux back (RELEASE.md §6), so this is
+  # where an ABI break would actually reach a user.
+  #
+  # Gated on the `changes` filter only, NOT on `gates`. It runs alongside them so a red
+  # typecheck and a broken bundle are both known after one wait rather than two; the cost is
+  # a Windows runner occasionally spent on a PR that was going to fail anyway.
+  package:
+    needs: changes
+    if: needs.changes.outputs.client == 'true'
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # No `version:` — pnpm's is pinned by `packageManager` in the root package.json, and
+      # passing both makes action-setup fail with ERR_PNPM_BAD_PM_VERSION.
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # `package:local` runs electron-vite directly and never goes through turbo, so it does
+      # not build packages/*. apps/client imports @tm/shared, @tm/protocol and @tm/ui through
+      # their `exports`, i.e. their dist/, which does not exist after a clean install — the
+      # bundle step then fails to resolve them.
+      - name: Build the shared packages
+        run: pnpm exec turbo run build --filter=./packages/*
+
+      # `package:local` is `package` with `--publish never`: same electron-vite build, same
+      # install-app-deps, same ensure:abi and check:feed gates, but it uploads nothing. A pull
+      # request has no tag and no draft to publish into, and must not create one.
+      #
+      # If this ever dies in NSIS with "!include: could not find … StdUtils.nsh", that is
+      # Windows' 260-character MAX_PATH against a deep checkout plus pnpm's .pnpm store
+      # naming — a local-path problem (it reproduces in the orchestrator's worktrees), not a
+      # code one. The runner checks out at D:\a\<repo>\<repo>, which is short enough.
+      - name: Package the Windows installer
+        run: pnpm --filter claude-orchestrator package:local
+
+      # RELEASE.md §5's smoke test, the same one release.yml runs — and the reason this job
+      # exists at all. It writes its verdict to a FILE: the packaged binary is a GUI-subsystem
+      # executable, detached from the console, so it prints nothing a step can capture and a
+      # check that read stdout would pass on every build, healthy or not.
+      #
+      # ELECTRON_RUN_AS_NODE runs it as plain Node — no window, no engine.
+      #
+      # Required through app.asar, NOT app.asar.unpacked. Only the compiled .node is unpacked;
+      # better-sqlite3's own dependencies — `bindings` above all — stay inside the archive, so
+      # requiring the unpacked directory dies with "Cannot find module 'bindings'" on a
+      # perfectly good build. Asking for the asar path is what the app itself does.
+      #
+      # `new Database()` is the point: the addon loads lazily inside it, which is precisely
+      # what fails when a bundle carries the wrong ABI.
+      - name: Smoke-test the packaged addon
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f smoke.txt
+          # The .exe is named after electron-builder.yml's `productName`.
+          ELECTRON_RUN_AS_NODE=1 "apps/client/dist/win-unpacked/VIPPER Task Manager.exe" -e '
+            const fs = require("fs");
+            const path = require("path");
+            try {
+              const pkg = "apps/client/dist/win-unpacked/resources/app.asar/node_modules/better-sqlite3";
+              const Database = require(path.resolve(pkg));
+              const row = new Database(":memory:").prepare("select 1 as ok").get();
+              fs.writeFileSync("smoke.txt",
+                "PASS packaged addon OK on ABI " + process.versions.modules + " " + JSON.stringify(row) + "\n");
+            } catch (err) {
+              fs.writeFileSync("smoke.txt", "FAIL " + ((err && err.stack) || err) + "\n");
+            }
+          ' || true
+          if [ ! -f smoke.txt ]; then
+            echo "::error::The packaged binary wrote no verdict at all — it did not reach the try/catch."
+            exit 1
+          fi
+          cat smoke.txt
+          grep -q '^PASS ' smoke.txt || {
+            echo "::error::The packaged better-sqlite3 addon failed to load — this build is bad (RELEASE.md §5)."
+            exit 1
+          }
+
+      # Not kept as an artifact on purpose: an installer built from a pull request is nobody's
+      # delivery path, and release.yml already keeps a copy of the one that is. What this job
+      # produces is a verdict, not a file.
