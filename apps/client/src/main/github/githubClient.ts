@@ -18,6 +18,7 @@
  *    URL is followed verbatim rather than re-derived, because the search endpoints attach
  *    their own opaque parameters to it.
  */
+import type { MergeRequestState } from '@shared/mergeRequest';
 import { sanitizeToken } from '@shared/secretToken';
 
 export interface GitHubClientConfig {
@@ -45,6 +46,148 @@ export interface GitHubUser {
   id: number;
   login: string;
   name?: string | null;
+}
+
+/**
+ * One row of `GET /search/issues` — an issue *or* a pull request, since GitHub keeps both
+ * in one index and `pull_request` is the only thing that tells them apart.
+ *
+ * Deliberately thin, and that is the fact `describePullRequest` is built around: search
+ * results carry no branches, no head SHA, no `mergeable_state` and no repository **id**.
+ * Everything attention depends on needs the detail endpoints, which is why the list alone
+ * can never fill a row in.
+ */
+export interface GitHubSearchIssueItem {
+  /** The GLOBAL issue id — not the repo, and not what `#12` means to a human. */
+  id: number;
+  /** The per-repo number, which is what `#12` means. */
+  number: number;
+  title: string;
+  body?: string | null;
+  /** `open` or `closed`. Merged-ness lives in `pull_request.merged_at`. */
+  state: string;
+  draft?: boolean;
+  html_url: string;
+  /**
+   * `https://api.github.com/repos/{owner}/{repo}` — the ONLY thing on a search row that
+   * says which repository this is. The owner and repo every detail call needs are parsed
+   * back out of it; see `describePullRequest.ts`.
+   */
+  repository_url: string;
+  updated_at: string;
+  /** Present iff this row is a pull request. `merged_at` is set once it lands. */
+  pull_request?: { url?: string; html_url?: string; merged_at?: string | null } | null;
+  user?: { id?: number; login?: string } | null;
+  labels?: Array<{ name?: string }> | null;
+}
+
+/** `GET /repos/{owner}/{repo}/pulls/{number}` — the half a search row cannot answer. */
+export interface GitHubPullRequest {
+  id: number;
+  number: number;
+  title: string;
+  body?: string | null;
+  state: string;
+  draft?: boolean;
+  merged?: boolean;
+  merged_at?: string | null;
+  html_url: string;
+  updated_at?: string;
+  /**
+   * GitHub's verdict on whether this can merge, and the counterpart of GitLab's
+   * `detailed_merge_status`. Carried by the DETAIL endpoint only — search rows omit it.
+   */
+  mergeable_state?: string | null;
+  /**
+   * Whether the merge is clean. **Tri-state on purpose:** `null` means GitHub has not
+   * finished computing it, which is "checking", not "clean" — treating it as a boolean is
+   * how a conflicted branch comes to wear a green tick.
+   */
+  mergeable?: boolean | null;
+  /** The source branch and, crucially, the head SHA the check runs hang off. */
+  head?: { ref?: string; sha?: string; repo?: { id?: number; full_name?: string } | null } | null;
+  base?: { ref?: string; repo?: { id?: number; full_name?: string } | null } | null;
+}
+
+/**
+ * One review on a pull request. `state` is `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`,
+ * `DISMISSED` or `PENDING`; the fold that turns a list of these into an approval count
+ * lives in `describePullRequest.ts`.
+ */
+export interface GitHubReview {
+  id: number;
+  state?: string;
+  submitted_at?: string | null;
+  user?: { id?: number; login?: string } | null;
+}
+
+/**
+ * One check run on a commit — GitHub's unit of CI, and the equivalent of a GitLab job.
+ *
+ * Two fields where GitLab has one: a run is `queued`/`in_progress`/`completed`, and only a
+ * completed one has a `conclusion`. Both are needed to say what a dot should look like —
+ * see `checkRuns.ts`.
+ */
+export interface GitHubCheckRun {
+  id?: number;
+  name?: string;
+  status?: string;
+  conclusion?: string | null;
+  html_url?: string | null;
+  details_url?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+}
+
+/** One legacy commit status — what CI reported before check runs existed. */
+export interface GitHubStatusContext {
+  context?: string;
+  state?: string;
+  target_url?: string | null;
+}
+
+/** `GET /repos/{owner}/{repo}/commits/{sha}/status`, for repos still on commit statuses. */
+export interface GitHubCombinedStatus {
+  state?: string;
+  total_count?: number;
+  sha?: string;
+  statuses?: GitHubStatusContext[] | null;
+}
+
+/**
+ * `GET /repos/{owner}/{repo}/branches/{branch}/protection`.
+ *
+ * Admin-gated: on a repository you merely contribute to this 403s, which is the normal
+ * case and not an error worth showing. See `describePullRequest.ts` for what is done
+ * instead — nothing, deliberately.
+ */
+export interface GitHubBranchProtection {
+  required_pull_request_reviews?: {
+    required_approving_review_count?: number | null;
+    dismiss_stale_reviews?: boolean;
+    require_code_owner_reviews?: boolean;
+  } | null;
+}
+
+/**
+ * Narrow a pull request's state to ours.
+ *
+ * GitHub has no `merged` state: a landed PR is `closed` with `merged_at` set, and reading
+ * that as "closed" would put every shipped branch in the same bucket as an abandoned one —
+ * on a card, the difference between "this shipped" and "this was thrown away".
+ *
+ * `locked` has no analogue here: GitHub's `locked` flag freezes the *conversation*, while
+ * GitLab's `locked` state means a merge is in progress. Mapping one onto the other would
+ * claim a PR was mid-merge because somebody muted an argument on it.
+ */
+export function toPullRequestState(pr: {
+  state?: string;
+  merged?: boolean | null;
+  merged_at?: string | null;
+  pull_request?: { merged_at?: string | null } | null;
+}): MergeRequestState {
+  if (pr.merged === true || pr.merged_at || pr.pull_request?.merged_at) return 'merged';
+  return pr.state === 'open' ? 'opened' : 'closed';
 }
 
 /**
@@ -76,6 +219,17 @@ export function nextPageUrl(link: string | null | undefined): string | null {
     if (match) return match[1];
   }
   return null;
+}
+
+/**
+ * `/repos/{owner}/{repo}`, with both parts escaped.
+ *
+ * Escaped rather than interpolated raw because these come back off a search row's
+ * `repository_url` and go straight into a path: an owner or repo containing anything
+ * URL-significant would otherwise change which endpoint we called.
+ */
+function repoPath(owner: string, repo: string): string {
+  return `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
 }
 
 export class GitHubClient {
@@ -145,5 +299,107 @@ export class GitHubClient {
   /** GET /user — the "Test connection" call, and the identity every comment is compared to. */
   getMe(): Promise<GitHubUser> {
     return this.request<GitHubUser>('/user');
+  }
+
+  /**
+   * Your open pull requests, newest activity first.
+   *
+   * `author:@me` only — the same decision GitLab's `scope=created_by_me` makes, and for the
+   * same reason: this is the set *you* are responsible for landing. PRs you were merely
+   * asked to review are someone else's to push, and folding them in would double the noise
+   * on a board whose whole point is "what is mine and what is it waiting on".
+   *
+   * `advanced_search=true` is not optional politeness either. GitHub deprecated the legacy
+   * search syntax on 4 Sep 2025; a query sent without the flag comes back with a
+   * deprecation warning and is scheduled to stop working. Our query means the same thing
+   * under both syntaxes — the difference is only how a space between several `repo:`/`org:`
+   * qualifiers is read, and there is one qualifier of each here.
+   *
+   * Search is the only endpoint that answers "across every repository" in one call, which
+   * is why it is used despite being the thinnest payload GitHub has: see
+   * {@link GitHubSearchIssueItem} for what it will not tell you.
+   */
+  async listMyPullRequests(maxPages = 5): Promise<GitHubSearchIssueItem[]> {
+    const q = encodeURIComponent('is:pr is:open author:@me');
+    const all: GitHubSearchIssueItem[] = [];
+    let url: string | null = this.url(
+      `/search/issues?q=${q}&advanced_search=true&sort=updated&order=desc&per_page=100`,
+    );
+    for (let i = 0; i < maxPages && url; i++) {
+      const { body, res }: { body: unknown; res: Response } = await this.rawUrl(url);
+      const items = (body as { items?: unknown } | null)?.items;
+      if (Array.isArray(items)) all.push(...(items as GitHubSearchIssueItem[]));
+      // The `Link` header, not a page counter: search hangs its own opaque parameters off
+      // the next URL, and re-deriving it drops them.
+      url = nextPageUrl(res.headers?.get('link'));
+    }
+    return all;
+  }
+
+  /**
+   * One pull request in full — the head SHA, the branches, `mergeable` and
+   * `mergeable_state`. None of those are on a search row, so this is the only route to
+   * knowing whether CI is green or whether the branch conflicts.
+   */
+  getPullRequest(owner: string, repo: string, number: number): Promise<GitHubPullRequest> {
+    return this.request<GitHubPullRequest>(`${repoPath(owner, repo)}/pulls/${number}`);
+  }
+
+  /** Every review, oldest first — GitHub returns the whole history, not the current state. */
+  listReviews(owner: string, repo: string, number: number, maxPages = 3): Promise<GitHubReview[]> {
+    return this.paged<GitHubReview>(
+      `${repoPath(owner, repo)}/pulls/${number}/reviews?per_page=100`,
+      maxPages,
+    );
+  }
+
+  /**
+   * The check runs on a commit — GitHub's answer to GitLab's pipeline jobs.
+   *
+   * `filter=latest` is the default and is sent anyway, because it is what makes a re-run
+   * replace its failed predecessor rather than sit beside it. GitLab has no such filter and
+   * `pipelineStages.ts` has to dedupe by hand; here the server does it, and being explicit
+   * stops a future default change quietly reintroducing the stale-red-stage bug.
+   *
+   * One page of 100: more jobs than that would make the dot row unreadable anyway.
+   */
+  async listCheckRuns(owner: string, repo: string, sha: string): Promise<GitHubCheckRun[]> {
+    const body = await this.request<unknown>(
+      `${repoPath(owner, repo)}/commits/${encodeURIComponent(sha)}/check-runs?per_page=100&filter=latest`,
+    );
+    const runs = (body as { check_runs?: unknown } | null)?.check_runs;
+    return Array.isArray(runs) ? (runs as GitHubCheckRun[]) : [];
+  }
+
+  /**
+   * The legacy commit statuses on a commit, rolled up.
+   *
+   * Not a fallback for a failed call — a fallback for a different WORLD: plenty of repos
+   * still report CI through the statuses API (Jenkins, Buildkite, CircleCI's older
+   * integration), and those have no check runs at all. A PR there would otherwise read as
+   * "no pipeline" while a wall of red sat on it in the browser.
+   */
+  getCombinedStatus(owner: string, repo: string, sha: string): Promise<GitHubCombinedStatus> {
+    return this.request<GitHubCombinedStatus>(
+      `${repoPath(owner, repo)}/commits/${encodeURIComponent(sha)}/status?per_page=100`,
+    );
+  }
+
+  /**
+   * A branch's protection rule — the only place the *required* approval count lives.
+   *
+   * **403s without admin on the repository**, which is the ordinary case for anyone
+   * contributing to someone else's project, and a 404 means the branch simply is not
+   * protected. The caller distinguishes the two by {@link GitHubError.status}; neither is
+   * an error worth surfacing.
+   */
+  getBranchProtection(
+    owner: string,
+    repo: string,
+    branch: string,
+  ): Promise<GitHubBranchProtection> {
+    return this.request<GitHubBranchProtection>(
+      `${repoPath(owner, repo)}/branches/${encodeURIComponent(branch)}/protection`,
+    );
   }
 }

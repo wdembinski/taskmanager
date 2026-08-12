@@ -88,6 +88,95 @@ describe('GitHubClient', () => {
   });
 });
 
+describe('GitHubClient — pull requests and their checks', () => {
+  /**
+   * `advanced_search=true` is load-bearing: GitHub deprecated the legacy issue-search
+   * syntax on 4 Sep 2025, and a query sent without the flag is on a removal schedule.
+   */
+  it('asks search for your own open PRs, in the syntax GitHub has not deprecated', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ total_count: 0, items: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().listMyPullRequests();
+
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(url).toContain('/search/issues?q=');
+    expect(decodeURIComponent(url)).toContain('q=is:pr is:open author:@me');
+    expect(url).toContain('advanced_search=true');
+    expect(url).toContain('sort=updated');
+  });
+
+  // Search wraps its rows in `items`, unlike every list endpoint — and pages by `Link`.
+  it('unwraps `items` and follows the search’s own next link', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({ items: [{ number: 1 }] }, 200, {
+          link: '<https://api.github.com/search/issues?q=x&page=2>; rel="next"',
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ items: [{ number: 2 }] }, 200, {}));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const prs = await client().listMyPullRequests();
+
+    expect(prs.map((p) => p.number)).toEqual([1, 2]);
+    expect(String(fetchMock.mock.calls[1][0])).toBe(
+      'https://api.github.com/search/issues?q=x&page=2',
+    );
+  });
+
+  it('unwraps `check_runs`, and asks the server to drop superseded re-runs', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ total_count: 1, check_runs: [{ name: 'build' }] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const runs = await client().listCheckRuns('acme', 'web', 'deadbeef');
+
+    expect(runs).toEqual([{ name: 'build' }]);
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(url).toBe(
+      'https://api.github.com/repos/acme/web/commits/deadbeef/check-runs?per_page=100&filter=latest',
+    );
+  });
+
+  it('reads a PR, its reviews and its combined status off the repo path', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().getPullRequest('acme', 'web', 7);
+    await client().listReviews('acme', 'web', 7);
+    await client().getCombinedStatus('acme', 'web', 'deadbeef');
+
+    expect(fetchMock.mock.calls.map((c) => String(c[0]))).toEqual([
+      'https://api.github.com/repos/acme/web/pulls/7',
+      'https://api.github.com/repos/acme/web/pulls/7/reviews?per_page=100',
+      'https://api.github.com/repos/acme/web/commits/deadbeef/status?per_page=100',
+    ]);
+  });
+
+  // A branch name is a path segment with slashes in it — the commonest kind there is.
+  it('escapes a branch name on the way into the protection path', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({}));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().getBranchProtection('acme', 'web', 'release/2026-08');
+
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      'https://api.github.com/repos/acme/web/branches/release%2F2026-08/protection',
+    );
+  });
+
+  // The admin-gated case the caller degrades on: the status has to survive the throw.
+  it('carries the 403 on branch protection through as a status', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ message: 'admin' }, 403)));
+    await expect(client().getBranchProtection('acme', 'web', 'main')).rejects.toMatchObject({
+      status: 403,
+    });
+  });
+});
+
 describe('apiRoot', () => {
   it('leaves github.com’s own API host alone, trailing slash and all', () => {
     expect(apiRoot('https://api.github.com')).toBe('https://api.github.com');
