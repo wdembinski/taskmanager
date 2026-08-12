@@ -49,6 +49,7 @@ plan the orchestrator could one day run on its own repo.
 | 23 | One model for planning, another for the steps | ✅ complete on `feat/setting-ai-agent-models-for-planning` — tag and draft cut once it lands on `development` |
 | 24 | Projects and their tickets (a tracker of our own) | 🚧 in progress on `feat/support-projects-and-their-tickets` — **the whole plan is written** (design, build steps, verification, critical files); build step 1 is next |
 | 25 | Cloud service (a hosted counterpart, sharing domain logic and UI) | 🚧 in progress on `feat/cloud-service` — target layout written, `apps/client`+`packages/shared` restructured, verified (found and fixed a broken per-package test run), Azure cost estimated, risks and open assumptions recorded, no-realtime-service/adaptive-polling design written; every package now scaffolded and the service deployed, with `apps/web` rebuilt on the desktop's own shell, board and detail pane (`feat/the-task-manager-web-should-look-like`, v0.82.0) and its layout matched to the desktop's (`feat/match-web-layout-to-desktop-client`, v0.82.5 — shared global CSS, the toolbar's Add button, a drift guard) — a human glance at the two UIs side by side is still owed |
+| 26 | Support all interactions in the web (relay the channel, not the command kind) | ✅ complete on `feat/support-all-interactions-in-the-web` — one `ipc-invoke` kind behind an exhaustive host-only policy, at-least-once delivery with a result-replay ledger, `PolledEventBus` in place of an event feed; gates green and forced, and the whole relay driven headlessly by [`verify-remote-ipc.mjs`](../../apps/client/scripts/verify-remote-ipc.mjs). A human pressing these controls against a real desktop is still owed, as is deploying the server with this schema |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -4795,6 +4796,75 @@ reproduces `task:changed` from a `board:tasks` diff.
 
 It was proven able to fail: reverting the ledger to a boolean, marking `attachment:pick`
 relayable, and making the drain fire-and-forget each turn it red.
+
+### Verification — the gates, forced, and a control that can still fail
+
+Step 3 of the ticket, run from this worktree against `3a19013`, the branch tip after steps 1
+and 2. `--force` on the two turbo-routed gates, because Phase 25 §8.1 caught this repo
+accepting a 47 ms `FULL TURBO` replay as a verification: a cached gate is not a gate, and
+`0 cached` below is the part of each line that matters.
+
+**Not on `pnpm test`, though**, and the reason is worth writing down once: the root script is
+`turbo run build --filter=./packages/* && vitest run`, so the flag falls through to `vitest`,
+which has no `--force` and exits on it. It needs none — `vitest run` is not cached and
+executes every time.
+
+| # | Command | Exit | Result |
+|---|---------|------|--------|
+| 1 | `pnpm typecheck --force` | **0** | 9 successful, 9 total — **0 cached**, 37.774s |
+| 2 | `pnpm test` | **0** | 143 files passed, 1 skipped (144); 2369 passed, 11 skipped (2380), 39.43s |
+| 3 | `pnpm build --force` | **0** | 6 successful, 6 total — **0 cached**, 33.107s, no turbo warning |
+
+`pnpm format:check` exits 0 (CI runs it ahead of the three, so a red one blocks the merge that
+would otherwise cut the release), and `check:abi` reports `better_sqlite3.node` and Electron
+both at ABI 130.
+
+The 11 skips are the two standing opt-ins and nothing new: 9 in `wslHost.test.ts` behind
+`ORCH_WSL_TEST=1`, 2 in `wslSession.e2e.test.ts` behind `ORCH_E2E=1`.
+
+**The two harnesses.** `verify-remote-ipc.mjs` passes all 16 checks against a real `Store` on a
+scratch SQLite file, and `verify-global-css.mjs` reports 12 selectors in, 12 rules out, nothing
+dropped by Griffel.
+
+**A green harness proves nothing on its own**, so the control was re-run rather than taken on
+trust from the section above. One line of `ipcRelay.ts` — `'attachment:pick': 'host-only'` to
+`'relay'` — turns **3 of the 16 red**, and the two `ipcRelay.test.ts` cases with it. Restored
+by `git checkout --`, green again, tree clean. Green before, red under one changed character,
+green after.
+
+Worth noting which guard did *not* catch it: `test/ipc-relay-coverage.test.ts` stayed green
+throughout. It checks that the policy record covers the channels, not how any one of them is
+classified — so the exhaustiveness gate and the classification gate are genuinely two
+different checks, and only the second one has an opinion about `attachment:pick`.
+
+**Phase 25's "the six standalone runs sum to the aggregate" invariant needs a seventh term
+now.** Run per package, the six sum to 141 files / 2367 tests against the aggregate's 144 /
+2380 — three files short, which looks exactly like suites falling between the two paths:
+
+| Command | Files | Tests |
+|---------|-------|-------|
+| `pnpm --filter claude-orchestrator test` | 67 passed, 1 skipped (68) | 1290 passed, 11 skipped (1301) |
+| `pnpm --filter @tm/server test` | 18 | 101 |
+| `pnpm --filter @tm/web test` | 9 | 110 |
+| `pnpm --filter @tm/shared test` | 26 | 575 |
+| `pnpm --filter @tm/protocol test` | 1 | 12 |
+| `pnpm --filter @tm/ui test` | 19 | 268 |
+| `pnpm exec vitest run test/` | **3** | **13** |
+| | **144 = the aggregate** | **2380 = the aggregate** |
+
+The missing three are the root `test/` directory — `repo-invariants`, `shell-parity` and this
+phase's `ipc-relay-coverage` — which belong to no package and so are reached by the root
+`vitest run` alone. They are covered, but by exactly one path, and the next person to check
+Phase 25 §9.3's sum will find 141 ≠ 144 and go looking for a regression that is not there.
+
+**The version.** This branch carries no bump: it was cut when `apps/client/package.json` said
+`0.82.6`, and `development` has since released `0.83.1`. Bumping it here would be futile rather
+than merely late — the version line is the one conflict the integration's Rung 1.5 resolves by
+**taking base's side**, so any number written here is dropped on the way in. After the merge the
+manifest reads `0.83.1`, which is not ahead of every tag, so `scripts/next-version.mjs` takes
+RELEASE.md §2's fallback and cuts **0.83.2** with `needsCommit=true`. That is correct and
+collision-free, but it is a PATCH for a range that is mostly `feat:` — the one thing a human
+may want to overrule, by bumping on `development` before the pipeline runs.
 
 ### What this leaves owed
 
