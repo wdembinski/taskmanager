@@ -64,14 +64,17 @@ export function archivedCards(rows: readonly Task[]): Task[] {
  * version that recorded only the timestamp, and inventing a reason for those would make every
  * other line in this list less trustworthy.
  */
-export function archiveReasonText(reason: TaskArchiveReason | null | undefined): string {
+export function archiveReasonText(
+  reason: TaskArchiveReason | null | undefined,
+  tracker = 'JIRA',
+): string {
   switch (reason) {
     case 'left-query':
-      return 'JIRA says it no longer matches this board’s query.';
+      return `${tracker} says it no longer matches this board’s query.`;
     case 'retention-expired':
       return 'It was finished, kept past the query, and the retention window ran out.';
     case 'gone-from-jira':
-      return 'JIRA no longer has the ticket — deleted, or not visible to your token.';
+      return `${tracker} no longer has the issue — deleted, or not visible to your token.`;
     default:
       return 'Removed by an earlier version, which did not record why.';
   }
@@ -95,9 +98,17 @@ export function removedAgo(archivedAt: number | null | undefined, now: number): 
   })}`;
 }
 
-/** The whole second line of a row: when it went, and which question sent it. */
+/**
+ * The whole second line of a row: when it went, and which question sent it.
+ *
+ * The tracker's NAME comes off the card rather than out of the reason, because the stored
+ * reason is a neutral vocabulary shared by both syncs (see `TaskArchiveReason`) and telling
+ * someone “JIRA says it no longer matches” about a GitHub issue is exactly the kind of
+ * confident wrong sentence this list exists to avoid.
+ */
 export function removedLine(task: Task, now: number): string {
-  return `Removed ${removedAgo(task.archivedAt, now)} · ${archiveReasonText(task.archivedReason)}`;
+  const tracker = task.externalSource === 'github' ? 'GitHub' : 'JIRA';
+  return `Removed ${removedAgo(task.archivedAt, now)} · ${archiveReasonText(task.archivedReason, tracker)}`;
 }
 
 /**

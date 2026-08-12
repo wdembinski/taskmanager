@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { isBlockedishStatus, isReviewishStatus, resolveStatusColumn } from './statusResolve';
+import {
+  firstUnmappedLabel,
+  isBlockedishStatus,
+  isReviewishStatus,
+  resolveGitHubColumn,
+  resolveStatusColumn,
+} from './statusResolve';
 
 describe('isReviewishStatus', () => {
   it('recognises review statuses in the indeterminate middle', () => {
@@ -175,5 +181,86 @@ describe('resolveStatusColumn', () => {
       column: 'in-progress',
       reason: 'category',
     });
+  });
+});
+
+describe('resolveGitHubColumn', () => {
+  const MAP = { 'In Review': 'in-review', blocked: 'blocked' } as const;
+
+  it('reads an open issue with no mapped label as TO DO', () => {
+    expect(resolveGitHubColumn([], 'open')).toEqual({
+      column: 'todo',
+      reason: 'category',
+      label: null,
+    });
+    expect(resolveGitHubColumn(['good first issue'], 'open', MAP)).toEqual({
+      column: 'todo',
+      reason: 'category',
+      label: null,
+    });
+  });
+
+  it('lets the user map a label onto a column no GitHub issue could otherwise reach', () => {
+    expect(resolveGitHubColumn(['in review'], 'open', MAP)).toEqual({
+      column: 'in-review',
+      reason: 'explicit',
+      label: 'in review',
+    });
+  });
+
+  it('takes the learned map only when the user said nothing', () => {
+    expect(resolveGitHubColumn(['wip'], 'open', MAP, { wip: 'in-progress' })).toEqual({
+      column: 'in-progress',
+      reason: 'learned',
+      label: 'wip',
+    });
+    // The user's map beats it, on the same issue, whichever order the labels come in.
+    expect(resolveGitHubColumn(['wip', 'in review'], 'open', MAP, { wip: 'in-progress' })).toEqual({
+      column: 'in-review',
+      reason: 'explicit',
+      label: 'in review',
+    });
+  });
+
+  /**
+   * The one place this departs from the JIRA resolver's precedence, and the reported failure
+   * it exists to prevent: nothing removes a label when you close an issue, so a stale
+   * `in review` outranking the close would leave a finished card in IN REVIEW forever and
+   * undo a drag into DONE on the very next poll.
+   */
+  it('lets CLOSED beat every label, mapped or learned', () => {
+    expect(resolveGitHubColumn(['in review'], 'closed', MAP)).toEqual({
+      column: 'done',
+      reason: 'category',
+      label: null,
+    });
+    expect(resolveGitHubColumn(['wip'], 'closed', MAP, { wip: 'in-progress' })).toEqual({
+      column: 'done',
+      reason: 'category',
+      label: null,
+    });
+  });
+
+  it('reads a state it has never heard of as closed, not as open', () => {
+    // The safe direction: a finished issue parked in TO DO hides work, the other way round
+    // only shows it. GitHub has two states; a third would be something new.
+    expect(resolveGitHubColumn([], 'archived').column).toBe('done');
+  });
+
+  it('matches labels ignoring case, like every other map here', () => {
+    expect(resolveGitHubColumn(['IN REVIEW'], 'open', MAP).column).toBe('in-review');
+  });
+});
+
+describe('firstUnmappedLabel', () => {
+  it('skips the labels already spending themselves on the column', () => {
+    const map = { 'in review': 'in-review' } as const;
+    expect(firstUnmappedLabel(['in review', 'backend'], map)).toBe('backend');
+    expect(firstUnmappedLabel(['backend', 'in review'], map)).toBe('backend');
+  });
+
+  it('skips a learned label too, and answers null when nothing is left', () => {
+    expect(firstUnmappedLabel(['wip'], undefined, { wip: 'in-progress' })).toBeNull();
+    expect(firstUnmappedLabel([])).toBeNull();
   });
 });

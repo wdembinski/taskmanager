@@ -28,7 +28,7 @@ import { PinRegular } from '@fluentui/react-icons';
 import type { BoardColumn } from '@tm/shared/model';
 import type { JiraStatusOption } from '@tm/shared/ipc';
 import type { StatusReason } from '@tm/shared/statusResolve';
-import { buildStatusMapRows, reasonLabel } from './statusMapView';
+import { buildStatusMapRows, reasonLabel, type StatusMapViewRow } from './statusMapView';
 
 const useStyles = makeStyles({
   root: { display: 'flex', flexDirection: 'column', gap: '6px' },
@@ -59,33 +59,57 @@ const REASON_APPEARANCE: Record<StatusReason, 'brand' | 'success' | 'warning' | 
 };
 
 export interface StatusMapViewerProps {
-  statuses: readonly JiraStatusOption[];
+  /** JIRA's statuses, resolved here by JIRA's own resolver. Ignored when `rows` is given. */
+  statuses?: readonly JiraStatusOption[];
+  /**
+   * Pre-resolved rows, for a tracker whose resolver is not JIRA's — GitHub's labels come in
+   * this way (`buildGitHubLabelRows`).
+   *
+   * The alternative was a second table component, and it is the worse one: what this file is
+   * FOR is the “Why” column — the surface that would have made the IN REVIEW bug obvious —
+   * and a second copy of it would be a second place for that idea to decay. What differs
+   * between the two trackers is only who resolved the rows, so that is the only thing lifted
+   * out.
+   */
+  rows?: readonly StatusMapViewRow[];
   /** Why the list is empty, when it is. Null when the fetch simply hasn't run. */
   error?: string | null;
   map?: Record<string, BoardColumn>;
   learned?: Record<string, BoardColumn>;
   columnLabel: Record<BoardColumn, string>;
-  /** Promote a status into the explicit map with the column it currently resolves to. */
+  /** What the first column is called — “Status”, “Label”. */
+  nameHeader?: string;
+  /**
+   * The tracker's own classification column. **Null hides it**, which is what GitHub does:
+   * an issue has no category, and a blank column with a JIRA heading over it would be
+   * inviting the reader to wonder what should be in it.
+   */
+  categoryHeader?: string | null;
+  /** What to say when there is nothing to show. */
+  emptyText?: string;
+  /** Promote a name into the explicit map with the column it currently resolves to. */
   onPin: (name: string, column: BoardColumn) => void;
 }
 
 export function StatusMapViewer({
   statuses,
+  rows: given,
   error,
   map,
   learned,
   columnLabel,
+  nameHeader = 'Status',
+  categoryHeader = 'JIRA category',
+  emptyText = 'Save a working JIRA connection and this lists every status your instance defines, with the column it resolves to.',
   onPin,
 }: StatusMapViewerProps): React.JSX.Element {
   const styles = useStyles();
-  const rows = buildStatusMapRows(statuses, map, learned);
+  const rows = given ?? buildStatusMapRows(statuses ?? [], map, learned);
 
   if (!rows.length) {
     return (
       <Body1 className={styles.empty}>
-        {error
-          ? `Your instance's statuses could not be read — ${error}`
-          : 'Save a working JIRA connection and this lists every status your instance defines, with the column it resolves to.'}
+        {error ? `Your instance's statuses could not be read — ${error}` : emptyText}
       </Body1>
     );
   }
@@ -93,11 +117,14 @@ export function StatusMapViewer({
   return (
     <div className={styles.root}>
       <div className={styles.scroll}>
-        <Table size="extra-small" aria-label="How each JIRA status resolves to a board column">
+        <Table
+          size="extra-small"
+          aria-label={`How each ${nameHeader.toLowerCase()} resolves to a board column`}
+        >
           <TableHeader>
             <TableRow>
-              <TableHeaderCell>Status</TableHeaderCell>
-              <TableHeaderCell>JIRA category</TableHeaderCell>
+              <TableHeaderCell>{nameHeader}</TableHeaderCell>
+              {categoryHeader !== null && <TableHeaderCell>{categoryHeader}</TableHeaderCell>}
               <TableHeaderCell>Resolves to</TableHeaderCell>
               <TableHeaderCell>Why</TableHeaderCell>
               <TableHeaderCell />
@@ -107,11 +134,13 @@ export function StatusMapViewer({
             {rows.map((row) => (
               <TableRow key={row.name}>
                 <TableCell className={styles.name}>{row.name}</TableCell>
-                <TableCell className={styles.muted}>{row.category}</TableCell>
+                {categoryHeader !== null && (
+                  <TableCell className={styles.muted}>{row.category}</TableCell>
+                )}
                 <TableCell>{columnLabel[row.column]}</TableCell>
                 <TableCell className={styles.whyCell}>
                   <Badge appearance="tint" color={REASON_APPEARANCE[row.reason]}>
-                    {reasonLabel(row.reason, row.column)}
+                    {row.why ?? reasonLabel(row.reason, row.column)}
                   </Badge>
                 </TableCell>
                 <TableCell>
@@ -120,7 +149,7 @@ export function StatusMapViewer({
                       size="small"
                       appearance="subtle"
                       icon={<PinRegular />}
-                      title="Pin this status to the column it resolves to, as an explicit mapping"
+                      title={`Pin this ${nameHeader.toLowerCase()} to the column it resolves to, as an explicit mapping`}
                       aria-label={`Pin ${row.name} to ${columnLabel[row.column]}`}
                       onClick={() => onPin(row.name, row.column)}
                     />

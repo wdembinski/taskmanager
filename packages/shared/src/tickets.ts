@@ -62,10 +62,12 @@ export function isEpic(task: Pick<Task, 'issueType'>): boolean {
  * Precedence, most specific owner first:
  *
  *  1. `issueType` — a native ticket's own closed vocabulary. Only this app writes it.
- *  2. `externalType` — JIRA's, a free string, so matched loosely the way the board already
- *     matches it ("Sub-task", "Technical Story", "New Feature" all have to land somewhere).
- *     Read only for a JIRA-sourced row: a native ticket may carry a stale one and its own
- *     `issueType` is the truth.
+ *  2. `externalType` — the TRACKER's, a free string, so matched loosely the way the board
+ *     already matches it ("Sub-task", "Technical Story", "New Feature" all have to land
+ *     somewhere). Read for any tracker-sourced row: JIRA writes an issue type there and
+ *     GitHub writes `Bug`/`Enhancement` off the two labels every repository is created with,
+ *     and both are the same kind of fact. NOT read for a native ticket, which may carry a
+ *     stale one from before it was adopted and whose own `issueType` is the truth.
  *  3. `type` — the legacy ad-hoc `bug|feature` a human picked in the Add-task dialog.
  *  4. `note` — a card nobody has typed at all.
  */
@@ -76,7 +78,7 @@ export function typeIconKeyFor(
 ): TypeIconKey {
   if (task.issueType && isIssueType(task.issueType)) return task.issueType;
 
-  if (task.externalSource === 'jira') {
+  if (task.externalSource != null) {
     const external = (task.externalType ?? '').toLowerCase();
     // Ordered by specificity, not alphabetically: "Sub-task" contains "task", and "Epic
     // Story" would match both — the first test that hits is the narrower reading.

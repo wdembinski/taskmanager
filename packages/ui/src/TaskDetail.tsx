@@ -306,7 +306,15 @@ export function TaskDetail({
   const [error, setError] = useState<string | null>(null);
 
   const taskId = task?.id ?? null;
+  /**
+   * JIRA in particular, and every use below is a JIRA-only *call*: `jira:fetchComments`,
+   * the @mention picker, the attachment upload, the composer's "Comment on the ticket"
+   * action. None of them has a GitHub route yet, so a GitHub card gets the pane without the
+   * ticket thread rather than a thread that never loads.
+   */
   const isJira = task?.externalSource === 'jira';
+  /** Any tracker — what "opening this card clears its unread border" is true of. */
+  const isExternal = task?.externalSource != null;
 
   /**
    * The composer's whole value: what was typed, who is named in it, and what is attached.
@@ -342,15 +350,20 @@ export function TaskDetail({
     if (isJira) {
       // JIRA comments are fetched live and merged in; failures shouldn't blank the pane.
       setJiraComments(await transport.invoke('jira:fetchComments', taskId).catch(() => []));
-      // Opening the task clears its unread border.
+    } else {
+      setJiraComments([]);
+    }
+    // Opening the task clears its unread border — for ANY tracker, and outside the branch
+    // above on purpose. The border is raised by whichever sync fetched the thread, so a card
+    // whose comments this pane cannot yet show would otherwise stay orange no matter how
+    // many times you opened it.
+    if (isExternal) {
       await transport
         .invoke('jira:markRead', taskId)
         .then((updated) => onStatusChanged?.(updated))
         .catch(() => undefined);
-    } else {
-      setJiraComments([]);
     }
-  }, [taskId, isJira, onStatusChanged]);
+  }, [taskId, isJira, isExternal, onStatusChanged]);
 
   useEffect(() => {
     setError(null);

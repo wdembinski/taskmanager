@@ -21,7 +21,8 @@ import type { Task } from '@tm/shared/model';
  *
  * Non-JIRA cards are ignored: an ad-hoc card on the personal board has no sprint and
  * never will, so letting it veto the name would mean the bar cleared itself the moment
- * you added a note to yourself.
+ * you added a note to yourself. A GitHub card is the same case and is skipped for the same
+ * reason — a sprint is a JIRA Software field, and GitHub has nothing that means it.
  */
 export function currentSprintName(tasks: readonly Task[]): string | null {
   let name: string | null = null;

@@ -187,7 +187,20 @@ export function TaskDetailsCell({
     }
   }
 
+  /**
+   * JIRA in particular: the priority dropdown below writes back to JIRA (`task:setPriority`),
+   * and its options are the ones that instance defines. A GitHub card has no priority to
+   * write to, so it gets the built-in scale and the edit stays local — which is what its
+   * sync is written to preserve.
+   */
   const isJira = task.externalSource === 'jira';
+  /**
+   * Any tracker — the test for "this card is a MIRROR of something", which is what the two
+   * uses below are actually about: editing the description here changes the app's copy and
+   * the next sync replaces it, and Delete must not be offered for a row the next sync would
+   * fetch straight back.
+   */
+  const isExternal = task.externalSource != null;
 
   // A JIRA card may only be given a priority this instance actually has — anything
   // else is rejected by the PUT. Main caches the list, so this costs one IPC round
@@ -480,10 +493,11 @@ export function TaskDetailsCell({
                 onChange={(_e, d) => setDraft(d.value)}
                 placeholder="What this card is, and what done means…"
               />
-              {isJira && (
+              {isExternal && (
                 <Caption1 className={styles.hint}>
-                  Edits the app&apos;s copy — the agent reads this, but nothing is written back to
-                  JIRA and the next sync replaces it with the ticket&apos;s text.
+                  Edits the app&apos;s copy — the agent reads this, but nothing is written back to{' '}
+                  {isJira ? 'JIRA' : 'GitHub'} and the next sync replaces it with the issue&apos;s
+                  own text.
                 </Caption1>
               )}
               <div className={styles.editRow}>
@@ -530,11 +544,12 @@ export function TaskDetailsCell({
         </>
       )}
 
-      {/* Deleting is offered ONLY for a card this app owns. A JIRA card is a mirror of a
-          ticket: removing it here would delete the row and then the very next sync would
-          fetch it straight back, which is a button that lies about what it does. Take a
-          mirrored card off the board by changing the query, or delete the issue in JIRA. */}
-      {!isJira && (
+      {/* Deleting is offered ONLY for a card this app owns. A MIRRORED card — JIRA's or
+          GitHub's — is a copy of an issue: removing it here would delete the row and then the
+          very next sync would fetch it straight back, which is a button that lies about what
+          it does. Take a mirrored card off the board by changing the query, or delete the
+          issue in the tracker. */}
+      {!isExternal && (
         <>
           <div className={styles.deleteRow}>
             <Button

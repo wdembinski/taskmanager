@@ -78,6 +78,7 @@ import {
   statusMapToRows,
   type StatusMapRow,
 } from '@ui/statusMap';
+import { buildGitHubLabelRows } from '@ui/statusMapView';
 import {
   execTargetLabel,
   formatExecTarget,
@@ -204,6 +205,9 @@ export function Settings(): JSX.Element {
   const [githubToken, setGithubToken] = useState('');
   const [githubMsg, setGithubMsg] = useState<string | null>(null);
   const [githubTest, setGithubTest] = useState<JiraTestResult | null>(null);
+  // GitHub's label → column map, edited exactly as JIRA's status map is and seeded the same
+  // way — once, so a blank row somebody is part-way through filling in survives a Save.
+  const [labelRows, setLabelRows] = useState<StatusMapRow[]>([]);
   // Cloud: the poller (`cloudPoller.ts`) needs `enabled` + `baseUrl` from this pane, plus a
   // vipper.iam sign-in — everything the poller actually authenticates with, not a form
   // field, so only the signed-in/out state and a couple of buttons live here.
@@ -231,6 +235,7 @@ export function Settings(): JSX.Element {
     ]);
     setSettings(appSettings);
     setStatusRows(statusMapToRows(appSettings.jira.statusCategoryOverrides));
+    setLabelRows(statusMapToRows(appSettings.github.labelColumnOverrides));
     setJiraStatus(status);
     setGitlabStatus(await window.api.invoke('gitlab:getConfigStatus'));
     setGithubStatus(await window.api.invoke('github:getConfigStatus'));
@@ -371,6 +376,11 @@ export function Settings(): JSX.Element {
                 lastCreateProjectKey: next.jira.lastCreateProjectKey,
                 lastCreateIssueTypeId: next.jira.lastCreateIssueTypeId,
               },
+              // GitHub's learned map is the same kind of engine-written field, and needs the
+              // same treatment for the same reason: this screen saves the WHOLE blob, so
+              // without taking it back the next Save writes a stale copy over what a drag
+              // just taught the app.
+              github: { ...prev.github, learnedLabelColumns: next.github.learnedLabelColumns },
             }
           : prev,
       );
@@ -404,6 +414,22 @@ export function Settings(): JSX.Element {
   function patchStatusRows(next: StatusMapRow[]): void {
     setStatusRows(next);
     patchJira({ statusCategoryOverrides: rowsToStatusMap(next) });
+  }
+
+  /** The same, for GitHub's label map — same rows, same serialisation, same round trip. */
+  function patchLabelRows(next: StatusMapRow[]): void {
+    setLabelRows(next);
+    patchGitHub({ labelColumnOverrides: rowsToStatusMap(next) });
+  }
+
+  /**
+   * Promote a resolved LABEL into the explicit map. `pinStatus` one tracker over, and it
+   * matters more here: the rows worth pinning are the ones the app taught ITSELF from a
+   * drag, and pinning is how a human takes that guess and makes it a fact they own.
+   */
+  function pinLabel(name: string, column: BoardColumn): void {
+    const others = labelRows.filter((r) => r.name.trim().toLowerCase() !== name.toLowerCase());
+    patchLabelRows([...others, { name, column }]);
   }
 
   async function save(): Promise<void> {
@@ -1082,6 +1108,124 @@ export function Settings(): JSX.Element {
               <Switch
                 checked={github.syncPullRequests}
                 onChange={(_e, d) => patchGitHub({ syncPullRequests: d.checked })}
+              />
+            </Field>
+
+            <Field
+              label="Issue query"
+              hint="Which issues become cards, in GitHub's own search syntax — the same box you would type into github.com/issues. Default: the open issues assigned to you, anywhere. Narrow it with `repo:owner/name` or `org:yourcompany`."
+            >
+              <Textarea
+                value={github.issueQuery}
+                resize="vertical"
+                disabled={!github.syncIssues}
+                onChange={(_e, d) => patchGitHub({ issueQuery: d.value })}
+              />
+            </Field>
+
+            <Field
+              label="Label mapping"
+              hint="Which board column each issue LABEL means, matched ignoring case. A GitHub issue has no workflow — it is open or it is closed — so unlike JIRA this map is the only way an issue reaches In Progress, In Review or Blocked at all. Closed always means Done, whatever labels the issue is still wearing."
+            >
+              <div className={styles.mapList}>
+                {labelRows.map((row, i) => (
+                  <div key={i} className={styles.mapRow}>
+                    {/* A plain Input, not the Combobox the JIRA map gets: labels are per
+                        REPOSITORY and a board can span dozens of them, so there is no
+                        instance-wide list to offer the way there is for a workflow's
+                        statuses. Typing the label is the honest control. */}
+                    <Input
+                      className={styles.mapName}
+                      value={row.name}
+                      placeholder="GitHub label, e.g. in review"
+                      onChange={(_e, d) =>
+                        patchLabelRows(
+                          labelRows.map((r, j) => (j === i ? { ...r, name: d.value } : r)),
+                        )
+                      }
+                    />
+                    <Dropdown
+                      className={styles.mapColumn}
+                      value={COLUMN_LABEL[row.column]}
+                      selectedOptions={[row.column]}
+                      onOptionSelect={(_e, d) =>
+                        d.optionValue &&
+                        patchLabelRows(
+                          labelRows.map((r, j) =>
+                            j === i ? { ...r, column: d.optionValue as BoardColumn } : r,
+                          ),
+                        )
+                      }
+                    >
+                      {MAPPABLE_COLUMNS.map((c) => (
+                        <Option key={c} value={c}>
+                          {COLUMN_LABEL[c]}
+                        </Option>
+                      ))}
+                    </Dropdown>
+                    <Button
+                      size="small"
+                      appearance="subtle"
+                      icon={<DismissRegular />}
+                      title="Remove this mapping"
+                      onClick={() => patchLabelRows(labelRows.filter((_r, j) => j !== i))}
+                    />
+                  </div>
+                ))}
+                <div>
+                  <Button
+                    size="small"
+                    icon={<AddRegular />}
+                    onClick={() =>
+                      patchLabelRows([...labelRows, { name: '', column: 'in-review' }])
+                    }
+                  >
+                    Add mapping
+                  </Button>
+                </div>
+              </div>
+            </Field>
+
+            {/* The same table JIRA's statuses get, and here it earns its keep for a different
+                reason: the rows worth reading are the LEARNED ones. Nothing else in the app
+                ever shows what a drag taught it, and an entry it got wrong would otherwise
+                keep quietly deciding a column with no way to see it, let alone correct it.
+                Pin turns a guess into a mapping the human owns. */}
+            <Field
+              label="How your labels resolve"
+              hint="Every label this app has an opinion about — the ones you mapped above, and the ones it taught itself when a drag applied one. Shown as if the issue were open, since a closed one is always Done."
+            >
+              <StatusMapViewer
+                rows={buildGitHubLabelRows(github.labelColumnOverrides, github.learnedLabelColumns)}
+                columnLabel={COLUMN_LABEL}
+                nameHeader="Label"
+                categoryHeader={null}
+                emptyText="No labels are mapped yet. Add one above, or drag a card between columns once issue syncing is on and the app will record what it applied."
+                onPin={pinLabel}
+              />
+            </Field>
+
+            <Field label="Done column">
+              <Switch
+                checked={github.showDoneColumn}
+                label="Show the Done column on the board"
+                onChange={(_e, d) => patchGitHub({ showDoneColumn: d.checked })}
+              />
+            </Field>
+
+            <Field
+              label="Keep finished cards for (days)"
+              hint="The commonest issue query there is says `is:open`, which stops matching an issue the instant you close it — so the card you had just dragged into Done would vanish out of it. A finished card is kept this long past the query instead, and re-read by number each sync, so reopening the issue on github.com still moves the card. 0 = take it off the board as soon as the query drops it."
+            >
+              <SpinButton
+                min={0}
+                max={365}
+                value={github.doneRetentionDays}
+                onChange={(_e, d) => {
+                  const n = d.value ?? Number(d.displayValue);
+                  if (Number.isFinite(n))
+                    patchGitHub({ doneRetentionDays: Math.max(0, Math.round(n as number)) });
+                }}
               />
             </Field>
 

@@ -125,7 +125,7 @@ export function useBoardExtras(): BoardExtras {
     };
 
     void load(() => transport.invoke('agentProject:list'), setAgentProjects);
-    void load(() => transport.invoke('gitlab:mergeRequests'), setMergeRequests);
+    void load(() => transport.invoke('mr:mergeRequests'), setMergeRequests);
     void load(() => transport.invoke('attachment:list'), setAttachments);
     void load(() => transport.invoke('chain:links'), setChainLinks);
     void load(() => transport.invoke('attention:list'), setAttentionItems);
@@ -148,7 +148,7 @@ export function useBoardExtras(): BoardExtras {
   // and for the reason those events give: the list is the payload.
   useEffect(() => {
     const offs = [
-      transport.on('gitlab:mergeRequestsChanged', setMergeRequests),
+      transport.on('mergeRequests:changed', setMergeRequests),
       transport.on('attachment:changed', setAttachments),
       transport.on('chain:changed', setChainLinks),
       transport.on('settings:changed', setSettings),

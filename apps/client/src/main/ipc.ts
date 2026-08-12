@@ -100,8 +100,14 @@ import { CloudPoller } from './cloudPoller';
 import { testCloudConnection } from './cloudTestConnection';
 import { FocusTracker } from './focusTracker';
 import { GitLabClient } from './gitlab/gitlabClient';
-import { GitHubClient, type GitHubSearchIssueItem } from './github/githubClient';
-import { githubIdentityFrom } from './github/identity';
+import {
+  GitHubClient,
+  GitHubError,
+  type GitHubIssueComment,
+  type GitHubSearchIssueItem,
+} from './github/githubClient';
+import { githubIdentityFrom, type GitHubIdentityCache } from './github/identity';
+import { issuesToRecheck, reconcileGitHubIssues, type IssueRef } from './github/githubIssueSync';
 import { gitlabIdentityFrom, type GitLabIdentityCache } from './gitlab/identity';
 import { describeMergeRequest } from './gitlab/describeMergeRequest';
 import {
@@ -991,6 +997,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // permission) we must not end up showing a priority the ticket doesn't have.
     // Clearing is local-only — JIRA priority is usually a required field, and a PUT of
     // `null` would fail on most workflows for no gain.
+    //
+    // **JIRA in particular, not "any external tracker".** This is a WRITE-BACK, and GitHub
+    // has no priority to write to: an issue's nearest equivalent is a label somebody's
+    // repository invented. So a GitHub card falls through to the local update below and
+    // keeps the priority the human set — which is also why `githubIssueSync.issueToTask`
+    // carries `externalPriority` forward instead of nulling it every sync.
     if (existing.externalSource === 'jira' && existing.externalKey && name) {
       await buildJiraClient().setPriority(existing.externalKey, name);
     }
@@ -1129,8 +1141,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
     // The same rule as `jira:markRead`: the newest comment we know of becomes the one you
     // have read. `now` only as a fallback, so a card with no comment at all is still quiet.
+    //
+    // ANY external tracker, not JIRA alone: `latestCommentAt`/`lastReadCommentAt` are the
+    // board's own two fields, written by whichever sync fetched the thread, and "I have seen
+    // this card's comments" is the same statement whoever hosts them.
     const task =
-      existing.externalSource === 'jira'
+      existing.externalSource != null
         ? (store.updateTask(taskId, { lastReadCommentAt: existing.latestCommentAt ?? now }) ??
           existing)
         : existing;
@@ -1862,9 +1878,49 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     return all;
   };
 
+  /**
+   * ONE GitHub sync, both halves: the issues that make cards, then the pull requests that
+   * land on them.
+   *
+   * The order is load-bearing and is the same one `syncJira` establishes. Issues first, so
+   * the board a pull request is matched against is the board as it is *now* — a PR whose
+   * issue appeared in this very sync attaches on this pass rather than on the next one. Then
+   * `rematchStoredMergeRequests`, exactly as it follows a JIRA sync: the board just changed
+   * shape, so a stored MR whose ticket has left should let go rather than point at a card
+   * that is no longer there. No network in that last step; it re-files what we already hold.
+   *
+   * Both halves are separately switchable (`syncIssues`, `syncPullRequests`) because plenty
+   * of people track work in JIRA and merge it on GitHub, and plenty track everything in
+   * GitHub Issues. Neither switch drags the other along.
+   *
+   * The issue half never takes the PR half down with it: a failing issue query — a syntax
+   * error in something the user typed — would otherwise mean no pull request appears on any
+   * card until it is fixed. It is logged and surfaced on the board's notice bar instead.
+   */
+  const syncGitHub = async (): Promise<MergeRequest[]> => {
+    const { github } = store.getSettings();
+    if (github.enabled && github.syncIssues) {
+      try {
+        await syncGitHubIssues();
+      } catch (e) {
+        logMain('GitHub issue sync failed', e);
+        send('board:notice', {
+          intent: 'error',
+          text: `GitHub issues could not be synced: ${e instanceof Error ? e.message : String(e)}`,
+        });
+      }
+    }
+    const mrs =
+      github.enabled && github.syncPullRequests
+        ? await syncGitHubPullRequests()
+        : store.listMergeRequests();
+    rematchStoredMergeRequests();
+    return mrs;
+  };
+
   handle('github:sync', async () => {
     try {
-      return await trackSync('github', syncGitHubPullRequests);
+      return await trackSync('github', syncGitHub);
     } catch (e) {
       logMain('GitHub sync failed', e);
       throw new Error(e instanceof Error ? e.message : String(e));
@@ -2509,6 +2565,188 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   };
 
   /**
+   * The account behind the configured GitHub token, fetched once per site and cached in
+   * `app_state`. `jiraIdentity` above, one tracker over, and fail-soft for the same reason:
+   * not knowing who you are costs a comment's attribution, while throwing would cost the
+   * whole sync.
+   */
+  const githubIdentity = async (
+    baseUrl: string,
+    client: GitHubClient,
+  ): Promise<GitHubIdentityCache | null> => {
+    const cached = store.loadGitHubIdentity();
+    if (cached && cached.baseUrl === baseUrl) return cached;
+    try {
+      const identity = githubIdentityFrom(await client.getMe(), baseUrl);
+      store.saveGitHubIdentity(identity);
+      return identity;
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * When we last read an issue's comments, by `owner/repo#123` → the issue's `updated_at` at
+   * that moment. In memory, not the DB.
+   *
+   * This is what keeps the comment fetch bounded by the BOARD rather than by the repository:
+   * comments are a call per issue, and only issues that have been touched since we last
+   * looked can have gained one (GitHub bumps an issue's `updated_at` when a comment is
+   * posted). Without it, every commentless card would cost a request on every poll forever.
+   *
+   * In memory rather than `app_state`, like the JIRA priority cache and the sync clock: the
+   * cost of losing it is one extra pass over the board on the first sync after a restart,
+   * and a persisted cache is one more thing that can be wrong across an upgrade.
+   */
+  const githubCommentsReadAt = new Map<string, number>();
+
+  /**
+   * One GitHub issue sync: run the user's query, re-read by number whatever it left out,
+   * reconcile, apply.
+   *
+   * `syncJira` above, and every decision it makes for a stated reason is made here for the
+   * same one — including the order the results are applied in: **unarchive, then upsert, then
+   * archive.** Restore first so an issue that has come back into the query lands on its own
+   * card again rather than beside the archived one it used to be.
+   *
+   * What is deliberately absent is JIRA's *confirm* pass. It exists there because a JQL
+   * cannot be asked about one issue cheaply, so "this stopped matching" and "that page was
+   * short" are indistinguishable without a second query. Here they are not: GitHub says so
+   * itself (`incomplete_results`, plus our own page cap — see `searchIssues`), and one call
+   * re-reads an issue by number. One pass answers both questions.
+   */
+  const syncGitHubIssues = async (): Promise<Task[]> => {
+    const { github } = store.getSettings();
+    if (!github.enabled || !github.syncIssues) return store.getPersonalTasks();
+    const client = buildGitHubClient();
+    const identity = await githubIdentity(github.baseUrl, client);
+
+    const query = github.issueQuery.trim();
+    if (!query) {
+      throw new Error('Set the GitHub issue query in Settings, or turn issue syncing off.');
+    }
+    // Whether the question itself changed since last time — an edited query. Null is read as
+    // *unchanged*, so the first sync after an upgrade does not have the guard stand down on a
+    // board it has never seen.
+    const lastQuery = store.loadGitHubLastQuery();
+    const queryChanged = lastQuery !== null && lastQuery !== query;
+
+    const { items, truncated } = await client.searchIssues(query);
+    if (truncated) {
+      logMain(
+        `GitHub sync: the issue search returned ${items.length} issues without reaching the ` +
+          `end of the query — nothing will be removed from the board this sync. Query: ${query}`,
+      );
+    }
+
+    // The ONE read that includes archived cards: a card taken off the board still corresponds
+    // to its issue, and a reconciler blind to it would mirror that issue back in as a brand
+    // new card, losing everything the old row carried. See `getPersonalTasksForSync`.
+    const personalForSync = store.getPersonalTasksForSync();
+
+    /**
+     * Re-read, by number, every card the search left out. Bounded by the board (at most one
+     * call per card on it), and on a healthy board it is ZERO calls — the search returned
+     * everything, so there is nothing to ask about.
+     *
+     * `checked` is the per-issue counterpart of the whole-pass `rechecked: null`: a call that
+     * errored (a transient 502, a repository that just went private) must not read as "GitHub
+     * does not have this issue". Only the keys that actually answered go in.
+     */
+    const toRecheck = issuesToRecheck(personalForSync, items);
+    const rechecked = new Map<string, GitHubSearchIssueItem>();
+    const recheckedKeys = new Set<string>();
+    const recheckQueue: IssueRef[] = [...toRecheck];
+    const recheckWorker = async (): Promise<void> => {
+      for (let ref = recheckQueue.shift(); ref; ref = recheckQueue.shift()) {
+        try {
+          const issue = await client.getIssue(ref.owner, ref.repo, ref.number);
+          rechecked.set(ref.key, issue);
+          recheckedKeys.add(ref.key);
+        } catch (e) {
+          // A 404 is an ANSWER — GitHub does not have it — and anything else is a question
+          // that failed. Only the first lets the card leave the board.
+          if (e instanceof GitHubError && e.status === 404) {
+            recheckedKeys.add(ref.key);
+          } else {
+            logMain(`GitHub sync: re-read of ${ref.key} failed — kept`, e);
+          }
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(4, recheckQueue.length) }, recheckWorker));
+
+    /**
+     * The comments, for the issues that could have gained one — see `githubCommentsReadAt`.
+     *
+     * A key ABSENT from this map means "not asked this time", which keeps whatever the card
+     * already knew; present-and-empty means "asked, and there are none". A failed fetch is
+     * left absent, so a rate limit cannot blank a card's unread marker.
+     */
+    const comments = new Map<string, GitHubIssueComment[]>();
+    const commentQueue = [...items, ...rechecked.values()].filter((issue) => {
+      const { owner, repo } = repoRefFromApiUrl(issue.repository_url);
+      const key = `${owner}/${repo}#${issue.number}`;
+      const updatedAt = Date.parse(issue.updated_at) || 0;
+      return updatedAt > (githubCommentsReadAt.get(key) ?? 0);
+    });
+    const commentWorker = async (): Promise<void> => {
+      for (let issue = commentQueue.shift(); issue; issue = commentQueue.shift()) {
+        const { owner, repo } = repoRefFromApiUrl(issue.repository_url);
+        const key = `${owner}/${repo}#${issue.number}`;
+        try {
+          comments.set(key, await client.listIssueComments(owner, repo, issue.number));
+          githubCommentsReadAt.set(key, Date.parse(issue.updated_at) || 0);
+        } catch (e) {
+          logMain(`GitHub sync: comments for ${key} could not be read — kept as they were`, e);
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(4, commentQueue.length) }, commentWorker));
+
+    const now = Date.now();
+    // Recorded before the reconcile rather than after: nothing below can throw a network
+    // error, so this is the last point at which "the query we just ran" is true.
+    store.saveGitHubLastQuery(query);
+    const { upserts, removals, restoreIds, refused, warning } = reconcileGitHubIssues(
+      personalForSync,
+      items,
+      {
+        overrides: github.labelColumnOverrides,
+        learned: github.learnedLabelColumns,
+        identity,
+        comments,
+        rechecked,
+        recheckedKeys,
+        truncated,
+        queryChanged,
+        now,
+        retentionMs: Math.max(0, github.doneRetentionDays) * 24 * 60 * 60 * 1000,
+      },
+    );
+    for (const id of restoreIds) store.unarchiveTask(id);
+    for (const t of upserts) store.upsertJiraTask(t);
+    // ARCHIVED, not deleted — see the same loop in `syncJira`. The row keeps its timeline,
+    // its files and its links, and "Removed cards" can put it back.
+    for (const r of removals) {
+      store.archiveTask(r.taskId, now, r.reason);
+      logMain(`GitHub sync: archived ${r.key} — ${r.reason} (${r.title})`);
+    }
+    for (const r of refused) {
+      logMain(`GitHub sync: REFUSED to remove ${r.key} (${r.title}) — ${warning ?? 'guarded'}`);
+    }
+    if (warning) {
+      logMain(`GitHub sync: ${warning}`);
+      // Its own bar, not the error bar: nothing failed, and a warning that reads as an error
+      // teaches people to dismiss both.
+      send('board:notice', { text: warning, intent: 'warning' });
+    }
+    const tasks = store.getPersonalTasks();
+    send('project:tasksChanged', { projectId: PERSONAL_PROJECT_ID, tasks });
+    return tasks;
+  };
+
+  /**
    * `syncJira`, with the diagnosis attached to whatever it throws — so the board's error
    * bar explains a bad deployment/credential the same way the Settings "Test connection"
    * button does.
@@ -2612,6 +2850,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     target: JiraTransitionTarget,
     toColumn: BoardColumn,
   ): Promise<TransitionOutcome> => {
+    // JIRA in particular, and this is the other WRITE-BACK: a transition is a POST to a JIRA
+    // workflow, which a GitHub issue does not have. Writing a card's move back to GitHub is a
+    // different act on a different API (open/close, and a label) and lives in its own path —
+    // a GitHub card reaching here would silently do nothing, which is the correct outcome
+    // until that path exists and the wrong one to leave unstated.
     if (task.externalSource !== 'jira' || !task.externalKey) return { applied: false, patch: {} };
     const client = buildJiraClient();
     const { jira } = store.getSettings();
@@ -2699,6 +2942,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // Brief a delegated card's agent with the ticket's comment thread (oldest first).
   // The scheduler has no JIRA client of its own, so it calls back in here on each fresh
   // agent run; anything unlinked or unconfigured yields no comments rather than an error.
+  //
+  // JIRA-only for now, and knowingly: a GitHub card's thread is fetched by its own sync and
+  // stored nowhere the scheduler can reach, so widening the test here would brief the agent
+  // with an empty list rather than with GitHub's comments. That is the one difference a
+  // delegated GitHub card carries today.
   scheduler.setTicketCommentProvider(async (task) => {
     const { jira } = store.getSettings();
     if (!jira.enabled || task.externalSource !== 'jira' || !task.externalKey) return [];
@@ -2848,7 +3096,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('jira:markRead', async (taskId) => {
     const task = store.getTask(taskId);
     if (!task) throw new Error('Task not found.');
-    if (task.externalSource !== 'jira') return task;
+    // Any external tracker: this handler touches nothing but our own two markers, and
+    // "opening a card clears its unread border" is the same statement for a GitHub issue as
+    // for a JIRA ticket. The name stays JIRA's because the IPC channel is part of the
+    // renderer's contract; what it does never was tracker-specific.
+    if (task.externalSource == null) return task;
     const updated = store.updateTask(taskId, {
       lastReadCommentAt: task.latestCommentAt ?? Date.now(),
     });
@@ -2907,7 +3159,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     {
       id: 'github',
       isEnabled: (s) => s.getSettings().github.enabled,
-      run: () => trackSync('github', syncGitHubPullRequests),
+      // `syncGitHub`, not the PR half alone: the background poll is what keeps the board's
+      // GitHub cards current, and a poller wired to only one of the two halves is exactly how
+      // an integration comes to work when you press the button and not otherwise.
+      run: () => trackSync('github', syncGitHub),
     },
   ]);
   syncPoller.reschedule();

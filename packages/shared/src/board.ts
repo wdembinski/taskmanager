@@ -202,12 +202,17 @@ export function columnForTask(task: Task): BoardColumn {
 }
 
 /**
- * Whether a JIRA task has comments the user hasn't read yet — drives the card's
+ * Whether a **mirrored** task has comments the user hasn't read yet — drives the card's
  * orange border. True when the newest comment seen at sync is newer than the last
  * one the user read (or none has been read). Internal tasks are never "unread".
+ *
+ * Any external tracker, not JIRA alone: the two fields it compares are the board's own, and
+ * the sync that fetched the thread has already decided which comments count as somebody
+ * else's. The name is JIRA's for history — renaming it would touch every card surface for no
+ * behaviour — but the rule never was.
  */
 export function hasUnreadJira(task: Task): boolean {
-  if (task.externalSource !== 'jira' || task.latestCommentAt == null) return false;
+  if (task.externalSource == null || task.latestCommentAt == null) return false;
   return task.lastReadCommentAt == null || task.latestCommentAt > task.lastReadCommentAt;
 }
 

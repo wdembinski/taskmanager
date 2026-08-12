@@ -221,7 +221,14 @@ export function MyTasks(): JSX.Element {
   // go on — see `useIntegratingTasks`.
   const merging = useIntegratingTasks();
 
-  const showDone = settings?.jira.showDoneColumn ?? false;
+  /**
+   * The Done column is a property of the BOARD, and there are two settings for it — one per
+   * tracker, since each integration owns its own retention. Either one asking for it is
+   * enough: a GitHub user who has never touched the JIRA pane must still be able to see
+   * where their closed issues went.
+   */
+  const showDone =
+    (settings?.jira.showDoneColumn ?? false) || (settings?.github.showDoneColumn ?? false);
   const jiraEnabled = settings?.jira.enabled ?? false;
   const currentSprintOnly = settings?.jira.currentSprintOnly ?? false;
   const gitlabEnabled = settings?.gitlab.enabled ?? false;
@@ -492,10 +499,16 @@ export function MyTasks(): JSX.Element {
   /** Cards a hand-written step can be added under: every top-level card on this board. */
   const parentCandidates = useMemo(() => (tasks ?? []).filter((t) => !t.parentTaskId), [tasks]);
 
+  // Writes BOTH, because the toolbar toggle is about the column and `showDone` above reads
+  // either. Writing one of them would give the switch a state it could not turn off.
   const setShowDone = useCallback((value: boolean) => {
     setSettings((prev) => {
       if (!prev) return prev;
-      const next = { ...prev, jira: { ...prev.jira, showDoneColumn: value } };
+      const next = {
+        ...prev,
+        jira: { ...prev.jira, showDoneColumn: value },
+        github: { ...prev.github, showDoneColumn: value },
+      };
       void window.api.invoke('settings:save', next);
       return next;
     });
@@ -1067,9 +1080,10 @@ export function MyTasks(): JSX.Element {
               column={col}
               label={COLUMN_LABEL[col]}
               cards={cardsByColumn[col]}
-              projectNameOf={(t) =>
-                t.externalSource === 'jira' ? t.phase || undefined : undefined
-              }
+              // Any tracker: `phase` carries the JIRA project's name or the GitHub
+              // repository's path, and on a board that mixes them that line is the only
+              // thing saying which is which.
+              projectNameOf={(t) => (t.externalSource ? t.phase || undefined : undefined)}
               agentNameOf={(t) => agentProjects.find((p) => p.id === t.agentProjectId)?.name}
               // The stripe is the PROJECT the card is filed under, not the agent it may
               // or may not be delegated to.

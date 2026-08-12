@@ -12,6 +12,11 @@
  *
  * The fix is not a second heuristic in the sync — it is one resolver both paths call,
  * so they cannot drift again. Pure: no React, no Electron, no DB.
+ *
+ * {@link resolveGitHubColumn} is the same contract for GitHub issues, which have no workflow
+ * at all: the sync and the drag both call it, for the same reason and against the same
+ * failure. It is a separate function rather than a flag because what there is to resolve is
+ * genuinely different — see its own docstring.
  */
 import type { BoardColumn, JiraStatusCategory } from './model';
 import { categoryToColumn, lookupStatusColumn } from './board';
@@ -127,4 +132,95 @@ export function resolveStatusColumn(
   if (isBlockedishStatus(rawStatus, category)) return { column: 'blocked', reason: 'heuristic' };
 
   return { column: categoryToColumn(category), reason: 'category' };
+}
+
+/** Which board column a GitHub issue lands in, which label said so, and which tier decided. */
+export interface GitHubColumnResolution extends StatusResolution {
+  /**
+   * The label that decided the column, or null when the issue's own open/closed state did.
+   *
+   * Carried out of the resolver rather than re-derived by the caller because it is what the
+   * card's `externalStatus` shows: "the thing this board is calling the issue's status".
+   */
+  label: string | null;
+}
+
+/**
+ * Resolve a GitHub issue to a board column, and say which tier decided.
+ *
+ * The same discipline as {@link resolveStatusColumn} and for the reason this file's header
+ * gives — one resolver, called by both the sync and the move, so a drag and the poll that
+ * follows it cannot disagree forever. What differs is what there is to resolve. A JIRA issue
+ * has a workflow status, one value, and the map's keys ARE those values. A GitHub issue has
+ * two independent things: it is open or closed, and it wears labels. Everything between "not
+ * started" and "finished" is a convention the repository invented, which is almost always a
+ * label — so the map is the *only* way a GitHub issue reaches IN PROGRESS, IN REVIEW or
+ * BLOCKED at all.
+ *
+ * **`closed ⇒ done` is asked first, and it wins.** That is the one place this departs from
+ * the JIRA resolver's precedence, and the orthogonality above is why: a JIRA status cannot
+ * be both "Done" and "In Review", but a GitHub issue is very often closed while still
+ * wearing the `in review` label somebody added a week ago — nothing removes a label when you
+ * close an issue. Letting a stale label outrank the close would leave a card the human
+ * finished on github.com sitting in IN REVIEW forever, and would undo a drag into DONE on
+ * the very next poll. Labels decide among OPEN issues, which is the only place they are
+ * ambiguous, and there the user's map beats the one the app taught itself, exactly as on
+ * JIRA.
+ *
+ * The tiers, in precedence order:
+ *
+ *   `category`  the issue is closed ⇒ DONE.
+ *   `explicit`  the first label the user mapped in Settings.
+ *   `learned`   the first label the app mapped itself, after a drag applied it.
+ *   `category`  nothing said otherwise; the issue is open ⇒ TO DO.
+ *
+ * Reusing `category` for the state tier rather than inventing a fifth {@link StatusReason}
+ * is deliberate: `STATUS_REASONS` is iterated as tier PRECEDENCE by the JIRA transition
+ * picker, so a new member would silently reorder that loop. `heuristic` is simply never
+ * returned here — GitHub has no status names to read.
+ *
+ * Labels are matched case-insensitively, the same as every other map in this file, and in
+ * the issue's own label order so that a repository with two mapped labels on one issue gets
+ * a stable answer rather than one that depends on `Object.keys`.
+ */
+export function resolveGitHubColumn(
+  labels: readonly string[],
+  state: string,
+  map?: Record<string, BoardColumn>,
+  learned?: Record<string, BoardColumn>,
+): GitHubColumnResolution {
+  // Anything that is not literally `open` is closed. GitHub only has the two, and reading
+  // an unexpected third as "open" would park a finished issue in TO DO — the direction that
+  // hides work rather than the one that shows it.
+  if (state !== 'open') return { column: 'done', reason: 'category', label: null };
+
+  for (const label of labels) {
+    const explicit = lookupStatusColumn(label, map);
+    if (explicit) return { column: explicit, reason: 'explicit', label };
+  }
+  for (const label of labels) {
+    const remembered = lookupStatusColumn(label, learned);
+    if (remembered) return { column: remembered, reason: 'learned', label };
+  }
+  return { column: 'todo', reason: 'category', label: null };
+}
+
+/**
+ * The label a mapped GitHub issue is NOT already spending on its column — the first one the
+ * maps say nothing about, which is what the card shows as its chip.
+ *
+ * Showing the deciding label there would draw the same fact twice: the column the card sits
+ * in already says "in review", so a chip repeating it is a wasted line on the board's
+ * narrowest surface.
+ */
+export function firstUnmappedLabel(
+  labels: readonly string[],
+  map?: Record<string, BoardColumn>,
+  learned?: Record<string, BoardColumn>,
+): string | null {
+  for (const label of labels) {
+    if (lookupStatusColumn(label, map) || lookupStatusColumn(label, learned)) continue;
+    return label;
+  }
+  return null;
 }

@@ -177,6 +177,81 @@ describe('GitHubClient — pull requests and their checks', () => {
   });
 });
 
+describe('searchIssues', () => {
+  it('sends the user’s query with advanced_search, and collects every page', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({ items: [{ number: 1 }], incomplete_results: false }, 200, {
+          link: '<https://api.github.com/search/issues?page=2&opaque=x>; rel="next"',
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ items: [{ number: 2 }], incomplete_results: false }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await client().searchIssues('is:issue is:open assignee:@me');
+
+    expect(result.items.map((i) => i.number)).toEqual([1, 2]);
+    expect(result.truncated).toBe(false);
+    expect(String(fetchMock.mock.calls[0][0])).toContain('advanced_search=true');
+    expect(String(fetchMock.mock.calls[0][0])).toContain(
+      encodeURIComponent('is:issue is:open assignee:@me'),
+    );
+    // The `Link` URL verbatim — search hangs its own parameters off it and re-deriving drops
+    // them.
+    expect(String(fetchMock.mock.calls[1][0])).toContain('opaque=x');
+  });
+
+  /**
+   * The one fact the reconciler turns on. Both shapes of short answer have to reach it as the
+   * same flag, because both have the same consequence: a board that read either as a shrunken
+   * board would archive the difference.
+   */
+  it('reports GitHub giving up as truncated', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(jsonResponse({ items: [{ number: 1 }], incomplete_results: true })),
+    );
+    const result = await client().searchIssues('is:issue');
+    expect(result).toMatchObject({ incompleteResults: true, truncated: true });
+  });
+
+  it('reports OUR page cap as truncated too', async () => {
+    // Every page advertises a next one; the cap is what stops us, and there is provably more
+    // out there that we chose not to read.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        jsonResponse({ items: [{ number: 1 }], incomplete_results: false }, 200, {
+          link: '<https://api.github.com/search/issues?page=99>; rel="next"',
+        }),
+      ),
+    );
+    const result = await client().searchIssues('is:issue', 2);
+    expect(result).toMatchObject({ incompleteResults: false, truncated: true });
+    expect(result.items).toHaveLength(2);
+  });
+});
+
+describe('getIssue / listIssueComments', () => {
+  it('asks for one issue by number, with both path parts escaped', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ number: 12, state: 'closed' }));
+    vi.stubGlobal('fetch', fetchMock);
+    await client().getIssue('acme', 'web.js', 12);
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      'https://api.github.com/repos/acme/web.js/issues/12',
+    );
+  });
+
+  it('pages an issue’s comments', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([{ id: 1 }]));
+    vi.stubGlobal('fetch', fetchMock);
+    const comments = await client().listIssueComments('acme', 'web', 12);
+    expect(comments).toHaveLength(1);
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/repos/acme/web/issues/12/comments');
+  });
+});
+
 describe('apiRoot', () => {
   it('leaves github.com’s own API host alone, trailing slash and all', () => {
     expect(apiRoot('https://api.github.com')).toBe('https://api.github.com');

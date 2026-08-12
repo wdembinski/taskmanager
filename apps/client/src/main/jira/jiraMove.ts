@@ -54,6 +54,11 @@ export interface MoveResolution {
 /** Decide the effect of dropping `task` into `toColumn`. Pure. */
 export function resolveMove(task: Task, toColumn: BoardColumn): MoveResolution {
   const from = columnForTask(task);
+  // JIRA in particular, not "any external tracker": what this decides is whether a JIRA
+  // TRANSITION is applied, and a GitHub issue has no workflow to transition. A GitHub card
+  // takes the same `localStatus` from the same rules below and simply carries no transition
+  // — its own write-back is a different act on a different API and belongs in its own
+  // resolver, not in a branch of this one.
   const isJira = task.externalSource === 'jira';
 
   if (toColumn === from) {

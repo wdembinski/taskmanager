@@ -12,14 +12,28 @@
  */
 import type { BoardColumn } from '@tm/shared/model';
 import type { JiraStatusOption } from '@tm/shared/ipc';
-import { resolveStatusColumn, type StatusReason } from '@tm/shared/statusResolve';
+import {
+  resolveGitHubColumn,
+  resolveStatusColumn,
+  type StatusReason,
+} from '@tm/shared/statusResolve';
 import { visibleColumns } from './board/boardColumns';
 
 export interface StatusMapViewRow {
   name: string;
-  category: JiraStatusOption['category'];
+  /**
+   * The tracker's own classification of this name — JIRA's status category. A string rather
+   * than `JiraStatusCategory` because GitHub has no such thing to report and its rows leave
+   * the cell out; see {@link buildGitHubLabelRows}.
+   */
+  category: string;
   column: BoardColumn;
   reason: StatusReason;
+  /**
+   * The "Why" badge's text, when the default {@link reasonLabel} would say something untrue
+   * for this tracker — GitHub's bottom tier is the issue's open/closed state, not a category.
+   */
+  why?: string;
 }
 
 /**
@@ -49,6 +63,48 @@ export function buildStatusMapRows(
     .map(({ name, category }) => {
       const { column, reason } = resolveStatusColumn(name, category, map, learned);
       return { name, category, column, reason };
+    })
+    .sort((a, b) => columnRank(a.column) - columnRank(b.column) || a.name.localeCompare(b.name));
+}
+
+/**
+ * One row per LABEL either map mentions, resolved by `resolveGitHubColumn` and explained.
+ *
+ * The two maps' own keys are the whole population, and that is not a shortcut — it is the
+ * honest answer to "which labels does this app have an opinion about". GitHub has no
+ * instance-wide list of statuses to enumerate the way JIRA does (labels are per repository,
+ * and a board can span dozens), and a card only stores the ONE label it is showing as a chip,
+ * so there is nothing else to read. What matters is on the list either way: every label the
+ * user mapped, and — the reason this table exists at all — every label the app taught itself,
+ * which is the set nobody would otherwise ever see.
+ *
+ * Resolved as if the issue were OPEN, because that is the only state in which a label decides
+ * anything: closed always means DONE. The Field's own hint says so; a row per label per state
+ * would double the table to say it twice.
+ */
+export function buildGitHubLabelRows(
+  map?: Record<string, BoardColumn>,
+  learned?: Record<string, BoardColumn>,
+): StatusMapViewRow[] {
+  const names = new Map<string, string>();
+  for (const name of [...Object.keys(map ?? {}), ...Object.keys(learned ?? {})]) {
+    const trimmed = name.trim();
+    // Case-blind, keeping the first spelling seen — the same rule `lookupStatusColumn`
+    // matches by, so the table cannot list two rows that are one entry to the engine.
+    if (trimmed && !names.has(trimmed.toLowerCase())) names.set(trimmed.toLowerCase(), trimmed);
+  }
+  return [...names.values()]
+    .map((name) => {
+      const { column, reason } = resolveGitHubColumn([name], 'open', map, learned);
+      return {
+        name,
+        category: '',
+        column,
+        reason,
+        // `category` is GitHub's bottom tier and it means "no label spoke", not "GitHub filed
+        // it there" — a row badged "JIRA category" would be nonsense on this screen.
+        why: reason === 'category' ? 'Not mapped — open means TO DO' : undefined,
+      };
     })
     .sort((a, b) => columnRank(a.column) - columnRank(b.column) || a.name.localeCompare(b.name));
 }

@@ -60,6 +60,13 @@ export interface GitHubUser {
 export interface GitHubSearchIssueItem {
   /** The GLOBAL issue id — not the repo, and not what `#12` means to a human. */
   id: number;
+  /**
+   * The GraphQL global node id (`I_kwDO…`). GitHub's own opaque, permanent handle for this
+   * issue, and what a mirrored card stores as `externalId` — the numeric `id` above is
+   * equally stable, but it is the one identifier GitHub has been steadily moving away from.
+   * Optional because an Enterprise Server old enough not to send it must still sync.
+   */
+  node_id?: string;
   /** The per-repo number, which is what `#12` means. */
   number: number;
   title: string;
@@ -79,6 +86,43 @@ export interface GitHubSearchIssueItem {
   pull_request?: { url?: string; html_url?: string; merged_at?: string | null } | null;
   user?: { id?: number; login?: string } | null;
   labels?: Array<{ name?: string }> | null;
+}
+
+/**
+ * One comment on an issue — `GET /repos/{owner}/{repo}/issues/{number}/comments`.
+ *
+ * Issue comments and pull-request *conversation* comments are the same endpoint on GitHub
+ * (a PR is an issue), which is why this type is not called an issue-only thing. Review
+ * comments on a diff are a different endpoint and are deliberately not fetched: they are
+ * about a line of code, not about the ticket.
+ */
+export interface GitHubIssueComment {
+  id: number;
+  body?: string | null;
+  created_at: string;
+  updated_at?: string;
+  html_url?: string;
+  user?: { id?: number; login?: string } | null;
+}
+
+/** What one `GET /search/issues` question came back with, plus how much to trust it. */
+export interface GitHubSearchResult {
+  items: GitHubSearchIssueItem[];
+  /**
+   * GitHub's own admission that it gave up early — the search index timed out and the
+   * result set is a partial one it will not vouch for.
+   */
+  incompleteResults: boolean;
+  /**
+   * Whether this answer stopped short of the end of the query, for ANY reason:
+   * `incompleteResults`, or {@link GitHubClient.paged}'s page cap still having a
+   * `rel="next"` to follow when it ran out.
+   *
+   * The single fact a reconciler needs, and the reason the two are folded into one flag:
+   * a short answer is indistinguishable from a shrunken board, so a sync that got one must
+   * remove nothing at all — and which *kind* of short does not change that.
+   */
+  truncated: boolean;
 }
 
 /** `GET /repos/{owner}/{repo}/pulls/{number}` — the half a search row cannot answer. */
@@ -320,20 +364,79 @@ export class GitHubClient {
    * {@link GitHubSearchIssueItem} for what it will not tell you.
    */
   async listMyPullRequests(maxPages = 5): Promise<GitHubSearchIssueItem[]> {
-    const q = encodeURIComponent('is:pr is:open author:@me');
-    const all: GitHubSearchIssueItem[] = [];
+    return (await this.searchIssues('is:pr is:open author:@me', maxPages)).items;
+  }
+
+  /**
+   * One search query, followed to the end, with **how short the answer was** attached.
+   *
+   * `advanced_search=true` is not optional politeness: GitHub deprecated the legacy search
+   * syntax on 4 Sep 2025, and a query sent without the flag comes back with a deprecation
+   * warning and is scheduled to stop working. It matters more here than for the fixed PR
+   * query above, because this one is a string the USER wrote and may well contain several
+   * `repo:`/`org:` qualifiers — the one place the two syntaxes read a space differently.
+   *
+   * The two truncation signals are folded into one `truncated` here rather than left for
+   * every caller to combine, because forgetting either has the same consequence and it is
+   * the expensive one: a board that reads a short answer as a shrunken board and archives
+   * the difference. See {@link GitHubSearchResult}.
+   */
+  async searchIssues(query: string, maxPages = 5): Promise<GitHubSearchResult> {
+    const q = encodeURIComponent(query.trim());
+    const items: GitHubSearchIssueItem[] = [];
+    let incompleteResults = false;
     let url: string | null = this.url(
       `/search/issues?q=${q}&advanced_search=true&sort=updated&order=desc&per_page=100`,
     );
-    for (let i = 0; i < maxPages && url; i++) {
+    let i = 0;
+    for (; i < maxPages && url; i++) {
       const { body, res }: { body: unknown; res: Response } = await this.rawUrl(url);
-      const items = (body as { items?: unknown } | null)?.items;
-      if (Array.isArray(items)) all.push(...(items as GitHubSearchIssueItem[]));
+      const page = body as { items?: unknown; incomplete_results?: unknown } | null;
+      if (Array.isArray(page?.items)) items.push(...(page.items as GitHubSearchIssueItem[]));
+      if (page?.incomplete_results === true) incompleteResults = true;
       // The `Link` header, not a page counter: search hangs its own opaque parameters off
       // the next URL, and re-deriving it drops them.
       url = nextPageUrl(res.headers?.get('link'));
     }
-    return all;
+    // `url` still being set means the cap stopped us, not GitHub — there is another page
+    // out there we chose not to read, which is exactly as short an answer as a timed-out
+    // index and has to be reported as one.
+    return { items, incompleteResults, truncated: incompleteResults || url !== null };
+  }
+
+  /**
+   * One issue by number — the re-read that lets a card leave the board.
+   *
+   * The counterpart of `getPullRequest`, and it exists for the same reason: absence from a
+   * search is a hint, never a verdict. Asking for an issue by its number has an answer that
+   * can be trusted in the negative (a 404 is `GitHubError` with `status: 404`), and it is
+   * bounded by the size of the BOARD rather than the size of the repository.
+   *
+   * Returns the search-row shape because that is what {@link GitHubSearchIssueItem} is —
+   * the fields both endpoints agree on — so the reconciler has one mapping rather than two.
+   */
+  getIssue(owner: string, repo: string, number: number): Promise<GitHubSearchIssueItem> {
+    return this.request<GitHubSearchIssueItem>(`${repoPath(owner, repo)}/issues/${number}`);
+  }
+
+  /**
+   * An issue's comments, oldest first.
+   *
+   * Two pages by default. The unread border only needs the NEWEST foreign comment, and a
+   * thread longer than two hundred comments is one where the newest is certain to be past
+   * the cap anyway — `sort=created&direction=desc` would be the fix if this ever bites, at
+   * the cost of the oldest-first order every caller currently expects.
+   */
+  listIssueComments(
+    owner: string,
+    repo: string,
+    number: number,
+    maxPages = 2,
+  ): Promise<GitHubIssueComment[]> {
+    return this.paged<GitHubIssueComment>(
+      `${repoPath(owner, repo)}/issues/${number}/comments?per_page=100`,
+      maxPages,
+    );
   }
 
   /**

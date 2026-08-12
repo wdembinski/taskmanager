@@ -8,7 +8,7 @@
  * that depends on an event simply never updated.
  *
  * Almost all of those events are "here is the whole new list" — `chain:changed`,
- * `attachment:changed`, `gitlab:mergeRequestsChanged`, `settings:changed` — and every one of
+ * `attachment:changed`, `mergeRequests:changed`, `settings:changed` — and every one of
  * them has a READ that returns exactly the same thing. So the event is reconstructible: call
  * the read, compare it with last time, and fan out when it differs. That is all this is.
  *
@@ -78,7 +78,7 @@ const DEFAULT_INTERVAL_MS = 2_500;
 const WHOLE_LIST_EVENTS = {
   'chain:changed': 'chain:links',
   'attachment:changed': 'attachment:list',
-  'gitlab:mergeRequestsChanged': 'gitlab:mergeRequests',
+  'mergeRequests:changed': 'mr:mergeRequests',
   'settings:changed': 'settings:get',
   'sync:changed': 'sync:state',
   'update:changed': 'update:get',

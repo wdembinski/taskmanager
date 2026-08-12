@@ -120,16 +120,17 @@ export function BoardScreen({
 
   const projects = useMemo(() => Object.values(state.projects), [state.projects]);
   /**
-   * The card's optional lines, read the desktop's way: `projectNameOf` is the JIRA project a
-   * ticket is filed under (`phase`), not the local project — every card on this board is in
-   * Personal, so that one would say the same word on all of them — and the stripe is the
-   * repo the card is tagged with, which is what the desktop colours it by.
+   * The card's optional lines, read the desktop's way: `projectNameOf` is the tracker's own
+   * container for the card (`phase` — JIRA's project name, or GitHub's `owner/repo`), not the
+   * local project — every card on this board is in Personal, so that one would say the same
+   * word on all of them — and the stripe is the repo the card is tagged with, which is what
+   * the desktop colours it by.
    *
    * Both now read the real agent-project list rather than the mirrored `Project` rows, so a
    * card's stripe is the same colour it is on the desktop.
    */
   const projectNameOf = (task: Task): string | undefined =>
-    task.externalSource === 'jira' ? task.phase || undefined : undefined;
+    task.externalSource ? task.phase || undefined : undefined;
   const agentNameOf = (task: Task): string | undefined =>
     extras.agentProjects.find((p) => p.id === task.agentProjectId)?.name;
   const projectColorOf = (task: Task): string | undefined =>

@@ -402,7 +402,16 @@ export interface Store {
    * is a defensible reason to let go of a card; "four hundred others left after it" is not.
    */
   pruneArchivedBefore(cutoff: number): number;
-  /** Insert a new JIRA-sourced task, or update the existing one with the same key. */
+  /**
+   * Insert a new **mirrored** task, or update the existing one with the same id.
+   *
+   * Named for JIRA because JIRA had it first; `reconcileGitHubIssues` writes through the very
+   * same method, and deliberately so. What it does is not tracker-specific — it refreshes the
+   * tracker's own fields and leaves every column the tracker has never heard of alone (the
+   * filing, the delegation, the plan, the steps, the status note, and whether the card is on
+   * the board at all). A second copy for GitHub would be a second place for that list to fall
+   * out of date. See the UPDATE below for the columns it deliberately omits.
+   */
   upsertJiraTask(task: Task): Task;
   /**
    * Create an ad-hoc task (Phase 8): appended after existing tasks, `source: 'adhoc'`.
@@ -697,6 +706,14 @@ export interface Store {
   saveJiraLastQuery(jql: string): void;
   /** The effective JQL of the last sync, or null if none has been recorded. */
   loadJiraLastQuery(): string | null;
+  /**
+   * The same, for GitHub's issue query. A separate row rather than a shared one: the two
+   * syncs run independently, and one integration's query being edited says nothing about
+   * whether the other's board is meant to turn over.
+   */
+  saveGitHubLastQuery(query: string): void;
+  /** The issue query of the last GitHub sync, or null if none has been recorded. */
+  loadGitHubLastQuery(): string | null;
   /**
    * Remember the main window's geometry so the next launch opens where the last one
    * closed. Written on a debounce while the window moves, so it stays cheap.
@@ -1924,6 +1941,9 @@ export function createStore(dbPath: string): Store {
   /** The same pair for GitHub. Separate rows, because both forges can be connected at once. */
   const GITHUB_TOKEN_KEY = 'github.pat';
   const GITHUB_IDENTITY_KEY = 'github.identity';
+
+  /** The issue query the last GitHub sync ran — `JIRA_LAST_QUERY_KEY`'s counterpart. */
+  const GITHUB_LAST_QUERY_KEY = 'github.lastQuery';
 
   /** The vipper.iam refresh token ciphertext — see `../iamSignIn.ts` and `ipc.ts`'s `iam:*` handlers. */
   const IAM_REFRESH_TOKEN_KEY = 'iam.refreshToken';
@@ -4091,6 +4111,15 @@ export function createStore(dbPath: string): Store {
 
     loadJiraLastQuery() {
       const row = selectState.get(JIRA_LAST_QUERY_KEY) as { value: string } | undefined;
+      return row?.value ?? null;
+    },
+
+    saveGitHubLastQuery(query) {
+      upsertState.run(GITHUB_LAST_QUERY_KEY, query);
+    },
+
+    loadGitHubLastQuery() {
+      const row = selectState.get(GITHUB_LAST_QUERY_KEY) as { value: string } | undefined;
       return row?.value ?? null;
     },
 

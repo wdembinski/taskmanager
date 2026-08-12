@@ -88,6 +88,8 @@ const HOST_ONLY_REASONS = {
   'jira:clearCredentials': 'credential-write',
   'gitlab:setCredentials': 'credential-write',
   'gitlab:clearCredentials': 'credential-write',
+  'github:setCredentials': 'credential-write',
+  'github:clearCredentials': 'credential-write',
   'iam:signOut': 'credential-write',
 
   'session:start': 'live-session',
@@ -215,10 +217,19 @@ export const RELAY_POLICY: {
   'gitlab:clearCredentials': 'host-only',
   'gitlab:testConnection': 'relay',
   'gitlab:sync': 'relay',
-  'gitlab:mergeRequests': 'relay',
-  'gitlab:setMergeRequestName': 'relay',
-  'gitlab:markRead': 'relay',
-  'gitlab:markEventsSeen': 'relay',
+
+  'github:getConfigStatus': 'relay',
+  'github:setCredentials': 'host-only',
+  'github:clearCredentials': 'host-only',
+  'github:testConnection': 'relay',
+  'github:sync': 'relay',
+
+  // Merge requests are provider-neutral, so these four are `mr:` rather than one set per
+  // forge — the reason `mergeRequest.ts` gives. They relay for the same reason the syncs do.
+  'mr:mergeRequests': 'relay',
+  'mr:setMergeRequestName': 'relay',
+  'mr:markRead': 'relay',
+  'mr:markEventsSeen': 'relay',
 
   'cloud:testConnection': 'relay',
 

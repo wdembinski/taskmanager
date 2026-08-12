@@ -715,8 +715,9 @@ const useStyles = makeStyles({
 
 /**
  * Pick a card icon for the task's type. Internal tasks use their user-chosen
- * `type` (bug/feature); JIRA tasks map their issue-type name onto the same glyphs.
- * A typeless internal task (legacy) falls back to a neutral note.
+ * `type` (bug/feature); a MIRRORED task maps its tracker's own type name onto the same
+ * glyphs — JIRA's issue type, or the `bug`/`enhancement` label GitHub creates every
+ * repository with. A typeless internal task (legacy) falls back to a neutral note.
  *
  * **Outline, and uncoloured.** These used to be solid and each in its own hue — a red bug,
  * a green story, a violet epic — which meant every card on the board opened with a saturated
@@ -727,7 +728,7 @@ const useStyles = makeStyles({
  * wrapping span, so the pane and the card cannot drift apart.
  */
 export function typeIcon(task: Task): JSX.Element {
-  if (task.externalSource !== 'jira') {
+  if (task.externalSource == null) {
     if (task.type === 'bug') return <BugRegular />;
     if (task.type === 'feature') return <BeakerRegular />;
     return <NoteRegular />;
@@ -1001,7 +1002,13 @@ export function TaskCard({
   const styles = useStyles();
   const badge = secondaryStatus(task);
   const sprintShown = showSprint;
-  const isJira = task.externalSource === 'jira';
+  /**
+   * Whether this card is a MIRROR of something in a tracker — which is what the footer badge
+   * says, and it says it the same way for either one: the key, linked to the issue, wearing
+   * the unread ring when the thread has moved. `owner/repo#123` is longer than `PROJ-1` and
+   * that is the point of showing it — a cross-repository board needs to know which repo.
+   */
+  const isExternal = task.externalSource != null;
   /**
    * Whether the priority indicator will draw anything — asked here so the footer row is not
    * created for a mark that turns out to be nothing. The same predicate `PriorityGlyph`
@@ -1374,12 +1381,12 @@ export function TaskCard({
           </Caption1>
         )}
 
-        {(isJira || showsPriority || chainChip !== null) && (
+        {(isExternal || showsPriority || chainChip !== null) && (
           <div className={styles.footer}>
             {/* First in the row, ahead of the ticket badge: it is the reason this card is
                 not moving, and that outranks where it came from. */}
             {chainChip}
-            {isJira && task.externalKey && (
+            {isExternal && task.externalKey && (
               <a
                 className={styles.jiraLink}
                 href={task.externalUrl ?? undefined}
@@ -1396,8 +1403,15 @@ export function TaskCard({
                   className={mergeClasses(styles.jiraBadge, jiraUnread && styles.jiraBadgeUnread)}
                 >
                   {/* `currentColor` when tinted, so the mark flips to near-black with the
-                      badge's text instead of sitting brand-blue on orange. */}
-                  <JiraMark size={12} color={jiraUnread ? 'currentColor' : undefined} />
+                      badge's text instead of sitting brand-blue on orange.
+
+                      JIRA's cards only. A GitHub card wears the same badge and the same
+                      unread ring — the fact is identical — but not another tracker's logo,
+                      which would be a lie drawn in brand colour. Its own mark comes with the
+                      rest of GitHub's card treatment. */}
+                  {task.externalSource === 'jira' && (
+                    <JiraMark size={12} color={jiraUnread ? 'currentColor' : undefined} />
+                  )}
                   {task.externalKey}
                 </span>
               </a>

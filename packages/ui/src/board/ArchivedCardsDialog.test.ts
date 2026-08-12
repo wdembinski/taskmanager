@@ -49,14 +49,29 @@ const card = (over: Partial<Task> = {}): Task =>
 describe('archiveReasonText', () => {
   it('gives each recorded reason its own sentence', () => {
     const reasons: TaskArchiveReason[] = ['left-query', 'retention-expired', 'gone-from-jira'];
-    const said = reasons.map(archiveReasonText);
+    const said = reasons.map((r) => archiveReasonText(r));
     expect(new Set(said).size).toBe(reasons.length);
     expect(said.every((s) => s.endsWith('.'))).toBe(true);
   });
 
-  it('separates a ticket that stopped matching from one JIRA no longer has', () => {
+  it('separates a ticket that stopped matching from one the tracker no longer has', () => {
     expect(archiveReasonText('left-query')).toMatch(/no longer matches/);
-    expect(archiveReasonText('gone-from-jira')).toMatch(/no longer has the ticket/);
+    expect(archiveReasonText('gone-from-jira')).toMatch(/no longer has the issue/);
+  });
+
+  // The reason is a NEUTRAL vocabulary shared by both syncs; only the sentence names a
+  // tracker. Telling someone “JIRA says it no longer matches” about a GitHub issue is the
+  // failure this argument exists to prevent.
+  it('names the tracker it is told about, not the one that got here first', () => {
+    expect(archiveReasonText('left-query', 'GitHub')).toMatch(/^GitHub says/);
+    expect(archiveReasonText('gone-from-jira', 'GitHub')).toMatch(/^GitHub no longer has/);
+    expect(archiveReasonText('left-query')).toMatch(/^JIRA says/);
+  });
+
+  it('gives a GitHub card a GitHub sentence, off the card itself', () => {
+    const line = removedLine(card({ externalSource: 'github', archivedReason: 'left-query' }), NOW);
+    expect(line).toMatch(/GitHub says/);
+    expect(removedLine(card({ archivedReason: 'left-query' }), NOW)).toMatch(/JIRA says/);
   });
 
   it('says an old row recorded no reason rather than inventing one', () => {

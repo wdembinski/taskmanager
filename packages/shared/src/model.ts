@@ -451,17 +451,27 @@ export type TicketLinkType =
 /**
  * Why a card was taken off the board — see {@link Task.archivedReason}.
  *
- * Each one names a question JIRA answered, because that is the rule the sync enforces: no
- * card leaves the board unless it was asked about by key and answered (`reconcileJiraTasks`).
- * Lives here rather than beside the sync so the Removed-cards list can spell them out to the
- * human without the renderer importing anything from main.
+ * Each one names a question the TRACKER answered, because that is the rule both syncs
+ * enforce: no card leaves the board unless it was asked about by key and answered
+ * (`reconcileJiraTasks`, `reconcileGitHubIssues`). Lives here rather than beside either sync
+ * so the Removed-cards list can spell them out to the human without the renderer importing
+ * anything from main.
+ *
+ * The vocabulary is deliberately tracker-NEUTRAL even though one of the values still says
+ * "jira": these strings are written into the `archivedReason` column, so renaming one would
+ * silently orphan every row an older build wrote. The tracker's NAME belongs in the sentence
+ * shown to the human, which is built from the card's own `externalSource` — see
+ * `archiveReasonText`.
  */
 export type TaskArchiveReason =
-  /** JIRA was asked whether this key still matches the board's query, and said no. */
+  /** The tracker was asked whether this key still matches the board's query, and said no. */
   | 'left-query'
   /** A finished card kept past the query, until `doneRetentionDays` ran out. */
   | 'retention-expired'
-  /** Asked for by key, and JIRA does not have it: deleted, or invisible to this token. */
+  /**
+   * Asked for by key, and the tracker does not have it: deleted, or invisible to this
+   * token. Named for JIRA because JIRA had it first; it means "gone from the tracker".
+   */
   | 'gone-from-jira';
 
 /** One unit of work, parsed from a plan or added ad-hoc, owned by the app's DB. */
@@ -540,14 +550,21 @@ export interface Task {
    *               refreshes it, but state the tracker has no say in is preserved — and
    *               for `blocked` that now turns on WHO blocked it (`preBlockStatus`), since
    *               a Blocked ticket is something JIRA can say for itself (see `jiraSync`).
+   *   - `github`: mirrored from a GitHub issue, the same way — see `githubIssueSync`.
    *   - `ticket`: a **native ticket** of a `kind: 'ticket'` project (Phase 24) — this app
    *               is the tracker, so nothing external ever refreshes or removes it.
    *
    * `ticket` is a value of its own rather than a flag beside `adhoc`, and that is the
    * *structural* guarantee that `reconcileJiraTasks` can never adopt, rewrite or archive a
    * native ticket: the reconciler filters on `source === 'jira'` in both directions.
+   *
+   * `github` is a value of its own for exactly the same reason, and it is load-bearing in
+   * BOTH directions now that two reconcilers share one board. `reconcileJiraTasks` filters
+   * on `source === 'jira'`, so it can never adopt, rewrite or archive a GitHub card;
+   * `reconcileGitHubIssues` filters on `source === 'github'` and cannot touch a JIRA one.
+   * Neither of them has to know the other exists.
    */
-  source: 'plan' | 'adhoc' | 'jira' | 'ticket';
+  source: 'plan' | 'adhoc' | 'jira' | 'github' | 'ticket';
   /**
    * True when this task authors the milestone's shared `CONTRACT.md` (team
    * orchestration, Phase C) — declared with a trailing `@contract` marker in the
@@ -617,12 +634,30 @@ export interface Task {
   /** Epoch ms the current `statusNote` was posted; null when there is none. */
   statusNoteAt?: number | null;
 
-  // --- External tracker linkage (JIRA integration). All null for internal tasks. ---
-  /** The external tracker this task mirrors, or null for an internal task. */
-  externalSource?: 'jira' | null;
-  /** The issue key shown to the user, e.g. `PROJ-123`. */
+  // --- External tracker linkage (JIRA and GitHub). All null for internal tasks. ---
+  /**
+   * The external tracker this task mirrors, or null for an internal task.
+   *
+   * Two values, and the difference between them is a *decision* at every site that reads
+   * this field rather than a synonym for "external". Most questions — does this card carry
+   * a tracker key, may it be deleted here, does its type icon come from `externalType` —
+   * are about any tracker. A few are about JIRA in particular, and they are all the ones
+   * that WRITE BACK: `task:setPriority` PUTs a JIRA priority, `transitionIssue` POSTs a
+   * JIRA transition, and neither means anything on a GitHub issue (see `github/`).
+   */
+  externalSource?: 'jira' | 'github' | null;
+  /**
+   * The issue key shown to the user — `PROJ-123` on JIRA, `owner/repo#123` on GitHub.
+   *
+   * The GitHub spelling is repo-scoped on purpose: issue 123 exists in every repository
+   * there has ever been, so a bare `#123` would file a pull request under whichever
+   * repository's issue 123 happened to be on the board (see `github/prMatch.ts`).
+   */
   externalKey?: string | null;
-  /** The tracker's internal issue id (stable across renames; used for API calls). */
+  /**
+   * The tracker's internal issue id (stable across renames; used for API calls). JIRA's
+   * numeric issue id, or GitHub's `node_id`.
+   */
   externalId?: string | null;
   /** Deep link to the issue in the tracker's web UI. */
   externalUrl?: string | null;

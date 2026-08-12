@@ -19,12 +19,7 @@
  * {@link reconcileJiraTasks}: **no card leaves the board unless JIRA was asked about it by
  * key and answered.**
  */
-import {
-  PERSONAL_PROJECT_ID,
-  type BoardColumn,
-  type Task,
-  type TaskArchiveReason,
-} from '@shared/model';
+import { PERSONAL_PROJECT_ID, type BoardColumn, type Task } from '@shared/model';
 import {
   categoryFromKey,
   columnForTask,
@@ -33,6 +28,14 @@ import {
   statusForColumn,
 } from '@shared/board';
 import { resolveStatusColumn } from '@shared/statusResolve';
+// The removal guard is the FORGE's, not JIRA's: one rule, applied by both reconcilers, and
+// re-exported below so nothing that already imports it from here has to move.
+import {
+  guardRemovals,
+  type ForgeRemoval,
+  type ForgeRemovalReason,
+  type RemovalGuardResult,
+} from '../forge/removalGuard';
 import { commentBodyToText, type JiraIssue } from './jiraClient';
 import { authorIsMe, type JiraIdentityCache } from './identity';
 import { epicKeyFromIssue, epicNameFromIssue } from './epicField';
@@ -147,26 +150,18 @@ function asSet(keys: KeySet | null | undefined): ReadonlySet<string> | null {
 }
 
 /**
- * Why the board is letting go of a card. Each one is a different question having answered.
- *
- * The same union the row stores and the Removed-cards list spells out — `TaskArchiveReason`
- * in `@shared/model` — because the reason a card left is carried all the way from this
- * decision to the sentence the human reads, and two vocabularies that had to be kept in step
- * would eventually not be.
+ * The removal vocabulary, and the guard itself, now live in `forge/removalGuard.ts` — the
+ * rule is shared with the GitHub reconciler, and a guard the second integration forgets to
+ * apply is not a guard. These aliases keep this module's own names working.
  */
-export type JiraRemovalReason = TaskArchiveReason;
-
-/**
- * One card the board is letting go of. Carries the key and the title as well as the id,
- * because the caller has to be able to *tell the human what left* — an id alone is not
- * something anybody can check against JIRA.
- */
-export interface JiraRemoval {
-  taskId: string;
-  key: string;
-  title: string;
-  reason: JiraRemovalReason;
-}
+export type JiraRemovalReason = ForgeRemovalReason;
+export type JiraRemoval = ForgeRemoval;
+export type JiraRemovalGuard = RemovalGuardResult;
+export {
+  guardRemovals,
+  DEFAULT_MAX_REMOVAL_FRACTION,
+  DEFAULT_MIN_GUARDED_REMOVALS,
+} from '../forge/removalGuard';
 
 export interface JiraSyncResult {
   /** JIRA tasks to insert or update (new + changed issues). */
@@ -180,24 +175,11 @@ export interface JiraSyncResult {
   removals: JiraRemoval[];
   /** Ids of archived cards whose issue is back in the query — put them back on the board. */
   restoreIds: string[];
-  /** Removals {@link guardRemovals} would not let through. Nothing was done to these. */
+  /** Removals `guardRemovals` would not let through. Nothing was done to these. */
   refused: JiraRemoval[];
   /** What the human should be told about this sync, or null when there is nothing to say. */
   warning: string | null;
 }
-
-/** What {@link guardRemovals} made of a removal set: what may go, what may not, and why. */
-export interface JiraRemovalGuard {
-  removals: JiraRemoval[];
-  refused: JiraRemoval[];
-  warning: string | null;
-}
-
-/** Share of the board that may leave in one sync before the guard refuses the lot. */
-export const DEFAULT_MAX_REMOVAL_FRACTION = 0.25;
-
-/** Below this many removals the guard never fires — a four-card board is all fractions. */
-export const DEFAULT_MIN_GUARDED_REMOVALS = 5;
 
 /**
  * Newest comment time (epoch ms) from an issue's inline comments, **ignoring your own**,
@@ -437,53 +419,6 @@ export function removalCandidateKeys(
 }
 
 /**
- * Refuse a removal set that is too big a share of the board to believe.
- *
- * Every removal below has an answer from JIRA behind it, so this is not a second opinion on
- * any one card — it is a bound on how wrong one sync is allowed to be. A credential that
- * silently narrowed, a filter someone half-edited, an instance answering a query with
- * something odd: the failure mode they share is *many cards at once*, and taking a third of
- * a board off in one poll is the kind of thing to stop and report rather than do and log.
- *
- * Two dials, and the second matters as much as the first: on a four-card board every honest
- * removal is a quarter of it, so nothing under {@link DEFAULT_MIN_GUARDED_REMOVALS} is
- * guarded at all.
- *
- * It stands down entirely when `queryChanged` — a new sprint, an edited JQL. The board is
- * *meant* to turn over then, and a guard that fires on the one expected mass removal would
- * be teaching the human to ignore it.
- *
- * All or nothing: a partial removal would leave the board in a state no question produced.
- */
-export function guardRemovals(
-  removals: readonly JiraRemoval[],
-  boardCount: number,
-  opts: {
-    maxRemovalFraction?: number;
-    minGuardedRemovals?: number;
-    queryChanged?: boolean;
-  } = {},
-): JiraRemovalGuard {
-  const allowed: JiraRemovalGuard = { removals: [...removals], refused: [], warning: null };
-  if (opts.queryChanged) return allowed;
-
-  const fraction = opts.maxRemovalFraction ?? DEFAULT_MAX_REMOVAL_FRACTION;
-  const floor = opts.minGuardedRemovals ?? DEFAULT_MIN_GUARDED_REMOVALS;
-  if (removals.length < floor) return allowed;
-  if (removals.length <= boardCount * fraction) return allowed;
-
-  const pct = Math.round(fraction * 100);
-  return {
-    removals: [],
-    refused: [...removals],
-    warning:
-      `Kept ${removals.length} of ${boardCount} JIRA cards that JIRA says have left the ` +
-      `query — more than ${pct}% of the board in one sync. Nothing was removed. Check the ` +
-      `board's JQL and that JIRA is answering it in full.`,
-  };
-}
-
-/**
  * Reconcile the JQL result against the current Personal-board tasks. Ad-hoc tasks are
  * never touched.
  *
@@ -609,7 +544,11 @@ export function reconcileJiraTasks(
   const boardCount = existing.filter(
     (t) => t.source === 'jira' && t.externalKey != null && t.archivedAt == null,
   ).length;
-  const guarded = guardRemovals(candidates, boardCount, opts);
+  const guarded = guardRemovals(candidates, boardCount, {
+    ...opts,
+    tracker: 'JIRA',
+    queryName: 'JQL',
+  });
 
   const notes: string[] = [];
   if (truncated) {
