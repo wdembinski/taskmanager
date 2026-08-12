@@ -231,7 +231,12 @@ _onto_ are provable now, and step 9 checked them:
 [`ci-cd-handoff.md`](ci-cd-handoff.md) records what every repository setting and secret the
 pipeline depends on actually reads today, with the command that read it.
 
-Two of the five need a human click, and one of them is a genuine red rather than a formality:
-the repository's default workflow permission is `read`, which would fail the `version` job's
-push. Neither is a code change, and neither could have been caught by any gate in this
-report — which is the reason that file exists.
+Two of the five were wrong, and one was a genuine red rather than a formality: the
+repository's default workflow permission was `read`, which cannot be raised by a workflow's
+own `permissions:` block and would have failed the `version` job's push. It has since been
+set to `write`. The other — the app's _Release after merge_ switch — is a click in the app
+and is still owed.
+
+Neither is a code change, and neither could have been caught by any gate in this report, on
+any runner, at any point. That is the reason that file exists: a pipeline can be entirely
+correct in every file it is made of and still not run.
