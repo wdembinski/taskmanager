@@ -4,7 +4,7 @@
  * under vitest). Focus: untracked base-tree files that collide with an incoming branch must be
  * adopted (identical) or preserved (differing), never silently overwritten.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -727,6 +727,137 @@ describe('WorktreeManager — a worktree that was already merged and cleaned up'
     expect(again.mode === 'failed' && again.reason).toMatch(/rebase --abort/);
     // And it touched nothing: the commit the stranded worktree holds is still there.
     expect((await git(first.cwd, ['log', '--oneline'])).stdout).toContain('step work');
+  });
+
+  /**
+   * The regression THIS group exists for, one turn of the screw further on: the debris could
+   * not be deleted at all.
+   *
+   * A card's first steps merged, the merge's cleanup died on a lock inside `node_modules`
+   * (Windows holds a file open and `rmSync` gives up with `ENOTEMPTY`), and the next step
+   * added to that card — days later, with nothing to do with the lock — was parked on "Delete
+   * that directory and retry". Every button on the card re-ran the same impossible delete.
+   *
+   * The lock is invisible to the person being asked to win a race against it, so preparation
+   * builds the worktree NEXT DOOR instead and says what it left behind.
+   */
+  describe('when the leftover directory cannot be deleted', () => {
+    /** The delete that never succeeds — a lock we cannot reproduce portably. */
+    type Debris = { removeDebris: (appPath: string) => Promise<string | null> };
+    const STUCK =
+      "ENOTEMPTY: directory not empty, rmdir '…\\node_modules\\.pnpm\\electron\\dist\\resources'";
+
+    function jam(wtm: WorktreeManager) {
+      return vi.spyOn(wtm as unknown as Debris, 'removeDebris').mockResolvedValue(STUCK);
+    }
+
+    /** Exactly what a merge whose cleanup half-failed leaves: files, no `.git`, no branch. */
+    async function mergeAndStrandCleanup(cwd: string, branch: string): Promise<void> {
+      writeFileSync(join(cwd, 'locked-node-modules.txt'), 'held open\n');
+      rmSync(join(cwd, '.git'), { recursive: true, force: true });
+      await git(repo, ['worktree', 'prune']);
+      await git(repo, ['branch', '-D', branch]);
+    }
+
+    it('builds the next step a fresh worktree beside the debris instead of parking it', async () => {
+      const wtm = new WorktreeManager(join(root, 'wtroot-stuck'));
+      const task = { id: 'stuck1' } as unknown as Task;
+      const first = await wtm.prepare(worktreeProject(), task, task.id, 'feat/stuck');
+      expect(first.mode).toBe('worktree');
+      if (first.mode !== 'worktree') return;
+      await mergeAndStrandCleanup(first.cwd, 'feat/stuck');
+      jam(wtm);
+
+      const again = await wtm.prepare(worktreeProject(), task, task.id, 'feat/stuck');
+
+      // The step RUNS — the whole point. Not `failed`, and not in the base tree.
+      expect(again.mode).toBe('worktree');
+      if (again.mode !== 'worktree') return;
+      expect(again.cwd).not.toBe(first.cwd);
+      expect(again.cwd).toBe(`${first.cwd}-2`);
+      expect(existsSync(join(again.cwd, '.git'))).toBe(true);
+      expect(again.branch).toBe('feat/stuck');
+      expect(again.base).toBe(base);
+      // The directory nobody could delete is left exactly as it was, and named — a leftover
+      // on the timeline can be swept up, a silent one poisons the next run.
+      expect(existsSync(join(first.cwd, 'locked-node-modules.txt'))).toBe(true);
+      expect(again.note).toContain(first.cwd);
+      expect(again.note).toMatch(/could not be deleted/i);
+    });
+
+    it('finds that fresh worktree again — a resumed step, and the Merge button', async () => {
+      const wtm = new WorktreeManager(join(root, 'wtroot-stuck2'));
+      const task = { id: 'stuck2' } as unknown as Task;
+      const first = await wtm.prepare(worktreeProject(), task, task.id, 'feat/stuck2');
+      if (first.mode !== 'worktree') throw new Error('setup failed');
+      await mergeAndStrandCleanup(first.cwd, 'feat/stuck2');
+      const spy = jam(wtm);
+      const moved = await wtm.prepare(worktreeProject(), task, task.id, 'feat/stuck2');
+      if (moved.mode !== 'worktree') throw new Error('setup failed');
+      writeFileSync(join(moved.cwd, 'step.txt'), 'the new step ran\n');
+      await git(moved.cwd, ['add', '-A']);
+      await git(moved.cwd, ['commit', '--no-verify', '-m', 'new step']);
+
+      // The next run of the same card reuses it rather than building a third...
+      const resumed = await wtm.prepare(worktreeProject(), task, task.id, 'feat/stuck2');
+      expect(resumed.mode === 'worktree' && resumed.cwd).toBe(moved.cwd);
+      // ...and the Merge button, which reads disk and nothing else, finds it too.
+      const live = await wtm.inspect(worktreeProject(), task.id, 'feat/stuck2');
+      expect(live?.cwd).toBe(moved.cwd);
+      expect(live?.branch).toBe('feat/stuck2');
+
+      // And it merges from there, which is what "the step ran" has to end in.
+      spy.mockRestore();
+      const res = await wtm.integrate(project(), 'feat/stuck2', base, moved.cwd, 'integrate');
+      expect(res.status).toBe('merged');
+      expect((await git(repo, ['show', `${base}:step.txt`])).stdout).toBe('the new step ran\n');
+    });
+
+    it('cleans up BOTH the moved worktree and the debris when the card is abandoned', async () => {
+      const wtm = new WorktreeManager(join(root, 'wtroot-stuck3'));
+      const task = { id: 'stuck3' } as unknown as Task;
+      const first = await wtm.prepare(worktreeProject(), task, task.id, 'feat/stuck3');
+      if (first.mode !== 'worktree') throw new Error('setup failed');
+      await mergeAndStrandCleanup(first.cwd, 'feat/stuck3');
+      const spy = jam(wtm);
+      const moved = await wtm.prepare(worktreeProject(), task, task.id, 'feat/stuck3');
+      if (moved.mode !== 'worktree') throw new Error('setup failed');
+
+      // The lock is gone by the time the human presses "Clean up & abandon" — the usual case,
+      // since what held it was a process on its way out.
+      spy.mockRestore();
+      await wtm.cleanup(worktreeProject(), task.id);
+
+      expect(existsSync(moved.cwd)).toBe(false);
+      expect(existsSync(first.cwd)).toBe(false);
+    });
+
+    it('refuses only once every slot is occupied, naming each one', async () => {
+      const wtm = new WorktreeManager(join(root, 'wtroot-stuck4'));
+      const task = { id: 'stuck4' } as unknown as Task;
+      const stranded: string[] = [];
+      jam(wtm);
+      // Ten worktrees, each merged and each left half-deleted: the bound has to be reachable
+      // or it is not a bound, and a card in this state has ten directories nobody swept up.
+      for (let i = 0; i < 10; i++) {
+        const prep = await wtm.prepare(worktreeProject(), task, task.id, 'feat/stuck4');
+        expect(prep.mode).toBe('worktree');
+        if (prep.mode !== 'worktree') return;
+        stranded.push(prep.cwd);
+        await mergeAndStrandCleanup(prep.cwd, 'feat/stuck4');
+      }
+
+      const full = await wtm.prepare(worktreeProject(), task, task.id, 'feat/stuck4');
+
+      expect(full.mode).toBe('failed');
+      expect(full).not.toHaveProperty('cwd');
+      if (full.mode !== 'failed') return;
+      // Every leftover is named: the human is being asked to delete them, so "some
+      // directories" would send them hunting.
+      for (const dir of stranded) expect(full.reason).toContain(dir);
+      // Eleven preparations, each shelling out to git several times: the only test here that
+      // needs longer than the 5s default, and it needs it on any machine.
+    }, 60_000);
   });
 
   it('inspect() reads what is there without creating a worktree or resurrecting a branch', async () => {

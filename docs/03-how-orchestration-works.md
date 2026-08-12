@@ -472,6 +472,13 @@ the plan, so the steps are full-auto.
 - **Integration happens once.** A finished step with a pending sibling marks itself
   done and starts the next one; only the **last** step merges the branch back into the
   base and removes the worktree.
+- **Steps added after that merge start a fresh one.** The branch and the worktree are
+  gone, so the next step gets a new worktree cut from base on the same branch name —
+  and if the old directory is *still on disk* because its cleanup was stopped by a
+  Windows lock (almost always something under `node_modules`), the new one is built
+  beside it as `<parentId>-2` rather than the run being parked on "delete that
+  directory and retry". The leftover is inert, is named on the card's timeline, and is
+  swept up by *Clean up & abandon* whenever the lock is gone.
 - **The parent is never auto-completed.** After the final merge the card stays *In
   Progress* with a "ready for review" comment — moving it to Done is yours.
 - A **failed** step parks and the chain simply stops; fixing it and marking it done

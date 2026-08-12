@@ -102,6 +102,24 @@ const MAX_MECHANICAL_ROUNDS = 20;
  */
 const WORKTREE_REMOVE_RETRY_MS = 750;
 
+/**
+ * How many directories a task's worktree may be tried at: the canonical one, then `-2`,
+ * `-3`… . Each extra slot exists for one reason — the previous one is still on disk and
+ * cannot be deleted (see {@link WorktreeManager.chooseBuildPath}) — so a project that has
+ * reached the last of them has ten leftover directories the human has not dealt with, and
+ * quietly making an eleventh would be hoarding rather than recovering.
+ */
+const MAX_WORKTREE_SLOTS = 10;
+
+/**
+ * What `rmSync` is allowed to do about a directory Windows is still holding: retry the
+ * individual `rmdir`/`unlink` that failed, rather than abandoning the whole recursive walk
+ * on the first `ENOTEMPTY`/`EBUSY`/`EPERM`. Node does this itself when asked, and asking is
+ * strictly better than our own outer retry — that one restarts the entire traversal, so a
+ * lock held on one file deep in `node_modules` costs a full re-walk of everything above it.
+ */
+const RM_RETRY = { maxRetries: 4, retryDelay: 200 } as const;
+
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
@@ -354,9 +372,55 @@ export class WorktreeManager {
   /**
    * Deterministic worktree path for a task, so a resumed run reuses it. Joined in
    * the HOST's shape — `node:path.join` would build `\` separators for a Linux path.
+   *
+   * `slot` is 0 for the canonical path and 1, 2… for the fallbacks below it; see
+   * {@link WorktreeManager.candidatePaths} for why a task may need a second address.
    */
-  private pathIn(root: string, projectId: string, taskId: string): string {
-    return hostJoin(root, projectId, taskId);
+  private pathIn(root: string, projectId: string, taskId: string, slot = 0): string {
+    return hostJoin(root, projectId, slot === 0 ? taskId : `${taskId}-${slot + 1}`);
+  }
+
+  /**
+   * Every directory a task's worktree may live at, most-preferred first.
+   *
+   * There is more than one because a worktree's directory can OUTLIVE the worktree. Cleanup
+   * after a successful merge deletes `.git` and then walks the tree, and on Windows anything
+   * still holding a file inside it — an exiting CLI, a watcher, a virus scanner, most often
+   * something under `node_modules` — stops that walk part-way. What is left is inert debris,
+   * but it sits exactly where the next run's worktree has to go.
+   *
+   * That is the case this list exists for, and it is a case that ARRIVES with a new step: the
+   * card's earlier steps merged, the merge cleaned up, the cleanup half-failed — and the step
+   * added afterwards was the first thing to need the directory again. Refusing to run it
+   * ("delete that directory and retry") asks the human to win a race against a lock they
+   * cannot see, on behalf of work that has nothing to do with it.
+   *
+   * So preparation falls forward to `<taskId>-2`, `-3`… instead. Everything that READS a
+   * task's worktree resolves it through this same list, so the fallback is not a second
+   * address anyone has to know about — it is the same worktree, one door along.
+   */
+  private candidatePaths(root: string, projectId: string, taskId: string): string[] {
+    return Array.from({ length: MAX_WORKTREE_SLOTS }, (_, slot) =>
+      this.pathIn(root, projectId, taskId, slot),
+    );
+  }
+
+  /**
+   * The task's LIVE worktree — the first candidate that exists and that git still recognises
+   * — or null when it has none. Reads only.
+   *
+   * Existing is not the same as being a worktree, and treating it as such is what let a card
+   * try to merge a branch its own successful merge had already deleted: cleanup removed
+   * `.git` and then died on a locked `node_modules`, and every later run was handed the
+   * leftovers as though they were live. One `isRepo` call per candidate settles it.
+   */
+  private async findLive(paths: readonly string[], host: ExecHost): Promise<string | null> {
+    for (const cwd of paths) {
+      // `existsSync` runs on the APP's filesystem, so a distro path has to be named the
+      // way Windows can see it (`\\wsl.localhost\…`) before it can be checked.
+      if (existsSync(host.toApp(cwd)) && (await isRepo(cwd, host))) return cwd;
+    }
+    return null;
   }
 
   /**
@@ -455,15 +519,9 @@ export class WorktreeManager {
       };
     }
     const branch = branchName?.trim() || taskBranch(ownerTaskId);
-    const cwd = this.pathIn(root, project.id, ownerTaskId);
-    // `existsSync` runs on the APP's filesystem, so a distro path has to be named the
-    // way Windows can see it (`\\wsl.localhost\…`) before it can be checked.
-    //
-    // Existing is NOT the same as being a worktree, and treating it as such is what let a
-    // card try to merge a branch its own successful merge had already deleted: cleanup
-    // removed `.git` and then died on a locked `node_modules`, and every later run was
-    // handed the leftovers as though they were live. One `isRepo` call settles it.
-    if (existsSync(host.toApp(cwd)) && (await isRepo(cwd, host))) {
+    const paths = this.candidatePaths(root, project.id, ownerTaskId);
+    const live = await this.findLive(paths, host);
+    if (live) {
       // The worktree is already checked out on SOME branch, and if the card was renamed
       // after it was created that is not the name we were just handed. Returning the
       // requested name would be a lie the integration step then acts on, so read the real
@@ -471,76 +529,35 @@ export class WorktreeManager {
       //
       // Past `isRepo`, an empty answer is a real anomaly rather than the ordinary "no
       // worktree yet", so it must not fall back to the name we were asked for — that
-      // fallback is the exact shape of the bug above.
+      // fallback is the exact shape of the bug `findLive` describes.
       //
       // A DETACHED head is empty here too (see `currentBranch`), and that is the case this
       // guard was always describing without catching: a worktree stranded mid-rebase used
       // to report its branch as the literal `HEAD`, which sailed past this check, ran a
       // whole step, and then merged nothing because no branch by that name exists. Refusing
       // costs one interrupted run; the alternative silently drops the work.
-      const actual = await currentBranch(cwd, host);
+      const actual = await currentBranch(live, host);
       if (!actual) {
         return {
           mode: 'failed',
           reason:
-            `The worktree at ${cwd} is a git repository but has no branch checked out, so ` +
+            `The worktree at ${live} is a git repository but has no branch checked out, so ` +
             `this task has no branch to work on or merge back. Check ` +
-            `\`git -C "${cwd}" status\` — a half-finished rebase or merge leaves a detached ` +
-            `HEAD, and \`git -C "${cwd}" rebase --abort\` (or "Retry fresh (discard ` +
+            `\`git -C "${live}" status\` — a half-finished rebase or merge leaves a detached ` +
+            `HEAD, and \`git -C "${live}" rebase --abort\` (or "Retry fresh (discard ` +
             `branch)" on the card, which rebuilds the worktree) clears it. The task was ` +
             `not run in the base tree (${project.path}) to avoid polluting it.`,
         };
       }
-      return { mode: 'worktree', cwd, branch: actual, base };
+      return { mode: 'worktree', cwd: live, branch: actual, base, note };
     }
 
-    // The directory is there but git does not recognise it: debris from a cleanup that
-    // half-finished. Clear it so the worktree can be rebuilt below.
-    //
-    // Safe by construction, which is the only reason this deletes anything: `integrate`
-    // commits everything in the worktree (`commitAll`) BEFORE it merges, and cleanup only
-    // runs after that merge succeeded. So whatever is left in a directory git has stopped
-    // tracking was already committed and already landed — there is nothing here that git
-    // ever held and could still lose.
-    if (existsSync(host.toApp(cwd))) {
-      const why = await gitPreflight(cwd, host);
-      if (why.state !== 'not-a-repo') {
-        // git itself could not be run (not installed, distro down). That is not the
-        // directory's fault, and deleting a work tree on the strength of an answer we
-        // never got is how real work disappears. Refuse instead.
-        return {
-          mode: 'failed',
-          reason:
-            `Couldn't tell whether the worktree at ${cwd} is still a git repository: ` +
-            `${why.state === 'unknown' ? why.detail : why.state}. Nothing was deleted and ` +
-            `the task was not run — fix git for that path and retry.`,
-        };
-      }
-      // Retried, for exactly the reason the directory is in this state at all: what
-      // half-deleted it was a Windows lock on `node_modules`, and a lock held by an exiting
-      // process is usually gone a moment later. `removeWorktreeChecked` next door already
-      // retries; a single attempt here left a card parked on `ENOTEMPTY` while the git path
-      // beside it would have recovered.
-      const removed = await this.removeDebris(host.toApp(cwd));
-      if (removed) {
-        return {
-          mode: 'failed',
-          reason:
-            `The worktree at ${cwd} is no longer a git repository — a previous cleanup left ` +
-            `it half-deleted — and it could not be removed to rebuild it: ${removed}. Delete ` +
-            `that directory and retry. The task was not run in the base tree ` +
-            `(${project.path}) to avoid polluting it.`,
-        };
-      }
-      // A write outside the task's own worktree belongs on the timeline, exactly like the
-      // unborn-HEAD repair above — it explains where a directory went.
-      note =
-        `${note ? `${note} ` : ''}The worktree at ${cwd} was left half-deleted by an earlier ` +
-        `cleanup (its \`.git\` was gone), so it was removed and rebuilt. Nothing was lost: a ` +
-        `worktree is only ever cleaned up after its work has been committed and merged.`;
-      // git may still hold an admin record pointing at the path we just removed, which
-      // would make `worktree add` refuse. `prepare`'s own prune-and-retry below covers it.
-    }
+    // No live worktree, so one has to be built — and the only thing that can stand in the
+    // way is a directory left over from a previous one.
+    const chosen = await this.chooseBuildPath(paths, host, project.path);
+    if ('reason' in chosen) return { mode: 'failed', reason: chosen.reason };
+    const cwd = chosen.cwd;
+    if (chosen.note) note = `${note ? `${note} ` : ''}${chosen.note}`;
 
     // A `stacked` chain link asks for this branch to be cut from another card's, not from
     // base. A start point that no longer exists falls back to `base` in silence, and that
@@ -718,11 +735,111 @@ export class WorktreeManager {
     });
   }
 
-  /** Remove a task's worktree (best effort) — used when cleaning up a failed task. */
+  /**
+   * Remove a task's worktree (best effort) — used when cleaning up a failed task, and when a
+   * project's execution target moves and its worktrees have to go with it.
+   *
+   * Sweeps every candidate path rather than only the canonical one: a run that had to build
+   * next door to undeletable debris (see {@link WorktreeManager.candidatePaths}) leaves BOTH
+   * on disk, and a "Clean up & abandon" that removed only the address the worktree would
+   * have had is exactly the kind of cleanup this whole area exists to stop trusting. Debris
+   * git no longer recognises is deleted outright — there is no worktree left for git to
+   * remove, its admin record went with the `.git` file.
+   */
   async cleanup(project: Project, taskId: string): Promise<void> {
     const { host, root } = await this.workspaceFor(project);
-    const cwd = this.pathIn(root, project.id, taskId);
-    if (existsSync(host.toApp(cwd))) await this.removeWorktreeChecked(project, cwd, host);
+    for (const cwd of this.candidatePaths(root, project.id, taskId)) {
+      if (!existsSync(host.toApp(cwd))) continue;
+      if (await isRepo(cwd, host)) await this.removeWorktreeChecked(project, cwd, host);
+      else await this.removeDebris(host.toApp(cwd));
+    }
+  }
+
+  /**
+   * Where to BUILD a task's worktree, given that it has no live one: the first candidate
+   * path that is free, clearing leftovers out of the preferred ones on the way.
+   *
+   * The whole method is about one failure and the two ways of answering it. A previous
+   * worktree's directory is still on disk with its `.git` gone — inert debris from a cleanup
+   * that a Windows lock stopped part-way (see {@link WorktreeManager.candidatePaths}).
+   *
+   *  - **Delete it and reuse the address.** Always tried first, and it is safe by
+   *    construction — which is the only reason this deletes anything. `integrate` commits
+   *    everything in the worktree (`commitAll`) BEFORE it merges, and cleanup only runs
+   *    after that merge succeeded, so whatever is left in a directory git has stopped
+   *    tracking was already committed and already landed. There is nothing here that git
+   *    ever held and could still lose.
+   *  - **Leave it and build next door.** What this used to do instead was park the task
+   *    with "delete that directory and retry" — and that is how a card whose earlier steps
+   *    had merged perfectly well came to refuse every step added afterwards: the lock is on
+   *    a `node_modules` tree nobody can see holding, and the work being blocked has nothing
+   *    to do with it. The debris is named on the timeline so it can be swept up later,
+   *    which is a chore; not running is a stop.
+   *
+   * Returns the path to build at (plus anything the human has to be told), or the reason
+   * nothing could be done.
+   */
+  private async chooseBuildPath(
+    paths: readonly string[],
+    host: ExecHost,
+    projectPath: string,
+  ): Promise<{ cwd: string; note?: string } | { reason: string }> {
+    /** Debris we could not delete, in the order the paths were tried. */
+    const leftover: { path: string; why: string }[] = [];
+
+    for (const cwd of paths) {
+      if (!existsSync(host.toApp(cwd))) {
+        return { cwd, note: this.leftoverNote(leftover, cwd) || undefined };
+      }
+      const why = await gitPreflight(cwd, host);
+      if (why.state !== 'not-a-repo') {
+        // git itself could not be run (not installed, distro down). That is not the
+        // directory's fault, and deleting a work tree on the strength of an answer we
+        // never got is how real work disappears. Refuse instead.
+        return {
+          reason:
+            `Couldn't tell whether the worktree at ${cwd} is still a git repository: ` +
+            `${why.state === 'unknown' ? why.detail : why.state}. Nothing was deleted and ` +
+            `the task was not run — fix git for that path and retry.`,
+        };
+      }
+      const failure = await this.removeDebris(host.toApp(cwd));
+      if (!failure) {
+        // A write outside the task's own worktree belongs on the timeline, exactly like the
+        // unborn-HEAD repair in `prepare` — it explains where a directory went.
+        //
+        // git may still hold an admin record pointing at the path just removed, which would
+        // make `worktree add` refuse. `prepare`'s own prune-and-retry covers it.
+        const repaired =
+          `The worktree at ${cwd} was left half-deleted by an earlier cleanup (its ` +
+          `\`.git\` was gone), so it was removed and rebuilt. Nothing was lost: a worktree ` +
+          `is only ever cleaned up after its work has been committed and merged.`;
+        const stranded = this.leftoverNote(leftover, cwd);
+        return { cwd, note: stranded ? `${repaired} ${stranded}` : repaired };
+      }
+      leftover.push({ path: cwd, why: failure });
+    }
+
+    return {
+      reason:
+        `This task's worktree could not be built: all ${paths.length} directories it may use ` +
+        `under ${paths[0]} are occupied by leftovers from earlier worktrees that cannot be ` +
+        `deleted (${leftover.map((l) => `${l.path}: ${l.why}`).join('; ')}). Delete them and ` +
+        `retry. The task was not run in the base tree (${projectPath}) to avoid polluting it.`,
+    };
+  }
+
+  /** The half of a prep note that accounts for debris left standing, or undefined if none. */
+  private leftoverNote(leftover: readonly { path: string; why: string }[], cwd: string): string {
+    if (leftover.length === 0) return '';
+    return (
+      `An earlier worktree of this card is still on disk at ` +
+      `${leftover.map((l) => l.path).join(', ')} and could not be deleted ` +
+      `(${leftover[leftover.length - 1].why}), so this run was given a fresh worktree at ` +
+      `${cwd} instead of waiting for it. Nothing in the leftover directory is needed — a ` +
+      `worktree is only ever cleaned up after its work has been committed and merged — so ` +
+      `delete it whenever convenient.`
+    );
   }
 
   /**
@@ -737,7 +854,7 @@ export class WorktreeManager {
   private async removeDebris(appPath: string): Promise<string | null> {
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        rmSync(appPath, { recursive: true, force: true });
+        rmSync(appPath, { recursive: true, force: true, ...RM_RETRY });
         return null;
       } catch (err) {
         if (attempt === 1) return (err as Error).message ?? String(err);
@@ -793,8 +910,10 @@ export class WorktreeManager {
   ): Promise<{ cwd: string; branch: string; base: string } | null> {
     const { host, root } = await this.workspaceFor(project);
     if (!project.useWorktrees || !(await isRepo(project.path, host))) return null;
-    const cwd = this.pathIn(root, project.id, ownerTaskId);
-    if (!existsSync(host.toApp(cwd)) || !(await isRepo(cwd, host))) return null;
+    // Resolved through the same candidate list `prepare` builds with, so a worktree that had
+    // to be built next door to undeletable debris is still the one the Merge button finds.
+    const cwd = await this.findLive(this.candidatePaths(root, project.id, ownerTaskId), host);
+    if (!cwd) return null;
     // The worktree's own HEAD outranks the name we were handed: a card renamed after its
     // worktree was made carries a branch name that was never checked out anywhere.
     const branch =
