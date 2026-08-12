@@ -245,6 +245,19 @@ The task that actually receives a message typed on a card. Normally the card its
 a card executing an approved plan holds no session of its own, so the target is the
 **step** that is running (`chatTarget` in `src/shared/board.ts`). The composer names it.
 
+### Stop / Resume
+
+The two halves of one gesture, offered from the same slot on the card and in the **Agent**
+panel — never both at once (`canStopWork` / `canResumeWork` in `packages/shared/src/board.ts`).
+**Stop** ends a card's run, cancels the steps queued behind it, unparks it from the
+usage-limit gate, and keeps the branch and worktree. **Resume** picks that work back up: it
+rejoins the same session — one *"you were stopped, carry on"* sentence, not the brief again —
+in the worktree the agent left, and re-queues a chain's cancelled steps so it restarts at the
+step that was interrupted. Neither moves the card: only you do that. What remembers a stop is
+`Task.stoppedAt`, since a board card's `status` is handed back to your column; it is cleared
+by anything that starts the work again. See
+[doc 03](03-how-orchestration-works.md#stopping-and-resuming-it).
+
 ### Parked chain
 
 A card whose approved plan has stopped: some step is `failed` or waiting on a question,

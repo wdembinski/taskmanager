@@ -384,9 +384,10 @@ inbox. On My Tasks you don't have to go there — the card gets an **orange fram
 (the same treatment as an unread JIRA comment) and the question, with its
 one-click options or a free-text reply, renders in the card's detail sidebar. The
 live transcript streams into the same timeline as your comments and status
-changes. **Stop** ends the run and keeps the worktree.
+changes. **Stop** ends the run and keeps the worktree; **Resume** picks it back up in the
+same conversation.
 
-### Stopping it
+### Stopping and resuming it
 
 **Stop** is on the card itself — a small square-in-circle button beside the agent
 glyph — and again in the detail pane's **Agent** panel. It appears whenever there is
@@ -400,9 +401,36 @@ work a click could stop, which is wider than "this card says `running`":
 - a card parked behind the usage limit, which Stop unparks so it does not come back to
   life at the reset.
 
-Stopping keeps the branch and the worktree, so the work is picked up again by sending
-the agent a message. It changes no column: stopping is a run's end, not a card's, and
-only you move a card (see *Where the card sits while it works* below).
+Stopping keeps the branch and the worktree, so the work can be picked up again — by
+**Resume**, below, or by simply saying something to the agent. It changes no column:
+stopping is a run's end, not a card's, and only you move a card (see *Where the card sits
+while it works* below).
+
+**Resume** is Stop's inverse and sits in Stop's slot — the same square beside the agent
+glyph on the card, the same place in the **Agent** panel. The two are mutually exclusive
+by construction (`canStopWork` / `canResumeWork` in `packages/shared/src/board.ts`), so
+the row holds one of them or neither and never both. What it offers:
+
+- **The same conversation, not a fresh briefing.** The run resumes by session id and the
+  agent is greeted with one sentence — *"You were stopped. Continue the task where you
+  left off."* — rather than the card's whole brief again. It already knows what it had
+  done, and it comes back to the worktree it left. (A run with no session to rejoin yet —
+  a step stopped before it ever started — does get the full brief; there is nothing to
+  carry on from.)
+- **A chain's cancelled steps are re-queued.** Stop marks every step queued behind the
+  running one `stopped`, which leaves a chain with nothing runnable in it. Resume puts
+  them back to `pending`, in order, and that re-queueing *is* the resume: it is what makes
+  the start land on the step that was interrupted instead of opening a session on the card
+  beside its own chain.
+- **It parks rather than drops.** Resume goes through the ordinary start path, so a usage
+  limit or an expired sign-in parks the card behind the same gate any other start would.
+
+What remembers the stop is `Task.stoppedAt`, not a status: on a board card `status` is
+borrowed and handed straight back to your column (see *Where the card sits while it works*
+below), so a stopped ticket resting in TO DO would otherwise be indistinguishable from one
+nobody had ever started. It is cleared by work starting again — by Resume, a plain Start, a
+chat reply, or the limit gate's own resume — so a card that has run again stops offering
+Resume.
 
 Usage limits behave exactly as they do for plan tasks: the task parks as
 `blocked-by-limit` behind the global gate and resumes by session id at reset.
@@ -483,7 +511,10 @@ the plan, so the steps are full-auto.
   Progress* with a "ready for review" comment — moving it to Done is yours.
 - A **failed** step parks and the chain simply stops; fixing it and marking it done
   resumes the chain. **Stop** on the parent stops the running step and marks the rest
-  `stopped`. Usage limits park and resume a step like any other task — including the
+  `stopped`; **Resume** puts those steps back to `pending` and rejoins the stopped step's
+  own session, so the chain carries on from the step it was interrupted in rather than
+  from the top (see *Stopping and resuming it* above). Usage limits park and resume a step
+  like any other task — including the
   step that had not started yet when the limit arrived, which is parked behind the
   same gate so the reset can start it (see *Usage limits* above).
 - Each step's prompt is deliberately narrow: *step N of M*, its own brief, the sibling
