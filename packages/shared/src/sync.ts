@@ -12,14 +12,14 @@
  * ways worth knowing: whether the integration is on at all, and whether its last attempt
  * failed while the others succeeded.
  *
- * `services` is deliberately a LIST. JIRA and GitLab are what exist today, but the shape of
- * the integration is "a tracker that gets refreshed", and a third one should appear in the
- * tooltip by being added to the array — not by threading another pair of fields through the
- * IPC layer, the status bar and its styles.
+ * `services` is deliberately a LIST, and GitHub is the proof it was worth it: it appeared in
+ * the tooltip by being added to `SyncServiceId` and to the array `syncState()` builds, with
+ * nothing threaded through the IPC layer, the status bar or its styles. The shape of the
+ * integration is "a tracker that gets refreshed"; the next one should cost the same.
  */
 
 /** Which tracker a row describes. Extend as integrations are added. */
-export type SyncServiceId = 'jira' | 'gitlab' | 'cloud';
+export type SyncServiceId = 'jira' | 'gitlab' | 'github' | 'cloud';
 
 export interface ServiceSyncState {
   id: SyncServiceId;

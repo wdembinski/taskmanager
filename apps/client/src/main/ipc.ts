@@ -100,6 +100,8 @@ import { CloudPoller } from './cloudPoller';
 import { testCloudConnection } from './cloudTestConnection';
 import { FocusTracker } from './focusTracker';
 import { GitLabClient } from './gitlab/gitlabClient';
+import { GitHubClient } from './github/githubClient';
+import { githubIdentityFrom } from './github/identity';
 import { gitlabIdentityFrom, type GitLabIdentityCache } from './gitlab/identity';
 import { describeMergeRequest } from './gitlab/describeMergeRequest';
 import {
@@ -1417,6 +1419,72 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   });
 
   // -------------------------------------------------------------------------
+  // GitHub. The GitLab block again, one forge over: same encryption path, same paste
+  // hygiene, same refusal to store anything when the OS secure store is unavailable.
+  const buildGitHubClient = (): GitHubClient => {
+    const { github } = store.getSettings();
+    if (!github.baseUrl.trim()) throw new Error('Set the GitHub API URL in Settings first.');
+    const cipher = store.loadGitHubToken();
+    if (!cipher) throw new Error('No GitHub token saved — add one in Settings.');
+    return new GitHubClient({ baseUrl: github.baseUrl, token: decryptSecret(cipher, 'GitHub') });
+  };
+
+  handle('github:getConfigStatus', async () => {
+    const { github } = store.getSettings();
+    return {
+      enabled: github.enabled,
+      hasToken: store.loadGitHubToken() !== null,
+      encryptionAvailable: safeStorage.isEncryptionAvailable(),
+      plainTextStorage: usesPlainTextStorage(),
+      // GitHub has one auth mode; 'server' is the honest answer for github.com and for
+      // GitHub Enterprise Server alike. See the note on the GitLab handler above.
+      deployment: 'server' as const,
+      baseUrl: github.baseUrl,
+    };
+  });
+
+  handle('github:setCredentials', async (token) => {
+    if (!token.trim()) {
+      store.clearGitHubToken();
+      return { ok: true, message: 'Token cleared.' };
+    }
+    if (!safeStorage.isEncryptionAvailable()) {
+      return {
+        ok: false,
+        message: 'OS secure storage is unavailable, so the token was not saved.',
+      };
+    }
+    // Same paste hygiene as the JIRA and GitLab tokens above.
+    const noise = tokenHadNoise(token);
+    store.saveGitHubToken(safeStorage.encryptString(sanitizeToken(token)).toString('base64'));
+    return {
+      ok: true,
+      message: usesPlainTextStorage()
+        ? 'Token saved — but this machine has no keyring, so it is only obfuscated on disk.'
+        : noise
+          ? 'Token saved — whitespace came with the paste and was stripped.'
+          : 'Token saved.',
+    };
+  });
+
+  handle('github:clearCredentials', async () => store.clearGitHubToken());
+
+  handle('github:testConnection', async () => {
+    try {
+      const me = await buildGitHubClient().getMe();
+      // The test is also the cheapest possible moment to learn WHO you are: the answer is
+      // already in hand, and caching it here is what stops your own comment lighting your
+      // own card orange later, without a request of its own. Keyed by base URL, so pointing
+      // the app at another instance re-discovers rather than mis-attributing.
+      store.saveGitHubIdentity(githubIdentityFrom(me, store.getSettings().github.baseUrl));
+      return { ok: true, displayName: me.login, message: `Connected as ${me.login}.` };
+    } catch (e) {
+      logMain('GitHub test connection failed', e);
+      return { ok: false, message: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  // -------------------------------------------------------------------------
   // vipper.iam cloud sign-in (Phase 25's "Guard the cloud API with vipper.iam"). The refresh
   // token is the one credential of the three (JIRA/GitLab/IAM) this app itself is a party to
   // minting, but it still goes through the exact same encrypt-and-store path as the other two.
@@ -1553,6 +1621,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   > = {
     jira: { lastSyncAt: null, syncing: false, error: null },
     gitlab: { lastSyncAt: null, syncing: false, error: null },
+    github: { lastSyncAt: null, syncing: false, error: null },
     cloud: { lastSyncAt: null, syncing: false, error: null },
   };
 
@@ -1561,6 +1630,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     const services: ServiceSyncState[] = [
       { id: 'jira', label: 'JIRA', enabled: settings.jira.enabled, ...syncClock.jira },
       { id: 'gitlab', label: 'GitLab', enabled: settings.gitlab.enabled, ...syncClock.gitlab },
+      { id: 'github', label: 'GitHub', enabled: settings.github.enabled, ...syncClock.github },
       { id: 'cloud', label: 'Cloud', enabled: settings.cloud.enabled, ...syncClock.cloud },
     ];
     // The NEWEST of the services' clocks, so a sweep in which one tracker failed still

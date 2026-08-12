@@ -690,6 +690,23 @@ export interface IpcApi {
    */
   'gitlab:sync': () => Promise<MergeRequest[]>;
 
+  // --- GitHub. The same four channels again, one forge over. -----------------
+  //
+  // `JiraConfigStatus` and `JiraTestResult` are reused verbatim, exactly as the GitLab
+  // channels above do. The names have aged badly, but the shapes have not: "is it on, is
+  // there a token, can this machine encrypt one" and "did the credential work, and who
+  // does it say you are" are the same two questions for every integration, and a third
+  // pair of identical interfaces would be three places to change the next time either
+  // question grows a field.
+  /** Whether GitHub is enabled, has a stored token, and can encrypt one. */
+  'github:getConfigStatus': () => Promise<JiraConfigStatus>;
+  /** Store the GitHub personal access token, encrypted via the OS secure store. */
+  'github:setCredentials': (token: string) => Promise<{ ok: boolean; message: string }>;
+  /** Remove the stored GitHub token. */
+  'github:clearCredentials': () => Promise<void>;
+  /** Verify base URL + token by calling `/user`; returns the login. */
+  'github:testConnection': () => Promise<JiraTestResult>;
+
   // --- Merge requests, whichever forge they came from -----------------------
   /**
    * Every stored merge request, for the whole board in one call — GitLab's and GitHub's

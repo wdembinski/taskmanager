@@ -203,6 +203,82 @@ export const DEFAULT_GITLAB_SETTINGS: GitLabSettings = {
 };
 
 /**
+ * GitHub integration config.
+ *
+ * Bigger than {@link GitLabSettings} because GitHub is asked to do two jobs rather than
+ * one: it carries pull requests onto cards the way GitLab does, AND it can be the board's
+ * *source* of cards the way JIRA is. The two are separately switchable — plenty of people
+ * track work in JIRA and merge it on GitHub, and plenty track everything in GitHub Issues
+ * — so neither is allowed to drag the other along with it.
+ *
+ * One auth mode, like GitLab: a personal access token, which works identically on
+ * github.com and GitHub Enterprise Server.
+ */
+export interface GitHubSettings {
+  /** Master switch — when off, nothing is fetched and no PR or issue appears anywhere. */
+  enabled: boolean;
+  /**
+   * The API root. `https://api.github.com` for github.com; for GitHub Enterprise Server
+   * give the instance root (`https://github.acme.internal`) and the client appends
+   * `/api/v3` — see `main/github/githubClient.ts`, which is the only place that rule lives.
+   */
+  baseUrl: string;
+  /** Mirror issues matching {@link issueQuery} onto the board as cards. */
+  syncIssues: boolean;
+  /** Put your open pull requests on the cards they belong to. */
+  syncPullRequests: boolean;
+  /**
+   * The GitHub search query selecting the issues to mirror — the analogue of
+   * {@link JiraSettings.jql}, in GitHub's own search syntax. `is:issue` is part of the
+   * default rather than forced at fetch time, so a user who wants their own PRs on the
+   * board as cards can say so.
+   */
+  issueQuery: string;
+  /**
+   * The user's map from an issue LABEL to a board column, matched case-insensitively
+   * (`{ "in review": "in-review" }`).
+   *
+   * GitHub issues have no workflow: an issue is open or it is closed, and everything
+   * between those two is a convention the repository invented — almost always a label.
+   * So unlike JIRA, where the mapping corrects a status the tracker already knows, this
+   * map is the *only* way a GitHub issue can land anywhere but To Do or Done.
+   */
+  labelColumnOverrides: Record<string, BoardColumn>;
+  /**
+   * The map the app taught ITSELF, label → column, written when a drag successfully
+   * applies a label. Same shape and matching as {@link labelColumnOverrides}, and always
+   * losing to it — see `JiraSettings.learnedStatusColumns`, which exists for exactly the
+   * same reason: a column resolved one way on the way out and another on the way back in
+   * undoes the move on the next sync.
+   */
+  learnedLabelColumns?: Record<string, BoardColumn>;
+  /** Whether the board shows the Done column for GitHub's cards. */
+  showDoneColumn: boolean;
+  /**
+   * How long (in days) a closed card is kept on the board after its issue stops matching
+   * {@link issueQuery}. 0 = it goes the moment it leaves the query. Same trap as JIRA's:
+   * the commonest query there is says `is:open`, which stops matching an issue the instant
+   * you close it — so the card you had just dragged into DONE would vanish out of it.
+   */
+  doneRetentionDays: number;
+}
+
+/**
+ * The out-of-the-box GitHub config: off, pointed at github.com, both features on so that
+ * switching `enabled` is the only decision a github.com user has to make.
+ */
+export const DEFAULT_GITHUB_SETTINGS: GitHubSettings = {
+  enabled: false,
+  baseUrl: 'https://api.github.com',
+  syncIssues: true,
+  syncPullRequests: true,
+  issueQuery: 'is:issue is:open assignee:@me',
+  labelColumnOverrides: {},
+  showDoneColumn: false,
+  doneRetentionDays: 14,
+};
+
+/**
  * The desktop client's own cloud-mirror config (Phase 25). Deliberately separate from
  * `syncIntervalMinutes`: JIRA and GitLab share one minutes-scale timer (`syncPoller.ts`),
  * but the cloud mirror polls on a seconds-scale, server-directed cadence of its own
@@ -425,6 +501,8 @@ export interface AppSettings {
   jira: JiraSettings;
   /** GitLab integration config — merge requests on the cards their ticket lives on. */
   gitlab: GitLabSettings;
+  /** GitHub integration config — issues as cards, pull requests on them. */
+  github: GitHubSettings;
   /** The cloud mirror's own config — see {@link CloudSettings}. */
   cloud: CloudSettings;
 }
@@ -463,6 +541,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   shownEarlierStepCards: [],
   jira: DEFAULT_JIRA_SETTINGS,
   gitlab: DEFAULT_GITLAB_SETTINGS,
+  github: DEFAULT_GITHUB_SETTINGS,
   cloud: DEFAULT_CLOUD_SETTINGS,
 };
 

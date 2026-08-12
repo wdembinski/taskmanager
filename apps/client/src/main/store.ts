@@ -50,6 +50,7 @@ import {
   type AppSettings,
   DEFAULT_BOARD_DISPLAY,
   DEFAULT_CLOUD_SETTINGS,
+  DEFAULT_GITHUB_SETTINGS,
   DEFAULT_GITLAB_SETTINGS,
   DEFAULT_JIRA_SETTINGS,
   DEFAULT_SETTINGS,
@@ -62,6 +63,7 @@ import type { JiraEpicFieldCache } from './jira/epicField';
 import type { JiraSprintFieldCache } from './jira/jiraSprint';
 import type { JiraIdentityCache } from './jira/identity';
 import type { GitLabIdentityCache } from './gitlab/identity';
+import type { GitHubIdentityCache } from './github/identity';
 import type {
   MergeRequest,
   MergeRequestState,
@@ -643,6 +645,13 @@ export interface Store {
   /** Cache `GET /user` per instance, so notes can be attributed without a request each. */
   saveGitLabIdentity(cache: GitLabIdentityCache): void;
   loadGitLabIdentity(): GitLabIdentityCache | null;
+  /** The GitHub token ciphertext — the same trio again, one forge over. */
+  saveGitHubToken(value: string): void;
+  loadGitHubToken(): string | null;
+  clearGitHubToken(): void;
+  /** Cache GitHub's `GET /user` per instance; see {@link saveGitLabIdentity}. */
+  saveGitHubIdentity(cache: GitHubIdentityCache): void;
+  loadGitHubIdentity(): GitHubIdentityCache | null;
   saveJiraToken(value: string): void;
   /** Load the stored JIRA token ciphertext, or null if none is set. */
   loadJiraToken(): string | null;
@@ -1912,6 +1921,10 @@ export function createStore(dbPath: string): Store {
   const GITLAB_TOKEN_KEY = 'gitlab.pat';
   const GITLAB_IDENTITY_KEY = 'gitlab.identity';
 
+  /** The same pair for GitHub. Separate rows, because both forges can be connected at once. */
+  const GITHUB_TOKEN_KEY = 'github.pat';
+  const GITHUB_IDENTITY_KEY = 'github.identity';
+
   /** The vipper.iam refresh token ciphertext — see `../iamSignIn.ts` and `ipc.ts`'s `iam:*` handlers. */
   const IAM_REFRESH_TOKEN_KEY = 'iam.refreshToken';
   const CLOUD_CLIENT_ID_KEY = 'cloud.clientId';
@@ -2447,6 +2460,7 @@ export function createStore(dbPath: string): Store {
         ...parsed,
         jira: { ...DEFAULT_JIRA_SETTINGS, ...(parsed.jira ?? {}) },
         gitlab: { ...DEFAULT_GITLAB_SETTINGS, ...(parsed.gitlab ?? {}) },
+        github: { ...DEFAULT_GITHUB_SETTINGS, ...(parsed.github ?? {}) },
         cloud: { ...DEFAULT_CLOUD_SETTINGS, ...(parsed.cloud ?? {}) },
         board: { ...DEFAULT_BOARD_DISPLAY, ...(parsed.board ?? {}) },
       };
@@ -3944,6 +3958,36 @@ export function createStore(dbPath: string): Store {
       try {
         const parsed = JSON.parse(row.value) as GitLabIdentityCache;
         return typeof parsed?.baseUrl === 'string' && typeof parsed?.username === 'string'
+          ? parsed
+          : null;
+      } catch {
+        return null; // corrupt value — re-fetch
+      }
+    },
+
+    saveGitHubToken(value) {
+      upsertState.run(GITHUB_TOKEN_KEY, value);
+    },
+
+    loadGitHubToken() {
+      const row = selectState.get(GITHUB_TOKEN_KEY) as { value: string } | undefined;
+      return row?.value ?? null;
+    },
+
+    clearGitHubToken() {
+      deleteState.run(GITHUB_TOKEN_KEY);
+    },
+
+    saveGitHubIdentity(cache) {
+      upsertState.run(GITHUB_IDENTITY_KEY, JSON.stringify(cache));
+    },
+
+    loadGitHubIdentity() {
+      const row = selectState.get(GITHUB_IDENTITY_KEY) as { value: string } | undefined;
+      if (!row) return null;
+      try {
+        const parsed = JSON.parse(row.value) as GitHubIdentityCache;
+        return typeof parsed?.baseUrl === 'string' && typeof parsed?.login === 'string'
           ? parsed
           : null;
       } catch {

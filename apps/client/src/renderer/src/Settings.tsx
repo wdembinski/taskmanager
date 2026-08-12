@@ -43,6 +43,7 @@ import type { ClaudeModel, PermissionMode } from '@shared/session';
 import type {
   AppSettings,
   CloudSettings,
+  GitHubSettings,
   GitLabSettings,
   JiraSettings,
   PriorityDisplay,
@@ -160,7 +161,7 @@ const COLUMN_LABEL: Record<BoardColumn, string> = Object.fromEntries(
   COLUMN_META.map((c) => [c.column, STATUS_LABEL[statusForColumn(c.column)]]),
 ) as Record<BoardColumn, string>;
 
-type SettingsSection = 'general' | 'board' | 'jira' | 'gitlab' | 'cloud' | 'agents';
+type SettingsSection = 'general' | 'board' | 'jira' | 'gitlab' | 'github' | 'cloud' | 'agents';
 
 export function Settings(): JSX.Element {
   const styles = useStyles();
@@ -197,6 +198,12 @@ export function Settings(): JSX.Element {
   const [gitlabToken, setGitlabToken] = useState('');
   const [gitlabMsg, setGitlabMsg] = useState<string | null>(null);
   const [gitlabTest, setGitlabTest] = useState<JiraTestResult | null>(null);
+  // GitHub: the same four again. Separate state rather than a shared "forge" block,
+  // because both can be connected at once and each has to report its own token.
+  const [githubStatus, setGithubStatus] = useState<JiraConfigStatus | null>(null);
+  const [githubToken, setGithubToken] = useState('');
+  const [githubMsg, setGithubMsg] = useState<string | null>(null);
+  const [githubTest, setGithubTest] = useState<JiraTestResult | null>(null);
   // Cloud: the poller (`cloudPoller.ts`) needs `enabled` + `baseUrl` from this pane, plus a
   // vipper.iam sign-in — everything the poller actually authenticates with, not a form
   // field, so only the signed-in/out state and a couple of buttons live here.
@@ -226,12 +233,18 @@ export function Settings(): JSX.Element {
     setStatusRows(statusMapToRows(appSettings.jira.statusCategoryOverrides));
     setJiraStatus(status);
     setGitlabStatus(await window.api.invoke('gitlab:getConfigStatus'));
+    setGithubStatus(await window.api.invoke('github:getConfigStatus'));
     setIamStatus(await window.api.invoke('iam:getConfigStatus'));
     void loadJiraStatuses();
   }, []);
 
   function patchGitLab(change: Partial<GitLabSettings>): void {
     setSettings((prev) => (prev ? { ...prev, gitlab: { ...prev.gitlab, ...change } } : prev));
+    setSaved(false);
+  }
+
+  function patchGitHub(change: Partial<GitHubSettings>): void {
+    setSettings((prev) => (prev ? { ...prev, github: { ...prev.github, ...change } } : prev));
     setSaved(false);
   }
 
@@ -277,6 +290,28 @@ export function Settings(): JSX.Element {
   async function testGitLab(): Promise<void> {
     setGitlabTest(null);
     setGitlabTest(await window.api.invoke('gitlab:testConnection'));
+  }
+
+  async function saveGitHubToken(): Promise<void> {
+    // Save the form first, for the same reason the GitLab path does: main reads the
+    // STORED settings, so a token saved against an unsaved URL would be paired with
+    // stale config and fail in a way that looks like a bad token.
+    await save();
+    const res = await window.api.invoke('github:setCredentials', githubToken);
+    setGithubMsg(res.message);
+    setGithubToken('');
+    setGithubStatus(await window.api.invoke('github:getConfigStatus'));
+  }
+
+  async function clearGitHubToken(): Promise<void> {
+    await window.api.invoke('github:clearCredentials');
+    setGithubMsg('Token cleared.');
+    setGithubStatus(await window.api.invoke('github:getConfigStatus'));
+  }
+
+  async function testGitHub(): Promise<void> {
+    setGithubTest(null);
+    setGithubTest(await window.api.invoke('github:testConnection'));
   }
 
   /** Fetch the instance's statuses. Fails soft — the field stays typeable regardless. */
@@ -439,6 +474,7 @@ export function Settings(): JSX.Element {
 
   const jira = settings.jira;
   const gitlab = settings.gitlab;
+  const github = settings.github;
   const cloud = settings.cloud;
   // An *.atlassian.net site configured as Server/DC is the one misconfiguration we can
   // spot for certain, and it fails as a bare 401 that reads like a bad token. Warn on
@@ -458,6 +494,7 @@ export function Settings(): JSX.Element {
         <Tab value="board">Board</Tab>
         <Tab value="jira">JIRA</Tab>
         <Tab value="gitlab">GitLab</Tab>
+        <Tab value="github">GitHub</Tab>
         <Tab value="cloud">Cloud</Tab>
         <Tab value="agents">Agents</Tab>
       </TabList>
@@ -996,6 +1033,122 @@ export function Settings(): JSX.Element {
           {gitlabTest && (
             <MessageBar intent={gitlabTest.ok ? 'success' : 'error'}>
               <MessageBarBody>{gitlabTest.message}</MessageBarBody>
+            </MessageBar>
+          )}
+        </div>
+      ) : section === 'github' ? (
+        <div className={styles.pane}>
+          <Subtitle2>GitHub</Subtitle2>
+          <Body1 className={styles.hint}>
+            GitHub can do two jobs here, and they switch on separately. It can be where the board’s
+            cards come from — your issues, mirrored the way JIRA’s are — and it can put your open
+            pull requests on the cards they belong to, so a failing check or a request for changes
+            raises the same orange ring an unread comment does.
+          </Body1>
+
+          <div className={styles.grid}>
+            <Field label="Enable GitHub">
+              <Switch
+                checked={github.enabled}
+                onChange={(_e, d) => patchGitHub({ enabled: d.checked })}
+              />
+            </Field>
+
+            <Field
+              label="Server URL"
+              hint="github.com, or your own GitHub Enterprise Server — e.g. https://github.example.com"
+            >
+              <Input
+                value={github.baseUrl}
+                placeholder="https://api.github.com"
+                onChange={(_e, d) => patchGitHub({ baseUrl: d.value })}
+              />
+            </Field>
+
+            <Field
+              label="Sync issues onto the board"
+              hint="Mirrors the issues your query matches as cards. Off if your work is tracked somewhere else and GitHub is only where it merges."
+            >
+              <Switch
+                checked={github.syncIssues}
+                onChange={(_e, d) => patchGitHub({ syncIssues: d.checked })}
+              />
+            </Field>
+
+            <Field
+              label="Show pull requests on cards"
+              hint="Puts your open PRs on the card whose ticket they name, with their checks and reviews."
+            >
+              <Switch
+                checked={github.syncPullRequests}
+                onChange={(_e, d) => patchGitHub({ syncPullRequests: d.checked })}
+              />
+            </Field>
+
+            <Field
+              label="Personal access token"
+              hint={
+                githubStatus?.encryptionAvailable === false
+                  ? 'The OS secure store is unavailable, so a token cannot be saved on this machine.'
+                  : githubStatus?.plainTextStorage
+                    ? 'No keyring on this machine, so the token is obfuscated on disk rather than kept secret. Needs the repo scope.'
+                    : `Needs the repo scope — or public_repo, for public repositories only.${
+                        githubStatus?.hasToken ? ' A token is stored.' : ''
+                      }`
+              }
+            >
+              <Input
+                type="password"
+                value={githubToken}
+                placeholder={githubStatus?.hasToken ? '•••••••• (stored)' : 'ghp_…'}
+                onChange={(_e, d) => setGithubToken(d.value)}
+              />
+            </Field>
+          </div>
+
+          {githubStatus?.plainTextStorage && (
+            <MessageBar intent="warning">
+              <MessageBarBody>
+                This machine has no OS keyring (typical on WSL, a headless session, or a minimal
+                desktop), so the token is stored with a fixed built-in key — obfuscated on disk, but
+                readable by anyone who can read your app data. Prefer a token scoped to the minimum
+                you need. To get real encryption instead, install a keyring (e.g.{' '}
+                <code>gnome-keyring</code> / <code>libsecret</code>) and restart the app.
+              </MessageBarBody>
+            </MessageBar>
+          )}
+
+          <div className={styles.actions}>
+            <Button appearance="primary" onClick={() => void save()}>
+              Save
+            </Button>
+            {saved && <Caption1 className={styles.saved}>Saved.</Caption1>}
+          </div>
+
+          <div className={styles.actions}>
+            <Button
+              appearance="secondary"
+              disabled={!githubToken.trim() || githubStatus?.encryptionAvailable === false}
+              onClick={() => void saveGitHubToken()}
+            >
+              Save token
+            </Button>
+            <Button
+              appearance="secondary"
+              disabled={!githubStatus?.hasToken}
+              onClick={() => void clearGitHubToken()}
+            >
+              Clear token
+            </Button>
+            <Button appearance="primary" onClick={() => void testGitHub()}>
+              Test connection
+            </Button>
+            {githubMsg && <Caption1 className={styles.saved}>{githubMsg}</Caption1>}
+          </div>
+
+          {githubTest && (
+            <MessageBar intent={githubTest.ok ? 'success' : 'error'}>
+              <MessageBarBody>{githubTest.message}</MessageBarBody>
             </MessageBar>
           )}
         </div>
