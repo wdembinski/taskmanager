@@ -175,3 +175,36 @@ describe('BoardPoller', () => {
     expect(onError).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('BoardPoller: catching up past the page cap', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('polls again immediately while the server says there is more', async () => {
+    // The read side is capped, so a first poll against a mature board comes back in pages.
+    // Left to the cadence, the board would fill in one page every 2.5 seconds.
+    const pages = [
+      { ...response(), hasMore: true },
+      { ...response(), hasMore: true },
+      { ...response(), hasMore: false },
+    ];
+    let n = 0;
+    const fetchImpl = vi.fn().mockImplementation(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => pages[Math.min(n++, pages.length - 1)],
+    }));
+    const { poller } = makePoller({ fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    poller.reschedule();
+    // Each zero-delay re-arm is one more timer to run; three passes drain the three pages.
+    for (let i = 0; i < 3; i++) await vi.runOnlyPendingTimersAsync();
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+
+    // And then it settles back onto the cadence rather than spinning: nothing more fires
+    // until an interval has actually elapsed.
+    await vi.advanceTimersByTimeAsync(CADENCE_MS.active - 1);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    poller.dispose();
+  });
+});

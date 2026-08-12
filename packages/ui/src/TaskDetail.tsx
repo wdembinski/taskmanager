@@ -334,7 +334,11 @@ export function TaskDetail({
     // The reload already contains everything streamed so far (events are persisted as
     // they arrive), so drop the live buffer to avoid showing each line twice.
     setLiveEvents([]);
-    setActivity(await transport.invoke('task:activity', taskId));
+    // The one mount read that used to have no `.catch`, which mattered the moment this
+    // channel started crossing a network: a rejection was an unhandled rejection AND left the
+    // previously selected card's timeline on screen under the new card's title. An empty
+    // timeline is the honest answer for a card whose history could not be fetched.
+    setActivity(await transport.invoke('task:activity', taskId).catch(() => []));
     if (isJira) {
       // JIRA comments are fetched live and merged in; failures shouldn't blank the pane.
       setJiraComments(await transport.invoke('jira:fetchComments', taskId).catch(() => []));

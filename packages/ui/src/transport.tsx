@@ -27,6 +27,19 @@ export interface Transport {
    * cannot answer that (there is no such thing as a "path" for a file picked in a browser).
    */
   pathForFile(file: File): string;
+  /**
+   * Where to fetch an attachment's bytes from — a host fact, because the two hosts store
+   * them in completely different places.
+   *
+   * Electron answers `vipper-attachment://a/<id>`, a custom scheme registered by the main
+   * process (`ipc.ts`) so a locked-down window can show an image it is never told the path
+   * of. That scheme does not exist in a browser, so every `<img src>` in the shared
+   * attachment strip was simply broken there; the web answers an HTTP download URL instead.
+   *
+   * Optional so a host that has not implemented it yet still satisfies `Transport`; callers
+   * fall back to `@tm/shared/attachments`'s `attachmentUrl`, which is the Electron answer.
+   */
+  attachmentUrl?(id: string): string;
 }
 
 const TransportContext = createContext<Transport | null>(null);

@@ -265,6 +265,9 @@ export function AttachmentStrip({
 
   const images = attachments.filter((a) => a.mimeType?.startsWith('image/') && !gone.has(a.id));
 
+  /** The host's URL for an attachment, falling back to Electron's custom scheme. */
+  const imageSrc = (id: string): string => transport.attachmentUrl?.(id) ?? attachmentUrl(id);
+
   return (
     <div
       className={mergeClasses(styles.root, over && styles.over)}
@@ -347,8 +350,10 @@ export function AttachmentStrip({
         </div>
       )}
 
-      {/* The picture itself, for the kind of attachment that is only useful as one. Served
-          over `vipper-attachment://`, so no path crosses into the window. */}
+      {/* The picture itself, for the kind of attachment that is only useful as one. WHERE
+          from is the host's answer, not this component's: Electron serves
+          `vipper-attachment://`, a scheme only it registers, and a browser serves an HTTP
+          download. Hardcoding the first is what left every one of these broken on the web. */}
       {images.length > 0 && (
         <div className={styles.previews}>
           {images.map((a) => (
@@ -361,7 +366,7 @@ export function AttachmentStrip({
             >
               <img
                 className={styles.thumb}
-                src={attachmentUrl(a.id)}
+                src={imageSrc(a.id)}
                 alt={a.fileName}
                 onError={() => setGone((prev) => new Set(prev).add(a.id))}
               />

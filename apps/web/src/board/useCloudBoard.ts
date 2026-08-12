@@ -76,9 +76,17 @@ export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi
         getAccessToken: () => auth.getAccessToken(),
         getTargetClientId: () =>
           resolveTargetClientId(window.localStorage, stateRef.current.clients),
+        // Read through the ref for the same reason the target is: the transport outlives
+        // every poll, and this has to be the freshest answer at the moment a call times out
+        // rather than the one that was true when it was built.
+        hasLiveClient: () => stateRef.current.clients.length > 0,
       }),
     [auth, config.cloudApiBase, clientId],
   );
+
+  // Everything still awaiting an answer fails loudly when the tab tears down, rather than
+  // leaving a promise nobody will ever settle.
+  useEffect(() => () => transport.dispose(), [transport]);
 
   useEffect(() => {
     const focus = createBrowserFocusSignal();

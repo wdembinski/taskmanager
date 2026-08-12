@@ -170,6 +170,7 @@ export const RELAY_POLICY: {
   'task:cleanupWorktree': 'relay',
   'task:assignAgent': 'relay',
   'task:stopAgent': 'relay',
+  'task:resumeAgent': 'relay',
   'task:chat': 'relay',
   'task:replan': 'relay',
   'task:dismissAttention': 'relay',

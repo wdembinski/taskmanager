@@ -44,6 +44,17 @@ export class BoardPoller {
   private consecutiveFailures = 0;
   private lastServerIntervalMs: number | null = null;
   private lastPollAt = 0;
+  /**
+   * Set when the last read said there were more rows past its cursor
+   * (`BoardResponse.hasMore`), which makes the next poll immediate instead of one cadence
+   * interval away.
+   *
+   * The read side is capped now (`MirrorService.BOARD_PAGE_LIMIT`), so a first poll against
+   * a mature board comes back in several bounded trips rather than one unbounded one. Left
+   * to the ordinary cadence, that catch-up would take a page every 2.5 seconds and the board
+   * would visibly fill in over a minute.
+   */
+  private catchingUp = false;
   private readonly unsubscribeFocus: () => void;
 
   constructor(private readonly deps: BoardPollerDeps) {
@@ -65,6 +76,9 @@ export class BoardPoller {
   }
 
   private computeDelay(): number {
+    // Mid-catch-up the cadence is not the question: there is known, already-committed data
+    // waiting, and the only reason to wait at all is to yield the event loop.
+    if (this.catchingUp && this.consecutiveFailures === 0) return 0;
     const serverIntervalMs =
       this.lastServerIntervalMs ??
       (this.deps.focus.isFocused() ? CADENCE_MS.active : CADENCE_MS.idle);
@@ -126,6 +140,7 @@ export class BoardPoller {
     const body = (await res.json()) as BoardResponse;
 
     this.lastServerIntervalMs = body.cadence.intervalMs;
+    this.catchingUp = body.hasMore === true;
     this.deps.onResponse(body);
   }
 

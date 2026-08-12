@@ -24,7 +24,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import type { AttentionItem } from '@shared/attention';
-import type { AttentionIndex } from '@ui/attentionIndex';
+import { buildAttentionIndex, type AttentionIndex } from '@ui/attentionIndex';
 
 export type { AttentionIndex };
 
@@ -55,27 +55,8 @@ export function useAttentionIndex(): AttentionIndex {
     };
   }, []);
 
-  return useMemo(() => {
-    const byTask = new Map<string, AttentionItem[]>();
-    for (const item of items) {
-      const list = byTask.get(item.taskId);
-      if (list) list.push(item);
-      else byTask.set(item.taskId, [item]);
-    }
-    const taskIds = new Set(byTask.keys());
-    return {
-      byTask,
-      taskIds,
-      count: items.length,
-      itemsFor: (ids) => {
-        const out: AttentionItem[] = [];
-        for (const id of ids) {
-          if (!id) continue;
-          const list = byTask.get(id);
-          if (list) out.push(...list);
-        }
-        return out;
-      },
-    };
-  }, [items]);
+  // The index itself is built in `@tm/ui` — apps/web builds the same one from the same
+  // list, over the relay rather than over `window.api`, and two copies of "how a card's
+  // ring is decided" is precisely what would drift.
+  return useMemo(() => buildAttentionIndex(items), [items]);
 }

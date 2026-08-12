@@ -22,3 +22,35 @@ export interface AttentionIndex {
    */
   itemsFor: (ids: readonly (string | null | undefined)[]) => AttentionItem[];
 }
+
+/**
+ * Build one from a flat list of items.
+ *
+ * Extracted here from `useAttentionIndex` (apps/client) the moment a second host needed it:
+ * apps/web reads `attention:list` over the relay and subscribes through `PolledEventBus`
+ * rather than `window.api`, but the INDEX it builds afterwards is the same index — and a
+ * second copy of "how a card's ring is decided" is exactly the kind of thing that drifts
+ * without anything going red.
+ */
+export function buildAttentionIndex(items: readonly AttentionItem[]): AttentionIndex {
+  const byTask = new Map<string, AttentionItem[]>();
+  for (const item of items) {
+    const list = byTask.get(item.taskId);
+    if (list) list.push(item);
+    else byTask.set(item.taskId, [item]);
+  }
+  return {
+    byTask,
+    taskIds: new Set(byTask.keys()),
+    count: items.length,
+    itemsFor: (ids) => {
+      const out: AttentionItem[] = [];
+      for (const id of ids) {
+        if (!id) continue;
+        const list = byTask.get(id);
+        if (list) out.push(...list);
+      }
+      return out;
+    },
+  };
+}
