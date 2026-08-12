@@ -24,6 +24,11 @@ the pipeline itself; this is only the evidence that it holds together.
 
 Nothing here went red that was not made to.
 
+> The last row has since been overtaken by events, twice: the pipeline's first real run failed
+> at `gates` on 12 August 2026, and the run after it published **v0.83.1** end to end. The
+> measurements above are left exactly as they were taken;
+> [§7](#7-added-after-this-report--the-first-real-run-and-what-it-caught) is what happened.
+
 ---
 
 ## 1. The version resolver
@@ -240,3 +245,224 @@ and is still owed.
 Neither is a code change, and neither could have been caught by any gate in this report, on
 any runner, at any point. That is the reason that file exists: a pipeline can be entirely
 correct in every file it is made of and still not run.
+
+---
+
+## 7. Added after this report — the first real run, and what it caught
+
+§4 said a release end to end was unprovable until this landed. It has now landed, and there
+have been two runs. The short version:
+
+| Run                                                                            | Head        | Result                                                       |
+| ------------------------------------------------------------------------------ | ----------- | ------------------------------------------------------------ |
+| [31602231983](https://github.com/wdembinski/taskmanager/actions/runs/31602231983) | `b7d79d2`   | ❌ red at `gates` — one assertion. Nothing tagged, nothing published |
+| [31608982908](https://github.com/wdembinski/taskmanager/actions/runs/31608982908) | `2fc8676`   | ✅ **v0.83.1 published**, Windows + Linux, 5m07s              |
+
+`f263099..b7d79d2` into `development` on 12 August 2026 started the first. **It went red at
+`gates`, so `version`, `windows`, `linux` and `promote` all skipped** — no `v0.83.0` tag, no
+draft, nothing published, and the latest release stayed `v0.82.6`. The pipeline behaved
+correctly: _nothing is tagged from a red tree_ is exactly §1's job, and what it caught was a
+test of ours rather than a fault in the workflows.
+
+**There is no `v0.83.0` and there never will be.** The fix commit was pushed, the next run
+took the version from the manifest as it found it, and `v0.83.1` is the release that carries
+both. A skipped version number costs nothing — a moved tag would.
+
+### 7.1 One assertion, and it was describing the machine
+
+```
+Test Files  1 failed | 136 passed | 2 skipped (139)
+     Tests  1 failed | 2277 passed | 13 skipped (2291)
+
+FAIL apps/client/src/main/exec/wslHost.test.ts > WslExecHost path and relay wiring
+     > spawns the relay as the WINDOWS binary, reachable over loopback
+```
+
+The assertion was `expect(spec.command.startsWith('/mnt/')).toBe(true)`.
+
+`relaySpec` builds that command as `this.toNative(process.execPath)`
+([`wslHost.ts:262`](../../apps/client/src/main/exec/wslHost.ts)), and `toNative` is
+`windowsToLinux`, which **returns non-Windows input untouched**
+([`wslPath.ts:60`](../../packages/shared/src/wslPath.ts)) — deliberate and documented, so a
+stored Linux path survives the round trip. So:
+
+| Where it runs   | `process.execPath` | Translates to  | `/mnt/` prefix |
+| --------------- | ------------------ | -------------- | -------------- |
+| This Windows box | `C:\…\node.exe`   | `/mnt/c/…`     | ✅ passes      |
+| ubuntu runner   | `/usr/bin/node`    | itself         | ❌ fails       |
+
+The assertion was never a statement about `relaySpec`. It was a statement about the machine,
+and it had been true for months because **the suite had never run on Linux**: the branch was
+merged locally without a PR, so `ci.yml` never fired, and every gate run before this one was
+this same Windows box. `pnpm test` was green here throughout — and, as it stood, **could not
+be made to fail here**, which is the actual lesson.
+
+### 7.2 Red before green, on this machine
+
+A test that has never been seen to fail proves nothing, so the runner was stood up locally
+before anything was changed: a throwaway setup file (in `$TEMP`, never in the work tree, and
+deleted afterwards) doing the two things the runner does differently —
+
+```js
+Object.defineProperty(process, 'platform', { value: 'linux' });
+process.execPath = '/usr/bin/node';
+```
+
+`vitest 2.1.9` has no `--setupFiles` CLI flag, so it was wired in through a throwaway config
+beside `apps/client/vitest.config.ts` that merged `setupFiles` onto the real one — also
+deleted afterwards, and the work tree confirmed clean.
+
+| Step                                                  | Result                                                            |
+| ----------------------------------------------------- | ----------------------------------------------------------------- |
+| **RED** — the pre-fix test, simulated runner          | ❌ `wslHost.test.ts:185:46`, _expected false to be true_          |
+| **GREEN** — after the fix, simulated runner           | ✅ 4 passed, 9 skipped                                            |
+| **GREEN** — after the fix, this Windows box, no setup | ✅ 4 passed, 9 skipped                                            |
+
+The red reproduced CI's failure at the same file, the same line and the same assertion —
+which is what makes it a reproduction rather than a resemblance.
+
+### 7.3 The fix asserts the whole path, on every platform
+
+`process.execPath` is a plain writable, configurable property
+(`{"writable":true,"enumerable":true,"configurable":true}`), so the test now stands a Windows
+binary in its place and asserts the **entire** translated string:
+
+```ts
+expect(spec.command).toBe('/mnt/c/Users/me/AppData/Local/Programs/app/VIPPER Task Manager.exe');
+```
+
+Restored in a `finally`, because `process.execPath` is process-wide and
+`permissionServer.test.ts` spawns with it — a leaked fake would break an unrelated file in
+the same run.
+
+Two alternatives were rejected. Changing `wslHost.ts` would have been fixing correct
+production code to get past a red gate — the production code was right all along, and it is
+untouched.
+
+The other is the one that actually shipped first. Commit `2fc8676` put the `/mnt/` check
+behind `process.platform === 'win32'` and added an equality against
+`host.toNative(process.execPath)`; that is what turned the pipeline green and released
+`v0.83.1`. It was the right call under the circumstances — the release was blocked — but it
+is weaker than it looks in the place that matters: the guard **deletes the shape check from
+CI entirely**, which is the one environment where nothing else exercises it, and the equality
+it added is a tautology (both sides call `toNative(process.execPath)`, so it holds whatever
+`toNative` does, including nothing at all).
+
+Stubbing the input replaces both with a single assertion that runs identically on every
+runner and states a fact about `relaySpec` rather than about the box it ran on.
+
+It is also strictly a stronger check than the prefix ever was, which was confirmed by
+mutation: dropping the `toLowerCase()` from `windowsToLinux`'s drive letter yields
+`/mnt/C/Users/…`, which `startsWith('/mnt/')` accepts happily and the equality catches.
+
+```
+Expected: "/mnt/c/Users/me/AppData/Local/Programs/app/VIPPER Task Manager.exe"
+Received: "/mnt/C/Users/me/AppData/Local/Programs/app/VIPPER Task Manager.exe"
+```
+
+`wslPath.ts` was restored from a copy in `$TEMP` immediately afterwards and confirmed clean.
+Two tests went red under that mutation, not one — `translates paths in both directions`
+catches it as well, which is as it should be. The point is narrower: of the three ways the
+relay's own command has been asserted, only this one catches it.
+
+### 7.4 The gates, re-run
+
+RELEASE.md §1 in full, forced as §3 explains:
+
+| Gate                                  | Exit | Result                                          |
+| ------------------------------------- | ---- | ----------------------------------------------- |
+| `pnpm install --frozen-lockfile`      | 0    | already up to date                              |
+| `pnpm format:check`                   | 0    | all matched files clean                         |
+| `pnpm exec turbo run typecheck --force` | 0  | 9 tasks, **0 cached**, 32.087s                  |
+| `pnpm test`                           | 1    | **2281 passed, 11 skipped**; 1 file failed — below |
+| `pnpm exec turbo run build --force`   | 0    | 6 tasks, **0 cached**, 27.665s                  |
+
+### 7.5 The one red left is local to this machine, and CI is the proof
+
+`apps/server/src/config/secrets.test.ts` fails **here** at collection, before any of its
+tests run:
+
+```
+SyntaxError: The requested module '../commonjs/state-cjs.js'
+             does not provide an export named 'state'
+  ❯ apps/server/src/config/secrets.ts:1  import { DefaultAzureCredential } from '@azure/identity';
+```
+
+It is not caused by anything on this branch — it reproduces on `HEAD` with the fix stashed,
+the test file dates from `f36d40b` (Phase 25, already on `development`), and it is a module
+interop failure in a dependency rather than an assertion.
+
+The interesting part is that **it does not happen on the runner**. The same commit's log from
+run 31602231983 shows it green:
+
+```
+✓ apps/server/src/config/secrets.test.ts (3 tests) 4ms
+```
+
+So this is an artefact of this machine's `node_modules` — two `@azure/identity` versions are
+in the local store (`3.4.2` and `4.13.1`) and the path in the error does not exist under the
+`4.13.1` the server resolves. It was left alone deliberately: it is not in the release path,
+CI installs the same lockfile cleanly, and rebuilding `node_modules` inside a worktree is the
+hazard that has previously deleted the real checkout's copy. Anyone who does want it gone
+should chase it in the main checkout, not here.
+
+The honest summary of §7.4 is therefore: **every gate that CI runs is green, and the one
+local failure is one CI demonstrably does not have.**
+
+One other thing was seen once and is written down rather than dismissed: on one of three full
+`pnpm test` runs, two cases in `apps/client/src/main/worktreeManager.test.ts` failed
+(`adopts an identical untracked dupe` and `union-merges additive .gitignore churn`). They
+passed in isolation — 36 of 36 — and did not recur on the two runs after it. That file shells
+out to `git` in temporary repositories, so contention under a loaded parallel run is the
+likely cause, but "likely" is the accurate word: it has been seen to fail once, on this
+machine, and nobody has explained it. If it starts failing on the runner, this is the first
+sighting.
+
+### 7.6 The run after it, which is the proof §4 said could not be written
+
+Pushing the interim fix started
+[run 31608982908](https://github.com/wdembinski/taskmanager/actions/runs/31608982908), and it
+went all the way through in **5m07s**:
+
+```
+$ gh release view v0.83.1 --json isDraft,publishedAt,assets
+draft: false   published: 2026-08-12T14:55:18Z   tag: v0.83.1
+   claude-orchestrator-0.83.1-setup.exe
+   claude-orchestrator-0.83.1-setup.exe.blockmap
+   claude-orchestrator-0.83.1.AppImage
+   claude-orchestrator-0.83.1.deb
+   latest-linux.yml
+   latest.yml
+```
+
+Every claim §4 deferred is now discharged. `gates` reached **Build** and passed it on ubuntu;
+`version` tagged and drafted; `windows` and `linux` both packaged into that draft; `promote`
+published it. Both update feeds are there alongside both installers, which means
+`check-update-feed.mjs` ran inside the packaging scripts and was satisfied — on the runner,
+not here.
+
+**A merge into `development` now cuts and publishes a release without anyone watching.** That
+is the whole point of the pipeline, and as of 12 August 2026 it is a fact rather than a
+design.
+
+What is still owed is unchanged and is not something a runner can do: the clean-machine
+install, and release notes better than generated commit subjects. Both are in
+[`docs/11`](../11-ci-cd-pipeline.md#what-still-needs-a-human).
+
+### 7.7 What this section changes, and what it must not
+
+The release is unblocked, so **this step is no longer an unblock** — it is the stronger
+version of a fix that already shipped. Two consequences worth stating plainly:
+
+- **No release by hand, then or now.** `RELEASE.md` was not run at any point here. The merge
+  is the release, and a second releaser following the same file toward the same tag is the
+  hazard [the handoff's §5](ci-cd-handoff.md#5-the-apps-release-after-merge-switch--required)
+  describes. That switch is **still on**, and run 31608982908 went green with it on — so if
+  it started an agent, that agent raced a workflow that won. It is still the one thing that
+  can spoil a future run, and it is still a click nobody has made.
+- **The version moved under this branch.** When this step was planned the manifest read
+  `0.83.0` with `needsCommit=false`; `v0.83.1` has since been tagged _from this branch's own
+  HEAD_, so the manifest now reads `0.83.1`, names a version that is already published, and
+  `scripts/next-version.mjs` answers `0.83.2 / needsCommit=true`. Rather than leave the
+  release to §2's fallback, `apps/client/package.json` is bumped to `0.83.2` here, which puts
+  the resolver back on `needsCommit=false` and makes the next release deterministic.

@@ -179,6 +179,36 @@ decides which you get.
 No code changed for this, and none should — see
 [`docs/11`'s section on the switch](../11-ci-cd-pipeline.md#the-apps-release-after-merge-switch).
 
+### Since this was written: the pipeline has released twice over, and this is still owed
+
+The branch merged into `development` on 12 August 2026. Two runs followed:
+
+- [31602231983](https://github.com/wdembinski/taskmanager/actions/runs/31602231983) **failed
+  at `gates`** — one test assertion that only held on Windows — so nothing was tagged and no
+  `v0.83.0` exists.
+- [31608982908](https://github.com/wdembinski/taskmanager/actions/runs/31608982908), on the
+  fix, went green end to end and **published `v0.83.1`** for Windows and Linux at 14:55 UTC.
+
+[The gate report's §7](ci-cd-gate-report.md#7-added-after-this-report--the-first-real-run-and-what-it-caught)
+has both, and the failure's reproduction.
+
+**The switch is still on, and it was on for both of those runs.** That is not a reprieve, it
+is a near miss: run 31608982908 published a release while the orchestrator's own release
+agent was free to start on the same merge. It went green anyway, so either no agent started
+or the agent lost the race and found the version published — the harmless branch of the two.
+_Nothing decided which._ The item stands exactly as written above, for the same reason, and
+_The order_ below is now advice for the next merge rather than this one.
+
+Three things the runs settled that no local gate could:
+
+- **The workflow-permissions fix (1) was real and sufficient.** The `version` job pushed a
+  tag and created a release with `GITHUB_TOKEN`, which is precisely what the read-only
+  default would have refused.
+- **The pipeline works.** Tag, draft, both packaging jobs, promote, and both update feeds —
+  on runners, unattended, in five minutes.
+- **The value of running gates somewhere other than the author's machine.** A test that had
+  been green locally for months went red on the first honest run.
+
 ---
 
 ## The order

@@ -22,7 +22,9 @@ the tag names the whole repository's state.
 What was checked before any of this ran for real — the gates, the version resolver against
 the repo's actual tags, and the invariant tests put through their own mutations — is recorded
 in [`docs/plan/ci-cd-gate-report.md`](plan/ci-cd-gate-report.md), along with the two things
-that could not be proven until the pipeline was on `development`.
+that could not be proven until the pipeline was on `development`. Both have since been
+proven by the pipeline itself: it published **v0.83.1** unattended on 12 August 2026, on its
+second run. The first went red, and its §7 is worth reading before writing a gate test.
 
 ---
 
@@ -110,6 +112,39 @@ workflows express in their own right is only the part a human never had to be to
 tagging, the drafting, the ordering, the promotion. That is also what keeps
 [`docs/plan/ci-cd-gate-report.md`](plan/ci-cd-gate-report.md) meaningful: gates run locally and
 gates run on the runner are the same commands, not two lists that resemble each other.
+
+---
+
+## The gates run on Linux
+
+`gates` runs on `ubuntu-latest`, in both `ci.yml` and `release.yml`. Every test in this
+repository is therefore a Linux test now, including the ones written on a Windows machine for
+Windows-only code — and a suite that has only ever run on one platform can be green for
+reasons that have nothing to do with the code.
+
+**A gate test that reads `process.platform`, `process.execPath`, `os.homedir()` or a path's
+shape must either stub the value it is asserting about, or sit behind the `ENABLED` flag that
+`apps/client/src/main/exec/wslHost.test.ts` already uses for its real-distro block.**
+
+Prefer stubbing. `process.execPath` is writable and configurable, so a test can stand a
+`C:\…` binary in its place, assert the full translation, and check the same property
+identically on every runner — restoring it in a `finally`, because it is process-wide and
+other suites spawn with it. A `process.platform === 'win32'` guard also goes green, but it
+goes green by **deleting the check from CI**, which is the one place nothing else exercises
+Windows-shaped strings.
+
+This is not hypothetical: it is the whole of why the pipeline's first real run cut no
+`v0.83.0`, and why there is no such version. One assertion —
+`spec.command.startsWith('/mnt/')` — was describing the machine rather than the code, because
+`windowsToLinux` returns already-Linux input untouched and the runner's `execPath` is
+`/usr/bin/node`. It had been true for months on a Windows box, and could not be made to fail
+there. The run after the fix published `v0.83.1` end to end.
+[`docs/plan/ci-cd-gate-report.md` §7](plan/ci-cd-gate-report.md#7-added-after-this-report--the-first-real-run-and-what-it-caught)
+has both runs, the reproduction and the fix.
+
+The Windows-only jobs — `ci.yml`'s `package` and `release.yml`'s `windows` — package and smoke
+test the app, and prove nothing about unit tests. Nothing runs the unit suite on Windows in
+CI at all.
 
 ---
 

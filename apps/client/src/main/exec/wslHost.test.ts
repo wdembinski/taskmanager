@@ -175,28 +175,39 @@ describe('WslExecHost path and relay wiring', () => {
 
   it('spawns the relay as the WINDOWS binary, reachable over loopback', () => {
     const script = 'C:\\Users\\me\\AppData\\Roaming\\app\\mcp\\permission-server.cjs';
-    const spec = host.relaySpec({
-      brokerUrl: 'http://127.0.0.1:51234',
-      token: 'tok',
-      runId: 'run-1',
-      serverScriptPath: script,
-    });
-    // The COMMAND is a Linux path: WSL's loader has to find and exec the binary.
-    // It is `toNative(process.execPath)`, so its SHAPE depends on where this suite
-    // runs, not on the code under test: only on Windows is `execPath` a `C:\…` path
-    // that translates to `/mnt/…`. On a Linux runner it is `/usr/…`, translates to
-    // itself, and a bare `/mnt/` assertion fails a perfectly healthy build — which
-    // is what it did to the release pipeline's first run and cost v0.83.0.
-    expect(spec.command).toBe(host.toNative(process.execPath));
-    if (process.platform === 'win32') {
-      expect(spec.command.startsWith('/mnt/')).toBe(true);
+    // `relaySpec` translates `process.execPath`, and `windowsToLinux` returns a path
+    // that is already Linux untouched — so on the CI runner the real execPath
+    // (`/usr/…`) translates to itself and a `/mnt/` assertion describes the MACHINE,
+    // not this code. That is how this file passed on Windows for months and then
+    // failed the release pipeline's first run, costing v0.83.0 its tag. Stand a
+    // Windows binary in its place so the property under test is asserted identically
+    // on any runner, rather than checked on one platform and skipped on the other.
+    const realExecPath = process.execPath;
+    process.execPath = 'C:\\Users\\me\\AppData\\Local\\Programs\\app\\VIPPER Task Manager.exe';
+    try {
+      const spec = host.relaySpec({
+        brokerUrl: 'http://127.0.0.1:51234',
+        token: 'tok',
+        runId: 'run-1',
+        serverScriptPath: script,
+      });
+      // The COMMAND is a Linux path: WSL's loader has to find and exec the binary.
+      // Asserted whole rather than by its `/mnt/` prefix, which would miss a wrong
+      // drive letter, a lost separator translation or a dropped space.
+      expect(spec.command).toBe(
+        '/mnt/c/Users/me/AppData/Local/Programs/app/VIPPER Task Manager.exe',
+      );
+      // The ARGUMENT stays a Windows path: argv crosses verbatim, and a Linux path
+      // would be resolved against the process's UNC working directory instead
+      // ("Cannot find module \\wsl.localhost\<distro>\mnt\c\…").
+      expect(spec.args[0]).toBe(script);
+      // Loopback is the app's own, because the relay is a Windows process.
+      expect(spec.env.ORCH_BROKER_URL).toBe('http://127.0.0.1:51234');
+    } finally {
+      // Process-wide, and permissionServer.test.ts spawns with it: a leaked fake
+      // would break an unrelated file in the same run.
+      process.execPath = realExecPath;
     }
-    // The ARGUMENT stays a Windows path: argv crosses verbatim, and a Linux path
-    // would be resolved against the process's UNC working directory instead
-    // ("Cannot find module \\wsl.localhost\<distro>\mnt\c\…").
-    expect(spec.args[0]).toBe(script);
-    // Loopback is the app's own, because the relay is a Windows process.
-    expect(spec.env.ORCH_BROKER_URL).toBe('http://127.0.0.1:51234');
   });
 
   it('forwards every relay variable through WSLENV', () => {
