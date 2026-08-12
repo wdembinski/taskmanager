@@ -32,6 +32,21 @@
 # A job rather than a step here because Azure SQL's firewall admits Azure services, not
 # arbitrary runner IPs — and it runs BEFORE the app is repointed, so the schema is never
 # behind the code that expects it.
+#
+# ── Rolling back ──────────────────────────────────────────────────────────────
+# If you are reading this because a run went red: the deploy verifies itself and fails
+# without rolling anything back. Traffic moves to a new revision only once it reports
+# healthy, so a container that never starts normally leaves the previous one serving —
+# check before you act. To go back deliberately, every image is tagged with its commit
+# SHA and Terraform ignores the running image, so it is one command:
+#
+#   az containerapp revision list -n taskmanager-api -g taskmanager -o table
+#   az containerapp update -n taskmanager-api -g taskmanager \
+#     --image ghcr.io/wdembinski/taskmanager-server:<previous-sha>
+#
+# Migrations do NOT roll back with it. They are applied before the app is repointed, so
+# the older image meets the newer schema — fine for additive migrations, which is the
+# reason to keep them additive (docs/10, "Rollback and teardown").
 
 name: Deploy
 
@@ -89,6 +104,7 @@ jobs:
       RESOURCE_GROUP: taskmanager
       CONTAINER_APP: taskmanager-api
       MIGRATE_JOB: taskmanager-migrate
+      API_BASE: https://tasks-api.vipper.network
     steps:
       - uses: actions/checkout@v4
 
@@ -149,14 +165,72 @@ jobs:
             done
             echo "::error::Timed out waiting for the migration job."; exit 1
 
+      # `az containerapp update` returns as soon as the revision is CREATED, not when it
+      # serves anything, so the command succeeding says almost nothing. Wait for the new
+      # revision to actually run — and do it here rather than by curling /health, because
+      # in single-revision mode a revision that never starts leaves the PREVIOUS one
+      # serving: /health would answer 200 from the old code and the deploy would go green
+      # having changed nothing.
       - name: Point the Container App at the new image
         uses: azure/cli@v2
         with:
           azcliversion: latest
           inlineScript: |
+            set -euo pipefail
             az containerapp update \
               --name ${{ env.CONTAINER_APP }} --resource-group ${{ env.RESOURCE_GROUP }} \
-              --image ${{ env.IMAGE }}:${{ github.sha }}
+              --image ${{ env.IMAGE }}:${{ github.sha }} --output none
+            REV=$(az containerapp show \
+              --name ${{ env.CONTAINER_APP }} --resource-group ${{ env.RESOURCE_GROUP }} \
+              --query properties.latestRevisionName -o tsv)
+            echo "New revision: $REV"
+            # Up to ~5 min (30 × 10s): image pull, Node boot and the first health probe.
+            for _ in $(seq 1 30); do
+              STATE=$(az containerapp revision show \
+                --name ${{ env.CONTAINER_APP }} --resource-group ${{ env.RESOURCE_GROUP }} \
+                --revision "$REV" --query properties.runningState -o tsv)
+              echo "revision state: $STATE"
+              case "$STATE" in
+                Running|RunningAtMaxScale) echo "$REV is running."; exit 0 ;;
+                # Idle with no replicas, not broken — a failed start reports Failed or
+                # Degraded. The /health poll below wakes it and proves it serves.
+                Stopped) echo "$REV is provisioned but scaled to zero."; exit 0 ;;
+                Failed|Degraded)
+                  echo "::error::Revision $REV failed to start ($STATE). Logs: az containerapp logs show -n ${{ env.CONTAINER_APP }} -g ${{ env.RESOURCE_GROUP }} --revision $REV --tail 100"
+                  exit 1 ;;
+              esac
+              sleep 10
+            done
+            echo "::error::Timed out waiting for revision $REV to run."; exit 1
+
+      # The two checks docs/09 and docs/10 tell a human to run after a deploy, run here so
+      # nobody has to remember. Neither needs Azure — the API is public — so plain curl.
+      - name: Check the API answers /health
+        run: |
+          # ~2 min (24 × 5s). The revision runs by now; this covers ingress moving traffic
+          # onto it and the certificate/DNS edge, which lag the revision by a few seconds.
+          for i in $(seq 1 24); do
+            BODY=$(curl -fsS --max-time 10 "$API_BASE/health" | tr -d ' \r\n' || true)
+            echo "health ($i/24): ${BODY:-<no response>}"
+            case "$BODY" in
+              *'"status":"ok"'*) echo "API is serving."; exit 0 ;;
+            esac
+            sleep 5
+          done
+          echo '::error::'"$API_BASE"'/health never returned {"status":"ok"}. The revision is running, so suspect ingress, DNS or a startup that dies after the probe — see the rollback one-liner at the top of this workflow.'
+          exit 1
+
+      # A listening process is not a working one. Every route but /health carries
+      # IamAuthGuard, so an unauthenticated /v1/board must be refused: 401 proves the auth
+      # chain is wired, where 200 would mean CLOUD_DEV_NO_AUTH reached production.
+      - name: Check the auth guard is on
+        run: |
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$API_BASE/v1/board")
+          echo "GET /v1/board -> $CODE"
+          if [ "$CODE" != "401" ]; then
+            echo "::error::Expected 401 from $API_BASE/v1/board, got $CODE. 200 means the guard is off; 5xx means the process is up but the request path is broken."
+            exit 1
+          fi
 
   # ── @tm/web → Static Web App ───────────────────────────────────────────────
   web:
