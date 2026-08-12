@@ -592,7 +592,7 @@ export interface IpcApi {
    * is deliberately not dismissable, since its answer is what finishes the rebase.
    *
    * Returns the task, whose read markers may have moved. The inbox and the merge-request
-   * list announce themselves on `attention:resolved` / `gitlab:mergeRequestsChanged`.
+   * list announce themselves on `attention:resolved` / `mergeRequests:changed`.
    */
   'task:dismissAttention': (taskId: string) => Promise<Task>;
 
@@ -680,17 +680,29 @@ export interface IpcApi {
   'gitlab:clearCredentials': () => Promise<void>;
   /** Verify base URL + token by calling `/user`; returns the username. */
   'gitlab:testConnection': () => Promise<JiraTestResult>;
-  /** Fetch merge requests and reconcile them onto the board. Returns the full list. */
-  'gitlab:sync': () => Promise<MergeRequest[]>;
   /**
-   * Every stored merge request, for the whole board in one call.
+   * Fetch GitLab's merge requests and reconcile them onto the board. Returns the full
+   * list — every provider's, since one board list holds them all.
+   *
+   * Stays in the `gitlab:` namespace on purpose: this is a *fetch* against one forge's
+   * API, and each forge gets its own trigger. Only the read-and-annotate channels below
+   * are provider-neutral, because they talk to the board's own table.
+   */
+  'gitlab:sync': () => Promise<MergeRequest[]>;
+
+  // --- Merge requests, whichever forge they came from -----------------------
+  /**
+   * Every stored merge request, for the whole board in one call — GitLab's and GitHub's
+   * together, because `MergeRequest` carries its `provider` and every consumer (the card
+   * rows, `mergeBlockers`, `chainNeedsAttention`, `sortCards`) reads them the same way.
+   * Two lists would mean two of each of those.
    *
    * Deliberately NOT hung off `Task`: `issueToTask` rebuilds the whole task literal on
    * every JIRA sync and `upsertJiraTask` writes the whole row, so an MR array living
    * there would be clobbered every poll. The board holds the array and derives its own
    * `Map<taskId, MergeRequest[]>`, exactly as it does for `board:tasks`.
    */
-  'gitlab:mergeRequests': () => Promise<MergeRequest[]>;
+  'mr:mergeRequests': () => Promise<MergeRequest[]>;
 
   // --- vipper.iam cloud sign-in (Phase 25) -----------------------------------
   /** Whether a refresh token is stored and the OS secure store can encrypt one. */
@@ -720,15 +732,15 @@ export interface IpcApi {
    * switched on, and which one's last attempt failed).
    */
   'sync:state': () => Promise<SyncState>;
-  /** Mark an MR's discussion read (clears the comment half of its attention). */
   /**
    * Rename a merge request **in this app only** — pass null or blank to go back to the
-   * upstream title. Never written to GitLab, and preserved across syncs.
+   * upstream title. Never written back to the forge, and preserved across syncs.
    */
-  'gitlab:setMergeRequestName': (mrId: string, name: string | null) => Promise<MergeRequest[]>;
-  'gitlab:markRead': (mrId: string) => Promise<MergeRequest[]>;
+  'mr:setMergeRequestName': (mrId: string, name: string | null) => Promise<MergeRequest[]>;
+  /** Mark an MR's discussion read (clears the comment half of its attention). */
+  'mr:markRead': (mrId: string) => Promise<MergeRequest[]>;
   /** Acknowledge an MR's pipeline/approval events (the other half, tracked separately). */
-  'gitlab:markEventsSeen': (mrId: string) => Promise<MergeRequest[]>;
+  'mr:markEventsSeen': (mrId: string) => Promise<MergeRequest[]>;
   /**
    * The connected instance's priority names, most urgent first — what the detail
    * pane's priority dropdown offers for a JIRA card, since only names this instance
@@ -772,7 +784,7 @@ export interface IpcApi {
   /**
    * Every link on the board, in one call — the arrows, not the cards.
    *
-   * Held as its own list for the same reason `gitlab:mergeRequests` is: the board derives
+   * Held as its own list for the same reason `mr:mergeRequests` is: the board derives
    * whatever per-card index it needs from it, and a JIRA sync (which rewrites whole task
    * rows every poll) cannot clobber something that does not live on `Task`.
    */
@@ -987,14 +999,14 @@ export interface IpcEvents {
    */
   'board:notice': { text: string; intent: 'warning' | 'error' };
   /**
-   * The merge-request list changed — a GitLab sync landed, or a read marker moved.
-   * Mirrors `project:tasksChanged`: the whole list, so the board replaces rather than
-   * patches.
+   * The merge-request list changed — a forge sync landed, or a read marker moved.
+   * Mirrors `project:tasksChanged`: the whole list, every provider's, so the board
+   * replaces rather than patches.
    */
-  'gitlab:mergeRequestsChanged': MergeRequest[];
+  'mergeRequests:changed': MergeRequest[];
   /**
    * The chain changed — an arrow was drawn, erased, re-gated, or cascaded away with a
-   * deleted card. Carries the whole list, exactly as `gitlab:mergeRequestsChanged` does,
+   * deleted card. Carries the whole list, exactly as `mergeRequests:changed` does,
    * so the board replaces rather than patches.
    */
   'chain:changed': TaskLink[];

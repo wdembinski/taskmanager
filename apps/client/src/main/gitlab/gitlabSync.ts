@@ -2,7 +2,7 @@
  * Pure reconciliation of fetched GitLab merge requests into stored ones.
  *
  * Mirrors `jira/jiraSync.ts`: no DB, no Electron — the IPC layer applies the returned
- * upserts and deletes. Keyed by `gl-{projectId}-{iid}`, so an MR keeps its identity (and
+ * upserts and deletes. Keyed by `gl-{repoId}-{number}`, so an MR keeps its identity (and
  * therefore its read markers) across syncs.
  *
  * Two things here are easy to get wrong, and both are about NOT shouting:
@@ -22,13 +22,13 @@ import {
   type PipelineStatus,
 } from '@shared/mergeRequest';
 import { gitlabAuthorIsMe, type GitLabIdentityCache } from './identity';
-import { discoverIssueKeys, pickTaskKey } from './mrMatch';
+import { discoverIssueKeys, pickTaskKey } from '../forge/issueKeys';
 import type { GitLabNote } from './gitlabClient';
 
 /** What one fetched MR looks like once the client's shapes are narrowed. */
 export interface FetchedMergeRequest {
-  gitlabProjectId: number;
-  iid: number;
+  repoId: number;
+  number: number;
   projectPath: string;
   title: string;
   description: string | null;
@@ -95,8 +95,8 @@ export function needsDetailRefresh(prior: MergeRequest | undefined, updatedAt: n
   return PIPELINE_IN_FLIGHT.has(prior.pipelineStatus);
 }
 
-export function mergeRequestId(gitlabProjectId: number, iid: number): string {
-  return `gl-${gitlabProjectId}-${iid}`;
+export function mergeRequestId(repoId: number, number: number): string {
+  return `gl-${repoId}-${number}`;
 }
 
 /** Newest note NOT written by you, in epoch ms, or null. */
@@ -161,7 +161,7 @@ export function reconcileMergeRequests(
   const seen = new Set<string>();
 
   for (const mr of fetched) {
-    const id = mergeRequestId(mr.gitlabProjectId, mr.iid);
+    const id = mergeRequestId(mr.repoId, mr.number);
     seen.add(id);
     const prior = byId.get(id);
 
@@ -199,9 +199,9 @@ export function reconcileMergeRequests(
       id,
       taskId,
       provider: 'gitlab',
-      gitlabProjectId: mr.gitlabProjectId,
+      repoId: mr.repoId,
       projectPath: mr.projectPath,
-      iid: mr.iid,
+      number: mr.number,
       title: mr.title,
       webUrl: mr.webUrl,
       sourceBranch: mr.sourceBranch,

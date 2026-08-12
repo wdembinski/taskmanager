@@ -175,7 +175,7 @@ export function MyTasks(): JSX.Element {
   const [archivedOpenedAt, setArchivedOpenedAt] = useState<number | null>(null);
   // Merge requests for the WHOLE board in one array, not hung off each Task: a JIRA
   // sync rebuilds every task literal, so an array living there would be clobbered on
-  // every poll. See the `gitlab:mergeRequests` contract.
+  // every poll. See the `mr:mergeRequests` contract.
   const [mergeRequests, setMergeRequests] = useState<MergeRequest[]>([]);
   /**
    * The chain's edges, held as their own list for exactly the reason the merge requests
@@ -242,7 +242,7 @@ export function MyTasks(): JSX.Element {
       window.api.invoke('board:tasks'),
       window.api.invoke('settings:get'),
       window.api.invoke('agentProject:list'),
-      window.api.invoke('gitlab:mergeRequests'),
+      window.api.invoke('mr:mergeRequests'),
       window.api.invoke('chain:links'),
       window.api.invoke('attachment:list'),
       window.api.invoke('board:archived'),
@@ -310,7 +310,7 @@ export function MyTasks(): JSX.Element {
           : prev,
       );
     });
-    const offMrs = window.api.on('gitlab:mergeRequestsChanged', setMergeRequests);
+    const offMrs = window.api.on('mergeRequests:changed', setMergeRequests);
     // The whole list, replaced — a link can also vanish because its CARD was deleted and
     // the row cascaded away, which no per-link patch would ever hear about.
     const offLinks = window.api.on('chain:changed', setLinks);

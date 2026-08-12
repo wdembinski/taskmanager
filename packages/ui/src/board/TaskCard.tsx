@@ -98,6 +98,7 @@ import { PriorityGlyph } from '../PriorityGlyph';
 import {
   mrAttentionReason,
   mrLabel,
+  mrRef,
   mrVerdict,
   verdictSummary,
   type MergeRequest,
@@ -1590,7 +1591,7 @@ export function TaskCard({
                   styles.mrRow,
                   reason !== null && styles.stepLoud,
                 )}
-                title={reason ?? `!${mr.iid} ${mr.title} · ${verdictSummary(mr)}`}
+                title={reason ?? `${mrRef(mr)} ${mr.title} · ${verdictSummary(mr)}`}
                 onDragStart={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
@@ -1645,9 +1646,9 @@ export function TaskCard({
                     carries the upstream title and the branch. */}
                 <Caption1
                   className={styles.stepTitle}
-                  title={`!${mr.iid} ${mr.title}\n${mr.sourceBranch} → ${mr.targetBranch}`}
+                  title={`${mrRef(mr)} ${mr.title}\n${mr.sourceBranch} → ${mr.targetBranch}`}
                 >
-                  {`!${mr.iid} ${mrLabel(mr)}`}
+                  {`${mrRef(mr)} ${mrLabel(mr)}`}
                 </Caption1>
                 {mr.draft && <Caption1 className={styles.progress}>draft</Caption1>}
                 {/* The row's verdict — see `verdictIcon`. */}

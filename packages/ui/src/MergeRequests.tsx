@@ -23,13 +23,14 @@ import {
 import { RenameRegular } from '@fluentui/react-icons';
 import { UNREAD_ORANGE } from '@tm/shared/accent';
 import {
-  MERGE_BLOCKER_LABEL,
+  mergeBlockerLabel,
   mergeBlockers,
   mrIsSettled,
   mrAttentionReason,
   mrLabel,
   mrNeedsAttention,
   mrReadyToMerge,
+  mrRef,
   mrVerdict,
   verdictSummary,
   type MergeBlocker,
@@ -176,7 +177,7 @@ export function MergeRequests({
           >
             <div className={styles.titleRow}>
               <a className={styles.link} href={mr.webUrl} target="_blank" rel="noreferrer">
-                !{mr.iid}
+                {mrRef(mr)}
               </a>
               {renaming === mr.id ? (
                 <Input
@@ -275,7 +276,7 @@ export function MergeRequests({
                   size="small"
                   style={{ color: FLUO.red, borderColor: FLUO.red }}
                 >
-                  {MERGE_BLOCKER_LABEL[blocker]}
+                  {mergeBlockerLabel(blocker, mr.provider)}
                 </Badge>
               ))}
               <Caption1 className={styles.muted}>

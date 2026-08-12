@@ -1117,7 +1117,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       store.markMergeRequestEventsSeen(mr.id, now);
       touchedMrs = true;
     }
-    if (touchedMrs) send('gitlab:mergeRequestsChanged', store.listMergeRequests());
+    if (touchedMrs) send('mergeRequests:changed', store.listMergeRequests());
 
     // The same rule as `jira:markRead`: the newest comment we know of becomes the one you
     // have read. `now` only as a fallback, so a card with no comment at all is still quiet.
@@ -1654,9 +1654,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     const listedIds = new Set(list.map((mr) => mergeRequestId(mr.project_id, mr.iid)));
     for (const prior of stored) {
       if (listedIds.has(prior.id) || mrIsSettled(prior)) continue;
-      const fetched = await client
-        .getMergeRequest(prior.gitlabProjectId, prior.iid)
-        .catch(() => null);
+      const fetched = await client.getMergeRequest(prior.repoId, prior.number).catch(() => null);
       // Unreadable or gone: leave it out, and the reconciler deletes it as it always did.
       if (fetched)
         detailed.push(await describeMergeRequest(client, fetched, { stale: false, prior }));
@@ -1676,7 +1674,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // is handed to the engine before the board is told anything (see `Task.landedAt`).
     for (const taskId of landedTaskIds(upserts)) scheduler.noteWorkLanded(taskId);
     const all = store.listMergeRequests();
-    send('gitlab:mergeRequestsChanged', all);
+    send('mergeRequests:changed', all);
     return all;
   };
 
@@ -1696,29 +1694,29 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     const changed = rematchMergeRequests(stored, boardKeyIndex());
     if (!changed.length) return;
     for (const mr of changed) store.upsertMergeRequest(mr);
-    send('gitlab:mergeRequestsChanged', store.listMergeRequests());
+    send('mergeRequests:changed', store.listMergeRequests());
   }
 
-  handle('gitlab:mergeRequests', async () => store.listMergeRequests());
+  handle('mr:mergeRequests', async () => store.listMergeRequests());
 
-  handle('gitlab:setMergeRequestName', async (mrId, name) => {
+  handle('mr:setMergeRequestName', async (mrId, name) => {
     store.setMergeRequestName(mrId, name);
     const all = store.listMergeRequests();
-    send('gitlab:mergeRequestsChanged', all);
+    send('mergeRequests:changed', all);
     return all;
   });
 
-  handle('gitlab:markRead', async (mrId) => {
+  handle('mr:markRead', async (mrId) => {
     store.markMergeRequestRead(mrId, Date.now());
     const all = store.listMergeRequests();
-    send('gitlab:mergeRequestsChanged', all);
+    send('mergeRequests:changed', all);
     return all;
   });
 
-  handle('gitlab:markEventsSeen', async (mrId) => {
+  handle('mr:markEventsSeen', async (mrId) => {
     store.markMergeRequestEventsSeen(mrId, Date.now());
     const all = store.listMergeRequests();
-    send('gitlab:mergeRequestsChanged', all);
+    send('mergeRequests:changed', all);
     return all;
   });
   // -------------------------------------------------------------------------

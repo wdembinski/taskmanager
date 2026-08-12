@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
   approvalSummary,
+  detailedMergeBlocker,
+  mergeBlockerLabel,
   mergeBlockers,
   mrApprovalState,
   mrAttentionReason,
   mrIsSettled,
   mrNeedsAttention,
   mrReadyToMerge,
+  mrRef,
   mrVerdict,
   verdictSummary,
   type MergeRequest,
@@ -16,9 +19,9 @@ const mr = (over: Partial<MergeRequest> = {}): MergeRequest => ({
   id: 'gl-9-1',
   taskId: 't1',
   provider: 'gitlab',
-  gitlabProjectId: 9,
+  repoId: 9,
   projectPath: 'acme/web',
-  iid: 1,
+  number: 1,
   title: 'ENG-1 fix the thing',
   displayName: null,
   webUrl: 'https://gitlab.com/acme/web/-/merge_requests/1',
@@ -377,5 +380,65 @@ describe('mergeBlockers', () => {
     // verdict slot would be the same fact told twice.
     expect(mrVerdict(clear({ pipelineStatus: 'failed' }))).toBe('approved');
     expect(mrVerdict(clear({ draft: true }))).toBe('approved');
+  });
+});
+
+/**
+ * The two places a merge request stops being provider-agnostic — everything above this
+ * point asks the same questions of a pull request as of a merge request.
+ */
+describe('two forges, one merge request', () => {
+  /** The same MR, as GitHub would have filed it. */
+  const pr = (over: Partial<MergeRequest> = {}): MergeRequest =>
+    mr({ provider: 'github', id: 'gh-9-1', detailedMergeStatus: 'clean', ...over });
+
+  it('writes the number the way its own forge writes it', () => {
+    // `#12` for a GitLab MR is not a styling slip — over there it means an ISSUE.
+    expect(mrRef(mr({ number: 12 }))).toBe('!12');
+    expect(mrRef(pr({ number: 12 }))).toBe('#12');
+  });
+
+  it('names the forge that actually refused', () => {
+    expect(mergeBlockerLabel('other', 'gitlab')).toBe('blocked by GitLab');
+    expect(mergeBlockerLabel('other', 'github')).toBe('blocked by GitHub');
+    expect(mergeBlockerLabel('checking', 'github')).toBe('GitHub is still checking');
+    // The other eight are facts about the branch and read the same either way.
+    expect(mergeBlockerLabel('conflict', 'github')).toBe(mergeBlockerLabel('conflict', 'gitlab'));
+  });
+
+  it('carries that name all the way to the sentence on screen', () => {
+    const stuck = pr({ detailedMergeStatus: 'dirty', approvalsRequired: 1, approvalsGiven: 1 });
+    expect(verdictSummary(stuck)).toContain('merge conflicts');
+    expect(verdictSummary(pr({ detailedMergeStatus: 'security_advisory' }))).not.toContain(
+      'GitLab',
+    );
+  });
+
+  // GitHub's `mergeable_state` is a shorter, vaguer vocabulary than GitLab's, and none of
+  // its values collide with one — which is why both live in one switch.
+  it('reads GitHub mergeable_state as well as GitLab detailed_merge_status', () => {
+    expect(detailedMergeBlocker('clean')).toBeNull();
+    expect(detailedMergeBlocker('dirty')).toBe('conflict');
+    expect(detailedMergeBlocker('behind')).toBe('need-rebase');
+    expect(detailedMergeBlocker('unstable')).toBe('pipeline');
+    expect(detailedMergeBlocker('draft')).toBe('draft');
+    // `blocked` covers a missing review, a branch-protection rule and a required check
+    // that never ran — too many things to name one, so the raw string tells the human.
+    expect(detailedMergeBlocker('blocked')).toBe('other');
+    // Not an answer yet: the mergeability job hasn't finished. Same as GitLab's `checking`.
+    expect(detailedMergeBlocker('unknown')).toBe('checking');
+  });
+
+  it('still blocks by default on a status neither forge has taught us', () => {
+    expect(mergeBlockers(pr({ detailedMergeStatus: 'merge_queue_pending' }))).toContain('other');
+    expect(mrReadyToMerge(pr({ detailedMergeStatus: 'merge_queue_pending' }))).toBe(false);
+  });
+
+  it('is ready to merge on a clean, approved pull request', () => {
+    expect(mrReadyToMerge(pr({ approvalsRequired: 1, approvalsGiven: 1 }))).toBe(true);
+  });
+
+  it('puts the pull request reference in the attention tooltip', () => {
+    expect(mrAttentionReason(pr({ number: 7, latestNoteAt: 200 }))).toContain('#7');
   });
 });

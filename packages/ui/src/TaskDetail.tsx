@@ -829,9 +829,9 @@ export function TaskDetail({
             />
             <MergeRequests
               mergeRequests={mergeRequests}
-              onMarkRead={(id) => void transport.invoke('gitlab:markRead', id)}
-              onMarkEventsSeen={(id) => void transport.invoke('gitlab:markEventsSeen', id)}
-              onRename={(id, name) => void transport.invoke('gitlab:setMergeRequestName', id, name)}
+              onMarkRead={(id) => void transport.invoke('mr:markRead', id)}
+              onMarkEventsSeen={(id) => void transport.invoke('mr:markEventsSeen', id)}
+              onRename={(id, name) => void transport.invoke('mr:setMergeRequestName', id, name)}
             />
           </>
         )}

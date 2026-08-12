@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { discoverIssueKeys, pickTaskKey } from './mrMatch';
+import { discoverIssueKeys, pickTaskKey } from './issueKeys';
 
 const BOARD = ['ENG-431', 'ENG-9', 'OPS-12'];
 

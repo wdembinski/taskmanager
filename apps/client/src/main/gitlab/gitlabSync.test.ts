@@ -14,8 +14,8 @@ const ME = { id: 7, username: 'wd', baseUrl: 'https://gitlab.com' };
 const NOW = 1_000;
 
 const fetched = (over: Partial<FetchedMergeRequest> = {}): FetchedMergeRequest => ({
-  gitlabProjectId: 9,
-  iid: 1,
+  repoId: 9,
+  number: 1,
   projectPath: 'acme/web',
   title: 'ENG-1: fix login',
   description: null,
@@ -226,7 +226,7 @@ describe('reconcileMergeRequests', () => {
   });
 
   describe('a settled MR is the card’s history, not a row to delete', () => {
-    /** What the IPC layer hands back after reading a dropped-out MR by iid. */
+    /** What the IPC layer hands back after reading a dropped-out MR by number. */
     const settled = (state: 'merged' | 'closed'): MergeRequest =>
       reconcileMergeRequests([], [fetched({ state })], opts).upserts[0];
 
@@ -285,7 +285,7 @@ describe('reconcileMergeRequests', () => {
       it('names a card once however many of its MRs merged', () => {
         const two = reconcileMergeRequests(
           [],
-          [fetched({ iid: 1, state: 'merged' }), fetched({ iid: 2, state: 'merged' })],
+          [fetched({ number: 1, state: 'merged' }), fetched({ number: 2, state: 'merged' })],
           opts,
         ).upserts;
         expect(landedTaskIds(two)).toEqual(['task-1']);
@@ -301,7 +301,7 @@ describe('reconcileMergeRequests', () => {
   it('handles several MRs on one ticket', () => {
     const { upserts } = reconcileMergeRequests(
       [],
-      [fetched({ iid: 1 }), fetched({ iid: 2, sourceBranch: 'feature/ENG-1-part-2' })],
+      [fetched({ number: 1 }), fetched({ number: 2, sourceBranch: 'feature/ENG-1-part-2' })],
       opts,
     );
     expect(upserts.map((m) => m.taskId)).toEqual(['task-1', 'task-1']);

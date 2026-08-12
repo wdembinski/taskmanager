@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { foldStageStatus, stagesFromJobs } from './pipelineStages';
+// The FOLD — which of several job outcomes a stage takes — moved to `../forge/stageFold`
+// and is tested there. What is left here is GitLab's own half: reading a `/jobs` payload
+// into stages, in the order the pipeline runs them.
+import { stagesFromJobs } from './pipelineStages';
 import type { GitLabJob } from './gitlabClient';
 
 const job = (over: Partial<GitLabJob> = {}): GitLabJob => ({
@@ -9,52 +12,6 @@ const job = (over: Partial<GitLabJob> = {}): GitLabJob => ({
   status: 'success',
   allow_failure: false,
   ...over,
-});
-
-describe('foldStageStatus', () => {
-  it('is green when every job passed', () => {
-    expect(foldStageStatus([job(), job({ id: 2, name: 'j2' })])).toBe('success');
-  });
-
-  it('is red when a job failed', () => {
-    expect(foldStageStatus([job(), job({ id: 2, status: 'failed' })])).toBe('failed');
-  });
-
-  // A stage still working has not finished failing: calling it failed invites someone to
-  // look before there is anything conclusive to see.
-  it('reports running ahead of a failure in the same stage', () => {
-    expect(foldStageStatus([job({ status: 'failed' }), job({ id: 2, status: 'running' })])).toBe(
-      'running',
-    );
-  });
-
-  // GitLab does not fail the pipeline for an allow_failure job, so a red stage here would
-  // contradict the overall status sitting right beside it.
-  it('treats a failed allow_failure job as passing', () => {
-    expect(foldStageStatus([job({ status: 'failed', allow_failure: true })])).toBe('success');
-    expect(foldStageStatus([job({ status: 'failed', allow_failure: true }), job({ id: 2 })])).toBe(
-      'success',
-    );
-  });
-
-  it('is skipped only when the whole stage was', () => {
-    expect(foldStageStatus([job({ status: 'skipped' }), job({ id: 2, status: 'skipped' })])).toBe(
-      'skipped',
-    );
-    expect(foldStageStatus([job({ status: 'skipped' }), job({ id: 2, status: 'success' })])).toBe(
-      'success',
-    );
-  });
-
-  it('surfaces a manual gate once nothing is still moving', () => {
-    expect(foldStageStatus([job({ status: 'success' }), job({ id: 2, status: 'manual' })])).toBe(
-      'manual',
-    );
-  });
-
-  it('is unknown for no jobs at all', () => {
-    expect(foldStageStatus([])).toBe('unknown');
-  });
 });
 
 describe('stagesFromJobs', () => {
@@ -77,6 +34,20 @@ describe('stagesFromJobs', () => {
     expect(stagesFromJobs(jobs)).toEqual([
       { name: 'build', status: 'success' },
       { name: 'test', status: 'failed' },
+    ]);
+  });
+
+  // The adaptation into the neutral fold shape, end to end: GitLab spells the two fields
+  // `status` and `allow_failure`, and both have to arrive for a tolerated failure to read
+  // as green here rather than as a red stage beside a green pipeline.
+  it('carries status and allow_failure through to the neutral fold', () => {
+    const jobs = [
+      job({ id: 20, name: 'lint', stage: 'test', status: 'failed', allow_failure: true }),
+      job({ id: 10, name: 'compile', stage: 'build', status: 'canceled' }),
+    ];
+    expect(stagesFromJobs(jobs)).toEqual([
+      { name: 'build', status: 'canceled' },
+      { name: 'test', status: 'success' },
     ]);
   });
 

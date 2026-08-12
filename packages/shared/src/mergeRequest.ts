@@ -1,16 +1,26 @@
 /**
- * A GitLab merge request, as the board understands one.
+ * A merge request, as the board understands one — GitLab's MR and GitHub's pull request
+ * are the same object here, and deliberately so.
  *
  * The point of the integration: the MR for a ticket lives in a different tool from the
  * ticket, so "is this actually done?" needs two tabs. Putting the MR on the card that
  * carries its JIRA key answers it in one glance — and, more usefully, lets a red
  * pipeline or a review comment raise the SAME orange ring an unread ticket comment does.
  *
+ * Which forge it came from is a FIELD, not a second type: every predicate below — the
+ * ring, the blockers, the ordering — asks the same questions of a pull request as of a
+ * merge request, so a second shape would be a second copy of all of it. Only two things
+ * genuinely differ, and both are answered here: how the number is written ({@link mrRef})
+ * and which forge's name to say out loud ({@link mergeBlockerLabel}).
+ *
  * Pure types and predicates, shared by the engine and the UI so the ring and the card
  * ordering cannot disagree about what "wants you" means.
  */
 
-/** The upstream state of an MR, as GitLab reports it. */
+/** Which forge a merge request came from. */
+export type ForgeProvider = 'gitlab' | 'github';
+
+/** The upstream state of an MR, as the forge reports it. */
 export type MergeRequestState = 'opened' | 'merged' | 'closed' | 'locked';
 
 /** A CI pipeline's outcome. `unknown` when the MR carries no pipeline we could read. */
@@ -38,24 +48,25 @@ export interface PipelineStage {
 }
 
 export interface MergeRequest {
-  /** `gl-{projectId}-{iid}` — stable across syncs and unique per instance. */
+  /** `gl-{repoId}-{number}` — stable across syncs and unique per instance. */
   id: string;
   /** The board task this MR was matched to, or null while nothing claims it. */
   taskId: string | null;
-  provider: 'gitlab';
-  gitlabProjectId: number;
-  /** `group/subgroup/repo`, for display. */
+  provider: ForgeProvider;
+  /** The forge's own id for the repository this MR is on. */
+  repoId: number;
+  /** `group/subgroup/repo` or `owner/repo`, for display. */
   projectPath: string;
-  /** The per-project MR number — what `!123` means to a human. */
-  iid: number;
+  /** The per-repo MR number — what `!123` or `#123` means to a human. See {@link mrRef}. */
+  number: number;
   title: string;
   /**
    * A name for this MR **in this app only**, or null to use the upstream `title`.
    *
-   * Yours, not GitLab's: nothing is ever written back, and the next sync must not touch it —
-   * so it is carried across syncs the way the read markers are, as the one kind of field
-   * GitLab knows nothing about. An MR titled "Draft: WIP fix for the thing (attempt 3)" is a
-   * poor row label, and renaming it upstream is somebody else's call.
+   * Yours, not the forge's: nothing is ever written back, and the next sync must not touch
+   * it — so it is carried across syncs the way the read markers are, as the one kind of
+   * field the forge knows nothing about. An MR titled "Draft: WIP fix for the thing
+   * (attempt 3)" is a poor row label, and renaming it upstream is somebody else's call.
    */
   displayName: string | null;
   webUrl: string;
@@ -85,22 +96,23 @@ export interface MergeRequest {
    */
   changesRequested: boolean;
   /**
-   * **GitLab's own answer to "can this merge"** — `detailed_merge_status`, raw and
-   * unnormalized, or null when we could not read it (an instance older than 15.6, or a
-   * sync that only saw the list endpoint, which does not carry it).
+   * **The forge's own answer to "can this merge"** — GitLab's `detailed_merge_status` or
+   * GitHub's `mergeable_state`, raw and unnormalized, or null when we could not read it (a
+   * GitLab instance older than 15.6, or a sync that only saw the list endpoint, which does
+   * not carry it on either forge).
    *
    * This is the field whose absence made the board lie. Everything else here describes the
    * merge request's *inputs* — is CI green, has anyone approved — and the app inferred
-   * "ready to merge" from those. But GitLab refuses a merge for reasons no input mentions:
+   * "ready to merge" from those. But a forge refuses a merge for reasons no input mentions:
    * the branch has diverged and needs a rebase, fast-forward is impossible, another MR is
    * blocking it. An MR sitting behind three of those was showing as green and approved.
    *
-   * Kept raw rather than parsed into an enum on the way in, so an instance that invents a
-   * status we have never heard of degrades to "blocked, and here is what GitLab called it"
+   * Kept raw rather than parsed into an enum on the way in, so a forge that invents a
+   * status we have never heard of degrades to "blocked, and here is what it called it"
    * instead of being silently read as mergeable. See {@link mergeBlockers}.
    */
   detailedMergeStatus: string | null;
-  /** Whether the source branch conflicts with its target, as GitLab reports it. */
+  /** Whether the source branch conflicts with its target, as the forge reports it. */
   hasConflicts: boolean;
   /** Every JIRA key found in the branch, title or description. */
   issueKeys: string[];
@@ -123,6 +135,25 @@ export interface MergeRequest {
 const BAD_PIPELINES: ReadonlySet<PipelineStatus> = new Set(['failed', 'canceled']);
 
 /**
+ * How this merge request is written when a human refers to it: `!12` on GitLab, `#12` on
+ * GitHub.
+ *
+ * A single character, and worth a function anyway: it is the notation each forge's own UI,
+ * commit messages and review comments use, so `#12` for a GitLab MR is not a small styling
+ * slip — it is the spelling that means an ISSUE over there. Every surface that shows a
+ * number goes through here so the card row, its tooltip and the attention reason cannot
+ * disagree.
+ */
+export function mrRef(mr: Pick<MergeRequest, 'provider' | 'number'>): string {
+  return `${mr.provider === 'github' ? '#' : '!'}${mr.number}`;
+}
+
+/** The forge's name, for the two sentences that have to say who refused. */
+function forgeName(provider: ForgeProvider): string {
+  return provider === 'github' ? 'GitHub' : 'GitLab';
+}
+
+/**
  * Just the fields readiness depends on, so the sync can ask about a freshly fetched MR —
  * which has no id, markers or issue keys yet — without assembling a whole `MergeRequest`
  * to answer a question about six fields.
@@ -143,10 +174,10 @@ export type MergeReadiness = Pick<
  * Why this merge request cannot be merged right now — one reason per thing a human would
  * have to go and fix.
  *
- * `other` is deliberate and load-bearing: GitLab keeps adding statuses (security policies,
- * external status checks, title regexes), and an unknown one must read as **blocked** with
- * the raw string shown, never as mergeable. Guessing in the optimistic direction is exactly
- * how an MR with conflicts came to wear a green tick.
+ * `other` is deliberate and load-bearing: both forges keep adding statuses (security
+ * policies, external status checks, title regexes), and an unknown one must read as
+ * **blocked** with the raw string shown, never as mergeable. Guessing in the optimistic
+ * direction is exactly how an MR with conflicts came to wear a green tick.
  */
 export type MergeBlocker =
   | 'draft'
@@ -160,30 +191,57 @@ export type MergeBlocker =
   | 'checking'
   | 'other';
 
-/** How each blocker reads on screen — a phrase that completes "can't merge: …". */
-export const MERGE_BLOCKER_LABEL: Record<MergeBlocker, string> = {
-  draft: 'still a draft',
-  conflict: 'merge conflicts',
-  'need-rebase': 'needs a rebase',
-  discussions: 'unresolved threads',
-  'changes-requested': 'changes requested',
-  approvals: 'not approved',
-  pipeline: 'pipeline not green',
-  'blocked-by-another': 'blocked by another merge request',
-  checking: 'GitLab is still checking',
-  other: 'blocked by GitLab',
-};
+/**
+ * How each blocker reads on screen — a phrase that completes "can't merge: …".
+ *
+ * A function of the provider rather than a constant table, because two of these name the
+ * forge out loud, and they are exactly the two that describe something the forge *itself*
+ * did: it refused for a reason we don't have a word for, or it hasn't finished deciding.
+ * "Blocked by GitLab" over a GitHub pull request names the wrong wall — the human goes
+ * looking in a tool that has never heard of this branch. The other eight are facts about
+ * the branch and read the same either way.
+ */
+export function mergeBlockerLabel(blocker: MergeBlocker, provider: ForgeProvider): string {
+  switch (blocker) {
+    case 'draft':
+      return 'still a draft';
+    case 'conflict':
+      return 'merge conflicts';
+    case 'need-rebase':
+      return 'needs a rebase';
+    case 'discussions':
+      return 'unresolved threads';
+    case 'changes-requested':
+      return 'changes requested';
+    case 'approvals':
+      return 'not approved';
+    case 'pipeline':
+      return 'pipeline not green';
+    case 'blocked-by-another':
+      return 'blocked by another merge request';
+    case 'checking':
+      return `${forgeName(provider)} is still checking`;
+    case 'other':
+      return `blocked by ${forgeName(provider)}`;
+  }
+}
 
 /**
- * Normalize one `detailed_merge_status` string, or null when GitLab says it can merge.
+ * Normalize one merge-status string, or null when the forge says it can merge.
  *
- * `mergeable` is the ONLY value that means yes. Everything else — including a value this
- * table has never seen — is a blocker, which is the whole point: the failure mode worth
- * engineering against is claiming an MR is ready when it isn't.
+ * Both vocabularies live in one switch: GitLab's `detailed_merge_status` and GitHub's
+ * `mergeable_state`. They do not collide — no string means one thing on one forge and
+ * something else on the other — so the provider does not have to be threaded through, and
+ * `mergeBlockers` stays a function of the MR's fields alone.
+ *
+ * `mergeable`/`clean` are the ONLY values that mean yes. Everything else — including a
+ * value this table has never seen — is a blocker, which is the whole point: the failure
+ * mode worth engineering against is claiming an MR is ready when it isn't.
  */
 export function detailedMergeBlocker(raw: string | null | undefined): MergeBlocker | null {
   if (!raw) return null; // not read at all — the caller falls back to what it does know
   switch (raw) {
+    // --- GitLab: `detailed_merge_status` -----------------------------------
     case 'mergeable':
       return null;
     case 'draft_status':
@@ -212,6 +270,28 @@ export function detailedMergeBlocker(raw: string | null | undefined): MergeBlock
       return 'checking';
     case 'not_open':
       return null; // a closed/merged MR is handled by `state`, not by this
+
+    // --- GitHub: `mergeable_state` -----------------------------------------
+    // A much shorter vocabulary, and vaguer where it overlaps: `blocked` covers a missing
+    // review, an unsatisfied branch-protection rule and a required check that has not run,
+    // so it maps to `other` — the raw string is what tells the human which. `unknown` is
+    // GitHub's "the mergeability job hasn't finished", i.e. the same not-an-answer as
+    // GitLab's `checking`.
+    case 'clean':
+      return null;
+    case 'dirty':
+      return 'conflict';
+    case 'behind':
+      return 'need-rebase';
+    case 'blocked':
+      return 'other';
+    case 'unstable':
+      return 'pipeline';
+    case 'draft':
+      return 'draft';
+    case 'unknown':
+      return 'checking';
+
     default:
       return 'other';
   }
@@ -222,14 +302,14 @@ export function detailedMergeBlocker(raw: string | null | undefined): MergeBlock
  *
  * Two sources, deliberately combined rather than one trusted over the other:
  *
- *  - **GitLab's own verdict** (`detailedMergeStatus`), which is the only thing that knows
+ *  - **The forge's own verdict** (`detailedMergeStatus`), which is the only thing that knows
  *    about conflicts, rebases and cross-MR blocks. When it is absent — an older instance, or
  *    a sync that never fetched the detail — `hasConflicts` and `draft` still stand in for
  *    the two most common cases.
- *  - **Our own two conditions**, a red pipeline and a missing approval, which GitLab only
- *    enforces when the *project* is configured to require them. A project with no such rule
- *    reports `mergeable` over a failed pipeline, and "nothing left to do but merge it" is
- *    plainly untrue there.
+ *  - **Our own two conditions**, a red pipeline and a missing approval, which a forge only
+ *    enforces when the *repository* is configured to require them. A repo with no such rule
+ *    reports `mergeable`/`clean` over a failed pipeline, and "nothing left to do but merge
+ *    it" is plainly untrue there.
  *
  * Empty means empty: a merge request with no blockers is one you can go and land.
  * Non-`opened` returns empty too — a merged MR is not "blocked", it is finished.
@@ -273,10 +353,10 @@ export function mergeBlockers(mr: MergeReadiness): MergeBlocker[] {
  * comments tell you to go and work; this tells you to go and finish.
  *
  * It used to be a hand-written conjunction over the MR's inputs — open, not a draft, green,
- * approved — and that list was missing everything only GitLab knows: conflicts, a branch
+ * approved — and that list was missing everything only the forge knows: conflicts, a branch
  * that needs rebasing, a block by another MR. An MR failing all three of those satisfied
  * every clause here and was announced as ready. Asking `mergeBlockers` instead means the
- * question is answered in one place and a newly invented GitLab status blocks by default.
+ * question is answered in one place and a newly invented forge status blocks by default.
  */
 export function mrReadyToMerge(mr: MergeReadiness): boolean {
   return mr.state === 'opened' && mergeBlockers(mr).length === 0;
@@ -315,7 +395,7 @@ export function mrApprovalState(mr: ApprovalFacts): MrApprovalState {
 /**
  * Whether an MR's life is **over** — it landed, or somebody closed it unmerged.
  *
- * The board only ever fetches `state=opened`, so a settled MR is one GitLab has stopped
+ * The board only ever fetches the open ones, so a settled MR is one the forge has stopped
  * listing. That absence used to delete it, which is why merging an MR made it vanish off
  * the card that had been tracking it all week. A settled MR is that card's history and it
  * stays; see `gitlab/gitlabSync.ts` for the retention rule.
@@ -390,7 +470,7 @@ export function mrAttentionReason(mr: MergeRequest): string | null {
   }
   if (unseenEvent && mr.changesRequested) reasons.push('changes were requested');
   if (unseenEvent && mrReadyToMerge(mr)) reasons.push('approved and green — ready to merge');
-  return reasons.length ? `!${mr.iid}: ${reasons.join(', ')}` : null;
+  return reasons.length ? `${mrRef(mr)}: ${reasons.join(', ')}` : null;
 }
 
 /**
@@ -420,10 +500,10 @@ export function verdictSummary(mr: MergeRequest): string {
     case 'changes-requested':
       return 'changes requested';
     case 'blocked':
-      // Every reason, not just the first: GitLab's own UI lists them together, and being
+      // Every reason, not just the first: the forge's own UI lists them together, and being
       // told about the conflict only to hit the rebase next is two trips for one problem.
       return `can't merge — ${mergeBlockers(mr)
-        .map((b) => MERGE_BLOCKER_LABEL[b])
+        .map((b) => mergeBlockerLabel(b, mr.provider))
         .join(', ')}`;
     default:
       return approvalSummary(mr);

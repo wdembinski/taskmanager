@@ -514,9 +514,9 @@ export interface Store {
   /** Persist the JIRA token (opaque, already encrypted by the caller). */
   /** Every stored merge request, newest activity first. */
   listMergeRequests(): MergeRequest[];
-  /** Insert or update one merge request (by its stable `gl-{project}-{iid}` id). */
+  /** Insert or update one merge request (by its stable `gl-{repoId}-{number}` id). */
   upsertMergeRequest(mr: MergeRequest): void;
-  /** Drop merge requests GitLab no longer lists. */
+  /** Drop merge requests the forge no longer lists. */
   deleteMergeRequests(ids: readonly string[]): void;
 
   // --- The chain of execution (see `@shared/taskChain`). ---
@@ -1011,14 +1011,14 @@ export function createStore(dbPath: string): Store {
     -- mean that opening an MR after a failed pipeline also silenced a comment landing a
     -- second later — the same pairing the JIRA side uses.
     CREATE TABLE IF NOT EXISTS merge_requests (
-      id                TEXT PRIMARY KEY,   -- gl-{projectId}-{iid}
+      id                TEXT PRIMARY KEY,   -- gl-{repoId}-{number}
       taskId            TEXT,               -- NULL = no board card claims it
-      provider          TEXT NOT NULL,
-      gitlabProjectId   INTEGER NOT NULL,
+      provider          TEXT NOT NULL,      -- 'gitlab' | 'github'; one table holds both
+      repoId            INTEGER NOT NULL,   -- the forge's own id for the repository
       projectPath       TEXT NOT NULL,
-      iid               INTEGER NOT NULL,
+      "number"          INTEGER NOT NULL,   -- !12 on GitLab, #12 on GitHub
       title             TEXT NOT NULL,
-      displayName       TEXT,               -- yours, never GitLab's; NULL = use the title
+      displayName       TEXT,               -- yours, never the forge's; NULL = use the title
       webUrl            TEXT NOT NULL,
       sourceBranch      TEXT NOT NULL,
       targetBranch      TEXT NOT NULL,
@@ -1379,6 +1379,18 @@ export function createStore(dbPath: string): Store {
   }
   if (!mrColumns.some((c) => c.name === 'hasConflicts')) {
     db.exec(`ALTER TABLE merge_requests ADD COLUMN hasConflicts INTEGER NOT NULL DEFAULT 0`);
+  }
+
+  // Migrate databases created while merge requests were GitLab's alone. A pure RENAME:
+  // every existing row is a GitLab MR and stays exactly what it was — only the two columns
+  // whose names said "GitLab" now say what they hold for either forge. Guarded on the OLD
+  // name rather than the new one so a fresh database (whose DDL above already has them)
+  // skips it, and so a half-applied pair still finishes.
+  if (mrColumns.some((c) => c.name === 'gitlabProjectId')) {
+    db.exec(`ALTER TABLE merge_requests RENAME COLUMN gitlabProjectId TO repoId`);
+  }
+  if (mrColumns.some((c) => c.name === 'iid')) {
+    db.exec(`ALTER TABLE merge_requests RENAME COLUMN iid TO "number"`);
   }
 
   // Migrate databases created before Phase 8 added the task source column. Existing
@@ -1931,9 +1943,9 @@ export function createStore(dbPath: string): Store {
     id: string;
     taskId: string | null;
     provider: string;
-    gitlabProjectId: number;
+    repoId: number;
     projectPath: string;
-    iid: number;
+    number: number;
     title: string;
     displayName: string | null;
     webUrl: string;
@@ -1948,7 +1960,7 @@ export function createStore(dbPath: string): Store {
     approvalsRequired: number | null;
     approvalsGiven: number;
     changesRequested: number;
-    /** GitLab's `detailed_merge_status`, raw; NULL on rows written before we asked. */
+    /** The forge's own merge verdict, raw; NULL on rows written before we asked. */
     detailedMergeStatus: string | null;
     hasConflicts: number;
     issueKeys: string;
@@ -1985,10 +1997,13 @@ export function createStore(dbPath: string): Store {
     return {
       id: r.id,
       taskId: r.taskId,
-      provider: 'gitlab',
-      gitlabProjectId: r.gitlabProjectId,
+      // Rows written before GitHub existed here have `provider: 'gitlab'` stored, so the
+      // column is trusted rather than hardcoded — anything unrecognised reads as GitLab,
+      // which is what every such row actually is.
+      provider: r.provider === 'github' ? 'github' : 'gitlab',
+      repoId: r.repoId,
       projectPath: r.projectPath,
-      iid: r.iid,
+      number: r.number,
       title: r.title,
       displayName: r.displayName,
       webUrl: r.webUrl,
@@ -2018,14 +2033,14 @@ export function createStore(dbPath: string): Store {
   const selectMergeRequest = db.prepare(`SELECT * FROM merge_requests WHERE id = ?`);
   const upsertMergeRequestStmt = db.prepare(
     `INSERT INTO merge_requests
-       (id, taskId, provider, gitlabProjectId, projectPath, iid, title, displayName, webUrl,
+       (id, taskId, provider, repoId, projectPath, "number", title, displayName, webUrl,
         sourceBranch, targetBranch, state, draft, pipelineStatus, pipelineStages,
         pipelineUrl,
         approvalsRequired, approvalsGiven, changesRequested,
         detailedMergeStatus, hasConflicts, issueKeys,
         latestNoteAt, lastReadAt, lastEventAt, lastEventSeenAt, updatedAt, syncedAt)
      VALUES
-       (@id, @taskId, @provider, @gitlabProjectId, @projectPath, @iid, @title, @displayName,
+       (@id, @taskId, @provider, @repoId, @projectPath, @number, @title, @displayName,
         @webUrl,
         @sourceBranch, @targetBranch, @state, @draft, @pipelineStatus, @pipelineStages,
         @pipelineUrl,

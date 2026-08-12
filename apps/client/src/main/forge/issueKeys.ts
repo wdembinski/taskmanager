@@ -1,7 +1,8 @@
 /**
- * Working out which ticket a merge request belongs to.
+ * Working out which ticket a merge request belongs to — neither forge's, because neither
+ * forge is involved in the answer.
  *
- * GitLab has no idea about JIRA, so the link is whatever the human typed: a branch named
+ * A forge has no idea about JIRA, so the link is whatever the human typed: a branch named
  * `feature/ENG-431`, a title starting `ENG-431:`, a description mentioning it. Scanning
  * for "something that looks like a key" alone is far too eager — `UTF-8`, `ISO-8601`,
  * `RFC-2119` and `IE-11` all match the shape — so every candidate is intersected with
@@ -67,7 +68,7 @@ export function discoverIssueKeys(mr: MergeRequestText, knownKeys: readonly stri
  * The first, which by the ordering above means the branch's key beats the title's. An MR
  * naming two tickets is filed under the one whose branch it is on — that is the ticket
  * being worked; the others are references. Every key is still stored, so a later change
- * to the board can re-match without re-reading GitLab.
+ * to the board can re-match without re-reading the forge.
  */
 export function pickTaskKey(keys: readonly string[]): string | null {
   return keys[0] ?? null;

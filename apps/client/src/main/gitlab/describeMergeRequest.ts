@@ -153,8 +153,10 @@ export async function describeMergeRequest(
     : null;
 
   return {
-    gitlabProjectId: projectId,
-    iid,
+    // GitLab's `project_id` and `iid` are this MR's `repoId` and `number` — the neutral
+    // names the board stores them under, since GitHub answers the same two facts.
+    repoId: projectId,
+    number: iid,
     projectPath: projectPathOf(detail) || projectPathOf(listed),
     title: detail.title ?? listed.title ?? '',
     description: detail.description ?? null,
