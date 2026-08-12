@@ -155,6 +155,8 @@ interface TaskRow {
   chainLandedAt: number | null;
   /** Epoch ms an agent last started on this card or a step of it. See `Task.workedAt`. */
   workedAt: number | null;
+  /** Epoch ms the human stopped this card's work; NULL once anything starts. See `Task.stoppedAt`. */
+  stoppedAt: number | null;
   // Native tickets (Phase 24). NULL on everything that is not one.
   /** The ticket's permanent name, `'TM-123'`. Partial-unique over the non-NULL rows. */
   ticketKey: string | null;
@@ -291,6 +293,7 @@ export interface Store {
         | 'landedAt'
         | 'chainLandedAt'
         | 'workedAt'
+        | 'stoppedAt'
         | 'autoRelease'
         | 'autoIntegrate'
         // Native tickets. `ticketKey`/`ticketNumber` are deliberately NOT patchable — a key
@@ -840,6 +843,7 @@ export function createStore(dbPath: string): Store {
       landedAt               INTEGER,
       chainLandedAt          INTEGER,
       workedAt               INTEGER,
+      stoppedAt              INTEGER,
       autoRelease            INTEGER,
       autoIntegrate          INTEGER,
       -- Native tickets (Phase 24). epicTaskId / milestoneId / assigneeId / reporterId are
@@ -1368,6 +1372,11 @@ export function createStore(dbPath: string): Store {
     // row, and backfilled immediately below — a NULL here would hide the Merge button on
     // every card that had already run, which is the exact bug this column exists to fix.
     ['workedAt', 'INTEGER'],
+    // When the human stopped this card's work. NULL on every pre-existing row and
+    // deliberately NOT backfilled — unlike `workedAt` above, where NULL was a lie about
+    // cards that had plainly run, NULL here is exactly true: nothing was stopped mid-upgrade,
+    // and a guess would offer Resume on cards nobody ever stopped.
+    ['stoppedAt', 'INTEGER'],
     // The card's auto-release override. NULL on every pre-existing row = "nobody has ruled
     // on this card", which follows the project's (also new, also off) preference — so no
     // upgraded install starts releasing anything by itself.
@@ -1621,7 +1630,7 @@ export function createStore(dbPath: string): Store {
         externalDescription,
         preBlockStatus, preRunStatus, retainedSince, archivedAt, archivedReason, lastReadCommentAt, latestCommentAt,
         projectTagId, agentProjectId, agentMode, agentModel,
-        agentPlan, agentBranch, planRound, landedAt, chainLandedAt, workedAt, autoRelease, autoIntegrate,
+        agentPlan, agentBranch, planRound, landedAt, chainLandedAt, workedAt, stoppedAt, autoRelease, autoIntegrate,
         ticketKey, ticketNumber, issueType, epicTaskId, milestoneId, labels,
         storyPoints, estimateDays, startAt, dueAt, assigneeId, reporterId)
      VALUES
@@ -1635,7 +1644,7 @@ export function createStore(dbPath: string): Store {
         -- an UPDATE, so a card created already filed (the Add-task dialog's Project
         -- picker) used to lose its project between the form and the row.
         @projectTagId, @agentProjectId, @agentMode, @agentModel,
-        @agentPlan, @agentBranch, @planRound, @landedAt, @chainLandedAt, @workedAt, @autoRelease, @autoIntegrate,
+        @agentPlan, @agentBranch, @planRound, @landedAt, @chainLandedAt, @workedAt, @stoppedAt, @autoRelease, @autoIntegrate,
         -- The twelve ticket columns are listed HERE as well as in the column list above,
         -- and that is the whole discipline: a column added to the table, the row type and
         -- the writer but not to this statement is silently dropped at creation. That is
@@ -2432,6 +2441,7 @@ export function createStore(dbPath: string): Store {
       landedAt: task.landedAt ?? null,
       chainLandedAt: task.chainLandedAt ?? null,
       workedAt: task.workedAt ?? null,
+      stoppedAt: task.stoppedAt ?? null,
       // Three states in one column: 1 = release, 0 = don't, NULL = follow the project.
       autoRelease:
         task.autoRelease === null || task.autoRelease === undefined
@@ -2515,6 +2525,7 @@ export function createStore(dbPath: string): Store {
       landedAt: r.landedAt ?? null,
       chainLandedAt: r.chainLandedAt ?? null,
       workedAt: r.workedAt ?? null,
+      stoppedAt: r.stoppedAt ?? null,
       // NULL stays null — it is a real third state ("this card has not ruled"), not a
       // missing false, and collapsing it here would pin every card to whatever the
       // project's preference was the first time it was read.
@@ -2979,6 +2990,7 @@ export function createStore(dbPath: string): Store {
         'landedAt',
         'chainLandedAt',
         'workedAt',
+        'stoppedAt',
         // Native tickets. `ticketKey`/`ticketNumber` are deliberately absent, for the same
         // kind of reason `parentTaskId` is: a key is a permanent name, and the only thing
         // allowed to rewrite one is a prefix rename, which re-keys the whole project at

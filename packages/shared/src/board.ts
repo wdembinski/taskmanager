@@ -576,6 +576,43 @@ export function canStopWork(
 }
 
 /**
+ * Whether **Resume** would actually resume something — the mirror of {@link canStopWork},
+ * and written as one deliberately: the two are asked side by side, of the same task and the
+ * same steps, and every place that offers one offers the other.
+ *
+ * Mutually exclusive with it, which is the first thing this checks. A card that answered
+ * `true` to both would claim, in one row of buttons, that it is running and that it is
+ * stopped — and pressing Resume on work that is already moving is how a card ends up with
+ * two sessions on one branch. Whenever Stop is on offer, this is `false`, whatever the
+ * columns below say: a stop that has been superseded by a fresh start is history.
+ *
+ * Otherwise it takes three answers, because a stop leaves its mark in more than one place:
+ *
+ *  - **`task.stoppedAt`** — the durable one, and the only one that survives on a board card.
+ *    `guardCardStatus` hands the borrowed `status` back to the column the human left the card
+ *    in, so a stopped ticket says `todo` and nothing else remembers the stop.
+ *  - **`task.status === 'stopped'`** — a plan project's task and a step of a chain really do
+ *    land there and stay: that guard only protects board cards, and off the board `stopped`
+ *    IS the resting state.
+ *  - **a `stopped` STEP** — the shape the Stop button produces on a card executing a plan.
+ *    The card itself is only `in-progress`; the step held the run, so the step wears the stop.
+ *
+ * `subtasks` must be the task's OWN steps, for the same reason {@link canStopWork} says so:
+ * a step's `subtasks` are its SIBLINGS, and a Resume drawn from those would offer to restart
+ * whichever sibling was stopped last rather than this one.
+ */
+export function canResumeWork(
+  task: Task,
+  subtasks: Task[] = [],
+  liveRunTaskIds?: ReadonlySet<string>,
+): boolean {
+  if (canStopWork(task, subtasks, liveRunTaskIds)) return false;
+  if (task.stoppedAt != null) return true;
+  if (task.status === 'stopped') return true;
+  return subtasks.some((s) => s.status === 'stopped');
+}
+
+/**
  * What a **card** should say about its run, in words — or nothing, when something else on the
  * card already says it.
  *

@@ -18,6 +18,7 @@ import {
   needsAgentInput,
   cardRunLabel,
   canStopWork,
+  canResumeWork,
   hasAgentWorked,
   runPhase,
   type RunState,
@@ -648,6 +649,66 @@ describe('canStopWork', () => {
   it('never reads a settled task out of the live-run snapshot', () => {
     expect(canStopWork(card({ status: 'done' }), [], new Set(['c1']))).toBe(false);
     expect(canStopWork(card(), [step('s1', 'done')], new Set(['s1']))).toBe(false);
+  });
+});
+
+describe('canResumeWork', () => {
+  const card = (over: Partial<Task> = {}): Task =>
+    task({ id: 'c1', agentProjectId: 'a1', status: 'in-progress', ...over });
+  const step = (id: string, status: Task['status']): Task =>
+    task({ id, status, parentTaskId: 'c1' });
+
+  it('is false for a card nobody has stopped', () => {
+    expect(canResumeWork(task({ status: 'pending' }))).toBe(false);
+    expect(canResumeWork(card(), [step('s1', 'done')])).toBe(false);
+  });
+
+  // The board case, and the reason the column exists: `guardCardStatus` hands the borrowed
+  // status back to the column the human left the card in, so a stopped ticket rests in TO DO
+  // and `stoppedAt` is the only thing that still remembers the stop.
+  it('is true for a stopped card, whatever column it rests in', () => {
+    expect(canResumeWork(card({ status: 'pending', stoppedAt: 1_700 }))).toBe(true);
+    expect(canResumeWork(card({ status: 'in-review', stoppedAt: 1_700 }))).toBe(true);
+  });
+
+  // The shape the Stop button leaves on a card executing a plan: the step held the run, so
+  // the step wears the stop while the card says only `in-progress`.
+  it('is true for a card whose STEP was stopped', () => {
+    expect(canResumeWork(card(), [step('s1', 'done'), step('s2', 'stopped')])).toBe(true);
+  });
+
+  // Off the board the guard does not fire, and `stopped` really is where the row rests.
+  it('is true for a plan project’s task left in `stopped`', () => {
+    expect(canResumeWork(task({ projectId: 'p1', source: 'plan', status: 'stopped' }))).toBe(true);
+  });
+
+  // Asked of the step ITSELF, never of its parent's list: a step's `subtasks` are its
+  // siblings, and a Resume drawn from those would restart whichever one was stopped.
+  it('judges a step on itself', () => {
+    expect(canResumeWork(step('s2', 'stopped'))).toBe(true);
+    expect(canResumeWork(step('s1', 'done'))).toBe(false);
+  });
+
+  it('is false while the work is running', () => {
+    expect(canResumeWork(card({ status: 'running' }))).toBe(false);
+    expect(canResumeWork(card(), [step('s1', 'running')])).toBe(false);
+  });
+
+  // The one invariant the two share: offering both is how a card ends up claiming it is
+  // running and stopped at once. Stop wins — a stop superseded by a fresh start is history.
+  it('is never true where canStopWork is', () => {
+    const restarted = card({ status: 'running', stoppedAt: 1_700 });
+    expect(canStopWork(restarted)).toBe(true);
+    expect(canResumeWork(restarted)).toBe(false);
+
+    const chain = [step('s1', 'stopped'), step('s2', 'running')];
+    expect(canStopWork(card(), chain)).toBe(true);
+    expect(canResumeWork(card(), chain)).toBe(false);
+
+    // Including the spawn window, where the live-run snapshot knows before the row does.
+    const spawning = card({ status: 'pending', stoppedAt: 1_700 });
+    expect(canStopWork(spawning, [], new Set(['c1']))).toBe(true);
+    expect(canResumeWork(spawning, [], new Set(['c1']))).toBe(false);
   });
 });
 

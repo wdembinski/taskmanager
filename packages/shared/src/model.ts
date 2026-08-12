@@ -505,6 +505,23 @@ export interface Task {
    * discards it.
    */
   workedAt?: number | null;
+  /**
+   * Epoch ms the human STOPPED this card's work — the Stop button, or the same call made
+   * on one of its steps. Null once anything starts again, and null on a card nobody has
+   * stopped.
+   *
+   * The durable half of a stop. Everything else a stop leaves behind is a status, and a
+   * status is exactly what does NOT survive it on a board card: `guardCardStatus` gives the
+   * borrowed field straight back to the column the human left the card in, so a stopped
+   * ticket resting in TO DO is indistinguishable — from `status` alone — from one that was
+   * never started. This column is what a **Resume** can be offered from; see `canResumeWork`
+   * in `@shared/board`.
+   *
+   * Cleared rather than accumulated, unlike {@link Task.workedAt}: it answers "is this card
+   * stopped RIGHT NOW", not "was it ever". A record of every stop belongs in the event trail,
+   * which already has one.
+   */
+  stoppedAt?: number | null;
   /** Ordering within the project (phase order, then position in the plan). */
   order: number;
   /**
