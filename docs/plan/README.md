@@ -4530,6 +4530,262 @@ merely larger.
 
 ---
 
+## Phase 26 — Support all interactions in the web
+
+Phase 25 gave the browser a board that looked exactly like the desktop's and could do almost
+nothing: drag a card between columns, add a card, and read. This phase is the rest of it.
+
+### The decision: relay a channel, not a command kind
+
+The v1 wire had three `CommandKind`s — `set-status`, `add-comment`, `create-task` — each
+mapped by hand in [`cloudCommands.ts`](../../apps/client/src/main/cloudCommands.ts) to the
+`Store` mutation the desktop's own IPC handler would have made. That was the right shape for
+three. `IpcApi` has about 115 channels, and the obvious next step — one kind per channel —
+would have been a second, hand-maintained copy of a contract that already exists, drifting
+from it one forgotten field at a time. Every one of those channels also already has a
+handler on the desktop that does the right thing, *including* the atomicity it chose, the
+JIRA write-back it performs and the events it pushes. A cloud-flavoured `task:move` would
+have been a second answer to a question with an answer.
+
+So the relay carries the CHANNEL. One new kind, `ipc-invoke`, with a payload of
+`{channel, args}`; the applying client looks the channel up in a registry that `ipc.ts`'s own
+`handle()` fills, and runs the real handler.
+
+The three v1 kinds stay. A queued row can outlive an upgrade, and `set-status` in particular
+earns its place: its effect is observed through the mirror, so it needs no result to travel
+back at all and the browser can resolve it the moment the command is queued.
+
+### The host-only list, and a reason each
+
+`ipc-invoke` is a remote-code-execution primitive pointed at your own desktop, so what may
+travel is decided by an **exhaustive** `Record<keyof IpcApi, RelayPolicy>` in
+[`packages/shared/src/ipcRelay.ts`](../../packages/shared/src/ipcRelay.ts). Exhaustiveness is
+the point: adding a channel to `IpcApi` fails `pnpm typecheck` until somebody classifies it.
+A `Set` of strings would have let a new channel default to relayable, and the first person to
+find out would be whoever's file dialog opened on a machine they were not sitting at.
+
+Twenty channels are host-only, in four groups:
+
+- **Native modals** — `project:pickDirectory`, `project:pickFile`, `attachment:pick`,
+  `jira:pickAttachments`. Each `await`s `dialog.showOpenDialog`. Relayed, one wedges cloud
+  sync (the drain is serial) until somebody dismisses a dialog they did not ask for, and the
+  paths it returns are paths on a machine the browser cannot use.
+- **Window / OS** — `window:*`, `update:install` (quits the app), `attachment:open`
+  (`shell.openPath`, on someone else's screen), `auth:signIn` (opens a terminal there) and
+  `iam:signIn` (the web runs its own PKCE flow; relaying it would sign the *desktop* in).
+- **Credential writes** — `jira:setCredentials|clearCredentials`,
+  `gitlab:setCredentials|clearCredentials`, `iam:signOut`. A secret typed into a browser
+  would cross as plaintext inside a command payload and land in the server's `commands`
+  table, which is an audit trail.
+- **Live sessions** — `session:start|stop|answer`. A run id is a handle into the desktop's
+  `SessionManager` and means nothing in a browser, which has no way to have obtained a valid
+  one. The card-level equivalents (`task:run`, `task:stopAgent`, `task:chat`,
+  `attention:answer`) DO relay: they take a task id, which is mirrored, and they are what the
+  UI actually presses.
+
+Both sides read that one file: apps/web refuses locally so the click fails immediately, and
+the engine refuses again if a command arrives anyway. One refusal sentence, written once.
+
+### Mirror or RPC: the rule, and the two entities it selected
+
+An RPC works while a desktop client is polling. The mirror works whether or not one is
+awake, because the server holds the rows. That is the whole difference, and it is what
+decides which of the two anything uses:
+
+> **Mirror it when it must be readable with the desktop asleep. Otherwise relay it.**
+
+By that rule the board's cards and projects stay mirrored (they always were), and everything
+else the detail pane needs — attachments, chain links, merge requests, the agent projects,
+settings — is relayed, because a pane you opened while nothing was running has nothing to
+show you anyway.
+
+Two entities were selected for mirroring and **have not been built** — see *What this leaves
+owed* below. `task_activity` (the timeline is most of the detail pane) and `attention_items`
+(an inbox you can only read while the desktop is awake is not an inbox) are the two whose
+value survives the desktop being off. Both are readable today over the relay.
+
+### Why there is no event feed, and no SSE
+
+The desktop pushes a dozen `IpcEvents` channels. There is no such wire here, deliberately:
+Phase 25's "No realtime service" section costs out one polled round trip per tick, and at the
+active tier's 2.5s a second connection is a second bill — plus an SSE endpoint is a stateful
+thing to run and to scale, against a workload of one human clicking.
+
+Almost every one of those events is "here is the whole new list", and every one of those has
+a READ that returns exactly the same thing. So
+[`PolledEventBus`](../../apps/web/src/board/polledEvents.ts) reconstructs them: call the
+read, diff, fan out. Three rules make that honest — only the reads someone is subscribed to
+are called, an unchanged payload emits nothing, and the FIRST read is a baseline rather than
+a change (the component that just subscribed has already loaded it).
+
+Three do not survive, and the module says so by name rather than being quietly short:
+`window:maximizedChanged` (host-only anyway), `board:notice` (a transient toast is not state,
+so a poll cannot find it again) and `usage:sample` (a 1 Hz sample against a 2.5s poll — the
+Performance gauge redraws from `usage:series` instead, which is stated in the UI).
+
+### At-least-once, at last
+
+Delivery was **at-most-once while every docstring claimed at-least-once**.
+`MirrorService.sync` set `deliveredAt` inside the transaction that read the queue, the filter
+was `deliveredAt IS NULL`, and `SyncRequest.ackedCommandIds` was accepted and never read. A
+command whose HTTP response was lost was never sent again. Survivable for `set-status`, whose
+optimistic overlay expires on its own; fatal for an RPC a browser is awaiting, where "the
+reply was lost" and "the desktop has not answered yet" look identical forever.
+
+`deliveredAt` is a LEASE now and `ackedAt` retires the row
+([`commandQueue.ts`](../../apps/server/src/mirror/commandQueue.ts), pure and tested like
+`rowVersion.ts`). The lease is five minutes: one idle cadence interval, plus the slowest
+relayable handler (`jira:sync`/`gitlab:sync` are minutes-scale), plus the fact that the drain
+is serial so a slow one holds the queue behind it. `enqueueCommand` became idempotent too —
+the primary key is caller-supplied, so a retried POST used to be a 500 for a command the
+server had accepted perfectly well.
+
+### The result-replay ledger, and the transaction that was never there
+
+Redelivery being real changes what the applied-command ledger has to hold. It stored a
+boolean and short-circuited a repeat to `{ok: true}`; a redelivered `task:run` on a card that
+is running *because of that very command* would then re-enter `scheduler.startTaskNow` and
+answer the browser "already running" for a command that had succeeded. So
+`cloud_applied_commands` stores the ANSWER, and a repeat arrival replays it.
+
+Going async also exposed a trap that would have shipped in silence.
+`store.runInTransaction(fn)` is `db.transaction(fn)()`, and better-sqlite3 requires `fn` to
+be **synchronous**. Hand it an `async` one and it returns a Promise, the transaction commits
+at the first `await`, and every write after that runs untransacted — no error, nothing red.
+`applyCloudCommands` wrapped its whole batch in exactly that call.
+
+The fix is not an async transaction; there is no such thing here. It is that the batch
+transaction was the wrong unit anyway: a relayed invoke runs a handler that already chose its
+own atomicity, wrapping several of those in one SQLite transaction was never going to make
+them atomic together, and rolling command #2 back because command #4 failed is not something
+any caller asked for — they are separate clicks by a human. Each command stands alone now,
+and the only transaction left is the tiny synchronous one that records its outcome.
+
+Two smaller corrections came with it. The batch is no longer re-sorted by `issuedAt`, which
+is a *browser's* wall clock: the server already delivers `createdAt ASC` from a clock it owns,
+so there is one authority and it is monotonic. And the per-outcome event fan-out in `ipc.ts`
+was removed for relayed invokes — the real handlers already push `task:changed`,
+`project:tasksChanged`, the chain and the attachments themselves, so left in, every relayed
+click would have pushed twice.
+
+### The drain, and why the poller stays a poller
+
+`CloudPollerDeps.onCommands` is `(commands) => void`, called fire-and-forget while `tick()`'s
+`finally` re-arms the timer. Making it `async` would let the next tick's batch interleave
+with this one over the same cards. Awaiting it inside `send()` instead would couple poll
+liveness to handler latency: one `jira:sync` taking two minutes would stop the mirror for two
+minutes, and a channel that never resolved would stop it forever.
+
+So [`main/commandQueue.ts`](../../apps/client/src/main/commandQueue.ts) owns the
+serialization — enqueue and return, drain one at a time in delivered order, emit each result
+— and the poller stays a poller.
+
+### The browser end
+
+[`httpTransport.ts`](../../apps/web/src/board/httpTransport.ts) posts the command, keeps a
+pending-promise map keyed by command id, and polls `GET /v1/results` **only while something
+is pending**, widening from 300 ms to 2.5 s as it waits. Request volume is bounded by clicks
+rather than by wall time: an idle tab makes no results requests at all. A timeout says WHICH
+silence it was — `BoardResponse.clients` already knows whether any desktop is polling, and
+"start the app" and "wait, it is still working" are different problems.
+
+The **stub tier is gone**. It answered fabricated empty values for eight reads, and every one
+of them was false the moment a desktop was actually polling. Before un-stubbing
+`task:activity`, `TaskDetail`'s `loadActivity` got the `.catch` it never had: it was the one
+mount read with no error handling, so a rejection was an unhandled rejection *and* left the
+previous card's timeline under the new card's title.
+
+Results are served by their own route rather than folded into `BoardResponse`, and the reason
+is scope: a board is account-wide, a result belongs to the one tab awaiting it. `GET
+/v1/results` is scoped to `accountId` **and** `issuedBy`. The same request also made a third
+polled route out of `IamAuthGuard`, which was making two uncached IAM round trips per request
+— hence [`authCache.ts`](../../apps/server/src/iam/authCache.ts), a ten-second TTL that never
+caches a failure and stays bounded.
+
+### Two blockers that had to clear first
+
+- **No tombstones.** `GET /v1/board` hardcoded `deletedTaskIds: []` while
+  `cloudBoardStore.applyBoardResponse` handled them correctly and simply never received any.
+  A card deleted on the desktop sat on an open web tab until reload. There is a `tombstones`
+  table now, written by `applyMirrorDelta` and cleared when an id comes back (`task:restore`
+  reuses it).
+- **`rowsSince` was unbounded.** The push side has been carefully bounded since
+  `SYNC_BYTES_LIMIT`; the read side had no `take` and no byte cap, so a first poll against a
+  mature board asked for everything in one response. It pages now, with a `hasMore` the
+  browser polls straight through rather than one page per cadence interval.
+
+### What the board gained
+
+None of it needed extraction. `TaskDetail` already rendered the agent panel, the merge
+requests, the attachments, the chain and the attention ring; `BoardScreen` just never passed
+the props, so the same component drew a stub in one host and the whole thing in the other.
+[`useBoardExtras`](../../apps/web/src/board/useBoardExtras.ts) relays the eight reads and the
+pane draws what it always could. The cards gained stop-from-card, step folding and earlier
+planning rounds; the board gained `ChainOverlay` and `ChainLinkPopover` (draw, re-gate and
+delete arrows); the toolbar gained Current sprint, Chain focus and Sync; Removed cards can
+restore.
+
+The board's own preferences moved off this app's `localStorage` onto `settings:get`/
+`settings:save`, so the switches ARE the desktop's rather than a second set of the same three
+that silently disagreed. That made `settings:save` the one relayed channel whose arguments are
+rewritten on the way through: both Settings screens load the whole blob at mount and save it
+whole, and a browser widens that staleness window a great deal, so a relayed save MERGES over
+the engine's current copy instead of overwriting it.
+
+### Shared, and forked
+
+`Attention.tsx` and `Performance.tsx` had no host in them at all — only `window.api` calls —
+so they moved into `@tm/ui` whole, with `useTransport()` in their place, dragging their
+host-free helpers along (`PaneLoading`, `useInitialLoad`, `TokenChart`, `BurnRateGauge`,
+`UsageQuotaBars`, `usageFormat`, and `formatCountdown` out of `LimitBanner`). The desktop
+imports them back: extracted, never copied.
+
+`Settings.tsx` went the other way, and the ratio is the argument: 1478 lines in ONE component,
+nine of twenty-one channels host-bound. Sharing it whole would have meant roughly eight
+optional capability props the web passes `false` for — exactly the shape this repo's own rule
+says to fork instead. So the split is by SECTION: the pieces with a rule in them are shared as
+real components (`ColorSwatches` and its palette, `StatusMapViewer`, `PlanningModelField`,
+`BaseBranchField`) and `apps/web/src/settings/` owns the shell, with a *Desktop only* tab that
+names each withheld section and why.
+
+### How it is verified
+
+Every piece has a unit suite. What none of them covers is the circuit, so
+[`verify-remote-ipc.mjs`](../../apps/client/scripts/verify-remote-ipc.mjs) drives a real
+`Store` on a scratch SQLite file, a real `RelayRegistry`, `applyCloudCommand` and
+`CommandQueue`, and a real `HttpTransport` over a fake `fetch` into a fake server that
+imports the SERVER's own lease predicate rather than restating it. It proves a relayed invoke
+round-trips, a host-only channel is refused by name before the network, a lost result is
+redelivered and **replayed rather than re-executed**, ordering holds across interleaved
+batches, a rejecting command does not roll back its predecessor, and `PolledEventBus`
+reproduces `task:changed` from a `board:tasks` diff.
+
+It was proven able to fail: reverting the ledger to a boolean, marking `attachment:pick`
+relayable, and making the drain fire-and-forget each turn it red.
+
+### What this leaves owed
+
+- **A human still has to press these controls against a real desktop.** No test in this
+  repo can do that: there is no DOM harness in the workspace (no jsdom, no
+  `@testing-library`), so nothing here has seen a rendered pixel. `test/shell-parity.test.ts`
+  says the same thing about the same board and is worth re-reading before trusting either.
+- **`task_activity` and `attention_items` are not mirrored yet.** Both are readable over the
+  relay, so nothing is missing while a desktop is polling; what is owed is reading them while
+  one is not. Each costs a SQLite trigger set, an outbox discriminator, a mirror entity and
+  migration, an `applyMirrorDelta` branch, `cloudDelta` byte accounting, a
+  `cloudOutboxBackfill` pass and a `cloudBoardStore` ingest — and `task_activity` carries the
+  full AI transcript, so the per-entity byte budget matters there more than anywhere.
+- **Attachment BYTES do not cross.** `Transport.attachmentUrl` is in place, so the shared
+  strip asks the host where to fetch a preview from instead of hardcoding Electron's custom
+  scheme — but the endpoints behind the web's answer are not built, and `attachment:add`
+  takes paths by explicit design, so adding a file from a browser still needs an upload
+  route, a desktop-side handler that writes the blob under `userData/attachments/`, and a
+  download that streams it back.
+- **The server has not been deployed with this schema.** `CommandResults1786800000000` adds
+  `commands.ackedAt`, `command_results` and `tombstones`, and has only been read, not run.
+
+---
+
 ## Conventions for every phase
 
 - **Contract first.** New data crossing the UI↔engine boundary gets its types in
