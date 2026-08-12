@@ -125,6 +125,7 @@ import { emptyGitGraph } from '@shared/gitGraph';
 import { cardBranchesFor, readGitGraph } from './gitGraph';
 import { listClaudeSessions } from './claudeSessions';
 import { sanitizeWindowState } from './windowState';
+import { createWindowStateFlusher, type WindowStateFlusher } from './windowFlush';
 import { appPlanPath, appProjectFile } from './projectPaths';
 import { RELEASE_DOC } from '@shared/release';
 import { RUN_REFUSAL_MESSAGE } from '@shared/scheduler';
@@ -218,7 +219,7 @@ export interface Engine {
   claudeUsagePoller: ClaudeUsagePoller;
   updater: Updater;
   /** Flushes the window geometry — must be disposed BEFORE the store closes. */
-  windowTracker: { dispose(): void };
+  windowTracker: WindowStateFlusher;
 }
 
 /**
@@ -338,36 +339,22 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // one the next launch reads — is actually written. `getNormalBounds()` is the
   // un-maximized rectangle, and `manualBounds` is our stand-in for the same thing on a
   // WM that wouldn't maximize, so the pair always records the RESTORED size.
-  let windowSaveTimer: NodeJS.Timeout | null = null;
-  const persistWindowState = (): void => {
-    if (mainWindow.isDestroyed()) return;
-    store.saveWindowState({
+  // The debounce, the disposed flag and the "is a write safe right now" guard all live in
+  // `windowFlush.ts` — see its header for why the last two are not optional on quit.
+  const windowTracker = createWindowStateFlusher({
+    read: () => ({
       bounds: manualBounds ?? mainWindow.getNormalBounds(),
       maximized: isMaximized(),
-    });
-  };
-  const scheduleWindowSave = (): void => {
-    if (windowSaveTimer) clearTimeout(windowSaveTimer);
-    windowSaveTimer = setTimeout(() => {
-      windowSaveTimer = null;
-      persistWindowState();
-    }, 400);
-  };
+    }),
+    write: (state) => store.saveWindowState(state),
+    canWrite: () => !mainWindow.isDestroyed() && store.isOpen(),
+  });
   // Spelled out rather than looped: BrowserWindow's `on` is a set of per-event
   // overloads, so a union of event names has no single overload to match.
-  mainWindow.on('resize', scheduleWindowSave);
-  mainWindow.on('move', scheduleWindowSave);
-  mainWindow.on('maximize', scheduleWindowSave);
-  mainWindow.on('unmaximize', scheduleWindowSave);
-  const windowTracker = {
-    dispose(): void {
-      if (windowSaveTimer) {
-        clearTimeout(windowSaveTimer);
-        windowSaveTimer = null;
-      }
-      persistWindowState();
-    },
-  };
+  mainWindow.on('resize', windowTracker.schedule);
+  mainWindow.on('move', windowTracker.schedule);
+  mainWindow.on('maximize', windowTracker.schedule);
+  mainWindow.on('unmaximize', windowTracker.schedule);
   mainWindow.on('close', () => windowTracker.dispose());
   // ---------------------------------------------------------------------------
 

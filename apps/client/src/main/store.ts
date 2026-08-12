@@ -718,6 +718,14 @@ export interface Store {
    * schema comment above `cloud_applied_commands` describes.
    */
   runInTransaction<T>(fn: () => T): T;
+  /**
+   * Is the underlying handle still usable? Asked by the ONE caller that legitimately races
+   * `close()` — the window-geometry flush, driven by an OS event whose timing we do not
+   * control (`windowFlush.ts`). Every other method throws on use-after-close on purpose:
+   * a store that silently swallowed writes would hide exactly this class of bug.
+   */
+  isOpen(): boolean;
+  /** Close the handle. Idempotent — quit calls teardown from more than one place. */
   close(): void;
 }
 
@@ -3961,8 +3969,12 @@ export function createStore(dbPath: string): Store {
       return db.transaction(fn)();
     },
 
+    isOpen() {
+      return db.open;
+    },
+
     close() {
-      db.close();
+      if (db.open) db.close();
     },
   };
 }
