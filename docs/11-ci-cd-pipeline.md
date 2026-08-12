@@ -19,6 +19,11 @@ touches Azure. A push that changes only the desktop app deploys nothing; a push 
 only the server still cuts a release, because the version of record is the desktop app's and
 the tag names the whole repository's state.
 
+What was checked before any of this ran for real — the gates, the version resolver against
+the repo's actual tags, and the invariant tests put through their own mutations — is recorded
+in [`docs/plan/ci-cd-gate-report.md`](plan/ci-cd-gate-report.md), along with the two things
+that could not be proven until the pipeline was on `development`.
+
 ---
 
 ## What triggers what
