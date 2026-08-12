@@ -12,9 +12,15 @@ import { Column, CreateDateColumn, Entity, Index, PrimaryColumn } from 'typeorm'
  * table only stores and relays, it never interprets a payload.
  *
  * Rows are kept (not deleted) once delivered, marked via `deliveredAt` — a
- * small audit trail of what was relayed, and it means `POST /v1/sync` only
- * has to filter `deliveredAt IS NULL` rather than reason about a queue that
- * shrinks out from under it.
+ * small audit trail of what was relayed, and it means `POST /v1/sync` never
+ * has to reason about a queue that shrinks out from under it.
+ *
+ * `deliveredAt` is a LEASE, not a tombstone: it used to be the whole filter
+ * (`deliveredAt IS NULL`), which made delivery at-most-once while every
+ * docstring on the wire claimed at-least-once — a command whose HTTP response
+ * was lost was never sent again. `ackedAt` is what actually retires a row now.
+ * See ../mirror/commandQueue.ts for the rule and why the lease is as long as
+ * it is.
  */
 @Entity('commands')
 export class Command {
@@ -47,9 +53,19 @@ export class Command {
   @Column({ type: 'simple-json' })
   payload!: unknown;
 
+  /** When this row was last put on the wire. Null until its first delivery. */
   @Index()
   @Column({ type: 'datetime2', nullable: true })
   deliveredAt!: Date | null;
+
+  /**
+   * When the target Client confirmed it had this command
+   * (`SyncRequest.ackedCommandIds`). Null means it is still owed, whatever
+   * `deliveredAt` says — which is the whole point of having both.
+   */
+  @Index()
+  @Column({ type: 'datetime2', nullable: true })
+  ackedAt!: Date | null;
 
   @CreateDateColumn()
   createdAt!: Date;

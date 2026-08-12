@@ -69,6 +69,9 @@ describe('AppModule', () => {
     const options = findOptionsFactory()();
 
     expect(options.synchronize).toBe(false);
-    expect((options.entities as unknown[]).length).toBe(5);
+    // Account, Client, Command, CommandResultRow, ProjectMirror, TaskMirror, Tombstone.
+    // A count rather than the names: this is a "did somebody drop one" guard, and every
+    // entity's own shape is asserted where it is used.
+    expect((options.entities as unknown[]).length).toBe(7);
   });
 });

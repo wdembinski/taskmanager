@@ -20,6 +20,8 @@ import { DataSource } from 'typeorm';
 import { Account } from '../entities/account.entity';
 import { Client } from '../entities/client.entity';
 import { Command } from '../entities/command.entity';
+import { CommandResultRow } from '../entities/commandResult.entity';
+import { Tombstone } from '../entities/tombstone.entity';
 import { ProjectMirror } from '../entities/projectMirror.entity';
 import { TaskMirror } from '../entities/taskMirror.entity';
 import { buildMssqlConnectionOptions } from './typeormOptions';
@@ -29,7 +31,7 @@ dotenv.config({ path: '.env.example' });
 
 export const AppDataSource = new DataSource({
   ...buildMssqlConnectionOptions(),
-  entities: [Account, Client, Command, ProjectMirror, TaskMirror],
+  entities: [Account, Client, Command, CommandResultRow, ProjectMirror, TaskMirror, Tombstone],
   migrations: [join(__dirname, '..', 'migrations', '*.{ts,js}')],
   logging: process.env.NODE_ENV === 'development',
   // Migrations, not synchronize — matches vipper.iam's convention.

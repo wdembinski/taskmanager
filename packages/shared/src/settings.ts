@@ -465,3 +465,40 @@ export const DEFAULT_SETTINGS: AppSettings = {
   gitlab: DEFAULT_GITLAB_SETTINGS,
   cloud: DEFAULT_CLOUD_SETTINGS,
 };
+
+/**
+ * Fold an incoming settings blob over the CURRENT one, one level of nesting deep.
+ *
+ * Both Settings screens load the whole blob at mount and save it back whole, which makes
+ * every save a full overwrite — including of whatever the engine learned in between. The
+ * desktop keeps that window narrow by pushing `settings:changed` back at the open screen.
+ * A browser tab does not get that push (there is no event channel over the mirror), and a
+ * relayed `settings:save` can be carrying a blob that was read an hour ago.
+ *
+ * So a relayed save MERGES: fields the caller sent win, fields it did not send keep whatever
+ * the engine has now. `incoming` is `unknown` because it arrived over HTTP as JSON; anything
+ * that is not an object is ignored entirely rather than partially applied.
+ *
+ * One level, not deep: the nested groups (`jira`, `gitlab`, `cloud`, `board`) are merged
+ * field-by-field, and the arrays (`statusKeywords`, `foldedStepCards`, …) are REPLACED
+ * wholesale when present. That is the right rule for both — an array's whole content is the
+ * value being edited, and merging two lists element-wise would resurrect entries the human
+ * had just removed.
+ */
+export function mergeAppSettings(current: AppSettings, incoming: unknown): AppSettings {
+  if (!isPlainObject(incoming)) return current;
+
+  const merged = { ...current } as Record<string, unknown>;
+  for (const [key, value] of Object.entries(incoming)) {
+    if (value === undefined) continue;
+    const existing = merged[key];
+    merged[key] =
+      isPlainObject(existing) && isPlainObject(value) ? { ...existing, ...value } : value;
+  }
+  return merged as unknown as AppSettings;
+}
+
+/** An object literal — not an array, not null, not a class instance from a JSON parse. */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}

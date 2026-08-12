@@ -4,6 +4,8 @@ import { buildMssqlConnectionOptions } from './database/typeormOptions';
 import { Account } from './entities/account.entity';
 import { Client } from './entities/client.entity';
 import { Command } from './entities/command.entity';
+import { CommandResultRow } from './entities/commandResult.entity';
+import { Tombstone } from './entities/tombstone.entity';
 import { ProjectMirror } from './entities/projectMirror.entity';
 import { TaskMirror } from './entities/taskMirror.entity';
 import { HealthModule } from './health/health.module';
@@ -29,7 +31,15 @@ import { PresenceModule } from './presence/presence.module';
     TypeOrmModule.forRootAsync({
       useFactory: () => ({
         ...buildMssqlConnectionOptions(),
-        entities: [Account, Client, Command, ProjectMirror, TaskMirror],
+        entities: [
+          Account,
+          Client,
+          Command,
+          CommandResultRow,
+          ProjectMirror,
+          TaskMirror,
+          Tombstone,
+        ],
         // Migrations, not synchronize — see database/dataSource.ts.
         synchronize: false,
         logging: process.env.NODE_ENV === 'development',

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CADENCE_MS } from '@protocol/cadence';
-import type { SyncResponse } from '@protocol/wire';
+import { PROTOCOL_VERSION, type SyncResponse } from '@protocol/wire';
 import type { Task } from '@shared/model';
 import { DEFAULT_CLOUD_SETTINGS, type CloudSettings } from '@shared/settings';
 import { CloudPoller, type CloudPollerDeps, type FocusSignal } from './cloudPoller';
@@ -41,6 +41,8 @@ function fakeStore(outbox: CloudOutboxRow[] = []): Store {
     getProject: () => undefined,
     getPendingCloudAcks: () => [],
     markCloudAcksSent: () => {},
+    getPendingCloudResults: () => [],
+    markCloudResultsSent: () => {},
   } as unknown as Store;
 }
 
@@ -220,6 +222,8 @@ describe('CloudPoller', () => {
         getProject: () => undefined,
         getPendingCloudAcks: () => ['cmd-1', 'cmd-2'],
         markCloudAcksSent,
+        getPendingCloudResults: () => [],
+        markCloudResultsSent: () => {},
       } as unknown as Store,
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
@@ -227,6 +231,79 @@ describe('CloudPoller', () => {
     const body = JSON.parse(fetchImpl.mock.calls[0]![1].body);
     expect(body.ackedCommandIds).toEqual(['cmd-1', 'cmd-2']);
     expect(markCloudAcksSent).toHaveBeenCalledWith(['cmd-1', 'cmd-2']);
+  });
+
+  it('sends pending results and clears them once the sync succeeds', async () => {
+    const markCloudResultsSent = vi.fn();
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, json: async () => response() });
+    const { poller } = makePoller({
+      store: {
+        getCloudDelta: () => [],
+        pruneCloudOutbox: () => {},
+        loadCloudClientId: () => 'client-1',
+        loadCloudCursor: () => null,
+        saveCloudCursor: () => {},
+        getTask: () => undefined,
+        getProject: () => undefined,
+        getPendingCloudAcks: () => [],
+        markCloudAcksSent: () => {},
+        getPendingCloudResults: () => [
+          { commandId: 'cmd-1', taskId: null, projectId: null, ok: true, reason: null, value: 7 },
+          { commandId: 'cmd-2', taskId: null, projectId: null, ok: false, reason: 'nope' },
+        ],
+        markCloudResultsSent,
+      } as unknown as Store,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    await poller.tick();
+
+    const body = JSON.parse(fetchImpl.mock.calls[0]![1].body);
+    expect(body.results).toEqual([
+      { commandId: 'cmd-1', ok: true, value: 7 },
+      { commandId: 'cmd-2', ok: false, error: 'nope' },
+    ]);
+    expect(markCloudResultsSent).toHaveBeenCalledWith(['cmd-1', 'cmd-2']);
+  });
+
+  it('keeps a result pending when the sync that carried it failed', async () => {
+    // The rule the acks and the outbox prune already follow: nothing is marked sent on a
+    // request that did not land, because nothing will resend it.
+    const markCloudResultsSent = vi.fn();
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue({ ok: false, status: 500, statusText: 'Server Error' });
+    const { poller } = makePoller({
+      store: {
+        getCloudDelta: () => [],
+        pruneCloudOutbox: () => {},
+        loadCloudClientId: () => 'client-1',
+        loadCloudCursor: () => null,
+        saveCloudCursor: () => {},
+        getTask: () => undefined,
+        getProject: () => undefined,
+        getPendingCloudAcks: () => [],
+        markCloudAcksSent: () => {},
+        getPendingCloudResults: () => [
+          { commandId: 'cmd-1', taskId: null, projectId: null, ok: true, reason: null },
+        ],
+        markCloudResultsSent,
+      } as unknown as Store,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    await poller.tick();
+    expect(markCloudResultsSent).not.toHaveBeenCalled();
+  });
+
+  it('states the protocol version it speaks', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, json: async () => response() });
+    const { poller } = makePoller({ fetchImpl: fetchImpl as unknown as typeof fetch });
+    await poller.tick();
+    const body = JSON.parse(fetchImpl.mock.calls[0]![1].body);
+    expect(body.protocolVersion).toBe(PROTOCOL_VERSION);
   });
 
   /** A store that remembers what each tick asked for and what it pruned. */
@@ -250,6 +327,8 @@ describe('CloudPoller', () => {
       getProject: () => undefined,
       getPendingCloudAcks: () => [],
       markCloudAcksSent: () => {},
+      getPendingCloudResults: () => [],
+      markCloudResultsSent: () => {},
     } as unknown as Store;
     return { store, limits, pruned };
   }
@@ -335,6 +414,8 @@ describe('CloudPoller', () => {
       getProject: () => undefined,
       getPendingCloudAcks: () => [],
       markCloudAcksSent: () => {},
+      getPendingCloudResults: () => [],
+      markCloudResultsSent: () => {},
     } as unknown as Store;
     const fetchImpl = vi
       .fn()

@@ -21,6 +21,22 @@ export interface MirrorDelta {
   deletedProjectIds: string[];
 }
 
+/**
+ * The version of THIS contract, sent on every `SyncRequest` and returned on every
+ * `BoardResponse`.
+ *
+ * Nothing on the wire carried a version before, and the two ends do not update together:
+ * apps/web is served fresh on every load, apps/client is an installed binary somebody
+ * updates when they feel like it. So the realistic mismatch is a browser six versions ahead
+ * of the desktop it is talking to, asking it to run a channel that build has never heard of
+ * — and the only honest way to say "your desktop app is too old for this" is for the two to
+ * have exchanged a number first.
+ *
+ * Bump it when the wire gains a field an older peer would be WRONG to ignore. Adding an
+ * optional field it can safely skip is not that.
+ */
+export const PROTOCOL_VERSION = 2;
+
 /** Body of `POST /v1/sync` — a Client's heartbeat and its outgoing changes in one request. */
 export interface SyncRequest {
   clientId: string;
@@ -36,6 +52,55 @@ export interface SyncRequest {
    * not that command survived the applying Client's own validation.
    */
   ackedCommandIds: string[];
+  /**
+   * What each of those commands actually ANSWERED, for the ones somebody is waiting on.
+   *
+   * An ack says the command is off the queue; a result says what it returned. `set-status`
+   * only ever needed the first — the web app watches the mirror for its effect and never
+   * reads a return value. An `ipc-invoke` is the opposite: a browser is holding an unresolved
+   * promise for it, so the value has to travel.
+   *
+   * Optional so a desktop build that predates results still type-checks against this
+   * contract; the server treats a missing array as an empty one.
+   */
+  results?: CommandResult[];
+  /** {@link PROTOCOL_VERSION} as this Client understands it. Absent from an older build. */
+  protocolVersion?: number;
+}
+
+/**
+ * What one command returned, travelling back the way its ack does.
+ *
+ * `value` is whatever the channel's own `IpcApi` signature resolves to, JSON round-tripped —
+ * which is the same trip an Electron IPC reply already makes (structured clone), so a shape
+ * that survives one survives the other.
+ *
+ * `error` is the handler's message **verbatim**. Not `String(err)`, which renders a plain
+ * `Error` as the word "Error" and tells the human nothing, and not the preload bridge's
+ * `ipcErrorMessage` unwrapping either: that strips an `Error invoking remote method '…':`
+ * prefix Electron adds, and no such prefix exists on this path. The message that crosses
+ * here is the one the handler wrote.
+ */
+export interface CommandResult {
+  commandId: string;
+  ok: boolean;
+  value?: unknown;
+  error?: string;
+}
+
+/**
+ * Response to `GET /v1/results?since=` — the results for commands THIS caller issued.
+ *
+ * Its own route rather than a field on `BoardResponse`, because the two have different
+ * scopes and mixing them would be a leak: a board is account-wide (every tab and every
+ * desktop client on the account reads the same one), while a result belongs to the one tab
+ * that is awaiting it. Scoping by `issuedBy` is what keeps a second tab from resolving a
+ * promise it never made.
+ */
+export interface ResultsResponse {
+  results: CommandResult[];
+  /** Pass back as `since` on the next poll. */
+  cursor: string;
 }
 
 /** Response to `POST /v1/sync` — the world's changes since `cursor`, plus what to do next. */
@@ -89,6 +154,17 @@ export interface BoardResponse {
    * `POST /v1/commands` would have nowhere to be delivered to and nobody to apply it.
    */
   clients: ClientPresence[];
+  /** {@link PROTOCOL_VERSION} as the SERVER understands it. */
+  protocolVersion?: number;
+  /**
+   * True when the page cap cut this read short: there are more rows past `cursor` and the
+   * caller should poll again immediately rather than wait out its cadence.
+   *
+   * The push side has been bounded since `SYNC_BYTES_LIMIT`; the read side was not, so a
+   * first poll against a mature board asked for every row it had ever mirrored in one
+   * response. See `mirror.service.ts`'s `rowsSince`.
+   */
+  hasMore?: boolean;
 }
 
 /** Body of `POST /v1/commands` — one Client asking the server to relay an action to another. */
@@ -97,8 +173,24 @@ export interface CommandRequest {
   command: CommandEnvelope;
 }
 
-/** The v1 command kinds a Client can be asked to apply. Acking is by {@link CommandEnvelope.id}. */
-export type CommandKind = 'set-status' | 'add-comment' | 'create-task';
+/**
+ * The command kinds a Client can be asked to apply. Acking is by {@link CommandEnvelope.id}.
+ *
+ * The first three are v1's: one kind per EDIT, each mapped by hand to the `Store` mutation
+ * the desktop's own IPC handler would make (`apps/client/src/main/cloudCommands.ts`).
+ * `ipc-invoke` is v2's, and it is the reason that list stopped growing: the web client needs
+ * roughly a hundred channels, and a hundred hand-mapped kinds would be a second, drifting
+ * copy of `IpcApi` — every one of which already has a handler on the desktop that does the
+ * right thing, including the atomicity, the JIRA push and the events. So the relay carries
+ * the CHANNEL rather than a translation of it, and `@tm/shared/ipcRelay` decides which
+ * channels are allowed through.
+ *
+ * The three older kinds stay: they are what a browser session issued before it could relay,
+ * a queued one can still be in the table across an upgrade, and `set-status` in particular
+ * is worth keeping as its own kind — its effect is observed through the mirror, so it needs
+ * no result to come back at all.
+ */
+export type CommandKind = 'set-status' | 'add-comment' | 'create-task' | 'ipc-invoke';
 
 interface CommandEnvelopeOf<Kind extends CommandKind, Payload> {
   id: string;
@@ -114,4 +206,14 @@ export type CommandEnvelope =
   | CommandEnvelopeOf<
       'create-task',
       { projectId: string; title: string; phase?: string; description?: string }
-    >;
+    >
+  /**
+   * Run one `IpcApi` channel on the target Client and send back what it returned.
+   *
+   * `channel` is a `keyof IpcApi` and `args` its `Parameters<…>`, but both are widened here
+   * on purpose: this package must not depend on the desktop's IPC contract, and the payload
+   * has been through JSON either way. The narrowing happens where it can be enforced — the
+   * applying Client checks the channel against `@tm/shared/ipcRelay` and its own registry
+   * before it dispatches anything.
+   */
+  | CommandEnvelopeOf<'ipc-invoke', { channel: string; args: unknown[] }>;

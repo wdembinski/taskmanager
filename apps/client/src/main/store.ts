@@ -699,23 +699,48 @@ export interface Store {
   loadCloudCursor(): string | null;
   saveCloudCursor(cursor: string): void;
   /**
-   * Has this relayed command (by `CommandEnvelope.id`) already been applied? `cloudCommands.ts`
-   * checks this before mapping a command to a `Store` mutation, so a redelivery — at-least-once
-   * is all the poll loop guarantees — cannot apply the same edit twice.
+   * What this relayed command (by `CommandEnvelope.id`) ANSWERED the first time, or null if
+   * it has never been applied. `cloudCommands.ts` checks this before dispatching, so a
+   * redelivery — at-least-once is all the poll loop guarantees — is replayed rather than
+   * re-executed.
+   *
+   * The ledger stores the answer rather than a boolean, and that distinction is load-bearing
+   * now that redelivery actually happens: a redelivered `task:run` on a card that is running
+   * BECAUSE OF THAT VERY COMMAND would re-enter the scheduler and answer the browser
+   * "already running" for a command that had succeeded.
    */
-  isCloudCommandApplied(id: string): boolean;
-  /** Record a relayed command as applied, and pending an ack on the next `/v1/sync`. */
-  markCloudCommandApplied(id: string): void;
+  getCloudCommandOutcome(id: string): StoredCloudOutcome | null;
+  /**
+   * Record a relayed command's outcome: applied, pending an ack on the next `/v1/sync`, and
+   * — when `awaited` — pending a RESULT on it too.
+   *
+   * `awaited` is false for the three v1 edit kinds, whose effect the web app observes
+   * through the mirror and whose return value nothing is holding a promise for. Those are
+   * written as already-sent, because there is nothing to send.
+   */
+  recordCloudCommandApplied(id: string, outcome: StoredCloudOutcome, awaited: boolean): void;
   /** Ids applied (or rejected) since the last successful ack — goes out as the next
    *  `SyncRequest.ackedCommandIds`. */
   getPendingCloudAcks(): string[];
   /** Mark ids as acked once a `/v1/sync` carrying them has succeeded. */
   markCloudAcksSent(ids: readonly string[]): void;
+  /** The results not yet delivered to the server — goes out as `SyncRequest.results`. */
+  getPendingCloudResults(): PendingCloudResult[];
+  /** Mark results as sent once a `/v1/sync` carrying them has succeeded — mirrors
+   *  {@link markCloudAcksSent}, and is a separate moment from it for the same reason
+   *  `appliedAt` and `ackedAt` are two columns. */
+  markCloudResultsSent(ids: readonly string[]): void;
   /**
    * Run `fn` inside one `better-sqlite3` transaction, committing its return value or rolling
-   * every write in it back on a throw. `cloudCommands.ts` uses this to apply a whole batch of
-   * relayed commands — in `seq` order — as one atomic unit per poll tick, exactly as the
-   * schema comment above `cloud_applied_commands` describes.
+   * every write in it back on a throw.
+   *
+   * **`fn` must be synchronous.** `better-sqlite3` transactions are, and handing this an
+   * `async` function silently does the wrong thing: it returns a Promise, the transaction
+   * commits at the first `await`, and every write after that point runs untransacted with
+   * nothing red anywhere. `applyCloudCommands` used to wrap its whole batch in one of these
+   * and could not become async without hitting exactly that; it now records each command's
+   * outcome in its own tiny synchronous transaction instead, and leaves the atomicity of the
+   * work itself to the handler that already chose it.
    */
   runInTransaction<T>(fn: () => T): T;
   /**
@@ -727,6 +752,27 @@ export interface Store {
   isOpen(): boolean;
   /** Close the handle. Idempotent — quit calls teardown from more than one place. */
   close(): void;
+}
+
+/**
+ * One relayed command's stored answer — enough to REPLAY it without running anything.
+ *
+ * `taskId`/`projectId` are what the desktop's own event fan-out needs (which card changed,
+ * which board to refresh); `ok`/`reason`/`value` are what the wire needs. Both, because a
+ * redelivery has to reproduce both halves.
+ */
+export interface StoredCloudOutcome {
+  taskId: string | null;
+  projectId: string | null;
+  ok: boolean;
+  reason: string | null;
+  /** What the channel returned, for an `ipc-invoke`. Absent for the edit kinds. */
+  value?: unknown;
+}
+
+/** A stored outcome plus the command it belongs to, on its way onto the wire. */
+export interface PendingCloudResult extends StoredCloudOutcome {
+  commandId: string;
 }
 
 /**
@@ -1156,12 +1202,40 @@ export function createStore(dbPath: string): Store {
     -- /v1/sync call, so ackedAt is null for however long that takes. Rows are kept, not
     -- pruned, once acked — the ledger is small (one row per command ever relayed to this
     -- Client) and an audit trail of what landed costs nothing to keep.
+    -- result and resultSentAt are Phase 26's: a relayed ipc-invoke has an ANSWER a browser
+    -- is holding a promise for, so the ledger stores what each command returned rather than
+    -- merely that it ran. That is what makes a redelivery a REPLAY: re-running task:run for
+    -- a card that is running because of that very command would answer "already running"
+    -- for a command that had in fact succeeded. resultSentAt is a third moment after
+    -- appliedAt and ackedAt — the ack says the command is off the server's queue, the result
+    -- says what it answered, and they ride the same request but are not the same fact. A
+    -- command nobody awaits is written already-sent; there is nothing to send.
+    -- (No backticks in this block: it is inside a template literal.)
     CREATE TABLE IF NOT EXISTS cloud_applied_commands (
-      id        TEXT PRIMARY KEY,
-      appliedAt INTEGER NOT NULL,
-      ackedAt   INTEGER
+      id           TEXT PRIMARY KEY,
+      appliedAt    INTEGER NOT NULL,
+      ackedAt      INTEGER,
+      result       TEXT,
+      resultSentAt INTEGER
     );
   `);
+
+  // Migrate ledgers written before the relay stored results. Every existing row is one of
+  // the three v1 edit kinds, applied under the old rule where "applied" was the whole
+  // answer — so a NULL `result` reads back as "applied, nothing to replay", and
+  // `resultSentAt` defaults to the applied time because none of them was ever awaited.
+  {
+    const ledgerColumns = db.prepare(`PRAGMA table_info(cloud_applied_commands)`).all() as Array<{
+      name: string;
+    }>;
+    if (!ledgerColumns.some((c) => c.name === 'result')) {
+      db.exec(`ALTER TABLE cloud_applied_commands ADD COLUMN result TEXT`);
+    }
+    if (!ledgerColumns.some((c) => c.name === 'resultSentAt')) {
+      db.exec(`ALTER TABLE cloud_applied_commands ADD COLUMN resultSentAt INTEGER`);
+      db.exec(`UPDATE cloud_applied_commands SET resultSentAt = appliedAt`);
+    }
+  }
 
   // Migrate databases created before Phase 3 added the write-back column.
   const projectColumns = db.prepare(`PRAGMA table_info(projects)`).all() as Array<{ name: string }>;
@@ -2729,14 +2803,24 @@ export function createStore(dbPath: string): Store {
 
   // The cloud mirror's applied-command ledger (Phase 25's "Apply queued cloud commands on
   // the client") — see the schema comment above `cloud_applied_commands`.
-  const selectCloudCommandApplied = db.prepare(`SELECT 1 FROM cloud_applied_commands WHERE id = ?`);
+  const selectCloudCommandOutcome = db.prepare(
+    `SELECT result FROM cloud_applied_commands WHERE id = ?`,
+  );
   const insertCloudCommandApplied = db.prepare(
-    `INSERT OR IGNORE INTO cloud_applied_commands (id, appliedAt, ackedAt) VALUES (?, ?, NULL)`,
+    `INSERT OR IGNORE INTO cloud_applied_commands (id, appliedAt, ackedAt, result, resultSentAt)
+     VALUES (?, ?, NULL, ?, ?)`,
   );
   const selectPendingCloudAcks = db.prepare(
     `SELECT id FROM cloud_applied_commands WHERE ackedAt IS NULL`,
   );
   const markCloudAckSent = db.prepare(`UPDATE cloud_applied_commands SET ackedAt = ? WHERE id = ?`);
+  const selectPendingCloudResults = db.prepare(
+    `SELECT id, result FROM cloud_applied_commands
+      WHERE resultSentAt IS NULL AND result IS NOT NULL ORDER BY appliedAt`,
+  );
+  const markCloudResultSent = db.prepare(
+    `UPDATE cloud_applied_commands SET resultSentAt = ? WHERE id = ?`,
+  );
 
   return {
     addProject(input) {
@@ -3945,12 +4029,22 @@ export function createStore(dbPath: string): Store {
       deleteCloudOutboxThrough.run(throughSeq);
     },
 
-    isCloudCommandApplied(id) {
-      return selectCloudCommandApplied.get(id) !== undefined;
+    getCloudCommandOutcome(id) {
+      const row = selectCloudCommandOutcome.get(id) as { result: string | null } | undefined;
+      if (!row) return null;
+      // A row written before the ledger stored results (or by a kind that stores none) is
+      // still "applied" — it just has nothing to replay beyond that fact.
+      if (row.result === null) return { taskId: null, projectId: null, ok: true, reason: null };
+      try {
+        return JSON.parse(row.result) as StoredCloudOutcome;
+      } catch {
+        return { taskId: null, projectId: null, ok: true, reason: null };
+      }
     },
 
-    markCloudCommandApplied(id) {
-      insertCloudCommandApplied.run(id, Date.now());
+    recordCloudCommandApplied(id, outcome, awaited) {
+      const now = Date.now();
+      insertCloudCommandApplied.run(id, now, JSON.stringify(outcome), awaited ? null : now);
     },
 
     getPendingCloudAcks() {
@@ -3962,6 +4056,29 @@ export function createStore(dbPath: string): Store {
       const ackedAt = Date.now();
       db.transaction(() => {
         for (const id of ids) markCloudAckSent.run(ackedAt, id);
+      })();
+    },
+
+    getPendingCloudResults() {
+      const rows = selectPendingCloudResults.all() as Array<{ id: string; result: string }>;
+      const pending: PendingCloudResult[] = [];
+      for (const row of rows) {
+        try {
+          pending.push({ commandId: row.id, ...(JSON.parse(row.result) as StoredCloudOutcome) });
+        } catch {
+          // A corrupt row must not wedge the queue behind it forever — it is dropped from
+          // the wire, and its `resultSentAt` is stamped so it is never read again.
+          markCloudResultSent.run(Date.now(), row.id);
+        }
+      }
+      return pending;
+    },
+
+    markCloudResultsSent(ids) {
+      if (ids.length === 0) return;
+      const sentAt = Date.now();
+      db.transaction(() => {
+        for (const id of ids) markCloudResultSent.run(sentAt, id);
       })();
     },
 

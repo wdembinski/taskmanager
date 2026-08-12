@@ -14,6 +14,7 @@ import {
   BOARD_FOCUS_HEADER,
   type BoardResponse,
   type CommandRequest,
+  type ResultsResponse,
   type SyncRequest,
   type SyncResponse,
 } from '@tm/protocol/wire';
@@ -60,5 +61,25 @@ export class MirrorController {
     @Headers(BOARD_FOCUS_HEADER) focusHeader: string | undefined,
   ): Promise<BoardResponse> {
     return this.mirror.board(accountId, since, clientId, focusHeader === 'true');
+  }
+
+  /**
+   * What the desktop answered, for the commands THIS caller issued — the return half of a
+   * relayed `ipc-invoke`.
+   *
+   * The caller identifies itself with the same `X-TM-Client-Id` header `GET /v1/board` uses
+   * as its presence beat, and that value is what a command's `issuedBy` was set from, so no
+   * new identity is invented for this route. Without it there is no scope to read at all,
+   * which is an empty answer rather than an error: a caller that cannot name itself has
+   * nothing awaiting it by definition.
+   */
+  @Get('results')
+  results(
+    @AccountId() accountId: string,
+    @Query('since') since: string | undefined,
+    @Headers(BOARD_CLIENT_HEADER) clientId: string | undefined,
+  ): Promise<ResultsResponse> {
+    if (!clientId) return Promise.resolve({ results: [], cursor: since ?? '' });
+    return this.mirror.resultsSince(accountId, clientId, since);
   }
 }

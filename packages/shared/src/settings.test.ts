@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_SETTINGS, resolveSyncInterval } from './settings';
+import {
+  DEFAULT_JIRA_SETTINGS,
+  DEFAULT_SETTINGS,
+  mergeAppSettings,
+  resolveSyncInterval,
+} from './settings';
 
 describe('resolveSyncInterval', () => {
   it('leaves an already-migrated blob alone', () => {
@@ -45,5 +50,59 @@ describe('resolveSyncInterval', () => {
 
   it('never returns a negative interval', () => {
     expect(resolveSyncInterval({ syncIntervalMinutes: -5 })).toBe(0);
+  });
+});
+
+describe('mergeAppSettings', () => {
+  it('keeps a field the caller did not send', () => {
+    const current = { ...DEFAULT_SETTINGS, branchPrefix: 'learned/' };
+    const merged = mergeAppSettings(current, { concurrency: 4 });
+    expect(merged.concurrency).toBe(4);
+    expect(merged.branchPrefix).toBe('learned/');
+  });
+
+  it('merges a nested group field-by-field rather than replacing it', () => {
+    // The realistic staleness: the engine learned a JIRA base URL after the tab loaded, and
+    // the tab is saving a `jira` block that predates it.
+    const current = {
+      ...DEFAULT_SETTINGS,
+      jira: { ...DEFAULT_JIRA_SETTINGS, baseUrl: 'https://jira.example.com', enabled: true },
+    };
+    const merged = mergeAppSettings(current, { jira: { showDoneColumn: true } });
+    expect(merged.jira.showDoneColumn).toBe(true);
+    expect(merged.jira.baseUrl).toBe('https://jira.example.com');
+    expect(merged.jira.enabled).toBe(true);
+  });
+
+  it('replaces an array wholesale, so a removal is not undone', () => {
+    const current = { ...DEFAULT_SETTINGS, foldedStepCards: ['a', 'b', 'c'] };
+    const merged = mergeAppSettings(current, { foldedStepCards: ['a'] });
+    expect(merged.foldedStepCards).toEqual(['a']);
+  });
+
+  it('ignores an explicit undefined rather than clearing the field', () => {
+    const current = { ...DEFAULT_SETTINGS, branchPrefix: 'keep/' };
+    const merged = mergeAppSettings(current, { branchPrefix: undefined });
+    expect(merged.branchPrefix).toBe('keep/');
+  });
+
+  it('applies a null, which is a real value for the nullable fields', () => {
+    const current = { ...DEFAULT_SETTINGS, defaultPlanningModel: 'opus' as const };
+    const merged = mergeAppSettings(current, { defaultPlanningModel: null });
+    expect(merged.defaultPlanningModel).toBeNull();
+  });
+
+  it('ignores something that is not an object at all', () => {
+    // It arrived over HTTP as JSON — partially applying a string would be worse than nothing.
+    expect(mergeAppSettings(DEFAULT_SETTINGS, 'nonsense')).toEqual(DEFAULT_SETTINGS);
+    expect(mergeAppSettings(DEFAULT_SETTINGS, null)).toEqual(DEFAULT_SETTINGS);
+    expect(mergeAppSettings(DEFAULT_SETTINGS, [1, 2])).toEqual(DEFAULT_SETTINGS);
+  });
+
+  it('does not mutate the settings it was given', () => {
+    const current = { ...DEFAULT_SETTINGS, jira: { ...DEFAULT_JIRA_SETTINGS } };
+    mergeAppSettings(current, { concurrency: 9, jira: { enabled: true } });
+    expect(current.concurrency).toBe(DEFAULT_SETTINGS.concurrency);
+    expect(current.jira.enabled).toBe(false);
   });
 });

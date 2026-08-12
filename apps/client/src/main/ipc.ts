@@ -92,7 +92,10 @@ import {
 import { iamSignInConfig } from './iamConfig';
 import { signIn as runIamSignIn } from './iamSignIn';
 import { refreshTokens } from '@shared/iamPkce';
-import { applyCloudCommands } from './cloudCommands';
+import type { CommandEnvelope } from '@protocol/wire';
+import { applyCloudCommand, type CloudCommandOutcome } from './cloudCommands';
+import { CommandQueue } from './commandQueue';
+import { relayRegistry } from './ipcRegistry';
 import { CloudPoller } from './cloudPoller';
 import { testCloudConnection } from './cloudTestConnection';
 import { FocusTracker } from './focusTracker';
@@ -151,12 +154,19 @@ import { WorktreeManager } from './worktreeManager';
 /**
  * Type-safe wrapper around ipcMain.handle. `K` is constrained to a real channel
  * name, and the handler's return type must match that channel's contract.
+ *
+ * It also records the handler in `relayRegistry`, which is how a browser tab reaches this
+ * same code: a relayed `ipc-invoke` looks the channel up there and runs THIS function, not a
+ * cloud-flavoured copy of it. See `ipcRegistry.ts`. Registering unconditionally rather than
+ * only for relayable channels is deliberate — the registry does the classifying, and a
+ * `handle()` call that also had to remember to opt in would be the thing everyone forgets.
  */
 function handle<K extends keyof IpcApi>(
   channel: K,
   handler: (...args: Parameters<IpcApi[K]>) => ReturnType<IpcApi[K]>,
 ): void {
   ipcMain.handle(channel, (_event, ...args) => handler(...(args as Parameters<IpcApi[K]>)));
+  relayRegistry.register(channel, handler as (...args: never[]) => unknown);
 }
 
 /**
@@ -2698,6 +2708,46 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   ]);
   syncPoller.reschedule();
 
+  // Relayed commands drain here, serially, in the order the server delivered them.
+  //
+  // The event fan-out this used to do per outcome is gone, and its absence is the point:
+  // every relayed command now runs a REAL handler (`ipc-invoke` → `ipcRegistry`), and those
+  // handlers already push `task:changed` / `project:tasksChanged` themselves — plus the
+  // chain, attachment and merge-request pushes a hand-rolled fan-out never knew about. Left
+  // in, every relayed invoke would have pushed twice, which for a whole-list event like
+  // `chain:changed` means the board re-renders from two identical payloads for every click
+  // somebody makes in a browser.
+  //
+  // The three v1 edit kinds are the exception — they write through `Store` directly and have
+  // no handler behind them — so they, and only they, still get their events pushed here.
+  const cloudCommandQueue = new CommandQueue<CommandEnvelope, CloudCommandOutcome>({
+    run: (command) => applyCloudCommand(store, command),
+    onResult: (command, outcome) => {
+      if (!outcome.ok) {
+        logMain(`cloud: command ${outcome.id} rejected — ${outcome.reason}`);
+        return;
+      }
+      if (command.kind === 'ipc-invoke') return; // the handler announced itself already
+      if (outcome.projectId) {
+        send('project:tasksChanged', {
+          projectId: outcome.projectId,
+          tasks: store.getTasks(outcome.projectId),
+        });
+      }
+      if (!outcome.taskId) return;
+      const task = store.getTask(outcome.taskId);
+      if (!task) return;
+      send('task:changed', { task, runId: null });
+      // Same two follow-ups `task:setStatus` makes for a human's own move — see its own
+      // comments in this file for why each one exists.
+      if (restingStatus(task) === 'done') scheduler.dismissAttentionForCard(task.id);
+      if (task.status === 'pending') scheduler.reconsiderChains('card-changed');
+    },
+    // `applyCloudCommand` is contracted not to throw, so this is a bug rather than a command
+    // that failed — logged loudly, and the drain carries on with the ones behind it.
+    onError: (command, error) => logMain(`cloud: command ${command.id} threw`, error),
+  });
+
   // The cloud mirror's own poller — same `trackSync` wrapping as JIRA/GitLab above, so the
   // status bar's ring reacts to it identically, but its own seconds-scale, self-scheduling
   // timer rather than a slot on `syncPoller`'s shared one. See `cloudPoller.ts`'s header for
@@ -2707,34 +2757,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     focus: focusTracker,
     getSettings: () => store.getSettings().cloud,
     getAccessToken: getCloudAccessToken,
-    // Phase 25's "Apply queued cloud commands on the client": map every relayed command to
-    // the `Store` mutation `cloudCommands.ts` picks for it, then push the same UI events the
-    // matching IPC handler would — a command from the web app has to look, to an open
-    // desktop window, exactly like the edit it stands in for. Acking happens for free: the
-    // batch is committed (and each id recorded) inside `applyCloudCommands` itself, and the
-    // next tick's `SyncRequest.ackedCommandIds` reads straight off that ledger.
-    onCommands: (commands) => {
-      const outcomes = applyCloudCommands(store, commands);
-      const changedProjects = new Set<string>();
-      for (const outcome of outcomes) {
-        if (!outcome.ok) {
-          logMain(`cloud: command ${outcome.id} rejected — ${outcome.reason}`);
-          continue;
-        }
-        if (outcome.projectId) changedProjects.add(outcome.projectId);
-        if (!outcome.taskId) continue;
-        const task = store.getTask(outcome.taskId);
-        if (!task) continue;
-        send('task:changed', { task, runId: null });
-        // Same two follow-ups `task:setStatus` makes for a human's own move — see its own
-        // comments in this file for why each one exists.
-        if (restingStatus(task) === 'done') scheduler.dismissAttentionForCard(task.id);
-        if (task.status === 'pending') scheduler.reconsiderChains('card-changed');
-      }
-      for (const projectId of changedProjects) {
-        send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) });
-      }
-    },
+    // Hand the batch to the serial drain and return. Applying is `cloudCommands.ts`'s job,
+    // ordering and one-at-a-time is `commandQueue.ts`'s, and acking is free: each command
+    // records itself in the ledger, which the next tick's `SyncRequest.ackedCommandIds` and
+    // `SyncRequest.results` both read straight off.
+    onCommands: (commands) => cloudCommandQueue.enqueue(commands),
     runTracked: (run) => trackSync('cloud', run),
   });
   cloudPoller.reschedule();

@@ -18,7 +18,8 @@
  * in a test the same way `GitLabClient` can.
  */
 import { CADENCE_MS, nextPollDelayMs } from '@protocol/cadence';
-import type { CommandEnvelope, SyncRequest, SyncResponse } from '@protocol/wire';
+import type { CommandEnvelope, CommandResult, SyncRequest, SyncResponse } from '@protocol/wire';
+import { PROTOCOL_VERSION } from '@protocol/wire';
 import type { CloudSettings } from '@shared/settings';
 import { SYNC_BYTES_LIMIT, buildMirrorDeltaWithin } from './cloudDelta';
 import { logMain } from './log';
@@ -38,10 +39,18 @@ export interface CloudPollerDeps {
   /** A bearer access token for this tick, or null when not signed in — the tick then
    * fails like any other network error (counted, backed off, retried next time). */
   getAccessToken: () => Promise<string | null>;
-  /** Commands the server relayed for this client this tick. `CloudPoller` only hands them
-   * off — applying them (`cloudCommands.ts`, wired in `ipc.ts`) is the caller's job, and
-   * acking them back (`Store`'s applied-command ledger) is what feeds the next tick's
-   * `SyncRequest.ackedCommandIds` above. */
+  /**
+   * Commands the server relayed for this client this tick. `CloudPoller` only hands them
+   * off — applying them (`cloudCommands.ts`, drained by `main/commandQueue.ts` and wired in
+   * `ipc.ts`) is the caller's job, and acking them back (`Store`'s applied-command ledger) is
+   * what feeds the next tick's `SyncRequest.ackedCommandIds` above.
+   *
+   * Deliberately still `=> void`, and deliberately still fire-and-forget. Making it `async`
+   * and awaiting it here would couple poll liveness to handler latency: a relayed `jira:sync`
+   * running for two minutes would stop the mirror for two minutes, and a channel that never
+   * resolved would stop it forever. The queue on the other side is what keeps two ticks'
+   * batches from interleaving; see its own header.
+   */
   onCommands: (commands: CommandEnvelope[]) => void;
   /** Wraps one tick so the status bar can watch it, exactly as `trackSync` wraps JIRA/GitLab. */
   runTracked: <T>(run: () => Promise<T>) => Promise<T>;
@@ -158,6 +167,16 @@ export class CloudPoller {
     // `cloudCommands.ts`'s own header for why acking happens here rather than the moment a
     // command is applied: this is the only place a "the server heard back" round trip exists.
     const ackedCommandIds = this.deps.store.getPendingCloudAcks();
+    // The answers to relayed `ipc-invoke`s, riding the same request as the acks. Two
+    // separate ledger columns and two separate "sent" marks, because they are two facts: an
+    // ack retires the command on the server's queue, a result is what a browser is awaiting.
+    const pendingResults = this.deps.store.getPendingCloudResults();
+    const results: CommandResult[] = pendingResults.map((row) => ({
+      commandId: row.commandId,
+      ok: row.ok,
+      ...(row.value === undefined ? {} : { value: row.value }),
+      ...(row.reason === null ? {} : { error: row.reason }),
+    }));
     const { delta, sent } = buildMirrorDeltaWithin(
       rows,
       this.deps.store.getTask,
@@ -170,6 +189,8 @@ export class CloudPoller {
       focused: this.deps.focus.isFocused(),
       deltas: delta,
       ackedCommandIds,
+      results,
+      protocolVersion: PROTOCOL_VERSION,
     };
 
     const payload = JSON.stringify(request);
@@ -208,6 +229,12 @@ export class CloudPoller {
       this.deps.store.pruneCloudOutbox(Math.max(...sent.map((r) => r.seq)));
     }
     if (ackedCommandIds.length > 0) this.deps.store.markCloudAcksSent(ackedCommandIds);
+    // Only marked once the request that carried them actually succeeded — the same rule the
+    // acks and the outbox prune above follow, and for the same reason: a result marked sent
+    // on a request that failed is an answer the browser never gets and nothing will resend.
+    if (results.length > 0) {
+      this.deps.store.markCloudResultsSent(results.map((r) => r.commandId));
+    }
     this.deps.store.saveCloudCursor(body.cursor);
     this.lastServerIntervalMs = body.cadence.intervalMs;
     if (body.commands.length > 0) this.deps.onCommands(body.commands);
