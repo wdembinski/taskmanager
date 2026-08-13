@@ -23,12 +23,21 @@
  *     again if a command reaches it anyway; this refusal is the courtesy that makes the click
  *     fail immediately instead of after a round trip.
  *
- * `task:setStatus` and `task:create` keep their own paths as the older, narrower `set-status`
- * and `create-task` command kinds: their effect is observed through the mirror and needs no
- * result to come back at all, so they resolve as soon as the command is queued rather than
- * waiting on a desktop poll. That is not a shortcut — it is the discipline this file already
- * established, that an RPC's EFFECT is observed through the mirror and not through its
- * return value. `BoardScreen` owns the optimistic overlay for the gap (`cloudBoardStore.ts`).
+ * `task:setStatus` keeps its own path as the older, narrower `set-status` command kind: its
+ * effect is observed through the mirror and needs no result to come back at all, so it
+ * resolves as soon as the command is queued rather than waiting on a desktop poll. That is
+ * not a shortcut — it is the discipline this file already established, that an RPC's EFFECT
+ * is observed through the mirror and not through its return value. `BoardScreen` owns the
+ * optimistic overlay for the gap (`cloudBoardStore.ts`).
+ *
+ * `task:create` USED to have the same treatment and no longer does. The difference is what
+ * the two calls' return values are worth. Nobody reads what a status change hands back; the
+ * add-task dialog reads the created `Task` and keeps working on it — a JIRA ticket adopts its
+ * id, a chain link is drawn to it, files are copied onto it — and the fabricated
+ * `pending:<uuid>` row this returned could not be any of those things. Worse, `create-task`
+ * carries four fields, so everything else the shared dialog asks for (type, filing, parent)
+ * was dropped on the floor by the kind itself. Relayed, the desktop runs its own
+ * `task:create` handler and answers with the real row.
  *
  * POLLING, NOT PUSHING
  * --------------------
@@ -120,15 +129,11 @@ export class HttpTransport implements Transport {
     channel: K,
     ...args: Parameters<IpcApi[K]>
   ): ReturnType<IpcApi[K]> {
-    // The two kinds that predate the relay, and still earn their place: their effect is
-    // observed through the mirror, so waiting for a result would be waiting for nothing.
+    // The one kind that predates the relay and still earns its place: its effect is observed
+    // through the mirror, so waiting for a result would be waiting for nothing.
     if (channel === 'task:setStatus') {
       const [taskId, status] = args as Parameters<IpcApi['task:setStatus']>;
       return this.setStatus(taskId, status) as ReturnType<IpcApi[K]>;
-    }
-    if (channel === 'task:create') {
-      const [projectId, input] = args as Parameters<IpcApi['task:create']>;
-      return this.createTask(projectId, input) as ReturnType<IpcApi[K]>;
     }
     if (!isRelayable(channel)) {
       return Promise.reject(new Error(hostOnlyMessage(channel))) as ReturnType<IpcApi[K]>;
@@ -283,25 +288,6 @@ export class HttpTransport implements Transport {
     // (`cloudBoardStore.queuePendingStatusChange`) rather than trust this call's return
     // value, which cannot know the task's real other fields.
     return { id: taskId, status } as Task;
-  }
-
-  private async createTask(
-    projectId: string,
-    input: { title: string; phase?: string; description?: string },
-  ): Promise<Task> {
-    await this.sendCommand('create-task', {
-      projectId,
-      title: input.title,
-      phase: input.phase,
-      description: input.description,
-    });
-    return {
-      id: `pending:${this.mintId()}`,
-      projectId,
-      phase: input.phase ?? '',
-      title: input.title,
-      status: 'pending',
-    } as Task;
   }
 
   private async sendCommand(

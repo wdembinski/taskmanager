@@ -22,9 +22,14 @@
  * The board's own preferences live in `settings:get`/`settings:save` now rather than in this
  * app's `localStorage`, so the switches match the desktop's instead of being a second set of
  * the same three toggles that silently disagreed with them.
+ *
+ * And making a card is the desktop's own dialog (`@tm/ui/AddTaskDialog`), not this app's fork
+ * of it. The fork asked for a title and a phase because that is all the `create-task` command
+ * kind could carry; the shared one calls `task:create` over the relay, so the desktop runs its
+ * own handler and every field — type, description, filing, parent, chain link, ticket — lands.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Caption1, makeStyles } from '@fluentui/react-components';
+import { Button, Caption1, makeStyles } from '@fluentui/react-components';
 import {
   COLUMN_META,
   focusCards,
@@ -42,13 +47,19 @@ import { useCardAnchors } from '@tm/ui/board/useCardAnchors';
 import { arrowRoute } from '@tm/ui/board/chainArrows';
 import { linkDropStates, type LinkDragState } from '@tm/ui/board/chainDrag';
 import { foldedCardSet, toggleFoldedCard } from '@tm/ui/board/foldedSteps';
+import { AddTaskDialog } from '@tm/ui/AddTaskDialog';
 import { TaskDetail } from '@tm/ui/TaskDetail';
 import { useTransport } from '@tm/ui/transport';
 import { useBoardLayoutStyles } from '@tm/ui/board/boardLayout';
 import { ArchivedCardsDialog, archivedCards } from '@tm/ui/board/ArchivedCardsDialog';
 import { awaitingMerge, blockedBy, chainComponent } from '@tm/shared/taskChain';
-import { isManualStatus, type BoardColumn, type ManualStatus, type Task } from '@tm/shared/model';
-import { AddTaskDialog } from './AddTaskDialog';
+import {
+  isManualStatus,
+  PERSONAL_PROJECT_ID,
+  type BoardColumn,
+  type ManualStatus,
+  type Task,
+} from '@tm/shared/model';
 import { BoardToolbar } from './BoardToolbar';
 import { selectArchivedTasks, selectBoardTasks } from './boardSelectors';
 import { displayStatus, isTaskPending, type CloudBoardState } from './cloudBoardStore';
@@ -85,7 +96,6 @@ export interface BoardScreenProps {
    * overlay a drag gets, without putting a second identical command on the wire.
    */
   onStatusNoted: (taskId: string, status: ManualStatus) => void;
-  onCreateTask: (projectId: string, input: { title: string; phase?: string }) => Promise<void>;
 }
 
 export function BoardScreen({
@@ -93,7 +103,6 @@ export function BoardScreen({
   everSeenClient,
   onSetStatus,
   onStatusNoted,
-  onCreateTask,
 }: BoardScreenProps): JSX.Element {
   const layout = useBoardLayoutStyles();
   const styles = useStyles();
@@ -106,6 +115,8 @@ export function BoardScreen({
   const [chainFocus, setChainFocus] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
+  /** Whether the shared add-task dialog is up — the desktop's own `addOpen`. */
+  const [addOpen, setAddOpen] = useState(false);
   /**
    * When the Removed-cards dialog was opened, or null while it is shut — the timestamp
    * rather than a boolean for the reason `MyTasks` holds one: the rows are labelled
@@ -153,6 +164,13 @@ export function BoardScreen({
   );
   const attachmentsByTask = useMemo(() => byTask(extras.attachments), [extras.attachments]);
   const tasksById = useMemo(() => new Map(boardTasks.map((t) => [t.id, t])), [boardTasks]);
+
+  /**
+   * Cards the add-task dialog may hang a hand-written step under, and — asked the other way
+   * round — chain the new card after. `MyTasks`'s own `parentCandidates`: every top-level
+   * card on this board, from the mirrored rows this screen already draws.
+   */
+  const parentCandidates = useMemo(() => boardTasks.filter((t) => !t.parentTaskId), [boardTasks]);
 
   /** The chain the focus toggle narrows the board to — `MyTasks`'s own `focusIds`. */
   const focusIds = useMemo(
@@ -376,13 +394,21 @@ export function BoardScreen({
           }}
           archivedCount={removedCards.length}
           onOpenArchived={() => setArchivedOpenedAt(Date.now())}
+          // The trigger only — the dialog itself is mounted at the bottom of the tree, the
+          // way the desktop mounts it, because it is `open`-controlled rather than wrapped
+          // round its own button. Small and primary, exactly as `MyTasks` renders it: it
+          // sits in a row of small controls, and a default-size button would set the
+          // toolbar's height and make the two boards visibly different.
           addTask={
-            <AddTaskDialog
-              projects={projects}
-              onCreate={onCreateTask}
-              disabled={!everSeenClient || projects.length === 0}
-              disabledReason={disabledReason}
-            />
+            <Button
+              size="small"
+              appearance="primary"
+              disabled={!everSeenClient}
+              title={disabledReason}
+              onClick={() => setAddOpen(true)}
+            >
+              Add task…
+            </Button>
           }
         />
 
@@ -542,6 +568,36 @@ export function BoardScreen({
           />
         </div>
       )}
+
+      {/* The desktop's own add-task dialog, the same component with the same props — so a
+          card made here can carry a project, a description, a type, a phase, a parent, a
+          chain link and a JIRA ticket, instead of the title-and-phase pair the web's own
+          fork of this dialog could ask for. It talks to the engine through the transport
+          (`task:create`, `task:addSubtask`, `chain:link`, `jira:*`), so every field it
+          collects is applied by the desktop's own handler and lands in full. */}
+      <AddTaskDialog
+        open={addOpen}
+        projectId={PERSONAL_PROJECT_ID}
+        phases={[]}
+        parents={parentCandidates}
+        // The same cards, asked a different question — see `parentCandidates`.
+        chainCandidates={parentCandidates}
+        // The REAL projects (`agentProject:list`, relayed), not the mirrored `Project` rows:
+        // filing a card is about a repo the engine knows, and the mirror's rows are the
+        // queues that hold tasks. The detail pane's Project dropdown offers this same list.
+        projects={extras.agentProjects}
+        jiraEnabled={settings.jira.enabled}
+        // A browser has no OS file picker and no path for a dropped `File`, so the whole
+        // files section is one thing this host cannot do rather than a control to grey out.
+        filesEnabled={false}
+        onClose={() => setAddOpen(false)}
+        // The new card itself arrives on the next board poll (the desktop mirrors the write);
+        // this re-reads the relayed lists, which is where a chain link drawn at creation is.
+        onCreated={extras.refresh}
+        // A link that would not draw is reported HERE: the card exists by then, and the
+        // dialog it was refused in is already closing.
+        onNotice={setError}
+      />
 
       <ArchivedCardsDialog
         open={archivedOpenedAt !== null}

@@ -189,6 +189,12 @@ export interface CommandRequest {
  * a queued one can still be in the table across an upgrade, and `set-status` in particular
  * is worth keeping as its own kind — its effect is observed through the mirror, so it needs
  * no result to come back at all.
+ *
+ * `create-task` is the one of the three the web has STOPPED sending. It carries four fields,
+ * and the shared add-task dialog collects a dozen (type, filing, parent, chain link, ticket),
+ * so a card made in a browser now relays `task:create` like any other channel and gets the
+ * real row back rather than a fabricated id. The kind is still applied — an older client's
+ * queued command must not become unreadable — but nothing issues it any more.
  */
 export type CommandKind = 'set-status' | 'add-comment' | 'create-task' | 'ipc-invoke';
 

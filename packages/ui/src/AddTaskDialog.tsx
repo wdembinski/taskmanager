@@ -53,6 +53,7 @@ import {
   MessageBar,
   MessageBarBody,
   Option,
+  Spinner,
   Textarea,
   tokens,
 } from '@fluentui/react-components';
@@ -917,10 +918,16 @@ export function AddTaskDialog({
             <Button appearance="secondary" onClick={onClose} disabled={saving}>
               Cancel
             </Button>
+            {/* The spinner is not decoration on a web client: `task:create` is relayed
+                there, so Add settles on the desktop's next drain rather than in the
+                microsecond an in-process write takes. A button that only greys out reads as
+                a click that did nothing. On the desktop it flashes and is gone, which is the
+                honest picture of how long that write actually takes. */}
             <Button
               appearance="primary"
               onClick={() => void save()}
               disabled={saving || !title.trim()}
+              icon={saving ? <Spinner size="tiny" /> : undefined}
             >
               {isStep ? 'Add step' : 'Add task'}
             </Button>

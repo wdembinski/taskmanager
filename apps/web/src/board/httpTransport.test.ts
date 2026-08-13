@@ -75,7 +75,7 @@ function t(): HttpTransport {
   return makeTransport().transport;
 }
 
-describe('HttpTransport: the two mirror-observed kinds', () => {
+describe('HttpTransport: the one mirror-observed kind', () => {
   it('posts a set-status command and resolves without waiting for a result', async () => {
     nextId = 0;
     const { transport, fetchImpl } = makeTransport({ newCommandId: () => 'cmd-1' });
@@ -98,17 +98,50 @@ describe('HttpTransport: the two mirror-observed kinds', () => {
     expect(init.headers.authorization).toBe('Bearer token');
   });
 
-  it('posts a create-task command', async () => {
-    const { transport, fetchImpl } = makeTransport();
-    await transport.invoke('task:create', 'p1', { title: 'New card', phase: 'Phase 1' });
+  /**
+   * The inverse of what this file asserted before, because the answer changed. `task:create`
+   * used to be the second mirror-observed kind: it posted a `create-task` command, which can
+   * carry a project, a title, a phase and a description, and answered a fabricated
+   * `pending:<uuid>` row.
+   *
+   * Both halves were wrong once the shared dialog started making cards here. The kind drops
+   * every other field the dialog collects (type, filing, parent), and its caller does not
+   * throw the answer away the way a status change's caller does — it adopts a JIRA ticket
+   * onto the returned id, draws a chain link to it and copies files onto it, none of which a
+   * made-up id can be the subject of. So it relays, and the row that comes back is real.
+   */
+  it('relays task:create, so the created card comes back whole', async () => {
+    const server = makeServer();
+    const { transport } = makeTransport({
+      fetchImpl: server.fetchImpl as unknown as typeof fetch,
+      newCommandId: () => 'cmd-9',
+    });
 
-    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
-    expect(body.command.kind).toBe('create-task');
-    expect(body.command.payload).toEqual({
-      projectId: 'p1',
+    const call = transport.invoke('task:create', 'personal', {
       title: 'New card',
       phase: 'Phase 1',
-      description: undefined,
+      type: 'bug',
+      description: 'what it is about',
+      projectTagId: 'proj-1',
+    });
+    server.answer('cmd-9', { ok: true, value: { id: 'real-1', title: 'New card' } });
+
+    await expect(call).resolves.toMatchObject({ id: 'real-1' });
+    expect(server.queued[0]).toMatchObject({
+      kind: 'ipc-invoke',
+      payload: {
+        channel: 'task:create',
+        args: [
+          'personal',
+          {
+            title: 'New card',
+            phase: 'Phase 1',
+            type: 'bug',
+            description: 'what it is about',
+            projectTagId: 'proj-1',
+          },
+        ],
+      },
     });
   });
 });

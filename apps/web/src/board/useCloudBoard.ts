@@ -49,7 +49,9 @@ export interface CloudBoardApi {
   setStatus: (taskId: string, status: ManualStatus) => Promise<void>;
   /** Record a status change the detail pane already sent — see the implementation. */
   noteStatus: (taskId: string, status: ManualStatus) => void;
-  createTask: (projectId: string, input: { title: string; phase?: string }) => Promise<void>;
+  // No `createTask` here any more: the shared add-task dialog calls `task:create` on the
+  // transport itself, like every other write under `TaskDetail`, and a second path through
+  // this hook could only ever be the narrower one (see `httpTransport.ts`).
 }
 
 export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi {
@@ -158,13 +160,6 @@ export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi
     );
   }, []);
 
-  const createTask = useCallback(
-    async (projectId: string, input: { title: string; phase?: string }) => {
-      await transport.invoke('task:create', projectId, input);
-    },
-    [transport],
-  );
-
   return {
     state,
     cadence: state.cadence,
@@ -173,6 +168,5 @@ export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi
     transport,
     setStatus,
     noteStatus,
-    createTask,
   };
 }

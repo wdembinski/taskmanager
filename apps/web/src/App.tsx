@@ -203,7 +203,6 @@ function SignedInBoard({
             everSeenClient={board.targetClientId !== null}
             onSetStatus={(taskId, status) => void board.setStatus(taskId, status)}
             onStatusNoted={board.noteStatus}
-            onCreateTask={board.createTask}
           />
         )}
         {screen === 'performance' && <Performance />}
