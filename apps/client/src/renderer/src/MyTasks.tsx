@@ -48,7 +48,7 @@ import {
   type LinkGate,
   type TaskLink,
 } from '@shared/taskChain';
-import { AddTaskDialog } from './AddTaskDialog';
+import { AddTaskDialog } from '@ui/AddTaskDialog';
 import {
   ArchivedCardsDialog,
   archivedCards,

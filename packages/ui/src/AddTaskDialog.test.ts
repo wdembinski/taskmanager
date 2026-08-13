@@ -14,7 +14,7 @@
  * taken-list a brand-new task has on both sides.
  */
 import { describe, expect, it } from 'vitest';
-import { attachmentName } from '@shared/attachments';
+import { attachmentName } from '@tm/shared/attachments';
 import { addTaskPlan, stageAttachments, type AddTaskForm } from './AddTaskDialog';
 
 const form = (over: Partial<AddTaskForm> = {}): AddTaskForm => ({

@@ -26,6 +26,13 @@
  * an attachment hangs off a task id, and there is no task yet. So they are **staged** — held
  * as paths while the form is filled in, and copied once the row exists. See
  * {@link stageAttachments} for why the `@name` you cite before that is the name you get.
+ *
+ * It lives here, and not in apps/client, because making a card is the same act in both
+ * clients and a second dialog would be a second set of answers to these four questions.
+ * Every channel it calls relays over the mirror except `attachment:pick`, which opens an OS
+ * modal on the machine the engine runs on and so has no browser answer at all — which is
+ * what `filesEnabled` is for. Nothing else here is host-specific: the engine is reached
+ * through {@link useTransport}, not through `window.api`.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -51,11 +58,12 @@ import {
 } from '@fluentui/react-components';
 import { Switch } from '@fluentui/react-components';
 import { AttachRegular } from '@fluentui/react-icons';
-import type { Project, Task, TaskType } from '@shared/model';
-import type { JiraIssueTypeOption, JiraProjectOption } from '@shared/ipc';
-import { attachmentName, insertAttachmentRef } from '@shared/attachments';
-import { LINK_GATE_LABEL, LINK_REFUSAL_MESSAGE } from '@shared/taskChain';
-import { isFileDrag } from '@ui/AttachmentStrip';
+import type { Project, Task, TaskType } from '@tm/shared/model';
+import type { JiraIssueTypeOption, JiraProjectOption } from '@tm/shared/ipc';
+import { attachmentName, insertAttachmentRef } from '@tm/shared/attachments';
+import { LINK_GATE_LABEL, LINK_REFUSAL_MESSAGE } from '@tm/shared/taskChain';
+import { isFileDrag } from './AttachmentStrip';
+import { useTransport } from './transport';
 
 /** The task types offered in the picker, with their display labels. */
 const TASK_TYPES: Array<{ value: TaskType; label: string }> = [
@@ -283,6 +291,18 @@ export interface AddTaskDialogProps {
    * no sense.
    */
   jiraEnabled?: boolean;
+  /**
+   * Whether this host can put files on the card as it is created. Defaults to on, because
+   * the host that cannot is the exception: a browser has no OS file picker to open and no
+   * path to hand a dropped `File`, so the whole section — pick, drop, chips, staging — is
+   * one thing it cannot do rather than a control to grey out.
+   *
+   * A prop and not a `typeof window.api` check on purpose. This component no longer knows
+   * which host it is rendering in — that is the entire point of {@link useTransport} — and a
+   * capability the caller states is one that typechecks, rather than one discovered at run
+   * time from a global that only exists in one of the two apps.
+   */
+  filesEnabled?: boolean;
   onClose: () => void;
   onCreated: () => void;
   /**
@@ -305,10 +325,12 @@ export function AddTaskDialog({
   chainCandidates = [],
   projects = [],
   jiraEnabled = false,
+  filesEnabled = true,
   onClose,
   onCreated,
   onNotice,
 }: AddTaskDialogProps): JSX.Element {
+  const transport = useTransport();
   const styles = useStyles();
   const [title, setTitle] = useState('');
   const [phase, setPhase] = useState('');
@@ -360,7 +382,7 @@ export function AddTaskDialog({
     if (!open || !asJira) return;
     let live = true;
     setLoadingMeta(true);
-    void Promise.all([window.api.invoke('jira:projects'), window.api.invoke('settings:get')]).then(
+    void Promise.all([transport.invoke('jira:projects'), transport.invoke('settings:get')]).then(
       ([projects, settings]) => {
         if (!live) return;
         setJiraProjects(projects);
@@ -375,7 +397,7 @@ export function AddTaskDialog({
     return () => {
       live = false;
     };
-  }, [open, asJira]);
+  }, [open, asJira, transport]);
 
   // Issue types depend on the project, so they load after one is picked.
   useEffect(() => {
@@ -385,8 +407,8 @@ export function AddTaskDialog({
     }
     let live = true;
     void Promise.all([
-      window.api.invoke('jira:issueTypes', jiraProjectKey),
-      window.api.invoke('settings:get'),
+      transport.invoke('jira:issueTypes', jiraProjectKey),
+      transport.invoke('settings:get'),
     ]).then(([types, settings]) => {
       if (!live) return;
       setJiraTypes(types);
@@ -396,7 +418,7 @@ export function AddTaskDialog({
     return () => {
       live = false;
     };
-  }, [asJira, jiraProjectKey]);
+  }, [asJira, jiraProjectKey, transport]);
 
   const parent = useMemo(() => parents.find((p) => p.id === parentId) ?? null, [parents, parentId]);
   const isStep = parent !== null;
@@ -423,7 +445,7 @@ export function AddTaskDialog({
     const excuse = (why: string): void =>
       onNotice?.(`The card was created, but it could not be chained — ${why}.`);
     try {
-      const result = await window.api.invoke('chain:link', fromTaskId, createdId);
+      const result = await transport.invoke('chain:link', fromTaskId, createdId);
       if (result.status === 'refused') excuse(LINK_REFUSAL_MESSAGE[result.reason]);
     } catch (e) {
       excuse(e instanceof Error ? e.message : String(e));
@@ -443,7 +465,7 @@ export function AddTaskDialog({
     ticket: { projectKey: string; issueTypeId: string; summary: string; description?: string },
   ): Promise<void> {
     try {
-      await window.api.invoke('jira:createTask', { ...ticket, adoptTaskId: createdId });
+      await transport.invoke('jira:createTask', { ...ticket, adoptTaskId: createdId });
     } catch (e) {
       const why = e instanceof Error ? e.message : String(e);
       onNotice?.(`The card was created, but its JIRA ticket was not — ${why}`);
@@ -462,7 +484,7 @@ export function AddTaskDialog({
    */
   async function attachTo(createdId: string, paths: string[]): Promise<void> {
     try {
-      await window.api.invoke('attachment:add', createdId, paths);
+      await transport.invoke('attachment:add', createdId, paths);
     } catch (e) {
       const why = e instanceof Error ? e.message : String(e);
       onNotice?.(
@@ -521,7 +543,7 @@ export function AddTaskDialog({
   async function pickFiles(): Promise<void> {
     setError(null);
     try {
-      stage(await window.api.invoke('attachment:pick'));
+      stage(await transport.invoke('attachment:pick'));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -559,9 +581,9 @@ export function AddTaskDialog({
       // A step is created through its parent (it inherits the delegation and joins
       // the chain); everything else is an ordinary ad-hoc card.
       if (plan.kind === 'step') {
-        createdId = (await window.api.invoke('task:addSubtask', plan.parentId, plan.step)).id;
+        createdId = (await transport.invoke('task:addSubtask', plan.parentId, plan.step)).id;
       } else {
-        created = await window.api.invoke('task:create', projectId, plan.card);
+        created = await transport.invoke('task:create', projectId, plan.card);
         createdId = created.id;
         if (plan.ticket) await ticketFor(created.id, plan.ticket);
       }
@@ -704,93 +726,101 @@ export function AddTaskDialog({
                   somebody thinks of the card, not ten minutes later. Nothing is copied yet:
                   an attachment hangs off a task id and there is none until Add. No thumbnail
                   for the same reason — a preview is served BY id (`vipper-attachment://`),
-                  and `img-src` does not allow a local file, which is the point of it. */}
-              <Field
-                label="Files (optional)"
-                hint={
-                  staged.length
-                    ? `Copied onto the ${isStep ? 'step' : 'card'} when you press Add. Name one as @file in the text above and the agent running this gets the real file.`
-                    : 'Attach a screenshot, a mockup, a log — the agent gets the file, not a description of it.'
-                }
-              >
-                <div
-                  className={mergeClasses(styles.files, over && styles.over)}
-                  onDragOver={(e) => {
-                    // Not ours — and a `dragover` handler may only read the type list, not
-                    // the payload. Returning without `preventDefault` is what lets anything
-                    // else land where it was aimed; the window itself refuses the rest.
-                    if (!isFileDrag(e.dataTransfer.types) || saving) return;
-                    e.preventDefault();
-                    e.dataTransfer.dropEffect = 'copy';
-                    if (!over) setOver(true);
-                  }}
-                  onDragLeave={(e) => {
-                    // Only when the pointer really leaves the strip, not every child it enters.
-                    if (!e.currentTarget.contains(e.relatedTarget as Node)) setOver(false);
-                  }}
-                  onDrop={(e) => {
-                    if (!isFileDrag(e.dataTransfer.types) || saving) return;
-                    e.preventDefault();
-                    setOver(false);
-                    // `File.path` was removed in Electron 32, so the path comes from the
-                    // preload bridge. Something with no file on disk answers '' and is dropped.
-                    const paths = Array.from(e.dataTransfer.files)
-                      .map((file) => window.api.pathForFile(file))
-                      .filter((path) => path !== '');
-                    if (paths.length) stage(paths);
-                    else setError('That has no file on disk to attach.');
-                  }}
+                  and `img-src` does not allow a local file, which is the point of it.
+
+                  The whole section is gone rather than disabled on a host that cannot pick
+                  files: staging is paths, and a client with no filesystem underneath it has
+                  nothing to put in one — an Attach button that could only ever fail, and a
+                  drop zone that would eat a file and stage nothing, are worse than no
+                  offer. See `filesEnabled`. */}
+              {filesEnabled && (
+                <Field
+                  label="Files (optional)"
+                  hint={
+                    staged.length
+                      ? `Copied onto the ${isStep ? 'step' : 'card'} when you press Add. Name one as @file in the text above and the agent running this gets the real file.`
+                      : 'Attach a screenshot, a mockup, a log — the agent gets the file, not a description of it.'
+                  }
                 >
-                  {staged.length > 0 && (
-                    <div className={styles.chips}>
-                      {staged.map((s) => (
-                        <Badge
-                          key={s.path}
-                          appearance="tint"
-                          color="informative"
-                          icon={<AttachRegular />}
-                          title={`${s.path} · cite it as @${s.name}`}
-                        >
-                          <button
-                            type="button"
-                            className={styles.chipName}
-                            title={`Write @${s.name} into the text above`}
-                            onClick={() => insertRefs([s.name])}
+                  <div
+                    className={mergeClasses(styles.files, over && styles.over)}
+                    onDragOver={(e) => {
+                      // Not ours — and a `dragover` handler may only read the type list, not
+                      // the payload. Returning without `preventDefault` is what lets anything
+                      // else land where it was aimed; the window itself refuses the rest.
+                      if (!isFileDrag(e.dataTransfer.types) || saving) return;
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = 'copy';
+                      if (!over) setOver(true);
+                    }}
+                    onDragLeave={(e) => {
+                      // Only when the pointer really leaves the strip, not every child it enters.
+                      if (!e.currentTarget.contains(e.relatedTarget as Node)) setOver(false);
+                    }}
+                    onDrop={(e) => {
+                      if (!isFileDrag(e.dataTransfer.types) || saving) return;
+                      e.preventDefault();
+                      setOver(false);
+                      // `File.path` was removed in Electron 32, so the path comes from the
+                      // host. Something with no file on disk answers '' and is dropped.
+                      const paths = Array.from(e.dataTransfer.files)
+                        .map((file) => transport.pathForFile(file))
+                        .filter((path) => path !== '');
+                      if (paths.length) stage(paths);
+                      else setError('That has no file on disk to attach.');
+                    }}
+                  >
+                    {staged.length > 0 && (
+                      <div className={styles.chips}>
+                        {staged.map((s) => (
+                          <Badge
+                            key={s.path}
+                            appearance="tint"
+                            color="informative"
+                            icon={<AttachRegular />}
+                            title={`${s.path} · cite it as @${s.name}`}
                           >
-                            {s.name}
-                          </button>
-                          <button
-                            type="button"
-                            className={styles.chipX}
-                            aria-label={`Don’t attach ${s.name}`}
-                            title="Don’t attach this one"
-                            disabled={saving}
-                            onClick={() => unstage(s.path)}
-                          >
-                            ×
-                          </button>
-                        </Badge>
-                      ))}
+                            <button
+                              type="button"
+                              className={styles.chipName}
+                              title={`Write @${s.name} into the text above`}
+                              onClick={() => insertRefs([s.name])}
+                            >
+                              {s.name}
+                            </button>
+                            <button
+                              type="button"
+                              className={styles.chipX}
+                              aria-label={`Don’t attach ${s.name}`}
+                              title="Don’t attach this one"
+                              disabled={saving}
+                              onClick={() => unstage(s.path)}
+                            >
+                              ×
+                            </button>
+                          </Badge>
+                        ))}
+                      </div>
+                    )}
+                    <div className={styles.row}>
+                      <Button
+                        size="small"
+                        appearance="subtle"
+                        icon={<AttachRegular />}
+                        disabled={saving}
+                        onClick={() => void pickFiles()}
+                      >
+                        Attach
+                      </Button>
+                      <Caption1 className={styles.hint}>
+                        {staged.length === 0
+                          ? 'Drop files here, or pick them.'
+                          : 'Click a file to write its @name where the caret is.'}
+                      </Caption1>
                     </div>
-                  )}
-                  <div className={styles.row}>
-                    <Button
-                      size="small"
-                      appearance="subtle"
-                      icon={<AttachRegular />}
-                      disabled={saving}
-                      onClick={() => void pickFiles()}
-                    >
-                      Attach
-                    </Button>
-                    <Caption1 className={styles.hint}>
-                      {staged.length === 0
-                        ? 'Drop files here, or pick them.'
-                        : 'Click a file to write its @name where the caret is.'}
-                    </Caption1>
                   </div>
-                </div>
-              </Field>
+                </Field>
+              )}
               {/* A ticket AS WELL as the card, not instead of it: the card is written
                   first and the issue is linked onto it, so everything above still applies
                   and a JIRA that will not answer costs you the ticket alone. Never offered
