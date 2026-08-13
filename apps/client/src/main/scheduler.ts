@@ -1150,7 +1150,9 @@ export class Scheduler {
    *
    * A hold, not a gate: it is counted by {@link Scheduler.workIsHeld}, so for the few
    * seconds the probe takes nothing new is pumped into a wall the account may well be up
-   * against. Held FIRST and confirmed second, deliberately — the alternative is asking
+   * against — see there for the start points it deliberately does not reach, and why a
+   * launch that slips through one of them costs a session and nothing else.
+   * Held FIRST and confirmed second, deliberately — the alternative is asking
    * first and discovering, three launches later, that they all died the same way. If the
    * probe contradicts the text the hold is dropped and the failure settles as the card's
    * own, so a wrong classification costs a few seconds of queue, not five hours.
@@ -1941,14 +1943,26 @@ export class Scheduler {
    * Whether any account-wide gate is holding work: a usage limit, or a dead sign-in.
    *
    * Both are properties of the ACCOUNT, not of a task, so both have to stop scheduling
-   * everywhere rather than be discovered per card. They are asked as one question at
-   * every start point; where the two need different words for the human — a countdown
-   * versus a Sign in button — the call sites ask the gates apart.
+   * everywhere rather than be discovered per card. This is the question the paths that
+   * start work *anonymously* ask — `pump`, and the auto-retry relaunch in `case 'exited'`.
+   * Where the two gates need different words for the human — a countdown versus a Sign in
+   * button — or a different disposal for the work they are refusing, the call site asks the
+   * gates apart instead: `runTask` (which must name the gate in its refusal),
+   * `advanceSubtasks` (which must PARK the step, not drop it) and `startPendingReplan`.
    *
    * A limit being CHECKED counts too ({@link Scheduler.probingLimit}). It is not a gate —
    * there is nothing to tell the human and it lasts seconds — but a run that just said the
    * account is out of budget is exactly the moment not to launch three more, and the whole
    * point of holding before confirming is that the hold is in force while the probe runs.
+   *
+   * Which is also the limit of that hold, and it is deliberate: the three call sites above
+   * see only the GATES, so a step or a re-plan can still launch during the few seconds a
+   * probe is out. Nothing is lost when it does — `engageLimit` parks every run in flight,
+   * so a session started mid-probe is parked with a recipe like any other — and the
+   * alternative is worse in each case, because until the probe answers there is no gate to
+   * park against: `advanceSubtasks` would have to leave the step `pending` and forgotten
+   * (the 2/4 card), and `runTask` would have to refuse a human with a countdown to a reset
+   * that may never be scheduled. A wasted launch is the cheaper wrong answer.
    */
   private get workIsHeld(): boolean {
     return this.limitGate.active || this.authGate.active || this.probingLimit.size > 0;

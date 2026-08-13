@@ -13,6 +13,28 @@
  * direction would stop the whole board over one agent's prose, so the classifier is
  * deliberately split into wording only the CLI produces, and wording an agent might also
  * produce, which is believed only when the model was demonstrably never called.
+ *
+ * ITS TWIN, AND WHERE THEY MUST DIFFER
+ * ------------------------------------
+ * `limitGate.ts` now carries the same classifier for the account's *other* outage
+ * (`detectLimitFailure`), read out of the same `result` event on the same code path in
+ * `Scheduler.onRunEvent`, for the same reason: neither is the card's failure. They are two
+ * functions rather than one parameterised one because the corroboration they can reach for
+ * is not the same, and unifying them would have to drop whichever half is stricter:
+ *
+ *  - **`usage` all-zero.** Load-bearing here — a credential that cannot authenticate runs
+ *    no turns, so an agent writing "unauthorized" is separated from the CLI saying it by
+ *    the one fact that cannot be faked. Useless there: a usage limit is normally hit
+ *    *mid-run*, tokens already spent, so its ambiguous tier is corroborated against a live
+ *    `/usage` probe instead (see `decideLimitPark`) — a subprocess this file needs none of.
+ *  - **The `success` guard.** Applied by the CALLER here, because this classifier is only
+ *    ever consulted about a run that already failed. `detectLimitFailure` owns it itself,
+ *    because the limit phrase is something a *successful* run can legitimately end on — an
+ *    agent reporting on that very feature — and a run that succeeded hit no wall.
+ *
+ * What they DO share is the reason both exist: `terminalReason` is `api_error` on both, and
+ * the sentence naming the real cause is in `resultText`. Anything learned about that shape
+ * belongs in both files.
  */
 import type { SessionEvent } from '@shared/session';
 import type { AuthState } from '@shared/auth';
