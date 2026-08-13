@@ -68,6 +68,7 @@ describe('the channels that DO relay', () => {
   const MUST_RELAY = [
     'task:run',
     'task:stopAgent',
+    'task:resumeAgent',
     'task:chat',
     'task:replan',
     'attention:answer',

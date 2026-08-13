@@ -134,6 +134,30 @@ describe('HttpTransport: a relayed invoke is a real round trip', () => {
     });
   });
 
+  /**
+   * `development` asserted the exact opposite of this while the branch was in flight: a
+   * browser had no engine to resume into, so the transport refused `task:resumeAgent`
+   * outright. That tier is gone — `RELAY_POLICY` decides what may cross now, and it classes
+   * this channel with the card-level twins it was always shaped like, `task:run` and
+   * `task:stopAgent`. Same assertion, kept by name, inverted because the answer changed.
+   */
+  it('relays task:resumeAgent, because the resume happens on the desktop', async () => {
+    const server = makeServer();
+    const { transport } = makeTransport({
+      fetchImpl: server.fetchImpl as unknown as typeof fetch,
+      newCommandId: () => 'cmd-7',
+    });
+
+    const call = transport.invoke('task:resumeAgent', 't1');
+    server.answer('cmd-7', { ok: true, value: { id: 't1', status: 'in-progress' } });
+
+    await expect(call).resolves.toMatchObject({ id: 't1', status: 'in-progress' });
+    expect(server.queued[0]).toMatchObject({
+      kind: 'ipc-invoke',
+      payload: { channel: 'task:resumeAgent', args: ['t1'] },
+    });
+  });
+
   it('rejects with the desktop’s own message when the handler failed', async () => {
     const server = makeServer();
     const { transport } = makeTransport({
