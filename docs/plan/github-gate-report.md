@@ -2,7 +2,9 @@
 
 Steps 1–8 **built** the integration; step 9 **wrote** the headless harness; step 10 **ran** it
 and became §§1–7 of this file. Steps 11–13 then rebased the branch onto `development`, added the
-pull-request discussion, and re-ran the lot — that is §8.
+pull-request discussion, and re-ran the lot — that is §8. Step 14 walked the plan's **critical
+files** one by one on the finished tip and re-earned every number a fourth time — that is §9,
+which is also where the merge this branch is now heading into is written down.
 
 This file records the real numbers, and says plainly what cannot be run here and is therefore
 still owed to a person.
@@ -19,7 +21,9 @@ single-instance lock, so a second instance kills a live session.
 ## Summary
 
 Numbers from the re-run on `27bc03e` (§8). Step 10's original numbers are kept inline in §§1–4,
-so the two runs can be compared rather than one overwriting the other.
+so the two runs can be compared rather than one overwriting the other. All of them were run a
+third time on the finished tip `61750e1` (§9.2) and came back **identical** — which is the point:
+step 14 wrote no code, so a number that had moved would have meant something drifted underneath.
 
 | What                                   | Result                                                              |
 | -------------------------------------- | ------------------------------------------------------------------- |
@@ -245,6 +249,9 @@ set `development`'s manifest to `0.85.0` before the next release rather than re-
 > ahead of the highest tag, so `needsCommit=false` still holds and the rule is unchanged — only
 > the number to be suspicious of is. If this feature ships as **`v0.84.3`**, the bump was
 > swallowed.
+>
+> **Update, `61750e1`.** `v0.84.3` has since been released from `development` too, so that
+> number is spent as a tell as well. §9.3 carries the current one.
 
 ---
 
@@ -366,3 +373,92 @@ the integrator's rebase.
 That is a happy answer this time and should not be read as a general one. The rule the mirror
 imposes is unchanged: **whoever rebases this branch next must re-read `verify-github.mjs` against
 `ipc.ts` again**, because the check that catches a drift is a person, not a gate.
+
+---
+
+## 9. The critical files, walked one by one on the finished tip (`61750e1`)
+
+The plan's last step names six files (plus three reference points) as the ones this ticket lives
+or dies on. This section is that walk. Nothing below is a claim carried forward from an earlier
+step: every file was re-opened on `61750e1`, and every gate was re-run on it rather than on the
+`27bc03e` §8 measured.
+
+### 9.1 The six files, and what is actually in them
+
+| File                                          | What it had to end up as                            | On `61750e1`                                                                                                                                    |
+| --------------------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `packages/ui/src/board/TaskCard.tsx`          | both features, neither overwriting the other        | ✅ `canResumeWork` (:66), `TrackerMark` (:98), `resumable` (:1112) + `resumesChain` (:1114) **above** `ticketUnread` (:1116), `styles.runButton` (:1301, :1334) |
+| `apps/client/package.json`                    | `0.85.0`, and the harness given a name              | ✅ `0.85.0`; `"verify:github"` beside `check:abi` / `ensure:abi`                                                                                  |
+| `apps/client/src/main/ipc.ts`                 | 785 GitHub lines *and* the two things `development` put there | ✅ 3510 lines: `createWindowStateFlusher` imported at :154, `task:resumeAgent` at :854, `github:*` at :1454–:3355, the renamed `mr:*` at :1961–:1977 |
+| `github/{githubClient,describePullRequest,githubPrSync}.ts` + `forge/notes.ts` | step 2's unread signal                | ✅ `listReviewComments` (:607), all three sources folded at `describePullRequest.ts:307`, the keep-what-we-knew ternary at `githubPrSync.ts:165–169` |
+| `apps/client/scripts/verify-github.mjs`       | still mirroring the merged `ipc.ts`, still able to go red | ✅ 1349 lines, **98 checks**, exit 0 — §9.2                                                                                                     |
+| `docs/plan/github-gate-report.md`             | what was actually run                               | ✅ this section                                                                                                                                  |
+
+Two absences are as load-bearing as the presences, because they are what a bad rebase resolution
+would have left behind: `TaskCard.tsx` contains **no** `styles.stopButton` (the key `development`
+renamed) and **no** `jiraUnread` (the name the branch renamed). Both greps come back empty.
+
+The three reference points held without needing a change. `gitlab/gitlabSync.ts` now *imports*
+the logic it used to own (`latestForeignNoteAt` at :26, used at :169–:173) rather than carrying a
+second copy; `scripts/next-version.mjs` reads `needsCommit=false`; RELEASE.md §1's four gates are
+below.
+
+### 9.2 The gates, forced, on `61750e1`
+
+| Gate                               | Exit | Tasks / files                     | Time    |
+| ---------------------------------- | ---- | --------------------------------- | ------- |
+| `pnpm turbo run build --force`     | 0    | 6 successful, **0 cached**        | 28.149s |
+| `pnpm turbo run typecheck --force` | 0    | 9 successful, **0 cached**        | 22.877s |
+| `pnpm vitest run`                  | 0    | 153 files passed, 1 skipped (154) | 47.20s  |
+| `pnpm format:check`                | 0    | all matched files                 | —       |
+| `pnpm run verify:github`           | 0    | **98 checks**                     | —       |
+
+`pnpm vitest run`: **2555 passed, 11 skipped (2566)** — identical to §8.4, which is the answer
+wanted here: step 14 added no code, so a moved number would have meant something had drifted.
+
+The mirror was re-read against `ipc.ts` once more, under the rule §8.6 leaves behind. `ipc.ts` is
+byte-identical to the one §8.1 reconciled — no commit since is on this branch — so §8.1 stands
+rather than being re-derived. What has moved is `development`, and that is §9.3.
+
+### 9.3 The merge this branch is now heading into
+
+`development` was ten commits ahead when §8.6 was written and is **eleven** now. The eleventh is
+`0de6d4c chore(release): v0.84.3`; the other ten are Phase 26, which taught `apps/web` to relay
+the desktop's own IPC handlers. `git merge-base --is-ancestor development feat/github-support`
+therefore still does not pass, and — as §8.6 says — this step may no more fix that than the last
+one could: the rebase belongs to the integrator, and a step is forbidden from reshaping the
+branch. What a step *can* do is hand over the resolutions instead of the surprise.
+
+A read-only `git merge-tree 767bda5 development HEAD` puts the whole conflict surface at **six
+files, eight hunks**. Every other file merges clean, including the 3510-line `ipc.ts` — the
+eleven commits touch it by 85 lines and `git diff … -- ipc.ts | grep -i github` is still empty,
+so not one of the five regions the harness mirrors is in the way.
+
+| File                                | The conflict                                                                       | The resolution                                                                                                                            |
+| ----------------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/client/package.json`          | `0.84.3` vs `0.85.0`                                                                | **Keep `0.85.0`.** See §7 — this is the line that has been silently swallowed before                                                       |
+| `apps/client/src/renderer/src/Settings.tsx` | `development` moved `statusMap.ts` into `packages/ui`; the branch still imports `./statusMap` and adds `./statusMapView` | Take `@ui/statusMap`, **keep** the branch's `import { buildGitHubLabelRows } from './statusMapView'`. `statusMapView.ts` never imports the moved module, so nothing else follows |
+| `apps/web/src/board/httpTransport.ts` (×2) | the branch adds `github:*` entries to `STUBBED_READS`; `development` **deleted that whole layer** for a real `ipc-invoke` relay | Take `development`'s relay outright and drop the branch's stub entries. The relay is channel-generic, so the GitHub channels are served *better* by it than by the stubs they replace — but check that by eye, do not assume it |
+| `apps/web/src/board/httpTransport.test.ts` | the tests for the layer above                                                    | Same call: `development`'s suite, minus the branch's stub cases                                                                            |
+| `apps/web/src/board/BoardScreen.tsx` | one JSDoc paragraph, reworded by both                                              | Take the branch's wording (it says "the tracker's own container … JIRA's project name, or GitHub's `owner/repo`") and keep `development`'s closing sentence about the real agent-project list |
+| `packages/ui/src/TaskDetail.tsx`    | `development` gave `task:activity` a `.catch`; the branch made the comment channel depend on the tracker | **Take both**: `development`'s `.catch`, then the branch's `tracker === 'github' ? 'github:fetchComments' : 'jira:fetchComments'` and its unconditional clear-the-unread-border block |
+
+Only the `httpTransport` pair is more than mechanical, and it is not a *conflict* so much as an
+overlap: two branches independently taught the web app about GitHub channels, and `development`'s
+way — relay the channel — subsumes the branch's. Resolve it by deleting, not by merging.
+
+**The version tell, refreshed.** §7's tell was `v0.84.2`, §8's was `v0.84.3`; both have since been
+released from `development` on their own, which is what spends a tell. The manifest still reads
+ahead of every tag —
+
+```
+$ node scripts/next-version.mjs
+version=0.85.0
+tag=v0.85.0
+needsCommit=false
+# apps/client/package.json already bumped to 0.85.0, ahead of the highest tag v0.84.3
+```
+
+— so the rule is unchanged and only the number to be suspicious of has moved again. **If this
+feature ships as `v0.84.4`, the bump was swallowed on the merge.** Fix it by setting
+`development`'s manifest to `0.85.0` before the next release, never by re-pointing a tag.
