@@ -134,6 +134,53 @@ export function resolveStatusColumn(
   return { column: categoryToColumn(category), reason: 'category' };
 }
 
+/**
+ * A label name reduced to the words in it: lower-cased, a leading `status:`/`kind:` qualifier
+ * dropped, and `-`, `_` and `/` read as spaces.
+ *
+ * Repositories spell the same idea `in-progress`, `status: In Progress` and `Status/WIP`, and
+ * a name test that only matched one of those would be a test that never fires.
+ */
+function labelWords(label: string): string {
+  return label
+    .trim()
+    .toLowerCase()
+    .replace(/^[^:]{0,20}:\s*/, '')
+    .replace(/[-_/]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * The column a GitHub label NAME reads as, by its words alone, or null when it says nothing.
+ *
+ * **Never consulted by {@link resolveGitHubColumn}**, which is the point: a poll must not
+ * guess. A repository's labels are its own taxonomy, and a sync that moved cards on a guess
+ * would rearrange a board nobody touched. It is a tier of the MOVE (`github/githubMove.ts`),
+ * where there is a human act behind the guess — they dragged the card into that column while
+ * the issue already wore the label — and where what it decides is written straight into
+ * `learnedLabelColumns`, so the next poll resolves the same label from the map instead.
+ *
+ * It is also the one thing that tells the learned map when to keep quiet: see the blocked-name
+ * refusal in {@link resolveGitHubColumn}.
+ *
+ * Only the three columns an issue's own state cannot express are recognised. TO DO and DONE
+ * are said by open/closed, so reading a label as either could only fight the state that
+ * already decides them.
+ */
+export function columnFromLabelName(label: string): BoardColumn | null {
+  const words = labelWords(label);
+  if (!words) return null;
+  // Review first, for the reason {@link isBlockedishStatus} gives: "waiting for review" and
+  // "pending review" are review labels, and the blocked vocabulary would otherwise steal them.
+  if (/\breview(s|ing|ed)?\b/.test(words)) return 'in-review';
+  if (hasBlockedName(words)) return 'blocked';
+  if (/\b(in progress|in dev|in development|wip|doing|started|ongoing)\b/.test(words)) {
+    return 'in-progress';
+  }
+  return null;
+}
+
 /** Which board column a GitHub issue lands in, which label said so, and which tier decided. */
 export interface GitHubColumnResolution extends StatusResolution {
   /**
@@ -200,7 +247,15 @@ export function resolveGitHubColumn(
   }
   for (const label of labels) {
     const remembered = lookupStatusColumn(label, learned);
-    if (remembered) return { column: remembered, reason: 'learned', label };
+    // **The map the app wrote itself may never speak for a blocked-ish name; the map the human
+    // wrote always may.** The identical refusal to the one in {@link resolveStatusColumn}, and
+    // it transfers whole: this map is filled by a drag that "succeeded", so a picker that
+    // reached for the wrong label is remembered as a fact and re-asserted on every poll. The
+    // entry is not destroyed — it simply stops being consulted for a name that says blocked,
+    // which is also what `githubMove.shouldLearnLabel` refuses to write in the first place.
+    if (remembered && columnFromLabelName(label) !== 'blocked') {
+      return { column: remembered, reason: 'learned', label };
+    }
   }
   return { column: 'todo', reason: 'category', label: null };
 }

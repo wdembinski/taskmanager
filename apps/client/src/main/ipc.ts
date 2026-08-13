@@ -58,7 +58,7 @@ import {
   restingStatus,
 } from '@shared/board';
 import { assignmentStatusPatch, humanStatusPatch } from './cardStatusGuard';
-import { isBlockedishStatus } from '@shared/statusResolve';
+import { isBlockedishStatus, resolveGitHubColumn } from '@shared/statusResolve';
 import type { AppSettings } from '@shared/settings';
 import { sameExecTarget, type ExecTarget } from '@shared/execTarget';
 import { normalizeBaseUrl } from '@shared/jiraUrl';
@@ -107,7 +107,18 @@ import {
   type GitHubSearchIssueItem,
 } from './github/githubClient';
 import { githubIdentityFrom, type GitHubIdentityCache } from './github/identity';
-import { issuesToRecheck, reconcileGitHubIssues, type IssueRef } from './github/githubIssueSync';
+import {
+  categoryForColumn,
+  issuesToRecheck,
+  parseIssueKey,
+  reconcileGitHubIssues,
+  type IssueRef,
+} from './github/githubIssueSync';
+import {
+  planLabelChange,
+  resolveMove as resolveGitHubMove,
+  shouldLearnLabel,
+} from './github/githubMove';
 import { gitlabIdentityFrom, type GitLabIdentityCache } from './gitlab/identity';
 import { describeMergeRequest } from './gitlab/describeMergeRequest';
 import {
@@ -1045,18 +1056,16 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     const from = restingStatus(existing);
     if (from === status) return existing;
 
-    // The dropdown is the detail pane's drag-and-drop: same resolution, same JIRA
-    // transition, same pre-block memory. Two controls that set the same states and only
-    // one of which reached the tracker was a coin toss over whether the ticket moved.
+    // The dropdown is the detail pane's drag-and-drop: same resolution, same forge write,
+    // same pre-block memory. Two controls that set the same states and only one of which
+    // reached the tracker was a coin toss over whether the ticket moved.
     //
     // The chosen status is written verbatim rather than `move.localStatus`, which is the
     // column's REPRESENTATIVE status: Done and Cancelled share the DONE column, and a
     // cancelled card that came back reading "Done" would have lost the distinction the
     // user reached for the dropdown to make.
     const move = resolveMove(existing, columnForStatus(status));
-    const outcome = move.jiraTransition
-      ? await transitionIssue(existing, move.jiraTransition, columnForStatus(status))
-      : null;
+    const outcome = await writeMoveToForge(existing, move, columnForStatus(status));
     const patch: Parameters<Store['updateTask']>[1] = {
       ...humanStatusPatch(existing, status),
       preBlockStatus: preBlockMarker(move, outcome),
@@ -2801,6 +2810,30 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     send('settings:changed', next);
   };
 
+  /**
+   * Remember that a GitHub LABEL means the column the user just dropped a card into.
+   *
+   * `learnStatusColumn` above, one forge over, and the reason is identical: without it the
+   * move and the poll read the same thing differently and the next sync undoes the drag. The
+   * decision itself is `shouldLearnLabel`'s, in `github/githubMove.ts` where it is testable;
+   * all that is left here is the trim, the guard and the write.
+   */
+  const learnLabelColumn = (label: string, column: BoardColumn): void => {
+    const name = label.trim();
+    const settings = store.getSettings();
+    const { github } = settings;
+    if (!shouldLearnLabel(name, column, github)) return;
+    const next: AppSettings = {
+      ...settings,
+      github: {
+        ...github,
+        learnedLabelColumns: { ...github.learnedLabelColumns, [name]: column },
+      },
+    };
+    store.saveSettings(next);
+    send('settings:changed', next);
+  };
+
   /** What a transition attempt did: whether the tracker moved, and what to patch locally. */
   interface TransitionOutcome {
     /** True only when a transition was actually POSTed and accepted. */
@@ -2824,7 +2857,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
    * transitions can change between the drop and the sync.
    */
   const preBlockMarker = (
-    move: MoveResolution,
+    move: Pick<MoveResolution, 'preBlockStatus'>,
     outcome: TransitionOutcome | null,
   ): TaskStatus | null => (outcome?.applied ? null : move.preBlockStatus);
 
@@ -2903,6 +2936,115 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     };
   };
 
+  /**
+   * Write a card's move back to GitHub — `transitionIssue`, one forge over, and under the same
+   * contract: called BEFORE any local write, and it **throws** rather than returning a failure.
+   * If GitHub rejects the write (the token cannot write to that repository, the issue was
+   * transferred, the API is down) the card must not budge either, or the board would be showing
+   * a column the issue has never been in. `task:move` rejects and the optimistic move in the UI
+   * rolls back.
+   *
+   * The order of the writes is state → add → remove, and it is the order of consequence: the
+   * open/closed state is the coarse fact, the added label is what makes IN PROGRESS and IN
+   * REVIEW mean anything at all, and a stale label left behind is the only one of the three a
+   * later poll can survive. A partial failure still throws.
+   *
+   * `applied` is not "the calls returned 2xx" — it is **"will the next poll agree?"**, asked of
+   * `resolveGitHubColumn`, the very resolver the sync uses, against the labels and state this
+   * move leaves behind. That is what makes BLOCKED come out right without a special case: a
+   * blocked drop backed by a mapped label is GitHub's block (`applied`, so no `preBlockStatus`
+   * is remembered and removing the label in the browser unblocks it), and one backed by nothing
+   * mapped is ours (not applied, so the column to restore is remembered and every poll
+   * preserves it).
+   */
+  const moveGitHubIssue = async (task: Task, target: BoardColumn): Promise<TransitionOutcome> => {
+    const { github } = store.getSettings();
+    // Not "the forge refused" — the integration is switched off, so there is nothing to
+    // disagree with and nothing to write. The card moves locally, as it did before GitHub
+    // could be asked at all.
+    if (!github.enabled) return { applied: false, patch: {} };
+    const ref = task.externalKey ? parseIssueKey(task.externalKey) : null;
+    if (!ref) return { applied: false, patch: {} };
+    const client = buildGitHubClient();
+
+    // Re-read the issue first, for its CURRENT labels. The card only remembers the one label
+    // that decided its column, and this needs the whole set: which of them speak for a column
+    // the card is leaving, and whether the one that would say the new column is already there.
+    // One call per drag, and it is also what makes a drag onto a deleted issue fail loudly.
+    const issue = await client.getIssue(ref.owner, ref.repo, ref.number);
+    const labels = (issue.labels ?? [])
+      .map((l) => (l?.name ?? '').trim())
+      .filter((name) => name.length > 0);
+    const change = planLabelChange(labels, issue.state, target, github);
+    // BLOCKED is the one target GitHub is allowed not to be able to say — see `githubMove.ts`
+    // and `JiraSettings.blockedTransitionName`. The card blocks locally instead.
+    if (!change && target === 'blocked') return { applied: false, patch: {} };
+    if (!change) {
+      throw new Error(
+        `No GitHub label means ${COLUMN_LABEL[target]}, and a GitHub issue has no state that ` +
+          `does — an issue is only open or closed. Map a label to ${COLUMN_LABEL[target]} in ` +
+          `Settings, then move ${task.externalKey} again.`,
+      );
+    }
+
+    if (change.state) {
+      await client.setIssueState(ref.owner, ref.repo, ref.number, change.state);
+    }
+    if (change.addLabel) {
+      await client.addLabels(ref.owner, ref.repo, ref.number, [change.addLabel]);
+    }
+    for (const label of change.removeLabels) {
+      try {
+        await client.removeLabel(ref.owner, ref.repo, ref.number, label);
+      } catch (e) {
+        // The label is not on the issue any more — somebody removed it in the browser, or two
+        // drags raced. That is the state we were asking for, so it is not a failure.
+        if (e instanceof GitHubError && e.status === 404) continue;
+        throw e;
+      }
+    }
+
+    // Only now, with GitHub having accepted it: a drag is the strongest statement there is
+    // about what a label means, and this is what stops the next poll disagreeing with it.
+    if (change.columnLabel) learnLabelColumn(change.columnLabel, target);
+    const after = resolveGitHubColumn(
+      change.labelsAfter,
+      change.stateAfter,
+      github.labelColumnOverrides,
+      // Re-read, because the learn above may just have written into it.
+      store.getSettings().github.learnedLabelColumns,
+    );
+    return {
+      applied: after.column === target,
+      patch: {
+        // What the board is calling the issue's status, by exactly the rule `issueToTask` uses:
+        // the label that decided the column, or the issue's own state when nothing else spoke.
+        externalStatus: after.label ?? change.stateAfter,
+        externalStatusCategory: categoryForColumn(after.column),
+      },
+    };
+  };
+
+  /**
+   * The forge write one drop needs, whichever forge the card came from, or null when it came
+   * from neither. One place, so the two controls that move a card — the board's drag and the
+   * detail pane's dropdown — cannot drift into supporting different trackers.
+   *
+   * Each resolver answers only its own half: the local half (`resolveMove`) is shared and is
+   * already in hand by the time this is called, and the GitHub resolver's `target` is the one
+   * fact it adds — which column the ISSUE has to be made to say, or null for a card GitHub has
+   * never heard of.
+   */
+  const writeMoveToForge = async (
+    task: Task,
+    move: MoveResolution,
+    toColumn: BoardColumn,
+  ): Promise<TransitionOutcome | null> => {
+    if (move.jiraTransition) return transitionIssue(task, move.jiraTransition, toColumn);
+    const target = resolveGitHubMove(task, toColumn).target;
+    return target ? moveGitHubIssue(task, target) : null;
+  };
+
   handle('task:move', async (taskId, toColumn) => {
     const existing = store.getTask(taskId);
     if (!existing) throw new Error('Task not found.');
@@ -2912,9 +3054,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     const move = resolveMove(existing, toColumn);
     if (move.noop) return existing;
 
-    const outcome = move.jiraTransition
-      ? await transitionIssue(existing, move.jiraTransition, toColumn)
-      : null;
+    const outcome = await writeMoveToForge(existing, move, toColumn);
     const patch: Parameters<Store['updateTask']>[1] = {
       ...humanStatusPatch(existing, move.localStatus),
       preBlockStatus: preBlockMarker(move, outcome),

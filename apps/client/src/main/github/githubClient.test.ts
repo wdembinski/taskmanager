@@ -252,6 +252,61 @@ describe('getIssue / listIssueComments', () => {
   });
 });
 
+describe('the writes a card’s move makes', () => {
+  it('PATCHes the state and NOTHING else', async () => {
+    // A PATCH that carried a title or a body would rewrite whatever it had merely read.
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ number: 12, state: 'closed' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().setIssueState('acme', 'web', 12, 'closed');
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe('https://api.github.com/repos/acme/web/issues/12');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(String(init.body))).toEqual({ state: 'closed' });
+    expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json');
+  });
+
+  it('POSTs labels to the additive endpoint, never a PUT of the whole set', async () => {
+    // A PUT would delete every label the app knows nothing about — the repo's own taxonomy.
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([{ name: 'wip' }]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().addLabels('acme', 'web', 12, ['wip']);
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe('https://api.github.com/repos/acme/web/issues/12/labels');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(String(init.body))).toEqual({ labels: ['wip'] });
+  });
+
+  it('escapes the label name it deletes — labels have spaces and slashes in them', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().removeLabel('acme', 'web', 12, 'status: in review');
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe(
+      'https://api.github.com/repos/acme/web/issues/12/labels/status%3A%20in%20review',
+    );
+    expect(init.method).toBe('DELETE');
+    // No body, so no Content-Type either.
+    expect(init.body).toBeUndefined();
+  });
+
+  it('throws a GitHubError with the status, so a refused move can be told from a missing label', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ message: 'Not Found' }, 404)));
+    await expect(client().removeLabel('acme', 'web', 12, 'wip')).rejects.toMatchObject({
+      status: 404,
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ message: 'no' }, 403)));
+    await expect(client().setIssueState('acme', 'web', 12, 'closed')).rejects.toBeInstanceOf(
+      GitHubError,
+    );
+  });
+});
+
 describe('apiRoot', () => {
   it('leaves github.com’s own API host alone, trailing slash and all', () => {
     expect(apiRoot('https://api.github.com')).toBe('https://api.github.com');

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  columnFromLabelName,
   firstUnmappedLabel,
   isBlockedishStatus,
   isReviewishStatus,
@@ -249,6 +250,49 @@ describe('resolveGitHubColumn', () => {
 
   it('matches labels ignoring case, like every other map here', () => {
     expect(resolveGitHubColumn(['IN REVIEW'], 'open', MAP).column).toBe('in-review');
+  });
+
+  // The JIRA refusal, one forge over: the learned map is written by a drag that "succeeded",
+  // so a picker that reached for the wrong label would otherwise be believed for ever.
+  it('ignores a learned entry that speaks for a label named blocked', () => {
+    expect(resolveGitHubColumn(['blocked'], 'open', undefined, { blocked: 'in-progress' })).toEqual(
+      { column: 'todo', reason: 'category', label: null },
+    );
+    // The human's own map is never refused.
+    expect(
+      resolveGitHubColumn(['blocked'], 'open', { blocked: 'in-progress' }, { blocked: 'todo' }),
+    ).toEqual({ column: 'in-progress', reason: 'explicit', label: 'blocked' });
+  });
+
+  it('never guesses from a label NAME — that tier belongs to the move, not the poll', () => {
+    // A poll that moved cards on a guess would rearrange a board nobody touched.
+    expect(resolveGitHubColumn(['in progress', 'needs review'], 'open').column).toBe('todo');
+  });
+});
+
+describe('columnFromLabelName', () => {
+  it('reads the three columns an issue state cannot express', () => {
+    expect(columnFromLabelName('in progress')).toBe('in-progress');
+    expect(columnFromLabelName('needs review')).toBe('in-review');
+    expect(columnFromLabelName('blocked')).toBe('blocked');
+  });
+
+  it('reads the spellings the same idea actually gets in a repository', () => {
+    expect(columnFromLabelName('Status: In-Progress')).toBe('in-progress');
+    expect(columnFromLabelName('status/WIP')).toBe('in-progress');
+    expect(columnFromLabelName('  In_Review  ')).toBe('in-review');
+    expect(columnFromLabelName('on-hold')).toBe('blocked');
+  });
+
+  it('lets review beat blocked, exactly as isBlockedishStatus does', () => {
+    expect(columnFromLabelName('waiting for review')).toBe('in-review');
+  });
+
+  it('says nothing about a label that is about something else', () => {
+    expect(columnFromLabelName('bug')).toBeNull();
+    expect(columnFromLabelName('good first issue')).toBeNull();
+    expect(columnFromLabelName('done')).toBeNull(); // said by closing, never by a label
+    expect(columnFromLabelName('   ')).toBeNull();
   });
 });
 

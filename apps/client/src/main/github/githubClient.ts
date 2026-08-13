@@ -323,6 +323,39 @@ export class GitHubClient {
   }
 
   /**
+   * One WRITE — the only calls in this client that change anything on github.com.
+   *
+   * Separate from {@link rawUrl} rather than a parameter on it, so that every read stays a
+   * read by construction: a method argument that defaults to GET is one careless call away
+   * from a PATCH. The error path is deliberately identical, because the caller
+   * (`ipc.ts task:move`) turns any failure into a REFUSED move — a card must never claim a
+   * move the forge did not make, so what matters is that a failure is impossible to miss.
+   */
+  private async write<T>(
+    path: string,
+    method: 'PATCH' | 'POST' | 'DELETE',
+    body?: unknown,
+  ): Promise<T> {
+    const res = await fetch(this.url(path), {
+      method,
+      headers:
+        body === undefined
+          ? this.headers()
+          : { ...this.headers(), 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new GitHubError(
+        `GitHub ${res.status} ${res.statusText}${text ? `: ${text.slice(0, 300)}` : ''}`,
+        res.status,
+      );
+    }
+    if (res.status === 204) return undefined as T;
+    return (await res.json().catch(() => undefined)) as T;
+  }
+
+  /**
    * Every page of a list endpoint, following `Link: rel="next"` up to `maxPages`.
    *
    * Capped rather than trusting the header forever: a paginated endpoint that keeps
@@ -417,6 +450,54 @@ export class GitHubClient {
    */
   getIssue(owner: string, repo: string, number: number): Promise<GitHubSearchIssueItem> {
     return this.request<GitHubSearchIssueItem>(`${repoPath(owner, repo)}/issues/${number}`);
+  }
+
+  /**
+   * Open or close an issue — `PATCH /repos/{owner}/{repo}/issues/{number}`.
+   *
+   * The board's half of DONE: closing is the only thing GitHub itself understands as
+   * "finished", and any move out of DONE reopens. `state` is the ONLY field sent, so a PATCH
+   * cannot quietly rewrite a title or a body it merely happened to have read.
+   *
+   * `state_reason` is deliberately left out: GitHub defaults a close to `completed`, and the
+   * board has no way to tell "done" from "not planned" — a card dragged into DONE is the human
+   * saying the work is finished, which is exactly the default.
+   */
+  setIssueState(
+    owner: string,
+    repo: string,
+    number: number,
+    state: 'open' | 'closed',
+  ): Promise<GitHubSearchIssueItem> {
+    return this.write<GitHubSearchIssueItem>(`${repoPath(owner, repo)}/issues/${number}`, 'PATCH', {
+      state,
+    });
+  }
+
+  /**
+   * Add labels to an issue — `POST /repos/{owner}/{repo}/issues/{number}/labels`.
+   *
+   * Additive by definition: this endpoint appends, it does not replace, which is why removing
+   * the label a card is leaving behind is a separate call rather than a PUT of the whole set.
+   * A PUT would silently delete every label the app knows nothing about — the repository's own
+   * taxonomy — on every drag.
+   */
+  addLabels(owner: string, repo: string, number: number, labels: string[]): Promise<unknown> {
+    return this.write(`${repoPath(owner, repo)}/issues/${number}/labels`, 'POST', { labels });
+  }
+
+  /**
+   * Remove ONE label from an issue — `DELETE .../issues/{number}/labels/{name}`.
+   *
+   * **404 means the label was not on the issue**, which is the ordinary outcome of two drags
+   * racing or of somebody removing it in the browser first, and the caller treats it as
+   * success. The name is escaped: labels routinely contain spaces, slashes and colons.
+   */
+  removeLabel(owner: string, repo: string, number: number, label: string): Promise<unknown> {
+    return this.write(
+      `${repoPath(owner, repo)}/issues/${number}/labels/${encodeURIComponent(label)}`,
+      'DELETE',
+    );
   }
 
   /**

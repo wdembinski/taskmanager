@@ -180,8 +180,12 @@ function labelsOf(issue: GitHubSearchIssueItem): string[] {
  * already read, so it is DERIVED from the column rather than invented beside it — a GitHub
  * issue has no category of its own, and two independently-computed answers would eventually
  * disagree about the same card.
+ *
+ * Exported for the same reason: a drag writes this pair onto the card the moment GitHub
+ * accepts it, rather than leaving the pane wrong until the next poll, and it must be the same
+ * answer this sync would have given.
  */
-function categoryForColumn(column: BoardColumn): JiraStatusCategory {
+export function categoryForColumn(column: BoardColumn): JiraStatusCategory {
   if (column === 'done') return 'Done';
   if (column === 'todo') return 'To Do';
   return 'In Progress';
