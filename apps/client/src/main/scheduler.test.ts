@@ -1407,6 +1407,72 @@ describe('Scheduler run-failure handling', () => {
   });
 
   /**
+   * The interleaving the other way round: the failure is filed FIRST.
+   *
+   * The CLI does not always name the limit in the turn it ends — the turn dies as an
+   * ordinary `api_error`, `handleRunFailure` parks it for a human, and the
+   * `rate_limit_event` lands a beat later. The card then said two contradictory things at
+   * once: `blocked-by-limit` (waiting for a reset nobody has to do anything about) with an
+   * inbox item asking a human to choose between Retry, AI-fix and Mark done for a failure
+   * that never happened — and whose run is gone, so the ask is unanswerable anyway.
+   */
+  it('withdraws a failure it had already filed when the limit turns up after it', () => {
+    const { scheduler, store, task, emitAttention, emitResolved, fire } = setup(0);
+    fire(failResult);
+    expect(emitAttention).toHaveBeenCalledTimes(1);
+    const item = emitAttention.mock.calls[0][0] as { id: string };
+
+    // The signal the CLI sends separately from the turn's own result.
+    fire({ kind: 'rate-limit', status: 'rejected', rateLimitType: 'rolling', resetsAt: null });
+
+    expect(emitResolved).toHaveBeenCalledWith(item.id);
+    expect(store.deleteAttention).toHaveBeenCalledWith(item.id);
+    expect(scheduler.listAttention()).toHaveLength(0);
+    expect(task.status).toBe('blocked-by-limit');
+    // Nothing about the failure is left to inherit — see the retry case below for why the
+    // queue in particular matters.
+    const privates = scheduler as unknown as {
+      fixNotes: Map<string, string>;
+      retryQueue: Set<string>;
+      attempts: Map<string, number>;
+    };
+    expect(privates.fixNotes.size).toBe(0);
+    expect(privates.retryQueue.size).toBe(0);
+    expect(privates.attempts.size).toBe(0);
+  });
+
+  /**
+   * The same interleaving one step earlier, where it is a live bug rather than a wrong
+   * sentence: the failure was worth an auto-retry, so the task sits in `retryQueue` when
+   * the limit arrives. `case 'exited'` reads that queue and calls `startTask` directly, and
+   * `startTask` has no gate check of its own — so the card the gate had just parked
+   * launched a fresh session straight into the wall.
+   */
+  it('does not relaunch a queued retry into the wall the limit just raised', () => {
+    const { scheduler, start, fire } = setup(1);
+    fire(failResult); // retryable, under the cap → queued for relaunch on `exited`
+    const privates = scheduler as unknown as {
+      fixNotes: Map<string, string>;
+      retryQueue: Set<string>;
+      attempts: Map<string, number>;
+    };
+    expect(privates.retryQueue.has('t1')).toBe(true);
+    expect(privates.fixNotes.has('t1')).toBe(true);
+
+    fire({ kind: 'rate-limit', status: 'rejected', rateLimitType: 'rolling', resetsAt: null });
+
+    // Withdrawn: the retry is the gate's to make at reset time, the attempt was never the
+    // card's to spend, and the note would brief the resumed run about its own good work.
+    expect(privates.retryQueue.size).toBe(0);
+    expect(privates.fixNotes.size).toBe(0);
+    expect(privates.attempts.size).toBe(0);
+
+    fire(exited); // the parked process dies, as it always does
+
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  /**
    * The other half of holding first: the hold has to come back off.
    *
    * With no epoch to believe, the sentence is checked against what the account actually

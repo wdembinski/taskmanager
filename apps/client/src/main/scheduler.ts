@@ -3368,7 +3368,11 @@ export class Scheduler {
         this.pump(run.projectId); // a slot freed up — advance the queue
         // An auto-retry of a task whose project queue is idle (e.g. an ad-hoc run):
         // `pump` won't touch an inactive project, so relaunch it directly.
-        if (retrying && !this.activeProjects.has(run.projectId)) {
+        // `!this.workIsHeld`: this branch reaches `startTask` directly, and `startTask` has
+        // no gate check of its own — only `pump` and `runTask`'s refusal path do. A retry
+        // queued moments before a usage limit (or a dead sign-in) was engaged would
+        // otherwise launch a fresh session straight into the wall the gate just went up for.
+        if (retrying && !this.workIsHeld && !this.activeProjects.has(run.projectId)) {
           const task = this.store.getTask(run.taskId);
           const project = task ? this.runProjectFor(task) : undefined;
           // Membership in `retryQueue` (which is what `retrying` is) is the authority on
@@ -3415,6 +3419,10 @@ export class Scheduler {
     );
     for (const run of active) {
       run.settled = true; // its imminent exit is expected — don't settle it as failed
+      // BEFORE `clearRunAttention`, which blanks `runId` on exactly these items: after it
+      // the only thing left to match on is the task, which would also catch failures this
+      // limit had nothing to do with.
+      this.withdrawTaskFailed(run);
       this.clearRunAttention(run.runId); // a parked run can't be answered mid-limit
       this.updateTask(run.taskId, { status: 'blocked-by-limit' }, null);
       // Said on the card, not only in its status — the same rule `parkForLimit` follows, and
@@ -3433,6 +3441,54 @@ export class Scheduler {
       // End the process now; we'll spawn a fresh `--resume` for it at reset time.
       this.sessions.stop(run.runId);
     }
+  }
+
+  /**
+   * Take back a failure this run had already been blamed for, because the limit is the
+   * real reason it stopped.
+   *
+   * The two facts arrive in either order. A `rate_limit_event` that lands first parks the
+   * run before anything settles, and nothing is ever filed. But the CLI often ends the turn
+   * first and reports the limit a beat later — by then `handleRunFailure` has already run,
+   * so the card is `waiting-input` behind an inbox item asking a human to decide about a
+   * failure that never happened, and `engageLimit` moves it to `blocked-by-limit`
+   * underneath: an unanswerable ask on a card that says it is waiting for a reset.
+   *
+   * Retracting the item is only half of it. The bookkeeping `handleRunFailure` left behind
+   * is what the resumed run would inherit:
+   *
+   *  - `attempts` — the resume would start with its auto-retries already spent, so the
+   *    first genuine failure after the window reopens parks instead of retrying.
+   *  - `retryQueue` — load-bearing, not hygiene. `case 'exited'` deletes the entry and
+   *    relaunches through `startTask`, which has no `workIsHeld` guard of its own; that is
+   *    a fresh session started straight into the wall we just raised the gate for. Cleared
+   *    here AND gated there, because either alone leaves a way through.
+   *  - `fixNotes` — the resumed run would otherwise be briefed "the previous attempt failed
+   *    (api_error)", a lie about its own work that costs tokens and misdirects it.
+   *
+   * `pendingDecisions` is left alone (a `task-failed` holds no tool open), and so is
+   * `merge-conflict`: a rebase stopped halfway with markers in a worktree is not retracted
+   * by a usage limit, and its answer is still the only thing that finishes the integration.
+   *
+   * The honest residual gap: this can only retract a failure whose run is still in
+   * `this.runs`. If `exited` has already fired, the run is gone and `engageLimit` never
+   * sees it. Matching by the reason text instead would not close that — the reason on the
+   * interleaving this exists for is literally `api_error`, which is indistinguishable from
+   * every other transient failure.
+   */
+  private withdrawTaskFailed(run: Run): void {
+    // Snapshotted: `resolveAttention` mutates the map we would otherwise be iterating.
+    for (const item of [...this.attention.values()]) {
+      if (item.taskId !== run.taskId) continue;
+      if (item.kind !== 'task-failed' || item.runId !== run.runId) continue;
+      // `resolveAttention` does the map, the row and the UI event, but not the stored
+      // context — a leftover one keeps `applyFailureChoice` alive for an unreachable item.
+      this.pendingFailures.delete(item.id);
+      this.resolveAttention(item.id);
+    }
+    this.attempts.delete(run.taskId);
+    this.retryQueue.delete(run.taskId);
+    this.fixNotes.delete(run.taskId);
   }
 
   /**
