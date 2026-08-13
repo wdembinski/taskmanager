@@ -2,12 +2,15 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { buildMssqlConnectionOptions } from './database/typeormOptions';
 import { Account } from './entities/account.entity';
+import { AttachmentBlob } from './entities/attachmentBlob.entity';
+import { AttachmentUpload } from './entities/attachmentUpload.entity';
 import { Client } from './entities/client.entity';
 import { Command } from './entities/command.entity';
 import { CommandResultRow } from './entities/commandResult.entity';
 import { Tombstone } from './entities/tombstone.entity';
 import { ProjectMirror } from './entities/projectMirror.entity';
 import { TaskMirror } from './entities/taskMirror.entity';
+import { AttachmentsModule } from './attachments/attachments.module';
 import { EventsModule } from './events/events.module';
 import { HealthModule } from './health/health.module';
 import { MirrorModule } from './mirror/mirror.module';
@@ -34,6 +37,8 @@ import { PresenceModule } from './presence/presence.module';
         ...buildMssqlConnectionOptions(),
         entities: [
           Account,
+          AttachmentBlob,
+          AttachmentUpload,
           Client,
           Command,
           CommandResultRow,
@@ -50,6 +55,7 @@ import { PresenceModule } from './presence/presence.module';
     PresenceModule,
     EventsModule,
     MirrorModule,
+    AttachmentsModule,
   ],
 })
 export class AppModule {}

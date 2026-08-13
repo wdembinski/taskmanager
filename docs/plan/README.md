@@ -4876,6 +4876,50 @@ real components (`ColorSwatches` and its palette, `StatusMapViewer`, `PlanningMo
 `BaseBranchField`) and `apps/web/src/settings/` owns the shell, with a *Desktop only* tab that
 names each withheld section and why.
 
+### Bytes in the cloud
+
+Every row a card carries reaches the browser over the relay, including its attachments —
+`attachment:list` and `attachment:changed` hand over whole `TaskAttachment` rows. The BYTES do
+not: `attachment:add` takes paths precisely so a 30 MB screen recording never crosses a
+structured clone, and a browser has neither the path nor the disk. So the chips rendered and
+nothing behind them opened.
+
+The cloud now holds a copy. `attachment_blobs` is one row per attachment (keyed by the
+attachment's own id — an attachment's bytes never change, since re-attaching mints a new id),
+`attachment_uploads` is the other direction: a file a browser picked, parked until the desktop
+can collect it and turn it into a real attachment. `TaskAttachment.cloudBlobAt` is the epoch ms
+of the last successful push, absent when there is nothing up there; it travels for free on the
+rows that already travel.
+
+**A cache, not a record.** The desktop's disk is still the only copy that matters, and that is
+what makes eviction legitimate rather than data loss. It is also not optional garnish: the
+default storage tier is a `VARBINARY(MAX)` column in the 2 GB SQL database that already holds
+the mirror, so an unbounded cache is an outage on a long enough timeline. Each account gets a
+quota, and pressure evicts blobs **coldest-first on `lastReadAt`** — last READ, so the mockup
+somebody opens daily outlives the one nobody has looked at since it went up. An evicted blob
+costs one re-push. [`quota.ts`](../../apps/server/src/attachments/quota.ts) is that arithmetic,
+pure and tested; [`blobStore.ts`](../../apps/server/src/attachments/blobStore.ts) is the port
+the SQL tier sits behind, and an Azure Blob adapter is one `useClass` away — which is where
+this ends up, and why the bytes are a column on a metadata row rather than the row itself.
+
+**The bodies are raw, and that is load-bearing.** `main.ts` registers only the JSON body
+parser, so an `application/octet-stream` request arrives with its body unread — no multer, no
+temp files, no third dependency. The cap is a byte counter that destroys the socket, not a
+`Content-Length` check, because a header is what the sender *says*. Both ends of that carry a
+comment: a global body parser added later would consume the stream and store an empty file,
+silently, with nothing erroring.
+
+**One route is guarded differently, and only one.** `GET /v1/attachments/:id` is read by an
+`<img src>`, which sets no headers at all, so a bearer token cannot reach it. `MediaTokenGuard`
+takes a `?mt=` ticket instead — one account, `media:read`, ten minutes, in memory, minted by a
+POST that *is* bearer-guarded — and it authorises that route and nothing else. The bytes come
+back `nosniff`, `Cache-Control: private, immutable` (honest, because a re-attached file is a
+new id), `Content-Disposition: attachment` for everything that is not `image/*`, and SVG —
+an image by MIME type, a document by capability — under `Content-Security-Policy: sandbox`.
+
+The registry is per-process, like presence, the auth caches and the event bus: one more reason
+[the service runs on a single replica](../09-deploying-the-cloud-service.md).
+
 ### How it is verified
 
 Every piece has a unit suite. What none of them covers is the circuit, so

@@ -44,7 +44,7 @@ cloud at all: it is `tsx` against `src/`, and neither survives into the image.
 as unhealthy and restarts forever. It also does no database work, so a database blip does
 not roll every replica.
 
-**One replica, always — `min_replicas = max_replicas = 1`.** Three things in this process are
+**One replica, always — `min_replicas = max_replicas = 1`.** Four things in this process are
 per-process state, and every one of them is wrong on a second replica:
 
 - **presence** ([`presence.registry.ts`](../apps/server/src/presence/presence.registry.ts)) is
@@ -57,6 +57,12 @@ per-process state, and every one of them is wrong on a second replica:
   `GET /v1/events` stream and the replay ring behind it. A desktop's `POST /v1/events` reaching
   replica A while the browser is streaming from replica B pushes events into a process nobody
   is listening to, and the tab shows a board that never moves.
+- **the media-token registry**
+  ([`mediaTokens.ts`](../apps/server/src/attachments/mediaTokens.ts)) holds the short-lived
+  `?mt=` tickets `<img src>` reads attachment bytes with. Minted on replica A and presented to
+  replica B, a perfectly valid ticket is a 401 and the picture never loads. In memory on
+  purpose — a ticket that survives a restart is a decision — and a restart costs one round trip
+  to mint another.
 
 The first two have been true and undocumented since the service was first deployed. The third
 is what makes **`min_replicas`** matter as well, which is new: Container Apps' default HTTP
@@ -89,6 +95,7 @@ feed the process.
 | `DB_HOST` / `DB_NAME` / `DB_USER` | the Azure SQL server, database and least-privilege user |
 | `AZURE_KEY_VAULT_URI`   | the vault holding `db-password` and `cloud-iam-client-secret` |
 | `CLOUD_IAM_*`           | the vipper.iam endpoint and this API's confidential client |
+| `CLOUD_BLOB_QUOTA_BYTES` | unset — 256 MB of attachment bytes per account, evicted coldest-first. Worth lowering if the SQL tier gets tight, since the bytes live in a `VARBINARY(MAX)` column there (`attachments/blobStore.ts`) |
 
 Two settings are derived rather than configured, so that a deployment cannot inherit a
 development default by forgetting a variable:

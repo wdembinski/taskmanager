@@ -55,7 +55,62 @@ export interface TaskAttachment {
   /** Bytes on disk, for the chip's subtitle and for refusing something absurd. */
   size: number;
   createdAt: number;
+  /**
+   * Epoch ms of the last successful push of these bytes to the cloud — **absent** when the
+   * cloud has never held them, or when it held them and evicted them since.
+   *
+   * The bytes live on the desktop's disk; this says whether a second copy of them is
+   * currently reachable from a browser. A web tab renders a chip for every attachment either
+   * way (the row travels for free: `attachment:list` and `attachment:changed` already carry
+   * whole rows over the relay, so nothing new is plumbed to make this visible), and uses this
+   * to tell "you can look at this now" from "ask the desktop to push it first".
+   *
+   * A timestamp rather than a boolean because the two facts it answers are different
+   * questions and only one of them a boolean could answer: *is it up there* — and *is what
+   * is up there the bytes I have*. An attachment's bytes never change once written (a
+   * re-attached file is a new id, see `attachmentName`'s dedupe), so the second question is
+   * really "was it pushed by a build that pushed the whole thing", and a date is what you can
+   * reason about after the fact when it turns out one wasn't.
+   *
+   * Optional, and the *store's* seven columns do not include it yet — the desktop's
+   * `insertAttachment` binds a `TaskAttachment` by named parameter, and better-sqlite3
+   * refuses an object carrying a key the statement does not name. So whatever starts writing
+   * this adds the column and the parameter in the same change; until then a row read back
+   * from SQLite simply has no `cloudBlobAt`, which is exactly what "never pushed" means.
+   */
+  cloudBlobAt?: number;
 }
+
+/**
+ * The MIME prefix a browser may show INLINE — everything else is served as a download.
+ *
+ * The whole preview story is `<img src>`, so this is not a taste call about which files
+ * deserve a thumbnail: it is the one content class the cloud will hand a browser to render
+ * in its own origin. Anything else (a PDF, an HTML file, a `.svg`'s more adventurous
+ * cousins) is served `Content-Disposition: attachment`, which makes the browser save it
+ * rather than execute it against the session that asked for it.
+ *
+ * `image/svg+xml` matches this prefix and IS rendered — an SVG is a picture, and refusing
+ * the commonest mockup format would be a strange place to draw the line — but it is the one
+ * image type that can carry script, so the cloud serves it under `Content-Security-Policy:
+ * sandbox`. See the server's `attachmentHeaders.ts`, which is where both halves are decided.
+ */
+export const CLOUD_PREVIEW_MIME_PREFIX = 'image/';
+
+/**
+ * The most one attachment's bytes may be, to be pushed to the cloud at all.
+ *
+ * Bounded far below what an attachment may be locally, and deliberately: an attachment can
+ * be a 30 MB screen recording (`attachment:add` takes paths, never bytes, precisely so one
+ * never crosses a structured clone), while a cloud blob crosses an HTTPS request, is held
+ * whole in memory at both ends of it, and lands in a shared per-account quota. 25 MB covers
+ * every screenshot and mockup anybody previews in a browser, and refuses the video — which
+ * is not a regression, because the video was never previewable in a browser anyway.
+ *
+ * Enforced on the SERVER by a byte counter over the request stream, not by trusting
+ * `Content-Length` — a sender can declare one number and send another.
+ */
+export const CLOUD_BLOB_MAX_BYTES = 25 * 1024 * 1024;
 
 /**
  * What an agent is told about one attachment: the token to expect in the brief, and where

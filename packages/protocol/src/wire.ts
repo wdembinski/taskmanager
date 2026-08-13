@@ -424,3 +424,76 @@ export type CommandEnvelope =
    * before it dispatches anything.
    */
   | CommandEnvelopeOf<'ipc-invoke', { channel: string; args: unknown[] }>;
+
+/**
+ * THE BLOB ROUTES — how an attachment's bytes reach a browser, and how a browser's bytes
+ * reach a desktop.
+ *
+ * Five routes, two directions, and one thing they all have in common: the body is **raw**.
+ * `POST /v1/uploads` and `PUT /v1/attachments/:id/blob` send `application/octet-stream` and
+ * the two GETs answer with it, because a file is bytes and base64 in a JSON envelope would
+ * be a third more of them for nothing.
+ *
+ * - `POST /v1/uploads` — a browser hands over a file it wants attached, before any card row
+ *   for it exists. Answers an {@link UploadTicket}; the id in it is what a relayed
+ *   `attachment:*` channel then names, so the desktop can fetch the bytes and write them
+ *   where every other attachment lives.
+ * - `GET /v1/uploads/:id` — the desktop collecting those bytes. Guarded like every other
+ *   `/v1` route.
+ * - `PUT /v1/attachments/:id/blob` — the desktop pushing an existing attachment's bytes up,
+ *   so a browser can look at them. Answers {@link BlobStored}, whose `storedAt` is what the
+ *   desktop records as `TaskAttachment.cloudBlobAt`.
+ * - `GET /v1/attachments/:id?mt=` — the picture itself, for an `<img src>`. The ONLY route
+ *   authorised by a media token rather than by a bearer, for the reason `MediaTokenGuard`
+ *   exists: an `<img>` cannot set an `Authorization` header.
+ * - `DELETE /v1/attachments/:id/blob` — the bytes are gone locally, so drop the copy.
+ *
+ * The metadata (`name`, `type`) travels in the query string rather than in the body for the
+ * same reason the body is raw: there is no envelope to put it in.
+ */
+
+/** `?name=` on the two upload routes — the file's original name, for the chip and the download. */
+export const BLOB_NAME_QUERY = 'name';
+
+/** `?type=` on the two upload routes — the sender's best guess at a MIME type, or nothing. */
+export const BLOB_TYPE_QUERY = 'type';
+
+/**
+ * `?mt=` on `GET /v1/attachments/:id` — the media token.
+ *
+ * In the URL, not a header, and that is the whole point: the reader is an `<img src>`, which
+ * sets no headers at all. See the server's `mediaTokens.ts` for what a token is worth (one
+ * account, `media:read`, ten minutes) and why that is the narrowest thing that can be put in
+ * a URL a browser will happily leak into a referrer.
+ */
+export const MEDIA_TOKEN_QUERY = 'mt';
+
+/**
+ * The original file name on `GET /v1/uploads/:id` — a raw body has nowhere else to carry it.
+ *
+ * **Percent-encoded**, and the reader must `decodeURIComponent` it: a header value is latin-1
+ * by the letter of HTTP, and a file name is whatever the human called it.
+ */
+export const BLOB_NAME_HEADER = 'X-TM-File-Name';
+
+/** What `POST /v1/uploads` answers: bytes are held, here is what to call them. */
+export interface UploadTicket {
+  /** Server-assigned. What a relayed `attachment:*` channel names to claim these bytes. */
+  id: string;
+  /** How many bytes the server actually counted — not what the sender declared. */
+  size: number;
+  /** Epoch ms this ticket stops being claimable and its bytes are reclaimed. */
+  expiresAt: number;
+}
+
+/** What `PUT /v1/attachments/:id/blob` answers — `storedAt` becomes `cloudBlobAt`. */
+export interface BlobStored {
+  storedAt: number;
+  size: number;
+}
+
+/** What `POST /v1/media-tokens` answers — one short-lived `media:read` ticket for this account. */
+export interface MediaTokenGrant {
+  token: string;
+  expiresAt: number;
+}

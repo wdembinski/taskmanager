@@ -25,6 +25,16 @@ async function bootstrap() {
   const limit = bodyLimit(process.env);
   app.useBodyParser('json', { limit });
 
+  // AND NOTHING ELSE. `useBodyParser('json')` only touches requests whose Content-Type is
+  // JSON, which is what lets the blob routes (`POST /v1/uploads`, `PUT /v1/attachments/:id/blob`)
+  // read their `application/octet-stream` bodies straight off the socket under their own byte
+  // counter — see attachments/rawBody.ts, which has the other half of this comment.
+  //
+  // A GLOBAL parser added here — `app.use(express.raw())`, `express.text()`, anything without a
+  // type filter — would consume those bodies before the route ran. Nothing would error: the
+  // upload would simply arrive as zero bytes and store an empty file. If a future route needs
+  // its own parser, register it for that route's content type, never for everything.
+
   // Named origins, not `*` — see config/cors.ts.
   app.enableCors({ origin: corsOrigin(process.env) });
 
