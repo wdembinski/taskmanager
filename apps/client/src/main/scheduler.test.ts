@@ -1218,6 +1218,8 @@ describe('Scheduler run-failure handling', () => {
       listTaskLinks: () => [],
       saveAuthGate: vi.fn(),
       loadAuthGate: () => null,
+      // The limit gate persists itself on every change, and one of these cases now raises it.
+      saveLimitGate: vi.fn(),
       getSettings: () => ({ maxAutoRetries, limitJitterMs: 0, concurrency: 1 }),
       ...INERT_ATTENTION_STORE,
       // Spied rather than inert: whether the parked failure's ROW survives its run's exit
@@ -1248,8 +1250,11 @@ describe('Scheduler run-failure handling', () => {
       settled: false,
     });
     (scheduler as unknown as { inFlight: Set<string> }).inFlight.add('t1');
-    const fire = (event: unknown): void =>
-      (scheduler as unknown as { onRunEvent: (r: string, e: unknown) => void }).onRunEvent(
+    // Awaitable: a `result` naming a usage limit is confirmed against a `/usage` reading
+    // before it is believed, and that is the one branch of `onRunEvent` that yields. Every
+    // other event still completes synchronously, so the cases below need no `await`.
+    const fire = (event: unknown): Promise<void> =>
+      (scheduler as unknown as { onRunEvent: (r: string, e: unknown) => Promise<void> }).onRunEvent(
         'r1',
         event,
       );
@@ -1350,6 +1355,78 @@ describe('Scheduler run-failure handling', () => {
     expect(start).not.toHaveBeenCalled();
     // …and nothing else may start either, however it is asked.
     expect(scheduler.runTask('t1')).toBeNull();
+  });
+
+  /**
+   * The limit's version of the same rule, and the same bug.
+   *
+   * A run that merely ENDS with "Claude AI usage limit reached|<epoch>" is the account out
+   * of budget, not this card failing — but nothing read it, so it settled as the card's
+   * `api_error`, spent an auto-retry against a wall that was still up, and left the gate
+   * that exists for exactly this down while the queue fed the next card into it.
+   *
+   * `readUsage` is not wired here, which is the point: the epoch tier needs no
+   * corroboration, so the park is decided synchronously and the probe is never asked.
+   */
+  it('holds all work behind the usage-limit gate instead of blaming the card', async () => {
+    const { scheduler, task, start, emitAttention, fire } = setup(1);
+
+    await fire({
+      ...failResult,
+      resultText: 'Claude AI usage limit reached|1754870400',
+      terminalReason: 'api_error',
+    });
+
+    const gate = scheduler.currentLimit();
+    expect(gate?.resetsAt).toBe(1754870400); // the CLI's own field, parsed, not guessed
+    expect(gate?.parkedTaskIds).toEqual(['t1']);
+    expect(task.status).toBe('blocked-by-limit');
+    // Not an inbox item: an account-wide outage filed against one card tells the human
+    // nothing about the one thing actually wrong, and there is nothing for them to answer.
+    expect(emitAttention).not.toHaveBeenCalled();
+    fire(exited);
+    expect(start).not.toHaveBeenCalled(); // no auto-retry into the same wall
+  });
+
+  /**
+   * …and the card is told. `engageLimit` wrote no timeline note at all, so a card parked
+   * this way went completely silent — worse, for a human reading the card, than the
+   * `api_error` it used to file.
+   */
+  it('says on the card that the account is limited and it resumes by itself', async () => {
+    const { store, fire } = setup(1);
+
+    await fire({ ...failResult, resultText: 'Claude AI usage limit reached|1754870400' });
+
+    const notes = (store.appendTaskEvent as ReturnType<typeof vi.fn>).mock.calls
+      .map(([, , , event]) => event as { kind: string; text?: string })
+      .filter((e) => e.kind === 'assistant');
+    expect(notes).toHaveLength(1);
+    expect(notes[0].text).toMatch(/usage limit/i);
+    expect(notes[0].text).toMatch(/picks up by itself|nothing to press/i);
+  });
+
+  /**
+   * The other half of holding first: the hold has to come back off.
+   *
+   * With no epoch to believe, the sentence is checked against what the account actually
+   * has left — and a probe reporting 20% of the session window used contradicts it. The
+   * board must not be parked for five hours over that, so the failure falls through to
+   * exactly the path it took before any of this existed.
+   */
+  it('lets a contradicted limit settle as an ordinary failure', async () => {
+    const { scheduler, task, emitAttention, fire } = setup(1);
+    scheduler.setUsageProbe(() => Promise.resolve({ sessionPct: 20, weeklyPct: 3 }));
+
+    await fire({ ...failResult, resultText: 'Claude AI usage limit reached' });
+
+    expect(scheduler.currentLimit()).toBeNull(); // nothing parked, no countdown raised
+    expect(emitAttention).not.toHaveBeenCalled(); // an auto-retry is still available
+    expect(task.status).toBe('pending'); // …and it took it, as it always did
+    // The hold is off, so the queue can move again — this is the whole cost of a wrong
+    // classification: the few seconds the probe took.
+    const held = (scheduler as unknown as { probingLimit: Set<string> }).probingLimit;
+    expect(held.size).toBe(0);
   });
 
   it('resumes what it held the moment the human signs in', () => {
@@ -1814,8 +1891,11 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       });
       (scheduler as unknown as { inFlight: Set<string> }).inFlight.add(taskId);
     };
-    const fire = (runId: string, event: unknown): void =>
-      (scheduler as unknown as { onRunEvent: (r: string, e: unknown) => void }).onRunEvent(
+    // Awaitable for the one branch of `onRunEvent` that yields — a `result` naming a usage
+    // limit, which is confirmed against a `/usage` reading before it is believed. Every
+    // other event still completes synchronously, so the cases below need no `await`.
+    const fire = (runId: string, event: unknown): Promise<void> =>
+      (scheduler as unknown as { onRunEvent: (r: string, e: unknown) => Promise<void> }).onRunEvent(
         runId,
         event,
       );
@@ -2428,6 +2508,44 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       await flush();
       expect(h.prepared).toEqual([{ taskId: 's1', owner: 't1' }]);
       gate.dispose();
+    });
+
+    /**
+     * The third way the wall arrives, end to end: no `rate_limit_event` at all, just a step
+     * whose run ENDED saying the account is out of budget.
+     *
+     * Every case above starts from the CLI's structured signal. This one starts from the
+     * symptom the human actually reported — a chain that stopped, one step marked failed
+     * for something it did not do, and no banner, no countdown and nothing that would ever
+     * pick it back up. It now ends where the other two do.
+     */
+    it('parks a step whose run merely ENDED on a usage limit, and resumes it at the reset', async () => {
+      const h = setup();
+      h.seedRun('r1', 's1');
+
+      await h.fire('r1', {
+        kind: 'result',
+        success: false,
+        resultText: 'Claude AI usage limit reached|1754870400',
+        costUsd: null,
+        durationMs: null,
+        stopReason: null,
+        terminalReason: 'api_error',
+      });
+
+      // The step is parked, not failed; the card is untouched — its work is the chain's.
+      expect(h.children[0].status).toBe('blocked-by-limit');
+      expect(h.parent.status).toBe('in-progress');
+      expect(h.scheduler.currentLimit()?.resetsAt).toBe(1754870400);
+      // Nothing is asked of the human: there is nothing for them to decide, and this is not
+      // this card's failure to answer for.
+      expect(h.emitAttention).not.toHaveBeenCalled();
+      expect(h.prepared).toEqual([]);
+
+      h.scheduler.resumeLimitNow();
+      await flush();
+      // Exactly the step the wall stopped — not the card beside it, and not step 2.
+      expect(h.prepared).toEqual([{ taskId: 's1', owner: 't1' }]);
     });
 
     it('un-strands a step left blocked-by-limit with no gate behind it (restart)', async () => {

@@ -44,15 +44,22 @@ export function parseClaudeUsageText(text: string): CliUsageReading {
  * Run `/usage` and read the two percentages back. Never throws — a CLI that is
  * missing, logged out, offline, or mid-upgrade just means "no reading yet", the same
  * shape `getClaudeStatus` uses for the same reasons.
+ *
+ * `timeoutMs` is a parameter because the background poller and the scheduler want
+ * different answers to "how long is too long". The poller can afford to wait — nothing
+ * is blocked on it, and a slow reading still refreshes a bar. The limit classifier
+ * cannot: it asks with the queue held, so it passes a few seconds and treats a slower
+ * CLI as no reading at all (see `Scheduler.probeUsage`).
  */
 export async function readClaudeUsage(
   host: ExecHost = localHost(),
+  timeoutMs = 30_000,
 ): Promise<CliUsageReading | null> {
   const { code, stdout } = await host.exec(
     process.cwd(),
     'claude',
     ['-p', '/usage', '--output-format', 'json'],
-    { resolveViaShell: true, timeoutMs: 30_000 },
+    { resolveViaShell: true, timeoutMs },
   );
   if (code !== 0) return null;
   let parsed: unknown;

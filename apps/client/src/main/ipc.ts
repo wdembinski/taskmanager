@@ -168,9 +168,9 @@ import { writePermissionServer } from './permissionServerSource';
 import { openInteractiveSignIn, watchForSignIn } from './signIn';
 import { PlanWatcher } from './planWatcher';
 import { SyncPoller } from './syncPoller';
-import { ClaudeUsagePoller } from './claudeUsage';
+import { ClaudeUsagePoller, readClaudeUsage } from './claudeUsage';
 import { validateBranchName } from '@shared/branchName';
-import { Scheduler } from './scheduler';
+import { LIMIT_PROBE_TIMEOUT_MS, Scheduler } from './scheduler';
 import { SessionManager } from './sessionManager';
 import { createStore, type Store } from './store';
 import { Updater } from './updater';
@@ -426,6 +426,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // its own channel rather than being folded into `claude:getStatus` — that one answers
   // "is there a credentials file", which stayed true for the whole outage this exists for.
   scheduler.setAuthNotifier((state) => send('auth:changed', state));
+
+  // The corroborating witness for a usage limit the CLI only stated in prose: `/usage` is a
+  // LOCAL meta-command (no tokens, no turns — see `claudeUsage.ts`), so the scheduler can
+  // afford to ask before it parks the whole board. Asked fresh rather than read off
+  // `claudeUsagePoller`, whose cached reading can be ten minutes old — the question here is
+  // "is the account out of budget right now", and ten minutes is the whole of the answer.
+  scheduler.setUsageProbe(() => readClaudeUsage(undefined, LIMIT_PROBE_TIMEOUT_MS));
 
   // Phase 22: where the attached bytes live, so a prompt can hand the agent real paths.
   // `app.getPath` is Electron's, and the scheduler is unit-tested without it — so the root

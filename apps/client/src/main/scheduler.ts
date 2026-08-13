@@ -102,7 +102,15 @@ import type { PermissionGate } from './claudeSession';
 import { buildChainSummary } from './chainSummary';
 import { shouldSurfaceEvent } from './eventNoise';
 import { AuthGate, detectAuthFailure, isAuthFailureText } from './authGate';
-import { classifyLimit, isBlockingLimitStatus, LimitGate } from './limitGate';
+import {
+  classifyLimit,
+  decideLimitPark,
+  detectLimitFailure,
+  isBlockingLimitStatus,
+  LimitGate,
+  type LimitSignal,
+} from './limitGate';
+import type { CliUsageReading } from './claudeUsage';
 import type { PermissionRequest, PermissionDecisionResult } from './permissionBroker';
 import { EXIT_PLAN_MODE_TOOL, evaluateToolUse } from './permissionPolicy';
 import { tickPlanCheckbox } from './planParser';
@@ -213,6 +221,16 @@ function resumeWithNotePrompt(note: string): string {
  * (Rung 3). Mechanical union-merge (Rung 1) runs first, inside the integration itself.
  */
 const MAX_CONFLICT_FIX_ATTEMPTS = 2;
+
+/**
+ * How long the limit classifier waits for its `/usage` reading before giving up on it.
+ *
+ * The probe is free (a local meta-command — no tokens, no turns), but it is asked with the
+ * queue HELD, which is what puts a bound on it at all: every second here is a second in
+ * which nothing else may start. A few seconds buys the corroboration; anything slower is
+ * read as "no reading", which the ladder in `decideLimitPark` already knows what to do with.
+ */
+export const LIMIT_PROBE_TIMEOUT_MS = 5_000;
 
 /**
  * The permission mode for a run the ORCHESTRATOR requeued to make one specific edit — a
@@ -1094,6 +1112,35 @@ export class Scheduler {
     rateLimitType: string;
     resetsAt: number | null;
   } | null = null;
+  /**
+   * Runs whose `result` named a usage limit and whose `/usage` probe has not answered yet.
+   *
+   * A hold, not a gate: it is counted by {@link Scheduler.workIsHeld}, so for the few
+   * seconds the probe takes nothing new is pumped into a wall the account may well be up
+   * against. Held FIRST and confirmed second, deliberately — the alternative is asking
+   * first and discovering, three launches later, that they all died the same way. If the
+   * probe contradicts the text the hold is dropped and the failure settles as the card's
+   * own, so a wrong classification costs a few seconds of queue, not five hours.
+   */
+  private readonly probingLimit = new Set<string>();
+  /**
+   * Per-task count of consecutive limit parks made on evidence NOTHING has confirmed —
+   * the CLI's prose with no epoch and no `/usage` reading to corroborate it.
+   *
+   * This is `decideLimitPark`'s `priorTextParks`: past its floor the same card parking
+   * again on the same unconfirmed sentence stops being a wait worth taking, and the human
+   * is asked instead. Counted up by a park nothing corroborated AND by the ask that
+   * follows the floor (until something confirms a limit, the guess stays a guess); reset by
+   * anything that ends the run of guesses — an epoch, a reading at the cap, or the task
+   * simply working. In memory only, like {@link Scheduler.attempts} and for the same reason.
+   */
+  private readonly limitTextParks = new Map<string, number>();
+  /**
+   * Reads the account's real `/usage` percentages — the corroborating witness for a limit
+   * the CLI only claimed in prose. Injected by the IPC layer (which owns `claudeUsage`);
+   * undefined in tests, which is simply "no reading" and exercises the floor above.
+   */
+  private readUsage?: () => Promise<CliUsageReading | null>;
 
   constructor(
     private readonly store: Store,
@@ -1196,6 +1243,15 @@ export class Scheduler {
    */
   setAuthNotifier(notify: (state: AuthState | null) => void): void {
     this.emitAuth = notify;
+  }
+
+  /**
+   * Wire the `/usage` probe the limit classifier corroborates a text-only limit with. A
+   * setter for the same reason as {@link Scheduler.setAuthNotifier}: every unit test builds
+   * this class positionally, and no reading is a state the ladder already handles.
+   */
+  setUsageProbe(read: () => Promise<CliUsageReading | null>): void {
+    this.readUsage = read;
   }
 
   /** Wire the "these branches are mid-merge" notifier (see {@link Scheduler.integrating}). */
@@ -1847,9 +1903,14 @@ export class Scheduler {
    * everywhere rather than be discovered per card. They are asked as one question at
    * every start point; where the two need different words for the human — a countdown
    * versus a Sign in button — the call sites ask the gates apart.
+   *
+   * A limit being CHECKED counts too ({@link Scheduler.probingLimit}). It is not a gate —
+   * there is nothing to tell the human and it lasts seconds — but a run that just said the
+   * account is out of budget is exactly the moment not to launch three more, and the whole
+   * point of holding before confirming is that the hold is in force while the probe runs.
    */
   private get workIsHeld(): boolean {
-    return this.limitGate.active || this.authGate.active;
+    return this.limitGate.active || this.authGate.active || this.probingLimit.size > 0;
   }
 
   /** The active usage-limit gate, or null — seeds the countdown banner on load. */
@@ -2410,6 +2471,8 @@ export class Scheduler {
     for (const proposal of this.pendingProposals.values()) this.clearProposalTimer(proposal);
     this.pendingProposals.clear();
     this.attempts.clear();
+    this.limitTextParks.clear();
+    this.probingLimit.clear(); // a probe still in flight is abandoned, not waited for
     this.retryQueue.clear();
     this.fixNotes.clear();
     this.conflictFixAttempts.clear();
@@ -3000,7 +3063,13 @@ export class Scheduler {
     };
   }
 
-  private onRunEvent(runId: string, event: SessionEvent): void {
+  /**
+   * Async for exactly one branch: a `result` that names a usage limit is confirmed against
+   * a `/usage` reading before it is believed (see the `result` case below). Every other
+   * event still runs start to finish synchronously — an `async` body only yields where it
+   * actually awaits — so nothing else about the ordering of this handler changed.
+   */
+  private async onRunEvent(runId: string, event: SessionEvent): Promise<void> {
     if (this.disposed) return;
     const run = this.runs.get(runId);
     if (!run) return;
@@ -3158,7 +3227,13 @@ export class Scheduler {
         // `allowed`/`allowed_warning` (approaching the cap) or an empty status must
         // NOT engage the gate, or a mere warning falsely parks everything for a full
         // weekly window (see `isBlockingLimitStatus`).
-        if (isBlockingLimitStatus(event.status)) this.engageLimit(event);
+        if (isBlockingLimitStatus(event.status)) {
+          this.engageLimit({
+            status: event.status,
+            rateLimitType: event.rateLimitType,
+            resetsAt: event.resetsAt,
+          });
+        }
         break;
 
       case 'result':
@@ -3191,6 +3266,57 @@ export class Scheduler {
             this.engageAuthFailure(run, authReason);
             this.sessions.stop(runId);
             break;
+          }
+        }
+        {
+          // The account's OTHER outage, read the same way and filed the same place: the run
+          // did not fail, the account ran out of budget mid-sentence. Before this it settled
+          // as the card's failure — an `api_error` parked against work that was doing fine —
+          // while the gate that exists for precisely this stayed down, so the queue walked
+          // the next card into the same wall.
+          //
+          // Above `describeEmptyOutcome` on purpose: a `plan` run the wall cut off presented
+          // no plan, and that verdict ("ended without presenting a plan") is a true sentence
+          // about the wrong cause. The account's answer is asked first.
+          //
+          // (No `success` guard, unlike the sign-in classifier above: a *successful* run can
+          // legitimately end on the limit phrase — an agent reporting on this very feature —
+          // so `detectLimitFailure` owns that rule itself.)
+          const limit = detectLimitFailure(event);
+          if (limit !== null) {
+            // Hold FIRST — synchronously, before the probe can yield — then confirm.
+            this.probingLimit.add(runId);
+            const reading = this.readUsage ? await this.probeUsage() : null;
+            this.probingLimit.delete(runId);
+            if (this.disposed) break;
+            const parks = this.limitTextParks.get(run.taskId) ?? 0;
+            if (decideLimitPark(limit, reading, parks) === 'park') {
+              // Only a guess repeats itself: a park nothing corroborated is what the floor
+              // counts, and anything that did confirm one starts the count over.
+              if (limit.tier === 'epoch' || reading !== null)
+                this.limitTextParks.delete(run.taskId);
+              else this.limitTextParks.set(run.taskId, parks + 1);
+              // Only the epoch tier carries a reset time. The last `rate_limit_event` the CLI
+              // sent is the next best answer — same account, same window — and failing that
+              // the gate waits out its type's conservative default.
+              const resetsAt = limit.resetsAt ?? this.lastRateLimit?.resetsAt ?? null;
+              const signal: LimitSignal = { ...limit, resetsAt };
+              // So the Performance dashboard's pressure read agrees with the banner: this
+              // path never went through the `rate-limit` case that normally records it.
+              this.lastRateLimit = {
+                status: signal.status,
+                rateLimitType: signal.rateLimitType,
+                resetsAt,
+              };
+              // Parks and stops this run and every other one — `run` by name, because the
+              // probe above gave its process time to exit and leave the map.
+              this.engageLimit(signal, run);
+              break;
+            }
+            // The probe says the account has budget left, so the sentence is not the whole
+            // story and a human should look. Released, counted, and settled as any other
+            // failure — which is what this path did for every limit before today.
+            this.limitTextParks.set(run.taskId, parks + 1);
           }
         }
         {
@@ -3263,20 +3389,76 @@ export class Scheduler {
    * A usage limit hit — engage the account-wide gate (Phase 5). Every currently
    * running task is parked (`blocked-by-limit`) and its process ended; the saved
    * session id lets us resume it when the gate's timer fires at reset time.
+   *
+   * Takes a {@link LimitSignal} rather than the CLI's event, because there are now two
+   * ways to learn this: the structured `rate_limit_event`, and a run that merely ended
+   * with the reason in its text (`detectLimitFailure`). Both park identically — the
+   * account is limited either way — so only the reading of it differs.
+   *
+   * `failing` is named separately by the second of those, and only it needs to: that path
+   * pauses on a `/usage` probe first, and a process that dies in those few seconds is
+   * removed from `runs` by its own `exited`. Without this the one run that PROVED the
+   * limit would be the one run the gate never parked — left `running` behind a gate that
+   * has no memory of it, which is the exact shape of card that never comes back.
    */
-  private engageLimit(event: Extract<SessionEvent, { kind: 'rate-limit' }>): void {
+  private engageLimit(signal: LimitSignal, failing?: Run): void {
     // Account-wide: park EVERY in-flight run, not only the one that hit the wall.
-    const active = [...this.runs.values()];
+    const live = [...this.runs.values()];
+    const active = failing && !this.runs.has(failing.runId) ? [failing, ...live] : live;
+    // Captured before `engage`, exactly as `engageAuthFailure` does: only the FIRST engage
+    // writes timeline notes, or a queue draining into the wall buries each card's history
+    // under one note per attempt.
+    const first = !this.limitGate.active;
     this.limitGate.engage(
-      { status: event.status, rateLimitType: event.rateLimitType, resetsAt: event.resetsAt },
+      signal,
       active.map((r) => r.taskId),
     );
     for (const run of active) {
       run.settled = true; // its imminent exit is expected — don't settle it as failed
       this.clearRunAttention(run.runId); // a parked run can't be answered mid-limit
       this.updateTask(run.taskId, { status: 'blocked-by-limit' }, null);
+      // Said on the card, not only in its status — the same rule `parkForLimit` follows, and
+      // the reason it exists here too: a card parked by this path used to go completely
+      // silent, where before the gate ever read a failure it at least said `api_error`.
+      // "Something stopped and told me nothing" is indistinguishable from "something broke".
+      if (first) {
+        this.noteRun(
+          run.projectId,
+          run.taskId,
+          run.runId,
+          'Stopped because the account hit its Claude usage limit. Everything is held until ' +
+            'the window resets, and this picks up by itself then — nothing to press.',
+        );
+      }
       // End the process now; we'll spawn a fresh `--resume` for it at reset time.
       this.sessions.stop(run.runId);
+    }
+  }
+
+  /**
+   * Ask the injected `/usage` probe for a reading, bounded by {@link
+   * LIMIT_PROBE_TIMEOUT_MS} and never throwing — anything other than a reading is null,
+   * which `decideLimitPark` treats as "no reading" rather than as evidence either way.
+   *
+   * The bound is here as well as in `readClaudeUsage` because this is the side holding the
+   * queue: the scheduler must not depend on an injected function to return promptly, or a
+   * hung probe becomes a silent, invisible hold with no banner and no timer behind it.
+   */
+  private async probeUsage(): Promise<CliUsageReading | null> {
+    const read = this.readUsage;
+    if (!read) return null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        Promise.resolve()
+          .then(read)
+          .catch(() => null),
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => resolve(null), LIMIT_PROBE_TIMEOUT_MS);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 
@@ -3847,6 +4029,9 @@ export class Scheduler {
       return;
     }
     this.attempts.delete(run.taskId); // a success clears the retry counter
+    // …and the run of unconfirmed limit parks: this task just worked, so whatever the last
+    // one of those was reading, it is not a card being parked over and over on a guess.
+    this.limitTextParks.delete(run.taskId);
     // The orchestrator finishes WORK; it does not close cards. A run already moved this
     // card to IN PROGRESS when it started, and that is where it stays: only the human
     // decides a card is done, by dragging it. What changes here is that the spinner stops
