@@ -1744,10 +1744,20 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       ...INERT_ATTENTION_STORE,
     } as unknown as Store;
     const prepared: Array<{ taskId: string; owner: string }> = [];
+    /** Whether each `prepare` was told this run is resolving a rebase the app paused. */
+    const resuming: boolean[] = [];
     const integrated: Array<{ branch: string; base: string }> = [];
     const worktrees = {
-      prepare: (_p: Project, task: Task, owner: string = task.id) => {
+      prepare: (
+        _p: Project,
+        task: Task,
+        owner: string = task.id,
+        _branch?: string,
+        _startPoint?: string,
+        prepOpts?: { resumingRebase?: boolean },
+      ) => {
         prepared.push({ taskId: task.id, owner });
+        resuming.push(prepOpts?.resumingRebase === true);
         return Promise.resolve({
           mode: 'worktree',
           cwd: `C:/wt/${owner}`,
@@ -1804,6 +1814,7 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       stop,
       emitAttention,
       prepared,
+      resuming,
       integrated,
       added,
       comments,
@@ -1830,6 +1841,49 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
     scheduler.runTask('s2');
     await flush();
     expect(prepared).toEqual([{ taskId: 's2', owner: 't1' }]);
+  });
+
+  /**
+   * A rebase paused in the worktree is debris for an ordinary run — it detaches HEAD, which
+   * blocks every button on the card — and is the whole job of a conflict-resolution run.
+   * Only the scheduler can tell the two apart, so it has to SAY which one this is; preparing
+   * without an answer is how a card either stays stuck or has its conflict fix thrown away.
+   */
+  describe('a rebase paused in the worktree', () => {
+    /** Park a merge conflict against `taskId`, as Rung 3 does when the AI rung runs out. */
+    const parkConflict = (scheduler: Scheduler, taskId: string): void => {
+      (scheduler as unknown as { attention: Map<string, unknown> }).attention.set('inbox-1', {
+        id: 'inbox-1',
+        kind: 'merge-conflict',
+        taskId,
+        projectId: 'agent-1',
+      });
+    };
+
+    it('is cleared before an ordinary step', async () => {
+      const { scheduler, resuming } = setup();
+      scheduler.runTask('s2');
+      await flush();
+      expect(resuming).toEqual([false]);
+    });
+
+    it('is handed over when a conflict is parked against a step of the same card', async () => {
+      const { scheduler, resuming } = setup();
+      // Parked against s1; the run being started is s2 — one worktree, one branch, so the
+      // conflict is just as much s2's as s1's.
+      parkConflict(scheduler, 's1');
+      scheduler.runTask('s2');
+      await flush();
+      expect(resuming).toEqual([true]);
+    });
+
+    it('is not handed over for a conflict parked on an unrelated card', async () => {
+      const { scheduler, resuming } = setup();
+      parkConflict(scheduler, 'someone-elses-card');
+      scheduler.runTask('s2');
+      await flush();
+      expect(resuming).toEqual([false]);
+    });
   });
 
   describe('starting a CARD that has steps', () => {

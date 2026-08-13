@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Project, Task } from '@shared/model';
 import { LOCAL_TARGET } from '@shared/execTarget';
-import { git } from './git';
+import { currentBranch, git, hasConflicts, rebaseOnto } from './git';
 import {
   classifyUntrackedCollisions,
   resolveVersionOnlyConflict,
@@ -505,6 +505,97 @@ describe('WorktreeManager.prepare — a branch stacked on another card’s', () 
   });
 });
 
+/**
+ * The regression this suite exists for: a card whose worktree was left part-way through a
+ * rebase. `HEAD` is detached there, so `currentBranch` reports nothing, and preparation used
+ * to refuse — identically, every time the human pressed anything, with "Retry fresh (discard
+ * branch)" as the only offered way out. It is a state one `rebase --abort` undoes without
+ * losing a commit, and any agent that rebases in its own worktree can produce it.
+ */
+describe('WorktreeManager.prepare — a worktree stranded mid-rebase', () => {
+  function worktreeProject(): Project {
+    return { id: 'p1', path: repo, useWorktrees: true, target: LOCAL_TARGET } as unknown as Project;
+  }
+
+  /**
+   * Give `taskId` a worktree, then strand it: a commit on its branch and a conflicting one on
+   * base, rebased into a stop. Returns the worktree path, which has no branch checked out.
+   */
+  async function strand(wtm: WorktreeManager, taskId: string): Promise<string> {
+    const first = await wtm.prepare(worktreeProject(), { id: taskId } as unknown as Task);
+    expect(first.mode).toBe('worktree');
+    if (first.mode !== 'worktree') throw new Error('no worktree');
+    writeFileSync(join(first.cwd, 'seed.txt'), 'branch side\n');
+    await git(first.cwd, ['commit', '--no-verify', '-am', 'branch edit']);
+    writeFileSync(join(repo, 'seed.txt'), 'base side\n');
+    await git(repo, ['commit', '--no-verify', '-am', 'base edit']);
+
+    expect((await rebaseOnto(first.cwd, base)).code).not.toBe(0);
+    expect(await currentBranch(first.cwd)).toBe(''); // the state under test
+    return first.cwd;
+  }
+
+  it('undoes the abandoned rebase, runs on the restored branch, and says so on the card', async () => {
+    const wtm = new WorktreeManager(join(root, 'wtroot-reb1'));
+    const cwd = await strand(wtm, 'reb1');
+
+    const prep = await wtm.prepare(worktreeProject(), { id: 'reb1' } as unknown as Task);
+
+    expect(prep.mode).toBe('worktree');
+    if (prep.mode !== 'worktree') return;
+    // The SAME worktree, back on its own branch — not a rebuilt one, and not the base tree.
+    expect(prep.cwd).toBe(cwd);
+    expect(prep.branch).toBe(taskBranch('reb1'));
+    expect(await currentBranch(cwd)).toBe(taskBranch('reb1'));
+    // Nothing of the branch was lost, and the agent gets a tree with no conflict markers.
+    expect(await hasConflicts(cwd)).toBe(false);
+    // Read line-normalized: a checkout on Windows may write CRLF back (core.autocrlf).
+    expect(readFileSync(join(cwd, 'seed.txt'), 'utf8').replace(/\r\n/g, '\n')).toBe(
+      'branch side\n',
+    );
+    // A write nobody asked for belongs on the timeline.
+    expect(prep.note).toMatch(/rebase/i);
+    expect(prep.note).toContain(taskBranch('reb1'));
+  });
+
+  it('leaves the pause alone when resolving that rebase IS the run', async () => {
+    const wtm = new WorktreeManager(join(root, 'wtroot-reb2'));
+    const cwd = await strand(wtm, 'reb2');
+
+    const prep = await wtm.prepare(
+      worktreeProject(),
+      { id: 'reb2' } as unknown as Task,
+      'reb2',
+      undefined,
+      undefined,
+      { resumingRebase: true },
+    );
+
+    expect(prep.mode).toBe('worktree');
+    if (prep.mode !== 'worktree') return;
+    // The branch the rebase will land on, read out of the paused rebase rather than guessed.
+    expect(prep.branch).toBe(taskBranch('reb2'));
+    // The conflict the run exists to resolve is still there, and nothing was announced.
+    expect(await hasConflicts(cwd)).toBe(true);
+    expect(await currentBranch(cwd)).toBe('');
+    expect(prep.note).toBeUndefined();
+  });
+
+  it('still refuses a HEAD detached for some other reason, and names what it checked', async () => {
+    const wtm = new WorktreeManager(join(root, 'wtroot-reb3'));
+    const first = await wtm.prepare(worktreeProject(), { id: 'reb3' } as unknown as Task);
+    if (first.mode !== 'worktree') throw new Error('no worktree');
+    await git(first.cwd, ['checkout', '--detach', 'HEAD']);
+
+    const prep = await wtm.prepare(worktreeProject(), { id: 'reb3' } as unknown as Task);
+
+    expect(prep.mode).toBe('failed');
+    expect(prep).not.toHaveProperty('cwd');
+    expect(prep.mode === 'failed' && prep.reason).toContain('no rebase is in progress');
+    expect(prep.mode === 'failed' && prep.reason).toContain(first.cwd);
+  });
+});
+
 describe('WorktreeManager.prepare — worktree-enabled repo that cannot isolate', () => {
   it('reports "failed" (never falls back to the base tree) when a worktree cannot be created', async () => {
     const task = { id: 't1' } as unknown as Task;
@@ -694,12 +785,15 @@ describe('WorktreeManager — a worktree that was already merged and cleaned up'
   });
 
   /**
-   * The other way a worktree stops having a branch, and the one that cost a whole card: a
-   * step left it stranded mid-rebase, so `HEAD` was detached. `rev-parse --abbrev-ref HEAD`
-   * answers the literal `HEAD` there — not empty — so the guard above sailed past it, the
-   * run was launched with `HEAD` recorded as its branch, and the merge afterwards looked for
-   * a branch by that name, found none, and reported `nothing-to-merge`. The work was fine and
-   * committed; nothing merged it, and the step span "Running" until a human noticed.
+   * The other way a worktree stops having a branch, and the one that cost a whole card:
+   * `HEAD` detached. `rev-parse --abbrev-ref HEAD` answers the literal `HEAD` there — not
+   * empty — so the guard above sailed past it, the run was launched with `HEAD` recorded as
+   * its branch, and the merge afterwards looked for a branch by that name, found none, and
+   * reported `nothing-to-merge`. The work was fine and committed; nothing merged it, and the
+   * step span "Running" until a human noticed.
+   *
+   * Detached by a bare `checkout`, as here, is still refused. The far commoner cause — a
+   * rebase abandoned in the worktree — is recovered instead; see the suite above.
    */
   it('refuses a worktree whose HEAD is detached instead of calling the branch "HEAD"', async () => {
     const wtm = new WorktreeManager(join(root, 'wtroot-detached'));
@@ -708,7 +802,7 @@ describe('WorktreeManager — a worktree that was already merged and cleaned up'
     expect(first.mode).toBe('worktree');
     if (first.mode !== 'worktree') return;
 
-    // Exactly what an interrupted `git rebase` leaves behind in that worktree.
+    // A HEAD detached on purpose — no rebase in progress to undo.
     writeFileSync(join(first.cwd, 'step.txt'), 'work\n');
     await git(first.cwd, ['add', '-A']);
     await git(first.cwd, ['commit', '--no-verify', '-m', 'step work']);
@@ -724,7 +818,7 @@ describe('WorktreeManager — a worktree that was already merged and cleaned up'
     expect(again).not.toHaveProperty('cwd');
     // The reason has to name the state and a way out, or it is just "it broke".
     expect(again.mode === 'failed' && again.reason).toMatch(/detached/i);
-    expect(again.mode === 'failed' && again.reason).toMatch(/rebase --abort/);
+    expect(again.mode === 'failed' && again.reason).toMatch(/checkout <branch>/);
     // And it touched nothing: the commit the stranded worktree holds is still there.
     expect((await git(first.cwd, ['log', '--oneline'])).stdout).toContain('step work');
   });

@@ -2545,6 +2545,9 @@ export class Scheduler {
         // branch instead of from base, so it opens with the predecessor's commits already
         // in the tree — which is the only thing that makes the loose gate worth having.
         this.chain.startPointFor(task),
+        // A paused rebase in the worktree is normally debris to clear before the run (see
+        // `rescueDetached`) — unless resolving it IS the run, which only the scheduler knows.
+        { resumingRebase: this.isResolvingConflict(task) },
       );
     } catch (err) {
       // Preparation blew up (odd git state). For a worktree-enabled repo, never fall back
@@ -4173,6 +4176,33 @@ export class Scheduler {
       base: ctx.base,
       worktree: ctx.worktree,
     });
+  }
+
+  /**
+   * Is the run about to start the resolution of a rebase THIS app paused — Rung 2's agent
+   * fix, or a human who pressed Start (or replied in chat) while a `merge-conflict` sits in
+   * the inbox?
+   *
+   * It decides one thing, in `prepare`: whether the paused rebase in the worktree is handed
+   * to the run or undone before it. Undoing it is right for every other run — a card whose
+   * worktree is detached cannot be started at all otherwise — and catastrophic for this one,
+   * which exists to finish that exact rebase.
+   *
+   * Asked across the whole WORKTREE, not the one task: a plan's steps share their parent's
+   * worktree, so the conflict may be parked against a sibling of the task being started.
+   */
+  private isResolvingConflict(task: Task): boolean {
+    const owner = this.worktreeOwner(task);
+    const sharesWorktree = (taskId: string): boolean => {
+      if (taskId === task.id) return true;
+      const other = this.store.getTask(taskId);
+      return !!other && this.worktreeOwner(other) === owner;
+    };
+    for (const taskId of this.pendingConflictFix.keys()) if (sharesWorktree(taskId)) return true;
+    for (const item of this.attention.values()) {
+      if (item.kind === 'merge-conflict' && sharesWorktree(item.taskId)) return true;
+    }
+    return false;
   }
 
   /**

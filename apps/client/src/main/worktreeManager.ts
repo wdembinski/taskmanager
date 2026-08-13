@@ -49,6 +49,7 @@ import {
   mergeFfOnly,
   preserveUntracked,
   pruneWorktrees,
+  rebasingBranch,
   rebaseOnto,
   removeUntracked,
   removeWorktree,
@@ -446,6 +447,11 @@ export class WorktreeManager {
    * else — the returned `base` is still the project's integration branch, so where this
    * card eventually merges is unchanged. Ignored for a worktree that already exists, which
    * has a start point by definition.
+   *
+   * `opts.resumingRebase` says this run IS the resolution of a rebase the orchestrator itself
+   * paused — the conflict ladder's AI rung, or a human pressing Start while a merge conflict
+   * is parked. It changes exactly one thing: the paused rebase is handed over rather than
+   * cleared away. See {@link WorktreeManager.rescueDetached}.
    */
   async prepare(
     project: Project,
@@ -453,6 +459,7 @@ export class WorktreeManager {
     ownerTaskId = task.id,
     branchName?: string,
     startPoint?: string,
+    opts?: { resumingRebase?: boolean },
   ): Promise<WorktreePrep> {
     const { host, root } = await this.workspaceFor(project);
     if (!project.useWorktrees || !(await isRepo(project.path, host))) {
@@ -538,16 +545,15 @@ export class WorktreeManager {
       // costs one interrupted run; the alternative silently drops the work.
       const actual = await currentBranch(live, host);
       if (!actual) {
-        return {
-          mode: 'failed',
-          reason:
-            `The worktree at ${live} is a git repository but has no branch checked out, so ` +
-            `this task has no branch to work on or merge back. Check ` +
-            `\`git -C "${live}" status\` — a half-finished rebase or merge leaves a detached ` +
-            `HEAD, and \`git -C "${live}" rebase --abort\` (or "Retry fresh (discard ` +
-            `branch)" on the card, which rebuilds the worktree) clears it. The task was ` +
-            `not run in the base tree (${project.path}) to avoid polluting it.`,
-        };
+        const rescued = await this.rescueDetached(live, host, opts?.resumingRebase === true);
+        if (rescued.branch === null) {
+          return {
+            mode: 'failed',
+            reason: `${rescued.reason} The task was not run in the base tree (${project.path}) to avoid polluting it.`,
+          };
+        }
+        if (rescued.note) note = `${note ? `${note} ` : ''}${rescued.note}`;
+        return { mode: 'worktree', cwd: live, branch: rescued.branch, base, note };
       }
       return { mode: 'worktree', cwd: live, branch: actual, base, note };
     }
@@ -756,6 +762,79 @@ export class WorktreeManager {
   }
 
   /**
+   * A live worktree whose `HEAD` is detached: put a branch back under it, or say why not.
+   *
+   * A detached worktree is a card that cannot be started at all — no step, no chat, no
+   * merge — and the state is not rare: any agent that runs `git rebase` in its own worktree
+   * and stops on a conflict leaves exactly this behind, as does the planning session that
+   * traces a rebase to see whether a branch still lands. Refusing was the old answer, and it
+   * refused the same way every time it was pressed: the only recovery offered was "Retry
+   * fresh (discard branch)", which throws away every commit on the branch to fix a state
+   * that costs nothing to undo. That is the wrong trade by a wide margin.
+   *
+   * So a paused REBASE is recovered rather than reported. `rebase --abort` is the same
+   * command the old message asked the human to run, and it is safe by construction: it
+   * restores the branch at the commit it had before the rebase started, so no commit can be
+   * lost — only the replay in flight, which the card is about to redo anyway.
+   *
+   * The exception is `resuming`, and it is the whole reason this takes a flag. When the
+   * orchestrator paused the rebase itself and this run is the resolution of it (conflict
+   * ladder Rung 2/3), aborting would discard the very work the run exists to do — so the
+   * branch is read out of the rebase state and the pause is handed over untouched.
+   *
+   * Anything ELSE that detaches a HEAD (a bare `git checkout <sha>`, a bisect) has no
+   * one obvious undo and might be deliberate, so it is still refused — with a message that
+   * says what was checked rather than guessing at a cause.
+   */
+  private async rescueDetached(
+    live: string,
+    host: ExecHost,
+    resuming: boolean,
+  ): Promise<{ branch: string; note?: string } | { branch: null; reason: string }> {
+    const rebasing = await rebasingBranch(live, host);
+    if (!rebasing) {
+      return {
+        branch: null,
+        reason:
+          `The worktree at ${live} is a git repository but has no branch checked out, and no ` +
+          `rebase is in progress there to explain it — so this task has no branch to work on ` +
+          `or merge back. Check \`git -C "${live}" status\`: a detached HEAD is what a bare ` +
+          `\`git checkout <commit>\` or an interrupted bisect leaves behind, and checking the ` +
+          `branch back out (\`git -C "${live}" checkout <branch>\`) clears it. "Retry fresh ` +
+          `(discard branch)" on the card rebuilds the worktree, at the cost of the branch.`,
+      };
+    }
+    if (resuming) return { branch: rebasing };
+
+    const aborted = await abortRebase(live, host);
+    // The abort's own exit code is not the question — whether a branch is back under HEAD is,
+    // and only git can answer that. An abort that half-worked and left the head detached is
+    // still a refusal, and it must not be reported as a recovery.
+    const restored = await currentBranch(live, host);
+    if (!restored) {
+      return {
+        branch: null,
+        reason:
+          `The worktree at ${live} is stranded part-way through a rebase of "${rebasing}", ` +
+          `so it has no branch checked out and this task had nothing to work on. Undoing that ` +
+          `rebase automatically failed: ${aborted.stderr.trim() || 'git rebase --abort failed'}. ` +
+          `Run \`git -C "${live}" rebase --abort\` yourself, or use "Retry fresh (discard ` +
+          `branch)" on the card to rebuild the worktree.`,
+      };
+    }
+    return {
+      branch: restored,
+      note:
+        `This card's worktree was stranded part-way through a rebase of "${rebasing}" onto ` +
+        `something else, which leaves it with no branch checked out and blocks every run on ` +
+        `the card. That rebase was undone (\`git rebase --abort\`) and "${restored}" checked ` +
+        `back out before this run started. No commit was lost — an aborted rebase restores ` +
+        `the branch exactly as it was before it began — but if that rebase was one you wanted, ` +
+        `it has to be started again.`,
+    };
+  }
+
+  /**
    * Where to BUILD a task's worktree, given that it has no live one: the first candidate
    * path that is free, clearing leftovers out of the preferred ones on the way.
    *
@@ -915,9 +994,15 @@ export class WorktreeManager {
     const cwd = await this.findLive(this.candidatePaths(root, project.id, ownerTaskId), host);
     if (!cwd) return null;
     // The worktree's own HEAD outranks the name we were handed: a card renamed after its
-    // worktree was made carries a branch name that was never checked out anywhere.
+    // worktree was made carries a branch name that was never checked out anywhere. Mid-rebase
+    // there is no HEAD branch to read, and the branch being replayed is the truthful answer —
+    // it is what the worktree goes back to, and reading nothing here would fall through to a
+    // name that may never have been checked out (see `rescueDetached`).
     const branch =
-      (await currentBranch(cwd, host)) || branchName?.trim() || taskBranch(ownerTaskId);
+      (await currentBranch(cwd, host)) ||
+      (await rebasingBranch(cwd, host)) ||
+      branchName?.trim() ||
+      taskBranch(ownerTaskId);
     if (!(await branchExists(project.path, branch, host))) return null;
     const base = project.baseBranch?.trim() || (await currentBranch(project.path, host));
     return base ? { cwd, branch, base } : null;

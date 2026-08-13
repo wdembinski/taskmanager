@@ -11,7 +11,7 @@
  * non-zero git exit is surfaced as `GitResult.code` rather than throwing, so the
  * caller decides what a failure means (e.g. a non-zero `rebase` = conflicts).
  */
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import type { GitPreflight } from '@shared/model';
 import { localHost, type ExecHost } from './exec';
 
@@ -244,6 +244,55 @@ export async function rebaseOnto(
 /** Abort an in-progress rebase, restoring the branch to its pre-rebase state. */
 export async function abortRebase(worktreePath: string, host?: ExecHost): Promise<GitResult> {
   return git(worktreePath, ['rebase', '--abort'], host);
+}
+
+/**
+ * The branch a rebase in progress is replaying in `dir` — i.e. the branch git will put back
+ * when that rebase finishes or is aborted — or **null** when no rebase is under way.
+ *
+ * This is the one question {@link currentBranch} cannot answer and every caller of it then
+ * has to guess at: mid-rebase, `HEAD` is detached, so the worktree reports no branch at all
+ * even though it very much has one waiting for it. Told apart, "detached because a rebase is
+ * paused here" becomes a recoverable state ({@link abortRebase} puts the branch back, losing
+ * no commit) instead of the dead end it looks like.
+ *
+ * Both rebase backends are checked — `rebase-merge` (the default, and every interactive
+ * rebase) and `rebase-apply` (`--apply`) — because which one ran is not ours to predict.
+ * A rebase of a detached HEAD writes the literal `detached HEAD` here rather than a ref, and
+ * that is correctly reported as "no branch": there is none to go back to.
+ */
+export async function rebasingBranch(dir: string, host?: ExecHost): Promise<string | null> {
+  for (const backend of ['rebase-merge', 'rebase-apply']) {
+    const head = await readGitFile(dir, `${backend}/head-name`, host);
+    const ref = head?.trim() ?? '';
+    if (ref.startsWith('refs/heads/')) return ref.slice('refs/heads/'.length) || null;
+  }
+  return null;
+}
+
+/**
+ * Read a file out of the repo's git DIRECTORY (not its work tree), or null if it isn't there.
+ *
+ * `rev-parse --git-path` is what makes this safe to do at all: a worktree's `.git` is a *file*
+ * pointing into the main repo's admin area, so the state of a rebase running here lives at a
+ * path only git can name. It answers with an absolute path in a real repo and a relative one
+ * in some layouts, hence the join — and the read goes through `toApp` so a WSL project's
+ * `/home/...` is named the way this process can open it.
+ */
+async function readGitFile(
+  dir: string,
+  relative: string,
+  host: ExecHost = localHost(),
+): Promise<string | null> {
+  const res = await git(dir, ['rev-parse', '--git-path', relative], host);
+  const path = res.code === 0 ? res.stdout.trim() : '';
+  if (!path) return null;
+  const absolute = /^([A-Za-z]:)?[\\/]/.test(path) ? path : `${dir.replace(/[\\/]+$/, '')}/${path}`;
+  try {
+    return readFileSync(host.toApp(absolute), 'utf8');
+  } catch {
+    return null; // no rebase in progress is the ordinary case, not an error
+  }
 }
 
 /** Continue a rebase after conflicts were resolved and staged. */

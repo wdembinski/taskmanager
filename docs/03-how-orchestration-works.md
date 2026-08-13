@@ -507,6 +507,15 @@ the plan, so the steps are full-auto.
   beside it as `<parentId>-2` rather than the run being parked on "delete that
   directory and retry". The leftover is inert, is named on the card's timeline, and is
   swept up by *Clean up & abandon* whenever the lock is gone.
+- **A rebase abandoned in the worktree is undone, not reported.** A rebase that stops
+  part-way leaves `HEAD` detached, which is a worktree with no branch — and that blocks
+  every button on the card, not just the step that caused it. Preparation therefore runs
+  `git rebase --abort` first and carries on with the branch that comes back; no commit
+  can be lost that way (an abort restores the branch exactly as it was), and the card's
+  timeline says it happened. The one exception is a rebase **the app itself** paused for
+  a merge conflict — resolving that is the whole job of the run it hands the worktree to,
+  so it is left exactly as it is. A HEAD detached any other way (a bare
+  `git checkout <commit>`) is still refused, because there is no one obvious undo.
 - **The parent is never auto-completed.** After the final merge the card stays *In
   Progress* with a "ready for review" comment — moving it to Done is yours.
 - A **failed** step parks and the chain simply stops; fixing it and marking it done

@@ -7,6 +7,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  abortRebase,
   addWorktree,
   changedInBranch,
   commitAll,
@@ -22,6 +23,7 @@ import {
   isRepo,
   listBranches,
   mergeFfOnly,
+  rebasingBranch,
   rebaseOnto,
   removeWorktree,
 } from './git';
@@ -189,6 +191,63 @@ describe('git helpers — a detached HEAD', () => {
     // Back on a branch, the name comes back.
     await git(repo, ['checkout', base]);
     expect(await currentBranch(repo)).toBe(base);
+  });
+});
+
+/**
+ * `rebasingBranch` is the other half of that answer. "No branch checked out" is where the app
+ * used to stop — it could not tell a worktree paused mid-rebase (which has a branch waiting
+ * for it, and one command that puts it back) from one detached on purpose.
+ */
+describe('git helpers — the branch a paused rebase is replaying', () => {
+  /** Leave `repo` stopped on a conflict, rebasing `topic` onto `base`. */
+  async function conflictingRebase(): Promise<void> {
+    await git(repo, ['checkout', '-b', 'topic']);
+    await commitFile(repo, 'a.txt', 'topic\n', 'topic edit');
+    await git(repo, ['checkout', base]);
+    await commitFile(repo, 'a.txt', 'base\n', 'base edit');
+    await git(repo, ['checkout', 'topic']);
+    const rebased = await rebaseOnto(repo, base);
+    expect(rebased.code).not.toBe(0); // the conflict this test is about
+  }
+
+  it('names the branch while the rebase is paused, and nothing once it is aborted', async () => {
+    await conflictingRebase();
+
+    // The worktree reports no branch — and yet it has one, which is the whole point.
+    expect(await currentBranch(repo)).toBe('');
+    expect(await hasConflicts(repo)).toBe(true);
+    expect(await rebasingBranch(repo)).toBe('topic');
+
+    await abortRebase(repo);
+    expect(await rebasingBranch(repo)).toBeNull();
+    expect(await currentBranch(repo)).toBe('topic');
+  });
+
+  it('is null in an ordinary repo, and in one detached without a rebase', async () => {
+    expect(await rebasingBranch(repo)).toBeNull();
+    await git(repo, ['checkout', '--detach', 'HEAD']);
+    expect(await currentBranch(repo)).toBe('');
+    expect(await rebasingBranch(repo)).toBeNull();
+  });
+
+  it('reads a rebase running in a WORKTREE, whose git dir is not its own `.git`', async () => {
+    // The case the app actually hits: `.git` is a file pointing into the main repo's admin
+    // area, so the rebase state is at a path only `rev-parse --git-path` can name.
+    const wt = mkdtempSync(join(tmpdir(), 'orch-git-wt-'));
+    await git(repo, ['checkout', '-b', 'wt-topic']);
+    await commitFile(repo, 'a.txt', 'topic\n', 'topic edit');
+    await git(repo, ['checkout', base]);
+    await commitFile(repo, 'a.txt', 'base\n', 'base edit');
+    await git(repo, ['worktree', 'add', wt, 'wt-topic']);
+    try {
+      expect((await rebaseOnto(wt, base)).code).not.toBe(0);
+      expect(await currentBranch(wt)).toBe('');
+      expect(await rebasingBranch(wt)).toBe('wt-topic');
+    } finally {
+      await git(repo, ['worktree', 'remove', '--force', wt]);
+      rmSync(wt, { recursive: true, force: true });
+    }
   });
 });
 
