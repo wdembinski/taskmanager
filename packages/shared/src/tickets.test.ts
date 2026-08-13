@@ -97,6 +97,20 @@ describe('typeIconKeyFor', () => {
     expect(jira('')).toBe('note');
   });
 
+  // GitHub writes exactly two type names — the labels every new repository is created with —
+  // and `Enhancement` is the one JIRA's vocabulary does not already cover. It used to fall
+  // through every arm and land on a neutral note, so every GitHub feature request on the board
+  // wore the same glyph as a card nobody had typed at all.
+  it("reads GitHub's two label-derived types", () => {
+    const github = (externalType: string): string =>
+      typeIconKeyFor(task({ source: 'github', externalSource: 'github', externalType }));
+    expect(github('Bug')).toBe('bug');
+    expect(github('Enhancement')).toBe('feature');
+    // Nothing else is claimed: the sync writes null for a repo's own taxonomy rather than
+    // guessing, and a null type is a note.
+    expect(github('')).toBe('note');
+  });
+
   it('falls back to the legacy ad-hoc type, then to a neutral note', () => {
     expect(typeIconKeyFor(task({ type: 'bug' }))).toBe('bug');
     expect(typeIconKeyFor(task({ type: 'feature' }))).toBe('feature');

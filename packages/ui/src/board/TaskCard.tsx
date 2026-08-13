@@ -3,12 +3,13 @@
  *
  * Mirrors the product mockup: a stripe of its project's colour along the top, a type
  * icon + title, an optional label chip, its progress note, the card's "Project:" line,
- * and a footer with the JIRA source badge and a priority square. A small status badge
- * appears only for the "unusual" states bucketed into a column (an AI run, or a
+ * and a footer with the ticket badge — the tracker's own mark and the issue's key, for
+ * JIRA's cards and GitHub's alike (`../tracker`) — and a priority square. A small status
+ * badge appears only for the "unusual" states bucketed into a column (an AI run, or a
  * failed/stopped/cancelled task in Done).
  *
  * The card itself has NO frame — the fill is brighter than the column, which is edge
- * enough. The only frames are rings painted outside the box: orange for unread JIRA
+ * enough. The only frames are rings painted outside the box: orange for unread ticket
  * comments or an agent waiting on an answer, brand for the selected card, both when
  * both. Outside, so clicking a card never moves its own text.
  *
@@ -25,7 +26,7 @@
  *   - The spinner comes from `runPhase`, which can see a run that has spawned but is not
  *     yet persisted as `running`, and it is accompanied by words — "Running step 2 of 5"
  *     rather than bare motion.
- *   - A row that wants you takes a TINT and the ticket badge takes the JIRA signal, so
+ *   - A row that wants you takes a TINT and the ticket badge takes the tracker's signal, so
  *     the card's one orange ring keeps its meaning and the reason stays legible.
  */
 import {
@@ -93,10 +94,11 @@ import {
   RING,
   STATUS_INDICATOR_COLOR,
 } from '../theme';
-import { JiraMark } from '../JiraMark';
 import { PriorityGlyph } from '../PriorityGlyph';
+import { TrackerMark, shortTicketKey } from '../tracker';
 import {
   mrAttentionReason,
+  mrHeading,
   mrLabel,
   mrRef,
   mrVerdict,
@@ -537,7 +539,7 @@ const useStyles = makeStyles({
   titleRow: { display: 'flex', alignItems: 'flex-start', gap: '8px' },
   /**
    * "An agent is working on this card", as a slow fluo-cyan sweep behind the card's whole top
-   * section — title, chips, note, project, epic, and the JIRA/priority footer. It sits on
+   * section — title, chips, note, project, epic, and the ticket/priority footer. It sits on
    * `body`, which already ends exactly where the Steps and Merge requests sections begin,
    * so the band needs no wrapper and no negative margins: the sweep runs edge to edge and
    * the card's own `overflow: hidden` + radius clip it into the corners.
@@ -677,9 +679,9 @@ const useStyles = makeStyles({
   chainChipMore: { flexShrink: 0, whiteSpace: 'nowrap' },
   chainChipIcon: { fontSize: '12px', flexShrink: 0, display: 'flex' },
   grow: { flex: 1, minWidth: 0 },
-  jiraLink: { textDecoration: 'none' },
-  /** The ticket badge: the JIRA mark, then the key. */
-  jiraBadge: {
+  ticketLink: { textDecoration: 'none' },
+  /** The ticket badge: the tracker's own mark, then the key. */
+  ticketBadge: {
     display: 'inline-flex',
     alignItems: 'center',
     gap: '5px',
@@ -693,12 +695,12 @@ const useStyles = makeStyles({
   /**
    * The same badge, carrying the unread signal itself.
    *
-   * The card's ring says "this wants you" but never why, so a new JIRA comment and an
+   * The card's ring says "this wants you" but never why, so a new ticket comment and an
    * agent's question looked identical. Tinting the badge that OWNS the reason is the
    * same move the merge-request rows make, and it costs the card no extra furniture.
    */
   // The whole `border`, not `borderColor`: Griffel rejects the four-sided shorthand.
-  jiraBadgeUnread: {
+  ticketBadgeUnread: {
     backgroundColor: ACCENT.unread,
     border: `1px solid ${ACCENT.unread}`,
     color: ACCENT.unreadInk,
@@ -737,7 +739,14 @@ export function typeIcon(task: Task): JSX.Element {
   if (t.includes('bug')) return <BugRegular />;
   if (t.includes('story')) return <BookmarkRegular />;
   if (t.includes('epic')) return <SparkleRegular />;
-  if (t.includes('feature') || t.includes('improvement')) return <BeakerRegular />;
+  // `enhancement` is GitHub's word, and its half of the only two type names that sync writes
+  // (`githubIssueSync.issueTypeFrom`) — the other, `Bug`, JIRA's vocabulary already covered.
+  // The same ladder, in the same order, lives in `@tm/shared/tickets`'s `typeIconKeyFor`,
+  // which is the pure form of this and the one the tests cover: a word added to one belongs
+  // in the other.
+  if (t.includes('feature') || t.includes('improvement') || t.includes('enhancement')) {
+    return <BeakerRegular />;
+  }
   if (t.includes('sub')) return <PersonRegular />;
   if (t.includes('task')) return <TaskListSquareLtrRegular />;
   return <CircleRegular />;
@@ -1103,8 +1112,8 @@ export function TaskCard({
   const resumable = Boolean(onResume) && canResumeWork(task, subtasks, liveRunTaskIds);
   /** Whether that click also re-queues the card's PLAN, which the tooltip should say. */
   const resumesChain = subtasks.some((s) => s.status === 'stopped');
-  // Only the ticket badge carries the JIRA signal, so the ring's reason is legible.
-  const jiraUnread = hasUnreadJira(task);
+  // Only the ticket badge carries the tracker's signal, so the ring's reason is legible.
+  const ticketUnread = hasUnreadJira(task);
   /**
    * Whether the Steps heading is a control — and, therefore, whether `stepsFolded` counts.
    *
@@ -1388,31 +1397,35 @@ export function TaskCard({
             {chainChip}
             {isExternal && task.externalKey && (
               <a
-                className={styles.jiraLink}
+                className={styles.ticketLink}
                 href={task.externalUrl ?? undefined}
                 target="_blank"
                 rel="noreferrer"
                 onClick={(e) => e.stopPropagation()}
+                // Always the FULL key here, whatever the badge prints: the tooltip is where a
+                // GitHub card says which repository it came from (see `shortTicketKey`).
                 title={
-                  jiraUnread
+                  ticketUnread
                     ? `${task.externalKey} — new comments on the ticket`
                     : (task.externalKey ?? undefined)
                 }
               >
                 <span
-                  className={mergeClasses(styles.jiraBadge, jiraUnread && styles.jiraBadgeUnread)}
-                >
-                  {/* `currentColor` when tinted, so the mark flips to near-black with the
-                      badge's text instead of sitting brand-blue on orange.
-
-                      JIRA's cards only. A GitHub card wears the same badge and the same
-                      unread ring — the fact is identical — but not another tracker's logo,
-                      which would be a lie drawn in brand colour. Its own mark comes with the
-                      rest of GitHub's card treatment. */}
-                  {task.externalSource === 'jira' && (
-                    <JiraMark size={12} color={jiraUnread ? 'currentColor' : undefined} />
+                  className={mergeClasses(
+                    styles.ticketBadge,
+                    ticketUnread && styles.ticketBadgeUnread,
                   )}
-                  {task.externalKey}
+                >
+                  {/* This card's tracker, in that tracker's own mark. `currentColor` when
+                      tinted, so JIRA's flips to near-black with the badge's text instead of
+                      sitting brand-blue on orange; GitHub's is monochrome to begin with and
+                      reads the same either way. */}
+                  <TrackerMark
+                    task={task}
+                    size={12}
+                    color={ticketUnread ? 'currentColor' : undefined}
+                  />
+                  {shortTicketKey(task)}
                 </span>
               </a>
             )}
@@ -1589,7 +1602,9 @@ export function TaskCard({
       {mergeRequests.length > 0 && (
         <div className={styles.section}>
           <div className={styles.sectionHead}>
-            <span>{mergeRequests.length === 1 ? 'Merge request' : 'Merge requests'}</span>
+            {/* Named after the forge the rows actually came from — "Pull requests" over
+                GitHub's — by the same function the detail pane's list head uses. */}
+            <span>{mrHeading(mergeRequests)}</span>
           </div>
           {mergeRequests.map((mr) => {
             const reason = mrAttentionReason(mr);

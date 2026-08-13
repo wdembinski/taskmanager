@@ -60,6 +60,7 @@ import { StepBrief, TaskSteps } from './TaskSteps';
 import { TaskAgentPanel } from './TaskAgentPanel';
 import { TaskDetailsCell } from './TaskDetailsCell';
 import { chatAvailability, REFUSAL_HINT } from './taskChat';
+import { TrackerMark, shortTicketKey, trackerName, trackerOf } from './tracker';
 import { runPhase } from '@tm/shared/board';
 import { useTransport } from './transport';
 import type { AttentionIndex } from './attentionIndex';
@@ -312,10 +313,11 @@ export function TaskDetail({
    *
    * Every ticket call below is a pair now — `jira:fetchComments`/`github:fetchComments`, the
    * two @mention pickers, the two comment posts — so the thing the pane needs is not "is this
-   * JIRA" but "whose issue is it", which is also what the composer's button has to say.
+   * JIRA" but "whose issue is it", which is also what the composer's button and the key badge
+   * above have to say. The narrowing itself lives in `./tracker` with the mark and the name,
+   * because a pane that decided the tracker one way and drew it another is the bug.
    */
-  const tracker =
-    task?.externalSource === 'github' ? 'github' : task?.externalSource === 'jira' ? 'jira' : null;
+  const tracker = task ? trackerOf(task) : null;
   /**
    * JIRA in particular: files. Uploading one is a JIRA-only route — GitHub has no REST
    * endpoint for attaching a file to an issue at all — so the attach button belongs to one
@@ -767,6 +769,11 @@ export function TaskDetail({
           <div className={styles.titleRow}>
             <span className={styles.icon}>{typeIcon(task)}</span>
             <Subtitle2 className={styles.title}>{task.title}</Subtitle2>
+            {/* The ticket badge, and the one place this pane names the tracker out loud.
+                "Open in JIRA" over a GitHub issue sends the human to the wrong tab, and the
+                key itself is printed short (`#123`) with the whole `owner/repo#123` in the
+                tooltip — the same bargain the card's footer badge strikes, so the two cannot
+                read as two different tickets. */}
             {task.externalKey &&
               (task.externalUrl ? (
                 <a
@@ -774,15 +781,24 @@ export function TaskDetail({
                   href={task.externalUrl}
                   target="_blank"
                   rel="noreferrer noopener"
-                  title="Open the ticket in JIRA"
+                  title={`Open ${task.externalKey} in ${trackerName(task) ?? 'the tracker'}`}
                 >
-                  <Badge appearance="outline" color="informative">
-                    {task.externalKey}
+                  <Badge
+                    appearance="outline"
+                    color="informative"
+                    icon={<TrackerMark task={task} size={12} />}
+                  >
+                    {shortTicketKey(task)}
                   </Badge>
                 </a>
               ) : (
-                <Badge appearance="outline" color="informative">
-                  {task.externalKey}
+                <Badge
+                  appearance="outline"
+                  color="informative"
+                  icon={<TrackerMark task={task} size={12} />}
+                  title={task.externalKey}
+                >
+                  {shortTicketKey(task)}
                 </Badge>
               ))}
           </div>

@@ -6,8 +6,10 @@ import {
   mergeBlockers,
   mrApprovalState,
   mrAttentionReason,
+  mrHeading,
   mrIsSettled,
   mrNeedsAttention,
+  mrNoun,
   mrReadyToMerge,
   mrRef,
   mrVerdict,
@@ -396,6 +398,26 @@ describe('two forges, one merge request', () => {
     // `#12` for a GitLab MR is not a styling slip — over there it means an ISSUE.
     expect(mrRef(mr({ number: 12 }))).toBe('!12');
     expect(mrRef(pr({ number: 12 }))).toBe('#12');
+  });
+
+  it('calls the thing what its own forge calls it', () => {
+    expect(mrNoun('gitlab')).toBe('merge request');
+    expect(mrNoun('github')).toBe('pull request');
+  });
+
+  it('heads a list with the forge every row in it came from', () => {
+    expect(mrHeading([mr()])).toBe('Merge request');
+    expect(mrHeading([mr(), mr({ id: 'gl-9-2' })])).toBe('Merge requests');
+    expect(mrHeading([pr()])).toBe('Pull request');
+    expect(mrHeading([pr(), pr({ id: 'gh-9-2' })])).toBe('Pull requests');
+  });
+
+  it('keeps the model’s own name when the rows disagree about the forge', () => {
+    // No word is true of both, so neither forge's is borrowed for the other's rows.
+    expect(mrHeading([mr(), pr()])).toBe('Merge requests');
+    // And an empty list is nobody's — the callers hide the section, but the answer is
+    // still a heading rather than a crash on `mrs[0]`.
+    expect(mrHeading([])).toBe('Merge requests');
   });
 
   it('names the forge that actually refused', () => {

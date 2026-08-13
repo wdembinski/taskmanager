@@ -86,7 +86,17 @@ export function typeIconKeyFor(
     if (external.includes('bug') || external.includes('defect')) return 'bug';
     if (external.includes('epic')) return 'epic';
     if (external.includes('story')) return 'story';
-    if (external.includes('feature') || external.includes('improvement')) return 'feature';
+    // `enhancement` is GitHub's half of this arm and the only word it contributes: the sync
+    // writes `Bug` or `Enhancement` and nothing else (`githubIssueSync.issueTypeFrom`), and
+    // `Bug` was already covered by JIRA's, so without this a GitHub feature request fell all
+    // the way through to a neutral note.
+    if (
+      external.includes('feature') ||
+      external.includes('improvement') ||
+      external.includes('enhancement')
+    ) {
+      return 'feature';
+    }
     if (external.includes('task')) return 'task';
     return 'note';
   }

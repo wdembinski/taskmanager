@@ -23,12 +23,15 @@ import {
 import { RenameRegular } from '@fluentui/react-icons';
 import { UNREAD_ORANGE } from '@tm/shared/accent';
 import {
+  forgeName,
   mergeBlockerLabel,
   mergeBlockers,
   mrIsSettled,
   mrAttentionReason,
+  mrHeading,
   mrLabel,
   mrNeedsAttention,
+  mrNoun,
   mrReadyToMerge,
   mrRef,
   mrVerdict,
@@ -160,7 +163,9 @@ export function MergeRequests({
   return (
     <div className={styles.root}>
       <div className={styles.head}>
-        <Body1>Merge requests</Body1>
+        {/* The forge's own word for these — "Pull requests" over GitHub's. Shared with the
+            card's section head, which shows the same list one pane over. */}
+        <Body1>{mrHeading(mergeRequests)}</Body1>
         <Caption1 className={styles.muted}>({mergeRequests.length})</Caption1>
       </div>
 
@@ -196,10 +201,15 @@ export function MergeRequests({
               ) : (
                 <>
                   {/* The tooltip always carries the upstream title, so a renamed MR never
-                      hides what GitLab actually calls it. */}
+                      hides what the forge actually calls it — and it names the forge it
+                      belongs to, which is only true if it reads the row's own provider. */}
                   <Caption1
                     className={styles.title}
-                    title={mr.displayName ? `${mr.displayName}\nGitLab: ${mr.title}` : mr.title}
+                    title={
+                      mr.displayName
+                        ? `${mr.displayName}\n${forgeName(mr.provider)}: ${mr.title}`
+                        : mr.title
+                    }
                   >
                     {mrLabel(mr)}
                   </Caption1>
@@ -209,10 +219,10 @@ export function MergeRequests({
                     icon={<RenameRegular />}
                     title={
                       mr.displayName
-                        ? 'Rename in this app (empty to restore the GitLab title)'
+                        ? `Rename in this app (empty to restore the ${forgeName(mr.provider)} title)`
                         : 'Rename in this app'
                     }
-                    aria-label="Rename this merge request in this app"
+                    aria-label={`Rename this ${mrNoun(mr.provider)} in this app`}
                     onClick={() => {
                       setRenaming(mr.id);
                       setDraft(mr.displayName ?? '');

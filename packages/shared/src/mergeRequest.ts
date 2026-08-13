@@ -148,9 +148,50 @@ export function mrRef(mr: Pick<MergeRequest, 'provider' | 'number'>): string {
   return `${mr.provider === 'github' ? '#' : '!'}${mr.number}`;
 }
 
-/** The forge's name, for the two sentences that have to say who refused. */
-function forgeName(provider: ForgeProvider): string {
+/**
+ * The forge's name — for the sentences that have to say who refused, who owns the upstream
+ * title, and where a link is about to take you.
+ */
+export function forgeName(provider: ForgeProvider): string {
   return provider === 'github' ? 'GitHub' : 'GitLab';
+}
+
+/**
+ * What this thing is CALLED — "merge request" on GitLab, "pull request" on GitHub — for the
+ * headings and labels that have to name it in words rather than in `mrRef`'s notation.
+ *
+ * The type is called `MergeRequest` throughout and will stay that way: one board list holds
+ * both forges', every predicate here asks the same questions of either, and renaming the model
+ * after one forge's vocabulary would only move the mismatch. But a *heading* is read by a human
+ * who has GitHub open in the next window, and "Merge request" over a pull request is the same
+ * small lie as `#12` for a GitLab MR.
+ *
+ * Lower case, singular, no article: the caller capitalises and pluralises, because "Pull
+ * requests" as a heading and "can't merge this pull request" in a sentence want different
+ * shapes of the same word.
+ */
+export function mrNoun(provider: ForgeProvider): string {
+  return provider === 'github' ? 'pull request' : 'merge request';
+}
+
+/**
+ * The heading a LIST of them goes under — "Pull requests" over GitHub's, "Merge requests" over
+ * GitLab's — capitalised and pluralised for the count.
+ *
+ * The forge has to be unanimous. There is no honest word for a mixed list ("merge requests"
+ * over a GitHub PR names the wrong forge, and so does the reverse), so a card holding both —
+ * vanishingly rare, since a task lives in one repository — falls back to the model's own name
+ * rather than labelling one forge's rows with the other's vocabulary.
+ *
+ * One function, because the card's section head and the detail pane's list head are two
+ * renderings of the same list and there is no reading under which they should differ.
+ */
+export function mrHeading(mrs: readonly Pick<MergeRequest, 'provider'>[]): string {
+  const first = mrs[0];
+  const unanimous = first && mrs.every((mr) => mr.provider === first.provider);
+  const word = unanimous ? mrNoun(first.provider) : 'merge request';
+  const plural = mrs.length === 1 ? word : `${word}s`;
+  return plural.charAt(0).toUpperCase() + plural.slice(1);
 }
 
 /**
