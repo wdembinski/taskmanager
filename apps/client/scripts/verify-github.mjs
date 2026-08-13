@@ -10,7 +10,7 @@
  * second card. Both joints live inside `ipc.ts`'s 3000-line `registerIpc` closure, which has
  * no test file, so this drives the real code either side of them.
  *
- * Four claims, end to end, in the order a user meets them:
+ * Five claims, end to end, in the order a user meets them:
  *
  *   1. an issue becomes a card in the column its LABEL says;
  *   2. dragging that card to DONE **closes the issue upstream** — and the very next poll,
@@ -18,7 +18,13 @@
  *      taking away the thing you just finished;
  *   3. a pull request whose body says `closes #7` lands on **issue 7 of its own repository**'s
  *      card, with a decoy `acme/tools#7` sitting on the same board to prove it;
- *   4. a merged pull request sets {@link Task.landedAt}, which opens an `after-merge` gate.
+ *   4. a comment somebody ELSE left on a pull request raises its unread mark, and one of your
+ *      own does not — read from all **three** endpoints GitHub scatters a discussion across;
+ *   5. a merged pull request sets {@link Task.landedAt}, which opens an `after-merge` gate.
+ *
+ * The numbered SECTIONS below are the scenario's own running order and do not line up one to
+ * one: claims 3 and 4 are both asserted in section 3, off the same pair of pull requests,
+ * because the discussion is a property of a PR that has already been filed onto a card.
  *
  * What is REAL here, and therefore what a failure below is evidence about:
  *
@@ -31,6 +37,9 @@
  *     column and the one that decides whether the move "took";
  *   - `planLabelChange` and `githubMove.resolveMove`, against the issue's real current labels;
  *   - `describePullRequest`, `reconcilePullRequests`, `prMatch`, `landedTaskIds`;
+ *   - `foldNotes` + `forge/notes.ts`'s `latestForeignNoteAt`, against three real endpoints —
+ *     including `/pulls/{n}/comments`, whose absence is invisible to any assertion that only
+ *     asks whether SOME comment was found;
  *   - `linkSatisfied` / `readyToRelease` — the chain gate, asked of a real link row;
  *   - a real `store.ts` on a real SQLite file in a scratch profile, so "the card kept its id"
  *     is a claim about a database rather than about an object literal;
@@ -47,7 +56,21 @@
  * never on the mirror's own wording. If `ipc.ts` changes, this file must be re-read against
  * it — that is the cost of the closure not being reachable.
  *
- * **Proving it can fail.** 92 green checks say nothing until a mutation turns them red. Run
+ * That cost has been paid once already, and it is worth recording what it looked like. The
+ * mirror was re-read against `ipc.ts` on 2026-08-13, after the branch was rebased onto
+ * `development` and after the PR fetch path gained the discussion. One real drift: the mirror
+ * called `reconcilePullRequests` without the `identity` its options had just gained. JavaScript
+ * has no compiler to say so, so it ran perfectly — and passed `undefined`, which makes
+ * `githubAuthorIsMe` answer *false* for every author on earth. A mirror that lags is not a
+ * mirror that fails loudly; it is one that quietly verifies the bug. Restoring that omission
+ * on purpose reddens the same four checks mutation 5 below does.
+ *
+ * Two deliberate, standing differences from `ipc.ts`, neither of them drift: the mirror runs
+ * its detail/comment fetches SERIALLY where `ipc.ts` runs four at a time (a fixed request order
+ * is what makes `seen` assertable), and it folds `syncGitHub`'s `syncIssues`/`syncPullRequests`
+ * toggles into the two functions those toggles guard.
+ *
+ * **Proving it can fail.** 98 green checks say nothing until a mutation turns them red. Run
  * on 2026-08-13, one at a time, each restored afterwards with `git status` showing the file
  * byte-identical again — re-run them after touching the feature:
  *
@@ -65,8 +88,19 @@
  *     section 5's archive and pull-request sweep never happen at all.
  *   - **Claim 3.** Drop the `closingReferences` loop from `discoverPullRequestKeys`
  *     (`main/github/prMatch.ts`): **10 red**. The pull request files under nothing (`taskId`
- *     null, no keys), and because the arrow's predecessor is that card, claim 4 falls with it.
- *   - **Claim 4.** Change `landedTaskIds` (`main/gitlab/gitlabSync.ts`) to count `closed`
+ *     null, no keys), and because the arrow's predecessor is that card, claim 5 falls with it.
+ *   - **Claim 4, the endpoint.** Replace the `listReviewComments` call in
+ *     `describePullRequest.ts` with `[]`, so the inline half of a review goes unread: **4
+ *     red**. The mark does not merely vanish — it falls back to `11:00`, the older review
+ *     body, which is the whole reason the fixture puts a note in all three places and expects
+ *     the middle one. An assertion that only asked "is it non-null?" would have stayed green.
+ *   - **Claim 4, the predicate.** Change `reconcilePullRequests`'s `isMine` argument to
+ *     `() => false`, so nothing counts as yours: **4 red**, and note the direction — the mark
+ *     rises to `13:00` on the pull request you spoke on last, and PR 42, every word of which
+ *     is yours, grows an unread mark it should never have. That is the ring that never goes
+ *     out, and it is why both halves are asserted rather than only the lighting-up one. This
+ *     is also the mutation the mirror's missing `identity` reproduced exactly, above.
+ *   - **Claim 5.** Change `landedTaskIds` (`main/gitlab/gitlabSync.ts`) to count `closed`
  *     rather than `merged`: **5 red**, and section 3 stays entirely green. `landedAt` is
  *     never stamped, so the gate stays shut and the successor is never ready to release.
  *     That is the pair that isolates the landing from the filing.
@@ -89,7 +123,11 @@
  * quietly verify a stub), then run under Electron-as-Node so the addon's ABI matches the
  * binary loading it.
  *
- *   pnpm exec node scripts/verify-github.mjs
+ *   cd apps/client && pnpm run verify:github
+ *
+ * Deliberately NOT in CI: it stands up a server and runs under Electron-as-Node, which is a
+ * separate decision from "the unit tests run on every push". The `package.json` entry exists
+ * so the path is not something only this header remembers.
  *
  * Exits non-zero if any assertion failed, naming it.
  */
@@ -390,6 +428,57 @@ pulls.set(WIDGETS + '#42', {
   base: { ref: 'main', repo: { id: 7001, full_name: WIDGETS } },
 });
 
+// ---------------------------------------------------------------------------
+// The discussion on a pull request, which GitHub scatters across THREE endpoints.
+//
+// The fixture is arranged so that no single endpoint can carry the claim on its own, and so
+// that neither half of the rule is satisfiable by a mistake. On PR 41 there is one note in
+// each place and the NEWEST of the three is mine:
+//
+//   10:30  an APPROVED review with an empty body   (reviewer)  — a verdict, not a remark
+//   11:00  a COMMENTED review with a body          (reviewer)  — foreign, and older
+//   12:00  an inline review comment                (someone-else) — the expected answer
+//   13:00  a comment on the conversation tab       (me)        — newer, and not news
+//
+// So the one epoch asserted below is red if /pulls/41/comments is never asked (it falls back
+// to 11:00) and red if whose-comment-is-whose has been forgotten (it rises to 13:00).
+//
+// On PR 42 there is one note in each place too and every one of them is mine, so the answer
+// is null — the half that says a ring must also be able to STAY off.
+
+/** Inline review comments, by 'owner/repo#n' — the endpoint listReviewComments added. */
+const reviewComments = new Map();
+reviewComments.set(WIDGETS + '#41', [
+  { id: 61, body: 'This dispose looks doubled.', created_at: '2026-08-11T12:00:00Z', user: { id: 501, login: 'someone-else' } },
+]);
+reviewComments.set(WIDGETS + '#42', [
+  { id: 62, body: 'Note to self: measure this.', created_at: '2026-08-11T13:40:00Z', user: { id: 500, login: 'me' } },
+]);
+
+/**
+ * The reviews, per pull request rather than one list for all of them: a row here feeds BOTH
+ * the approval count and the note list, so the two pull requests can no longer share one.
+ */
+const reviews = new Map();
+reviews.set(WIDGETS + '#41', [
+  { id: 1, state: 'APPROVED', user: { id: 900, login: 'reviewer' }, submitted_at: '2026-08-11T10:30:00Z', body: '' },
+  // A later COMMENTED review by the SAME reviewer, which must not un-approve them — and whose
+  // body IS a remark, unlike the bare verdict above it.
+  { id: 2, state: 'COMMENTED', user: { id: 900, login: 'reviewer' }, submitted_at: '2026-08-11T11:00:00Z', body: 'Nice one.' },
+]);
+reviews.set(WIDGETS + '#42', [
+  { id: 3, state: 'COMMENTED', user: { id: 500, login: 'me' }, submitted_at: '2026-08-11T13:50:00Z', body: 'Rebasing this now.' },
+]);
+
+// The conversation tab. Keyed the same way as an issue's comments because on GitHub a pull
+// request IS an issue — /issues/{n}/comments is the endpoint either way.
+comments.set(WIDGETS + '#41', [
+  { id: 41001, body: 'Pushed a fix for that.', created_at: '2026-08-11T13:00:00Z', user: { id: 500, login: 'me' } },
+]);
+comments.set(WIDGETS + '#42', [
+  { id: 42001, body: 'Parking this until the cache work lands.', created_at: '2026-08-11T13:30:00Z', user: { id: 500, login: 'me' } },
+]);
+
 /** A detail response dressed as the search row the open-PR listing returns. */
 function prSearchRow(path, pr) {
   return {
@@ -526,11 +615,14 @@ const server = createServer((req, res) => {
         return;
       }
       if (kind === 'pulls' && seg[5] === 'reviews' && req.method === 'GET') {
-        json(res, 200, [
-          { id: 1, state: 'APPROVED', user: { id: 900, login: 'reviewer' } },
-          // A later COMMENTED review by the SAME reviewer, which must not un-approve them.
-          { id: 2, state: 'COMMENTED', user: { id: 900, login: 'reviewer' } },
-        ]);
+        json(res, 200, reviews.get(key) || []);
+        return;
+      }
+      // The INLINE remarks — /pulls/{n}/comments, which is a different endpoint from
+      // /issues/{n}/comments above and holds the half of a review nobody reads on the
+      // conversation tab.
+      if (kind === 'pulls' && seg[5] === 'comments' && req.method === 'GET') {
+        json(res, 200, reviewComments.get(key) || []);
         return;
       }
       if (kind === 'commits' && seg[5] === 'check-runs' && req.method === 'GET') {
@@ -777,6 +869,11 @@ async function drag(taskId, toColumn) {
 async function syncPullRequests(now) {
   const github = store.getSettings().github;
   if (!github.enabled || !github.syncPullRequests) return store.listMergeRequests();
+  // Who you are on this instance. ipc.ts reads it through githubIdentity's per-site cache;
+  // here, as in syncIssues, the cache is skipped because every sync wants the same answer.
+  // Required rather than optional, and passing it is the whole difference between a ring that
+  // means something and one every pull request you have spoken on wears for good.
+  const identity = githubIdentityFrom(await client.getMe(), github.baseUrl);
   const stored = store.listMergeRequests().filter((mr) => mr.provider === 'github');
   const list = await client.listMyPullRequests();
 
@@ -816,6 +913,7 @@ async function syncPullRequests(now) {
   const reconciled = reconcilePullRequests(stored, detailed, {
     knownKeys: index.knownKeys,
     taskIdByKey: index.taskIdByKey,
+    identity,
     now,
   });
   for (const mr of reconciled.upserts) store.upsertMergeRequest(mr);
@@ -1084,6 +1182,39 @@ check(
 );
 check('GitHub\'s own merge verdict was kept raw', stored41 && stored41.detailedMergeStatus === 'clean', stored41 && String(stored41.detailedMergeStatus));
 check('and mergeable: true is not a conflict', stored41 && stored41.hasConflicts === false);
+
+// The discussion. Both halves of the rule, because either one alone is satisfiable by a
+// mistake: a ring that never lights is exactly as wrong as one that never goes out.
+check(
+  'all three of the places GitHub scatters a discussion were read',
+  [
+    '/api/v3/repos/acme/widgets/issues/41/comments',
+    '/api/v3/repos/acme/widgets/pulls/41/comments',
+    '/api/v3/repos/acme/widgets/pulls/41/reviews',
+  ].every((p) => since(mark).some((r) => r.method === 'GET' && r.path === p)),
+  JSON.stringify(since(mark).filter((r) => r.path.indexOf('/41/') >= 0).map((r) => r.path)),
+);
+check(
+  'the newest remark somebody ELSE left raised the unread mark',
+  stored41 && stored41.latestNoteAt === Date.parse('2026-08-11T12:00:00Z'),
+  stored41 && String(stored41.latestNoteAt),
+);
+check(
+  'and it is the INLINE one, so the endpoint nobody reads on the conversation tab counts',
+  stored41 && stored41.latestNoteAt > Date.parse('2026-08-11T11:00:00Z'),
+  stored41 && String(stored41.latestNoteAt),
+);
+check(
+  'while my own, newer, comment on the very same pull request was not news',
+  stored41 && stored41.latestNoteAt < Date.parse('2026-08-11T13:00:00Z'),
+  stored41 && String(stored41.latestNoteAt),
+);
+check(
+  'and a pull request whose every remark is mine carries no unread mark at all',
+  stored42 && stored42.latestNoteAt === null,
+  stored42 && String(stored42.latestNoteAt),
+);
+
 // The decoy PR: its closing reference names an issue nobody has, so the tracker key in its
 // branch is what files it.
 check(
@@ -1142,6 +1273,11 @@ check(
 );
 check('still filed on the same card', after41 && after41.taskId === crash.id, after41 && String(after41.taskId));
 check('and it kept its id, so the read markers went with it', after41 && after41.id === 'gh-7001-41', after41 && after41.id);
+check(
+  'including the unread mark, which a re-read that never looked at the discussion must keep',
+  after41 && after41.latestNoteAt === Date.parse('2026-08-11T12:00:00Z'),
+  after41 && String(after41.latestNoteAt),
+);
 
 // The claim.
 check(

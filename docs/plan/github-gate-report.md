@@ -1,13 +1,16 @@
 # GitHub support — the verification report
 
-Step 10 of _GitHub support_, and the last one. Steps 1–8 **built** the integration; step 9
-**wrote** the headless harness. This file **runs** everything that can be run on this machine,
-records the real numbers, and says plainly what cannot be run here and is therefore still owed
-to a person.
+Steps 1–8 **built** the integration; step 9 **wrote** the headless harness; step 10 **ran** it
+and became §§1–7 of this file. Steps 11–13 then rebased the branch onto `development`, added the
+pull-request discussion, and re-ran the lot — that is §8.
 
-Everything below was executed from this worktree on `86d557d`
-(`test(github): verify the integration headlessly`), plus the one test file this step adds.
-The app was **never launched** —
+This file records the real numbers, and says plainly what cannot be run here and is therefore
+still owed to a person.
+
+§§1–7 were executed on `86d557d` (`test(github): verify the integration headlessly`) at step 10.
+The branch has since been **rebased onto `development`** and has gained the pull-request
+discussion, so everything was **re-run on the current tip `27bc03e`** — that run is §8, and the
+Summary below carries its numbers rather than step 10's. The app was **never launched** —
 [RELEASE.md rule 6](../../RELEASE.md#the-rules-that-outrank-everything-below): there is no
 single-instance lock, so a second instance kills a live session.
 
@@ -15,15 +18,19 @@ single-instance lock, so a second instance kills a live session.
 
 ## Summary
 
+Numbers from the re-run on `27bc03e` (§8). Step 10's original numbers are kept inline in §§1–4,
+so the two runs can be compared rather than one overwriting the other.
+
 | What                                   | Result                                                              |
 | -------------------------------------- | ------------------------------------------------------------------- |
 | `pnpm format:check`                    | ✅ clean                                                            |
-| `pnpm typecheck --force`               | ✅ 9 tasks, **0 cached**, 23.4s                                     |
-| `pnpm test`                            | ✅ 150 files passed / 1 skipped — **2498 passed**, 11 skipped, 38.3s |
-| `pnpm build --force`                   | ✅ 6 tasks, **0 cached**, 28.6s                                     |
+| `pnpm turbo run typecheck --force`     | ✅ 9 tasks, **0 cached**, 26.6s                                     |
+| `pnpm vitest run`                      | ✅ 153 files passed / 1 skipped — **2555 passed**, 11 skipped, 52.3s |
+| `pnpm turbo run build --force`         | ✅ 6 tasks, **0 cached**, 29.5s                                     |
 | Unit cover for every module added      | ✅ 15 files, 296 tests — one gap found and filled (`identity.ts`)   |
-| `scripts/verify-github.mjs` end to end | ✅ **92 checks**, exit 0                                            |
-| The harness can still go red           | ✅ re-checked by mutation: 5 red, exit 1, restored                  |
+| `pnpm run verify:github` end to end    | ✅ **98 checks**, exit 0                                            |
+| The harness can still go red           | ✅ 3 mutations, **4 red each**, exit 1, all restored                |
+| The mirror still matches `ipc.ts`      | ⚠️ **one real drift found and fixed** — see §8                      |
 | Live GitHub account, real token        | ⏳ **owed to a human** — see §5                                     |
 
 Nothing here went red that was not made to.
@@ -151,6 +158,9 @@ feature: the parts of `ipc.ts` it exercises are **mirrored**, because `registerI
 3000-line closure with no test file. If `ipc.ts` changes, `verify-github.mjs` must be re-read
 against it.
 
+That bill came due three steps later, and §8.1 records what it cost: one real drift, invisible to
+every gate, which made the harness run green while verifying the bug.
+
 ---
 
 ## 5. What is owed to a human, and why it cannot be done here
@@ -228,3 +238,131 @@ bump, which has silently swallowed a branch's bump at least four times in this r
 If it happens again, the pipeline patch-bumps and this feature ships as **`v0.84.2`**, a wrong
 version number rather than a missing release. Check the released tag; if it reads `v0.84.2`,
 set `development`'s manifest to `0.85.0` before the next release rather than re-pointing a tag.
+
+> **Update, `27bc03e`.** `v0.84.2` has since been released from `development` independently, so
+> it is now the highest tag and the sentence above can no longer be used as the tell. The branch
+> was rebased onto that `development` and its manifest still reads `0.85.0`, which is still
+> ahead of the highest tag, so `needsCommit=false` still holds and the rule is unchanged — only
+> the number to be suspicious of is. If this feature ships as **`v0.84.3`**, the bump was
+> swallowed.
+
+---
+
+## 8. Re-verified on the rebased tip (`27bc03e`)
+
+Two things happened to the branch after §§1–7 were written: it was **rebased onto
+`development`** (which had shipped _Resume a stopped run_ and two releases into nine of the same
+files), and it gained the **pull-request discussion** — `forge/notes.ts`, `listReviewComments`,
+and the `latestNoteAt` ternary that keeps an unread mark a sync did not look at. Both move code
+the harness mirrors, so the numbers above were re-earned rather than assumed.
+
+### 8.1 The mirror, re-read against `ipc.ts` — one real drift
+
+`verify-github.mjs` mirrors `registerIpc`'s `syncGitHubIssues`, `syncGitHubPullRequests`,
+`moveGitHubIssue`, `learnLabelColumn` and the `task:move` handler, because that closure is 3000
+lines with no test file. Every one was re-read line by line against the rebased `ipc.ts`.
+
+**The drift.** `ipc.ts`'s `syncGitHubPullRequests` now resolves an `identity` and passes it to
+`reconcilePullRequests`; the mirror did not. This is precisely the failure mode a mirror has and
+a test file does not: there is no compiler on a `.mjs`, so the missing option was `undefined`,
+`githubAuthorIsMe` answered _false_ for every author alive, and the harness ran green while
+verifying the bug. Restoring the omission deliberately reddens the same four checks as the
+predicate mutation in §8.3 — that is the evidence it mattered, rather than a claim that it did.
+
+Two differences were re-read and left alone, because they are deliberate and not drift: the
+mirror fetches **serially** where `ipc.ts` uses four workers (a fixed request order is what makes
+the recorded request log assertable), and it folds `syncGitHub`'s `syncIssues` /
+`syncPullRequests` toggles into the two functions those toggles guard. Both are now stated in the
+harness header so the next reader does not re-derive them.
+
+`task:move` was also re-read: `ipc.ts` now routes through `writeMoveToForge`, whose GitHub branch
+is the two lines the mirror already had. No change needed.
+
+### 8.2 The harness, extended to the discussion
+
+Six checks added, 92 → **98**. The fixture is the argument, so it is worth stating: PR 41 carries
+one note in **each** of the three places GitHub scatters a discussion, and the newest of them is
+**mine** —
+
+| When    | Where                            | Who             |
+| ------- | -------------------------------- | --------------- |
+| `10:30` | an APPROVED review, empty body   | `reviewer`      |
+| `11:00` | a COMMENTED review with a body   | `reviewer`      |
+| `12:00` | an **inline** review comment     | `someone-else`  |
+| `13:00` | the conversation tab             | **me**          |
+
+The asserted answer is the `12:00` one. That single epoch is red if `/pulls/{n}/comments` is
+never asked (it falls back to `11:00`) and red if whose-comment-is-whose has been forgotten (it
+rises to `13:00`). PR 42 carries one note in each place too and **every one is mine**, so its
+answer is `null` — the half of the rule that says a ring must also be able to stay off, which an
+assertion that only checked "did it light up?" would never catch.
+
+One further check sits in section 4: after the PR merges it is re-read with `stale: false`, which
+does not look at the discussion at all — and the unread mark must survive that, which is the
+`prior?.latestNoteAt` ternary rather than a blank.
+
+### 8.3 Proving the new checks can fail
+
+Three mutations, one at a time, each restored from a copy in `$TEMP` with `git status` confirming
+the file byte-identical afterwards.
+
+| Mutation                                                            | Red   | What the number became                                     |
+| ------------------------------------------------------------------- | ----- | ---------------------------------------------------------- |
+| `listReviewComments(...)` → `[]` in `describePullRequest.ts`         | **4** | `11:00` — fell back to the review body, did **not** vanish |
+| `reconcilePullRequests`'s `isMine` → `() => false`                   | **4** | `13:00`, and PR 42 grew a mark it should never have        |
+| the mirror's `identity` option removed again (the §8.1 drift)        | **4** | identical to the row above — which is why §8.1 mattered    |
+
+The first is the one worth dwelling on. The mark did not go null; it fell back to an **older,
+real** note. A harness asserting `latestNoteAt !== null` would have stayed green with the entire
+inline-comment endpoint deleted, which is the failure this fixture is shaped to prevent.
+
+### 8.4 The gates, forced, on `27bc03e`
+
+| Gate                               | Exit | Tasks / files                     | Time    |
+| ---------------------------------- | ---- | --------------------------------- | ------- |
+| `pnpm format:check`                | 0    | all matched files                 | —       |
+| `pnpm turbo run build --force`     | 0    | 6 successful, **0 cached**        | 29.525s |
+| `pnpm turbo run typecheck --force` | 0    | 9 successful, **0 cached**        | 26.577s |
+| `pnpm vitest run`                  | 0    | 153 passed, 1 skipped (154)       | 52.29s  |
+| `pnpm run verify:github`           | 0    | **98 checks**                     | —       |
+
+`pnpm vitest run`: **2555 passed, 11 skipped (2566)** — up from step 10's 2498 because the rebase
+brought `development`'s _Resume_ suites and step 2 added its own.
+
+```
+$ node scripts/next-version.mjs
+version=0.85.0
+tag=v0.85.0
+needsCommit=false
+# apps/client/package.json already bumped to 0.85.0, ahead of the highest tag v0.84.2
+```
+
+### 8.5 The harness has a name now
+
+`apps/client/package.json` gained `"verify:github": "node scripts/verify-github.mjs"`, beside
+`check:abi` / `ensure:abi`, so the path is no longer something only the script's own header
+remembers.
+
+It is **deliberately not in CI**. It stands up an HTTP server and runs under Electron-as-Node
+against a real `better-sqlite3` addon, which is a materially different thing from "the unit tests
+run on every push" and is a decision to take on its own rather than smuggle in with this ticket.
+
+### 8.6 `development` moved while this was being written
+
+`development` was an ancestor of the branch when this step began and was **ten commits ahead by
+the time it ended** — the app advances it mid-session. So `git merge-base --is-ancestor
+development feat/github-support`, which the plan lists as a verification criterion, no longer
+passes. Nothing in this step caused it and nothing in this step may fix it: rebasing is the
+integrator's to do at merge time, and this step is forbidden from touching the branch's shape.
+
+What matters here is whether it invalidates §8.1, because those ten commits **do** touch
+`apps/client/src/main/ipc.ts` — by 85 lines. They do not. The whole of that change is the cloud
+command queue and its imports; not one line of the five regions the harness mirrors
+(`syncGitHubIssues`, `syncGitHubPullRequests`, `moveGitHubIssue`, `learnLabelColumn`,
+`task:move`) is touched, which `git diff … -- ipc.ts | grep -i github` returning nothing
+confirms. The reconciliation above therefore still describes the `ipc.ts` that will exist after
+the integrator's rebase.
+
+That is a happy answer this time and should not be read as a general one. The rule the mirror
+imposes is unchanged: **whoever rebases this branch next must re-read `verify-github.mjs` against
+`ipc.ts` again**, because the check that catches a drift is a person, not a gate.

@@ -19,6 +19,7 @@
     "format": "prettier --write \"src/**/*.{ts,tsx}\" \"*.{json,md}\"",
     "check:abi": "node scripts/check-native-abi.mjs",
     "ensure:abi": "node scripts/ensure-native-abi.mjs",
+    "verify:github": "node scripts/verify-github.mjs",
     "check:feed": "node scripts/check-update-feed.mjs",
     "package": "electron-vite build && electron-builder install-app-deps && npm run ensure:abi && electron-builder --win --publish onTagOrDraft && npm run check:feed",
     "package:linux": "electron-vite build && electron-builder install-app-deps && npm run ensure:abi && electron-builder --linux --publish onTagOrDraft && npm run check:feed",
