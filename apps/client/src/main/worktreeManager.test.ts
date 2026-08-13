@@ -172,6 +172,168 @@ describe('WorktreeManager.integrate — conflict ladder Rung 1 (mechanical)', ()
 });
 
 /**
+ * A rebase this app already paused, met by a SECOND integration attempt — "Retry integration"
+ * in the inbox, or the automatic merge at the end of the next run.
+ *
+ * This is the state a card is in for as long as its conflict is unresolved, and it used to be
+ * the state from which nothing could ever succeed. `git rebase <base>` on top of a paused
+ * rebase fails with *"there is already a rebase-merge directory"*; that failure names no
+ * conflicted path, so it was read as "not a conflict, some other error" and answered with
+ * `rebase --abort` — which threw away whatever had been resolved and put the branch back where
+ * it started, so the next press repeated the whole cycle. `rerere` made it worse, not better:
+ * a repo that has recorded the resolution replays and STAGES it, so the retry saw a clean tree
+ * and aborted a rebase that only needed `--continue`.
+ */
+describe('WorktreeManager.integrate — a rebase already paused in the worktree', () => {
+  async function commitOnBase(file: string, content: string, msg: string) {
+    writeFileSync(join(repo, file), content);
+    await git(repo, ['add', '-A']);
+    await git(repo, ['commit', '--no-verify', '-m', msg]);
+  }
+
+  /**
+   * A branch whose first commit conflicts with base and whose second does not — the shape of
+   * every branch that has been open long enough to matter, and the one a single `--continue`
+   * is not enough for.
+   */
+  async function branchStoppedOnConflict(
+    name: string,
+  ): Promise<{ wtm: WorktreeManager; wt: string }> {
+    const wtm = new WorktreeManager(root);
+    await commitOnBase('src.txt', 'original\n', 'seed src');
+    const wt = join(root, `wt-${name}`);
+    await git(repo, ['worktree', 'add', '-b', `orch/${name}`, wt, base]);
+    writeFileSync(join(wt, 'src.txt'), 'BRANCH-EDIT\n');
+    await git(wt, ['commit', '--no-verify', '-am', 'branch edits src']);
+    writeFileSync(join(wt, 'later.txt'), 'later\n');
+    await git(wt, ['add', '-A']);
+    await git(wt, ['commit', '--no-verify', '-m', 'a second commit that does not conflict']);
+    await commitOnBase('src.txt', 'BASE-EDIT\n', 'base edits src');
+
+    const first = await wtm.integrate(project(), `orch/${name}`, base, wt, 'integrate');
+    expect(first.status).toBe('conflict'); // the rebase is now paused, mid-flight
+    return { wtm, wt };
+  }
+
+  it('continues a paused rebase whose resolutions are staged, instead of restarting it', async () => {
+    const { wtm, wt } = await branchStoppedOnConflict('p1');
+    // What Rung 2's agent is told to do, and all it is told to do: resolve the markers and
+    // stage them, leaving the `--continue` to the orchestrator. (It is also exactly what
+    // `rerere` does by itself on a repo that has seen the conflict before.)
+    writeFileSync(join(wt, 'src.txt'), 'RESOLVED-BY-HAND\n');
+    await git(wt, ['add', 'src.txt']);
+    expect(await hasConflicts(wt)).toBe(false);
+
+    const res = await wtm.integrate(project(), 'orch/p1', base, wt, 'integrate again');
+    expect(res.status).toBe('merged');
+    // The resolution landed, and so did the commit after it — a `--continue` that stops at
+    // the first patch has not finished the rebase.
+    expect((await git(repo, ['show', 'HEAD:src.txt'])).stdout).toContain('RESOLVED-BY-HAND');
+    expect((await git(repo, ['show', 'HEAD:later.txt'])).stdout).toContain('later');
+  });
+
+  it('hands a still-conflicted paused rebase back to the ladder, without aborting it', async () => {
+    const { wtm, wt } = await branchStoppedOnConflict('p2');
+    const res = await wtm.integrate(project(), 'orch/p2', base, wt, 'integrate again');
+    // `conflict` sends it up the ladder (AI, then a human) — which is where an unresolved
+    // conflict belongs. `error` was the old answer, and it came with an abort.
+    expect(res.status).toBe('conflict');
+    // The markers are still there: nothing undid the rebase behind the human's back.
+    expect(readFileSync(join(wt, 'src.txt'), 'utf8')).toContain('<<<<<<<');
+    expect(await hasConflicts(wt)).toBe(true);
+  });
+
+  /**
+   * The reported failure, reproduced exactly. `rerere` ("reuse recorded resolution") is on in
+   * plenty of repos, and it turns a branch that has been rebased before into one that can
+   * never be merged again: on the next attempt git replays the recorded resolution, STAGES it,
+   * and still stops. The tree is then clean and the index full — which the old code read as
+   * "the rebase failed and there are no conflicts", i.e. as an unexplained error, and answered
+   * with an abort. The human's log said it in one line, twice in six seconds:
+   *
+   *     Rebasing (1/13)
+   *     error: could not apply 234684b... refactor(mr): make merge requests provider-neutral
+   *     Staged 'apps/web/src/board/httpTransport.ts' using previous resolution.
+   */
+  it('continues through a stop that rerere already staged, instead of calling it an error', async () => {
+    const wtm = new WorktreeManager(root);
+    await git(repo, ['config', 'rerere.enabled', 'true']);
+    // `autoUpdate` is what makes the replayed resolution reach the INDEX rather than only the
+    // working tree — i.e. what makes git print "Staged … using previous resolution", which is
+    // the line the human's failing merge printed. Without it rerere leaves the path unmerged
+    // and the conflict is visible in the ordinary way.
+    await git(repo, ['config', 'rerere.autoUpdate', 'true']);
+    await commitOnBase('src.txt', 'original\n', 'seed src');
+    const wt = join(root, 'wt-rr');
+    await git(repo, ['worktree', 'add', '-b', 'orch/rr', wt, base]);
+    writeFileSync(join(wt, 'src.txt'), 'BRANCH-EDIT\n');
+    await git(wt, ['commit', '--no-verify', '-am', 'branch edits src']);
+    const branchTip = (await git(wt, ['rev-parse', 'HEAD'])).stdout.trim();
+    await commitOnBase('src.txt', 'BASE-EDIT\n', 'base edits src');
+
+    // Rebase once and resolve by hand, so rerere records the resolution…
+    await git(wt, ['rebase', base]);
+    writeFileSync(join(wt, 'src.txt'), 'RESOLVED\n');
+    await git(wt, ['add', 'src.txt']);
+    await git(wt, ['-c', 'core.editor=true', 'rebase', '--continue']);
+    // …then put the branch back where it was, so the merge meets the conflict a second time.
+    await git(wt, ['reset', '--hard', branchTip]);
+
+    const res = await wtm.integrate(project(), 'orch/rr', base, wt, 'integrate rr');
+    expect(res.status).toBe('merged');
+    expect((await git(repo, ['show', 'HEAD:src.txt'])).stdout).toContain('RESOLVED');
+  });
+
+  it('lands a resolution that reproduces base, dropping the patch it emptied', async () => {
+    const { wtm, wt } = await branchStoppedOnConflict('p3');
+    // Taking base's side leaves the patch with nothing in it. Git drops such a commit on
+    // `--continue` by itself; `advancePausedRebase` covers the case where it refuses instead.
+    // What this pins is the outcome either way: base gets the rest of the branch, and never a
+    // fast-forward to the branch's PRE-rebase tip (which is where its ref still points).
+    writeFileSync(join(wt, 'src.txt'), 'BASE-EDIT\n');
+    await git(wt, ['add', 'src.txt']);
+
+    const res = await wtm.finishAfterConflict(project(), 'orch/p3', base, wt);
+    expect(res.status).toBe('merged');
+    expect((await git(repo, ['show', 'HEAD:src.txt'])).stdout).toBe('BASE-EDIT\n');
+    expect((await git(repo, ['show', 'HEAD:later.txt'])).stdout).toContain('later');
+  });
+
+  it('reports each stop of a rebase that stops more than once, then lands it', async () => {
+    // Two conflicting commits, so the rebase stops twice. A branch open long enough to
+    // conflict usually conflicts more than once, and each stop has to reach a human (or Rung
+    // 2) rather than one of them being merged over.
+    const wtm = new WorktreeManager(root);
+    await commitOnBase('a.txt', 'original-a\n', 'seed a');
+    await commitOnBase('b.txt', 'original-b\n', 'seed b');
+    const wt = join(root, 'wt-p4');
+    await git(repo, ['worktree', 'add', '-b', 'orch/p4', wt, base]);
+    writeFileSync(join(wt, 'a.txt'), 'BRANCH-A\n');
+    await git(wt, ['commit', '--no-verify', '-am', 'branch edits a']);
+    writeFileSync(join(wt, 'b.txt'), 'BRANCH-B\n');
+    await git(wt, ['commit', '--no-verify', '-am', 'branch edits b']);
+    await commitOnBase('a.txt', 'BASE-A\n', 'base edits a');
+    await commitOnBase('b.txt', 'BASE-B\n', 'base edits b');
+
+    expect((await wtm.integrate(project(), 'orch/p4', base, wt, 'integrate')).status).toBe(
+      'conflict',
+    );
+    writeFileSync(join(wt, 'a.txt'), 'RESOLVED-A\n');
+    await git(wt, ['add', 'a.txt']);
+    // The second stop is reported honestly rather than merged over.
+    const mid = await wtm.finishAfterConflict(project(), 'orch/p4', base, wt);
+    expect(mid.status).toBe('conflict');
+    writeFileSync(join(wt, 'b.txt'), 'RESOLVED-B\n');
+    await git(wt, ['add', 'b.txt']);
+
+    const res = await wtm.finishAfterConflict(project(), 'orch/p4', base, wt);
+    expect(res.status).toBe('merged');
+    expect((await git(repo, ['show', 'HEAD:a.txt'])).stdout).toBe('RESOLVED-A\n');
+    expect((await git(repo, ['show', 'HEAD:b.txt'])).stdout).toBe('RESOLVED-B\n');
+  });
+});
+
+/**
  * Rung 1.5 (mechanical, scripted) — the rung that exists so a lockfile collision, far and away
  * the commonest thing parallel worktrees conflict on, does not cost an agent session to fix by
  * running one command. The contract these pin: it resolves everything or it touches nothing.

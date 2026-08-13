@@ -1641,6 +1641,8 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       savedLimit?: LimitState | null;
       /** What the merge reports back; `undefined` = it merged. */
       integrateResult?: Record<string, unknown>;
+      /** What continuing the paused rebase reports back; `undefined` = it merged. */
+      finishResult?: Record<string, unknown>;
     },
   ) {
     const agentProject = {
@@ -1747,6 +1749,8 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
     /** Whether each `prepare` was told this run is resolving a rebase the app paused. */
     const resuming: boolean[] = [];
     const integrated: Array<{ branch: string; base: string }> = [];
+    /** Every paused rebase the scheduler went back and finished (Rung 2's redemption). */
+    const finished: Array<{ branch: string; base: string }> = [];
     const worktrees = {
       prepare: (
         _p: Project,
@@ -1768,6 +1772,15 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       integrate: (_p: Project, branch: string, base: string) => {
         integrated.push({ branch, base });
         return Promise.resolve(opts?.integrateResult ?? { status: 'merged' });
+      },
+      // Rung 2's two ends: what it tells the agent is conflicted, and what continues the
+      // paused rebase once the agent's run is over. `finished` is the fact those cases are
+      // really about — a rebase left paused with nobody to continue it is the stranded
+      // worktree that blocks every later button on the card.
+      listConflicts: () => Promise.resolve(['src/app.ts']),
+      finishAfterConflict: (_p: Project, branch: string, base: string) => {
+        finished.push({ branch, base });
+        return Promise.resolve(opts?.finishResult ?? { status: 'merged' });
       },
       cleanup: vi.fn(),
     } as unknown as WorktreeManager;
@@ -1816,6 +1829,7 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       prepared,
       resuming,
       integrated,
+      finished,
       added,
       comments,
       seedRun,
@@ -1883,6 +1897,80 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       scheduler.runTask('s2');
       await flush();
       expect(resuming).toEqual([false]);
+    });
+  });
+
+  /**
+   * Rung 2 — the agent asked to resolve a rebase this app paused.
+   *
+   * All three of these are one failure, seen from three sides. On a card assigned `plan`, the
+   * conflict fix was launched in `plan` mode, so the run that existed to WRITE resolutions was
+   * the one mode that may not; it sat at the approval gate, raised a plan-approval nobody had
+   * asked for, staged the resolutions anyway, and then — because that approval was still open
+   * — never settled. Never settling meant the paused rebase was never continued, and a
+   * detached `HEAD` in the worktree then refused every button on the card. Nothing about any
+   * of it appeared on the card.
+   */
+  describe('conflict ladder Rung 2 (the agent fix)', () => {
+    /** Drive a card's run to a rebase conflict, which dispatches the AI fix. */
+    const toConflict = (harness: ReturnType<typeof setup>): void => {
+      harness.seedRun('r-work', 't1');
+      harness.fire('r-work', okResult);
+    };
+
+    const conflicted = {
+      integrateResult: {
+        status: 'conflict',
+        worktree: 'C:/wt/t1',
+        branch: 'orch/t1',
+        base: 'main',
+      },
+    };
+
+    it('runs in a mode that can WRITE, not the `plan` the card is assigned', async () => {
+      const harness = setup(undefined, conflicted);
+      const { start, parent } = harness;
+      expect(parent.agentMode).toBe('plan'); // the state the real card was in
+      toConflict(harness);
+      await flush();
+      // The project's own default, because an install that has decided how much its agents
+      // may do unattended keeps deciding it — only `plan` is refused.
+      expect(start).toHaveBeenCalledTimes(1);
+      expect(start.mock.calls[0][0]).toMatchObject({ permissionMode: 'acceptEdits' });
+    });
+
+    it('finishes the paused rebase even with an inbox item still open for its run', async () => {
+      const harness = setup(undefined, conflicted);
+      const { scheduler, start, fire, finished } = harness;
+      toConflict(harness);
+      await flush();
+      const fixRunId = (start.mock.calls[0][1] as { runId: string }).runId;
+      // What plan mode left behind: an approval for a plan the agent had already abandoned,
+      // open against the very run whose `result` is about to arrive.
+      (scheduler as unknown as { attention: Map<string, unknown> }).attention.set('inbox-plan', {
+        id: 'inbox-plan',
+        kind: 'plan-approval',
+        runId: fixRunId,
+        taskId: 't1',
+        projectId: 'agent-1',
+      });
+      fire(fixRunId, okResult);
+      await flush();
+      expect(finished).toEqual([{ branch: 'orch/t1', base: 'main' }]);
+    });
+
+    it('finishes the paused rebase even when the fix run FAILED', async () => {
+      // A usage limit, a dead sign-in, an api_error: the run is over and the rebase is still
+      // paused. `finishAfterConflict` re-reads the tree, so an unresolved fix comes back as a
+      // conflict and climbs the ladder — what must never happen is nobody looking at all.
+      const harness = setup(undefined, conflicted);
+      const { start, fire, finished } = harness;
+      toConflict(harness);
+      await flush();
+      const fixRunId = (start.mock.calls[0][1] as { runId: string }).runId;
+      fire(fixRunId, { ...okResult, success: false, terminalReason: 'api_error' });
+      await flush();
+      expect(finished).toEqual([{ branch: 'orch/t1', base: 'main' }]);
     });
   });
 

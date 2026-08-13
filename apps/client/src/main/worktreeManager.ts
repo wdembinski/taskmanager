@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Project, Task } from '@shared/model';
 import { hostFor, hostJoin, type ExecHost } from './exec';
+import type { GitResult } from './git';
 import {
   abortRebase,
   addedInBranch,
@@ -50,6 +51,7 @@ import {
   preserveUntracked,
   pruneWorktrees,
   rebasingBranch,
+  rebaseInProgress,
   rebaseOnto,
   removeUntracked,
   removeWorktree,
@@ -646,6 +648,22 @@ export class WorktreeManager {
         };
       }
 
+      // A rebase already paused in this worktree is NOT ours to restart, and this is where
+      // "Retry integration" used to become an unpressable button. `git rebase <base>` on top
+      // of a paused one fails with *"there is already a rebase-merge directory"*; that failure
+      // names no conflicted path, so the code below read it as "not a conflict, some other
+      // error" and answered with `rebase --abort` — throwing away the very resolutions Rung 2's
+      // agent (or the human) had just staged, and leaving the next press to repeat the cycle.
+      //
+      // Checked BEFORE the safety commit, which is the more dangerous half. `commitAll` is
+      // `git add -A` and a commit; run mid-rebase it stages the conflict MARKERS and writes
+      // them into history. That never surfaced only because the failure it led to ended in
+      // the abort above, which threw the marker commit away with everything else — so fixing
+      // the abort without fixing this would have merged `<<<<<<<` into the base branch.
+      if (await rebaseInProgress(worktree, host)) {
+        return this.continuePausedRebase(project, branch, base, worktree, host);
+      }
+
       // AFTER `commitAll`, and that order matters: a run that left work uncommitted has
       // something to land, and asking before the safety commit would call it empty.
       await commitAll(worktree, commitMessage, host);
@@ -682,19 +700,25 @@ export class WorktreeManager {
         // Each round consumes one commit, so the bound can only be hit by a pathological branch.
         const autoResolved: string[] = [];
         for (let round = 0; rebased.code !== 0 && round < MAX_MECHANICAL_ROUNDS; round++) {
-          if (!(await hasConflicts(worktree, host))) break;
+          if (!(await hasConflicts(worktree, host))) {
+            // A rebase can stop with NOTHING left unmerged, and that is not an error either.
+            // `rerere` replays a resolution this repo has recorded before, stages it, and git
+            // still stops — so the tree is clean, the index is full, and all that is owed is
+            // `--continue`. Reading a clean tree as "no conflict to fix" is what turned the
+            // second and third presses of Retry into the same parked failure as the first: the
+            // more times a branch had been rebased, the more reliably rerere made it
+            // unmergeable. If no rebase is running at all, this really is some other failure.
+            if (!(await rebaseInProgress(worktree, host))) break;
+            rebased = await this.advancePausedRebase(worktree, attrsPath, host);
+            continue;
+          }
           const fixed = await this.resolveMechanically(worktree, host);
           // `null` = something here needs judgement. The work tree is exactly as git left it
           // (see `resolveMechanically`), so the AI/human rung below gets the real conflict —
           // never a tree this rung had already half-resolved and made to look clean.
           if (!fixed) break;
           autoResolved.push(...fixed);
-          // A resolution that reproduces what base already has empties the patch, and
-          // `--continue` refuses an empty one. That commit's content IS in base, so skipping
-          // is not a loss — it is the same outcome the rebase would have reached alone.
-          rebased = (await hasStagedChanges(worktree, host))
-            ? await continueRebase(worktree, attrsPath, host)
-            : await skipRebase(worktree, host);
+          rebased = await this.advancePausedRebase(worktree, attrsPath, host);
         }
 
         // Anything still conflicted is a real conflict → `conflict`, for the AI/human rungs.
@@ -702,6 +726,10 @@ export class WorktreeManager {
           if (await hasConflicts(worktree, host)) {
             return { status: 'conflict', worktree, branch, base };
           }
+          // Safe to abort: this rebase is one THIS call started, a few lines above — a rebase
+          // that was already paused when we arrived never reaches here (it is handled before
+          // the safety commit). Undoing our own is free; undoing somebody else's is how a
+          // resolution gets thrown away.
           await abortRebase(worktree, host);
           return { status: 'error', message: rebased.stderr || 'rebase failed' };
         }
@@ -715,8 +743,27 @@ export class WorktreeManager {
   }
 
   /**
+   * Move a paused rebase on by one patch: continue it, or skip a patch that resolution
+   * emptied.
+   *
+   * The two are told apart by the index, never by guessing. `--continue` refuses an empty
+   * patch (*"No changes - did you forget to use 'git add'?"*), which is the shape a
+   * resolution takes when it reproduces what base already has — that commit's content IS in
+   * base, so skipping loses nothing and is the outcome the rebase would have reached alone.
+   */
+  private async advancePausedRebase(
+    worktree: string,
+    attrsPath: string,
+    host: ExecHost,
+  ): Promise<GitResult> {
+    return (await hasStagedChanges(worktree, host))
+      ? continueRebase(worktree, attrsPath, host)
+      : skipRebase(worktree, host);
+  }
+
+  /**
    * Finish integration after a human (or agent) resolved a rebase conflict in the
-   * worktree: continue the rebase if one is still in progress, then fast-forward.
+   * worktree: drive the rebase to its end, then fast-forward.
    */
   finishAfterConflict(
     project: Project,
@@ -726,19 +773,72 @@ export class WorktreeManager {
   ): Promise<IntegrationResult> {
     return this.enqueue(project.id, async () => {
       const { host } = await this.workspaceFor(project);
-      if (await hasConflicts(worktree, host)) return { status: 'conflict', worktree, branch, base };
-      // If a rebase is still open (conflicts were staged but not continued), continue it
-      // (union attrs so later patches' additive files still auto-merge); a "no rebase in
-      // progress" error is fine — it means they finished already.
-      const attrs = withUnionAttributes();
-      try {
-        await continueRebase(worktree, host.toNative(attrs.file), host);
-      } finally {
-        attrs.cleanup();
-      }
-      if (await hasConflicts(worktree, host)) return { status: 'conflict', worktree, branch, base };
-      return this.fastForward(project, branch, base, worktree);
+      return this.continuePausedRebase(project, branch, base, worktree, host);
     });
+  }
+
+  /**
+   * Drive a rebase that is already paused in `worktree` to its end, then fast-forward.
+   *
+   * The one path for every arrival at a paused rebase — the human answering *Resolved*, Rung
+   * 2's agent run ending, and a plain re-`integrate` that found one waiting. Deliberately NOT
+   * enqueued: `integrate` and `finishAfterConflict` are the enqueued entry points, and taking
+   * the per-project lock twice would deadlock.
+   *
+   * Looped, because a rebase stops once per conflicting COMMIT and a branch with thirteen of
+   * them stops thirteen times. Continuing exactly once and then fast-forwarding assumed the
+   * caller would be back for each of the others; that held for the human answering *Resolved*,
+   * and not for a stop this can settle by itself — a lockfile on the ninth commit, or one
+   * `rerere` has already staged — which is now driven through here instead of costing a rung.
+   */
+  private async continuePausedRebase(
+    project: Project,
+    branch: string,
+    base: string,
+    worktree: string,
+    host: ExecHost,
+  ): Promise<IntegrationResult> {
+    // Union attrs so later patches' additive files still auto-merge.
+    const attrs = withUnionAttributes();
+    const attrsPath = host.toNative(attrs.file);
+    const autoResolved: string[] = [];
+    try {
+      for (let round = 0; round < MAX_MECHANICAL_ROUNDS; round++) {
+        if (await hasConflicts(worktree, host)) {
+          // Rung 1.5 still applies to the stops a resumed rebase runs into: a lockfile that
+          // collides on the ninth commit is no more worth an agent session than one that
+          // collides on the first. `null` means this one needs judgement — up the ladder.
+          const fixed = await this.resolveMechanically(worktree, host);
+          if (!fixed) return { status: 'conflict', worktree, branch, base };
+          autoResolved.push(...fixed);
+        } else if (!(await rebaseInProgress(worktree, host))) {
+          // No rebase left to drive: it finished — just now, or before we were called.
+          const done = await this.fastForward(project, branch, base, worktree);
+          if (done.status !== 'merged' || autoResolved.length === 0) return done;
+          return { ...done, autoResolved: [...new Set(autoResolved)] };
+        }
+        const advanced = await this.advancePausedRebase(worktree, attrsPath, host);
+        // A `--continue` that neither finished the rebase nor left conflicts is a failure this
+        // cannot resolve, and the one thing that must NOT follow it is a fast-forward:
+        // mid-rebase the branch ref still points at its PRE-rebase commit, so advancing base to
+        // it would merge the unrebased work and report a success. Say so instead, and leave the
+        // paused rebase exactly as it is — it is what the next attempt has to work with.
+        if (advanced.code !== 0 && !(await hasConflicts(worktree, host))) {
+          return {
+            status: 'error',
+            message: advanced.stderr.trim() || 'could not continue the paused rebase',
+          };
+        }
+      }
+      return {
+        status: 'error',
+        message:
+          `the rebase of "${branch}" onto ${base} stopped more than ${MAX_MECHANICAL_ROUNDS} ` +
+          `times; it is still paused in ${worktree}`,
+      };
+    } finally {
+      attrs.cleanup();
+    }
   }
 
   /**

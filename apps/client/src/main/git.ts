@@ -271,15 +271,41 @@ export async function rebasingBranch(dir: string, host?: ExecHost): Promise<stri
 }
 
 /**
- * Read a file out of the repo's git DIRECTORY (not its work tree), or null if it isn't there.
+ * Is a rebase paused in `dir` at all — has git stopped part-way and left its state behind?
+ *
+ * The blunter sibling of {@link rebasingBranch}, and the two are not interchangeable. That one
+ * answers *which branch* is being replayed, so it says "no" for a rebase of a detached `HEAD`
+ * and for one whose `head-name` git wrote as the literal `detached HEAD`. Here the question is
+ * only ever asked to decide two things — would `git rebase <base>` refuse with *"there is
+ * already a rebase-merge directory"*, and is `--continue` the move rather than a fresh start —
+ * and for both of those, ANY paused rebase counts.
+ *
+ * Asked of the state DIRECTORY, which is what git itself checks, rather than of a file inside
+ * it: which files a stopped rebase leaves behind differs by backend and by why it stopped, and
+ * a predicate that answers "no" to a rebase that is plainly in progress is worse than useless
+ * — it is what licenses a caller to start a second one.
+ */
+export async function rebaseInProgress(
+  dir: string,
+  host: ExecHost = localHost(),
+): Promise<boolean> {
+  for (const backend of ['rebase-merge', 'rebase-apply']) {
+    const path = await gitPath(dir, backend, host);
+    if (path && existsSync(host.toApp(path))) return true;
+  }
+  return false;
+}
+
+/**
+ * Name a path inside the repo's git DIRECTORY (not its work tree), as this process can open it.
  *
  * `rev-parse --git-path` is what makes this safe to do at all: a worktree's `.git` is a *file*
  * pointing into the main repo's admin area, so the state of a rebase running here lives at a
  * path only git can name. It answers with an absolute path in a real repo and a relative one
- * in some layouts, hence the join — and the read goes through `toApp` so a WSL project's
- * `/home/...` is named the way this process can open it.
+ * in some layouts, hence the join — and the result goes through `toApp` at the call site so a
+ * WSL project's `/home/...` is named the way this process can reach it.
  */
-async function readGitFile(
+async function gitPath(
   dir: string,
   relative: string,
   host: ExecHost = localHost(),
@@ -287,7 +313,19 @@ async function readGitFile(
   const res = await git(dir, ['rev-parse', '--git-path', relative], host);
   const path = res.code === 0 ? res.stdout.trim() : '';
   if (!path) return null;
-  const absolute = /^([A-Za-z]:)?[\\/]/.test(path) ? path : `${dir.replace(/[\\/]+$/, '')}/${path}`;
+  return /^([A-Za-z]:)?[\\/]/.test(path) ? path : `${dir.replace(/[\\/]+$/, '')}/${path}`;
+}
+
+/**
+ * Read a file out of the repo's git DIRECTORY (not its work tree), or null if it isn't there.
+ */
+async function readGitFile(
+  dir: string,
+  relative: string,
+  host: ExecHost = localHost(),
+): Promise<string | null> {
+  const absolute = await gitPath(dir, relative, host);
+  if (!absolute) return null;
   try {
     return readFileSync(host.toApp(absolute), 'utf8');
   } catch {

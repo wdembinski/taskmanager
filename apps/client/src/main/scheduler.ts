@@ -215,6 +215,28 @@ function resumeWithNotePrompt(note: string): string {
 const MAX_CONFLICT_FIX_ATTEMPTS = 2;
 
 /**
+ * The permission mode for a run the ORCHESTRATOR requeued to make one specific edit — a
+ * Rung 2 conflict fix.
+ *
+ * `plan` is a mode for a conversation whose product is a plan, and a card assigned it hands
+ * it to every later run started on that card (the same shape as the review session that had
+ * to plan its own review). A conflict fix is requeued through exactly that path, so Rung 2's
+ * agent was launched in the one mode that may not write, to write resolutions — it sat at the
+ * approval gate for thirty minutes before doing the job anyway, and left an approval nobody
+ * asked for parked on the card afterwards.
+ *
+ * The card's own mode is honoured wherever it is a mode that can write. Only `plan` is
+ * replaced, and by the project's default rather than a constant, so an install that has
+ * decided how much its agents may do unattended keeps deciding it. `acceptEdits` is the
+ * floor: the fix is edits to files in the run's own worktree plus the `git add` that stages
+ * them, and a project defaulting to `plan` has expressed no opinion about that.
+ */
+function conflictFixMode(assigned: PermissionMode, project: Project): PermissionMode {
+  if (assigned !== 'plan') return assigned;
+  return project.defaultPermissionMode === 'plan' ? 'acceptEdits' : project.defaultPermissionMode;
+}
+
+/**
  * The interactive actions offered when a failed task parks in the inbox (Phase A of
  * team orchestrator). The human picks one; `answerAttention` matches on the text.
  * Grouped so the option set can be built per failure kind.
@@ -2463,7 +2485,15 @@ export class Scheduler {
     // beats the project default. Captured on the run so every later decision —
     // permissions above all — judges the run the human actually authorized, and so the
     // one-turn override never outlives its turn.
-    const permissionMode = opts.permissionMode ?? task.agentMode ?? project.defaultPermissionMode;
+    const assignedMode = opts.permissionMode ?? task.agentMode ?? project.defaultPermissionMode;
+    // …except that a Rung 2 conflict fix is not a turn anyone assigned a mode to. The
+    // orchestrator requeued it to make one specific edit in one specific worktree, so a `plan`
+    // it inherited from the card is not an instruction, it is an accident of which card the
+    // rebase happened to belong to — see {@link conflictFixMode}. Asked of the map rather than
+    // threaded through `requeue` so it holds however the run gets started, including a `pump`
+    // that reaches this task later, or a human pressing Start on it first.
+    const fixingConflict = this.pendingConflictFix.has(task.id);
+    const permissionMode = fixingConflict ? conflictFixMode(assignedMode, project) : assignedMode;
     // A card whose chain just landed carries `chainLandedAt` as a one-shot marker
     // (`finishParentChain`): the very next run started on it — whichever caller that turns
     // out to be, a chat reply above all — is the review conversation, not new work, so it
@@ -2481,9 +2511,12 @@ export class Scheduler {
     // asked for on this turn means "come back with a plan", while `plan` inherited from
     // the card means only "this card may not write". A conversation — a chat reply, a
     // post-chain review — is judged as a conversation unless the caller says otherwise.
+    // A conflict fix joins the list of turns that are not planning turns, for the same
+    // reason: it was asked for resolutions in a worktree, and grading it on whether it came
+    // back with a plan would fail every successful one.
     const expectsPlan =
       opts.permissionMode === 'plan' ||
-      !(opts.chatPrompt !== undefined || reviewSeed || opts.releaseSeed);
+      !(opts.chatPrompt !== undefined || reviewSeed || opts.releaseSeed || fixingConflict);
     const run: Run = {
       taskId: task.id,
       projectId: project.id,
@@ -3137,7 +3170,16 @@ export class Scheduler {
           break;
         }
         // Parked awaiting a human (a question/permission): stay alive for the answer.
-        if (this.hasPendingAttention(runId)) break;
+        //
+        // …unless this run is a Rung 2 conflict fix, which must settle whatever else is in
+        // the inbox for it. Its turn is over — a `result` says so — and the state it is
+        // holding is not its own: a rebase is paused in a worktree with the orchestrator
+        // named as the only thing that will ever continue it. A conflict fix that inherited
+        // `plan` mode raised a plan-approval nobody wanted, staged its resolutions anyway,
+        // and then hit this line: it never settled, so the rebase was never continued, and
+        // the card sat unstartable behind a stranded worktree and an approval for a plan the
+        // agent had already abandoned. What holds a live tool is released by `settle` itself.
+        if (this.hasPendingAttention(runId) && !this.pendingConflictFix.has(run.taskId)) break;
         run.settled = true;
         {
           // A dead sign-in is not this task's failure, it is the account's — so it must not
@@ -3682,6 +3724,30 @@ export class Scheduler {
       return;
     }
 
+    // A Rung 2 conflict fix, redeemed the moment its run ends — BEFORE the chain and step
+    // bookkeeping below, and deliberately whether it succeeded or failed.
+    //
+    // What it owns is not the run's state, it is the repository's: a rebase paused in a
+    // worktree, with this orchestrator named as the only thing that will continue it. Gated
+    // on `done` (and on the run still carrying branch/base/worktree) it was redeemed only by
+    // the happy path, so a fix that hit a usage limit, a dead sign-in, or an inbox item left
+    // the rebase paused with nobody left to finish it — a detached `HEAD` that then refuses
+    // every button on the card, which is the failure that costs an evening to understand
+    // because nothing about it is on the card.
+    //
+    // Failing over to `finishAfterConflict` is safe because it re-READS the tree rather than
+    // believing the run: markers still in place come back as `conflict` and climb the ladder
+    // to the next attempt (or to a human), which is exactly where an unresolved fix belongs.
+    // The stored context is used, not the run's, because it names the integration being
+    // resumed — a run's own branch/base can be missing on precisely the paths that stranded it.
+    const conflictFix = this.pendingConflictFix.get(run.taskId);
+    if (conflictFix) {
+      this.pendingConflictFix.delete(run.taskId);
+      this.attempts.delete(run.taskId);
+      void this.finishConflict(conflictFix);
+      return;
+    }
+
     // A step of an approved plan that still has siblings to run: the chain's branch is
     // not finished, so there is nothing to integrate yet — mark the step done and start
     // the next one. Only the FINAL step falls through to the integration below, which
@@ -3715,14 +3781,9 @@ export class Scheduler {
           base: run.base,
           worktree: run.worktree,
         };
-        // If this run was an agent conflict-fix (Rung 2), finish the paused rebase rather
-        // than starting a fresh integrate — the worktree is mid-rebase with staged fixes.
-        // A conflict fix always finishes: the human already asked for that merge, and
-        // leaving a worktree mid-rebase is not a state to park in.
-        if (this.pendingConflictFix.delete(run.taskId)) {
-          void this.finishConflict({ projectId: project.id, ...ctx });
-          return;
-        }
+        // (A Rung 2 conflict fix never reaches here — it is redeemed at the top of `settle`,
+        // where a failed one is caught too.)
+        //
         // Phase 17: merging is the human's call unless they asked for it to be automatic.
         // Auto-merge happens at the moment the work has been reviewed least, and when it
         // failed it parked an ask whose only real option retried the same failure.
@@ -4249,6 +4310,9 @@ export class Scheduler {
       ctx.runId,
       `Merge conflict — attempting AI resolution (${attempt}/${MAX_CONFLICT_FIX_ATTEMPTS}).`,
     );
+    // BEFORE the requeue: `startTask` reads this map to know the run it is about to start is
+    // a conflict fix, and that decides both the mode it runs in and that it is not a planning
+    // turn. Set after, the run would already have been launched under the card's own mode.
     this.pendingConflictFix.set(ctx.taskId, { projectId: project.id, ...ctx });
     this.fixNotes.set(ctx.taskId, note);
     this.requeue(project, ctx.taskId);
