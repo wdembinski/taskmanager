@@ -3,8 +3,15 @@
  * mapping lives in `@tm/shared/board` (shared with the main process); this module adds
  * the renderer-only concerns: display metadata and the "Show Done" toggle.
  */
-import type { BoardColumn, Task } from '@tm/shared/model';
-import { chainNeedsAttention, columnForStatus, restingStatus } from '@tm/shared/board';
+import type { BoardColumn, Task, TaskStatus } from '@tm/shared/model';
+import type { RunState } from '@tm/shared/board';
+import {
+  chainNeedsAttention,
+  columnForStatus,
+  columnForTask,
+  restingStatus,
+  statusForColumn,
+} from '@tm/shared/board';
 import { priorityRank } from '@tm/shared/priority';
 import type { MergeRequest } from '@tm/shared/mergeRequest';
 
@@ -30,6 +37,32 @@ export const COLUMN_META: ReadonlyArray<{ column: BoardColumn; label: string; or
 /** The columns to render, honoring the "Show Done" toggle. */
 export function visibleColumns(showDone: boolean): BoardColumn[] {
   return COLUMN_META.filter((c) => showDone || c.column !== 'done').map((c) => c.column);
+}
+
+/**
+ * The status worth badging on a card, or null when the column already says it.
+ *
+ * Measured against the column the card is actually IN (`columnForTask`), not against the
+ * one its raw status would imply. Those two part company the moment a run borrows the
+ * status: a card sitting in TO DO with a live agent is `running`, and the badge is then
+ * the card's own way of saying so — without the card going anywhere.
+ *
+ * The `run` fallback covers the card whose STEP is the thing parked: a chain held behind
+ * the usage-limit gate leaves the parent `in-progress` in IN PROGRESS, so the rule above
+ * has nothing to say and the card looked exactly like one merely working. Taken from
+ * {@link runPhase} rather than from a second predicate of its own — `phase: 'blocked'` is
+ * returned from the two usage-limit branches and nowhere else, and one answer to "what is
+ * this card doing" is the whole reason that helper exists. A parallel test here is how the
+ * card and the detail pane start disagreeing.
+ *
+ * `blocked` never spins, so the badge clears the card's `!run.spinner` guard — which is
+ * right: a running card's badge would only repeat the label, but a paused one has no label
+ * to repeat.
+ */
+export function cardBadgeStatus(task: Task, run: RunState): TaskStatus | null {
+  const canonical = statusForColumn(columnForTask(task));
+  const secondary = task.status === canonical ? null : task.status;
+  return secondary ?? (run.phase === 'blocked' ? 'blocked-by-limit' : null);
 }
 
 /** A card as the board renders it: the card itself plus the steps that travel with it. */

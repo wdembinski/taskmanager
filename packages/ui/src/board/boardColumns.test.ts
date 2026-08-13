@@ -3,8 +3,11 @@ import type { BoardColumn, Task, TaskStatus } from '@tm/shared/model';
 import type { MergeRequest } from '@tm/shared/mergeRequest';
 import type { TaskLink } from '@tm/shared/taskChain';
 import { chainComponent } from '@tm/shared/taskChain';
+import type { RunState } from '@tm/shared/board';
+import { runPhase } from '@tm/shared/board';
 import {
   COLUMN_META,
+  cardBadgeStatus,
   columnForStatus,
   columnForTask,
   focusAnchorId,
@@ -82,6 +85,61 @@ describe('statusForColumn', () => {
     expect(statusForColumn('in-review')).toBe('in-review');
     expect(statusForColumn('blocked')).toBe('blocked');
     expect(statusForColumn('done')).toBe('done');
+  });
+});
+
+/**
+ * The badge the card wears next to its title. Two rules, and the second is the one this
+ * suite exists for: a card whose STEP is parked behind the usage-limit gate is an ordinary
+ * `in-progress` card sitting in IN PROGRESS, so nothing about the card itself could say so.
+ */
+describe('cardBadgeStatus', () => {
+  /** Nothing running — the answer has to come from the card's own status alone. */
+  const idle: RunState = { phase: 'idle', label: '', spinner: false };
+
+  it('badges a running card that is sitting in TO DO', () => {
+    // A run borrows `status` and leaves the card where its human put it, so the badge is
+    // the card's only way of saying it is working. Unchanged by the move off the card.
+    const running = card('c', { status: 'running', preRunStatus: 'pending' });
+    expect(columnForTask(running)).toBe('todo');
+    expect(cardBadgeStatus(running, idle)).toBe('running');
+  });
+
+  it('says nothing when the column already says it', () => {
+    expect(cardBadgeStatus(card('c', { status: 'in-progress' }), idle)).toBeNull();
+    expect(cardBadgeStatus(card('c', { status: 'pending' }), idle)).toBeNull();
+  });
+
+  it('badges a card the limit stopped, from its own status — not the fallback', () => {
+    // Symptom 1: `blocked-by-limit` lands in IN PROGRESS, whose canonical status is
+    // `in-progress`, so the ordinary rule already answers and the run is never consulted.
+    const limited = card('c', { status: 'blocked-by-limit' });
+    expect(columnForTask(limited)).toBe('in-progress');
+    expect(cardBadgeStatus(limited, idle)).toBe('blocked-by-limit');
+  });
+
+  // Symptom 2, and the reason this helper takes the run at all: the parked thing is a
+  // STEP, so the parent is a plain `in-progress` card in IN PROGRESS and looked exactly
+  // like one merely working.
+  it('badges a card whose STEP is held behind the usage-limit gate', () => {
+    const parent = card('parent', { status: 'in-progress' });
+    const steps = [
+      card('s1', { parentTaskId: 'parent', order: 0, status: 'done' }),
+      card('s2', { parentTaskId: 'parent', order: 1, status: 'blocked-by-limit' }),
+    ];
+    const run = runPhase(parent, steps);
+    expect(run.phase).toBe('blocked');
+    expect(cardBadgeStatus(parent, run)).toBe('blocked-by-limit');
+  });
+
+  it('leaves a chain that is merely waiting its turn unbadged', () => {
+    // `queued` is not `blocked`: a Limit badge on every card with a pending step would
+    // make the badge mean nothing.
+    const parent = card('parent', { status: 'in-progress' });
+    const steps = [card('s1', { parentTaskId: 'parent', order: 0, status: 'pending' })];
+    const run = runPhase(parent, steps);
+    expect(run.phase).toBe('queued');
+    expect(cardBadgeStatus(parent, run)).toBeNull();
   });
 });
 

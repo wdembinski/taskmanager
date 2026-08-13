@@ -78,7 +78,7 @@ import { statusNoteColor, type StatusKeyword } from '@tm/shared/statusKeywords';
 import { DEFAULT_BOARD_DISPLAY, type BoardDisplaySettings } from '@tm/shared/settings';
 import { AgentGlyph } from '../AgentGlyph';
 import { STATUS_COLOR, STATUS_LABEL } from '../taskStatus';
-import { columnForTask, splitEarlierSteps, statusForColumn, subtaskProgress } from './boardColumns';
+import { cardBadgeStatus, splitEarlierSteps, subtaskProgress } from './boardColumns';
 import {
   CHAIN_LINK_MIME,
   TASK_ID_ATTR,
@@ -958,19 +958,6 @@ export interface TaskCardProps {
   dragging: boolean;
 }
 
-/**
- * The status worth badging on the card, or null when the column already says it.
- *
- * Measured against the column the card is actually IN (`columnForTask`), not against the
- * one its raw status would imply. Those two part company the moment a run borrows the
- * status: a card sitting in TO DO with a live agent is `running`, and the badge is then
- * the card's own way of saying so — without the card going anywhere.
- */
-function secondaryStatus(task: Task): Task['status'] | null {
-  const canonical = statusForColumn(columnForTask(task));
-  return task.status === canonical ? null : task.status;
-}
-
 export function TaskCard({
   task,
   projectName,
@@ -1009,7 +996,6 @@ export function TaskCard({
   dragging,
 }: TaskCardProps): JSX.Element {
   const styles = useStyles();
-  const badge = secondaryStatus(task);
   const sprintShown = showSprint;
   /**
    * Whether this card is a MIRROR of something in a tracker — which is what the footer badge
@@ -1087,6 +1073,10 @@ export function TaskCard({
   // `status === 'running'`, which could not see a run that had spawned but not yet been
   // persisted — the "it's clearly working but there's no spinner" complaint.
   const run = runPhase(task, subtasks, liveRunTaskIds, mergingTaskIds);
+  // The status worth badging, which needs the run: a card whose STEP is parked behind the
+  // usage-limit gate is an ordinary `in-progress` card in IN PROGRESS, so only the phase
+  // knows there is anything to say.
+  const badge = cardBadgeStatus(task, run);
   // What is worth saying in WORDS, once the pulsing glyph and the step counter have had their
   // say. Null while the agent is visibly working.
   const cardLabel = cardRunLabel(run, isAgentAssigned(task));
