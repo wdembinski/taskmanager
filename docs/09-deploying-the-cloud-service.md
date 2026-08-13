@@ -44,9 +44,35 @@ cloud at all: it is `tsx` against `src/`, and neither survives into the image.
 as unhealthy and restarts forever. It also does no database work, so a database blip does
 not roll every replica.
 
-**One replica, always.** Presence is an in-memory `Map`, so a second replica answers polls
-from a table that never saw the other half of the conversation and the board silently sits
-on the idle cadence tier. `max_replicas = 1` is not a cost setting.
+**One replica, always — `min_replicas = max_replicas = 1`.** Three things in this process are
+per-process state, and every one of them is wrong on a second replica:
+
+- **presence** ([`presence.registry.ts`](../apps/server/src/presence/presence.registry.ts)) is
+  an in-memory `Map`, so a second replica answers polls from a table that never saw the other
+  half of the conversation and the board silently sits on the idle cadence tier;
+- **the guard's auth caches** ([`iamAuth.guard.ts`](../apps/server/src/iam/iamAuth.guard.ts))
+  live on the guard instance, deliberately — a cached authorization that survives a restart is
+  a decision, not an optimisation;
+- **the event bus** ([`eventBus.ts`](../apps/server/src/events/eventBus.ts)) holds every open
+  `GET /v1/events` stream and the replay ring behind it. A desktop's `POST /v1/events` reaching
+  replica A while the browser is streaming from replica B pushes events into a process nobody
+  is listening to, and the tab shows a board that never moves.
+
+The first two have been true and undocumented since the service was first deployed. The third
+is what makes **`min_replicas`** matter as well, which is new: Container Apps' default HTTP
+scaler counts **concurrent requests**, and an SSE stream is one concurrent request for its
+entire life. Open a handful of tabs and ACA does exactly what it was told — it scales out, and
+you have a split brain. Pinning both ends is the only thing that stops it.
+
+Sticky sessions do not rescue this. ACA's session affinity is a **cookie**, and the desktop
+Client polls with Node's `fetch`, which carries no cookie jar — so the one caller whose
+requests must land on the same replica as the browser's stream is precisely the one affinity
+cannot pin.
+
+`min_replicas = 1` also means no scale-to-zero and therefore a small always-on bill (the
+`docs/plan/azure-realtime-cost-comparison.md` row 2 shape). That is the price of a push
+channel, and it is bounded: still one replica, not two, and no Redis backplane — the thing
+that made HA thirteen times more expensive in that same comparison.
 
 ## Configuration
 
@@ -77,11 +103,21 @@ development default by forgetting a variable:
 
 ```bash
 curl -fsS https://tasks-api.vipper.network/health          # {"status":"ok"}
-curl -o /dev/null -w '%{http_code}\n' https://tasks-api.vipper.network/v1/board   # 401
+curl -o /dev/null -w '%{http_code}\n' https://tasks-api.vipper.network/v1/board    # 401
+curl -o /dev/null -w '%{http_code}\n' https://tasks-api.vipper.network/v1/events   # 401
+
+# And the pin, which no probe can infer — both numbers must read 1.
+az containerapp show -n taskmanager-api -g taskmanager \
+  --query 'properties.template.scale.{min:minReplicas,max:maxReplicas}'
 ```
 
 A 200 from `/health` and a 401 from `/v1/board` together say the right thing: the process
-is up and the guard is on. Then open the web client and sign in.
+is up and the guard is on. `/v1/events` answers 401 for the same reason — it is guarded like
+every other `/v1` route, and a GET is classified `read`. Then open the web client and sign in.
+
+The scale query is worth running after any infrastructure change: it is set in the separate
+`infrastructure` repo, so nothing in this one can enforce it, and a stream that works
+perfectly on one replica is exactly what an unpinned `min_replicas` breaks later under load.
 
 ## Running the image locally
 

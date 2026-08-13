@@ -183,6 +183,76 @@ export interface EventBatchResponse {
   listeners: number;
 }
 
+/**
+ * The `event:` names carried on `GET /v1/events`, the server-sent stream that delivers the
+ * batches above to a browser.
+ *
+ * Here rather than in apps/server because a frame name is only worth anything to the reader
+ * on the other end: the server writes these strings and apps/web matches on them, which is
+ * the definition of a wire, and a magic string copied across an app boundary is the thing
+ * this package exists to stop.
+ *
+ * `engine` rather than `event` for the payload frame so no control name can ever collide
+ * with it — and `message`, EventSource's default name for an unnamed frame, stays free.
+ */
+export const EVENT_STREAM_FRAMES = {
+  /** One {@link EventEnvelope}, carrying the `id:` a `Last-Event-ID` resumes from. */
+  event: 'engine',
+  /** Always the first frame on a connection — {@link HelloFrame}. */
+  hello: 'hello',
+  /** Something was lost, and this says how much — {@link GapFrame}. */
+  gap: 'gap',
+  /** The server is closing this stream deliberately — {@link ByeFrame}. */
+  bye: 'bye',
+} as const;
+
+/**
+ * `?lastEventId=` on `GET /v1/events`, the query-string twin of the `Last-Event-ID` header.
+ *
+ * Both, because the two possible readers can each only send one of them: a `fetch`-based
+ * reader must set the header itself (it is the only way it can carry an `Authorization`
+ * header at all), while a plain `EventSource` sets `Last-Event-ID` for free and cannot set
+ * any header — so anything else it wants to say has to travel in the URL.
+ */
+export const EVENT_STREAM_LAST_ID_QUERY = 'lastEventId';
+
+/**
+ * The stream's opening frame. `resumed: false` with `lastEventId: null` is a fresh
+ * connection and nothing is wrong; `resumed: false` with an id is a reconnect the server
+ * could not honour, and a {@link GapFrame} follows saying so.
+ */
+export interface HelloFrame {
+  resumed: boolean;
+  /** The position the client asked to resume from, echoed back — `null` if it asked for none. */
+  lastEventId: number | null;
+}
+
+/**
+ * Why a hole exists in the stream.
+ *
+ * - `sender` — the desktop coalesced or shed events before forwarding (`EventBatchRequest.gap`).
+ * - `shed` — this subscriber could not keep up and the server dropped its oldest queued events.
+ * - `expired` — a resume arrived after the events it asked for had aged out of the replay ring.
+ * - `reset` — the server has no memory of the id at all (it restarted, or the account's ring
+ *   was reclaimed), so not even the size of the hole is known.
+ */
+export type GapReason = 'sender' | 'shed' | 'expired' | 'reset';
+
+/** A hole in the stream — the browser's cue to re-read whatever it was watching. */
+export interface GapFrame {
+  reason: GapReason;
+  /** How many events were lost, when that is knowable. Absent means "unknown, assume many". */
+  count?: number;
+}
+
+/**
+ * The server hanging up on purpose, so a reader can tell a deliberate close from a dropped
+ * connection. Either way it reconnects — `lifetime` just means it was expected.
+ */
+export interface ByeFrame {
+  reason: 'lifetime' | 'shutdown';
+}
+
 /** Body of `POST /v1/presence` — a bare focus beat between full syncs. */
 export interface PresenceRequest {
   clientId: string;

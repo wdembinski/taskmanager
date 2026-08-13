@@ -8,6 +8,7 @@ import { CommandResultRow } from './entities/commandResult.entity';
 import { Tombstone } from './entities/tombstone.entity';
 import { ProjectMirror } from './entities/projectMirror.entity';
 import { TaskMirror } from './entities/taskMirror.entity';
+import { EventsModule } from './events/events.module';
 import { HealthModule } from './health/health.module';
 import { MirrorModule } from './mirror/mirror.module';
 import { PresenceModule } from './presence/presence.module';
@@ -47,6 +48,7 @@ import { PresenceModule } from './presence/presence.module';
     }),
     HealthModule,
     PresenceModule,
+    EventsModule,
     MirrorModule,
   ],
 })

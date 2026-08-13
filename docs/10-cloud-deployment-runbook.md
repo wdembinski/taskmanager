@@ -239,7 +239,8 @@ to, and it will say so.
 | Migration job cannot reach the server | `AllowAzureServices` missing — the only reason a job connects where a runner cannot. |
 | App logs `Missing IAM config` and exits | Vault read returned nothing: check `AZURE_KEY_VAULT_URI`, the Secrets User role, and the exact names. |
 | CORS errors in the browser | `CLOUD_ALLOWED_ORIGINS` does not match exactly. A trailing slash never matches. |
-| Board loads but never updates | More than one replica. Presence is in-memory; `max_replicas` must stay 1. |
+| Board loads but never updates | More than one replica. Presence, the auth cache and the event bus are all in-memory; `min_replicas` **and** `max_replicas` must both stay 1 — see [09](09-deploying-the-cloud-service.md). |
+| Live updates arrive on one tab and not another | Same cause. ACA's HTTP scaler counts concurrent requests and an open `GET /v1/events` stream is one for its whole life, so open tabs scale you into a split brain unless `min_replicas = max_replicas = 1`. Cookie affinity does not help: the desktop's `fetch` carries no cookies. |
 | Deep links 404 | `staticwebapp.config.json` did not reach the uploaded folder. |
 
 ## Rollback and teardown

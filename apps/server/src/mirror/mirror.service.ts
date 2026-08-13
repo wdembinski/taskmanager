@@ -16,6 +16,7 @@ import { CommandResultRow } from '../entities/commandResult.entity';
 import { ProjectMirror } from '../entities/projectMirror.entity';
 import { TaskMirror } from '../entities/taskMirror.entity';
 import { Tombstone } from '../entities/tombstone.entity';
+import { EventBus } from '../events/eventBus';
 import { PresenceService } from '../presence/presence.service';
 import { applyMirrorDelta } from './applyMirrorDelta';
 import { boardCursor } from './boardCursor';
@@ -64,6 +65,7 @@ export class MirrorService {
     @InjectRepository(Tombstone) private readonly tombstones: Repository<Tombstone>,
     @InjectRepository(CommandResultRow) private readonly results: Repository<CommandResultRow>,
     private readonly presence: PresenceService,
+    private readonly events: EventBus,
   ) {}
 
   /**
@@ -78,7 +80,10 @@ export class MirrorService {
    * the at-most-once it used to give.
    *
    * `request.focused` doubles as this Client's presence beat — recording it costs no extra
-   * round trip, and the resulting cadence rides back on this same response.
+   * round trip, and the resulting cadence rides back on this same response. So does
+   * `eventListeners`, for the same reason: a desktop must not push a running agent's transcript
+   * into the cloud for nobody, and asking "is anyone watching?" on its own route would be the
+   * second request per tick this whole wire exists to avoid.
    */
   async sync(accountId: string, request: SyncRequest): Promise<SyncResponse> {
     const now = Date.now();
@@ -140,6 +145,7 @@ export class MirrorService {
       cursor: rowVersionToCursor(await this.currentRowVersion(accountId)),
       cadence,
       commands: commands.map(toCommandEnvelope),
+      eventListeners: this.events.listeners(accountId, now),
     };
   }
 

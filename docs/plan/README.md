@@ -4639,6 +4639,17 @@ Three do not survive, and the module says so by name rather than being quietly s
 so a poll cannot find it again) and `usage:sample` (a 1 Hz sample against a 2.5s poll — the
 Performance gauge redraws from `usage:series` instead, which is stated in the UI).
 
+> **Superseded.** The "Mirror all interactions/features to web" round builds the wire this
+> section ruled out — `POST /v1/events` and a server-sent `GET /v1/events`
+> ([`apps/server/src/events/`](../../apps/server/src/events/)) — because the third bullet is
+> the one that did not hold: `board:notice` and a running agent's transcript have no read
+> behind them, so polling can never reconstruct them at any cadence. The two costs stand and
+> are paid deliberately: the stream is stateful (hence the pinned single replica in
+> [`docs/09`](../09-deploying-the-cloud-service.md)), and it is a second connection — which is
+> why a desktop only forwards while `SyncResponse.eventListeners` says somebody is watching.
+> `PolledEventBus` stays as the fallback for a browser talking to a desktop too old to
+> forward.
+
 ### At-least-once, at last
 
 Delivery was **at-most-once while every docstring claimed at-least-once**.
