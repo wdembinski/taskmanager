@@ -15,6 +15,7 @@ import { ATTACHMENT_SCHEME } from '@shared/attachments';
 import { PRODUCT_NAME } from '@shared/product';
 import { registerIpcHandlers, type Engine } from './ipc';
 import { formatError, getLogPath, logMain } from './log';
+import { runShutdownSteps, type ShutdownStep } from './shutdown';
 
 // Nothing in main used to report a failure anywhere the user could see it. A throw
 // during startup (v0.25.0 on Linux: a wrong-ABI better_sqlite3.node) left the window
@@ -130,13 +131,24 @@ let engine: Engine | undefined;
 let reportedFatal = false;
 
 /**
+ * Set as the first thing `before-quit` does. Past that point the app is going away, so
+ * a dialog is only ever in the user's way — worst of all during an auto-update restart,
+ * where the modal sits in front of the installer and there is nothing to act on.
+ */
+let shuttingDown = false;
+
+/**
  * Log a fatal error to file and show it to the user, because in a packaged app there
  * is no console to print it to. `fatal: true` means the app cannot usefully continue
  * (the engine never came up), so we quit rather than leave dead windows on screen.
+ *
+ * The log is written unconditionally, including while shutting down: a genuine late
+ * failure must still be recoverable from `logs/main.log`. Only the un-actionable
+ * DIALOG is suppressed.
  */
 function reportFatal(title: string, err: unknown, fatal = false): void {
   logMain(title, err);
-  if (reportedFatal) return;
+  if (shuttingDown || reportedFatal) return;
   reportedFatal = true;
   // Resolving the log path touches app.getPath, which can itself fail very early.
   let logHint = 'the app log';
@@ -177,22 +189,41 @@ void app.whenReady().then(() => {
   });
 });
 
-// Never leave orphaned `claude` processes running after the app closes, and
-// close the database so its WAL is checkpointed cleanly. Dispose the scheduler
-// FIRST so the `exited` events from killed sessions don't try to write to a
-// database we're about to close.
+// Never leave orphaned `claude` processes running after the app closes, and close the
+// database so its WAL is checkpointed cleanly.
+//
+// Order matters twice over. The window tracker goes FIRST, because its last geometry
+// write needs the database still open; the scheduler is disposed before the sessions are
+// killed, so the `exited` events from those kills don't try to schedule anything against
+// a database we're about to close; and `store.close()` is last for the same reason.
+//
+// It runs through `runShutdownSteps` rather than as a straight line so that ONE throwing
+// disposer can no longer skip the steps behind it — the crash that started this
+// (`windowTracker.dispose()` throwing "The database connection is not open" on an
+// auto-update restart) took the WAL checkpoint down with it.
 app.on('before-quit', () => {
-  engine?.windowTracker.dispose(); // last geometry write, before the DB goes away
-  engine?.updater.dispose();
-  engine?.syncPoller.dispose();
-  engine?.cloudPoller.dispose();
-  engine?.focusTracker.dispose();
-  engine?.claudeUsagePoller.dispose();
-  engine?.watcher.dispose();
-  engine?.scheduler.dispose();
-  engine?.sessions.stopAll();
-  engine?.broker.close();
-  engine?.store.close();
+  shuttingDown = true; // FIRST: past here a modal only blocks the installer behind it
+
+  // Bound once so each step closes over a definitely-present engine: quitting before
+  // `registerIpcHandlers` returned leaves nothing to dispose, which is not a failure.
+  const live = engine;
+  const steps: ShutdownStep[] = live
+    ? [
+        { name: 'windowTracker', run: () => live.windowTracker.dispose() },
+        { name: 'updater', run: () => live.updater.dispose() },
+        { name: 'syncPoller', run: () => live.syncPoller.dispose() },
+        { name: 'cloudPoller', run: () => live.cloudPoller.dispose() },
+        { name: 'focusTracker', run: () => live.focusTracker.dispose() },
+        { name: 'claudeUsagePoller', run: () => live.claudeUsagePoller.dispose() },
+        { name: 'watcher', run: () => live.watcher.dispose() },
+        { name: 'scheduler', run: () => live.scheduler.dispose() },
+        { name: 'sessions', run: () => live.sessions.stopAll() },
+        { name: 'broker', run: () => live.broker.close() },
+        { name: 'store', run: () => live.store.close() },
+      ]
+    : [];
+
+  runShutdownSteps(steps, (name, err) => logMain(`shutdown step "${name}" failed`, err));
 });
 
 // Quit when all windows are closed, except on macOS where apps typically stay
