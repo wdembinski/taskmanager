@@ -108,6 +108,79 @@ export interface SyncResponse {
   cursor: string;
   cadence: CadenceDirective;
   commands: CommandEnvelope[];
+  /**
+   * How many browser sessions are currently listening for pushed events (see
+   * {@link EventEnvelope}). Zero — or absent — means nobody is watching, and a Client that
+   * reads it that way stops forwarding until the next sync says otherwise.
+   *
+   * This is the whole reason the count travels on a response the Client already makes: a
+   * desktop with no browser open must not be posting a running agent's transcript into the
+   * cloud for nobody, and asking "is anyone there?" on its own route would be a second
+   * request per tick — the thing `SyncRequest` exists to avoid.
+   *
+   * Optional, so no `PROTOCOL_VERSION` bump: a server that predates the push channel omits
+   * it and a Client that never forwards ignores it. Neither is WRONG to skip it, which is
+   * exactly the line this file's rule draws — an older desktop that never forwards is old,
+   * not broken, and the browser falls back to `PolledEventBus` as it does today.
+   */
+  eventListeners?: number;
+}
+
+/**
+ * One engine event on its way to the browser — the push half of the mirror.
+ *
+ * `channel` is a `keyof IpcEvents` and `payload` its `IpcEvents[channel]`, both widened here
+ * for the same reason `ipc-invoke` widens its own: this package must not depend on the
+ * desktop's IPC contract, and the value has been through JSON either way. The narrowing
+ * happens where it can be enforced — the forwarding Client classifies the channel against
+ * `@tm/shared/ipcEventFanout`, and the receiving browser hands the payload to a subscriber
+ * that was typed by `Transport.on` long before it got here.
+ *
+ * Payloads are capped at `MAX_EVENT_BYTES` by that same module before they are enveloped:
+ * a `session:event` carrying a `Write` tool's input carries the whole file.
+ */
+export interface EventEnvelope {
+  channel: string;
+  payload: unknown;
+  /** Epoch ms the desktop emitted it — the browser orders by this, not by arrival. */
+  at: number;
+  /**
+   * The sender's own monotonic counter, one stream per `clientId` (not per channel). It
+   * exists so a receiver can tell "nothing has happened" from "I was not told": a jump means
+   * events were coalesced or dropped between two batches, which is `EventBatchRequest.gap`
+   * on the sending side and a re-read on the receiving one.
+   */
+  seq: number;
+}
+
+/**
+ * Body of `POST /v1/events` — one desktop Client handing over what its engine just pushed.
+ *
+ * A batch rather than an event per request because the events arrive in bursts (a running
+ * agent emits a dozen `session:event`s a second) and the whole design of this wire is one
+ * round trip per tick.
+ */
+export interface EventBatchRequest {
+  clientId: string;
+  /**
+   * How many events this Client dropped since its last batch — coalesced by policy, or shed
+   * because the queue was full. Absent or 0 means the stream is complete.
+   *
+   * Reported rather than hidden: a browser that knows it has holes can re-read the affected
+   * transcript (`session:gap` → `task:activity`), and one that is silently missing lines
+   * shows a plausible, wrong picture of what an agent did.
+   */
+  gap?: number;
+  events: EventEnvelope[];
+}
+
+/**
+ * Response to `POST /v1/events` — the same listener count {@link SyncResponse.eventListeners}
+ * carries, answered on the push itself so a Client learns the audience left without waiting
+ * for its next sync.
+ */
+export interface EventBatchResponse {
+  listeners: number;
 }
 
 /** Body of `POST /v1/presence` — a bare focus beat between full syncs. */

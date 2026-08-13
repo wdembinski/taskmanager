@@ -1000,6 +1000,21 @@ export interface IpcApi {
 export interface IpcEvents {
   /** A normalized event from a running Claude session (see SessionEventEnvelope). */
   'session:event': SessionEventEnvelope;
+  /**
+   * This run's stream has holes: events were coalesced away, shed under load, or lost with a
+   * dropped connection between here and whoever is listening.
+   *
+   * Its own channel because a missing `session:event` is invisible by construction — a
+   * transcript that is quietly three tool calls short looks exactly like one where the agent
+   * did three fewer things. A consumer that gets this re-reads the transcript it knows is
+   * incomplete (`task:activity`, which is the record; the live stream never was) instead of
+   * rendering a plausible, wrong picture of the run.
+   *
+   * Nothing in the desktop emits it: an Electron IPC push does not drop events. It is for the
+   * mirrored path, where the desktop's forwarder and the browser's receiver are separated by
+   * a poll loop that can fall behind (`EventBatchRequest.gap`).
+   */
+  'session:gap': { runId: string };
   /** A task's status/sessionId changed (with its live runId while executing). */
   'task:changed': TaskChange;
   /**
