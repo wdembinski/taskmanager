@@ -455,6 +455,10 @@ export function BoardScreen({
                 selectedTaskId={selectedTaskId}
                 draggingId={draggingId}
                 onStopTask={(taskId) => void extras.stopTask(taskId).catch(reportError)}
+                // The card decides when to OFFER this (`canResumeWork`, from `stoppedAt` and
+                // the card's own steps); the column only needs the prop to exist, and until
+                // now this app was the only host that did not pass it.
+                onResumeTask={(taskId) => void extras.resumeTask(taskId).catch(reportError)}
                 onSelectTask={selectTask}
                 onDragStartTask={setDraggingId}
                 onDragEndTask={() => setDraggingId(null)}

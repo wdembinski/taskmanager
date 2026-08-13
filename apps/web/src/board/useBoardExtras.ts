@@ -25,7 +25,7 @@
  * being given before any of this existed, and it is the right answer while nobody is home.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useTransport } from '@tm/ui/transport';
+import { useTransport, type Transport } from '@tm/ui/transport';
 import type { Project, Task } from '@tm/shared/model';
 import type { TaskAttachment } from '@tm/shared/attachments';
 import type { MergeRequest } from '@tm/shared/mergeRequest';
@@ -49,9 +49,51 @@ export interface BoardExtras {
   removeLink: (linkId: string) => Promise<void>;
   setLinkGate: (linkId: string, gate: LinkGate) => Promise<void>;
   stopTask: (taskId: string) => Promise<void>;
+  /** Put a stopped card back to work — the exact inverse of {@link BoardExtras.stopTask}. */
+  resumeTask: (taskId: string) => Promise<void>;
   restoreTask: (taskId: string) => Promise<void>;
   /** Re-read everything. The board calls this after an edit whose event it cannot wait for. */
   refresh: () => void;
+}
+
+/**
+ * The two card-level run controls, as plain functions over a transport: send the command,
+ * then answer with the live set to show for it.
+ *
+ * WHY THEY RE-READ `scheduler:activeRuns`
+ * ---------------------------------------
+ * No event carries "this run started" or "this run stopped" to a browser — `task:changed`
+ * is reconstructed from the mirror (`polledEvents.ts`), which the desktop only pushes on
+ * its own next sync. Re-reading the live set is what puts the spinner on the card, or takes
+ * it off, now rather than in a few seconds.
+ *
+ * WHY THEY LIVE OUTSIDE THE HOOK
+ * ------------------------------
+ * So the suite can drive them. This workspace has no jsdom and no `@testing-library`
+ * (apps/web/vitest.config.ts), so a hook cannot be rendered in a test — but the two calls
+ * each control makes, and their order, are the whole of what there is to get wrong here.
+ */
+export async function stopTaskOver(
+  transport: Pick<Transport, 'invoke'>,
+  taskId: string,
+): Promise<ReadonlySet<string>> {
+  await transport.invoke('task:stopAgent', taskId);
+  return liveRunTaskIdsOver(transport);
+}
+
+/** Resume, the exact inverse of {@link stopTaskOver} — `TaskCard`'s Resume button. */
+export async function resumeTaskOver(
+  transport: Pick<Transport, 'invoke'>,
+  taskId: string,
+): Promise<ReadonlySet<string>> {
+  await transport.invoke('task:resumeAgent', taskId);
+  return liveRunTaskIdsOver(transport);
+}
+
+async function liveRunTaskIdsOver(
+  transport: Pick<Transport, 'invoke'>,
+): Promise<ReadonlySet<string>> {
+  return new Set((await transport.invoke('scheduler:activeRuns')).map((r) => r.taskId));
 }
 
 export function useBoardExtras(): BoardExtras {
@@ -165,13 +207,12 @@ export function useBoardExtras(): BoardExtras {
   );
 
   const stopTask = useCallback(
-    async (taskId: string) => {
-      await transport.invoke('task:stopAgent', taskId);
-      // No event carries "this run stopped" to a browser — `task:changed` is reconstructed
-      // from the mirror, which the desktop only pushes on its own next sync. Re-reading the
-      // live set is what takes the spinner off the card now rather than in a few seconds.
-      setLiveRuns(new Set((await transport.invoke('scheduler:activeRuns')).map((r) => r.taskId)));
-    },
+    async (taskId: string) => setLiveRuns(await stopTaskOver(transport, taskId)),
+    [transport],
+  );
+
+  const resumeTask = useCallback(
+    async (taskId: string) => setLiveRuns(await resumeTaskOver(transport, taskId)),
     [transport],
   );
 
@@ -198,6 +239,7 @@ export function useBoardExtras(): BoardExtras {
     removeLink,
     setLinkGate,
     stopTask,
+    resumeTask,
     restoreTask,
     refresh,
   };
