@@ -18,6 +18,7 @@
  * growing a rule it alone knows is the signal to extract, not to build the harness.
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { hostname } from 'node:os';
 import { basename, join } from 'node:path';
 import {
   app,
@@ -92,7 +93,8 @@ import {
 import { iamSignInConfig } from './iamConfig';
 import { signIn as runIamSignIn } from './iamSignIn';
 import { refreshTokens } from '@shared/iamPkce';
-import type { CommandEnvelope } from '@protocol/wire';
+import type { ClientInfo, CommandEnvelope } from '@protocol/wire';
+import { PROTOCOL_VERSION } from '@protocol/wire';
 import { applyCloudCommand, type CloudCommandOutcome } from './cloudCommands';
 import { CommandQueue } from './commandQueue';
 import { relayRegistry } from './ipcRegistry';
@@ -3546,6 +3548,16 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     focus: focusTracker,
     getSettings: () => store.getSettings().cloud,
     getAccessToken: getCloudAccessToken,
+    // What a browser names this desktop by, once it has more than one to choose between —
+    // see `ClientInfo` on `@protocol/wire`. Built here because this is the only side of
+    // `cloudPoller.ts` that is allowed to touch Electron; read fresh per tick because
+    // nothing forces it to be constant and pinning it would only be a way to go stale.
+    getClientInfo: (): ClientInfo => ({
+      name: hostname(),
+      platform: process.platform,
+      appVersion: app.getVersion(),
+      protocolVersion: PROTOCOL_VERSION,
+    }),
     // Hand the batch to the serial drain and return. Applying is `cloudCommands.ts`'s job,
     // ordering and one-at-a-time is `commandQueue.ts`'s, and acking is free: each command
     // records itself in the ledger, which the next tick's `SyncRequest.ackedCommandIds` and

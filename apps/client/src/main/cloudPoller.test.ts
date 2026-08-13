@@ -80,6 +80,12 @@ function makePoller(
       ...settings,
     }),
     getAccessToken: async () => 'token',
+    getClientInfo: () => ({
+      name: 'WORKSTATION',
+      platform: 'win32',
+      appVersion: '0.84.5',
+      protocolVersion: PROTOCOL_VERSION,
+    }),
     onCommands: () => {},
     runTracked: (run) => run(),
     fetchImpl: fetchImpl as unknown as typeof fetch,
@@ -304,6 +310,40 @@ describe('CloudPoller', () => {
     await poller.tick();
     const body = JSON.parse(fetchImpl.mock.calls[0]![1].body);
     expect(body.protocolVersion).toBe(PROTOCOL_VERSION);
+  });
+
+  it('names the machine it is running on, so a browser can name it back', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, json: async () => response() });
+    const { poller } = makePoller({ fetchImpl: fetchImpl as unknown as typeof fetch });
+    await poller.tick();
+    const body = JSON.parse(fetchImpl.mock.calls[0]![1].body);
+    expect(body.info).toEqual({
+      name: 'WORKSTATION',
+      platform: 'win32',
+      appVersion: '0.84.5',
+      protocolVersion: PROTOCOL_VERSION,
+    });
+  });
+
+  it('re-reads the identity on every tick rather than pinning the first answer', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, json: async () => response() });
+    let appVersion = '0.84.5';
+    const { poller } = makePoller({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      getClientInfo: () => ({ appVersion }),
+    });
+    await poller.tick();
+    appVersion = '0.85.0';
+    await poller.tick();
+
+    const versions = fetchImpl.mock.calls.map(
+      (call) => (JSON.parse(call[1].body) as { info: { appVersion: string } }).info.appVersion,
+    );
+    expect(versions).toEqual(['0.84.5', '0.85.0']);
   });
 
   /** A store that remembers what each tick asked for and what it pruned. */

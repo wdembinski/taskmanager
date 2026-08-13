@@ -31,7 +31,10 @@ import { SignInScreen } from './auth/SignInScreen';
 import { useCloudAuth } from './auth/useCloudAuth';
 import { BoardScreen } from './board/BoardScreen';
 import { SettingsScreen } from './settings/SettingsScreen';
+import { ClientPicker } from './board/ClientPicker';
+import { SkewBanner } from './board/SkewBanner';
 import { StaleBanner } from './board/StaleBanner';
+import { versionSkew } from './board/targetClient';
 import { useCloudBoard } from './board/useCloudBoard';
 import { loadWebConfig } from './env';
 
@@ -148,6 +151,9 @@ function SignedInBoard({
   const [screen, setScreen] = useState<Screen>('mytasks');
 
   const online = board.state.clients.length > 0;
+  // Only ever about the Client this tab is actually driving. A second, older desktop on the
+  // account is nothing to warn about while nothing is being sent to it.
+  const skew = versionSkew(board.targetClient);
 
   return (
     <TransportProvider transport={board.transport}>
@@ -161,7 +167,16 @@ function SignedInBoard({
           // The shell's own banner strip, which is where the desktop's outage bars go too —
           // above the screen rather than inside it, so the board below is the board and
           // nothing shifts the columns down but a thing that had to be said.
-          !online ? <StaleBanner everSeenClient={board.targetClientId !== null} /> : null
+          //
+          // At most one of the two, and offline wins: a desktop that isn't polling is the
+          // bigger fact, and its version cannot matter until it comes back. (They are
+          // mutually exclusive anyway — skew is read off a LIVE Client — but stating the
+          // order here means the next banner added doesn't have to rediscover it.)
+          !online ? (
+            <StaleBanner everSeenClient={board.targetClientId !== null} />
+          ) : skew && board.targetClient ? (
+            <SkewBanner skew={skew} client={board.targetClient} />
+          ) : null
         }
         status={
           <StatusBar>
@@ -169,12 +184,22 @@ function SignedInBoard({
                 goes anywhere: a command is delivered to a desktop Client, so with none
                 polling there is nothing to apply it. */}
             <StatusDot ok={online} />
+            {/* Named, not counted. "2 clients" told you the size of a set you could neither
+                see nor choose from, while every edit made here goes to exactly ONE of them —
+                so the bar says which, and offers the others when there are any. */}
             <Caption1>
-              {online
-                ? `Desktop app connected · ${board.state.clients.length} client${board.state.clients.length === 1 ? '' : 's'}`
-                : board.targetClientId !== null
-                  ? 'Desktop app offline — edits are queued'
-                  : 'No desktop app has ever synced this account'}
+              {online && board.targetClient ? (
+                <ClientPicker
+                  clients={board.state.clients}
+                  selected={board.targetClient}
+                  onSelect={board.selectTargetClient}
+                  className={styles.linkButton}
+                />
+              ) : board.targetClientId !== null ? (
+                'Desktop app offline — edits are queued'
+              ) : (
+                'No desktop app has ever synced this account'
+              )}
             </Caption1>
             {/* A poll that comes back proves this tab's own connection, whether or not it
                 carried any deltas — which is a different claim from the dot's. */}

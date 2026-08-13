@@ -18,7 +18,13 @@
  * in a test the same way `GitLabClient` can.
  */
 import { CADENCE_MS, nextPollDelayMs } from '@protocol/cadence';
-import type { CommandEnvelope, CommandResult, SyncRequest, SyncResponse } from '@protocol/wire';
+import type {
+  ClientInfo,
+  CommandEnvelope,
+  CommandResult,
+  SyncRequest,
+  SyncResponse,
+} from '@protocol/wire';
 import { PROTOCOL_VERSION } from '@protocol/wire';
 import type { CloudSettings } from '@shared/settings';
 import { SYNC_BYTES_LIMIT, buildMirrorDeltaWithin } from './cloudDelta';
@@ -39,6 +45,16 @@ export interface CloudPollerDeps {
   /** A bearer access token for this tick, or null when not signed in — the tick then
    * fails like any other network error (counted, backed off, retried next time). */
   getAccessToken: () => Promise<string | null>;
+  /**
+   * Who this desktop is, for the browser to name it by — see `ClientInfo` on
+   * `@protocol/wire`.
+   *
+   * A dep rather than something this file reads for itself, because three of its four fields
+   * come from Electron (`app.getVersion()`) and Node (`os.hostname()`, `process.platform`),
+   * and this module's header commits to importing neither Electron nor anything `Store`-shaped
+   * so a mocked `fetch` can drive it whole. `ipc.ts` builds the value; this just sends it.
+   */
+  getClientInfo: () => ClientInfo;
   /**
    * Commands the server relayed for this client this tick. `CloudPoller` only hands them
    * off — applying them (`cloudCommands.ts`, drained by `main/commandQueue.ts` and wired in
@@ -204,6 +220,9 @@ export class CloudPoller {
       ackedCommandIds,
       results,
       protocolVersion: PROTOCOL_VERSION,
+      // Every tick, not once: there is no registration step to send it on, and it is four
+      // short strings against a request that already carries whole task rows.
+      info: this.deps.getClientInfo(),
     };
 
     const payload = JSON.stringify(request);

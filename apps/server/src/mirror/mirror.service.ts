@@ -1,8 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
-import { DataSource, IsNull, LessThan, Repository } from 'typeorm';
+import { DataSource, In, IsNull, LessThan, Repository } from 'typeorm';
 import type {
   BoardResponse,
+  ClientPresence,
   CommandRequest,
   CommandResult,
   ResultsResponse,
@@ -20,6 +21,7 @@ import { EventBus } from '../events/eventBus';
 import { PresenceService } from '../presence/presence.service';
 import { applyMirrorDelta } from './applyMirrorDelta';
 import { boardCursor } from './boardCursor';
+import { clientInfoColumns, describeClients } from './clientInfo';
 import { acknowledgeable, leaseCutoff } from './commandQueue';
 import { toCommandEnvelope } from './commandMapping';
 import {
@@ -60,6 +62,7 @@ export const BOARD_BYTES_LIMIT = 1_000_000;
 export class MirrorService {
   constructor(
     @InjectDataSource() private readonly dataSource: DataSource,
+    @InjectRepository(Client) private readonly clients: Repository<Client>,
     @InjectRepository(TaskMirror) private readonly taskMirrors: Repository<TaskMirror>,
     @InjectRepository(ProjectMirror) private readonly projectMirrors: Repository<ProjectMirror>,
     @InjectRepository(Tombstone) private readonly tombstones: Repository<Tombstone>,
@@ -84,11 +87,19 @@ export class MirrorService {
    * `eventListeners`, for the same reason: a desktop must not push a running agent's transcript
    * into the cloud for nobody, and asking "is anyone watching?" on its own route would be the
    * second request per tick this whole wire exists to avoid.
+   *
+   * `SyncRequest.info` rides that same registration write — see `clientInfo.ts` for why only
+   * the fields a request actually carried are written, and `client.entity.ts` for why identity
+   * is allowed on a row that deliberately refuses to store presence.
    */
   async sync(accountId: string, request: SyncRequest): Promise<SyncResponse> {
     const now = Date.now();
     const commands = await this.dataSource.transaction(async (manager) => {
-      await manager.upsert(Client, { id: request.clientId, accountId }, ['id']);
+      await manager.upsert(
+        Client,
+        { id: request.clientId, accountId, ...clientInfoColumns(request) },
+        ['id'],
+      );
 
       await applyMirrorDelta(manager, accountId, request.deltas);
 
@@ -222,6 +233,8 @@ export class MirrorService {
       ? this.presence.beat(accountId, clientId, { kind: 'web', focused, at: now })
       : this.presence.cadence(accountId, now);
 
+    const clients = await this.namedClients(accountId, now);
+
     return {
       cursor: rowVersionToCursor(cursor),
       cadence,
@@ -235,8 +248,33 @@ export class MirrorService {
           .filter((r) => r.entity === 'project')
           .map((r) => r.entityId),
       },
-      clients: this.presence.clients(accountId, now),
+      clients,
     };
+  }
+
+  /**
+   * The live desktop Clients, each carrying whatever it last told us it was.
+   *
+   * Presence decides WHO is in the list (in-memory, swept on read); the `clients` table only
+   * decides what each one is CALLED. So this is a lookup by primary key over the handful of
+   * ids presence just returned, not a scan — and it is skipped entirely when nobody is
+   * polling, which is the case a board read hits on every idle account.
+   */
+  private async namedClients(accountId: string, now: number): Promise<ClientPresence[]> {
+    const live = this.presence.clients(accountId, now);
+    if (live.length === 0) return live;
+
+    const rows = await this.clients.find({
+      where: { accountId, id: In(live.map((client) => client.id)) },
+      select: {
+        id: true,
+        name: true,
+        platform: true,
+        appVersion: true,
+        protocolVersion: true,
+      },
+    });
+    return describeClients(live, rows);
   }
 
   /**

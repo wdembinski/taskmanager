@@ -37,6 +37,49 @@ export interface MirrorDelta {
  */
 export const PROTOCOL_VERSION = 2;
 
+/**
+ * Who a desktop Client IS, so a browser can name the machine it is driving rather than count
+ * anonymous ids — `ClientPresence.id` is a UUID generated on first sync and says nothing to
+ * anybody. Sent on {@link SyncRequest}, persisted on the server's `clients` row, and handed
+ * back on {@link ClientPresence.info}.
+ *
+ * WHAT THIS DELIBERATELY DOES NOT CARRY
+ * -------------------------------------
+ * What that desktop is CONFIGURED with. `settings:get`, `jira:getConfigStatus`,
+ * `gitlab:getConfigStatus`, `agentProject:list` and `exec:listDistros` are all `'relay'` in
+ * `@tm/shared/ipcRelay`, so a browser already reads every one of them live, off the target
+ * Client, through the same `ipc-invoke` path every other channel uses. Mirroring any of it
+ * onto this type would be a second, staler copy of an answer the wire can already ask for —
+ * and it would go out of date the moment somebody changed a setting on the desktop.
+ *
+ * Identity is the exception because it is the one thing you cannot ask a Client for: you have
+ * to know which Client to ask FIRST, and picking one is the question this answers.
+ *
+ * Every field is optional. A build older than this one sends no `info` at all, and a browser
+ * that gets none falls back to the id — which is the pre-existing behaviour, not a failure —
+ * so this is an added field an older peer can safely skip, and by this file's own rule that
+ * is NOT a {@link PROTOCOL_VERSION} bump. A Client that sends `info` fills all four.
+ */
+export interface ClientInfo {
+  /** The machine's own name — `os.hostname()` on the desktop. */
+  name?: string;
+  /** `process.platform`: `win32`, `linux`, `darwin`. Not narrowed — it is a label to show. */
+  platform?: string;
+  /** The desktop app's version, `app.getVersion()`. */
+  appVersion?: string;
+  /**
+   * {@link PROTOCOL_VERSION} as that Client understands it — the PERSISTED twin of
+   * {@link SyncRequest.protocolVersion}, which the server reads per request and discards.
+   *
+   * This is the one the browser reads back, and it is what gives `ipcRegistry`'s "…is not
+   * wired up in this build of the desktop app. It is probably older than the browser tab
+   * talking to it — update it and try again." something to point at BEFORE it fires: a tab
+   * whose own `PROTOCOL_VERSION` is ahead of this number can say so up front, instead of
+   * letting the human discover it one refused channel at a time.
+   */
+  protocolVersion?: number;
+}
+
 /** Body of `POST /v1/sync` — a Client's heartbeat and its outgoing changes in one request. */
 export interface SyncRequest {
   clientId: string;
@@ -66,6 +109,12 @@ export interface SyncRequest {
   results?: CommandResult[];
   /** {@link PROTOCOL_VERSION} as this Client understands it. Absent from an older build. */
   protocolVersion?: number;
+  /**
+   * Who this Client is — see {@link ClientInfo}. Sent on every sync rather than once at
+   * registration: there is no registration step (the row is upserted lazily on first sync),
+   * and a desktop that gets renamed or updated has to be able to say so without one.
+   */
+  info?: ClientInfo;
 }
 
 /**
@@ -285,6 +334,15 @@ export interface ClientPresence {
   id: string;
   /** Epoch ms this Client's presence entry last beat — see `PRESENCE_TTL_MS`. */
   lastSeen: number;
+  /**
+   * What that Client last told us it was — see {@link ClientInfo}.
+   *
+   * Read from the server's `clients` row rather than from the presence map: presence is
+   * in-memory and rebuilt from beats, identity is durable and written once per sync, so
+   * folding the second into the first would put a name back into memory that a restart
+   * would lose. Absent for a Client whose build predates {@link SyncRequest.info}.
+   */
+  info?: ClientInfo;
 }
 
 export interface BoardResponse {

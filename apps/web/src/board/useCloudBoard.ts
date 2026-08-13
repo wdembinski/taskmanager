@@ -7,6 +7,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CadenceDirective } from '@tm/protocol/cadence';
+import type { ClientPresence } from '@tm/protocol/wire';
 import type { ManualStatus } from '@tm/shared/model';
 import type { CloudAuth } from '../auth/cloudAuth';
 import type { WebConfig } from '../env';
@@ -23,7 +24,7 @@ import {
   type CloudBoardState,
 } from './cloudBoardStore';
 import { HttpTransport } from './httpTransport';
-import { resolveTargetClientId } from './targetClient';
+import { resolveTargetClientId, setPreferredClientId } from './targetClient';
 
 /** How often the pending-overlay sweep runs — well under `PENDING_STATUS_TIMEOUT_MS`, so a
  *  timed-out change doesn't sit visibly stuck for most of its own timeout window. */
@@ -43,6 +44,17 @@ export interface CloudBoardApi {
   lastPolledAt: number | null;
   /** The desktop Client a command would be sent to, or null if none has ever synced. */
   targetClientId: string | null;
+  /**
+   * That same Client's presence entry, when it is one of the live ones — which is what
+   * carries its `ClientInfo`, and so everything the status bar needs to NAME it.
+   *
+   * Null while the target is only a remembered id (`targetClientId` outlives presence by
+   * design, so a queued edit still has an addressee): a Client that is not polling is not in
+   * the list, so there is nothing current to say about it.
+   */
+  targetClient: ClientPresence | null;
+  /** Point this browser at a specific desktop — the status bar's picker, persisted. */
+  selectTargetClient: (clientId: string) => void;
   /** The `Transport` this session's `<TransportProvider>` wraps the tree in — see
    *  `packages/ui/src/transport.tsx`. */
   transport: HttpTransport;
@@ -68,7 +80,17 @@ export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi
   const stateRef = useRef(state);
   stateRef.current = state;
 
+  // The picked target lives in `localStorage`, not in state: the transport reads it through
+  // a ref, outside React, on a call that may happen between renders. This counter exists only
+  // to make a pick re-render the tree that displays it — nothing reads its value.
+  const [, notePreferenceChanged] = useState(0);
   const targetClientId = resolveTargetClientId(window.localStorage, state.clients);
+  const targetClient = state.clients.find((client) => client.id === targetClientId) ?? null;
+
+  const selectTargetClient = useCallback((id: string) => {
+    setPreferredClientId(window.localStorage, id);
+    notePreferenceChanged((n) => n + 1);
+  }, []);
 
   const transport = useMemo(
     () =>
@@ -168,6 +190,8 @@ export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi
     cadence: state.cadence,
     lastPolledAt,
     targetClientId,
+    targetClient,
+    selectTargetClient,
     transport,
     setStatus,
     noteStatus,

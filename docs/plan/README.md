@@ -4757,6 +4757,47 @@ polled route out of `IamAuthGuard`, which was making two uncached IAM round trip
 — hence [`authCache.ts`](../../apps/server/src/iam/authCache.ts), a ten-second TTL that never
 caches a failure and stays bounded.
 
+### Which desktop, by name
+
+`BoardResponse.clients` answered "how many", and the status bar said so — _2 clients_ — about
+a set the human could neither see nor choose from, while every edit made in the browser goes
+to exactly **one** of them (`resolveTargetClientId`, most-recently-seen-wins). So a
+`ClientInfo` rides `SyncRequest` — `os.hostname()`, `process.platform`, `app.getVersion()`,
+`PROTOCOL_VERSION` — lands on four nullable `clients` columns via the lazy upsert that already
+happens on every sync, and comes back on `ClientPresence.info`.
+
+Identity is allowed on a table that [deliberately refuses to store
+presence](../../apps/server/src/entities/client.entity.ts) because of what it costs: a
+hostname changes when a machine is renamed and a version when the app updates — roughly never
+— so writing them on a row that is being written anyway is free, where `lastSeen` would have
+been a write on every poll at the 2.5 s tier. `GET /v1/board` joins the two by primary key
+over the handful of ids presence just returned, and skips the query entirely when nobody is
+polling.
+
+**A picker, only when there is a choice.** One Client renders as a label; a second turns it
+into a menu, and the pick is persisted beside `lastKnownDesktopClientId` in its own key — that
+one is a record of what was observed and is overwritten on every poll, so a preference stored
+there is not a preference. A preference for a Client that is **not** live is skipped and not
+cleared: the machine is off, not disowned, and it takes the target back the moment it polls
+again, while edits meanwhile go somewhere that can apply them.
+
+**And the skew warning.** Both ends have exchanged `PROTOCOL_VERSION` since it existed, and
+until now the only thing that ever compared them was `RelayRegistry.invoke` refusing an
+unknown channel with _"probably older than the browser tab talking to it — update it"_ — a
+correct sentence that arrives after a click, on one control, with no way to tell whether the
+next control will work either. `versionSkew` says it when the board loads instead. It is not a
+blocker: most channels work across a gap (that is the whole reason the bump rule is "only when
+an older peer would be WRONG to ignore it"), and it stays silent for a desktop that never said
+which version it speaks — an unknown version is not a mismatch, and warning about one would
+fire on every desktop alive the day this shipped.
+
+**What deliberately did not travel: configuration.** `settings:get`, `jira:getConfigStatus`,
+`gitlab:getConfigStatus`, `agentProject:list` and `exec:listDistros` are all `'relay'`, so the
+browser already reads every one of them live off the target Client. Mirroring any of it onto
+`ClientInfo` would be a second, staler copy of an answer the wire can already ask for. Identity
+is the exception because it is the one thing you cannot ask a Client for: you have to know
+which Client to ask first.
+
 ### Two blockers that had to clear first
 
 - **No tombstones.** `GET /v1/board` hardcoded `deletedTaskIds: []` while
