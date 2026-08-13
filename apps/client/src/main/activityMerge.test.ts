@@ -22,6 +22,12 @@ const event = (id: number, createdAt: number): TaskActivityEntry => ({
   createdAt,
 });
 
+const ticket = (
+  kind: 'jira-comment' | 'github-comment',
+  id: string,
+  createdAt: number,
+): TaskActivityEntry => ({ kind, id, author: 'Ada', body: id, createdAt, mine: false });
+
 describe('mergeActivity', () => {
   it('interleaves the two sources oldest-first by timestamp', () => {
     const merged = mergeActivity([comment(1, 300), status(1, 100), event(5, 200), comment(2, 400)]);
@@ -41,6 +47,22 @@ describe('mergeActivity', () => {
       ['comment', 3],
       ['event', 9],
     ]);
+  });
+
+  // The two trackers' comments share a weight: a card is linked to ONE tracker, so they never
+  // meet, and what matters is only where a ticket comment sits against everything else.
+  it('sorts either tracker’s comment after a chat and before an event', () => {
+    const merged = mergeActivity([
+      event(1, 50),
+      ticket('github-comment', 'g1', 50),
+      ticket('jira-comment', 'j1', 50),
+      comment(2, 50),
+    ]);
+    expect(merged[0].kind).toBe('comment');
+    expect(merged[3].kind).toBe('event');
+    // Between themselves the tie falls through to the id, which is all a shared weight
+    // promises — and all it needs to promise, since one card never holds both.
+    expect([merged[1].kind, merged[2].kind].sort()).toEqual(['github-comment', 'jira-comment']);
   });
 
   it('does not mutate its input', () => {

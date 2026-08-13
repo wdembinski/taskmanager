@@ -41,11 +41,13 @@ export class GitHubError extends Error {
   }
 }
 
-/** `GET /user` — who the token belongs to. */
+/** `GET /user` — who the token belongs to. Also one row of the assignable-user list. */
 export interface GitHubUser {
   id: number;
   login: string;
   name?: string | null;
+  /** Only on the list endpoints; the @mention picker shows it when there is one. */
+  avatar_url?: string | null;
 }
 
 /**
@@ -518,6 +520,46 @@ export class GitHubClient {
       `${repoPath(owner, repo)}/issues/${number}/comments?per_page=100`,
       maxPages,
     );
+  }
+
+  /**
+   * Post a comment on an issue — `POST /repos/{owner}/{repo}/issues/{number}/comments`.
+   *
+   * The board's only *write* to a thread, and the counterpart of `jiraClient.addComment`. The
+   * body is **Markdown**, which is the whole difference between the two: JIRA needs a document
+   * built for it (ADF, or wiki markup on an older instance), while here the string the human
+   * typed is already the wire format — mentions included, since `@login` is Markdown's own
+   * spelling of one. See `githubComment.ts` for the one substitution main still makes.
+   *
+   * Returns the created comment, so the caller can move the read markers to the time GitHub
+   * actually recorded rather than to the time we pressed send.
+   */
+  addIssueComment(
+    owner: string,
+    repo: string,
+    number: number,
+    body: string,
+  ): Promise<GitHubIssueComment> {
+    return this.write<GitHubIssueComment>(
+      `${repoPath(owner, repo)}/issues/${number}/comments`,
+      'POST',
+      { body },
+    );
+  }
+
+  /**
+   * The people who can be @mentioned on this repository's issues — the picker's source list.
+   *
+   * `/assignees` rather than `/collaborators`, deliberately: they return the same set of humans
+   * for any ordinary repository, but listing collaborators **requires push access**, so on the
+   * project you merely file issues against the picker would come back empty for a reason no
+   * error could explain. Read access is enough for this one.
+   *
+   * The whole list, filtered in main: GitHub offers no query parameter here, and a repository's
+   * collaborator list is small enough that two pages is the entire answer nearly always.
+   */
+  listAssignableUsers(owner: string, repo: string, maxPages = 2): Promise<GitHubUser[]> {
+    return this.paged<GitHubUser>(`${repoPath(owner, repo)}/assignees?per_page=100`, maxPages);
   }
 
   /**

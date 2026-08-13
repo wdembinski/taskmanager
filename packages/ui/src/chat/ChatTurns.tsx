@@ -2,7 +2,7 @@
  * The conversation itself (Phase 12, phase 5): the turns `turns.ts` folded, rendered.
  *
  * One bubble shape throughout — same radius, same padding, whoever wrote it. Side, fill
- * and the `JIRA` tag carry all the meaning; the shape carries none. The agent is the
+ * and the tracker tag carry all the meaning; the shape carries none. The agent is the
  * exception on purpose: its turn is full width and unbubbled, because markdown tables
  * and fenced code need the width, and it is marked with the `AgentsRegular` glyph the
  * board card and the agent panel already use, so one symbol means "an agent" everywhere.
@@ -20,7 +20,7 @@ import { AgentsRegular, ChevronDownRegular, ChevronRightRegular } from '@fluentu
 import { statusNoteColor, type StatusKeyword } from '@tm/shared/statusKeywords';
 import { Markdown } from './MarkdownView';
 import { RichComment } from './RichComment';
-import type { Turn } from './turns';
+import { TRACKER_NAME, type Turn } from './turns';
 
 const useStyles = makeStyles({
   root: { display: 'flex', flexDirection: 'column', gap: '12px', minWidth: 0 },
@@ -159,9 +159,9 @@ export function ChatTurns({ turns, onDeleteNote, statusKeywords }: ChatTurnsProp
                 }
                 title={turn.commentId !== null ? 'Double-click to delete this note' : undefined}
               >
-                {turn.variant === 'jira' && (
+                {turn.variant === 'ticket' && (
                   <Badge className={styles.tag} appearance="tint" color="warning" size="small">
-                    JIRA
+                    {TRACKER_NAME[turn.tracker ?? 'jira']}
                   </Badge>
                 )}
                 {turn.variant === 'status' && (
@@ -185,7 +185,9 @@ export function ChatTurns({ turns, onDeleteNote, statusKeywords }: ChatTurnsProp
         if (turn.kind === 'them') {
           return (
             <div key={turn.key} className={mergeClasses(styles.row, styles.theirs)}>
-              <Caption1 className={styles.meta}>{turn.author} · Jira</Caption1>
+              <Caption1 className={styles.meta}>
+                {turn.author} · {TRACKER_NAME[turn.tracker]}
+              </Caption1>
               <div className={mergeClasses(styles.bubble, styles.them)}>
                 {turn.rich?.length ? (
                   <RichComment blocks={turn.rich} attachments={turn.attachments} />

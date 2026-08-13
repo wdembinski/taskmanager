@@ -11,7 +11,7 @@
  *   your chat message  → right, blue
  *   your note          → right, blue (lighter — nobody but you ever reads it)
  *   your status update → right, blue (lighter), tagged with the keyword's colour
- *   your JIRA comment  → right, blue, tagged `JIRA` (it left the app)
+ *   your ticket comment→ right, blue, tagged with its tracker (it left the app)
  *   someone else's     → left, grey, with their name
  *   the agent          → left, FULL WIDTH, unbubbled (tables and code need the width)
  *
@@ -26,16 +26,33 @@ import type { AdfBlock, CommentAttachment } from '@tm/shared/adf';
 /** Tool names the CLI uses to spawn a sub-agent — worth naming in a folded row. */
 const SUBAGENT_TOOLS = new Set(['task', 'agent']);
 
+/**
+ * Which tracker a ticket comment left the app for — the word on its badge, and the reason
+ * `github-comment` is a kind of its own (`@tm/shared/model`). A bubble tagged JIRA over a
+ * comment that lives on GitHub sends the human to the wrong place to answer it.
+ */
+export type TurnTracker = 'jira' | 'github';
+
+/**
+ * What each tracker is called wherever the pane names one — the badge on a comment you
+ * posted, the line above one somebody else did, and the composer's own button. One table,
+ * because those three have to agree: a button that says GitHub must not produce a bubble
+ * that says JIRA.
+ */
+export const TRACKER_NAME: Record<TurnTracker, string> = { jira: 'JIRA', github: 'GitHub' };
+
 export type Turn =
-  /** Something the human wrote. `variant` picks the fill and the `JIRA` tag. */
+  /** Something the human wrote. `variant` picks the fill and the tracker tag. */
   | {
       key: string;
       kind: 'you';
-      variant: 'chat' | 'note' | 'jira' | 'status';
+      variant: 'chat' | 'note' | 'ticket' | 'status';
       body: string;
       createdAt: number;
       /** Only a note can be deleted — the other two were read by someone else. */
       commentId: number | null;
+      /** Which tracker it was posted to. Set for `ticket`, absent for the rest. */
+      tracker?: TurnTracker;
       /** A ticket comment's structure, when it had any (mentions, links, code). */
       rich?: AdfBlock[];
       attachments?: CommentAttachment[];
@@ -47,6 +64,7 @@ export type Turn =
       author: string;
       body: string;
       createdAt: number;
+      tracker: TurnTracker;
       rich?: AdfBlock[];
       attachments?: CommentAttachment[];
     }
@@ -176,7 +194,8 @@ export function foldTurns(entries: readonly TaskActivityEntry[]): Turn[] {
             ? {
                 key: `jira-${entry.id}`,
                 kind: 'you',
-                variant: 'jira',
+                variant: 'ticket',
+                tracker: 'jira',
                 body: entry.body,
                 createdAt: entry.createdAt,
                 commentId: null,
@@ -189,8 +208,34 @@ export function foldTurns(entries: readonly TaskActivityEntry[]): Turn[] {
                 author: entry.author,
                 body: entry.body,
                 createdAt: entry.createdAt,
+                tracker: 'jira',
                 rich: entry.rich,
                 attachments: entry.attachments,
+              },
+        );
+        continue;
+      // The same fold, and deliberately not merged with the case above: a GitHub comment
+      // carries no `rich` and no `attachments` (its body is Markdown, and its files are links
+      // inside it), so the two differ in what they can even offer the bubble.
+      case 'github-comment':
+        turns.push(
+          entry.mine
+            ? {
+                key: `gh-${entry.id}`,
+                kind: 'you',
+                variant: 'ticket',
+                tracker: 'github',
+                body: entry.body,
+                createdAt: entry.createdAt,
+                commentId: null,
+              }
+            : {
+                key: `gh-${entry.id}`,
+                kind: 'them',
+                author: entry.author,
+                body: entry.body,
+                createdAt: entry.createdAt,
+                tracker: 'github',
               },
         );
         continue;

@@ -223,6 +223,12 @@ export const RELAY_POLICY: {
   'github:clearCredentials': 'host-only',
   'github:testConnection': 'relay',
   'github:sync': 'relay',
+  // The same four as JIRA's, and relayed for the same reason: they are the shared pane's own
+  // calls, picked by the card's tracker rather than by which app is asking.
+  'github:fetchComments': 'relay',
+  'github:addComment': 'relay',
+  'github:searchUsers': 'relay',
+  'github:markRead': 'relay',
 
   // Merge requests are provider-neutral, so these four are `mr:` rather than one set per
   // forge — the reason `mergeRequest.ts` gives. They relay for the same reason the syncs do.

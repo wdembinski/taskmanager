@@ -106,7 +106,8 @@ import {
   type GitHubIssueComment,
   type GitHubSearchIssueItem,
 } from './github/githubClient';
-import { githubIdentityFrom, type GitHubIdentityCache } from './github/identity';
+import { githubAuthorIsMe, githubIdentityFrom, type GitHubIdentityCache } from './github/identity';
+import { buildCommentBody } from './github/githubComment';
 import {
   categoryForColumn,
   issuesToRecheck,
@@ -3080,25 +3081,41 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   });
 
   // Brief a delegated card's agent with the ticket's comment thread (oldest first).
-  // The scheduler has no JIRA client of its own, so it calls back in here on each fresh
+  // The scheduler has no tracker client of its own, so it calls back in here on each fresh
   // agent run; anything unlinked or unconfigured yields no comments rather than an error.
   //
-  // JIRA-only for now, and knowingly: a GitHub card's thread is fetched by its own sync and
-  // stored nowhere the scheduler can reach, so widening the test here would brief the agent
-  // with an empty list rather than with GitHub's comments. That is the one difference a
-  // delegated GitHub card carries today.
+  // Either tracker, fetched live rather than read from the board: a comment thread is not
+  // stored anywhere the scheduler could reach, and the point of the brief is that the agent
+  // starts a run knowing what has been said since the last one.
   scheduler.setTicketCommentProvider(async (task) => {
-    const { jira } = store.getSettings();
-    if (!jira.enabled || task.externalSource !== 'jira' || !task.externalKey) return [];
-    const comments = await buildJiraClient().getComments(task.externalKey);
-    return comments
-      .map((c) => ({
-        author: c.author?.displayName ?? 'JIRA',
-        body: commentBodyToText(c.body),
-        createdAt: Date.parse(c.created) || 0,
-      }))
-      .sort((a, b) => a.createdAt - b.createdAt)
-      .map(({ author, body }) => ({ author, body }));
+    const settings = store.getSettings();
+    if (task.externalKey && task.externalSource === 'jira' && settings.jira.enabled) {
+      const comments = await buildJiraClient().getComments(task.externalKey);
+      return comments
+        .map((c) => ({
+          author: c.author?.displayName ?? 'JIRA',
+          body: commentBodyToText(c.body),
+          createdAt: Date.parse(c.created) || 0,
+        }))
+        .sort((a, b) => a.createdAt - b.createdAt)
+        .map(({ author, body }) => ({ author, body }));
+    }
+    if (task.externalKey && task.externalSource === 'github' && settings.github.enabled) {
+      const ref = parseIssueKey(task.externalKey);
+      if (!ref) return [];
+      // Already oldest-first from the API, and sorted anyway for the same reason the JIRA
+      // branch sorts: the brief's own wording promises the order.
+      const comments = await buildGitHubClient().listIssueComments(ref.owner, ref.repo, ref.number);
+      return comments
+        .map((c) => ({
+          author: c.user?.login ?? 'GitHub',
+          body: (c.body ?? '').trim(),
+          createdAt: Date.parse(c.created_at) || 0,
+        }))
+        .sort((a, b) => a.createdAt - b.createdAt)
+        .map(({ author, body }) => ({ author, body }));
+    }
+    return [];
   });
 
   handle('jira:fetchComments', async (taskId) => {
@@ -3233,19 +3250,145 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     if (updated) send('task:changed', { task: updated, runId: null });
   });
 
-  handle('jira:markRead', async (taskId) => {
+  /**
+   * Clear a card's unread border. Any external tracker: this touches nothing but our own two
+   * markers, and "opening a card clears its unread border" is the same statement for a GitHub
+   * issue as for a JIRA ticket.
+   *
+   * One implementation behind two channel names. `jira:markRead` keeps its name because the
+   * renderer's contract already has it and what it does never was tracker-specific;
+   * `github:markRead` exists so a GitHub pane need not call the other tracker's channel. A
+   * second *implementation* is what would eventually let them disagree.
+   */
+  const markCommentsRead = async (taskId: string): Promise<Task> => {
     const task = store.getTask(taskId);
     if (!task) throw new Error('Task not found.');
-    // Any external tracker: this handler touches nothing but our own two markers, and
-    // "opening a card clears its unread border" is the same statement for a GitHub issue as
-    // for a JIRA ticket. The name stays JIRA's because the IPC channel is part of the
-    // renderer's contract; what it does never was tracker-specific.
     if (task.externalSource == null) return task;
     const updated = store.updateTask(taskId, {
       lastReadCommentAt: task.latestCommentAt ?? Date.now(),
     });
     if (updated) send('task:changed', { task: updated, runId: null });
     return updated ?? task;
+  };
+
+  handle('jira:markRead', (taskId) => markCommentsRead(taskId));
+  handle('github:markRead', (taskId) => markCommentsRead(taskId));
+
+  /**
+   * The issue behind a GitHub card, or null when this card is not one.
+   *
+   * Every handler below starts here, and all three want the same three things — the card is
+   * GitHub's, its key parses, and there is a client to ask with — so the check is written once.
+   */
+  const githubIssueForTask = (taskId: string): IssueRef | null => {
+    const task = store.getTask(taskId);
+    if (!task || task.externalSource !== 'github' || !task.externalKey) return null;
+    return parseIssueKey(task.externalKey);
+  };
+
+  handle('github:fetchComments', async (taskId) => {
+    const ref = githubIssueForTask(taskId);
+    if (!ref) return [];
+    const task = store.getTask(taskId);
+    const client = buildGitHubClient();
+    // Who the token belongs to, so your own comments sit on your side of the pane. Unknown
+    // identity → every comment reads as someone else's, deliberately (see `identity.ts`).
+    const identity = await githubIdentity(store.getSettings().github.baseUrl, client);
+    const comments = await client.listIssueComments(ref.owner, ref.repo, ref.number);
+    // No attachment pass, unlike the JIRA handler: GitHub has no per-issue file list to match
+    // a comment against — an uploaded file is a link inside the Markdown, already in `body`.
+    const entries = comments.map((c) => ({
+      kind: 'github-comment' as const,
+      id: String(c.id),
+      author: c.user?.login ?? 'GitHub',
+      body: (c.body ?? '').replace(/\s+$/, ''),
+      createdAt: Date.parse(c.created_at) || 0,
+      mine: githubAuthorIsMe(c.user, identity),
+    }));
+    // Keep the unread marker honest with freshly-fetched comments — OTHER people's only, for
+    // the reason `jira:fetchComments` gives: folding your own back in would undo `markRead`
+    // the instant the pane opened.
+    const latest = entries
+      .filter((e) => !e.mine)
+      .reduce((m, e) => Math.max(m, e.createdAt), task?.latestCommentAt ?? 0);
+    if (latest && latest !== task?.latestCommentAt) {
+      store.updateTask(taskId, { latestCommentAt: latest });
+    }
+    return entries;
+  });
+
+  /**
+   * A repository's mentionable people, keyed by site + `owner/repo`.
+   *
+   * The WHOLE list per repository rather than a list per query, because GitHub has no search
+   * parameter on this endpoint: one call answers every keystroke that follows, and the
+   * filtering is done here. Same fail-soft rule as the JIRA picker — an empty list still lets
+   * the user type a plain name, which posts as ordinary text.
+   */
+  const githubUserCache = new Map<string, JiraUserOption[]>();
+
+  handle('github:searchUsers', async (taskId, query) => {
+    const { github } = store.getSettings();
+    const needle = query.trim().toLowerCase();
+    if (!github.enabled || !needle) return [];
+    const ref = githubIssueForTask(taskId);
+    if (!ref) return [];
+    const cacheKey = `${github.baseUrl}|${ref.owner}/${ref.repo}`;
+    let people = githubUserCache.get(cacheKey);
+    if (!people) {
+      try {
+        const users = await buildGitHubClient().listAssignableUsers(ref.owner, ref.repo);
+        // The LOGIN in both fields, and that is the point: what the picker writes into the
+        // text is `@login`, which is already the mention GitHub resolves. A display name here
+        // would put a label in the comment that links to nobody.
+        people = users
+          .filter((u) => (u.login ?? '').trim().length > 0)
+          .map((u) => ({
+            id: u.login,
+            displayName: u.login,
+            email: null,
+            avatarUrl: u.avatar_url ?? null,
+          }));
+        githubUserCache.set(cacheKey, people);
+      } catch (e) {
+        logMain('GitHub collaborator list failed', e);
+        return [];
+      }
+    }
+    return people.filter((p) => p.displayName.toLowerCase().includes(needle)).slice(0, 20);
+  });
+
+  handle('github:addComment', async (taskId, draft) => {
+    const ref = githubIssueForTask(taskId);
+    if (!ref) throw new Error('This task is not linked to a GitHub issue.');
+    // Trailing whitespace only — the mention ranges are offsets into this exact string, so
+    // trimming the front would move every one of them. A mention left dangling past the cut is
+    // dropped by `buildCommentBody`.
+    const text = draft.text.replace(/\s+$/, '');
+    if (draft.attachmentPaths?.length) {
+      // Refused, not ignored. GitHub has no REST route for attaching a file to an issue (the
+      // browser uploads through a private endpoint), and posting the words while quietly
+      // dropping the file is the failure the human would find out about last.
+      throw new Error(
+        'GitHub has no API for attaching files to an issue — attach it in the browser, or ' +
+          'link to it from the comment.',
+      );
+    }
+    if (!text) throw new Error('A comment needs some text.');
+    const client = buildGitHubClient();
+    const created = await client.addIssueComment(
+      ref.owner,
+      ref.repo,
+      ref.number,
+      buildCommentBody(
+        text,
+        (draft.mentions ?? []).map((m) => ({ start: m.start, end: m.end, login: m.id })),
+      ),
+    );
+    // Bump both markers so our own comment never lights the unread border.
+    const at = Date.parse(created?.created_at ?? '') || Date.now();
+    const updated = store.updateTask(taskId, { latestCommentAt: at, lastReadCommentAt: at });
+    if (updated) send('task:changed', { task: updated, runId: null });
   });
 
   // Frameless-window controls for the renderer's custom title bar, plus a push so

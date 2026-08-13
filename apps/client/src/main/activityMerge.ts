@@ -10,18 +10,24 @@
 import type { TaskActivityEntry } from '@shared/model';
 
 // Deterministic tiebreak when two entries share a timestamp: status → status-note →
-// comment → chat → jira-comment → event, then by id. JIRA ids are strings, the rest
+// comment → chat → ticket comment → event, then by id. Tracker ids are strings, the rest
 // numbers, so we compare stringified with numeric collation (only reached within one
 // kind anyway). `chat` sits directly before `event` on purpose: a message to the agent
 // is written just before the send, so on a same-millisecond tie it must precede the
 // transcript events that message caused. `status-note` follows `status` because moving
 // a card and then saying why is the order those two are written in.
+//
+// `github-comment` shares `jira-comment`'s weight rather than taking one after it: a card is
+// linked to ONE tracker, so the two kinds never meet on the same timeline and any order
+// between them would be a rule about a case that cannot arise. What they must agree on is
+// where a ticket comment sits relative to everything else, and that is what sharing says.
 const KIND_ORDER: Record<TaskActivityEntry['kind'], number> = {
   status: 0,
   'status-note': 1,
   comment: 2,
   chat: 3,
   'jira-comment': 4,
+  'github-comment': 4,
   event: 5,
 };
 

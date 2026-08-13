@@ -711,6 +711,44 @@ export interface IpcApi {
    * every provider's, exactly as `gitlab:sync` does, since one board list holds them all.
    */
   'github:sync': () => Promise<MergeRequest[]>;
+  /**
+   * The linked GitHub issue's comments as timeline entries (empty for non-GitHub tasks) —
+   * `jira:fetchComments`, one tracker over, and the same read: the app fetches the thread
+   * itself and the pane merges it in. Also keeps the unread marker honest, as that one does.
+   */
+  'github:fetchComments': (taskId: string) => Promise<TaskActivityEntry[]>;
+  /**
+   * Post a comment to the linked GitHub issue; also marks the task's comments as read.
+   *
+   * The draft shape is `JiraCommentDraft` verbatim — the same reuse, for the same reason, as
+   * `JiraConfigStatus` above. Two of its three fields mean exactly what they do there:
+   * `mentions` are ranges into `text` (never an inline syntax), which main resolves to the
+   * `@login` GitHub itself understands, since a comment body here is plain **Markdown** and
+   * needs no ADF built for it.
+   *
+   * `attachmentPaths` is the one field with no GitHub behind it and is **ignored**: uploading
+   * a file to an issue is a browser-only route on github.com (there is no REST endpoint for
+   * it), so the composer offers no attach button on a GitHub card. Silently dropping a path
+   * would post the words without the file — see the handler, which refuses instead.
+   */
+  'github:addComment': (taskId: string, body: JiraCommentDraft) => Promise<void>;
+  /**
+   * People matching a partial name, for the @mention picker — scoped to the issue's own
+   * repository, which is the only place GitHub can answer the question from. `id` carries the
+   * **login**, because `@login` is what a Markdown body resolves; `displayName` carries it too,
+   * so what the composer types into the text is already what GitHub will link.
+   *
+   * Fails soft to `[]` like its JIRA counterpart: an empty picker still lets you type a name.
+   */
+  'github:searchUsers': (taskId: string, query: string) => Promise<JiraUserOption[]>;
+  /**
+   * Mark a GitHub task's comments as read (clears the unread border); returns the task.
+   *
+   * An alias of `jira:markRead`, which was never tracker-specific (it touches nothing but our
+   * own two markers). It exists so a GitHub card's pane does not have to invoke a channel
+   * named for the other tracker, and both names go through one implementation.
+   */
+  'github:markRead': (taskId: string) => Promise<Task>;
 
   // --- Merge requests, whichever forge they came from -----------------------
   /**

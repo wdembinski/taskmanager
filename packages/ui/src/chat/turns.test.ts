@@ -30,7 +30,7 @@ describe('foldTurns', () => {
     expect(turns.map((t) => (t.kind === 'you' ? t.variant : t.kind))).toEqual([
       'chat',
       'note',
-      'jira',
+      'ticket',
     ]);
     // Only a note can be deleted — the other two were read by someone else.
     expect(turns.map((t) => (t.kind === 'you' ? t.commentId : null))).toEqual([null, 2, null]);
@@ -85,7 +85,43 @@ describe('foldTurns', () => {
         attachments,
       },
     ]);
-    expect(mine).toMatchObject({ kind: 'you', variant: 'jira', rich, attachments });
+    expect(mine).toMatchObject({ kind: 'you', variant: 'ticket', rich, attachments });
+  });
+
+  // A ticket comment says which tracker it left the app for, on both sides of the pane: the
+  // badge and the author line are what tell the human where to go and answer it.
+  it('carries the tracker onto the turn, either side and either tracker', () => {
+    const [jiraMine, jiraTheirs] = foldTurns([
+      { kind: 'jira-comment', id: 'j6', author: 'Me', body: 'a', createdAt: 1, mine: true },
+      { kind: 'jira-comment', id: 'j7', author: 'Ada', body: 'b', createdAt: 2, mine: false },
+    ]);
+    expect(jiraMine).toMatchObject({ kind: 'you', variant: 'ticket', tracker: 'jira' });
+    expect(jiraTheirs).toMatchObject({ kind: 'them', tracker: 'jira' });
+
+    const [ghMine, ghTheirs] = foldTurns([
+      { kind: 'github-comment', id: '11', author: 'me', body: 'a', createdAt: 1, mine: true },
+      { kind: 'github-comment', id: '12', author: 'octocat', body: 'b', createdAt: 2, mine: false },
+    ]);
+    expect(ghMine).toMatchObject({
+      kind: 'you',
+      variant: 'ticket',
+      tracker: 'github',
+      body: 'a',
+      commentId: null,
+    });
+    expect(ghTheirs).toMatchObject({ kind: 'them', tracker: 'github', author: 'octocat' });
+  });
+
+  // Two trackers, two id spaces: JIRA's comment 12 and GitHub's comment 12 are different
+  // comments, and a shared key would make React render one of them twice.
+  it('keys a GitHub comment apart from a JIRA one with the same id', () => {
+    const [jira] = foldTurns([
+      { kind: 'jira-comment', id: '12', author: 'Ada', body: 'a', createdAt: 1, mine: false },
+    ]);
+    const [github] = foldTurns([
+      { kind: 'github-comment', id: '12', author: 'ada', body: 'a', createdAt: 1, mine: false },
+    ]);
+    expect(jira.key).not.toBe(github.key);
   });
 
   it('leaves rich undefined for a comment that carried no structure', () => {

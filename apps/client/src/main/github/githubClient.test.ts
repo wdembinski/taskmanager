@@ -252,6 +252,38 @@ describe('getIssue / listIssueComments', () => {
   });
 });
 
+describe('commenting on an issue', () => {
+  it('POSTs the body as JSON and returns what GitHub recorded', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ id: 99, created_at: '2026-08-13T09:00:00Z' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const created = await client().addIssueComment('acme', 'web', 12, 'looks good @octocat');
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe('https://api.github.com/repos/acme/web/issues/12/comments');
+    expect(init.method).toBe('POST');
+    // Markdown, verbatim: there is no document to build, so the body is the string as typed.
+    expect(JSON.parse(String(init.body))).toEqual({ body: 'looks good @octocat' });
+    expect(created.id).toBe(99);
+  });
+
+  it('asks /assignees for the mention picker — /collaborators needs push access', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse([{ id: 1, login: 'octocat', avatar_url: 'https://a/1' }]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const people = await client().listAssignableUsers('acme', 'web');
+
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      'https://api.github.com/repos/acme/web/assignees?per_page=100',
+    );
+    expect(people.map((p) => p.login)).toEqual(['octocat']);
+  });
+});
+
 describe('the writes a card’s move makes', () => {
   it('PATCHes the state and NOTHING else', async () => {
     // A PATCH that carried a title or a body would rewrite whatever it had merely read.

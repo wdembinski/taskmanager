@@ -32,6 +32,7 @@ import { PERMISSION_MODE_LABELS } from '@tm/shared/session';
 import { MODELS } from '@tm/shared/model';
 import type { Project, Task } from '@tm/shared/model';
 import type { JiraUserOption } from '@tm/shared/ipc';
+import { TRACKER_NAME, type TurnTracker } from './turns';
 import type { ChatAvailability } from '../taskChat';
 import { cardModelFromOption, projectDefaultLabel, PROJECT_DEFAULT } from '../modelChoice';
 import { MentionPicker } from './MentionPicker';
@@ -116,17 +117,26 @@ export interface ComposerProps {
   value: ComposerValue;
   onChange: (value: ComposerValue) => void;
   busy: boolean;
-  /** True when this card is linked to a ticket, so the third action makes sense. */
-  isJira: boolean;
-  /** Look people up for the @mention picker (JIRA cards only). */
+  /**
+   * The tracker this card is linked to, or null for a card that is nobody's ticket — which
+   * is what decides whether the fourth action (comment on the ticket) is offered at all, and
+   * what it is called. A boolean here used to mean JIRA; naming the tracker is what lets the
+   * button say where the words are about to go.
+   */
+  tracker: TurnTracker | null;
+  /** Look people up for the @mention picker (ticket cards only). */
   onSearchPeople?: (query: string) => Promise<JiraUserOption[]>;
-  /** Open the OS file picker; returns the chosen absolute paths. */
+  /**
+   * Open the OS file picker; returns the chosen absolute paths. Only passed for a tracker
+   * that can accept an upload — GitHub has no API for attaching a file to an issue.
+   */
   onPickAttachments?: () => Promise<string[]>;
   onSendChat: () => void;
   onAddNote: () => void;
   /** File the text as the card's progress note — the one line the board shows. */
   onPostStatus: () => void;
-  onAddJiraComment: () => void;
+  /** Post the text on the linked ticket, whichever tracker it belongs to. */
+  onAddTicketComment: () => void;
   /**
    * Persist a model / permission-mode change for the next run. `model: null` is a real
    * choice — "follow the agent project" — not an absence, which is why it is nullable and
@@ -143,13 +153,13 @@ export function Composer({
   value,
   onChange,
   busy,
-  isJira,
+  tracker,
   onSearchPeople,
   onPickAttachments,
   onSendChat,
   onAddNote,
   onPostStatus,
-  onAddJiraComment,
+  onAddTicketComment,
   onAgentOptions,
 }: ComposerProps): JSX.Element {
   const styles = useStyles();
@@ -165,14 +175,14 @@ export function Composer({
   const live = task.status === 'running' || task.status === 'waiting-input';
 
   // ---- @mentions -----------------------------------------------------------
-  // Only offered on a JIRA card: the other three destinations are plain text, and a
+  // Only offered on a ticket card: the other three destinations are plain text, and a
   // picker that inserts a name nothing will resolve is a picker that lies.
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [query, setQuery] = useState<MentionQuery | null>(null);
   const [people, setPeople] = useState<JiraUserOption[]>([]);
   const [activeIndex, setActiveIndex] = useState(0);
   const [searching, setSearching] = useState(false);
-  const mentionsOn = isJira && Boolean(onSearchPeople);
+  const mentionsOn = tracker !== null && Boolean(onSearchPeople);
   const pickerOpen = mentionsOn && query !== null;
 
   // Debounced lookup. The generation counter is what keeps a slow response for "al"
@@ -336,17 +346,17 @@ export function Composer({
           >
             Post status
           </Button>
-          {isJira && (
+          {tracker !== null && (
             <Button
               size="small"
-              title="Post this text on the linked JIRA issue"
+              title={`Post this text on the linked ${TRACKER_NAME[tracker]} issue`}
               disabled={busy || (empty && !value.attachments.length)}
-              onClick={onAddJiraComment}
+              onClick={onAddTicketComment}
             >
-              Add JIRA comment
+              Add {TRACKER_NAME[tracker]} comment
             </Button>
           )}
-          {isJira && onPickAttachments && (
+          {tracker !== null && onPickAttachments && (
             <Button
               size="small"
               appearance="subtle"

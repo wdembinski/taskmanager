@@ -1335,4 +1335,28 @@ export type TaskActivityEntry =
        * per-ISSUE in JIRA, not per-comment, so this is a best-effort association.
        */
       attachments?: CommentAttachment[];
+    }
+  /**
+   * A comment fetched live from the linked GitHub issue. Not persisted, exactly like
+   * `jira-comment`, and carrying the same fields it does — `id` is GitHub's comment id as a
+   * string, so one union member's id type covers both.
+   *
+   * **A kind of its own rather than a reused `jira-comment`**, and the timeline is the reason:
+   * an entry says where it came from, and a GitHub thread rendered under a JIRA badge would be
+   * a card telling the human to go and look somewhere the comment is not. It sorts at the same
+   * weight as `jira-comment` (`main/activityMerge.ts`) — the two never appear on one card, so
+   * there is no order between them to decide.
+   *
+   * No `rich`: a GitHub comment body is Markdown, not a structured document, so `body` IS the
+   * comment. No `attachments` either — GitHub has no per-issue attachment list to match against
+   * (files are inline links in the Markdown, already part of `body`).
+   */
+  | {
+      kind: 'github-comment';
+      id: string;
+      author: string;
+      body: string;
+      createdAt: number;
+      /** Whether *you* wrote it — decided in main against the cached `GET /user`. */
+      mine: boolean;
     };

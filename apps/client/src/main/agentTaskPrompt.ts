@@ -14,9 +14,10 @@
  *     (`attention.ts`; the same wording as the plan-task prompt).
  *   - the worktree rule — commit on your own branch; the orchestrator merges it back.
  *
- * The agent is explicitly told NOT to write to the tracker: the orchestrator never
- * transitions or comments on JIRA, and a helpful agent doing it by hand would break
- * that guarantee.
+ * The agent is explicitly told NOT to write to the tracker — JIRA or GitHub. Every
+ * transition and every comment this app makes, it makes ITSELF, programmatically, from
+ * the human's own action on the card; a helpful agent doing it by hand would break that
+ * guarantee, and would do it with credentials nobody audited it against.
  */
 import type { Task } from '@shared/model';
 import type { PromptAttachment } from '@shared/attachments';
@@ -284,7 +285,7 @@ export function buildAgentTaskPrompt(
     ...(key
       ? [
           `Do NOT update ${key} in the tracker — no status transitions, no comments. The`,
-          `orchestrator never writes to JIRA; report back here instead.`,
+          `orchestrator writes to JIRA and GitHub itself; report back here instead.`,
           '',
         ]
       : []),
@@ -506,7 +507,7 @@ export function buildAgentSubtaskPrompt(
     ...(key
       ? [
           `Do NOT update ${key} in the tracker — no status transitions, no comments. The`,
-          `orchestrator never writes to JIRA; report back here instead.`,
+          `orchestrator writes to JIRA and GitHub itself; report back here instead.`,
           '',
         ]
       : []),

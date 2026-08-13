@@ -300,21 +300,28 @@ export function TaskDetail({
   const transport = useTransport();
   const styles = useStyles();
   const [activity, setActivity] = useState<TaskActivityEntry[]>([]);
-  const [jiraComments, setJiraComments] = useState<TaskActivityEntry[]>([]);
+  /** The linked ticket's own thread — JIRA's or GitHub's — fetched live, never stored. */
+  const [ticketComments, setTicketComments] = useState<TaskActivityEntry[]>([]);
   const [liveEvents, setLiveEvents] = useState<TaskActivityEntry[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const taskId = task?.id ?? null;
   /**
-   * JIRA in particular, and every use below is a JIRA-only *call*: `jira:fetchComments`,
-   * the @mention picker, the attachment upload, the composer's "Comment on the ticket"
-   * action. None of them has a GitHub route yet, so a GitHub card gets the pane without the
-   * ticket thread rather than a thread that never loads.
+   * WHICH tracker this card belongs to, or null for a card that is nobody's ticket.
+   *
+   * Every ticket call below is a pair now — `jira:fetchComments`/`github:fetchComments`, the
+   * two @mention pickers, the two comment posts — so the thing the pane needs is not "is this
+   * JIRA" but "whose issue is it", which is also what the composer's button has to say.
    */
-  const isJira = task?.externalSource === 'jira';
-  /** Any tracker — what "opening this card clears its unread border" is true of. */
-  const isExternal = task?.externalSource != null;
+  const tracker =
+    task?.externalSource === 'github' ? 'github' : task?.externalSource === 'jira' ? 'jira' : null;
+  /**
+   * JIRA in particular: files. Uploading one is a JIRA-only route — GitHub has no REST
+   * endpoint for attaching a file to an issue at all — so the attach button belongs to one
+   * tracker rather than to any ticket.
+   */
+  const isJira = tracker === 'jira';
 
   /**
    * The composer's whole value: what was typed, who is named in it, and what is attached.
@@ -335,7 +342,7 @@ export function TaskDetail({
   const loadActivity = useCallback(async () => {
     if (!taskId) {
       setActivity([]);
-      setJiraComments([]);
+      setTicketComments([]);
       setLiveEvents([]);
       return;
     }
@@ -347,23 +354,26 @@ export function TaskDetail({
     // previously selected card's timeline on screen under the new card's title. An empty
     // timeline is the honest answer for a card whose history could not be fetched.
     setActivity(await transport.invoke('task:activity', taskId).catch(() => []));
-    if (isJira) {
-      // JIRA comments are fetched live and merged in; failures shouldn't blank the pane.
-      setJiraComments(await transport.invoke('jira:fetchComments', taskId).catch(() => []));
+    if (tracker) {
+      // The ticket's comments are fetched live and merged in; failures shouldn't blank the
+      // pane. Which channel is the only tracker-shaped thing here — both answer with the same
+      // `TaskActivityEntry[]`, in the kind that names where each comment came from.
+      const channel = tracker === 'github' ? 'github:fetchComments' : 'jira:fetchComments';
+      setTicketComments(await transport.invoke(channel, taskId).catch(() => []));
     } else {
-      setJiraComments([]);
+      setTicketComments([]);
     }
     // Opening the task clears its unread border — for ANY tracker, and outside the branch
     // above on purpose. The border is raised by whichever sync fetched the thread, so a card
-    // whose comments this pane cannot yet show would otherwise stay orange no matter how
+    // whose comments this pane could not show would otherwise stay orange no matter how
     // many times you opened it.
-    if (isExternal) {
+    if (tracker) {
       await transport
-        .invoke('jira:markRead', taskId)
+        .invoke(tracker === 'github' ? 'github:markRead' : 'jira:markRead', taskId)
         .then((updated) => onStatusChanged?.(updated))
         .catch(() => undefined);
     }
-  }, [taskId, isJira, isExternal, onStatusChanged]);
+  }, [taskId, tracker, onStatusChanged]);
 
   useEffect(() => {
     setError(null);
@@ -462,8 +472,8 @@ export function TaskDetail({
   // Nothing is filtered here — `foldTurns` decides what the conversation shows and what
   // collapses into a single "worked with N tools" line.
   const timeline = useMemo(
-    () => [...activity, ...jiraComments, ...liveEvents].sort((a, b) => a.createdAt - b.createdAt),
-    [activity, jiraComments, liveEvents],
+    () => [...activity, ...ticketComments, ...liveEvents].sort((a, b) => a.createdAt - b.createdAt),
+    [activity, ticketComments, liveEvents],
   );
   const turns = useMemo(() => foldTurns(timeline), [timeline]);
 
@@ -595,24 +605,38 @@ export function TaskDetail({
     }
   }
 
-  async function addJiraComment(): Promise<void> {
+  /**
+   * Post the composed text on the linked ticket — JIRA's issue or GitHub's, decided by the
+   * card and not by the button, which is why there is one function rather than two.
+   *
+   * The draft that goes over the wire is identical for both: the same text, the same mention
+   * ranges. What each tracker then does with it (build an ADF document, or spell the mentions
+   * as `@login` in Markdown) belongs to main, where the tracker's client already lives.
+   */
+  async function addTicketComment(): Promise<void> {
     // A comment that is only files is still a comment worth posting.
-    if (!task || (!comment.text.trim() && !comment.attachments.length)) return;
+    if (!task || !tracker || (!comment.text.trim() && !comment.attachments.length)) return;
     setBusy(true);
     setError(null);
     try {
-      await transport.invoke('jira:addComment', task.id, {
-        // Untrimmed: the mention ranges are offsets into THIS string, so trimming here
-        // would silently move every one of them. Main trims the tail only.
-        text: comment.text,
-        mentions: comment.mentions.map((m) => ({
-          start: m.start,
-          end: m.end,
-          id: m.accountId,
-          displayName: m.displayName,
-        })),
-        attachmentPaths: comment.attachments,
-      });
+      await transport.invoke(
+        tracker === 'github' ? 'github:addComment' : 'jira:addComment',
+        task.id,
+        {
+          // Untrimmed: the mention ranges are offsets into THIS string, so trimming here
+          // would silently move every one of them. Main trims the tail only.
+          text: comment.text,
+          mentions: comment.mentions.map((m) => ({
+            start: m.start,
+            end: m.end,
+            id: m.accountId,
+            displayName: m.displayName,
+          })),
+          // Only ever non-empty on a JIRA card — the attach button is offered nowhere else, and
+          // `github:addComment` refuses a path rather than posting the words without the file.
+          attachmentPaths: comment.attachments,
+        },
+      );
       composer.reset();
       await loadActivity();
     } catch (e) {
@@ -928,13 +952,22 @@ export function TaskDetail({
           value={comment}
           onChange={composer.set}
           busy={busy}
-          isJira={isJira}
-          onSearchPeople={(q) => transport.invoke('jira:searchUsers', task.id, q)}
-          onPickAttachments={() => transport.invoke('jira:pickAttachments')}
+          tracker={tracker}
+          onSearchPeople={(q) =>
+            transport.invoke(
+              tracker === 'github' ? 'github:searchUsers' : 'jira:searchUsers',
+              task.id,
+              q,
+            )
+          }
+          // JIRA only, and the prop's absence is what hides the attach button: GitHub has no
+          // API for putting a file on an issue, so offering the picker would collect paths
+          // nothing could ever upload.
+          onPickAttachments={isJira ? () => transport.invoke('jira:pickAttachments') : undefined}
           onSendChat={() => void sendChat()}
           onAddNote={() => void addComment()}
           onPostStatus={() => void postStatus()}
-          onAddJiraComment={() => void addJiraComment()}
+          onAddTicketComment={() => void addTicketComment()}
           onAgentOptions={(options) => void setAgentOptions(options)}
         />
       </div>
