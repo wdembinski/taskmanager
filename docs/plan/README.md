@@ -4580,12 +4580,27 @@ Twenty channels are host-only, in four groups:
   table, which is an audit trail.
 - **Live sessions** — `session:start|stop|answer`. A run id is a handle into the desktop's
   `SessionManager` and means nothing in a browser, which has no way to have obtained a valid
-  one. The card-level equivalents (`task:run`, `task:stopAgent`, `task:chat`,
-  `attention:answer`) DO relay: they take a task id, which is mirrored, and they are what the
-  UI actually presses.
+  one. The card-level equivalents (`task:run`, `task:stopAgent`, `task:resumeAgent`,
+  `task:chat`, `attention:answer`) DO relay: they take a task id, which is mirrored, and they
+  are what the UI actually presses.
 
 Both sides read that one file: apps/web refuses locally so the click fails immediately, and
 the engine refuses again if a command arrives anyway. One refusal sentence, written once.
+
+**`task:resumeAgent` is the twentieth channel's near miss, and the rule decided it.** It
+landed on `development` while this branch was in flight, and `development`'s own web
+transport — the refuse-everything tier this branch replaced — had refused it with the comment
+*"a browser has no engine to resume into"*. That reasoning belonged to a transport with no
+relay under it. Here the channel takes a **task id**, not a run id, and is the exact
+card-level twin of `task:run` and `task:stopAgent`, both already relayed: the browser is not
+resuming anything itself, it is asking the desktop to. So it relays, `HOST_ONLY_REASONS` is
+untouched, and the host-only count stays at twenty across the same four groups.
+
+That classification is not a matter of taste in this file. `RELAY_POLICY`'s value type is
+computed from `HOST_ONLY_REASONS` —
+`{[K in keyof IpcApi]: K extends HostOnlyChannel ? 'host-only' : 'relay'}` — so the two lists
+cannot disagree: writing `'host-only'` here without a reason above is a **type** error, and so
+is the reverse.
 
 ### Mirror or RPC: the rule, and the two entities it selected
 
@@ -4759,6 +4774,20 @@ planning rounds; the board gained `ChainOverlay` and `ChainLinkPopover` (draw, r
 delete arrows); the toolbar gained Current sprint, Chain focus and Sync; Removed cards can
 restore.
 
+**Resume, in both places the desktop offers it.** The detail pane's came free:
+`TaskAgentPanel` calls `transport.invoke('task:resumeAgent', taskId)` itself, so relaying the
+channel is the whole of it — nothing to wire. The board **card's** needed a prop, because
+`KanbanColumn`'s `onResumeTask?` is optional and apps/web was not passing it. `useBoardExtras`
+gained `resumeTask` written as the mirror of the `stopTask` immediately above it: invoke, then
+re-read `scheduler:activeRuns` into `setLiveRuns`. That second call is not belt-and-braces —
+no event carries *"this run started"* to a browser, so re-reading the live set is what puts
+the spinner on the card now rather than whenever the next poll happens to come round.
+
+Nothing was needed to decide *when* to offer it. `canResumeWork`
+([`packages/shared/src/board.ts`](../../packages/shared/src/board.ts)) reads `task.stoppedAt`,
+`task.status` and the card's own steps, and `TaskMirror.data` stores the whole `Task` as JSON
+— so `stoppedAt` already crossed the mirror, with no schema change and no migration.
+
 The board's own preferences moved off this app's `localStorage` onto `settings:get`/
 `settings:save`, so the switches ARE the desktop's rather than a second set of the same three
 that silently disagreed. That made `settings:save` the one relayed channel whose arguments are
@@ -4799,10 +4828,11 @@ relayable, and making the drain fire-and-forget each turn it red.
 
 ### Verification — the gates, forced, and a control that can still fail
 
-Step 3 of the ticket, run from this worktree against `3a19013`, the branch tip after steps 1
-and 2. `--force` on the two turbo-routed gates, because Phase 25 §8.1 caught this repo
-accepting a 47 ms `FULL TURBO` replay as a verification: a cached gate is not a gate, and
-`0 cached` below is the part of each line that matters.
+Re-run from this worktree against `49eb017` — the branch tip **after the rebase onto
+`development` (`767bda5`)**, so these numbers describe the tree that will actually be merged,
+not the pre-rebase one. `--force` on the two turbo-routed gates, because Phase 25 §8.1 caught
+this repo accepting a 47 ms `FULL TURBO` replay as a verification: a cached gate is not a
+gate, and `0 cached` below is the part of each line that matters.
 
 **Not on `pnpm test`, though**, and the reason is worth writing down once: the root script is
 `turbo run build --filter=./packages/* && vitest run`, so the flag falls through to `vitest`,
@@ -4811,60 +4841,111 @@ executes every time.
 
 | # | Command | Exit | Result |
 |---|---------|------|--------|
-| 1 | `pnpm typecheck --force` | **0** | 9 successful, 9 total — **0 cached**, 37.774s |
-| 2 | `pnpm test` | **0** | 143 files passed, 1 skipped (144); 2369 passed, 11 skipped (2380), 39.43s |
-| 3 | `pnpm build --force` | **0** | 6 successful, 6 total — **0 cached**, 33.107s, no turbo warning |
+| 0 | `pnpm format:check` | **0** | All matched files use Prettier code style |
+| 1 | `pnpm typecheck --force` | **0** | 9 successful, 9 total — **0 cached**, 29.32s |
+| 2 | `pnpm test` | **0** | 148 files passed, 1 skipped (149); 2449 passed, 11 skipped (2460), 66.07s |
+| 3 | `pnpm build --force` | **0** | 6 successful, 6 total — **0 cached**, 31.152s, no turbo warning |
 
-`pnpm format:check` exits 0 (CI runs it ahead of the three, so a red one blocks the merge that
-would otherwise cut the release), and `check:abi` reports `better_sqlite3.node` and Electron
-both at ABI 130.
+`format:check` is numbered 0 rather than listed as an aside because CI runs it **ahead** of
+the other three: a red one blocks the merge that would otherwise cut the release, so it is the
+first gate in practice whatever order a human runs it in. `check:abi` reports
+`better_sqlite3.node` and Electron both at ABI 130.
 
 The 11 skips are the two standing opt-ins and nothing new: 9 in `wslHost.test.ts` behind
 `ORCH_WSL_TEST=1`, 2 in `wslSession.e2e.test.ts` behind `ORCH_E2E=1`.
 
-**The two harnesses.** `verify-remote-ipc.mjs` passes all 16 checks against a real `Store` on a
-scratch SQLite file, and `verify-global-css.mjs` reports 12 selectors in, 12 rules out, nothing
-dropped by Griffel.
+**The two harnesses.** `apps/client/scripts/verify-remote-ipc.mjs` passes all 16 checks against
+a real `Store` on a scratch SQLite file, and `packages/ui/scripts/verify-global-css.mjs`
+reports 12 selectors in, 12 rules out, nothing dropped by Griffel and no declaration missing.
+(They live in two different packages' `scripts/` directories, which is easy to get wrong from
+the repo root.)
 
 **A green harness proves nothing on its own**, so the control was re-run rather than taken on
-trust from the section above. One line of `ipcRelay.ts` — `'attachment:pick': 'host-only'` to
-`'relay'` — turns **3 of the 16 red**, and the two `ipcRelay.test.ts` cases with it. Restored
-by `git checkout --`, green again, tree clean. Green before, red under one changed character,
+trust from the section above — and re-aimed at the newest assertion, `task:resumeAgent`, since
+that is the one this round added. It took **two** mutations to learn what actually guards it.
+
+*Mutation 1 — flip `RELAY_POLICY`'s `'task:resumeAgent'` to `'host-only'` and nothing else.*
+This never reaches a test. `@tm/shared`'s dts build dies first with
+`src/ipcRelay.ts(173,3): error TS2322: Type '"host-only"' is not assignable to type '"relay"'`,
+because the mapped value type computes each channel's policy from `HOST_ONLY_REASONS`, and
+that channel has no reason. A stricter red than intended, and a real one — but it proves the
+*consistency* gate, not the classification the tests are there to hold.
+
+*Mutation 2 — the mistake's realistic shape:* classify it host-only in **both** lists
+(`'task:resumeAgent': 'live-session'` added to `HOST_ONLY_REASONS`). That typechecks, so the
+tests become the only thing standing in the way — and three of them fall:
+
+| Suite | Case | Under mutation 2 |
+|---|---|---|
+| `packages/shared/src/ipcRelay.test.ts` | `task:resumeAgent relays` | **FAIL** — expected false to be true |
+| `packages/shared/src/ipcRelay.test.ts` | the host-only list `is exactly that list` | **FAIL** — 20 channels ≠ 19 |
+| `apps/web/src/board/httpTransport.test.ts` | `relays task:resumeAgent, because the resume happens on the desktop` | **FAIL** — rejected `"task:resumeAgent" only works in t…` instead of resolving |
+| `test/ipc-relay-coverage.test.ts` | (whole file) | green throughout |
+
+Restored by `git checkout --`: 81/81 green, tree clean. Green before, red under the mutation,
 green after.
 
-Worth noting which guard did *not* catch it: `test/ipc-relay-coverage.test.ts` stayed green
-throughout. It checks that the policy record covers the channels, not how any one of them is
-classified — so the exhaustiveness gate and the classification gate are genuinely two
-different checks, and only the second one has an opinion about `attachment:pick`.
+Two things that red run taught, both worth keeping:
 
-**Phase 25's "the six standalone runs sum to the aggregate" invariant needs a seventh term
-now.** Run per package, the six sum to 141 files / 2367 tests against the aggregate's 144 /
-2380 — three files short, which looks exactly like suites falling between the two paths:
+- **`verify-remote-ipc.mjs` stayed green under both mutations.** It drives the circuit with
+  its own fixture channels, so it has no opinion whatsoever about how `task:resumeAgent` is
+  classified. It remains the only thing that exercises the whole relay end to end, and it is
+  simply not the guard for this — the unit suites are. A harness passing is not evidence about
+  a channel it never invokes.
+- **`test/ipc-relay-coverage.test.ts` stayed green too**, exactly as it did for
+  `attachment:pick` above. It checks that the policy record *covers* the channels, not how any
+  one of them is classified. The exhaustiveness gate and the classification gate are genuinely
+  two different checks, and only `ipcRelay.test.ts`'s `MUST_RELAY` list has an opinion here —
+  which is why the new channel was added to that list and not merely to the record.
+
+**Phase 25's "the six standalone runs sum to the aggregate" invariant needs an EIGHTH term
+now** — the seventh added above was not enough, and re-checking it here is what found that.
+Six packages plus the root `test/` directory sum to 148 files / 2435 tests against the
+aggregate's 149 / 2460: still one file and 25 tests short.
 
 | Command | Files | Tests |
 |---------|-------|-------|
-| `pnpm --filter claude-orchestrator test` | 67 passed, 1 skipped (68) | 1290 passed, 11 skipped (1301) |
+| `pnpm --filter claude-orchestrator test` | 69 passed, 1 skipped (70) | 1322 passed, 11 skipped (1333) |
 | `pnpm --filter @tm/server test` | 18 | 101 |
-| `pnpm --filter @tm/web test` | 9 | 110 |
-| `pnpm --filter @tm/shared test` | 26 | 575 |
+| `pnpm --filter @tm/web test` | 10 | 114 |
+| `pnpm --filter @tm/shared test` | 26 | 583 |
 | `pnpm --filter @tm/protocol test` | 1 | 12 |
 | `pnpm --filter @tm/ui test` | 19 | 268 |
-| `pnpm exec vitest run test/` | **3** | **13** |
-| | **144 = the aggregate** | **2380 = the aggregate** |
+| `pnpm exec vitest run test/` | 4 | 24 |
+| `pnpm exec vitest run scripts/next-version.test.mjs` | **1** | **25** |
+| | **149 = the aggregate** | **2460 = the aggregate** |
 
-The missing three are the root `test/` directory — `repo-invariants`, `shell-parity` and this
-phase's `ipc-relay-coverage` — which belong to no package and so are reached by the root
-`vitest run` alone. They are covered, but by exactly one path, and the next person to check
-Phase 25 §9.3's sum will find 141 ≠ 144 and go looking for a regression that is not there.
+Two paths belong to no package, and each is reached by the root `vitest run` alone:
+
+- the root `test/` directory — `repo-invariants`, `shell-parity`, `workflow-invariants` and
+  this phase's `ipc-relay-coverage` (it was three files when the seventh term was added; it is
+  four now); and
+- **`scripts/next-version.test.mjs`**, which is not under `test/` at all and is the term that
+  was missing. It is 25 tests covering `next-version.mjs` — the script that decides what
+  version the pipeline cuts, including the RELEASE.md §2 fallback the paragraph below turns
+  on. Worth knowing it is covered by exactly one command.
+
+The general shape is the trap, not either particular file: `vitest list --filesOnly` at the
+root is the only authority on what the aggregate actually collects, and anyone re-checking
+this sum should derive the terms from it rather than assuming the workspace layout accounts
+for every suite.
 
 **The version.** This branch carries no bump: it was cut when `apps/client/package.json` said
-`0.82.6`, and `development` has since released `0.83.1`. Bumping it here would be futile rather
-than merely late — the version line is the one conflict the integration's Rung 1.5 resolves by
-**taking base's side**, so any number written here is dropped on the way in. After the merge the
-manifest reads `0.83.1`, which is not ahead of every tag, so `scripts/next-version.mjs` takes
-RELEASE.md §2's fallback and cuts **0.83.2** with `needsCommit=true`. That is correct and
-collision-free, but it is a PATCH for a range that is mostly `feat:` — the one thing a human
-may want to overrule, by bumping on `development` before the pipeline runs.
+`0.82.6`, and `development` has kept releasing underneath it — `0.83.1` when this paragraph
+was first written, **`0.84.2`** now (tag `v0.84.2`, tip `767bda5`, which is what the branch was
+rebased onto). That drift is itself the argument. Bumping here would be futile rather than
+merely late: the version line is the one conflict the integration's Rung 1.5 resolves by
+**taking base's side**, so any number written on this branch is dropped on the way in, and a
+standalone `chore(release)` commit is the shape that rebases away with no conflict at all and
+vanishes silently.
+
+The reasoning is unchanged and only its inputs moved. After the merge the manifest reads
+`0.84.2`, which is not ahead of every tag, so `scripts/next-version.mjs` takes RELEASE.md §2's
+fallback and cuts **`0.84.3`** with `needsCommit=true`. Correct and collision-free — but still
+a PATCH over a range that is mostly `feat:`, and still the one thing a human may want to
+overrule, by bumping on `development` before the pipeline runs. Anyone reading this after
+another release should re-derive the number rather than trust it: the rule is stable, the
+operand is whatever `development` last shipped.
 
 ### What this leaves owed
 
@@ -4872,6 +4953,12 @@ may want to overrule, by bumping on `development` before the pipeline runs.
   repo can do that: there is no DOM harness in the workspace (no jsdom, no
   `@testing-library`), so nothing here has seen a rendered pixel. `test/shell-parity.test.ts`
   says the same thing about the same board and is worth re-reading before trusting either.
+  **Resume is the newest and least-observed of them**: what is proven is that the channel
+  relays, that `useBoardExtras.resumeTask` invokes it and re-reads `scheduler:activeRuns`, and
+  that `BoardScreen` passes `onResumeTask` — *not* that the button appears on the right card
+  at the right moment, since whether `canResumeWork` says yes depends on `stoppedAt`, status
+  and steps arriving intact through the mirror. Pressing Resume in a browser tab against a
+  live desktop, and watching the spinner appear on that card, stays a human act.
 - **`task_activity` and `attention_items` are not mirrored yet.** Both are readable over the
   relay, so nothing is missing while a desktop is polling; what is owed is reading them while
   one is not. Each costs a SQLite trigger set, an outbox discriminator, a mirror entity and
