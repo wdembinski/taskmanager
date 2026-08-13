@@ -2,8 +2,9 @@
  * The web board: `GET /v1/board`'s tasks/projects, drawn as the desktop's My Tasks screen —
  * the same frame (`useBoardLayoutStyles`), the same columns in the same order, the same
  * cards (`KanbanColumn`/`TaskCard`), the same ordering rule (`sortCards`), the same arrows
- * over the top (`ChainOverlay`/`ChainLinkPopover`), and the same 40% detail pane down the
- * right.
+ * over the top (`ChainOverlay`/`ChainLinkPopover`), the same 40% detail pane down the right,
+ * and — when the toolbar's button asks for it — the same commit graph beside that
+ * (`GitGraphPane`, reading the desktop's repository over the relay).
  *
  * IT IS NOT READ-ONLY ANY MORE
  * ----------------------------
@@ -48,6 +49,7 @@ import { arrowRoute } from '@tm/ui/board/chainArrows';
 import { linkDropStates, type LinkDragState } from '@tm/ui/board/chainDrag';
 import { foldedCardSet, toggleFoldedCard } from '@tm/ui/board/foldedSteps';
 import { AddTaskDialog } from '@tm/ui/AddTaskDialog';
+import { GitGraphPane } from '@tm/ui/GitGraphPane';
 import { TaskDetail } from '@tm/ui/TaskDetail';
 import { useTransport } from '@tm/ui/transport';
 import { useBoardLayoutStyles } from '@tm/ui/board/boardLayout';
@@ -127,6 +129,13 @@ export function BoardScreen({
   const { settings, saveSettings } = extras;
   const showDone = settings.jira.showDoneColumn;
   const showDetail = settings.showTaskDetail;
+  /**
+   * The commit-graph pane, read from the DESKTOP's own setting rather than a web-only one —
+   * the same bargain every other switch in this toolbar makes. Off until settings arrive,
+   * which is also `DEFAULT_SETTINGS`'s answer: the pane costs a `git log` on the desktop's
+   * machine, so it opens when somebody asks for it and not because a fetch is in flight.
+   */
+  const showGraph = settings.showGitGraph;
   const display = settings.board;
 
   const projects = useMemo(() => Object.values(state.projects), [state.projects]);
@@ -373,6 +382,10 @@ export function BoardScreen({
           onShowDetailChange={(next) =>
             void saveSettings({ ...settings, showTaskDetail: next }).catch(reportError)
           }
+          showGraph={showGraph}
+          onShowGraphChange={(next) =>
+            void saveSettings({ ...settings, showGitGraph: next }).catch(reportError)
+          }
           chainFocus={chainFocus}
           onChainFocusChange={setChainFocus}
           canFocusChain={selectedTaskId !== null}
@@ -565,6 +578,23 @@ export function BoardScreen({
               if (isManualStatus(updated.status)) onStatusNoted(updated.id, updated.status);
             }}
             onSubtasksChanged={extras.refresh}
+          />
+        </div>
+      )}
+
+      {/* The desktop's commit graph, over the relay. Last in the row so folding it away never
+          shifts the detail pane sideways, and unmounted rather than hidden for the reason the
+          desktop unmounts it: a graph nobody is looking at should not be asking a desktop to
+          re-read a repository every time a card changes. */}
+      {showGraph && (
+        <div className={layout.graph}>
+          <GitGraphPane
+            projects={extras.agentProjects}
+            selectedTask={selectedTask}
+            // The whole board, so a branch can carry the CARD's title instead of `orch/…`.
+            tasksById={tasksById}
+            // The only thing on the drawing allowed a colour — see `GRAPH_INK`.
+            runningTaskIds={extras.liveRunTaskIds}
           />
         </div>
       )}

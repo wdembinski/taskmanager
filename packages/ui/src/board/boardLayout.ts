@@ -8,9 +8,10 @@
  * already shared (`KanbanColumn`, `TaskCard`); what was not shared was everything AROUND
  * them, which is most of what makes two screens look like one application.
  *
- * The desktop's commit-graph pane stays behind in `MyTasks`: it is a third pane in this row
- * that only the desktop has (it costs a `git log` on the machine the project lives on), and
- * a rule here for a pane one host can never render would be a rule nobody can read.
+ * The commit-graph pane's own rule is here too (`graph`), now that both clients can draw one:
+ * `git:graph` is relayed, so a browser gets the same picture out of the desktop's repository.
+ * It is the third pane in this row, and how wide it is — and that the board is what gives way
+ * to it — is a rule about the ROW, which is what this file holds.
  */
 import { makeStyles, tokens } from '@fluentui/react-components';
 
@@ -78,5 +79,24 @@ export const useBoardLayoutStyles = makeStyles({
     // One surface for the whole pane, a step LIGHTER than the board — that contrast is
     // what separates the two halves of the screen, so no dividing line is needed.
     backgroundColor: tokens.colorNeutralBackground1,
+  },
+  /**
+   * The commit graph's pane (`GitGraphPane`), last in the row. A fixed px basis rather than
+   * the detail pane's percentage: what it holds is a fixed-width thing — a lane gutter, a
+   * subject, an author and a date — so a share of the window would leave it either clipping
+   * every subject or padded with empty space, depending only on how wide the monitor is.
+   * `0 0` so it neither grows nor shrinks, and the board (`flex: 1 1 auto`) absorbs the
+   * difference.
+   */
+  graph: {
+    flex: '0 0 340px',
+    minWidth: 0,
+    display: 'flex',
+    minHeight: 0,
+    overflow: 'hidden',
+    backgroundColor: tokens.colorNeutralBackground1,
+    // A rule rather than a change of shade: with the detail pane open this sits against
+    // another pane of the same surface, and two identical surfaces need an edge.
+    borderLeft: `1px solid ${tokens.colorNeutralStroke2}`,
   },
 });

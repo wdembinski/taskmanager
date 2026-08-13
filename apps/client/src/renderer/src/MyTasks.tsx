@@ -20,8 +20,6 @@ import {
   MessageBarBody,
   Switch,
   ToggleButton,
-  makeStyles,
-  tokens,
 } from '@fluentui/react-components';
 import {
   ArchiveRegular,
@@ -55,7 +53,7 @@ import {
   archivedCountLabel,
   archivedCountTitle,
 } from '@ui/board/ArchivedCardsDialog';
-import { GitGraphPane } from './GitGraphPane';
+import { GitGraphPane } from '@ui/GitGraphPane';
 import { PaneLoading } from '@ui/PaneLoading';
 import { TaskDetail } from '@ui/TaskDetail';
 import { useInitialLoad } from '@ui/useInitialLoad';
@@ -91,33 +89,6 @@ import {
 } from '@ui/board/boardColumns';
 import type { BoardCard, BoardColumn } from '@ui/board/boardColumns';
 
-/**
- * The board's own frame — root, board, toolbar, grow, columns, right — is
- * `useBoardLayoutStyles` in `@ui/board/boardLayout` now, so the browser client draws the
- * same board rather than a lookalike of it. What is left here is the one pane only this
- * host has.
- */
-const useStyles = makeStyles({
-  /**
-   * The commit graph's pane. A fixed px basis rather than the detail pane's percentage: what
-   * it holds is a fixed-width thing — a lane gutter, a subject, an author and a date — so a
-   * share of the window would leave it either clipping every subject or padded with empty
-   * space, depending only on how wide the monitor is. `0 0` so it neither grows nor shrinks,
-   * and the board (`flex: 1 1 auto`) absorbs the difference.
-   */
-  graph: {
-    flex: '0 0 340px',
-    minWidth: 0,
-    display: 'flex',
-    minHeight: 0,
-    overflow: 'hidden',
-    backgroundColor: tokens.colorNeutralBackground1,
-    // A rule rather than a change of shade: with the detail pane open this sits against
-    // another pane of the same surface, and two identical surfaces need an edge.
-    borderLeft: `1px solid ${tokens.colorNeutralStroke2}`,
-  },
-});
-
 const COLUMN_LABEL: Record<BoardColumn, string> = Object.fromEntries(
   COLUMN_META.map((c) => [c.column, c.label]),
 ) as Record<BoardColumn, string>;
@@ -136,8 +107,8 @@ function optimisticMove(task: Task, column: BoardColumn): Task {
 }
 
 export function MyTasks(): JSX.Element {
-  const styles = useStyles();
-  // The board's frame, shared with the browser client — see `boardLayout.ts`.
+  // The board's frame — including the commit graph's own pane — shared with the browser
+  // client. See `boardLayout.ts`; this screen has no styles left of its own.
   const layout = useBoardLayoutStyles();
   const [tasks, setTasks] = useState<Task[] | null>(null);
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -1221,7 +1192,7 @@ export function MyTasks(): JSX.Element {
           unmounted rather than hidden, for the same reason the detail pane is: a graph
           nobody is looking at should not be re-reading a repository on every `task:changed`. */}
       {showGraph && (
-        <div className={styles.graph}>
+        <div className={layout.graph}>
           <GitGraphPane
             projects={agentProjects}
             selectedTask={selectedTask}

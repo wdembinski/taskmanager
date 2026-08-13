@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import type { GitGraphEdge, GitRef } from '@shared/gitGraph';
-import { PERSONAL_PROJECT_ID, type Project, type Task } from '@shared/model';
-import { LOCAL_TARGET } from '@shared/execTarget';
+import type { GitGraphEdge, GitRef } from '@tm/shared/gitGraph';
+import { PERSONAL_PROJECT_ID, type Project, type Task } from '@tm/shared/model';
+import { LOCAL_TARGET } from '@tm/shared/execTarget';
 import {
   DOT_RADIUS,
   LANE_ORIGIN,

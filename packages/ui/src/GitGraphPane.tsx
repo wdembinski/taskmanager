@@ -1,11 +1,18 @@
 /**
- * The repository's commit graph, beside the board.
+ * The repository's commit graph, beside the board — in both clients.
  *
  * The board says what there is to do and the chain says in what order; neither can say what
  * actually HAPPENED in the repo. Which branches exist, which forked from where, which have
  * merged back into base — that lives in git, and until this pane the only way to see it was
- * to leave the app. `git:graph` reads it (`src/main/gitGraph.ts`) and `@shared/gitGraph` lays
- * it out in lanes; this file only draws what comes back.
+ * to leave the app. `git:graph` reads it (`apps/client/src/main/gitGraph.ts`) and
+ * `@tm/shared/gitGraph` lays it out in lanes; this file only draws what comes back.
+ *
+ * **A `git log` still only ever runs on the desktop, and that is fine.** The pane used to
+ * live in apps/client for exactly that reason — the browser has no repository to read — but
+ * the reason was about where the COMMAND runs, not where the picture is drawn. `git:graph`
+ * is a relayed channel (`@tm/shared/ipcRelay`), so a browser asks for it through the same
+ * `Transport` every other read here goes through and the desktop answers with its own
+ * handler. What arrives is a `GitGraph` either way, and one component draws it.
  *
  * **The lanes are one `<svg>` behind the rows**, exactly the way `ChainOverlay` is one `<svg>`
  * over the board's columns and for the same reason: a line per row would be clipped by its own
@@ -36,9 +43,10 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import { ArrowClockwiseRegular } from '@fluentui/react-icons';
-import type { GitGraph } from '@shared/gitGraph';
-import type { Project, Task } from '@shared/model';
-import { GRAPH_INK, MONO, fontPx } from '@ui/theme';
+import type { GitGraph } from '@tm/shared/gitGraph';
+import type { Project, Task } from '@tm/shared/model';
+import { GRAPH_INK, MONO, fontPx } from './theme';
+import { useTransport } from './transport';
 import {
   DOT_RADIUS,
   ROW_HEIGHT,
@@ -179,6 +187,7 @@ export function GitGraphPane({
   runningTaskIds,
 }: GitGraphPaneProps): JSX.Element {
   const styles = useStyles();
+  const transport = useTransport();
   /**
    * The repo the human PICKED, or null while they haven't. Kept separate from the default so
    * a pick survives selecting another card: switching cards would otherwise drag the graph
@@ -206,28 +215,31 @@ export function GitGraphPane({
   const issued = useRef(0);
   const applied = useRef(0);
 
-  const load = useCallback(async (id: string | null) => {
-    if (!id) {
-      setGraph(null);
-      return;
-    }
-    const seq = ++issued.current;
-    setLoading(true);
-    try {
-      const next = await window.api.invoke('git:graph', id, GRAPH_LIMIT);
-      if (seq <= applied.current) return;
-      applied.current = seq;
-      setGraph(next);
-      setReadAt(Date.now());
-      setError(null);
-    } catch (e: unknown) {
-      if (seq <= applied.current) return;
-      applied.current = seq;
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const load = useCallback(
+    async (id: string | null) => {
+      if (!id) {
+        setGraph(null);
+        return;
+      }
+      const seq = ++issued.current;
+      setLoading(true);
+      try {
+        const next = await transport.invoke('git:graph', id, GRAPH_LIMIT);
+        if (seq <= applied.current) return;
+        applied.current = seq;
+        setGraph(next);
+        setReadAt(Date.now());
+        setError(null);
+      } catch (e: unknown) {
+        if (seq <= applied.current) return;
+        applied.current = seq;
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [transport],
+  );
 
   // The repo changed (picked, or the selection moved the default): read the new one.
   useEffect(() => {
@@ -238,11 +250,15 @@ export function GitGraphPane({
    * A run finishing is the only thing that changes this picture, and `task:changed` is what
    * announces it — a commit, a merge and a released tag all land through one. No timer:
    * see the note at the top of the file.
+   *
+   * In a browser that event is the desktop's, forwarded (or rebuilt from the mirror), so it
+   * arrives on the desktop's sync rather than the instant the run ends — later, never more
+   * often, which is the direction that matters for something this expensive to re-read.
    */
   useEffect(() => {
     if (!projectId) return;
-    return window.api.on('task:changed', () => void load(projectId));
-  }, [load, projectId]);
+    return transport.on('task:changed', () => void load(projectId));
+  }, [transport, load, projectId]);
 
   const rows = graph?.commits ?? [];
   const gutter = gutterWidth(graph?.laneCount ?? 0);

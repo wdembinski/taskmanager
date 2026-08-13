@@ -1,7 +1,7 @@
 /**
  * The drawing half of the commit graph: geometry, labels and dates, with no React in it.
  *
- * `@shared/gitGraph` already answered the hard question — which LANE every commit sits in,
+ * `@tm/shared/gitGraph` already answered the hard question — which LANE every commit sits in,
  * and which lanes each parent link joins. What is left is turning those integers into pixels
  * and into words, and that is exactly the kind of thing worth having on its own: a bezier
  * that bends the wrong way, or a branch labelled with the wrong card, is a bug you can write
@@ -9,8 +9,8 @@
  *
  * The same split `board/chainArrows.ts` makes for the chain's arrows, for the same reason.
  */
-import type { GitGraphEdge, GitRef } from '@shared/gitGraph';
-import type { Project, Task } from '@shared/model';
+import type { GitGraphEdge, GitRef } from '@tm/shared/gitGraph';
+import type { Project, Task } from '@tm/shared/model';
 
 /**
  * One commit row's height in px, and the horizontal pitch between lanes.
