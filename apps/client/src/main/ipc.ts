@@ -495,6 +495,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // goes first: it starts nothing, and a limit restoring into a dead credential should
     // find the other gate already up rather than walk its parked set into it.
     .then(() => {
+      // The recipes first: restoring a limit whose reset has already passed resumes its
+      // parked set on the spot, and a resume with an empty table rebuilds a release run —
+      // or a chat reply — as ordinary work on the card (see `parkedRun.ts`).
+      scheduler.restoreParkedRuns();
       scheduler.restoreAuthGate();
       scheduler.restoreLimitGate();
     });

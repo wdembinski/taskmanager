@@ -4728,3 +4728,298 @@ describe('Scheduler.startTaskNow — the reason a Start was refused', () => {
     expect(scheduler.runTask('t1')).toBeNull();
   });
 });
+
+/**
+ * What a gate remembers about the run it parked — see `parkedRun.ts`.
+ *
+ * A gate parks TASKS, and both resume paths used to start each one with a bare
+ * `startTask(project, task)`. That is right for ordinary work and wrong for the only two
+ * runs that are not the card's work at all:
+ *
+ *  - a **release** run came back as ordinary work on the card, so instead of publishing the
+ *    merged branch it re-opened the card's session and started implementing something; and
+ *  - a **chat** reply came back with no prompt, so the agent was woken with nothing to
+ *    answer and the human's message was simply lost.
+ *
+ * Nothing else needs remembering: `reviewSeed` rebuilds itself inside `startTask` from
+ * `task.chainLandedAt`, and an ordinary work run is exactly what a bare `startTask`
+ * produces — which is why a missing recipe degrades to yesterday's behaviour rather than to
+ * a wrong kind of run.
+ */
+describe('a parked release or chat run comes back as what it was', () => {
+  /** The persisted recipe, restated here so the test names the shape it asserts on. */
+  interface Recipe {
+    taskId: string;
+    chatPrompt?: string;
+    releaseSeed?: boolean;
+    permissionMode?: PermissionMode;
+  }
+  /** The scheduler's own run bookkeeping, as much of it as these cases read. */
+  interface LiveRun {
+    taskId: string;
+    runId: string;
+    settled: boolean;
+    chatPrompt?: string;
+    releaseSeed?: boolean;
+    permissionMode?: PermissionMode;
+  }
+
+  const RELEASE_PROMPT = 'Release `main` by following RELEASE.md.';
+  const CHAT_PROMPT = 'Did you touch the auth code?';
+
+  function setup() {
+    const project = {
+      id: 'p',
+      path: 'C:/w',
+      planPath: 'C:/w/plan.md',
+      name: 'P',
+      concurrency: 1,
+      defaultModel: 'sonnet',
+      defaultPermissionMode: 'acceptEdits',
+    } as Project;
+    const card = {
+      id: 't1',
+      projectId: 'p',
+      phase: '',
+      title: 'Ship the export dialog',
+      status: 'in-progress',
+      // A card that has already worked and merged — which is the only card either of the two
+      // interesting runs ever happens on.
+      sessionId: 'sess-1',
+      order: 0,
+      source: 'board',
+      dependsOn: [],
+      isContract: false,
+      isScaffold: false,
+      agentProjectId: null,
+      parentTaskId: null,
+    } as unknown as Task;
+    const notes: string[] = [];
+    /** The `app_state` side table as a variable — what a relaunch would read back. */
+    let savedRuns: Recipe[] = [];
+    const store = {
+      getTask: (id: string) => (id === 't1' ? card : undefined),
+      getTasks: () => [card],
+      getProject: (id: string) => (id === 'p' ? project : undefined),
+      getSubtasks: () => [],
+      listProjects: () => [project],
+      listTaskLinks: () => [],
+      updateTask: (id: string, patch: Partial<Task>) => {
+        if (id === card.id) Object.assign(card, patch);
+        return card;
+      },
+      appendTaskEvent: vi.fn(
+        (_p: string, _taskId: string, _runId: string, event: { text?: string }) => {
+          notes.push(event.text ?? '');
+        },
+      ),
+      getSettings: () => ({ maxAutoRetries: 0, limitJitterMs: 0, concurrency: 1 }),
+      saveLimitGate: vi.fn(),
+      loadLimitGate: () => null,
+      saveAuthGate: vi.fn(),
+      loadAuthGate: () => null,
+      saveParkedRuns: (runs: readonly Recipe[]) => {
+        savedRuns = [...runs];
+      },
+      loadParkedRuns: () => savedRuns,
+      ...INERT_ATTENTION_STORE,
+    } as unknown as Store;
+    const start = vi.fn((_req: unknown, opts: { runId?: string }) => ({
+      runId: opts?.runId ?? 'r-new',
+    }));
+    const sessions = { start, stop: vi.fn(), send: vi.fn() } as unknown as SessionManager;
+    const emitAttention = vi.fn();
+    /** A second engine over the SAME store — a relaunch, for the persistence case. */
+    const relaunch = (): Scheduler =>
+      new Scheduler(store, sessions, vi.fn(), vi.fn(), emitAttention, vi.fn(), vi.fn());
+    return {
+      scheduler: relaunch(),
+      relaunch,
+      project,
+      card,
+      start,
+      emitAttention,
+      notes,
+      saved: () => savedRuns,
+    };
+  }
+
+  /** Start a run the way each caller does, with the opts that make it what it is. */
+  const startRun = (
+    scheduler: Scheduler,
+    project: Project,
+    task: Task,
+    opts: { chatPrompt?: string; releaseSeed?: boolean; permissionMode?: PermissionMode },
+  ): string =>
+    (
+      scheduler as unknown as {
+        startTask: (p: Project, t: Task, o: typeof opts) => string;
+      }
+    ).startTask(project, task, opts);
+
+  /** The account hits its usage limit, parking everything in flight. */
+  const hitLimit = (scheduler: Scheduler): void =>
+    (scheduler as unknown as { engageLimit: (s: unknown) => void }).engageLimit({
+      kind: 'rate-limit',
+      status: 'rejected',
+      rateLimitType: 'five_hour',
+      resetsAt: null,
+    });
+
+  /** The run the reset started: the only one that has not settled. */
+  const resumedRun = (scheduler: Scheduler): LiveRun | undefined =>
+    [...(scheduler as unknown as { runs: Map<string, LiveRun> }).runs.values()].find(
+      (r) => !r.settled,
+    );
+
+  /** Deliver an event to a run, as the session manager would. */
+  const fire = (scheduler: Scheduler, runId: string, event: unknown): Promise<void> =>
+    (scheduler as unknown as { onRunEvent: (r: string, e: unknown) => Promise<void> }).onRunEvent(
+      runId,
+      event,
+    );
+
+  it('starts a parked release run as a release run again', () => {
+    const h = setup();
+    startRun(h.scheduler, h.project, h.card, {
+      releaseSeed: true,
+      permissionMode: 'acceptEdits',
+      chatPrompt: RELEASE_PROMPT,
+    });
+    hitLimit(h.scheduler);
+    expect(h.card.status).toBe('blocked-by-limit');
+
+    h.scheduler.resumeLimitNow();
+
+    const run = resumedRun(h.scheduler);
+    expect(run?.releaseSeed).toBe(true);
+    // …and it is briefed to release, in the project directory rather than a worktree —
+    // there is no branch left to cut one from once the work has merged.
+    const [request] = h.start.mock.calls.at(-1) as [{ prompt: string; cwd: string }, unknown];
+    expect(request.prompt).toBe(RELEASE_PROMPT);
+    expect(request.cwd).toBe('C:/w');
+  });
+
+  /**
+   * The flag is not decoration: `settle` reads it to decide whose failure this is. A
+   * release that came back as ordinary work would park the CARD in the inbox for something
+   * its own work had nothing to do with, and auto-retry half a publish on the way.
+   */
+  it('so a failure settles as the release’s, not as the card’s', async () => {
+    const h = setup();
+    startRun(h.scheduler, h.project, h.card, {
+      releaseSeed: true,
+      permissionMode: 'acceptEdits',
+      chatPrompt: RELEASE_PROMPT,
+    });
+    hitLimit(h.scheduler);
+    h.scheduler.resumeLimitNow();
+    const run = resumedRun(h.scheduler);
+
+    await fire(h.scheduler, run!.runId, {
+      kind: 'result',
+      success: false,
+      resultText: 'npm publish exited 1',
+      costUsd: null,
+      durationMs: null,
+      stopReason: null,
+      terminalReason: 'error',
+    });
+
+    expect(h.notes.at(-1)).toContain('The release did not finish');
+    expect(h.card.status).toBe('in-progress'); // left where the human had it
+    expect(h.emitAttention).not.toHaveBeenCalled(); // and never parked against the card
+  });
+
+  it('gives a parked chat reply its prompt back', () => {
+    const h = setup();
+    startRun(h.scheduler, h.project, h.card, { chatPrompt: CHAT_PROMPT });
+    hitLimit(h.scheduler);
+
+    h.scheduler.resumeLimitNow();
+
+    expect(resumedRun(h.scheduler)?.chatPrompt).toBe(CHAT_PROMPT);
+    const [request, opts] = h.start.mock.calls.at(-1) as [
+      { prompt: string },
+      { resumeSessionId?: string },
+    ];
+    // The human's own words, into the conversation they were typed at.
+    expect(request.prompt).toBe(CHAT_PROMPT);
+    expect(opts.resumeSessionId).toBe('sess-1');
+  });
+
+  /**
+   * The regression guard. Ordinary work is every other run there is, and it must resume the
+   * way it always has: no recipe written, none read, and a plain resume of the card's own
+   * session.
+   */
+  it('leaves an ordinary work run resuming exactly as before', () => {
+    const h = setup();
+    startRun(h.scheduler, h.project, h.card, {});
+    hitLimit(h.scheduler);
+    expect(h.saved()).toEqual([]); // nothing about a work run is worth remembering
+
+    h.scheduler.resumeLimitNow();
+
+    const run = resumedRun(h.scheduler);
+    expect(run?.chatPrompt).toBeUndefined();
+    expect(run?.releaseSeed).toBeFalsy();
+    const [, opts] = h.start.mock.calls.at(-1) as [unknown, { resumeSessionId?: string }];
+    expect(opts.resumeSessionId).toBe('sess-1');
+  });
+
+  it('drops the recipe once its park is over', () => {
+    const h = setup();
+    startRun(h.scheduler, h.project, h.card, { releaseSeed: true, chatPrompt: RELEASE_PROMPT });
+    hitLimit(h.scheduler);
+    expect(h.saved()).toEqual([
+      {
+        taskId: 't1',
+        chatPrompt: RELEASE_PROMPT,
+        releaseSeed: true,
+        permissionMode: 'acceptEdits',
+      },
+    ]);
+
+    h.scheduler.resumeLimitNow();
+
+    // A recipe describes ONE park. Left behind, it would rebuild a release the next time
+    // anything at all parked this card.
+    expect(h.saved()).toEqual([]);
+  });
+
+  /** A stop is the human saying no — the recipe must not outlive it either. */
+  it('drops the recipe when the human stops the card instead', () => {
+    const h = setup();
+    startRun(h.scheduler, h.project, h.card, { releaseSeed: true, chatPrompt: RELEASE_PROMPT });
+    hitLimit(h.scheduler);
+
+    expect(h.scheduler.stopTask('t1')).toBe(true);
+
+    expect(h.saved()).toEqual([]);
+  });
+
+  /**
+   * Why the table is persisted at all: a five-hour gate very often outlives a restart, and
+   * a relaunch that resumes with an empty table is the original bug with extra steps.
+   */
+  it('survives a restart, so the relaunch still releases', () => {
+    const h = setup();
+    startRun(h.scheduler, h.project, h.card, {
+      releaseSeed: true,
+      permissionMode: 'acceptEdits',
+      chatPrompt: RELEASE_PROMPT,
+    });
+    hitLimit(h.scheduler);
+    h.scheduler.dispose(); // the app closes with the card still parked
+
+    const next = h.relaunch();
+    next.restoreParkedRuns();
+    // Nothing was saved, so the gate is long gone: `restoreLimitGate` resumes what the DB
+    // still says is parked — the branch a relaunch after a five-hour window actually takes.
+    next.restoreLimitGate();
+
+    expect(resumedRun(next)?.releaseSeed).toBe(true);
+    expect(h.saved()).toEqual([]); // …and the recipe was consumed on the way
+  });
+});

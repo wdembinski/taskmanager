@@ -66,6 +66,7 @@ import {
 } from './askUserQuestion';
 import type { AuthState } from '@shared/auth';
 import type { LimitState, LimitType } from '@shared/limit';
+import type { ParkedRun } from './parkedRun';
 import type { UsageSample, UsageSource } from '@shared/usage';
 import {
   AGREE_SENTINEL,
@@ -818,6 +819,25 @@ interface Run {
   worktree?: string;
 }
 
+/**
+ * What a gate must remember about a run it is parking, or `null` when the run is ordinary
+ * work and a bare `startTask` on its task rebuilds it exactly — see {@link ParkedRun}.
+ *
+ * `reviewSeed` is deliberately absent: `startTask` derives it from `task.chainLandedAt`,
+ * so it rebuilds itself. `permissionMode` rides along with the two kinds that ARE recorded
+ * because those two chose it per turn; on an ordinary run it is the card's own mode, which
+ * the card still has.
+ */
+function parkedRunFor(run: Run): ParkedRun | null {
+  if (run.chatPrompt === undefined && !run.releaseSeed) return null;
+  return {
+    taskId: run.taskId,
+    chatPrompt: run.chatPrompt,
+    releaseSeed: run.releaseSeed,
+    permissionMode: run.permissionMode,
+  };
+}
+
 /** A parked merge conflict awaiting a human, so `answerAttention` can finish integrating. */
 interface PendingIntegration {
   projectId: string;
@@ -972,6 +992,19 @@ export class Scheduler {
    * keyed by task id. Set by the "AI fix & retry" resolution; consumed in `launch`.
    */
   private readonly fixNotes = new Map<string, string>();
+  /**
+   * How to rebuild a run one of the two gates parked, keyed by task id — see
+   * {@link ParkedRun}, which is also where the reasoning lives.
+   *
+   * Only a release run and a chat reply ever get an entry: everything else a run carries
+   * is re-derived from the task by `startTask`, so no recipe means "ordinary work", which
+   * is what both resume paths did for every run before this existed.
+   *
+   * Mirrored to the store on every change (`saveParkedRuns`) and read back by
+   * {@link Scheduler.restoreParkedRuns}, because a five-hour gate very often outlives a
+   * restart and a recipe that did not would strand its run in the same way it used to.
+   */
+  private readonly parkedRuns = new Map<string, ParkedRun>();
   /**
    * Team-orchestrator conflict ladder (Rung 2 — AI). Per-task count of automatic
    * agent-driven conflict-resolution attempts already spent on a branch integration.
@@ -1345,7 +1378,10 @@ export class Scheduler {
     const authParkedHere = (this.authGate.state?.parkedTaskIds ?? []).filter(
       (id) => this.store.getTask(id)?.projectId === projectId,
     );
-    if (authParkedHere.length > 0) this.authGate.unpark(authParkedHere);
+    if (authParkedHere.length > 0) {
+      this.authGate.unpark(authParkedHere);
+      this.forgetParkedRuns(authParkedHere); // nothing will rebuild these now
+    }
     // Abandon any in-flight proposal negotiations for this project (Phase D): cancel
     // the round timer and drop its human item. The proposer/sibling runs are handled
     // by the `runs` loop above (marked stopped), so no task status to set here.
@@ -1376,6 +1412,7 @@ export class Scheduler {
       const parked = this.store.getTasks(projectId).filter((t) => t.status === 'blocked-by-limit');
       for (const task of parked) this.updateTask(task.id, { status: 'stopped' }, null);
       this.limitGate.unpark(parked.map((t) => t.id));
+      this.forgetParkedRuns(parked.map((t) => t.id));
     }
     this.setState(projectId, 'idle');
   }
@@ -1727,6 +1764,7 @@ export class Scheduler {
     const authParked = new Set(this.authGate.state?.parkedTaskIds ?? []);
     if ([...owned].some((id) => authParked.has(id))) {
       this.authGate.unpark([...owned]);
+      this.forgetParkedRuns([...owned]);
       stopped = true;
     }
     // A card whose plan is approved but whose first step hasn't started yet is still
@@ -1759,6 +1797,9 @@ export class Scheduler {
     // A limit-parked task counts as stoppable too: drop it — and any step of its chain the
     // gate is holding — so nothing is resurrected when the limit resets.
     this.limitGate.unpark([taskId, ...queuedSteps.map((s) => s.id)]);
+    // …and with it whatever those parks were going to rebuild: a release or a chat reply
+    // the human has now stopped must not be waiting behind the next gate that goes up.
+    this.forgetParkedRuns([taskId, ...queuedSteps.map((s) => s.id)]);
     // The status half of this write does not survive on a board card — `guardCardStatus`
     // hands `status` straight back to the column the human left it in, which is the whole
     // reason a stopped ticket in TO DO used to be indistinguishable from one nobody had ever
@@ -2475,6 +2516,9 @@ export class Scheduler {
     this.probingLimit.clear(); // a probe still in flight is abandoned, not waited for
     this.retryQueue.clear();
     this.fixNotes.clear();
+    // In memory only, exactly as the two gates above: the recipes stay in the store, so the
+    // next launch restores them and a parked release still comes back as a release.
+    this.parkedRuns.clear();
     this.conflictFixAttempts.clear();
     this.chainStarts.clear();
     this.pendingReplans.clear();
@@ -3390,6 +3434,81 @@ export class Scheduler {
   }
 
   /**
+   * Write down how to rebuild these runs when their gate lifts — see {@link ParkedRun}.
+   *
+   * A run with nothing to remember (ordinary work) does not merely go unrecorded, it
+   * *clears* any recipe standing against its task: a card that was releasing yesterday and
+   * is doing ordinary work today must not come back as a release. That is also why this
+   * takes the runs rather than the task ids — the run is the only thing that knows which
+   * kind it is, and by resume time it is long gone.
+   */
+  private recordParkedRuns(runs: readonly Run[]): void {
+    let changed = false;
+    for (const run of runs) {
+      const recipe = parkedRunFor(run);
+      if (recipe) {
+        this.parkedRuns.set(run.taskId, recipe);
+        changed = true;
+      } else if (this.parkedRuns.delete(run.taskId)) {
+        changed = true;
+      }
+    }
+    if (changed) this.store.saveParkedRuns([...this.parkedRuns.values()]);
+  }
+
+  /**
+   * The recipe for this task's parked run, consumed as it is read.
+   *
+   * Consuming is the whole discipline: a recipe describes ONE park, and a chat prompt that
+   * outlived its resume would be re-sent to the agent the next time anything parked the
+   * card. Every resume path takes it, whether or not it goes on to start the task, because
+   * either way that park is over.
+   */
+  private takeParkedRun(taskId: string): ParkedRun | undefined {
+    const recipe = this.parkedRuns.get(taskId);
+    if (recipe) this.forgetParkedRuns([taskId]);
+    return recipe;
+  }
+
+  /** Drop these tasks' recipes — a park that is cancelled describes nothing. */
+  private forgetParkedRuns(taskIds: readonly string[]): void {
+    let changed = false;
+    for (const taskId of taskIds) if (this.parkedRuns.delete(taskId)) changed = true;
+    if (changed) this.store.saveParkedRuns([...this.parkedRuns.values()]);
+  }
+
+  /**
+   * What {@link Scheduler.startTask} has to be told again to rebuild a parked run, or `{}`
+   * when there is nothing to rebuild — which is an ordinary work run, and exactly what both
+   * resume paths passed for everything before recipes existed.
+   */
+  private resumeOpts(taskId: string): {
+    chatPrompt?: string;
+    releaseSeed?: boolean;
+    permissionMode?: PermissionMode;
+  } {
+    const recipe = this.takeParkedRun(taskId);
+    if (!recipe) return {};
+    return {
+      chatPrompt: recipe.chatPrompt,
+      releaseSeed: recipe.releaseSeed,
+      permissionMode: recipe.permissionMode,
+    };
+  }
+
+  /**
+   * Re-read the parked-run recipes a previous process left behind.
+   *
+   * Called at startup BEFORE the two gates are restored, because restoring a limit whose
+   * reset has already passed resumes its parked set there and then — with an empty table,
+   * that resume is the very thing this exists to stop being ordinary work.
+   */
+  restoreParkedRuns(): void {
+    if (this.disposed) return;
+    for (const recipe of this.store.loadParkedRuns()) this.parkedRuns.set(recipe.taskId, recipe);
+  }
+
+  /**
    * A usage limit hit — engage the account-wide gate (Phase 5). Every currently
    * running task is parked (`blocked-by-limit`) and its process ended; the saved
    * session id lets us resume it when the gate's timer fires at reset time.
@@ -3417,6 +3536,10 @@ export class Scheduler {
       signal,
       active.map((r) => r.taskId),
     );
+    // What each of these runs IS, written down before the runs themselves are thrown away.
+    // The gate remembers tasks, and a task cannot say whether it was releasing merged work
+    // or carrying a sentence a human typed — see {@link ParkedRun}.
+    this.recordParkedRuns(active);
     for (const run of active) {
       run.settled = true; // its imminent exit is expected — don't settle it as failed
       // BEFORE `clearRunAttention`, which blanks `runId` on exactly these items: after it
@@ -3568,6 +3691,12 @@ export class Scheduler {
     /** Cards that yielded to their chain above — advanced after the loop, once per card. */
     const chains = new Set<string>();
     for (const taskId of state.parkedTaskIds) {
+      // Read (and drop) the recipe FIRST, before any of the branches below can `continue`
+      // past it: this park ends here however this task leaves the loop, and a recipe that
+      // outlived it would rebuild the wrong run the next time anything parked the card.
+      // Taken after the auth hand-over above, which is the one case where the park is NOT
+      // over — the other gate is still holding it, and will want the recipe.
+      const rebuild = this.resumeOpts(taskId);
       const task = this.store.getTask(taskId);
       // Only resume tasks still parked by the limit (not since stopped/deleted).
       if (!task || task.status !== 'blocked-by-limit') continue;
@@ -3587,7 +3716,10 @@ export class Scheduler {
         this.releaseStrandedPark(task);
         continue;
       }
-      this.startTask(project, task); // resumes by task.sessionId when there is one
+      // …as the run it WAS: a release run comes back releasing, a chat reply comes back
+      // carrying what the human typed, and everything else gets `{}` — a bare start, which
+      // is what every parked run used to get. Resumes by task.sessionId when there is one.
+      this.startTask(project, task, rebuild);
     }
     // A step parked by `advanceSubtasks` is resumed by its own entry above; this covers the
     // card whose chain simply had nothing running to park. A chain stopped at a failed or
@@ -3610,6 +3742,9 @@ export class Scheduler {
    * behind a gate that no longer exists. The same shapes {@link
    * Scheduler.reconcileInterruptedTasks} uses for the same reason: a card re-queues, a
    * step parks for the human (nothing re-enters a chain on its own).
+   *
+   * Its parked-run recipe is already gone: `resumeParked` takes it before it gets here, so
+   * a release that could not be restarted does not lie in wait for the next gate either.
    */
   private releaseStrandedPark(task: Task): void {
     this.noteRun(
@@ -3639,6 +3774,10 @@ export class Scheduler {
     // within seconds, and one note per card per attempt would bury the run's real history.
     const first = !this.authGate.active;
     this.authGate.engage(reason, [failing.taskId, ...casualties.map((r) => r.taskId)]);
+    // The same as the limit's, and including `failing` for the same reason the gate's own
+    // parked set does: a run whose `exited` has already removed it from `runs` is still a
+    // run this gate is holding, and it is the one that proved the credential is dead.
+    this.recordParkedRuns([failing, ...casualties]);
     for (const run of casualties) {
       run.settled = true; // its imminent exit is expected — not a failure of its own
       // A question or a permission dies with its process; a parked failure or conflict
@@ -3673,6 +3812,9 @@ export class Scheduler {
     const closed: ReadonlySet<TaskStatus> = new Set(['done', 'cancelled', 'stopped', 'failed']);
     const chains = new Set<string>();
     for (const taskId of state.parkedTaskIds) {
+      // Taken first and unconditionally, exactly as in `resumeParked` — the park is over
+      // for this task whichever way it leaves the loop.
+      const rebuild = this.resumeOpts(taskId);
       const task = this.store.getTask(taskId);
       if (!task || closed.has(task.status)) continue;
       if (!task.parentTaskId && chainInFlight(this.store.getSubtasks(task.id))) {
@@ -3683,7 +3825,9 @@ export class Scheduler {
       if (this.hasLiveRunFor([task])) continue;
       const project = this.runProjectFor(task);
       if (!project) continue;
-      this.startTask(project, task); // resumes by task.sessionId when there is one
+      // …as the run it was (a release, a chat reply, or plain work — see `resumeOpts`).
+      // Resumes by task.sessionId when there is one.
+      this.startTask(project, task, rebuild);
     }
     for (const parentId of chains) {
       if (parkedStep(this.store.getSubtasks(parentId))) continue;
@@ -4954,6 +5098,10 @@ export class Scheduler {
    */
   private parkForLimit(task: Task): void {
     if (this.limitGate.park([task.id]).length === 0) return;
+    // Nothing was running, so there is no recipe to keep and an older one would be a lie:
+    // what this park holds is an ordinary work run that has not started yet, whatever the
+    // task's last parked run happened to be (see {@link ParkedRun}).
+    this.forgetParkedRuns([task.id]);
     this.updateTask(task.id, { status: 'blocked-by-limit' }, null);
     this.noteRun(
       task.projectId,
@@ -4975,6 +5123,7 @@ export class Scheduler {
    */
   private parkForSignIn(task: Task): void {
     if (this.authGate.park([task.id]).length === 0) return;
+    this.forgetParkedRuns([task.id]); // no live run, so no recipe — as in `parkForLimit`
     this.noteRun(
       task.projectId,
       task.id,

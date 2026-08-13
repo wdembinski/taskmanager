@@ -76,6 +76,7 @@ import type { TaskAttachment } from '@shared/attachments';
 import type { ParsedTask } from './planParser';
 import { splitProjectTag } from './projectTagMigration';
 import { blockOwnerFor, needsBlockOwner } from './blockOwnerMigration';
+import type { ParkedRun } from './parkedRun';
 import type { SavedWindowState } from './windowState';
 import { reconcileTasks } from './taskReconcile';
 
@@ -518,6 +519,17 @@ export interface Store {
   saveAuthGate(state: AuthState | null): void;
   /** Load a persisted sign-in gate, or null if the sign-in was believed good. */
   loadAuthGate(): AuthState | null;
+  /**
+   * Persist the whole {@link ParkedRun} side table — what a gate would have to be told
+   * again to rebuild the runs it parked (see `parkedRun.ts`). An empty array clears it.
+   *
+   * Written whole rather than row by row: it is a handful of entries at most (one per
+   * parked run that is a release or a chat reply), and the engine already holds it in
+   * memory, so there is nothing to be gained by making the store diff it.
+   */
+  saveParkedRuns(runs: readonly ParkedRun[]): void;
+  /** The persisted parked-run recipes; empty when nothing was parked (or the value rotted). */
+  loadParkedRuns(): ParkedRun[];
   /** Current app settings, with any unset field filled from `DEFAULT_SETTINGS` (Phase 6). */
   getSettings(): AppSettings;
   /** Persist the full app settings object. */
@@ -1904,6 +1916,12 @@ export function createStore(dbPath: string): Store {
   const LIMIT_GATE_KEY = 'limitGate';
   /** …and the one under which the sign-in gate is (see `@shared/auth`). */
   const AUTH_GATE_KEY = 'authGate';
+  /**
+   * …and the one holding the recipes for the runs those two gates parked (`parkedRun.ts`).
+   * Deliberately beside the gates rather than inside either of them: a recipe outlives a
+   * restart exactly as a gate does, but belongs to neither gate's shape.
+   */
+  const PARKED_RUNS_KEY = 'parkedRuns';
   /** The single row key under which app settings are persisted. */
   const SETTINGS_KEY = 'settings';
 
@@ -3604,6 +3622,24 @@ export function createStore(dbPath: string): Store {
         return JSON.parse(row.value) as LimitState;
       } catch {
         return null; // corrupt/legacy value — treat as no gate
+      }
+    },
+
+    saveParkedRuns(runs) {
+      if (runs.length === 0) deleteState.run(PARKED_RUNS_KEY);
+      else upsertState.run(PARKED_RUNS_KEY, JSON.stringify(runs));
+    },
+
+    loadParkedRuns() {
+      const row = selectState.get(PARKED_RUNS_KEY) as { value: string } | undefined;
+      if (!row) return [];
+      try {
+        const parsed = JSON.parse(row.value) as ParkedRun[];
+        // A recipe with no task to attach to can never be claimed, and would sit in the
+        // table for ever; a non-array value is a rot we treat as nothing saved.
+        return Array.isArray(parsed) ? parsed.filter((r) => typeof r?.taskId === 'string') : [];
+      } catch {
+        return []; // corrupt/legacy value — every parked run falls back to ordinary work
       }
     },
 
