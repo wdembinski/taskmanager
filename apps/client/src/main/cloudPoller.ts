@@ -52,6 +52,19 @@ export interface CloudPollerDeps {
    * batches from interleaving; see its own header.
    */
   onCommands: (commands: CommandEnvelope[]) => void;
+  /**
+   * How many browsers are watching the pushed event stream, per this tick's response.
+   *
+   * `CloudPoller` does not use the number itself — `cloudEventForwarder.ts` does, and this is
+   * the only route that can tell it. Reported here rather than fetched there because that is
+   * the entire argument for putting the count on `SyncResponse` at all: a desktop learns
+   * whether anyone is listening on a request it was already making, instead of asking "is
+   * anyone there?" once per tick on a channel of its own.
+   *
+   * Not called when the field is absent — a server predating the push channel omits it, and
+   * "did not say" must not read as "nobody is watching".
+   */
+  onEventListeners?: (count: number) => void;
   /** Wraps one tick so the status bar can watch it, exactly as `trackSync` wraps JIRA/GitLab. */
   runTracked: <T>(run: () => Promise<T>) => Promise<T>;
   fetchImpl?: typeof fetch;
@@ -237,6 +250,7 @@ export class CloudPoller {
     }
     this.deps.store.saveCloudCursor(body.cursor);
     this.lastServerIntervalMs = body.cadence.intervalMs;
+    if (body.eventListeners !== undefined) this.deps.onEventListeners?.(body.eventListeners);
     if (body.commands.length > 0) this.deps.onCommands(body.commands);
   }
 

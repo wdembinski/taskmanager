@@ -213,6 +213,9 @@ app.on('before-quit', () => {
         { name: 'updater', run: () => live.updater.dispose() },
         { name: 'syncPoller', run: () => live.syncPoller.dispose() },
         { name: 'cloudPoller', run: () => live.cloudPoller.dispose() },
+        // Before `sessions`, deliberately: killing the sessions pushes a last burst of events
+        // through `send`, and there is nobody left to deliver them to.
+        { name: 'cloudEvents', run: () => live.cloudEvents.dispose() },
         { name: 'focusTracker', run: () => live.focusTracker.dispose() },
         { name: 'claudeUsagePoller', run: () => live.claudeUsagePoller.dispose() },
         { name: 'watcher', run: () => live.watcher.dispose() },

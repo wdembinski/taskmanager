@@ -96,6 +96,7 @@ import type { CommandEnvelope } from '@protocol/wire';
 import { applyCloudCommand, type CloudCommandOutcome } from './cloudCommands';
 import { CommandQueue } from './commandQueue';
 import { relayRegistry } from './ipcRegistry';
+import { CloudEventForwarder } from './cloudEventForwarder';
 import { CloudPoller } from './cloudPoller';
 import { testCloudConnection } from './cloudTestConnection';
 import { FocusTracker } from './focusTracker';
@@ -248,6 +249,9 @@ export interface Engine {
   /** The cloud mirror's own timer — seconds-scale, server-directed, and separate from
    * `syncPoller` on purpose; see `cloudPoller.ts`'s own header. */
   cloudPoller: CloudPoller;
+  /** The push half of the same mirror: every `IpcEvents` push, batched to `POST /v1/events`.
+   * Holds a timer and a queue, so it is disposed on quit like every other one. */
+  cloudEvents: CloudEventForwarder;
   /** The `BrowserWindow` focus/idle signal `cloudPoller` polls on — its listeners outlive
    * the window's own close handlers, so it is disposed alongside every other timer. */
   focusTracker: FocusTracker;
@@ -264,9 +268,25 @@ export interface Engine {
  * the engine so the caller can stop sessions and close the DB on quit.
  */
 export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
+  // The cloud's copy of everything `send` pushes. Constructed INERT here, at the top of the
+  // function, because `send` is defined on the next line and everything it needs to actually
+  // send — the store, the access token — is declared hundreds of lines below;
+  // `cloudEvents.configure(...)` supplies those beside `cloudPoller`. Until then it queues
+  // nothing, and it queues nothing afterwards either unless a browser is watching.
+  const cloudEvents = new CloudEventForwarder();
+
   // Small helper: push an event to the UI unless the window is gone.
+  //
+  // This is the single choke point for the whole `IpcEvents` surface — `webContents.send`
+  // appears exactly once in this file, and `SessionManager` is constructed with a callback
+  // that goes through here — so mirroring the engine to the browser is this one line rather
+  // than a per-channel fan-out that the next new channel would forget to join.
+  //
+  // Outside the `isDestroyed` guard on purpose: a closed desktop window says nothing about
+  // whether somebody has the web app open.
   const send = <K extends keyof IpcEvents>(channel: K, payload: IpcEvents[K]): void => {
     if (!mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
+    cloudEvents.publish(channel, payload);
   };
 
   // The engine pushes normalized session events to the UI over 'session:event'.
@@ -3505,6 +3525,18 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     onError: (command, error) => logMain(`cloud: command ${command.id} threw`, error),
   });
 
+  // The forwarder built inert at the top of this function can finally send: the settings, the
+  // token and the client id it needs all exist by here. Nothing else changes — `send` has been
+  // handing it every event since the first line of the engine ran, and it has been dropping
+  // them, because no browser had been reported watching.
+  cloudEvents.configure({
+    getSettings: () => store.getSettings().cloud,
+    getAccessToken: getCloudAccessToken,
+    // The SAME id `SyncRequest.clientId` carries, so the server can tell a pushed event and a
+    // mirrored row came from one desktop — which is what step 7 needs to name it in the web.
+    getClientId: () => store.loadCloudClientId(),
+  });
+
   // The cloud mirror's own poller — same `trackSync` wrapping as JIRA/GitLab above, so the
   // status bar's ring reacts to it identically, but its own seconds-scale, self-scheduling
   // timer rather than a slot on `syncPoller`'s shared one. See `cloudPoller.ts`'s header for
@@ -3519,6 +3551,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // records itself in the ledger, which the next tick's `SyncRequest.ackedCommandIds` and
     // `SyncRequest.results` both read straight off.
     onCommands: (commands) => cloudCommandQueue.enqueue(commands),
+    // The only route that can tell the forwarder whether anyone is watching — see
+    // `CloudPollerDeps.onEventListeners`. Zero here is what stops a desktop posting a running
+    // agent's transcript into the cloud for nobody.
+    onEventListeners: (count) => cloudEvents.setListeners(count),
     runTracked: (run) => trackSync('cloud', run),
   });
   cloudPoller.reschedule();
@@ -3540,6 +3576,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     watcher,
     syncPoller,
     cloudPoller,
+    cloudEvents,
     focusTracker,
     claudeUsagePoller,
     updater,
