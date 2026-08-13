@@ -9,9 +9,13 @@ import { describe, expect, it } from 'vitest';
 import {
   classifyLimit,
   computeResumeAt,
+  decideLimitPark,
+  detectLimitFailure,
   isBlockingLimitStatus,
   LimitGate,
+  type LimitDetection,
   type LimitGateDeps,
+  type LimitResultSlice,
 } from './limitGate';
 import type { LimitState } from '@shared/limit';
 
@@ -63,6 +67,174 @@ describe('computeResumeAt', () => {
   it('falls back to a conservative wait when the reset time is unknown', () => {
     expect(computeResumeAt(null, 'rolling', now, 0)).toBe(now + 5 * 60 * 60 * 1000);
     expect(computeResumeAt(null, 'weekly', now, 0)).toBe(now + 7 * 24 * 60 * 60 * 1000);
+  });
+});
+
+/**
+ * A run that spent tokens before it stopped — the DEFAULT here, and the difference from
+ * `authGate.test.ts`, where a dead start has spent none. A usage limit is hit mid-run, so
+ * "no tokens" is never available as corroboration and must never be needed.
+ */
+const SPENT = {
+  inputTokens: 12,
+  outputTokens: 340,
+  cacheCreationTokens: 0,
+  cacheReadTokens: 151_869,
+};
+
+/** A `result` slice: a failed run with tokens spent, unless a test says otherwise. */
+function result(over: Partial<LimitResultSlice> = {}): LimitResultSlice {
+  return {
+    success: false,
+    resultText: '',
+    stopReason: null,
+    terminalReason: null,
+    usage: SPENT,
+    ...over,
+  };
+}
+
+describe('detectLimitFailure', () => {
+  /**
+   * The canonical wall. The CLI labels it `api_error` like everything else, and the only
+   * thing that names the cause — and the only thing that knows when it clears — is the
+   * trailing epoch in `resultText`.
+   */
+  it('believes the CLI’s own message, epoch and all, from a run that spent tokens', () => {
+    const signal = detectLimitFailure(
+      result({
+        resultText: 'Claude AI usage limit reached|1754870400',
+        terminalReason: 'api_error',
+        usage: SPENT,
+      }),
+    );
+    expect(signal).toEqual({
+      status: 'rejected',
+      rateLimitType: 'five_hour',
+      resetsAt: 1_754_870_400,
+      tier: 'epoch',
+    });
+  });
+
+  /** A blocking status, so the gate it feeds actually engages. */
+  it('reports a status the gate treats as blocking', () => {
+    const signal = detectLimitFailure(result({ resultText: 'Claude AI usage limit reached' }));
+    expect(isBlockingLimitStatus(signal!.status)).toBe(true);
+  });
+
+  /**
+   * The false positive that would hurt most: this repo's own agents write about usage
+   * limits all day. A substring test fires on every one of them, so the phrase alone is
+   * believed only when it is the WHOLE message.
+   */
+  it('does not stop the board because an agent wrote about usage limits', () => {
+    const agent = result({
+      resultText: [
+        'Added the limit classifier. The CLI ends such a run with the sentence',
+        '"Claude AI usage limit reached", which we now match anchored rather than as a',
+        'substring — a bare substring test would have fired on this very answer.',
+      ].join('\n'),
+      terminalReason: 'error_during_execution',
+    });
+    expect(detectLimitFailure(agent)).toBeNull();
+  });
+
+  it('believes the same sentence when it is the entire message', () => {
+    const signal = detectLimitFailure(result({ resultText: '  Claude AI usage limit reached  ' }));
+    expect(signal).toMatchObject({ rateLimitType: 'five_hour', resetsAt: null, tier: 'text' });
+  });
+
+  /**
+   * `api_error` is what a usage limit wears — and what every transient blip wears too.
+   * Matching it is how one bad minute of network would park the board for five hours.
+   */
+  it('is null for the ordinary failures that must stay retryable', () => {
+    expect(detectLimitFailure(result({ terminalReason: 'api_error' }))).toBeNull();
+    expect(detectLimitFailure(result({ resultText: 'the tests failed: 3 red' }))).toBeNull();
+    expect(detectLimitFailure(result())).toBeNull();
+  });
+
+  /** A run that finished its work hit no wall, whatever sentence it ended on. */
+  it('ignores the exact sentence when the run succeeded', () => {
+    expect(
+      detectLimitFailure(
+        result({ success: true, resultText: 'Claude AI usage limit reached|1754870400' }),
+      ),
+    ).toBeNull();
+  });
+
+  /**
+   * Weekly is claimed only from the tier that cannot be prose. Without an epoch the same
+   * wording stays rolling: `classifyLimit` matches on `/week/`, so trusting free text here
+   * is how the phrase "next week" parks everything for seven days.
+   */
+  it('claims the weekly window only when an epoch backs the wording', () => {
+    expect(
+      detectLimitFailure(result({ resultText: 'Claude AI weekly usage limit reached|1754870400' })),
+    ).toMatchObject({ rateLimitType: 'weekly', resetsAt: 1_754_870_400 });
+
+    expect(
+      detectLimitFailure(
+        result({ resultText: 'Claude AI usage limit reached — your weekly limit resets Monday' }),
+      ),
+    ).toMatchObject({ rateLimitType: 'five_hour', resetsAt: null });
+  });
+
+  /** A limit-specific label needs no sentence: nothing else is called `rate_limit_error`. */
+  it('reads a limit-specific label even with no message at all', () => {
+    expect(detectLimitFailure(result({ terminalReason: 'rate_limit_error' }))).toMatchObject({
+      status: 'rejected',
+      rateLimitType: 'five_hour',
+      resetsAt: null,
+      tier: 'label',
+    });
+    expect(detectLimitFailure(result({ stopReason: 'rate_limited' }))).not.toBeNull();
+    expect(detectLimitFailure(result({ terminalReason: 'http_429' }))).not.toBeNull();
+  });
+});
+
+describe('decideLimitPark', () => {
+  const proof = (over: Partial<LimitDetection> = {}): LimitDetection => ({
+    status: 'rejected',
+    rateLimitType: 'five_hour',
+    resetsAt: null,
+    tier: 'text',
+    ...over,
+  });
+
+  it('parks on an epoch no matter what the probe says', () => {
+    const epoch = proof({ tier: 'epoch', resetsAt: 1_754_870_400 });
+    expect(decideLimitPark(epoch, { sessionPct: 3, weeklyPct: 4 }, 9)).toBe('park');
+  });
+
+  it('parks when the probe agrees the window is spent', () => {
+    expect(decideLimitPark(proof(), { sessionPct: 97, weeklyPct: 12 }, 0)).toBe('park');
+    // …reading the WEEKLY figure when the detection named the weekly window.
+    expect(
+      decideLimitPark(proof({ rateLimitType: 'weekly' }), { sessionPct: 12, weeklyPct: 99 }, 0),
+    ).toBe('park');
+  });
+
+  /** The probe contradicts the sentence, and the sentence is the weaker witness. */
+  it('asks the human when the probe says there is budget left', () => {
+    expect(decideLimitPark(proof(), { sessionPct: 40, weeklyPct: 99 }, 0)).toBe('ask');
+    expect(decideLimitPark(proof({ tier: 'label' }), { sessionPct: 94, weeklyPct: null }, 0)).toBe(
+      'ask',
+    );
+  });
+
+  /**
+   * No reading at all — offline, CLI busy, `/usage` unavailable. Parking costs a wait;
+   * not parking costs a card blamed for the account. So park, but only twice in a row for
+   * one task: past that, nothing has ever confirmed this and a human should look.
+   */
+  it('parks an unverifiable reading, down to the two-in-a-row floor', () => {
+    expect(decideLimitPark(proof(), null, 0)).toBe('park');
+    expect(decideLimitPark(proof(), null, 1)).toBe('park');
+    expect(decideLimitPark(proof(), null, 2)).toBe('ask');
+    // A reading that omits the window in question is no reading of that window.
+    expect(decideLimitPark(proof(), { sessionPct: null, weeklyPct: 3 }, 0)).toBe('park');
+    expect(decideLimitPark(proof(), { sessionPct: null, weeklyPct: 3 }, 2)).toBe('ask');
   });
 });
 

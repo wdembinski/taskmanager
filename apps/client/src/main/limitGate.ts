@@ -18,13 +18,17 @@
  *
  * PURE CORE
  * ---------
- * The two decisions — classifying the limit (`classifyLimit`) and computing when
- * to resume (`computeResumeAt`) — are pure functions, unit-tested directly. The
- * `LimitGate` class is a small state machine around them; its clock, jitter, and
- * timer are all injected, so it too is unit-tested with a mock clock (no real
- * `setTimeout`, no waiting).
+ * Every decision here is a pure function, unit-tested directly: classifying the
+ * limit (`classifyLimit`), computing when to resume (`computeResumeAt`), reading a
+ * limit out of a run that merely FAILED (`detectLimitFailure`), and deciding whether
+ * that reading is worth parking the board over (`decideLimitPark`). The `LimitGate`
+ * class is a small state machine around them; its clock, jitter, and timer are all
+ * injected, so it too is unit-tested with a mock clock (no real `setTimeout`, no
+ * waiting).
  */
+import type { SessionEvent } from '@shared/session';
 import type { LimitState, LimitType } from '@shared/limit';
+import type { CliUsageReading } from './claudeUsage';
 
 /**
  * Classify the CLI's `rateLimitType` string into the two buckets docs/03 names.
@@ -77,6 +81,179 @@ export interface LimitSignal {
   status: string;
   rateLimitType: string;
   resetsAt: number | null;
+}
+
+// ---------------------------------------------------------------------------
+// Reading a limit out of a FAILURE
+// ---------------------------------------------------------------------------
+//
+// Everything above this line is driven by the CLI's own `rate_limit_event`, which
+// is structured and unambiguous. This section handles the other way the wall
+// arrives: the run simply ends, and the only thing naming the cause is the text of
+// the `result` event — the exact shape `authGate.ts` was written for, so it is
+// written the same way and for the same reason. Believing an agent's prose here
+// would park the whole board over one card's answer; disbelieving the CLI would
+// blame a card for something the account did.
+
+/** Which tier of evidence fired, so a caller can tell near-proof from a guess. */
+export type LimitProofTier =
+  /** The CLI's own machine-readable form: the phrase plus a trailing `|<epoch>`. */
+  | 'epoch'
+  /** The phrase alone, and it was the WHOLE message. Believable, not proof. */
+  | 'text'
+  /** A limit-specific label on the result, with no sentence naming the cause. */
+  | 'label';
+
+/** A `LimitSignal` plus the strength of the evidence behind it. */
+export interface LimitDetection extends LimitSignal {
+  tier: LimitProofTier;
+}
+
+/**
+ * The `result` fields the judgement needs — a slice, so tests need no full event.
+ *
+ * Wider than `authGate.ts`'s `AuthResultSlice` by one field: `success`. The
+ * sign-in classifier is only ever consulted about a run that already failed, whereas the
+ * limit phrase is something a *successful* run can legitimately end with (an agent
+ * reporting on this very feature), and a run that succeeded hit no wall by definition.
+ */
+export type LimitResultSlice = Pick<
+  Extract<SessionEvent, { kind: 'result' }>,
+  'success' | 'resultText' | 'stopReason' | 'terminalReason' | 'usage'
+>;
+
+/** The sentence the CLI ends on when the account is out of budget. */
+const LIMIT_PHRASE = /usage limit reached|reached your usage limit/i;
+
+/** The only lead-ins the CLI itself puts in front of that phrase. */
+const LIMIT_LEAD_IN = /(?:claude(?: ai| code)?\s+|you(?:'|’)?ve\s+|you have\s+)?/;
+
+/**
+ * The phrase carrying the CLI's trailing epoch — `Claude AI usage limit reached|1754870400`.
+ *
+ * Believed on sight, wherever it appears. No agent writes a bare 10-digit unix timestamp
+ * after a pipe; that field is the CLI telling a machine when the window clears, and it is
+ * also the only source of a reset time on this path.
+ */
+const LIMIT_WITH_EPOCH = new RegExp(`(?:${LIMIT_PHRASE.source})\\s*\\|\\s*(\\d{10})(?!\\d)`, 'i');
+
+/**
+ * The phrase as the WHOLE message: anchored at both ends, single-line, and allowed only
+ * the CLI's own decoration around it. A bare substring test is what makes this dangerous —
+ * this repo's own agents write about usage limits, and a paragraph that merely *contains*
+ * the phrase must not stop the board.
+ */
+const WHOLE_LIMIT_MESSAGE = new RegExp(
+  `^${LIMIT_LEAD_IN.source}(?:${LIMIT_PHRASE.source})[^\\n]{0,140}$`,
+  'i',
+);
+
+/** …and a hard cap on top of the anchors, so no amount of trailing clause qualifies. */
+const MAX_LIMIT_MESSAGE_CHARS = 200;
+
+/**
+ * Labels that mean a limit and nothing else.
+ *
+ * `api_error` is deliberately absent. The CLI files a usage limit under it — but it files
+ * every transient blip under it too, and matching it is precisely how one bad minute of
+ * network would park the board for five hours.
+ */
+const LIMIT_LABELS = /rate[_ -]?limit(?:_?error|ed)?\b|(?<!\d)429(?!\d)/i;
+
+/** Wording that names the long window rather than the rolling one. */
+const WEEKLY_WORDING = /\bweek(ly)?\b|\bseven[- ]?day\b|\b7[- ]?d(ay)?s?\b/i;
+
+/**
+ * Read a usage limit out of a run's `result`, or null if this failure is the card's own.
+ *
+ * Three tiers, weakest last, each believed for a different reason — see the constants
+ * above. Note what is NOT used as corroboration: `usage`. The sign-in gate can lean on
+ * "the model was never called", because a dead credential runs no turns; a usage limit is
+ * normally hit *mid-run*, with tokens spent, so all-zero usage is simply not available
+ * here and its absence proves nothing either way.
+ */
+export function detectLimitFailure(result: LimitResultSlice): LimitDetection | null {
+  // A run that finished its work hit no wall, whatever sentence it chose to end on.
+  if (result.success) return null;
+
+  const text = result.resultText?.trim() ?? '';
+  const labels = [result.terminalReason ?? '', result.stopReason ?? ''].filter((l) => l.length > 0);
+  const candidates = [text, ...labels].filter((c) => c.length > 0);
+
+  for (const candidate of candidates) {
+    const match = LIMIT_WITH_EPOCH.exec(candidate);
+    if (match) return detected(Number(match[1]), candidates, 'epoch');
+  }
+
+  if (text.length > 0 && text.length <= MAX_LIMIT_MESSAGE_CHARS && WHOLE_LIMIT_MESSAGE.test(text)) {
+    return detected(null, candidates, 'text');
+  }
+
+  if (labels.some((label) => LIMIT_LABELS.test(label))) return detected(null, candidates, 'label');
+
+  return null;
+}
+
+/**
+ * Build the signal, deriving `rateLimitType` rather than passing the sentence through.
+ *
+ * `classifyLimit` tests `/week|seven|7\s*d/i`, so handing it free text would park the
+ * board for SEVEN DAYS over an agent saying "next week". Weekly is claimed only when the
+ * wording says so *and* an epoch parsed — i.e. only from the tier that cannot be prose.
+ * Rolling is the strictly safer wrong answer: it resumes early, hits the wall again, and
+ * re-parks on a real `rate_limit_event`.
+ */
+function detected(
+  resetsAt: number | null,
+  candidates: readonly string[],
+  tier: LimitProofTier,
+): LimitDetection {
+  const weekly = resetsAt !== null && candidates.some((c) => WEEKLY_WORDING.test(c));
+  return {
+    status: 'rejected',
+    rateLimitType: weekly ? 'weekly' : 'five_hour',
+    resetsAt,
+    tier,
+  };
+}
+
+/** At or above this share of a window's cap, the probe CORROBORATES the text. */
+const AT_CAP_PCT = 95;
+
+/** Text-only parks in a row before the text stops being believed unaided. */
+const TEXT_PARK_FLOOR = 2;
+
+/**
+ * Whether a detection is worth parking the account over, or should fall through to the
+ * ordinary failure path so the human is asked.
+ *
+ * Pure, with the `/usage` reading injected — the probe is a subprocess, and this decision
+ * has to be testable without one. The ladder, in order:
+ *
+ *   - an epoch: the CLI said so in its own machine-readable field. Park.
+ *   - a reading at/near the cap for the window in question: the account genuinely has
+ *     nothing left, so the text is corroborated. Park.
+ *   - a reading clearly UNDER the cap: the probe actively contradicts the sentence, and
+ *     the sentence is the weaker witness. Ask.
+ *   - no reading at all (probe failed, offline, CLI busy): park, because the cost of
+ *     being wrong is a wait, not a wrong answer — but only up to {@link TEXT_PARK_FLOOR}
+ *     in a row for one task. Past that, something is parking this card repeatedly on
+ *     evidence nothing has ever confirmed, and a human should look at it.
+ */
+export function decideLimitPark(
+  proof: LimitDetection,
+  reading: CliUsageReading | null,
+  priorTextParks: number,
+): 'park' | 'ask' {
+  if (proof.tier === 'epoch') return 'park';
+
+  const window = classifyLimit(proof.rateLimitType) === 'weekly' ? 'weeklyPct' : 'sessionPct';
+  // A reading that omits the window we care about tells us nothing about it, so it
+  // counts as no reading rather than as a low one.
+  const pct = reading ? reading[window] : null;
+  if (pct !== null) return pct >= AT_CAP_PCT ? 'park' : 'ask';
+
+  return priorTextParks >= TEXT_PARK_FLOOR ? 'ask' : 'park';
 }
 
 /**
