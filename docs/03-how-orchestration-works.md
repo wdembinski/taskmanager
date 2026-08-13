@@ -87,6 +87,58 @@ tells us **when the limit resets**. The engine then:
 The dashboard shows a banner with a live countdown so you always know why work is
 paused and when it'll pick back up.
 
+### What engages the gate
+
+There are **two** ways the app learns the account is out of budget, and only the first
+is unambiguous.
+
+**1. The CLI's own `rate_limit_event`.** Structured, with the reset time in a field.
+Only a hard rejection engages the gate — an `allowed`/warning status is a heads-up as
+the cap approaches, and reading one as a block once parked everything for a full weekly
+window.
+
+**2. A run that merely FAILED, with the reason only in its text.** This is the common
+one: the turn ends as an `api_error` and the sentence *"Claude AI usage limit reached"*
+is the only thing naming the cause. Taken literally that is dangerous in both
+directions — believing an agent's prose parks the whole board over one card's answer,
+and disbelieving the CLI blames a card for something the account did — so the text is
+weighed on a ladder of evidence:
+
+- **An epoch** (`…usage limit reached|1754870400`). That is the CLI telling a machine
+  when the window clears; no agent writes a bare unix timestamp after a pipe. Believed
+  wherever it appears, and it is the only source of a reset time on this path.
+- **The phrase as the whole message** — anchored at both ends, one line, nothing but the
+  CLI's own decoration around it. Believable, not proof, so it is corroborated against
+  the account's real `/usage` reading. That probe is a local meta-command: free, no
+  tokens, no turn. It is asked with the **queue held**, so nothing new is launched into a
+  wall while the answer comes back. A reading at or above 95% of the window's cap
+  confirms the sentence and the gate goes up. A reading clearly *under* it contradicts
+  the sentence, and the run settles as the card's own failure so a human is asked. No
+  reading at all (offline, CLI busy) parks — the cost of being wrong is a wait, not a
+  wrong answer — but only twice in a row for one card, after which the same unconfirmed
+  sentence gets asked about rather than parked on again.
+- **A limit-specific label** on the result (`rate_limit`, `429`). `api_error` is
+  deliberately *not* one: the CLI files a usage limit under it, but it files every
+  transient blip under it too, and matching it is how one bad minute of network would
+  park the board for five hours.
+
+A limit is called **weekly** only when the wording says so *and* an epoch parsed — never
+from free text, or an agent saying "next week" would hold every project for seven days.
+Rolling is the safer wrong answer: it resumes early, hits the wall again if it is still
+there, and re-parks.
+
+Whichever way it arrives, the park is the same one. And because the two facts often
+arrive in the opposite order — the turn ends, and the limit is named a beat later — a
+failure already filed against the card is **withdrawn** when the limit turns out to be
+why it stopped, together with the retry counter, the queued retry and the fix note the
+resumed run would otherwise inherit ("the previous attempt failed (api_error)" is a lie
+about its own work).
+
+`scripts/verify-limit-park.mjs` drives both of these headlessly, against a stub `claude`
+on `PATH`: an agent's paragraph *about* usage limits parks as an ordinary failure with
+the gate left down, and the CLI's own sentence parks the account with no `task-failed`
+row written at all.
+
 **Everything the limit stopped is parked, not just what was running.** The gate is
 what remembers work across the reset, so anything that would have started while it
 is up is parked behind it too — above all the **next step of a card's plan**, whose
