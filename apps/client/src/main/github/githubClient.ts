@@ -94,9 +94,8 @@ export interface GitHubSearchIssueItem {
  * One comment on an issue — `GET /repos/{owner}/{repo}/issues/{number}/comments`.
  *
  * Issue comments and pull-request *conversation* comments are the same endpoint on GitHub
- * (a PR is an issue), which is why this type is not called an issue-only thing. Review
- * comments on a diff are a different endpoint and are deliberately not fetched: they are
- * about a line of code, not about the ticket.
+ * (a PR is an issue), which is why this type is not called an issue-only thing. Comments on
+ * a diff come from a second endpoint — see {@link GitHubReviewComment}.
  */
 export interface GitHubIssueComment {
   id: number;
@@ -105,6 +104,22 @@ export interface GitHubIssueComment {
   updated_at?: string;
   html_url?: string;
   user?: { id?: number; login?: string } | null;
+}
+
+/**
+ * One INLINE review comment — `GET /repos/{owner}/{repo}/pulls/{number}/comments`.
+ *
+ * The third place a human can say something on a pull request, and on a reviewed repository
+ * it is where nearly all of it is said: a reviewer who leaves six remarks on six lines leaves
+ * *nothing* on the conversation tab, so a sync reading only `/issues/{n}/comments` would call
+ * that PR silent. Same wire shape as an issue comment plus where in the diff it hangs, which
+ * is why it extends rather than repeats it.
+ */
+export interface GitHubReviewComment extends GitHubIssueComment {
+  /** The file the remark is attached to. Carried for provenance; nothing reads it yet. */
+  path?: string;
+  /** The line in that file, or null once the diff has moved out from under the comment. */
+  line?: number | null;
 }
 
 /** What one `GET /search/issues` question came back with, plus how much to trust it. */
@@ -163,6 +178,13 @@ export interface GitHubPullRequest {
 export interface GitHubReview {
   id: number;
   state?: string;
+  /**
+   * The summary the reviewer typed above their line comments — usually empty on a bare
+   * approval, and the entire message on a review that had something to say. It is carried
+   * because it appears in neither comments endpoint; see `describePullRequest.foldNotes`.
+   */
+  body?: string | null;
+  /** When it was submitted. Absent on a PENDING draft, which nobody else can see yet. */
   submitted_at?: string | null;
   user?: { id?: number; login?: string } | null;
 }
@@ -569,6 +591,29 @@ export class GitHubClient {
    */
   getPullRequest(owner: string, repo: string, number: number): Promise<GitHubPullRequest> {
     return this.request<GitHubPullRequest>(`${repoPath(owner, repo)}/pulls/${number}`);
+  }
+
+  /**
+   * A pull request's INLINE review comments, oldest first.
+   *
+   * `/pulls/{n}/comments`, which is a different endpoint from `/issues/{n}/comments` despite a
+   * PR being an issue: the conversation tab is the issue's, the diff remarks are the pull
+   * request's, and a PR reviewed line-by-line has all of its discussion in the second one.
+   * Both are needed before "has anybody said anything here" can be answered honestly.
+   *
+   * Two pages, the same cap and the same reasoning as {@link listIssueComments}: only the
+   * newest foreign comment is ever read off the result.
+   */
+  listReviewComments(
+    owner: string,
+    repo: string,
+    number: number,
+    maxPages = 2,
+  ): Promise<GitHubReviewComment[]> {
+    return this.paged<GitHubReviewComment>(
+      `${repoPath(owner, repo)}/pulls/${number}/comments?per_page=100`,
+      maxPages,
+    );
   }
 
   /** Every review, oldest first — GitHub returns the whole history, not the current state. */

@@ -16,6 +16,10 @@
  *  - **`lastEventAt` fires on TRANSITIONS only** — checks going red, approvals dropping,
  *    becoming ready to merge. Bumping it while a PR is steadily red would re-raise the alarm
  *    on every poll, so "Mark seen" would never stick.
+ *  - **`latestNoteAt` counts only comments that are not yours**, for the reason `identity.ts`
+ *    gives: a PR is full of your own review, and counting it would leave every one you have
+ *    ever spoken on permanently ringed. The three endpoints a GitHub discussion is scattered
+ *    across are folded into one list upstream, in `describePullRequest.ts`.
  *  - **A settled PR is retained** on its card rather than deleted. The search asks for
  *    `is:open`, so a merged PR simply stops coming back; deleting on that absence is what
  *    made a merged MR vanish off its card at the very moment it had something worth saying.
@@ -30,6 +34,8 @@ import {
   type PipelineStatus,
 } from '@shared/mergeRequest';
 import { pickTaskKey } from '../forge/issueKeys';
+import { latestForeignNoteAt } from '../forge/notes';
+import { githubAuthorIsMe, type GitHubIdentityCache } from './identity';
 import { discoverPullRequestKeys, isRepoScopedKey } from './prMatch';
 // The fetched shape and the staleness rule are the GitLab module's, and deliberately shared:
 // step 1 made `MergeRequest` provider-neutral, so a GitHub PR fills in the same fields rather
@@ -44,6 +50,14 @@ export interface GitHubSyncOptions {
   knownKeys: readonly string[];
   /** Board key → task id, for filing a matched pull request. */
   taskIdByKey: ReadonlyMap<string, string>;
+  /**
+   * Who you are on this GitHub instance, so your own comments are not news. Required rather
+   * than optional — the same shape `GitLabSyncOptions` uses — because forgetting it has a
+   * symptom nobody would report as a bug: every PR you have ever reviewed wearing an unread
+   * ring forever. Null is a real value and means "we could not find out", which counts
+   * nothing as yours; see `identity.ts` for why that is the safe direction.
+   */
+  identity: GitHubIdentityCache | null;
   now: number;
 }
 
@@ -145,6 +159,15 @@ export function reconcilePullRequests(
     const key = pickTaskKey(issueKeys);
     const taskId = key ? (opts.taskIdByKey.get(key) ?? null) : null;
 
+    // The discussion is only re-read for PRs that changed, so an absent list means "keep what
+    // we knew" rather than "there are none" — the same ternary `gitlabSync` uses, and the same
+    // reason: a sync that did not look must not be able to un-mark a comment as unread.
+    const latestNoteAt = pr.notes
+      ? (latestForeignNoteAt(pr.notes, (n) => githubAuthorIsMe(n.author, opts.identity)) ??
+        prior?.latestNoteAt ??
+        null)
+      : (prior?.latestNoteAt ?? null);
+
     // An event fires on the TRANSITION, never on a steady state — otherwise "Mark seen"
     // would be undone by the very next poll.
     const wentRed =
@@ -186,10 +209,7 @@ export function reconcilePullRequests(
       detailedMergeStatus: pr.detailedMergeStatus ?? prior?.detailedMergeStatus ?? null,
       hasConflicts: pr.hasConflicts,
       issueKeys,
-      // A PR's discussion is a separate endpoint and a separate decision about whose comments
-      // count, and nothing fetches it yet — so this is always "not re-read this time", which
-      // keeps whatever we knew rather than claiming there are no comments.
-      latestNoteAt: prior?.latestNoteAt ?? null,
+      latestNoteAt,
       // The user's own markers survive every sync — they are the one thing GitHub knows
       // nothing about, and a local rename is the same kind of field.
       displayName: prior?.displayName ?? null,

@@ -4,7 +4,7 @@
  * The impure half, mirroring `gitlab/describeMergeRequest.ts` — and its two rules transfer
  * unchanged, because they are about what a sync is allowed to *claim*, not about GitLab:
  *
- *  - **Only re-read what moved.** Each PR costs up to five requests, so they are spent only
+ *  - **Only re-read what moved.** Each PR costs up to seven requests, so they are spent only
  *    on a PR the caller says is stale. As on GitLab, "moved" cannot just mean `updated_at`:
  *    GitHub does not touch a pull request when its checks finish, so a PR first seen
  *    mid-run would otherwise read as running forever. That decision is the caller's
@@ -17,19 +17,26 @@
  *    "approvals unknown". A confident `0` would say "no approval required" about a repo
  *    that requires two.
  *
- * What this step deliberately does NOT fetch is the discussion: `notes` is left undefined,
- * which the reconciler reads as "not re-read this time" and keeps what it knew. A PR's
- * comments are a separate endpoint and a separate decision about whose comments count.
+ * The discussion is read from **three** endpoints and folded into one list, because GitHub
+ * scatters it: the conversation tab is `/issues/{n}/comments`, the line-by-line remarks are
+ * `/pulls/{n}/comments`, and a review's own summary is the `body` of a row in `/reviews`.
+ * Reading only the first — which is the endpoint whose name says "comments" — would call a
+ * PR silent that six reviewers had written all over, which is the whole signal the ring is
+ * for. Whose comments *count* is not decided here: the notes carry their author and the
+ * reconciler asks the identity cache (see `forge/notes.ts`).
  */
 import type { MergeRequest, PipelineStage, PipelineStatus } from '@shared/mergeRequest';
 import {
   GitHubError,
   toPullRequestState,
   type GitHubClient,
+  type GitHubIssueComment,
   type GitHubPullRequest,
   type GitHubReview,
+  type GitHubReviewComment,
   type GitHubSearchIssueItem,
 } from './githubClient';
+import type { ForgeNote } from '../forge/notes';
 import {
   overallCheckStatus,
   overallStatusContextStatus,
@@ -127,6 +134,38 @@ export function foldReviews(reviews: readonly GitHubReview[]): ReviewVerdicts {
     else if (state === 'CHANGES_REQUESTED') changesRequested = true;
   }
   return { approvalsGiven, changesRequested };
+}
+
+/**
+ * The three places a human can speak on a pull request, folded into one note list.
+ *
+ * A **review's body** is included, and that is the non-obvious one. `/reviews` is already
+ * fetched for the approval count, and a row there carries the summary the reviewer typed
+ * above their line comments — on a PR approved with "one nit and otherwise ship it", that
+ * sentence is the whole message and it appears in no other endpoint.
+ *
+ * An **empty** review body is skipped, deliberately: a bare APPROVED or CHANGES_REQUESTED row
+ * is a verdict, not a remark, and the reconciler already raises it as an event of its own
+ * (`becameReady`, `nowRequested`). Counting it here as well would put an unread ring on a PR
+ * that had been silently approved, and pressing "Mark seen" would not clear the second signal.
+ *
+ * A review with no `submitted_at` is a PENDING draft only its author can see — no timestamp
+ * and, as far as anybody else is concerned, not yet said.
+ */
+export function foldNotes(
+  issueComments: readonly GitHubIssueComment[],
+  reviewComments: readonly GitHubReviewComment[],
+  reviews: readonly GitHubReview[],
+): ForgeNote[] {
+  const notes: ForgeNote[] = [];
+  for (const comment of [...issueComments, ...reviewComments]) {
+    notes.push({ createdAt: comment.created_at, author: comment.user });
+  }
+  for (const review of reviews) {
+    if (!review.submitted_at || !review.body?.trim()) continue;
+    notes.push({ createdAt: review.submitted_at, author: review.user });
+  }
+  return notes;
 }
 
 /** What one CI read produced, or null when nothing answered. */
@@ -240,6 +279,8 @@ export async function describePullRequest(
   let pipelineStatus: PipelineStatus = prior?.pipelineStatus ?? 'unknown';
   let pipelineStages: PipelineStage[] = prior?.pipelineStages ?? [];
   let pipelineUrl: string | null = prior?.pipelineUrl ?? null;
+  /** The discussion, when this sync read it. Undefined = "not re-read this time". */
+  let notes: FetchedMergeRequest['notes'];
 
   if (stale && owner && repo) {
     detail = await client.getPullRequest(owner, repo, number).catch(() => null);
@@ -250,6 +291,20 @@ export async function describePullRequest(
       approvalsGiven = verdicts.approvalsGiven;
       changesRequested = verdicts.changesRequested;
     }
+
+    /**
+     * The discussion, from all three of the places GitHub keeps it. The reviews are the ones
+     * already fetched above rather than a second call — the approval count and the review
+     * bodies come off the same rows.
+     *
+     * Each source degrades on its own, as everything else in this file does, and the failure
+     * mode is deliberately gentle: if all three fail this is an EMPTY list, which the
+     * reconciler turns into "nothing newer than what we already recorded" rather than into a
+     * blank. A comment already seen is therefore never un-remembered by a bad request.
+     */
+    const issueComments = await client.listIssueComments(owner, repo, number).catch(() => []);
+    const reviewComments = await client.listReviewComments(owner, repo, number).catch(() => []);
+    notes = foldNotes(issueComments, reviewComments, reviews ?? []);
 
     // The bar belongs to the TARGET branch, so it is only askable once the detail told us
     // which one that is — or, failing that, from what we already stored.
@@ -322,5 +377,6 @@ export async function describePullRequest(
      */
     hasConflicts: detail ? detail.mergeable === false : (prior?.hasConflicts ?? false),
     updatedAt,
+    notes,
   };
 }

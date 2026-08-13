@@ -43,13 +43,10 @@ const opts = {
   now: NOW,
 };
 
-const note = (
-  at: string,
-  authorId: number,
-): { id: number; body: string; created_at: string; author: { id: number } } => ({
-  id: authorId,
-  body: 'hi',
-  created_at: at,
+// The neutral note shape (`forge/notes.ts`) the fetched MR now carries — `describeMergeRequest`
+// maps GitLab's `created_at` onto it, so the reconciler asks one question of both forges.
+const note = (at: string, authorId: number): { createdAt: string; author: { id: number } } => ({
+  createdAt: at,
   author: { id: authorId },
 });
 

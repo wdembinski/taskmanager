@@ -1811,6 +1811,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     const { github } = store.getSettings();
     if (!github.enabled) return store.listMergeRequests();
     const client = buildGitHubClient();
+    // Who you are on this instance — cached per site, so this is a call once, not once a
+    // sync. It is what stops your own review comments marking your own PR unread.
+    const identity = await githubIdentity(github.baseUrl, client);
     // This forge's rows only — see the same line in `syncGitLab`.
     const stored = store.listMergeRequests().filter((mr) => mr.provider === 'github');
     const list = await client.listMyPullRequests();
@@ -1875,6 +1878,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     const { upserts, deleteIds } = reconcilePullRequests(stored, detailed, {
       knownKeys,
       taskIdByKey,
+      identity,
       now: Date.now(),
     });
     for (const mr of upserts) store.upsertMergeRequest(mr);

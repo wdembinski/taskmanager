@@ -250,6 +250,38 @@ describe('getIssue / listIssueComments', () => {
     expect(comments).toHaveLength(1);
     expect(String(fetchMock.mock.calls[0][0])).toContain('/repos/acme/web/issues/12/comments');
   });
+
+  /**
+   * A different endpoint from the one above, despite a pull request BEING an issue: the
+   * conversation tab is the issue's, the line-by-line remarks are the pull request's. A PR
+   * reviewed diff-first has all of its discussion in this one.
+   */
+  it('reads a pull request’s inline review comments from the pulls path', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([{ id: 1, path: 'src/app.ts' }]));
+    vi.stubGlobal('fetch', fetchMock);
+    const comments = await client().listReviewComments('acme', 'web', 7);
+    expect(comments).toHaveLength(1);
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      'https://api.github.com/repos/acme/web/pulls/7/comments?per_page=100',
+    );
+  });
+
+  it('follows `Link: rel="next"` through the review comments, up to the cap', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse([{ id: 1 }], 200, {
+        link: '<https://api.github.com/repos/acme/web/pulls/7/comments?page=2>; rel="next"',
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const comments = await client().listReviewComments('acme', 'web', 7);
+
+    expect(comments).toHaveLength(2);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[1][0])).toBe(
+      'https://api.github.com/repos/acme/web/pulls/7/comments?page=2',
+    );
+  });
 });
 
 describe('commenting on an issue', () => {

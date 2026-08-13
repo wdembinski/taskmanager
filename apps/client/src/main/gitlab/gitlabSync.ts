@@ -23,7 +23,7 @@ import {
 } from '@shared/mergeRequest';
 import { gitlabAuthorIsMe, type GitLabIdentityCache } from './identity';
 import { discoverIssueKeys, pickTaskKey } from '../forge/issueKeys';
-import type { GitLabNote } from './gitlabClient';
+import { latestForeignNoteAt, type ForgeNote } from '../forge/notes';
 
 /** What one fetched MR looks like once the client's shapes are narrowed. */
 export interface FetchedMergeRequest {
@@ -47,8 +47,14 @@ export interface FetchedMergeRequest {
   detailedMergeStatus: string | null;
   hasConflicts: boolean;
   updatedAt: number;
-  /** Human notes, when this sync fetched them. Undefined = "not re-read this time". */
-  notes?: GitLabNote[];
+  /**
+   * Human notes, when this sync fetched them. Undefined = "not re-read this time".
+   *
+   * The provider-NEUTRAL shape (`forge/notes.ts`), not GitLab's wire type: a GitHub pull
+   * request fills this in from three endpoints of its own, and the reconcilers must be able
+   * to ask the same question of both. The forge maps its payload on the way in.
+   */
+  notes?: ForgeNote[];
 }
 
 export interface GitLabSyncOptions {
@@ -97,20 +103,6 @@ export function needsDetailRefresh(prior: MergeRequest | undefined, updatedAt: n
 
 export function mergeRequestId(repoId: number, number: number): string {
   return `gl-${repoId}-${number}`;
-}
-
-/** Newest note NOT written by you, in epoch ms, or null. */
-function latestForeignNoteAt(
-  notes: readonly GitLabNote[],
-  identity: GitLabIdentityCache | null,
-): number | null {
-  let latest: number | null = null;
-  for (const note of notes) {
-    if (gitlabAuthorIsMe(note.author, identity)) continue;
-    const at = Date.parse(note.created_at);
-    if (!Number.isNaN(at) && (latest === null || at > latest)) latest = at;
-  }
-  return latest;
 }
 
 /**
@@ -175,7 +167,9 @@ export function reconcileMergeRequests(
     // Notes are only re-read for MRs that changed, so an absent list means "keep what
     // we knew" rather than "there are none".
     const latestNoteAt = mr.notes
-      ? (latestForeignNoteAt(mr.notes, opts.identity) ?? prior?.latestNoteAt ?? null)
+      ? (latestForeignNoteAt(mr.notes, (n) => gitlabAuthorIsMe(n.author, opts.identity)) ??
+        prior?.latestNoteAt ??
+        null)
       : (prior?.latestNoteAt ?? null);
 
     // An event fires on the TRANSITION, never on a steady state — otherwise "Mark seen"

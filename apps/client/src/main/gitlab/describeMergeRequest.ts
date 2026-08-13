@@ -84,7 +84,12 @@ export async function describeMergeRequest(
     // "approvals dropped since last sync" signal stands in for it.
     changesRequested = reviewers.some((r) => r.state === 'requested_changes');
 
-    notes = await client.listNotes(projectId, iid).catch(() => []);
+    // Mapped to the neutral note shape here, at the edge, so that the reconciler asks the
+    // same question of a GitLab discussion and a GitHub one — see `forge/notes.ts`. The
+    // body is dropped on the way through: nothing downstream reads a comment, only when it
+    // arrived and who wrote it.
+    const fetchedNotes = await client.listNotes(projectId, iid).catch(() => []);
+    notes = fetchedNotes.map((note) => ({ createdAt: note.created_at, author: note.author }));
   }
 
   const pipeline = detail.head_pipeline ?? detail.pipeline ?? null;

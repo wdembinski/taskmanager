@@ -4,14 +4,21 @@
  * the same rule: an answer from the forge replaces what we stored, silence keeps it.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { describePullRequest, foldReviews, repoRefFromApiUrl } from './describePullRequest';
+import {
+  describePullRequest,
+  foldNotes,
+  foldReviews,
+  repoRefFromApiUrl,
+} from './describePullRequest';
 import { GitHubError } from './githubClient';
 import type {
   GitHubCheckRun,
   GitHubClient,
   GitHubCombinedStatus,
+  GitHubIssueComment,
   GitHubPullRequest,
   GitHubReview,
+  GitHubReviewComment,
   GitHubSearchIssueItem,
 } from './githubClient';
 import type { MergeRequest } from '@shared/mergeRequest';
@@ -77,6 +84,8 @@ interface ClientStub {
   }>;
   checkRuns?: Answer<GitHubCheckRun[]>;
   combined?: Answer<GitHubCombinedStatus>;
+  issueComments?: Answer<GitHubIssueComment[]>;
+  reviewComments?: Answer<GitHubReviewComment[]>;
 }
 
 /** Every call answers independently — the point being that one failing costs only itself. */
@@ -93,6 +102,8 @@ function client(stub: ClientStub = {}): GitHubClient {
     getBranchProtection: vi.fn(() => answer(stub.protection, 'protection')),
     listCheckRuns: vi.fn(() => answer(stub.checkRuns, 'check-runs')),
     getCombinedStatus: vi.fn(() => answer(stub.combined, 'status')),
+    listIssueComments: vi.fn(() => answer(stub.issueComments, 'issue comments')),
+    listReviewComments: vi.fn(() => answer(stub.reviewComments, 'review comments')),
   } as unknown as GitHubClient;
 }
 
@@ -156,6 +167,67 @@ describe('foldReviews', () => {
   });
 });
 
+describe('foldNotes', () => {
+  const comment = (at: string, id: number): GitHubIssueComment => ({
+    id,
+    body: 'have a look at this',
+    created_at: at,
+    user: { id, login: `dev${id}` },
+  });
+
+  /**
+   * The point of the whole step: GitHub scatters a discussion across three endpoints, and the
+   * one whose name says "comments" is the one a reviewed PR uses least.
+   */
+  it('folds the conversation, the diff remarks and the review bodies into one list', () => {
+    expect(
+      foldNotes(
+        [comment('2026-08-01T10:00:00Z', 1)],
+        [{ ...comment('2026-08-02T10:00:00Z', 2), path: 'src/app.ts', line: 12 }],
+        [
+          {
+            id: 5,
+            state: 'CHANGES_REQUESTED',
+            body: 'two nits',
+            submitted_at: '2026-08-03T10:00:00Z',
+            user: { id: 3, login: 'dev3' },
+          },
+        ],
+      ),
+    ).toEqual([
+      { createdAt: '2026-08-01T10:00:00Z', author: { id: 1, login: 'dev1' } },
+      { createdAt: '2026-08-02T10:00:00Z', author: { id: 2, login: 'dev2' } },
+      { createdAt: '2026-08-03T10:00:00Z', author: { id: 3, login: 'dev3' } },
+    ]);
+  });
+
+  /**
+   * A bare approval is a verdict, not a remark — and the reconciler already raises it as
+   * `becameReady`. Counting it twice would ring a PR that was approved in silence, and
+   * "Mark seen" would only clear one of the two signals.
+   */
+  it('does not treat a review with nothing written in it as something said', () => {
+    expect(
+      foldNotes(
+        [],
+        [],
+        [
+          { id: 1, state: 'APPROVED', body: '', submitted_at: '2026-08-03T10:00:00Z' },
+          { id: 2, state: 'APPROVED', body: '   ', submitted_at: '2026-08-04T10:00:00Z' },
+          { id: 3, state: 'APPROVED', submitted_at: '2026-08-05T10:00:00Z' },
+        ],
+      ),
+    ).toEqual([]);
+  });
+
+  // PENDING: a draft review only its author can see, and it has no `submitted_at` at all.
+  it('leaves an unsubmitted draft review out', () => {
+    expect(
+      foldNotes([], [], [{ id: 1, state: 'PENDING', body: 'wip', submitted_at: null }]),
+    ).toEqual([]);
+  });
+});
+
 describe('describePullRequest — a full read', () => {
   it('fills the row in from the detail, the reviews, the bar and the checks', async () => {
     const result = await describePullRequest(
@@ -189,9 +261,10 @@ describe('describePullRequest — a full read', () => {
       hasConflicts: false,
       updatedAt: Date.parse('2026-08-11T10:00:00.000Z'),
     });
-    // The discussion is a separate endpoint and a separate decision; undefined means the
-    // reconciler keeps whatever it knew rather than reading "no comments".
-    expect(result.notes).toBeUndefined();
+    // Both comment endpoints were left unstubbed here, so both threw and the one review has
+    // no body: an EMPTY list, which the reconciler reads as "nothing newer" — never as a
+    // reason to forget a comment it already recorded.
+    expect(result.notes).toEqual([]);
   });
 
   it('reads a landed PR as merged rather than merely closed', async () => {
@@ -206,6 +279,60 @@ describe('describePullRequest — a full read', () => {
   });
 });
 
+describe('describePullRequest — the discussion', () => {
+  it('reads all three sources and hands them over as notes', async () => {
+    const stub = client({
+      pull: detail(),
+      reviews: [
+        {
+          id: 5,
+          state: 'APPROVED',
+          body: 'ship it',
+          submitted_at: '2026-08-03T10:00:00Z',
+          user: { id: 3 },
+        },
+      ],
+      issueComments: [{ id: 1, created_at: '2026-08-01T10:00:00Z', user: { id: 1 } }],
+      reviewComments: [{ id: 2, created_at: '2026-08-02T10:00:00Z', user: { id: 2 } }],
+      protection: {},
+      checkRuns: [],
+      combined: {},
+    });
+    const result = await describePullRequest(stub, listed(), { stale: true });
+
+    expect(stub.listIssueComments).toHaveBeenCalledWith('acme', 'web', 7);
+    expect(stub.listReviewComments).toHaveBeenCalledWith('acme', 'web', 7);
+    expect(result.notes?.map((n) => n.createdAt)).toEqual([
+      '2026-08-01T10:00:00Z',
+      '2026-08-02T10:00:00Z',
+      '2026-08-03T10:00:00Z',
+    ]);
+    // The reviews are the ones already fetched for the approval count — the body and the
+    // verdict come off the same rows, so the discussion costs no extra call.
+    expect(stub.listReviews).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * One failing endpoint costs only itself, as everywhere else in this file — and the worst
+   * case is an empty list, which the reconciler reads as "nothing newer" rather than as a
+   * reason to forget a comment it already knew about.
+   */
+  it('keeps the comments it did manage to read when one endpoint refuses', async () => {
+    const result = await describePullRequest(
+      client({
+        pull: detail(),
+        reviews: [],
+        issueComments: 'fail',
+        reviewComments: [{ id: 2, created_at: '2026-08-02T10:00:00Z', user: { id: 2 } }],
+      }),
+      listed(),
+      { stale: true },
+    );
+
+    expect(result.notes).toEqual([{ createdAt: '2026-08-02T10:00:00Z', author: { id: 2 } }]);
+  });
+});
+
 describe('describePullRequest — only re-read what moved', () => {
   it('spends no requests at all on a PR that has not moved', async () => {
     const stub = client();
@@ -213,6 +340,10 @@ describe('describePullRequest — only re-read what moved', () => {
 
     expect(stub.getPullRequest).not.toHaveBeenCalled();
     expect(stub.listCheckRuns).not.toHaveBeenCalled();
+    // Undefined, not empty: a PR nobody touched has a discussion we did not look at, and the
+    // reconciler must keep the note time it already holds.
+    expect(stub.listIssueComments).not.toHaveBeenCalled();
+    expect(result.notes).toBeUndefined();
     expect(result.pipelineStatus).toBe('failed');
     expect(result.pipelineStages).toHaveLength(2);
     expect(result.approvalsRequired).toBe(2);

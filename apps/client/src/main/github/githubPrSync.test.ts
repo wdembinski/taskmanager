@@ -37,6 +37,9 @@ const fetched = (over: Partial<FetchedMergeRequest> = {}): FetchedMergeRequest =
   ...over,
 });
 
+/** You, on the connected instance — the reason your own review is not news. */
+const ME = { id: 7, login: 'wd', baseUrl: 'https://api.github.com' };
+
 /** The board: one card mirroring GitHub issue `acme/web#123`, one mirroring a JIRA ticket. */
 const opts = {
   knownKeys: ['acme/web#123', 'ENG-1'],
@@ -44,8 +47,15 @@ const opts = {
     ['acme/web#123', 'task-1'],
     ['ENG-1', 'task-9'],
   ]),
+  identity: ME,
   now: NOW,
 };
+
+/** A note as `describePullRequest` hands it over — the neutral shape, from any of the three. */
+const note = (at: string, authorId: number): { createdAt: string; author: { id: number } } => ({
+  createdAt: at,
+  author: { id: authorId },
+});
 
 describe('needsDetailRefresh', () => {
   const prior = (over: Partial<MergeRequest> = {}): MergeRequest =>
@@ -178,6 +188,85 @@ describe('reconcilePullRequests', () => {
       now: 3_000,
     }).upserts;
     expect(requested[0].lastEventAt).toBe(3_000);
+  });
+
+  it('counts other people’s comments and ignores my own', () => {
+    const mine = reconcilePullRequests(
+      [],
+      [fetched({ notes: [note('2026-08-01T10:00:00Z', 7)] })],
+      opts,
+    );
+    expect(mine.upserts[0].latestNoteAt).toBeNull();
+
+    const theirs = reconcilePullRequests(
+      [],
+      [fetched({ notes: [note('2026-08-01T10:00:00Z', 8)] })],
+      opts,
+    );
+    expect(theirs.upserts[0].latestNoteAt).toBe(Date.parse('2026-08-01T10:00:00Z'));
+  });
+
+  /**
+   * The unread ring is what a comment on a PR is FOR — and `mrNeedsAttention` is what the card
+   * asks. A review left by somebody else raises it; the same review left by you does not.
+   */
+  it('raises the ring for a review comment that is not yours', () => {
+    const [pr] = reconcilePullRequests(
+      [],
+      [fetched({ notes: [note('2026-08-01T10:00:00Z', 8)] })],
+      opts,
+    ).upserts;
+    expect(mrNeedsAttention(pr)).toBe(true);
+    expect(mrAttentionReason(pr)).toContain('new comments');
+
+    const [mine] = reconcilePullRequests(
+      [],
+      [fetched({ notes: [note('2026-08-01T10:00:00Z', 7)] })],
+      opts,
+    ).upserts;
+    expect(mrNeedsAttention(mine)).toBe(false);
+  });
+
+  // An identity we could not read counts nothing as yours: a PR that shouts when it needn't
+  // is a nuisance, one that stays quiet while a reviewer waits is a missed review.
+  it('treats every comment as foreign when it does not know who you are', () => {
+    const { upserts } = reconcilePullRequests(
+      [],
+      [fetched({ notes: [note('2026-08-01T10:00:00Z', 7)] })],
+      { ...opts, identity: null },
+    );
+    expect(upserts[0].latestNoteAt).toBe(Date.parse('2026-08-01T10:00:00Z'));
+  });
+
+  /**
+   * The line this step replaced. Comments are only re-read for PRs that moved, so an absent
+   * list must keep what we knew — the old `prior?.latestNoteAt ?? null` blanked it, which is
+   * how a PR you had never read went quiet on the next poll.
+   */
+  it('keeps a known comment time when this sync did not re-read the discussion', () => {
+    const prior = reconcilePullRequests(
+      [],
+      [fetched({ notes: [note('2026-08-01T10:00:00Z', 8)] })],
+      opts,
+    ).upserts;
+    const again = reconcilePullRequests(prior, [fetched()], opts);
+    expect(again.upserts[0].latestNoteAt).toBe(prior[0].latestNoteAt);
+  });
+
+  // Nothing but your own comments on a PR we DID re-read is not a reason to forget the one
+  // somebody else left last week.
+  it('keeps a known comment time when the only new comments are yours', () => {
+    const prior = reconcilePullRequests(
+      [],
+      [fetched({ notes: [note('2026-08-01T10:00:00Z', 8)] })],
+      opts,
+    ).upserts;
+    const again = reconcilePullRequests(
+      prior,
+      [fetched({ notes: [note('2026-08-02T10:00:00Z', 7)] })],
+      opts,
+    );
+    expect(again.upserts[0].latestNoteAt).toBe(Date.parse('2026-08-01T10:00:00Z'));
   });
 
   it('preserves the user’s read markers and local rename across every sync', () => {
