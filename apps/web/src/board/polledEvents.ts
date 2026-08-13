@@ -1,5 +1,12 @@
 /**
- * `Transport.on()` for a host with no push channel — the engine's events, rebuilt from polls.
+ * The engine's events, rebuilt from polls — apps/web's FALLBACK when nothing is pushing.
+ *
+ * There IS a push channel now (`sseEvents.ts`), and `eventBus.ts` is the composite that
+ * chooses between the two. This is the half that runs when the stream is not connected, and
+ * it keeps its baselines across the switch so that the first poll after a resume announces
+ * everything that changed while the stream was quietly broken. Nothing below has changed
+ * because of that; what follows still describes this half exactly, and the map of absences at
+ * the bottom is now a statement about the fallback rather than about the app.
  *
  * The desktop's renderer subscribes to a dozen `IpcEvents` channels and the engine pushes to
  * them over Electron IPC. There is no such wire here (docs/plan/README.md's "No realtime
@@ -95,11 +102,23 @@ export const REPRODUCIBLE_EVENTS: ReadonlyArray<keyof IpcEvents> = [
   'attention:resolved',
 ];
 
-/** Events that are honestly gone, with the reason, so a caller can say so in the UI. */
+/**
+ * Events THIS BUS cannot rebuild, with the reason, so a caller can say so in the UI.
+ *
+ * Read as "why is nothing arriving on this channel *while the app is polling*". Several of
+ * these do arrive when the push stream is connected (`eventBus.ts`), which is the whole point
+ * of having built it — a poll can only ever find state that is still there to be read, and a
+ * push carries the occurrence itself.
+ */
 export const UNREPRODUCIBLE_EVENTS: Readonly<Record<string, string>> = {
   'window:maximizedChanged': 'a browser tab has no app window to maximize',
   'board:notice': 'a one-off notice is not state, so a poll cannot find it again',
-  'session:event': 'a live transcript is streamed, and is far too large to poll',
+  'session:event':
+    'a live transcript is pushed, not polled — it is far too large to re-read on a timer, ' +
+    'so while the event stream is down the timeline stops until the run settles',
+  'session:gap':
+    'a poll has no stream to lose lines from, so it never has a hole to admit to — which is ' +
+    'not the same as being complete; see `session:event` above',
   'project:tasksChanged': 'the board is mirrored directly; this app reads it from the mirror',
   'scheduler:changed': 'no project queues are shown in the browser',
   'usage:sample': 'a per-second sample cannot survive a 2.5s poll — the chart redraws instead',
@@ -114,8 +133,35 @@ export class PolledEventBus {
   private timer: ReturnType<typeof setInterval> | null = null;
   private inFlight: Promise<void> | null = null;
   private disposed = false;
+  private paused = false;
 
   constructor(private readonly deps: PolledEventBusDeps) {}
+
+  /**
+   * Stop polling WITHOUT forgetting anything — subscriptions, and above all the baselines,
+   * are kept exactly as they are.
+   *
+   * For `eventBus.ts`, which pauses this bus for as long as the pushed stream is connected.
+   * Disposing or unsubscribing instead would drop the baselines, and the baselines are what
+   * make the resume worth having: the first poll after one diffs against the board as it was
+   * when the stream took over, so a change the stream failed to deliver is announced rather
+   * than silently absorbed into a fresh baseline.
+   *
+   * {@link poll} still works while paused, and deliberately: a caller that KNOWS it has a
+   * hole (the stream said so) wants exactly one pass, not a timer.
+   */
+  pause(): void {
+    if (this.paused) return;
+    this.paused = true;
+    this.stop();
+  }
+
+  /** Poll again, starting with an immediate pass — see {@link pause}. */
+  resume(): void {
+    if (!this.paused) return;
+    this.paused = false;
+    if (this.listeners.size > 0) this.start();
+  }
 
   /**
    * Subscribe. Returns the unsubscribe, exactly as `Transport.on` promises.
@@ -272,7 +318,7 @@ export class PolledEventBus {
   }
 
   private start(): void {
-    if (this.timer || this.disposed) return;
+    if (this.timer || this.disposed || this.paused) return;
     const set = this.deps.setIntervalImpl ?? setInterval;
     this.timer = set(() => void this.poll(), this.deps.intervalMs ?? DEFAULT_INTERVAL_MS);
     // Read once immediately so the baseline is established without waiting a whole interval,

@@ -444,6 +444,21 @@ export function TaskDetail({
     });
   }, []);
 
+  // The live stream above admits it lost lines — so stop trusting it and re-read the record.
+  //
+  // Nothing on the desktop emits this: an Electron IPC push does not drop events. It is for
+  // the mirrored path (apps/web), where the events cross a poll loop that can fall behind and
+  // a connection that can drop. A transcript three tool calls short looks exactly like one
+  // where the agent did three fewer things, which is why the hole gets its own channel rather
+  // than being left invisible. `loadActivity` replaces the timeline wholesale AND clears the
+  // live buffer, so a line that arrived both ways is de-duplicated by the reload.
+  useEffect(() => {
+    return transport.on('session:gap', ({ runId }) => {
+      if (!runIdRef.current || runId !== runIdRef.current) return;
+      void reloadRef.current();
+    });
+  }, []);
+
   /**
    * A merge finished — re-read the timeline so its outcome appears without clicking away
    * and back.

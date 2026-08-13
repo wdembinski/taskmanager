@@ -206,6 +206,62 @@ describe('PolledEventBus: the inbox’s two edges from one list', () => {
   });
 });
 
+describe('PolledEventBus: pausing for the pushed stream', () => {
+  it('keeps its baselines while paused, so the resume announces what changed meanwhile', async () => {
+    const engine = fakeEngine({ 'chain:links': [{ id: 'l1' }] });
+    const bus = makeBus(engine);
+    const seen = vi.fn();
+    bus.on('chain:changed', seen);
+
+    await bus.poll(); // baseline
+    bus.pause();
+    engine.set('chain:links', [{ id: 'l1' }, { id: 'l2' }]);
+    bus.resume();
+    await bus.poll();
+
+    // Against a CLEARED baseline this would have been the mount value and emitted nothing —
+    // which is the failure `eventBus.ts` pauses (rather than unsubscribes) to avoid.
+    expect(seen).toHaveBeenCalledTimes(1);
+    expect(seen).toHaveBeenCalledWith([{ id: 'l1' }, { id: 'l2' }]);
+  });
+
+  it('runs no timer while paused, and one again after a resume', () => {
+    const engine = fakeEngine({ 'chain:links': [] });
+    const timers: Array<number | null> = [];
+    const bus = new PolledEventBus({
+      invoke: engine.invoke,
+      setIntervalImpl: (() => {
+        timers.push(timers.length + 1);
+        return timers.length;
+      }) as unknown as typeof setInterval,
+      clearIntervalImpl: ((id: number) =>
+        timers.splice(timers.indexOf(id), 1)) as unknown as typeof clearInterval,
+    });
+
+    bus.on('chain:changed', vi.fn());
+    expect(timers).toHaveLength(1);
+    bus.pause();
+    expect(timers).toHaveLength(0);
+    bus.resume();
+    expect(timers).toHaveLength(1);
+    bus.dispose();
+  });
+
+  it('still answers an explicit poll while paused — that is the catch-up read', async () => {
+    const engine = fakeEngine({ 'chain:links': [{ id: 'l1' }] });
+    const bus = makeBus(engine);
+    const seen = vi.fn();
+    bus.on('chain:changed', seen);
+
+    await bus.poll();
+    bus.pause();
+    engine.set('chain:links', []);
+    await bus.poll();
+
+    expect(seen).toHaveBeenCalledWith([]);
+  });
+});
+
 describe('what this bus does and does not claim', () => {
   it('lists the events it can reproduce', () => {
     expect(REPRODUCIBLE_EVENTS).toContain('chain:changed');

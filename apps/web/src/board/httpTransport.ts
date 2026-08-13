@@ -39,12 +39,18 @@
  * was dropped on the floor by the kind itself. Relayed, the desktop runs its own
  * `task:create` handler and answers with the real row.
  *
- * POLLING, NOT PUSHING
- * --------------------
- * There is no event feed (docs/plan/README.md's "No realtime service"), so a result is
- * fetched rather than delivered. The poll runs **only while something is pending** and
- * widens as it waits, so request volume is bounded by clicks rather than by wall time: a tab
- * left open with nothing in flight makes no results requests at all.
+ * RESULTS ARE POLLED; EVENTS ARE PUSHED
+ * -------------------------------------
+ * A relayed call's RESULT is fetched rather than delivered: the poll runs **only while
+ * something is pending** and widens as it waits, so request volume is bounded by clicks
+ * rather than by wall time — a tab left open with nothing in flight makes no results requests
+ * at all. A stream would cost a connection to save a few hundred milliseconds on a click.
+ *
+ * EVENTS are the other way round, and now have their own channel: `on()` hands off to
+ * `eventBus.ts`, which reads `GET /v1/events` as a stream and falls back to rebuilding events
+ * from polls only when that stream is down. The difference is who is waiting — a result has a
+ * promise held open for it, while an event is a firehose a running agent produces whether
+ * anyone asked or not.
  */
 import {
   PROTOCOL_VERSION,
@@ -57,7 +63,10 @@ import type { IpcApi, IpcEvents } from '@tm/shared/ipc';
 import type { ManualStatus, Task } from '@tm/shared/model';
 import { BOARD_CLIENT_HEADER } from '@tm/protocol/wire';
 import type { Transport } from '@tm/ui/transport';
+import type { FocusSignal } from './BoardPoller';
+import { CloudEventBus } from './eventBus';
 import { PolledEventBus } from './polledEvents';
+import { SseEventStream } from './sseEvents';
 
 /**
  * How fast results are polled while a call is in flight, and how far that widens.
@@ -98,6 +107,17 @@ export interface HttpTransportDeps {
    * yet" in a timeout message, which are two very different things to be told.
    */
   hasLiveClient?: () => boolean;
+  /**
+   * The tab's visibility, if the host has one. Used only by the pushed event stream, which
+   * reconnects the moment the tab comes back to the foreground rather than waiting out a
+   * backoff a background tab's throttled timers may have stretched to minutes.
+   *
+   * Optional so a test — and any host without a `document` — gets a transport that works,
+   * just without that one shortcut.
+   */
+  focus?: FocusSignal;
+  /** Every failed attempt to open the event stream. Default: `console.warn`. */
+  onEventStreamError?: (error: unknown) => void;
   fetchImpl?: typeof fetch;
   newCommandId?: () => string;
   now?: () => number;
@@ -116,12 +136,25 @@ export class HttpTransport implements Transport {
   private readonly pending = new Map<string, Pending>();
   private polling = false;
   private resultCursor: string | null = null;
-  private readonly events: PolledEventBus;
+  private readonly events: CloudEventBus;
 
   constructor(private readonly deps: HttpTransportDeps) {
-    this.events = new PolledEventBus({
-      invoke: (channel, ...args) =>
-        this.invoke(channel, ...args) as Promise<Awaited<ReturnType<IpcApi[typeof channel]>>>,
+    this.events = new CloudEventBus({
+      polled: new PolledEventBus({
+        invoke: (channel, ...args) =>
+          this.invoke(channel, ...args) as Promise<Awaited<ReturnType<IpcApi[typeof channel]>>>,
+      }),
+      createStream: (handlers) =>
+        new SseEventStream({
+          ...handlers,
+          apiBase: deps.apiBase,
+          getAccessToken: deps.getAccessToken,
+          fetchImpl: deps.fetchImpl,
+          onError:
+            deps.onEventStreamError ??
+            ((error: unknown) => console.warn('event stream failed', error)),
+        }),
+      focus: deps.focus,
     });
   }
 

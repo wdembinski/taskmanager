@@ -4648,7 +4648,20 @@ Performance gauge redraws from `usage:series` instead, which is stated in the UI
 > [`docs/09`](../09-deploying-the-cloud-service.md)), and it is a second connection — which is
 > why a desktop only forwards while `SyncResponse.eventListeners` says somebody is watching.
 > `PolledEventBus` stays as the fallback for a browser talking to a desktop too old to
-> forward.
+> forward — and for one whose stream is down. `apps/web/src/board/eventBus.ts` is the
+> composite that chooses between the two, and the rule it enforces is that they are **never
+> both running**: the same events travel on both, so a live stream beside a live poll timer
+> means every whole-list event arrives twice and `task:changed` double-fires. The fallback is
+> paused rather than unsubscribed, because its baselines are the only reason falling back is
+> worth anything — the first poll after a resume diffs against the board as it was when the
+> stream took over, so a change the stream failed to deliver is announced instead of being
+> absorbed into a fresh baseline.
+>
+> The browser reads the stream with `fetch` + `ReadableStream`, not `EventSource`: the latter
+> cannot set an `Authorization` header, so the bearer would sit in an access log for the life
+> of every connection, and it reconnects itself with the stale URL after the token expires —
+> a 401 loop the page cannot intercept. The `text/event-stream` framing is kept regardless,
+> because every proxy in the path already knows not to buffer it.
 
 ### At-least-once, at last
 

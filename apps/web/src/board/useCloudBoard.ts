@@ -82,6 +82,9 @@ export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi
         // every poll, and this has to be the freshest answer at the moment a call times out
         // rather than the one that was true when it was built.
         hasLiveClient: () => stateRef.current.clients.length > 0,
+        // Its own signal rather than the poller's below: both are the same `visibilitychange`
+        // reading, and the transport outlives the effect that builds the poller.
+        focus: createBrowserFocusSignal(),
       }),
     [auth, config.cloudApiBase, clientId],
   );
