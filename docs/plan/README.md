@@ -4975,6 +4975,155 @@ later. Fixing it means teaching that dialog's staging model to hold a `File` as 
 and to pick the matching channel at create time, which is a change to a control the shared
 add-task work had just settled; it is deliberately not folded in here.
 
+### Verifying the mirrored web, headlessly
+
+Nothing in this repo has ever seen a rendered pixel, so the gates are the suites plus the
+scenario harnesses — and that is stated up front rather than discovered at the end, because
+it bounds what everything below is evidence *for*.
+
+**The gates, forced.** RELEASE.md §1's three, plus the `format:check` CI runs ahead of them.
+`--force` on the two turbo-routed ones, because a cached gate is not a gate: this repo has
+already once accepted a 47 ms `FULL TURBO` replay as a verification, so `0 cached` is the part
+of each line that matters.
+
+| # | Command | Exit | Result |
+|---|---------|------|--------|
+| 0 | `pnpm format:check` | **0** | All matched files use Prettier code style |
+| 1 | `pnpm typecheck --force` | **0** | 9 successful, 9 total — **0 cached**, 34.358s |
+| 2 | `pnpm test` | **0** | 177 files passed, 1 skipped (178); 2925 passed, 11 skipped (2936), 60.44s |
+| 3 | `pnpm build --force` | **0** | 6 successful, 6 total — **0 cached**, 36.671s |
+
+Not `pnpm test --force`: the root script is `turbo run build --filter=./packages/* && vitest
+run`, so the flag falls through to `vitest`, which has no `--force` and exits on it. It needs
+none — `vitest run` is not cached.
+
+The 11 skips are the two standing opt-ins and nothing new (9 in `wslHost.test.ts` behind
+`ORCH_WSL_TEST=1`, 2 in `wslSession.e2e.test.ts` behind `ORCH_E2E=1`).
+
+**The first run of gate 2 was RED, and the reason is worth keeping.** Two tests in
+`worktreeManager.test.ts` — untouched by this round — timed out at vitest's 5s default. Both
+pass in isolation in under 2s; each spawns a dozen real `git` processes against a real temp
+repo, so their duration is a function of how loaded the machine is, and this round grew the
+workspace run by ~470 tests. Several neighbours were already sitting at 4–5.5s. So the failure
+was real and the cause was not in the code under test: the two real-git suites
+(`worktreeManager.test.ts`, `worktreeWsl.test.ts` — the latter crosses the WSL boundary at
+~3.7s per test *idle*) now carry `vi.setConfig({ testTimeout: 30_000 })`. Per file, so a
+genuinely hung unit test still fails in five seconds.
+
+**The eight-term sum still holds, and is still eight.** Phase 25's invariant — the standalone
+runs sum to the aggregate — re-derived from `pnpm exec vitest list --filesOnly` rather than
+from the workspace layout, which is the trap: two paths belong to no package.
+
+| Command | Files | Tests |
+|---------|-------|-------|
+| `pnpm --filter claude-orchestrator test` | 82 passed, 1 skipped (83) | 1541 passed, 11 skipped (1552) |
+| `pnpm --filter @tm/server test` | 27 | 199 |
+| `pnpm --filter @tm/web test` | 13 | 158 |
+| `pnpm --filter @tm/shared test` | 27 | 645 |
+| `pnpm --filter @tm/protocol test` | 1 | 12 |
+| `pnpm --filter @tm/ui test` | 22 | 313 |
+| `pnpm exec vitest run test/` | 4 | 32 |
+| `pnpm exec vitest run scripts/next-version.test.mjs` | 1 | 25 |
+| | **178 = the aggregate** | **2936 = the aggregate** |
+
+#### The circuit, not the pieces
+
+Every new module has its own suite — `ipcEventFanout`, the server's `eventBus` and
+`sseStream`, the browser's `sseEvents` (fed a fake `ReadableStream`, since
+`apps/web/vitest.config.ts` has no jsdom), the composite bus's never-both rule,
+`cloudEventForwarder`'s batching and listener gate, the upload byte cap and the hostile
+filename. What none of them covers is the wire, so
+[`verify-remote-sse.mjs`](../../apps/client/scripts/verify-remote-sse.mjs) joins
+`verify-remote-ipc.mjs` as the second harness: **36 checks**, all passing, driving one engine
+event from a real `CloudEventForwarder`, through a real `POST /v1/events` into the server's
+real `EventBus`, out of a real `SseStream` as real `text/event-stream` bytes, into the
+browser's real `SseEventStream` and `CloudEventBus`.
+
+It runs under **plain Node, not Electron-as-Node** — there is no `Store` and no
+`better-sqlite3` anywhere on this wire, so the ABI preflight `verify-remote-ipc.mjs` opens
+with would be checking something this script never touches. Its fake server is **one route,
+two methods against one `EventBus`**, because that is what the service is; a harness that gave
+each direction its own bus would pass with the two halves wired to nothing.
+
+Three things it proved that no unit suite was in a position to:
+
+- **A gap frame is the common case, not the outage case.** Coalescing two updates to one card
+  is a hole by design, so the batch carries `gap: 1`, the server writes a `gap` frame with
+  reason `sender`, and the browser answers with exactly one catch-up read — *without* starting
+  the poll timer. The harness found this by dying on it: `CloudEventBus.catchUp` calls
+  `polled.poll()` from inside the browser's read loop, and a stand-in without that method
+  threw there, which took the whole SSE connection down until the reconnect. Worth knowing in
+  its own right: **an exception thrown under `onEnvelope`/`onGap` costs a connection**, and the
+  reconnect is what saves it.
+- **The retry floor is a floor.** `SSE_RETRY_MIN_MS` clamps the server's own `retry:` up to a
+  second, so a reconnect cannot be hurried by making the fake server impatient — a test that
+  waited on the server's number would fail for a reason that has nothing to do with resume.
+- **The listener grace is what makes a forced close survivable.** Events published while
+  nobody is connected still get forwarded, because the account is inside `LISTENER_GRACE_MS`,
+  and the ring replays them exactly once on the new connection.
+
+The harness also carries a preflight against [the backtick
+trap](../../apps/client/scripts/verify-remote-sse.mjs): the scenario is a template literal, so
+a backtick written in prose *ends* it, and what reaches disk is a truncated file that Node
+reports as a syntax error pointing at the next word. It cost two rounds here. The check reads
+the script's own SOURCE, because by the time the interpolated string exists the damage is done.
+
+#### The two root suites, extended
+
+- `test/ipc-relay-coverage.test.ts` gained the event direction: every channel `ipc.ts`
+  actually pushes is classified in `EVENT_FANOUT`, every entry corresponds to something
+  pushed (with `session:gap` named as the one deliberate exception rather than filtered away),
+  and no name appears in both `RELAY_POLICY` and `EVENT_FANOUT`. 5 tests → 9.
+- `test/shell-parity.test.ts` gained the controls that moved into `@tm/ui` this round —
+  `AddTaskDialog` and `GitGraphPane` — asserted both as imports and as the absence of a
+  host-local copy. 7 tests → 10.
+
+#### Proving each new gate can fail
+
+Phase 26's trap applies and was worked around rather than walked into: a classification record
+whose value type is *computed* dies at typecheck when you mutate one entry, which proves the
+consistency gate and says nothing about the suite. So each mutation was made **in both places
+that would have to agree**, the tree re-typechecked, and only then was it asked which gate went
+red.
+
+| Mutation | `pnpm typecheck` | What went red |
+|---|---|---|
+| A — `session:paused` added to **both** `IpcEvents` and `EVENT_FANOUT`, pushed by nothing | **green** (9/9, 0 cached) | `ipc-relay-coverage` › *pushes every event it claims to classify* and `ipcEventFanout.test.ts` › *covers exactly the event channels* |
+| B — `window:maximizedChanged` reclassified `drop` → `replace-last` | **green** | `verify-remote-sse.mjs` › *window:maximizedChanged is not forwarded at all*, plus 4 in `ipcEventFanout.test.ts` |
+| C — a local `apps/web/src/board/AddTaskDialog.tsx` re-added | **green** (4/4, 0 cached) | `shell-parity` › *leaves no local copy of either behind in a host tree*, and nothing else |
+
+Mutation A is the one that earns the new exhaustiveness test its place: `send<K extends keyof
+IpcEvents>` means the type system already refuses a *push* of an unclassified channel, so the
+direction that is genuinely uncovered is the ORPHAN one — a classification for an event nobody
+emits, which typechecks perfectly and reads in review as coverage. Mutation C is the same
+argument for the parity file: a forked component compiles, renders, and is invisible to every
+other gate in the repo.
+
+Each was restored with `git checkout --` and the tree re-verified clean before the next.
+
+#### One defect the gates could not see, fixed
+
+`apps/web/src/board/sseEvents.ts` contained a **raw NUL byte** — the SSE grammar's "ignore an
+`id` containing U+0000", written as the character rather than the escape. It compiles, it
+behaves correctly, and prettier is happy with it; what it does is make **git call the file
+binary**, so this round's own diff for it read `Bin 0 -> 13958 bytes` with no line-level review
+and no blame. Now spelled `'\u0000'`, the way `@tm/shared/ipcEventFanout`'s `KEY_SEPARATOR`
+spells the same character.
+
+Five files predating this round carry the same raw-NUL idiom (`attention.ts`,
+`gitlab/pipelineStages.ts`, `planValidate.ts`, `usageRollup.ts`, `iam/iamAuth.guard.ts`).
+They are left alone and recorded here rather than swept up: it is a house idiom, changing it is
+not this round's business, and a repo invariant forbidding it would demand five unrelated edits
+to go green.
+
+#### What a human still has to do
+
+**Open a browser beside a running desktop and watch a transcript stream.** Everything above is
+the circuit driven through fakes at its two edges — a fake `fetch`, a fake socket, a fake
+poller. No assertion here has seen a real agent's output arrive in a real tab, and none of them
+can: that needs the deployed server, a signed-in desktop actually running a session, and eyes.
+The same debt the previous two rounds recorded, unchanged and not reduced by any of this.
+
 ### How it is verified
 
 Every piece has a unit suite. What none of them covers is the circuit, so

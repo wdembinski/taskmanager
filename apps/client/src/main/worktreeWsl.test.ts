@@ -9,8 +9,12 @@
  *
  * Skips itself when WSL is unavailable, so the suite still passes without it.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
+// Every git invocation here crosses the Windows/WSL boundary, which is the slowest thing in
+// the whole suite: ~3.7s per test with the machine otherwise idle, i.e. inside vitest's 5s
+// default only while nothing else is running. See the same note in `worktreeManager.test.ts`.
+vi.setConfig({ testTimeout: 30_000 });
 import { existsSync } from 'node:fs';
 import type { Project, Task } from '@shared/model';
 import { listWslDistros } from './exec/wsl';

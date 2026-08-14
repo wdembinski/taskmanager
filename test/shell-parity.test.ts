@@ -184,6 +184,26 @@ function topLevelKeys(literal: string): string[] {
   return keys;
 }
 
+/** Where each host's own source lives — `dist` and `node_modules` are nobody's source. */
+const HOST_TREES = ['apps/web/src', 'apps/client/src/renderer/src'];
+
+/**
+ * Every file under a tree whose name `matches`, recursively and repo-relative.
+ *
+ * At module scope rather than inside one `describe` because two of them walk the host trees
+ * now: the global-CSS rules look for a re-declaration, and the shared-component check looks
+ * for a re-implementation. Same walk, different filter.
+ */
+function filesUnder(tree: string, matches: RegExp): string[] {
+  const found: string[] = [];
+  for (const entry of readdirSync(join(repoRoot, ...tree.split('/')), { withFileTypes: true })) {
+    const path = `${tree}/${entry.name}`;
+    if (entry.isDirectory()) found.push(...filesUnder(path, matches));
+    else if (matches.test(entry.name)) found.push(path);
+  }
+  return found;
+}
+
 /** Every CSS rule a file declares for itself, across all of its `makeStyles` blocks. */
 function localRuleNames(source: string): string[] {
   const names: string[] = [];
@@ -279,24 +299,15 @@ describe("the app's global CSS rules", () => {
     { pattern: /\bcolor-scheme\s*:|\bcolorScheme\s*:/, what: 'the dark colour-scheme' },
   ];
 
-  /** Where each host's own source lives — `dist` and `node_modules` are nobody's source. */
-  const HOST_TREES = ['apps/web/src', 'apps/client/src/renderer/src'];
   /** The two entry documents, which live above those trees and can carry a <style> block. */
   const HOST_DOCUMENTS = ['apps/web/index.html', 'apps/client/src/renderer/index.html'];
   const STYLE_BEARING = /\.(ts|tsx|css|html)$/;
 
-  function filesUnder(tree: string): string[] {
-    const found: string[] = [];
-    for (const entry of readdirSync(join(repoRoot, ...tree.split('/')), { withFileTypes: true })) {
-      const path = `${tree}/${entry.name}`;
-      if (entry.isDirectory()) found.push(...filesUnder(path));
-      else if (STYLE_BEARING.test(entry.name)) found.push(path);
-    }
-    return found;
-  }
-
   it('are declared in packages/ui and nowhere else', () => {
-    const hostFiles = [...HOST_TREES.flatMap(filesUnder), ...HOST_DOCUMENTS];
+    const hostFiles = [
+      ...HOST_TREES.flatMap((tree) => filesUnder(tree, STYLE_BEARING)),
+      ...HOST_DOCUMENTS,
+    ];
     // A guard over an empty list passes for the wrong reason: if a tree is ever moved or
     // renamed, that must read as a broken test rather than as a clean board.
     expect(hostFiles.length, 'found no host sources to scan — has a tree moved?').toBeGreaterThan(
@@ -312,6 +323,62 @@ describe("the app's global CSS rules", () => {
           'host alone and the other one silently keeps the old look.',
       ).toEqual([]);
     }
+  });
+});
+
+describe('the controls that moved into the shared package', () => {
+  /**
+   * Two components the mirror round lifted out of `apps/client/src/renderer/src` and into
+   * `packages/ui`, because a browser now needs each of them.
+   *
+   * They are a different kind of parity from the shell above, and worth their own block for
+   * it. `AppShell` was always shared; these two were the DESKTOP'S, and were moved on the
+   * argument that making a card and reading a commit graph are the same act on either host.
+   * The way that argument gets quietly abandoned is not by editing the shared file — it is by
+   * one host growing a local copy "just for now", which nothing else in this repo would go
+   * red about, since both hosts would still compile and still render something.
+   *
+   * `filesEnabled` on the dialog is the shape of divergence that is FINE and is deliberately
+   * not asserted against: a prop the shared component owns, with both hosts passing what is
+   * true of them. The fork this catches is a second implementation.
+   */
+  const MOVED = [
+    { name: 'AddTaskDialog', subpath: 'AddTaskDialog' },
+    { name: 'GitGraphPane', subpath: 'GitGraphPane' },
+  ] as const;
+
+  for (const [label, path] of [
+    ['the browser client', WEB_BOARD],
+    ['the desktop renderer', DESKTOP_BOARD],
+  ] as const) {
+    it(`renders ${label}'s add-task dialog and commit graph from @tm/ui`, () => {
+      const source = read(path);
+      for (const piece of MOVED) {
+        expect(
+          importedFrom(source, piece.subpath),
+          `${path} must import ${piece.name} from @tm/ui/${piece.subpath} (or its @ui alias). ` +
+            'It was moved into packages/ui precisely so both hosts get the same one; an ' +
+            'import from anywhere else is the fork.',
+        ).toContain(piece.name);
+      }
+    });
+  }
+
+  it('leaves no local copy of either behind in a host tree', () => {
+    // The realistic regression is a FILE, not an import: somebody re-adds
+    // `apps/web/src/board/AddTaskDialog.tsx` (which is exactly where this one lived until the
+    // mirror round deleted it) and points one host at it. Both hosts still typecheck, both
+    // still render a dialog, and the two drift from that commit onward.
+    const names = MOVED.map((piece) => piece.name);
+    const pattern = new RegExp(`^(?:${names.join('|')})\\.tsx?$`);
+    const copies = HOST_TREES.flatMap((tree) => filesUnder(tree, pattern));
+
+    expect(
+      copies,
+      `${copies.join(', ')} re-implements a component that lives in packages/ui. Delete it ` +
+        'and import from @tm/ui — a host-local copy is a second implementation that only ' +
+        'diverges, and nothing else in this repo can see it happen.',
+    ).toEqual([]);
   });
 });
 

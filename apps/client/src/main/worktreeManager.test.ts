@@ -6,6 +6,13 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+// A single test here spawns a dozen real `git` processes against a real temp repo, so its
+// duration is a function of how loaded the machine is rather than of anything under test. In
+// isolation the slowest is ~2s; inside the full workspace run — which the mirror round grew
+// by ~470 tests — two of them crossed vitest's 5s default and went red on timing alone. The
+// budget is raised only for this file, so a genuinely hung UNIT test still fails fast.
+// `worktreeWsl.test.ts` carries the same line for the same reason.
+vi.setConfig({ testTimeout: 30_000 });
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Project, Task } from '@shared/model';
