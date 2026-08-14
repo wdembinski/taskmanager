@@ -9,9 +9,10 @@
  * sections entirely.
  *
  * Every one of them is a relayable `IpcApi` read now, so this hook is the whole fix: load
- * them at mount, keep them fresh through `Transport.on` — which the web satisfies with
- * `PolledEventBus`, the desktop with real pushed events — and hand them straight to the
- * components that were always ready for them.
+ * them at mount, keep them fresh through `Transport.on` — which the desktop satisfies with
+ * real pushed events, and the web with `CloudEventBus`: the forwarded engine events off the
+ * SSE stream while it is up, `PolledEventBus`'s reconstruction from the mirror while it is
+ * not — and hand them straight to the components that were always ready for them.
  *
  * WHY A SEPARATE HOOK FROM `useCloudBoard`
  * ----------------------------------------
@@ -62,10 +63,18 @@ export interface BoardExtras {
  *
  * WHY THEY RE-READ `scheduler:activeRuns`
  * ---------------------------------------
- * No event carries "this run started" or "this run stopped" to a browser — `task:changed`
- * is reconstructed from the mirror (`polledEvents.ts`), which the desktop only pushes on
- * its own next sync. Re-reading the live set is what puts the spinner on the card, or takes
- * it off, now rather than in a few seconds.
+ * Because the answer has to be on screen when the click returns, and no arriving event is
+ * guaranteed to be. Re-reading the live set is what puts the spinner on the card, or takes
+ * it off, NOW rather than in a few seconds.
+ *
+ * The alternative is to wait for an event, and both of the two buses that could carry one
+ * are a maybe. `PolledEventBus` reconstructs `task:changed` from the mirror, which the
+ * desktop only pushes on its own next sync — and it cannot reproduce `scheduler:changed` at
+ * all (`polledEvents.ts` says so by name). `CloudEventBus` on a live SSE stream DOES forward
+ * the real `scheduler:changed` — that became true when the push channel was built, and the
+ * flat claim that once stood here, that no event carries a run's start or stop to a browser,
+ * stopped being true with it. What did not change is that the stream is allowed to be down,
+ * so subscribing instead of re-reading would trade a certainty for a usually.
  *
  * WHY THEY LIVE OUTSIDE THE HOOK
  * ------------------------------

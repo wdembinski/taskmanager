@@ -5290,6 +5290,192 @@ operand is whatever `development` last shipped.
 - **The server has not been deployed with this schema.** `CommandResults1786800000000` adds
   `commands.ackedAt`, `command_results` and `tombstones`, and has only been read, not run.
 
+> **Two of these are answered by the round below.** Attachment bytes DO cross now — the
+> upload route, the blob store and the browser's preview are steps 9 and 10, and
+> `Transport.attachmentUrl` returns a real URL rather than `''`. And the un-run schema is two
+> migrations larger than that bullet says: `ClientInfo1786900000000` and
+> `AttachmentBlobs1787000000000` join it, all three still only read. The other three bullets
+> stand unchanged.
+
+### The critical files, walked one by one on the finished tip (`0f8b456`)
+
+The plan's twelfth step names twenty-two files, in six areas, as the ones this round lives or
+dies on. This section is that walk. Nothing in it is carried forward from an earlier step:
+every file was re-opened on `0f8b456`, and every gate re-run there rather than trusted from
+the run step 11 measured on the same commit.
+
+All twenty-two exist. **Seventeen changed on this branch; five did not** — and the five are
+where the walk earned its keep, because "named critical and never touched" is either a design
+working as intended or something quietly forgotten, and only reading them tells you which.
+
+#### The seventeen that changed
+
+| Area | File | What it had to end up as | On `0f8b456` |
+| --- | --- | --- | --- |
+| Relay policy | `packages/shared/src/ipcRelay.ts` | the new upload channel classified, exhaustively | ✅ `+4`: `attachment:addUploaded` → `'relay'` (:263), with the comment that a browser is its only possible caller; host-only count still **20** across the same four groups |
+| Wire | `packages/protocol/src/wire.ts` | the event and blob contracts | ✅ `+280`: `EventEnvelope` (:191), `EventBatchRequest/Response` (:212/:231), `EVENT_STREAM_FRAMES` (:247), `HelloFrame`/`GapFrame`/`ByeFrame` (:273–:301), `UploadTicket`/`BlobStored`/`MediaTokenGrant` (:480–:496); `CommandKind` still the four of Phase 26 (:400) |
+| Desktop | `apps/client/src/main/ipc.ts` | the `send` choke point, the `attachment:*` handlers, the engine wiring | ✅ `+122`: `send` at **:301** still the only `webContents.send` in the file, now with `cloudEvents.publish` beside it; `attachment:addUploaded` at :2345 among six handlers; `cloudEvents.configure` (:3575) and `cloudAttachments.configure` beside `cloudPoller` (:3605), both constructed **inert** at :284/:290 |
+| Desktop | `apps/client/src/main/cloudPoller.ts` | carry the client's name, learn who is listening | ✅ `+35`: `getClientInfo` dep, `info` on every `SyncRequest` (:223), and `onEventListeners?.(body.eventListeners)` guarded on `!== undefined` (:272) so a server predating the channel does not read as "nobody watching" |
+| Desktop | `apps/client/src/main/store.ts` | remember what the cloud already holds | ✅ `+72`: `cloudBlobAt` column, a PRAGMA-guarded `ALTER TABLE` for existing databases, `markAttachmentUploaded(id, at)` taking `null` to un-stamp |
+| Server | `apps/server/src/app.module.ts` | the two new modules and three new entities | ✅ `+8`: `EventsModule`, `AttachmentsModule`, `AttachmentBlob`, `AttachmentUpload`, `Client` — all inside the `forRootAsync` factory, not the decorator literal |
+| Server | `apps/server/src/mirror/mirror.service.ts` | name the desktops, count the listeners | ✅ `+52`: `clientInfoColumns` on the registration write (:100), `eventListeners: this.events.listeners(accountId, now)` on the response (:159) |
+| Server | `apps/server/src/main.ts` | let octet-stream bodies through | ✅ `+10`: the "AND NOTHING ELSE" comment on `useBodyParser('json')`, spelling out that a global `express.raw()` would silently store every upload as zero bytes |
+| Server | `apps/server/src/migrations/` | the two new tables | ✅ `ClientInfo1786900000000`, `AttachmentBlobs1787000000000` — picked up by `dataSource.ts`'s glob (:47), which is why nothing needed registering by hand |
+| Web | `apps/web/src/board/httpTransport.ts` | push, and blobs | ✅ `+220`: `CloudEventBus` (:146/:164) fed by `SseEventStream` (:170), `hostOnlyMessage` refusal before the network (:194), `MEDIA_TOKEN_QUERY` on the preview URL (:230) |
+| Web | `apps/web/src/board/polledEvents.ts` | stay the fallback, honestly | ✅ `+54`: still names what it cannot reproduce rather than hiding it — `'scheduler:changed': 'no project queues are shown in the browser'` (:123) |
+| Web | `apps/web/src/board/BoardScreen.tsx` | the graph, and the real dialog | ✅ `+112`: `GitGraphPane` from `@tm/ui`, the shared `AddTaskDialog` with every field |
+| Web | `apps/web/src/board/targetClient.ts` | pick a desktop by name | ✅ `+96` |
+| Web | `apps/web/src/App.tsx` | the picker and the skew banner | ✅ `+38` |
+| Shared UI | `packages/ui/src/transport.tsx` | one interface both hosts satisfy | ✅ `+25`: `attachmentUrl` and `attachFiles`, optional so the desktop can decline them |
+| Shared UI | `packages/ui/src/TaskDetail.tsx` | notice a hole in the transcript | ✅ `+15`: the `session:gap` subscription that re-reads the record, with the note that nothing on the desktop ever emits it |
+| Shared UI | `packages/ui/src/AttachmentStrip.tsx` | upload from a browser | ✅ `+86`: `transport.attachFiles` guarded on presence (:239), so the desktop's strip is unchanged |
+
+#### The five that did not change, and which kind each is
+
+- **`apps/client/src/main/ipcRegistry.ts` — needed nothing, and that is the design paying
+  out.** This round added exactly one relayable channel, and the registry never heard about
+  it: `ipc.ts`'s `handle()` records every channel it registers, so `attachment:addUploaded`
+  became relayable by being written. A registry that had to be edited alongside would be the
+  hand-maintained second list this file exists to not be.
+- **`apps/server/src/presence/presence.registry.ts` — needed nothing, and it is checkable
+  rather than assumed.** The worry worth having is that a browser on a live SSE stream stops
+  polling, ages out of presence, and drops the whole account to the idle tier — slowing the
+  desktop's mirror sync while somebody is actively watching. It does not happen:
+  `useCloudBoard.ts` builds `BoardPoller` (:127) and `PresenceHeartbeat` (:144) as two
+  independent effects, neither of which knows whether the stream is up.
+- **`packages/protocol/src/cadence.ts` — every number right, the opening premise expired.**
+  It said "v1 ships no realtime push channel, so the only lever for staleness is how often a
+  Client polls". There is a push channel now. The policy survives the premise because the
+  stream carries engine EVENTS and the mirror's ROWS still travel only on the poll — so the
+  header now says that, and says why wiring the tiers to the stream's health would be a real
+  change rather than a tidy-up.
+- **`apps/server/src/iam/iamAuth.guard.ts` — correct for routes it had never heard of.** Its
+  docstring named `MirrorController` and `PresenceController`; `EventsController` and four of
+  `AttachmentsController`'s five routes now use it too. Nothing was wrong, and the reason is
+  worth keeping: `actionFor` keys on the **method**, not on a route list, so `GET /v1/events`
+  authorized as a read and `POST /v1/events` as a write without anybody coming back here. The
+  comment now names the new routes and, more usefully, names the one route the guard never
+  sees — `GET /v1/attachments/:id`, which an `<img src>` cannot put a header on and which
+  therefore runs under `MediaTokenGuard` instead.
+- **`apps/web/src/board/useBoardExtras.ts` — a claim that this round falsified.** It said "no
+  event carries *this run started* or *this run stopped* to a browser", and justified
+  re-reading `scheduler:activeRuns` with it. `EVENT_FANOUT` forwards `scheduler:changed`
+  (`replace-by-key` on `projectId`), so a browser on a live stream is now told. The re-read is
+  still right and still stays — a stream that is allowed to drop cannot be the thing a button's
+  own feedback waits on — but it is right for a different reason than the one written down,
+  and the header now gives that reason instead.
+
+Four of the five needed nothing at all. **Three carried a sentence that had stopped being
+true**, which is the failure mode a file nobody edits is uniquely prone to: no diff, no
+review, no gate. All three were fixed here, comment-only — see *What this step changed* below.
+
+#### The gates, forced, on `0f8b456`
+
+| Gate | Exit | Result |
+| --- | --- | --- |
+| `pnpm format:check` | **0** | All matched files use Prettier code style |
+| `pnpm typecheck --force` | **0** | 9 successful, 9 total — **0 cached**, 27.08s |
+| `pnpm build --force` | **0** | 6 successful, 6 total — **0 cached**, 33.117s |
+| `pnpm test` | **0** | 177 files passed, 1 skipped (178); **2925 passed, 11 skipped (2936)**, 60.90s |
+| `node apps/client/scripts/verify-remote-ipc.mjs` | **0** | **16 checks**, ABI 130/130 |
+| `node apps/client/scripts/verify-remote-sse.mjs` | **0** | **36 checks** |
+
+Identical to §*Verifying the mirrored web, headlessly* in every figure that is a count, which
+is the answer wanted: step 11 and this step measured the same commit, so a number that had
+moved would have meant something drifted underneath rather than that anything improved.
+
+One honest caveat about gate 4. `pnpm test` is `turbo run build --filter=./packages/* &&
+vitest run`, and that prefix reported `3 cached, 3 total >>> FULL TURBO` in 66 ms. A cached
+gate is not a gate — but the gate above it forced all six builds from cold, so what the cache
+replayed here is a superset that had already been earned, not a claim resting on itself.
+
+Neither harness has a `verify:*` script name; both run by path. That is the rule rather than
+the omission — nine of the ten `apps/client/scripts/verify-*.mjs` are run that way, and
+`verify:github` is the exception.
+
+#### What this step changed
+
+Three comments, and one character. `cadence.ts`, `iamAuth.guard.ts` and `useBoardExtras.ts`
+each carried a statement the round had falsified, quoted above with what replaced it.
+Comment-only was the deliberate bar: a walk that finds a false sentence in a security guard's
+header and leaves it there has not finished, and a walk that starts changing behaviour on the
+last step but one has exceeded itself.
+
+**The character is the interesting one, because editing the guard is what exposed it.** The
+moment the header above was touched, `git diff` answered `Bin 4440 -> 5118 bytes` — a change
+to the file that decides whether a request may write, with no line review and no blame.
+`iamAuth.guard.ts:75` holds its authorization cache key as `` `${action}<NUL>${token}` `` with
+the separator written as the RAW character, which is one of the five pre-existing files
+§*One defect the gates could not see* listed and deliberately left alone. That decision was
+right for a step touching none of them and does not survive a step touching this one: leaving
+it means this commit's own edit is unreviewable. So it now reads `\u0000`, the same spelling
+`@tm/shared/ipcEventFanout`'s `KEY_SEPARATOR` uses, with a comment saying why the separator
+must be a character neither half can contain.
+
+Byte-identical in behaviour — `` `${action}\u0000${token}` `` evaluates to exactly what the
+raw character did, asserted directly, and `@tm/server`'s 199 tests across 27 files pass
+unchanged. **This commit's diff for the file is still binary anyway** — it reads
+`Bin 4440 -> 5835 bytes`, the extra bytes being the comment — because git calls a diff binary
+when EITHER side is, and the `HEAD` side still holds the NUL. It is text from the next commit
+onward, the same one-time cost `sseEvents.ts` paid in step 11. Which means the honest summary
+is that the fix cost this one review and buys every later one. The remaining four
+files (`attention.ts`, `gitlab/pipelineStages.ts`, `planValidate.ts`, `usageRollup.ts`) still
+carry the idiom and are still left alone, on step 11's reasoning, which still holds for them:
+nothing here is editing them.
+
+The gates were therefore run **twice**: the table above on `0f8b456` before any edit, and the
+whole set again afterwards. Second run — format ✅, typecheck 9/9 **0 cached** 27.332s, build
+6/6 **0 cached** 32.033s, `2925 passed | 11 skipped (2936)` across `177 passed | 1 skipped
+(178)`, harnesses 16 and 36, all exit 0. Every count identical. That is a measurement rather
+than an assumption, which is the only reason it is worth stating: a comment cannot move a test
+count, so the pair proves the edits were what they claimed to be.
+
+#### The merge this branch is heading into
+
+`development` is **seven commits ahead** of the merge base `ef44513` — the usage-limit round
+(`feat(limit): …` through `docs(limit): …`), whose manifest reads `0.85.0`. So the
+integrator's rebase is not a no-op, and as in every previous round it cannot be done from
+here: the rebase belongs to the integrator, and a step may not reshape the branch. What a step
+can do is hand over what it found instead of the surprise.
+
+A read-only `git merge-tree ef44513 HEAD development` produces **zero conflict markers**. Two
+files are changed on both sides and git resolves both without one:
+
+| File | Branch | `development` | Why they miss each other |
+| --- | --- | --- | --- |
+| `apps/client/src/main/store.ts` | `cloudBlobAt` column + PRAGMA-guarded `ALTER TABLE task_attachments` | a `parkedRuns` key/value state row | Different tables, and neither is a numbered ladder there is a slot to collide over |
+| `apps/client/src/main/ipc.ts` | `cloudEvents`/`cloudAttachments` wiring, the `attachment:*` handlers | `scheduler.setUsageProbe(…)`, `scheduler.restoreParkedRuns()` | Different regions of a 3657-line file; the limit round adds no channel and no `send` |
+
+**The check that mattered most, and it comes back clean.** `development` touches no `IpcApi`
+and no `IpcEvents` member — `packages/shared/src/ipc.ts` is not in its diff at all. Had it
+added one, the merge would still have shown zero conflicts and `pnpm typecheck` would have
+gone **red** on this branch's two exhaustive records, `RELAY_POLICY` and `EVENT_FANOUT`. That
+is precisely the failure those records exist to cause, and precisely the one a merge preview
+cannot show you. Whoever rebases must re-run the gates afterwards regardless; this is the
+reason to expect them to matter rather than to skim them.
+
+**One semantic overlap, which works out.** `development` rewrote
+`packages/ui/src/board/TaskCard.tsx` to badge a limited card through
+`cardBadgeStatus(task, run)`, and apps/web renders that same shared card — two files that have
+never been compiled together, because neither branch has both. It resolves in the web's
+favour: `run` is computed *inside* `TaskCard` by
+`runPhase(task, subtasks, liveRunTaskIds, mergingTaskIds)` (`TaskCard.tsx:1089`), and the web
+supplies all four — subtasks via `groupSubtasks` (`BoardScreen.tsx:201`), `liveRunTaskIds`
+from the relayed `scheduler:activeRuns`, the merging set from `useBoardExtras`, and every
+status off mirrored rows. So the limit badge should reach the browser for free. That is a
+conclusion drawn by reading, not a gate that ran, and it is the first thing to check by eye
+after the rebase.
+
+**The version, and why this round has no tell.** This branch carries **no bump**:
+`apps/client/package.json` reads `0.84.5`, which is exactly the merge base's value, while
+`development` reads `0.85.0`. Base equals branch, so the three-way merge takes `development`'s
+`0.85.0` with no conflict and nothing lost — the *opposite* of the trap earlier rounds kept
+hitting, because there is no bump here for a rebase to swallow. That is now the normal case:
+CI cuts releases from `development`, so a feature branch has no business writing a version
+line at all. `node scripts/next-version.mjs` run in this worktree answers `version=0.84.6 /
+needsCommit=true`, which is the branch's own view against a tag list that tops out at
+`v0.84.5` here; it is not what governs, and it should not be acted on from this side.
+
 ---
 
 ## Conventions for every phase

@@ -1,9 +1,23 @@
 /**
  * The presence-driven adaptive cadence policy from docs/plan/README.md Phase 25 ("No
- * realtime service — adaptive polling"): v1 ships no realtime push channel, so the only
- * lever for staleness is how often a Client polls. This is the one place that policy
- * lives — apps/server's {@link resolveCadence} call and each Client's
- * {@link nextPollDelayMs} call both import it, so the two sides can never drift apart.
+ * realtime service — adaptive polling"): the only lever on how stale the MIRROR is, is how
+ * often a Client polls for it. This is the one place that policy lives — apps/server's
+ * {@link resolveCadence} call and each Client's {@link nextPollDelayMs} call both import it,
+ * so the two sides can never drift apart.
+ *
+ * THERE IS NOW A PUSH CHANNEL, AND IT DOES NOT CHANGE ANY NUMBER HERE
+ * ------------------------------------------------------------------
+ * Phase 25 wrote the paragraph above when nothing was pushed at all. Phase 26's successor
+ * round added one (`/v1/events`, SSE — `apps/server/src/events/`), so the premise "nothing
+ * is pushed" has expired while every number below has not, and the distinction is worth
+ * being exact about: the stream carries ENGINE EVENTS (a transcript line, `task:changed`),
+ * and the mirror's task and project ROWS still travel only on the poll this file paces.
+ *
+ * So a browser watching a live SSE stream still polls `GET /v1/board` at the cadence set
+ * here, and still beats presence on its own timer — `useCloudBoard.ts` builds the poller and
+ * the heartbeat as two effects that neither know nor care whether the stream is up. Wiring
+ * the tiers to the stream's health would be a real change, not a tidy-up: it would make the
+ * mirror's freshness depend on a channel whose whole design assumption is that it may drop.
  */
 
 /** Two tiers in v1 — see the plan doc for why a third "warm" tier isn't built yet. */
