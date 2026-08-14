@@ -5607,6 +5607,122 @@ README.md` has never satisfied Prettier and is deliberately left that way — re
 
 ---
 
+## Fix — the cloud web does not connect to the desktop app
+
+**The report.** A browser signed in to the cloud shows the board and says *No desktop app has
+ever synced this account* (or *Desktop app offline — edits are queued*), while the desktop app
+is running on the other machine and its own **Settings → Cloud → Test connection** answers
+*"Connected. The server recognises this account."*
+
+**Why both of those can be true at once.** They are answers to different questions, and the
+probe was answering the easier one. A desktop becomes *reachable from a browser* by
+**writing**: `POST /v1/sync` is the only request that registers its presence, and
+`BoardResponse.clients` — built from that in-memory presence map — is the only reason a
+browser has a `targetClientId` to address a command to. The probe stopped at `GET /v1/board`
+answering 200, which proves this machine can **read** and nothing else. Three separate faults
+live in the gap, and every one of them printed that same "Connected":
+
+1. **Cloud sync switched off.** `CloudSettings.enabled` is the poller's master switch and it
+   is off out of the box. With it off nothing is ever mirrored and no presence is ever
+   registered — while the address, the sign-in and the account's access are all perfect.
+2. **An account granted `read` but not `write`.** `IamAuthGuard.actionFor` authorizes per HTTP
+   method: a GET is a read, everything else a write. A grant with only `read` lets both
+   clients fetch a board and 403s every single `POST /v1/sync`, silently, forever — the poller
+   counts the tick, backs off and retries.
+3. **A server that took the sync and does not list the machine.** Presence is an in-memory map
+   per server process (deliberately — Phase 25's cost model refuses a write per poll), so a
+   second replica answers the browser's board read from a map that never saw this desktop.
+
+So the ladder in [`cloudTestConnection.ts`](../../apps/client/src/main/cloudTestConnection.ts)
+now ends where the ticket does — *can a browser signed in to this account see THIS machine and
+send it a command* — and each new rung names the person whose problem it is. Address →
+sign-in → **the master switch** → **this machine's own `POST /v1/sync`** → **its id coming back
+in `BoardResponse.clients`**.
+
+Two details of that ladder are load-bearing rather than tidy:
+
+- **The switch is checked after the sign-in and before the sync.** After, because "reachable
+  and signed in" is worth confirming in the same breath as "and still switched off". Before,
+  because the sync **registers presence**: probing with the switch off would put this machine
+  in every browser's client list for the next ninety seconds and invite commands that nothing
+  is ever going to poll for.
+- **The probe's sync is a real one, so it takes real commands with it.** `POST /v1/sync`
+  *leases* what it delivers, so a probe that dropped a batch would delay a browser's click by
+  a full five-minute lease. It hands whatever it collected to the same serial drain the poller
+  uses. It sends empty deltas, no acks and no results, and discards the cursor, so the outbox,
+  the ledger and the stored cursor are untouched.
+
+### The other half: a healthy desktop that is invisible anyway
+
+`BACKOFF_CAP_MS` was five minutes, and it is the number that decides **how long a client stays
+missing from the board after an outage has ended**. Past `PRESENCE_TTL_MS` a Client has dropped
+out of `BoardResponse.clients`; the browser then draws its stale banner, has no target it can
+prove is live, and stays that way for the rest of the backoff while the desktop it is
+complaining about sits there perfectly well, waiting out a timer set by a blip that is over.
+
+That window is not hypothetical. **Every deployment restarts the API**, which both fails
+whatever tick was in flight and erases the presence map — so a routine deploy cost every
+desktop up to five minutes of invisibility. And the two ends recover asymmetrically: a
+browser's poll is pulled forward the moment its tab is focused (`BoardPoller.onFocusChange`)
+and the human *is* in the browser, so the tab comes straight back and the desktop nobody is
+touching does not.
+
+The cap is `PRESENCE_TTL_MS` now, and it is applied **after** the jitter rather than before —
+jittering a capped value pushed it back over the cap by up to `jitterRatio`, which was harmless
+while the cap was an arbitrary five minutes and is not now that it means "and therefore still
+visible to a browser". What the cap was protecting against is unchanged in kind: one request
+every ninety seconds per client, against a product whose cost model is written around a 2.5s
+active tier.
+
+### And the sentence the browser shows
+
+`StaleBanner`'s advice was *"Sign in and open the desktop app at least once before editing from
+here"* — the one instruction that does not work, because the app being open is not what makes
+it visible. It now points at where the answer actually lives: **Settings → Cloud → Test
+connection** on the desktop, which after this fix walks the whole chain and names the rung.
+
+### What is deliberately not in this fix
+
+- **No change to the presence map's home.** Moving presence into SQL would make it survive a
+  restart and a second replica, and it would put a write on every poll at the active tier's
+  2.5s — the exact write amplification Phase 25 costed out and refused. The probe *reports*
+  the multi-replica symptom instead, which is a deployment fact (`docs/09` already pins the
+  single replica the SSE stream needs) rather than something the client can fix.
+- **No automatic "turn cloud sync on for me".** The switch is off by default on purpose: this
+  app mirrors a private board to a server the user chose. A probe that flipped it would be
+  making that decision for them; naming it is the whole of what was missing.
+- **No new test harness for `registerIpcHandlers`.** Same answer as the JIRA fix above: the
+  decision moved into a pure module that already has one, and what is left in `ipc.ts` is the
+  four values it passes.
+
+**Notes.**
+
+- No release step: per `RELEASE.md` rule 5 the tag is cut once this reaches `development`, and
+  since v0.83.x CI cuts it — so this branch carries no version bump and must not grow one.
+- Owed, and only a human with both ends running can retire it: pressing **Test connection**
+  against the live service and confirming the verdict names the machine, plus the browser's
+  banner read on a real account.
+
+| Gate | Exit | Result |
+| --- | --- | --- |
+| `pnpm format:check` | **0** | All matched files use Prettier code style |
+| `pnpm typecheck --force` | **0** | 9 successful, 9 total — **0 cached**, 34.07s |
+| `pnpm build` | **0** | 6 successful, 6 total |
+| `pnpm test` | **0** | 177 files passed, 1 skipped (178); **2966 passed, 11 skipped (2977)**, 62.36s |
+
+**2966, against 2958 before this fix — exactly the eight assertions added here.** Six of them
+are the probe's new rungs (`cloudTestConnection.test.ts`, 8 → 14) and two are the cap's
+(`cadence.test.ts`, 12 → 14). Nothing else moved: the remaining edits are comments, two
+user-facing strings and a documentation table, none of which can change a test count, so a
+ninth pass or a single disappearance would have meant this touched something it did not mean
+to.
+
+Both new classifications were proven red-first by mutation — `listed` forced true, and the
+master-switch rung disabled — and exactly the two tests written for them failed, with the two
+messages they are supposed to produce. The mutants were removed before the gates above.
+
+---
+
 ## Conventions for every phase
 
 - **Contract first.** New data crossing the UI↔engine boundary gets its types in
