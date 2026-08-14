@@ -18,6 +18,7 @@
  * growing a rule it alone knows is the signal to extract, not to build the harness.
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { basename, join } from 'node:path';
 import {
@@ -98,6 +99,7 @@ import { PROTOCOL_VERSION } from '@protocol/wire';
 import { applyCloudCommand, type CloudCommandOutcome } from './cloudCommands';
 import { CommandQueue } from './commandQueue';
 import { relayRegistry } from './ipcRegistry';
+import { CloudAttachmentUploader, fetchUploadBytes } from './cloudAttachmentUploader';
 import { CloudEventForwarder } from './cloudEventForwarder';
 import { CloudPoller } from './cloudPoller';
 import { testCloudConnection } from './cloudTestConnection';
@@ -150,6 +152,7 @@ import {
   sweepOrphanAttachments,
 } from './attachments';
 import { attachmentFile } from './attachmentPaths';
+import { collectUploads } from './uploadedAttachments';
 import type { ServiceSyncState, SyncServiceId, SyncState } from '@shared/sync';
 import { hostFor, listWslDistros, readinessFor, statusForTargets } from './exec';
 import { gitPreflight } from './git';
@@ -254,6 +257,9 @@ export interface Engine {
   /** The push half of the same mirror: every `IpcEvents` push, batched to `POST /v1/events`.
    * Holds a timer and a queue, so it is disposed on quit like every other one. */
   cloudEvents: CloudEventForwarder;
+  /** Pushes attachment BYTES to the cloud so a browser can preview them — its own pass,
+   *  holding a timer between files, so it is disposed on quit like every other one. */
+  cloudAttachments: CloudAttachmentUploader;
   /** The `BrowserWindow` focus/idle signal `cloudPoller` polls on — its listeners outlive
    * the window's own close handlers, so it is disposed alongside every other timer. */
   focusTracker: FocusTracker;
@@ -276,6 +282,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // `cloudEvents.configure(...)` supplies those beside `cloudPoller`. Until then it queues
   // nothing, and it queues nothing afterwards either unless a browser is watching.
   const cloudEvents = new CloudEventForwarder();
+
+  // The cloud's copy of an attachment's BYTES, and inert for the same reason: the attachment
+  // handlers below call `scan()` on it, and everything it needs to actually push — the store,
+  // the access token — is declared far below them. `configure(...)` supplies those beside
+  // `cloudPoller`, and until then every `scan()` is a no-op.
+  const cloudAttachments = new CloudAttachmentUploader();
 
   // Small helper: push an event to the UI unless the window is gone.
   //
@@ -2317,11 +2329,51 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // can succeed, and those chips are not the human's to reconcile against an error
     // message: they see four files appear and one sentence about the fifth.
     const all = pushAttachments();
+    // Whatever landed is a candidate for the cloud's preview cache. Fire-and-forget, and
+    // after the push above, so a thumbnail is never what a human waits for.
+    cloudAttachments.scan();
     if (failed.length > 0) {
       const detail = failed.map((f) => `${basename(f.path)} (${f.reason})`).join(', ');
       throw new Error(`Could not attach ${detail}.`);
     }
     return all;
+  });
+
+  /**
+   * The same thing for a browser: fetch each parked upload, write it into a temp directory of
+   * its own, and hand the paths to the very same `addAttachments`.
+   *
+   * The bytes are fetched HERE rather than sent over the relay — see `attachment:addUploaded`
+   * on `IpcApi` — so nothing this handler writes came from the command payload except a file
+   * NAME, which `attachmentName` sanitizes on the way into `userData`
+   * (`uploadedAttachments.ts` has the argument in full).
+   *
+   * The failure shape is `attachment:add`'s, deliberately: what landed is pushed first, then
+   * one sentence names what did not, so a gesture of five files where one ticket had expired
+   * attaches four rather than none. The temp copies go in a `finally` — they are copies of
+   * copies, and the OS's temp sweep is not a schedule to rely on for a 25 MB file.
+   */
+  handle('attachment:addUploaded', async (taskId, uploads) => {
+    if (!store.getTask(taskId)) throw new Error('Task not found.');
+    const collected = await collectUploads(uploads, (upload) =>
+      fetchUploadBytes(upload, {
+        getSettings: () => store.getSettings().cloud,
+        getAccessToken: getCloudAccessToken,
+      }),
+    );
+    try {
+      const { failed } = await addAttachments(store, userData, taskId, collected.paths);
+      const all = pushAttachments();
+      cloudAttachments.scan();
+      const problems = [
+        ...collected.failed.map((f) => `${f.path} (${f.reason})`),
+        ...failed.map((f) => `${basename(f.path)} (${f.reason})`),
+      ];
+      if (problems.length > 0) throw new Error(`Could not attach ${problems.join(', ')}.`);
+      return all;
+    } finally {
+      await collected.cleanup();
+    }
   });
 
   handle('attachment:remove', async (id) => {
@@ -3539,6 +3591,24 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     getClientId: () => store.loadCloudClientId(),
   });
 
+  // The bytes half of the same mirror. Configured here for the same reason — it needs the
+  // store and the token getter — and then asked once, which is the boot backfill: everything
+  // attached before this build (or while the cloud was off, or during an outage) is exactly
+  // what has no `cloudBlobAt`, and one pass at a file a second is what walks it. A desktop
+  // with the cloud switched off does none of this and makes no requests.
+  cloudAttachments.configure({
+    getSettings: () => store.getSettings().cloud,
+    getAccessToken: getCloudAccessToken,
+    listAttachments: () => store.listAttachments(),
+    readBytes: (attachment) =>
+      readFile(attachmentFile(userData, attachment.taskId, attachment.name)),
+    markUploaded: (id, at) => store.markAttachmentUploaded(id, at),
+    // How a browser finds out its thumbnail is ready: `attachment:changed` is forwarded, so
+    // the row it already listens to comes back carrying `cloudBlobAt`.
+    onUploaded: () => pushAttachments(),
+  });
+  cloudAttachments.scan();
+
   // The cloud mirror's own poller — same `trackSync` wrapping as JIRA/GitLab above, so the
   // status bar's ring reacts to it identically, but its own seconds-scale, self-scheduling
   // timer rather than a slot on `syncPoller`'s shared one. See `cloudPoller.ts`'s header for
@@ -3589,6 +3659,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     syncPoller,
     cloudPoller,
     cloudEvents,
+    cloudAttachments,
     focusTracker,
     claudeUsagePoller,
     updater,

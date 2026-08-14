@@ -15,6 +15,7 @@
  * same three methods.
  */
 import { createContext, useContext, type ReactNode } from 'react';
+import type { TaskAttachment } from '@tm/shared/attachments';
 import type { IpcApi, IpcEvents } from '@tm/shared/ipc';
 
 export interface Transport {
@@ -42,8 +43,30 @@ export interface Transport {
    * `''` means "this host cannot serve these bytes", and is a real answer rather than a
    * failure: the strip shows the chip and skips the thumbnail. A host that pointed at a URL
    * it could not actually serve would look identical on screen and be a lie in the code.
+   *
+   * The whole ROW rather than an id, because whether a host can serve an attachment is a
+   * question about that attachment and not just about the host: the cloud answers for the
+   * ones whose bytes it currently holds (`cloudBlobAt`) and `''` for the rest, and only the
+   * row knows which is which. Electron answers for all of them, and reads nothing but the id.
    */
-  attachmentUrl?(id: string): string;
+  attachmentUrl?(attachment: TaskAttachment): string;
+  /**
+   * Attach files the user picked IN THIS CLIENT, as `File` objects.
+   *
+   * The desktop does not implement this, and that is the point. There, a picked file already
+   * has a path — `attachment:pick` returns paths, a drop resolves through `pathForFile` — and
+   * `attachment:add` takes paths precisely so a 30 MB recording never crosses a structured
+   * clone to reach a process that could have read the file itself. A browser has neither the
+   * path nor the disk, so its files have to travel as bytes over their own route.
+   *
+   * Absent, therefore, means "this host does the path flow", which is what
+   * `AttachmentStrip` branches on: with no `attachFiles` it behaves exactly as it did before
+   * this existed, down to the same two calls in the same order.
+   *
+   * Resolves to the whole attachment list, like `attachment:add`, so the strip can tell what
+   * it just added by id and cite it. Rejects with a sentence to show when nothing landed.
+   */
+  attachFiles?(taskId: string, files: readonly File[]): Promise<TaskAttachment[]>;
 }
 
 const TransportContext = createContext<Transport | null>(null);

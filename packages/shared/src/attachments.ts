@@ -72,13 +72,36 @@ export interface TaskAttachment {
    * really "was it pushed by a build that pushed the whole thing", and a date is what you can
    * reason about after the fact when it turns out one wasn't.
    *
-   * Optional, and the *store's* seven columns do not include it yet — the desktop's
-   * `insertAttachment` binds a `TaskAttachment` by named parameter, and better-sqlite3
-   * refuses an object carrying a key the statement does not name. So whatever starts writing
-   * this adds the column and the parameter in the same change; until then a row read back
-   * from SQLite simply has no `cloudBlobAt`, which is exactly what "never pushed" means.
+   * `null` and absent mean the same thing — never pushed — and both occur: the store's column
+   * reads back as `null` on every row that has not been up, while a row minted in memory
+   * (or one from a build older than the column) simply has no key. Every reader therefore
+   * tests it for truthiness rather than for presence. Writing it is `markAttachmentUploaded`,
+   * and only `cloudAttachmentUploader.ts` calls that.
    */
-  cloudBlobAt?: number;
+  cloudBlobAt?: number | null;
+}
+
+/**
+ * A file a browser parked in the cloud (`POST /v1/uploads`), on its way to becoming a real
+ * attachment — what `attachment:addUploaded` names so the desktop can collect the bytes.
+ *
+ * An id rather than the bytes, for the same reason `attachment:add` takes paths rather than
+ * bytes: the relay is a JSON command queue, and a picture through it would be base64 in a
+ * `commands` row. The bytes travel over their own raw route between the two machines that
+ * actually have them.
+ *
+ * `fileName` is the browser's, so it is **not trusted**: it names a file on somebody else's
+ * machine and reaches the desktop over the network. `attachmentName` is what turns it into
+ * something that may be written under `userData` — see `uploadedAttachments.ts`, which is the
+ * one place that boundary is crossed.
+ */
+export interface UploadedAttachment {
+  /** `UploadTicket.id` — the id `GET /v1/uploads/:id` hands the bytes back for. */
+  id: string;
+  /** What the human called the file, untrusted; the chip's label once it lands. */
+  fileName: string;
+  /** The browser's `File.type`, or nothing when it had none to offer. */
+  mimeType?: string | null;
 }
 
 /**

@@ -4920,6 +4920,61 @@ an image by MIME type, a document by capability — under `Content-Security-Poli
 The registry is per-process, like presence, the auth caches and the event bus: one more reason
 [the service runs on a single replica](../09-deploying-the-cloud-service.md).
 
+### Attaching and previewing from a browser
+
+Those routes are plumbing until something calls them. Both ends now do, and each direction is
+a different problem.
+
+**Up, from a browser.** `Transport.attachFiles` is a method the desktop deliberately does not
+implement, and `AttachmentStrip` branches on its presence: where it is missing (Electron) every
+line is the one that was there before — the picker returns paths, a drop resolves through
+`pathForFile`, `attachment:add` copies them — and where it is present the Attach button opens a
+hidden `<input type="file">` and a drop hands over the raw `File`s. The web transport uploads
+each to `POST /v1/uploads` and then relays the new `attachment:addUploaded`, naming only the
+ticket ids. Two hops for one gesture, and they differ in kind: the bytes are megabytes and go
+over their own raw route, while the command is JSON in the `commands` table, which is an audit
+trail and not somewhere to park a picture in base64.
+
+The desktop's handler streams each ticket into a **temp directory of its own** and then calls
+the same `addAttachments` a local pick does — same naming policy, same dedupe, same size check,
+same collected-failures contract, no second implementation of "become an attachment". One
+directory per file because `basename` is how the name survives to the row, so two files called
+`shot.png` in one gesture must not share a directory. And the `fileName` is a string from
+another machine: `uploadTempName` makes it openable, `attachmentName` makes it *safe*, and that
+second one is the boundary between an authenticated browser and a write into `userData` —
+asserted directly in [`uploadedAttachments.test.ts`](../../apps/client/src/main/uploadedAttachments.test.ts),
+which feeds it `../../../../evil.exe` and checks both what lands and what `attachmentName`
+then reduces it to.
+
+**Down, to a browser.** [`cloudAttachmentUploader.ts`](../../apps/client/src/main/cloudAttachmentUploader.ts)
+pushes qualifying blobs — an image, under the cap, not already up — one a second, with the
+boot pass doubling as the backfill for everything attached before this existed. `cloudBlobAt`
+is stamped from the server's own `storedAt` and travels to the browser on the
+`attachment:changed` it already listens to. A failure leaves the row unstamped, which is the
+truth and is what makes the next scan retry it; a `413` is the one refusal that will still be
+true tomorrow, so that id is not asked again. A desktop with cloud sync off makes no requests
+at all.
+
+`HttpTransport.attachmentUrl` therefore takes the whole row rather than an id: `''` unless
+`cloudBlobAt` is set, because whether a host can serve an attachment is a question about that
+attachment. The strip reads `''` as "no preview here" and shows the chip alone — a plausible
+URL for bytes nobody pushed would look identical on screen and be a claim that was not true.
+The `?mt=` ticket is held by [`mediaToken.ts`](../../apps/web/src/board/mediaToken.ts) and
+refreshed ahead of expiry, because `attachmentUrl` is read *during a render* and cannot await
+anything; the one render before the first mint lands is the same honest `''`.
+
+Deleting an attachment does not delete its cloud copy. That is the cache argument taken
+seriously rather than an omission: the blob is unreachable the moment the row is gone, and it
+leaves on the next eviction pass like any other cold blob.
+
+**Still owed: the add-task dialog.** `AddTaskDialog` stages absolute PATHS — there is no task
+id to hang an attachment off until the card exists, so it holds paths and copies them on with
+`attachment:add` afterwards — and a browser has none, so files cannot be attached *while
+creating* a card there. The strip on the card itself works, which is the whole flow one click
+later. Fixing it means teaching that dialog's staging model to hold a `File` as well as a path
+and to pick the matching channel at create time, which is a change to a control the shared
+add-task work had just settled; it is deliberately not folded in here.
+
 ### How it is verified
 
 Every piece has a unit suite. What none of them covers is the circuit, so

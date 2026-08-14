@@ -257,6 +257,10 @@ export const RELAY_POLICY: {
   'attachment:list': 'relay',
   'attachment:pick': 'host-only',
   'attachment:add': 'relay',
+  // The one channel here a browser is the only possible caller of: it names upload tickets,
+  // and only a browser has any. The desktop fetches those bytes itself, so nothing crosses
+  // this wire that the engine then trusts as a local path.
+  'attachment:addUploaded': 'relay',
   'attachment:remove': 'relay',
   'attachment:open': 'host-only',
 

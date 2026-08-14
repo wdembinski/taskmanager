@@ -45,7 +45,7 @@ import type {
   TaskActivityEntry,
   TaskType,
 } from './model';
-import type { TaskAttachment } from './attachments';
+import type { TaskAttachment, UploadedAttachment } from './attachments';
 import type { GitGraph } from './gitGraph';
 import type { ExecTarget, TargetReadiness } from './execTarget';
 import type { ActiveRun, SchedulerChange, TaskChange } from './scheduler';
@@ -957,6 +957,26 @@ export interface IpcApi {
    * renamed or deleted the minute after they picked it. Returns the whole list.
    */
   'attachment:add': (taskId: string, paths: string[]) => Promise<TaskAttachment[]>;
+  /**
+   * The same thing for a caller with no filesystem: attach files a browser already parked in
+   * the cloud (`POST /v1/uploads`), named by their ticket ids.
+   *
+   * Its own channel rather than a second shape for `attachment:add`, because the two differ
+   * in the one thing that matters about that handler — where the bytes come from. A path is
+   * a fact about the machine the engine runs on and is trusted as such; an upload is bytes
+   * and a `fileName` that arrived over the network from another machine, and the desktop
+   * fetches them itself rather than being handed anything it must not have been handed.
+   *
+   * Relayed, and it is the first channel that is interesting BECAUSE it is relayed: a
+   * browser is the only caller that can have an upload id at all (`attachment:pick` opens a
+   * dialog on the desktop, which is why that one is host-only). Returns the whole list, like
+   * every other `attachment:*` write, and reports partial failure the same way
+   * `attachment:add` does — what landed is pushed, then it throws naming what did not.
+   */
+  'attachment:addUploaded': (
+    taskId: string,
+    uploads: UploadedAttachment[],
+  ) => Promise<TaskAttachment[]>;
   /** Drop one attachment — the row and the bytes. Returns the whole list. */
   'attachment:remove': (id: string) => Promise<TaskAttachment[]>;
   /**

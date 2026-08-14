@@ -18,6 +18,12 @@
  *   picker's, or `pathForFile` on a dropped `File`) straight back to main; opening and
  *   previewing go by `id`. `attachmentUrl(id)` is how a locked-down window is allowed to
  *   see a local file at all — see `src/main/attachments.ts`.
+ * - **A browser has no paths, so it takes the other branch.** `Transport.attachFiles` is
+ *   absent on the desktop and present on the web; where it is present, the Attach button
+ *   opens a hidden `<input type="file">` and a drop hands over the raw `File`s, which the
+ *   web transport uploads and then names over `attachment:addUploaded`. Where it is absent
+ *   — the desktop — every line below is the one that was here before it existed, which is
+ *   the reason the branch is on the METHOD rather than on some "am I in a browser" flag.
  * - **The drop zone is gated on `Files`.** The board already drags cards (`text/plain`)
  *   and chain links (`CHAIN_LINK_MIME`) with the same native mechanism; reading the
  *   TYPE is what keeps three gestures that share a `dragover` from answering each other's
@@ -27,7 +33,7 @@
  *   spends colour on things that move. `color="informative"` is Fluent's grey badge; the
  *   only colour here is on a file that is gone, which is not a fact but a thing to fix.
  */
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   Badge,
   Button,
@@ -136,6 +142,7 @@ const useStyles = makeStyles({
   },
   thumbButton: { border: 'none', background: 'none', padding: 0, cursor: 'pointer' },
   row: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' },
+  hiddenInput: { display: 'none' },
   hint: { color: tokens.colorNeutralForeground3 },
   error: { color: tokens.colorPaletteRedForeground1 },
 });
@@ -189,25 +196,26 @@ export function AttachmentStrip({
    * serves a 404 for a row whose bytes are missing, and the `<img>` reports that.
    */
   const [gone, setGone] = useState<ReadonlySet<string>>(new Set());
+  /** The browser picker's `<input>`, clicked by the Attach button. Null on the desktop. */
+  const fileInput = useRef<HTMLInputElement>(null);
 
   const locked = disabled || busy;
 
   /**
-   * Copy files in and cite whatever landed.
+   * Run one attach — however this host does it — and cite whatever landed.
    *
-   * The new ones are the ids the list did not have a moment ago — main answers with the
-   * WHOLE board's list, so this is also what filters it back down to this task. On a
-   * partial failure main pushes what landed and then throws (so the chips appear either
-   * way); nothing is cited in that case, because the answer that names the survivors is
-   * the one that did not come back.
+   * The new ones are the ids the list did not have a moment ago — the engine answers with
+   * the WHOLE board's list either way, so this is also what filters it back down to this
+   * task. On a partial failure the engine pushes what landed and then throws (so the chips
+   * appear either way); nothing is cited in that case, because the answer that names the
+   * survivors is the one that did not come back.
    */
-  async function add(paths: string[]): Promise<void> {
-    if (!paths.length) return;
+  async function attach(run: () => Promise<readonly TaskAttachment[]>): Promise<void> {
     setBusy(true);
     setError(null);
     const before = new Set(attachments.map((a) => a.id));
     try {
-      const all = await transport.invoke('attachment:add', taskId, paths);
+      const all = await run();
       const added = all.filter((a) => a.taskId === taskId && !before.has(a.id));
       if (added.length) onInsertRefs?.(added.map((a) => a.name));
     } catch (e) {
@@ -215,6 +223,22 @@ export function AttachmentStrip({
     } finally {
       setBusy(false);
     }
+  }
+
+  /** Copy files in by path — what a host with a filesystem behind it does. */
+  async function add(paths: string[]): Promise<void> {
+    if (!paths.length) return;
+    await attach(() => transport.invoke('attachment:add', taskId, paths));
+  }
+
+  /**
+   * Hand the files themselves over — what a host with no paths does. Only ever called where
+   * `attachFiles` exists, which is the same condition every caller below branches on.
+   */
+  async function addFiles(files: File[]): Promise<void> {
+    const upload = transport.attachFiles;
+    if (!upload || !files.length) return;
+    await attach(() => upload(taskId, files));
   }
 
   /** The OS picker, then the copy. Main owns both — the renderer only relays the paths. */
@@ -269,9 +293,10 @@ export function AttachmentStrip({
    * bytes" — see `Transport.attachmentUrl` — and the previews below are dropped for it,
    * rather than pointed at something that will 404.
    */
-  const imageSrc = (id: string): string => transport.attachmentUrl?.(id) ?? attachmentUrl(id);
+  const imageSrc = (a: TaskAttachment): string =>
+    transport.attachmentUrl?.(a) ?? attachmentUrl(a.id);
   const images = attachments.filter(
-    (a) => a.mimeType?.startsWith('image/') && !gone.has(a.id) && imageSrc(a.id) !== '',
+    (a) => a.mimeType?.startsWith('image/') && !gone.has(a.id) && imageSrc(a) !== '',
   );
 
   return (
@@ -293,12 +318,19 @@ export function AttachmentStrip({
         if (!isFileDrag(e.dataTransfer.types) || locked) return;
         e.preventDefault();
         setOver(false);
+        const files = Array.from(e.dataTransfer.files);
+        if (transport.attachFiles) {
+          // The bytes are what this host has, so they are what it sends. No `pathForFile`
+          // here — in a browser it answers '' for everything, which would read as "that has
+          // no file on disk" for a perfectly ordinary drop.
+          if (files.length) void addFiles(files);
+          else setError('That drop carried no files.');
+          return;
+        }
         // `File.path` was removed in Electron 32, so the path comes from the preload
         // bridge — the one thing it knows about this feature. Something with no path on
         // disk (a dragged selection, a virtual file) answers '' and is dropped here.
-        const paths = Array.from(e.dataTransfer.files)
-          .map((file) => transport.pathForFile(file))
-          .filter((path) => path !== '');
+        const paths = files.map((file) => transport.pathForFile(file)).filter((p) => p !== '');
         if (paths.length) void add(paths);
         else setError('That has no file on disk to attach.');
       }}
@@ -372,7 +404,7 @@ export function AttachmentStrip({
             >
               <img
                 className={styles.thumb}
-                src={imageSrc(a.id)}
+                src={imageSrc(a)}
                 alt={a.fileName}
                 onError={() => setGone((prev) => new Set(prev).add(a.id))}
               />
@@ -382,13 +414,33 @@ export function AttachmentStrip({
       )}
 
       <div className={styles.row}>
+        {/* The browser's picker. Hidden and driven by the button beside it, because a bare
+            `<input type="file">` is the one control in HTML that cannot be styled to match
+            anything — and because only a real user gesture may open it, which a click
+            forwarded straight from the button still is. Rendered only where it is used, so
+            the desktop's DOM is exactly what it was. */}
+        {transport.attachFiles && (
+          <input
+            ref={fileInput}
+            type="file"
+            multiple
+            className={styles.hiddenInput}
+            onChange={(e) => {
+              const files = Array.from(e.target.files ?? []);
+              // Cleared before the upload starts, so picking the same file twice in a row
+              // fires `change` the second time too.
+              e.target.value = '';
+              void addFiles(files);
+            }}
+          />
+        )}
         <Button
           size="small"
           appearance="subtle"
           icon={<AttachRegular />}
           disabled={locked}
           title={disabledHint}
-          onClick={() => void pick()}
+          onClick={() => (transport.attachFiles ? fileInput.current?.click() : void pick())}
         >
           Attach
         </Button>

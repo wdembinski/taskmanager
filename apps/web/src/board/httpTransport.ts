@@ -53,11 +53,17 @@
  * anyone asked or not.
  */
 import {
+  BLOB_NAME_QUERY,
+  BLOB_TYPE_QUERY,
+  MEDIA_TOKEN_QUERY,
   PROTOCOL_VERSION,
   type CommandEnvelope,
   type CommandRequest,
   type ResultsResponse,
+  type UploadTicket,
 } from '@tm/protocol/wire';
+import { CLOUD_BLOB_MAX_BYTES } from '@tm/shared/attachments';
+import type { TaskAttachment, UploadedAttachment } from '@tm/shared/attachments';
 import { hostOnlyMessage, isRelayable } from '@tm/shared/ipcRelay';
 import type { IpcApi, IpcEvents } from '@tm/shared/ipc';
 import type { ManualStatus, Task } from '@tm/shared/model';
@@ -65,6 +71,7 @@ import { BOARD_CLIENT_HEADER } from '@tm/protocol/wire';
 import type { Transport } from '@tm/ui/transport';
 import type { FocusSignal } from './BoardPoller';
 import { CloudEventBus } from './eventBus';
+import { MediaTokenHolder } from './mediaToken';
 import { PolledEventBus } from './polledEvents';
 import { SseEventStream } from './sseEvents';
 
@@ -137,8 +144,23 @@ export class HttpTransport implements Transport {
   private polling = false;
   private resultCursor: string | null = null;
   private readonly events: CloudEventBus;
+  /** The `?mt=` ticket every thumbnail's URL carries — see `mediaToken.ts`. */
+  private readonly mediaToken: MediaTokenHolder;
+  private readonly mediaTokenListeners = new Set<() => void>();
 
   constructor(private readonly deps: HttpTransportDeps) {
+    this.mediaToken = new MediaTokenHolder({
+      apiBase: deps.apiBase,
+      getAccessToken: deps.getAccessToken,
+      // A token arriving does not change any state React is watching, so the tab would sit
+      // showing chips without thumbnails until something else re-rendered it. One hop out
+      // through `useCloudBoard` is what makes the pictures appear.
+      onChange: () => {
+        for (const listener of this.mediaTokenListeners) listener();
+      },
+      fetchImpl: deps.fetchImpl,
+      now: deps.now,
+    });
     this.events = new CloudEventBus({
       polled: new PolledEventBus({
         invoke: (channel, ...args) =>
@@ -185,32 +207,97 @@ export class HttpTransport implements Transport {
   }
 
   /**
-   * Where a browser fetches an attachment's bytes from — and the honest answer today is
-   * NOWHERE, so this returns `''`.
+   * Where a browser fetches an attachment's bytes from — `GET /v1/attachments/:id?mt=`, for
+   * the ones the cloud actually holds, and `''` for every other.
    *
    * The desktop answers `vipper-attachment://a/<id>`, a custom scheme registered only in
-   * Electron. A browser cannot resolve it, so every `<img src>` in the shared attachment
-   * strip was pointed at a URL that could never load. That is the bug this resolver exists
-   * to end: the shared component asks the HOST where the bytes are instead of hardcoding
-   * one host's answer.
+   * Electron, which a browser cannot resolve — that is the bug this resolver exists to end.
+   * But a URL on this origin is only an honest answer for bytes that are up there, and most
+   * are not: only images under the cap are pushed at all, and the cloud is a CACHE that
+   * evicts under quota pressure. `cloudBlobAt` is the row's own record of that, so it is what
+   * decides here.
    *
-   * Making the web's answer a real URL needs the bytes to be on the server, and they are
-   * not: the mirror carries `Task` and `Project` rows, and `attachment:add` takes paths by
-   * explicit design (an attachment can be a 30 MB video). Building that — an upload route,
-   * a desktop-side handler that writes the blob under `userData/attachments/`, and a
-   * download that streams it back — is written up as owed in docs/plan/README.md Phase 26.
-   *
-   * Until then `''`, which the strip reads as "this host cannot show a preview" and answers
-   * with the chip alone. Returning a plausible URL to a route that 404s would look exactly
-   * the same on screen and be a claim that was not true.
+   * `''` for the rest, and for the moment before this tab has minted its media token. The
+   * strip reads it as "this host cannot show a preview" and renders the chip alone; a
+   * plausible URL to a route that 404s would look identical on screen and be a claim that was
+   * not true — which is the whole reason the desktop's answer was not simply copied.
    */
-  attachmentUrl(): string {
-    return '';
+  attachmentUrl(attachment: TaskAttachment): string {
+    if (!attachment.cloudBlobAt) return '';
+    const token = this.mediaToken.current();
+    if (!token) return '';
+    const url = new URL(`${this.deps.apiBase}/v1/attachments/${encodeURIComponent(attachment.id)}`);
+    url.searchParams.set(MEDIA_TOKEN_QUERY, token);
+    return url.toString();
+  }
+
+  /**
+   * Attach files this browser picked: park the bytes in the cloud, then tell the desktop to
+   * collect them.
+   *
+   * Two hops for one gesture, and they are different in kind. The BYTES go straight to the
+   * server over their own raw route (`POST /v1/uploads`), because they are megabytes and the
+   * relay is a JSON command queue — base64 in a `commands` row would be a third more of them,
+   * parked in what is meant to be an audit trail. The COMMAND is an ordinary relayed
+   * `attachment:addUploaded` naming the tickets, so the desktop runs its own attachment
+   * handler and the file lands under `userData` exactly like one picked there: same naming
+   * policy, same dedupe, same events.
+   *
+   * The uploads run in parallel and are awaited together: a five-file pick should take as
+   * long as its largest file, and one that fails must fail the gesture rather than half-
+   * attaching it — the tickets that did land expire on their own within the hour.
+   */
+  async attachFiles(taskId: string, files: readonly File[]): Promise<TaskAttachment[]> {
+    if (files.length === 0) return [];
+    const uploads = await Promise.all(files.map((file) => this.upload(file)));
+    return this.invoke('attachment:addUploaded', taskId, uploads);
+  }
+
+  /** One file to `POST /v1/uploads`, answering the ticket that names it on the relay. */
+  private async upload(file: File): Promise<UploadedAttachment> {
+    if (file.size > CLOUD_BLOB_MAX_BYTES) {
+      // Refused here rather than by the server's byte counter, purely so the human is told
+      // before the upload rather than after it. The server enforces it either way.
+      throw new Error(
+        `${file.name} is larger than ${Math.round(CLOUD_BLOB_MAX_BYTES / (1024 * 1024))} MB, ` +
+          'which is the most a browser can attach. Attach it from the desktop app.',
+      );
+    }
+    const token = await this.deps.getAccessToken();
+    if (!token) throw new Error('Not signed in to vipper.iam.');
+
+    const url = new URL(`${this.deps.apiBase}/v1/uploads`);
+    url.searchParams.set(BLOB_NAME_QUERY, file.name);
+    if (file.type) url.searchParams.set(BLOB_TYPE_QUERY, file.type);
+
+    const fetchImpl = this.deps.fetchImpl ?? fetch;
+    const res = await fetchImpl(url.toString(), {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        // Raw, and it must stay raw: the server reads this body itself under a byte counter,
+        // with no parser registered for this type. See `apps/server`'s `rawBody.ts`.
+        'content-type': 'application/octet-stream',
+      },
+      body: file,
+    });
+    if (!res.ok) throw new Error(`${file.name} could not be uploaded (${res.status})`);
+
+    const ticket = (await res.json()) as UploadTicket;
+    return { id: ticket.id, fileName: file.name, mimeType: file.type || null };
+  }
+
+  /** Run `cb` whenever a media token arrives — see `mediaToken.ts` on why a render needs this. */
+  onMediaTokenChange(cb: () => void): () => void {
+    this.mediaTokenListeners.add(cb);
+    return () => this.mediaTokenListeners.delete(cb);
   }
 
   /** Stop the result poll and fail everything still waiting. Called when the tab tears down. */
   dispose(): void {
     this.events.dispose();
+    this.mediaToken.dispose();
+    this.mediaTokenListeners.clear();
     for (const [, entry] of this.pending) {
       entry.reject(new Error('The page is closing.'));
     }

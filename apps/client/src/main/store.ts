@@ -643,6 +643,18 @@ export interface Store {
    * `void` would delete the only record of where the file is.
    */
   deleteAttachment(id: string): TaskAttachment | undefined;
+  /**
+   * Stamp (or clear) when the cloud last took these bytes — `TaskAttachment.cloudBlobAt`.
+   *
+   * `null` un-stamps it, which is not an error path but the ordinary consequence of a cache:
+   * the cloud evicts under quota pressure, and a row that stops being true up there has to
+   * stop claiming otherwise down here or nothing will ever push it again.
+   *
+   * Silent about an id that is not there — the attachment was removed while its upload was
+   * in flight, which is a race with an obvious right answer (do nothing) rather than a
+   * failure the uploader could act on.
+   */
+  markAttachmentUploaded(id: string, at: number | null): void;
 
   /**
    * Persist one open inbox item, with the kind-specific `context` its answer path needs
@@ -1156,14 +1168,20 @@ export function createStore(dbPath: string): Store {
     -- COLLATE NOCASE on the name because that unique index stands in for the filesystem's
     -- own uniqueness, and NTFS says A.png and a.png are the same file. NOCASE folds ASCII
     -- only, which is exactly the character set attachmentName() emits.
+    --
+    -- cloudBlobAt is the one column here that is not about this machine: epoch ms of the
+    -- last successful push of these bytes to the cloud, NULL for "not up there". It is a
+    -- cache receipt, not a fact about the file — the cloud evicts under quota pressure, and
+    -- clearing this is how the desktop learns to push again.
     CREATE TABLE IF NOT EXISTS task_attachments (
-      id        TEXT PRIMARY KEY,
-      taskId    TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-      name      TEXT NOT NULL COLLATE NOCASE,   -- the @token, and the file's name on disk
-      fileName  TEXT NOT NULL,                  -- the name it arrived with, for the chip
-      mimeType  TEXT,                           -- NULL when the suffix said nothing
-      size      INTEGER NOT NULL,
-      createdAt INTEGER NOT NULL,
+      id          TEXT PRIMARY KEY,
+      taskId      TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      name        TEXT NOT NULL COLLATE NOCASE, -- the @token, and the file's name on disk
+      fileName    TEXT NOT NULL,                -- the name it arrived with, for the chip
+      mimeType    TEXT,                         -- NULL when the suffix said nothing
+      size        INTEGER NOT NULL,
+      createdAt   INTEGER NOT NULL,
+      cloudBlobAt INTEGER,                      -- NULL until something pushes the bytes up
       UNIQUE (taskId, name)
     );
     -- Native tickets (Phase 24). Four NEW tables, so nothing to migrate.
@@ -1391,6 +1409,16 @@ export function createStore(dbPath: string): Store {
   // below fill it from there, exactly as `createdAt` was never backfilled either.
   if (!projectColumns.some((c) => c.name === 'updatedAt')) {
     db.exec(`ALTER TABLE projects ADD COLUMN updatedAt INTEGER`);
+  }
+
+  // Migrate databases created before an attachment's bytes could be pushed to the cloud
+  // (Phase 26). NULL on every pre-existing row is exactly right — nothing has ever been
+  // pushed — and `cloudAttachmentUploader`'s backfill is what walks them afterwards.
+  const attachmentColumns = db.prepare(`PRAGMA table_info(task_attachments)`).all() as Array<{
+    name: string;
+  }>;
+  if (!attachmentColumns.some((c) => c.name === 'cloudBlobAt')) {
+    db.exec(`ALTER TABLE task_attachments ADD COLUMN cloudBlobAt INTEGER`);
   }
 
   // Migrate databases created before per-stage pipeline detail. NULL reads back as [], and
@@ -2329,11 +2357,17 @@ export function createStore(dbPath: string): Store {
   // No conflict target: DO NOTHING then covers the unique (taskId, name) AND the primary
   // key, so a re-inserted row on the plan-sync path is idempotent for free.
   const insertAttachment = db.prepare<[TaskAttachment]>(
-    `INSERT INTO task_attachments (id, taskId, name, fileName, mimeType, size, createdAt)
-     VALUES (@id, @taskId, @name, @fileName, @mimeType, @size, @createdAt)
+    `INSERT INTO task_attachments
+       (id, taskId, name, fileName, mimeType, size, createdAt, cloudBlobAt)
+     VALUES (@id, @taskId, @name, @fileName, @mimeType, @size, @createdAt, @cloudBlobAt)
      ON CONFLICT DO NOTHING`,
   );
   const deleteAttachmentStmt = db.prepare(`DELETE FROM task_attachments WHERE id = ?`);
+  // Only ever written by `cloudAttachmentUploader.ts`: a timestamp when the cloud took the
+  // bytes, NULL when they are known not to be up there any more.
+  const markAttachmentUploadedStmt = db.prepare(
+    `UPDATE task_attachments SET cloudBlobAt = ? WHERE id = ?`,
+  );
 
   const upsertAttentionStmt = db.prepare(
     `INSERT INTO attention_items
@@ -3886,8 +3920,10 @@ export function createStore(dbPath: string): Store {
       deleteTicketLinkStmt.run(id);
     },
 
-    // The seven columns ARE `TaskAttachment`, in order, so these rows need no mapper —
-    // unlike a link's `gate`, nothing here is a string the schema could disagree with.
+    // The eight columns ARE `TaskAttachment`, in order, so these rows need no mapper —
+    // unlike a link's `gate`, nothing here is a string the schema could disagree with. The
+    // one wrinkle is `cloudBlobAt`, which reads back as `null` rather than absent; the type
+    // says `number | null` for exactly that, and every reader tests it for truthiness.
     listAttachments() {
       return selectAttachments.all() as TaskAttachment[];
     },
@@ -3901,7 +3937,15 @@ export function createStore(dbPath: string): Store {
     },
 
     addAttachment(input) {
-      const row: TaskAttachment = { ...input, id: randomUUID(), createdAt: Date.now() };
+      const row: TaskAttachment = {
+        ...input,
+        id: randomUUID(),
+        createdAt: Date.now(),
+        // Explicit, never left absent: better-sqlite3 binds by named parameter and refuses an
+        // object missing one the statement names. A brand-new attachment is by definition not
+        // in the cloud yet, so `null` is also the honest value.
+        cloudBlobAt: input.cloudBlobAt ?? null,
+      };
       // The foreign key rejects an unknown task and the unique index a name already used
       // on it; either way the caller gets "no attachment" rather than an exception out of
       // a file drop. Same contract as `addTaskLink`.
@@ -3918,6 +3962,10 @@ export function createStore(dbPath: string): Store {
       if (!row) return undefined;
       deleteAttachmentStmt.run(id);
       return row;
+    },
+
+    markAttachmentUploaded(id, at) {
+      markAttachmentUploadedStmt.run(at, id);
     },
 
     saveAttention(item, context) {

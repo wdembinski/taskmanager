@@ -1,8 +1,21 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { IpcApi } from '@tm/shared/ipc';
+import { CLOUD_BLOB_MAX_BYTES, type TaskAttachment } from '@tm/shared/attachments';
 import { DEFAULT_SETTINGS } from '@tm/shared/settings';
 import type { CommandResult } from '@tm/protocol/wire';
 import { HttpTransport, RPC_TIMEOUT_MS, type HttpTransportDeps } from './httpTransport';
+
+/** One attachment row, for the two questions this file asks about previewing one. */
+const attachment = (over: Partial<TaskAttachment> = {}): TaskAttachment => ({
+  id: 'a1',
+  taskId: 't1',
+  name: 'shot.png',
+  fileName: 'shot.png',
+  mimeType: 'image/png',
+  size: 10,
+  createdAt: 1,
+  ...over,
+});
 
 /**
  * A fake server: `POST /v1/commands` records what was queued, `GET /v1/results` serves
@@ -418,12 +431,110 @@ describe('HttpTransport: preconditions', () => {
     expect(transport.pathForFile({} as File)).toBe('');
   });
 
-  it('says it cannot serve attachment bytes, rather than naming a route that 404s', () => {
-    // The desktop answers `vipper-attachment://a/<id>`, a scheme only Electron registers,
-    // and the bytes are not on the server yet (docs/plan/README.md Phase 26, "what this
-    // leaves owed"). `''` makes the shared strip show the chip and skip the thumbnail; a
-    // plausible URL would look the same on screen and be a claim that was not true.
+  it('says it cannot serve bytes the cloud does not hold, rather than naming a route that 404s', () => {
+    // `''` makes the shared strip show the chip and skip the thumbnail. A plausible URL for
+    // bytes nobody pushed would look identical on screen and be a claim that was not true —
+    // which is the entire reason the desktop's `vipper-attachment://` answer was not copied.
     const { transport } = makeTransport();
-    expect(transport.attachmentUrl()).toBe('');
+    expect(transport.attachmentUrl(attachment({ cloudBlobAt: null }))).toBe('');
+    expect(transport.attachmentUrl(attachment({ cloudBlobAt: undefined }))).toBe('');
+  });
+
+  it('answers a media-token URL once the cloud holds the bytes and a token has landed', async () => {
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.includes('/v1/media-tokens')) {
+        return { ok: true, status: 200, json: async () => ({ token: 'mt-1', expiresAt: 601_000 }) };
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    const { transport } = makeTransport({ fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    // The first read has no token yet — one request's worth of `''`, then the picture.
+    expect(transport.attachmentUrl(attachment({ cloudBlobAt: 5 }))).toBe('');
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+
+    expect(transport.attachmentUrl(attachment({ cloudBlobAt: 5 }))).toBe(
+      'https://api.example.com/v1/attachments/a1?mt=mt-1',
+    );
+  });
+
+  it('uploads each picked file, then relays attachment:addUploaded naming the tickets', async () => {
+    // The two hops differ in kind on purpose: the BYTES go straight to the server over their
+    // own raw route, and only the ticket ids travel on the relay — base64 in a `commands` row
+    // would park a picture in what is meant to be an audit trail.
+    const server = makeServer();
+    let ticket = 0;
+    const fetchImpl = vi.fn(async (url: string, init?: { method?: string; body?: unknown }) => {
+      if (url.startsWith('https://api.example.com/v1/uploads')) {
+        // Captured per request: `json()` is awaited later, so a closure over the counter
+        // itself would hand both files whichever id was minted last.
+        const id = `up-${(ticket += 1)}`;
+        return { ok: true, status: 201, json: async () => ({ id, size: 4, expiresAt: 9 }) };
+      }
+      return server.fetchImpl(url, init as { method?: string; body?: string });
+    });
+    const { transport } = makeTransport({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      newCommandId: () => 'cmd-up',
+    });
+
+    const files = [
+      new File(['abcd'], 'Shot 1.png', { type: 'image/png' }),
+      new File(['efgh'], 'notes.txt', { type: '' }),
+    ];
+    const call = transport.attachFiles('t1', files);
+
+    // Let both uploads and the command post settle before the desktop answers.
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+    server.answer('cmd-up', { ok: true, value: [{ id: 'a1', taskId: 't1', name: 'Shot-1.png' }] });
+
+    await expect(call).resolves.toEqual([{ id: 'a1', taskId: 't1', name: 'Shot-1.png' }]);
+
+    const uploadCalls = fetchImpl.mock.calls.filter(([url]) => String(url).includes('/v1/uploads'));
+    expect(uploadCalls).toHaveLength(2);
+    expect(String(uploadCalls[0][0])).toContain('name=Shot+1.png');
+    expect(String(uploadCalls[0][0])).toContain('type=image%2Fpng');
+    // No `type=` for a file the browser could not name — `mimeForExtension` on the desktop is
+    // what fills that in, off the name the file arrived with.
+    expect(String(uploadCalls[1][0])).not.toContain('type=');
+    expect((uploadCalls[0][1] as RequestInit).method).toBe('POST');
+    expect(
+      ((uploadCalls[0][1] as RequestInit).headers as Record<string, string>)['content-type'],
+    ).toBe('application/octet-stream');
+
+    expect(server.queued).toEqual([
+      {
+        id: 'cmd-up',
+        issuedAt: 1000,
+        issuedBy: 'web-1',
+        kind: 'ipc-invoke',
+        payload: {
+          channel: 'attachment:addUploaded',
+          args: [
+            't1',
+            [
+              { id: 'up-1', fileName: 'Shot 1.png', mimeType: 'image/png' },
+              { id: 'up-2', fileName: 'notes.txt', mimeType: null },
+            ],
+          ],
+        },
+      },
+    ]);
+  });
+
+  it('refuses a file over the cloud cap before spending the upload on it', async () => {
+    const { transport, fetchImpl } = makeTransport();
+    const huge = new File(['x'], 'video.mp4', { type: 'video/mp4' });
+    // `File` has no writable size, so this stands in for one the server would 413 anyway.
+    Object.defineProperty(huge, 'size', { value: CLOUD_BLOB_MAX_BYTES + 1 });
+
+    await expect(transport.attachFiles('t1', [huge])).rejects.toThrow(/larger than/);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('attaches nothing for an empty pick', async () => {
+    const { transport, fetchImpl } = makeTransport();
+    await expect(transport.attachFiles('t1', [])).resolves.toEqual([]);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

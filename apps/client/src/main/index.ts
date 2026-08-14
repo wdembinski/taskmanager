@@ -216,6 +216,9 @@ app.on('before-quit', () => {
         // Before `sessions`, deliberately: killing the sessions pushes a last burst of events
         // through `send`, and there is nobody left to deliver them to.
         { name: 'cloudEvents', run: () => live.cloudEvents.dispose() },
+        // Before `store`, like every other cloud timer: a pass that woke up between files
+        // would otherwise read a closed database.
+        { name: 'cloudAttachments', run: () => live.cloudAttachments.dispose() },
         { name: 'focusTracker', run: () => live.focusTracker.dispose() },
         { name: 'claudeUsagePoller', run: () => live.claudeUsagePoller.dispose() },
         { name: 'watcher', run: () => live.watcher.dispose() },

@@ -115,6 +115,13 @@ export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi
   // leaving a promise nobody will ever settle.
   useEffect(() => () => transport.dispose(), [transport]);
 
+  // The media token lives outside React (it is read synchronously while rendering an
+  // `<img src>` — see `mediaToken.ts`), so its arrival changes no state on its own. This is
+  // the one hop that turns it into a render, exactly as `notePreferenceChanged` above does
+  // for the picked target: nothing reads the counter's value.
+  const [, noteMediaToken] = useState(0);
+  useEffect(() => transport.onMediaTokenChange(() => noteMediaToken((n) => n + 1)), [transport]);
+
   useEffect(() => {
     const focus = createBrowserFocusSignal();
     const poller = new BoardPoller({
