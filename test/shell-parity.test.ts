@@ -31,6 +31,10 @@
  * it before any of it was relied on — step 5 of the same branch found its `webPrefs`
  * fixtures coerced to the same answer as the defaults, so the suite passed against a
  * mutant and proved nothing.
+ *
+ * The last block is the inverse of all the others and belongs here for that reason: parity
+ * has exactly one deliberate hole in it, and a hole nothing asserts is indistinguishable
+ * from an omission. See "the one configuration the web deliberately does not mirror".
  */
 import { describe, expect, it } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
@@ -419,4 +423,88 @@ describe('the theme both hosts mount', () => {
       ).toMatch(/useGlobalStyles\(\)/);
     });
   }
+});
+
+describe('the one configuration the web deliberately does not mirror', () => {
+  /**
+   * Agent projects are created and edited on the DESKTOP, and that is a decision rather than
+   * a piece of the mirror nobody got to (plan doc, "What is deliberately out of scope").
+   *
+   * An agent project IS a folder on the machine the engine runs on, so making one begins with
+   * `project:pickDirectory` — a native picker, `host-only` for the reason every native modal
+   * is. What makes this worth a guard is that the WRITE channels are not host-only:
+   * `agentProject:add`, `:update` and `:remove` are plain `'relay'`, correctly, because
+   * executed on the desktop they are ordinary store writes. So nothing in `RELAY_POLICY`
+   * stops a browser calling them, and `pnpm typecheck` never will either. The only thing
+   * holding the boundary is that no browser code does — which is exactly the kind of fact
+   * that survives right up until somebody adds a form in good faith.
+   *
+   * The block asserts the decision, not the reasoning: if the decision is ever reversed, the
+   * fix is to change it here and in the plan doc, not to delete the assertion.
+   */
+  const WEB_TREE = 'apps/web/src';
+  const SHARED_UI_TREE = 'packages/ui/src';
+  const DESKTOP_PANE = 'apps/client/src/renderer/src/AgentProjects.tsx';
+
+  /** A CALL, not a mention: both files below discuss these channels in prose, correctly. */
+  const AGENT_PROJECT_WRITE = /invoke\(\s*'agentProject:(?:add|update|remove)'/;
+  const NATIVE_PICKER = /invoke\(\s*'project:pick(?:Directory|File)'/;
+
+  it('has no browser code that creates, edits or removes one', () => {
+    // Tests are excluded because the web's own suite calls `project:pickDirectory` on purpose
+    // (`httpTransport.test.ts`) to assert the transport REFUSES it — the opposite of a breach.
+    const sources = filesUnder(WEB_TREE, /\.tsx?$/).filter((path) => !/\.test\.tsx?$/.test(path));
+    expect(
+      sources.length,
+      `found no non-test sources under ${WEB_TREE} — has the tree moved?`,
+    ).toBeGreaterThan(10);
+
+    const writes = sources.filter((path) => AGENT_PROJECT_WRITE.test(read(path)));
+    expect(
+      writes,
+      `${writes.join(', ')} calls an agentProject write channel. Those relay, so it would ` +
+        'even work — and it would leave a browser holding a repo path on a machine it cannot ' +
+        'see. Creating and editing agent projects is desktop-only by decision (plan doc, ' +
+        '"What is deliberately out of scope"); reversing it is a plan change, not a patch.',
+    ).toEqual([]);
+
+    const pickers = sources.filter((path) => NATIVE_PICKER.test(read(path)));
+    expect(
+      pickers,
+      `${pickers.join(', ')} calls a native file picker. It is host-only, so the transport ` +
+        'refuses it before the network — a caller here can only ever produce that refusal.',
+    ).toEqual([]);
+  });
+
+  it('keeps the pane itself in the desktop renderer, and nowhere else', () => {
+    const pattern = /^AgentProjects\.tsx?$/;
+    const copies = [...filesUnder(WEB_TREE, pattern), ...filesUnder(SHARED_UI_TREE, pattern)];
+
+    expect(
+      copies,
+      `${copies.join(', ')} is an agent-projects pane outside the desktop renderer. Unlike ` +
+        'AddTaskDialog and GitGraphPane above, this one was deliberately NOT moved into ' +
+        'packages/ui: it reaches the engine through window.api directly and opens a folder ' +
+        'picker, so a shared copy would be a pane only one host could ever run.',
+    ).toEqual([]);
+
+    // The walk finding nothing must mean "nowhere else", not "walked the wrong trees".
+    expect(
+      filesUnder('apps/client/src/renderer/src', pattern),
+      `${DESKTOP_PANE} is where this pane lives. If it has moved, the two searches above ` +
+        'proved nothing rather than passing.',
+    ).toContain(DESKTOP_PANE);
+  });
+
+  it('says so on the web, where somebody would go looking', () => {
+    // The card is the whole of the user-facing answer: a section that is quietly absent reads
+    // as a screen that is broken, and the fix for that is text, not a feature.
+    const settings = read('apps/web/src/settings/SettingsScreen.tsx');
+    expect(
+      settings,
+      'apps/web/src/settings/SettingsScreen.tsx must keep an "Agent projects" entry in ' +
+        'HOST_ONLY_SECTIONS. Dropping the entry does not remove the limit — it removes the ' +
+        'only explanation of it a browser user is ever offered.',
+    ).toMatch(/title:\s*'Agent projects'/);
+  });
 });

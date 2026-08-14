@@ -5476,6 +5476,135 @@ line at all. `node scripts/next-version.mjs` run in this worktree answers `versi
 needsCommit=true`, which is the branch's own view against a tag list that tops out at
 `v0.84.5` here; it is not what governs, and it should not be acted on from this side.
 
+### What is deliberately out of scope
+
+The plan's thirteenth and last step ships no feature. It writes down what this round chose
+*not* to mirror, and — where the choice was resting on nothing but nobody having got round to
+breaking it — makes the choice checkable.
+
+#### Creating or editing an agent project stays on the desktop
+
+An agent project **is** a folder on the machine the engine runs on. Everything else about one
+— its name, its colour, its default model and planning model, its base branch, its execution
+target, the JIRA epics it owns — hangs off a path that only that machine can name. So making
+one starts at `project:pickDirectory`, a native `dialog.showOpenDialog`, and the pane that
+calls it (`apps/client/src/renderer/src/AgentProjects.tsx`) is desktop-only in two independent
+ways: it opens that picker, and it reaches the engine through `window.api` directly rather
+than through the shared `Transport`. There is no useful half of it a browser could draw. A
+path field with no picker behind it is an invitation to type an absolute path on a computer
+you cannot see, and the first thing it produces is a project pointing at a directory that does
+not exist.
+
+**What a browser can still do with agent projects is most of what anyone does with them.**
+Read them (`agentProject:list`, relayed, and `useBoardExtras` fetches them on every board
+load); file a card under one, from the add-task dialog's Project field or the detail pane's
+dropdown (`task:setProject`); assign a card to one and override that card's model and
+permission mode (`task:assignAgent`, through the shared `AssignAgentDialog` that
+`TaskAgentPanel` opens). The line is between *using* them and *configuring* them, and it falls
+where the folder picker does.
+
+**Where the boundary actually holds, in four places, only two of which were load-bearing
+before this step:**
+
+| Layer | What it does | Was it holding? |
+| --- | --- | --- |
+| `RELAY_POLICY` | `project:pickDirectory` / `:pickFile` are `host-only`, so `httpTransport` refuses them before the network and names the reason from `hostOnlyMessage` | yes — asserted by `httpTransport.test.ts`'s host-only cases |
+| The engine | `ipcRegistry.ts` refuses a host-only channel that arrives over the wire anyway | yes — the browser's refusal is a courtesy, this one is the guarantee |
+| The web's UI | nothing under `apps/web/src` calls an `agentProject` write | **it was true, and nothing said so** — now `shell-parity.test.ts` |
+| The Settings card | "Set these from the desktop app" names *Agent projects* and why | **it was there, and nothing kept it there** — now asserted too |
+
+**The one thing that is deliberately NOT a wall.** `agentProject:add`, `:update` and
+`:remove` are classified `'relay'`, not `'host-only'`, and this step leaves them that way on
+purpose. Executed on the desktop they are ordinary store writes — none of the four
+`HostOnlyReason` groups applies, and inventing a fifth ("needs a path only that machine can
+name") would reclassify `project:add` and half of `project:*` along with them, on the last
+step of a round, for a hole nothing is falling through. The honest description is therefore:
+*the channels would work; there is simply no browser code that calls them, by decision.* Which
+is exactly the sort of fact that stays true until somebody adds a form in good faith — hence
+the guard, whose failure message says the decision is a plan change rather than a patch.
+
+**What reversing it would cost**, so the price is on the table rather than discovered: a
+directory *browser* served by the desktop (list a path's children over the relay, since the
+browser cannot enumerate a remote disk and `showOpenDialog` cannot be relayed without wedging
+the serial command drain behind a modal on somebody else's screen), a validation round trip so
+a typed path fails in the dialog instead of at first run, `AgentProjects.tsx` ported off
+`window.api` onto `Transport`, and `useGitPreflight` reachable from a browser. None of that is
+hard; all of it is a phase, not a step.
+
+#### Merging and releasing were never this branch's to do
+
+No step in this round merged anything or cut a release, and this one does not either. Both
+belong to the orchestrator, from the project's own checkout: a step runs in a shared worktree
+on `feat/mirror-all-interactions-features-to-web`, and a step that rebased or merged would be
+reshaping the branch its eleven siblings are standing on. Step 12 did the part a step *can*
+do — read `git merge-tree` and hand over what it found (zero conflict markers, two files
+changed on both sides that miss each other, and the `IpcApi`/`IpcEvents` check that would have
+gone red on a merge no preview shows as a conflict). Since v0.83.x, CI cuts the release from
+`development` after the merge lands, which is also why this branch carries no version bump and
+must not grow one.
+
+#### Three sentences that were false, and one that was true in only one host
+
+Step 12's walk found that the files nobody edits are where stale prose survives. This step
+found the same failure in the files that *state* the decision it is recording — and one of
+them was the decision's own header.
+
+- **`apps/web/src/settings/SettingsScreen.tsx` said `AgentProjects` was shared from
+  `@tm/ui`.** It never has been: it is not in `packages/ui/src`, and by the reasoning above it
+  cannot be. The header now names it as the one section deliberately *not* shared, and says
+  which two things make it desktop-bound.
+- **The same file's "Agent projects" card said "every other field on an existing agent project
+  is editable from a card's detail pane".** Nothing of the sort is: the detail pane edits the
+  **card** — which project it is filed under, its model, its mode — and no field of a
+  *project* is reachable from a browser at all. `agentProject:update` has exactly one caller
+  in the repo and it is the desktop pane. The card now says what is true, and, more usefully,
+  says what you *can* do from there.
+- **`packages/ui/src/AssignAgentDialog.tsx` sent everyone to "Settings → Agents".** True on
+  the desktop. In a browser it is a dead end: the web's Settings has no Agents section, by
+  this very decision — it has a *Desktop only* tab that explains the absence. This dialog
+  renders in **both** hosts (`TaskDetail` → `TaskAgentPanel`), so its empty state now names
+  the desktop app explicitly. It is the smallest change here and the one a user was most
+  likely to hit, because the empty state is what a new installation shows.
+
+#### How this step is verified
+
+The guard is three assertions in `test/shell-parity.test.ts`, in a block called *the one
+configuration the web deliberately does not mirror* — the inverse of everything else in that
+file, which is why it belongs there: parity has exactly one deliberate hole, and a hole
+nothing asserts is indistinguishable from an omission. It scans non-test sources under
+`apps/web/src` for an `invoke('agentProject:add'|…)` or a picker call (a *call*, matched as
+`invoke\(\s*'…'`, because both files legitimately discuss those channel names in prose), it
+refuses an `AgentProjects` pane under `apps/web/src` or `packages/ui/src` while asserting the
+desktop's own is still where it says it is — so an empty result means "nowhere else" rather
+than "walked the wrong tree" — and it holds the Settings card in place.
+
+Written red-first, as that file's header requires. Each was run against a mutant and confirmed
+to fail with the message it is supposed to produce: a web source calling `agentProject:add`, a
+web source calling `project:pickDirectory`, an `AgentProjects.tsx` planted in `packages/ui`,
+and the card's title edited out. All four mutants were removed before the gates below.
+
+| Gate | Exit | Result |
+| --- | --- | --- |
+| `pnpm format:check` | **0** | All matched files use Prettier code style |
+| `pnpm typecheck --force` | **0** | 9 successful, 9 total — **0 cached**, 26.80s |
+| `pnpm build --force` | **0** | 6 successful, 6 total — **0 cached**, 31.11s |
+| `pnpm test` | **0** | 177 files passed, 1 skipped (178); **2928 passed, 11 skipped (2939)**, 61.54s |
+| `node apps/client/scripts/verify-remote-ipc.mjs` | **0** | 16 checks |
+| `node apps/client/scripts/verify-remote-sse.mjs` | **0** | 36 checks |
+
+**2928, against step 12's 2925 — exactly the three assertions added here, and nothing else
+moved.** That is the number worth reading: the other four edits are comments and user-facing
+strings, which cannot move a test count, so a fourth new pass or a single disappearance would
+have meant this step did something it did not intend to.
+
+One note on `format:check`, since this step is mostly prose. Its glob is `apps/**/*.{ts,tsx}`,
+`packages/**/*.{ts,tsx}` and `*.{json,md}` — root-level markdown only. So neither `test/*.ts`
+nor `docs/plan/README.md` is covered by it: `test/shell-parity.test.ts` was prettier-clean
+before this step and the new block was written into it unformatted, which nothing would have
+caught, and it was formatted with `npx prettier --write` on that file alone. `docs/plan/
+README.md` has never satisfied Prettier and is deliberately left that way — reformatting a
+5,500-line document to satisfy a check that does not read it would bury this step's own diff.
+
 ---
 
 ## Conventions for every phase

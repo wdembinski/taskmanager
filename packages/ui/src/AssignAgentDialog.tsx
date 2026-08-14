@@ -2,12 +2,20 @@
  * AssignAgentDialog — delegate one My Tasks card to an agent.
  *
  * The card never leaves the Personal board; what this picks is the **agent project**
- * (a repo directory, managed in Settings → Agents) the run happens in, plus the model
- * and permission mode that run uses. The project is pre-filled from the ticket's epic
- * (`resolveAgentProject`), so for a linked epic the whole dialog is usually one click.
+ * (a repo directory, managed in the desktop app's Settings → Agents) the run happens in,
+ * plus the model and permission mode that run uses. The project is pre-filled from the
+ * ticket's epic (`resolveAgentProject`), so for a linked epic the whole dialog is usually
+ * one click.
  *
  * Confirming calls `task:assignAgent`, which records the instructions on the task's
  * timeline and starts the agent immediately — there is no queue.
+ *
+ * This dialog renders in BOTH hosts — apps/web reaches it through the shared `TaskDetail`'s
+ * `TaskAgentPanel` — which is why the empty state below names the desktop app explicitly.
+ * Creating an agent project is deliberately desktop-only (it needs a folder picker on the
+ * machine the engine runs on), and the web's Settings has no Agents section to send anyone
+ * to: an instruction that is true in one host and a dead end in the other reads as a broken
+ * screen rather than as the decision it is.
  */
 import { useEffect, useRef, useState } from 'react';
 import {
@@ -257,8 +265,8 @@ export function AssignAgentDialog({
               {agentProjects.length === 0 ? (
                 <MessageBar intent="warning">
                   <MessageBarBody>
-                    No agent projects yet. Add one in Settings → Agents (a repository folder, plus
-                    the JIRA epics it owns) and then assign this card.
+                    No agent projects yet. Add one in the desktop app, under Settings → Agents (a
+                    repository folder, plus the JIRA epics it owns), and then assign this card.
                   </MessageBarBody>
                 </MessageBar>
               ) : (

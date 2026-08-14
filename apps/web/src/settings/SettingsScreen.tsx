@@ -12,9 +12,22 @@
  * precisely the shape this repo's own rule says to fork instead.
  *
  * So the split is by SECTION. Everything with a rule in it is shared as a real component
- * from `@tm/ui` — `ColorSwatches` and its palette, `StatusMapViewer` and `buildStatusMapRows`,
- * `PlanningModelField`, `BaseBranchField`, `AgentProjects` — and this file is the shell plus
- * the plain `AppSettings` fields, which are a form over a JSON blob and carry no rule at all.
+ * from `@tm/ui` — `ColorSwatches` and its palette and `PlanningModelField` here,
+ * `StatusMapViewer` with `buildStatusMapRows` and `BaseBranchField` for the sections that
+ * stayed on the desktop — and this file is the shell plus the plain `AppSettings` fields,
+ * which are a form over a JSON blob and carry no rule at all.
+ *
+ * THE ONE SECTION THAT IS NOT SHARED, AND WILL NOT BE
+ * ---------------------------------------------------
+ * `AgentProjects` is not in `@tm/ui` and does not belong there. It lives in
+ * `apps/client/src/renderer/src/AgentProjects.tsx`, reaches the engine through `window.api`
+ * directly rather than through the transport, and its first act is `project:pickDirectory` —
+ * a native folder picker for a directory on the machine the engine runs on, which is why that
+ * channel is `host-only` while `agentProject:add` itself is not. Choosing the folder is very
+ * nearly the whole of creating one, so there is no useful half of this pane a browser could
+ * draw: it would be an empty path field asking somebody to type an absolute path on a
+ * computer they cannot see. It appears in {@link HOST_ONLY_SECTIONS} instead, which is a
+ * decision rather than a gap — see the plan doc, "What is deliberately out of scope".
  *
  * WHAT THE HOST-ONLY SECTIONS DO INSTEAD
  * --------------------------------------
@@ -476,7 +489,9 @@ const HOST_ONLY_SECTIONS: ReadonlyArray<{ title: string; why: string }> = [
   {
     title: 'Agent projects',
     why:
-      'adding one needs a native folder picker to choose a directory on that machine. Every ' +
-      'other field on an existing agent project is editable from a card’s detail pane.',
+      'one IS a folder on that machine, so adding it starts with a native folder picker there ' +
+      'and the rest — its defaults, its base branch, the epics it owns — is configured beside ' +
+      'it. What you can do from here is use them: file a card under one, or assign a card to ' +
+      'one and override the model and permission mode for that card.',
   },
 ];
