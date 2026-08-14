@@ -93,7 +93,7 @@ import {
 } from './jira/jiraMove';
 import { iamSignInConfig } from './iamConfig';
 import { signIn as runIamSignIn } from './iamSignIn';
-import { refreshTokens } from '@shared/iamPkce';
+import { isDeadGrant, refreshTokens } from '@shared/iamPkce';
 import type { ClientInfo, CommandEnvelope } from '@protocol/wire';
 import { PROTOCOL_VERSION } from '@protocol/wire';
 import { applyCloudCommand, type CloudCommandOutcome } from './cloudCommands';
@@ -1631,6 +1631,19 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       };
       return cloudAccessToken.value;
     } catch (e) {
+      // A grant vipper.iam has refused is thrown away rather than retried until the end of
+      // time. `iam:getStatus` — and so Settings' "Signed in." — is "a refresh token is on
+      // file", the same claim about storage the web's `CloudAuth.isSignedIn` makes, so a dead
+      // token left in place makes that pane state something false while the poller fails
+      // silently behind it. Cleared, both tell the truth and `cloud:testConnection` stops at
+      // its sign-in rung with "you are not signed in", which is the actionable sentence.
+      //
+      // Only for a dead grant: an outage must not sign anybody out of their desktop app.
+      if (isDeadGrant(e)) {
+        logMain('vipper.iam refused the stored refresh token — signing out', e);
+        store.clearIamRefreshToken();
+        return null;
+      }
       logMain('vipper.iam access token refresh failed', e);
       return null;
     }

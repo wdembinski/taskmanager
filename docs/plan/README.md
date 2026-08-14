@@ -5695,6 +5695,52 @@ connection** on the desktop, which after this fix walks the whole chain and name
   decision moved into a pure module that already has one, and what is left in `ipc.ts` is the
   four values it passes.
 
+### What it actually was: a session that had ended, and an app that could not tell
+
+v0.86.2 shipped the ladder above and the browser still showed nothing. The evidence that
+settled it was gathered rather than guessed, and it is worth recording because it eliminated
+every layer in one pass:
+
+- **The desktop's own SQLite** (a read-only snapshot): cloud enabled, correct URL, refresh
+  token on file, `cloud.cursor` advanced, and — the telling one — **`cloud_outbox` empty while
+  the app was actively writing rows**. The outbox is trigger-filled and pruned only after a
+  *successful* sync, so it had drained seconds earlier. The desktop was syncing perfectly.
+- **The server's SQL database**: one real account, `422` task mirrors (421 on `personal`),
+  6 project mirrors, `data` intact as `nvarchar(max)`, and the newest row was *this ticket's
+  own card*, mirrored seconds before. The client row read `WDEMBINS-DESKTOP · win32 · v0.86.2`.
+- **The relay**: 1,125 commands, **0 unacked**, delivered in ~1s, 445 results `ok=True`, from
+  three browser sessions — all under that same account. So the browser had been authenticating
+  as the right account and driving the desktop successfully.
+- **The API log**: no errors at all. **The last command from any browser: 08:35 that morning.**
+
+Nothing was wrong with the desktop, the server, the data, the account or the relay — and the
+web's own board filter would have passed 421 of those rows. The status bar said **"first sync
+pending"**, which was the whole answer: no board read had *ever* come back in that tab.
+
+`CloudAuth.isSignedIn()` is *"a refresh token string is in `localStorage`"*, and `useCloudAuth`
+read it **once, at mount, and never again**. vipper.iam rotates refresh tokens on every use and
+a replayed one revokes the family — something two tabs can do to each other without anybody
+doing anything wrong, and three sessions were on this account. After that, `getAccessToken()`
+returned `null` forever behind a `console.warn`, every poll threw *"Not signed in to
+vipper.iam"*, and the app went on rendering as fully signed in over an empty board.
+
+Three changes, and the first is the one that matters:
+
+1. **A refused grant ends the session.** `@tm/shared/iamPkce` now throws a typed
+   `IamTokenError` carrying the OAuth2 `error` code, and `isDeadGrant` is the single shared
+   rule: `invalid_grant` or `invalid_client` means the stored token can never work again;
+   **everything else — a network throw, a 5xx, a 429, an HTML body from a proxy — stays
+   transient**, because signing somebody out when their wifi blipped would be a worse bug than
+   this one. On a dead grant the web discards the token and fires `onSessionEnded`, and
+   `useCloudAuth` puts the sign-in screen back up carrying the reason.
+2. **A failing board read says so.** `UnreachableBanner` outranks `StaleBanner`, and the
+   status bar says *"not syncing"* instead of *"first sync pending"* forever. This half is
+   cause-agnostic and would have answered the question on day one whatever the reason: the old
+   pairing printed *"No desktop app has ever synced this account"* — blaming a machine that was
+   working — when the truth was that this tab had not heard from the server at all.
+3. **The desktop's twin.** `getCloudAccessToken` clears a dead token too, so Settings' "Signed
+   in." and `cloud:testConnection`'s sign-in rung stop making the same false claim.
+
 **Notes.**
 
 - No release step: per `RELEASE.md` rule 5 the tag is cut once this reaches `development`, and
@@ -5708,18 +5754,28 @@ connection** on the desktop, which after this fix walks the whole chain and name
 | `pnpm format:check` | **0** | All matched files use Prettier code style |
 | `pnpm typecheck --force` | **0** | 9 successful, 9 total — **0 cached**, 34.07s |
 | `pnpm build` | **0** | 6 successful, 6 total |
-| `pnpm test` | **0** | 177 files passed, 1 skipped (178); **2966 passed, 11 skipped (2977)**, 62.36s |
+| `pnpm test` | **0** | 177 files passed, 1 skipped (178); **2973 passed, 11 skipped (2984)**, 62.21s |
 
-**2966, against 2958 before this fix — exactly the eight assertions added here.** Six of them
-are the probe's new rungs (`cloudTestConnection.test.ts`, 8 → 14) and two are the cap's
-(`cadence.test.ts`, 12 → 14). Nothing else moved: the remaining edits are comments, two
-user-facing strings and a documentation table, none of which can change a test count, so a
-ninth pass or a single disappearance would have meant this touched something it did not mean
-to.
+**2973, against 2958 before this fix — exactly the fifteen assertions added here.** Eight are
+the first round's (the probe's new rungs, `cloudTestConnection.test.ts` 8 → 14; the cap's,
+`cadence.test.ts` 12 → 14) and seven the session round's (`iamPkce.test.ts` 9 → 13,
+`cloudAuth.test.ts` 11 → 14). Nothing else moved: the remaining edits are comments, user-facing
+strings and documentation, none of which can change a test count, so a sixteenth pass or a
+single disappearance would have meant this touched something it did not mean to.
 
-Both new classifications were proven red-first by mutation — `listed` forced true, and the
-master-switch rung disabled — and exactly the two tests written for them failed, with the two
-messages they are supposed to produce. The mutants were removed before the gates above.
+**Four classifications, each proven red-first by mutation**, and in every case exactly the
+test written for it failed with the message it is supposed to produce:
+
+| Mutant | Test that caught it |
+| --- | --- |
+| `listed` forced true | *reports a sync the server took but did not turn into a connected client* |
+| the master-switch rung disabled | *names the master switch, and writes nothing while it is off* |
+| `isDeadGrant` widened to every `IamTokenError` | *calls everything else transient* |
+| `endSession` stops clearing the token | *ends the session when vipper.iam refuses the grant* |
+
+The third is the one worth the trouble: it is the "sign you out when the wifi blips" bug, and
+it is a mutation that looks *more* thorough than the real rule. The mutants were removed before
+the gates above.
 
 ---
 
