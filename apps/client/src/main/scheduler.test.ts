@@ -5270,6 +5270,29 @@ describe('Scheduler.settle — opening a pull request instead of merging', () =>
     expect(String((saved?.[0] as { prompt: string })?.prompt)).toMatch(/No GitHub token is saved/);
   });
 
+  it('says the branch was PUSHED, not opened, when the request was already there', async () => {
+    // The second settle of a card that goes on working. `openPullRequest` pushes into the
+    // pull request that is already open and reports `existed`, so the note must not announce
+    // a second one — there is only ever the one, and it now carries this work too.
+    const { finish, flush, notes } = setup({
+      projectAutoCreatePr: true,
+      open: async () => ({
+        url: 'https://github.com/o/r/pull/12',
+        ref: '#12',
+        existed: true,
+      }),
+    });
+
+    finish();
+    await flush();
+
+    const note = notes.find((n) => n.includes('#12'));
+    expect(note).toMatch(/already open/);
+    expect(note).not.toMatch(/was opened for it/);
+    // Still the thing a human most needs to read off this card: it did NOT merge.
+    expect(note).toMatch(/NOT been merged/);
+  });
+
   it('says so on the card when nothing is wired to reach a forge', async () => {
     const { finish, flush, notes, worktrees } = setup({
       projectAutoCreatePr: true,

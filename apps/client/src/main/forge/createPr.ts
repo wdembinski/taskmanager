@@ -107,13 +107,32 @@ export async function openPullRequest(
     throw new Error('This card is not delegated to an agent project, so it has no branch.');
   }
 
+  /**
+   * The pull request this card already has, if it has one.
+   *
+   * It does **not** short-circuit the push, and that is the whole subtlety. A card whose PR is
+   * open goes on working — the next step of the same plan, a re-run, a chat that writes code —
+   * and every one of those settles through here again. Returning the open one at this point
+   * would strand those commits on the local branch forever: the pull request would show the
+   * first run's work and nothing after it, while the card's timeline claimed a push that never
+   * happened. So the branch is pushed every time and only the POST is skipped, which is what
+   * "already open" actually means.
+   */
   const alreadyOpen = openMergeRequestFor(deps.listMergeRequests(), owner.id);
-  if (alreadyOpen) {
-    return { url: alreadyOpen.webUrl, ref: mrRef(alreadyOpen), existed: true };
-  }
+  /**
+   * Report that pull request — for the paths below where there is genuinely nothing left to
+   * push. A link to the open one is a better answer there than an error about a branch that
+   * has already done its job.
+   */
+  const reportOpen = (): OpenedPullRequest | null =>
+    alreadyOpen ? { url: alreadyOpen.webUrl, ref: mrRef(alreadyOpen), existed: true } : null;
 
   const live = await deps.inspect(project, owner.id, owner.agentBranch ?? undefined);
   if (!live) {
+    // A card whose branch was merged and cleaned up may still carry an open pull request —
+    // one somebody merged on the forge, say. Its link is the useful answer, not this refusal.
+    const open = reportOpen();
+    if (open) return open;
     throw new Error(
       `There is no branch left for this card. Its worktree and branch are removed as the ` +
         `last step of a successful merge, so this usually means the work is already in ` +
@@ -127,12 +146,18 @@ export async function openPullRequest(
   // the worktree's tidiness: a branch with an uncommitted file has work on it, and a branch
   // whose commits are all in base already has none — and only the second is a refusal.
   if (!(await hasCommits(live.cwd, host))) {
+    const open = reportOpen();
+    if (open) return open;
     throw new Error(
       `Nothing has been committed on "${live.branch}" yet, so there is nothing to open a pull request for.`,
     );
   }
   const ahead = await commitsAhead(live.cwd, live.base, live.branch, host);
   if (ahead === 0) {
+    // Nothing new to push AND one already open is the ordinary shape of a settled card being
+    // asked twice — the pull request carries everything the branch has. Report it.
+    const open = reportOpen();
+    if (open) return open;
     throw new Error(
       `"${live.branch}" has no commits that ${live.base} does not already have — it has ` +
         `been merged, or nothing was ever written to it. There is nothing to open a pull ` +
@@ -187,6 +212,19 @@ export async function openPullRequest(
     // its own error, token and all, and this string goes on a timeline that keeps it.
     const why = (pushed.stderr.trim() || pushed.stdout.trim() || 'git push failed').slice(0, 400);
     throw new Error(`Could not push "${live.branch}" to ${remote.host}: ${why}`);
+  }
+
+  // Already open — so the push above is the entire job, and there is nothing to POST. Both
+  // forges would refuse a second create as a duplicate anyway; this simply does not ask, and
+  // the note says what actually happened rather than claiming to have opened one.
+  if (alreadyOpen) {
+    deps.note(
+      project.id,
+      owner.id,
+      `Pushed "${live.branch}" to ${remote.host} — ${mrRef(alreadyOpen)} was already open for ` +
+        `it and now carries this work: ${alreadyOpen.webUrl}`,
+    );
+    return { url: alreadyOpen.webUrl, ref: mrRef(alreadyOpen), existed: true };
   }
 
   const title = prTitle(owner);

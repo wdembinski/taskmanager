@@ -1122,8 +1122,8 @@ export class Scheduler {
    * Push a card's branch and open a pull request for it — see {@link setPullRequestOpener}.
    * Null until `ipc.ts` wires it, which is also how the unit tests run without one.
    */
-  private openPullRequest: ((taskId: string) => Promise<{ url: string; ref: string }>) | null =
-    null;
+  private openPullRequest:
+    ((taskId: string) => Promise<{ url: string; ref: string; existed?: boolean }>) | null = null;
   /**
    * The account-wide usage-limit gate (Phase 5). When active, ALL scheduling is
    * held; when its timer fires, every parked task resumes by its saved session id.
@@ -1310,7 +1310,9 @@ export class Scheduler {
    * and the absence is not silent: a card with "open a PR when finished" on and nothing
    * wired says so on its timeline instead of quietly doing nothing.
    */
-  setPullRequestOpener(open: (taskId: string) => Promise<{ url: string; ref: string }>): void {
+  setPullRequestOpener(
+    open: (taskId: string) => Promise<{ url: string; ref: string; existed?: boolean }>,
+  ): void {
     this.openPullRequest = open;
   }
 
@@ -5425,11 +5427,18 @@ export class Scheduler {
     try {
       const opened = await this.openPullRequest(ownerId);
       if (this.disposed) return;
+      // Two sentences rather than one, because a card that runs more than once reaches here
+      // more than once: the FIRST settle opens the pull request, and every settle after it
+      // pushes into the one that is already open. Saying "opened" both times would describe a
+      // second pull request that does not exist.
       this.noteCard(
         project.id,
         ownerId,
-        `Finished on branch "${ctx.branch}". It has NOT been merged into ${ctx.base} — it was ` +
-          `pushed and ${opened.ref} was opened for it: ${opened.url}`,
+        opened.existed
+          ? `Finished on branch "${ctx.branch}". It has NOT been merged into ${ctx.base} — it ` +
+              `was pushed to ${opened.ref}, which was already open for it: ${opened.url}`
+          : `Finished on branch "${ctx.branch}". It has NOT been merged into ${ctx.base} — it ` +
+              `was pushed and ${opened.ref} was opened for it: ${opened.url}`,
       );
     } catch (err) {
       if (this.disposed) return;

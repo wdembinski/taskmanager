@@ -43,6 +43,10 @@
  *  4. The token never reaches the repository's `.git/config` — it is spent as argv, and
  *     `--set-upstream` is skipped for exactly that reason.
  *  5. Every refusal names its wall: a repo with no `origin` says so, in those words.
+ *  6. A card that keeps working keeps ONE pull request, up to date: the second call pushes the
+ *     new commit into the open PR and POSTs nothing. This is the one behaviour here with no
+ *     visible symptom when it breaks — the button still succeeds, the note still reads well,
+ *     and the work simply never reaches the forge.
  *
  * ## Prove it can fail
  *
@@ -51,6 +55,11 @@
  * fails, because the branch is not in the bare repo under its own name. Or put
  * `'--set-upstream'` back unconditionally and check 4 fails, because git records the
  * tokenized URL in the repo's own config.
+ *
+ * For check 6, put the early return back: in `createPr.ts`, return `reportOpen()` as soon as
+ * `alreadyOpen` is truthy, before the push. The second call then still answers `#12` and still
+ * POSTs nothing — everything a caller can see stays correct — and only "pushes the new commit"
+ * goes red, which is exactly why it is worth a check of its own.
  */
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -342,6 +351,40 @@ check(
   'a repo with no origin refuses, and says so',
   Boolean(refusal && /no "origin" remote/i.test(refusal)),
   refusal ?? '(it did not refuse)',
+);
+
+// ── 6: a card that goes on working keeps its ONE pull request up to date ─────────────
+// The second settle of the same card — a later step of the plan, a re-run, a chat that wrote
+// code. The pull request is already open, so nothing is POSTed; the branch must still be
+// pushed, or those commits never leave this machine while the timeline says they did.
+writeFileSync(join(repo, 'export.ts'), 'export const ok = true;\nexport const more = 1;\n');
+git(repo, 'add', '-A');
+git(repo, 'commit', '--no-verify', '-m', 'more work on the export dialog');
+const secondHead = git(repo, 'rev-parse', 'HEAD').stdout.trim();
+const postsBefore = calls.filter((c) => (c.init.method ?? 'GET') === 'POST').length;
+
+const again = await openPullRequest(deps, card.id);
+
+check(
+  'a second run reports the pull request that is already open',
+  again.existed === true && again.ref === '#12',
+  JSON.stringify(again),
+);
+const thereNow = git(bare, 'rev-parse', `refs/heads/${BRANCH}`);
+check(
+  'and pushes the new commit into it rather than stranding it locally',
+  thereNow.code === 0 && thereNow.stdout.trim() === secondHead,
+  `origin has ${thereNow.stdout.trim() || thereNow.stderr.trim()}, branch is at ${secondHead}`,
+);
+check(
+  'without POSTing a second create',
+  calls.filter((c) => (c.init.method ?? 'GET') === 'POST').length === postsBefore,
+  `${calls.filter((c) => (c.init.method ?? 'GET') === 'POST').length} POST(s), was ${postsBefore}`,
+);
+check(
+  'and the note says it was pushed, not that a second one was opened',
+  notes.some((n) => n.includes('already open') && n.includes('#12')),
+  notes.join(' | '),
 );
 
 store.close();
