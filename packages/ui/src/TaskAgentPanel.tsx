@@ -39,7 +39,7 @@ import type { Project, Task } from '@tm/shared/model';
 import { autoIntegrateOn, projectAutoIntegrate } from '@tm/shared/integrate';
 import { autoReleaseOn, RELEASE_DOC } from '@tm/shared/release';
 import { autoCreatePrOn } from '@tm/shared/pullRequest';
-import { mrIsSettled, mrNoun, mrRef, type MergeRequest } from '@tm/shared/mergeRequest';
+import { mrAbbrev, mrIsSettled, mrNoun, mrRef, type MergeRequest } from '@tm/shared/mergeRequest';
 import { PERMISSION_MODE_LABELS } from '@tm/shared/session';
 import { AssignAgentDialog } from './AssignAgentDialog';
 import { stepPosition } from './board/boardColumns';
@@ -352,7 +352,16 @@ export function TaskAgentPanel({
    * repo's own remote, and its refusal names the host if that turns out to be GitLab.
    */
   const prNoun = openMr ? mrNoun(openMr.provider) : 'pull request';
-  const prLabel = prNoun === 'merge request' ? 'Create MR' : 'Create PR';
+  /**
+   * The same answer in two letters, for the button face and the switch label.
+   *
+   * Read off the PROVIDER, not off `prNoun` — both of these used to ask whether the noun
+   * happened to equal the string `'merge request'`, which is a question about how
+   * `@tm/shared/mergeRequest` words itself rather than about which forge this card is on. The
+   * fallback is the same one `prNoun` takes, and for the same reason.
+   */
+  const prAbbrev = openMr ? mrAbbrev(openMr.provider) : 'PR';
+  const prLabel = `Create ${prAbbrev}`;
   /**
    * Whether this card's branch is pushed and a PR opened when the work finishes, instead of
    * being merged here: the card's own answer when it has one, else the project's.
@@ -896,7 +905,7 @@ export function TaskAgentPanel({
             // Read when the work settles, so once a merge is under way the answer has been
             // taken and changing it could only describe the past.
             disabled={busy || mergeBusy}
-            label={`Open a ${prNoun === 'merge request' ? 'MR' : 'PR'} when finished`}
+            label={`Open a ${prAbbrev} when finished`}
             onChange={(_e, d) => void setAutoCreatePr(d.checked)}
           />
         </Field>

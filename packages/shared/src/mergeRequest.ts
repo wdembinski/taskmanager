@@ -175,6 +175,20 @@ export function mrNoun(provider: ForgeProvider): string {
 }
 
 /**
+ * The initials — `PR` on GitHub, `MR` on GitLab — for the places that have room for two
+ * letters and not for {@link mrNoun}: a button face, a switch label.
+ *
+ * A function OF THE PROVIDER, beside the other three, rather than something a caller derives
+ * from the noun. The caller that needed it was asking `mrNoun(p) === 'merge request'`, which
+ * tests this file's WORDING rather than the forge — reword the noun (or hand it a provider
+ * invented later) and every such caller silently falls through to GitHub's spelling, putting
+ * "Create PR" on a GitLab card. Everything that names a forge asks the forge.
+ */
+export function mrAbbrev(provider: ForgeProvider): string {
+  return provider === 'github' ? 'PR' : 'MR';
+}
+
+/**
  * The heading a LIST of them goes under — "Pull requests" over GitHub's, "Merge requests" over
  * GitLab's — capitalised and pluralised for the count.
  *

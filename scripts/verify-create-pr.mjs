@@ -387,6 +387,31 @@ check(
   notes.join(' | '),
 );
 
+// ── 7: a forge with no URL configured refuses BY NAME ────────────────────────────────
+// The guard `ipc.ts`'s client builders have always carried, now shared with this path
+// (`forge/baseUrl.ts`). Without it the blank setting reaches `fetch` as the RELATIVE url
+// `/api/v3/repos/…` and the human is shown `TypeError: Invalid URL` — thrown from inside the
+// one function whose stated contract is that every refusal names its own wall.
+//
+// A third card, because the two above now carry an open pull request and would stop at it
+// before a client was ever built. The push still happens (the branch is already there, so
+// git says "Everything up-to-date") and the refusal comes from the create, which is exactly
+// where it came from before.
+const configured = store.getSettings();
+store.saveSettings({ ...configured, github: { ...configured.github, baseUrl: '   ' } });
+const third = store.createTask('personal', { title: 'A card whose forge has no URL' });
+store.updateTask(third.id, { agentProjectId: project.id, agentBranch: BRANCH });
+const noUrl = await openPullRequest(deps, third.id).then(
+  () => null,
+  (e) => String(e?.message ?? e),
+);
+check(
+  'a forge with no URL configured refuses by naming the setting',
+  Boolean(noUrl && /GitHub API URL/.test(noUrl) && !/Invalid URL/i.test(noUrl)),
+  noUrl ?? '(it did not refuse)',
+);
+store.saveSettings(configured);
+
 store.close();
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

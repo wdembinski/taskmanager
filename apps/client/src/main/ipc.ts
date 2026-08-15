@@ -141,7 +141,12 @@ import {
   type FetchedMergeRequest,
 } from './gitlab/gitlabSync';
 import { reconcilePullRequests, rematchPullRequests } from './github/githubPrSync';
-import { mrIsSettled, type ForgeProvider, type MergeRequest } from '@shared/mergeRequest';
+import {
+  forgeName,
+  mrIsSettled,
+  type ForgeProvider,
+  type MergeRequest,
+} from '@shared/mergeRequest';
 import { canLink, isLinkGate, type LinkResult, type TaskLink } from '@shared/taskChain';
 import type { TaskAttachment } from '@shared/attachments';
 import {
@@ -164,6 +169,7 @@ import { createWindowStateFlusher, type WindowStateFlusher } from './windowFlush
 import { appPlanPath, appProjectFile } from './projectPaths';
 import { RELEASE_DOC } from '@shared/release';
 import { openPullRequest, type CreatePrDeps } from './forge/createPr';
+import { forgeBaseUrl } from './forge/baseUrl';
 import { RUN_REFUSAL_MESSAGE } from '@shared/scheduler';
 import { logMain } from './log';
 import { parsePlan } from './planParser';
@@ -1442,11 +1448,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // GitLab. Mirrors the JIRA block above; the token is encrypted the same way and
   // never leaves this process.
   const buildGitLabClient = (): GitLabClient => {
-    const { gitlab } = store.getSettings();
-    if (!gitlab.baseUrl.trim()) throw new Error('Set the GitLab URL in Settings first.');
+    // The URL first and the token second, which is the order they are obtained in: nobody has
+    // a token for an instance they have not named yet. `forgeBaseUrl` owns that refusal now —
+    // `forge/createPr.ts` builds its own clients and has to make the same one.
+    const baseUrl = forgeBaseUrl('gitlab', store.getSettings());
     const cipher = store.loadGitLabToken();
     if (!cipher) throw new Error('No GitLab token saved — add one in Settings.');
-    return new GitLabClient({ baseUrl: gitlab.baseUrl, token: decryptSecret(cipher, 'GitLab') });
+    return new GitLabClient({ baseUrl, token: decryptSecret(cipher, forgeName('gitlab')) });
   };
 
   handle('gitlab:getConfigStatus', async () => {
@@ -1503,11 +1511,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // GitHub. The GitLab block again, one forge over: same encryption path, same paste
   // hygiene, same refusal to store anything when the OS secure store is unavailable.
   const buildGitHubClient = (): GitHubClient => {
-    const { github } = store.getSettings();
-    if (!github.baseUrl.trim()) throw new Error('Set the GitHub API URL in Settings first.');
+    // The GitLab builder above, one forge over — same guard, same order, same reason.
+    const baseUrl = forgeBaseUrl('github', store.getSettings());
     const cipher = store.loadGitHubToken();
     if (!cipher) throw new Error('No GitHub token saved — add one in Settings.');
-    return new GitHubClient({ baseUrl: github.baseUrl, token: decryptSecret(cipher, 'GitHub') });
+    return new GitHubClient({ baseUrl, token: decryptSecret(cipher, forgeName('github')) });
   };
 
   handle('github:getConfigStatus', async () => {
@@ -1575,7 +1583,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   const forgeToken = (provider: ForgeProvider): string | null => {
     const cipher = provider === 'github' ? store.loadGitHubToken() : store.loadGitLabToken();
     if (!cipher) return null;
-    return decryptSecret(cipher, provider === 'github' ? 'GitHub' : 'GitLab');
+    // `forgeName`, not a ternary: the label goes into a sentence the human reads ("The stored
+    // GitHub token could not be decrypted…"), and it is the same name the two other places
+    // that say it out loud already use.
+    return decryptSecret(cipher, forgeName(provider));
   };
 
   const createPrDeps = (): CreatePrDeps => ({

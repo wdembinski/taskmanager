@@ -31,7 +31,7 @@
  * `a-refusal-that-named-the-wrong-wall` is about.
  */
 import type { ForgeProvider, MergeRequest } from '@shared/mergeRequest';
-import { mrIsSettled, mrRef } from '@shared/mergeRequest';
+import { forgeName, mrIsSettled, mrNoun, mrRef } from '@shared/mergeRequest';
 import type { Project, Task } from '@shared/model';
 import type { AppSettings } from '@shared/settings';
 import { sanitizeToken } from '@shared/secretToken';
@@ -41,6 +41,7 @@ import { GitHubClient } from '../github/githubClient';
 import { pullRequestId } from '../github/githubPrSync';
 import { GitLabClient } from '../gitlab/gitlabClient';
 import { mergeRequestId } from '../gitlab/gitlabSync';
+import { forgeBaseUrl } from './baseUrl';
 import { parseRemoteUrl, pickForge } from './remoteUrl';
 
 /** What {@link openPullRequest} needs from the world around it. */
@@ -192,8 +193,8 @@ export async function openPullRequest(
   const token = deps.tokenFor(provider);
   if (!token) {
     throw new Error(
-      `No ${provider === 'github' ? 'GitHub' : 'GitLab'} token is saved, so the branch cannot ` +
-        `be pushed or a pull request opened. Add one in Settings.`,
+      `No ${forgeName(provider)} token is saved, so the branch cannot be pushed or a ` +
+        `${mrNoun(provider)} opened. Add one in Settings.`,
     );
   }
   const clean = sanitizeToken(token);
@@ -234,18 +235,21 @@ export async function openPullRequest(
       ? await createOnGitHub(settings, clean, remote.path, live.branch, live.base, title, body)
       : await createOnGitLab(settings, clean, remote.path, live.branch, live.base, title, body);
 
+  // `#12` / `!12`, from the same function the card row, the tooltip and the attention reason
+  // spell it with — `created` carries the provider and the number, which is all `mrRef` reads.
+  const ref = mrRef(created);
   deps.upsertMergeRequest(rowFor(created, owner.id, deps.now()));
   deps.note(
     project.id,
     owner.id,
     created.existed
-      ? `A ${created.provider === 'github' ? 'pull' : 'merge'} request for "${live.branch}" was ` +
-          `already open — ${created.ref}: ${created.webUrl}`
-      : `Pushed "${live.branch}" to ${remote.host} and opened ${created.ref} against ` +
+      ? `A ${mrNoun(created.provider)} for "${live.branch}" was already open — ` +
+          `${ref}: ${created.webUrl}`
+      : `Pushed "${live.branch}" to ${remote.host} and opened ${ref} against ` +
           `\`${live.base}\` — ${created.webUrl}`,
   );
 
-  return { url: created.webUrl, ref: created.ref, existed: created.existed };
+  return { url: created.webUrl, ref, existed: created.existed };
 }
 
 /** The card's open merge request, if it has one. A settled one is history, not a blocker. */
@@ -312,7 +316,14 @@ export function prBody(
   return [description, closes].filter(Boolean).join('\n\n');
 }
 
-/** What both forges' creates boil down to, before it becomes a stored row. */
+/**
+ * What both forges' creates boil down to, before it becomes a stored row.
+ *
+ * No `ref` field: `#12` and `!12` are a function of `provider` and `number`, both of which are
+ * right here, and {@link mrRef} is where that function lives. Carrying the string as well
+ * would be a third place the forge's notation is decided — and the one place it could be
+ * decided WRONGLY, since nothing checks a hand-written `#` against the provider beside it.
+ */
 interface CreatedRef {
   provider: ForgeProvider;
   repoId: number;
@@ -323,7 +334,6 @@ interface CreatedRef {
   sourceBranch: string;
   targetBranch: string;
   draft: boolean;
-  ref: string;
   existed: boolean;
 }
 
@@ -342,10 +352,12 @@ async function createOnGitHub(
       `"${projectPath}" is not an owner/repo path, so GitHub cannot be asked for a pull request.`,
     );
   }
-  // The setting is handed over exactly as the human typed it. `apiRoot`'s rule — github.com
-  // is its own host, an Enterprise instance hangs off `/api/v3` — is NOT re-derived here;
-  // `githubClient.ts` owns it, and a second copy is a second thing to keep in step.
-  const client = new GitHubClient({ baseUrl: settings.github.baseUrl, token });
+  // Through the same guard `ipc.ts` builds its clients behind, so a blank setting refuses with
+  // the sentence naming it rather than with `TypeError: Invalid URL` from inside `fetch`.
+  // `apiRoot`'s rule — github.com is its own host, an Enterprise instance hangs off `/api/v3`
+  // — is NOT re-derived here; `githubClient.ts` owns it, and a second copy is a second thing
+  // to keep in step.
+  const client = new GitHubClient({ baseUrl: forgeBaseUrl('github', settings), token });
   const { pullRequest, existed } = await client.createPullRequest(ownerName, repoName, {
     head: branch,
     base,
@@ -365,7 +377,6 @@ async function createOnGitHub(
     sourceBranch: pullRequest.head?.ref ?? branch,
     targetBranch: pullRequest.base?.ref ?? base,
     draft: pullRequest.draft === true,
-    ref: `#${pullRequest.number}`,
     existed,
   };
 }
@@ -379,7 +390,8 @@ async function createOnGitLab(
   title: string,
   body: string,
 ): Promise<CreatedRef> {
-  const client = new GitLabClient({ baseUrl: settings.gitlab.baseUrl, token });
+  // Same guard as the GitHub half, one forge over. See {@link forgeBaseUrl}.
+  const client = new GitLabClient({ baseUrl: forgeBaseUrl('gitlab', settings), token });
   const { mergeRequest, existed } = await client.createMergeRequest(projectPath, {
     source_branch: branch,
     target_branch: base,
@@ -396,7 +408,6 @@ async function createOnGitLab(
     sourceBranch: mergeRequest.source_branch ?? branch,
     targetBranch: mergeRequest.target_branch ?? base,
     draft: mergeRequest.draft === true || mergeRequest.work_in_progress === true,
-    ref: `!${mergeRequest.iid}`,
     existed,
   };
 }
