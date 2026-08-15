@@ -141,7 +141,12 @@ import {
   type FetchedMergeRequest,
 } from './gitlab/gitlabSync';
 import { reconcilePullRequests, rematchPullRequests } from './github/githubPrSync';
-import { mrIsSettled, type MergeRequest } from '@shared/mergeRequest';
+import {
+  forgeName,
+  mrIsSettled,
+  type ForgeProvider,
+  type MergeRequest,
+} from '@shared/mergeRequest';
 import { canLink, isLinkGate, type LinkResult, type TaskLink } from '@shared/taskChain';
 import type { TaskAttachment } from '@shared/attachments';
 import {
@@ -163,6 +168,8 @@ import { sanitizeWindowState } from './windowState';
 import { createWindowStateFlusher, type WindowStateFlusher } from './windowFlush';
 import { appPlanPath, appProjectFile } from './projectPaths';
 import { RELEASE_DOC } from '@shared/release';
+import { openPullRequest, type CreatePrDeps } from './forge/createPr';
+import { forgeBaseUrl } from './forge/baseUrl';
 import { RUN_REFUSAL_MESSAGE } from '@shared/scheduler';
 import { logMain } from './log';
 import { parsePlan } from './planParser';
@@ -1082,6 +1089,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       // Read at merge time, not at run time, so flipping it while the agent works still
       // decides what happens when that work lands.
       ...(options.autoRelease !== undefined ? { autoRelease: options.autoRelease } : {}),
+      // Read when the work SETTLES, like the two below, so turning it on mid-run still
+      // decides what happens to the branch the agent is writing right now.
+      ...(options.autoCreatePr !== undefined ? { autoCreatePr: options.autoCreatePr } : {}),
       // Read the moment the run FINISHES, likewise, so changing your mind while the agent
       // works still decides what happens to the branch it is writing.
       ...(options.autoIntegrate !== undefined ? { autoIntegrate: options.autoIntegrate } : {}),
@@ -1438,11 +1448,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // GitLab. Mirrors the JIRA block above; the token is encrypted the same way and
   // never leaves this process.
   const buildGitLabClient = (): GitLabClient => {
-    const { gitlab } = store.getSettings();
-    if (!gitlab.baseUrl.trim()) throw new Error('Set the GitLab URL in Settings first.');
+    // The URL first and the token second, which is the order they are obtained in: nobody has
+    // a token for an instance they have not named yet. `forgeBaseUrl` owns that refusal now —
+    // `forge/createPr.ts` builds its own clients and has to make the same one.
+    const baseUrl = forgeBaseUrl('gitlab', store.getSettings());
     const cipher = store.loadGitLabToken();
     if (!cipher) throw new Error('No GitLab token saved — add one in Settings.');
-    return new GitLabClient({ baseUrl: gitlab.baseUrl, token: decryptSecret(cipher, 'GitLab') });
+    return new GitLabClient({ baseUrl, token: decryptSecret(cipher, forgeName('gitlab')) });
   };
 
   handle('gitlab:getConfigStatus', async () => {
@@ -1499,11 +1511,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // GitHub. The GitLab block again, one forge over: same encryption path, same paste
   // hygiene, same refusal to store anything when the OS secure store is unavailable.
   const buildGitHubClient = (): GitHubClient => {
-    const { github } = store.getSettings();
-    if (!github.baseUrl.trim()) throw new Error('Set the GitHub API URL in Settings first.');
+    // The GitLab builder above, one forge over — same guard, same order, same reason.
+    const baseUrl = forgeBaseUrl('github', store.getSettings());
     const cipher = store.loadGitHubToken();
     if (!cipher) throw new Error('No GitHub token saved — add one in Settings.');
-    return new GitHubClient({ baseUrl: github.baseUrl, token: decryptSecret(cipher, 'GitHub') });
+    return new GitHubClient({ baseUrl, token: decryptSecret(cipher, forgeName('github')) });
   };
 
   handle('github:getConfigStatus', async () => {
@@ -1560,6 +1572,51 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       return { ok: false, message: e instanceof Error ? e.message : String(e) };
     }
   });
+
+  // -------------------------------------------------------------------------
+  // Opening a pull request for a card (`forge/createPr.ts`).
+  //
+  // The token reader is the only thing this file adds: `decryptSecret` lives in this closure
+  // because it is the one place `safeStorage` is reachable, and a **null** rather than a
+  // throw is what "no token saved" means — `openPullRequest` turns that into a sentence
+  // naming the forge, which is more use than a decryption error.
+  const forgeToken = (provider: ForgeProvider): string | null => {
+    const cipher = provider === 'github' ? store.loadGitHubToken() : store.loadGitLabToken();
+    if (!cipher) return null;
+    // `forgeName`, not a ternary: the label goes into a sentence the human reads ("The stored
+    // GitHub token could not be decrypted…"), and it is the same name the two other places
+    // that say it out loud already use.
+    return decryptSecret(cipher, forgeName(provider));
+  };
+
+  const createPrDeps = (): CreatePrDeps => ({
+    getTask: (id) => store.getTask(id),
+    getProject: (id) => store.getProject(id),
+    getSettings: () => store.getSettings(),
+    listMergeRequests: () => store.listMergeRequests(),
+    upsertMergeRequest: (mr) => {
+      store.upsertMergeRequest(mr);
+      // Pushed straight out, for the reason the row is written here at all: the card's
+      // merge-request section must show the PR on the next paint rather than after the
+      // next poll, and nothing else would tell the renderer it exists.
+      send('mergeRequests:changed', store.listMergeRequests());
+    },
+    inspect: (project, ownerTaskId, branchName) =>
+      worktrees.inspect(project, ownerTaskId, branchName),
+    tokenFor: forgeToken,
+    note: (projectId, taskId, body) => {
+      store.addComment(projectId, taskId, body);
+      send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) });
+    },
+    now: () => Date.now(),
+  });
+
+  handle('task:createPullRequest', async (taskId) => openPullRequest(createPrDeps(), taskId));
+
+  // The scheduler opens the same PR, through the same function, when a card finishes with
+  // "Open a PR when finished" on — so it is handed the deps rather than growing its own way
+  // in. Set here because only this closure can read a secret out of `safeStorage`.
+  scheduler.setPullRequestOpener((taskId) => openPullRequest(createPrDeps(), taskId));
 
   // -------------------------------------------------------------------------
   // vipper.iam cloud sign-in (Phase 25's "Guard the cloud API with vipper.iam"). The refresh

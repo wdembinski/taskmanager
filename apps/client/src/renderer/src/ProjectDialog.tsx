@@ -84,6 +84,7 @@ export function ProjectDialog({
   const [baseBranch, setBaseBranch] = useState('');
   const [writeBack, setWriteBack] = useState(false);
   const [autoRelease, setAutoRelease] = useState(false);
+  const [autoCreatePr, setAutoCreatePr] = useState(false);
   /** `null` = follow the app-wide setting, which is what a project that never ruled does. */
   const [autoIntegrate, setAutoIntegrate] = useState<boolean | null>(null);
   /**
@@ -131,6 +132,7 @@ export function ProjectDialog({
       setBaseBranch(project.baseBranch);
       setWriteBack(project.writeBackPlan);
       setAutoRelease(project.autoRelease);
+      setAutoCreatePr(project.autoCreatePr);
       setAutoIntegrate(project.autoIntegrate);
       setTarget(project.target);
       setInstructions(project.instructions);
@@ -204,6 +206,7 @@ export function ProjectDialog({
           baseBranch,
           writeBackPlan: writeBack,
           autoRelease,
+          autoCreatePr,
           autoIntegrate,
           target,
           instructions,
@@ -220,6 +223,7 @@ export function ProjectDialog({
           baseBranch,
           writeBackPlan: writeBack,
           autoRelease,
+          autoCreatePr,
           autoIntegrate,
           target,
           instructions,
@@ -429,6 +433,18 @@ export function ProjectDialog({
                     checked={autoRelease}
                     label="Release after merge by default"
                     onChange={(_e, d) => setAutoRelease(d.checked)}
+                  />
+                </Field>
+              )}
+
+              {/* The alternative to merging, so it sits beside it — and for the same reason
+                  as the two above, only where there is a branch to push at all. */}
+              {useWorktrees && (
+                <Field hint='Every task here starts with "Open a PR when finished" already on: its branch is pushed to the repo&apos;s remote and a pull/merge request is opened against the base branch, INSTEAD of the branch being merged locally. Needs a GitHub or GitLab token in Settings.'>
+                  <Switch
+                    checked={autoCreatePr}
+                    label="Open a PR when finished by default"
+                    onChange={(_e, d) => setAutoCreatePr(d.checked)}
                   />
                 </Field>
               )}

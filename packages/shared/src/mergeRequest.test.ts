@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   approvalSummary,
   detailedMergeBlocker,
+  mrAbbrev,
   mergeBlockerLabel,
   mergeBlockers,
   mrApprovalState,
@@ -403,6 +404,20 @@ describe('two forges, one merge request', () => {
   it('calls the thing what its own forge calls it', () => {
     expect(mrNoun('gitlab')).toBe('merge request');
     expect(mrNoun('github')).toBe('pull request');
+  });
+
+  it('abbreviates it from the provider, not from the noun', () => {
+    expect(mrAbbrev('gitlab')).toBe('MR');
+    expect(mrAbbrev('github')).toBe('PR');
+    // The initials are the noun's initials — the two must not drift apart, since a button
+    // saying "Create PR" beside a tooltip saying "open a merge request" names two things.
+    for (const provider of ['github', 'gitlab'] as const) {
+      const initials = mrNoun(provider)
+        .split(' ')
+        .map((word) => word[0]?.toUpperCase())
+        .join('');
+      expect(mrAbbrev(provider)).toBe(initials);
+    }
   });
 
   it('heads a list with the forge every row in it came from', () => {
