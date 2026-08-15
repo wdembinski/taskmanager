@@ -5779,6 +5779,112 @@ the gates above.
 
 ---
 
+## Fix — three cards the web never saw
+
+**The report.** Three cards — *Add button to Create PR/MR*, *Add user details page*, *Budget
+schema plan and implementation* — were on the desktop board and absent from the web one.
+
+**What it actually was.** Not a filter, not a selector, not the paging on `GET /v1/board`.
+The desktop's push had been failing for a day. `POST /v1/sync` was building a
+**10,427,787-byte** body every tick and the server was refusing it `413 Payload Too Large`;
+nothing was marked sent, so the next tick rebuilt the identical body. Forever.
+
+The body was not the board. `SyncRequest.results` — the answers to relayed `ipc-invoke`s —
+was read straight out of `cloud_applied_commands` and put on the wire **uncapped and
+unbatched**. A browser tab had asked for a card's activity timeline about thirty times in one
+burst; each answer was a few hundred kilobytes of timeline JSON, and all 36 of them went into
+every request. `SYNC_BYTES_LIMIT` did not help: it bounds the **entities**, and the entities
+in those requests were one 15 kB task. The 413 handler did not help either — it halves
+`batchLimit`, which is an entity count, so the client dutifully shrank the 15 kB half of a
+10 MB request until it was sending one entity, and stayed wedged.
+
+Everything downstream stopped with it. The outbox stopped draining, so the three cards, all
+created *after* the wedge, were never mirrored at all — the server has no row for them, which
+is exactly what a web board with no card looks like. They were noticed because they were new;
+every other card on that board was simply frozen at its last pre-wedge state.
+
+**The evidence, in the order it settled the question** (the sweep in
+[[a-session-that-had-ended]]'s terms, all read-only, ~20 minutes):
+
+1. A snapshot of `%APPDATA%\claude-orchestrator\orchestrator.db` (+`-wal`, `-shm`) read under
+   `ELECTRON_RUN_AS_NODE=1` — all three cards present, `projectId = 'personal'`,
+   `archivedAt IS NULL`, so both `selectBoardTasks` and the web's `selectBoardTasks` selector
+   should draw them.
+2. `cloud_outbox`: 139 rows over 22 tasks, oldest `seq` 1535 — the `insert` for *Add user
+   details page*. A trigger-filled log that pruning empties on every success does not hold
+   eleven hours of writes unless nothing has succeeded.
+3. `cloud_applied_commands WHERE resultSentAt IS NULL`: **36 rows, 10,382,246 bytes**, all
+   applied inside one 300 ms burst. That is the body, to within the framing.
+4. `logs/main.log`: `cloud sync batch over the byte cap: 1 entity, 10427787 bytes` followed by
+   `413`, on repeat. The log line had been printing the diagnosis all along — "1 entity" and
+   "10 MB" in the same sentence is the whole bug — and it was never read.
+
+**The fix.** [`cloudResults.ts`](../../apps/client/src/main/cloudResults.ts), a pure module
+that is to `SyncRequest.results` what `cloudDelta.ts` is to the entities: pack oldest-first
+within a byte budget, always at least one, and let the rest wait for the next tick.
+
+Its second rule is the one that matters, and it is deliberately *not* `cloudDelta`'s. An
+oversized task row is sent anyway, because a task row is durable state and dropping it would
+lose the card. An oversized **result** is replaced by a truthful `ok: false` error, because it
+is one browser interaction's return value: a body no hop will accept means the promise waiting
+on it never resolves either way, and carrying it forever costs every answer and every card
+queued behind it. Replacing it settles the promise, retires the row, and lets the queue move.
+
+Three smaller things ride along, each closing a way the same shape could recur:
+
+- **A 413 now halves both budgets.** The body is entities *plus* answers; shrinking one while
+  the other stays whole converges on a request that is still too large.
+- **The budget and the hard cap are separate parameters.** A shrunken budget only ever
+  *defers* an answer; only the fixed cap can *replace* one. A transient 413 must not start
+  discarding results that were perfectly sendable a minute ago.
+- **A wedge says so.** When a 413 arrives on a request that is already one entity and one
+  result, there is nothing left to halve — the client logs that in those words, instead of
+  leaving a bare 413 to be read as a hop being difficult.
+
+Nothing needs unwedging by hand: the next tick after this ships sends the backlog in ~1 MB
+slices, and the outbox drains behind it.
+
+**What is deliberately not in this fix.**
+
+- **A larger `CLOUD_BODY_LIMIT`.** The server's 8 MB backstop is not the fault — an unbounded
+  client will exceed any number picked here, and raising it only moves the wedge. The bound
+  belongs at the one place that can split work across ticks, which is the client.
+- **Rate-limiting the burst that made 36 identical timeline requests.** Real, and a different
+  bug: even one legitimate answer must not be able to wedge the mirror, which is what this
+  change guarantees. Left for whoever looks at why the tab asked thirty times.
+
+**Verification.** `cloudResults.test.ts` covers the packing, the always-one rule, the
+replacement, and the defer-don't-destroy split; two `cloudPoller.test.ts` cases reproduce the
+real wedge (36 × 300 kB) and assert the request that comes out is bounded and that only what
+went out is marked sent. Both poller cases were run against a mutant — `boundCloudResults`
+called with an unbounded budget — and fail there, which is the old behaviour exactly.
+
+| Gate | Exit | Result |
+| --- | --- | --- |
+| `pnpm format:check` | **0** | All matched files use Prettier code style |
+| `pnpm typecheck --force` | **0** | 9 successful, 9 total — **0 cached**, 31.67s |
+| `pnpm test` | **0** | 178 files passed, 1 skipped (179); **2979 passed, 11 skipped (2990)**, 67.68s |
+| `pnpm build --force` | **0** | 6 successful, 6 total — **0 cached**, 39.42s |
+
+Run on the **rebased** commit, not the one first written: `development` had moved on to
+v0.86.2 underneath this branch, so the pre-rebase run measured a tree nobody will merge. Of
+those 2979, eleven are this branch's — the nine `cloudResults` cases and the two added to
+`cloudPoller.test.ts`. Nothing else in the diff is a test, so that is the whole delta.
+
+No version bump, per `RELEASE.md` rule 5 and the two PRs before this one: CI cuts the tag when
+this reaches `development`. A bump written here is a guaranteed conflict on the version line
+against whatever the pipeline released in the meantime — this branch carried one to 0.86.3 and
+it collided with `development`'s 0.86.2 on the first rebase.
+
+**What no test here covers, and cannot.** That the live install actually unwedges. Nothing
+was launched (`RELEASE.md` rule 6) and the desktop's copy of this code is the packaged one, so
+the sequence a person will see — update, next tick sends ~1 MB of the backlog, the outbox
+drains, the three cards appear on the web board — is owed as live verification. What *is*
+established is that the queue those cards are stuck behind can no longer build a request the
+server refuses.
+
+---
+
 ## Conventions for every phase
 
 - **Contract first.** New data crossing the UI↔engine boundary gets its types in
