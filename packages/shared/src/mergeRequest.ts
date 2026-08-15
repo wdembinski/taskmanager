@@ -52,6 +52,30 @@ export interface MergeRequest {
   id: string;
   /** The board task this MR was matched to, or null while nothing claims it. */
   taskId: string | null;
+  /**
+   * The card this app **opened** this merge request for, remembered rather than re-derived.
+   *
+   * {@link taskId} above is a GUESS: every sync throws it away and rebuilds it from the keys
+   * it can find in the title, the branch and the description (`forge/issueKeys.ts`). That is
+   * the only thing available for an MR somebody opened in the forge's own UI, and it is
+   * right for one — but it is not the only thing available for an MR *we* opened. Pressing
+   * **Create PR** on a card knows exactly which card it is, and a guess that disagrees with
+   * that is simply wrong.
+   *
+   * It disagrees more often than it sounds. The key only round-trips when the card carries
+   * one the board indexes: a card with no ticket behind it has none at all, a GitHub issue
+   * spells its key `owner/repo#12` — a closing reference in the BODY, which re-matching never
+   * re-reads — and a title a human has since edited on the forge takes the prefix with it.
+   * In every one of those the next sync re-derived nothing, wrote `taskId: null`, and the row
+   * the button had just put on the card vanished off it — while sitting in the table, still
+   * open, belonging to nobody.
+   *
+   * So this is the one field about *which card* the syncs may not touch, alongside the read
+   * markers and the local rename: nothing upstream can change it, because nothing upstream
+   * knows it. Null for every MR discovered by a sync — those keep on being matched by key,
+   * exactly as before. See `matchTaskId` in either forge's reconciler for the precedence.
+   */
+  openedForTaskId: string | null;
   provider: ForgeProvider;
   /** The forge's own id for the repository this MR is on. */
   repoId: number;

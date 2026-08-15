@@ -47,6 +47,13 @@
  *     new commit into the open PR and POSTs nothing. This is the one behaviour here with no
  *     visible symptom when it breaks — the button still succeeds, the note still reads well,
  *     and the work simply never reaches the forge.
+ *  7. A forge with no URL configured refuses by naming the setting, not with `Invalid URL`.
+ *  8. The **next sync leaves the row on the card**. The card here carries no tracker key, so
+ *     matching by key has nothing to work with — and matching by key is all the reconciler
+ *     used to do, which is why the row appeared on the button and was gone by the next poll.
+ *  9. A database written **before** `openedForTaskId` existed upgrades into it and is writable
+ *     afterwards. Every installed copy is that database, and this is the only harness in the
+ *     repo that can open one at all (see `the-store-has-no-tests`).
  *
  * ## Prove it can fail
  *
@@ -60,6 +67,15 @@
  * `alreadyOpen` is truthy, before the push. The second call then still answers `#12` and still
  * POSTs nothing — everything a caller can see stays correct — and only "pushes the new commit"
  * goes red, which is exactly why it is worth a check of its own.
+ *
+ * For check 8, drop `openedForTaskId: taskId` from `rowFor` in `createPr.ts` — the row is still
+ * written, still on the card, and still under the right id, and the sync one line later takes
+ * it off the card. That is the whole bug, and only check 8 sees it.
+ *
+ * For check 9, delete the guarded `ALTER TABLE merge_requests ADD COLUMN openedForTaskId` from
+ * `store.ts`: the fresh database above is unaffected — every check up to 8 still passes — and
+ * re-opening the older one dies on `no such column`, which is what an installed copy would do
+ * on the first press of the button.
  */
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -113,6 +129,8 @@ if (!process.versions.electron) {
   // lets both be pulled out of the app and run on their own like this.
   bundle(join(root, 'apps/client/src/main/forge/createPr.ts'), join(scratch, 'createPr.cjs'));
   bundle(join(root, 'apps/client/src/main/store.ts'), join(scratch, 'store.cjs'), 'better-sqlite3');
+  // The reconciler check 8 runs — pure, and the third module here that reaches no Electron.
+  bundle(join(root, 'apps/client/src/main/github/githubPrSync.ts'), join(scratch, 'prSync.cjs'));
 
   const electron = join(
     clientModules,
@@ -140,6 +158,7 @@ const require = createRequire(import.meta.url);
 const work = process.argv[2];
 const { openPullRequest } = require(join(work, 'createPr.cjs'));
 const { createStore } = require(join(work, 'store.cjs'));
+const { reconcilePullRequests } = require(join(work, 'prSync.cjs'));
 
 let failures = 0;
 const check = (label, ok, detail) => {
@@ -412,6 +431,121 @@ check(
 );
 store.saveSettings(configured);
 
+// ── 8: the next sync leaves the row on the card ──────────────────────────────────────
+// The reported bug. The row appears the moment the button is pressed and is gone off the card
+// again by the next poll: `reconcilePullRequests` rebuilds `taskId` from the keys it can find
+// in the pull request's own text, and this card — typed in here, exactly as a native ticket or
+// a hand-made card is — carries none. It wrote `taskId: null` over a link the button had known
+// for certain, and the row sat in the table belonging to nobody.
+//
+// Run through the REAL store, not just the reconciler, because the fix is only as good as the
+// column under it: `openedForTaskId` has to survive the round trip through SQLite, including
+// the guarded ALTER that adds it to a database written before it existed.
+const board = {
+  // The board as `boardKeyIndex` builds it for a card with no tracker key: no keys at all,
+  // and the card's own id.
+  knownKeys: [],
+  taskIdByKey: new Map(),
+  knownTaskIds: new Set([card.id, second.id, third.id]),
+  identity: null,
+  now: 1_760_000_100_000,
+};
+const stored = store.listMergeRequests().filter((r) => r.provider === 'github');
+check(
+  'the stored row remembers the card it was opened for',
+  stored.find((r) => r.id === 'gh-555-12')?.openedForTaskId === card.id,
+  JSON.stringify(stored.map((r) => ({ id: r.id, openedForTaskId: r.openedForTaskId }))),
+);
+// What the sync actually does: the same search row GitHub would return for the open PR.
+const listed = {
+  repoId: 555,
+  number: 12,
+  projectPath: 'acme/checkout',
+  title: 'Fix the export dialog',
+  description: 'The dialog forgets the last folder.',
+  webUrl: 'https://github.com/acme/checkout/pull/12',
+  sourceBranch: BRANCH,
+  targetBranch: base,
+  state: 'opened',
+  draft: false,
+  pipelineStatus: 'unknown',
+  pipelineStages: [],
+  pipelineUrl: null,
+  approvalsRequired: null,
+  approvalsGiven: 0,
+  changesRequested: false,
+  detailedMergeStatus: null,
+  hasConflicts: false,
+  updatedAt: 1_760_000_050_000,
+};
+const { upserts, deleteIds } = reconcilePullRequests(stored, [listed], board);
+for (const mr of upserts) store.upsertMergeRequest(mr);
+store.deleteMergeRequests(deleteIds);
+
+const afterSync = store.listMergeRequests().find((r) => r.id === 'gh-555-12');
+check(
+  'and the sync leaves it on that card instead of orphaning it',
+  afterSync?.taskId === card.id,
+  `taskId is ${String(afterSync?.taskId)}, card is ${card.id}`,
+);
+check(
+  'with the link still recorded, so every later sync answers the same',
+  afterSync?.openedForTaskId === card.id,
+  JSON.stringify(afterSync),
+);
+
 store.close();
+
+// ── 9: a database written BEFORE the column upgrades into it ─────────────────────────
+// Everything above ran against a table the DDL created complete, which is the one shape no
+// existing user has: every installed copy has a `merge_requests` table from before this. The
+// guarded ALTER is what carries them over, and a broken one does not degrade — the very next
+// upsert throws, on a channel a human pressed a button to reach.
+//
+// Dropped and re-opened rather than mocked: `createStore` runs its migrations on open, so
+// taking the column away and asking for the store again exercises the real path.
+const dbPath = join(work, 'orchestrator.db');
+const raw = new (require('better-sqlite3'))(dbPath);
+raw.exec(`ALTER TABLE merge_requests DROP COLUMN openedForTaskId`);
+const gone = raw
+  .prepare(`PRAGMA table_info(merge_requests)`)
+  .all()
+  .some((c) => c.name === 'openedForTaskId');
+raw.close();
+check('the column can be taken away, so the migration has something to do', !gone);
+
+// Caught rather than allowed to throw: without the migration, `createStore` dies while
+// PREPARING the upsert — `no such column: openedForTaskId` — and a stack trace out of a
+// verification script says far less than the sentence naming what it was doing.
+let upgraded = null;
+let openError = null;
+try {
+  upgraded = createStore(dbPath);
+} catch (e) {
+  openError = String(e?.message ?? e);
+}
+check(
+  'opening an older database does not fall over',
+  upgraded !== null,
+  openError ?? undefined,
+);
+if (upgraded) {
+  const row9 = upgraded.listMergeRequests().find((r) => r.id === 'gh-555-12');
+  check(
+    'the migration adds the column back, empty',
+    row9 !== undefined && row9.openedForTaskId === null,
+    JSON.stringify(row9 ?? null),
+  );
+  // And it is writable afterwards — an ALTER that ran but left the INSERT naming a column
+  // that is not there would only be found here.
+  upgraded.upsertMergeRequest({ ...row9, openedForTaskId: card.id });
+  check(
+    'and the row can be written and read back through it',
+    upgraded.listMergeRequests().find((r) => r.id === 'gh-555-12')?.openedForTaskId === card.id,
+    JSON.stringify(upgraded.listMergeRequests().find((r) => r.id === 'gh-555-12') ?? null),
+  );
+  upgraded.close();
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

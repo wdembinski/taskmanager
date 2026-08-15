@@ -21,6 +21,9 @@ import {
 const mr = (over: Partial<MergeRequest> = {}): MergeRequest => ({
   id: 'gl-9-1',
   taskId: 't1',
+  // Discovered by a sync, like every merge request these predicates are about — the card
+  // it remembers only matters where the card is worked out, which is the reconcilers.
+  openedForTaskId: null,
   provider: 'gitlab',
   repoId: 9,
   projectPath: 'acme/web',
