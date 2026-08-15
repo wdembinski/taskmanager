@@ -1355,10 +1355,11 @@ export function Settings(): JSX.Element {
 
             {/* The poller never reports a failure — it counts the tick and retries — so
                 without this, a wrong address, a missing sign-in and a refused account all
-                look identical: an empty board. */}
+                look identical: an empty board. It reads the SAVED settings, hence "Save
+                first" below: a URL typed and not saved is not the one being tested. */}
             <Field
               label="Check it works"
-              hint="Walks the whole chain — address, sign-in, then reading your board — and says which part fails."
+              hint="Save first, then test. Walks the whole chain — address, sign-in, this machine's own sync, then whether the server lists it as connected — and says which part fails."
             >
               <div className={styles.actions}>
                 <Button

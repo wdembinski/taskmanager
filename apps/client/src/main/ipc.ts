@@ -93,7 +93,7 @@ import {
 } from './jira/jiraMove';
 import { iamSignInConfig } from './iamConfig';
 import { signIn as runIamSignIn } from './iamSignIn';
-import { refreshTokens } from '@shared/iamPkce';
+import { isDeadGrant, refreshTokens } from '@shared/iamPkce';
 import type { ClientInfo, CommandEnvelope } from '@protocol/wire';
 import { PROTOCOL_VERSION } from '@protocol/wire';
 import { applyCloudCommand, type CloudCommandOutcome } from './cloudCommands';
@@ -1688,10 +1688,37 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       };
       return cloudAccessToken.value;
     } catch (e) {
+      // A grant vipper.iam has refused is thrown away rather than retried until the end of
+      // time. `iam:getStatus` — and so Settings' "Signed in." — is "a refresh token is on
+      // file", the same claim about storage the web's `CloudAuth.isSignedIn` makes, so a dead
+      // token left in place makes that pane state something false while the poller fails
+      // silently behind it. Cleared, both tell the truth and `cloud:testConnection` stops at
+      // its sign-in rung with "you are not signed in", which is the actionable sentence.
+      //
+      // Only for a dead grant: an outage must not sign anybody out of their desktop app.
+      if (isDeadGrant(e)) {
+        logMain('vipper.iam refused the stored refresh token — signing out', e);
+        store.clearIamRefreshToken();
+        return null;
+      }
       logMain('vipper.iam access token refresh failed', e);
       return null;
     }
   };
+
+  /**
+   * What a browser names this desktop by — see `ClientInfo` on `@protocol/wire`.
+   *
+   * One definition for the two senders: the poller writes it on every tick, and
+   * `cloud:testConnection` writes it on the one sync it makes itself. A probe that sent no
+   * identity would register the machine anonymously and the verdict could not name it.
+   */
+  const cloudClientInfo = (): ClientInfo => ({
+    name: hostname(),
+    platform: process.platform,
+    appVersion: app.getVersion(),
+    protocolVersion: PROTOCOL_VERSION,
+  });
 
   // Defined here rather than beside the other handlers because it needs
   // `getCloudAccessToken`, which is declared just above.
@@ -1699,6 +1726,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     const result = await testCloudConnection({
       settings: store.getSettings().cloud,
       getAccessToken: getCloudAccessToken,
+      // The id a browser addresses a command to — the probe registers it and then looks for
+      // it coming back in `BoardResponse.clients`, which is the actual question people press
+      // this button to ask.
+      clientId: store.loadCloudClientId(),
+      clientInfo: cloudClientInfo(),
+      // The probe's own sync leases whatever was queued for this machine, exactly as a poll
+      // tick does, so it hands the batch to the same serial drain rather than dropping it.
+      onCommands: (commands) => cloudCommandQueue.enqueue(commands),
     });
     if (!result.ok) logMain('Cloud test connection failed', result.message);
     return result;
@@ -3676,15 +3711,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     getSettings: () => store.getSettings().cloud,
     getAccessToken: getCloudAccessToken,
     // What a browser names this desktop by, once it has more than one to choose between —
-    // see `ClientInfo` on `@protocol/wire`. Built here because this is the only side of
-    // `cloudPoller.ts` that is allowed to touch Electron; read fresh per tick because
-    // nothing forces it to be constant and pinning it would only be a way to go stale.
-    getClientInfo: (): ClientInfo => ({
-      name: hostname(),
-      platform: process.platform,
-      appVersion: app.getVersion(),
-      protocolVersion: PROTOCOL_VERSION,
-    }),
+    // see `ClientInfo` on `@protocol/wire`. Built above rather than inline because this is
+    // the only side of `cloudPoller.ts` that is allowed to touch Electron and the connection
+    // probe needs the same four fields; read fresh per tick because nothing forces it to be
+    // constant and pinning it would only be a way to go stale.
+    getClientInfo: cloudClientInfo,
     // Hand the batch to the serial drain and return. Applying is `cloudCommands.ts`'s job,
     // ordering and one-at-a-time is `commandQueue.ts`'s, and acking is free: each command
     // records itself in the ledger, which the next tick's `SyncRequest.ackedCommandIds` and

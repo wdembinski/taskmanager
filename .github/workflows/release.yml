@@ -25,8 +25,11 @@
 #     the push signed or to trigger something downstream, at which point guard 1 evaporates
 #     silently.
 #
-# The bump commit also touches only `apps/client/package.json`, which matches no filter in
-# `deploy.yml` — so even if it did trigger, it would deploy nothing.
+# The bump commit touches only `apps/client/package.json`. That used to match no filter in
+# `deploy.yml` at all; it now matches the WEB one, deliberately — the web bundle bakes the
+# version of record for its status bar, so a bump is a change to the web. Guard 1 means the
+# push still triggers nothing, which is why `promote` dispatches that deploy explicitly; see
+# its last step. Neither path is a loop: `deploy.yml` pushes no commits.
 #
 # ── What still needs a human ───────────────────────────────────────────────────
 #
@@ -52,6 +55,7 @@ concurrency:
 
 permissions:
   contents: write # push the bump commit and the tag; create and edit the release
+  actions: write # `gh workflow run deploy.yml` from promote — the last step below
 
 jobs:
   # ── §1 Green gates ─────────────────────────────────────────────────────────
@@ -113,6 +117,10 @@ jobs:
       release: ${{ steps.decide.outputs.release }}
       version: ${{ steps.next.outputs.version }}
       tag: ${{ steps.next.outputs.tag }}
+      # 'true' when §2's fallback applied, i.e. this run wrote the version itself in a
+      # `chore(release):` commit rather than finding it in the work commit. `promote` needs
+      # to know: that commit is the one nothing downstream can see (see its last step).
+      needsCommit: ${{ steps.next.outputs.needsCommit }}
 
     steps:
       # RELEASE.md rule 5: only the integration branch is releasable. `push` can only be
@@ -452,3 +460,33 @@ jobs:
         if: needs.linux.result != 'success'
         run: |
           echo "::warning::$TAG was published WITHOUT Linux artifacts — the linux job ended '${{ needs.linux.result }}'. Linux users get the next version; attaching them to this one now would need gh release upload, which mangles filenames (RELEASE.md §6)."
+
+      # The cloud is not this workflow's business — except for this one thread, which no
+      # other workflow can pull.
+      #
+      # The web bundle bakes the version of record for its status bar (apps/web's
+      # vite.config.ts), so that number only moves when the bundle is rebuilt. When the bump
+      # rode inside the work commit, the push that carried it also triggered deploy.yml and
+      # the web was rebuilt there — apps/client/package.json is one of its web filter's
+      # paths. When §2's FALLBACK applied, the bump lives in a `chore(release):` commit this
+      # job's `version` step pushed with GITHUB_TOKEN, and GitHub's loop guard means that
+      # push triggers nothing at all. Left alone, the deployed web would then keep showing
+      # the PREVIOUS version for good — which is how it came to be sitting on v0.78.2 while
+      # the desktop was released at v0.86.0.
+      #
+      # `workflow_dispatch` is the documented exception to that loop guard: an event raised
+      # with GITHUB_TOKEN does create a run for it. deploy.yml's path filter compares against
+      # the previous commit on a dispatch (docs/11), and the previous commit here is the bump
+      # commit — apps/client/package.json alone — so this deploys the web and not the server.
+      # If another push has landed on development since, that comparison is a different one;
+      # that push will have run its own deploy, so the worst case is a redundant one.
+      #
+      # Never fatal. The release is published by the time this runs, and a red run after a
+      # good release is a lie about the release — the warning is the hand-back instead.
+      - name: Redeploy the web client so it carries the released version
+        if: needs.version.outputs.needsCommit == 'true'
+        run: |
+          set -uo pipefail
+          gh workflow run deploy.yml --ref development || {
+            echo "::warning::Could not dispatch deploy.yml. $TAG is published and unaffected, but the deployed web client still shows the version it was last built with. Run Actions -> Deploy -> Run workflow on development to correct it."
+          }
