@@ -150,6 +150,8 @@ interface TaskRow {
   planRound: number | null;
   /** Per-card auto-release override as 0/1; NULL = follow the project. See `Task.autoRelease`. */
   autoRelease: number | null;
+  /** Per-card open-a-PR override as 0/1; NULL = follow the project. See `Task.autoCreatePr`. */
+  autoCreatePr: number | null;
   /** Per-card auto-merge override as 0/1; NULL = follow the project. See `Task.autoIntegrate`. */
   autoIntegrate: number | null;
   /** Epoch ms this card's work landed; NULL = it has not. See `Task.landedAt`. */
@@ -204,6 +206,8 @@ interface ProjectRow {
   writeBackPlan: number;
   /** The project's auto-release preference as 0/1. See `Project.autoRelease`. */
   autoRelease: number;
+  /** The project's open-a-PR preference as 0/1. See `Project.autoCreatePr`. */
+  autoCreatePr: number;
   /** The project's auto-merge preference as 0/1; NULL = follow the app-wide setting. */
   autoIntegrate: number | null;
   planAligned: number;
@@ -315,6 +319,7 @@ export interface Store {
         | 'workedAt'
         | 'stoppedAt'
         | 'autoRelease'
+        | 'autoCreatePr'
         | 'autoIntegrate'
         // Native tickets. `ticketKey`/`ticketNumber` are deliberately NOT patchable — a key
         // is a permanent name, and the only thing allowed to rewrite one is a prefix rename
@@ -911,6 +916,7 @@ export function createStore(dbPath: string): Store {
       baseBranch            TEXT,
       writeBackPlan         INTEGER NOT NULL DEFAULT 0,
       autoRelease           INTEGER NOT NULL DEFAULT 0,
+      autoCreatePr          INTEGER NOT NULL DEFAULT 0,
       autoIntegrate         INTEGER,
       planAligned           INTEGER NOT NULL DEFAULT 0,
       kind                  TEXT NOT NULL DEFAULT 'plan',
@@ -981,6 +987,7 @@ export function createStore(dbPath: string): Store {
       workedAt               INTEGER,
       stoppedAt              INTEGER,
       autoRelease            INTEGER,
+      autoCreatePr           INTEGER,
       autoIntegrate          INTEGER,
       -- Native tickets (Phase 24). epicTaskId / milestoneId / assigneeId / reporterId are
       -- plain TEXT with NO foreign key, exactly as parentTaskId already is: foreign_keys is
@@ -1370,6 +1377,13 @@ export function createStore(dbPath: string): Store {
     db.exec(`ALTER TABLE projects ADD COLUMN autoRelease INTEGER NOT NULL DEFAULT 0`);
   }
 
+  // Migrate databases created before a project could ask for a PR instead of a merge. 0 =
+  // off for every existing project, which is exactly what they all did: a finished card's
+  // branch was merged locally or left for the Merge button, and nothing was ever pushed.
+  if (!projectColumns.some((c) => c.name === 'autoCreatePr')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN autoCreatePr INTEGER NOT NULL DEFAULT 0`);
+  }
+
   // Migrate databases created before a project could decide auto-merge for itself. NULL —
   // "follow the app-wide setting" — is deliberately NOT a `DEFAULT 0`: every existing
   // project was already doing exactly what `AppSettings.autoIntegrate` said, and writing a
@@ -1573,6 +1587,10 @@ export function createStore(dbPath: string): Store {
     // on this card", which follows the project's (also new, also off) preference — so no
     // upgraded install starts releasing anything by itself.
     ['autoRelease', 'INTEGER'],
+    // The card's open-a-PR override. NULL on every pre-existing row = "nobody has ruled on
+    // this card", which follows the project's (also new, also off) preference — so an
+    // upgrade pushes nothing and opens nothing until somebody asks it to.
+    ['autoCreatePr', 'INTEGER'],
     // The card's auto-merge override. NULL on every pre-existing row = "nobody has ruled on
     // this card", which follows its project and, through it, the app-wide setting — so an
     // upgrade merges exactly as often as the install did the day before.
@@ -1788,8 +1806,8 @@ export function createStore(dbPath: string): Store {
   }
 
   const insertProject = db.prepare<[ProjectRow]>(
-    `INSERT INTO projects (id, name, path, planPath, defaultModel, planningModel, defaultPermissionMode, concurrency, useWorktrees, baseBranch, writeBackPlan, autoRelease, autoIntegrate, planAligned, kind, jiraEpicKeys, ticketPrefix, ticketSeq, target, instructions, color, createdAt)
-     VALUES (@id, @name, @path, @planPath, @defaultModel, @planningModel, @defaultPermissionMode, @concurrency, @useWorktrees, @baseBranch, @writeBackPlan, @autoRelease, @autoIntegrate, @planAligned, @kind, @jiraEpicKeys, @ticketPrefix, @ticketSeq, @target, @instructions, @color, @createdAt)`,
+    `INSERT INTO projects (id, name, path, planPath, defaultModel, planningModel, defaultPermissionMode, concurrency, useWorktrees, baseBranch, writeBackPlan, autoRelease, autoCreatePr, autoIntegrate, planAligned, kind, jiraEpicKeys, ticketPrefix, ticketSeq, target, instructions, color, createdAt)
+     VALUES (@id, @name, @path, @planPath, @defaultModel, @planningModel, @defaultPermissionMode, @concurrency, @useWorktrees, @baseBranch, @writeBackPlan, @autoRelease, @autoCreatePr, @autoIntegrate, @planAligned, @kind, @jiraEpicKeys, @ticketPrefix, @ticketSeq, @target, @instructions, @color, @createdAt)`,
   );
   const selectProjects = db.prepare(`SELECT * FROM projects ORDER BY createdAt`);
   const selectProject = db.prepare(`SELECT * FROM projects WHERE id = ?`);
@@ -1822,7 +1840,7 @@ export function createStore(dbPath: string): Store {
         externalDescription,
         preBlockStatus, preRunStatus, retainedSince, archivedAt, archivedReason, lastReadCommentAt, latestCommentAt,
         projectTagId, agentProjectId, agentMode, agentModel,
-        agentPlan, agentBranch, planRound, landedAt, chainLandedAt, workedAt, stoppedAt, autoRelease, autoIntegrate,
+        agentPlan, agentBranch, planRound, landedAt, chainLandedAt, workedAt, stoppedAt, autoRelease, autoCreatePr, autoIntegrate,
         ticketKey, ticketNumber, issueType, epicTaskId, milestoneId, labels,
         storyPoints, estimateDays, startAt, dueAt, assigneeId, reporterId)
      VALUES
@@ -1836,7 +1854,7 @@ export function createStore(dbPath: string): Store {
         -- an UPDATE, so a card created already filed (the Add-task dialog's Project
         -- picker) used to lose its project between the form and the row.
         @projectTagId, @agentProjectId, @agentMode, @agentModel,
-        @agentPlan, @agentBranch, @planRound, @landedAt, @chainLandedAt, @workedAt, @stoppedAt, @autoRelease, @autoIntegrate,
+        @agentPlan, @agentBranch, @planRound, @landedAt, @chainLandedAt, @workedAt, @stoppedAt, @autoRelease, @autoCreatePr, @autoIntegrate,
         -- The twelve ticket columns are listed HERE as well as in the column list above,
         -- and that is the whole discipline: a column added to the table, the row type and
         -- the writer but not to this statement is silently dropped at creation. That is
@@ -2559,6 +2577,7 @@ export function createStore(dbPath: string): Store {
       baseBranch: r.baseBranch ?? '',
       writeBackPlan: r.writeBackPlan !== 0,
       autoRelease: r.autoRelease !== 0,
+      autoCreatePr: r.autoCreatePr !== 0,
       // NULL stays null: a real third state ("this project has not ruled"), which follows
       // the app-wide setting. Collapsing it to false here would pin every project to
       // "never merge" the first time it was read.
@@ -2664,6 +2683,13 @@ export function createStore(dbPath: string): Store {
           : task.autoRelease
             ? 1
             : 0,
+      // Same three states again: 1 = open a PR, 0 = don't, NULL = follow the project.
+      autoCreatePr:
+        task.autoCreatePr === null || task.autoCreatePr === undefined
+          ? null
+          : task.autoCreatePr
+            ? 1
+            : 0,
       // Same three states, same reason: 1 = merge, 0 = don't, NULL = follow the project.
       autoIntegrate:
         task.autoIntegrate === null || task.autoIntegrate === undefined
@@ -2746,6 +2772,9 @@ export function createStore(dbPath: string): Store {
       // project's preference was the first time it was read.
       autoRelease:
         r.autoRelease === null || r.autoRelease === undefined ? null : r.autoRelease !== 0,
+      // Ditto — see `@shared/pullRequest`; the null is the card saying nothing, not "no".
+      autoCreatePr:
+        r.autoCreatePr === null || r.autoCreatePr === undefined ? null : r.autoCreatePr !== 0,
       // Ditto — see `@shared/integrate` for why the null must survive the round trip.
       autoIntegrate:
         r.autoIntegrate === null || r.autoIntegrate === undefined ? null : r.autoIntegrate !== 0,
@@ -3005,6 +3034,9 @@ export function createStore(dbPath: string): Store {
         // Off unless asked for, on both kinds of project: releasing is the one thing a
         // human is entitled to have never happen by accident.
         autoRelease: input.autoRelease ?? false,
+        // Off unless asked for, for the same reason: pushing a branch to somebody's forge
+        // and opening a pull request on it is not something to start doing by surprise.
+        autoCreatePr: input.autoCreatePr ?? false,
         // `null` unless the caller ruled: a new project inherits the app-wide switch and
         // keeps inheriting it, rather than freezing today's value into the row.
         autoIntegrate: input.autoIntegrate ?? null,
@@ -3025,6 +3057,7 @@ export function createStore(dbPath: string): Store {
         useWorktrees: project.useWorktrees ? 1 : 0,
         writeBackPlan: project.writeBackPlan ? 1 : 0,
         autoRelease: project.autoRelease ? 1 : 0,
+        autoCreatePr: project.autoCreatePr ? 1 : 0,
         autoIntegrate: project.autoIntegrate === null ? null : project.autoIntegrate ? 1 : 0,
         planAligned: project.planAligned ? 1 : 0,
         jiraEpicKeys: JSON.stringify(project.jiraEpicKeys),
@@ -3104,6 +3137,10 @@ export function createStore(dbPath: string): Store {
       if (patch.writeBackPlan !== undefined) {
         sets.push(`writeBackPlan = @writeBackPlan`);
         params.writeBackPlan = patch.writeBackPlan ? 1 : 0;
+      }
+      if (patch.autoCreatePr !== undefined) {
+        sets.push(`autoCreatePr = @autoCreatePr`);
+        params.autoCreatePr = patch.autoCreatePr ? 1 : 0;
       }
       if (patch.autoRelease !== undefined) {
         sets.push(`autoRelease = @autoRelease`);
@@ -3240,6 +3277,10 @@ export function createStore(dbPath: string): Store {
       // Handled apart from the loop above: SQLite has no boolean, and better-sqlite3
       // refuses to bind one — while `null` here is a value the caller may really mean
       // ("this card follows its project again"), not an absent field.
+      if (patch.autoCreatePr !== undefined) {
+        sets.push(`autoCreatePr = @autoCreatePr`);
+        params.autoCreatePr = patch.autoCreatePr === null ? null : patch.autoCreatePr ? 1 : 0;
+      }
       if (patch.autoRelease !== undefined) {
         sets.push(`autoRelease = @autoRelease`);
         params.autoRelease = patch.autoRelease === null ? null : patch.autoRelease ? 1 : 0;

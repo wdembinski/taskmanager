@@ -376,6 +376,24 @@ export interface IpcApi {
    */
   'task:integrate': (taskId: string) => Promise<void>;
   /**
+   * Push this card's branch to its remote and open a pull/merge request against base.
+   *
+   * The other half of `task:integrate`, and its alternative rather than its sequel: a card
+   * whose work goes out as a PR is NOT merged locally, or the pull request would be for
+   * changes base already has.
+   *
+   * Resolves with the PR's URL, how a human writes it (`#12` / `!12`), and whether it was
+   * **already open** — pressing the button twice is ordinary, and the second press reports
+   * the existing one rather than failing. Every refusal arrives as a thrown sentence naming
+   * the wall it hit: no remote, no token for that forge, nothing committed on the branch.
+   *
+   * A row is written into the card's merge requests before this resolves, so the card shows
+   * the PR immediately instead of after the next sync.
+   */
+  'task:createPullRequest': (
+    taskId: string,
+  ) => Promise<{ url: string; ref: string; existed: boolean }>;
+  /**
    * Whether a project has release instructions on disk (`RELEASE.md` at its root).
    *
    * A question about the FILE SYSTEM, which the renderer cannot see, and the reason the
@@ -488,6 +506,12 @@ export interface IpcApi {
        * card does — so the switch has an off, an on, and a "whatever the project says".
        */
       autoRelease?: boolean | null;
+      /**
+       * Open a PR/MR for this card when its work finishes, instead of merging it here
+       * (`@shared/pullRequest`). `null` hands the decision back to the agent project's own
+       * preference, which is what an untouched card does.
+       */
+      autoCreatePr?: boolean | null;
       /**
        * Merge this card's branch as soon as its work finishes (`@shared/integrate`). `null`
        * hands the decision back to the agent project — and through it to the app-wide
