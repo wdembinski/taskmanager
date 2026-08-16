@@ -143,8 +143,8 @@ export function BoardScreen({
   /**
    * The agent projects every repo control on this screen draws from — the relay's answer when
    * the desktop gave one, and the mirrored `projects` rows when it did not. Computed once and
-   * passed to all four sites, so a card's stripe, its agent name, the pane's Project dropdown
-   * and the add-task dialog can never be looking at two different lists. See
+   * passed to all five sites, so a card's stripe, its agent name, the pane's Project dropdown,
+   * the commit graph and the add-task dialog can never be looking at two different lists. See
    * `selectAgentProjects` for why this replaces rather than merges.
    */
   const agentProjects = useMemo(

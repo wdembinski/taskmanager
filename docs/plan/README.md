@@ -5713,10 +5713,11 @@ this account has no agent projects, *nobody was home* means the mirror is the be
 Reading emptiness instead of the flag would resurrect every deleted repo the moment a desktop
 went quiet.
 
-`BoardScreen` computes the list once and hands the same array to all four sites that used to
+`BoardScreen` computes the list once and hands the same array to all five sites that used to
 read `extras.agentProjects` — `agentNameOf`, `projectColorOf`, `TaskDetail`'s `agentProjects`,
 `GitGraphPane`'s `projects` and `AddTaskDialog`'s `projects` — so a card's stripe, the pane's
-Project dropdown and the add dialog can never disagree about which repos exist. Nothing
+Project dropdown, the commit graph and the add dialog can never disagree about which repos
+exist. Nothing
 downstream changed: the stripe is still `TaskCard`'s `projectNotch`, and the writes those lists
 sit behind (`task:setProject`, `task:assignAgent`) still relay and still refuse honestly.
 
