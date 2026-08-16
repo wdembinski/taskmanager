@@ -63,7 +63,7 @@ import {
   type Task,
 } from '@tm/shared/model';
 import { BoardToolbar } from './BoardToolbar';
-import { selectArchivedTasks, selectBoardTasks } from './boardSelectors';
+import { selectAgentProjects, selectArchivedTasks, selectBoardTasks } from './boardSelectors';
 import { displayStatus, isTaskPending, type CloudBoardState } from './cloudBoardStore';
 import { mergeRequestsByTask, useBoardExtras, byTask } from './useBoardExtras';
 
@@ -139,6 +139,19 @@ export function BoardScreen({
   const display = settings.board;
 
   const projects = useMemo(() => Object.values(state.projects), [state.projects]);
+
+  /**
+   * The agent projects every repo control on this screen draws from — the relay's answer when
+   * the desktop gave one, and the mirrored `projects` rows when it did not. Computed once and
+   * passed to all four sites, so a card's stripe, its agent name, the pane's Project dropdown
+   * and the add-task dialog can never be looking at two different lists. See
+   * `selectAgentProjects` for why this replaces rather than merges.
+   */
+  const agentProjects = useMemo(
+    () => selectAgentProjects(state.projects, extras.agentProjects, extras.agentProjectsLoaded),
+    [state.projects, extras.agentProjects, extras.agentProjectsLoaded],
+  );
+
   /**
    * The card's optional lines, read the desktop's way: `projectNameOf` is the tracker's own
    * container for the card (`phase` — JIRA's project name, or GitHub's `owner/repo`), not the
@@ -146,15 +159,17 @@ export function BoardScreen({
    * word on all of them — and the stripe is the repo the card is tagged with, which is what
    * the desktop colours it by.
    *
-   * Both now read the real agent-project list rather than the mirrored `Project` rows, so a
-   * card's stripe is the same colour it is on the desktop.
+   * Both read the resolved agent-project list, so a card's stripe is the same colour it is on
+   * the desktop — and stays that colour with the desktop asleep, since the mirrored rows carry
+   * `color` too. The notch itself is unchanged (`TaskCard`'s `projectNotch`); all this decides
+   * is whether it has a colour to be.
    */
   const projectNameOf = (task: Task): string | undefined =>
     task.externalSource ? task.phase || undefined : undefined;
   const agentNameOf = (task: Task): string | undefined =>
-    extras.agentProjects.find((p) => p.id === task.agentProjectId)?.name;
+    agentProjects.find((p) => p.id === task.agentProjectId)?.name;
   const projectColorOf = (task: Task): string | undefined =>
-    extras.agentProjects.find((p) => p.id === task.projectTagId)?.color || undefined;
+    agentProjects.find((p) => p.id === task.projectTagId)?.color || undefined;
 
   /** The desktop's own card set — Personal, un-archived. See `boardSelectors.ts`. */
   const boardTasks = useMemo(() => selectBoardTasks(state), [state]);
@@ -549,7 +564,7 @@ export function BoardScreen({
         <div className={layout.right}>
           <TaskDetail
             task={selectedTask}
-            agentProjects={extras.agentProjects}
+            agentProjects={agentProjects}
             subtasks={chain}
             parentTask={parentOfSelected}
             mergeRequests={selectedTask ? (mrsByTask.get(selectedTask.id) ?? []) : []}
@@ -589,7 +604,7 @@ export function BoardScreen({
       {showGraph && (
         <div className={layout.graph}>
           <GitGraphPane
-            projects={extras.agentProjects}
+            projects={agentProjects}
             selectedTask={selectedTask}
             // The whole board, so a branch can carry the CARD's title instead of `orch/…`.
             tasksById={tasksById}
@@ -612,10 +627,12 @@ export function BoardScreen({
         parents={parentCandidates}
         // The same cards, asked a different question — see `parentCandidates`.
         chainCandidates={parentCandidates}
-        // The REAL projects (`agentProject:list`, relayed), not the mirrored `Project` rows:
-        // filing a card is about a repo the engine knows, and the mirror's rows are the
-        // queues that hold tasks. The detail pane's Project dropdown offers this same list.
-        projects={extras.agentProjects}
+        // The agent projects, resolved (`selectAgentProjects`): the relay's answer while a
+        // desktop is awake, and the mirrored rows filtered to `kind === 'agent'` while it is
+        // not — which is what keeps this field offering repos instead of nothing against a
+        // desktop that is merely asleep. The detail pane's Project dropdown offers the same
+        // list, because both are handed the one computed above.
+        projects={agentProjects}
         jiraEnabled={settings.jira.enabled}
         // A browser has no OS file picker and no path for a dropped `File`, so the whole
         // files section is one thing this host cannot do rather than a control to grey out.

@@ -34,7 +34,9 @@
  *
  * The last block is the inverse of all the others and belongs here for that reason: parity
  * has exactly one deliberate hole in it, and a hole nothing asserts is indistinguishable
- * from an omission. See "the one configuration the web deliberately does not mirror".
+ * from an omission. See "agent projects: the web reads them and does not configure them" —
+ * which now guards the shape of the hole from both sides, since the read-only half of that
+ * pane has since been drawn.
  */
 import { describe, expect, it } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
@@ -425,19 +427,20 @@ describe('the theme both hosts mount', () => {
   }
 });
 
-describe('the one configuration the web deliberately does not mirror', () => {
+describe('agent projects: the web reads them and does not configure them', () => {
   /**
    * Agent projects are created and edited on the DESKTOP, and that is a decision rather than
    * a piece of the mirror nobody got to (plan doc, "What is deliberately out of scope").
    *
-   * **Narrowed since, and narrowed rather than reversed.** *Reading* the list is in scope on
-   * both hosts and now survives a desktop that is not answering: the web falls back to the
-   * mirrored `projects` rows, filtered to `kind === 'agent'` exactly as this repo's own
-   * handler filters them (`apps/client/src/main/ipc.ts`; plan doc, "Fix — agent projects when
-   * the desktop is asleep"). Nothing below asserts anything about reading, and nothing below
-   * should be read as forbidding it — every pattern here matches a WRITE channel or a native
-   * picker. What the web does not mirror is *configuring* one, which is what this block's
-   * title has always said and is why the title still fits.
+   * **Narrowed since, and narrowed rather than reversed** — which is why this block is no
+   * longer titled "the one configuration the web deliberately does not mirror". *Reading* the
+   * list is in scope on both hosts, survives a desktop that is not answering (the web falls
+   * back to the mirrored `projects` rows, filtered to `kind === 'agent'` exactly as this
+   * repo's own handler filters them — `apps/client/src/main/ipc.ts`; plan doc, "Fix — agent
+   * projects when the desktop is asleep"), and has a pane of its own in the web's Settings.
+   * So the block now asserts BOTH halves: that the read-only view exists, and that nothing
+   * around it writes. Every pattern below still matches a WRITE channel or a native picker,
+   * and none of them should ever be read as forbidding a read.
    *
    * An agent project IS a folder on the machine the engine runs on, so making one begins with
    * `project:pickDirectory` — a native picker, `host-only` for the reason every native modal
@@ -454,6 +457,9 @@ describe('the one configuration the web deliberately does not mirror', () => {
   const WEB_TREE = 'apps/web/src';
   const SHARED_UI_TREE = 'packages/ui/src';
   const DESKTOP_PANE = 'apps/client/src/renderer/src/AgentProjects.tsx';
+  /** The web's half: a list, no form. Named here because three assertions below refer to it. */
+  const WEB_VIEW = 'apps/web/src/settings/ProjectsSection.tsx';
+  const WEB_SETTINGS = 'apps/web/src/settings/SettingsScreen.tsx';
 
   /** A CALL, not a mention: both files below discuss these channels in prose, correctly. */
   const AGENT_PROJECT_WRITE = /invoke\(\s*'agentProject:(?:add|update|remove)'/;
@@ -485,16 +491,17 @@ describe('the one configuration the web deliberately does not mirror', () => {
     ).toEqual([]);
   });
 
-  it('keeps the pane itself in the desktop renderer, and nowhere else', () => {
+  it('keeps the EDITING pane in the desktop renderer, and nowhere else', () => {
     const pattern = /^AgentProjects\.tsx?$/;
     const copies = [...filesUnder(WEB_TREE, pattern), ...filesUnder(SHARED_UI_TREE, pattern)];
 
     expect(
       copies,
-      `${copies.join(', ')} is an agent-projects pane outside the desktop renderer. Unlike ` +
-        'AddTaskDialog and GitGraphPane above, this one was deliberately NOT moved into ' +
-        'packages/ui: it reaches the engine through window.api directly and opens a folder ' +
-        'picker, so a shared copy would be a pane only one host could ever run.',
+      `${copies.join(', ')} is an agent-projects EDITING pane outside the desktop renderer. ` +
+        'Unlike AddTaskDialog and GitGraphPane above, this one was deliberately NOT moved ' +
+        'into packages/ui: it reaches the engine through window.api directly and opens a ' +
+        'folder picker, so a shared copy would be a pane only one host could ever run. The ' +
+        `web's read-only view is ${WEB_VIEW} and is asserted below.`,
     ).toEqual([]);
 
     // The walk finding nothing must mean "nowhere else", not "walked the wrong trees".
@@ -508,12 +515,51 @@ describe('the one configuration the web deliberately does not mirror', () => {
   it('says so on the web, where somebody would go looking', () => {
     // The card is the whole of the user-facing answer: a section that is quietly absent reads
     // as a screen that is broken, and the fix for that is text, not a feature.
-    const settings = read('apps/web/src/settings/SettingsScreen.tsx');
+    const settings = read(WEB_SETTINGS);
     expect(
       settings,
-      'apps/web/src/settings/SettingsScreen.tsx must keep an "Agent projects" entry in ' +
-        'HOST_ONLY_SECTIONS. Dropping the entry does not remove the limit — it removes the ' +
-        'only explanation of it a browser user is ever offered.',
+      `${WEB_SETTINGS} must keep an "Agent projects" entry in HOST_ONLY_SECTIONS. Dropping ` +
+        'the entry does not remove the limit — it removes the only explanation of it a ' +
+        'browser user is ever offered. Its wording has changed (adding and editing are what ' +
+        'stay on the desktop now); the entry itself survives.',
     ).toMatch(/title:\s*'Agent projects'/);
+  });
+
+  it('draws the read-only view, and renders it from the web Settings screen', () => {
+    // The other half of the decision. Reading the list is in scope, so a silent deletion of
+    // the pane that does it should go red here rather than be discovered on the screen — the
+    // same argument that put the write guard above in this file.
+    expect(
+      filesUnder('apps/web/src/settings', /^ProjectsSection\.tsx?$/),
+      `${WEB_VIEW} is the browser's read-only agent-projects view and is part of this ` +
+        'decision, not a convenience. Viewing what is configured is in scope (plan doc, ' +
+        '"What is deliberately out of scope"); removing the view narrows the web back without ' +
+        'anything saying so.',
+    ).toContain(WEB_VIEW);
+
+    expect(
+      read(WEB_SETTINGS),
+      `${WEB_SETTINGS} must render ProjectsSection. A pane nothing mounts is a file, not a ` +
+        'feature, and the tab it sits behind is the only place a browser user can see how a ' +
+        'project is configured.',
+    ).toMatch(/<ProjectsSection\b/);
+  });
+
+  it('keeps that view presentational, which is the whole of "read only"', () => {
+    // The cheapest structural statement of the boundary. The write channels RELAY, so the
+    // only thing stopping a control being added to this pane is that the pane has no way to
+    // send anything — no transport, no window.api. Say so here, so it stays true.
+    const source = read(WEB_VIEW);
+    for (const [pattern, what] of [
+      [/transport\.invoke\(/, 'calls the transport'],
+      [/window\.api/, 'reaches window.api'],
+    ] as const) {
+      expect(
+        pattern.test(source),
+        `${WEB_VIEW} ${what}. It takes a list of projects and returns markup, and that is the ` +
+          'whole of what makes it read-only: agentProject:add/update/remove are classified ' +
+          "'relay', so neither RELAY_POLICY nor pnpm typecheck would stop a write added here.",
+      ).toBe(false);
+    }
   });
 });
