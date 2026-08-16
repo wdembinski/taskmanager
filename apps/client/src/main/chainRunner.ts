@@ -40,7 +40,15 @@
  */
 import { restingStatus } from '@shared/board';
 import type { Task } from '@shared/model';
-import { blockedBy, outgoingLinks, readyToReleaseGiven, type TaskLink } from '@shared/taskChain';
+import {
+  blockedBy,
+  chainDecline,
+  chainWorkUnderWay,
+  outgoingLinks,
+  readyToReleaseGiven,
+  type ChainDecline,
+  type TaskLink,
+} from '@shared/taskChain';
 
 /** Everything the runner needs from the world, so it can be exercised without one. */
 export interface ChainRunnerDeps {
@@ -133,45 +141,16 @@ const MOVED_NOTE =
 const ABANDONED: ReadonlySet<Task['status']> = new Set(['stopped', 'cancelled']);
 
 /**
- * The statuses that mean a card's own work is **finished with** — exactly the ones that
- * file it under IN REVIEW or DONE (see `columnForStatus`), however it got there.
- *
- * Read through `restingStatus`, never through `status`: while a run holds the field the
- * answer to "is this card's work finished with" is about the column the human left it in,
- * not about the run — and a run is caught by `inFlight` a line earlier anyway.
- *
- * `blocked` is deliberately not here. A blocked card is parked, not done, and it is the
- * case {@link ChainRunner.releaseNote} exists for: the chain leaves it where it is and says
- * on its timeline that it was ready, so moving it back to TO DO starts it.
- */
-const SETTLED: ReadonlySet<Task['status']> = new Set([
-  'in-review',
-  'done',
-  'failed',
-  'stopped',
-  'cancelled',
-]);
-
-/**
  * Why a successor the chain reached was not started — the whole vocabulary of a decline,
  * and the tail of the note that reports one.
  *
- * The first three mean **this card's own work is already done or under way**, so there was
- * never anything for the release to start. The last three mean the card is still waiting to
- * run and something else is in the way — which is the case a human can act on, and the one
- * whose note ends "start it whenever you like".
+ * Five of the six are {@link ChainDecline}, which lives in `@shared/taskChain` **because
+ * the board asks the same question**: a card whose arrows are all satisfied and which the
+ * engine would nonetheless refuse has to say so on the board, or a solid arrow leads to a
+ * card that merely looks idle. This one adds the sixth, which only the engine can know.
  */
 type Decline =
-  /** A run is already reserved for it. Never two agents on one card. */
-  | 'in-flight'
-  /** Its own branch is in base: whatever this arrow was for, it happened. */
-  | 'landed'
-  /** Resting in IN REVIEW or DONE — see {@link SETTLED}. */
-  | 'settled'
-  /** Nobody has said who would do the work. */
-  | 'no-agent'
-  /** Parked somewhere the chain does not start cards from (Blocked, most of all). */
-  | 'resting'
+  | ChainDecline
   /** The engine itself refused the start — a limit, or a run that beat us to it. */
   | 'refused';
 
@@ -550,61 +529,27 @@ export class ChainRunner {
 
   /**
    * Whether this card's **own work** is already done or under way — the one answer that
-   * makes a release moot, whichever path asked.
+   * makes a release moot, whichever path asked. See `chainWorkUnderWay`, which is where the
+   * reasoning lives now that the board asks it too.
    *
-   * Not `sessionId`, which is what this used to read and what made the chain stall: a card
-   * that was planned, or that somebody chatted with about the ticket, has a session and has
-   * done nothing it was chained to do. What actually settles the question is whether a run
-   * is reserved, whether this card's branch is in base, and whether the human has filed it
-   * under IN REVIEW or DONE. Returns the reason, so the caller can say it out loud.
-   *
-   * The `inFlight` clause is the one that must never be relaxed: it, and the same check
+   * The `inFlight` argument is the one that must never be relaxed: it, and the same check
    * inside `Scheduler.runTask`, are what keep two agents off one card.
    */
   private workUnderWay(task: Task): Decline | null {
-    if (this.deps.inFlight(task.id)) return 'in-flight';
-    if (task.landedAt != null) return 'landed';
-    if (SETTLED.has(restingStatus(task))) return 'settled';
-    return null;
+    return chainWorkUnderWay(task, this.deps.inFlight(task.id));
   }
 
   /**
    * Why a release may not start this card, or null when it may — every guard the two
    * release paths share, in one place so they cannot drift apart.
+   *
+   * That "one place" is `@shared/taskChain` rather than this file: the board draws a chip
+   * from the very same answer, and while it computed its own the two disagreed about a card
+   * resting in IN PROGRESS and about one with no agent — which is to say, about exactly the
+   * card a human then reports as "chained but never started".
    */
   private declineReason(task: Task): Decline | null {
-    const working = this.workUnderWay(task);
-    if (working) return working;
-    if (!task.agentProjectId) return 'no-agent';
-    if (!this.startable(task)) return 'resting';
-    return null;
-  }
-
-  /**
-   * Whether the card is resting somewhere a release may start it from.
-   *
-   * TO DO and IN PROGRESS: the two columns that mean the work is still ahead of the card.
-   * `pending` is the queue's own "waiting to run"; `in-progress` is a card somebody has
-   * begun — by hand, or with a run that has since finished — and is exactly where a chained
-   * card that has been planned, or chatted with, tends to sit. Neither says the work is
-   * done, and refusing to start from either was how a chain came to stall on a card whose
-   * only crime was that somebody had talked to it.
-   *
-   * BLOCKED, IN REVIEW and DONE are left alone, because the human put the card there
-   * deliberately. For those the chain says its piece on the timeline and moves nothing — the
-   * automatic move to IN PROGRESS belongs to a card the chain STARTED, and one it declined
-   * was never started.
-   *
-   * Reads `restingStatus`, never `status`: while a run holds that field the question is
-   * about the column the card was left in, and a live run is refused a line earlier anyway.
-   */
-  private startable(task: Task): boolean {
-    const resting = restingStatus(task);
-    return (
-      Boolean(task.agentProjectId) &&
-      (resting === 'pending' || resting === 'in-progress') &&
-      !this.deps.inFlight(task.id)
-    );
+    return chainDecline(task, this.deps.inFlight(task.id));
   }
 
   /** The cards at either end of the links, by id — everything a readiness check can ask for. */
