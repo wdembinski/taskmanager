@@ -415,14 +415,21 @@ async function createOnGitLab(
 /**
  * The stored row for a freshly opened PR.
  *
- * Two things are deliberate. The **id** comes from the same builders the syncs use
+ * Three things are deliberate. The **id** comes from the same builders the syncs use
  * (`pullRequestId` / `mergeRequestId`), so the next reconcile pass recognises this row as
- * the one it is about to refresh rather than filing a duplicate beside it. And every field
- * we did not just learn takes its **honest empty value** — `pipelineStatus: 'unknown'`,
+ * the one it is about to refresh rather than filing a duplicate beside it. Every field we did
+ * not just learn takes its **honest empty value** — `pipelineStatus: 'unknown'`,
  * `approvalsRequired: null`, `pipelineStages: []` — because the interface's own comments are
  * explicit that these must not be confidently wrong: a `0` required-approvals on a fresh PR
  * would render as "no approval needed", and a `success` pipeline as a green tick on a
  * pipeline that has not started.
+ *
+ * And **`openedForTaskId`**, which is what keeps the row on the card. `taskId` alone does
+ * not: every sync rebuilds it from the keys it can find in the pull request's own text, and
+ * a card with no tracker key — or a GitHub card, whose key goes in the body as a closing
+ * reference — supplies nothing to find. The row was appearing the moment the button was
+ * pressed and dropping off the card on the very next poll, still open and belonging to
+ * nobody. This is the one thing about it the forge cannot tell us, so it is remembered.
  */
 function rowFor(created: CreatedRef, taskId: string, now: number): MergeRequest {
   return {
@@ -431,6 +438,7 @@ function rowFor(created: CreatedRef, taskId: string, now: number): MergeRequest 
         ? pullRequestId(created.repoId, created.number)
         : mergeRequestId(created.repoId, created.number),
     taskId,
+    openedForTaskId: taskId,
     provider: created.provider,
     repoId: created.repoId,
     projectPath: created.projectPath,

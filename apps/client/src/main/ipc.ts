@@ -1756,24 +1756,45 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   };
 
   /**
-   * The board's keys and the cards behind them, for matching MRs to tasks.
+   * The board's keys and the cards behind them, for matching MRs to tasks — plus the set of
+   * card ids, which is what a merge request's *remembered* card is checked against.
    *
    * The archived-excluding read, deliberately: an MR is matched to a card so the card can show
    * it, and a card that is off the board has nowhere to show anything. Including archived rows
    * here would have a removed card silently claim a live merge request, which then appears
-   * nowhere at all — worse than the orphan an unmatched MR already handles.
+   * nowhere at all — worse than the orphan an unmatched MR already handles. That applies to
+   * `knownTaskIds` for the same reason, which is why the link is checked against it at all.
    */
-  const boardKeyIndex = (): { knownKeys: string[]; taskIdByKey: Map<string, string> } => {
+  const boardKeyIndex = (): {
+    knownKeys: string[];
+    taskIdByKey: Map<string, string>;
+    knownTaskIds: Set<string>;
+  } => {
     const taskIdByKey = new Map<string, string>();
+    const knownTaskIds = new Set<string>();
     for (const task of store.getPersonalTasks()) {
+      knownTaskIds.add(task.id);
       // Any tracker's key, not JIRA's alone: a GitHub pull request names its issue as
       // `owner/repo#123`, which is the same kind of fact about the same kind of card. The
       // upper-casing is what makes the lookup case-insensitive on both spellings.
       if (task.externalSource && task.externalKey) {
         taskIdByKey.set(task.externalKey.toUpperCase(), task.id);
       }
+      // A NATIVE ticket's key (`TM-12`) counts too, and leaving it out was a hole rather
+      // than a decision: it is the key this app puts in front of the title of every pull
+      // request it opens (`prTitle`), the key a human types into a branch name, and the one
+      // the card itself prints — but nothing here indexed it, so no merge request naming it
+      // could ever be matched to it. A card with a native ticket behind it looked, to every
+      // reconciler, exactly like a card with no key at all.
+      const ticketKey = task.ticketKey?.trim();
+      // Never over a tracker's own: `externalKey` is the mirrored issue's real name, and if
+      // some board somehow spells both the same, the mirrored card is the one whose key the
+      // forge's text is quoting.
+      if (ticketKey && !taskIdByKey.has(ticketKey.toUpperCase())) {
+        taskIdByKey.set(ticketKey.toUpperCase(), task.id);
+      }
     }
-    return { knownKeys: [...taskIdByKey.keys()], taskIdByKey };
+    return { knownKeys: [...taskIdByKey.keys()], taskIdByKey, knownTaskIds };
   };
 
   // -------------------------------------------------------------------------
@@ -1906,10 +1927,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
         detailed.push(await describeMergeRequest(client, fetched, { stale: false, prior }));
     }
 
-    const { knownKeys, taskIdByKey } = boardKeyIndex();
+    const { knownKeys, taskIdByKey, knownTaskIds } = boardKeyIndex();
     const { upserts, deleteIds } = reconcileMergeRequests(stored, detailed, {
       knownKeys,
       taskIdByKey,
+      knownTaskIds,
       identity,
       now: Date.now(),
     });
@@ -2011,10 +2033,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       }
     }
 
-    const { knownKeys, taskIdByKey } = boardKeyIndex();
+    const { knownKeys, taskIdByKey, knownTaskIds } = boardKeyIndex();
     const { upserts, deleteIds } = reconcilePullRequests(stored, detailed, {
       knownKeys,
       taskIdByKey,
+      knownTaskIds,
       identity,
       now: Date.now(),
     });

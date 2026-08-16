@@ -1070,6 +1070,7 @@ export function createStore(dbPath: string): Store {
     CREATE TABLE IF NOT EXISTS merge_requests (
       id                TEXT PRIMARY KEY,   -- gl-{repoId}-{number}
       taskId            TEXT,               -- NULL = no board card claims it
+      openedForTaskId   TEXT,               -- the card WE opened it for; NULL = a sync found it
       provider          TEXT NOT NULL,      -- 'gitlab' | 'github'; one table holds both
       repoId            INTEGER NOT NULL,   -- the forge's own id for the repository
       projectPath       TEXT NOT NULL,
@@ -1459,6 +1460,14 @@ export function createStore(dbPath: string): Store {
   }
   if (!mrColumns.some((c) => c.name === 'hasConflicts')) {
     db.exec(`ALTER TABLE merge_requests ADD COLUMN hasConflicts INTEGER NOT NULL DEFAULT 0`);
+  }
+
+  // Migrate databases from before this app could OPEN a merge request itself. NULL on every
+  // existing row is the truth about all of them — each was discovered by a sync and is
+  // matched to its card by key, which is the behaviour this column does not change. It is
+  // only the ones the Create PR button opens from here on that remember their card.
+  if (!mrColumns.some((c) => c.name === 'openedForTaskId')) {
+    db.exec(`ALTER TABLE merge_requests ADD COLUMN openedForTaskId TEXT`);
   }
 
   // Migrate databases created while merge requests were GitLab's alone. A pure RENAME:
@@ -2039,6 +2048,8 @@ export function createStore(dbPath: string): Store {
   interface MergeRequestRow {
     id: string;
     taskId: string | null;
+    /** The card the Create PR button opened it for; NULL on every row a sync discovered. */
+    openedForTaskId: string | null;
     provider: string;
     repoId: number;
     projectPath: string;
@@ -2094,6 +2105,10 @@ export function createStore(dbPath: string): Store {
     return {
       id: r.id,
       taskId: r.taskId,
+      // `?? null` rather than the column straight: rows written before the column existed
+      // read back as `undefined` from a `SELECT *` on some drivers, and `undefined` is not a
+      // value `upsertMergeRequest` can bind.
+      openedForTaskId: r.openedForTaskId ?? null,
       // Rows written before GitHub existed here have `provider: 'gitlab'` stored, so the
       // column is trusted rather than hardcoded — anything unrecognised reads as GitLab,
       // which is what every such row actually is.
@@ -2130,22 +2145,29 @@ export function createStore(dbPath: string): Store {
   const selectMergeRequest = db.prepare(`SELECT * FROM merge_requests WHERE id = ?`);
   const upsertMergeRequestStmt = db.prepare(
     `INSERT INTO merge_requests
-       (id, taskId, provider, repoId, projectPath, "number", title, displayName, webUrl,
+       (id, taskId, openedForTaskId, provider, repoId, projectPath, "number", title,
+        displayName, webUrl,
         sourceBranch, targetBranch, state, draft, pipelineStatus, pipelineStages,
         pipelineUrl,
         approvalsRequired, approvalsGiven, changesRequested,
         detailedMergeStatus, hasConflicts, issueKeys,
         latestNoteAt, lastReadAt, lastEventAt, lastEventSeenAt, updatedAt, syncedAt)
      VALUES
-       (@id, @taskId, @provider, @repoId, @projectPath, @number, @title, @displayName,
-        @webUrl,
+       (@id, @taskId, @openedForTaskId, @provider, @repoId, @projectPath, @number, @title,
+        @displayName, @webUrl,
         @sourceBranch, @targetBranch, @state, @draft, @pipelineStatus, @pipelineStages,
         @pipelineUrl,
         @approvalsRequired, @approvalsGiven, @changesRequested,
         @detailedMergeStatus, @hasConflicts, @issueKeys,
         @latestNoteAt, @lastReadAt, @lastEventAt, @lastEventSeenAt, @updatedAt, @syncedAt)
      ON CONFLICT(id) DO UPDATE SET
-       taskId = excluded.taskId, projectPath = excluded.projectPath,
+       taskId = excluded.taskId,
+       -- COALESCE, unlike every other column here: a reconciler carries the remembered card
+       -- forward, but a row rebuilt by anything that did not look it up first must not be
+       -- able to forget which card opened it. Nothing upstream can supply this, so a NULL
+       -- coming in is always "did not know", never "no longer true".
+       openedForTaskId = COALESCE(excluded.openedForTaskId, merge_requests.openedForTaskId),
+       projectPath = excluded.projectPath,
        title = excluded.title, displayName = excluded.displayName,
        webUrl = excluded.webUrl,
        sourceBranch = excluded.sourceBranch, targetBranch = excluded.targetBranch,
