@@ -572,9 +572,14 @@ export function TaskAgentPanel({
    *
    * The returned task is handed on even though the engine also emits `task:changed`: exactly
    * as Stop does, so the card the human is looking at is right on the next paint rather than
-   * on the next event. A refusal from the gate arrives as a throw and lands in `error` below,
-   * and `task:resumeAgent` has already announced the card by then — so a resume the limit
-   * parks reads as "held", not as "nothing happened".
+   * on the next event. That hand-on is also what makes a resume the LIMIT parks read as
+   * "held" rather than as "nothing happened" — it no longer throws, it resolves with the
+   * parked card, and painting that card is what puts "Paused — usage limit" in the pane
+   * instead of an error line claiming the resume failed.
+   *
+   * The sign-out gate still arrives as a throw and lands in `error` below, and must: it
+   * writes nothing on the card (`CARD_RECORDS_PARK`), so that sentence is the only place
+   * the human is ever told to sign in.
    */
   async function resume(): Promise<void> {
     setBusy(true);
