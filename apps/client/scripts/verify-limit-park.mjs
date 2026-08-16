@@ -656,6 +656,20 @@ section('4. A card DELEGATED into the wall is queued, and the reset starts it');
  * isReportablePark IS the two imports below, so flipping CARD_RECORDS_PARK.limit turns
  * "resolves" back into "throws" here exactly as it does there. The handler own two lines are
  * covered by their premises rather than executed.
+ *
+ * Measured, rather than assumed, on 16 Aug 2026 — and the answer is sharper than "covered by
+ * their premises", so do not read that sentence as reassurance. The premises really are live:
+ * flipping CARD_RECORDS_PARK.limit reddens the fourth check below AND packages/shared own unit
+ * tests. But neutering isReportablePark itself — which is the WHOLE of the behaviour change,
+ * all three handlers back to throwing — leaves format, typecheck, all fifteen test tasks and
+ * every one of this script 42 checks green. Nothing automated anywhere touches the branch that
+ * consumes the premises.
+ *
+ * So the one click that covers it is a human opening the assign dialog against a real standing
+ * limit and watching it close instead of erroring. That is not a nice-to-have on the owed list;
+ * for this line it is the only cover there is. The seam that would close it does not exist
+ * today: registerIpcHandlers takes only a BrowserWindow and builds everything else itself, so
+ * a test would need a refactor of ipc.ts rather than a new file.
  */
 const delegated = store.createTask(PERSONAL_PROJECT_ID, { title: 'Delegate this into the wall' });
 if (!delegated) throw new Error('the store refused the delegated card');

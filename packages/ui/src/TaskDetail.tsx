@@ -597,6 +597,11 @@ export function TaskDetail({
     // dialog closes on a card that looks idle; `runPhase` already produces the words for
     // it, both for the card itself and for a chain held at a step, and this is what asks
     // for them. No spinner, because nothing is moving — which `run.spinner` handles.
+    //
+    // `runPhase`'s blocked phase and the amber card badge ARE unit-tested
+    // (`board/boardColumns.test.ts`); this line, which asks the pane for them, is not —
+    // deleting it leaves all 318 UI tests green. Changing it is a change only a human
+    // looking at the pane can catch.
     run.phase === 'blocked';
 
   async function addComment(): Promise<void> {
