@@ -589,7 +589,15 @@ export function TaskDetail({
     run.phase === 'waiting' ||
     // A merge is not the agent, but it IS the card working — and the band above the
     // composer is the one place that says so in words.
-    run.phase === 'merging';
+    run.phase === 'merging' ||
+    // Nor is a usage limit the agent — but a card parked in the gate is work the engine
+    // has ACCEPTED and will start by itself at the reset, and until this line the pane
+    // said nothing at all about it. Assigning an agent while the account is walled now
+    // succeeds rather than throwing (`task:assignAgent` returns the parked card), so the
+    // dialog closes on a card that looks idle; `runPhase` already produces the words for
+    // it, both for the card itself and for a chain held at a step, and this is what asks
+    // for them. No spinner, because nothing is moving — which `run.spinner` handles.
+    run.phase === 'blocked';
 
   async function addComment(): Promise<void> {
     if (!task || !comment.text.trim()) return;
@@ -953,8 +961,8 @@ export function TaskDetail({
                   the words without the motion, because a spinner over "Waiting for you"
                   says the opposite of what is true. */}
               {run.spinner && <Spinner size="tiny" />}
-              {/* `run.label`, never a hardcoded fallback: this band only renders for
-                  running/starting/waiting, and every one of those carries a label. A
+              {/* `run.label`, never a hardcoded fallback: this band only renders for the
+                  phases `managedByAI` names, and every one of those carries a label. A
                   fallback here could only ever be a claim the phase had already denied —
                   which is how "Agent running" came to sit under a card that was not. */}
               <Caption1 className={styles.runningLabel}>{run.label}</Caption1>
