@@ -50,7 +50,7 @@ import { runningSubAgents } from './agentActivity';
 import { stepPosition } from './board/boardColumns';
 import { typeIcon } from './board/TaskCard';
 import { ChatTurns } from './chat/ChatTurns';
-import { Composer } from './chat/Composer';
+import { Composer, type ComposerBusy } from './chat/Composer';
 import { foldTurns } from './chat/turns';
 import { EMPTY_COMPOSER, type ComposerValue } from './chat/mentions';
 import { draftKey, useDraft } from './drafts';
@@ -304,7 +304,12 @@ export function TaskDetail({
   /** The linked ticket's own thread — JIRA's or GitHub's — fetched live, never stored. */
   const [ticketComments, setTicketComments] = useState<TaskActivityEntry[]>([]);
   const [liveEvents, setLiveEvents] = useState<TaskActivityEntry[]>([]);
-  const [busy, setBusy] = useState(false);
+  /**
+   * Which write is in flight, so the button actually pressed is the one that answers — see
+   * {@link ComposerBusy}. `'other'` covers this pane's own actions the composer knows
+   * nothing about (dismissing the attention ring).
+   */
+  const [busy, setBusy] = useState<ComposerBusy>(null);
   const [error, setError] = useState<string | null>(null);
 
   const taskId = task?.id ?? null;
@@ -593,7 +598,7 @@ export function TaskDetail({
 
   async function addComment(): Promise<void> {
     if (!task || !comment.text.trim()) return;
-    setBusy(true);
+    setBusy('note');
     setError(null);
     try {
       await transport.invoke('task:addComment', task.id, comment.text.trim());
@@ -602,14 +607,14 @@ export function TaskDetail({
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
 
   /** File the text as the card's headline. `onStatusChanged` puts it on the board. */
   async function postStatus(): Promise<void> {
     if (!task || !comment.text.trim()) return;
-    setBusy(true);
+    setBusy('status');
     setError(null);
     try {
       onStatusChanged?.(await transport.invoke('task:setStatusNote', task.id, comment.text.trim()));
@@ -618,7 +623,7 @@ export function TaskDetail({
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
 
@@ -633,7 +638,7 @@ export function TaskDetail({
   async function addTicketComment(): Promise<void> {
     // A comment that is only files is still a comment worth posting.
     if (!task || !tracker || (!comment.text.trim() && !comment.attachments.length)) return;
-    setBusy(true);
+    setBusy('ticket');
     setError(null);
     try {
       await transport.invoke(
@@ -659,7 +664,7 @@ export function TaskDetail({
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
 
@@ -671,7 +676,7 @@ export function TaskDetail({
    */
   async function sendChat(): Promise<void> {
     if (!task || !comment.text.trim()) return;
-    setBusy(true);
+    setBusy('chat');
     setError(null);
     try {
       const result = await transport.invoke('task:chat', task.id, comment.text.trim());
@@ -684,7 +689,7 @@ export function TaskDetail({
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
 
@@ -720,14 +725,14 @@ export function TaskDetail({
    */
   async function dismissAttention(): Promise<void> {
     if (!task) return;
-    setBusy(true);
+    setBusy('other');
     setError(null);
     try {
       onStatusChanged?.(await transport.invoke('task:dismissAttention', task.id));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
 
@@ -862,12 +867,12 @@ export function TaskDetail({
                 <Button
                   size="small"
                   appearance="subtle"
-                  icon={<AlertOffRegular />}
-                  disabled={busy}
+                  icon={busy === 'other' ? <Spinner size="tiny" /> : <AlertOffRegular />}
+                  disabled={busy !== null}
                   title="Stop this card asking — clears its inbox items, unread comments and merge-request alerts"
                   onClick={() => void dismissAttention()}
                 >
-                  Dismiss
+                  {busy === 'other' ? 'Dismissing…' : 'Dismiss'}
                 </Button>
               </div>
             )}
