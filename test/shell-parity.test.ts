@@ -430,6 +430,15 @@ describe('the one configuration the web deliberately does not mirror', () => {
    * Agent projects are created and edited on the DESKTOP, and that is a decision rather than
    * a piece of the mirror nobody got to (plan doc, "What is deliberately out of scope").
    *
+   * **Narrowed since, and narrowed rather than reversed.** *Reading* the list is in scope on
+   * both hosts and now survives a desktop that is not answering: the web falls back to the
+   * mirrored `projects` rows, filtered to `kind === 'agent'` exactly as this repo's own
+   * handler filters them (`apps/client/src/main/ipc.ts`; plan doc, "Fix — agent projects when
+   * the desktop is asleep"). Nothing below asserts anything about reading, and nothing below
+   * should be read as forbidding it — every pattern here matches a WRITE channel or a native
+   * picker. What the web does not mirror is *configuring* one, which is what this block's
+   * title has always said and is why the title still fits.
+   *
    * An agent project IS a folder on the machine the engine runs on, so making one begins with
    * `project:pickDirectory` — a native picker, `host-only` for the reason every native modal
    * is. What makes this worth a guard is that the WRITE channels are not host-only:

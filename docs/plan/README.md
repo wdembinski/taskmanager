@@ -5503,6 +5503,14 @@ permission mode (`task:assignAgent`, through the shared `AssignAgentDialog` that
 `TaskAgentPanel` opens). The line is between *using* them and *configuring* them, and it falls
 where the folder picker does.
 
+> **Narrowed later, and only on the reading half.** "Read them (`agentProject:list`, relayed)"
+> was the whole read path, and a relayed read needs a desktop awake to run it. Opened against
+> one that is not polling, the browser got an empty list — no project names, no project
+> colours, no Project dropdown, no picker in *Assign agent* — and read as an account with no
+> projects. The list is resolved from the mirror now when the relay does not answer;
+> *configuring* one is still desktop-only and the guard below still asserts exactly that. See
+> [Fix — agent projects when the desktop is asleep](#fix--agent-projects-when-the-desktop-is-asleep).
+
 **Where the boundary actually holds, in four places, only two of which were load-bearing
 before this step:**
 
@@ -5604,6 +5612,76 @@ before this step and the new block was written into it unformatted, which nothin
 caught, and it was formatted with `npx prettier --write` on that file alone. `docs/plan/
 README.md` has never satisfied Prettier and is deliberately left that way — reformatting a
 5,500-line document to satisfy a check that does not read it would bury this step's own diff.
+
+---
+
+## Fix — agent projects when the desktop is asleep
+
+**Goal.** The web board draws agent projects in five places — a card's project name and its
+project colour (`BoardScreen.tsx:155`/`:157`), the Project dropdown in the detail pane
+(`TaskDetailsCell.tsx`), the picker in *Assign agent* (`AssignAgentDialog.tsx`), and the
+add-task dialog's Project field — and every one of them reads the single relayed
+`agentProject:list` that `useBoardExtras` fires on board load. A relayed read needs a desktop
+awake to run it. Against one that is closed, asleep, or simply not polling, that call does not
+even fail fast: it waits out `RPC_TIMEOUT_MS` — three minutes (`httpTransport.ts:100`) — and
+then rejects, and `useBoardExtras`'s deliberately silent `load` swallows the rejection and
+leaves the list `[]`. All five controls then render their empty state, which reads as *an
+account with no projects* rather than as *a desktop that is not answering*.
+
+The rows have been in the browser the whole time. `GET /v1/board`'s `deltas.projects` land in
+`cloudBoardStore`'s `state.projects`, mirrored whole from the desktop's `projects` table by
+`buildMirrorDelta` with no filtering of any kind, and `BoardScreen` already holds them
+(`BoardScreen.tsx:141`) for its own empty-state check. This round resolves the agent projects
+from those rows when the relay has nothing to say.
+
+### Decisions taken
+
+Four, taken before any code, because each is something a reviewer would otherwise have to
+infer from a diff — and two of them are choices whose *opposite* is the more obvious reading.
+
+**Relay wins when it answered; the mirror is the fallback.** Not a per-id merge, and not a
+union. Each source is internally consistent and a hybrid list would match neither: a live
+desktop's `agentProject:list` is authoritative *including its deletions*, so a project removed
+a moment ago is absent from that answer and still present in the mirror until the next sync
+lands — a union resurrects it, and resurrects it in a dropdown a human is about to file a card
+under. With no answer, the mirrored rows are what the account knows, which is the whole of
+what this browser can honestly say.
+
+Which way round they apply matters as much as which one wins, and it is the reason the fix is
+not "fall back on the rejection". The relay's silence costs three minutes; a fallback applied
+only after the timeout would leave the board projectless for exactly as long as the bug does
+today. The mirrored rows are what the list holds *first*, and the relay's answer replaces them
+if and when it arrives.
+
+**Only `kind === 'agent'`**, matching the desktop handler (`ipc.ts:772`) exactly — that
+handler is `store.listProjects().filter((project) => project.kind === 'agent')` and this is
+the same predicate over the same rows, which is the point. The mirror carries every `projects`
+row the desktop has: the Personal board (`kind: 'plan'`, from the column's own default at
+`store.ts:916`), legacy plan projects, and `kind: 'ticket'` projects. None of those is what
+either host means by an agent project — the Personal board is the card list this board *is*, a
+plan project comes with a queue the Projects tab owns, and a ticket project has no directory
+at all — and neither host lists them. Filtering by anything other than the kind (by "has a
+`path`", say) would be exactly the test-by-elimination that `isPlanProject`'s comment in
+`packages/shared/src/model.ts` already argues against: correct only until the next kind exists.
+
+**Read-only means read-only.** No web code calls `agentProject:add|update|remove` or
+`project:pickDirectory|pickFile`; those stay guarded by `test/shell-parity.test.ts`'s block
+*the one configuration the web deliberately does not mirror*, and this round adds nothing to
+that surface. The decision is *narrowed* — viewing the list is in scope now, and was already
+in scope whenever a desktop happened to be awake — rather than reversed, so the guard block
+and Phase 26's "What is deliberately out of scope" are both **edited** to say which half moved
+and which did not. Deleting either would turn a deliberate hole back into an omission, which
+is the failure that block exists to prevent. The Settings card's own wording ("What you can do
+from here is use them") needs no change: using them is precisely what this fixes.
+
+**No version bump on this branch.** Since v0.83.x, CI cuts the release from `development`
+after the merge lands ([`docs/11-ci-cd-pipeline.md`](../11-ci-cd-pipeline.md)), so a feature
+branch has no business writing a version line at all — Phase 26 said the same thing about
+itself above. A bump written here is not merely redundant: when the branch and `development`
+end up agreeing on the number, the three-way merge drops it with **no conflict and nothing
+red**, and a branch that "released itself" on paper released nothing. `scripts/next-version.mjs`
+run from this worktree answers against a tag list that is not the one that governs, and should
+not be acted on from this side.
 
 ---
 
