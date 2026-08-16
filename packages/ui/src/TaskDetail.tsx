@@ -847,6 +847,9 @@ export function TaskDetail({
           merging={merging}
           waitingOn={chainWaitingOn}
           mergeHeld={chainMergeHeld}
+          // The same list the `<MergeRequests>` section below renders — so the Create PR
+          // slot and the row it would duplicate can never disagree about whether one is open.
+          mergeRequests={mergeRequests}
           onOpenTask={onOpenTask}
           onTaskChanged={(updated) => {
             onStatusChanged?.(updated);
