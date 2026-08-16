@@ -513,7 +513,15 @@ export function TaskAgentPanel({
     }
   }
 
-  /** Re-enter a chain that stopped: run the parked step again in the card's worktree. */
+  /**
+   * Re-enter a chain that stopped: run the parked step again in the card's worktree.
+   *
+   * `task:run` throws for every wall a human has to clear, so the catch below is still the
+   * whole error path. What it does NOT throw for is a usage limit — the step is parked in
+   * the gate and starts at the reset — and that one arrives as a `{ refused }` outcome
+   * instead. Nothing to report: leaving `error` clear is deliberate, because the step's own
+   * row is already showing the hold the engine wrote on it.
+   */
   async function runStep(stepId: string): Promise<void> {
     setBusy(true);
     setError(null);
