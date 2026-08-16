@@ -237,6 +237,52 @@ export interface GitHubBranchProtection {
   } | null;
 }
 
+/** What {@link GitHubClient.createPullRequest} is asked to open. */
+export interface CreatePullRequestInput {
+  /**
+   * The source branch. A bare name for a branch in this repository, or `owner:branch` for
+   * a fork — passed through verbatim, since GitHub accepts both and we have no business
+   * deciding which one the caller meant.
+   */
+  head: string;
+  base: string;
+  title: string;
+  body?: string;
+  draft?: boolean;
+}
+
+/**
+ * A pull request that now exists, and whether **we** are the ones who made it.
+ *
+ * `existed` is the whole point of the type. Pressing "Create PR" twice is normal — the
+ * human forgets, the scheduler and the button race, a step re-runs — and the second press
+ * must report the pull request that is already open rather than paint an error over a
+ * perfectly healthy branch. So the second answer is a success carrying a flag, not a
+ * failure carrying an explanation.
+ */
+export interface CreatedPullRequest {
+  pullRequest: GitHubPullRequest;
+  existed: boolean;
+}
+
+/**
+ * GitHub's way of saying "there is already one of these": **422**, with the sentence
+ * `A pull request already exists for owner:branch.` in the `errors` array.
+ *
+ * Matched on the text and not on the status alone, because 422 is GitHub's answer to every
+ * unprocessable create — a base branch that does not exist, a head with no commits on it,
+ * a repository with pull requests disabled — and reading all of those as "already open"
+ * would send the caller looking for a PR that was never made and report the absence as its
+ * own confusing failure.
+ */
+function isAlreadyExists(err: unknown): boolean {
+  return (
+    err instanceof GitHubError &&
+    err.status === 422 &&
+    /pull request already exists/i.test(err.message)
+  );
+}
+
 /**
  * Narrow a pull request's state to ours.
  *
@@ -591,6 +637,68 @@ export class GitHubClient {
    */
   getPullRequest(owner: string, repo: string, number: number): Promise<GitHubPullRequest> {
     return this.request<GitHubPullRequest>(`${repoPath(owner, repo)}/pulls/${number}`);
+  }
+
+  /**
+   * Open a pull request — `POST /repos/{owner}/{repo}/pulls`.
+   *
+   * The one call in this client that creates something on github.com, and it goes through
+   * the same private {@link write} every other mutation does, so it inherits the "a read
+   * cannot become a write by accident" separation rather than restating it.
+   *
+   * **An existing pull request is a SUCCESS.** GitHub refuses a duplicate with a 422, and
+   * that refusal is exactly the outcome to expect from pressing the button twice or from a
+   * step re-running — so it is caught, the open PR for that head is fetched, and the caller
+   * gets it back with `existed: true`. The only thing it must not do is invent one: if the
+   * lookup comes back empty (somebody closed it in the half second in between, a fork whose
+   * head we spelled differently from GitHub's own listing) the original 422 is re-thrown,
+   * because a refusal we cannot explain is better than a silent nothing.
+   */
+  async createPullRequest(
+    owner: string,
+    repo: string,
+    input: CreatePullRequestInput,
+  ): Promise<CreatedPullRequest> {
+    try {
+      const pullRequest = await this.write<GitHubPullRequest>(
+        `${repoPath(owner, repo)}/pulls`,
+        'POST',
+        {
+          head: input.head,
+          base: input.base,
+          title: input.title,
+          // Sent even when empty, so a card with no description clears rather than inherits.
+          body: input.body ?? '',
+          draft: input.draft ?? false,
+        },
+      );
+      return { pullRequest, existed: false };
+    } catch (err) {
+      if (!isAlreadyExists(err)) throw err;
+      const open = await this.findOpenPullRequest(owner, repo, input.head);
+      if (!open) throw err;
+      return { pullRequest: open, existed: true };
+    }
+  }
+
+  /**
+   * The open pull request whose head is `head`, or null when there is none.
+   *
+   * `head` is qualified with the owner when the caller did not already do so, because that
+   * is what the LIST endpoint requires — `?head=branch` silently matches nothing, which
+   * would read as "there is no such pull request" for one that is plainly there.
+   */
+  async findOpenPullRequest(
+    owner: string,
+    repo: string,
+    head: string,
+  ): Promise<GitHubPullRequest | null> {
+    const qualified = head.includes(':') ? head : `${owner}:${head}`;
+    const body = await this.request<unknown>(
+      `${repoPath(owner, repo)}/pulls?state=open&head=${encodeURIComponent(qualified)}&per_page=1`,
+    );
+    const list = Array.isArray(body) ? (body as GitHubPullRequest[]) : [];
+    return list[0] ?? null;
   }
 
   /**

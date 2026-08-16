@@ -38,6 +38,52 @@ export interface TokenResponse {
 
 const DEFAULT_SCOPE = 'openid offline_access';
 
+/**
+ * What vipper.iam answered when a token request failed — the status, and the OAuth2 `error`
+ * code out of the body (RFC 6749 §5.2: `{"error":"invalid_grant", …}` with a 4xx).
+ *
+ * A typed error rather than the flat `Error` this used to throw, because both callers have to
+ * make the SAME decision from it and could not: *is the token on file dead, or was that a
+ * blip?* The answer changes what the app does — a dead grant has to end the session, a blip
+ * must not — and picking it out of a message string is the kind of guess that ends up wrong on
+ * the one release where the wording changes.
+ */
+export class IamTokenError extends Error {
+  constructor(
+    readonly status: number,
+    /** The OAuth2 `error` code, when the body carried a parseable one. */
+    readonly code: string | null,
+    /** The raw body, for the log. */
+    readonly detail: string,
+  ) {
+    super(`vipper.iam token request failed (${status}${code ? ` ${code}` : ''} ${detail})`);
+    this.name = 'IamTokenError';
+  }
+}
+
+/**
+ * True when the identity server has refused the GRANT itself, so the stored refresh token can
+ * never work again and keeping it is keeping a lie.
+ *
+ * The two codes, and why only these two:
+ *
+ *  - **`invalid_grant`** — the refresh token is expired, revoked, or was replayed. vipper.iam
+ *    rotates refresh tokens on every use and a replayed one revokes the whole family, which is
+ *    something two browser tabs can do to each other without anybody doing anything wrong.
+ *  - **`invalid_client`** — this build's client id is no longer registered. A token minted for
+ *    it is equally unusable, and no amount of retrying changes that.
+ *
+ * Everything else is transient by default, deliberately: a network throw, a 5xx, a 429, a
+ * proxy eating the request. Signing somebody out because their wifi dropped would be a worse
+ * bug than the one this exists to fix — so the rule is "only when the server named the grant".
+ */
+export function isDeadGrant(error: unknown): boolean {
+  return (
+    error instanceof IamTokenError &&
+    (error.code === 'invalid_grant' || error.code === 'invalid_client')
+  );
+}
+
 /** A fresh, random `code_verifier` and its S256 `code_challenge` — generate one per sign-in attempt. */
 export async function createPkcePair(): Promise<PkcePair> {
   const verifier = randomUrlSafeString(32);
@@ -133,9 +179,25 @@ async function postToken(
     } catch {
       // ignore — the status code alone is still useful
     }
-    throw new Error(`vipper.iam token request failed (${res.status} ${detail})`);
+    throw new IamTokenError(res.status, oauthErrorCode(detail), detail);
   }
   return (await res.json()) as TokenResponse;
+}
+
+/**
+ * The `error` field out of an RFC 6749 §5.2 body, or null for anything that is not one.
+ *
+ * Tolerant on purpose: an identity server behind a proxy can answer HTML, and a gateway can
+ * answer nothing at all. Neither is a grant decision, and both must read as "no code" rather
+ * than throw inside the error path.
+ */
+function oauthErrorCode(body: string): string | null {
+  try {
+    const parsed = JSON.parse(body) as { error?: unknown };
+    return typeof parsed.error === 'string' ? parsed.error : null;
+  } catch {
+    return null;
+  }
 }
 
 function randomUrlSafeString(byteLength: number): string {

@@ -22,6 +22,7 @@ import {
   createPkcePair,
   createState,
   exchangeCodeForTokens,
+  isDeadGrant,
   refreshTokens,
   type IamPkceConfig,
   type TokenResponse,
@@ -82,6 +83,7 @@ export class CloudAuth {
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;
   private accessToken: AccessTokenCache | null = null;
+  private readonly sessionEndedListeners = new Set<(reason: string) => void>();
 
   constructor(deps: CloudAuthDeps) {
     this.config = deps.config;
@@ -91,9 +93,33 @@ export class CloudAuth {
     this.now = deps.now ?? Date.now;
   }
 
-  /** Whether a refresh token is on file — the UI's "signed in" flag, no network involved. */
+  /**
+   * Whether a refresh token is on file — the UI's "signed in" flag, no network involved.
+   *
+   * A claim about STORAGE, not about a working session, and that gap is what
+   * {@link onSessionEnded} closes. It cannot be answered any better than this synchronously
+   * (the only way to know a refresh token still works is to spend one), so the honest design
+   * is to let it be optimistic and then say so the moment the answer comes back no.
+   */
   isSignedIn(): boolean {
     return this.localStorage.getItem(REFRESH_TOKEN_KEY) !== null;
+  }
+
+  /**
+   * Called when the stored refresh token turns out to be dead, after this has already thrown
+   * it away — the signal `useCloudAuth` turns back into the sign-in screen.
+   *
+   * This is the hole the whole "cloud web does not connect" ticket fell down. `isSignedIn` is
+   * "a refresh token string is in localStorage" and `useCloudAuth` reads it ONCE at mount, so
+   * a token vipper.iam had revoked rendered as a perfectly signed-in application with an empty
+   * board: `getAccessToken` returned null forever behind a `console.warn`, every board poll
+   * threw "Not signed in to vipper.iam", and nothing on screen said a word. Sessions end on
+   * their own — a rotated token replayed by a second tab is enough — so an app that cannot
+   * notice one ending is an app that eventually shows a board that is a lie.
+   */
+  onSessionEnded(listener: (reason: string) => void): () => void {
+    this.sessionEndedListeners.add(listener);
+    return () => this.sessionEndedListeners.delete(listener);
   }
 
   /**
@@ -164,10 +190,19 @@ export class CloudAuth {
       this.saveTokens(tokens);
       return this.accessToken!.value;
     } catch (e) {
-      // Same fail-soft shape as `ipc.ts`'s own `getCloudAccessToken`: the poller treats a
-      // null token exactly like any other failed tick (counted, backed off, retried), not a
-      // special case — and a refresh token vipper.iam has revoked would fail every retry
-      // identically, so there is nothing a special case could do differently here anyway.
+      // A DEAD grant and a blip are not the same failure, and this used to treat them alike —
+      // "there is nothing a special case could do differently here anyway", which was exactly
+      // wrong: a revoked token fails every retry identically FOREVER, and the one thing worth
+      // doing about that is to stop pretending to be signed in. See `onSessionEnded`.
+      if (isDeadGrant(e)) {
+        this.endSession(
+          'Your session has expired. Sign in again to reconnect to your desktop app.',
+        );
+        return null;
+      }
+      // Everything else stays fail-soft, deliberately: the poller treats a null token exactly
+      // like any other failed tick (counted, backed off, retried). An outage must not sign
+      // anybody out — it ends on its own, and a session does not have to.
       console.warn('vipper.iam access token refresh failed', e);
       return null;
     }
@@ -176,6 +211,17 @@ export class CloudAuth {
   signOut(): void {
     this.accessToken = null;
     this.localStorage.removeItem(REFRESH_TOKEN_KEY);
+  }
+
+  /**
+   * Throw the dead token away and tell whoever is listening.
+   *
+   * The token is cleared FIRST, so `isSignedIn()` is already false by the time a listener asks
+   * — a listener that re-read it and got `true` would put the board straight back up.
+   */
+  private endSession(reason: string): void {
+    this.signOut();
+    for (const listener of this.sessionEndedListeners) listener(reason);
   }
 
   private saveTokens(tokens: TokenResponse): void {

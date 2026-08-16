@@ -118,6 +118,7 @@ import { tickPlanCheckbox } from './planParser';
 import { buildReleasePrompt } from './releasePrompt';
 import { autoIntegrateOn } from '@shared/integrate';
 import { autoReleaseOn, RELEASE_DOC } from '@shared/release';
+import { autoCreatePrOn } from '@shared/pullRequest';
 import {
   extractPlanMarkdown,
   splitPlanIntoSteps,
@@ -1118,6 +1119,12 @@ export class Scheduler {
    */
   private attachmentRoot: string | null = null;
   /**
+   * Push a card's branch and open a pull request for it — see {@link setPullRequestOpener}.
+   * Null until `ipc.ts` wires it, which is also how the unit tests run without one.
+   */
+  private openPullRequest:
+    ((taskId: string) => Promise<{ url: string; ref: string; existed?: boolean }>) | null = null;
+  /**
    * The account-wide usage-limit gate (Phase 5). When active, ALL scheduling is
    * held; when its timer fires, every parked task resumes by its saved session id.
    */
@@ -1292,6 +1299,21 @@ export class Scheduler {
   /** Wire the "these branches are mid-merge" notifier (see {@link Scheduler.integrating}). */
   setIntegratingNotifier(notify: (taskIds: string[]) => void): void {
     this.integratingChanged = notify;
+  }
+
+  /**
+   * Wire the "push this card's branch and open a pull request" call (`forge/createPr.ts`).
+   *
+   * Injected rather than imported for the same reason {@link setAttachmentRoot} is: opening
+   * a PR needs a decrypted token, and only `ipc.ts` can reach Electron's `safeStorage` — so
+   * the scheduler is handed the finished call rather than the means to build it. Optional,
+   * and the absence is not silent: a card with "open a PR when finished" on and nothing
+   * wired says so on its timeline instead of quietly doing nothing.
+   */
+  setPullRequestOpener(
+    open: (taskId: string) => Promise<{ url: string; ref: string; existed?: boolean }>,
+  ): void {
+    this.openPullRequest = open;
   }
 
   /**
@@ -4192,6 +4214,39 @@ export class Scheduler {
         // work its steps only contributed to.
         const settling = this.store.getTask(run.taskId);
         const owner = settling?.parentTaskId ? this.store.getTask(settling.parentTaskId) : settling;
+        // Open a pull request INSTEAD of merging, when the card asks for it.
+        //
+        // Asked before auto-merge and asked of the OWNER, both deliberately. Before, because
+        // the two are alternatives: merging first and then opening a PR would open one for
+        // work base already has. Of the owner, for the same reason `autoIntegrateOn` is —
+        // a plan's steps share one branch, so one pull request opens for the whole plan when
+        // its LAST step lands, rather than each step opening its own.
+        //
+        // The work has already reached this point past `hasPendingSibling`, so "the card's
+        // work is written" and "all the steps are done" are the same moment here.
+        if (autoCreatePrOn(owner, project)) {
+          this.attempts.delete(run.taskId);
+          // The branch stays exactly where it is, offer and all: a pull request is opened
+          // ON it, not instead of it, and if the create fails the human still has the Merge
+          // button and the Create PR button pointing at an untouched branch.
+          this.readyToIntegrate.set(run.taskId, { projectId: project.id, ...ctx });
+          void this.openPullRequestFor(project, ctx, owner?.id ?? run.taskId);
+          // The same status split as every other path out of here: a STEP must reach `done`
+          // or the chain machinery breaks, and a CARD must not — only the human moves a card.
+          const settledForPr = this.store.getTask(run.taskId);
+          this.updateTask(
+            run.taskId,
+            { status: settledForPr?.parentTaskId ? 'done' : 'in-progress' },
+            null,
+          );
+          this.maybeWriteBackPlan(run.taskId);
+          void this.finishParentChain(run.taskId, {
+            branch: ctx.branch,
+            base: ctx.base,
+            merged: false,
+          });
+          return;
+        }
         if (autoIntegrateOn(owner, project, this.store.getSettings())) {
           void this.integrateWorktree(project, ctx);
           return;
@@ -5336,6 +5391,71 @@ export class Scheduler {
       }),
     });
     return true;
+  }
+
+  /**
+   * Push a finished card's branch and open a pull request for it — the automatic half of
+   * the **Create PR** button, run when the card's work settles with the switch on.
+   *
+   * **A failure must not lose the branch.** It parks the way `startReleaseRun`'s failures do
+   * — a note on the timeline plus an inbox item naming the wall — and nothing about the
+   * repository changes: the branch, the worktree and the merge offer are all exactly where
+   * they were, so the human presses Create PR again (or Merge) once they have fixed whatever
+   * was named. That is the whole reason this is fire-and-forget rather than awaited into the
+   * settle path: a create that cannot happen is a thing to tell somebody about, not a reason
+   * to leave a card mid-settle.
+   *
+   * `runId` is the settling run's, so the parked item answers into the same conversation the
+   * work happened in.
+   */
+  private async openPullRequestFor(
+    project: Project,
+    ctx: { taskId: string; runId: string; branch: string; base: string; worktree: string },
+    ownerId: string,
+  ): Promise<void> {
+    if (!this.openPullRequest) {
+      // Wired by `ipc.ts` and by nothing else, so an unwired scheduler is a test or a
+      // half-built app — either way the card must not silently do nothing.
+      this.noteCard(
+        project.id,
+        ownerId,
+        `"Open a PR when finished" is on for this card, but this build cannot reach a forge ` +
+          `— the branch "${ctx.branch}" is untouched, and Merge still works.`,
+      );
+      return;
+    }
+    try {
+      const opened = await this.openPullRequest(ownerId);
+      if (this.disposed) return;
+      // Two sentences rather than one, because a card that runs more than once reaches here
+      // more than once: the FIRST settle opens the pull request, and every settle after it
+      // pushes into the one that is already open. Saying "opened" both times would describe a
+      // second pull request that does not exist.
+      this.noteCard(
+        project.id,
+        ownerId,
+        opened.existed
+          ? `Finished on branch "${ctx.branch}". It has NOT been merged into ${ctx.base} — it ` +
+              `was pushed to ${opened.ref}, which was already open for it: ${opened.url}`
+          : `Finished on branch "${ctx.branch}". It has NOT been merged into ${ctx.base} — it ` +
+              `was pushed and ${opened.ref} was opened for it: ${opened.url}`,
+      );
+    } catch (err) {
+      if (this.disposed) return;
+      const why = err instanceof Error ? err.message : String(err);
+      this.raiseTaskFailed({
+        kind: 'integration',
+        projectId: project.id,
+        taskId: ctx.taskId,
+        runId: ctx.runId,
+        reason:
+          `The work is finished on "${ctx.branch}", but the pull request could not be ` +
+          `opened: ${why} Nothing was merged and the branch is untouched.`,
+        branch: ctx.branch,
+        base: ctx.base,
+        worktree: ctx.worktree,
+      });
+    }
   }
 
   // ---- Cross-agent negotiation coordinator (Phase D) ----------------------

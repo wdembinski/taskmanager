@@ -144,16 +144,37 @@ export class WslExecHost implements ExecHost {
     return ['-d', this.distro, '-e', 'bash', '-lc', script, 'orch', cwd, file, ...args];
   }
 
+  /**
+   * `file args…`, wrapped so that `opts.env` reaches the LINUX side.
+   *
+   * Not `WSLENV`. That is the right tool for the relay — which crosses Linux→Windows and
+   * carries values Electron reads — and the wrong one here for two reasons: it would mean
+   * mutating this process' own environment to smuggle a value across, and half of what the
+   * push sets is *empty* (`GIT_ASKPASS=`), which Windows treats as deleting the variable
+   * rather than defining it as blank. An unset `GIT_ASKPASS` is not the same instruction as
+   * an empty one.
+   *
+   * `env NAME=VALUE … cmd` says it in the distro's own vocabulary instead: the assignments
+   * arrive as ordinary positional parameters, so there is still no quoting to get wrong and
+   * no injection surface, and `env` execs the real command in place — the pid the run script
+   * announced is still the command's own.
+   */
+  private withEnv(file: string, args: string[], env?: Record<string, string>): string[] {
+    if (!env || Object.keys(env).length === 0) return [file, ...args];
+    return ['env', ...Object.entries(env).map(([k, v]) => `${k}=${v}`), file, ...args];
+  }
+
   async exec(
     cwd: string,
     file: string,
     args: string[],
     opts: ExecOptions = {},
   ): Promise<ExecResult> {
+    const [command, ...rest] = this.withEnv(file, args, opts.env);
     return new Promise((resolve) => {
       execFile(
         'wsl.exe',
-        this.argv(cwd, file, args),
+        this.argv(cwd, command, rest),
         {
           windowsHide: true,
           timeout: opts.timeoutMs,

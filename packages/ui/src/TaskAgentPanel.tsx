@@ -38,6 +38,8 @@ import { canResumeWork, canStopWork, hasAgentWorked, parkedStep } from '@tm/shar
 import type { Project, Task } from '@tm/shared/model';
 import { autoIntegrateOn, projectAutoIntegrate } from '@tm/shared/integrate';
 import { autoReleaseOn, RELEASE_DOC } from '@tm/shared/release';
+import { autoCreatePrOn } from '@tm/shared/pullRequest';
+import { mrAbbrev, mrIsSettled, mrNoun, mrRef, type MergeRequest } from '@tm/shared/mergeRequest';
 import { PERMISSION_MODE_LABELS } from '@tm/shared/session';
 import { AssignAgentDialog } from './AssignAgentDialog';
 import { stepPosition } from './board/boardColumns';
@@ -173,6 +175,15 @@ export interface TaskAgentPanelProps {
    * is how a chain ends up looking stalled for a day.
    */
   mergeHeld?: readonly Task[];
+  /**
+   * The merge requests the pane is already showing for this card (`<MergeRequests>`).
+   *
+   * Read here so the **Create PR** slot can hold a LINK to an open one instead of a second
+   * button that would only ever come back "there is already one of those". It is the same
+   * list, passed down rather than fetched again: two sources for "does this card have a PR"
+   * is exactly how a card ends up offering to create one it is displaying underneath.
+   */
+  mergeRequests?: readonly MergeRequest[];
 }
 
 export function TaskAgentPanel({
@@ -187,6 +198,7 @@ export function TaskAgentPanel({
   merging = false,
   waitingOn = [],
   mergeHeld = [],
+  mergeRequests = [],
 }: TaskAgentPanelProps): JSX.Element {
   const transport = useTransport();
   const styles = useStyles();
@@ -231,6 +243,14 @@ export function TaskAgentPanel({
    * lowers it, because then there is a sentence to read and something to press again.
    */
   const [mergingOther, setMergingOther] = useState<string | null>(null);
+  /**
+   * Create PR has been pressed and the engine has not answered yet.
+   *
+   * Local, unlike `merging`, and that is honest here where it would not be for the merge: the
+   * IPC call resolves when the pull request EXISTS — push, POST, row and note are all inside
+   * it — so the round trip is the whole of the wait rather than the start of it.
+   */
+  const [creatingPrNow, setCreatingPrNow] = useState(false);
 
   const taskId = task.id;
   // Which step (if any) the shown item belongs to, and which step has stopped the chain
@@ -318,6 +338,36 @@ export function TaskAgentPanel({
    */
   const releasing = autoReleaseOn(task, assigned);
   /**
+   * This card's OPEN merge request, if it has one. A settled one is the card's history —
+   * it merged last Tuesday — and must not stop a new pull request being opened for new work.
+   */
+  const openMr = mergeRequests.find((mr) => !mrIsSettled(mr)) ?? null;
+  /**
+   * What to CALL a pull request here.
+   *
+   * Taken from the merge request the card already carries when there is one, because that is
+   * the only forge this card is demonstrably on. With nothing to read it from, "pull
+   * request" is the label — the neutral choice is not available (there isn't one), and GitHub
+   * is what an unconfigured install most often means. The engine never guesses: it reads the
+   * repo's own remote, and its refusal names the host if that turns out to be GitLab.
+   */
+  const prNoun = openMr ? mrNoun(openMr.provider) : 'pull request';
+  /**
+   * The same answer in two letters, for the button face and the switch label.
+   *
+   * Read off the PROVIDER, not off `prNoun` — both of these used to ask whether the noun
+   * happened to equal the string `'merge request'`, which is a question about how
+   * `@tm/shared/mergeRequest` words itself rather than about which forge this card is on. The
+   * fallback is the same one `prNoun` takes, and for the same reason.
+   */
+  const prAbbrev = openMr ? mrAbbrev(openMr.provider) : 'PR';
+  const prLabel = `Create ${prAbbrev}`;
+  /**
+   * Whether this card's branch is pushed and a PR opened when the work finishes, instead of
+   * being merged here: the card's own answer when it has one, else the project's.
+   */
+  const creatingPr = autoCreatePrOn(task, assigned);
+  /**
    * The app-wide merge default, which this card resolves through its project.
    *
    * Held here rather than passed down: the pane is reached from two different boards and
@@ -353,6 +403,7 @@ export function TaskAgentPanel({
     setBusy(false);
     setMergePressed(false);
     setMergingOther(null);
+    setCreatingPrNow(false);
   }, [taskId]);
 
   // Hand over cleanly: once the engine is reporting the merge, the local bridge lets go.
@@ -510,6 +561,50 @@ export function TaskAgentPanel({
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
+    }
+  }
+
+  /**
+   * Turn "open a PR when finished" on or off for THIS card.
+   *
+   * Same rule as the release switch: choosing what the project already prefers stores `null`
+   * rather than the same value again, which puts the card back to inheriting.
+   */
+  async function setAutoCreatePr(on: boolean): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      onTaskChanged(
+        await transport.invoke('task:setAgentOptions', taskId, {
+          autoCreatePr: on === Boolean(assigned?.autoCreatePr) ? null : on,
+        }),
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /**
+   * Push this card's branch and open a pull request for it, on the human's say-so.
+   *
+   * Unlike `integrate`, this one really is finished when the promise is: the engine pushes,
+   * POSTs, writes the row and files the note before it resolves. The row arriving is what
+   * makes the button turn into a link — nothing here has to set that itself.
+   *
+   * A pull request that was ALREADY open is not an error and is not announced: the card is
+   * about to show it, which is the answer the human wanted.
+   */
+  async function createPullRequest(): Promise<void> {
+    setCreatingPrNow(true);
+    setError(null);
+    try {
+      await transport.invoke('task:createPullRequest', taskId);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCreatingPrNow(false);
     }
   }
 
@@ -673,6 +768,39 @@ export function TaskAgentPanel({
             {mergeBusy ? 'Merging…' : 'Merge branch'}
           </Button>
         )}
+        {/* The other way a branch leaves this card: pushed to the forge with a pull request
+            on it, rather than merged here. Offered on the same terms as Merge — a delegated
+            card that has run, in a worktree repo, not a step and not mid-run — and only
+            while there is nothing open: once there IS a pull request the slot becomes a link
+            to it, because a second create would only ever be refused as a duplicate. */}
+        {canIntegrate && !isStep && !live && !openMr && (
+          <Button
+            size="small"
+            disabled={busy || mergeBusy || creatingPrNow}
+            icon={creatingPrNow ? <Spinner size="tiny" /> : undefined}
+            title={
+              creatingPrNow
+                ? "Pushing this card's branch and opening a request for it."
+                : `Push this card's branch and open a ${prNoun} against its base branch, ` +
+                  `instead of merging it here.`
+            }
+            onClick={() => void createPullRequest()}
+          >
+            {creatingPrNow ? 'Opening…' : prLabel}
+          </Button>
+        )}
+        {canIntegrate && !isStep && openMr && (
+          <Button
+            size="small"
+            as="a"
+            href={openMr.webUrl}
+            target="_blank"
+            rel="noreferrer"
+            title={`Open ${mrRef(openMr)} on the forge — this card already has one.`}
+          >
+            {mrRef(openMr)}
+          </Button>
+        )}
         {staged && (
           <Button
             size="small"
@@ -747,6 +875,38 @@ export function TaskAgentPanel({
             disabled={busy || mergeBusy}
             label="Merge when finished"
             onChange={(_e, d) => void setAutoIntegrate(d.checked)}
+          />
+        </Field>
+      )}
+
+      {/* The alternative to merging, so it sits directly under the merge switch: these two
+          answer the same question ("what happens to this branch when the work is done?") and
+          reading them together is the only way the either/or is legible.
+
+          The hint carries the assumption the whole feature rests on, in words, because it is
+          not something a switch label can say: turning this on means the branch is NOT
+          merged locally. */}
+      {canIntegrate && !isStep && (
+        <Field
+          hint={
+            creatingPr
+              ? 'The branch is pushed and a ' +
+                prNoun +
+                ' is opened when the last step finishes, instead of being merged locally.'
+              : `The branch is merged or left for you, and nothing is pushed. ${
+                  assigned?.autoCreatePr
+                    ? `${assigned.name} opens one by default — this card is the exception.`
+                    : ''
+                }`
+          }
+        >
+          <Switch
+            checked={creatingPr}
+            // Read when the work settles, so once a merge is under way the answer has been
+            // taken and changing it could only describe the past.
+            disabled={busy || mergeBusy}
+            label={`Open a ${prAbbrev} when finished`}
+            onChange={(_e, d) => void setAutoCreatePr(d.checked)}
           />
         </Field>
       )}
