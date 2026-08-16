@@ -5503,6 +5503,24 @@ permission mode (`task:assignAgent`, through the shared `AssignAgentDialog` that
 `TaskAgentPanel` opens). The line is between *using* them and *configuring* them, and it falls
 where the folder picker does.
 
+> **Narrowed later, and only on the reading half.** "Read them (`agentProject:list`, relayed)"
+> was the whole read path, and a relayed read needs a desktop awake to run it. Opened against
+> one that is not polling, the browser got an empty list — no project names, no project
+> colours, no Project dropdown, no picker in *Assign agent* — and read as an account with no
+> projects. The list is resolved from the mirror now when the relay does not answer;
+> *configuring* one is still desktop-only and the guard below still asserts exactly that. See
+> [Fix — agent projects when the desktop is asleep](#fix--agent-projects-when-the-desktop-is-asleep).
+>
+> **And viewing one is now a pane of its own.** *Seeing what a project is configured to do* —
+> its path, its models, its permission mode, its base branch, its execution target, its two
+> automation switches and its epics — is in scope and shipped, read-only, as the web Settings'
+> **Projects** tab (`apps/web/src/settings/ProjectsSection.tsx`). It is presentational: a list
+> in, markup out, with no transport call and no `window.api` in it, which is the whole of what
+> makes it read-only, since the write channels would relay perfectly well. **Creating, editing
+> and removing stay desktop-only**, for the folder-picker reason below and no other. The guard
+> block asserts both halves now, and is retitled *agent projects: the web reads them and does
+> not configure them* for it.
+
 **Where the boundary actually holds, in four places, only two of which were load-bearing
 before this step:**
 
@@ -5568,8 +5586,10 @@ them was the decision's own header.
 
 #### How this step is verified
 
-The guard is three assertions in `test/shell-parity.test.ts`, in a block called *the one
-configuration the web deliberately does not mirror* — the inverse of everything else in that
+The guard is three assertions in `test/shell-parity.test.ts`, in a block that was called *the
+one configuration the web deliberately does not mirror* and is now called *agent projects: the
+web reads them and does not configure them* (it grew two more assertions when the read-only
+Projects tab shipped — see the fix section below) — the inverse of everything else in that
 file, which is why it belongs there: parity has exactly one deliberate hole, and a hole
 nothing asserts is indistinguishable from an omission. It scans non-test sources under
 `apps/web/src` for an `invoke('agentProject:add'|…)` or a picker call (a *call*, matched as
@@ -5882,6 +5902,135 @@ the sequence a person will see — update, next tick sends ~1 MB of the backlog,
 drains, the three cards appear on the web board — is owed as live verification. What *is*
 established is that the queue those cards are stuck behind can no longer build a request the
 server refuses.
+
+---
+
+## Fix — agent projects when the desktop is asleep
+
+**Goal.** The web board draws agent projects in five places — a card's project name and its
+project colour (`BoardScreen.tsx:155`/`:157`), the Project dropdown in the detail pane
+(`TaskDetailsCell.tsx`), the picker in *Assign agent* (`AssignAgentDialog.tsx`), and the
+add-task dialog's Project field — and every one of them reads the single relayed
+`agentProject:list` that `useBoardExtras` fires on board load. A relayed read needs a desktop
+awake to run it. Against one that is closed, asleep, or simply not polling, that call does not
+even fail fast: it waits out `RPC_TIMEOUT_MS` — three minutes (`httpTransport.ts:100`) — and
+then rejects, and `useBoardExtras`'s deliberately silent `load` swallows the rejection and
+leaves the list `[]`. All five controls then render their empty state, which reads as *an
+account with no projects* rather than as *a desktop that is not answering*.
+
+The rows have been in the browser the whole time. `GET /v1/board`'s `deltas.projects` land in
+`cloudBoardStore`'s `state.projects`, mirrored whole from the desktop's `projects` table by
+`buildMirrorDelta` with no filtering of any kind, and `BoardScreen` already holds them
+(`BoardScreen.tsx:141`) for its own empty-state check. This round resolves the agent projects
+from those rows when the relay has nothing to say.
+
+### Decisions taken
+
+Four, taken before any code, because each is something a reviewer would otherwise have to
+infer from a diff — and two of them are choices whose *opposite* is the more obvious reading.
+
+**Relay wins when it answered; the mirror is the fallback.** Not a per-id merge, and not a
+union. Each source is internally consistent and a hybrid list would match neither: a live
+desktop's `agentProject:list` is authoritative *including its deletions*, so a project removed
+a moment ago is absent from that answer and still present in the mirror until the next sync
+lands — a union resurrects it, and resurrects it in a dropdown a human is about to file a card
+under. With no answer, the mirrored rows are what the account knows, which is the whole of
+what this browser can honestly say.
+
+Which way round they apply matters as much as which one wins, and it is the reason the fix is
+not "fall back on the rejection". The relay's silence costs three minutes; a fallback applied
+only after the timeout would leave the board projectless for exactly as long as the bug does
+today. The mirrored rows are what the list holds *first*, and the relay's answer replaces them
+if and when it arrives.
+
+**Only `kind === 'agent'`**, matching the desktop handler (`ipc.ts:772`) exactly — that
+handler is `store.listProjects().filter((project) => project.kind === 'agent')` and this is
+the same predicate over the same rows, which is the point. The mirror carries every `projects`
+row the desktop has: the Personal board (`kind: 'plan'`, from the column's own default at
+`store.ts:916`), legacy plan projects, and `kind: 'ticket'` projects. None of those is what
+either host means by an agent project — the Personal board is the card list this board *is*, a
+plan project comes with a queue the Projects tab owns, and a ticket project has no directory
+at all — and neither host lists them. Filtering by anything other than the kind (by "has a
+`path`", say) would be exactly the test-by-elimination that `isPlanProject`'s comment in
+`packages/shared/src/model.ts` already argues against: correct only until the next kind exists.
+
+**Read-only means read-only.** No web code calls `agentProject:add|update|remove` or
+`project:pickDirectory|pickFile`; those stay guarded by `test/shell-parity.test.ts`'s block
+*the one configuration the web deliberately does not mirror*, and this round adds nothing to
+that surface. The decision is *narrowed* — viewing the list is in scope now, and was already
+in scope whenever a desktop happened to be awake — rather than reversed, so the guard block
+and Phase 26's "What is deliberately out of scope" are both **edited** to say which half moved
+and which did not. Deleting either would turn a deliberate hole back into an omission, which
+is the failure that block exists to prevent. The Settings card's own wording ("What you can do
+from here is use them") needs no change: using them is precisely what this fixes.
+
+**No version bump on this branch.** Since v0.83.x, CI cuts the release from `development`
+after the merge lands ([`docs/11-ci-cd-pipeline.md`](../11-ci-cd-pipeline.md)), so a feature
+branch has no business writing a version line at all — Phase 26 said the same thing about
+itself above. A bump written here is not merely redundant: when the branch and `development`
+end up agreeing on the number, the three-way merge drops it with **no conflict and nothing
+red**, and a branch that "released itself" on paper released nothing. `scripts/next-version.mjs`
+run from this worktree answers against a tag list that is not the one that governs, and should
+not be acted on from this side.
+
+### Resolving the list, and showing it
+
+**One selector, beside the board's other two.** `selectAgentProjects(mirrored, relayed,
+relayAnswered)` in `apps/web/src/board/boardSelectors.ts` is the whole of the first decision as
+code: `relayAnswered` picks the source, `kind === 'agent'` filters *both* branches so the shape
+is the same either way, and the result is ordered by `name` (then `id`, to break a tie the same
+way every time) so the list does not visibly reshuffle when the relay's answer arrives and
+replaces the mirror's. It is pure, which matters here more than usual: this workspace has no
+jsdom and no `@testing-library`, so a pure function plus `boardSelectors.test.ts` is the only
+place any of this can actually be *proved* rather than eyeballed.
+
+The flag it turns on is `BoardExtras.agentProjectsLoaded`, set **only** on the successful branch
+of `useBoardExtras`'s `load()`. The hook's fail-soft `catch` is deliberately silent and leaves
+it `false`, which is exactly the distinction the whole fix rests on: *loaded and empty* means
+this account has no agent projects, *nobody was home* means the mirror is the better answer.
+Reading emptiness instead of the flag would resurrect every deleted repo the moment a desktop
+went quiet.
+
+`BoardScreen` computes the list once and hands the same array to all five sites that used to
+read `extras.agentProjects` — `agentNameOf`, `projectColorOf`, `TaskDetail`'s `agentProjects`,
+`GitGraphPane`'s `projects` and `AddTaskDialog`'s `projects` — so a card's stripe, the pane's
+Project dropdown, the commit graph and the add dialog can never disagree about which repos
+exist. Nothing downstream changed: the stripe is still `TaskCard`'s `projectNotch`, and the
+writes those lists sit behind (`task:setProject`, `task:assignAgent`) still relay and still
+refuse honestly.
+
+**The Projects tab** (`apps/web/src/settings/ProjectsSection.tsx`) is the read-only half of the
+desktop's pane. It shows what the desktop's list card shows *plus* what only its edit drawer
+shows — base branch, execution target, the auto-merge tri-state, auto-release — because there
+is no drawer here and no plan for one, so a fact that lives only in the drawer would be a fact
+this host cannot see at all. The words are the desktop's own (`PERMISSION_MODE_LABELS`,
+`modelCaption`, `execTargetLabel`) rather than a second vocabulary for the same settings.
+`SettingsScreen` keeps its own single `agentProject:list` read — one call, on a screen that
+unmounts when you leave it, rather than a second copy of `useBoardExtras`'s eight — and
+resolves it against the mirrored rows `App` passes down with the same `selectAgentProjects`.
+Its empty state distinguishes *no projects yet* from *nothing has synced yet*.
+
+### How the projects surface is verified
+
+No DOM harness exists in this workspace, so the proof is the pure selector, the structural
+guards, and the gates — the same shape `test/shell-parity.test.ts`'s own header argues for.
+
+- **The selector**, in `apps/web/src/board/boardSelectors.test.ts`: the mirror-only fallback,
+  the relay winning once it answered, an answered-but-empty relay yielding `[]` *and not the
+  mirror*, non-agent kinds dropped on both branches, the ordering stable across the swap, the
+  name tie broken by id, and the relayed array not sorted in place (it is React state held in
+  `useBoardExtras`, and sorting it there would be a mutation nothing would report).
+- **The guards**, in the block retitled *agent projects: the web reads them and does not
+  configure them*. `AGENT_PROJECT_WRITE` and `NATIVE_PICKER` still match no non-test source
+  under `apps/web/src` — those two are the whole of "read only", since the write channels relay
+  and neither `RELAY_POLICY` nor `pnpm typecheck` would stop a browser calling them. Two new
+  assertions say the read-only view exists and is rendered from `SettingsScreen`, and that it
+  contains no `transport.invoke(` and no `window.api` — the cheapest structural statement of
+  "presentational, therefore read-only". The `title: 'Agent projects'` assertion survives; the
+  entry's wording changed, not its existence.
+- **Red before green.** The new selector tests were run against an inverted `relayAnswered`
+  branch and went red before it was restored, so they are testing the predicate rather than
+  agreeing with it.
 
 ---
 
