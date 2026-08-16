@@ -101,12 +101,7 @@ export interface NavRailProps {
   accountItems?: readonly NavRailAccountItem[];
 }
 
-export function NavRail({
-  items,
-  selected,
-  onSelect,
-  accountItems,
-}: NavRailProps): JSX.Element {
+export function NavRail({ items, selected, onSelect, accountItems }: NavRailProps): JSX.Element {
   const styles = useStyles();
   return (
     <div className={styles.rail}>
