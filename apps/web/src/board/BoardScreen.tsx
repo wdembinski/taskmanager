@@ -48,13 +48,14 @@ import { useCardAnchors } from '@tm/ui/board/useCardAnchors';
 import { arrowRoute } from '@tm/ui/board/chainArrows';
 import { linkDropStates, type LinkDragState } from '@tm/ui/board/chainDrag';
 import { foldedCardSet, toggleFoldedCard } from '@tm/ui/board/foldedSteps';
+import { chainStates } from '@tm/ui/board/chainStates';
 import { AddTaskDialog } from '@tm/ui/AddTaskDialog';
 import { GitGraphPane } from '@tm/ui/GitGraphPane';
 import { TaskDetail } from '@tm/ui/TaskDetail';
 import { useTransport } from '@tm/ui/transport';
 import { useBoardLayoutStyles } from '@tm/ui/board/boardLayout';
 import { ArchivedCardsDialog, archivedCards } from '@tm/ui/board/ArchivedCardsDialog';
-import { awaitingMerge, blockedBy, chainComponent } from '@tm/shared/taskChain';
+import { chainComponent } from '@tm/shared/taskChain';
 import {
   isManualStatus,
   PERSONAL_PROJECT_ID,
@@ -227,20 +228,10 @@ export function BoardScreen({
    * and the relayed links — the same functions, so the chip on the web says what it says on
    * the desktop.
    */
-  const chainStates = useMemo(() => {
-    const byId = new Map<string, { waitingOn: Task[]; mergeHeld: Task[]; ready: boolean }>();
-    for (const id of new Set(extras.chainLinks.map((l) => l.toTaskId))) {
-      const task = tasksById.get(id);
-      if (!task) continue;
-      const waitingOn = blockedBy(task, extras.chainLinks, tasksById);
-      byId.set(id, {
-        waitingOn,
-        mergeHeld: awaitingMerge(task, extras.chainLinks, tasksById),
-        ready: waitingOn.length === 0 && task.status === 'pending' && !task.sessionId,
-      });
-    }
-    return byId;
-  }, [extras.chainLinks, tasksById]);
+  const chainState = useMemo(
+    () => chainStates(extras.chainLinks, tasksById, extras.liveRunTaskIds),
+    [extras.chainLinks, tasksById, extras.liveRunTaskIds],
+  );
 
   const pendingTaskIds = useMemo(() => {
     const ids = new Set<string>();
@@ -491,7 +482,7 @@ export function BoardScreen({
                         },
                   );
                 }}
-                chainStateOf={(t) => chainStates.get(t.id)}
+                chainStateOf={(t) => chainState.get(t.id)}
                 selectedTaskId={selectedTaskId}
                 draggingId={draggingId}
                 onStopTask={(taskId) => void extras.stopTask(taskId).catch(reportError)}
@@ -562,8 +553,8 @@ export function BoardScreen({
             attention={extras.attention}
             liveRunTaskIds={extras.liveRunTaskIds}
             mergingTaskIds={extras.mergingTaskIds}
-            chainWaitingOn={selectedTask ? chainStates.get(selectedTask.id)?.waitingOn : undefined}
-            chainMergeHeld={selectedTask ? chainStates.get(selectedTask.id)?.mergeHeld : undefined}
+            chainWaitingOn={selectedTask ? chainState.get(selectedTask.id)?.waitingOn : undefined}
+            chainMergeHeld={selectedTask ? chainState.get(selectedTask.id)?.mergeHeld : undefined}
             chainLinks={extras.chainLinks}
             chainTasksById={tasksById}
             onUnlinkChain={(linkId) => void extras.removeLink(linkId).catch(reportError)}
