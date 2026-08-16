@@ -41,10 +41,9 @@ import { loadWebConfig } from './env';
 
 const useStyles = makeStyles({
   /**
-   * Sign out, in the status bar rather than on the board's toolbar — which is what lets
-   * that toolbar hold the same things `MyTasks`'s does. Same treatment as the desktop's
-   * update link: no colour of its own (the bar can change fill under it), underlined so it
-   * reads as the one clickable thing down here.
+   * The Client picker's own link styling, in the status bar. Same treatment as the
+   * desktop's update link: no colour of its own (the bar can change fill under it),
+   * underlined so it reads as the one clickable thing down here.
    */
   linkButton: {
     background: 'none',
@@ -161,8 +160,15 @@ function SignedInBoard({
       <AppShell
         nav={
           // Scratch run refuses selection inside `NavRail` (it is the one tile still marked
-          // unavailable), so anything that reaches here is a real destination.
-          <NavRail items={NAV} selected={screen} onSelect={(id) => setScreen(id as Screen)} />
+          // unavailable), so anything that reaches here is a real destination. Sign out lives
+          // in the rail's own Account dropdown rather than the status bar — this is the only
+          // host with an account to sign back out of, so it is also the only one passing it.
+          <NavRail
+            items={NAV}
+            selected={screen}
+            onSelect={(id) => setScreen(id as Screen)}
+            accountItems={[{ id: 'signout', label: 'Sign out', onClick: onSignOut }]}
+          />
         }
         banners={
           // The shell's own banner strip, which is where the desktop's outage bars go too —
@@ -224,11 +230,6 @@ function SignedInBoard({
                   : `synced ${describeAge(now - board.lastPolledAt)}`}
             </Caption1>
             <StatusSpacer />
-            <Caption1>
-              <button type="button" className={styles.linkButton} onClick={onSignOut}>
-                Sign out
-              </button>
-            </Caption1>
             <Caption1>v{__APP_VERSION__}</Caption1>
           </StatusBar>
         }
