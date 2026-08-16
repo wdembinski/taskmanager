@@ -74,14 +74,67 @@ export type RunRefusal =
   /** The engine is shutting down; nothing new starts. */
   | 'shutting-down';
 
-/** What an ad-hoc start did: a live run, or a reason there is none. */
+/**
+ * The refusals that HOLD the work rather than dropping it.
+ *
+ * The other four end the attempt: the card is gone, already busy, has nowhere to run, or
+ * the app is closing — press Start again when you have fixed it, or never. These two do
+ * not. A Start stopped by a gate is parked *in* that gate (`parkForLimit` /
+ * `parkForSignIn`), and the gate's resume is what eventually runs it, so "refused" here
+ * means *accepted and queued behind an account-wide wall* — the opposite of a rejection.
+ *
+ * Worth a name of its own because that difference is invisible at the call site: both
+ * arrive as `{ refused }` on a {@link RunOutcome}, and treating a park like a rejection is
+ * how a caller ends up asking a human to press a button the engine will press for them.
+ */
+export type ParkedRefusal = Extract<RunRefusal, 'limit' | 'signed-out'>;
+
+/** Whether this refusal parked the work (it starts by itself) or dropped it. */
+export function isParkedRefusal(refusal: RunRefusal): refusal is ParkedRefusal {
+  return refusal === 'limit' || refusal === 'signed-out';
+}
+
+/**
+ * Whether the card's own `status` records the park — the two gates differ here, and the
+ * difference decides who is allowed to *return* a park instead of throwing one.
+ *
+ * `parkForLimit` writes `blocked-by-limit` onto the task, so a limit park is a fact the
+ * card carries: anything that reads the task back sees the hold, and a handler may report
+ * it by returning an ordinary outcome. `parkForSignIn` deliberately writes no status —
+ * an auth-parked task stays plain `pending`, which is already the engine's word for "this
+ * will run again" and is what `resumeAfterSignIn` matches on. So a sign-out park leaves
+ * nothing on the card to see; the only trace is the gate's own set and a note on the
+ * timeline, and a caller that quietly returned it would look, to every later reader, exactly
+ * like a card nobody ever started.
+ *
+ * Hence: `true` may be returned, `false` must still be raised loudly enough for the human
+ * to be told to sign in.
+ */
+export const CARD_RECORDS_PARK: Record<ParkedRefusal, boolean> = {
+  limit: true,
+  'signed-out': false,
+};
+
+/**
+ * What an ad-hoc start did: a live run, or the reason no run started now.
+ *
+ * `{ refused }` is not uniformly a rejection. Four of the six say the work did not happen
+ * and will not until something changes; the two {@link isParkedRefusal} names say it is
+ * held and starts by itself. A caller that reads every `refused` as failure will report a
+ * parked card as a dead end.
+ */
 export type RunOutcome = { runId: string } | { refused: RunRefusal };
 
 /**
- * One sentence per refusal — what is wrong, and what the human does about it.
+ * One sentence per refusal — what is wrong, and what happens next.
  *
- * Both gate messages promise a resume because the engine now makes that promise good:
- * a Start refused by a gate parks the card *in* that gate, which is the only thing that
+ * Not all six are bad news, and the wording follows {@link isParkedRefusal} rather than the
+ * shape of the value: the four dropped refusals name the fix and the button to press again,
+ * while the two parked ones are a receipt — the card is already waiting, and the sentence
+ * says so and explicitly tells the human there is nothing else to press.
+ *
+ * Both gate messages promise a self-start because the engine makes that promise good: a
+ * Start refused by a gate parks the card *in* that gate, which is the only thing that
  * remembers work across the pause. Saying "press Start again later" instead would be
  * asking someone to remember, per card, what the app already knows.
  */

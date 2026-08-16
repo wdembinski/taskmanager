@@ -608,7 +608,15 @@ export function TaskAgentPanel({
     }
   }
 
-  /** Re-enter a chain that stopped: run the parked step again in the card's worktree. */
+  /**
+   * Re-enter a chain that stopped: run the parked step again in the card's worktree.
+   *
+   * `task:run` throws for every wall a human has to clear, so the catch below is still the
+   * whole error path. What it does NOT throw for is a usage limit — the step is parked in
+   * the gate and starts at the reset — and that one arrives as a `{ refused }` outcome
+   * instead. Nothing to report: leaving `error` clear is deliberate, because the step's own
+   * row is already showing the hold the engine wrote on it.
+   */
   async function runStep(stepId: string): Promise<void> {
     setBusy(true);
     setError(null);
@@ -659,9 +667,14 @@ export function TaskAgentPanel({
    *
    * The returned task is handed on even though the engine also emits `task:changed`: exactly
    * as Stop does, so the card the human is looking at is right on the next paint rather than
-   * on the next event. A refusal from the gate arrives as a throw and lands in `error` below,
-   * and `task:resumeAgent` has already announced the card by then — so a resume the limit
-   * parks reads as "held", not as "nothing happened".
+   * on the next event. That hand-on is also what makes a resume the LIMIT parks read as
+   * "held" rather than as "nothing happened" — it no longer throws, it resolves with the
+   * parked card, and painting that card is what puts "Paused — usage limit" in the pane
+   * instead of an error line claiming the resume failed.
+   *
+   * The sign-out gate still arrives as a throw and lands in `error` below, and must: it
+   * writes nothing on the card (`CARD_RECORDS_PARK`), so that sentence is the only place
+   * the human is ever told to sign in.
    */
   async function resume(): Promise<void> {
     setBusy(true);

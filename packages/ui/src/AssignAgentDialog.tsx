@@ -7,8 +7,11 @@
  * ticket's epic (`resolveAgentProject`), so for a linked epic the whole dialog is usually
  * one click.
  *
- * Confirming calls `task:assignAgent`, which records the instructions on the task's
- * timeline and starts the agent immediately — there is no queue.
+ * Confirming calls `task:assignAgent`, which records the instructions on the task's timeline
+ * and starts the agent immediately (Assign without starting stages it instead). The one
+ * exception is an account-wide usage limit: the assignment still sticks and the engine parks
+ * the card in the gate to start at the reset, which comes back as an ordinary success here —
+ * the dialog closes, and the detail pane is where the wait is explained.
  *
  * This dialog renders in BOTH hosts — apps/web reaches it through the shared `TaskDetail`'s
  * `TaskAgentPanel` — which is why the empty state below names the desktop app explicitly.

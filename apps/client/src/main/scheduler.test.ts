@@ -4879,6 +4879,19 @@ describe('a parked release or chat run comes back as what it was', () => {
       event,
     );
 
+  /** The parked process finally goes away — which is what frees the card for a new Start. */
+  const exit = (scheduler: Scheduler, runId: string): Promise<void> =>
+    fire(scheduler, runId, { kind: 'exited', code: 0 });
+
+  /** The credential is dead, reported by the run that proved it — raises the sign-in gate. */
+  const hitSignedOut = (scheduler: Scheduler, runId: string): void => {
+    const engine = scheduler as unknown as {
+      runs: Map<string, LiveRun>;
+      engageAuthFailure: (failing: LiveRun, reason: string) => void;
+    };
+    engine.engageAuthFailure(engine.runs.get(runId)!, 'OAuth session expired');
+  };
+
   it('starts a parked release run as a release run again', () => {
     const h = setup();
     startRun(h.scheduler, h.project, h.card, {
@@ -4997,6 +5010,55 @@ describe('a parked release or chat run comes back as what it was', () => {
     expect(h.scheduler.stopTask('t1')).toBe(true);
 
     expect(h.saved()).toEqual([]);
+  });
+
+  /**
+   * A second park over the first, which the gate answers with "already parked".
+   *
+   * The recipe describes the run being HELD, and the run being held here is the one the
+   * human just asked for: an ordinary work run that has not started. Clearing it only when
+   * the gate reports a fresh park read the answer as permission to keep yesterday's recipe,
+   * so the reset re-sent a chat message the human had long moved on from — and never did
+   * the work they pressed Start for.
+   */
+  it('drops a stale recipe when the same card is parked a second time', async () => {
+    const h = setup();
+    const runId = startRun(h.scheduler, h.project, h.card, { chatPrompt: CHAT_PROMPT });
+    hitLimit(h.scheduler);
+    expect(h.saved().map((r) => r.chatPrompt)).toEqual([CHAT_PROMPT]);
+    await exit(h.scheduler, runId); // the parked process goes away, freeing the card
+
+    // The human presses Start against the standing gate: parked again, this time as work.
+    expect(h.scheduler.startTaskNow('t1')).toEqual({ refused: 'limit' });
+
+    expect(h.saved()).toEqual([]); // the chat recipe did not survive its own park
+    h.scheduler.resumeLimitNow();
+    const run = resumedRun(h.scheduler);
+    expect(run?.chatPrompt).toBeUndefined();
+    expect(run?.releaseSeed).toBeFalsy();
+    const [request, opts] = h.start.mock.calls.at(-1) as [
+      { prompt: string },
+      { resumeSessionId?: string },
+    ];
+    expect(request.prompt).not.toBe(CHAT_PROMPT); // ordinary work, on the card's own session
+    expect(opts.resumeSessionId).toBe('sess-1');
+  });
+
+  /** The identical shape behind the other gate — same park, same stale recipe. */
+  it('drops a stale recipe when the sign-in gate parks the card again', async () => {
+    const h = setup();
+    const runId = startRun(h.scheduler, h.project, h.card, { chatPrompt: CHAT_PROMPT });
+    hitSignedOut(h.scheduler, runId);
+    expect(h.saved().map((r) => r.chatPrompt)).toEqual([CHAT_PROMPT]);
+    await exit(h.scheduler, runId);
+
+    expect(h.scheduler.startTaskNow('t1')).toEqual({ refused: 'signed-out' });
+
+    expect(h.saved()).toEqual([]);
+    h.scheduler.signedIn();
+    expect(resumedRun(h.scheduler)?.chatPrompt).toBeUndefined();
+    const [request] = h.start.mock.calls.at(-1) as [{ prompt: string }, unknown];
+    expect(request.prompt).not.toBe(CHAT_PROMPT);
   });
 
   /**

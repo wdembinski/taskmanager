@@ -5166,11 +5166,15 @@ export class Scheduler {
    * the task is left `pending` for the caller's next pass.
    */
   private parkForLimit(task: Task): void {
-    if (this.limitGate.park([task.id]).length === 0) return;
     // Nothing was running, so there is no recipe to keep and an older one would be a lie:
     // what this park holds is an ordinary work run that has not started yet, whatever the
-    // task's last parked run happened to be (see {@link ParkedRun}).
+    // task's last parked run happened to be (see {@link ParkedRun}). Cleared ABOVE the gate's
+    // answer, not below it: a card already in the parked set is the case that most needs it —
+    // a chat reply parked by the limit, then a Start pressed against the same gate, would
+    // otherwise resume as the chat run the human has since moved on from. The recipe is a
+    // statement about the run being held, and this park holds a different one either way.
     this.forgetParkedRuns([task.id]);
+    if (this.limitGate.park([task.id]).length === 0) return;
     this.updateTask(task.id, { status: 'blocked-by-limit' }, null);
     this.noteRun(
       task.projectId,
@@ -5191,8 +5195,8 @@ export class Scheduler {
    * looking at the card tomorrow can tell "waiting for you to sign in" from "idle".
    */
   private parkForSignIn(task: Task): void {
-    if (this.authGate.park([task.id]).length === 0) return;
-    this.forgetParkedRuns([task.id]); // no live run, so no recipe — as in `parkForLimit`
+    this.forgetParkedRuns([task.id]); // no live run, so no recipe — as in `parkForLimit`,
+    if (this.authGate.park([task.id]).length === 0) return; // stale whether or not it re-parks
     this.noteRun(
       task.projectId,
       task.id,

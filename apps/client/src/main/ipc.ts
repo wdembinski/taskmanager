@@ -170,7 +170,12 @@ import { appPlanPath, appProjectFile } from './projectPaths';
 import { RELEASE_DOC } from '@shared/release';
 import { openPullRequest, type CreatePrDeps } from './forge/createPr';
 import { forgeBaseUrl } from './forge/baseUrl';
-import { RUN_REFUSAL_MESSAGE } from '@shared/scheduler';
+import {
+  CARD_RECORDS_PARK,
+  isParkedRefusal,
+  RUN_REFUSAL_MESSAGE,
+  type RunRefusal,
+} from '@shared/scheduler';
 import { logMain } from './log';
 import { parsePlan } from './planParser';
 import { planHasAlignmentMarkers, validatePlan } from './planValidate';
@@ -234,6 +239,23 @@ function ensureAligned(store: Store, project: Project, hasMarkers: boolean): Pro
   if (project.planAligned || !hasMarkers) return project;
   store.setPlanAligned(project.id, true);
   return { ...project, planAligned: true };
+}
+
+/**
+ * Whether a refusal may be REPORTED rather than thrown.
+ *
+ * Two things have to be true: the engine parked the work (so it starts by itself, and telling
+ * the human to press something would be a lie), and the park is written on the card
+ * (`CARD_RECORDS_PARK`), so the row a handler hands back actually says it is held. A usage
+ * limit satisfies both — `parkForLimit` stamps `blocked-by-limit` — and is the only refusal
+ * that does today.
+ *
+ * A sign-out park satisfies only the first: the card stays plain `pending`, so returning it
+ * would render as "assigned, idle, nobody knows why" and the one fix (sign in) would go
+ * unsaid. That one keeps throwing.
+ */
+function isReportablePark(refusal: RunRefusal): boolean {
+  return isParkedRefusal(refusal) && CARD_RECORDS_PARK[refusal];
 }
 
 /**
@@ -810,7 +832,15 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // reads. This used to guess — "already running, or a usage limit" — for all six
     // reasons at once, which meant a signed-out account was reported as a usage limit and
     // the one action that would fix it (sign in) went unsaid.
-    if ('refused' in outcome) throw new Error(RUN_REFUSAL_MESSAGE[outcome.refused]);
+    //
+    // A park the CARD records is returned rather than thrown: `parkForLimit` wrote
+    // `blocked-by-limit` onto the task, so the hold is a fact every later reader can see
+    // and the caller has something truthful to render. The other refusals — including the
+    // sign-out park, which leaves nothing on the card (`CARD_RECORDS_PARK`) — still throw,
+    // because a thrown sentence is the only place they are ever told to the human.
+    if ('refused' in outcome && !isReportablePark(outcome.refused)) {
+      throw new Error(RUN_REFUSAL_MESSAGE[outcome.refused]);
+    }
     return outcome;
   });
   handle('task:integrate', async (taskId) => {
@@ -899,7 +929,16 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       // start it is parked behind that gate and will begin by itself. Say so before
       // throwing, or the board would keep drawing an undelegated card and the human would
       // assign it a second time.
-      send('task:changed', { task, runId: null });
+      //
+      // Re-read first: the park is written DURING `startTaskNow`, after the row above was
+      // fetched, so `task` predates `blocked-by-limit` and announcing it would put a card
+      // on the board that looks assigned-and-idle.
+      const parked = store.getTask(taskId) ?? task;
+      send('task:changed', { task: parked, runId: null });
+      // A usage limit is not a failed assignment — it is a queued one. Returning the card
+      // is what lets the dialog close on its own success instead of reporting a wall the
+      // human can do nothing about, and the pane reads the hold off the card itself.
+      if (isReportablePark(outcome.refused)) return parked;
       throw new Error(RUN_REFUSAL_MESSAGE[outcome.refused]);
     }
     send('task:changed', { task, runId: outcome.runId });
@@ -924,7 +963,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // as `task:assignAgent` above, and the same refusal vocabulary as `task:run`.
     const task = store.getTask(taskId) ?? existing;
     send('task:changed', { task, runId: 'runId' in outcome ? outcome.runId : null });
-    if ('refused' in outcome) throw new Error(RUN_REFUSAL_MESSAGE[outcome.refused]);
+    // ...and the one park the card records is not raised at all: the re-read above already
+    // carries `blocked-by-limit`, so resolving hands the caller a card that explains itself.
+    // Same rule as `task:run` and `task:assignAgent`; a sign-out still throws.
+    if ('refused' in outcome && !isReportablePark(outcome.refused)) {
+      throw new Error(RUN_REFUSAL_MESSAGE[outcome.refused]);
+    }
     return task;
   });
   handle('task:chat', async (taskId, message) => scheduler.chatWithAgent(taskId, message));
