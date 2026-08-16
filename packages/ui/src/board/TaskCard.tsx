@@ -71,8 +71,10 @@ import {
   isAgentAssigned,
   needsAgentInput,
   parkedStep,
+  restingStatus,
   runPhase,
 } from '@tm/shared/board';
+import type { ChainDecline } from '@tm/shared/taskChain';
 import { priorityIndicatorShown } from '@tm/shared/priority';
 import { statusNoteColor, type StatusKeyword } from '@tm/shared/statusKeywords';
 import { DEFAULT_BOARD_DISPLAY, type BoardDisplaySettings } from '@tm/shared/settings';
@@ -677,6 +679,21 @@ const useStyles = makeStyles({
    * below exists to prevent.
    */
   chainChipMore: { flexShrink: 0, whiteSpace: 'nowrap' },
+  /**
+   * The chip for a card whose turn has come and which the chain could not start — the one
+   * chain state that is asking the reader for something.
+   *
+   * Emphasis by WEIGHT rather than by hue, deliberately: the board's colour budget is spent
+   * on the things that move (step dots, the running band, the agent's pulse), and a chip
+   * that shouted in orange would compete with them from every card in To Do. Full-strength
+   * foreground and a real stroke are enough to pull it out of the row of grey chips beside
+   * it, which is all it has to do — the tooltip carries the instruction.
+   */
+  chainChipHeld: {
+    color: tokens.colorNeutralForeground1,
+    // The whole `border`, not `borderColor`: Griffel rejects the four-sided shorthand.
+    border: `1px solid ${tokens.colorNeutralStroke1}`,
+  },
   chainChipIcon: { fontSize: '12px', flexShrink: 0, display: 'flex' },
   grow: { flex: 1, minWidth: 0 },
   ticketLink: { textDecoration: 'none' },
@@ -930,6 +947,20 @@ export interface TaskCardProps {
    */
   chainReady?: boolean;
   /**
+   * Its turn has come and the engine would **not** start it, with the reason — the state
+   * that used to have nowhere to be said.
+   *
+   * A declined card shows no *waiting on* chip (its arrows are satisfied) and no *ready*
+   * one (the engine would refuse), so before this it showed nothing at all: a solid arrow
+   * arriving at a card that looked exactly as idle as every other card in To Do, with the
+   * engine's own explanation filed on a timeline nobody had a reason to open. Only the two
+   * a human can act on are drawn — `no-agent` and `resting` — which is the same split
+   * `ChainRunner.releaseNote` makes between "Ready to start" and "Not started": a card that
+   * has landed, settled or is already running wants nothing from anybody, and the card says
+   * so in its own badge already.
+   */
+  chainBlocked?: ChainDecline | null;
+  /**
    * Stop the agent working this card — absent on a board that does not offer it, which is
    * also what hides the button.
    *
@@ -984,6 +1015,7 @@ export function TaskCard({
   waitingOn = [],
   mergeHeld = [],
   chainReady = false,
+  chainBlocked = null,
   onLinkTo,
   onLinkArm,
   onStop,
@@ -1056,6 +1088,29 @@ export function TaskCard({
     >
       <PlayCircleRegular className={styles.chainChipIcon} />
       <span className={styles.chainChipText}>ready</span>
+    </span>
+  ) : chainBlocked === 'no-agent' ? (
+    <span
+      className={mergeClasses(styles.chainChip, styles.chainChipHeld)}
+      title={
+        'Everything this card waits for has finished, but nobody has said who does the ' +
+        'work — assign an agent and it starts by itself.'
+      }
+    >
+      <PersonRegular className={styles.chainChipIcon} />
+      <span className={styles.chainChipText}>needs an agent</span>
+    </span>
+  ) : chainBlocked === 'resting' ? (
+    <span
+      className={mergeClasses(styles.chainChip, styles.chainChipHeld)}
+      title={
+        `Everything this card waits for has finished. It is ${STATUS_LABEL[restingStatus(task)]}, ` +
+        `and the chain never takes a card off a column you put it in — move it back to ` +
+        `To Do and it starts.`
+      }
+    >
+      <PresenceBlockedRegular className={styles.chainChipIcon} />
+      <span className={styles.chainChipText}>its turn — held</span>
     </span>
   ) : null;
   // Null when the note matched no keyword — the line then keeps the card's ordinary

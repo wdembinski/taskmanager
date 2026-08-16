@@ -332,3 +332,87 @@ export function awaitingMerge(
   }
   return held;
 }
+
+/**
+ * Why a chain whose gates are all met still could not start a card — or `null` when
+ * nothing is in the way and the engine would run it.
+ *
+ * The gates above answer *"is this card's turn"*; this answers *"and can anything be done
+ * about it"*, which is the other half of the same question and was for a long time asked
+ * only inside the engine. The board asked its own, shorter version, and the two drifted:
+ * a chained card resting in IN PROGRESS, or one with no agent assigned, showed **no chip
+ * at all** — not *waiting on*, not *ready* — so a satisfied arrow led to a card that sat
+ * there looking like every other idle card, with the engine's explanation filed on a
+ * timeline nobody had a reason to open.
+ *
+ * Living here rather than in the engine for the reason this whole module exists: the
+ * runner and the board must answer from the same function, or the chip is a lie.
+ *
+ * The order of the tests is the order of a sentence a human can act on:
+ *
+ *  - `in-flight` / `landed` / `settled` — this card's own work is done or under way, so
+ *    the release was moot ({@link chainWorkUnderWay}).
+ *  - `no-agent` — nobody has said who does the work. Asked BEFORE the column, because a
+ *    card that is both unassigned and parked needs an agent either way, and "assign one"
+ *    is the step that takes no decision.
+ *  - `resting` — parked somewhere the chain does not start cards from (BLOCKED, in
+ *    practice: IN REVIEW and DONE are already `settled`). The human put it there, so the
+ *    chain says its piece and moves nothing.
+ *
+ * `inFlight` is the caller's, because only the engine holds the reservation: the main
+ * process passes `Scheduler.inFlight`, and a renderer passes membership of the live-run
+ * set it already has. Nothing here reads `sessionId` — a card that was planned, or merely
+ * chatted with, has one and has done none of the work it was chained to do.
+ */
+export type ChainDecline = 'in-flight' | 'landed' | 'settled' | 'no-agent' | 'resting';
+
+/**
+ * The statuses that mean a card's own work is **finished with** — exactly the ones filed
+ * under IN REVIEW or DONE (see `columnForStatus`), however they got there.
+ *
+ * `blocked` is deliberately absent: a blocked card is parked, not done, and it is the case
+ * the `resting` decline exists for — the chain leaves it where it is and says on its
+ * timeline that its turn came, so moving it back to TO DO starts it.
+ */
+const CHAIN_SETTLED: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
+  'in-review',
+  'done',
+  'failed',
+  'stopped',
+  'cancelled',
+]);
+
+/** The two columns that mean the work is still ahead of the card. */
+const CHAIN_STARTABLE: ReadonlySet<TaskStatus> = new Set<TaskStatus>(['pending', 'in-progress']);
+
+/**
+ * Whether this card's **own work** is already done or under way — the narrow half of
+ * {@link chainDecline}, and the only part of it that makes a release *moot* rather than
+ * merely blocked.
+ *
+ * Asked on its own by anything reporting who is still HELD by a card that has not merged:
+ * a successor whose work is finished is not waiting for that merge, and naming it would
+ * make the sentence wrong.
+ *
+ * Read through `restingStatus`, never through `status`: while a run holds that field the
+ * question is about the column the human left the card in, and a live run is caught by
+ * `inFlight` a line earlier anyway.
+ */
+export function chainWorkUnderWay(
+  task: Task,
+  inFlight: boolean,
+): Extract<ChainDecline, 'in-flight' | 'landed' | 'settled'> | null {
+  if (inFlight) return 'in-flight';
+  if (task.landedAt != null) return 'landed';
+  if (CHAIN_SETTLED.has(restingStatus(task))) return 'settled';
+  return null;
+}
+
+/** See {@link ChainDecline}. */
+export function chainDecline(task: Task, inFlight: boolean): ChainDecline | null {
+  const working = chainWorkUnderWay(task, inFlight);
+  if (working) return working;
+  if (!task.agentProjectId) return 'no-agent';
+  if (!CHAIN_STARTABLE.has(restingStatus(task))) return 'resting';
+  return null;
+}
