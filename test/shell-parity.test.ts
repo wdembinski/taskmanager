@@ -442,7 +442,10 @@ describe('the one configuration the web deliberately does not mirror', () => {
    * The block asserts the decision, not the reasoning: if the decision is ever reversed, the
    * fix is to change it here and in the plan doc, not to delete the assertion.
    */
-  const WEB_TREE = 'apps/web/src';
+  // A list, not a single tree: the cloud sync layer moved out of apps/web/src into
+  // packages/cloud/src (Phase 27 step 3), so a breach introduced there would sail past a
+  // scan that only ever walked apps/web/src again.
+  const WEB_TREES = ['apps/web/src', 'packages/cloud/src'];
   const SHARED_UI_TREE = 'packages/ui/src';
   const DESKTOP_PANE = 'apps/client/src/renderer/src/AgentProjects.tsx';
 
@@ -453,10 +456,12 @@ describe('the one configuration the web deliberately does not mirror', () => {
   it('has no browser code that creates, edits or removes one', () => {
     // Tests are excluded because the web's own suite calls `project:pickDirectory` on purpose
     // (`httpTransport.test.ts`) to assert the transport REFUSES it — the opposite of a breach.
-    const sources = filesUnder(WEB_TREE, /\.tsx?$/).filter((path) => !/\.test\.tsx?$/.test(path));
+    const sources = WEB_TREES.flatMap((tree) => filesUnder(tree, /\.tsx?$/)).filter(
+      (path) => !/\.test\.tsx?$/.test(path),
+    );
     expect(
       sources.length,
-      `found no non-test sources under ${WEB_TREE} — has the tree moved?`,
+      `found no non-test sources under ${WEB_TREES.join(', ')} — has a tree moved?`,
     ).toBeGreaterThan(10);
 
     const writes = sources.filter((path) => AGENT_PROJECT_WRITE.test(read(path)));
@@ -478,7 +483,10 @@ describe('the one configuration the web deliberately does not mirror', () => {
 
   it('keeps the pane itself in the desktop renderer, and nowhere else', () => {
     const pattern = /^AgentProjects\.tsx?$/;
-    const copies = [...filesUnder(WEB_TREE, pattern), ...filesUnder(SHARED_UI_TREE, pattern)];
+    const copies = [
+      ...WEB_TREES.flatMap((tree) => filesUnder(tree, pattern)),
+      ...filesUnder(SHARED_UI_TREE, pattern),
+    ];
 
     expect(
       copies,
@@ -499,10 +507,10 @@ describe('the one configuration the web deliberately does not mirror', () => {
   it('says so on the web, where somebody would go looking', () => {
     // The card is the whole of the user-facing answer: a section that is quietly absent reads
     // as a screen that is broken, and the fix for that is text, not a feature.
-    const settings = read('apps/web/src/settings/SettingsScreen.tsx');
+    const settings = read('packages/cloud/src/settings/SettingsScreen.tsx');
     expect(
       settings,
-      'apps/web/src/settings/SettingsScreen.tsx must keep an "Agent projects" entry in ' +
+      'packages/cloud/src/settings/SettingsScreen.tsx must keep an "Agent projects" entry in ' +
         'HOST_ONLY_SECTIONS. Dropping the entry does not remove the limit — it removes the ' +
         'only explanation of it a browser user is ever offered.',
     ).toMatch(/title:\s*'Agent projects'/);

@@ -5,8 +5,8 @@
 #   - @tm/server changed  -> build the image, push to GHCR, run migrations, then point
 #                            the Azure Container App at the new image.
 #   - @tm/web changed     -> build the Vite bundle and upload it to the Static Web App.
-# A change to a shared package (@tm/shared, @tm/protocol, @tm/ui) or the lockfile triggers
-# both, since either app could be affected.
+# A change to @tm/shared or @tm/protocol (used by both apps) or the lockfile triggers both.
+# @tm/ui and @tm/cloud are web-only and trigger just that job.
 #
 # It does NOT touch the desktop app. apps/client is released by release.yml, which runs off
 # the same push and follows RELEASE.md's procedure — and nothing here should ever try to do
@@ -91,6 +91,7 @@ jobs:
               - 'packages/shared/**'
               - 'packages/protocol/**'
               - 'packages/ui/**'
+              - 'packages/cloud/**'
               - 'pnpm-lock.yaml'
               - '.github/workflows/deploy.yml'
 
@@ -258,9 +259,9 @@ jobs:
           VITE_CLOUD_API_BASE: https://tasks-api.vipper.network
           VITE_CLOUD_IAM_ISSUER: https://auth.vipper.network/oidc
           VITE_CLOUD_IAM_CLIENT_ID: ${{ secrets.VITE_CLOUD_IAM_CLIENT_ID }}
-        # turbo builds @tm/shared, @tm/protocol and @tm/ui first (build.dependsOn ^build);
-        # @tm/web imports them through their `exports`, i.e. their dist/, which does not
-        # exist after a clean install.
+        # turbo builds @tm/shared, @tm/protocol, @tm/ui and @tm/cloud first (build.dependsOn
+        # ^build); @tm/web imports them through their `exports`, i.e. their dist/, which does
+        # not exist after a clean install.
         run: pnpm exec turbo run build --filter=@tm/web
 
       # Vite does not copy this (there is no public/ dir) and Static Web Apps only reads

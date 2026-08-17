@@ -1,0 +1,53 @@
+{
+  "name": "@tm/cloud",
+  "version": "0.86.0",
+  "description": "The cloud sync layer shared by every browser client — auth, presence, the adaptive board poll/SSE loop, the HTTP transport and the connection-state banners. Extracted out of apps/web so apps/mobile does not grow a second copy of the same sync logic.",
+  "license": "UNLICENSED",
+  "private": true,
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    "./*": {
+      "import": {
+        "types": "./dist/*.d.ts",
+        "default": "./dist/*.js"
+      },
+      "require": {
+        "types": "./dist/*.d.cts",
+        "default": "./dist/*.cjs"
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@tm/protocol": "workspace:*",
+    "@tm/shared": "workspace:*"
+  },
+  "peerDependencies": {
+    "@fluentui/react-components": "^9.54.0",
+    "@fluentui/react-icons": "^2.0.270",
+    "@tm/ui": "workspace:*",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@fluentui/react-components": "^9.54.0",
+    "@fluentui/react-icons": "^2.0.270",
+    "@tm/ui": "workspace:*",
+    "@types/node": "^22.9.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tsup": "^8.0.2",
+    "typescript": "^5.7.2"
+  }
+}

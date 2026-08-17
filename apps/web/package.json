@@ -16,6 +16,7 @@
   "dependencies": {
     "@fluentui/react-components": "^9.54.0",
     "@fluentui/react-icons": "^2.0.270",
+    "@tm/cloud": "workspace:*",
     "@tm/protocol": "workspace:*",
     "@tm/shared": "workspace:*",
     "@tm/ui": "workspace:*",
