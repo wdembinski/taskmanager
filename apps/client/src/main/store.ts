@@ -24,7 +24,6 @@ import {
   type PersonInput,
   type PersonPatch,
   type Project,
-  type ProjectKind,
   type ProjectPatch,
   type Task,
   type TaskActivityEntry,
@@ -207,7 +206,12 @@ interface ProjectRow {
   /** The project's auto-merge preference as 0/1; NULL = follow the app-wide setting. */
   autoIntegrate: number | null;
   planAligned: number;
-  /** 'plan' | 'agent' | 'ticket'; validated on read by `toProjectKind`, never trusted raw. */
+  /**
+   * A derived legacy label (`'plan' | 'agent' | 'ticket'`), written on every insert for
+   * whatever outside this build still looks at it — see the `kind` write in `addProject`.
+   * `rowToProject` no longer reads it back: a project's capabilities come from its other
+   * fields now (`hasPlan`, `hasRepo`, `ownsTickets` in `@shared/model`).
+   */
   kind: string;
   /** JSON array of JIRA epic keys owned by an agent project; null for plan projects. */
   jiraEpicKeys: string | null;
@@ -873,22 +877,6 @@ function normalizeEpicKeys(keys: string[] | undefined): string[] {
 }
 
 /**
- * The stored `kind` as a {@link ProjectKind}, by **explicit whitelist**.
- *
- * This used to be `r.kind === 'agent' ? 'agent' : 'plan'`, inline in `rowToProject`, and
- * that ternary is a trap the moment a third kind exists: a `'ticket'` row written by this
- * very build would read back as a **plan project**, and every kind-test in the app that is
- * written as "not agent" would then adopt it — the Projects tab would list it and the plan
- * watcher would watch a plan file for a directory it does not have. A whitelist degrades an
- * unknown value to `plan` exactly as before, but only values nobody has heard of.
- */
-function toProjectKind(raw: string): ProjectKind {
-  if (raw === 'agent') return 'agent';
-  if (raw === 'ticket') return 'ticket';
-  return 'plan';
-}
-
-/**
  * Open (or create) the database at `dbPath` and return the store API.
  * `join(app.getPath('userData'), 'orchestrator.db')` is the production path.
  */
@@ -1409,6 +1397,27 @@ export function createStore(dbPath: string): Store {
   // below fill it from there, exactly as `createdAt` was never backfilled either.
   if (!projectColumns.some((c) => c.name === 'updatedAt')) {
     db.exec(`ALTER TABLE projects ADD COLUMN updatedAt INTEGER`);
+  }
+
+  // A safety net for the `kind` column's retirement: a project's capabilities now come
+  // from its fields (`hasPlan`/`hasRepo`/`ownsTickets` in `@shared/model`), not from this
+  // legacy label, so a plan project with a real directory but a blank `planPath` would
+  // silently drop off the Projects tab and stop being watched the moment `hasPlan` — not
+  // `kind` — decides that question. `addProject` has always defaulted `planPath` for a
+  // plan-kind project, so no row this build ever wrote should match, but the WHERE clause
+  // makes the fix idempotent regardless: once backfilled, `planPath` is no longer blank,
+  // so a legacy row is never rewritten twice and a project never lands here except by an
+  // anomaly this exists to correct.
+  const planlessPlanRows = db
+    .prepare(
+      `SELECT id, path FROM projects WHERE kind = 'plan' AND path <> '' AND (planPath IS NULL OR planPath = '')`,
+    )
+    .all() as Array<{ id: string; path: string }>;
+  if (planlessPlanRows.length > 0) {
+    const backfillPlanPath = db.prepare(`UPDATE projects SET planPath = ? WHERE id = ?`);
+    for (const row of planlessPlanRows) {
+      backfillPlanPath.run(hostJoin(row.path, 'plan.md'), row.id);
+    }
   }
 
   // Migrate databases created before an attachment's bytes could be pushed to the cloud
@@ -2565,7 +2574,6 @@ export function createStore(dbPath: string): Store {
       autoIntegrate:
         r.autoIntegrate === null || r.autoIntegrate === undefined ? null : r.autoIntegrate !== 0,
       planAligned: r.planAligned !== 0,
-      kind: toProjectKind(r.kind),
       jiraEpicKeys: parseStringArray(r.jiraEpicKeys),
       // NULL — "this project has no prefix" — presents as '' for the same reason `color`
       // and `baseBranch` do: the renderer's absent value is an empty string, and the NULL
@@ -2827,9 +2835,8 @@ export function createStore(dbPath: string): Store {
       const projectRow = selectProject.get(projectId) as ProjectRow | undefined;
       if (!projectRow) return undefined;
       const project = rowToProject(projectRow);
-      // Only a ticket project has an allocator, and only a prefixed one can name what it
-      // allocates. Both are "no ticket" rather than an exception, as with `addTaskLink`.
-      if (project.kind !== 'ticket') return undefined;
+      // Only a prefixed project has an allocator to name what it creates. "No ticket"
+      // rather than an exception, as with `addTaskLink`.
       const prefix = normalizeTicketPrefix(project.ticketPrefix);
       if (!prefix) return undefined;
 
@@ -2957,31 +2964,24 @@ export function createStore(dbPath: string): Store {
 
   return {
     addProject(input) {
-      // Unspecified project fields inherit the user's global defaults (Phase 6).
+      // Unspecified project fields inherit the user's global defaults (Phase 6). No
+      // branching on a `kind` any more — a project simply carries whatever the caller
+      // gave it, and empty fields are what make it a bare repo, a ticket project, or the
+      // Personal board rather than a plan-driven one (see `hasPlan`/`hasRepo`/`ownsTickets`
+      // in `@shared/model`).
       const defaults = getSettings();
-      // An agent project is a bare repo directory: there is no plan file to parse or
-      // tick checkboxes in, and each assigned card runs on its own branch, so those
-      // three fields are forced rather than taken from the caller/global defaults.
-      const kind = toProjectKind(input.kind ?? 'plan');
-      const isAgent = kind === 'agent';
-      // A TICKET project is not a repo at all (D2 in the phase entry): it is a key prefix
-      // and a set of tickets, with nowhere on disk to be. `''` is already a real value for
-      // both path fields — the Personal board is seeded with exactly that — so the fix is
-      // to force them, not to invent a directory. Without this branch the `planPath`
-      // fallback below would hand it `hostJoin('', 'plan.md')`, a plan file at the root of
-      // whichever machine it was pointed at.
-      const isTicket = kind === 'ticket';
-      const noRepo = isAgent || isTicket;
-      const ticketPrefix = isTicket ? (normalizeTicketPrefix(input.ticketPrefix ?? '') ?? '') : '';
+      const ticketPrefix = normalizeTicketPrefix(input.ticketPrefix ?? '') ?? '';
       const project: Project = {
         id: randomUUID(),
-        // A ticket project has no folder to be named after, so its prefix is the fallback:
-        // `basename('')` is `''`, and a nameless project is unfindable in every list.
-        name: input.name?.trim() || (isTicket ? ticketPrefix : basename(input.path)),
-        path: isTicket ? '' : input.path,
+        // A project with no directory has nothing to be named after `basename('')` is
+        // `''`, so it falls back to the ticket prefix rather than going nameless.
+        name: input.name?.trim() || basename(input.path) || ticketPrefix,
+        path: input.path,
         // `hostJoin`, not `path.join`: for a WSL project the path is a Linux one, and
-        // joining it on Windows would produce `/home/you/repo\plan.md`.
-        planPath: noRepo ? '' : (input.planPath ?? hostJoin(input.path, 'plan.md')),
+        // joining it on Windows would produce `/home/you/repo\plan.md`. Only defaulted
+        // when there is a directory to put it in — a project with no `path` stays
+        // plan-less unless the caller names a `planPath` of its own.
+        planPath: input.planPath ?? (input.path ? hostJoin(input.path, 'plan.md') : ''),
         defaultModel: input.defaultModel ?? defaults.defaultModel,
         // Seeded from the app-wide default like `defaultModel`, and null all the way down
         // unless someone has set one — a new project plans on what it executes on.
@@ -2996,14 +2996,11 @@ export function createStore(dbPath: string): Store {
             : (defaults.defaultPlanningModel ?? null),
         defaultPermissionMode: input.defaultPermissionMode ?? defaults.defaultPermissionMode,
         concurrency: Math.max(1, Math.round(input.concurrency ?? defaults.concurrency)),
-        // A ticket project has no repo, so it has no worktrees either — and its tickets are
-        // delegated to a real AGENT project when somebody wants one worked, which is where
-        // the branch is actually cut.
-        useWorktrees: isTicket ? false : isAgent ? true : (input.useWorktrees ?? true),
-        baseBranch: isTicket ? '' : (input.baseBranch?.trim() ?? ''),
-        writeBackPlan: noRepo ? false : (input.writeBackPlan ?? defaults.writeBackPlan),
-        // Off unless asked for, on both kinds of project: releasing is the one thing a
-        // human is entitled to have never happen by accident.
+        useWorktrees: input.useWorktrees ?? true,
+        baseBranch: input.baseBranch?.trim() ?? '',
+        writeBackPlan: input.writeBackPlan ?? defaults.writeBackPlan,
+        // Off unless asked for: releasing is the one thing a human is entitled to have
+        // never happen by accident.
         autoRelease: input.autoRelease ?? false,
         // `null` unless the caller ruled: a new project inherits the app-wide switch and
         // keeps inheriting it, rather than freezing today's value into the row.
@@ -3012,7 +3009,6 @@ export function createStore(dbPath: string): Store {
         // the migration above. A plan carrying `@needs:`/`@contract` is also confirmed
         // aligned on its next sync (see ipc `syncProjectPlan`).
         planAligned: input.planAligned ?? true,
-        kind,
         jiraEpicKeys: normalizeEpicKeys(input.jiraEpicKeys),
         ticketPrefix,
         target: input.target ?? defaults.defaultExecTarget,
@@ -3027,6 +3023,9 @@ export function createStore(dbPath: string): Store {
         autoRelease: project.autoRelease ? 1 : 0,
         autoIntegrate: project.autoIntegrate === null ? null : project.autoIntegrate ? 1 : 0,
         planAligned: project.planAligned ? 1 : 0,
+        // A derived legacy label — nothing in this build reads it back (`rowToProject`
+        // skips it), kept only for whatever outside this build still looks at the column.
+        kind: project.planPath ? 'plan' : project.path ? 'agent' : 'ticket',
         jiraEpicKeys: JSON.stringify(project.jiraEpicKeys),
         // '' goes in as NULL: the partial unique index ignores NULLs, and every project
         // that is not a ticket project would otherwise collide with the next one on ''.

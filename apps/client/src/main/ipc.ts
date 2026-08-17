@@ -40,9 +40,9 @@ import type {
   JiraUserOption,
 } from '@shared/ipc';
 import {
+  hasPlan,
+  hasRepo,
   isManualStatus,
-  isPlanProject,
-  isRepoProject,
   PERSONAL_PROJECT_ID,
   type BoardColumn,
   type JiraStatusCategory,
@@ -589,10 +589,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   const targetsInUse = (): ExecTarget[] => {
     const targets = store
       .listProjects()
-      // `isRepoProject`, not "not the Personal board": a ticket project has no directory
+      // `hasRepo`, not "not the Personal board": a ticket project has no directory
       // either, so its target is only whatever the default was the day it was created, and
       // counting it would resurrect the very warning this filter exists to suppress.
-      .filter(isRepoProject)
+      .filter(hasRepo)
       .map((project) => project.target);
     return targets.length > 0 ? targets : [store.getSettings().defaultExecTarget];
   };
@@ -651,10 +651,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
   handle('project:add', async (input) => {
     const project = store.addProject(input);
-    // Only a plan project has a plan file: for an agent or a ticket project there is
-    // nothing to parse and nothing to watch. Asked as `isPlanProject` rather than as
-    // `kind === 'agent'`, so a fourth kind cannot inherit the plan-parsing path by default.
-    if (!isPlanProject(project)) return { project, tasks: [] };
+    // Only a project with a plan file has anything to parse or watch. Asked as `hasPlan`
+    // rather than as some notion of "kind", so any project shape that has no plan file
+    // takes this path — nothing has to opt in by name.
+    if (!hasPlan(project)) return { project, tasks: [] };
     const result = syncProjectPlan(store, project);
     watcher.watch(project); // pick up future edits to its plan file live
     return result;
@@ -663,12 +663,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('project:list', async () =>
     store
       .listProjects()
-      // Only plan projects belong on the Projects tab. The built-in Personal board is the
-      // standalone My Tasks board rather than a code project; agent projects belong to My
-      // Tasks (managed in Settings); a ticket project has its own surface. Stated as the
-      // kind we WANT — the old `!personal && kind !== 'agent'` would have listed every new
-      // kind on this tab by default.
-      .filter(isPlanProject)
+      // Only projects with a plan file belong on the Projects tab. The built-in Personal
+      // board is the standalone My Tasks board rather than a code project; a bare agent
+      // project belongs to My Tasks (managed in Settings); a ticket project has its own
+      // surface. All three simply have no plan file, so `hasPlan` alone is what lists them
+      // out — no elimination that a new project shape could silently fall through.
+      .filter(hasPlan)
       .map((project) => {
         const tasks = store.getTasks(project.id);
         // A stored `dependsOn` is the persisted form of a plan `@needs:` marker, so a
@@ -770,14 +770,17 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // gate work unchanged) but never queued, watched, or listed on the Projects tab.
 
   handle('agentProject:list', async () =>
-    store.listProjects().filter((project) => project.kind === 'agent'),
+    store.listProjects().filter((project) => hasRepo(project) && !hasPlan(project)),
   );
 
-  handle('agentProject:add', async (input) => store.addProject({ ...input, kind: 'agent' }));
+  // Forced plan-less rather than passed a `kind`: a repo with no plan file is what an
+  // agent project IS now, and the caller (the Agent Projects dialog) never sends `planPath`
+  // anyway.
+  handle('agentProject:add', async (input) => store.addProject({ ...input, planPath: '' }));
 
   handle('agentProject:update', async (id, patch) => {
     const existing = store.getProject(id);
-    if (!existing || existing.kind !== 'agent') return null;
+    if (!existing || !hasRepo(existing) || hasPlan(existing)) return null;
     // Guard the plan-only fields: an agent project stays plan-less no matter what.
     const { planPath: _planPath, writeBackPlan: _writeBackPlan, ...safe } = patch;
     await retireRunStateIfTargetChanged(id, safe);
@@ -834,7 +837,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       throw new Error('This task already has an agent working on it.');
     }
     const target = store.getProject(input.agentProjectId);
-    if (!target || target.kind !== 'agent') {
+    if (!target || !hasRepo(target)) {
       throw new Error('Pick an agent project to delegate this task to.');
     }
     // The instructions become a timeline comment BEFORE the run starts, so they are
@@ -928,7 +931,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // stripe nothing on the board could explain.
     if (input.projectTagId) {
       const target = store.getProject(input.projectTagId);
-      if (!target || target.kind !== 'agent') throw new Error('Unknown project.');
+      if (!target || !hasRepo(target)) throw new Error('Unknown project.');
     }
     const task = store.createTask(projectId, input);
     if (!task) throw new Error('A task needs a title.');
@@ -1017,7 +1020,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     if (!existing) throw new Error('Task not found.');
     if (projectTagId !== null) {
       const target = store.getProject(projectTagId);
-      if (!target || target.kind !== 'agent') throw new Error('Unknown project.');
+      if (!target || !hasRepo(target)) throw new Error('Unknown project.');
     }
     // Filing only, and now to its OWN column. This used to write `agentProjectId`, the
     // same field delegation writes, so tagging a card as "a Billing card" gave it the

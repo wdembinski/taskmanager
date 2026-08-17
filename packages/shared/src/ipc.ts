@@ -322,9 +322,9 @@ export interface IpcApi {
   'project:alignPlan': (id: string) => Promise<{ runId: string | null; contractPhases: string[] }>;
 
   /**
-   * List the agent projects — repo directories a My Tasks card can be delegated to
-   * (`kind: 'agent'`). Deliberately separate from `project:list`, which returns only
-   * the legacy plan-driven projects shown on the Projects tab.
+   * List the agent projects — repo directories, with no plan file, that a My Tasks card
+   * can be delegated to. Deliberately separate from `project:list`, which returns only
+   * the plan-driven projects shown on the Projects tab.
    */
   'agentProject:list': () => Promise<Project[]>;
   /**
