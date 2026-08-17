@@ -2917,7 +2917,7 @@ picks up unplanned work it bumps for what it actually did and the rest shift wit
 ladder is a consequence of §4, not a schedule to be honoured against it.
 
 - [x] **1** — Add ticket schema and store methods · `feat` → 0.71.0
-- [ ] **2** — Expose ticket IPC and handlers · `feat` → 0.72.0
+- [x] **2** — Expose ticket IPC and handlers · `feat` → 0.87.0
 - [ ] **3** — Verify ticket schema against SQLite · `test` → 0.72.1
 - [ ] **4** — Add Projects screen with backlog table · `feat` → 0.73.0
 - [ ] **5** — Build ticket drawer, labels and milestones · `feat` → 0.74.0
@@ -2972,7 +2972,7 @@ to `projectTagId` ([`store.ts:1119-1121`](../../src/main/store.ts)). `labels` ne
 `parseStringArray` on read ([`store.ts:1594`](../../src/main/store.ts)); `isMe` must be
 encoded 0/1 by hand, since better-sqlite3 refuses to bind a boolean.
 
-#### 2 — Expose ticket IPC and handlers · `feat` → 0.72.0
+#### 2 — Expose ticket IPC and handlers · `feat` → 0.87.0 (planned as 0.72.0; see outcome below)
 
 Contract first ([`docs/04`](../04-contributing-guide.md) Recipe A) — `src/shared/ipc.ts`
 before either side:
@@ -2999,6 +2999,21 @@ before either side:
   malformed or taken prefix, epic-of-epic, epic in another project, link to an unknown task,
   `setMe` clearing the previous Me. Preload needs no change (`invoke`/`on` are generic).
 - New `src/shared/ticketLinks.ts` + `.test.ts`.
+
+**Outcome, and two corrections.** Landed as `packages/shared/src/ipc.ts` →
+`apps/client/src/main/ipc.ts` — the monorepo split renamed both paths this section cites, but
+changed nothing about the shapes. Store side needed **no changes at all**: step 1's
+`getBoardTasks`/`getArchivedTasksFor`, `updateTask`'s ticket-field allowlist and the full
+people/milestone/label/ticket-link CRUD were already there, so this step was the IPC layer
+only, exactly as its title says. The version bump is **0.87.0**, not 0.72.0 — the ladder above
+was drafted against a `0.70`-era baseline and the app had already reached `0.86.0` by the time
+this step ran; CONTRIBUTING.md §4 pins the number to `apps/client/package.json`, not to a plan
+written earlier. New guards live in one `assertTicketRefs` helper shared by `ticket:create` and
+`ticket:update`, rather than duplicated per handler. The exhaustiveness gates
+(`ipcRelay.test.ts`'s host-only list needed no entry — every new channel relays) forced two
+files this section did not name: `packages/shared/src/ipcEventFanout.test.ts` (the `CLASSIFIED`
+table is asserted equal to `EVENT_FANOUT`'s keys) and `apps/web/src/board/polledEvents.ts`'s
+`WHOLE_LIST_EVENTS`, both updated for the same five events.
 
 #### 3 — Verify ticket schema against SQLite · `test` → 0.72.1
 
