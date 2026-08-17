@@ -319,7 +319,7 @@ import {
   reconcilePullRequests,
   rematchPullRequests,
 } from '__REPO__/src/main/github/githubPrSync';
-import { landedTaskIds } from '__REPO__/src/main/gitlab/gitlabSync';
+import { landedTaskIds, PIPELINE_IN_FLIGHT } from '__REPO__/src/main/gitlab/gitlabSync';
 import { githubIdentityFrom } from '__REPO__/src/main/github/identity';
 import { resolveMove } from '__REPO__/src/main/jira/jiraMove';
 
@@ -892,10 +892,14 @@ async function syncPullRequests(now) {
     detailed.push(await describePullRequest(client, item, { stale, prior }));
   }
 
-  // Read back the open PRs that dropped out of the list, so their ENDING is a fact.
+  // Read back the open PRs that dropped out of the list, so their ENDING is a fact. One
+  // whose checks were still running when it dropped out keeps being read back — with
+  // `detail` passed through so the checks are still read — until they finish; see
+  // PIPELINE_IN_FLIGHT and the matching comment in ipc.ts.
   const listedRefs = new Set(list.map(listedRef));
   for (const prior of stored) {
-    if (listedRefs.has(prRef(prior.projectPath, prior.number)) || mrIsSettled(prior)) continue;
+    if (listedRefs.has(prRef(prior.projectPath, prior.number))) continue;
+    if (mrIsSettled(prior) && !PIPELINE_IN_FLIGHT.has(prior.pipelineStatus)) continue;
     const parts = prior.projectPath.split('/');
     if (!parts[0] || !parts[1]) continue;
     const detail = await client.getPullRequest(parts[0], parts[1], prior.number).catch(() => null);
@@ -904,6 +908,7 @@ async function syncPullRequests(now) {
         await describePullRequest(client, listedFromDetail(detail, parts[0], parts[1]), {
           stale: false,
           prior,
+          detail,
         }),
       );
     }

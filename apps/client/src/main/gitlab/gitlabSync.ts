@@ -80,8 +80,16 @@ const BAD_PIPELINES: ReadonlySet<PipelineStatus> = new Set(['failed', 'canceled'
  *
  * `manual` and `unknown` are deliberately absent: both can sit unchanged indefinitely, so
  * treating them as in-flight would re-read those MRs on every single poll forever.
+ *
+ * Exported for the "read back a settled MR" pass in `ipc.ts` (both forges): an MR whose
+ * pipeline was still running the moment it merged must keep being read back — otherwise its
+ * last known stage keeps whatever it was mid-run, forever. See `describeMergeRequest.ts`.
  */
-const PIPELINE_IN_FLIGHT: ReadonlySet<PipelineStatus> = new Set(['created', 'pending', 'running']);
+export const PIPELINE_IN_FLIGHT: ReadonlySet<PipelineStatus> = new Set([
+  'created',
+  'pending',
+  'running',
+]);
 
 /**
  * Whether this MR is worth spending its detail calls on.
