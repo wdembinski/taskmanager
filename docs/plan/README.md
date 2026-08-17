@@ -2924,7 +2924,7 @@ ladder is a consequence of §4, not a schedule to be honoured against it.
 - [ ] **6** — Scope the Kanban board to a project · `feat` → 0.75.0
 - [ ] **7** — Draw the Gantt timeline read-only · `feat` → 0.76.0
 - [ ] **8** — Drag Gantt bars to reschedule · `feat` → 0.77.0
-- [ ] **9** — Verify ticket flows and document the model · `test` → 0.77.1
+- [x] **9** — Verify ticket flows and document the model · `test` → 0.77.1
 
 #### 1 — Add ticket schema and store methods · `feat` → 0.71.0
 

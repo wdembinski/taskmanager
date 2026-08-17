@@ -777,6 +777,247 @@ check(
 oldRawAfter.close();
 migrated.close();
 
+// ---------------------------------------------------------------------------
+section('11. A full round trip: epics, milestones, labels, links and dated tickets');
+
+const fullProj = store.addProject({
+  path: '',
+  kind: 'ticket',
+  ticketPrefix: 'FULL',
+  name: 'full round trip',
+});
+const fullMilestone = store.addMilestone(fullProj.id, { name: 'Beta', dueAt: 1700000000000 });
+store.addTicketLabel(fullProj.id, { name: 'backend', color: '#336699' });
+store.addTicketLabel(fullProj.id, { name: 'urgent', color: '#cc0000' });
+const fullEpic = store.createTicket(fullProj.id, { title: 'the epic', issueType: 'epic' });
+const fullReporter = store.addPerson({ name: 'Reporter Rae' });
+const fullAssignee = store.addPerson({ name: 'Assignee Amir' });
+
+const fullTicket = store.createTicket(fullProj.id, {
+  title: 'a fully-dressed ticket',
+  issueType: 'story',
+  epicTaskId: fullEpic.id,
+  milestoneId: fullMilestone.id,
+  labels: ['backend', 'urgent'],
+  storyPoints: 2.5,
+  estimateDays: 0.5,
+  startAt: 1690000000000,
+  dueAt: 1695000000000,
+  assigneeId: fullAssignee.id,
+  reporterId: fullReporter.id,
+  description: 'the brief',
+  priority: 'High',
+});
+check('the fully-dressed ticket was created', Boolean(fullTicket));
+
+const fullLink = store.addTicketLink(fullTicket.id, fullEpic.id, 'implements');
+check('the link was drawn', Boolean(fullLink));
+
+const fullReadBack = store.getTask(fullTicket.id);
+check('epicTaskId round-trips', fullReadBack.epicTaskId === fullEpic.id);
+check('milestoneId round-trips', fullReadBack.milestoneId === fullMilestone.id);
+check(
+  'labels round-trip through parseStringArray, in the order they were given',
+  JSON.stringify(fullReadBack.labels) === JSON.stringify(['backend', 'urgent']),
+  JSON.stringify(fullReadBack.labels),
+);
+check(
+  'storyPoints survives as a REAL 2.5, not rounded to 2',
+  fullReadBack.storyPoints === 2.5,
+  String(fullReadBack.storyPoints),
+);
+check(
+  'estimateDays survives as a REAL 0.5, not rounded to 0 or 1',
+  fullReadBack.estimateDays === 0.5,
+  String(fullReadBack.estimateDays),
+);
+check('startAt round-trips', fullReadBack.startAt === 1690000000000);
+check('dueAt round-trips', fullReadBack.dueAt === 1695000000000);
+check('assigneeId round-trips', fullReadBack.assigneeId === fullAssignee.id);
+check('reporterId round-trips', fullReadBack.reporterId === fullReporter.id);
+check('issueType round-trips', fullReadBack.issueType === 'story');
+check(
+  "the ticket's own brief round-trips as externalDescription",
+  fullReadBack.externalDescription === 'the brief',
+);
+check('priority round-trips as externalPriority', fullReadBack.externalPriority === 'High');
+check(
+  'the ticket appears on its own board',
+  store.getBoardTasks(fullProj.id).some((t) => t.id === fullTicket.id),
+);
+check(
+  'the link reads back from both ends via listTicketLinks',
+  store
+    .listTicketLinks()
+    .some(
+      (l) =>
+        l.id === fullLink.id &&
+        l.fromTaskId === fullTicket.id &&
+        l.toTaskId === fullEpic.id &&
+        l.type === 'implements',
+    ),
+);
+
+// ---------------------------------------------------------------------------
+section('12. A prefix rename is one transaction: a mid-rename collision leaves nothing rewritten');
+
+const bulkProj = store.addProject({
+  path: '',
+  kind: 'ticket',
+  ticketPrefix: 'BULK',
+  name: 'bulk rename',
+});
+const bulkTickets = [];
+for (let i = 1; i <= 500; i++) {
+  bulkTickets.push(store.createTicket(bulkProj.id, { title: 'bulk ' + i }));
+}
+check('500 tickets were created under BULK', bulkTickets.every(Boolean));
+
+// Plant a raw-SQL collision at exactly the key the rekey would write for ticket #250 — a
+// bystander row, wearing no ticketNumber of its own (so the rekey's own WHERE clause never
+// touches it), sitting on the key the rename is about to try to hand to someone else. The
+// partial unique index on tasks(ticketKey) does not care whose row got there first.
+const plantedCollision = store.createTask(bulkProj.id, {
+  title: 'a bystander wearing the target key',
+});
+raw.prepare('UPDATE tasks SET ticketKey = ? WHERE id = ?').run('COLLIDE-250', plantedCollision.id);
+
+let renameThrew = false;
+try {
+  store.updateProject(bulkProj.id, { ticketPrefix: 'COLLIDE' });
+} catch {
+  renameThrew = true;
+}
+check('the rename throws rather than silently partially applying', renameThrew);
+
+const bulkProjRow = raw.prepare('SELECT ticketPrefix FROM projects WHERE id = ?').get(bulkProj.id);
+check(
+  "the project's own prefix is unchanged — the write that set it rolled back too",
+  bulkProjRow.ticketPrefix === 'BULK',
+  String(bulkProjRow.ticketPrefix),
+);
+
+const bulkFirstAfter = store.getTask(bulkTickets[0].id);
+const bulkMiddleAfter = store.getTask(bulkTickets[249].id);
+const bulkLastAfter = store.getTask(bulkTickets[499].id);
+check(
+  'not one of the 500 tickets was rekeyed — first, middle and last all still wear BULK',
+  bulkFirstAfter.ticketKey === 'BULK-1' &&
+    bulkMiddleAfter.ticketKey === 'BULK-250' &&
+    bulkLastAfter.ticketKey === 'BULK-500',
+  [bulkFirstAfter.ticketKey, bulkMiddleAfter.ticketKey, bulkLastAfter.ticketKey].join(','),
+);
+
+const plantedAfter = store.getTask(plantedCollision.id);
+check(
+  'the planted bystander still wears the key that caused the collision',
+  plantedAfter.ticketKey === 'COLLIDE-250',
+);
+
+// ---------------------------------------------------------------------------
+section('13. Deleting an epic leaves a Gantt-visible child alone but for its epicTaskId');
+
+const ganttEpicProj = store.addProject({
+  path: '',
+  kind: 'ticket',
+  ticketPrefix: 'GANTT',
+  name: 'gantt epic',
+});
+const ganttEpic = store.createTicket(ganttEpicProj.id, { title: 'the epic', issueType: 'epic' });
+const ganttChild = store.createTicket(ganttEpicProj.id, {
+  title: 'a dated child',
+  epicTaskId: ganttEpic.id,
+  startAt: 1700000000000,
+  dueAt: 1701000000000,
+});
+store.deleteTask(ganttEpic.id);
+const ganttChildAfter = store.getTask(ganttChild.id);
+check("the child survives its epic's delete", Boolean(ganttChildAfter));
+check('its epicTaskId is nulled rather than left dangling', ganttChildAfter.epicTaskId === null);
+check(
+  "its Gantt dates are untouched by the epic's delete",
+  ganttChildAfter.startAt === 1700000000000 && ganttChildAfter.dueAt === 1701000000000,
+  ganttChildAfter.startAt + ',' + ganttChildAfter.dueAt,
+);
+check(
+  'the child still reads back on the board, dates intact',
+  store
+    .getBoardTasks(ganttEpicProj.id)
+    .some(
+      (t) => t.id === ganttChild.id && t.startAt === 1700000000000 && t.dueAt === 1701000000000,
+    ),
+);
+
+// ---------------------------------------------------------------------------
+section('14. Removing a person nulls every pointer to them, across every project they touch');
+
+const crossProjA = store.addProject({
+  path: '',
+  kind: 'ticket',
+  ticketPrefix: 'XA',
+  name: 'cross project A',
+});
+const crossProjB = store.addProject({
+  path: '',
+  kind: 'ticket',
+  ticketPrefix: 'XB',
+  name: 'cross project B',
+});
+const crossPerson = store.addPerson({ name: 'Cross-Project Cara' });
+const crossTicketA = store.createTicket(crossProjA.id, {
+  title: 'assigned in A',
+  assigneeId: crossPerson.id,
+});
+const crossTicketB = store.createTicket(crossProjB.id, {
+  title: 'reported in B',
+  reporterId: crossPerson.id,
+});
+store.deletePerson(crossPerson.id);
+const crossTicketAAfter = store.getTask(crossTicketA.id);
+const crossTicketBAfter = store.getTask(crossTicketB.id);
+check(
+  "project A's ticket survives, its assigneeId nulled",
+  Boolean(crossTicketAAfter) && crossTicketAAfter.assigneeId === null,
+);
+check(
+  "project B's ticket survives, its reporterId nulled",
+  Boolean(crossTicketBAfter) && crossTicketBAfter.reporterId === null,
+);
+check(
+  'the deleted person is gone from the app-wide roster',
+  !store.listPeople().some((p) => p.id === crossPerson.id),
+);
+
+// ---------------------------------------------------------------------------
+section('15. A board query for an unknown project degrades to empty, never throws');
+
+let goneBoardThrew = false;
+let goneBoardTasks;
+try {
+  goneBoardTasks = store.getBoardTasks('gone');
+} catch {
+  goneBoardThrew = true;
+}
+check('getBoardTasks for an unknown project id does not throw', !goneBoardThrew);
+check(
+  'it answers with an empty array rather than undefined or null',
+  Array.isArray(goneBoardTasks) && goneBoardTasks.length === 0,
+  JSON.stringify(goneBoardTasks),
+);
+
+let goneArchivedThrew = false;
+let goneArchivedTasks;
+try {
+  goneArchivedTasks = store.getArchivedTasksFor('gone');
+} catch {
+  goneArchivedThrew = true;
+}
+check('getArchivedTasksFor for an unknown project id does not throw either', !goneArchivedThrew);
+check(
+  'and it too answers with an empty array',
+  Array.isArray(goneArchivedTasks) && goneArchivedTasks.length === 0,
+);
+
 raw.close();
 store.close();
 
