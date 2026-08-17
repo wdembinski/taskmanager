@@ -136,6 +136,7 @@ import {
   landedTaskIds,
   mergeRequestId,
   needsDetailRefresh,
+  PIPELINE_IN_FLIGHT,
   reconcileMergeRequests,
   rematchMergeRequests,
   type FetchedMergeRequest,
@@ -1971,12 +1972,20 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
      * moment it merged; asking GitLab what actually happened costs one call per MR, once,
      * because the answer is terminal and the guard below never asks again.
      *
-     * `stale: false` keeps the pipeline, approvals and notes we already hold — none of them
-     * can move now, and re-reading four endpoints to learn nothing would be waste.
+     * `stale: false` keeps the approvals and notes we already hold — none of them can move
+     * now, and re-reading four endpoints to learn nothing would be waste. The pipeline is
+     * the exception: `describeMergeRequest` reads it off this same detail response and
+     * refreshes its stages regardless of `stale` whenever it moved, because CI does not
+     * stop the moment an MR merges — see the comment there.
      */
     const listedIds = new Set(list.map((mr) => mergeRequestId(mr.project_id, mr.iid)));
     for (const prior of stored) {
-      if (listedIds.has(prior.id) || mrIsSettled(prior)) continue;
+      if (listedIds.has(prior.id)) continue;
+      // Once settled, an MR whose pipeline had already finished needs no further calls —
+      // it is done. One that was still running when it dropped out of the list keeps being
+      // read back until THAT pipeline (or the merge pipeline that follows it) reaches a
+      // terminal state, or its "running" stage would stay lit forever. See PIPELINE_IN_FLIGHT.
+      if (mrIsSettled(prior) && !PIPELINE_IN_FLIGHT.has(prior.pipelineStatus)) continue;
       const fetched = await client.getMergeRequest(prior.repoId, prior.number).catch(() => null);
       // Unreadable or gone: leave it out, and the reconciler deletes it as it always did.
       if (fetched)
@@ -2069,12 +2078,19 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
      * at once; asking costs one call per PR, once, because the answer is terminal and the
      * guard below never asks again.
      *
-     * `stale: false` keeps the checks and approvals we already hold — none of them can move
-     * now, and re-reading four endpoints to learn nothing would be waste.
+     * `stale: false` keeps the approvals and notes we already hold — none of them can move
+     * now, and re-reading them would be waste. Checks are the exception: `detail` is passed
+     * straight through, so `describePullRequest` still reads the checks off its head SHA
+     * regardless of `stale` — see the comment there for why a merge must not freeze a check
+     * that was still `in_progress`.
      */
     const listedRefs = new Set(list.map(listedRef));
     for (const prior of stored) {
-      if (listedRefs.has(prRef(prior.projectPath, prior.number)) || mrIsSettled(prior)) continue;
+      if (listedRefs.has(prRef(prior.projectPath, prior.number))) continue;
+      // Same rule as GitLab's half of this sync: a settled PR whose checks had already
+      // finished needs no further calls, but one still running when it dropped out of the
+      // open list keeps being read back until they do. See PIPELINE_IN_FLIGHT.
+      if (mrIsSettled(prior) && !PIPELINE_IN_FLIGHT.has(prior.pipelineStatus)) continue;
       const [owner, repo] = prior.projectPath.split('/');
       if (!owner || !repo) continue;
       const detail = await client.getPullRequest(owner, repo, prior.number).catch(() => null);
@@ -2084,6 +2100,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
           await describePullRequest(client, listedFromDetail(detail, owner, repo), {
             stale: false,
             prior,
+            detail,
           }),
         );
       }
