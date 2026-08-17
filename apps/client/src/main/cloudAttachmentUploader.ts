@@ -87,6 +87,8 @@ export interface CloudAttachmentUploaderDeps {
    * is no second channel for this, and no poll that would have found it.
    */
   onUploaded?: () => void;
+  /** A push came back 401 — see `CloudPollerDeps.onAuthRejected`. Never called for a 403. */
+  onAuthRejected?: () => void;
   fetchImpl?: typeof fetch;
   now?: () => number;
   /** Injected so a test does not have to wait out {@link UPLOAD_GAP_MS} per file. */
@@ -233,6 +235,10 @@ export class CloudAttachmentUploader {
         body: bytes,
       });
       if (!res.ok) {
+        // A rejected token — see `CloudPollerDeps.onAuthRejected`. This pass already retries
+        // the next attachment (and the next scan, on a later failure), so there is no inline
+        // retry here — just the signal that lets the next request use a fresh token.
+        if (res.status === 401) deps.onAuthRejected?.();
         // The one refusal that will still be true tomorrow: over the cap, or an account with
         // no room and nothing evictable. Anything else is worth trying again.
         if (res.status === 413) this.refused.add(attachment.id);

@@ -476,4 +476,73 @@ describe('CloudPoller', () => {
     await poller.tick();
     expect(fetchImpl).not.toHaveBeenCalled();
   });
+
+  describe('a 401', () => {
+    /** A `getAccessToken` that hands out a stale token first, then a fresh one. */
+    function staleThenFresh(): ReturnType<typeof vi.fn> {
+      let calls = 0;
+      return vi.fn(async () => {
+        calls += 1;
+        return calls === 1 ? 'stale' : 'fresh';
+      });
+    }
+
+    it('invalidates, refetches the token and retries once, counting the tick as a success', async () => {
+      const onAuthRejected = vi.fn();
+      const getAccessToken = staleThenFresh();
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce({ ok: false, status: 401, statusText: 'Unauthorized' })
+        .mockResolvedValueOnce({ ok: true, status: 200, json: async () => response() });
+      const { poller } = makePoller({
+        onAuthRejected,
+        getAccessToken,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+
+      await poller.tick();
+
+      expect(onAuthRejected).toHaveBeenCalledTimes(1);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(fetchImpl.mock.calls[0]![1].headers.authorization).toBe('Bearer stale');
+      expect(fetchImpl.mock.calls[1]![1].headers.authorization).toBe('Bearer fresh');
+      expect((poller as unknown as { consecutiveFailures: number }).consecutiveFailures).toBe(0);
+    });
+
+    it('makes only one retry attempt when the fresh token also comes back 401', async () => {
+      const onAuthRejected = vi.fn();
+      const getAccessToken = staleThenFresh();
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValue({ ok: false, status: 401, statusText: 'Unauthorized' });
+      const { poller } = makePoller({
+        onAuthRejected,
+        getAccessToken,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+
+      await poller.tick();
+
+      expect(onAuthRejected).toHaveBeenCalledTimes(1);
+      expect(fetchImpl).toHaveBeenCalledTimes(2); // no third request
+      expect((poller as unknown as { consecutiveFailures: number }).consecutiveFailures).toBe(1);
+    });
+
+    it('does not retry or invalidate on a 403 — only a 401 means the token is bad', async () => {
+      const onAuthRejected = vi.fn();
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValue({ ok: false, status: 403, statusText: 'Forbidden' });
+      const { poller } = makePoller({
+        onAuthRejected,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+
+      await poller.tick();
+
+      expect(onAuthRejected).not.toHaveBeenCalled();
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect((poller as unknown as { consecutiveFailures: number }).consecutiveFailures).toBe(1);
+    });
+  });
 });

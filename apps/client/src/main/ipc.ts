@@ -3575,6 +3575,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // The SAME id `SyncRequest.clientId` carries, so the server can tell a pushed event and a
     // mirrored row came from one desktop — which is what step 7 needs to name it in the web.
     getClientId: () => store.loadCloudClientId(),
+    onAuthRejected: () => cloudToken.invalidate(),
   });
 
   // The bytes half of the same mirror. Configured here for the same reason — it needs the
@@ -3592,6 +3593,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // How a browser finds out its thumbnail is ready: `attachment:changed` is forwarded, so
     // the row it already listens to comes back carrying `cloudBlobAt`.
     onUploaded: () => pushAttachments(),
+    onAuthRejected: () => cloudToken.invalidate(),
   });
   cloudAttachments.scan();
 
@@ -3624,6 +3626,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // agent's transcript into the cloud for nobody.
     onEventListeners: (count) => cloudEvents.setListeners(count),
     runTracked: (run) => trackSync('cloud', run),
+    onAuthRejected: () => cloudToken.invalidate(),
   });
   cloudPoller.reschedule();
 
