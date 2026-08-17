@@ -57,7 +57,13 @@ import type { LinkGate, LinkResult, TaskLink } from './taskChain';
 import type { AppSettings } from './settings';
 import type { SyncState } from './sync';
 import type { UpdateState } from './update';
-import type { UsageQuotas, UsageSample, UsageSeriesPoint, UsageSummary } from './usage';
+import type {
+  SessionStat,
+  UsageQuotas,
+  UsageSample,
+  UsageSeriesPoint,
+  UsageSummary,
+} from './usage';
 
 /** Result of checking whether the local `claude` CLI is installed and logged in. */
 export interface ClaudeStatus {
@@ -653,6 +659,14 @@ export interface IpcApi {
    * poll this. Live changes arrive via the same `usage:sample` event.
    */
   'usage:quotas': () => Promise<UsageQuotas>;
+  /**
+   * Session-by-session history of how fast the account burns through its rolling
+   * 5-hour token budget: one entry per reconstructed past session (see `SessionStat`),
+   * each with how long it took to exhaust the budget measured two ways — processing
+   * time alone and full wall-clock time. Behind the Performance screen's two "time to
+   * exhaust a session" charts. Live changes arrive via the same `usage:sample` event.
+   */
+  'usage:sessionStats': () => Promise<SessionStat[]>;
 
   /** The current global app settings (Phase 6). */
   'settings:get': () => Promise<AppSettings>;

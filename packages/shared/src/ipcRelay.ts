@@ -192,6 +192,7 @@ export const RELAY_POLICY: {
   'usage:summary': 'relay',
   'usage:series': 'relay',
   'usage:quotas': 'relay',
+  'usage:sessionStats': 'relay',
 
   'settings:get': 'relay',
   'settings:save': 'relay',

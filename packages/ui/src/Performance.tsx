@@ -38,6 +38,7 @@ import { useInitialLoad } from './useInitialLoad';
 import { TokenChart } from './TokenChart';
 import { formatCountdown } from './countdown';
 import { UsageQuotaBars, useUsageQuotas } from './UsageQuotaBars';
+import { SessionStatsSection, useSessionStats } from './SessionStatsSection';
 import { formatCost, formatPct, formatTokens, niceCeil } from './usageFormat';
 
 /**
@@ -268,6 +269,7 @@ export function Performance(): JSX.Element {
   // The two metered windows. Their own live reading, on their own cadence: they are
   // fixed windows and deliberately ignore the range selector below them.
   const quotas = useUsageQuotas();
+  const sessionStats = useSessionStats();
   // Sticky peak burn so the gauge's full-scale doesn't jump around second to second.
   const peakBurn = useRef(0);
   const [gaugeMax, setGaugeMax] = useState(50);
@@ -460,6 +462,13 @@ export function Performance(): JSX.Element {
             <span className={styles.sectionTitle}>Live · last 2 min · tokens/sec</span>
             <TokenChart points={series} bucketMs={BUCKET_MS} />
           </div>
+
+          {sessionStats && (
+            <div className={styles.section}>
+              <span className={styles.sectionTitle}>Session statistics</span>
+              <SessionStatsSection stats={sessionStats} />
+            </div>
+          )}
 
           <div className={styles.section}>
             <span className={styles.sectionTitle}>By project → task ({rangeLabel})</span>

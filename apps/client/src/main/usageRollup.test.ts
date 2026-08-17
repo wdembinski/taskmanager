@@ -8,6 +8,7 @@ import {
   bucketSeries,
   burnRate,
   rollupQuotas,
+  rollupSessionStats,
   rollupWindow,
   type TokensIn,
   usageQuota,
@@ -416,5 +417,90 @@ describe('rollupQuotas', () => {
     expect(quotas.session.pctSource).toBe('claude');
     expect(quotas.weekly.pctSource).toBe('budget');
     expect(quotas.weekly.pct).toBe(25);
+  });
+});
+
+describe('rollupSessionStats', () => {
+  it('measures wall-clock and processing time to exhaust a session, capping idle gaps out of processing time', () => {
+    const samples = [
+      sample({ inputTokens: 40, createdAt: 0 }),
+      sample({ inputTokens: 40, createdAt: 2 * MIN }),
+      sample({ inputTokens: 20, createdAt: 20 * MIN }), // 18-minute gap — mostly idle
+    ];
+    const stats = rollupSessionStats(samples, { limit: 100, idleGapMs: 10 * MIN });
+    expect(stats).toHaveLength(1);
+    expect(stats[0]).toMatchObject({
+      index: 0,
+      startedAt: 0,
+      exhaustedAt: 20 * MIN,
+      tokens: 100,
+      limit: 100,
+      wallClockMs: 20 * MIN,
+      // 0 + 2min + a capped 10min (of the real 18) = 12min of processing.
+      processingMs: 12 * MIN,
+      exhausted: true,
+    });
+  });
+
+  it('leaves a session unexhausted when the 5-hour window lapses before the budget is spent', () => {
+    const samples = [
+      sample({ inputTokens: 30, createdAt: 0 }),
+      sample({ inputTokens: 10, createdAt: USAGE_WINDOW_MS + MIN }), // starts the next session
+    ];
+    const stats = rollupSessionStats(samples, { limit: 1000 });
+    expect(stats).toHaveLength(2);
+    expect(stats[0]).toMatchObject({
+      tokens: 30,
+      exhausted: false,
+      exhaustedAt: null,
+      wallClockMs: null,
+      processingMs: null,
+    });
+    expect(stats[1]).toMatchObject({
+      startedAt: USAGE_WINDOW_MS + MIN,
+      tokens: 10,
+      exhausted: false,
+    });
+  });
+
+  it('starts the next session right at the sample after one exhausts, even mid-window', () => {
+    const samples = [
+      sample({ inputTokens: 100, createdAt: 0 }),
+      sample({ inputTokens: 50, createdAt: MIN }),
+    ];
+    const stats = rollupSessionStats(samples, { limit: 100 });
+    expect(stats).toHaveLength(2);
+    expect(stats[0]).toMatchObject({
+      exhausted: true,
+      exhaustedAt: 0,
+      wallClockMs: 0,
+      processingMs: 0,
+    });
+    expect(stats[1]).toMatchObject({ startedAt: MIN, tokens: 50, exhausted: false });
+  });
+
+  it('never exhausts when no budget is set, and keeps grouping samples into one open session', () => {
+    const samples = [
+      sample({ inputTokens: 500, createdAt: 0 }),
+      sample({ inputTokens: 500, createdAt: MIN }),
+    ];
+    const stats = rollupSessionStats(samples, { limit: 0 });
+    expect(stats).toHaveLength(1);
+    expect(stats[0]).toMatchObject({ tokens: 1000, exhausted: false, exhaustedAt: null });
+  });
+
+  it('sorts unordered input by time before reconstructing sessions', () => {
+    const samples = [
+      sample({ inputTokens: 60, createdAt: MIN }),
+      sample({ inputTokens: 40, createdAt: 0 }),
+    ];
+    const stats = rollupSessionStats(samples, { limit: 100 });
+    expect(stats).toHaveLength(1);
+    expect(stats[0]).toMatchObject({
+      startedAt: 0,
+      exhaustedAt: MIN,
+      tokens: 100,
+      exhausted: true,
+    });
   });
 });
