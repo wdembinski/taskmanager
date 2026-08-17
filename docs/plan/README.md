@@ -2918,7 +2918,7 @@ ladder is a consequence of §4, not a schedule to be honoured against it.
 
 - [x] **1** — Add ticket schema and store methods · `feat` → 0.71.0
 - [x] **2** — Expose ticket IPC and handlers · `feat` → 0.87.0
-- [ ] **3** — Verify ticket schema against SQLite · `test` → 0.72.1
+- [x] **3** — Verify ticket schema against SQLite · `test` → 0.87.1
 - [ ] **4** — Add Projects screen with backlog table · `feat` → 0.73.0
 - [ ] **5** — Build ticket drawer, labels and milestones · `feat` → 0.74.0
 - [ ] **6** — Scope the Kanban board to a project · `feat` → 0.75.0
@@ -3015,7 +3015,7 @@ files this section did not name: `packages/shared/src/ipcEventFanout.test.ts` (t
 table is asserted equal to `EVENT_FANOUT`'s keys) and `apps/web/src/board/polledEvents.ts`'s
 `WHOLE_LIST_EVENTS`, both updated for the same five events.
 
-#### 3 — Verify ticket schema against SQLite · `test` → 0.72.1
+#### 3 — Verify ticket schema against SQLite · `test` → 0.87.1
 
 `scripts/verify-tickets.mjs`, modelled line-for-line on
 [`scripts/verify-attachments.mjs`](../../scripts/verify-attachments.mjs) — Vite-bundle the
@@ -3038,6 +3038,32 @@ It must prove:
 - **migration from `v0.69.0`** via `git archive`, asserting every old row survives and that
   `PRAGMA foreign_key_list(tasks)` on the migrated DB is *identical* to the fresh one;
 - **JIRA isolation** — `getPersonalTasksForSync()` returns none of a ticket project's rows.
+
+**Outcome, and three corrections.** The version bump is **0.87.1**, not the drafted
+`0.72.1` — the same ladder drift step 2 already recorded, one patch further down. The
+migration leg downgrades to **`v0.72.0`**, not the drafted `v0.69.0`: both tags predate
+ticket columns (`git ls-tree <tag> -- src/main/store.ts` shows neither ever mentions
+`ticketKey`), so either proves the same thing, and `v0.72.0` is the more recent one. Both
+also predate the pnpm-workspace split (`apps/client` did not exist yet — the tree was
+`src/main`, `src/shared` at the repo root), which `verify-attachments.mjs` does not account
+for: its `git archive` runs with `cwd` at this package, and a pathspec resolved from a
+directory that is not part of the old tag's tree is a `fatal: current working directory is
+untracked`, not a silently-wrong answer. `verify-tickets.mjs` runs that one command from the
+repo's top level instead — everything else about the two scripts (the scratch layout, the
+Vite bundling, the Electron-as-Node run) is unchanged. Third: **both forges**, not JIRA
+alone — GitHub sync landed on this board after this section was drafted, so the isolation
+proof is two independent facts (a JIRA-sourced row and a GitHub-sourced row can each wear a
+ticket's key text as their own `externalKey` without either merging into the native ticket),
+not one.
+
+The harness also found a real gap while proving the cascade bullet: `deleteTaskDeep`
+(`store.ts`) nulled `milestoneId`/`assigneeId`/`reporterId` on delete, exactly as the
+`tasks` table's own comment promises for all four cross-reference columns, but never
+`epicTaskId` — a ticket whose epic was deleted kept a dangling pointer at the ROW, even
+though nothing writable could produce one afterwards (`assertTicketRefs` in `ipc.ts` only
+checks a field that is explicitly being set). Fixed in this step with one more prepared
+statement, `clearEpicOnTasks`, run in the same loop as the existing three; proven by
+mutation — the check goes red with the statement commented out and green with it restored.
 
 #### 4 — Add Projects screen with backlog table · `feat` → 0.73.0
 
