@@ -5661,6 +5661,44 @@ gets to assume it. All four hold exactly as stated; nothing here needed correcti
   side should hold to the same rule, for the same reason — it is what lets it run under vitest
   at all.
 
+### The critical files, walked one by one on the finished tip (`13ca41c`)
+
+Step 9's table names twelve files across three areas — the shared token-error grammar, the
+desktop's single-flight minter and its call sites, and the web's own copies of the same two
+ideas (single-flight token, sync-progress gate). All twelve were re-opened on `13ca41c`, and
+all three gates re-run there rather than trusted from whatever step last measured them on the
+same commit.
+
+All twelve exist, and all twelve changed on this branch — unlike the wider Phase 26 round this
+convention comes from, this fix has no file the plan named as critical but left untouched, so
+there is no "unchanged, and which kind" list here.
+
+| File | What it had to end up as | On `13ca41c` |
+| --- | --- | --- |
+| `packages/shared/src/iamPkce.ts` | `IamTokenError`, `isTerminalGrantError`, error-body parsing, message text unchanged | ✅ `IamTokenError` at :125, `isTerminalGrantError` at :152 duck-typed on `oauthError` rather than `instanceof` (`@tm/shared` reaches `apps/client` as a source alias but `apps/web`/`apps/server` as built `dist` — two module instances); `postToken`'s throw at :190 still reads `` vipper.iam token request failed (${status} ${detail}) `` — `iamPkce.test.ts`'s pinned substring survives |
+| `apps/client/src/main/cloudToken.ts` | new — `CloudTokenProvider`, the single-flight | ✅ 163 lines; `get()` at :97 collapses concurrent callers onto one `inflight` promise; `mint()` at :137 sets `rejected` only on `isTerminalGrantError`, leaving every other failure (network blip, 503) retryable on the next tick |
+| `apps/client/src/main/ipc.ts` | status (plan cites :1568), signOut (:1595), the replaced block (:1610-1637), sender wiring (:3588/3601/3620) | ✅ present at :1571, :1602, :1607-1614, and :3584/3601/3618 — each a handful of lines off the plan's own citation because the file grew elsewhere on the branch since the plan was written, not because anything is missing: `iam:getConfigStatus` reads `cloudToken.state()`/`.explain()`/`.lastMintedAt()`, `iam:signOut` calls `cloudToken.forget()`, and `cloudEvents`/`cloudAttachments`/`cloudPoller` each wire `onAuthRejected: () => cloudToken.invalidate()` |
+| `apps/client/src/main/cloudPoller.ts` | `onAuthRejected`, `describeMissingToken`, `post()` extraction, retry-once | ✅ `describeMissingToken` read at :204 when `getAccessToken()` answers null; `post()` extracted at :292; a 401 at :256 calls `onAuthRejected` then re-mints and retries the SAME request once with the fresh token — never in a loop |
+| `apps/client/src/main/index.ts` | `app.requestSingleInstanceLock()` | ✅ :36, quitting every later copy outright and focusing the survivor on `second-instance`; the comment at :33 names the gap this closes — two copies racing the desktop's own refresh-token rotation would each spend the same grant |
+| `apps/client/src/renderer/src/Settings.tsx` | cloud section: state-driven hint + warning bar | ✅ `iamHint(iamStatus)` on the account `Field` at :1352, a `MessageBar intent="warning"` at :1353 gated on `authState === 'rejected'`, and the sign-in button's label/appearance flipping on the same state |
+| `apps/web/src/auth/cloudAuth.ts` | the same single-flight + terminal handling | ✅ `getAccessToken()` at :158 mirrors `CloudTokenProvider.get()`'s `inflight` guard; `mint()` at :189 calls every `onGrantRevoked` listener and drops the stored refresh token on `isTerminalGrantError` — what lets `useCloudAuth` stop curtaining a board that will never sync again |
+| `apps/web/src/board/syncGate.ts` | new — `boardIsReady`, `syncCurtainText`, `syncStatusLabel`, `describeAge` | ✅ 70 lines, all four exported; `boardIsReady` at :31 reads only the latched `initialSyncComplete`, never `draining` — the rule its own header states: ready is permanent once reached |
+| `apps/web/src/board/BoardPoller.ts` | `onPollingChange` | ✅ optional dep at :35, called `true` at the top of `tick()` (:113) and `false` in its `finally` (:123) — a fact about a request in flight, not about what `onResponse`/`onError` last said |
+| `apps/web/src/board/useCloudBoard.ts` | `SyncProgress` + the `hasMore` latch | ✅ `syncProgress` state at :77; the latch is the one-liner at :144 — `initialSyncComplete: p.initialSyncComplete \|\| response.hasMore !== true` — true forever once either side has been true once |
+| `apps/web/src/App.tsx` | board branch, status-bar clause | ✅ `boardIsReady(board.syncProgress)` gates the board render at :225, `<SyncCurtain>` (from `@tm/ui/SyncCurtain`, imported :28) takes over otherwise; the status bar's `syncStatusLabel(...)` clause at :210 |
+| `packages/ui/src/SyncCurtain.tsx` | new — the blue curtain | ✅ 57 lines; its own header explains why it is not `PaneLoading` — a network round trip worth seconds, not a millisecond-scale local read worth a skeleton |
+
+**The gates, forced, on `13ca41c`.** `pnpm typecheck --force`: 9/9, 0 cached. `pnpm build
+--force`: 6/6, 0 cached. `pnpm test`: 180 test files passed (1 skipped), 3020 tests passed (11
+skipped). Nothing here was trusted from an earlier step's numbers on this same commit — the
+point of forcing is that a cached green from before this walk would not have proven anything
+about the tip it walked.
+
+No file named in the table needed a code change. The walk found the intended behaviour already
+in place from steps 2-8; the only drift found was the plan's own `ipc.ts` line citations, which
+moved because the file grew elsewhere on the branch after the plan was written, not because any
+wiring is missing.
+
 ---
 
 ## Conventions for every phase
