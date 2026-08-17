@@ -25,6 +25,7 @@ import { Attention } from '@tm/ui/Attention';
 import { Performance } from '@tm/ui/Performance';
 import { NavRail, type NavRailItem } from '@tm/ui/shell/NavRail';
 import { StatusBar, StatusDot, StatusSpacer } from '@tm/ui/shell/StatusBar';
+import { SyncCurtain } from '@tm/ui/SyncCurtain';
 import { TransportProvider } from '@tm/ui/transport';
 import { CloudAuth } from './auth/cloudAuth';
 import { SignInScreen } from './auth/SignInScreen';
@@ -34,7 +35,7 @@ import { SettingsScreen } from './settings/SettingsScreen';
 import { ClientPicker } from './board/ClientPicker';
 import { SkewBanner } from './board/SkewBanner';
 import { StaleBanner } from './board/StaleBanner';
-import { describeAge } from './board/syncGate';
+import { boardIsReady, syncCurtainText, syncStatusLabel } from './board/syncGate';
 import { versionSkew } from './board/targetClient';
 import { useCloudBoard } from './board/useCloudBoard';
 import { loadWebConfig } from './env';
@@ -203,13 +204,10 @@ function SignedInBoard({
               )}
             </Caption1>
             {/* A poll that comes back proves this tab's own connection, whether or not it
-                carried any deltas — which is a different claim from the dot's. */}
-            <Caption1>
-              ·{' '}
-              {board.lastPolledAt === null
-                ? 'first sync pending'
-                : `synced ${describeAge(now - board.lastPolledAt)}`}
-            </Caption1>
+                carried any deltas — which is a different claim from the dot's. Once the
+                board has latched ready, a later paged catch-up shows here as "syncing…"
+                rather than pulling the board back behind the curtain. */}
+            <Caption1>· {syncStatusLabel(board.syncProgress, board.lastPolledAt, now)}</Caption1>
             <StatusSpacer />
             <Caption1>
               <button type="button" className={styles.linkButton} onClick={onSignOut}>
@@ -223,14 +221,20 @@ function SignedInBoard({
         {/* Each screen is unmounted rather than hidden when you leave it — every one of
             them polls, and a Performance pane nobody is looking at should not be relaying a
             `usage:summary` every second. The desktop's own `App` folds them the same way. */}
-        {screen === 'mytasks' && (
-          <BoardScreen
-            state={board.state}
-            everSeenClient={board.targetClientId !== null}
-            onSetStatus={(taskId, status) => void board.setStatus(taskId, status)}
-            onStatusNoted={board.noteStatus}
-          />
-        )}
+        {screen === 'mytasks' &&
+          (boardIsReady(board.syncProgress) ? (
+            <BoardScreen
+              state={board.state}
+              everSeenClient={board.targetClientId !== null}
+              onSetStatus={(taskId, status) => void board.setStatus(taskId, status)}
+              onStatusNoted={board.noteStatus}
+            />
+          ) : (
+            <SyncCurtain
+              {...syncCurtainText(board.syncProgress)}
+              error={board.syncProgress.lastError}
+            />
+          ))}
         {screen === 'performance' && <Performance />}
         {screen === 'attention' && <Attention />}
         {screen === 'settings' && <SettingsScreen />}
