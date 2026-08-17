@@ -61,7 +61,7 @@ import {
 } from '@shared/board';
 import { assignmentStatusPatch, humanStatusPatch } from './cardStatusGuard';
 import { isBlockedishStatus, resolveGitHubColumn } from '@shared/statusResolve';
-import type { AppSettings } from '@shared/settings';
+import { clampSyncInterval, type AppSettings } from '@shared/settings';
 import { sameExecTarget, type ExecTarget } from '@shared/execTarget';
 import { normalizeBaseUrl } from '@shared/jiraUrl';
 import { sanitizeToken, tokenHadNoise } from '@shared/secretToken';
@@ -1890,7 +1890,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       .map((s) => s.lastSyncAt)
       .filter((t): t is number => t !== null);
     return {
-      intervalMs: Math.max(0, Math.round(settings.syncIntervalMinutes ?? 0)) * 60_000,
+      intervalMs: clampSyncInterval(settings.syncIntervalMinutes ?? 0) * 60_000,
       lastSyncAt: stamps.length ? Math.max(...stamps) : null,
       syncing: Object.values(syncClock).some((c) => c.syncing),
       services,

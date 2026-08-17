@@ -80,6 +80,7 @@ import { useTransport } from '@tm/ui/transport';
 import { MODELS } from '@tm/shared/model';
 import type { Project } from '@tm/shared/model';
 import type { ClaudeModel, PermissionMode } from '@tm/shared/session';
+import { clampSyncInterval, MAX_SYNC_INTERVAL_MINUTES } from '@tm/shared/settings';
 import type { AppSettings } from '@tm/shared/settings';
 import { selectAgentProjects } from '../board/boardSelectors';
 import { ProjectsEmpty, ProjectsSection } from './ProjectsSection';
@@ -292,9 +293,15 @@ export function SettingsScreen({ projects }: SettingsScreenProps): JSX.Element {
             >
               <Input
                 type="number"
+                min={0}
+                max={MAX_SYNC_INTERVAL_MINUTES}
                 value={String(settings.syncIntervalMinutes)}
+                // `clampSyncInterval`: a plain number input has no upper bound of its own, and
+                // an unclamped value reaches `SyncPoller` on the desktop — see its docstring
+                // for why that overflows the timer's delay into "sync continuously" rather
+                // than failing loud.
                 onChange={(_e, d) =>
-                  patch({ syncIntervalMinutes: Math.max(0, Number(d.value) || 0) })
+                  patch({ syncIntervalMinutes: clampSyncInterval(Number(d.value) || 0) })
                 }
               />
             </Field>
