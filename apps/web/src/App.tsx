@@ -34,16 +34,16 @@ import { SettingsScreen } from './settings/SettingsScreen';
 import { ClientPicker } from './board/ClientPicker';
 import { SkewBanner } from './board/SkewBanner';
 import { StaleBanner } from './board/StaleBanner';
+import { UnreachableBanner } from './board/UnreachableBanner';
 import { versionSkew } from './board/targetClient';
 import { useCloudBoard } from './board/useCloudBoard';
 import { loadWebConfig } from './env';
 
 const useStyles = makeStyles({
   /**
-   * Sign out, in the status bar rather than on the board's toolbar — which is what lets
-   * that toolbar hold the same things `MyTasks`'s does. Same treatment as the desktop's
-   * update link: no colour of its own (the bar can change fill under it), underlined so it
-   * reads as the one clickable thing down here.
+   * The Client picker's own link styling, in the status bar. Same treatment as the
+   * desktop's update link: no colour of its own (the bar can change fill under it),
+   * underlined so it reads as the one clickable thing down here.
    */
   linkButton: {
     background: 'none',
@@ -160,19 +160,32 @@ function SignedInBoard({
       <AppShell
         nav={
           // Scratch run refuses selection inside `NavRail` (it is the one tile still marked
-          // unavailable), so anything that reaches here is a real destination.
-          <NavRail items={NAV} selected={screen} onSelect={(id) => setScreen(id as Screen)} />
+          // unavailable), so anything that reaches here is a real destination. Sign out lives
+          // in the rail's own Account dropdown rather than the status bar — this is the only
+          // host with an account to sign back out of, so it is also the only one passing it.
+          <NavRail
+            items={NAV}
+            selected={screen}
+            onSelect={(id) => setScreen(id as Screen)}
+            accountItems={[{ id: 'signout', label: 'Sign out', onClick: onSignOut }]}
+          />
         }
         banners={
           // The shell's own banner strip, which is where the desktop's outage bars go too —
           // above the screen rather than inside it, so the board below is the board and
           // nothing shifts the columns down but a thing that had to be said.
           //
-          // At most one of the two, and offline wins: a desktop that isn't polling is the
-          // bigger fact, and its version cannot matter until it comes back. (They are
-          // mutually exclusive anyway — skew is read off a LIVE Client — but stating the
-          // order here means the next banner added doesn't have to rediscover it.)
-          !online ? (
+          // At most one of the three, in this order, and the order is the point:
+          //
+          //  1. **This tab cannot read at all.** Everything below is a claim about what the
+          //     server said, and it has said nothing. Reporting "no desktop app has synced"
+          //     here would be blaming another machine for a failure in this one — which is
+          //     precisely what sent somebody hunting through a perfectly healthy desktop.
+          //  2. **No desktop client is polling.** The bigger fact once reads work.
+          //  3. **Version skew**, which cannot matter until a Client is back.
+          board.pollError ? (
+            <UnreachableBanner message={board.pollError} />
+          ) : !online ? (
             <StaleBanner everSeenClient={board.targetClientId !== null} />
           ) : skew && board.targetClient ? (
             <SkewBanner skew={skew} client={board.targetClient} />
@@ -202,19 +215,21 @@ function SignedInBoard({
               )}
             </Caption1>
             {/* A poll that comes back proves this tab's own connection, whether or not it
-                carried any deltas — which is a different claim from the dot's. */}
+                carried any deltas — which is a different claim from the dot's.
+
+                "first sync pending" is only honest before the first read has been ATTEMPTED.
+                It used to be what a tab said forever while every read failed, which reads as
+                "still loading" and is how an outage passed for a slow start. A tab that has
+                tried and failed says so. */}
             <Caption1>
               ·{' '}
-              {board.lastPolledAt === null
-                ? 'first sync pending'
-                : `synced ${describeAge(now - board.lastPolledAt)}`}
+              {board.pollError
+                ? 'not syncing'
+                : board.lastPolledAt === null
+                  ? 'first sync pending'
+                  : `synced ${describeAge(now - board.lastPolledAt)}`}
             </Caption1>
             <StatusSpacer />
-            <Caption1>
-              <button type="button" className={styles.linkButton} onClick={onSignOut}>
-                Sign out
-              </button>
-            </Caption1>
             <Caption1>v{__APP_VERSION__}</Caption1>
           </StatusBar>
         }
@@ -232,7 +247,10 @@ function SignedInBoard({
         )}
         {screen === 'performance' && <Performance />}
         {screen === 'attention' && <Attention />}
-        {screen === 'settings' && <SettingsScreen />}
+        {/* The mirrored `projects` rows, which this hook already holds for the board — so the
+            Settings screen's Projects tab still lists what is configured when no desktop is
+            awake to answer its own `agentProject:list`. */}
+        {screen === 'settings' && <SettingsScreen projects={board.state.projects} />}
       </AppShell>
     </TransportProvider>
   );

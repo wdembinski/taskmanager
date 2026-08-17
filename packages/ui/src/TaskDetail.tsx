@@ -51,7 +51,7 @@ import { runningSubAgents } from './agentActivity';
 import { stepPosition } from './board/boardColumns';
 import { typeIcon } from './board/TaskCard';
 import { ChatTurns } from './chat/ChatTurns';
-import { Composer } from './chat/Composer';
+import { Composer, type ComposerBusy } from './chat/Composer';
 import { foldTurns } from './chat/turns';
 import { EMPTY_COMPOSER, type ComposerValue } from './chat/mentions';
 import { draftKey, useDraft } from './drafts';
@@ -307,7 +307,12 @@ export function TaskDetail({
   /** The linked ticket's own thread — JIRA's or GitHub's — fetched live, never stored. */
   const [ticketComments, setTicketComments] = useState<TaskActivityEntry[]>([]);
   const [liveEvents, setLiveEvents] = useState<TaskActivityEntry[]>([]);
-  const [busy, setBusy] = useState(false);
+  /**
+   * Which write is in flight, so the button actually pressed is the one that answers — see
+   * {@link ComposerBusy}. `'other'` covers this pane's own actions the composer knows
+   * nothing about (dismissing the attention ring).
+   */
+  const [busy, setBusy] = useState<ComposerBusy>(null);
   const [error, setError] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState(false);
   /** The title being written, drafted like every other editable field (`./drafts`). */
@@ -600,11 +605,24 @@ export function TaskDetail({
     run.phase === 'waiting' ||
     // A merge is not the agent, but it IS the card working — and the band above the
     // composer is the one place that says so in words.
-    run.phase === 'merging';
+    run.phase === 'merging' ||
+    // Nor is a usage limit the agent — but a card parked in the gate is work the engine
+    // has ACCEPTED and will start by itself at the reset, and until this line the pane
+    // said nothing at all about it. Assigning an agent while the account is walled now
+    // succeeds rather than throwing (`task:assignAgent` returns the parked card), so the
+    // dialog closes on a card that looks idle; `runPhase` already produces the words for
+    // it, both for the card itself and for a chain held at a step, and this is what asks
+    // for them. No spinner, because nothing is moving — which `run.spinner` handles.
+    //
+    // `runPhase`'s blocked phase and the amber card badge ARE unit-tested
+    // (`board/boardColumns.test.ts`); this line, which asks the pane for them, is not —
+    // deleting it leaves all 318 UI tests green. Changing it is a change only a human
+    // looking at the pane can catch.
+    run.phase === 'blocked';
 
   async function addComment(): Promise<void> {
     if (!task || !comment.text.trim()) return;
-    setBusy(true);
+    setBusy('note');
     setError(null);
     try {
       await transport.invoke('task:addComment', task.id, comment.text.trim());
@@ -613,14 +631,14 @@ export function TaskDetail({
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
 
   /** File the text as the card's headline. `onStatusChanged` puts it on the board. */
   async function postStatus(): Promise<void> {
     if (!task || !comment.text.trim()) return;
-    setBusy(true);
+    setBusy('status');
     setError(null);
     try {
       onStatusChanged?.(await transport.invoke('task:setStatusNote', task.id, comment.text.trim()));
@@ -629,7 +647,7 @@ export function TaskDetail({
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
 
@@ -644,7 +662,7 @@ export function TaskDetail({
   async function addTicketComment(): Promise<void> {
     // A comment that is only files is still a comment worth posting.
     if (!task || !tracker || (!comment.text.trim() && !comment.attachments.length)) return;
-    setBusy(true);
+    setBusy('ticket');
     setError(null);
     try {
       await transport.invoke(
@@ -670,7 +688,7 @@ export function TaskDetail({
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
 
@@ -682,7 +700,7 @@ export function TaskDetail({
    */
   async function sendChat(): Promise<void> {
     if (!task || !comment.text.trim()) return;
-    setBusy(true);
+    setBusy('chat');
     setError(null);
     try {
       const result = await transport.invoke('task:chat', task.id, comment.text.trim());
@@ -695,7 +713,7 @@ export function TaskDetail({
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
 
@@ -731,14 +749,14 @@ export function TaskDetail({
    */
   async function dismissAttention(): Promise<void> {
     if (!task) return;
-    setBusy(true);
+    setBusy('other');
     setError(null);
     try {
       onStatusChanged?.(await transport.invoke('task:dismissAttention', task.id));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
 
@@ -911,6 +929,9 @@ export function TaskDetail({
           merging={merging}
           waitingOn={chainWaitingOn}
           mergeHeld={chainMergeHeld}
+          // The same list the `<MergeRequests>` section below renders — so the Create PR
+          // slot and the row it would duplicate can never disagree about whether one is open.
+          mergeRequests={mergeRequests}
           onOpenTask={onOpenTask}
           onTaskChanged={(updated) => {
             onStatusChanged?.(updated);
@@ -939,12 +960,12 @@ export function TaskDetail({
                 <Button
                   size="small"
                   appearance="subtle"
-                  icon={<AlertOffRegular />}
-                  disabled={busy}
+                  icon={busy === 'other' ? <Spinner size="tiny" /> : <AlertOffRegular />}
+                  disabled={busy !== null}
                   title="Stop this card asking — clears its inbox items, unread comments and merge-request alerts"
                   onClick={() => void dismissAttention()}
                 >
-                  Dismiss
+                  {busy === 'other' ? 'Dismissing…' : 'Dismiss'}
                 </Button>
               </div>
             )}
@@ -1030,8 +1051,8 @@ export function TaskDetail({
                   the words without the motion, because a spinner over "Waiting for you"
                   says the opposite of what is true. */}
               {run.spinner && <Spinner size="tiny" />}
-              {/* `run.label`, never a hardcoded fallback: this band only renders for
-                  running/starting/waiting, and every one of those carries a label. A
+              {/* `run.label`, never a hardcoded fallback: this band only renders for the
+                  phases `managedByAI` names, and every one of those carries a label. A
                   fallback here could only ever be a claim the phase had already denied —
                   which is how "Agent running" came to sit under a card that was not. */}
               <Caption1 className={styles.runningLabel}>{run.label}</Caption1>

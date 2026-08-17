@@ -234,6 +234,7 @@ function AgentProjectDialog({
   const [color, setColor] = useState('');
   const [baseBranch, setBaseBranch] = useState('');
   const [autoRelease, setAutoRelease] = useState(false);
+  const [autoCreatePr, setAutoCreatePr] = useState(false);
   /** `null` = follow the app-wide setting, which is what a repo that never ruled does. */
   const [autoIntegrate, setAutoIntegrate] = useState<boolean | null>(null);
   /**
@@ -271,6 +272,7 @@ function AgentProjectDialog({
       setColor(project.color);
       setBaseBranch(project.baseBranch);
       setAutoRelease(project.autoRelease);
+      setAutoCreatePr(project.autoCreatePr);
       setAutoIntegrate(project.autoIntegrate);
       setModel(project.defaultModel);
       setPlanningModel(project.planningModel);
@@ -338,6 +340,7 @@ function AgentProjectDialog({
           target,
           baseBranch,
           autoRelease,
+          autoCreatePr,
           autoIntegrate,
         });
       } else {
@@ -352,6 +355,7 @@ function AgentProjectDialog({
           target,
           baseBranch,
           autoRelease,
+          autoCreatePr,
           autoIntegrate,
         });
       }
@@ -512,6 +516,16 @@ function AgentProjectDialog({
               checked={autoRelease}
               label="Release after merge by default"
               onChange={(_e, d) => setAutoRelease(d.checked)}
+            />
+          </Field>
+
+          {/* The alternative to merging, and a preference in exactly the same sense: a card
+              may still say otherwise, and one that never does follows this. */}
+          <Field hint='Every card assigned here starts with "Open a PR when finished" already on: its branch is pushed to this repo&apos;s remote and a pull/merge request is opened against the base branch, INSTEAD of the branch being merged locally. Needs a GitHub or GitLab token in Settings.'>
+            <Switch
+              checked={autoCreatePr}
+              label="Open a PR when finished by default"
+              onChange={(_e, d) => setAutoCreatePr(d.checked)}
             />
           </Field>
 

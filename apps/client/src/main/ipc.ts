@@ -93,7 +93,7 @@ import {
 } from './jira/jiraMove';
 import { iamSignInConfig } from './iamConfig';
 import { signIn as runIamSignIn } from './iamSignIn';
-import { refreshTokens } from '@shared/iamPkce';
+import { isDeadGrant, refreshTokens } from '@shared/iamPkce';
 import type { ClientInfo, CommandEnvelope } from '@protocol/wire';
 import { PROTOCOL_VERSION } from '@protocol/wire';
 import { applyCloudCommand, type CloudCommandOutcome } from './cloudCommands';
@@ -141,7 +141,12 @@ import {
   type FetchedMergeRequest,
 } from './gitlab/gitlabSync';
 import { reconcilePullRequests, rematchPullRequests } from './github/githubPrSync';
-import { mrIsSettled, type MergeRequest } from '@shared/mergeRequest';
+import {
+  forgeName,
+  mrIsSettled,
+  type ForgeProvider,
+  type MergeRequest,
+} from '@shared/mergeRequest';
 import { canLink, isLinkGate, type LinkResult, type TaskLink } from '@shared/taskChain';
 import type { TaskAttachment } from '@shared/attachments';
 import {
@@ -163,7 +168,14 @@ import { sanitizeWindowState } from './windowState';
 import { createWindowStateFlusher, type WindowStateFlusher } from './windowFlush';
 import { appPlanPath, appProjectFile } from './projectPaths';
 import { RELEASE_DOC } from '@shared/release';
-import { RUN_REFUSAL_MESSAGE } from '@shared/scheduler';
+import { openPullRequest, type CreatePrDeps } from './forge/createPr';
+import { forgeBaseUrl } from './forge/baseUrl';
+import {
+  CARD_RECORDS_PARK,
+  isParkedRefusal,
+  RUN_REFUSAL_MESSAGE,
+  type RunRefusal,
+} from '@shared/scheduler';
 import { logMain } from './log';
 import { parsePlan } from './planParser';
 import { planHasAlignmentMarkers, validatePlan } from './planValidate';
@@ -227,6 +239,23 @@ function ensureAligned(store: Store, project: Project, hasMarkers: boolean): Pro
   if (project.planAligned || !hasMarkers) return project;
   store.setPlanAligned(project.id, true);
   return { ...project, planAligned: true };
+}
+
+/**
+ * Whether a refusal may be REPORTED rather than thrown.
+ *
+ * Two things have to be true: the engine parked the work (so it starts by itself, and telling
+ * the human to press something would be a lie), and the park is written on the card
+ * (`CARD_RECORDS_PARK`), so the row a handler hands back actually says it is held. A usage
+ * limit satisfies both — `parkForLimit` stamps `blocked-by-limit` — and is the only refusal
+ * that does today.
+ *
+ * A sign-out park satisfies only the first: the card stays plain `pending`, so returning it
+ * would render as "assigned, idle, nobody knows why" and the one fix (sign in) would go
+ * unsaid. That one keeps throwing.
+ */
+function isReportablePark(refusal: RunRefusal): boolean {
+  return isParkedRefusal(refusal) && CARD_RECORDS_PARK[refusal];
 }
 
 /**
@@ -803,7 +832,15 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // reads. This used to guess — "already running, or a usage limit" — for all six
     // reasons at once, which meant a signed-out account was reported as a usage limit and
     // the one action that would fix it (sign in) went unsaid.
-    if ('refused' in outcome) throw new Error(RUN_REFUSAL_MESSAGE[outcome.refused]);
+    //
+    // A park the CARD records is returned rather than thrown: `parkForLimit` wrote
+    // `blocked-by-limit` onto the task, so the hold is a fact every later reader can see
+    // and the caller has something truthful to render. The other refusals — including the
+    // sign-out park, which leaves nothing on the card (`CARD_RECORDS_PARK`) — still throw,
+    // because a thrown sentence is the only place they are ever told to the human.
+    if ('refused' in outcome && !isReportablePark(outcome.refused)) {
+      throw new Error(RUN_REFUSAL_MESSAGE[outcome.refused]);
+    }
     return outcome;
   });
   handle('task:integrate', async (taskId) => {
@@ -892,7 +929,16 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       // start it is parked behind that gate and will begin by itself. Say so before
       // throwing, or the board would keep drawing an undelegated card and the human would
       // assign it a second time.
-      send('task:changed', { task, runId: null });
+      //
+      // Re-read first: the park is written DURING `startTaskNow`, after the row above was
+      // fetched, so `task` predates `blocked-by-limit` and announcing it would put a card
+      // on the board that looks assigned-and-idle.
+      const parked = store.getTask(taskId) ?? task;
+      send('task:changed', { task: parked, runId: null });
+      // A usage limit is not a failed assignment — it is a queued one. Returning the card
+      // is what lets the dialog close on its own success instead of reporting a wall the
+      // human can do nothing about, and the pane reads the hold off the card itself.
+      if (isReportablePark(outcome.refused)) return parked;
       throw new Error(RUN_REFUSAL_MESSAGE[outcome.refused]);
     }
     send('task:changed', { task, runId: outcome.runId });
@@ -917,7 +963,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // as `task:assignAgent` above, and the same refusal vocabulary as `task:run`.
     const task = store.getTask(taskId) ?? existing;
     send('task:changed', { task, runId: 'runId' in outcome ? outcome.runId : null });
-    if ('refused' in outcome) throw new Error(RUN_REFUSAL_MESSAGE[outcome.refused]);
+    // ...and the one park the card records is not raised at all: the re-read above already
+    // carries `blocked-by-limit`, so resolving hands the caller a card that explains itself.
+    // Same rule as `task:run` and `task:assignAgent`; a sign-out still throws.
+    if ('refused' in outcome && !isReportablePark(outcome.refused)) {
+      throw new Error(RUN_REFUSAL_MESSAGE[outcome.refused]);
+    }
     return task;
   });
   handle('task:chat', async (taskId, message) => scheduler.chatWithAgent(taskId, message));
@@ -1094,6 +1145,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       // Read at merge time, not at run time, so flipping it while the agent works still
       // decides what happens when that work lands.
       ...(options.autoRelease !== undefined ? { autoRelease: options.autoRelease } : {}),
+      // Read when the work SETTLES, like the two below, so turning it on mid-run still
+      // decides what happens to the branch the agent is writing right now.
+      ...(options.autoCreatePr !== undefined ? { autoCreatePr: options.autoCreatePr } : {}),
       // Read the moment the run FINISHES, likewise, so changing your mind while the agent
       // works still decides what happens to the branch it is writing.
       ...(options.autoIntegrate !== undefined ? { autoIntegrate: options.autoIntegrate } : {}),
@@ -1450,11 +1504,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // GitLab. Mirrors the JIRA block above; the token is encrypted the same way and
   // never leaves this process.
   const buildGitLabClient = (): GitLabClient => {
-    const { gitlab } = store.getSettings();
-    if (!gitlab.baseUrl.trim()) throw new Error('Set the GitLab URL in Settings first.');
+    // The URL first and the token second, which is the order they are obtained in: nobody has
+    // a token for an instance they have not named yet. `forgeBaseUrl` owns that refusal now —
+    // `forge/createPr.ts` builds its own clients and has to make the same one.
+    const baseUrl = forgeBaseUrl('gitlab', store.getSettings());
     const cipher = store.loadGitLabToken();
     if (!cipher) throw new Error('No GitLab token saved — add one in Settings.');
-    return new GitLabClient({ baseUrl: gitlab.baseUrl, token: decryptSecret(cipher, 'GitLab') });
+    return new GitLabClient({ baseUrl, token: decryptSecret(cipher, forgeName('gitlab')) });
   };
 
   handle('gitlab:getConfigStatus', async () => {
@@ -1511,11 +1567,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // GitHub. The GitLab block again, one forge over: same encryption path, same paste
   // hygiene, same refusal to store anything when the OS secure store is unavailable.
   const buildGitHubClient = (): GitHubClient => {
-    const { github } = store.getSettings();
-    if (!github.baseUrl.trim()) throw new Error('Set the GitHub API URL in Settings first.');
+    // The GitLab builder above, one forge over — same guard, same order, same reason.
+    const baseUrl = forgeBaseUrl('github', store.getSettings());
     const cipher = store.loadGitHubToken();
     if (!cipher) throw new Error('No GitHub token saved — add one in Settings.');
-    return new GitHubClient({ baseUrl: github.baseUrl, token: decryptSecret(cipher, 'GitHub') });
+    return new GitHubClient({ baseUrl, token: decryptSecret(cipher, forgeName('github')) });
   };
 
   handle('github:getConfigStatus', async () => {
@@ -1572,6 +1628,51 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       return { ok: false, message: e instanceof Error ? e.message : String(e) };
     }
   });
+
+  // -------------------------------------------------------------------------
+  // Opening a pull request for a card (`forge/createPr.ts`).
+  //
+  // The token reader is the only thing this file adds: `decryptSecret` lives in this closure
+  // because it is the one place `safeStorage` is reachable, and a **null** rather than a
+  // throw is what "no token saved" means — `openPullRequest` turns that into a sentence
+  // naming the forge, which is more use than a decryption error.
+  const forgeToken = (provider: ForgeProvider): string | null => {
+    const cipher = provider === 'github' ? store.loadGitHubToken() : store.loadGitLabToken();
+    if (!cipher) return null;
+    // `forgeName`, not a ternary: the label goes into a sentence the human reads ("The stored
+    // GitHub token could not be decrypted…"), and it is the same name the two other places
+    // that say it out loud already use.
+    return decryptSecret(cipher, forgeName(provider));
+  };
+
+  const createPrDeps = (): CreatePrDeps => ({
+    getTask: (id) => store.getTask(id),
+    getProject: (id) => store.getProject(id),
+    getSettings: () => store.getSettings(),
+    listMergeRequests: () => store.listMergeRequests(),
+    upsertMergeRequest: (mr) => {
+      store.upsertMergeRequest(mr);
+      // Pushed straight out, for the reason the row is written here at all: the card's
+      // merge-request section must show the PR on the next paint rather than after the
+      // next poll, and nothing else would tell the renderer it exists.
+      send('mergeRequests:changed', store.listMergeRequests());
+    },
+    inspect: (project, ownerTaskId, branchName) =>
+      worktrees.inspect(project, ownerTaskId, branchName),
+    tokenFor: forgeToken,
+    note: (projectId, taskId, body) => {
+      store.addComment(projectId, taskId, body);
+      send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) });
+    },
+    now: () => Date.now(),
+  });
+
+  handle('task:createPullRequest', async (taskId) => openPullRequest(createPrDeps(), taskId));
+
+  // The scheduler opens the same PR, through the same function, when a card finishes with
+  // "Open a PR when finished" on — so it is handed the deps rather than growing its own way
+  // in. Set here because only this closure can read a secret out of `safeStorage`.
+  scheduler.setPullRequestOpener((taskId) => openPullRequest(createPrDeps(), taskId));
 
   // -------------------------------------------------------------------------
   // vipper.iam cloud sign-in (Phase 25's "Guard the cloud API with vipper.iam"). The refresh
@@ -1643,10 +1744,37 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       };
       return cloudAccessToken.value;
     } catch (e) {
+      // A grant vipper.iam has refused is thrown away rather than retried until the end of
+      // time. `iam:getStatus` — and so Settings' "Signed in." — is "a refresh token is on
+      // file", the same claim about storage the web's `CloudAuth.isSignedIn` makes, so a dead
+      // token left in place makes that pane state something false while the poller fails
+      // silently behind it. Cleared, both tell the truth and `cloud:testConnection` stops at
+      // its sign-in rung with "you are not signed in", which is the actionable sentence.
+      //
+      // Only for a dead grant: an outage must not sign anybody out of their desktop app.
+      if (isDeadGrant(e)) {
+        logMain('vipper.iam refused the stored refresh token — signing out', e);
+        store.clearIamRefreshToken();
+        return null;
+      }
       logMain('vipper.iam access token refresh failed', e);
       return null;
     }
   };
+
+  /**
+   * What a browser names this desktop by — see `ClientInfo` on `@protocol/wire`.
+   *
+   * One definition for the two senders: the poller writes it on every tick, and
+   * `cloud:testConnection` writes it on the one sync it makes itself. A probe that sent no
+   * identity would register the machine anonymously and the verdict could not name it.
+   */
+  const cloudClientInfo = (): ClientInfo => ({
+    name: hostname(),
+    platform: process.platform,
+    appVersion: app.getVersion(),
+    protocolVersion: PROTOCOL_VERSION,
+  });
 
   // Defined here rather than beside the other handlers because it needs
   // `getCloudAccessToken`, which is declared just above.
@@ -1654,6 +1782,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     const result = await testCloudConnection({
       settings: store.getSettings().cloud,
       getAccessToken: getCloudAccessToken,
+      // The id a browser addresses a command to — the probe registers it and then looks for
+      // it coming back in `BoardResponse.clients`, which is the actual question people press
+      // this button to ask.
+      clientId: store.loadCloudClientId(),
+      clientInfo: cloudClientInfo(),
+      // The probe's own sync leases whatever was queued for this machine, exactly as a poll
+      // tick does, so it hands the batch to the same serial drain rather than dropping it.
+      onCommands: (commands) => cloudCommandQueue.enqueue(commands),
     });
     if (!result.ok) logMain('Cloud test connection failed', result.message);
     return result;
@@ -1676,24 +1812,45 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   };
 
   /**
-   * The board's keys and the cards behind them, for matching MRs to tasks.
+   * The board's keys and the cards behind them, for matching MRs to tasks — plus the set of
+   * card ids, which is what a merge request's *remembered* card is checked against.
    *
    * The archived-excluding read, deliberately: an MR is matched to a card so the card can show
    * it, and a card that is off the board has nowhere to show anything. Including archived rows
    * here would have a removed card silently claim a live merge request, which then appears
-   * nowhere at all — worse than the orphan an unmatched MR already handles.
+   * nowhere at all — worse than the orphan an unmatched MR already handles. That applies to
+   * `knownTaskIds` for the same reason, which is why the link is checked against it at all.
    */
-  const boardKeyIndex = (): { knownKeys: string[]; taskIdByKey: Map<string, string> } => {
+  const boardKeyIndex = (): {
+    knownKeys: string[];
+    taskIdByKey: Map<string, string>;
+    knownTaskIds: Set<string>;
+  } => {
     const taskIdByKey = new Map<string, string>();
+    const knownTaskIds = new Set<string>();
     for (const task of store.getPersonalTasks()) {
+      knownTaskIds.add(task.id);
       // Any tracker's key, not JIRA's alone: a GitHub pull request names its issue as
       // `owner/repo#123`, which is the same kind of fact about the same kind of card. The
       // upper-casing is what makes the lookup case-insensitive on both spellings.
       if (task.externalSource && task.externalKey) {
         taskIdByKey.set(task.externalKey.toUpperCase(), task.id);
       }
+      // A NATIVE ticket's key (`TM-12`) counts too, and leaving it out was a hole rather
+      // than a decision: it is the key this app puts in front of the title of every pull
+      // request it opens (`prTitle`), the key a human types into a branch name, and the one
+      // the card itself prints — but nothing here indexed it, so no merge request naming it
+      // could ever be matched to it. A card with a native ticket behind it looked, to every
+      // reconciler, exactly like a card with no key at all.
+      const ticketKey = task.ticketKey?.trim();
+      // Never over a tracker's own: `externalKey` is the mirrored issue's real name, and if
+      // some board somehow spells both the same, the mirrored card is the one whose key the
+      // forge's text is quoting.
+      if (ticketKey && !taskIdByKey.has(ticketKey.toUpperCase())) {
+        taskIdByKey.set(ticketKey.toUpperCase(), task.id);
+      }
     }
-    return { knownKeys: [...taskIdByKey.keys()], taskIdByKey };
+    return { knownKeys: [...taskIdByKey.keys()], taskIdByKey, knownTaskIds };
   };
 
   // -------------------------------------------------------------------------
@@ -1826,10 +1983,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
         detailed.push(await describeMergeRequest(client, fetched, { stale: false, prior }));
     }
 
-    const { knownKeys, taskIdByKey } = boardKeyIndex();
+    const { knownKeys, taskIdByKey, knownTaskIds } = boardKeyIndex();
     const { upserts, deleteIds } = reconcileMergeRequests(stored, detailed, {
       knownKeys,
       taskIdByKey,
+      knownTaskIds,
       identity,
       now: Date.now(),
     });
@@ -1931,10 +2089,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       }
     }
 
-    const { knownKeys, taskIdByKey } = boardKeyIndex();
+    const { knownKeys, taskIdByKey, knownTaskIds } = boardKeyIndex();
     const { upserts, deleteIds } = reconcilePullRequests(stored, detailed, {
       knownKeys,
       taskIdByKey,
+      knownTaskIds,
       identity,
       now: Date.now(),
     });
@@ -3631,15 +3790,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     getSettings: () => store.getSettings().cloud,
     getAccessToken: getCloudAccessToken,
     // What a browser names this desktop by, once it has more than one to choose between —
-    // see `ClientInfo` on `@protocol/wire`. Built here because this is the only side of
-    // `cloudPoller.ts` that is allowed to touch Electron; read fresh per tick because
-    // nothing forces it to be constant and pinning it would only be a way to go stale.
-    getClientInfo: (): ClientInfo => ({
-      name: hostname(),
-      platform: process.platform,
-      appVersion: app.getVersion(),
-      protocolVersion: PROTOCOL_VERSION,
-    }),
+    // see `ClientInfo` on `@protocol/wire`. Built above rather than inline because this is
+    // the only side of `cloudPoller.ts` that is allowed to touch Electron and the connection
+    // probe needs the same four fields; read fresh per tick because nothing forces it to be
+    // constant and pinning it would only be a way to go stale.
+    getClientInfo: cloudClientInfo,
     // Hand the batch to the serial drain and return. Applying is `cloudCommands.ts`'s job,
     // ordering and one-at-a-time is `commandQueue.ts`'s, and acking is free: each command
     // records itself in the ledger, which the next tick's `SyncRequest.ackedCommandIds` and

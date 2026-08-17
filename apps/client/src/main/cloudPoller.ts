@@ -18,16 +18,11 @@
  * in a test the same way `GitLabClient` can.
  */
 import { CADENCE_MS, nextPollDelayMs } from '@protocol/cadence';
-import type {
-  ClientInfo,
-  CommandEnvelope,
-  CommandResult,
-  SyncRequest,
-  SyncResponse,
-} from '@protocol/wire';
+import type { ClientInfo, CommandEnvelope, SyncRequest, SyncResponse } from '@protocol/wire';
 import { PROTOCOL_VERSION } from '@protocol/wire';
 import type { CloudSettings } from '@shared/settings';
 import { SYNC_BYTES_LIMIT, buildMirrorDeltaWithin } from './cloudDelta';
+import { RESULTS_BYTES_LIMIT, boundCloudResults } from './cloudResults';
 import { logMain } from './log';
 import type { Store } from './store';
 
@@ -91,6 +86,11 @@ export interface CloudPollerDeps {
  *  An upper bound on the COUNT only; `SYNC_BYTES_LIMIT` is what bounds the actual request. */
 const OUTBOX_LIMIT = 200;
 
+/** How far a run of 413s may shrink the results budget. Four halvings' worth, and still
+ *  larger than any ordinary answer — below this the budget is deferring one message at a
+ *  time and the problem is not the results. */
+const RESULT_BYTES_FLOOR = 64_000;
+
 export class CloudPoller {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
@@ -111,6 +111,16 @@ export class CloudPoller {
    * few wasted ticks, and it converges on the "at least one entity" floor rather than zero.
    */
   private batchLimit = OUTBOX_LIMIT;
+  /**
+   * How many bytes of relayed answers this tick may carry. Halved by the same 413 that
+   * halves `batchLimit`, and reset by the same success, because a body some hop refuses is
+   * the sum of both halves and shrinking only one of them converges on nothing.
+   *
+   * Floored well above a single ordinary answer: this budget only ever DEFERS results (see
+   * `boundCloudResults`' two parameters), so driving it to zero would buy nothing and cost
+   * a tick.
+   */
+  private resultBytesLimit = RESULTS_BYTES_LIMIT;
   private readonly unsubscribeFocus: () => void;
 
   constructor(private readonly deps: CloudPollerDeps) {
@@ -199,13 +209,24 @@ export class CloudPoller {
     // The answers to relayed `ipc-invoke`s, riding the same request as the acks. Two
     // separate ledger columns and two separate "sent" marks, because they are two facts: an
     // ack retires the command on the server's queue, a result is what a browser is awaiting.
+    //
+    // Bounded, not sent whole: an uncapped `results` array is what wedged this mirror for a
+    // day — thirty-odd timeline answers rebuilt into a 10 MB body on every tick, refused
+    // `413` every time, with every card queued behind them. See `cloudResults.ts`.
     const pendingResults = this.deps.store.getPendingCloudResults();
-    const results: CommandResult[] = pendingResults.map((row) => ({
-      commandId: row.commandId,
-      ok: row.ok,
-      ...(row.value === undefined ? {} : { value: row.value }),
-      ...(row.reason === null ? {} : { error: row.reason }),
-    }));
+    const {
+      results,
+      sent: sentResultIds,
+      oversized,
+    } = boundCloudResults(pendingResults, this.resultBytesLimit, RESULTS_BYTES_LIMIT);
+    for (const dropped of oversized) {
+      // The one trace an answer a browser will never see leaves. Loud, like the oversized
+      // entity below, and for the same reason: it is a real loss, chosen over a wedge.
+      logMain(
+        `cloud sync replaced a relayed result too large to send: ${dropped.commandId}, ` +
+          `${dropped.bytes} bytes (cap ${RESULTS_BYTES_LIMIT}). The browser awaiting it gets an error.`,
+      );
+    }
     const { delta, sent } = buildMirrorDeltaWithin(
       rows,
       this.deps.store.getTask,
@@ -247,10 +268,27 @@ export class CloudPoller {
     });
     if (!res.ok) {
       // 413 is the one failure the NEXT request can do something about — see `batchLimit`.
-      if (res.status === 413) this.batchLimit = Math.max(1, Math.floor(this.batchLimit / 2));
+      // BOTH halves shrink: the body is entities plus answers, and halving one while the
+      // other stays whole converges on a request that is still too large.
+      if (res.status === 413) {
+        this.batchLimit = Math.max(1, Math.floor(this.batchLimit / 2));
+        this.resultBytesLimit = Math.max(RESULT_BYTES_FLOOR, Math.floor(this.resultBytesLimit / 2));
+        if (sent.length <= 1 && results.length <= 1) {
+          // Nothing left to halve. Whatever this request is, it is already the smallest one
+          // this client can build, so the next tick will send the same thing and be refused
+          // the same way — say so once per tick rather than leave a bare 413 to be read as
+          // "a hop is being difficult". This is the state that hid three cards for a day.
+          logMain(
+            `cloud sync is wedged: ${payloadBytes} bytes is already the smallest request ` +
+              `this client can build (${sent.length} entit${sent.length === 1 ? 'y' : 'ies'}, ` +
+              `${results.length} result${results.length === 1 ? '' : 's'}) and the server refused it 413.`,
+          );
+        }
+      }
       throw new Error(`cloud sync failed (${res.status} ${res.statusText})`);
     }
     this.batchLimit = OUTBOX_LIMIT;
+    this.resultBytesLimit = RESULTS_BYTES_LIMIT;
     const body = (await res.json()) as SyncResponse;
 
     // Only the rows actually SENT are acked — never `rows`, which `buildMirrorDeltaWithin`
@@ -264,8 +302,10 @@ export class CloudPoller {
     // Only marked once the request that carried them actually succeeded — the same rule the
     // acks and the outbox prune above follow, and for the same reason: a result marked sent
     // on a request that failed is an answer the browser never gets and nothing will resend.
-    if (results.length > 0) {
-      this.deps.store.markCloudResultsSent(results.map((r) => r.commandId));
+    // `sentResultIds`, not every pending row: `boundCloudResults` may have left answers for
+    // the next tick, and marking those sent would be discarding them unsent.
+    if (sentResultIds.length > 0) {
+      this.deps.store.markCloudResultsSent(sentResultIds);
     }
     this.deps.store.saveCloudCursor(body.cursor);
     this.lastServerIntervalMs = body.cadence.intervalMs;
