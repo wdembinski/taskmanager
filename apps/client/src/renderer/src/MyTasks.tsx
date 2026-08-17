@@ -12,12 +12,14 @@
  * drawn by dragging a card's handle, and a **Chain** toggle in the toolbar that reduces the
  * board to the selected card's chain and nothing else — see `focusIds`.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Button,
+  Dropdown,
   MessageBar,
   MessageBarActions,
   MessageBarBody,
+  Option,
   Switch,
   ToggleButton,
 } from '@fluentui/react-components';
@@ -34,7 +36,7 @@ import {
   type AppSettings,
   type BoardDisplaySettings,
 } from '@shared/settings';
-import type { IpcEvents } from '@shared/ipc';
+import type { BoardScope, IpcEvents } from '@shared/ipc';
 import type { MergeRequest } from '@shared/mergeRequest';
 import type { TaskAttachment } from '@shared/attachments';
 import {
@@ -105,6 +107,16 @@ function optimisticMove(task: Task, column: BoardColumn): Task {
   return isRunStatus(task.status) ? { ...task, preRunStatus: status } : { ...task, status };
 }
 
+/**
+ * Swap one project's slice of the board for a fresh list from that project, leaving
+ * every other project's cards untouched. What the All scope needs whenever an answer
+ * arrives that only ever speaks for ONE board — `project:tasksChanged`, JIRA's sync —
+ * regardless of how many boards the union is currently showing.
+ */
+function replaceProjectSlice(prev: Task[] | null, projectId: string, next: Task[]): Task[] {
+  return [...(prev ?? []).filter((t) => t.projectId !== projectId), ...next];
+}
+
 export function MyTasks(): JSX.Element {
   // The board's frame — including the commit graph's own pane — shared with the browser
   // client. See `boardLayout.ts`; this screen has no styles left of its own.
@@ -114,6 +126,33 @@ export function MyTasks(): JSX.Element {
   // The repos a card can be delegated to — fetched once and shared by the cards
   // (glyph tooltip) and the detail pane (assign dialog).
   const [agentProjects, setAgentProjects] = useState<Project[]>([]);
+  /** The boards the toolbar's scope Dropdown offers — Personal plus every other
+   *  project with no plan file. Fed by `board:scopes`. */
+  const [scopes, setScopes] = useState<BoardScope[]>([]);
+  /**
+   * Which board is open: `'all'` unions every board's cards, or one board's own
+   * project id. Mirrors `settings.boardScopeId`, but kept as its own state — unlike
+   * the toolbar switches below — because changing it drives a re-fetch
+   * (`board:tasks(scope)`/`board:archived(scope)`) rather than a plain settings write.
+   */
+  const [scope, setScope] = useState<string>('all');
+  /**
+   * `scope`, for the live-update effect below to read WITHOUT depending on it. That
+   * effect subscribes seven events on `[patchTask, refreshArchived]`; putting scope in
+   * `patchTask`'s deps would tear all seven down and rebuild them on every scope
+   * change, possibly mid-drag. Kept current by a plain assignment in the render body —
+   * the same pattern `Transcript` uses for a value a stable callback must always see
+   * the latest of.
+   */
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
+  /** Board project ids `scope === 'all'` covers — what "is this project in scope"
+   *  tests against once the scope itself is All rather than one board. */
+  const scopeIds = useMemo(() => new Set(scopes.map((s) => s.id)), [scopes]);
+  const scopeIdsRef = useRef(scopeIds);
+  scopeIdsRef.current = scopeIds;
+  /** Board metadata by project id — the name/colour a mixed board draws per card. */
+  const boardsById = useMemo(() => new Map(scopes.map((s) => [s.id, s])), [scopes]);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -204,27 +243,50 @@ export function MyTasks(): JSX.Element {
   const gitlabEnabled = settings?.gitlab.enabled ?? false;
   const githubEnabled = settings?.github.enabled ?? false;
   const display = settings?.board ?? DEFAULT_BOARD_DISPLAY;
+  /**
+   * What the cards actually draw: `display`, with the project name forced on while the
+   * board mixes projects together. A single-board scope already says which project
+   * every card is on (the scope picker itself), so the saved preference is left alone
+   * there — it is only the All view that needs the line to stay legible.
+   */
+  const boardDisplay = useMemo(
+    () => (scope === 'all' ? { ...display, showProjectName: true } : display),
+    [display, scope],
+  );
+  /** The scope Dropdown's closed-state label. */
+  const scopeLabel = useMemo(
+    () =>
+      scope === 'all' ? 'All boards' : (scopes.find((s) => s.id === scope)?.name ?? 'All boards'),
+    [scope, scopes],
+  );
   const showDetail = settings?.showTaskDetail ?? true;
   // Off until the settings land, unlike the detail pane: the graph costs a `git log` on the
   // machine the project runs on, so guessing it ON would spawn one before we know it is wanted.
   const showGraph = settings?.showGitGraph ?? false;
 
   const refresh = useCallback(async () => {
-    setTasks(await window.api.invoke('board:tasks'));
+    setTasks(await window.api.invoke('board:tasks', scopeRef.current));
   }, []);
 
   // One seed load for every channel the board reads, so a failure in any of them is
   // reported rather than leaving the board on its spinner.
+  //
+  // Settings come first, alone, because `board:tasks`/`board:archived` need the saved
+  // scope BEFORE they are asked — a parallel fetch would have to guess and then redo
+  // the read once settings landed.
   const seed = useCallback(async () => {
-    const [board, appSettings, projects, mrs, chain, files, gone] = await Promise.all([
-      window.api.invoke('board:tasks'),
-      window.api.invoke('settings:get'),
+    const appSettings = await window.api.invoke('settings:get');
+    const initialScope = appSettings.boardScopeId || 'all';
+    const [board, projects, mrs, chain, files, gone, boardScopes] = await Promise.all([
+      window.api.invoke('board:tasks', initialScope),
       window.api.invoke('project:list'),
       window.api.invoke('mr:mergeRequests'),
       window.api.invoke('chain:links'),
       window.api.invoke('attachment:list'),
-      window.api.invoke('board:archived'),
+      window.api.invoke('board:archived', initialScope),
+      window.api.invoke('board:scopes'),
     ]);
+    setScope(initialScope);
     setTasks(board);
     setSettings(appSettings);
     // A repo directory with no plan file — the delegation targets, same as `agentProject:list`
@@ -234,6 +296,7 @@ export function MyTasks(): JSX.Element {
     setLinks(chain);
     setAttachments(files);
     setArchived(gone);
+    setScopes(boardScopes);
   }, []);
 
   /**
@@ -242,7 +305,30 @@ export function MyTasks(): JSX.Element {
    * "the board changed" is the only signal there is that something might have left it.
    */
   const refreshArchived = useCallback(async () => {
-    setArchived(await window.api.invoke('board:archived'));
+    setArchived(await window.api.invoke('board:archived', scopeRef.current));
+  }, []);
+
+  /**
+   * Switch boards: re-seeds both `board:tasks`/`board:archived` for the new scope and
+   * saves it, so the board comes back where it was left rather than resetting to All
+   * on the next launch. Not optimistic on the task list itself — unlike the toolbar
+   * switches, this is a different set of rows, not a property of the ones already
+   * shown, so there is nothing honest to paint before the answer comes back.
+   */
+  const setBoardScope = useCallback(async (nextScope: string) => {
+    setScope(nextScope);
+    const [board, gone] = await Promise.all([
+      window.api.invoke('board:tasks', nextScope),
+      window.api.invoke('board:archived', nextScope),
+    ]);
+    setTasks(board);
+    setArchived(gone);
+    setSettings((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, boardScopeId: nextScope };
+      void window.api.invoke('settings:save', next);
+      return next;
+    });
   }, []);
 
   /** Put a removed card back, and take it out of the list it came from. */
@@ -257,7 +343,14 @@ export function MyTasks(): JSX.Element {
   const initial = useInitialLoad(seed);
 
   const patchTask = useCallback((task: Task) => {
-    if (task.projectId !== PERSONAL_PROJECT_ID) return; // board shows only personal tasks
+    // "Is this project in scope" — reads `scopeRef`/`scopeIdsRef`, not `scope`/`scopeIds`
+    // directly, so this callback's identity (and the effect below that depends on it)
+    // never changes when the scope does. See the refs' own comments.
+    const inScope =
+      scopeRef.current === 'all'
+        ? scopeIdsRef.current.has(task.projectId)
+        : task.projectId === scopeRef.current;
+    if (!inScope) return;
     setTasks((prev) => (prev ? prev.map((t) => (t.id === task.id ? task : t)) : prev));
   }, []);
 
@@ -268,8 +361,17 @@ export function MyTasks(): JSX.Element {
   useEffect(() => {
     const offTask = window.api.on('task:changed', ({ task }) => patchTask(task));
     const offTasks = window.api.on('project:tasksChanged', ({ projectId, tasks: next }) => {
-      if (projectId !== PERSONAL_PROJECT_ID) return;
-      setTasks(next);
+      const inScope =
+        scopeRef.current === 'all'
+          ? scopeIdsRef.current.has(projectId)
+          : projectId === scopeRef.current;
+      if (!inScope) return;
+      // `next` is one project's WHOLE list. A single-board scope replaces `tasks` with
+      // it, same as before; the All scope has other boards' cards in `tasks` too, so it
+      // can only replace that project's own slice and must keep the rest.
+      setTasks((prev) =>
+        scopeRef.current === 'all' ? replaceProjectSlice(prev, projectId, next) : next,
+      );
       // A card leaving the board is a whole-board change and nothing else — there is no
       // per-card event for it, because from the card's own point of view nothing happened.
       // So the removed list is re-read alongside: it is the one moment it can have changed.
@@ -452,8 +554,18 @@ export function MyTasks(): JSX.Element {
     [tasks, selectedTask],
   );
 
-  /** Cards a hand-written step can be added under: every top-level card on this board. */
-  const parentCandidates = useMemo(() => (tasks ?? []).filter((t) => !t.parentTaskId), [tasks]);
+  /**
+   * Cards a hand-written step can be added under: every top-level card on the board the
+   * new card is filed to. `AddTaskDialog` below still files new cards under
+   * `PERSONAL_PROJECT_ID` regardless of the scope open — a step belongs to its parent,
+   * so with an All-scope board mixing several projects' cards in `tasks`, offering a
+   * step on another board's card as a parent would be offering a parent it can never
+   * actually join.
+   */
+  const parentCandidates = useMemo(
+    () => (tasks ?? []).filter((t) => !t.parentTaskId && t.projectId === PERSONAL_PROJECT_ID),
+    [tasks],
+  );
 
   // Writes BOTH, because the toolbar toggle is about the column and `showDone` above reads
   // either. Writing one of them would give the switch a state it could not turn off.
@@ -572,7 +684,19 @@ export function MyTasks(): JSX.Element {
         gitlabEnabled ? window.api.invoke('gitlab:sync') : Promise.resolve(null),
         githubEnabled ? window.api.invoke('github:sync') : Promise.resolve(null),
       ]);
-      if (jira.status === 'fulfilled' && jira.value) setTasks(jira.value);
+      // JIRA only ever syncs the Personal board — `jira.value` is that board's WHOLE
+      // list, never the union. On the All scope it can only replace Personal's own
+      // slice; on any other single-board scope it names a board that isn't even open.
+      if (jira.status === 'fulfilled' && jira.value) {
+        const jiraTasks = jira.value;
+        setTasks((prev) =>
+          scopeRef.current === 'all'
+            ? replaceProjectSlice(prev, PERSONAL_PROJECT_ID, jiraTasks)
+            : scopeRef.current === PERSONAL_PROJECT_ID
+              ? jiraTasks
+              : prev,
+        );
+      }
       // Both forges return the WHOLE list, so the later one wins and neither can lose the
       // other's rows — see `gitlab:sync` in the contract.
       if (gitlab.status === 'fulfilled' && gitlab.value) setMergeRequests(gitlab.value);
@@ -856,6 +980,24 @@ export function MyTasks(): JSX.Element {
               anywhere. The column stays shut until you open it — a board that opens its own
               columns cannot be reasoned about — but the numeral makes it impossible to
               mistake a hidden card for a lost one. */}
+          {/* Which board's cards are shown: every board unioned (the default), or one
+              board alone. Fed by `board:scopes`, seeded from and saved to
+              `settings.boardScopeId` so the board opens where it was left. */}
+          <Dropdown
+            size="small"
+            value={scopeLabel}
+            selectedOptions={[scope]}
+            onOptionSelect={(_e, d) => {
+              if (d.optionValue) void setBoardScope(d.optionValue);
+            }}
+          >
+            <Option value="all">All boards</Option>
+            {scopes.map((s) => (
+              <Option key={s.id} value={s.id}>
+                {s.name}
+              </Option>
+            ))}
+          </Dropdown>
           <Switch
             label={doneSwitchLabel(showDone, hiddenDone)}
             title={doneSwitchTitle(showDone, hiddenDone) ?? undefined}
@@ -1036,16 +1178,33 @@ export function MyTasks(): JSX.Element {
               column={col}
               label={COLUMN_LABEL[col]}
               cards={cardsByColumn[col]}
-              // Any tracker: `phase` carries the JIRA project's name or the GitHub
-              // repository's path, and on a board that mixes them that line is the only
-              // thing saying which is which.
-              projectNameOf={(t) => (t.externalSource ? t.phase || undefined : undefined)}
+              // On a single-board scope: any tracker's `phase` (the JIRA project's name
+              // or the GitHub repository's path), same as always. On the All scope, a
+              // mixed board needs to say which BOARD a card is on before it needs to say
+              // which tracker phase it's in — the board wins where the two would both
+              // have something to say (see `boardsById`, keyed by the card's own
+              // `projectId`, not its `projectTagId`).
+              projectNameOf={(t) => {
+                if (scope === 'all') {
+                  const board = boardsById.get(t.projectId);
+                  if (board && board.id !== PERSONAL_PROJECT_ID) return board.name;
+                }
+                return t.externalSource ? t.phase || undefined : undefined;
+              }}
               agentNameOf={(t) => agentProjects.find((p) => p.id === t.agentProjectId)?.name}
-              // The stripe is the PROJECT the card is filed under, not the agent it may
-              // or may not be delegated to.
-              projectColorOf={(t) =>
-                agentProjects.find((p) => p.id === t.projectTagId)?.color || undefined
-              }
+              // The stripe is the PROJECT the card is filed under first — `projectTagId`,
+              // written only by delegation — and, on the All scope, the card's own BOARD
+              // project as a fallback: a card added straight onto a project's board
+              // carries no tag at all, and its board is the only project it names.
+              projectColorOf={(t) => {
+                const tagColor = agentProjects.find((p) => p.id === t.projectTagId)?.color;
+                if (tagColor) return tagColor;
+                if (scope !== 'all') return undefined;
+                const board = boardsById.get(t.projectId);
+                return board && board.id !== PERSONAL_PROJECT_ID
+                  ? board.color || undefined
+                  : undefined;
+              }}
               // With the sprint filter on every card carries the same chip, so the name
               // moves to the status bar and is said once. Off, the chip earns its place.
               showSprint={!currentSprintOnly}
@@ -1053,7 +1212,7 @@ export function MyTasks(): JSX.Element {
               attentionTaskIds={attention.taskIds}
               liveRunTaskIds={liveRuns}
               mergingTaskIds={merging}
-              display={display}
+              display={boardDisplay}
               // Which cards are showing their steps, and the one control that changes it.
               // Saved rather than local, so it survives this board being unmounted.
               foldedStepTaskIds={foldedSteps}
