@@ -369,6 +369,25 @@ export const DEFAULT_BOARD_DISPLAY: BoardDisplaySettings = {
   showPoints: false,
 };
 
+/**
+ * The Projects screen's Gantt timeline, saved for the same reason `foldedStepCards` is: the
+ * screen is unmounted every time you leave it, and a collapse you had to redo on every visit
+ * would not be a collapse.
+ */
+export interface GanttSettings {
+  /**
+   * Epics whose Gantt row is collapsed to a single bar — the union of its children's dates
+   * rather than a row per child. See `projects/ganttLayout.ts`'s `toggleCollapsedEpic`, which
+   * is what prunes an id the moment its epic leaves the project.
+   */
+  collapsedEpicIds: string[];
+}
+
+/** Nothing collapsed out of the box — a fresh project's timeline opens fully expanded. */
+export const DEFAULT_GANTT_SETTINGS: GanttSettings = {
+  collapsedEpicIds: [],
+};
+
 export interface AppSettings {
   /** Model applied to a newly added project (its tasks run with this unless changed). */
   defaultModel: ClaudeModel;
@@ -529,6 +548,8 @@ export interface AppSettings {
   github: GitHubSettings;
   /** The cloud mirror's own config — see {@link CloudSettings}. */
   cloud: CloudSettings;
+  /** The Projects screen's Gantt timeline — see {@link GanttSettings}. */
+  gantt: GanttSettings;
 }
 
 /** The out-of-the-box settings, also used to fill any field missing from storage. */
@@ -568,6 +589,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   gitlab: DEFAULT_GITLAB_SETTINGS,
   github: DEFAULT_GITHUB_SETTINGS,
   cloud: DEFAULT_CLOUD_SETTINGS,
+  gantt: DEFAULT_GANTT_SETTINGS,
 };
 
 /**

@@ -15,19 +15,24 @@
  * project's tickets.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { makeStyles } from '@fluentui/react-components';
+import { ToggleButton, makeStyles } from '@fluentui/react-components';
 import type { Milestone, Person, Project, TicketLabel } from '@tm/shared/model';
 import { PaneLoading } from '../PaneLoading';
 import { useTransport } from '../transport';
 import { useInitialLoad } from '../useInitialLoad';
 import { BacklogTable } from './BacklogTable';
 import { ProjectAdmin } from './ProjectAdmin';
+import { TimelinePane } from './TimelinePane';
 
 const useStyles = makeStyles({
   root: { display: 'flex', gap: '20px', minHeight: 0, height: '100%' },
   admin: { flex: '0 0 320px', minWidth: 0, overflowY: 'auto' },
-  backlog: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' },
+  backlog: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '10px' },
+  viewSwitch: { display: 'flex', gap: '4px' },
 });
+
+/** The Projects screen's own two views of one project's tickets. */
+type ProjectView = 'backlog' | 'timeline';
 
 export function Projects(): JSX.Element {
   const styles = useStyles();
@@ -37,6 +42,7 @@ export function Projects(): JSX.Element {
   const [milestones, setMilestones] = useState<Milestone[]>([]);
   const [labels, setLabels] = useState<TicketLabel[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [view, setView] = useState<ProjectView>('backlog');
 
   const seed = useCallback(async () => {
     const [ticketProjects, allPeople, allMilestones, allLabels] = await Promise.all([
@@ -109,16 +115,48 @@ export function Projects(): JSX.Element {
       </div>
       <div className={styles.backlog}>
         {selectedProject && (
-          // Keyed on the project: switching the selection is rare enough that a clean
-          // remount — a fresh seed load, a fresh subscription — beats reconciling
-          // `BacklogTable`'s state onto a different project mid-life.
-          <BacklogTable
-            key={selectedProject.id}
-            projectId={selectedProject.id}
-            people={people}
-            labels={projectLabels}
-            milestones={projectMilestones}
-          />
+          <>
+            <div className={styles.viewSwitch}>
+              <ToggleButton
+                size="small"
+                appearance="subtle"
+                checked={view === 'backlog'}
+                onClick={() => setView('backlog')}
+              >
+                Backlog
+              </ToggleButton>
+              <ToggleButton
+                size="small"
+                appearance="subtle"
+                checked={view === 'timeline'}
+                onClick={() => setView('timeline')}
+              >
+                Timeline
+              </ToggleButton>
+            </div>
+            {/* Keyed on the project: switching the selection is rare enough that a clean
+                remount — a fresh seed load, a fresh subscription — beats reconciling either
+                pane's state onto a different project mid-life. The two views are a SWITCH,
+                never mounted together, so there is nothing for their independent ticket
+                loads to disagree about. */}
+            {view === 'backlog' ? (
+              <BacklogTable
+                key={selectedProject.id}
+                projectId={selectedProject.id}
+                people={people}
+                labels={projectLabels}
+                milestones={projectMilestones}
+              />
+            ) : (
+              <TimelinePane
+                key={selectedProject.id}
+                projectId={selectedProject.id}
+                people={people}
+                labels={projectLabels}
+                milestones={projectMilestones}
+              />
+            )}
+          </>
         )}
       </div>
     </div>

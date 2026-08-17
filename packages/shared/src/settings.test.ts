@@ -129,3 +129,17 @@ describe('DEFAULT_SETTINGS / DEFAULT_BOARD_DISPLAY (Phase 24 fields)', () => {
     expect(DEFAULT_BOARD_DISPLAY.showPoints).toBe(false);
   });
 });
+
+// The Gantt timeline's own settings group (Phase 24 step 6) — a blob written before it has
+// no `gantt` field at all, and this is what a missing field fills in as.
+describe('DEFAULT_SETTINGS.gantt', () => {
+  it('opens every epic expanded out of the box', () => {
+    expect(DEFAULT_SETTINGS.gantt.collapsedEpicIds).toEqual([]);
+  });
+
+  it('merges field-by-field and replaces its array wholesale, like every other nested group', () => {
+    const current = { ...DEFAULT_SETTINGS, gantt: { collapsedEpicIds: ['e1', 'e2'] } };
+    const merged = mergeAppSettings(current, { gantt: { collapsedEpicIds: ['e1'] } });
+    expect(merged.gantt.collapsedEpicIds).toEqual(['e1']);
+  });
+});
