@@ -315,6 +315,13 @@ export function TaskDetail({
   const [busy, setBusy] = useState<ComposerBusy>(null);
   const [error, setError] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState(false);
+  /**
+   * Own flag, not the pane's `busy` above: that one names which COMPOSER send is in
+   * flight (`ComposerBusy`), and a title edit is not one of its four sends — the same
+   * reason `TaskDetailsCell`'s description Save keeps its own `busy` rather than sharing
+   * the pane's.
+   */
+  const [titleBusy, setTitleBusy] = useState(false);
   /** The title being written, drafted like every other editable field (`./drafts`). */
   const titleDraft = useDraft(task ? draftKey(task.id, 'title') : null, task?.title ?? '');
 
@@ -769,7 +776,7 @@ export function TaskDetail({
     if (!task) return;
     const trimmed = titleDraft.value.trim();
     if (!trimmed) return;
-    setBusy(true);
+    setTitleBusy(true);
     setError(null);
     try {
       onStatusChanged?.(await transport.invoke('task:setTitle', task.id, trimmed));
@@ -778,7 +785,7 @@ export function TaskDetail({
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setBusy(false);
+      setTitleBusy(false);
     }
   }
 
@@ -845,7 +852,7 @@ export function TaskDetail({
                 <Input
                   className={styles.title}
                   value={titleDraft.value}
-                  disabled={busy}
+                  disabled={titleBusy}
                   autoFocus
                   onChange={(_e, d) => titleDraft.set(d.value)}
                   onKeyDown={(e) => {
@@ -853,16 +860,17 @@ export function TaskDetail({
                     else if (e.key === 'Escape') cancelTitleEdit();
                   }}
                 />
-                <Button size="small" disabled={busy} onClick={cancelTitleEdit}>
+                <Button size="small" disabled={titleBusy} onClick={cancelTitleEdit}>
                   Cancel
                 </Button>
                 <Button
                   size="small"
                   appearance="primary"
-                  disabled={busy || !titleDraft.value.trim()}
+                  icon={titleBusy ? <Spinner size="tiny" /> : undefined}
+                  disabled={titleBusy || !titleDraft.value.trim()}
                   onClick={() => void saveTitle()}
                 >
-                  Save
+                  {titleBusy ? 'Saving…' : 'Save'}
                 </Button>
               </>
             ) : (
