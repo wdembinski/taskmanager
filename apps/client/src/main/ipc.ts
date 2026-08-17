@@ -93,7 +93,7 @@ import {
 } from './jira/jiraMove';
 import { iamSignInConfig } from './iamConfig';
 import { signIn as runIamSignIn } from './iamSignIn';
-import { refreshTokens } from '@shared/iamPkce';
+import { CloudTokenProvider } from './cloudToken';
 import type { ClientInfo, CommandEnvelope } from '@protocol/wire';
 import { PROTOCOL_VERSION } from '@protocol/wire';
 import { applyCloudCommand, type CloudCommandOutcome } from './cloudCommands';
@@ -1585,6 +1585,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       store.saveIamRefreshToken(
         safeStorage.encryptString(sanitizeToken(tokens.refresh_token)).toString('base64'),
       );
+      cloudToken.renewed();
       return { ok: true, message: 'Signed in.' };
     } catch (e) {
       logMain('IAM sign-in failed', e);
@@ -1593,51 +1594,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   });
 
   handle('iam:signOut', async () => {
-    cloudAccessToken = null;
+    cloudToken.forget();
     store.clearIamRefreshToken();
   });
 
-  /**
-   * The cloud mirror's own access token — minted from the stored refresh token, cached in
-   * memory until it's close to expiry rather than reminted on every poll (the active tier
-   * is 2.5s; a mint-per-tick would cost `apps/server` a vipper.iam round trip every request
-   * for nothing a cache doesn't already answer). vipper.iam rotates the refresh token on
-   * every use, so a successful mint re-encrypts and re-saves it, exactly as `iam:signIn`
-   * does with the first one. Returns null — never throws — whenever there is nothing to
-   * mint from: `cloudPoller` treats that exactly like any other failed tick (counted,
-   * backed off, retried next time), not a special case.
-   */
-  let cloudAccessToken: { value: string; expiresAt: number } | null = null;
-  const getCloudAccessToken = async (): Promise<string | null> => {
-    if (cloudAccessToken && cloudAccessToken.expiresAt > Date.now() + 5_000) {
-      return cloudAccessToken.value;
-    }
-    const cipher = store.loadIamRefreshToken();
-    if (!cipher || !safeStorage.isEncryptionAvailable()) return null;
-    try {
-      const refreshToken = decryptSecret(cipher, 'vipper.iam');
-      // `redirectUri` is part of `IamPkceConfig`'s shape but only read for the
-      // authorization-code grant `signIn()` uses — the refresh-token grant never sends it,
-      // so an empty placeholder is fine here.
-      const tokens = await refreshTokens({ ...iamSignInConfig(), redirectUri: '' }, refreshToken);
-      if (tokens.refresh_token) {
-        store.saveIamRefreshToken(
-          safeStorage.encryptString(sanitizeToken(tokens.refresh_token)).toString('base64'),
-        );
-      }
-      cloudAccessToken = {
-        value: tokens.access_token,
-        expiresAt: Date.now() + tokens.expires_in * 1000,
-      };
-      return cloudAccessToken.value;
-    } catch (e) {
-      logMain('vipper.iam access token refresh failed', e);
-      return null;
-    }
-  };
-
-  // Defined here rather than beside the other handlers because it needs
-  // `getCloudAccessToken`, which is declared just above.
   handle('cloud:testConnection', async () => {
     const result = await testCloudConnection({
       settings: store.getSettings().cloud,
@@ -1756,6 +1716,32 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       pushSyncState();
     }
   };
+
+  /**
+   * The cloud mirror's own access token — a single `CloudTokenProvider` shared by every
+   * caller that needs one (`getCloudAccessToken` below is kept as a one-line alias so its
+   * five existing call sites in this file are untouched). Its `onStateChange` pushes the
+   * sync state, so it's constructed here, after `pushSyncState`, rather than up beside the
+   * other IAM handlers above — declaring it there would be a forward reference.
+   */
+  const cloudToken = new CloudTokenProvider({
+    config: () => ({ ...iamSignInConfig(), redirectUri: '' }),
+    loadRefreshToken: () => {
+      const cipher = store.loadIamRefreshToken();
+      if (!cipher || !safeStorage.isEncryptionAvailable()) return null;
+      try {
+        return decryptSecret(cipher, 'vipper.iam');
+      } catch (e) {
+        logMain('vipper.iam refresh token could not be decrypted', e);
+        return null;
+      }
+    },
+    saveRefreshToken: (token) =>
+      store.saveIamRefreshToken(safeStorage.encryptString(sanitizeToken(token)).toString('base64')),
+    onStateChange: () => pushSyncState(),
+    log: logMain,
+  });
+  const getCloudAccessToken = (): Promise<string | null> => cloudToken.get();
 
   handle('sync:state', async () => syncState());
 

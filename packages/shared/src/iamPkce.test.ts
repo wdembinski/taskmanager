@@ -4,6 +4,8 @@ import {
   createPkcePair,
   createState,
   exchangeCodeForTokens,
+  IamTokenError,
+  isTerminalGrantError,
   refreshTokens,
 } from './iamPkce';
 
@@ -137,5 +139,63 @@ describe('refreshTokens', () => {
     expect(params.get('grant_type')).toBe('refresh_token');
     expect(params.get('refresh_token')).toBe('the-refresh-token');
     expect(params.get('client_id')).toBe(CONFIG.clientId);
+  });
+});
+
+function fakeFetchText(status: number, text: string): typeof fetch {
+  return vi.fn().mockResolvedValue({
+    ok: status >= 200 && status < 300,
+    status,
+    json: () => Promise.reject(new Error('not json')),
+    text: () => Promise.resolve(text),
+  }) as unknown as typeof fetch;
+}
+
+describe('IamTokenError / isTerminalGrantError', () => {
+  it('keeps the existing message format verbatim', async () => {
+    await expect(
+      refreshTokens(CONFIG, 'rt', fakeFetch(400, { error: 'invalid_grant' })),
+    ).rejects.toThrow(/^vipper\.iam token request failed \(400 /);
+  });
+
+  it('reads oauthError from a JSON error body', async () => {
+    const err = await refreshTokens(
+      CONFIG,
+      'rt',
+      fakeFetch(400, { error: 'invalid_grant', error_description: 'Refresh token is invalid' }),
+    ).catch((e) => e);
+
+    expect(err).toBeInstanceOf(IamTokenError);
+    expect((err as IamTokenError).oauthError).toBe('invalid_grant');
+    expect((err as IamTokenError).oauthErrorDescription).toBe('Refresh token is invalid');
+    expect(isTerminalGrantError(err)).toBe(true);
+  });
+
+  it('falls back to scanning a form-encoded/non-JSON body for invalid_grant', async () => {
+    const err = await refreshTokens(
+      CONFIG,
+      'rt',
+      fakeFetchText(400, 'error=invalid_grant&error_description=revoked'),
+    ).catch((e) => e);
+
+    expect((err as IamTokenError).oauthError).toBe('invalid_grant');
+    expect(isTerminalGrantError(err)).toBe(true);
+  });
+
+  it('reports no oauthError — and is not terminal — for an HTML 502 from a gateway', async () => {
+    const err = await refreshTokens(
+      CONFIG,
+      'rt',
+      fakeFetchText(502, '<html><body>Bad Gateway</body></html>'),
+    ).catch((e) => e);
+
+    expect((err as IamTokenError).oauthError).toBeNull();
+    expect(isTerminalGrantError(err)).toBe(false);
+  });
+
+  it('is false for a plain non-OAuth error', () => {
+    expect(isTerminalGrantError(new Error('network down'))).toBe(false);
+    expect(isTerminalGrantError(null)).toBe(false);
+    expect(isTerminalGrantError('nope')).toBe(false);
   });
 });

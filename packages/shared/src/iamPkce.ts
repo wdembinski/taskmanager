@@ -116,6 +116,59 @@ export function refreshTokens(
   );
 }
 
+/**
+ * Thrown by {@link postToken} on any non-2xx response. `message` is unchanged from the plain
+ * `Error` this replaces — callers pinning that substring (`iamPkce.test.ts`,
+ * `cloudToken.test.ts`) keep working — but `oauthError` gives {@link isTerminalGrantError} a
+ * structured field to check instead of parsing the message string itself.
+ */
+export class IamTokenError extends Error {
+  readonly status: number;
+  /** RFC 6749 `error`, e.g. `invalid_grant` — `null` when the body wasn't an OAuth error. */
+  readonly oauthError: string | null;
+  readonly oauthErrorDescription: string | null;
+
+  constructor(
+    status: number,
+    detail: string,
+    oauthError: string | null,
+    oauthErrorDescription: string | null,
+  ) {
+    super(`vipper.iam token request failed (${status} ${detail})`);
+    this.name = 'IamTokenError';
+    this.status = status;
+    this.oauthError = oauthError;
+    this.oauthErrorDescription = oauthErrorDescription;
+  }
+}
+
+/**
+ * A refresh token vipper.iam will never honor again (revoked, expired, or rotated out from
+ * under this caller) — retrying it is pointless until the user signs in again. Duck-typed on
+ * `oauthError` rather than `instanceof IamTokenError`: `@tm/shared` reaches `apps/client` as a
+ * source alias but `apps/web`/`apps/server` as built `dist`, two different module instances
+ * whose classes fail `instanceof` against each other's errors.
+ */
+export function isTerminalGrantError(e: unknown): boolean {
+  if (typeof e !== 'object' || e === null) return false;
+  return (e as { oauthError?: unknown }).oauthError === 'invalid_grant';
+}
+
+/** Best-effort `{ error, error_description }` out of a token error body, JSON or not. */
+function parseOAuthError(detail: string): { error: string | null; description: string | null } {
+  try {
+    const body = JSON.parse(detail) as { error?: unknown; error_description?: unknown };
+    return {
+      error: typeof body.error === 'string' ? body.error : null,
+      description: typeof body.error_description === 'string' ? body.error_description : null,
+    };
+  } catch {
+    // Not JSON — an HTML error page from a proxy/gateway in front of vipper.iam, say. The one
+    // fact still worth recovering from prose is whether it names `invalid_grant`.
+    return { error: /\binvalid_grant\b/.test(detail) ? 'invalid_grant' : null, description: null };
+  }
+}
+
 async function postToken(
   config: IamPkceConfig,
   params: Record<string, string>,
@@ -133,7 +186,8 @@ async function postToken(
     } catch {
       // ignore — the status code alone is still useful
     }
-    throw new Error(`vipper.iam token request failed (${res.status} ${detail})`);
+    const { error, description } = parseOAuthError(detail);
+    throw new IamTokenError(res.status, detail, error, description);
   }
   return (await res.json()) as TokenResponse;
 }
