@@ -475,6 +475,73 @@ describe('the theme both hosts mount', () => {
   }
 });
 
+describe('the shared screens fit a phone', () => {
+  /**
+   * Phase 27 step 5. There is no DOM harness in this repo (see the file header), so these
+   * read the source as text, the same way the theme block above reads for
+   * `scaleTheme(appDarkTheme,` — a CSS rule nobody asserts is a rule that silently reverts,
+   * and every one of these fixes is exactly the kind of one-line rule a later edit could
+   * undo without anything else here noticing.
+   */
+  const THEME = 'packages/ui/src/theme.ts';
+  const PERFORMANCE = 'packages/ui/src/Performance.tsx';
+  const ADD_TASK_DIALOG = 'packages/ui/src/AddTaskDialog.tsx';
+  const ARCHIVED_CARDS_DIALOG = 'packages/ui/src/board/ArchivedCardsDialog.tsx';
+  const SETTINGS_SCREEN = 'packages/cloud/src/settings/SettingsScreen.tsx';
+
+  it('sizes the document to the visible viewport, not the large one', () => {
+    const source = read(THEME);
+    expect(
+      source,
+      `${THEME}'s 'html, body, #root' rule must set height: '100dvh', not '100%'. Before a ` +
+        "phone install, '100%' resolves against the LARGE viewport (address bar excluded) " +
+        'while the visible area is the SMALL one — body ends up taller than the screen, and ' +
+        "since it does not scroll, MobileShell's bottom tab bar sits under the address bar " +
+        'and unreachable.',
+    ).toMatch(/'html, body, #root':\s*\{\s*margin:\s*0,\s*padding:\s*0,\s*height:\s*'100dvh'/);
+  });
+
+  it("stacks Performance's rail below the panel at phone width", () => {
+    const source = read(PERFORMANCE);
+    expect(
+      source,
+      `${PERFORMANCE}'s .main grid (gridTemplateColumns: 'minmax(220px, 1fr) minmax(0, 3fr)') ` +
+        'leaves the panel beside the rail ~130px wide at a 360px phone. It must collapse to a ' +
+        'single column under a max-width media query.',
+    ).toMatch(/'@media \(max-width: 599px\)':\s*\{\s*gridTemplateColumns:\s*'1fr',?\s*\}/);
+  });
+
+  it('caps AddTaskDialog to the viewport width on a phone', () => {
+    const source = read(ADD_TASK_DIALOG);
+    expect(
+      source,
+      `${ADD_TASK_DIALOG}'s dialog body must set minWidth: 'min(440px, calc(100vw - 32px))' — ` +
+        'a bare 440px overflows a 360px phone, and the calc side is a no-op once the viewport ' +
+        'is wide enough to afford the fixed one.',
+    ).toMatch(/minWidth:\s*'min\(440px, calc\(100vw - 32px\)\)'/);
+  });
+
+  it('caps ArchivedCardsDialog to the viewport width on a phone', () => {
+    const source = read(ARCHIVED_CARDS_DIALOG);
+    expect(
+      source,
+      `${ARCHIVED_CARDS_DIALOG}'s dialog body must set minWidth: 'min(520px, calc(100vw - ` +
+        "32px))' — a bare 520px overflows a 360px phone even worse than AddTaskDialog's own " +
+        '440px does.',
+    ).toMatch(/minWidth:\s*'min\(520px, calc\(100vw - 32px\)\)'/);
+  });
+
+  it("stacks SettingsScreen's two-column split under a breakpoint", () => {
+    const source = read(SETTINGS_SCREEN);
+    expect(
+      source,
+      `${SETTINGS_SCREEN}'s .row must switch to flexDirection: 'column' under a max-width ` +
+        'media query — its 160px nav beside a pane that wants up to 1100px has nowhere to go ' +
+        'on a phone.',
+    ).toMatch(/'@media \(max-width: 599px\)':\s*\{\s*flexDirection:\s*'column',?\s*\}/);
+  });
+});
+
 describe('the one configuration the web deliberately does not mirror', () => {
   /**
    * Agent projects are created and edited on the DESKTOP, and that is a decision rather than

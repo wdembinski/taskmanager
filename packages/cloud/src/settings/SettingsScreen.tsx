@@ -72,11 +72,28 @@ import type { ClaudeModel, PermissionMode } from '@tm/shared/session';
 import type { AppSettings } from '@tm/shared/settings';
 
 const useStyles = makeStyles({
-  row: { display: 'flex', gap: '16px', height: '100%', minHeight: 0 },
+  row: {
+    display: 'flex',
+    gap: '16px',
+    height: '100%',
+    minHeight: 0,
+    // A phone has no room for a 160px nav beside a pane that wants up to 1100px —
+    // stack instead, nav on top.
+    '@media (max-width: 599px)': {
+      flexDirection: 'column',
+    },
+  },
   nav: {
     minWidth: '160px',
     borderRight: `1px solid ${tokens.colorNeutralStroke2}`,
     paddingRight: '8px',
+    '@media (max-width: 599px)': {
+      minWidth: 0,
+      borderRight: 'none',
+      borderBottom: `1px solid ${tokens.colorNeutralStroke2}`,
+      paddingRight: 0,
+      paddingBottom: '8px',
+    },
   },
   pane: {
     display: 'flex',

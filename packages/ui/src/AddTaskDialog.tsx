@@ -73,7 +73,14 @@ const TASK_TYPES: Array<{ value: TaskType; label: string }> = [
 ];
 
 const useStyles = makeStyles({
-  body: { display: 'flex', flexDirection: 'column', gap: '12px', minWidth: '440px' },
+  // min(…) rather than a bare 440px: that overflows a 360px phone, and the calc side
+  // is a no-op once the viewport is wide enough to afford the fixed side.
+  body: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '12px',
+    minWidth: 'min(440px, calc(100vw - 32px))',
+  },
   /**
    * The staged files, skinned like `AttachmentStrip` — the same control at a different
    * moment, so it should not look like a different one. Transparent border until a file is

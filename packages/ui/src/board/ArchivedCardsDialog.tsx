@@ -131,7 +131,14 @@ export function archivedCountTitle(count: number): string {
 }
 
 const useStyles = makeStyles({
-  body: { display: 'flex', flexDirection: 'column', gap: '12px', minWidth: '520px' },
+  // min(…) rather than a bare 520px: that overflows a 360px phone worse than
+  // AddTaskDialog's own 440px does, and the calc side is a no-op at desktop widths.
+  body: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '12px',
+    minWidth: 'min(520px, calc(100vw - 32px))',
+  },
   // The list scrolls, the dialog does not: a board that lost thirty cards to a bad JQL is
   // exactly when this screen is opened, and thirty rows must not push the buttons off-screen.
   list: {
