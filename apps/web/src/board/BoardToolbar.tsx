@@ -23,7 +23,14 @@
  * the commit-graph pane the button here opens.
  */
 import type { ReactNode } from 'react';
-import { Button, Spinner, Switch, ToggleButton } from '@fluentui/react-components';
+import {
+  Button,
+  Dropdown,
+  Option,
+  Spinner,
+  Switch,
+  ToggleButton,
+} from '@fluentui/react-components';
 import {
   ArchiveRegular,
   ArrowRoutingRegular,
@@ -41,8 +48,18 @@ import {
   type HiddenDoneSummary,
 } from '@tm/ui/board/doneSwitchLabel';
 import type { BoardDisplaySettings } from '@tm/shared/settings';
+import type { BoardScope } from '@tm/shared/ipc';
 
 export interface BoardToolbarProps {
+  /** Which board is open — `'all'` unions every board's cards, or one board's own project
+   *  id. The desktop's own scope picker, mirrored from `settings.boardScopeId`. */
+  scope: string;
+  /** The Dropdown's closed-state label. */
+  scopeLabel: string;
+  /** The boards the picker offers, beyond the built-in "All boards" option — `board:scopes`'
+   *  own list, derived here from the mirrored projects. */
+  scopes: BoardScope[];
+  onScopeChange: (scope: string) => void;
   showDone: boolean;
   /** What the DONE column is holding while it is shut — see `hiddenDoneSummary`. */
   hiddenDone: HiddenDoneSummary;
@@ -72,6 +89,10 @@ export interface BoardToolbarProps {
 }
 
 export function BoardToolbar({
+  scope,
+  scopeLabel,
+  scopes,
+  onScopeChange,
   showDone,
   hiddenDone,
   onShowDoneChange,
@@ -95,6 +116,24 @@ export function BoardToolbar({
   const layout = useBoardLayoutStyles();
   return (
     <div className={layout.toolbar}>
+      {/* Which board's cards are shown: every board unioned (the default), or one board
+          alone — the desktop's own scope picker (`MyTasks.tsx`), same options and same
+          persisted setting. */}
+      <Dropdown
+        size="small"
+        value={scopeLabel}
+        selectedOptions={[scope]}
+        onOptionSelect={(_e, d) => {
+          if (d.optionValue) onScopeChange(d.optionValue);
+        }}
+      >
+        <Option value="all">All boards</Option>
+        {scopes.map((s) => (
+          <Option key={s.id} value={s.id}>
+            {s.name}
+          </Option>
+        ))}
+      </Dropdown>
       <Switch
         label={doneSwitchLabel(showDone, hiddenDone)}
         title={doneSwitchTitle(showDone, hiddenDone) ?? undefined}
