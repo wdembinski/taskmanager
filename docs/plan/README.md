@@ -50,7 +50,7 @@ plan the orchestrator could one day run on its own repo.
 | 24 | Projects and their tickets (a tracker of our own) | 🚧 in progress on `feat/support-projects-and-their-tickets` — **the whole plan is written** (design, build steps, verification, critical files); build step 1 is next |
 | 25 | Cloud service (a hosted counterpart, sharing domain logic and UI) | 🚧 in progress on `feat/cloud-service` — target layout written, `apps/client`+`packages/shared` restructured, verified (found and fixed a broken per-package test run), Azure cost estimated, risks and open assumptions recorded, no-realtime-service/adaptive-polling design written; every package now scaffolded and the service deployed, with `apps/web` rebuilt on the desktop's own shell, board and detail pane (`feat/the-task-manager-web-should-look-like`, v0.82.0) and its layout matched to the desktop's (`feat/match-web-layout-to-desktop-client`, v0.82.5 — shared global CSS, the toolbar's Add button, a drift guard) — a human glance at the two UIs side by side is still owed |
 | 26 | Support all interactions in the web (relay the channel, not the command kind) | ✅ complete on `feat/support-all-interactions-in-the-web` — one `ipc-invoke` kind behind an exhaustive host-only policy, at-least-once delivery with a result-replay ledger, `PolledEventBus` in place of an event feed; gates green and forced, and the whole relay driven headlessly by [`verify-remote-ipc.mjs`](../../apps/client/scripts/verify-remote-ipc.mjs). A human pressing these controls against a real desktop is still owed, as is deploying the server with this schema |
-| 27 | Mobile app for Android (an installable PWA, not a native build) | 🚧 in progress on `feat/mobile-app-for-android` — four framing decisions taken (new `apps/mobile`, PWA not Capacitor/TWA, its own subdomain, one-time human setup precedes reachability); nothing built yet |
+| 27 | Mobile app for Android (an installable PWA, not a native build) | 🚧 in progress on `feat/mobile-app-for-android` — four framing decisions taken (new `apps/mobile`, PWA not Capacitor/TWA, its own subdomain, one-time human setup precedes reachability); the share/fork boundary decided (new `packages/cloud` absorbs `apps/web`'s sync layer, `@tm/ui` is reused as-is, the shell/navigation/move/detail-route fork, the chain overlay and drag handle drop); nothing built yet |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -5674,6 +5674,51 @@ Nothing here touches code. `apps/mobile` does not exist yet; no dependency was a
 config was written. Step 2 — what is shared and what is forked — is the first step that
 reads `packages/shared`, `packages/protocol` and `packages/ui` against these four decisions
 and decides, file by file, which of them a phone screen can use unchanged.
+
+### Step 2: what is shared and what is forked
+
+The repo already has a rule for this, applied once already at the desktop/`apps/web` line in
+Phase 26: share when a file has no host in it, fork when sharing it would mean threading a
+dozen optional props through to keep two hosts happy. Applying that same rule one layer down,
+between `apps/web` and the new `apps/mobile`, sorts every file in `apps/web/src` and
+`packages/ui` into one of three piles.
+
+**Shared, moved into a new `packages/cloud` (`@tm/cloud`).** Everything under `apps/web/src`
+that talks to the cloud rather than to a screen has no host in it today only by accident — it
+happens to sit in `apps/web` because `apps/web` was the only browser client that existed. Two
+browser clients cannot each own a copy of the same sync layer; the moment `apps/mobile` also
+polls the board and refreshes a token, one of the two copies drifts. This moves: `auth/`,
+`presence.ts`, and out of `board/` — `useCloudBoard`, `cloudBoardStore`, `BoardPoller`,
+`httpTransport`, `eventBus`, `sseEvents`, `polledEvents`, `mediaToken`, `clientId`,
+`targetClient`, `boardSelectors`, `browserFocusSignal`, and `useBoardExtras` — plus the three
+components that render cloud connection state rather than task data, `ClientPicker`,
+`SkewBanner`, `StaleBanner`, and `settings/SettingsScreen.tsx`. Step 3 does the actual
+extraction; this step only decides the boundary.
+
+**Already shared, staying in `@tm/ui` unchanged.** `TaskCard`, `TaskDetail` and its whole
+tree, `chat/*`, `Attention`, `Performance`, `AddTaskDialog`, `GitGraphPane`, and
+`ArchivedCardsDialog` render the same way regardless of host — they take data and callbacks,
+not a layout. The theme (`packages/ui/src/theme.ts`) is shared for the same reason. None of
+these move; mobile imports them from `@tm/ui` exactly as `apps/web` and the desktop already
+do.
+
+**Forked — mobile writes its own.** The shell (a header and a bottom tab bar, not the
+desktop's 84px rail — a phone has no room for a rail and no mouse to hover it), the board's
+navigation (one column at a time with a swipe or tab to move between them, not the grid
+`KanbanColumn` lays out for a wide viewport), the move interaction (a tap-to-move flow — see
+step 6 — has nothing in common with the desktop's drag handlers), and the detail *route*
+(a full screen push, not the 40% side pane `TaskDetail` sits in on desktop — `TaskDetail`
+itself is shared per above, only what wraps it differs). `env.ts` and `vite-env.d.ts` also
+stay forked, per-app, on purpose — Decision 1 in step 1 already ruled out a shared runtime
+config between hosts that build and deploy independently.
+
+**Dropped, per the same rule read in reverse: a control this host cannot act on is dropped
+rather than disabled.** The chain overlay (`ChainOverlay.tsx`, `chainArrows.ts`) draws arrows
+between cards across columns; on a phone showing one column at a time there is nothing for an
+arrow to span, so chain state instead surfaces through the already-shared `TaskChain` inside
+the detail view. The chain-link drag handle needs no forking work at all: `TaskCard.tsx:1247`
+already renders it conditionally on `onLinkStart` being passed, so mobile gets the drop for
+free simply by never passing that prop.
 
 ---
 
