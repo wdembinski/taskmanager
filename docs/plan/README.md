@@ -50,6 +50,7 @@ plan the orchestrator could one day run on its own repo.
 | 24 | Projects and their tickets (a tracker of our own) | 🚧 in progress on `feat/support-projects-and-their-tickets` — **the whole plan is written** (design, build steps, verification, critical files); build step 1 is next |
 | 25 | Cloud service (a hosted counterpart, sharing domain logic and UI) | 🚧 in progress on `feat/cloud-service` — target layout written, `apps/client`+`packages/shared` restructured, verified (found and fixed a broken per-package test run), Azure cost estimated, risks and open assumptions recorded, no-realtime-service/adaptive-polling design written; every package now scaffolded and the service deployed, with `apps/web` rebuilt on the desktop's own shell, board and detail pane (`feat/the-task-manager-web-should-look-like`, v0.82.0) and its layout matched to the desktop's (`feat/match-web-layout-to-desktop-client`, v0.82.5 — shared global CSS, the toolbar's Add button, a drift guard) — a human glance at the two UIs side by side is still owed |
 | 26 | Support all interactions in the web (relay the channel, not the command kind) | ✅ complete on `feat/support-all-interactions-in-the-web` — one `ipc-invoke` kind behind an exhaustive host-only policy, at-least-once delivery with a result-replay ledger, `PolledEventBus` in place of an event feed; gates green and forced, and the whole relay driven headlessly by [`verify-remote-ipc.mjs`](../../apps/client/scripts/verify-remote-ipc.mjs). A human pressing these controls against a real desktop is still owed, as is deploying the server with this schema |
+| 27 | Mobile app for Android (an installable PWA, not a native build) | 🚧 in progress on `feat/mobile-app-for-android` — four framing decisions taken (new `apps/mobile`, PWA not Capacitor/TWA, its own subdomain, one-time human setup precedes reachability); nothing built yet |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -5604,6 +5605,75 @@ before this step and the new block was written into it unformatted, which nothin
 caught, and it was formatted with `npx prettier --write` on that file alone. `docs/plan/
 README.md` has never satisfied Prettier and is deliberately left that way — reformatting a
 5,500-line document to satisfy a check that does not read it would bury this step's own diff.
+
+---
+
+## Phase 27 — Mobile app for Android
+
+Twelve steps, approved before this phase started. Step 1 is not code — it is the four
+framing decisions the approved plan left for the first session to record, because the
+interactive prompt that would normally have taken them lives in a session nobody was
+watching. A headless step cannot guess and cannot ask twice; it writes the decision down
+instead, with the reasoning, so steps 2–12 build on a record rather than on an assumption
+buried in whichever session happened to make the call first.
+
+### Decision 1: a new `apps/mobile`, not a responsive `apps/web`
+
+`apps/web` already mirrors the desktop's shell, board and detail pane (Phases 25–26) at
+desktop proportions, with a shared `localStorage` namespace and service-worker scope. Making
+it respond to a phone viewport would mean every future desktop-shaped change — a new
+toolbar control, a wider dialog — carries a phone-shaped exception with it forever. A
+separate app pays a one-time cost (its own shell, routing, PWA manifest) in exchange for
+never having to ask "does this also make sense at 390px" for the rest of the project's life.
+Phase 26 already had to draw a share-vs-fork line once, between the desktop and `apps/web`;
+this decision draws the same kind of line one layer down. What mobile actually shares with
+web/desktop is a question for step 2, not something to settle by folding it into `apps/web`
+and finding out by accident which parts break at phone width.
+
+### Decision 2: an installable PWA, not a Capacitor/TWA native build
+
+There is no Android SDK, no JDK, and no keystore anywhere in this repo or on this machine,
+and code signing is already a deferred backlog item, unscheduled. A Capacitor or
+Trusted-Web-Activity build needs a Gradle project, and a Gradle project that nothing here can
+compile, sign, or run would land unproven, the same way an Electron build cannot be verified
+by actually launching it on this machine (that would kill the developer's own running copy —
+verification there has to work headlessly, past the native-module ABI split). A PWA installs
+as a WebAPK with its own icon and launches full-screen without any Android toolchain at all,
+and it is the only form of "Android app" this branch can actually build *and verify*
+headlessly. Play Store distribution — Bubblewrap/TWA, `assetlinks.json`, a keystore secret —
+is noted under *Out of scope* as a follow-up ticket, not designed here.
+
+### Decision 3: its own Azure Static Web App, on its own subdomain
+
+Serving the mobile app from the existing SWA under a `/m/` path was the alternative
+considered. It still needs a new IAM redirect URI regardless of which hosting shape is
+chosen, so that cost is not avoided by sharing — and sharing adds `base: '/m/'` routing,
+SWA route rules to keep it separate from the web app's own routes, and the same shared
+`localStorage` namespace and service-worker scope problem Decision 1 opted out of, this time
+between two *deployed* apps rather than two source trees. A dedicated subdomain (own SWA,
+own DNS record) costs one more one-time Azure resource and buys a clean scope boundary for
+the lifetime of the app.
+
+### Decision 4: one-time human setup is required before it is reachable, and blocks no coding step
+
+Creating the SWA, the DNS record, the `AZURE_STATIC_WEB_APPS_API_TOKEN_MOBILE` secret, and
+registering a `taskmanager-mobile` IAM client (or adding a redirect URI to the existing one)
+at `auth.vipper.network` are all actions on shared infrastructure — exactly the kind of
+action this project's own working agreement holds for a human to take deliberately, not
+something a session should do on its own authority. None of steps 2–9 need it to exist: they
+build the app itself. Step 10 (deploy from CI) writes the job, added to the existing secrets
+model in [`docs/11-ci-cd-pipeline.md`](../11-ci-cd-pipeline.md#secrets), and should condition
+the deploy step on `AZURE_STATIC_WEB_APPS_API_TOKEN_MOBILE` being set so the job stays inert
+rather than failing loudly while the secret does not exist yet — so the job can be written
+and merged before the human setup happens, in either order. Step 11 (critical files) is where
+the runbook for that one-time setup gets written down.
+
+### What this leaves for step 2
+
+Nothing here touches code. `apps/mobile` does not exist yet; no dependency was added; no
+config was written. Step 2 — what is shared and what is forked — is the first step that
+reads `packages/shared`, `packages/protocol` and `packages/ui` against these four decisions
+and decides, file by file, which of them a phone screen can use unchanged.
 
 ---
 
