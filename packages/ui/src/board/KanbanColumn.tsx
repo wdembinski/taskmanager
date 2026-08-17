@@ -16,6 +16,7 @@ import type { BoardDisplaySettings } from '@tm/shared/settings';
 import { TaskCard } from './TaskCard';
 import type { BoardCard, BoardColumn } from './boardColumns';
 import { isChainLinkDrag, type LinkDragState } from './chainDrag';
+import type { ChainState } from './chainStates';
 
 const useStyles = makeStyles({
   // A grid item of the board's scroll container (`boardLayout`'s `columns`): it stretches to
@@ -132,9 +133,7 @@ export interface KanbanColumnProps {
    * colours above are: the column holds no board-wide index of its own, and the board
    * already has one (see `MyTasks`). Undefined for a card nobody chained.
    */
-  chainStateOf?: (
-    task: Task,
-  ) => { waitingOn: Task[]; mergeHeld: Task[]; ready: boolean } | undefined;
+  chainStateOf?: (task: Task) => ChainState | undefined;
   selectedTaskId: string | null;
   draggingId: string | null;
   /**
@@ -232,6 +231,7 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               waitingOn={props.chainStateOf?.(task)?.waitingOn}
               mergeHeld={props.chainStateOf?.(task)?.mergeHeld}
               chainReady={props.chainStateOf?.(task)?.ready}
+              chainBlocked={props.chainStateOf?.(task)?.blocked}
               // Every card, unconditionally. A chain says what runs after what, never where
               // a card belongs; and a run only BORROWS the card's status (`cardStatusGuard`),
               // so not even a live agent or a live step takes a card out of the human's

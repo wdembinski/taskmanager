@@ -748,6 +748,16 @@ by something moving.
   for two days, and only the second is something you can fix. The card's pane goes further:
   it offers **Merge VIP-3** beside *Open VIP-3*, so the one thing holding the chain up is a
   click from where you already are.
+- When every predecessor is satisfied and the engine would **still** refuse the card, the chip
+  says which of the two things you can fix it is: **`needs an agent`** when nobody has said who
+  does the work — the state a card made through *Runs after…* is born in, since that picker
+  draws the arrow and never asks — and **`its turn — held`** when the card is parked in Blocked,
+  which the chain will not take it out of. Both are the engine's own verdict
+  (`chainDecline` in `@tm/shared/taskChain`, asked by the board and by `ChainRunner` alike), so
+  the chip cannot claim a card is ready that the runner would decline, or go silent on one it
+  refused. It used to do exactly that: a declined card showed no chip at all — no *waiting on*,
+  because its arrows were met, and no *ready*, because it was not — so a solid arrow arrived at
+  a card that looked like every other idle one, with the reason filed only on its timeline.
 - **Chain focus** in the toolbar reduces the board to the selected card's chain —
   everything upstream, everything downstream, and the siblings entangled with it. The cards
   stay in their real columns; it is a filter, not a pipeline of its own. It is deliberately
@@ -769,7 +779,14 @@ sends you hunting through three other cards' logs.
   whole reason for waiting was the other two.
 - A release **starts** the successor only if it is assigned to an agent and still resting in
   To Do or In Progress, with its own work neither landed nor under way. Anything else gets a
-  note on its timeline naming what released it, and is left alone.
+  note on its timeline naming what released it, and is left alone. That test is `chainDecline`,
+  and it lives in `@tm/shared/taskChain` rather than in the engine **because the board asks it
+  too** — the chip and the runner have to answer from one function, or the board is telling you
+  something the engine does not believe.
+- Nothing about a release **assigns** the successor. The chain says what runs after what; who
+  does the work — and, with it, which repository an agent is turned loose in — is a decision the
+  tool does not make for you. A chained card nobody assigned is therefore a chain that stops,
+  which is why the card wears `needs an agent` from the moment its turn comes.
 - **The only column a chain writes is the one it starts a card into.** Where a card sits
   stays yours, exactly as it is for every other run — with one exception, and it is what
   makes the rule honest: a card the **app** starts by itself is moved to In Progress, because

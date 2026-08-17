@@ -5,6 +5,8 @@ import {
   blockedBy,
   canLink,
   chainComponent,
+  chainDecline,
+  chainWorkUnderWay,
   incomingLinks,
   isLinkGate,
   linkSatisfied,
@@ -329,5 +331,67 @@ describe('awaitingMerge', () => {
     const byId = index(landed, written, d);
     expect(blockedBy(d, links, byId).map((t) => t.id)).toEqual(['c']);
     expect(awaitingMerge(d, links, byId).map((t) => t.id)).toEqual(['c']);
+  });
+});
+
+describe('chainDecline', () => {
+  it('is null for the ordinary chained card: assigned, in To Do, never run', () => {
+    expect(chainDecline(task({ id: 'b', agentProjectId: 'repo' }), false)).toBeNull();
+  });
+
+  it('names a card with no agent — the release has nobody to hand the work to', () => {
+    // The case this predicate was extracted for: a card created through *Runs after…*
+    // has a link and no agent, so the chain reaches it and can start nothing.
+    expect(chainDecline(task({ id: 'b' }), false)).toBe('no-agent');
+  });
+
+  it('asks about the agent BEFORE the column, so the sentence names the fixable thing', () => {
+    // Both are true of a Blocked, unassigned card. "Assign one" is the step that has to
+    // happen either way, and it is the one a human can act on without a decision.
+    expect(chainDecline(task({ id: 'b', status: 'blocked' }), false)).toBe('no-agent');
+  });
+
+  it('starts a card that has been PLANNED or chatted with — a session is not work', () => {
+    const planned = task({ id: 'b', agentProjectId: 'repo', sessionId: 's1' });
+    expect(chainDecline(planned, false)).toBeNull();
+  });
+
+  it('starts a card resting in In Progress, not only one in To Do', () => {
+    const begun = task({ id: 'b', status: 'in-progress', agentProjectId: 'repo' });
+    expect(chainDecline(begun, false)).toBeNull();
+  });
+
+  it('leaves a Blocked card alone, and says which column holds it', () => {
+    const parked = task({ id: 'b', status: 'blocked', agentProjectId: 'repo' });
+    expect(chainDecline(parked, false)).toBe('resting');
+  });
+
+  it('reads the resting status through a live run, never the borrowed one', () => {
+    const running = task({
+      id: 'b',
+      status: 'running',
+      preRunStatus: 'in-progress',
+      agentProjectId: 'repo',
+    });
+    // In flight outranks everything: the run is the answer, whatever the column says.
+    expect(chainDecline(running, true)).toBe('in-flight');
+    // And with no reservation the question is about the column the human left it in.
+    expect(chainDecline(running, false)).toBeNull();
+  });
+
+  it('declines a card whose own work has landed, or is filed as finished with', () => {
+    expect(chainDecline(task({ id: 'b', agentProjectId: 'r', landedAt: 7 }), false)).toBe('landed');
+    for (const status of ['in-review', 'done', 'failed', 'stopped', 'cancelled'] as const) {
+      expect(chainDecline(task({ id: 'b', status, agentProjectId: 'r' }), false)).toBe('settled');
+    }
+  });
+
+  it('agrees with chainWorkUnderWay on the three it shares with it', () => {
+    // `heldByMerge` asks the narrower question; the two must not drift apart.
+    const landed = task({ id: 'b', agentProjectId: 'r', landedAt: 7 });
+    expect(chainWorkUnderWay(landed, false)).toBe('landed');
+    expect(chainDecline(landed, false)).toBe(chainWorkUnderWay(landed, false));
+    // ...and the narrower one stops short of the two the board can act on.
+    expect(chainWorkUnderWay(task({ id: 'b' }), false)).toBeNull();
   });
 });

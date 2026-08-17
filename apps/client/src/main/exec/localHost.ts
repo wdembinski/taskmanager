@@ -39,6 +39,11 @@ export class LocalExecHost implements ExecHost {
         shell: opts.resolveViaShell,
         timeout: opts.timeoutMs,
         maxBuffer: opts.maxBuffer,
+        // Only when asked, and always ON TOP of this process' own environment: passing
+        // `env` at all replaces the whole set, so a bare `opts.env` would hand `git` a
+        // world with no PATH. Omitted entirely when there is nothing to add, so the
+        // ordinary case is byte-for-byte what it was.
+        ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
       });
       return { code: 0, stdout, stderr };
     } catch (err) {

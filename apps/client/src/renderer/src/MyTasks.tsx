@@ -39,8 +39,6 @@ import type { MergeRequest } from '@shared/mergeRequest';
 import type { TaskAttachment } from '@shared/attachments';
 import {
   LINK_REFUSAL_MESSAGE,
-  awaitingMerge,
-  blockedBy,
   canLink,
   chainComponent,
   type LinkGate,
@@ -70,6 +68,7 @@ import {
   taskIdUnder,
   type LinkDragState,
 } from '@ui/board/chainDrag';
+import { chainStates } from '@ui/board/chainStates';
 import { useCardAnchors } from '@ui/board/useCardAnchors';
 import { foldedCardSet, toggleFoldedCard } from '@ui/board/foldedSteps';
 import { useAttentionIndex } from './useAttentionIndex';
@@ -418,33 +417,17 @@ export function MyTasks(): JSX.Element {
 
   /**
    * Where each chained card stands: what it is still waiting on, which of those are waiting
-   * only on a human to merge, and whether its turn has come without anything having started.
+   * only on a human to merge, and — once it is waiting for nothing — whether the engine
+   * would actually start it. See `chainStates`, which the web's board shares.
    *
-   * Computed once for the board rather than per card, and only for cards that actually have
-   * an arrow into them — `readyToRelease` is vacuously true for everything else, so asking
-   * per card would have every unchained card on the board answering a question about a
-   * feature nobody used on it.
-   *
-   * `ready` matches the ENGINE's own release condition (never run, still waiting in To Do):
-   * the chip has to mean "the engine would have started this", or a card that shows `ready`
-   * and then sits there teaches the human to distrust the word.
+   * That answer used to be computed here, with a shorter predicate than the engine's, and
+   * the two disagreed: a chained card resting in IN PROGRESS or with no agent assigned got
+   * no chip at all, so a satisfied arrow arrived at a card that looked merely idle.
    */
-  const chainStates = useMemo(() => {
-    const byTask = new Map<string, { waitingOn: Task[]; mergeHeld: Task[]; ready: boolean }>();
-    for (const id of new Set(links.map((l) => l.toTaskId))) {
-      const task = tasksById.get(id);
-      if (!task) continue;
-      const waitingOn = blockedBy(task, links, tasksById);
-      byTask.set(id, {
-        waitingOn,
-        // A subset of `waitingOn`, derived from the same links in the same pass, so the
-        // chip's noun and its verb can never come from two different readings of the board.
-        mergeHeld: awaitingMerge(task, links, tasksById),
-        ready: waitingOn.length === 0 && task.status === 'pending' && !task.sessionId,
-      });
-    }
-    return byTask;
-  }, [links, tasksById]);
+  const chainState = useMemo(
+    () => chainStates(links, tasksById, liveRuns),
+    [links, tasksById, liveRuns],
+  );
 
   /**
    * The chain the selected task belongs to: a card's own steps, or — when a step is
@@ -1093,7 +1076,7 @@ export function MyTasks(): JSX.Element {
               onLinkEnd={() => setLinkDrag(null)}
               onLinkTo={(fromTaskId, toTaskId) => void drawLink(fromTaskId, toTaskId)}
               onLinkArm={armLink}
-              chainStateOf={(t) => chainStates.get(t.id)}
+              chainStateOf={(t) => chainState.get(t.id)}
               selectedTaskId={selectedTaskId}
               draggingId={draggingId}
               onStopTask={(taskId) => void stopTask(taskId)}
@@ -1171,10 +1154,10 @@ export function MyTasks(): JSX.Element {
             // What the selected card is still waiting on, so the pane can offer to override
             // it. From the same index the chips read, so the chip and the button can never
             // disagree about whether this card is blocked.
-            chainWaitingOn={selectedTask ? chainStates.get(selectedTask.id)?.waitingOn : undefined}
+            chainWaitingOn={selectedTask ? chainState.get(selectedTask.id)?.waitingOn : undefined}
             // Which of those are waiting on nothing but a merge, so the pane can offer that
             // merge where the human already is, rather than sending them to the other card.
-            chainMergeHeld={selectedTask ? chainStates.get(selectedTask.id)?.mergeHeld : undefined}
+            chainMergeHeld={selectedTask ? chainState.get(selectedTask.id)?.mergeHeld : undefined}
             // The whole chain, for the pane's Chain section — the keyboard's route to what
             // the board does by dragging. `removeLink` is the board's own, so an unlink from
             // the pane and one from the arrow's popover are the same call.

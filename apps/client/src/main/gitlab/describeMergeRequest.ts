@@ -24,7 +24,7 @@ import {
   type GitLabMergeRequest,
 } from './gitlabClient';
 import { stagesFromJobs } from './pipelineStages';
-import type { FetchedMergeRequest } from './gitlabSync';
+import { PIPELINE_IN_FLIGHT, type FetchedMergeRequest } from './gitlabSync';
 
 /** `references.full` is `group/repo!12`; the path is everything before the `!`. */
 function projectPathOf(mr: GitLabMergeRequest): string {
@@ -130,11 +130,26 @@ export async function describeMergeRequest(
    * call that SUCCEEDS and returns nothing is an answer, and it must be allowed to empty
    * the row: a fresh pipeline whose jobs do not exist yet was otherwise shown wearing the
    * previous pipeline's stages, which is the same staleness in a smaller window.
+   *
+   * Refetching is not gated on `stale` alone: the "read back a settled MR" pass in
+   * `ipc.ts` deliberately calls this with `stale: false` (nothing about approvals or
+   * notes can move once an MR has merged), but its whole POINT is to catch a pipeline the
+   * merge overtook mid-run — the overall status above already updates from `head_pipeline`
+   * regardless of `stale`, and the stage row must keep up with it or the last stage the
+   * runners were on stays "running" forever. Re-reading the jobs whenever the pipeline
+   * MOVED (its status changed, or it just landed on a new pipeline id — the merge pipeline
+   * replacing the one shown pre-merge) covers that without paying for a job listing on
+   * every settled poll that found nothing new.
    */
   let pipelineStages = prior?.pipelineStages ?? [];
   if (noPipeline) {
     pipelineStages = [];
-  } else if (stale && typeof pipeline?.id === 'number') {
+  } else if (
+    typeof pipeline?.id === 'number' &&
+    (stale ||
+      pipelineStatus !== (prior?.pipelineStatus ?? 'unknown') ||
+      PIPELINE_IN_FLIGHT.has(pipelineStatus))
+  ) {
     const jobs = await client.listPipelineJobs(projectId, pipeline.id).catch(() => null);
     if (jobs) pipelineStages = stagesFromJobs(jobs);
   }
