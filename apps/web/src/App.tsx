@@ -34,6 +34,7 @@ import { SettingsScreen } from './settings/SettingsScreen';
 import { ClientPicker } from './board/ClientPicker';
 import { SkewBanner } from './board/SkewBanner';
 import { StaleBanner } from './board/StaleBanner';
+import { describeAge } from './board/syncGate';
 import { versionSkew } from './board/targetClient';
 import { useCloudBoard } from './board/useCloudBoard';
 import { loadWebConfig } from './env';
@@ -247,13 +248,4 @@ function useTick(intervalMs: number): number {
     return () => clearInterval(id);
   }, [intervalMs]);
   return now;
-}
-
-/** A duration in ms as the coarsest unit that still says something — `12s ago`, `3m ago`. */
-function describeAge(ms: number): string {
-  const seconds = Math.max(0, Math.round(ms / 1000));
-  if (seconds < 60) return `${seconds}s ago`;
-  const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  return `${Math.round(minutes / 60)}h ago`;
 }

@@ -24,6 +24,7 @@ import {
   type CloudBoardState,
 } from './cloudBoardStore';
 import { HttpTransport } from './httpTransport';
+import { EMPTY_SYNC_PROGRESS, type SyncProgress } from './syncGate';
 import { resolveTargetClientId, setPreferredClientId } from './targetClient';
 
 /** How often the pending-overlay sweep runs — well under `PENDING_STATUS_TIMEOUT_MS`, so a
@@ -42,6 +43,9 @@ export interface CloudBoardApi {
    * claim. Folding it into the store would also churn a value four tests construct.
    */
   lastPolledAt: number | null;
+  /** How far the board's own read loop has gotten — see `syncGate.ts`'s `boardIsReady` for
+   *  the latch rule this drives. */
+  syncProgress: SyncProgress;
   /** The desktop Client a command would be sent to, or null if none has ever synced. */
   targetClientId: string | null;
   /**
@@ -70,6 +74,7 @@ export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi
   const clientId = useMemo(() => getOrCreateClientId(window.localStorage), []);
   const [state, setState] = useState<CloudBoardState>(EMPTY_BOARD_STATE);
   const [lastPolledAt, setLastPolledAt] = useState<number | null>(null);
+  const [syncProgress, setSyncProgress] = useState<SyncProgress>(EMPTY_SYNC_PROGRESS);
 
   // The poller and the transport are each built once and live for the component's whole
   // lifetime; both need the LATEST state (the cursor to poll `since`, the freshest
@@ -133,8 +138,21 @@ export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi
       onResponse: (response) => {
         setState((s) => applyBoardResponse(s, response));
         setLastPolledAt(Date.now());
+        setSyncProgress((p) => ({
+          ...p,
+          draining: response.hasMore === true,
+          initialSyncComplete: p.initialSyncComplete || response.hasMore !== true,
+          failures: 0,
+          lastError: null,
+        }));
       },
-      onError: (e) => console.warn('board poll failed', e),
+      onError: (e) =>
+        setSyncProgress((p) => ({
+          ...p,
+          failures: p.failures + 1,
+          lastError: e instanceof Error ? e.message : String(e),
+        })),
+      onPollingChange: (polling) => setSyncProgress((p) => ({ ...p, polling })),
     });
     void poller.tick(); // load immediately rather than waiting a full cadence interval
     return () => poller.dispose();
@@ -196,6 +214,7 @@ export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi
     state,
     cadence: state.cadence,
     lastPolledAt,
+    syncProgress,
     targetClientId,
     targetClient,
     selectTargetClient,

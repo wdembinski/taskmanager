@@ -174,6 +174,24 @@ describe('BoardPoller', () => {
     await poller.tick();
     expect(onError).toHaveBeenCalledTimes(1);
   });
+
+  it('reports polling true then false around a successful tick', async () => {
+    const onPollingChange = vi.fn();
+    const { poller } = makePoller({ onPollingChange });
+    await poller.tick();
+    expect(onPollingChange.mock.calls).toEqual([[true], [false]]);
+  });
+
+  it('still reports polling false when send() throws', async () => {
+    const onPollingChange = vi.fn();
+    const throwing = vi.fn().mockRejectedValue(new Error('boom'));
+    const { poller } = makePoller({
+      fetchImpl: throwing as unknown as typeof fetch,
+      onPollingChange,
+    });
+    await poller.tick();
+    expect(onPollingChange.mock.calls).toEqual([[true], [false]]);
+  });
 });
 
 describe('BoardPoller: catching up past the page cap', () => {
