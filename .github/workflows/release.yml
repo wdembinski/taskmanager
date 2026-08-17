@@ -245,6 +245,40 @@ jobs:
           TAG: ${{ steps.next.outputs.tag }}
         run: gh release create "$TAG" --draft --title "$TAG" --generate-notes
 
+      # electron-builder does not look the draft up the way the step above's own check does
+      # (`gh release view`, a single-release GET that sees a brand-new release immediately).
+      # Its GitHub publisher (electron-publish's GitHubPublisher.getOrCreateRelease) instead
+      # calls `GET /repos/{owner}/{repo}/releases` — the LIST endpoint — and scans the page for
+      # a matching tag_name. That list has shown several minutes of replication lag behind the
+      # single-release GET on this repo (close to 90 releases deep), which is long enough that
+      # `windows`/`linux` below found the brand-new draft invisible twice in a row: every
+      # upload silently "skipped publishing" with reason "release doesn't exist and not
+      # created because publish is not always and build is not on tag", producing a green run
+      # and an empty, unpublishable draft (v0.89.2, v0.89.3 — both by hand afterwards).
+      #
+      # So poll the SAME endpoint electron-builder queries, not the faster single-release one,
+      # until the tag is actually in it. Cheap and instant once GitHub has caught up; a hard
+      # failure with the mechanism named if it has not within 5 minutes, rather than another
+      # quiet skip two jobs downstream.
+      - name: Wait for the draft to be visible in the releases list
+        if: steps.decide.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.next.outputs.tag }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 20); do
+            if gh api --paginate "repos/${{ github.repository }}/releases" --jq '.[].tag_name' \
+                | grep -qxF "$TAG"; then
+              echo "$TAG is visible in the releases list (attempt $i)."
+              exit 0
+            fi
+            echo "Attempt $i: $TAG not yet in the releases list — waiting 15s."
+            sleep 15
+          done
+          echo "::error::$TAG never appeared in /repos/${{ github.repository }}/releases after 5 minutes — electron-builder's GitHubPublisher.getOrCreateRelease would silently skip every upload against it (see electron-publish/out/gitHubPublisher.js)."
+          exit 1
+
   # ── §5 Windows ─────────────────────────────────────────────────────────────
   windows:
     needs: version
