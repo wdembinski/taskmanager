@@ -54,6 +54,7 @@ const WEB_BOARD = 'apps/web/src/board/BoardScreen.tsx';
 const DESKTOP_BOARD = 'apps/client/src/renderer/src/MyTasks.tsx';
 const WEB_MAIN = 'apps/web/src/main.tsx';
 const DESKTOP_MAIN = 'apps/client/src/renderer/src/main.tsx';
+const MOBILE_APP = 'apps/mobile/src/App.tsx';
 
 function read(path: string): string {
   return readFileSync(join(repoRoot, ...path.split('/')), 'utf8');
@@ -188,8 +189,15 @@ function topLevelKeys(literal: string): string[] {
   return keys;
 }
 
-/** Where each host's own source lives — `dist` and `node_modules` are nobody's source. */
-const HOST_TREES = ['apps/web/src', 'apps/client/src/renderer/src'];
+/**
+ * Where each host's own source lives — `dist` and `node_modules` are nobody's source.
+ *
+ * `apps/mobile/src` joined this list the same commit that created it (Phase 27 step 4), on
+ * purpose: the global-CSS guard below is only worth having if it covers a host from its
+ * first commit, rather than retroactively blessing whatever landed there before anyone
+ * thought to add it.
+ */
+const HOST_TREES = ['apps/web/src', 'apps/client/src/renderer/src', 'apps/mobile/src'];
 
 /**
  * Every file under a tree whose name `matches`, recursively and repo-relative.
@@ -248,6 +256,44 @@ describe('the shell both hosts render through', () => {
   }
 });
 
+describe('the destinations both the browser and the Android client expose', () => {
+  /**
+   * The ticket's whole claim for `apps/mobile` (docs/plan/README.md, Phase 27) is "same
+   * features" — and a nav rail is the one place that claim can be read off as a literal list.
+   * `apps/web/src/App.tsx` and `apps/mobile/src/App.tsx` each declare a `NAV`/destinations
+   * array of `{ id: '…', label: '…', icon: … }` objects; this reads the `id`s off both, in
+   * the order they're written, so a destination added, dropped, or reordered on one side and
+   * not the other goes red here instead of waiting to be noticed by eye on a phone.
+   *
+   * Not compared against the desktop's own `apps/client/src/renderer/src/App.tsx`: that one
+   * already has no counterpart-parity guard today (nothing here enforces `apps/web`'s NAV
+   * against the desktop's either), and giving mobile a stricter guard than web already has
+   * would be a new rule invented in this step rather than the one asked for — mobile mirrors
+   * web's ids, which is what "modelled on apps/web" means for this file.
+   */
+  function navIds(source: string): string[] {
+    const ids: string[] = [];
+    for (const match of source.matchAll(/\{\s*id:\s*'([a-z]+)'/g)) ids.push(match[1]);
+    return ids;
+  }
+
+  it('list the same five destination ids, in the same order', () => {
+    const web = navIds(read(WEB_APP));
+    const mobile = navIds(read(MOBILE_APP));
+
+    // A guard that found nothing to compare passes for the wrong reason — same discipline
+    // as the global-CSS block's own `toBeGreaterThan` below.
+    expect(web.length, `found no NAV ids in ${WEB_APP} — has its destinations moved?`).toBe(5);
+
+    expect(
+      mobile,
+      `${MOBILE_APP}'s destination ids (${mobile.join(', ')}) must match ${WEB_APP}'s ` +
+        `(${web.join(', ')}), in the same order — the two hosts claim the same five ` +
+        'destinations, and a mismatch here is that claim going false silently.',
+    ).toEqual(web);
+  });
+});
+
 describe('the board frame both hosts render through', () => {
   /**
    * The four rules that ARE the board's frame — the flex row, the board half, the scrolling
@@ -303,8 +349,12 @@ describe("the app's global CSS rules", () => {
     { pattern: /\bcolor-scheme\s*:|\bcolorScheme\s*:/, what: 'the dark colour-scheme' },
   ];
 
-  /** The two entry documents, which live above those trees and can carry a <style> block. */
-  const HOST_DOCUMENTS = ['apps/web/index.html', 'apps/client/src/renderer/index.html'];
+  /** The entry documents, which live above those trees and can carry a <style> block. */
+  const HOST_DOCUMENTS = [
+    'apps/web/index.html',
+    'apps/client/src/renderer/index.html',
+    'apps/mobile/index.html',
+  ];
   const STYLE_BEARING = /\.(ts|tsx|css|html)$/;
 
   it('are declared in packages/ui and nowhere else', () => {

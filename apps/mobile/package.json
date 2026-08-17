@@ -1,0 +1,35 @@
+{
+  "name": "@tm/mobile",
+  "version": "0.1.0",
+  "description": "VIPPER Task Manager Cloud — the Android client, an installable PWA. Vite + React + Fluent UI, deployed to its own Azure Static Web App (docs/plan/README.md, Phase 27). Same cloud sync as apps/web, through @tm/cloud; its own shell, because a phone has no rail and no mouse.",
+  "license": "UNLICENSED",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@fluentui/react-components": "^9.54.0",
+    "@fluentui/react-icons": "^2.0.270",
+    "@tm/cloud": "workspace:*",
+    "@tm/protocol": "workspace:*",
+    "@tm/shared": "workspace:*",
+    "@tm/ui": "workspace:*",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11",
+    "vitest": "^2.1.5"
+  }
+}
