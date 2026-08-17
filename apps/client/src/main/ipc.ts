@@ -193,7 +193,7 @@ import { LIMIT_PROBE_TIMEOUT_MS, Scheduler } from './scheduler';
 import { SessionManager } from './sessionManager';
 import { createStore, type Store } from './store';
 import { Updater } from './updater';
-import { bucketSeries, rollupQuotas, rollupWindow } from './usageRollup';
+import { bucketSeries, rollupQuotas, rollupSessionStats, rollupWindow } from './usageRollup';
 import { WorktreeManager } from './worktreeManager';
 
 /**
@@ -1333,6 +1333,16 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       claudeUsage: claudeUsagePoller.current(),
     });
   });
+
+  // Session-by-session "how fast do I burn through a 5-hour budget" history, behind
+  // the Performance screen's two charts. Reconstructed from the whole sample history
+  // (not just the current window) — see `rollupSessionStats`'s own docs for why there
+  // is no session table to read this from instead.
+  handle('usage:sessionStats', async () =>
+    rollupSessionStats(store.getUsageSamples(0), {
+      limit: store.getSettings().sessionTokenBudget,
+    }),
+  );
 
   handle('settings:get', async () => store.getSettings());
   handle('settings:save', async (settings) => {

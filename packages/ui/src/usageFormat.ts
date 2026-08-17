@@ -35,3 +35,14 @@ export function niceCeil(n: number): number {
   const nice = frac <= 1 ? 1 : frac <= 2 ? 2 : frac <= 5 ? 5 : 10;
   return nice * pow;
 }
+
+/** A duration, compacted to whichever unit reads best: "45s", "12m", "3.4h", "2.1d". */
+export function formatDuration(ms: number): string {
+  const sec = ms / 1000;
+  if (sec < 60) return `${Math.round(sec)}s`;
+  const min = sec / 60;
+  if (min < 60) return `${Math.round(min)}m`;
+  const hr = min / 60;
+  if (hr < 24) return `${hr.toFixed(1)}h`;
+  return `${(hr / 24).toFixed(1)}d`;
+}
