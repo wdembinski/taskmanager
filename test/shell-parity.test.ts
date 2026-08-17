@@ -444,7 +444,7 @@ describe('the one configuration the web deliberately does not mirror', () => {
    */
   const WEB_TREE = 'apps/web/src';
   const SHARED_UI_TREE = 'packages/ui/src';
-  const DESKTOP_PANE = 'apps/client/src/renderer/src/AgentProjects.tsx';
+  const DESKTOP_PANE = 'apps/client/src/renderer/src/projects/Projects.tsx';
 
   /**
    * A CALL, not a mention: both files below discuss these channels in prose, correctly.
@@ -483,12 +483,12 @@ describe('the one configuration the web deliberately does not mirror', () => {
   });
 
   it('keeps the pane itself in the desktop renderer, and nowhere else', () => {
-    const pattern = /^AgentProjects\.tsx?$/;
+    const pattern = /^Projects\.tsx?$/;
     const copies = [...filesUnder(WEB_TREE, pattern), ...filesUnder(SHARED_UI_TREE, pattern)];
 
     expect(
       copies,
-      `${copies.join(', ')} is an agent-projects pane outside the desktop renderer. Unlike ` +
+      `${copies.join(', ')} is a projects-management pane outside the desktop renderer. Unlike ` +
         'AddTaskDialog and GitGraphPane above, this one was deliberately NOT moved into ' +
         'packages/ui: it reaches the engine through window.api directly and opens a folder ' +
         'picker, so a shared copy would be a pane only one host could ever run.',
@@ -508,9 +508,9 @@ describe('the one configuration the web deliberately does not mirror', () => {
     const settings = read('apps/web/src/settings/SettingsScreen.tsx');
     expect(
       settings,
-      'apps/web/src/settings/SettingsScreen.tsx must keep an "Agent projects" entry in ' +
+      'apps/web/src/settings/SettingsScreen.tsx must keep a "Projects" entry in ' +
         'HOST_ONLY_SECTIONS. Dropping the entry does not remove the limit — it removes the ' +
         'only explanation of it a browser user is ever offered.',
-    ).toMatch(/title:\s*'Agent projects'/);
+    ).toMatch(/title:\s*'Projects'/);
   });
 });

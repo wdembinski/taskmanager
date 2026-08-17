@@ -19,15 +19,16 @@
  *
  * THE ONE SECTION THAT IS NOT SHARED, AND WILL NOT BE
  * ---------------------------------------------------
- * `AgentProjects` is not in `@tm/ui` and does not belong there. It lives in
- * `apps/client/src/renderer/src/AgentProjects.tsx`, reaches the engine through `window.api`
- * directly rather than through the transport, and its first act is `project:pickDirectory` —
- * a native folder picker for a directory on the machine the engine runs on, which is why that
- * channel is `host-only` while `project:add` itself is not. Choosing the folder is very
- * nearly the whole of creating one, so there is no useful half of this pane a browser could
- * draw: it would be an empty path field asking somebody to type an absolute path on a
- * computer they cannot see. It appears in {@link HOST_ONLY_SECTIONS} instead, which is a
- * decision rather than a gap — see the plan doc, "What is deliberately out of scope".
+ * `Projects` is not in `@tm/ui` and does not belong there. It lives in
+ * `apps/client/src/renderer/src/projects/Projects.tsx`, reaches the engine through
+ * `window.api` directly rather than through the transport, and its first act is
+ * `project:pickDirectory` — a native folder picker for a directory on the machine the engine
+ * runs on, which is why that channel is `host-only` while `project:add` itself is not.
+ * Choosing the folder is very nearly the whole of creating a project with a repo, so there is
+ * no useful half of this pane a browser could draw: it would be an empty path field asking
+ * somebody to type an absolute path on a computer they cannot see. It appears in
+ * {@link HOST_ONLY_SECTIONS} instead, which is a decision rather than a gap — see the plan
+ * doc, "What is deliberately out of scope".
  *
  * WHAT THE HOST-ONLY SECTIONS DO INSTEAD
  * --------------------------------------
@@ -487,11 +488,11 @@ const HOST_ONLY_SECTIONS: ReadonlyArray<{ title: string; why: string }> = [
       'the control you actually want here.',
   },
   {
-    title: 'Agent projects',
+    title: 'Projects',
     why:
-      'one IS a folder on that machine, so adding it starts with a native folder picker there ' +
-      'and the rest — its defaults, its base branch, the epics it owns — is configured beside ' +
-      'it. What you can do from here is use them: file a card under one, or assign a card to ' +
-      'one and override the model and permission mode for that card.',
+      'a project with a repo IS a folder on that machine, so adding one starts with a native ' +
+      'folder picker there and the rest — its defaults, its base branch, the epics it owns — ' +
+      'is configured beside it. What you can do from here is use them: file a card under one, ' +
+      'or assign a card to one and override the model and permission mode for that card.',
   },
 ];

@@ -9,9 +9,9 @@
  * the next task, so no restart is needed.
  *
  * The vertical nav also hosts the Board pane (the status keywords that colour a card's
- * progress line), the JIRA connection — including the status-name → column map, the
- * only route to the IN REVIEW column — and the Agents pane (the repositories a My Tasks
- * card can be filed under or delegated to), which manages its own state.
+ * progress line) and the JIRA connection — including the status-name → column map, the
+ * only route to the IN REVIEW column. Managing the projects themselves (the repositories
+ * a My Tasks card can be filed under or delegated to) is its own nav item, `Projects`.
  */
 import { useCallback, useEffect, useState } from 'react';
 import {
@@ -86,7 +86,6 @@ import {
   parseExecTarget,
   type ExecTarget,
 } from '@shared/execTarget';
-import { AgentProjects } from './AgentProjects';
 import { ColorSwatches, PALETTE } from '@ui/ColorSwatches';
 import { PaneLoading } from '@ui/PaneLoading';
 import { PlanningModelField } from '@ui/PlanningModelField';
@@ -162,7 +161,7 @@ const COLUMN_LABEL: Record<BoardColumn, string> = Object.fromEntries(
   COLUMN_META.map((c) => [c.column, STATUS_LABEL[statusForColumn(c.column)]]),
 ) as Record<BoardColumn, string>;
 
-type SettingsSection = 'general' | 'board' | 'jira' | 'gitlab' | 'github' | 'cloud' | 'agents';
+type SettingsSection = 'general' | 'board' | 'jira' | 'gitlab' | 'github' | 'cloud';
 
 export function Settings(): JSX.Element {
   const styles = useStyles();
@@ -522,12 +521,9 @@ export function Settings(): JSX.Element {
         <Tab value="gitlab">GitLab</Tab>
         <Tab value="github">GitHub</Tab>
         <Tab value="cloud">Cloud</Tab>
-        <Tab value="agents">Agents</Tab>
       </TabList>
 
-      {section === 'agents' ? (
-        <AgentProjects />
-      ) : section === 'board' ? (
+      {section === 'board' ? (
         <div className={styles.pane}>
           <Subtitle2>Board</Subtitle2>
           <Body1 className={styles.hint}>
