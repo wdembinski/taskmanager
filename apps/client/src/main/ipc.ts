@@ -1062,6 +1062,18 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     send('task:changed', { task, runId: null });
     return task;
   });
+  handle('task:setTitle', async (taskId, title) => {
+    const existing = store.getTask(taskId);
+    if (!existing) throw new Error('Task not found.');
+    const trimmed = title.trim();
+    if (!trimmed) throw new Error('A task needs a title.');
+    // The app's copy only — a JIRA or GitHub sync overwrites `title` from the
+    // issue's own summary on the next poll, same bargain as the description.
+    const task = store.updateTask(taskId, { title: trimmed });
+    if (!task) throw new Error('Task not found.');
+    send('task:changed', { task, runId: null });
+    return task;
+  });
 
   handle('task:setProject', async (taskId, projectTagId) => {
     const existing = store.getTask(taskId);

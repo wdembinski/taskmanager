@@ -24,6 +24,7 @@ import {
   Badge,
   Button,
   Caption1,
+  Input,
   MessageBar,
   MessageBarBody,
   Spinner,
@@ -76,6 +77,8 @@ const useStyles = makeStyles({
   titleRow: { display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 },
   icon: { fontSize: '16px', display: 'flex', flexShrink: 0 },
   title: { flex: 1, minWidth: 0 },
+  /** The "app's copy only" caveat under an in-progress title edit on a synced card. */
+  titleHint: { color: tokens.colorNeutralForeground3 },
   key: { textDecoration: 'none' },
   phase: { color: tokens.colorNeutralForeground3 },
   /** Everything below the band keeps the pane's own inset. */
@@ -311,8 +314,23 @@ export function TaskDetail({
    */
   const [busy, setBusy] = useState<ComposerBusy>(null);
   const [error, setError] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState(false);
+  /**
+   * Own flag, not the pane's `busy` above: that one names which COMPOSER send is in
+   * flight (`ComposerBusy`), and a title edit is not one of its four sends — the same
+   * reason `TaskDetailsCell`'s description Save keeps its own `busy` rather than sharing
+   * the pane's.
+   */
+  const [titleBusy, setTitleBusy] = useState(false);
+  /** The title being written, drafted like every other editable field (`./drafts`). */
+  const titleDraft = useDraft(task ? draftKey(task.id, 'title') : null, task?.title ?? '');
 
   const taskId = task?.id ?? null;
+  // A card switch abandons whatever title edit was open on the previous one — the same
+  // rule `TaskDetailsCell` applies to the description's Edit toggle.
+  useEffect(() => {
+    setEditingTitle(false);
+  }, [taskId]);
   /**
    * WHICH tracker this card belongs to, or null for a card that is nobody's ticket.
    *
@@ -749,6 +767,34 @@ export function TaskDetail({
     }
   }
 
+  /**
+   * Rewrite the card's title. For a JIRA or GitHub card this is the app's copy only —
+   * the next sync overwrites it from the issue's own summary, same bargain the
+   * description strikes (`TaskDetailsCell`).
+   */
+  async function saveTitle(): Promise<void> {
+    if (!task) return;
+    const trimmed = titleDraft.value.trim();
+    if (!trimmed) return;
+    setTitleBusy(true);
+    setError(null);
+    try {
+      onStatusChanged?.(await transport.invoke('task:setTitle', task.id, trimmed));
+      titleDraft.commit();
+      setEditingTitle(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTitleBusy(false);
+    }
+  }
+
+  /** Abandoned: the card's own title comes back and the draft goes. */
+  function cancelTitleEdit(): void {
+    titleDraft.reset();
+    setEditingTitle(false);
+  }
+
   const isStep = Boolean(task.parentTaskId);
   /**
    * Whether this card is shouting — the board's own predicate, so the button appears for
@@ -801,40 +847,79 @@ export function TaskDetail({
           )}
           <div className={styles.titleRow}>
             <span className={styles.icon}>{typeIcon(task)}</span>
-            <Subtitle2 className={styles.title}>{task.title}</Subtitle2>
-            {/* The ticket badge, and the one place this pane names the tracker out loud.
-                "Open in JIRA" over a GitHub issue sends the human to the wrong tab, and the
-                key itself is printed short (`#123`) with the whole `owner/repo#123` in the
-                tooltip — the same bargain the card's footer badge strikes, so the two cannot
-                read as two different tickets. */}
-            {task.externalKey &&
-              (task.externalUrl ? (
-                <a
-                  className={styles.key}
-                  href={task.externalUrl}
-                  target="_blank"
-                  rel="noreferrer noopener"
-                  title={`Open ${task.externalKey} in ${trackerName(task) ?? 'the tracker'}`}
+            {editingTitle ? (
+              <>
+                <Input
+                  className={styles.title}
+                  value={titleDraft.value}
+                  disabled={titleBusy}
+                  autoFocus
+                  onChange={(_e, d) => titleDraft.set(d.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') void saveTitle();
+                    else if (e.key === 'Escape') cancelTitleEdit();
+                  }}
+                />
+                <Button size="small" disabled={titleBusy} onClick={cancelTitleEdit}>
+                  Cancel
+                </Button>
+                <Button
+                  size="small"
+                  appearance="primary"
+                  icon={titleBusy ? <Spinner size="tiny" /> : undefined}
+                  disabled={titleBusy || !titleDraft.value.trim()}
+                  onClick={() => void saveTitle()}
                 >
-                  <Badge
-                    appearance="outline"
-                    color="informative"
-                    icon={<TrackerMark task={task} size={12} />}
-                  >
-                    {shortTicketKey(task)}
-                  </Badge>
-                </a>
-              ) : (
-                <Badge
-                  appearance="outline"
-                  color="informative"
-                  icon={<TrackerMark task={task} size={12} />}
-                  title={task.externalKey}
-                >
-                  {shortTicketKey(task)}
-                </Badge>
-              ))}
+                  {titleBusy ? 'Saving…' : 'Save'}
+                </Button>
+              </>
+            ) : (
+              <>
+                <Subtitle2 className={styles.title}>{task.title}</Subtitle2>
+                <Button size="small" appearance="subtle" onClick={() => setEditingTitle(true)}>
+                  Edit
+                </Button>
+                {/* The ticket badge, and the one place this pane names the tracker out loud.
+                    "Open in JIRA" over a GitHub issue sends the human to the wrong tab, and the
+                    key itself is printed short (`#123`) with the whole `owner/repo#123` in the
+                    tooltip — the same bargain the card's footer badge strikes, so the two cannot
+                    read as two different tickets. */}
+                {task.externalKey &&
+                  (task.externalUrl ? (
+                    <a
+                      className={styles.key}
+                      href={task.externalUrl}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      title={`Open ${task.externalKey} in ${trackerName(task) ?? 'the tracker'}`}
+                    >
+                      <Badge
+                        appearance="outline"
+                        color="informative"
+                        icon={<TrackerMark task={task} size={12} />}
+                      >
+                        {shortTicketKey(task)}
+                      </Badge>
+                    </a>
+                  ) : (
+                    <Badge
+                      appearance="outline"
+                      color="informative"
+                      icon={<TrackerMark task={task} size={12} />}
+                      title={task.externalKey}
+                    >
+                      {shortTicketKey(task)}
+                    </Badge>
+                  ))}
+              </>
+            )}
           </div>
+          {editingTitle && tracker && (
+            <Caption1 className={styles.titleHint}>
+              Edits the app&apos;s copy — the next {isJira ? 'JIRA' : 'GitHub'} sync replaces it
+              with the issue&apos;s own {isJira ? 'summary' : 'title'}.
+            </Caption1>
+          )}
           <Caption1 className={styles.phase}>
             {[task.externalType ?? task.type, task.externalPriority, !isStep ? task.phase : null]
               .filter(Boolean)

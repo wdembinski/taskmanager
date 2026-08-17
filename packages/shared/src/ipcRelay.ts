@@ -165,6 +165,7 @@ export const RELAY_POLICY: {
   'task:updateSubtask': 'relay',
   'task:setStatus': 'relay',
   'task:setDescription': 'relay',
+  'task:setTitle': 'relay',
   'task:setPriority': 'relay',
   'task:setStatusNote': 'relay',
   'task:setProject': 'relay',
