@@ -348,6 +348,7 @@ jobs:
       # rather than waiting on it. `--clobber` makes this step (and the whole job) safe to
       # re-run: a retry re-uploads the same filenames instead of erroring on "already exists".
       - name: Upload the installer and feed to the draft
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.version.outputs.tag }}
