@@ -12,7 +12,7 @@
  * is merely silent.
  */
 import { useEffect, useMemo, useState } from 'react';
-import { Caption1, makeStyles } from '@fluentui/react-components';
+import { Caption1, CounterBadge, makeStyles } from '@fluentui/react-components';
 import {
   AlertRegular,
   DataTrendingRegular,
@@ -149,6 +149,33 @@ function SignedInBoard({
   const board = useCloudBoard(auth, config);
   const now = useTick(AGE_TICK_MS);
   const [screen, setScreen] = useState<Screen>('mytasks');
+  // How many tasks are waiting on a human — the same badge and status-bar highlight the
+  // desktop shell shows (`apps/client/src/renderer/src/App.tsx`), read the same way over
+  // `board.transport`'s `attention:list`/`attention:new`/`attention:resolved`
+  // (`useBoardExtras` reads the identical channels for the board's own ring, on its own
+  // subscription). Held here rather than inside `BoardScreen` because the nav rail and
+  // status bar are the shell's, not the board's, and both need the count with every other
+  // screen closed.
+  const [attentionCount, setAttentionCount] = useState(0);
+
+  useEffect(() => {
+    let live = true;
+    void board.transport
+      .invoke('attention:list')
+      .then((items) => {
+        if (live) setAttentionCount(items.length);
+      })
+      .catch(() => undefined);
+    const offNew = board.transport.on('attention:new', () => setAttentionCount((n) => n + 1));
+    const offResolved = board.transport.on('attention:resolved', () =>
+      setAttentionCount((n) => Math.max(0, n - 1)),
+    );
+    return () => {
+      live = false;
+      offNew();
+      offResolved();
+    };
+  }, [board.transport]);
 
   const online = board.state.clients.length > 0;
   // Only ever about the Client this tab is actually driving. A second, older desktop on the
@@ -164,7 +191,21 @@ function SignedInBoard({
           // in the rail's own Account dropdown rather than the status bar — this is the only
           // host with an account to sign back out of, so it is also the only one passing it.
           <NavRail
-            items={NAV}
+            items={NAV.map((item) =>
+              item.id === 'attention' && attentionCount > 0
+                ? {
+                    ...item,
+                    badge: (
+                      <CounterBadge
+                        count={attentionCount}
+                        color="danger"
+                        size="small"
+                        appearance="filled"
+                      />
+                    ),
+                  }
+                : item,
+            )}
             selected={screen}
             onSelect={(id) => setScreen(id as Screen)}
             accountItems={[{ id: 'signout', label: 'Sign out', onClick: onSignOut }]}
@@ -192,7 +233,7 @@ function SignedInBoard({
           ) : null
         }
         status={
-          <StatusBar>
+          <StatusBar attention={attentionCount > 0}>
             {/* The dot's question is the only one that decides whether an edit made here
                 goes anywhere: a command is delivered to a desktop Client, so with none
                 polling there is nothing to apply it. */}
@@ -229,6 +270,7 @@ function SignedInBoard({
                   ? 'first sync pending'
                   : `synced ${describeAge(now - board.lastPolledAt)}`}
             </Caption1>
+            {attentionCount > 0 && <Caption1>· {attentionCount} waiting on you</Caption1>}
             <StatusSpacer />
             <Caption1>v{__APP_VERSION__}</Caption1>
           </StatusBar>
