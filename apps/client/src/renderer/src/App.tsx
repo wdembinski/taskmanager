@@ -36,6 +36,7 @@ import {
 import {
   AlertRegular,
   DataTrendingRegular,
+  FolderRegular,
   PlayRegular,
   SettingsRegular,
   TaskListSquareLtrRegular,
@@ -48,6 +49,7 @@ import { AuthBanner } from './AuthBanner';
 import { LimitBanner } from './LimitBanner';
 import { MyTasks } from './MyTasks';
 import { currentSprintName } from '@ui/board/currentSprint';
+import { Projects } from '@ui/projects/Projects';
 import { SyncRing } from './SyncRing';
 import type { SyncState } from '@shared/sync';
 import { Performance } from '@ui/Performance';
@@ -87,13 +89,18 @@ const useStyles = makeStyles({
  *
  * The ENGINE's notion of a project stays exactly where it is. Projects are how runs are
  * queued, how concurrency is bounded and where a worktree is cut; the personal board is
- * itself a project. Only the two screens are gone.
+ * itself a project. Only the two screens were gone.
+ *
+ * Phase 24 brings a *Projects* tile back, but it is not that screen's revival: it manages
+ * **native ticket projects** — a key prefix and the tickets this app tracks itself, with no
+ * repo and no plan file — and its backlog, not the legacy plan-driven kind.
  */
-type TabId = 'mytasks' | 'performance' | 'attention' | 'settings' | 'scratch';
+type TabId = 'mytasks' | 'projects' | 'performance' | 'attention' | 'settings' | 'scratch';
 
 /** The rail, in order. The label is the tooltip and the accessible name. */
 const NAV: ReadonlyArray<NavRailItem & { id: TabId }> = [
   { id: 'mytasks', label: 'My Tasks', icon: <TaskListSquareLtrRegular /> },
+  { id: 'projects', label: 'Projects', icon: <FolderRegular /> },
   { id: 'performance', label: 'Performance', icon: <DataTrendingRegular /> },
   { id: 'attention', label: 'Attention', icon: <AlertRegular /> },
   { id: 'settings', label: 'Settings', icon: <SettingsRegular /> },
@@ -383,6 +390,8 @@ export function App(): JSX.Element {
     >
       {tab === 'mytasks' ? (
         <MyTasks />
+      ) : tab === 'projects' ? (
+        <Projects />
       ) : tab === 'performance' ? (
         <Performance />
       ) : tab === 'attention' ? (
