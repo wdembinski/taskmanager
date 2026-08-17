@@ -40,6 +40,7 @@ import {
 import { AddRegular, DismissRegular } from '@fluentui/react-icons';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
+import { clampSyncInterval, MAX_SYNC_INTERVAL_MINUTES } from '@shared/settings';
 import type {
   AppSettings,
   CloudSettings,
@@ -702,12 +703,15 @@ export function Settings(): JSX.Element {
             >
               <SpinButton
                 min={0}
-                max={120}
+                max={MAX_SYNC_INTERVAL_MINUTES}
                 value={settings.syncIntervalMinutes}
                 onChange={(_e, d) => {
                   const n = d.value ?? Number(d.displayValue);
-                  if (Number.isFinite(n))
-                    patch({ syncIntervalMinutes: Math.max(0, Math.round(n as number)) });
+                  // `clampSyncInterval`, not just `Number.isFinite`: `max` only constrains the
+                  // stepper buttons, not a value typed or pasted straight into the field, and
+                  // an unclamped one reaches `SyncPoller` — see its own docstring for why that
+                  // silently turns into a sync that never stops rather than a rejected save.
+                  if (Number.isFinite(n)) patch({ syncIntervalMinutes: clampSyncInterval(n) });
                 }}
               />
             </Field>
