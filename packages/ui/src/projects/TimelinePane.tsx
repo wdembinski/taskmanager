@@ -1,6 +1,7 @@
 /**
- * TimelinePane — the Gantt view of one project's tickets (Phase 24 step 6). Read-only: a bar
- * shows where a ticket is planned, nothing on this pane can be dragged yet (step 7).
+ * TimelinePane — the Gantt view of one project's tickets (Phase 24 steps 6-7). A bar shows
+ * where a ticket is planned, and — since step 7 — can be dragged to move it, dragged by
+ * either edge to resize it, or nudged a day at a time from the keyboard.
  *
  * Loads its own tickets and links the same way `BacklogTable` loads its own tickets — the two
  * panes are a Backlog/Timeline SWITCH in `Projects.tsx`, never mounted together, so there is
@@ -24,12 +25,34 @@
  * An undated ticket (`ganttBar` → null) never gets a bar; it is listed in the unscheduled
  * tray below the chart instead, which is what "→ the unscheduled tray" in `ganttLayout.ts`'s
  * own docs refers to.
+ *
+ * **The drag gesture is native pointer events, not HTML5 DnD** — the board's own drag
+ * (`board/chainDrag.ts`) reuses `dataTransfer` because it is choosing between two DnD
+ * payloads; a bar has no payload to carry, only a pixel delta, and DnD cannot report one
+ * mid-drag the way `pointermove` does. `setPointerCapture` is released on BOTH `pointerup`
+ * and `pointercancel` — a plain browser tab (the web mirror, `web-mirrors-the-desktop`) can
+ * lose the pointer to the page's own scroll gesture in a way an Electron window never will,
+ * and a capture that is only released on `pointerup` would leave the next click starting a
+ * phantom drag.
+ *
+ * Committing a drag follows `moveTask`'s optimistic shape in `MyTasks.tsx`: paint the
+ * rescheduled dates the instant the gesture ends, await `ticket:update`, paint what came
+ * back, and on a throw paint the ticket this pane had before the drag and surface the
+ * message. On the web that await is a relayed round trip through the desktop's own poll —
+ * seconds, not milliseconds — so the optimistic paint is what makes the drag read as a drag
+ * there, not merely a nicety.
+ *
+ * A collapsed epic's row draws the UNION of its children's bars (see `ganttRows`), which is
+ * not `row.ticket`'s own `startAt`/`dueAt` — there is nothing coherent to reschedule TO, so
+ * that one row's bar stays inert; expand it and its children drag individually.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Badge,
   Body1,
   Caption1,
+  MessageBar,
+  MessageBarBody,
   makeStyles,
   mergeClasses,
   tokens,
@@ -41,6 +64,7 @@ import { PaneLoading } from '../PaneLoading';
 import { useTransport } from '../transport';
 import { useInitialLoad } from '../useInitialLoad';
 import {
+  DAY_MS,
   GANTT_ROW_HEIGHT,
   collapsedEpicSet,
   ganttDependencyPath,
@@ -49,12 +73,43 @@ import {
   ganttRows,
   ganttScale,
   ganttTicks,
+  rescheduleTo,
   todayX,
   toggleCollapsedEpic,
+  type GanttBar,
   type GanttRow,
+  type RescheduleEdge,
 } from './ganttLayout';
 import { GanttHeader } from './GanttHeader';
 import { TicketDrawer } from './TicketDrawer';
+
+/** How far a pointer has to move, in px, before a press on a bar counts as a drag. Below
+ *  this it is a click — opening the drawer — the same threshold a native DnD would apply. */
+const DRAG_THRESHOLD_PX = 3;
+/** A resize handle's width, in px — thin strips at each end of a bar, `ew-resize` cursored. */
+const HANDLE_WIDTH_PX = 6;
+
+/** One in-flight drag gesture, tracked from the `pointerdown` that started it. */
+interface DragState {
+  ticketId: string;
+  edge: RescheduleEdge;
+  pointerId: number;
+  startClientX: number;
+  /** How far the pointer has moved since `startClientX` — px, screen space, not chart space. */
+  deltaPx: number;
+}
+
+/** `bar`, shifted by an in-flight drag's live `deltaPx` — a pure preview, nothing snapped or
+ *  clamped yet (that happens once on release, in `ganttLayout.ts`'s `rescheduleTo`). */
+function previewBar(bar: GanttBar, drag: DragState | null, rowId: string): GanttBar {
+  if (!drag || drag.ticketId !== rowId) return bar;
+  if (drag.edge === 'move') return { x: bar.x + drag.deltaPx, width: bar.width };
+  if (drag.edge === 'start') {
+    const width = Math.max(HANDLE_WIDTH_PX, bar.width - drag.deltaPx);
+    return { x: bar.x + bar.width - width, width };
+  }
+  return { x: bar.x, width: Math.max(HANDLE_WIDTH_PX, bar.width + drag.deltaPx) };
+}
 
 /** The row label column's fixed width — everything to its right is the scrollable chart. */
 const LABEL_WIDTH = 260;
@@ -120,9 +175,15 @@ const useStyles = makeStyles({
     stroke: tokens.colorBrandStroke1,
     strokeWidth: '1px',
     pointerEvents: 'auto',
-    cursor: 'pointer',
+    cursor: 'grab',
   },
+  barStatic: { cursor: 'pointer' },
   barEpic: { fill: tokens.colorBrandBackground, opacity: 0.85 },
+  handle: {
+    fill: 'transparent',
+    pointerEvents: 'auto',
+    cursor: 'ew-resize',
+  },
   barText: {
     fill: tokens.colorNeutralForegroundOnBrand,
     fontSize: '11px',
@@ -176,6 +237,18 @@ export function TimelinePane({
   const [links, setLinks] = useState<TicketLink[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
+  const [drag, setDrag] = useState<DragState | null>(null);
+  const [dragError, setDragError] = useState<string | null>(null);
+  // Set the instant a drag's pointer movement clears `DRAG_THRESHOLD_PX`, and read once by
+  // the bar's `onClick` right after — a real drag must not also open the drawer the way a
+  // plain click does, and `pointerup` cannot itself suppress the `click` that follows it.
+  const justDraggedRef = useRef(false);
+
+  /** Replace one ticket in `tickets` with the server's own copy — `moveTask`'s `patchTask`
+   *  in `MyTasks.tsx`, for this pane's own list. */
+  const patchTicket = useCallback((updated: Task) => {
+    setTickets((prev) => (prev ? prev.map((t) => (t.id === updated.id ? updated : t)) : prev));
+  }, []);
 
   const seed = useCallback(async () => {
     const [ownTickets, allSettings] = await Promise.all([
@@ -190,7 +263,7 @@ export function TimelinePane({
   useEffect(() => {
     const offTask = transport.on('task:changed', ({ task }) => {
       if (task.projectId !== projectId) return;
-      setTickets((prev) => (prev ? prev.map((t) => (t.id === task.id ? task : t)) : prev));
+      patchTicket(task);
     });
     const offTasks = transport.on('project:tasksChanged', ({ projectId: changed, tasks }) => {
       if (changed !== projectId) return;
@@ -202,7 +275,7 @@ export function TimelinePane({
       offTasks();
       offSettings();
     };
-  }, [transport, projectId]);
+  }, [transport, projectId, patchTicket]);
 
   useEffect(() => {
     let live = true;
@@ -252,6 +325,79 @@ export function TimelinePane({
   const dayCount = useMemo(() => ganttTicks(ganttScale(range, 1)).days.length, [range]);
   const chartWidth = Math.max(1, dayCount) * PX_PER_DAY;
   const scale = useMemo(() => ganttScale(range, chartWidth), [range, chartWidth]);
+
+  /**
+   * `moveTask`'s optimistic shape (`MyTasks.tsx`), for a ticket's dates instead of its column:
+   * paint the rescheduled ticket immediately, await `ticket:update`, paint what came back —
+   * and on a throw, paint the ticket this pane held before the drag and surface the message,
+   * rather than leaving the optimistic (and now possibly wrong) guess on screen.
+   */
+  const commitReschedule = useCallback(
+    async (ticket: Task, deltaMs: number, edge: RescheduleEdge) => {
+      const result = rescheduleTo(ticket, deltaMs, edge);
+      if (!result) return;
+      setDragError(null);
+      patchTicket({ ...ticket, startAt: result.startAt, dueAt: result.dueAt });
+      try {
+        const saved = await transport.invoke('ticket:update', ticket.id, {
+          startAt: result.startAt,
+          dueAt: result.dueAt,
+        });
+        patchTicket(saved);
+      } catch (e) {
+        patchTicket(ticket);
+        setDragError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [transport, patchTicket],
+  );
+
+  const handleBarPointerDown = useCallback(
+    (e: React.PointerEvent<SVGRectElement>, ticketId: string, edge: RescheduleEdge) => {
+      if (e.button !== 0) return;
+      e.currentTarget.setPointerCapture(e.pointerId);
+      setDrag({ ticketId, edge, pointerId: e.pointerId, startClientX: e.clientX, deltaPx: 0 });
+    },
+    [],
+  );
+
+  const handleBarPointerMove = useCallback((e: React.PointerEvent<SVGRectElement>) => {
+    setDrag((prev) => {
+      if (!prev || prev.pointerId !== e.pointerId) return prev;
+      return { ...prev, deltaPx: e.clientX - prev.startClientX };
+    });
+  }, []);
+
+  const endDrag = useCallback(
+    (e: React.PointerEvent<SVGRectElement>, commit: boolean) => {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+      setDrag((prev) => {
+        if (!prev || prev.pointerId !== e.pointerId) return prev;
+        if (commit && Math.abs(prev.deltaPx) >= DRAG_THRESHOLD_PX) {
+          justDraggedRef.current = true;
+          const ticket = (tickets ?? []).find((t) => t.id === prev.ticketId);
+          // The linear scale's own affine offset cancels out of a DIFFERENCE of two `msOf`
+          // calls, leaving exactly the ms a px DELTA represents — see `rescheduleTo`'s doc.
+          const deltaMs = scale.msOf(prev.deltaPx) - scale.msOf(0);
+          if (ticket) void commitReschedule(ticket, deltaMs, prev.edge);
+        }
+        return null;
+      });
+    },
+    [tickets, scale, commitReschedule],
+  );
+
+  const handleBarKeyDown = useCallback(
+    (e: React.KeyboardEvent<SVGRectElement>, ticket: Task) => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      e.preventDefault();
+      void commitReschedule(ticket, e.key === 'ArrowLeft' ? -DAY_MS : DAY_MS, 'move');
+    },
+    [commitReschedule],
+  );
+
   const ticks = useMemo(() => ganttTicks(scale), [scale]);
   const markers = useMemo(() => ganttMarkers(milestones, scale), [milestones, scale]);
   const today = todayX(scale, now);
@@ -308,6 +454,11 @@ export function TimelinePane({
 
   return (
     <div className={styles.root}>
+      {dragError && (
+        <MessageBar intent="error">
+          <MessageBarBody>{dragError}</MessageBarBody>
+        </MessageBar>
+      )}
       {rows.length === 0 ? (
         <Body1 className={styles.empty}>No tickets in this project yet.</Body1>
       ) : (
@@ -336,7 +487,6 @@ export function TimelinePane({
                   style={{ left: `${LABEL_WIDTH}px` }}
                   width={chartWidth}
                   height={chartHeight}
-                  aria-hidden="true"
                 >
                   {markers.map((m) => (
                     <line
@@ -346,33 +496,70 @@ export function TimelinePane({
                       y1={0}
                       x2={m.x}
                       y2={chartHeight}
+                      aria-hidden="true"
                     />
                   ))}
                   {today != null && (
-                    <line className={styles.today} x1={today} y1={0} x2={today} y2={chartHeight} />
+                    <line
+                      className={styles.today}
+                      x1={today}
+                      y1={0}
+                      x2={today}
+                      y2={chartHeight}
+                      aria-hidden="true"
+                    />
                   )}
                   {dependencyPaths.map((p) => (
-                    <path key={p.key} className={styles.dependency} d={p.d} />
+                    <path key={p.key} className={styles.dependency} d={p.d} aria-hidden="true" />
                   ))}
                   {scheduledRows.map((row, i) => {
-                    const bar = row.bar!;
+                    const isEpic = row.ticket.issueType === 'epic';
+                    // A collapsed epic's bar unions its children's — it is not the epic
+                    // ticket's own dates, so there is nothing coherent to drag it TO.
+                    const draggable = !(isEpic && collapsedEpicIds.has(row.ticket.id));
+                    const bar = draggable ? previewBar(row.bar!, drag, row.id) : row.bar!;
                     const y = i * GANTT_ROW_HEIGHT + BAR_INSET;
                     const height = GANTT_ROW_HEIGHT - BAR_INSET * 2;
-                    const isEpic = row.ticket.issueType === 'epic';
+                    const label = row.ticket.ticketKey
+                      ? `${row.ticket.ticketKey} ${row.ticket.title}`
+                      : row.ticket.title;
                     return (
-                      <g key={row.id} onClick={() => setSelectedTicketId(row.id)}>
-                        <title>
-                          {row.ticket.ticketKey
-                            ? `${row.ticket.ticketKey} ${row.ticket.title}`
-                            : row.ticket.title}
-                        </title>
+                      <g
+                        key={row.id}
+                        onClick={() => {
+                          if (justDraggedRef.current) {
+                            justDraggedRef.current = false;
+                            return;
+                          }
+                          setSelectedTicketId(row.id);
+                        }}
+                      >
+                        <title>{label}</title>
                         <rect
                           x={bar.x}
                           y={y}
                           width={bar.width}
                           height={height}
                           rx={4}
-                          className={mergeClasses(styles.bar, isEpic && styles.barEpic)}
+                          className={mergeClasses(
+                            styles.bar,
+                            !draggable && styles.barStatic,
+                            isEpic && styles.barEpic,
+                          )}
+                          tabIndex={draggable ? 0 : undefined}
+                          role={draggable ? 'button' : undefined}
+                          aria-label={
+                            draggable
+                              ? `${label} — drag or use arrow keys to reschedule`
+                              : undefined
+                          }
+                          onPointerDown={
+                            draggable ? (e) => handleBarPointerDown(e, row.id, 'move') : undefined
+                          }
+                          onPointerMove={draggable ? handleBarPointerMove : undefined}
+                          onPointerUp={draggable ? (e) => endDrag(e, true) : undefined}
+                          onPointerCancel={draggable ? (e) => endDrag(e, false) : undefined}
+                          onKeyDown={draggable ? (e) => handleBarKeyDown(e, row.ticket) : undefined}
                         />
                         {bar.width > 24 && (
                           <text
@@ -380,9 +567,38 @@ export function TimelinePane({
                             y={y + height / 2}
                             dominantBaseline="central"
                             className={styles.barText}
+                            aria-hidden="true"
                           >
                             {row.ticket.title}
                           </text>
+                        )}
+                        {draggable && (
+                          <>
+                            <rect
+                              x={bar.x}
+                              y={y}
+                              width={HANDLE_WIDTH_PX}
+                              height={height}
+                              className={styles.handle}
+                              aria-hidden="true"
+                              onPointerDown={(e) => handleBarPointerDown(e, row.id, 'start')}
+                              onPointerMove={handleBarPointerMove}
+                              onPointerUp={(e) => endDrag(e, true)}
+                              onPointerCancel={(e) => endDrag(e, false)}
+                            />
+                            <rect
+                              x={bar.x + bar.width - HANDLE_WIDTH_PX}
+                              y={y}
+                              width={HANDLE_WIDTH_PX}
+                              height={height}
+                              className={styles.handle}
+                              aria-hidden="true"
+                              onPointerDown={(e) => handleBarPointerDown(e, row.id, 'end')}
+                              onPointerMove={handleBarPointerMove}
+                              onPointerUp={(e) => endDrag(e, true)}
+                              onPointerCancel={(e) => endDrag(e, false)}
+                            />
+                          </>
                         )}
                       </g>
                     );

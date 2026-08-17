@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { Milestone, Task } from '@tm/shared/model';
 import {
+  DAY_MS,
   GANTT_ROW_HEIGHT,
+  clampSpan,
   collapsedEpicSet,
   ganttBar,
   ganttDependencyPath,
@@ -10,11 +12,11 @@ import {
   ganttRows,
   ganttScale,
   ganttTicks,
+  rescheduleTo,
+  snapToDay,
   toggleCollapsedEpic,
   todayX,
 } from './ganttLayout';
-
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 let seq = 0;
 /** A minimal native-ticket fixture — only the fields this module reads are worth naming. */
@@ -282,5 +284,120 @@ describe('collapsedEpicSet / toggleCollapsedEpic', () => {
 describe('GANTT_ROW_HEIGHT', () => {
   it('is a positive constant the drawing and the rows can share', () => {
     expect(GANTT_ROW_HEIGHT).toBeGreaterThan(0);
+  });
+});
+
+describe('snapToDay', () => {
+  it('snaps to the local midnight boundary, not the UTC one', () => {
+    const originalTz = process.env.TZ;
+    process.env.TZ = 'America/New_York';
+    try {
+      const localMidnight = new Date(2026, 2, 10).getTime();
+      const twoHoursIn = localMidnight + 2 * 60 * 60 * 1000;
+      // A UTC-boundary snap (`Math.round(ms / DAY_MS) * DAY_MS`) would land five hours off
+      // local midnight here — this only passes for an implementation that snaps LOCALLY.
+      expect(snapToDay(twoHoursIn)).toBe(localMidnight);
+    } finally {
+      process.env.TZ = originalTz;
+    }
+  });
+
+  it('rounds to whichever of the two neighbouring local midnights is closer', () => {
+    const day = new Date(2026, 0, 5).getTime();
+    const nextDay = new Date(2026, 0, 6).getTime();
+    expect(snapToDay(day + 1000)).toBe(day);
+    expect(snapToDay(nextDay - 1000)).toBe(nextDay);
+  });
+});
+
+describe('clampSpan', () => {
+  it('clamps the left edge to the minimum span when dragged past the right edge', () => {
+    const end = 10 * DAY_MS;
+    const [s, e] = clampSpan(50 * DAY_MS, end, 'start');
+    expect(e).toBe(end);
+    expect(e - s).toBe(DAY_MS);
+  });
+
+  it('clamps the right edge to the minimum span when dragged past the left edge', () => {
+    const start = 10 * DAY_MS;
+    const [s, e] = clampSpan(start, -5 * DAY_MS, 'end');
+    expect(s).toBe(start);
+    expect(e - s).toBe(DAY_MS);
+  });
+
+  it('leaves a span alone once it is already at or above the minimum', () => {
+    expect(clampSpan(0, 5 * DAY_MS, 'start')).toEqual([0, 5 * DAY_MS]);
+  });
+});
+
+describe('rescheduleTo', () => {
+  it('returns null for an undated ticket rather than inventing a start', () => {
+    expect(rescheduleTo({ startAt: null, dueAt: null }, DAY_MS, 'move')).toBeNull();
+    expect(rescheduleTo({ startAt: null, dueAt: 5 * DAY_MS }, DAY_MS, 'move')).toBeNull();
+    expect(rescheduleTo({ startAt: 5 * DAY_MS, dueAt: null }, DAY_MS, 'move')).toBeNull();
+  });
+
+  it('shifts both dates by the same whole number of days on a move', () => {
+    const startAt = new Date(2026, 5, 10).getTime();
+    const dueAt = new Date(2026, 5, 15).getTime();
+    const result = rescheduleTo({ startAt, dueAt }, 3 * DAY_MS + 1000, 'move');
+    expect(result).toEqual({
+      startAt: new Date(2026, 5, 13).getTime(),
+      dueAt: new Date(2026, 5, 18).getTime(),
+    });
+  });
+
+  it('moves exactly one day for a single-day keyboard nudge', () => {
+    const startAt = new Date(2026, 5, 10).getTime();
+    const dueAt = new Date(2026, 5, 12).getTime();
+    const result = rescheduleTo({ startAt, dueAt }, DAY_MS, 'move');
+    expect(result).toEqual({
+      startAt: new Date(2026, 5, 11).getTime(),
+      dueAt: new Date(2026, 5, 13).getTime(),
+    });
+  });
+
+  it('preserves a bar’s day-duration exactly when a move crosses a DST boundary', () => {
+    const originalTz = process.env.TZ;
+    process.env.TZ = 'America/New_York';
+    try {
+      // 2026-03-08 is the US spring-forward date. A 5-day ticket entirely before it, dragged
+      // 10 days forward, lands entirely after it — the raw ms between the new dates is one
+      // hour short of 5 * DAY_MS, but the CALENDAR-day span a human reads must still be 5.
+      const startAt = new Date(2026, 2, 1).getTime();
+      const dueAt = new Date(2026, 2, 6).getTime();
+      const result = rescheduleTo({ startAt, dueAt }, 10 * DAY_MS, 'move');
+      expect(result).toEqual({
+        startAt: new Date(2026, 2, 11).getTime(),
+        dueAt: new Date(2026, 2, 16).getTime(),
+      });
+    } finally {
+      process.env.TZ = originalTz;
+    }
+  });
+
+  it('returns the unchanged pair when a move would invert an already-inverted ticket', () => {
+    const startAt = 20 * DAY_MS;
+    const dueAt = 10 * DAY_MS;
+    const result = rescheduleTo({ startAt, dueAt }, DAY_MS, 'move');
+    expect(result).toEqual({ startAt, dueAt });
+  });
+
+  it('clamps to the minimum span, rather than inverting, when the start edge is dragged past the due edge', () => {
+    const startAt = 10 * DAY_MS;
+    const dueAt = 15 * DAY_MS;
+    const result = rescheduleTo({ startAt, dueAt }, 20 * DAY_MS, 'start');
+    expect(result).not.toBeNull();
+    expect(result!.dueAt).toBe(dueAt);
+    expect(result!.dueAt - result!.startAt).toBe(DAY_MS);
+  });
+
+  it('clamps to the minimum span, rather than inverting, when the due edge is dragged past the start edge', () => {
+    const startAt = 10 * DAY_MS;
+    const dueAt = 15 * DAY_MS;
+    const result = rescheduleTo({ startAt, dueAt }, -20 * DAY_MS, 'end');
+    expect(result).not.toBeNull();
+    expect(result!.startAt).toBe(startAt);
+    expect(result!.dueAt - result!.startAt).toBe(DAY_MS);
   });
 });

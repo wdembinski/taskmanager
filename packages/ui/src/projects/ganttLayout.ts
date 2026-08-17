@@ -19,7 +19,8 @@
  */
 import type { Milestone, Task } from '@tm/shared/model';
 
-const DAY_MS = 24 * 60 * 60 * 1000;
+/** One day in ms — exported for the drag gesture (step 7), which nudges by exactly one of these. */
+export const DAY_MS = 24 * 60 * 60 * 1000;
 /** Breathing room on each side of the dated tickets, in days. */
 const PAD_DAYS = 3;
 /** However narrow the dated tickets cluster, the range never draws shorter than this. */
@@ -341,4 +342,95 @@ export function toggleCollapsedEpic(
   const kept = collapsed.filter((id, i) => epicIdsOnBoard.has(id) && collapsed.indexOf(id) === i);
   const next = kept.filter((id) => id !== epicId);
   return collapsed.includes(epicId) ? next : [...next, epicId];
+}
+
+/** `ms` shifted by whole LOCAL calendar days via `Date#setDate` — DST-safe, unlike `ms + n*DAY_MS`. */
+function addLocalDays(ms: number, days: number): number {
+  const d = new Date(ms);
+  d.setDate(d.getDate() + days);
+  return d.getTime();
+}
+
+/**
+ * `ms` snapped to whichever local midnight — the day it falls in, or the next one — sits
+ * closer to it.
+ *
+ * Local, not UTC: `Math.round(ms / DAY_MS) * DAY_MS` snaps to boundaries at UTC midnight,
+ * which is a day's own midnight only for a reader at UTC+0. `startOfLocalDay` (and the day
+ * after it, reached the same `Date#setDate` way `ganttTicks` walks days) are what keep the
+ * boundary the one a human actually reads as "today."
+ */
+export function snapToDay(ms: number): number {
+  const floor = startOfLocalDay(ms).getTime();
+  const ceil = addLocalDays(floor, 1);
+  return ms - floor <= ceil - ms ? floor : ceil;
+}
+
+/** The narrowest a bar can be resized down to — one day, the same grain a bar snaps to. */
+const MIN_SPAN_MS = DAY_MS;
+
+/**
+ * A candidate `[start, end]`, corrected so `end - start` is never below {@link MIN_SPAN_MS}.
+ *
+ * Anchored on the edge `movedEdge` did NOT touch: dragging the left edge past the right one
+ * clamps the LEFT edge back to `end - MIN_SPAN_MS`, rather than swapping which value plays
+ * which role — a bar's start and due never trade places just because a drag overshot.
+ */
+export function clampSpan(
+  start: number,
+  end: number,
+  movedEdge: 'start' | 'end',
+): [number, number] {
+  if (end - start >= MIN_SPAN_MS) return [start, end];
+  return movedEdge === 'start' ? [end - MIN_SPAN_MS, end] : [start, start + MIN_SPAN_MS];
+}
+
+/** Which part of a bar a Gantt drag is moving. */
+export type RescheduleEdge = 'move' | 'start' | 'end';
+
+/**
+ * A ticket's new `[startAt, dueAt]` for one Gantt drag gesture — or `null` for an undated
+ * ticket, since there is no start to reschedule FROM (the caller sends those to the tray,
+ * never the chart, so this is a defensive `null` rather than an invented "today").
+ *
+ * `deltaMs` is the raw, LINEAR ms the pointer moved — `scale.msOf` is affine, so a caller
+ * gets this from `scale.msOf(dxPx) - scale.msOf(0)` rather than a fixed px-per-day constant.
+ * It is turned into whole LOCAL days here, never applied as raw ms: for `'move'`, both
+ * dates shift by the SAME day count (`addLocalDays`), which is what keeps a bar's duration
+ * exactly the number of days a human reads even when the drag crosses a DST boundary — a
+ * 5-day bar stays a 5-day bar whether or not an hour was added or dropped in between.
+ *
+ * `'start'`/`'end'` resize only the touched edge, snapped to the nearest local day
+ * ({@link snapToDay}) and then run through {@link clampSpan} — a resize that overshoots the
+ * other edge clamps to the minimum span instead of inverting the bar.
+ */
+export function rescheduleTo(
+  ticket: Pick<Task, 'startAt' | 'dueAt'>,
+  deltaMs: number,
+  edge: RescheduleEdge,
+): { startAt: number; dueAt: number } | null {
+  const startAt = ticket.startAt ?? null;
+  const dueAt = ticket.dueAt ?? null;
+  if (startAt == null || dueAt == null) return null;
+
+  if (edge === 'move') {
+    const days = Math.round(deltaMs / DAY_MS);
+    const newStart = addLocalDays(startAt, days);
+    const newDue = addLocalDays(dueAt, days);
+    // Shifting both ends by the same day count can't invert an already-ordered pair, but a
+    // ticket stored inverted to begin with (startAt after dueAt) must not come out swapped —
+    // see the module doc: clamping, never swapping, is how this file resolves an overshoot.
+    if (newDue < newStart) return { startAt, dueAt };
+    return { startAt: newStart, dueAt: newDue };
+  }
+
+  if (edge === 'start') {
+    const candidate = snapToDay(startAt + deltaMs);
+    const [s, e] = clampSpan(candidate, dueAt, 'start');
+    return { startAt: s, dueAt: e };
+  }
+
+  const candidate = snapToDay(dueAt + deltaMs);
+  const [s, e] = clampSpan(startAt, candidate, 'end');
+  return { startAt: s, dueAt: e };
 }
