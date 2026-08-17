@@ -433,7 +433,7 @@ describe('the one configuration the web deliberately does not mirror', () => {
    * An agent project IS a folder on the machine the engine runs on, so making one begins with
    * `project:pickDirectory` — a native picker, `host-only` for the reason every native modal
    * is. What makes this worth a guard is that the WRITE channels are not host-only:
-   * `agentProject:add`, `:update` and `:remove` are plain `'relay'`, correctly, because
+   * `project:add`, `:update` and `:remove` are plain `'relay'`, correctly, because
    * executed on the desktop they are ordinary store writes. So nothing in `RELAY_POLICY`
    * stops a browser calling them, and `pnpm typecheck` never will either. The only thing
    * holding the boundary is that no browser code does — which is exactly the kind of fact
@@ -446,8 +446,14 @@ describe('the one configuration the web deliberately does not mirror', () => {
   const SHARED_UI_TREE = 'packages/ui/src';
   const DESKTOP_PANE = 'apps/client/src/renderer/src/AgentProjects.tsx';
 
-  /** A CALL, not a mention: both files below discuss these channels in prose, correctly. */
-  const AGENT_PROJECT_WRITE = /invoke\(\s*'agentProject:(?:add|update|remove)'/;
+  /**
+   * A CALL, not a mention: both files below discuss these channels in prose, correctly.
+   *
+   * `project:*` now carries every project write — agent projects and plan projects alike,
+   * since `agentProject:*` folded into it — so this guards the whole surface rather than a
+   * name that used to be agent-project-specific.
+   */
+  const PROJECT_WRITE = /invoke\(\s*'project:(?:add|update|remove)'/;
   const NATIVE_PICKER = /invoke\(\s*'project:pick(?:Directory|File)'/;
 
   it('has no browser code that creates, edits or removes one', () => {
@@ -459,13 +465,13 @@ describe('the one configuration the web deliberately does not mirror', () => {
       `found no non-test sources under ${WEB_TREE} — has the tree moved?`,
     ).toBeGreaterThan(10);
 
-    const writes = sources.filter((path) => AGENT_PROJECT_WRITE.test(read(path)));
+    const writes = sources.filter((path) => PROJECT_WRITE.test(read(path)));
     expect(
       writes,
-      `${writes.join(', ')} calls an agentProject write channel. Those relay, so it would ` +
-        'even work — and it would leave a browser holding a repo path on a machine it cannot ' +
-        'see. Creating and editing agent projects is desktop-only by decision (plan doc, ' +
-        '"What is deliberately out of scope"); reversing it is a plan change, not a patch.',
+      `${writes.join(', ')} calls a project write channel. Those relay, so it would even ` +
+        'work — and it would leave a browser holding a repo path on a machine it cannot see. ' +
+        'Creating and editing projects is desktop-only by decision (plan doc, "What is ' +
+        'deliberately out of scope"); reversing it is a plan change, not a patch.',
     ).toEqual([]);
 
     const pickers = sources.filter((path) => NATIVE_PICKER.test(read(path)));

@@ -108,7 +108,7 @@ export interface AssignAgentDialogProps {
   open: boolean;
   /** The card being delegated (null closes the dialog's content). */
   task: Task | null;
-  /** Every agent project (from `agentProject:list`), for the picker. */
+  /** Every agent project (from `project:list`), for the picker. */
   agentProjects: Project[];
   onClose: () => void;
   /** The updated task, so the board can patch the card without a refresh. */

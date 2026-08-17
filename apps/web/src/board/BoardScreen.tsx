@@ -603,7 +603,7 @@ export function BoardScreen({
         parents={parentCandidates}
         // The same cards, asked a different question — see `parentCandidates`.
         chainCandidates={parentCandidates}
-        // The REAL projects (`agentProject:list`, relayed), not the mirrored `Project` rows:
+        // The REAL projects (`project:list`, relayed), not the mirrored `Project` rows:
         // filing a card is about a repo the engine knows, and the mirror's rows are the
         // queues that hold tasks. The detail pane's Project dropdown offers this same list.
         projects={extras.agentProjects}

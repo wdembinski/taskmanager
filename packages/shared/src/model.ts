@@ -296,11 +296,15 @@ export interface Project {
 }
 
 /**
- * What the UI sends to add a project. Only `path` is required; the engine fills
+ * What the UI sends to add a project. Every field is optional; the engine fills
  * sensible defaults (name = folder name, plan = `<path>/plan.md`, etc.).
+ *
+ * `path` itself is one of them now: a project with no folder is legal — a ticket
+ * project or the odd card list has nothing to check out — and omitting it is how the
+ * caller says so. See {@link Project.path} / {@link hasRepo}.
  */
 export interface AddProjectInput {
-  path: string;
+  path?: string;
   name?: string;
   planPath?: string;
   defaultModel?: ClaudeModel;

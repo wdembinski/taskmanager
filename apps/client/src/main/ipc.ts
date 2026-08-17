@@ -43,6 +43,7 @@ import {
   hasPlan,
   hasRepo,
   isManualStatus,
+  isPersonalBoard,
   PERSONAL_PROJECT_ID,
   type BoardColumn,
   type JiraStatusCategory,
@@ -663,12 +664,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('project:list', async () =>
     store
       .listProjects()
-      // Only projects with a plan file belong on the Projects tab. The built-in Personal
-      // board is the standalone My Tasks board rather than a code project; a bare agent
-      // project belongs to My Tasks (managed in Settings); a ticket project has its own
-      // surface. All three simply have no plan file, so `hasPlan` alone is what lists them
-      // out — no elimination that a new project shape could silently fall through.
-      .filter(hasPlan)
+      // Every project shape (plan-driven, bare repo, ticket project) belongs on this list
+      // now — the only one that does not is the built-in Personal board, which is the
+      // standalone My Tasks board rather than something to list or manage as a project.
+      .filter((project) => !isPersonalBoard(project.id))
       .map((project) => {
         const tasks = store.getTasks(project.id);
         // A stored `dependsOn` is the persisted form of a plan `@needs:` marker, so a
@@ -679,6 +678,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   );
 
   handle('project:remove', async (id) => {
+    // Refuse deleting a project out from under a live run — a run keys off its project's
+    // directory, and still has to be integrated back into it. Folded in from the old
+    // `agentProject:remove`, which was the only caller that ever checked this.
+    if (scheduler.hasLiveRuns(id)) {
+      throw new Error('Stop the agent working in this project before removing it.');
+    }
     watcher.unwatch(id);
     store.removeProject(id);
   });
@@ -762,36 +767,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       permissionMode: 'acceptEdits',
     });
     return { runId, contractPhases: phases };
-  });
-
-  // --- Agent projects -------------------------------------------------------
-  // A repo directory a My Tasks card can be delegated to. Stored in the same
-  // `projects` table (so worktrees, integration, usage attribution and the limit
-  // gate work unchanged) but never queued, watched, or listed on the Projects tab.
-
-  handle('agentProject:list', async () =>
-    store.listProjects().filter((project) => hasRepo(project) && !hasPlan(project)),
-  );
-
-  // Forced plan-less rather than passed a `kind`: a repo with no plan file is what an
-  // agent project IS now, and the caller (the Agent Projects dialog) never sends `planPath`
-  // anyway.
-  handle('agentProject:add', async (input) => store.addProject({ ...input, planPath: '' }));
-
-  handle('agentProject:update', async (id, patch) => {
-    const existing = store.getProject(id);
-    if (!existing || !hasRepo(existing) || hasPlan(existing)) return null;
-    // Guard the plan-only fields: an agent project stays plan-less no matter what.
-    const { planPath: _planPath, writeBackPlan: _writeBackPlan, ...safe } = patch;
-    await retireRunStateIfTargetChanged(id, safe);
-    return store.updateProject(id, safe) ?? null;
-  });
-
-  handle('agentProject:remove', async (id) => {
-    if (scheduler.hasLiveRuns(id)) {
-      throw new Error('Stop the agent working in this project before removing it.');
-    }
-    store.removeProject(id);
   });
 
   handle('scheduler:start', async (projectId) => scheduler.start(projectId));

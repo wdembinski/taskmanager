@@ -28,7 +28,7 @@ import {
   PanelRightContractRegular,
   PanelRightExpandRegular,
 } from '@fluentui/react-icons';
-import { PERSONAL_PROJECT_ID, type Project, type Task } from '@shared/model';
+import { hasPlan, hasRepo, PERSONAL_PROJECT_ID, type Project, type Task } from '@shared/model';
 import {
   DEFAULT_BOARD_DISPLAY,
   type AppSettings,
@@ -216,10 +216,10 @@ export function MyTasks(): JSX.Element {
   // One seed load for every channel the board reads, so a failure in any of them is
   // reported rather than leaving the board on its spinner.
   const seed = useCallback(async () => {
-    const [board, appSettings, repos, mrs, chain, files, gone] = await Promise.all([
+    const [board, appSettings, projects, mrs, chain, files, gone] = await Promise.all([
       window.api.invoke('board:tasks'),
       window.api.invoke('settings:get'),
-      window.api.invoke('agentProject:list'),
+      window.api.invoke('project:list'),
       window.api.invoke('mr:mergeRequests'),
       window.api.invoke('chain:links'),
       window.api.invoke('attachment:list'),
@@ -227,7 +227,9 @@ export function MyTasks(): JSX.Element {
     ]);
     setTasks(board);
     setSettings(appSettings);
-    setAgentProjects(repos);
+    // A repo directory with no plan file — the delegation targets, same as `agentProject:list`
+    // used to answer before the two channel sets merged into `project:*`.
+    setAgentProjects(projects.map((p) => p.project).filter((p) => hasRepo(p) && !hasPlan(p)));
     setMergeRequests(mrs);
     setLinks(chain);
     setAttachments(files);

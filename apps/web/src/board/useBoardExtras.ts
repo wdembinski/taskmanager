@@ -27,7 +27,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTransport, type Transport } from '@tm/ui/transport';
-import type { Project, Task } from '@tm/shared/model';
+import { hasPlan, hasRepo, type Project, type Task } from '@tm/shared/model';
 import type { TaskAttachment } from '@tm/shared/attachments';
 import type { MergeRequest } from '@tm/shared/mergeRequest';
 import type { LinkGate, TaskLink } from '@tm/shared/taskChain';
@@ -133,7 +133,13 @@ export function useBoardExtras(): BoardExtras {
       }
     };
 
-    void load(() => transport.invoke('agentProject:list'), setAgentProjects);
+    void load(
+      () => transport.invoke('project:list'),
+      // A repo directory with no plan file — the same set `agentProject:list` used to
+      // answer, before the two channel sets merged into `project:*`.
+      (projects) =>
+        setAgentProjects(projects.map((p) => p.project).filter((p) => hasRepo(p) && !hasPlan(p))),
+    );
     void load(() => transport.invoke('mr:mergeRequests'), setMergeRequests);
     void load(() => transport.invoke('attachment:list'), setAttachments);
     void load(() => transport.invoke('chain:links'), setChainLinks);

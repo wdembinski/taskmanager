@@ -40,7 +40,7 @@ import {
 import { DismissRegular } from '@fluentui/react-icons';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
-import { MODELS, type Project } from '@shared/model';
+import { hasPlan, hasRepo, MODELS, type Project } from '@shared/model';
 import { RELEASE_DOC } from '@shared/release';
 import {
   execTargetLabel,
@@ -104,7 +104,10 @@ export function AgentProjects(): JSX.Element {
   const [dialog, setDialog] = useState<{ open: boolean; project?: Project }>({ open: false });
 
   const refresh = useCallback(async () => {
-    setProjects(await window.api.invoke('agentProject:list'));
+    const all = await window.api.invoke('project:list');
+    // A repo directory with no plan file — the same set `agentProject:list` used to answer,
+    // now filtered client-side out of the merged `project:list`.
+    setProjects(all.map((p) => p.project).filter((p) => hasRepo(p) && !hasPlan(p)));
   }, []);
 
   const initial = useInitialLoad(refresh);
@@ -112,7 +115,7 @@ export function AgentProjects(): JSX.Element {
   async function remove(project: Project): Promise<void> {
     setError(null);
     try {
-      await window.api.invoke('agentProject:remove', project.id);
+      await window.api.invoke('project:remove', project.id);
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -327,7 +330,7 @@ function AgentProjectDialog({
     setError(null);
     try {
       if (project) {
-        await window.api.invoke('agentProject:update', project.id, {
+        await window.api.invoke('project:update', project.id, {
           path,
           name: name.trim() || undefined,
           defaultModel: model,
@@ -341,8 +344,11 @@ function AgentProjectDialog({
           autoIntegrate,
         });
       } else {
-        await window.api.invoke('agentProject:add', {
+        await window.api.invoke('project:add', {
           path,
+          // Forced plan-less: an agent project is a repo with no plan file, and `project:add`
+          // otherwise defaults `planPath` to `<path>/plan.md` the moment a path is given.
+          planPath: '',
           name: name.trim() || undefined,
           defaultModel: model,
           planningModel,

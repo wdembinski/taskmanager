@@ -46,7 +46,7 @@ export const PROTOCOL_VERSION = 2;
  * WHAT THIS DELIBERATELY DOES NOT CARRY
  * -------------------------------------
  * What that desktop is CONFIGURED with. `settings:get`, `jira:getConfigStatus`,
- * `gitlab:getConfigStatus`, `agentProject:list` and `exec:listDistros` are all `'relay'` in
+ * `gitlab:getConfigStatus`, `project:list` and `exec:listDistros` are all `'relay'` in
  * `@tm/shared/ipcRelay`, so a browser already reads every one of them live, off the target
  * Client, through the same `ipc-invoke` path every other channel uses. Mirroring any of it
  * onto this type would be a second, staler copy of an answer the wire can already ask for —

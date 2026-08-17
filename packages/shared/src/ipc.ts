@@ -260,11 +260,22 @@ export interface IpcApi {
   'project:pickDirectory': () => Promise<string | null>;
   /** Open a native file picker (markdown), for choosing a custom plan file (Phase 8). */
   'project:pickFile': () => Promise<string | null>;
-  /** Add a project, parse its plan into tasks, and return it with those tasks. */
+  /**
+   * Add a project — a plan-driven queue, a bare repo, a ticket project, or any mix of the
+   * three, since capabilities are derived from which fields are set (see `hasPlan` /
+   * `hasRepo` / `ownsTickets` in `@shared/model`) rather than from a `kind` the caller picks.
+   * A project with no folder is legal: `path` is optional on {@link AddProjectInput}. Parses
+   * a plan into tasks when one exists, and returns it with those tasks (empty otherwise).
+   */
   'project:add': (input: AddProjectInput) => Promise<ProjectWithTasks>;
-  /** List every project, each bundled with its current tasks. */
+  /**
+   * Every project, each bundled with its current tasks — every SHAPE of project (plan-driven,
+   * bare repo, ticket project) in the one list, since none of them is a special case any more.
+   * The lone exclusion is the built-in Personal board (`PERSONAL_PROJECT_ID`): it is the
+   * standalone My Tasks board rather than something to list or manage as a project.
+   */
   'project:list': () => Promise<ProjectWithTasks[]>;
-  /** Remove a project and all its tasks. */
+  /** Remove a project and all its tasks. Rejects while one of its runs is still live. */
   'project:remove': (id: string) => Promise<void>;
   /** Re-read a project's plan file and reconcile it into the task list. */
   'project:syncPlan': (id: string) => Promise<Task[]>;
@@ -277,9 +288,10 @@ export interface IpcApi {
    */
   'project:setAligned': (id: string, aligned: boolean) => Promise<void>;
   /**
-   * Edit an existing project's name / plan file / model / permission mode /
-   * write-back (Phase 8). Returns the updated project, or null if unknown. Model
-   * and mode changes take effect on the next task run.
+   * Edit an existing project's name / folder / plan file / ticket prefix / model /
+   * permission mode / write-back (Phase 8) — every shape of project through the one patch,
+   * since none of them is a special case. Returns the updated project, or null if unknown.
+   * Model and mode changes take effect on the next task run.
    */
   'project:update': (id: string, patch: ProjectPatch) => Promise<Project | null>;
   /** Parse a project's plan file and check its `@needs:` dependencies (resolve + no cycles). */
@@ -320,22 +332,6 @@ export interface IpcApi {
    * Either way the plan watcher re-syncs once the file changes.
    */
   'project:alignPlan': (id: string) => Promise<{ runId: string | null; contractPhases: string[] }>;
-
-  /**
-   * List the agent projects — repo directories, with no plan file, that a My Tasks card
-   * can be delegated to. Deliberately separate from `project:list`, which returns only
-   * the plan-driven projects shown on the Projects tab.
-   */
-  'agentProject:list': () => Promise<Project[]>;
-  /**
-   * Create an agent project from a folder (+ optional name, epic keys, defaults).
-   * No plan file is parsed or watched. Returns the created project.
-   */
-  'agentProject:add': (input: AddProjectInput) => Promise<Project>;
-  /** Edit an agent project (folder, name, epic keys, model, mode). Null if unknown. */
-  'agentProject:update': (id: string, patch: ProjectPatch) => Promise<Project | null>;
-  /** Remove an agent project. Rejects while one of its runs is still live. */
-  'agentProject:remove': (id: string) => Promise<void>;
 
   /**
    * Start (or resume) a project's queue: the scheduler runs its `pending` tasks

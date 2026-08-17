@@ -23,7 +23,7 @@
  * `apps/client/src/renderer/src/AgentProjects.tsx`, reaches the engine through `window.api`
  * directly rather than through the transport, and its first act is `project:pickDirectory` —
  * a native folder picker for a directory on the machine the engine runs on, which is why that
- * channel is `host-only` while `agentProject:add` itself is not. Choosing the folder is very
+ * channel is `host-only` while `project:add` itself is not. Choosing the folder is very
  * nearly the whole of creating one, so there is no useful half of this pane a browser could
  * draw: it would be an empty path field asking somebody to type an absolute path on a
  * computer they cannot see. It appears in {@link HOST_ONLY_SECTIONS} instead, which is a

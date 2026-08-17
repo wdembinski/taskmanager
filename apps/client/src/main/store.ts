@@ -2971,17 +2971,18 @@ export function createStore(dbPath: string): Store {
       // in `@shared/model`).
       const defaults = getSettings();
       const ticketPrefix = normalizeTicketPrefix(input.ticketPrefix ?? '') ?? '';
+      const path = input.path ?? '';
       const project: Project = {
         id: randomUUID(),
         // A project with no directory has nothing to be named after `basename('')` is
         // `''`, so it falls back to the ticket prefix rather than going nameless.
-        name: input.name?.trim() || basename(input.path) || ticketPrefix,
-        path: input.path,
+        name: input.name?.trim() || basename(path) || ticketPrefix,
+        path,
         // `hostJoin`, not `path.join`: for a WSL project the path is a Linux one, and
         // joining it on Windows would produce `/home/you/repo\plan.md`. Only defaulted
         // when there is a directory to put it in — a project with no `path` stays
         // plan-less unless the caller names a `planPath` of its own.
-        planPath: input.planPath ?? (input.path ? hostJoin(input.path, 'plan.md') : ''),
+        planPath: input.planPath ?? (path ? hostJoin(path, 'plan.md') : ''),
         defaultModel: input.defaultModel ?? defaults.defaultModel,
         // Seeded from the app-wide default like `defaultModel`, and null all the way down
         // unless someone has set one — a new project plans on what it executes on.

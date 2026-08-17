@@ -139,11 +139,6 @@ export const RELAY_POLICY: {
 
   'git:graph': 'relay',
 
-  'agentProject:list': 'relay',
-  'agentProject:add': 'relay',
-  'agentProject:update': 'relay',
-  'agentProject:remove': 'relay',
-
   'scheduler:start': 'relay',
   'scheduler:pause': 'relay',
   'scheduler:stop': 'relay',
