@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { PERSONAL_PROJECT_ID, type Project, type Task } from '@tm/shared/model';
-import { selectArchivedTasks, selectBoardTasks, type BoardTaskState } from './boardSelectors';
+import {
+  selectAgentProjects,
+  selectArchivedTasks,
+  selectBoardTasks,
+  type BoardTaskState,
+} from './boardSelectors';
 
 function task(overrides: Partial<Task> = {}): Task {
   return {
@@ -134,5 +139,104 @@ describe('selectArchivedTasks', () => {
       'ticketGone',
       'personalGone',
     ]);
+  });
+});
+
+// Phase 24: a board scoped to a native ticket project reads the SAME two selectors, with an
+// explicit `projectId` instead of the default.
+describe('scoping to a ticket project', () => {
+  it('selectBoardTasks reads the named project instead of Personal', () => {
+    expect(selectBoardTasks(board, 'p2').map((t) => t.id)).toEqual(['other']);
+  });
+
+  it('selectArchivedTasks reads the named project instead of Personal', () => {
+    const state = stateOf([
+      otherProject,
+      task({ id: 'otherArchived', projectId: 'p2', archivedAt: 1 }),
+    ]);
+    expect(selectArchivedTasks(state, 'p2').map((t) => t.id)).toEqual(['otherArchived']);
+  });
+});
+
+/** The mirror's own shape — `CloudBoardState.projects` is keyed by id, not a list. */
+function mirrorOf(...projects: Project[]): Record<string, Project> {
+  return Object.fromEntries(projects.map((p) => [p.id, p]));
+}
+
+describe('selectAgentProjects', () => {
+  const mirroredAgent = project({ id: 'm1', name: 'Mirrored', path: '/repos/m1' });
+  const personalBoard = project({
+    id: 'personal',
+    name: 'Personal',
+    path: '/repos/personal',
+    planPath: '/repos/personal/plan.md',
+  });
+  const mirror = mirrorOf(mirroredAgent, personalBoard);
+
+  it('falls back to the mirrored rows while the relay has not answered', () => {
+    expect(selectAgentProjects(mirror, [], false).map((p) => p.id)).toEqual(['m1']);
+  });
+
+  it('lets the relay win once it has answered', () => {
+    const relayed = [project({ id: 'r1', name: 'Relayed', path: '/repos/r1' })];
+    expect(selectAgentProjects(mirror, relayed, true).map((p) => p.id)).toEqual(['r1']);
+  });
+
+  it('answers nothing for an answered-but-empty relay, rather than the mirror', () => {
+    // The whole point of the flag: an account whose desktop really has no agent projects must
+    // show none. Reading emptiness as "nobody was home" would resurrect every deleted repo.
+    expect(selectAgentProjects(mirror, [], true)).toEqual([]);
+  });
+
+  it('keeps only a repo with no plan file, on both branches', () => {
+    const ticketProject = project({ id: 'tk', name: 'Tickets', path: '' });
+    const planProject = project({
+      id: 'pl',
+      name: 'Legacy',
+      path: '/repos/pl',
+      planPath: '/repos/pl/plan.md',
+    });
+    const agent = project({ id: 'ag', name: 'Repo', path: '/repos/ag' });
+
+    expect(
+      selectAgentProjects(mirrorOf(ticketProject, planProject, agent), [], false).map((p) => p.id),
+    ).toEqual(['ag']);
+    expect(
+      selectAgentProjects({}, [ticketProject, planProject, agent], true).map((p) => p.id),
+    ).toEqual(['ag']);
+  });
+
+  it('orders by name either way round, so the relay replacing the mirror does not reshuffle', () => {
+    const alpha = project({ id: 'z', name: 'Alpha', path: '/repos/z' });
+    const zulu = project({ id: 'a', name: 'Zulu', path: '/repos/a' });
+    expect(selectAgentProjects(mirrorOf(zulu, alpha), [], false).map((p) => p.name)).toEqual([
+      'Alpha',
+      'Zulu',
+    ]);
+    expect(selectAgentProjects({}, [zulu, alpha], true).map((p) => p.name)).toEqual([
+      'Alpha',
+      'Zulu',
+    ]);
+  });
+
+  it('breaks a name tie by id, so two repos of the same name keep one order', () => {
+    const first = project({ id: 'b', name: 'Same', path: '/repos/b' });
+    const second = project({ id: 'a', name: 'Same', path: '/repos/a' });
+    expect(selectAgentProjects({}, [first, second], true).map((p) => p.id)).toEqual(['a', 'b']);
+    expect(selectAgentProjects(mirrorOf(first, second), [], false).map((p) => p.id)).toEqual([
+      'a',
+      'b',
+    ]);
+  });
+
+  it('does not sort the relayed array in place', () => {
+    // It is `useBoardExtras`'s state: sorting the caller's array would mutate React state
+    // held elsewhere, which is the kind of thing that only shows up as a stale render.
+    const relayed = [
+      project({ id: 'z', name: 'Zulu', path: '/repos/z' }),
+      project({ id: 'a', name: 'Alpha', path: '/repos/a' }),
+    ];
+    selectAgentProjects({}, relayed, true);
+    expect(relayed.map((p) => p.name)).toEqual(['Zulu', 'Alpha']);
   });
 });

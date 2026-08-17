@@ -30,7 +30,14 @@ import {
   PanelRightContractRegular,
   PanelRightExpandRegular,
 } from '@fluentui/react-icons';
-import { hasPlan, hasRepo, PERSONAL_PROJECT_ID, type Project, type Task } from '@shared/model';
+import {
+  hasPlan,
+  hasRepo,
+  PERSONAL_PROJECT_ID,
+  type Person,
+  type Project,
+  type Task,
+} from '@shared/model';
 import {
   DEFAULT_BOARD_DISPLAY,
   type AppSettings,
@@ -153,6 +160,8 @@ export function MyTasks(): JSX.Element {
   scopeIdsRef.current = scopeIds;
   /** Board metadata by project id — the name/colour a mixed board draws per card. */
   const boardsById = useMemo(() => new Map(scopes.map((s) => [s.id, s])), [scopes]);
+  /** The person roster, for the assignee avatar (Phase 24) — app-wide, like `agentProjects`. */
+  const [people, setPeople] = useState<Person[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -277,7 +286,7 @@ export function MyTasks(): JSX.Element {
   const seed = useCallback(async () => {
     const appSettings = await window.api.invoke('settings:get');
     const initialScope = appSettings.boardScopeId || 'all';
-    const [board, projects, mrs, chain, files, gone, boardScopes] = await Promise.all([
+    const [board, projects, mrs, chain, files, gone, boardScopeList, roster] = await Promise.all([
       window.api.invoke('board:tasks', initialScope),
       window.api.invoke('project:list'),
       window.api.invoke('mr:mergeRequests'),
@@ -285,6 +294,7 @@ export function MyTasks(): JSX.Element {
       window.api.invoke('attachment:list'),
       window.api.invoke('board:archived', initialScope),
       window.api.invoke('board:scopes'),
+      window.api.invoke('person:list'),
     ]);
     setScope(initialScope);
     setTasks(board);
@@ -296,7 +306,8 @@ export function MyTasks(): JSX.Element {
     setLinks(chain);
     setAttachments(files);
     setArchived(gone);
-    setScopes(boardScopes);
+    setScopes(boardScopeList);
+    setPeople(roster);
   }, []);
 
   /**
@@ -382,6 +393,10 @@ export function MyTasks(): JSX.Element {
         prev
           ? {
               ...prev,
+              // The engine resets this behind the UI's back when the project a saved scope
+              // named is removed (`ticketProject:remove`) — a screen that saves the whole
+              // blob would otherwise clobber that reset right back onto disk.
+              boardScopeId: next.boardScopeId,
               jira: {
                 ...prev.jira,
                 learnedStatusColumns: next.jira.learnedStatusColumns,
@@ -399,6 +414,7 @@ export function MyTasks(): JSX.Element {
     // Ditto, and one more reason on top: an attachment also vanishes when its CARD is
     // deleted and the row cascades away, which no per-file patch would hear about.
     const offAttachments = window.api.on('attachment:changed', setAttachments);
+    const offPeople = window.api.on('person:changed', setPeople);
     // Pushed by a sync that kept cards it could not confirm had left. It arrives from the
     // POLLER as often as from the button, so it cannot be the return value of `sync()`.
     const offNotice = window.api.on('board:notice', setNotice);
@@ -409,6 +425,7 @@ export function MyTasks(): JSX.Element {
       offMrs();
       offLinks();
       offAttachments();
+      offPeople();
       offNotice();
     };
   }, [patchTask, refreshArchived]);
@@ -518,6 +535,8 @@ export function MyTasks(): JSX.Element {
 
   /** id → task for the whole board, so an arrow can ask its gate about the predecessor. */
   const tasksById = useMemo(() => new Map((tasks ?? []).map((t) => [t.id, t])), [tasks]);
+  /** id → person, for a native ticket's assignee avatar. */
+  const peopleById = useMemo(() => new Map(people.map((p) => [p.id, p])), [people]);
 
   /**
    * Where each chained card stands: what it is still waiting on, which of those are waiting
@@ -1191,6 +1210,10 @@ export function MyTasks(): JSX.Element {
                 }
                 return t.externalSource ? t.phase || undefined : undefined;
               }}
+              // A native ticket's parent epic, by NAME (Phase 24) — `t.epicTaskId` names
+              // another card on this same board.
+              epicNameOf={(t) => (t.epicTaskId ? tasksById.get(t.epicTaskId)?.title : undefined)}
+              assigneeOf={(t) => (t.assigneeId ? peopleById.get(t.assigneeId) : undefined)}
               agentNameOf={(t) => agentProjects.find((p) => p.id === t.agentProjectId)?.name}
               // The stripe is the PROJECT the card is filed under first — `projectTagId`,
               // written only by delegation — and, on the All scope, the card's own BOARD

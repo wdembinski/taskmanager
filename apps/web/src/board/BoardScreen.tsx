@@ -62,11 +62,12 @@ import {
   PERSONAL_PROJECT_ID,
   type BoardColumn,
   type ManualStatus,
+  type Person,
   type Task,
 } from '@tm/shared/model';
 import type { BoardScope } from '@tm/shared/ipc';
 import { BoardToolbar } from './BoardToolbar';
-import { selectArchivedTasks, selectBoardTasks } from './boardSelectors';
+import { selectAgentProjects, selectArchivedTasks, selectBoardTasks } from './boardSelectors';
 import { displayStatus, isTaskPending, type CloudBoardState } from './cloudBoardStore';
 import { mergeRequestsByTask, useBoardExtras, byTask } from './useBoardExtras';
 
@@ -151,6 +152,18 @@ export function BoardScreen({
   const scope = settings.boardScopeId || 'all';
 
   /**
+   * The agent projects every repo control on this screen draws from — the relay's answer when
+   * the desktop gave one, and the mirrored `projects` rows when it did not. Computed once and
+   * passed to all five sites, so a card's stripe, its agent name, the pane's Project dropdown,
+   * the commit graph and the add-task dialog can never be looking at two different lists. See
+   * `selectAgentProjects` for why this replaces rather than merges.
+   */
+  const agentProjects = useMemo(
+    () => selectAgentProjects(state.projects, extras.agentProjects, extras.agentProjectsLoaded),
+    [state.projects, extras.agentProjects, extras.agentProjectsLoaded],
+  );
+
+  /**
    * The boards the toolbar's scope Dropdown offers — Personal plus every other project with
    * no plan file, the desktop's own `board:scopes` rule (`isBoardProject`). Computed straight
    * from the mirrored `Project` rows rather than a relayed round trip: the mirror already
@@ -205,9 +218,9 @@ export function BoardScreen({
     return task.externalSource ? task.phase || undefined : undefined;
   };
   const agentNameOf = (task: Task): string | undefined =>
-    extras.agentProjects.find((p) => p.id === task.agentProjectId)?.name;
+    agentProjects.find((p) => p.id === task.agentProjectId)?.name;
   const projectColorOf = (task: Task): string | undefined => {
-    const tagColor = extras.agentProjects.find((p) => p.id === task.projectTagId)?.color;
+    const tagColor = agentProjects.find((p) => p.id === task.projectTagId)?.color;
     if (tagColor) return tagColor;
     if (scope !== 'all') return undefined;
     const board = boardsById.get(task.projectId);
@@ -234,6 +247,13 @@ export function BoardScreen({
   );
   const attachmentsByTask = useMemo(() => byTask(extras.attachments), [extras.attachments]);
   const tasksById = useMemo(() => new Map(boardTasks.map((t) => [t.id, t])), [boardTasks]);
+  const peopleById = useMemo(() => new Map(extras.people.map((p) => [p.id, p])), [extras.people]);
+  /** A native ticket's parent epic, by name (Phase 24) — `TaskCard`'s own `epicName` prop. */
+  const epicNameOf = (task: Task): string | undefined =>
+    task.epicTaskId ? tasksById.get(task.epicTaskId)?.title : undefined;
+  /** A native ticket's assignee (Phase 24) — `TaskCard`'s own `assignee` prop. */
+  const assigneeOf = (task: Task): Person | undefined =>
+    task.assigneeId ? peopleById.get(task.assigneeId) : undefined;
 
   /**
    * Cards the add-task dialog may hang a hand-written step under, and — asked the other way
@@ -502,6 +522,8 @@ export function BoardScreen({
                 label={COLUMN_LABEL[column]}
                 cards={cardsByColumn.get(column) ?? []}
                 projectNameOf={projectNameOf}
+                epicNameOf={epicNameOf}
+                assigneeOf={assigneeOf}
                 agentNameOf={agentNameOf}
                 projectColorOf={projectColorOf}
                 display={boardDisplay}
@@ -606,7 +628,7 @@ export function BoardScreen({
         <div className={layout.right}>
           <TaskDetail
             task={selectedTask}
-            agentProjects={extras.agentProjects}
+            agentProjects={agentProjects}
             subtasks={chain}
             parentTask={parentOfSelected}
             mergeRequests={selectedTask ? (mrsByTask.get(selectedTask.id) ?? []) : []}
@@ -646,7 +668,7 @@ export function BoardScreen({
       {showGraph && (
         <div className={layout.graph}>
           <GitGraphPane
-            projects={extras.agentProjects}
+            projects={agentProjects}
             selectedTask={selectedTask}
             // The whole board, so a branch can carry the CARD's title instead of `orch/…`.
             tasksById={tasksById}
@@ -671,10 +693,12 @@ export function BoardScreen({
         parents={parentCandidates}
         // The same cards, asked a different question — see `parentCandidates`.
         chainCandidates={parentCandidates}
-        // The REAL projects (`project:list`, relayed), not the mirrored `Project` rows:
-        // filing a card is about a repo the engine knows, and the mirror's rows are the
-        // queues that hold tasks. The detail pane's Project dropdown offers this same list.
-        projects={extras.agentProjects}
+        // The agent projects, resolved (`selectAgentProjects`): the relay's answer while a
+        // desktop is awake, and the mirrored rows filtered to a repo project while it is
+        // not — which is what keeps this field offering repos instead of nothing against a
+        // desktop that is merely asleep. The detail pane's Project dropdown offers the same
+        // list, because both are handed the one computed above.
+        projects={agentProjects}
         jiraEnabled={settings.jira.enabled}
         // A browser has no OS file picker and no path for a dropped `File`, so the whole
         // files section is one thing this host cannot do rather than a control to grey out.

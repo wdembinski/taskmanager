@@ -169,6 +169,35 @@ export interface GitLabSettings {
 }
 
 /**
+ * Upper bound for `syncIntervalMinutes`, matching the desktop Settings screen's own
+ * `SpinButton max`.
+ *
+ * `setInterval`/`setTimeout` take a 32-bit signed delay (`2_147_483_647`ms, ~24.8 days —
+ * `2**31 - 1`). A minutes value past that overflows the cast and Node/the browser silently
+ * clamp the delay to ~1ms instead of erroring, so an unvalidated interval does not fail loud
+ * — it turns "sync every N minutes" into "sync continuously", which is indistinguishable
+ * from the timer never having been throttled at all. 120 minutes is nowhere near that limit;
+ * it is chosen only because there is no legitimate reason for a background poll to be rarer
+ * than once every two hours.
+ */
+export const MAX_SYNC_INTERVAL_MINUTES = 120;
+
+/**
+ * Clamp a candidate `syncIntervalMinutes` to `[0, MAX_SYNC_INTERVAL_MINUTES]`, rounding to
+ * the nearest whole minute. Non-finite input (`NaN`, `Infinity`) becomes 0 — "off" is the
+ * safe reading of a value that cannot mean an actual cadence, not "sync forever".
+ *
+ * The one gate every writer of `syncIntervalMinutes` goes through — the two Settings
+ * screens, and `SyncPoller` itself against whatever a stored (or synced-from-elsewhere)
+ * blob actually contains, since a value that skipped this gate before it existed does not
+ * retroactively become safe.
+ */
+export function clampSyncInterval(minutes: number): number {
+  if (!Number.isFinite(minutes)) return 0;
+  return Math.min(MAX_SYNC_INTERVAL_MINUTES, Math.max(0, Math.round(minutes)));
+}
+
+/**
  * The one sync interval for a settings blob, migrating a pre-consolidation one.
  *
  * Takes the SMALLER of whatever the two integrations were separately set to, so a user who
@@ -348,14 +377,44 @@ export interface BoardDisplaySettings {
    * board looked like before this was a choice.
    */
   priorityDisplay: PriorityDisplay;
+  /**
+   * The assignee's avatar (Phase 24: native tickets). **Off by default** — a board with no
+   * ticket project has nobody to assign a card to, and turning this on would draw nothing
+   * for anybody, so the acceptance bar is that a database with no ticket project renders a
+   * board byte-identical to before this setting existed.
+   */
+  showAssignee: boolean;
+  /** Story points, as a chip. Off by default — see {@link showAssignee}. */
+  showPoints: boolean;
 }
 
-/** Labels and project name on, epic off — see {@link BoardDisplaySettings}. */
+/** Labels and project name on, epic/assignee/points off — see {@link BoardDisplaySettings}. */
 export const DEFAULT_BOARD_DISPLAY: BoardDisplaySettings = {
   showLabels: true,
   showProjectName: true,
   showEpicName: false,
   priorityDisplay: 'color',
+  showAssignee: false,
+  showPoints: false,
+};
+
+/**
+ * The Projects screen's Gantt timeline, saved for the same reason `foldedStepCards` is: the
+ * screen is unmounted every time you leave it, and a collapse you had to redo on every visit
+ * would not be a collapse.
+ */
+export interface GanttSettings {
+  /**
+   * Epics whose Gantt row is collapsed to a single bar — the union of its children's dates
+   * rather than a row per child. See `projects/ganttLayout.ts`'s `toggleCollapsedEpic`, which
+   * is what prunes an id the moment its epic leaves the project.
+   */
+  collapsedEpicIds: string[];
+}
+
+/** Nothing collapsed out of the box — a fresh project's timeline opens fully expanded. */
+export const DEFAULT_GANTT_SETTINGS: GanttSettings = {
+  collapsedEpicIds: [],
 };
 
 export interface AppSettings {
@@ -512,6 +571,8 @@ export interface AppSettings {
   github: GitHubSettings;
   /** The cloud mirror's own config — see {@link CloudSettings}. */
   cloud: CloudSettings;
+  /** The Projects screen's Gantt timeline — see {@link GanttSettings}. */
+  gantt: GanttSettings;
 }
 
 /** The out-of-the-box settings, also used to fill any field missing from storage. */
@@ -551,6 +612,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   gitlab: DEFAULT_GITLAB_SETTINGS,
   github: DEFAULT_GITHUB_SETTINGS,
   cloud: DEFAULT_CLOUD_SETTINGS,
+  gantt: DEFAULT_GANTT_SETTINGS,
 };
 
 /**

@@ -139,6 +139,26 @@ export const RELAY_POLICY: {
 
   'git:graph': 'relay',
 
+  'ticket:update': 'relay',
+
+  'person:list': 'relay',
+  'person:add': 'relay',
+  'person:update': 'relay',
+  'person:remove': 'relay',
+  'person:setMe': 'relay',
+
+  'label:list': 'relay',
+  'label:save': 'relay',
+  'label:remove': 'relay',
+
+  'milestone:list': 'relay',
+  'milestone:save': 'relay',
+  'milestone:remove': 'relay',
+
+  'ticketLink:list': 'relay',
+  'ticketLink:add': 'relay',
+  'ticketLink:remove': 'relay',
+
   'scheduler:start': 'relay',
   'scheduler:pause': 'relay',
   'scheduler:stop': 'relay',
@@ -148,6 +168,11 @@ export const RELAY_POLICY: {
 
   'task:run': 'relay',
   'task:integrate': 'relay',
+  // Neither a credential write nor a native modal: the token never leaves the desktop (it
+  // is read there and spent on one request), and the push happens on the machine that owns
+  // the worktree whichever screen the button was pressed from. So a browser tab gets it for
+  // the same reason it gets `task:integrate`.
+  'task:createPullRequest': 'relay',
   'task:create': 'relay',
   'ticket:create': 'relay',
   'task:delete': 'relay',
@@ -156,6 +181,7 @@ export const RELAY_POLICY: {
   'task:updateSubtask': 'relay',
   'task:setStatus': 'relay',
   'task:setDescription': 'relay',
+  'task:setTitle': 'relay',
   'task:setPriority': 'relay',
   'task:setStatusNote': 'relay',
   'task:setProject': 'relay',
@@ -188,6 +214,7 @@ export const RELAY_POLICY: {
   'usage:summary': 'relay',
   'usage:series': 'relay',
   'usage:quotas': 'relay',
+  'usage:sessionStats': 'relay',
 
   'settings:get': 'relay',
   'settings:save': 'relay',

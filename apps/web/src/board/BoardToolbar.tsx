@@ -118,22 +118,27 @@ export function BoardToolbar({
     <div className={layout.toolbar}>
       {/* Which board's cards are shown: every board unioned (the default), or one board
           alone — the desktop's own scope picker (`MyTasks.tsx`), same options and same
-          persisted setting. */}
-      <Dropdown
-        size="small"
-        value={scopeLabel}
-        selectedOptions={[scope]}
-        onOptionSelect={(_e, d) => {
-          if (d.optionValue) onScopeChange(d.optionValue);
-        }}
-      >
-        <Option value="all">All boards</Option>
-        {scopes.map((s) => (
-          <Option key={s.id} value={s.id}>
-            {s.name}
-          </Option>
-        ))}
-      </Dropdown>
+          persisted setting. Absent entirely with only Personal to choose from, so a
+          database with no other board renders a toolbar byte-identical to before this
+          existed rather than one extra control that does nothing. */}
+      {scopes.length > 1 && (
+        <Dropdown
+          size="small"
+          value={scopeLabel}
+          selectedOptions={[scope]}
+          title="Which board this shows"
+          onOptionSelect={(_e, d) => {
+            if (d.optionValue) onScopeChange(d.optionValue);
+          }}
+        >
+          <Option value="all">All boards</Option>
+          {scopes.map((s) => (
+            <Option key={s.id} value={s.id}>
+              {s.name}
+            </Option>
+          ))}
+        </Dropdown>
+      )}
       <Switch
         label={doneSwitchLabel(showDone, hiddenDone)}
         title={doneSwitchTitle(showDone, hiddenDone) ?? undefined}

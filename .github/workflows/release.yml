@@ -9,8 +9,8 @@
 #
 #   gates    §1  nothing is tagged from a red tree (rule 1)
 #   version  §0  idempotence, §2 the version, §3 tag and push, §4 the DRAFT release
-#   windows  §5  package + upload into the draft, then the headless addon smoke test
-#   linux    §6  package + upload; docs/07's ELF and ABI-symbol checks
+#   windows  §5  package, the headless addon smoke test, then upload into the draft
+#   linux    §6  package, docs/07's ELF and ABI-symbol checks, then upload into the draft
 #   promote  §7  publish the draft — always, even if Linux failed (rule 4)
 #
 # ── The two loop hazards, closed deliberately ──────────────────────────────────
@@ -25,8 +25,11 @@
 #     the push signed or to trigger something downstream, at which point guard 1 evaporates
 #     silently.
 #
-# The bump commit also touches only `apps/client/package.json`, which matches no filter in
-# `deploy.yml` — so even if it did trigger, it would deploy nothing.
+# The bump commit touches only `apps/client/package.json`. That used to match no filter in
+# `deploy.yml` at all; it now matches the WEB one, deliberately — the web bundle bakes the
+# version of record for its status bar, so a bump is a change to the web. Guard 1 means the
+# push still triggers nothing, which is why `promote` dispatches that deploy explicitly; see
+# its last step. Neither path is a loop: `deploy.yml` pushes no commits.
 #
 # ── What still needs a human ───────────────────────────────────────────────────
 #
@@ -52,6 +55,7 @@ concurrency:
 
 permissions:
   contents: write # push the bump commit and the tag; create and edit the release
+  actions: write # `gh workflow run deploy.yml` from promote — the last step below
 
 jobs:
   # ── §1 Green gates ─────────────────────────────────────────────────────────
@@ -113,6 +117,10 @@ jobs:
       release: ${{ steps.decide.outputs.release }}
       version: ${{ steps.next.outputs.version }}
       tag: ${{ steps.next.outputs.tag }}
+      # 'true' when §2's fallback applied, i.e. this run wrote the version itself in a
+      # `chore(release):` commit rather than finding it in the work commit. `promote` needs
+      # to know: that commit is the one nothing downstream can see (see its last step).
+      needsCommit: ${{ steps.next.outputs.needsCommit }}
 
     steps:
       # RELEASE.md rule 5: only the integration branch is releasable. `push` can only be
@@ -227,9 +235,10 @@ jobs:
           git push --follow-tags origin development
 
       # §4. The release must exist as a DRAFT before packaging, because that is what
-      # electron-builder's `--publish onTagOrDraft` uploads into. If it were already
-      # published, builder would report "skipped publishing" and exit 0 — a green run with an
-      # empty release.
+      # `gh release upload` in the windows/linux jobs below uploads into (their own comment
+      # explains why that upload is explicit and not electron-builder's `--publish`). Draft,
+      # specifically, because `gh release upload` can write to a published release too — the
+      # draft is what keeps a half-built version off the update feed until `promote` says so.
       - name: Draft the GitHub release
         if: steps.decide.outputs.release == 'true' && steps.decide.outputs.draftExists != 'true'
         env:
@@ -271,16 +280,15 @@ jobs:
         run: pnpm exec turbo run build --filter=./packages/*
 
       # electron-vite build → install-app-deps → ensure:abi → electron-builder --win
-      # --publish onTagOrDraft → check:feed. Neither gate is bypassed (rule 2): ensure:abi is
-      # why v0.25.0's permanent "Loading…" cannot ship again, and check:feed is why an
-      # unsigned build cannot ship a publisherName that refuses every auto-update.
+      # --publish never → check:feed. Neither gate is bypassed (rule 2): ensure:abi is why
+      # v0.25.0's permanent "Loading…" cannot ship again, and check:feed is why an unsigned
+      # build cannot ship a publisherName that refuses every auto-update.
       #
-      # GH_TOKEN is what --publish uses to upload the installer, its blockmap and latest.yml
-      # into the draft created above.
+      # `--publish never` (package:local, not package) on purpose — see "Upload the installer
+      # and feed to the draft" below for why electron-builder no longer does this upload
+      # itself.
       - name: Package the Windows installer
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: pnpm --filter claude-orchestrator package
+        run: pnpm --filter claude-orchestrator package:local
 
       # RELEASE.md §5's smoke test, adapted for CI in one way that matters: it writes its
       # verdict to a FILE. The packaged binary is a GUI-subsystem executable, so on Windows it
@@ -326,9 +334,34 @@ jobs:
             exit 1
           }
 
+      # electron-builder's own `--publish onTagOrDraft` used to do this upload, and no longer
+      # does: its GitHub publisher (electron-publish's GitHubPublisher.getOrCreateRelease)
+      # finds the release to upload into by calling `GET /repos/{owner}/{repo}/releases` — the
+      # LIST endpoint — and scanning it for a matching tag_name. That endpoint returned a flat
+      # empty `[]` for this repo across every page it claimed to have, for at least ten minutes
+      # after the draft above was created and fully visible to `gh release view` (the
+      # single-release GET) the entire time — not a propagation lag, an endpoint that does not
+      # work here. Three releases (v0.89.2 through v0.89.4) hit this before it was traced.
+      #
+      # `gh release upload` goes through the same single-release lookup that already works
+      # (confirmed by hand against all three), so it sidesteps the broken endpoint entirely
+      # rather than waiting on it. `--clobber` makes this step (and the whole job) safe to
+      # re-run: a retry re-uploads the same filenames instead of erroring on "already exists".
+      - name: Upload the installer and feed to the draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" --clobber \
+            apps/client/dist/*-setup.exe \
+            apps/client/dist/*.blockmap \
+            apps/client/dist/latest.yml
+
       # A backstop, not the delivery path: the artifacts that matter are already on the draft,
-      # uploaded by electron-builder under the exact names latest.yml records. This copy is
-      # what you reach for when a promotion goes wrong and the draft has to be rebuilt by hand.
+      # uploaded by the step above under the exact names latest.yml records. This copy is what
+      # you reach for when a promotion goes wrong and the draft has to be rebuilt by hand.
       - name: Keep a copy of the installer and the feed
         uses: actions/upload-artifact@v4
         with:
@@ -375,12 +408,11 @@ jobs:
       - name: Build the shared packages
         run: pnpm exec turbo run build --filter=./packages/*
 
-      # Same chain as Windows, with --linux: AppImage + deb, plus latest-linux.yml, which an
-      # AppImage cannot self-update without.
+      # Same chain as Windows, with --linux and --publish never: AppImage + deb, plus
+      # latest-linux.yml, which an AppImage cannot self-update without. See the Windows job's
+      # "Upload the installer and feed to the draft" for why this no longer publishes itself.
       - name: Package the Linux artifacts
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: pnpm --filter claude-orchestrator package:linux
+        run: pnpm --filter claude-orchestrator package:linux:local
 
       # docs/07's "Building for Linux" checks. Both are about the same failure — a bundle
       # carrying Windows-compiled native code, which is what a build from /mnt/c produces and
@@ -402,11 +434,25 @@ jobs:
           # permanent "Loading…" — the addon loads lazily, so nothing else catches it.
           readelf -Ws "$ADDON" | grep -q 'node_register_module_v130'
 
+      # See the Windows job's "Upload the installer and feed to the draft" for why this is
+      # explicit rather than electron-builder's own `--publish`.
+      - name: Upload the Linux artifacts and feed to the draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" --clobber \
+            apps/client/dist/*.AppImage \
+            apps/client/dist/*.deb \
+            apps/client/dist/latest-linux.yml
+
   # ── §7 Promote ─────────────────────────────────────────────────────────────
-  # Rule 4: promote the draft LAST — but DO promote it. Last, because electron-builder cannot
-  # write to a published release and says "skipped" while exiting 0. And do it, because four
-  # green drafts once piled up here unpublished, each waiting on a platform build that was
-  # never going to happen on its own.
+  # Rule 4: promote the draft LAST — but DO promote it. Last, because the windows/linux
+  # uploads have to land before there is anything to promote — `needs:` below enforces the
+  # order, this comment just says why it matters. And do it, because four green drafts once
+  # piled up here unpublished, each waiting on a platform build that was never going to
+  # happen on its own.
   #
   # Hence `always()` and a condition on Windows alone. §6 is explicit that a platform this
   # build cannot produce is not a reason to withhold a release: ship what you have and say
@@ -452,3 +498,33 @@ jobs:
         if: needs.linux.result != 'success'
         run: |
           echo "::warning::$TAG was published WITHOUT Linux artifacts — the linux job ended '${{ needs.linux.result }}'. Linux users get the next version; attaching them to this one now would need gh release upload, which mangles filenames (RELEASE.md §6)."
+
+      # The cloud is not this workflow's business — except for this one thread, which no
+      # other workflow can pull.
+      #
+      # The web bundle bakes the version of record for its status bar (apps/web's
+      # vite.config.ts), so that number only moves when the bundle is rebuilt. When the bump
+      # rode inside the work commit, the push that carried it also triggered deploy.yml and
+      # the web was rebuilt there — apps/client/package.json is one of its web filter's
+      # paths. When §2's FALLBACK applied, the bump lives in a `chore(release):` commit this
+      # job's `version` step pushed with GITHUB_TOKEN, and GitHub's loop guard means that
+      # push triggers nothing at all. Left alone, the deployed web would then keep showing
+      # the PREVIOUS version for good — which is how it came to be sitting on v0.78.2 while
+      # the desktop was released at v0.86.0.
+      #
+      # `workflow_dispatch` is the documented exception to that loop guard: an event raised
+      # with GITHUB_TOKEN does create a run for it. deploy.yml's path filter compares against
+      # the previous commit on a dispatch (docs/11), and the previous commit here is the bump
+      # commit — apps/client/package.json alone — so this deploys the web and not the server.
+      # If another push has landed on development since, that comparison is a different one;
+      # that push will have run its own deploy, so the worst case is a redundant one.
+      #
+      # Never fatal. The release is published by the time this runs, and a red run after a
+      # good release is a lie about the release — the warning is the hand-back instead.
+      - name: Redeploy the web client so it carries the released version
+        if: needs.version.outputs.needsCommit == 'true'
+        run: |
+          set -uo pipefail
+          gh workflow run deploy.yml --ref development || {
+            echo "::warning::Could not dispatch deploy.yml. $TAG is published and unaffected, but the deployed web client still shows the version it was last built with. Run Actions -> Deploy -> Run workflow on development to correct it."
+          }

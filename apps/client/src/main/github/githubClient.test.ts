@@ -398,3 +398,95 @@ describe('nextPageUrl', () => {
     expect(nextPageUrl(undefined)).toBeNull();
   });
 });
+
+describe('GitHubClient.createPullRequest', () => {
+  it('POSTs to /pulls and reports the pull request it made', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        id: 1,
+        number: 12,
+        title: 'Add SSO',
+        state: 'open',
+        draft: false,
+        html_url: 'https://github.com/o/r/pull/12',
+        head: { ref: 'feat/sso', repo: { id: 555 } },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const created = await client().createPullRequest('o', 'r', {
+      head: 'feat/sso',
+      base: 'main',
+      title: 'Add SSO',
+      body: 'Closes o/r#3',
+    });
+
+    expect(created.existed).toBe(false);
+    expect(created.pullRequest.number).toBe(12);
+    // The numeric repository id the board keys its row on lives on `head.repo`.
+    expect(created.pullRequest.head?.repo?.id).toBe(555);
+    expect(String(fetchMock.mock.calls[0][0])).toBe('https://api.github.com/repos/o/r/pulls');
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(String(init.body))).toEqual({
+      head: 'feat/sso',
+      base: 'main',
+      title: 'Add SSO',
+      body: 'Closes o/r#3',
+      draft: false,
+    });
+  });
+
+  it('treats "already exists" as a success and hands back the open one', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse(
+          { errors: [{ message: 'A pull request already exists for o:feat/sso.' }] },
+          422,
+        ),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse([{ id: 1, number: 7, title: 'Add SSO', state: 'open', html_url: 'u' }]),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const created = await client().createPullRequest('o', 'r', {
+      head: 'feat/sso',
+      base: 'main',
+      title: 'Add SSO',
+    });
+
+    expect(created.existed).toBe(true);
+    expect(created.pullRequest.number).toBe(7);
+    // The head must be owner-qualified or the list endpoint matches nothing at all.
+    expect(String(fetchMock.mock.calls[1][0])).toContain('head=o%3Afeat%2Fsso');
+  });
+
+  it('re-throws a 422 that is NOT a duplicate, rather than hunting for a PR', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ message: 'Validation Failed: base is invalid' }, 422));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      client().createPullRequest('o', 'r', { head: 'x', base: 'nope', title: 't' }),
+    ).rejects.toMatchObject({ status: 422 });
+    // One call: no lookup was attempted for a PR that was never refused as a duplicate.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-throws the original refusal when the duplicate cannot be found', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({ errors: [{ message: 'A pull request already exists for o:x.' }] }, 422),
+      )
+      .mockResolvedValueOnce(jsonResponse([]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      client().createPullRequest('o', 'r', { head: 'x', base: 'main', title: 't' }),
+    ).rejects.toMatchObject({ status: 422 });
+  });
+});

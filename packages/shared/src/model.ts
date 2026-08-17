@@ -223,6 +223,16 @@ export interface Project {
    */
   autoRelease: boolean;
   /**
+   * The project's PREFERENCE for opening a pull/merge request: when a card's work finishes,
+   * push its branch to the forge and open a PR against base **instead of** merging locally
+   * (see `@shared/pullRequest`).
+   *
+   * A default, not a decision, exactly like {@link Project.autoRelease} — every card may
+   * override it in the Details Panel, and a card that never did follows this. Off for every
+   * project that predates the field, so an upgrade opens nothing by itself.
+   */
+  autoCreatePr: boolean;
+  /**
    * The project's PREFERENCE for auto-merge: when a card's run finishes, merge its branch
    * back into base without waiting to be asked (see `@shared/integrate`).
    *
@@ -319,6 +329,8 @@ export interface AddProjectInput {
   writeBackPlan?: boolean;
   /** Release after a card's branch merges, per the repo's `RELEASE.md`. Defaults to off. */
   autoRelease?: boolean;
+  /** Open a PR/MR when a card's work finishes instead of merging it. Defaults to off. */
+  autoCreatePr?: boolean;
   /** Merge a finished card's branch by itself; defaults to `null` = follow the app setting. */
   autoIntegrate?: boolean | null;
   planAligned?: boolean;
@@ -357,6 +369,7 @@ export type ProjectPatch = Partial<
     | 'baseBranch'
     | 'writeBackPlan'
     | 'autoRelease'
+    | 'autoCreatePr'
     | 'autoIntegrate'
     | 'planAligned'
     | 'jiraEpicKeys'
@@ -845,6 +858,15 @@ export interface Task {
    * cards nobody has ruled on. See `@shared/release`.
    */
   autoRelease?: boolean | null;
+  /**
+   * This card's answer to "open a PR/MR when the work is finished?" — `true`/`false` when the
+   * human has said so in the Details Panel, `null` (the default, and every pre-existing card)
+   * when they have not, which follows the agent project's `autoCreatePr` preference.
+   *
+   * Three states rather than two for the same reason {@link Task.autoRelease} has three: a
+   * card that merely inherits must keep inheriting. See `@shared/pullRequest`.
+   */
+  autoCreatePr?: boolean | null;
   /**
    * This card's answer to "merge the branch when the work is finished?" — `true`/`false`
    * when the human has said so on the board, `null` (the default, and every pre-existing

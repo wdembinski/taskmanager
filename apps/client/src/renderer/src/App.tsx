@@ -35,6 +35,7 @@ import {
 } from '@fluentui/react-components';
 import {
   AlertRegular,
+  AppsListDetailRegular,
   DataTrendingRegular,
   FolderRegular,
   PlayRegular,
@@ -49,6 +50,9 @@ import { AuthBanner } from './AuthBanner';
 import { LimitBanner } from './LimitBanner';
 import { MyTasks } from './MyTasks';
 import { currentSprintName } from '@ui/board/currentSprint';
+// The ticket WORKSPACE (backlog table + Gantt over one ticket project's own tickets),
+// distinct from the admin `Projects` screen below — see the TabId doc above.
+import { Projects as TicketWorkspace } from '@ui/projects/Projects';
 import { SyncRing } from './SyncRing';
 import type { SyncState } from '@shared/sync';
 import { Performance } from '@ui/Performance';
@@ -91,14 +95,23 @@ const useStyles = makeStyles({
  *
  * The ENGINE's notion of a project stays exactly where it is. Projects are how runs are
  * queued, how concurrency is bounded and where a worktree is cut; the personal board is
- * itself a project.
+ * itself a project. Only the two screens were gone.
+ *
+ * Phase 24 brings a ticket workspace of its own — `TicketWorkspace` (`packages/ui/src/
+ * projects/Projects.tsx`), on its own `'tickets'` tab — but it is not the Projects tab
+ * above: it is the backlog/Gantt view of one ticket project's own tickets, a key prefix and
+ * the tickets this app tracks itself, with no repo and no plan file. Creating and editing a
+ * ticket project happens on the Projects tab like any other project; the Tickets tab is
+ * purely a workspace over whichever one you pick.
  */
-type TabId = 'mytasks' | 'projects' | 'performance' | 'attention' | 'settings' | 'scratch';
+type TabId =
+  'mytasks' | 'projects' | 'tickets' | 'performance' | 'attention' | 'settings' | 'scratch';
 
 /** The rail, in order. The label is the tooltip and the accessible name. */
 const NAV: ReadonlyArray<NavRailItem & { id: TabId }> = [
   { id: 'mytasks', label: 'My Tasks', icon: <TaskListSquareLtrRegular /> },
   { id: 'projects', label: 'Projects', icon: <FolderRegular /> },
+  { id: 'tickets', label: 'Tickets', icon: <AppsListDetailRegular /> },
   { id: 'performance', label: 'Performance', icon: <DataTrendingRegular /> },
   { id: 'attention', label: 'Attention', icon: <AlertRegular /> },
   { id: 'settings', label: 'Settings', icon: <SettingsRegular /> },
@@ -390,6 +403,8 @@ export function App(): JSX.Element {
         <MyTasks />
       ) : tab === 'projects' ? (
         <Projects />
+      ) : tab === 'tickets' ? (
+        <TicketWorkspace />
       ) : tab === 'performance' ? (
         <Performance />
       ) : tab === 'attention' ? (

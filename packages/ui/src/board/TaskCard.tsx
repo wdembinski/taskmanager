@@ -61,7 +61,7 @@ import {
   SparkleRegular,
   TaskListSquareLtrRegular,
 } from '@fluentui/react-icons';
-import type { Task } from '@tm/shared/model';
+import type { Person, Task } from '@tm/shared/model';
 import {
   canResumeWork,
   canStopWork,
@@ -92,12 +92,12 @@ import {
   ACCENT,
   ATTENTION_TINT,
   FLUO,
-  MONO,
   PIPELINE_COLOR,
   RING,
   STATUS_INDICATOR_COLOR,
 } from '../theme';
 import { PriorityGlyph } from '../PriorityGlyph';
+import { PersonAvatar } from '../projects/PersonAvatar';
 import { TrackerMark, shortTicketKey } from '../tracker';
 import {
   mrAttentionReason,
@@ -724,13 +724,33 @@ const useStyles = makeStyles({
     color: ACCENT.unreadInk,
   },
   /**
-   * A native ticket's key (`Task.ticketKey`) — plain text, no link, because unlike a synced
-   * tracker's badge there is nowhere for a click to go. Monospace is the only thing it
-   * borrows from `ticketBadge`'s shape rather than its behaviour: it is not wrapped in an
-   * `<a>`, and it carries none of the tracker mark or unread tint a mirrored card's badge
-   * does — a native ticket has no separate thread to be unread about.
+   * A native ticket's own key (Phase 24) — the same shape as `ticketBadge`, but never a
+   * link: unlike a JIRA or GitHub mirror, there is no tracker to send a click to, this app
+   * IS the tracker. Monospace so the key reads as a name rather than as prose, the same way
+   * a commit hash or a branch name does.
    */
-  ticketKeyBadge: { fontFamily: MONO },
+  ticketKeyBadge: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    padding: '2px 7px',
+    borderRadius: '4px',
+    border: `1px solid ${tokens.colorNeutralStroke2}`,
+    color: tokens.colorNeutralForeground2,
+    fontSize: '11px',
+    fontWeight: 600,
+    fontFamily: 'monospace',
+  },
+  /** Story points — the same quiet neutral chip the sprint wears; see `sprintChip`. */
+  pointsChip: {
+    backgroundColor: tokens.colorNeutralBackground4,
+    color: tokens.colorNeutralForeground2,
+    border: `1px solid ${tokens.colorNeutralStroke2}`,
+    fontSize: '11px',
+    fontWeight: 600,
+    padding: '1px 7px',
+    borderRadius: '4px',
+    flexShrink: 0,
+  },
 });
 
 /**
@@ -833,6 +853,19 @@ export interface TaskCardProps {
   task: Task;
   /** The card's "Project:" label (the JIRA project name for JIRA tasks). */
   projectName?: string;
+  /**
+   * The parent epic's name, for the "Epic:" line — a native ticket (Phase 24) carries only
+   * `epicTaskId`, a reference to another card, so the name is resolved by whoever holds the
+   * whole board (`tasksById.get(epicTaskId)?.title`) and passed down, the way `projectName`
+   * already is. Falls back to `task.externalEpicName`/`externalParentKey` for a mirrored
+   * card — see the render site.
+   */
+  epicName?: string;
+  /**
+   * The person this ticket is assigned to (Phase 24), for the avatar in its footer. Absent
+   * for every card with no `assigneeId` — most of them — which is what draws nothing.
+   */
+  assignee?: Pick<Person, 'name' | 'initials' | 'color'>;
   /** Name of the agent project this card is delegated to, for the glyph's tooltip. */
   agentName?: string;
   /** The card's project colour (`''`/undefined = no stripe). */
@@ -1001,6 +1034,8 @@ export interface TaskCardProps {
 export function TaskCard({
   task,
   projectName,
+  epicName,
+  assignee,
   agentName,
   projectColor,
   showSprint = true,
@@ -1051,6 +1086,13 @@ export function TaskCard({
    * itself asks, which is what keeps the row and its contents in step.
    */
   const showsPriority = priorityIndicatorShown(display.priorityDisplay, task.externalPriority);
+  /** A native ticket's own key (Phase 24) — see `styles.ticketKeyBadge`. Never set on a
+   *  mirrored card, so this and the tracker badge below never both draw. */
+  const showsTicketKey = Boolean(task.ticketKey);
+  /** Story points, gated the same way `showsPriority` gates the priority glyph. */
+  const showsPoints = display.showPoints && task.storyPoints != null;
+  /** The assignee avatar — nothing to draw without both the switch and a resolved person. */
+  const showsAssignee = display.showAssignee && Boolean(assignee);
   /**
    * Where this card stands in its chain, as one chip — or null, which is the answer for
    * every card nobody has drawn an arrow to.
@@ -1402,11 +1444,21 @@ export function TaskCard({
           )}
         </div>
 
-        {((display.showLabels && task.externalLabel) || (sprintShown && task.externalSprint)) && (
+        {((display.showLabels && (task.externalLabel || task.labels?.length)) ||
+          (sprintShown && task.externalSprint)) && (
           <div className={styles.chipRow}>
             {display.showLabels && task.externalLabel && (
               <span className={styles.chip}>{task.externalLabel}</span>
             )}
+            {/* A native ticket's own labels (Phase 24) — by name, same chip as a mirrored
+                card's single `externalLabel`, and the two never coexist (only one of
+                `externalLabel`/`labels` is ever set, depending on `task.source`). */}
+            {display.showLabels &&
+              task.labels?.map((label) => (
+                <span key={label} className={styles.chip}>
+                  {label}
+                </span>
+              ))}
             {sprintShown && task.externalSprint && (
               <span className={styles.sprintChip} title={`Sprint: ${task.externalSprint}`}>
                 {task.externalSprint}
@@ -1434,31 +1486,32 @@ export function TaskCard({
         )}
 
         {/* The name when the sync has it, the key until then — a key is still an answer
-            to "which epic", where an empty line looks like the toggle is broken. */}
-        {display.showEpicName && (task.externalEpicName || task.externalParentKey) && (
+            to "which epic", where an empty line looks like the toggle is broken. `epicName`
+            is a native ticket's own epic (Phase 24), resolved by whoever holds the board and
+            passed down — see the prop's doc; it never coexists with a mirrored card's
+            `externalEpicName`/`externalParentKey`, since those come from `task.source`. */}
+        {display.showEpicName && (epicName || task.externalEpicName || task.externalParentKey) && (
           <Caption1
             className={styles.project}
-            title={`Epic: ${task.externalEpicName ?? task.externalParentKey}`}
+            title={`Epic: ${epicName ?? task.externalEpicName ?? task.externalParentKey}`}
           >
-            Epic: {task.externalEpicName ?? task.externalParentKey}
+            Epic: {epicName ?? task.externalEpicName ?? task.externalParentKey}
           </Caption1>
         )}
 
-        {(isExternal || showsPriority || chainChip !== null || task.ticketKey) && (
+        {(isExternal ||
+          showsTicketKey ||
+          showsPriority ||
+          showsPoints ||
+          showsAssignee ||
+          chainChip !== null) && (
           <div className={styles.footer}>
             {/* First in the row, ahead of the ticket badge: it is the reason this card is
                 not moving, and that outranks where it came from. */}
             {chainChip}
-            {/* A native ticket's own key — plain text, no link: there is no tracker to open
-                it in, unlike the mirrored badge below. */}
-            {task.ticketKey && (
-              <span
-                className={mergeClasses(styles.ticketBadge, styles.ticketKeyBadge)}
-                title={task.ticketKey}
-              >
-                {task.ticketKey}
-              </span>
-            )}
+            {/* A native ticket's own key (Phase 24) — monospace, and never a link: unlike
+                the tracker badge below, there is nowhere to go, this app IS the tracker. */}
+            {showsTicketKey && <span className={styles.ticketKeyBadge}>{task.ticketKey}</span>}
             {isExternal && task.externalKey && (
               <a
                 className={styles.ticketLink}
@@ -1494,6 +1547,20 @@ export function TaskCard({
               </a>
             )}
             <span className={styles.grow} />
+            {/* Story points (Phase 24) — a quiet chip, the same treatment the sprint chip
+                gets above: a standing fact about the card, not something in motion. */}
+            {showsPoints && (
+              <span className={styles.pointsChip} title={`${task.storyPoints} points`}>
+                {task.storyPoints} pts
+              </span>
+            )}
+            {/* The assignee's avatar (Phase 24) — last before priority, the corner a card's
+                owner conventionally sits in. */}
+            {showsAssignee && assignee && (
+              <span title={`Assigned to ${assignee.name}`}>
+                <PersonAvatar person={assignee} size={20} />
+              </span>
+            )}
             {/* Square, chevron or nothing — whichever this board is set to. */}
             <PriorityGlyph
               mode={display.priorityDisplay}

@@ -62,6 +62,7 @@ const project = (id: string): Project => ({
   baseBranch: '',
   writeBackPlan: false,
   autoRelease: false,
+  autoCreatePr: false,
   autoIntegrate: null,
   planAligned: true,
   jiraEpicKeys: [],

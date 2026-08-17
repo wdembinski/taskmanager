@@ -93,6 +93,15 @@ export interface DescribePullRequestOptions {
   stale: boolean;
   /** What we already knew, reused when `stale` is false or a detail call fails. */
   prior?: MergeRequest;
+  /**
+   * A detail response the caller already fetched, so CI is not re-read off a second one.
+   *
+   * Used by the "read back a settled PR" pass in `ipc.ts`: it fetches the detail itself to
+   * learn whether the PR merged, and passes it through here rather than making this
+   * function fetch it again under `stale: true` — which would also re-spend the
+   * approvals/reviews/notes calls that this pass exists specifically to avoid.
+   */
+  detail?: GitHubPullRequest;
 }
 
 /** What the reviews say, once the history has been folded down to a verdict per reviewer. */
@@ -259,7 +268,7 @@ async function readApprovalBar(
 export async function describePullRequest(
   client: GitHubClient,
   listed: GitHubSearchIssueItem,
-  { stale, prior }: DescribePullRequestOptions,
+  { stale, prior, detail: knownDetail }: DescribePullRequestOptions,
 ): Promise<FetchedMergeRequest> {
   const { owner, repo } = repoRefFromApiUrl(listed.repository_url);
   const number = listed.number;
@@ -272,7 +281,7 @@ export async function describePullRequest(
    * `mergeable_state` — and `detail !== null` is exactly the "did we actually look?"
    * question every field below has to ask.
    */
-  let detail: GitHubPullRequest | null = null;
+  let detail: GitHubPullRequest | null = knownDetail ?? null;
   let approvalsRequired = prior?.approvalsRequired ?? null;
   let approvalsGiven = prior?.approvalsGiven ?? 0;
   let changesRequested = prior?.changesRequested ?? false;
@@ -283,7 +292,7 @@ export async function describePullRequest(
   let notes: FetchedMergeRequest['notes'];
 
   if (stale && owner && repo) {
-    detail = await client.getPullRequest(owner, repo, number).catch(() => null);
+    if (!detail) detail = await client.getPullRequest(owner, repo, number).catch(() => null);
 
     const reviews = await client.listReviews(owner, repo, number).catch(() => null);
     if (reviews) {
@@ -318,17 +327,30 @@ export async function describePullRequest(
         prior?.approvalsRequired ?? null,
       );
     }
+  }
 
-    // Check runs hang off the head SHA, which only the detail carries. No detail, no CI
-    // read — and therefore no change to what we knew about it.
-    const sha = detail?.head?.sha;
-    if (sha) {
-      const ci = await readCi(client, owner, repo, sha, detail?.html_url ?? listed.html_url ?? '');
-      if (ci) {
-        pipelineStatus = ci.status;
-        pipelineStages = ci.stages;
-        pipelineUrl = ci.url;
-      }
+  /**
+   * CI, read whenever a detail response is in hand — from `stale` above, or handed in by
+   * the caller — rather than gated on `stale` itself.
+   *
+   * That decoupling is the point: checks keep running after a PR merges, and the "read
+   * back a settled PR" pass in `ipc.ts` calls this with `stale: false` (nothing about
+   * approvals or notes can move once it has landed) but still passes `detail`, because its
+   * whole reason for existing is to learn whether THIS moved. Gating the read on `stale`
+   * left a check still `in_progress` at the moment of merge frozen that way forever — the
+   * same bug GitLab's half of this file never had, since its overall status already reads
+   * off `head_pipeline` unconditionally.
+   *
+   * Check runs hang off the head SHA, which only the detail carries. No detail, no CI read
+   * — and therefore no change to what we knew about it.
+   */
+  const sha = detail?.head?.sha;
+  if (sha && owner && repo) {
+    const ci = await readCi(client, owner, repo, sha, detail?.html_url ?? listed.html_url ?? '');
+    if (ci) {
+      pipelineStatus = ci.status;
+      pipelineStages = ci.stages;
+      pipelineUrl = ci.url;
     }
   }
 

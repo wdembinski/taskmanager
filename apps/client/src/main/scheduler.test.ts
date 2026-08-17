@@ -4879,6 +4879,19 @@ describe('a parked release or chat run comes back as what it was', () => {
       event,
     );
 
+  /** The parked process finally goes away — which is what frees the card for a new Start. */
+  const exit = (scheduler: Scheduler, runId: string): Promise<void> =>
+    fire(scheduler, runId, { kind: 'exited', code: 0 });
+
+  /** The credential is dead, reported by the run that proved it — raises the sign-in gate. */
+  const hitSignedOut = (scheduler: Scheduler, runId: string): void => {
+    const engine = scheduler as unknown as {
+      runs: Map<string, LiveRun>;
+      engageAuthFailure: (failing: LiveRun, reason: string) => void;
+    };
+    engine.engageAuthFailure(engine.runs.get(runId)!, 'OAuth session expired');
+  };
+
   it('starts a parked release run as a release run again', () => {
     const h = setup();
     startRun(h.scheduler, h.project, h.card, {
@@ -5000,6 +5013,55 @@ describe('a parked release or chat run comes back as what it was', () => {
   });
 
   /**
+   * A second park over the first, which the gate answers with "already parked".
+   *
+   * The recipe describes the run being HELD, and the run being held here is the one the
+   * human just asked for: an ordinary work run that has not started. Clearing it only when
+   * the gate reports a fresh park read the answer as permission to keep yesterday's recipe,
+   * so the reset re-sent a chat message the human had long moved on from — and never did
+   * the work they pressed Start for.
+   */
+  it('drops a stale recipe when the same card is parked a second time', async () => {
+    const h = setup();
+    const runId = startRun(h.scheduler, h.project, h.card, { chatPrompt: CHAT_PROMPT });
+    hitLimit(h.scheduler);
+    expect(h.saved().map((r) => r.chatPrompt)).toEqual([CHAT_PROMPT]);
+    await exit(h.scheduler, runId); // the parked process goes away, freeing the card
+
+    // The human presses Start against the standing gate: parked again, this time as work.
+    expect(h.scheduler.startTaskNow('t1')).toEqual({ refused: 'limit' });
+
+    expect(h.saved()).toEqual([]); // the chat recipe did not survive its own park
+    h.scheduler.resumeLimitNow();
+    const run = resumedRun(h.scheduler);
+    expect(run?.chatPrompt).toBeUndefined();
+    expect(run?.releaseSeed).toBeFalsy();
+    const [request, opts] = h.start.mock.calls.at(-1) as [
+      { prompt: string },
+      { resumeSessionId?: string },
+    ];
+    expect(request.prompt).not.toBe(CHAT_PROMPT); // ordinary work, on the card's own session
+    expect(opts.resumeSessionId).toBe('sess-1');
+  });
+
+  /** The identical shape behind the other gate — same park, same stale recipe. */
+  it('drops a stale recipe when the sign-in gate parks the card again', async () => {
+    const h = setup();
+    const runId = startRun(h.scheduler, h.project, h.card, { chatPrompt: CHAT_PROMPT });
+    hitSignedOut(h.scheduler, runId);
+    expect(h.saved().map((r) => r.chatPrompt)).toEqual([CHAT_PROMPT]);
+    await exit(h.scheduler, runId);
+
+    expect(h.scheduler.startTaskNow('t1')).toEqual({ refused: 'signed-out' });
+
+    expect(h.saved()).toEqual([]);
+    h.scheduler.signedIn();
+    expect(resumedRun(h.scheduler)?.chatPrompt).toBeUndefined();
+    const [request] = h.start.mock.calls.at(-1) as [{ prompt: string }, unknown];
+    expect(request.prompt).not.toBe(CHAT_PROMPT);
+  });
+
+  /**
    * Why the table is persisted at all: a five-hour gate very often outlives a restart, and
    * a relaunch that resumes with an empty table is the original bug with extra steps.
    */
@@ -5021,5 +5083,287 @@ describe('a parked release or chat run comes back as what it was', () => {
 
     expect(resumedRun(next)?.releaseSeed).toBe(true);
     expect(h.saved()).toEqual([]); // …and the recipe was consumed on the way
+  });
+});
+
+/**
+ * "Open a PR when finished" — the alternative to merging, taken at the moment the work is
+ * written.
+ *
+ * Three things are worth pinning and nothing else here is: it wins over auto-merge (the two
+ * are alternatives, and merging first would open a pull request for work base already has),
+ * it is asked of the card that OWNS the branch so a plan opens one PR rather than one per
+ * step, and a create that fails leaves the branch exactly where it was.
+ */
+describe('Scheduler.settle — opening a pull request instead of merging', () => {
+  function setup(opts: {
+    projectAutoCreatePr?: boolean;
+    cardAutoCreatePr?: boolean | null;
+    autoIntegrate?: boolean | null;
+    /** Steps of an approved plan, if this card has any. */
+    steps?: Array<{ id: string; status: string }>;
+    /** What the wired opener does. Omitted = a happy `#12`. */
+    open?: (taskId: string) => Promise<{ url: string; ref: string }>;
+    /** Leave the opener unwired, as a scheduler nobody called `setPullRequestOpener` on. */
+    unwired?: boolean;
+  }) {
+    const project = {
+      id: 'agent-1',
+      name: 'Checkout service',
+      path: 'C:/repo',
+      planPath: '',
+      kind: 'agent',
+      concurrency: 1,
+      useWorktrees: true,
+      defaultModel: 'sonnet',
+      defaultPermissionMode: 'acceptEdits',
+      instructions: '',
+      baseBranch: 'development',
+      autoCreatePr: opts.projectAutoCreatePr ?? false,
+      autoIntegrate: opts.autoIntegrate ?? null,
+    } as unknown as Project;
+    const card = {
+      id: 't1',
+      projectId: 'personal',
+      phase: '',
+      title: 'Fix the export dialog',
+      status: 'running',
+      order: 0,
+      source: 'jira',
+      dependsOn: [],
+      isContract: false,
+      isScaffold: false,
+      agentProjectId: 'agent-1',
+      parentTaskId: null,
+      autoCreatePr: opts.cardAutoCreatePr ?? null,
+    } as unknown as Task;
+    const steps = (opts.steps ?? []).map(
+      (s) =>
+        ({
+          ...s,
+          projectId: 'personal',
+          phase: '',
+          title: s.id,
+          order: 0,
+          source: 'jira',
+          dependsOn: [],
+          isContract: false,
+          isScaffold: false,
+          agentProjectId: 'agent-1',
+          parentTaskId: 't1',
+        }) as unknown as Task,
+    );
+    const byId = new Map<string, Task>([['t1', card], ...steps.map((s) => [s.id, s] as const)]);
+    const notes: string[] = [];
+    const store = {
+      getTask: (id: string) => byId.get(id),
+      getProject: (id: string) => (id === 'agent-1' ? project : undefined),
+      listProjects: () => [project],
+      getTasks: () => [card, ...steps],
+      getSubtasks: (parentId: string) => (parentId === 't1' ? steps : []),
+      getTaskActivity: () => [],
+      addComment: (_p: string, _t: string, body: string) => notes.push(body),
+      listTaskLinks: () => [],
+      updateTask: (id: string, patch: Partial<Task>) => {
+        const found = byId.get(id);
+        if (found) Object.assign(found, patch);
+        return found;
+      },
+      appendTaskEvent: vi.fn(),
+      appendTokenUsage: vi.fn(),
+      saveAttention: vi.fn(),
+      deleteAttention: () => undefined,
+      listAttention: () => [],
+      getTaskHistory: () => [],
+      getSettings: () => ({
+        maxAutoRetries: 0,
+        limitJitterMs: 0,
+        concurrency: 1,
+        autoIntegrate: false,
+      }),
+    } as unknown as Store;
+    const worktrees = {
+      // Answers a real shape rather than `undefined`: finishing a step advances the chain,
+      // which really does try to start the next one, and a bare `vi.fn()` there surfaces as
+      // an unhandled rejection deep inside `prepareAndLaunch` that has nothing to do with
+      // what is being tested. 'failed' is the cheapest honest answer — the next step parks
+      // instead of launching a session none of these tests want.
+      prepare: vi.fn(async () => ({ mode: 'failed', reason: 'no worktree in this test' })),
+      integrate: vi.fn(),
+      inspect: vi.fn(),
+      cleanup: vi.fn(),
+      changedFiles: vi.fn(async () => []),
+    };
+    const sessions = { start: vi.fn(), stop: vi.fn(), send: vi.fn() } as unknown as SessionManager;
+    const scheduler = new Scheduler(
+      store,
+      sessions,
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      worktrees as unknown as WorktreeManager,
+    );
+    const open = vi.fn(
+      opts.open ?? (async () => ({ url: 'https://github.com/o/r/pull/12', ref: '#12' })),
+    );
+    if (!opts.unwired) scheduler.setPullRequestOpener(open);
+
+    /** Settle a finished run that owns the card's branch — the moment the work is written. */
+    const finish = (taskId = 't1'): void =>
+      (scheduler as unknown as { settle: (r: unknown, s: string) => void }).settle(
+        {
+          runId: 'r1',
+          taskId,
+          projectId: 'agent-1',
+          branch: 'feat/export',
+          base: 'development',
+          worktree: 'C:/wt/t1',
+        },
+        'done',
+      );
+
+    const flush = async (): Promise<void> => {
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+    };
+
+    return { scheduler, card, steps, notes, worktrees, open, store, finish, flush };
+  }
+
+  it('does nothing at all when nobody asked for a pull request', async () => {
+    const { finish, flush, open } = setup({});
+    finish();
+    await flush();
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it('opens one when the project prefers it, and merges NOTHING', async () => {
+    const { finish, flush, open, worktrees, notes } = setup({ projectAutoCreatePr: true });
+    finish();
+    await flush();
+
+    expect(open).toHaveBeenCalledWith('t1');
+    expect(worktrees.integrate).not.toHaveBeenCalled();
+    expect(notes.some((n) => n.includes('#12') && n.includes('NOT been merged'))).toBe(true);
+  });
+
+  it('wins over auto-merge — the two are alternatives, not a sequence', async () => {
+    const { finish, flush, open, worktrees } = setup({
+      projectAutoCreatePr: true,
+      autoIntegrate: true,
+    });
+    finish();
+    await flush();
+
+    expect(open).toHaveBeenCalledTimes(1);
+    // Merging first would have opened a pull request for work base already had.
+    expect(worktrees.integrate).not.toHaveBeenCalled();
+  });
+
+  it('lets a card overrule its project in both directions', async () => {
+    const off = setup({ projectAutoCreatePr: true, cardAutoCreatePr: false });
+    off.finish();
+    await off.flush();
+    expect(off.open).not.toHaveBeenCalled();
+
+    const on = setup({ cardAutoCreatePr: true });
+    on.finish();
+    await on.flush();
+    expect(on.open).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not fire for a step whose siblings are still queued', async () => {
+    const { finish, flush, open } = setup({
+      projectAutoCreatePr: true,
+      steps: [
+        { id: 's1', status: 'running' },
+        { id: 's2', status: 'pending' },
+      ],
+    });
+
+    // The chain's branch is not finished, so there is nothing to open a pull request for
+    // yet — `hasPendingSibling` returns above the whole integration block.
+    finish('s1');
+    await flush();
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it('opens it against the CARD when the last step of a plan lands', async () => {
+    const { finish, flush, open } = setup({
+      projectAutoCreatePr: true,
+      steps: [
+        { id: 's1', status: 'done' },
+        { id: 's2', status: 'running' },
+      ],
+    });
+
+    finish('s2');
+    await flush();
+
+    // 't1', not 's2': a plan's steps share one branch, so one pull request opens for the
+    // card that owns it.
+    expect(open).toHaveBeenCalledWith('t1');
+    expect(open).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed create parks the card and leaves the branch exactly where it was', async () => {
+    const { finish, flush, worktrees, store, scheduler } = setup({
+      projectAutoCreatePr: true,
+      open: async () => {
+        throw new Error('No GitHub token is saved.');
+      },
+    });
+
+    finish();
+    await flush();
+
+    // Nothing merged, nothing cleaned up: the branch is untouched and both buttons still work.
+    expect(worktrees.integrate).not.toHaveBeenCalled();
+    expect(worktrees.cleanup).not.toHaveBeenCalled();
+    expect(
+      (scheduler as unknown as { readyToIntegrate: Map<string, unknown> }).readyToIntegrate.has(
+        't1',
+      ),
+    ).toBe(true);
+    // And it parked, naming the wall rather than failing silently.
+    const saved = (store.saveAttention as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(String((saved?.[0] as { prompt: string })?.prompt)).toMatch(/No GitHub token is saved/);
+  });
+
+  it('says the branch was PUSHED, not opened, when the request was already there', async () => {
+    // The second settle of a card that goes on working. `openPullRequest` pushes into the
+    // pull request that is already open and reports `existed`, so the note must not announce
+    // a second one — there is only ever the one, and it now carries this work too.
+    const { finish, flush, notes } = setup({
+      projectAutoCreatePr: true,
+      open: async () => ({
+        url: 'https://github.com/o/r/pull/12',
+        ref: '#12',
+        existed: true,
+      }),
+    });
+
+    finish();
+    await flush();
+
+    const note = notes.find((n) => n.includes('#12'));
+    expect(note).toMatch(/already open/);
+    expect(note).not.toMatch(/was opened for it/);
+    // Still the thing a human most needs to read off this card: it did NOT merge.
+    expect(note).toMatch(/NOT been merged/);
+  });
+
+  it('says so on the card when nothing is wired to reach a forge', async () => {
+    const { finish, flush, notes, worktrees } = setup({
+      projectAutoCreatePr: true,
+      unwired: true,
+    });
+    finish();
+    await flush();
+
+    expect(notes.some((n) => n.includes('cannot reach a forge'))).toBe(true);
+    expect(worktrees.integrate).not.toHaveBeenCalled();
   });
 });
