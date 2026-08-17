@@ -63,6 +63,7 @@ import {
 } from '@fluentui/react-components';
 import { AddRegular, DismissRegular } from '@fluentui/react-icons';
 import { ColorSwatches, PALETTE } from '@tm/ui/ColorSwatches';
+import { PeopleSettings } from '@tm/ui/projects/PeopleSettings';
 import { PlanningModelField } from '@tm/ui/PlanningModelField';
 import { PaneLoading } from '@tm/ui/PaneLoading';
 import { useInitialLoad } from '@tm/ui/useInitialLoad';
@@ -102,7 +103,7 @@ const useStyles = makeStyles({
 
 const MODES: PermissionMode[] = ['acceptEdits', 'plan', 'manual', 'bypassPermissions'];
 
-type Section = 'general' | 'board' | 'jira' | 'desktop';
+type Section = 'general' | 'board' | 'jira' | 'people' | 'desktop';
 
 export function SettingsScreen(): JSX.Element {
   const styles = useStyles();
@@ -162,6 +163,7 @@ export function SettingsScreen(): JSX.Element {
         <Tab value="general">General</Tab>
         <Tab value="board">Board</Tab>
         <Tab value="jira">JIRA</Tab>
+        <Tab value="people">People</Tab>
         <Tab value="desktop">Desktop only</Tab>
       </TabList>
 
@@ -425,6 +427,12 @@ export function SettingsScreen(): JSX.Element {
           </div>
 
           {actions}
+        </div>
+      )}
+
+      {section === 'people' && (
+        <div className={styles.pane}>
+          <PeopleSettings />
         </div>
       )}
 

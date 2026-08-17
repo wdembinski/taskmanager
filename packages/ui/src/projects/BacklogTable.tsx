@@ -1,11 +1,11 @@
 /**
  * BacklogTable — every ticket in one native ticket project, grouped by epic.
  *
- * Read-only for now: opening a ticket to edit it, and managing labels/milestones, is the next
- * step's job (the drawer). This one owns loading the project's tickets, the search box, the
- * sort toggle, and rendering `backlogView`'s grouped rows as a plain Fluent `Table` —
- * `StatusMapViewer.tsx` is the repo's only other one, and there is no `DataGrid` in this
- * workspace to reach for instead.
+ * A row click opens `TicketDrawer` on that ticket — labels, milestones and links are all
+ * managed from there, so this component's own job stays what it always was: loading the
+ * project's tickets, the search box, the sort toggle, and rendering `backlogView`'s grouped
+ * rows as a plain Fluent `Table` — `StatusMapViewer.tsx` is the repo's only other one, and
+ * there is no `DataGrid` in this workspace to reach for instead.
  *
  * Keyed by `projectId` at the call site (`Projects.tsx`) rather than reacting to it changing
  * in place: switching the selected project is rare enough that a remount — a fresh seed load,
@@ -46,6 +46,7 @@ import { PaneLoading } from '../PaneLoading';
 import { useTransport } from '../transport';
 import { useInitialLoad } from '../useInitialLoad';
 import { type BacklogSortKey, backlogRows } from './backlogView';
+import { TicketDrawer } from './TicketDrawer';
 
 const useStyles = makeStyles({
   root: { display: 'flex', flexDirection: 'column', gap: '10px', minHeight: 0 },
@@ -58,6 +59,7 @@ const useStyles = makeStyles({
   muted: { color: tokens.colorNeutralForeground3 },
   labelsCell: { display: 'flex', flexWrap: 'wrap', gap: '4px' },
   empty: { color: tokens.colorNeutralForeground3, padding: '8px 0' },
+  clickableRow: { cursor: 'pointer' },
 });
 
 /**
@@ -111,6 +113,7 @@ export function BacklogTable({
   const [tickets, setTickets] = useState<Task[] | null>(null);
   const [query, setQuery] = useState('');
   const [sortKey, setSortKey] = useState<BacklogSortKey>('key');
+  const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
 
   const seed = useCallback(
     async () => setTickets(await transport.invoke('board:tasks', projectId)),
@@ -150,6 +153,11 @@ export function BacklogTable({
       />
     );
   }
+
+  // Derived, not stored: as `tickets` is replaced by the `task:changed` / `project:tasksChanged`
+  // subscriptions above, the open drawer picks up the fresh row on its own next render — no
+  // callback needed to tell it a save landed.
+  const selectedTicket = tickets.find((t) => t.id === selectedTicketId) ?? null;
 
   return (
     <div className={styles.root}>
@@ -205,7 +213,11 @@ export function BacklogTable({
                     </TableCell>
                   </TableRow>
                   {group.tickets.map((ticket) => (
-                    <TableRow key={ticket.id}>
+                    <TableRow
+                      key={ticket.id}
+                      className={styles.clickableRow}
+                      onClick={() => setSelectedTicketId(ticket.id)}
+                    >
                       <TableCell className={styles.typeCell}>
                         {TYPE_ICON[typeIconKeyFor(ticket)]}
                       </TableCell>
@@ -261,6 +273,15 @@ export function BacklogTable({
           </Table>
         </div>
       )}
+
+      <TicketDrawer
+        ticket={selectedTicket}
+        tickets={tickets}
+        people={people}
+        labels={labels}
+        milestones={milestones}
+        onClose={() => setSelectedTicketId(null)}
+      />
     </div>
   );
 }
