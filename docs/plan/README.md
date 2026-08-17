@@ -5607,6 +5607,62 @@ README.md` has never satisfied Prettier and is deliberately left that way — re
 
 ---
 
+## Fix — Sync error
+
+**Goal.** A cloud sync that currently fails opaquely — a 401 dropped on the floor, a
+`refreshTokens` error string nobody can tell `invalid_grant` from a 503, a board that pages
+silently and can render an incomplete list as if it were the whole one — becomes a sync that
+recovers what it can and tells the truth about the rest, without a DOM harness to lean on for
+any of it.
+
+### Verified facts this rests on
+
+Every claim the plan was built on was re-read against this worktree before anything downstream
+gets to assume it. All four hold exactly as stated; nothing here needed correcting.
+
+- **Paging already round-trips.** `BoardResponse.hasMore` (`packages/protocol/src/wire.ts:368`)
+  is populated in `MirrorService.rowsSince`'s caller — `hasMore: tasks.hasMore ||
+  projects.hasMore || deletions.hasMore` at `mirror.service.ts:242`, itself built from the
+  per-page `{ rows, hasMore }` `rowsSince` returns at `mirror.service.ts:355-377` — and read on
+  the other end at `BoardPoller.ts:143` (`this.catchingUp = body.hasMore === true`), which is
+  what makes the next poll immediate instead of waiting out a cadence. **No server or protocol
+  change belongs in this fix.** Whatever step exposes progress to the UI reads `catchingUp`,
+  it does not invent a new signal.
+- **The guard's two failure codes are set at the framework level, not by convention.**
+  `iamAuth.guard.ts:60` throws `UnauthorizedException` (401) for a missing bearer token,
+  `:70` for one IAM introspects as inactive, and `:93` throws `ForbiddenException` (403) when
+  IAM's `authorize` call comes back disallowed. Nest resolves guards via `canActivate` before
+  the route handler ever runs (`mirror.controller.ts:37`'s `@UseGuards(IamAuthGuard)` covers
+  `@Post('sync')` at `:41`), so a 401'd `POST /v1/sync` never reached `MirrorController`'s
+  body-handling at all — the request can be replayed verbatim once a fresh token exists. A 403
+  means IAM said no to this subject for this action; retrying the same request changes nothing,
+  and any retry logic must not treat the two alike.
+- **`refreshTokens` fails through one shared, unstructured throw.** Both `exchangeCodeForTokens`
+  and `refreshTokens` (`packages/shared/src/iamPkce.ts:107-116`) funnel through the same
+  `postToken` (defined at `:119`); its error path is `:129-136`, and the actual `throw` —
+  `` `vipper.iam token request failed (${res.status} ${detail})` `` with `detail` as `res.text()`
+  read raw, no JSON parse — is at `:136`, seven lines past the function's own opening (the plan
+  cites `:119` for the function, not the throw; worth the seven-line correction since a later
+  step edits this exact line). There is today no way to tell `invalid_grant` (refresh token is
+  dead, re-authenticate) from a `503` (transient, retry) except by parsing that string.
+  `iamPkce.test.ts:120` asserts `.rejects.toThrow(/token request failed \(400/)` against
+  `exchangeCodeForTokens` — **that substring must survive** whatever structure gets added around
+  it; the fix is additive (a typed error / status code alongside the message), not a rewrite of
+  the message itself.
+- **There is no DOM harness in this workspace, and that is a standing, deliberate decision.**
+  `test/shell-parity.test.ts:5-8`: "no jsdom, no `@testing-library`... adding one is a
+  workspace-wide decision that the v0.82.0 branch deliberately left outside its scope." Any gate
+  logic this fix adds — what counts as "syncing," when the board curtains, when a retry is
+  attempted — has to be a plain exported function with its own `.test.ts`, not something proven
+  by rendering. The one available precedent for testing a main-process module without a
+  renderer is `iamSignIn.ts`'s own rule, stated in its header (`apps/client/src/main/
+  iamSignIn.ts:8`): "Electron-free by design (no `import('electron')`)... testable with a real
+  loopback server and `fetch`." Anything this fix adds to the token-refresh path on the desktop
+  side should hold to the same rule, for the same reason — it is what lets it run under vitest
+  at all.
+
+---
+
 ## Conventions for every phase
 
 - **Contract first.** New data crossing the UI↔engine boundary gets its types in
