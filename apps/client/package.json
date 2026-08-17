@@ -25,6 +25,7 @@
     "package": "electron-vite build && electron-builder install-app-deps && npm run ensure:abi && electron-builder --win --publish onTagOrDraft && npm run check:feed",
     "package:linux": "electron-vite build && electron-builder install-app-deps && npm run ensure:abi && electron-builder --linux --publish onTagOrDraft && npm run check:feed",
     "package:local": "electron-vite build && electron-builder install-app-deps && npm run ensure:abi && electron-builder --win --publish never && npm run check:feed",
+    "package:linux:local": "electron-vite build && electron-builder install-app-deps && npm run ensure:abi && electron-builder --linux --publish never && npm run check:feed",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
