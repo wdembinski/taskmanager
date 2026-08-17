@@ -2,6 +2,12 @@
  * Lifts one `CloudAuth` instance into React state: resolves the `/callback` redirect on
  * first mount (once — a second effect run under StrictMode must not try to redeem an
  * already-spent code a second time), then exposes `signedIn` plus `signIn`/`signOut`.
+ *
+ * Also listens for `CloudAuth` finding the stored grant revoked mid-session — a token
+ * refresh run from the board poller, not from here, so nothing else would otherwise turn
+ * that into a render. Flipping `signedIn` back to `false` is what sends `AuthedApp` back to
+ * `SignInScreen` instead of leaving a board curtained on a connection that will never
+ * recover on its own.
  */
 import { useEffect, useRef, useState } from 'react';
 import type { CloudAuth } from './cloudAuth';
@@ -38,6 +44,8 @@ export function useCloudAuth(auth: CloudAuth): CloudAuthState {
       }
     })();
   }, [auth]);
+
+  useEffect(() => auth.onGrantRevoked(() => setSignedIn(false)), [auth]);
 
   return {
     signedIn,

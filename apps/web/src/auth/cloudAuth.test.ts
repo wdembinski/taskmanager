@@ -140,6 +140,56 @@ describe('CloudAuth', () => {
     await expect(auth.getAccessToken()).resolves.toBeNull();
   });
 
+  it('collapses concurrent getAccessToken() callers onto one /token POST', async () => {
+    const local = fakeStorage();
+    local.setItem('tm.cloud.refreshToken', 'rt-stored');
+    let resolveFetch!: (value: unknown) => void;
+    const fetchImpl = vi.fn().mockReturnValue(
+      new Promise((resolve) => {
+        resolveFetch = resolve;
+      }),
+    );
+    const auth = new CloudAuth({
+      config,
+      localStorage: local,
+      sessionStorage: fakeStorage(),
+      fetchImpl,
+    });
+
+    // Three callers race getAccessToken() before the single in-flight refresh settles — the
+    // board poller, the transport, and the presence heartbeat all do this in practice.
+    const calls = [auth.getAccessToken(), auth.getAccessToken(), auth.getAccessToken()];
+    resolveFetch({ ok: true, json: async () => tokenResponse({ access_token: 'at-shared' }) });
+
+    expect(await Promise.all(calls)).toEqual(['at-shared', 'at-shared', 'at-shared']);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops the refresh token and stops requesting after invalid_grant', async () => {
+    const local = fakeStorage();
+    local.setItem('tm.cloud.refreshToken', 'rt-stored');
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue({ ok: false, status: 400, text: async () => 'invalid_grant' });
+    const auth = new CloudAuth({
+      config,
+      localStorage: local,
+      sessionStorage: fakeStorage(),
+      fetchImpl,
+    });
+    const revoked = vi.fn();
+    auth.onGrantRevoked(revoked);
+
+    expect(await auth.getAccessToken()).toBeNull();
+    expect(revoked).toHaveBeenCalledTimes(1);
+    expect(auth.isSignedIn()).toBe(false);
+
+    // A caller that keeps polling after the grant is dead (the board poller doesn't know to
+    // stop on its own) must not keep spending a request on an already-revoked grant.
+    expect(await auth.getAccessToken()).toBeNull();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it('signOut clears the stored refresh token and the cached access token', async () => {
     const local = fakeStorage();
     local.setItem('tm.cloud.refreshToken', 'rt-stored');

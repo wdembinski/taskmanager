@@ -22,6 +22,7 @@ import {
   createPkcePair,
   createState,
   exchangeCodeForTokens,
+  isTerminalGrantError,
   refreshTokens,
   type IamPkceConfig,
   type TokenResponse,
@@ -82,6 +83,12 @@ export class CloudAuth {
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;
   private accessToken: AccessTokenCache | null = null;
+  /** Collapses concurrent `getAccessToken()` callers onto one `/token` exchange — same fix
+   *  as the desktop's `CloudTokenProvider`: two callers racing a refresh each spend the SAME
+   *  stored refresh token, and vipper.iam rotates it on every use, so the loser's exchange
+   *  fails `invalid_grant` against an already-spent token. */
+  private inflight: Promise<string | null> | null = null;
+  private readonly revokedListeners = new Set<() => void>();
 
   constructor(deps: CloudAuthDeps) {
     this.config = deps.config;
@@ -152,6 +159,34 @@ export class CloudAuth {
     if (isAccessTokenFresh(this.accessToken, this.now())) {
       return this.accessToken!.value;
     }
+    // Every caller racing here (the poller, the transport, the presence heartbeat) shares
+    // the one mint in flight rather than each spending the same stored refresh token.
+    if (!this.inflight) {
+      const run = this.mint();
+      this.inflight = run;
+      void run.finally(() => {
+        if (this.inflight === run) this.inflight = null;
+      });
+    }
+    return this.inflight;
+  }
+
+  /** Run `cb` when a refresh has just found the stored grant permanently dead — the browser's
+   *  honest move is back to the sign-in screen, unlike the desktop (which keeps the token and
+   *  warns in its Settings pane, having somewhere to warn). `useCloudAuth` is the only
+   *  subscriber: it flips its React `signedIn` state so `AuthedApp` stops curtaining on a
+   *  board that will never sync again. */
+  onGrantRevoked(cb: () => void): () => void {
+    this.revokedListeners.add(cb);
+    return () => this.revokedListeners.delete(cb);
+  }
+
+  signOut(): void {
+    this.accessToken = null;
+    this.localStorage.removeItem(REFRESH_TOKEN_KEY);
+  }
+
+  private async mint(): Promise<string | null> {
     const refreshToken = this.localStorage.getItem(REFRESH_TOKEN_KEY);
     if (!refreshToken) return null;
 
@@ -166,16 +201,16 @@ export class CloudAuth {
     } catch (e) {
       // Same fail-soft shape as `ipc.ts`'s own `getCloudAccessToken`: the poller treats a
       // null token exactly like any other failed tick (counted, backed off, retried), not a
-      // special case — and a refresh token vipper.iam has revoked would fail every retry
-      // identically, so there is nothing a special case could do differently here anyway.
+      // special case — UNLESS vipper.iam has actually revoked the grant, which would fail
+      // every retry identically. Drop the dead refresh token so the next call short-circuits
+      // to null with no network request, and tell `useCloudAuth` to stop pretending.
+      if (isTerminalGrantError(e)) {
+        this.localStorage.removeItem(REFRESH_TOKEN_KEY);
+        for (const cb of this.revokedListeners) cb();
+      }
       console.warn('vipper.iam access token refresh failed', e);
       return null;
     }
-  }
-
-  signOut(): void {
-    this.accessToken = null;
-    this.localStorage.removeItem(REFRESH_TOKEN_KEY);
   }
 
   private saveTokens(tokens: TokenResponse): void {
