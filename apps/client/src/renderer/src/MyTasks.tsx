@@ -12,12 +12,14 @@
  * drawn by dragging a card's handle, and a **Chain** toggle in the toolbar that reduces the
  * board to the selected card's chain and nothing else — see `focusIds`.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Button,
+  Dropdown,
   MessageBar,
   MessageBarActions,
   MessageBarBody,
+  Option,
   Switch,
   ToggleButton,
 } from '@fluentui/react-components';
@@ -28,12 +30,13 @@ import {
   PanelRightContractRegular,
   PanelRightExpandRegular,
 } from '@fluentui/react-icons';
-import { PERSONAL_PROJECT_ID, type Project, type Task } from '@shared/model';
+import { PERSONAL_PROJECT_ID, type Person, type Project, type Task } from '@shared/model';
 import {
   DEFAULT_BOARD_DISPLAY,
   type AppSettings,
   type BoardDisplaySettings,
 } from '@shared/settings';
+import { boardScopes, resolveBoardScope, scopeLabel, type BoardScope } from '@shared/boardScope';
 import type { IpcEvents } from '@shared/ipc';
 import type { MergeRequest } from '@shared/mergeRequest';
 import type { TaskAttachment } from '@shared/attachments';
@@ -114,6 +117,15 @@ export function MyTasks(): JSX.Element {
   // The repos a card can be delegated to — fetched once and shared by the cards
   // (glyph tooltip) and the detail pane (assign dialog).
   const [agentProjects, setAgentProjects] = useState<Project[]>([]);
+  /**
+   * Every board this app's projects make available (Phase 24) — Personal, plus one per
+   * native ticket project. Seeded from `board:scopes` and kept live by `ticketProject:changed`
+   * (`boardScopes` recomputed over the pushed list) rather than re-invoking the channel, since
+   * that event already carries the whole list — see `ipc.ts`'s own doc on it.
+   */
+  const [scopes, setScopes] = useState<BoardScope[]>([]);
+  /** The person roster, for the assignee avatar — app-wide, like `agentProjects`. */
+  const [people, setPeople] = useState<Person[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -209,30 +221,72 @@ export function MyTasks(): JSX.Element {
   // machine the project runs on, so guessing it ON would spawn one before we know it is wanted.
   const showGraph = settings?.showGitGraph ?? false;
 
+  /**
+   * Which board is showing (Phase 24) — falls back to Personal for a `null`/missing
+   * `boardScopeId`, or one pointing at a project that no longer exists (`resolveBoardScope`).
+   * Before `scopes` has loaded this is Personal too, since `boardScopes` always guarantees it
+   * first — which is also what `board:tasks`'s own default already draws.
+   */
+  const scope = useMemo(
+    () => resolveBoardScope(scopes, settings?.boardScopeId ?? null),
+    [scopes, settings?.boardScopeId],
+  );
+  /**
+   * The live board id for the two subscriptions below (`patchTask`, `project:tasksChanged`)
+   * to read. A REF, not a dependency: those subscriptions are set up ONCE, in the effect
+   * further down, with `[patchTask, refreshArchived]` — and `patchTask` closing over
+   * `scope.projectId` directly would put it in that effect's dependency chain and tear down
+   * every one of its seven subscriptions on every scope change, possibly mid-drag. The render
+   * keeps this current instead, so a callback created once can still always ask "for THIS
+   * board?" with today's answer.
+   */
+  const scopeIdRef = useRef(scope.projectId);
+  scopeIdRef.current = scope.projectId;
+  /** Which board's tasks/archived are actually loaded into `tasks`/`archived` right now — see
+   *  the scope-change effect below, which this is how it tells "nothing to do" from "catch up". */
+  const loadedScopeRef = useRef<string | null>(null);
+
   const refresh = useCallback(async () => {
-    setTasks(await window.api.invoke('board:tasks'));
+    setTasks(await window.api.invoke('board:tasks', scopeIdRef.current));
+  }, []);
+
+  /** Load one board's cards and removed list — `seed`'s own fetch, and the scope-change
+   *  effect's. */
+  const loadBoard = useCallback(async (projectId: string) => {
+    const [board, gone] = await Promise.all([
+      window.api.invoke('board:tasks', projectId),
+      window.api.invoke('board:archived', projectId),
+    ]);
+    setTasks(board);
+    setArchived(gone);
+    loadedScopeRef.current = projectId;
   }, []);
 
   // One seed load for every channel the board reads, so a failure in any of them is
-  // reported rather than leaving the board on its spinner.
+  // reported rather than leaving the board on its spinner. Scopes and settings are read
+  // FIRST and separately, because the initial board fetch has to be scoped to whatever the
+  // saved `boardScopeId` names — a ticket board saved as the last-viewed one should not
+  // flash Personal before swapping to it.
   const seed = useCallback(async () => {
-    const [board, appSettings, repos, mrs, chain, files, gone] = await Promise.all([
-      window.api.invoke('board:tasks'),
+    const [boardScopeList, appSettings, repos, mrs, chain, files, roster] = await Promise.all([
+      window.api.invoke('board:scopes'),
       window.api.invoke('settings:get'),
       window.api.invoke('agentProject:list'),
       window.api.invoke('mr:mergeRequests'),
       window.api.invoke('chain:links'),
       window.api.invoke('attachment:list'),
-      window.api.invoke('board:archived'),
+      window.api.invoke('person:list'),
     ]);
-    setTasks(board);
+    setScopes(boardScopeList);
     setSettings(appSettings);
     setAgentProjects(repos);
     setMergeRequests(mrs);
     setLinks(chain);
     setAttachments(files);
-    setArchived(gone);
-  }, []);
+    setPeople(roster);
+    const initialScope = resolveBoardScope(boardScopeList, appSettings.boardScopeId);
+    await loadBoard(initialScope.projectId);
+  }, [loadBoard]);
 
   /**
    * Re-read the removed list. Cheap — one indexed query over a table the board has just been
@@ -240,7 +294,38 @@ export function MyTasks(): JSX.Element {
    * "the board changed" is the only signal there is that something might have left it.
    */
   const refreshArchived = useCallback(async () => {
-    setArchived(await window.api.invoke('board:archived'));
+    setArchived(await window.api.invoke('board:archived', scopeIdRef.current));
+  }, []);
+
+  // Catch the scope up with `tasks`/`archived` whenever it changes — an explicit pick from
+  // the Dropdown (`switchScope`, below), or `scopes` itself shrinking because the project the
+  // current scope named was removed (`resolveBoardScope` then falls back to Personal). `seed`
+  // already loaded the RIGHT board on mount, so `loadedScopeRef` is what keeps this from
+  // re-fetching Personal a second time right behind it.
+  useEffect(() => {
+    if (!settings) return; // seed() has not landed yet
+    if (loadedScopeRef.current === scope.projectId) return;
+    void loadBoard(scope.projectId);
+  }, [scope.projectId, settings, loadBoard]);
+
+  /**
+   * Switch which board My Tasks shows (Phase 24). Persisted like every other toolbar
+   * preference on this screen (the whole settings blob, optimistically) — the effect above
+   * is what actually re-fetches `tasks`/`archived` once `scope` recomputes from the new
+   * `boardScopeId`. Local, per-card view state from the OLD board means nothing on the new
+   * one, so it is reset here rather than surviving the swap.
+   */
+  const switchScope = useCallback((projectId: string) => {
+    setSelectedTaskId(null);
+    setSelectedLinkId(null);
+    setLinkDrag(null);
+    setChainFocus(false);
+    setSettings((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, boardScopeId: projectId };
+      void window.api.invoke('settings:save', next);
+      return next;
+    });
   }, []);
 
   /** Put a removed card back, and take it out of the list it came from. */
@@ -255,7 +340,10 @@ export function MyTasks(): JSX.Element {
   const initial = useInitialLoad(seed);
 
   const patchTask = useCallback((task: Task) => {
-    if (task.projectId !== PERSONAL_PROJECT_ID) return; // board shows only personal tasks
+    // The board shows only the SCOPED project's tasks. `scopeIdRef` rather than closing over
+    // `scope.projectId` — see its own doc: this callback's identity must survive a scope
+    // change, since it is one of the seven subscriptions the effect below sets up once.
+    if (task.projectId !== scopeIdRef.current) return;
     setTasks((prev) => (prev ? prev.map((t) => (t.id === task.id ? task : t)) : prev));
   }, []);
 
@@ -266,7 +354,8 @@ export function MyTasks(): JSX.Element {
   useEffect(() => {
     const offTask = window.api.on('task:changed', ({ task }) => patchTask(task));
     const offTasks = window.api.on('project:tasksChanged', ({ projectId, tasks: next }) => {
-      if (projectId !== PERSONAL_PROJECT_ID) return;
+      // Same ref, same reason as `patchTask` — see its doc.
+      if (projectId !== scopeIdRef.current) return;
       setTasks(next);
       // A card leaving the board is a whole-board change and nothing else — there is no
       // per-card event for it, because from the card's own point of view nothing happened.
@@ -278,6 +367,10 @@ export function MyTasks(): JSX.Element {
         prev
           ? {
               ...prev,
+              // The engine resets this behind the UI's back when the project a saved scope
+              // named is removed (`ticketProject:remove`) — a screen that saves the whole
+              // blob would otherwise clobber that reset right back onto disk.
+              boardScopeId: next.boardScopeId,
               jira: {
                 ...prev.jira,
                 learnedStatusColumns: next.jira.learnedStatusColumns,
@@ -295,6 +388,13 @@ export function MyTasks(): JSX.Element {
     // Ditto, and one more reason on top: an attachment also vanishes when its CARD is
     // deleted and the row cascades away, which no per-file patch would hear about.
     const offAttachments = window.api.on('attachment:changed', setAttachments);
+    // The ticket project list changed (added/renamed/removed) — recompute the scope picker
+    // from the pushed rows, the same pure function `board:scopes` itself calls, rather than
+    // re-invoking the channel. See `scopes`'s own doc.
+    const offTicketProjects = window.api.on('ticketProject:changed', (projects) => {
+      setScopes(boardScopes(projects));
+    });
+    const offPeople = window.api.on('person:changed', setPeople);
     // Pushed by a sync that kept cards it could not confirm had left. It arrives from the
     // POLLER as often as from the button, so it cannot be the return value of `sync()`.
     const offNotice = window.api.on('board:notice', setNotice);
@@ -305,6 +405,8 @@ export function MyTasks(): JSX.Element {
       offMrs();
       offLinks();
       offAttachments();
+      offTicketProjects();
+      offPeople();
       offNotice();
     };
   }, [patchTask, refreshArchived]);
@@ -414,6 +516,8 @@ export function MyTasks(): JSX.Element {
 
   /** id → task for the whole board, so an arrow can ask its gate about the predecessor. */
   const tasksById = useMemo(() => new Map((tasks ?? []).map((t) => [t.id, t])), [tasks]);
+  /** id → person, for a native ticket's assignee avatar. */
+  const peopleById = useMemo(() => new Map(people.map((p) => [p.id, p])), [people]);
 
   /**
    * Where each chained card stands: what it is still waiting on, which of those are waiting
@@ -848,6 +952,26 @@ export function MyTasks(): JSX.Element {
     <div className={layout.root}>
       <div className={layout.board}>
         <div className={layout.toolbar}>
+          {/* Which board this is (Phase 24) — absent entirely with only Personal to pick
+              from, so a database with no ticket project keeps a toolbar byte-identical to
+              before this existed rather than growing one extra control that does nothing. */}
+          {scopes.length > 1 && (
+            <Dropdown
+              size="small"
+              value={scopeLabel(scope)}
+              selectedOptions={[scope.projectId]}
+              title="Which project's board this shows"
+              onOptionSelect={(_e, d) => {
+                if (d.optionValue) switchScope(d.optionValue);
+              }}
+            >
+              {scopes.map((s) => (
+                <Option key={s.projectId} value={s.projectId}>
+                  {scopeLabel(s)}
+                </Option>
+              ))}
+            </Dropdown>
+          )}
           {/* The count is the toggle's whole job while it is off: DONE is the one column a
               card can reach without anybody dragging it there, so a card that failed, or
               whose ticket moved to a Done status, used to leave the board with nothing said
@@ -1038,6 +1162,10 @@ export function MyTasks(): JSX.Element {
               // repository's path, and on a board that mixes them that line is the only
               // thing saying which is which.
               projectNameOf={(t) => (t.externalSource ? t.phase || undefined : undefined)}
+              // A native ticket's parent epic, by NAME (Phase 24) — `t.epicTaskId` names
+              // another card on this same board.
+              epicNameOf={(t) => (t.epicTaskId ? tasksById.get(t.epicTaskId)?.title : undefined)}
+              assigneeOf={(t) => (t.assigneeId ? peopleById.get(t.assigneeId) : undefined)}
               agentNameOf={(t) => agentProjects.find((p) => p.id === t.agentProjectId)?.name}
               // The stripe is the PROJECT the card is filed under, not the agent it may
               // or may not be delegated to.

@@ -68,3 +68,23 @@ describe('selectArchivedTasks', () => {
     expect(selectArchivedTasks(state).map((t) => t.id)).toEqual(['newAlso', 'new', 'old']);
   });
 });
+
+// Phase 24: a board scoped to a native ticket project reads the SAME two selectors, with an
+// explicit `projectId` instead of the default.
+describe('scoping to a ticket project', () => {
+  it('selectBoardTasks reads the named project instead of Personal', () => {
+    expect(selectBoardTasks(board, 'p2').map((t) => t.id)).toEqual(['other']);
+  });
+
+  it('selectArchivedTasks reads the named project instead of Personal', () => {
+    const state = stateOf(
+      otherProject,
+      task({ id: 'otherArchived', projectId: 'p2', archivedAt: 1 }),
+    );
+    expect(selectArchivedTasks(state, 'p2').map((t) => t.id)).toEqual(['otherArchived']);
+  });
+
+  it('an explicit Personal id behaves exactly like the default', () => {
+    expect(selectBoardTasks(board, PERSONAL_PROJECT_ID)).toEqual(selectBoardTasks(board));
+  });
+});

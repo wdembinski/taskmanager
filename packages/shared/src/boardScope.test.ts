@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { PERSONAL_PROJECT_ID, type Project } from './model';
-import { boardScopes } from './boardScope';
+import { boardScopes, resolveBoardScope, scopeLabel, type BoardScope } from './boardScope';
 
 type ScopeInput = Pick<Project, 'id' | 'kind' | 'name' | 'ticketPrefix'>;
 
@@ -49,5 +49,54 @@ describe('boardScopes', () => {
     ]);
     expect(scopes.filter((s) => s.projectId === PERSONAL_PROJECT_ID)).toHaveLength(1);
     expect(scopes).toHaveLength(2);
+  });
+});
+
+describe('resolveBoardScope', () => {
+  const personal: BoardScope = {
+    projectId: PERSONAL_PROJECT_ID,
+    name: 'Personal',
+    ticketPrefix: '',
+  };
+  const platform: BoardScope = { projectId: 't1', name: 'Platform', ticketPrefix: 'PLAT' };
+  const scopes = [personal, platform];
+
+  it('finds the scope the id names', () => {
+    expect(resolveBoardScope(scopes, 't1')).toEqual(platform);
+  });
+
+  it('falls back to Personal (first) for a null id', () => {
+    expect(resolveBoardScope(scopes, null)).toEqual(personal);
+  });
+
+  it('falls back to Personal for an undefined id', () => {
+    expect(resolveBoardScope(scopes, undefined)).toEqual(personal);
+  });
+
+  // The project a saved scope named was removed since — the id is now dangling.
+  it('falls back to Personal for an id no longer among the scopes', () => {
+    expect(resolveBoardScope(scopes, 'deleted-project')).toEqual(personal);
+  });
+
+  it('still answers Personal even when handed an empty scope list', () => {
+    expect(resolveBoardScope([], 't1')).toEqual(personal);
+  });
+});
+
+describe('scopeLabel', () => {
+  it('is the bare name for Personal', () => {
+    expect(scopeLabel({ projectId: PERSONAL_PROJECT_ID, name: 'Personal', ticketPrefix: '' })).toBe(
+      'Personal',
+    );
+  });
+
+  it('is the bare name for a ticket project with no prefix yet', () => {
+    expect(scopeLabel({ projectId: 't1', name: 'Platform', ticketPrefix: '' })).toBe('Platform');
+  });
+
+  it('appends the ticket prefix in parentheses when the project has one', () => {
+    expect(scopeLabel({ projectId: 't1', name: 'Platform', ticketPrefix: 'PLAT' })).toBe(
+      'Platform (PLAT)',
+    );
   });
 });

@@ -61,8 +61,10 @@ import {
   PERSONAL_PROJECT_ID,
   type BoardColumn,
   type ManualStatus,
+  type Person,
   type Task,
 } from '@tm/shared/model';
+import { boardScopes, resolveBoardScope } from '@tm/shared/boardScope';
 import { BoardToolbar } from './BoardToolbar';
 import { selectArchivedTasks, selectBoardTasks } from './boardSelectors';
 import { displayStatus, isTaskPending, type CloudBoardState } from './cloudBoardStore';
@@ -140,6 +142,20 @@ export function BoardScreen({
   const display = settings.board;
 
   const projects = useMemo(() => Object.values(state.projects), [state.projects]);
+
+  /**
+   * Every board this account's projects make available (Phase 24), computed straight from
+   * the MIRROR rather than a relayed `board:scopes` call: `state.projects` already carries
+   * every project row — ticket projects included, since `cloudDelta.ts` shapes `Project`
+   * rows with no `kind` filter — so this is the same pure function the desktop's IPC handler
+   * calls, over data this screen already has.
+   */
+  const scopes = useMemo(() => boardScopes(projects), [projects]);
+  /** Which of `scopes` is showing — falls back to Personal for `null` or a dangling id. */
+  const scope = useMemo(
+    () => resolveBoardScope(scopes, settings.boardScopeId),
+    [scopes, settings.boardScopeId],
+  );
   /**
    * The card's optional lines, read the desktop's way: `projectNameOf` is the tracker's own
    * container for the card (`phase` — JIRA's project name, or GitHub's `owner/repo`), not the
@@ -157,8 +173,11 @@ export function BoardScreen({
   const projectColorOf = (task: Task): string | undefined =>
     extras.agentProjects.find((p) => p.id === task.projectTagId)?.color || undefined;
 
-  /** The desktop's own card set — Personal, un-archived. See `boardSelectors.ts`. */
-  const boardTasks = useMemo(() => selectBoardTasks(state), [state]);
+  /** The desktop's own card set — this board's, un-archived. See `boardSelectors.ts`. */
+  const boardTasks = useMemo(
+    () => selectBoardTasks(state, scope.projectId),
+    [state, scope.projectId],
+  );
 
   /**
    * The cards that have LEFT this board. No fetch and no `board:archived` equivalent: the
@@ -166,7 +185,10 @@ export function BoardScreen({
    * `boardSelectors.ts` says why ingest must not drop them), so this is the same list the
    * desktop's dialog shows, minus the step rows `archivedCards` filters out.
    */
-  const removedCards = useMemo(() => archivedCards(selectArchivedTasks(state)), [state]);
+  const removedCards = useMemo(
+    () => archivedCards(selectArchivedTasks(state, scope.projectId)),
+    [state, scope.projectId],
+  );
 
   const mrsByTask = useMemo(
     () => mergeRequestsByTask(extras.mergeRequests),
@@ -174,6 +196,13 @@ export function BoardScreen({
   );
   const attachmentsByTask = useMemo(() => byTask(extras.attachments), [extras.attachments]);
   const tasksById = useMemo(() => new Map(boardTasks.map((t) => [t.id, t])), [boardTasks]);
+  const peopleById = useMemo(() => new Map(extras.people.map((p) => [p.id, p])), [extras.people]);
+  /** A native ticket's parent epic, by name (Phase 24) — `TaskCard`'s own `epicName` prop. */
+  const epicNameOf = (task: Task): string | undefined =>
+    task.epicTaskId ? tasksById.get(task.epicTaskId)?.title : undefined;
+  /** A native ticket's assignee (Phase 24) — `TaskCard`'s own `assignee` prop. */
+  const assigneeOf = (task: Task): Person | undefined =>
+    task.assigneeId ? peopleById.get(task.assigneeId) : undefined;
 
   /**
    * Cards the add-task dialog may hang a hand-written step under, and — asked the other way
@@ -305,6 +334,24 @@ export function BoardScreen({
     setError(e instanceof Error ? e.message : String(e));
   }, []);
 
+  /**
+   * Switch which board is showing (Phase 24) — persisted through the same relayed
+   * `settings:save` every other toolbar switch uses (`saveSettings` is optimistic; see
+   * `useBoardExtras`), plus the local reset every board-wide view control here gets: a
+   * selection, an armed link or an open focus mode from the OLD board means nothing on the
+   * new one.
+   */
+  const switchScope = useCallback(
+    (projectId: string) => {
+      setSelectedTaskId(null);
+      setSelectedLinkId(null);
+      setLinkDrag(null);
+      setChainFocus(false);
+      void saveSettings({ ...settings, boardScopeId: projectId }).catch(reportError);
+    },
+    [settings, saveSettings],
+  );
+
   const foldedSteps = useMemo(() => foldedCardSet(settings.foldedStepCards), [settings]);
   const shownEarlierSteps = useMemo(
     () => foldedCardSet(settings.shownEarlierStepCards),
@@ -357,6 +404,9 @@ export function BoardScreen({
     <div className={layout.root}>
       <div className={layout.board}>
         <BoardToolbar
+          scopes={scopes}
+          scope={scope}
+          onScopeChange={switchScope}
           showDone={showDone}
           hiddenDone={hiddenDone}
           onShowDoneChange={(next) =>
@@ -425,7 +475,7 @@ export function BoardScreen({
           <Caption1 className={styles.empty}>
             {projects.length === 0 && Object.keys(state.tasks).length === 0
               ? 'No board data yet — waiting on the first sync from your desktop app.'
-              : 'No cards on your Personal board.'}
+              : `No cards on your ${scope.name} board.`}
           </Caption1>
         ) : (
           <div className={layout.columns} onClick={() => setSelectedLinkId(null)}>
@@ -436,6 +486,8 @@ export function BoardScreen({
                 label={COLUMN_LABEL[column]}
                 cards={cardsByColumn.get(column) ?? []}
                 projectNameOf={projectNameOf}
+                epicNameOf={epicNameOf}
+                assigneeOf={assigneeOf}
                 agentNameOf={agentNameOf}
                 projectColorOf={projectColorOf}
                 display={display}

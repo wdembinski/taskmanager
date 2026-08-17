@@ -856,6 +856,18 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     if (!existing || existing.kind !== 'ticket') return;
     store.removeProject(id);
     pushTicketProjects();
+    // The board scope this project WAS is gone with it. Behind the UI's back, like the
+    // JIRA `lastCreateProjectKey` write above — a saved `boardScopeId` pointing at a
+    // now-deleted project would otherwise sit there until the next save from a screen that
+    // still has the stale value, silently reviving it. `resolveBoardScope` already falls
+    // back to Personal for a dangling id, so the board itself recovers either way; this is
+    // only what keeps the SETTING from lying once it does.
+    const settings = store.getSettings();
+    if (settings.boardScopeId === id) {
+      const next: AppSettings = { ...settings, boardScopeId: null };
+      store.saveSettings(next);
+      send('settings:changed', next);
+    }
   });
 
   handle('board:scopes', async () => boardScopes(store.listProjects()));

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_BOARD_DISPLAY,
   DEFAULT_JIRA_SETTINGS,
   DEFAULT_SETTINGS,
   mergeAppSettings,
@@ -104,5 +105,27 @@ describe('mergeAppSettings', () => {
     mergeAppSettings(current, { concurrency: 9, jira: { enabled: true } });
     expect(current.concurrency).toBe(DEFAULT_SETTINGS.concurrency);
     expect(current.jira.enabled).toBe(false);
+  });
+
+  // `boardScopeId` is nullable, like `defaultPlanningModel` above — a save that resets the
+  // board to Personal must apply the `null`, not be mistaken for a field the caller omitted.
+  it('applies a null boardScopeId, resetting the board to Personal', () => {
+    const current = { ...DEFAULT_SETTINGS, boardScopeId: 'ticket-project-1' };
+    const merged = mergeAppSettings(current, { boardScopeId: null });
+    expect(merged.boardScopeId).toBeNull();
+  });
+});
+
+// A blob written before Phase 24 (native tickets) has no `board.showAssignee`/`showPoints`
+// and no `boardScopeId` at all — the defaults below are what such a blob fills in as, and
+// they are what keeps a board with no ticket project drawing exactly as it always has.
+describe('DEFAULT_SETTINGS / DEFAULT_BOARD_DISPLAY (Phase 24 fields)', () => {
+  it('scopes to nothing (Personal) out of the box', () => {
+    expect(DEFAULT_SETTINGS.boardScopeId).toBeNull();
+  });
+
+  it('draws no assignee avatar or points chip out of the box', () => {
+    expect(DEFAULT_BOARD_DISPLAY.showAssignee).toBe(false);
+    expect(DEFAULT_BOARD_DISPLAY.showPoints).toBe(false);
   });
 });

@@ -50,3 +50,30 @@ export function boardScopes(
   }
   return scopes;
 }
+
+/**
+ * The scope `AppSettings.boardScopeId` names, or Personal when that id is `null`,
+ * `undefined`, or no longer among `scopes` — a ticket project removed out from under a
+ * saved scope must resolve the board back to Personal rather than to nothing.
+ *
+ * Falls back to `scopes[0]` rather than the module's own `PERSONAL_SCOPE` constant: the
+ * caller's list is the one actually on screen, and `boardScopes` guarantees Personal is
+ * first in it — so this stays correct even if a caller ever seeds the picker from something
+ * other than a live `projects` table.
+ */
+export function resolveBoardScope(
+  scopes: readonly BoardScope[],
+  scopeId: string | null | undefined,
+): BoardScope {
+  return scopes.find((scope) => scope.projectId === scopeId) ?? scopes[0] ?? PERSONAL_SCOPE;
+}
+
+/**
+ * A scope's label in the board's scope picker — its ticket prefix in parentheses when it has
+ * one, since the name alone repeats what the Projects screen already showed and drops the
+ * one fact (its key) a picker exists to distinguish. Personal, and a ticket project with no
+ * prefix set yet, show the bare name.
+ */
+export function scopeLabel(scope: BoardScope): string {
+  return scope.ticketPrefix ? `${scope.name} (${scope.ticketPrefix})` : scope.name;
+}
