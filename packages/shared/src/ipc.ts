@@ -450,6 +450,13 @@ export interface IpcApi {
    */
   'task:setDescription': (taskId: string, description: string) => Promise<Task>;
   /**
+   * Rewrite the card's title. For a JIRA or GitHub card this edits the app's copy
+   * only: the next sync overwrites it with the issue's own summary, the same
+   * bargain `task:setDescription` strikes. Rejects a blank title. Returns the
+   * updated task.
+   */
+  'task:setTitle': (taskId: string, title: string) => Promise<Task>;
+  /**
    * Set a task's priority by name (`null` clears it). Unlike the description, this
    * one DOES write back: for a JIRA card the issue is updated first and the local row
    * only follows if JIRA accepted, so the two can never disagree. Allowed mid-run —
