@@ -94,6 +94,65 @@ inline CSS, so the design tokens (light/dark, spacing) stay consistent.
 
 ---
 
+## Recipe D: add a field to a native ticket
+
+A ticket field is a `tasks` column, so it enters at **seven stops in `apps/client/src/main/store.ts`**
+— miss one and the field is silently dropped, usually at creation, which is exactly what
+happened to `projectTagId`: the comment still sitting inside the `INSERT` at
+[`store.ts:1840-1845`](../apps/client/src/main/store.ts) is the scar from that. Work through
+them in this order:
+
+1. **The `CREATE TABLE tasks` block** ([`store.ts:935-1005`](../apps/client/src/main/store.ts))
+   — add the column so a brand-new database has it from the start.
+2. **The PRAGMA-guarded `ALTER TABLE` list**
+   ([`store.ts:1540-1609`](../apps/client/src/main/store.ts)) — add the same column here too,
+   with a comment saying what `NULL` means for every row that predates the field. This is what
+   an *existing* database picks up on its next open; skip it and only a fresh install gets the
+   column.
+3. **`TaskRow`** ([`store.ts:84`](../apps/client/src/main/store.ts)) — the raw shape a `SELECT *`
+   comes back as. It is not the same type as `Task`: booleans are `0`/`1`, arrays are JSON
+   strings.
+4. **`taskToRow`** ([`store.ts:2614`](../apps/client/src/main/store.ts)) — `Task` → `TaskRow`,
+   for the write side.
+5. **`rowToTask`** ([`store.ts:2696`](../apps/client/src/main/store.ts)) — `TaskRow` → `Task`,
+   for the read side. A JSON array column goes through `parseStringArray`
+   ([`store.ts:2587`](../apps/client/src/main/store.ts)), the same decoder `labels` and
+   `dependsOn` already use.
+6. **`insertTask`'s column list *and* value list**
+   ([`store.ts:1816-1847`](../apps/client/src/main/store.ts)) — both, not just one. SQLite
+   accepts an `INSERT` whose column list and `VALUES` list are different lengths only if you
+   get the count wrong in a way that still parses, which a missing field usually does not — but
+   a field present in `TaskRow`/`taskToRow` and absent from *this* statement compiles cleanly
+   and simply never reaches the database. That is the `projectTagId` bug exactly, and it is why
+   the twelve ticket columns are called out **twice** in this one `INSERT`, once in each list.
+7. **`updateTask`'s column allowlist** ([`store.ts:3192-3239`](../apps/client/src/main/store.ts))
+   — so the field is patchable after creation. A JSON array column is handled apart from the
+   loop, the way `labels` is (`store.ts:3261-3264`): better-sqlite3 refuses to bind an `Array`.
+
+If the field can be set **at creation**, `createTicketTx`
+([`store.ts:2830-2882`](../apps/client/src/main/store.ts)) also needs the one line that copies
+it off `TicketInput` onto the `Task` literal it builds — easy to forget precisely because it
+looks like an eighth store stop but is really just "did you wire the ticket you're creating,
+not only the one you're editing".
+
+Then four more stops finish the contract, outside `store.ts`:
+
+1. **`Task`** in [`packages/shared/src/model.ts`](../packages/shared/src/model.ts) — the field
+   on the domain type itself, documented for why it's nullable (native-ticket fields are `null`
+   for every task that isn't one).
+2. **`TicketInput`/`TicketPatch`**, same file — add the field to `TicketInput` if a human should
+   be able to set it while creating a ticket, and to the `Pick<Task, ...>` union behind
+   `TicketPatch` if it should be editable afterwards. Most fields want both.
+3. **`assertTicketRefs`** in `apps/client/src/main/ipc.ts` — only if the field is a reference to
+   another row (an id like `epicTaskId`/`milestoneId`/`assigneeId`/`reporterId`). `ticket:create`
+   and `ticket:update` otherwise forward `TicketInput`/`TicketPatch` straight through to the
+   store with no per-field code, so a plain scalar needs nothing here at all.
+4. **The renderer field** — `ticketFields.ts` (parsing/validation) and `TicketDrawer.tsx` (the
+   control itself), so a human has somewhere to put the value the first six stops now know how
+   to keep.
+
+---
+
 ## Testing
 
 - **Unit tests** (Vitest) live next to the code as `*.test.ts`. Prefer testing

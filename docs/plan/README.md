@@ -2917,14 +2917,14 @@ picks up unplanned work it bumps for what it actually did and the rest shift wit
 ladder is a consequence of §4, not a schedule to be honoured against it.
 
 - [x] **1** — Add ticket schema and store methods · `feat` → 0.71.0
-- [ ] **2** — Expose ticket IPC and handlers · `feat` → 0.72.0
-- [ ] **3** — Verify ticket schema against SQLite · `test` → 0.72.1
+- [x] **2** — Expose ticket IPC and handlers · `feat` → 0.87.0
+- [x] **3** — Verify ticket schema against SQLite · `test` → 0.87.1
 - [ ] **4** — Add Projects screen with backlog table · `feat` → 0.73.0
 - [ ] **5** — Build ticket drawer, labels and milestones · `feat` → 0.74.0
 - [ ] **6** — Scope the Kanban board to a project · `feat` → 0.75.0
 - [ ] **7** — Draw the Gantt timeline read-only · `feat` → 0.76.0
 - [ ] **8** — Drag Gantt bars to reschedule · `feat` → 0.77.0
-- [ ] **9** — Verify ticket flows and document the model · `test` → 0.77.1
+- [x] **9** — Verify ticket flows and document the model · `test` → 0.77.1
 
 #### 1 — Add ticket schema and store methods · `feat` → 0.71.0
 
@@ -2972,7 +2972,7 @@ to `projectTagId` ([`store.ts:1119-1121`](../../src/main/store.ts)). `labels` ne
 `parseStringArray` on read ([`store.ts:1594`](../../src/main/store.ts)); `isMe` must be
 encoded 0/1 by hand, since better-sqlite3 refuses to bind a boolean.
 
-#### 2 — Expose ticket IPC and handlers · `feat` → 0.72.0
+#### 2 — Expose ticket IPC and handlers · `feat` → 0.87.0 (planned as 0.72.0; see outcome below)
 
 Contract first ([`docs/04`](../04-contributing-guide.md) Recipe A) — `src/shared/ipc.ts`
 before either side:
@@ -3000,7 +3000,22 @@ before either side:
   `setMe` clearing the previous Me. Preload needs no change (`invoke`/`on` are generic).
 - New `src/shared/ticketLinks.ts` + `.test.ts`.
 
-#### 3 — Verify ticket schema against SQLite · `test` → 0.72.1
+**Outcome, and two corrections.** Landed as `packages/shared/src/ipc.ts` →
+`apps/client/src/main/ipc.ts` — the monorepo split renamed both paths this section cites, but
+changed nothing about the shapes. Store side needed **no changes at all**: step 1's
+`getBoardTasks`/`getArchivedTasksFor`, `updateTask`'s ticket-field allowlist and the full
+people/milestone/label/ticket-link CRUD were already there, so this step was the IPC layer
+only, exactly as its title says. The version bump is **0.87.0**, not 0.72.0 — the ladder above
+was drafted against a `0.70`-era baseline and the app had already reached `0.86.0` by the time
+this step ran; CONTRIBUTING.md §4 pins the number to `apps/client/package.json`, not to a plan
+written earlier. New guards live in one `assertTicketRefs` helper shared by `ticket:create` and
+`ticket:update`, rather than duplicated per handler. The exhaustiveness gates
+(`ipcRelay.test.ts`'s host-only list needed no entry — every new channel relays) forced two
+files this section did not name: `packages/shared/src/ipcEventFanout.test.ts` (the `CLASSIFIED`
+table is asserted equal to `EVENT_FANOUT`'s keys) and `apps/web/src/board/polledEvents.ts`'s
+`WHOLE_LIST_EVENTS`, both updated for the same five events.
+
+#### 3 — Verify ticket schema against SQLite · `test` → 0.87.1
 
 `scripts/verify-tickets.mjs`, modelled line-for-line on
 [`scripts/verify-attachments.mjs`](../../scripts/verify-attachments.mjs) — Vite-bundle the
@@ -3023,6 +3038,32 @@ It must prove:
 - **migration from `v0.69.0`** via `git archive`, asserting every old row survives and that
   `PRAGMA foreign_key_list(tasks)` on the migrated DB is *identical* to the fresh one;
 - **JIRA isolation** — `getPersonalTasksForSync()` returns none of a ticket project's rows.
+
+**Outcome, and three corrections.** The version bump is **0.87.1**, not the drafted
+`0.72.1` — the same ladder drift step 2 already recorded, one patch further down. The
+migration leg downgrades to **`v0.72.0`**, not the drafted `v0.69.0`: both tags predate
+ticket columns (`git ls-tree <tag> -- src/main/store.ts` shows neither ever mentions
+`ticketKey`), so either proves the same thing, and `v0.72.0` is the more recent one. Both
+also predate the pnpm-workspace split (`apps/client` did not exist yet — the tree was
+`src/main`, `src/shared` at the repo root), which `verify-attachments.mjs` does not account
+for: its `git archive` runs with `cwd` at this package, and a pathspec resolved from a
+directory that is not part of the old tag's tree is a `fatal: current working directory is
+untracked`, not a silently-wrong answer. `verify-tickets.mjs` runs that one command from the
+repo's top level instead — everything else about the two scripts (the scratch layout, the
+Vite bundling, the Electron-as-Node run) is unchanged. Third: **both forges**, not JIRA
+alone — GitHub sync landed on this board after this section was drafted, so the isolation
+proof is two independent facts (a JIRA-sourced row and a GitHub-sourced row can each wear a
+ticket's key text as their own `externalKey` without either merging into the native ticket),
+not one.
+
+The harness also found a real gap while proving the cascade bullet: `deleteTaskDeep`
+(`store.ts`) nulled `milestoneId`/`assigneeId`/`reporterId` on delete, exactly as the
+`tasks` table's own comment promises for all four cross-reference columns, but never
+`epicTaskId` — a ticket whose epic was deleted kept a dangling pointer at the ROW, even
+though nothing writable could produce one afterwards (`assertTicketRefs` in `ipc.ts` only
+checks a field that is explicitly being set). Fixed in this step with one more prepared
+statement, `clearEpicOnTasks`, run in the same loop as the existing three; proven by
+mutation — the check goes red with the statement commented out and green with it restored.
 
 #### 4 — Add Projects screen with backlog table · `feat` → 0.73.0
 

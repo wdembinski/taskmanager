@@ -10,7 +10,7 @@
  */
 import { useState } from 'react';
 import { Caption1, Text, makeStyles, mergeClasses, tokens } from '@fluentui/react-components';
-import type { Task } from '@tm/shared/model';
+import type { Person, Task } from '@tm/shared/model';
 import type { StatusKeyword } from '@tm/shared/statusKeywords';
 import type { BoardDisplaySettings } from '@tm/shared/settings';
 import { TaskCard } from './TaskCard';
@@ -82,6 +82,16 @@ export interface KanbanColumnProps {
   agentNameOf: (task: Task) => string | undefined;
   /** The card's project colour, for the stripe along its top edge. */
   projectColorOf: (task: Task) => string | undefined;
+  /**
+   * A native ticket's parent epic, by NAME (Phase 24) — resolved by whoever holds the whole
+   * board (`task.epicTaskId` names another card) and asked per card, the same shape as
+   * `projectNameOf`. Absent on a board with no epics to resolve, which is also what leaves
+   * `TaskCard`'s epic line falling back to a mirrored card's own `externalEpicName`.
+   */
+  epicNameOf?: (task: Task) => string | undefined;
+  /** A native ticket's assignee (Phase 24), for the avatar in its footer. Same shape as
+   *  `agentNameOf`: asked per card rather than passed as a lookup map. */
+  assigneeOf?: (task: Task) => Pick<Person, 'name' | 'initials' | 'color'> | undefined;
   /** Whether cards show their sprint chip (false while the sprint filter is on). */
   showSprint?: boolean;
   /** The user's status-note vocabulary, which colours each card's progress line. */
@@ -200,6 +210,8 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               key={task.id}
               task={task}
               projectName={props.projectNameOf(task)}
+              epicName={props.epicNameOf?.(task)}
+              assignee={props.assigneeOf?.(task)}
               agentName={props.agentNameOf(task)}
               projectColor={props.projectColorOf(task)}
               showSprint={props.showSprint}

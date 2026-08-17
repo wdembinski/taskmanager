@@ -46,12 +46,21 @@ import {
   PERSONAL_PROJECT_ID,
   type BoardColumn,
   type JiraStatusCategory,
+  type Milestone,
+  type Person,
   type Project,
   type ProjectPatch,
   type ProjectWithTasks,
   type Task,
   type TaskStatus,
+  type TicketInput,
+  type TicketLabel,
+  type TicketLink,
 } from '@shared/model';
+import { boardScopes } from '@shared/boardScope';
+import { isEpic, isNativeTicket } from '@shared/tickets';
+import { normalizeTicketPrefix } from '@shared/ticketKey';
+import { canLinkTickets, type TicketLinkResult } from '@shared/ticketLinks';
 import {
   ARCHIVE_RETENTION_DAYS,
   categoryFromKey,
@@ -821,6 +830,78 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     store.removeProject(id);
   });
 
+  // --- Ticket projects (Phase 24) --------------------------------------------
+  // A project with no repo at all: a key prefix and the tickets this app owns itself,
+  // stored in the same `projects` table as every other kind.
+
+  /** Push the ticket project list at the UI. The whole list, like `pushChainLinks`. */
+  function pushTicketProjects(): Project[] {
+    const projects = store.listProjects().filter((project) => project.kind === 'ticket');
+    send('ticketProject:changed', projects);
+    return projects;
+  }
+
+  /**
+   * A duplicate ticket prefix fails at the partial unique index, which throws the raw SQLite
+   * message. Turned into a sentence a human can read, rather than
+   * `UNIQUE constraint failed: projects.ticketPrefix`.
+   */
+  function ticketProjectSaveErrorMessage(err: unknown): string {
+    if (err instanceof Error && err.message.includes('ticketPrefix')) {
+      return 'Another project already uses that ticket prefix.';
+    }
+    return err instanceof Error ? err.message : 'Could not save that project.';
+  }
+
+  handle('ticketProject:list', async () =>
+    store.listProjects().filter((project) => project.kind === 'ticket'),
+  );
+
+  handle('ticketProject:add', async (input) => {
+    let project: Project;
+    try {
+      project = store.addProject({ ...input, kind: 'ticket' });
+    } catch (err) {
+      throw new Error(ticketProjectSaveErrorMessage(err));
+    }
+    pushTicketProjects();
+    return project;
+  });
+
+  handle('ticketProject:update', async (id, patch) => {
+    const existing = store.getProject(id);
+    if (!existing || existing.kind !== 'ticket') return null;
+    let updated: Project | undefined;
+    try {
+      updated = store.updateProject(id, patch);
+    } catch (err) {
+      throw new Error(ticketProjectSaveErrorMessage(err));
+    }
+    pushTicketProjects();
+    return updated ?? null;
+  });
+
+  handle('ticketProject:remove', async (id) => {
+    const existing = store.getProject(id);
+    if (!existing || existing.kind !== 'ticket') return;
+    store.removeProject(id);
+    pushTicketProjects();
+    // The board scope this project WAS is gone with it. Behind the UI's back, like the
+    // JIRA `lastCreateProjectKey` write above — a saved `boardScopeId` pointing at a
+    // now-deleted project would otherwise sit there until the next save from a screen that
+    // still has the stale value, silently reviving it. `resolveBoardScope` already falls
+    // back to Personal for a dangling id, so the board itself recovers either way; this is
+    // only what keeps the SETTING from lying once it does.
+    const settings = store.getSettings();
+    if (settings.boardScopeId === id) {
+      const next: AppSettings = { ...settings, boardScopeId: null };
+      store.saveSettings(next);
+      send('settings:changed', next);
+    }
+  });
+
+  handle('board:scopes', async () => boardScopes(store.listProjects()));
+
   handle('scheduler:start', async (projectId) => scheduler.start(projectId));
   handle('scheduler:pause', async (projectId) => scheduler.pause(projectId));
   handle('scheduler:stop', async (projectId) => scheduler.stop(projectId));
@@ -1011,6 +1092,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     pushChainLinks();
     // Its attachment rows went the same way, and the same argument applies to the chips.
     pushAttachments();
+    // A deleted TICKET takes its documented relationships with it too, for the identical
+    // reason: `ticket_links` cascades on both `fromTaskId` and `toTaskId`, so a link left
+    // drawn to a card that is gone is a lie no ordinary task will ever leave behind, but a
+    // ticket does every time it is removed.
+    pushTicketLinks();
     // The BYTES did not: no cascade reaches outside the database. After `deleteTask` has
     // returned, never inside its transaction — a throw in there would roll the row
     // deletion back and leave a card half-deleted, which is worse than either half alone.
@@ -2403,10 +2489,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   });
 
   // What the board asks for when it draws itself — so, by definition, the cards on it.
-  handle('board:tasks', async () => store.getPersonalTasks());
+  // `projectId` is OPTIONAL: a relayed call arrives with the argument simply absent, so the
+  // Personal default lives here rather than at any one call site.
+  handle('board:tasks', async (projectId) => store.getBoardTasks(projectId ?? PERSONAL_PROJECT_ID));
 
   // And the cards that are NOT on it — the same rows, the other side of `archivedAt`.
-  handle('board:archived', async () => store.getArchivedTasks());
+  handle('board:archived', async (projectId) =>
+    store.getArchivedTasksFor(projectId ?? PERSONAL_PROJECT_ID),
+  );
 
   handle('task:restore', async (taskId) => {
     const task = store.getTask(taskId);
@@ -2426,6 +2516,228 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     pushChainLinks();
     pushAttachments();
     return tasks;
+  });
+
+  // --- Native tickets, people, labels, milestones, ticket links (Phase 24) --
+  //
+  // A ticket is a `Task` row with `source: 'ticket'`; the twelve ticket-only fields
+  // (`TicketPatch`) are what this section guards, since `createTicketTx`/`updateTask` write
+  // them blindly and neither can afford a query per field on every card save. Every guard
+  // below is its own sentence for exactly that reason — a thrown `UNIQUE constraint failed`
+  // or a silent `undefined` teaches a human nothing.
+
+  /**
+   * Validate the cross-references a ticket create/update carries: `epicTaskId` must name an
+   * EPIC in the SAME project and not itself; an epic may not itself hang under another epic;
+   * `milestoneId`/`assigneeId`/`reporterId` must resolve. Throws the first refusal found.
+   */
+  function assertTicketRefs(
+    projectId: string,
+    ticketId: string | null,
+    issueType: NonNullable<TicketInput['issueType']>,
+    fields: Pick<TicketInput, 'epicTaskId' | 'milestoneId' | 'assigneeId' | 'reporterId'>,
+  ): void {
+    if (fields.epicTaskId != null) {
+      if (issueType === 'epic') throw new Error('An epic cannot itself hang under another epic.');
+      if (fields.epicTaskId === ticketId) throw new Error('A ticket cannot be its own epic.');
+      const epic = store.getTask(fields.epicTaskId);
+      if (!epic) throw new Error('That epic no longer exists.');
+      if (epic.projectId !== projectId) {
+        throw new Error("The epic must belong to the ticket's own project.");
+      }
+      if (!isEpic(epic)) throw new Error('That ticket is not an epic.');
+    }
+    if (fields.milestoneId != null) {
+      if (!store.listMilestones(projectId).some((m) => m.id === fields.milestoneId)) {
+        throw new Error('That milestone no longer exists.');
+      }
+    }
+    if (fields.assigneeId != null && !store.listPeople().some((p) => p.id === fields.assigneeId)) {
+      throw new Error('That assignee no longer exists.');
+    }
+    if (fields.reporterId != null && !store.listPeople().some((p) => p.id === fields.reporterId)) {
+      throw new Error('That reporter no longer exists.');
+    }
+  }
+
+  handle('ticket:create', async (projectId, input) => {
+    const project = store.getProject(projectId);
+    if (!project) throw new Error('Unknown project.');
+    if (project.kind !== 'ticket') throw new Error('That project does not hold tickets.');
+    if (!normalizeTicketPrefix(project.ticketPrefix)) {
+      throw new Error('Give this project a ticket key prefix before creating tickets in it.');
+    }
+    if (!input.title.trim()) throw new Error('A ticket needs a title.');
+    assertTicketRefs(projectId, null, input.issueType ?? 'task', input);
+    const task = store.createTicket(projectId, input);
+    if (!task) throw new Error('Could not create that ticket.');
+    send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) });
+    return task;
+  });
+
+  handle('ticket:update', async (taskId, patch) => {
+    const existing = store.getTask(taskId);
+    if (!existing) throw new Error('Unknown ticket.');
+    if (!isNativeTicket(existing)) throw new Error('That card is not a native ticket.');
+    const issueType =
+      patch.issueType !== undefined ? (patch.issueType ?? 'task') : (existing.issueType ?? 'task');
+    assertTicketRefs(existing.projectId, taskId, issueType, patch);
+    const updated = store.updateTask(taskId, patch);
+    if (!updated) throw new Error('Could not update that ticket.');
+    send('project:tasksChanged', {
+      projectId: existing.projectId,
+      tasks: store.getTasks(existing.projectId),
+    });
+    return updated;
+  });
+
+  // --- People (app-wide, not per project) ------------------------------------
+  function pushPeople(): Person[] {
+    const people = store.listPeople();
+    send('person:changed', people);
+    return people;
+  }
+
+  handle('person:list', async () => store.listPeople());
+
+  handle('person:add', async (input) => {
+    if (!input.name.trim()) throw new Error('A person needs a name.');
+    const person = store.addPerson(input);
+    if (!person) throw new Error('Could not add that person.');
+    pushPeople();
+    return person;
+  });
+
+  handle('person:update', async (id, patch) => {
+    const updated = store.updatePerson(id, patch) ?? null;
+    if (updated) pushPeople();
+    return updated;
+  });
+
+  handle('person:remove', async (id) => {
+    store.deletePerson(id);
+    pushPeople();
+  });
+
+  handle('person:setMe', async (id) => {
+    // Setting `isMe` clears it from whoever had it before, in the same write — the store's
+    // own guarantee (the partial unique index on `people.isMe`), not re-implemented here.
+    const updated = store.updatePerson(id, { isMe: true }) ?? null;
+    if (updated) pushPeople();
+    return updated;
+  });
+
+  // --- Labels (per ticket project) --------------------------------------------
+  function labelsAcrossTicketProjects(): TicketLabel[] {
+    return store
+      .listProjects()
+      .filter((p) => p.kind === 'ticket')
+      .flatMap((p) => store.listTicketLabels(p.id));
+  }
+
+  function pushLabels(): TicketLabel[] {
+    const labels = labelsAcrossTicketProjects();
+    send('label:changed', labels);
+    return labels;
+  }
+
+  // `projectId` optional so `pollChannel` (apps/web, which invokes with no arguments) still
+  // gets a real answer — every ticket project's labels at once.
+  handle('label:list', async (projectId) =>
+    projectId ? store.listTicketLabels(projectId) : labelsAcrossTicketProjects(),
+  );
+
+  handle('label:save', async (projectId, input) => {
+    const project = store.getProject(projectId);
+    if (!project || project.kind !== 'ticket') throw new Error('Unknown ticket project.');
+    if (!input.name.trim()) throw new Error('A label needs a name.');
+    const { id, ...fields } = input;
+    let saved: TicketLabel | undefined;
+    if (id) {
+      if (!store.listTicketLabels(projectId).some((l) => l.id === id)) {
+        throw new Error('That label is not in this project.');
+      }
+      saved = store.updateTicketLabel(id, fields);
+    } else {
+      saved = store.addTicketLabel(projectId, fields);
+    }
+    if (!saved) throw new Error('A label with that name already exists in this project.');
+    pushLabels();
+    return saved;
+  });
+
+  handle('label:remove', async (id) => {
+    store.deleteTicketLabel(id);
+    pushLabels();
+  });
+
+  // --- Milestones (per ticket project) ----------------------------------------
+  function milestonesAcrossTicketProjects(): Milestone[] {
+    return store
+      .listProjects()
+      .filter((p) => p.kind === 'ticket')
+      .flatMap((p) => store.listMilestones(p.id));
+  }
+
+  function pushMilestones(): Milestone[] {
+    const milestones = milestonesAcrossTicketProjects();
+    send('milestone:changed', milestones);
+    return milestones;
+  }
+
+  // Same optional `projectId` as `label:list`, and for the same reason.
+  handle('milestone:list', async (projectId) =>
+    projectId ? store.listMilestones(projectId) : milestonesAcrossTicketProjects(),
+  );
+
+  handle('milestone:save', async (projectId, input) => {
+    const project = store.getProject(projectId);
+    if (!project || project.kind !== 'ticket') throw new Error('Unknown ticket project.');
+    if (!input.name.trim()) throw new Error('A milestone needs a name.');
+    const { id, ...fields } = input;
+    let saved: Milestone | undefined;
+    if (id) {
+      if (!store.listMilestones(projectId).some((m) => m.id === id)) {
+        throw new Error('That milestone is not in this project.');
+      }
+      saved = store.updateMilestone(id, fields);
+    } else {
+      saved = store.addMilestone(projectId, fields);
+    }
+    if (!saved) throw new Error('Could not save that milestone.');
+    pushMilestones();
+    return saved;
+  });
+
+  handle('milestone:remove', async (id) => {
+    store.deleteMilestone(id);
+    pushMilestones();
+  });
+
+  // --- Ticket links (documentation, not the chain of execution) --------------
+  function pushTicketLinks(): TicketLink[] {
+    const links = store.listTicketLinks();
+    send('ticketLink:changed', links);
+    return links;
+  }
+
+  handle('ticketLink:list', async () => store.listTicketLinks());
+
+  handle('ticketLink:add', async (fromTaskId, toTaskId, type): Promise<TicketLinkResult> => {
+    const links = store.listTicketLinks();
+    const refusal = canLinkTickets(links, store.getTask(fromTaskId), store.getTask(toTaskId), type);
+    if (refusal) return { status: 'refused', reason: refusal };
+    const created = store.addTicketLink(fromTaskId, toTaskId, type);
+    // `canLinkTickets` already passed, so a miss here is a race with another writer rather
+    // than a refusal we can explain — report it as the duplicate the unique index caught,
+    // exactly as `chain:link` does for its own race.
+    if (!created) return { status: 'refused', reason: 'duplicate' };
+    return { status: 'ok', links: pushTicketLinks() };
+  });
+
+  handle('ticketLink:remove', async (id) => {
+    store.deleteTicketLink(id);
+    pushTicketLinks();
   });
 
   // --- The chain of execution ------------------------------------------------

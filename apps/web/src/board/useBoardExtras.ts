@@ -2,11 +2,11 @@
  * Everything the board needs that the MIRROR does not carry — read over the relay instead.
  *
  * `GET /v1/board` mirrors `Task` and `Project` rows and nothing else. The desktop's board
- * gets eight more lists from its engine (agent projects, merge requests, attachments, chain
- * links, the attention inbox, live runs, integrating cards, settings) and `BoardScreen`
- * simply did not pass them, which is why the shared detail pane rendered as a stub: with no
- * merge requests, no attachments, no chain and no agent projects, `TaskDetail` skips those
- * sections entirely.
+ * gets nine more lists from its engine (agent projects, merge requests, attachments, chain
+ * links, the attention inbox, live runs, integrating cards, the people roster, settings) and
+ * `BoardScreen` simply did not pass them, which is why the shared detail pane rendered as a
+ * stub: with no merge requests, no attachments, no chain and no agent projects, `TaskDetail`
+ * skips those sections entirely.
  *
  * Every one of them is a relayable `IpcApi` read now, so this hook is the whole fix: load
  * them at mount, keep them fresh through `Transport.on` — which the desktop satisfies with
@@ -27,7 +27,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTransport, type Transport } from '@tm/ui/transport';
-import type { Project, Task } from '@tm/shared/model';
+import type { Person, Project, Task } from '@tm/shared/model';
 import type { TaskAttachment } from '@tm/shared/attachments';
 import type { MergeRequest } from '@tm/shared/mergeRequest';
 import type { LinkGate, TaskLink } from '@tm/shared/taskChain';
@@ -55,6 +55,12 @@ export interface BoardExtras {
   attention: AttentionIndex;
   liveRunTaskIds: ReadonlySet<string>;
   mergingTaskIds: ReadonlySet<string>;
+  /**
+   * Everyone the account knows about (Phase 24: native tickets) — app-wide, like the
+   * desktop's own `person:list`, so a ticket's assignee avatar can be resolved without a
+   * mirror round trip (`Person` rows are not part of `MirrorDelta`; see `cloudDelta.ts`).
+   */
+  people: Person[];
   settings: AppSettings;
   /** Persist a settings change and reflect it immediately — see {@link useBoardExtras}. */
   saveSettings: (next: AppSettings) => Promise<void>;
@@ -128,6 +134,7 @@ export function useBoardExtras(): BoardExtras {
   const [attentionItems, setAttentionItems] = useState<AttentionItem[]>([]);
   const [liveRunTaskIds, setLiveRuns] = useState<ReadonlySet<string>>(new Set());
   const [mergingTaskIds, setMerging] = useState<ReadonlySet<string>>(new Set());
+  const [people, setPeople] = useState<Person[]>([]);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [generation, setGeneration] = useState(0);
 
@@ -168,6 +175,7 @@ export function useBoardExtras(): BoardExtras {
       () => transport.invoke('scheduler:integrating'),
       (ids) => setMerging(new Set(ids)),
     );
+    void load(() => transport.invoke('person:list'), setPeople);
     void load(() => transport.invoke('settings:get'), setSettings);
 
     return () => {
@@ -182,6 +190,7 @@ export function useBoardExtras(): BoardExtras {
       transport.on('mergeRequests:changed', setMergeRequests),
       transport.on('attachment:changed', setAttachments),
       transport.on('chain:changed', setChainLinks),
+      transport.on('person:changed', setPeople),
       transport.on('settings:changed', setSettings),
       transport.on('task:integrating', (ids) => setMerging(new Set(ids))),
       transport.on('attention:new', (item) =>
@@ -265,6 +274,7 @@ export function useBoardExtras(): BoardExtras {
     attention,
     liveRunTaskIds,
     mergingTaskIds,
+    people,
     settings,
     saveSettings,
     drawLink,

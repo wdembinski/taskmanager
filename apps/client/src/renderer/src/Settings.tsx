@@ -90,6 +90,7 @@ import {
 import { AgentProjects } from './AgentProjects';
 import { ColorSwatches, PALETTE } from '@ui/ColorSwatches';
 import { PaneLoading } from '@ui/PaneLoading';
+import { PeopleSettings } from '@ui/projects/PeopleSettings';
 import { PlanningModelField } from '@ui/PlanningModelField';
 import { ReadinessPanel } from './ReadinessPanel';
 import { StatusMapViewer } from '@ui/StatusMapViewer';
@@ -163,7 +164,8 @@ const COLUMN_LABEL: Record<BoardColumn, string> = Object.fromEntries(
   COLUMN_META.map((c) => [c.column, STATUS_LABEL[statusForColumn(c.column)]]),
 ) as Record<BoardColumn, string>;
 
-type SettingsSection = 'general' | 'board' | 'jira' | 'gitlab' | 'github' | 'cloud' | 'agents';
+type SettingsSection =
+  'general' | 'board' | 'jira' | 'gitlab' | 'github' | 'cloud' | 'agents' | 'people';
 
 export function Settings(): JSX.Element {
   const styles = useStyles();
@@ -524,10 +526,15 @@ export function Settings(): JSX.Element {
         <Tab value="github">GitHub</Tab>
         <Tab value="cloud">Cloud</Tab>
         <Tab value="agents">Agents</Tab>
+        <Tab value="people">People</Tab>
       </TabList>
 
       {section === 'agents' ? (
         <AgentProjects />
+      ) : section === 'people' ? (
+        <div className={styles.pane}>
+          <PeopleSettings />
+        </div>
       ) : section === 'board' ? (
         <div className={styles.pane}>
           <Subtitle2>Board</Subtitle2>

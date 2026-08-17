@@ -144,6 +144,34 @@ export const RELAY_POLICY: {
   'agentProject:update': 'relay',
   'agentProject:remove': 'relay',
 
+  'ticketProject:list': 'relay',
+  'ticketProject:add': 'relay',
+  'ticketProject:update': 'relay',
+  'ticketProject:remove': 'relay',
+
+  'board:scopes': 'relay',
+
+  'ticket:create': 'relay',
+  'ticket:update': 'relay',
+
+  'person:list': 'relay',
+  'person:add': 'relay',
+  'person:update': 'relay',
+  'person:remove': 'relay',
+  'person:setMe': 'relay',
+
+  'label:list': 'relay',
+  'label:save': 'relay',
+  'label:remove': 'relay',
+
+  'milestone:list': 'relay',
+  'milestone:save': 'relay',
+  'milestone:remove': 'relay',
+
+  'ticketLink:list': 'relay',
+  'ticketLink:add': 'relay',
+  'ticketLink:remove': 'relay',
+
   'scheduler:start': 'relay',
   'scheduler:pause': 'relay',
   'scheduler:stop': 'relay',

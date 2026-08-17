@@ -1874,6 +1874,10 @@ export function createStore(dbPath: string): Store {
         @storyPoints, @estimateDays, @startAt, @dueAt, @assigneeId, @reporterId)`,
   );
   const deleteTask = db.prepare(`DELETE FROM tasks WHERE id = ?`);
+  // Native tickets. No foreign key backs epicTaskId (see the tasks table above), so deleting
+  // an epic must null it on every ticket that named it — the same explicit clear
+  // deleteMilestoneTx/deletePersonTx already do for milestoneId/assigneeId/reporterId.
+  const clearEpicOnTasks = db.prepare(`UPDATE tasks SET epicTaskId = NULL WHERE epicTaskId = ?`);
   // Archiving is one column, written by id. Both statements take the card AND its steps in
   // one go (`parentTaskId = @id`): a step has no board presence of its own — the board hangs
   // it under its parent — so a step left behind by an archived card is a row nothing can
@@ -2851,6 +2855,9 @@ export function createStore(dbPath: string): Store {
     // own and would otherwise be unreachable in the UI.
     const children = (selectSubtaskIds.all(taskId) as Array<{ id: string }>).map((r) => r.id);
     for (const childId of [...children, taskId]) {
+      // A step can never be somebody's epic, but running this unconditionally is cheap and
+      // keeps the loop uniform — the same argument `deleteActivityForTask` already rests on.
+      clearEpicOnTasks.run(childId);
       deleteActivityForTask.run(childId);
       deleteEventsForTask.run(childId);
       deleteTask.run(childId);

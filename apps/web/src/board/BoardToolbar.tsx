@@ -23,7 +23,14 @@
  * the commit-graph pane the button here opens.
  */
 import type { ReactNode } from 'react';
-import { Button, Spinner, Switch, ToggleButton } from '@fluentui/react-components';
+import {
+  Button,
+  Dropdown,
+  Option,
+  Spinner,
+  Switch,
+  ToggleButton,
+} from '@fluentui/react-components';
 import {
   ArchiveRegular,
   ArrowRoutingRegular,
@@ -40,9 +47,20 @@ import {
   doneSwitchTitle,
   type HiddenDoneSummary,
 } from '@tm/ui/board/doneSwitchLabel';
+import { scopeLabel, type BoardScope } from '@tm/shared/boardScope';
 import type { BoardDisplaySettings } from '@tm/shared/settings';
 
 export interface BoardToolbarProps {
+  /**
+   * Every board this account's projects make available — Personal plus one per native
+   * ticket project (Phase 24). The picker below is rendered only when there is more than
+   * one: with just Personal, a dropdown for a choice that does not exist would be one more
+   * control that does nothing.
+   */
+  scopes: BoardScope[];
+  /** Which of `scopes` is showing. */
+  scope: BoardScope;
+  onScopeChange: (projectId: string) => void;
   showDone: boolean;
   /** What the DONE column is holding while it is shut — see `hiddenDoneSummary`. */
   hiddenDone: HiddenDoneSummary;
@@ -72,6 +90,9 @@ export interface BoardToolbarProps {
 }
 
 export function BoardToolbar({
+  scopes,
+  scope,
+  onScopeChange,
   showDone,
   hiddenDone,
   onShowDoneChange,
@@ -95,6 +116,26 @@ export function BoardToolbar({
   const layout = useBoardLayoutStyles();
   return (
     <div className={layout.toolbar}>
+      {/* Which board this is — absent entirely with only Personal to choose from, so a
+          database with no ticket project renders a toolbar byte-identical to before this
+          existed rather than one extra control that does nothing. */}
+      {scopes.length > 1 && (
+        <Dropdown
+          size="small"
+          value={scopeLabel(scope)}
+          selectedOptions={[scope.projectId]}
+          title="Which project's board this shows"
+          onOptionSelect={(_e, d) => {
+            if (d.optionValue) onScopeChange(d.optionValue);
+          }}
+        >
+          {scopes.map((s) => (
+            <Option key={s.projectId} value={s.projectId}>
+              {scopeLabel(s)}
+            </Option>
+          ))}
+        </Dropdown>
+      )}
       <Switch
         label={doneSwitchLabel(showDone, hiddenDone)}
         title={doneSwitchTitle(showDone, hiddenDone) ?? undefined}

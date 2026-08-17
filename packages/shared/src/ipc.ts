@@ -37,6 +37,11 @@ import type {
   GitPreflight,
   JiraStatusCategory,
   ManualStatus,
+  Milestone,
+  MilestoneInput,
+  Person,
+  PersonInput,
+  PersonPatch,
   PlanValidation,
   Project,
   ProjectPatch,
@@ -44,8 +49,15 @@ import type {
   Task,
   TaskActivityEntry,
   TaskType,
+  TicketInput,
+  TicketLabel,
+  TicketLabelInput,
+  TicketLink,
+  TicketLinkType,
+  TicketPatch,
 } from './model';
 import type { TaskAttachment, UploadedAttachment } from './attachments';
+import type { BoardScope } from './boardScope';
 import type { GitGraph } from './gitGraph';
 import type { ExecTarget, TargetReadiness } from './execTarget';
 import type { ActiveRun, RunOutcome, SchedulerChange, TaskChange } from './scheduler';
@@ -54,6 +66,7 @@ import type { AuthState } from './auth';
 import type { LimitState } from './limit';
 import type { MergeRequest } from './mergeRequest';
 import type { LinkGate, LinkResult, TaskLink } from './taskChain';
+import type { TicketLinkResult } from './ticketLinks';
 import type { AppSettings } from './settings';
 import type { SyncState } from './sync';
 import type { UpdateState } from './update';
@@ -342,6 +355,31 @@ export interface IpcApi {
   'agentProject:update': (id: string, patch: ProjectPatch) => Promise<Project | null>;
   /** Remove an agent project. Rejects while one of its runs is still live. */
   'agentProject:remove': (id: string) => Promise<void>;
+
+  /**
+   * List the ticket projects — native ticket boards (`kind: 'ticket'`), each a key prefix and
+   * a set of tickets the app owns itself, with no repo and no plan file. Deliberately
+   * separate from `project:list` (the legacy plan-driven Projects tab) and from
+   * `agentProject:list` (delegation targets), the same argument `agentProject:*` already
+   * makes for its own four channels.
+   */
+  'ticketProject:list': () => Promise<Project[]>;
+  /** Create a ticket project (optionally with a key prefix). Returns the created project. */
+  'ticketProject:add': (input: AddProjectInput) => Promise<Project>;
+  /**
+   * Edit a ticket project (name, prefix, colour). Null if unknown or not a ticket project.
+   * Renaming the prefix re-keys every ticket the project owns, in one transaction.
+   */
+  'ticketProject:update': (id: string, patch: ProjectPatch) => Promise<Project | null>;
+  /** Remove a ticket project and every ticket it owns. */
+  'ticketProject:remove': (id: string) => Promise<void>;
+
+  /**
+   * Every board a project makes available — the Personal board plus one per ticket project —
+   * for the scope picker on My Tasks. Personal is always present and always first, even in a
+   * database with no ticket project at all.
+   */
+  'board:scopes': () => Promise<BoardScope[]>;
 
   /**
    * Start (or resume) a project's queue: the scheduler runs its `pending` tasks
@@ -881,17 +919,113 @@ export interface IpcApi {
    * screen where a silent empty state hides a misconfiguration.
    */
   'jira:statuses': () => Promise<JiraStatusList>;
-  /** Every task on the standalone Personal board (JIRA tickets + internal ad-hoc). */
-  'board:tasks': () => Promise<Task[]>;
+  /**
+   * Every task on a board — the standalone Personal board (JIRA tickets + internal ad-hoc) by
+   * default, or a native ticket project's own board when `projectId` names one.
+   *
+   * `projectId` is OPTIONAL, not merely defaulted at the call site: a relayed invoke arrives
+   * as a JSON array with the argument simply absent, and `App.tsx`'s and `MyTasks.tsx`'s
+   * argument-free calls must keep working unchanged. The default (Personal) lives in the
+   * handler.
+   */
+  'board:tasks': (projectId?: string) => Promise<Task[]>;
   /**
    * The cards that have been taken OFF that board and not destroyed — most recently removed
-   * first. The complement of `board:tasks`, and the list "Removed cards" is drawn from.
+   * first. The complement of `board:tasks`, and the list "Removed cards" is drawn from. Same
+   * optional `projectId` as `board:tasks`, for the same reason.
    *
    * Every one still has its timeline, its files, its arrows and its transcript; `archivedAt`
    * says when it left and `archivedReason` says which question's answer took it. They are kept
    * for `ARCHIVE_RETENTION_DAYS` and then destroyed by the boot sweep.
    */
-  'board:archived': () => Promise<Task[]>;
+  'board:archived': (projectId?: string) => Promise<Task[]>;
+
+  /**
+   * Create a native ticket in a ticket project, allocating its key. Rejects with a sentence a
+   * human can read: an unknown or non-ticket project, one with no key prefix yet, a blank
+   * title, or an `epicTaskId`/`milestoneId`/`assigneeId`/`reporterId` that does not resolve.
+   * No `ticket:backlog` channel — the Projects screen calls `board:tasks(projectId)` instead,
+   * so there is one truth about what is on a board.
+   */
+  'ticket:create': (projectId: string, input: TicketInput) => Promise<Task>;
+  /**
+   * Edit a native ticket's own fields (type, epic, milestone, labels, estimate, dates,
+   * assignee, reporter). Title, description and priority go through the channels every other
+   * card already uses (`task:setDescription`, `task:setPriority`); this one is the twelve
+   * ticket-only fields `TicketPatch` names. Same guards as `ticket:create`.
+   */
+  'ticket:update': (taskId: string, patch: TicketPatch) => Promise<Task>;
+
+  /**
+   * Everyone the app knows about, oldest first — app-wide, not per project (a person works
+   * across repos, and "assigned to me" would otherwise have several answers).
+   */
+  'person:list': () => Promise<Person[]>;
+  /** Add a person. Rejects on a blank name. */
+  'person:add': (input: PersonInput) => Promise<Person>;
+  /** Edit one. Null for an unknown id. Setting `isMe` clears it from whoever had it before. */
+  'person:update': (id: string, patch: PersonPatch) => Promise<Person | null>;
+  /**
+   * Forget a person; every ticket that had them as assignee or reporter is nulled, not
+   * cascaded away.
+   */
+  'person:remove': (id: string) => Promise<void>;
+  /**
+   * Mark this person as **you** — the shorthand for `person:update(id, { isMe: true })`. At
+   * most one person may carry the flag; setting it here clears it from whoever had it, in the
+   * same write. Null for an unknown id.
+   */
+  'person:setMe': (id: string) => Promise<Person | null>;
+
+  /**
+   * A project's label registry — what gives a chip its colour and the filter dropdown its
+   * list. `projectId` omitted reads every ticket project's labels at once, the shape
+   * `pollChannel` needs since it invokes with no arguments.
+   */
+  'label:list': (projectId?: string) => Promise<TicketLabel[]>;
+  /**
+   * Create or edit a label, one channel for both — matching `settings:save`, not an add/update
+   * pair. `id` present edits that label (a rename rewrites the name on every ticket wearing
+   * it); omitted creates one. Rejects on a blank name or a name already taken in the project.
+   */
+  'label:save': (
+    projectId: string,
+    input: TicketLabelInput & { id?: string },
+  ) => Promise<TicketLabel>;
+  /** Delete a label and strip its name from every ticket wearing it. */
+  'label:remove': (id: string) => Promise<void>;
+
+  /**
+   * A project's milestones, earliest due first. Same optional `projectId` as `label:list`, and
+   * for the same reason.
+   */
+  'milestone:list': (projectId?: string) => Promise<Milestone[]>;
+  /**
+   * Create or edit a milestone, one channel for both — see `label:save`. Rejects on a blank
+   * name.
+   */
+  'milestone:save': (
+    projectId: string,
+    input: MilestoneInput & { id?: string },
+  ) => Promise<Milestone>;
+  /** Delete a milestone; every ticket planned for it is nulled, not cascaded away. */
+  'milestone:remove': (id: string) => Promise<void>;
+
+  /** Every documented ticket relationship, oldest first — small enough to hand over whole. */
+  'ticketLink:list': () => Promise<TicketLink[]>;
+  /**
+   * Document a relationship between two tickets. Refusals come back as data
+   * (`TicketLinkResult`) — the same shape `chain:link`'s `LinkResult` uses — rather than a
+   * rejected promise, since "those two already relate that way" is something to tell the
+   * human, not an error.
+   */
+  'ticketLink:add': (
+    fromTaskId: string,
+    toTaskId: string,
+    type: TicketLinkType,
+  ) => Promise<TicketLinkResult>;
+  /** Erase one link by id; no-op if it is already gone. */
+  'ticketLink:remove': (id: string) => Promise<void>;
   /**
    * Put a removed card back on the board, with the same id and everything hanging off it.
    * Returns the fresh board, so the caller does not have to ask for it again.
@@ -1194,6 +1328,29 @@ export interface IpcEvents {
    * rather than merges.
    */
   'update:changed': UpdateState;
+
+  // --- Native tickets (Phase 24) ---------------------------------------------
+  /**
+   * The ticket project list changed — one was added, edited or removed. The whole list,
+   * exactly as `chain:changed` and friends carry theirs, so the scope picker replaces rather
+   * than patches.
+   */
+  'ticketProject:changed': Project[];
+  /**
+   * A documented ticket relationship was added or removed — including cascaded away with a
+   * deleted ticket. The whole list, like `chain:changed`.
+   */
+  'ticketLink:changed': TicketLink[];
+  /** The person roster changed. The whole list, app-wide, like `chain:changed`. */
+  'person:changed': Person[];
+  /**
+   * A project's label registry changed. The whole list across every ticket project, matching
+   * what `label:list()` (no `projectId`) returns — the shape `polledEvents.ts` reproduces this
+   * from.
+   */
+  'label:changed': TicketLabel[];
+  /** A project's milestones changed. Same shape as `label:changed`, one table over. */
+  'milestone:changed': Milestone[];
 }
 
 /** Convenience: the set of valid invoke channel names. */

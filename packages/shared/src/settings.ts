@@ -377,14 +377,44 @@ export interface BoardDisplaySettings {
    * board looked like before this was a choice.
    */
   priorityDisplay: PriorityDisplay;
+  /**
+   * The assignee's avatar (Phase 24: native tickets). **Off by default** — a board with no
+   * ticket project has nobody to assign a card to, and turning this on would draw nothing
+   * for anybody, so the acceptance bar is that a database with no ticket project renders a
+   * board byte-identical to before this setting existed.
+   */
+  showAssignee: boolean;
+  /** Story points, as a chip. Off by default — see {@link showAssignee}. */
+  showPoints: boolean;
 }
 
-/** Labels and project name on, epic off — see {@link BoardDisplaySettings}. */
+/** Labels and project name on, epic/assignee/points off — see {@link BoardDisplaySettings}. */
 export const DEFAULT_BOARD_DISPLAY: BoardDisplaySettings = {
   showLabels: true,
   showProjectName: true,
   showEpicName: false,
   priorityDisplay: 'color',
+  showAssignee: false,
+  showPoints: false,
+};
+
+/**
+ * The Projects screen's Gantt timeline, saved for the same reason `foldedStepCards` is: the
+ * screen is unmounted every time you leave it, and a collapse you had to redo on every visit
+ * would not be a collapse.
+ */
+export interface GanttSettings {
+  /**
+   * Epics whose Gantt row is collapsed to a single bar — the union of its children's dates
+   * rather than a row per child. See `projects/ganttLayout.ts`'s `toggleCollapsedEpic`, which
+   * is what prunes an id the moment its epic leaves the project.
+   */
+  collapsedEpicIds: string[];
+}
+
+/** Nothing collapsed out of the box — a fresh project's timeline opens fully expanded. */
+export const DEFAULT_GANTT_SETTINGS: GanttSettings = {
+  collapsedEpicIds: [],
 };
 
 export interface AppSettings {
@@ -499,6 +529,19 @@ export interface AppSettings {
   /** Which optional context lines the board's cards draw. */
   board: BoardDisplaySettings;
   /**
+   * Which board My Tasks (and the web board) is scoped to — a `kind: 'ticket'` project's
+   * id, or `null` for the built-in Personal board. See `@shared/boardScope`'s
+   * `resolveBoardScope`, which is what actually reads this: a dangling id (its project was
+   * removed) or `null` both resolve to Personal, so this field never has to be validated on
+   * the way in.
+   *
+   * `null` rather than defaulting to `PERSONAL_PROJECT_ID` itself, so a settings blob
+   * written before Phase 24 needs no migration — the field is simply absent, and every
+   * reader (`DEFAULT_SETTINGS`'s spread, `mergeAppSettings`) already treats a missing field
+   * as its default.
+   */
+  boardScopeId: string | null;
+  /**
    * The board cards whose **Steps** section is folded away, by task id.
    *
    * A fold is a fact about one card rather than a preference about all of them — a plan of
@@ -534,6 +577,8 @@ export interface AppSettings {
   github: GitHubSettings;
   /** The cloud mirror's own config — see {@link CloudSettings}. */
   cloud: CloudSettings;
+  /** The Projects screen's Gantt timeline — see {@link GanttSettings}. */
+  gantt: GanttSettings;
 }
 
 /** The out-of-the-box settings, also used to fill any field missing from storage. */
@@ -562,6 +607,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   toastsEnabled: true,
   autoIntegrate: false,
   board: DEFAULT_BOARD_DISPLAY,
+  boardScopeId: null,
   // Nothing folded out of the box: a card that hid its own steps before you had asked it to
   // would read as steps that had gone missing.
   foldedStepCards: [],
@@ -572,6 +618,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   gitlab: DEFAULT_GITLAB_SETTINGS,
   github: DEFAULT_GITHUB_SETTINGS,
   cloud: DEFAULT_CLOUD_SETTINGS,
+  gantt: DEFAULT_GANTT_SETTINGS,
 };
 
 /**

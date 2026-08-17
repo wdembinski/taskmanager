@@ -16,6 +16,7 @@ import { Caption1, CounterBadge, makeStyles } from '@fluentui/react-components';
 import {
   AlertRegular,
   DataTrendingRegular,
+  FolderRegular,
   PlayRegular,
   SettingsRegular,
   TaskListSquareLtrRegular,
@@ -23,6 +24,7 @@ import {
 import { AppShell } from '@tm/ui/shell/AppShell';
 import { Attention } from '@tm/ui/Attention';
 import { Performance } from '@tm/ui/Performance';
+import { Projects } from '@tm/ui/projects/Projects';
 import { NavRail, type NavRailItem } from '@tm/ui/shell/NavRail';
 import { StatusBar, StatusDot, StatusSpacer } from '@tm/ui/shell/StatusBar';
 import { TransportProvider } from '@tm/ui/transport';
@@ -62,14 +64,18 @@ const DESKTOP_ONLY = 'desktop only';
 /**
  * The desktop's rail, in the desktop's order — see `apps/client/src/renderer/src/App.tsx`.
  *
- * Four of the five are live now. Attention and Performance moved into `@tm/ui` whole (they
+ * Five of the six are live now. Attention and Performance moved into `@tm/ui` whole (they
  * had no host in them at all, only `window.api` calls that are `useTransport()` now), and
  * Settings is a fork: nine of its twenty-one channels are host-bound, so the shell is this
- * app's and the host-free sections are shared. Scratch run stays off — it drives a live
+ * app's and the host-free sections are shared. Projects is a native ticket project — no
+ * folder, no native picker — so it carries no `unavailable` here either; the *agent*-project
+ * kind is the one that stays desktop-only (`shell-parity.test.ts`, "the one configuration the
+ * web deliberately does not mirror"). Scratch run stays off — it drives a live
  * `session:start`, which is host-only by policy (`@tm/shared/ipcRelay`).
  */
 const NAV: readonly NavRailItem[] = [
   { id: 'mytasks', label: 'My Tasks', icon: <TaskListSquareLtrRegular /> },
+  { id: 'projects', label: 'Projects', icon: <FolderRegular /> },
   { id: 'performance', label: 'Performance', icon: <DataTrendingRegular /> },
   { id: 'attention', label: 'Attention', icon: <AlertRegular /> },
   { id: 'settings', label: 'Settings', icon: <SettingsRegular /> },
@@ -77,7 +83,7 @@ const NAV: readonly NavRailItem[] = [
 ];
 
 /** The rail's destinations that this app actually renders. */
-type Screen = 'mytasks' | 'performance' | 'attention' | 'settings';
+type Screen = 'mytasks' | 'projects' | 'performance' | 'attention' | 'settings';
 
 /** How often the status bar's "synced Ns ago" recomputes between polls. */
 const AGE_TICK_MS = 5_000;
@@ -287,6 +293,7 @@ function SignedInBoard({
             onStatusNoted={board.noteStatus}
           />
         )}
+        {screen === 'projects' && <Projects />}
         {screen === 'performance' && <Performance />}
         {screen === 'attention' && <Attention />}
         {/* The mirrored `projects` rows, which this hook already holds for the board — so the
