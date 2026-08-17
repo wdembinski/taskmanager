@@ -48,7 +48,7 @@ import type {
 import type { TaskAttachment, UploadedAttachment } from './attachments';
 import type { GitGraph } from './gitGraph';
 import type { ExecTarget, TargetReadiness } from './execTarget';
-import type { ActiveRun, SchedulerChange, TaskChange } from './scheduler';
+import type { ActiveRun, RunOutcome, SchedulerChange, TaskChange } from './scheduler';
 import type { AttentionAnswer, AttentionItem } from './attention';
 import type { AuthState } from './auth';
 import type { LimitState } from './limit';
@@ -57,7 +57,13 @@ import type { LinkGate, LinkResult, TaskLink } from './taskChain';
 import type { AppSettings } from './settings';
 import type { SyncState } from './sync';
 import type { UpdateState } from './update';
-import type { UsageQuotas, UsageSample, UsageSeriesPoint, UsageSummary } from './usage';
+import type {
+  SessionStat,
+  UsageQuotas,
+  UsageSample,
+  UsageSeriesPoint,
+  UsageSummary,
+} from './usage';
 
 /** Result of checking whether the local `claude` CLI is installed and logged in. */
 export interface ClaudeStatus {
@@ -358,8 +364,16 @@ export interface IpcApi {
    * no status, no transcript line — so without this the UI has no way to know it started.
    */
   'scheduler:integrating': () => Promise<string[]>;
-  /** Run a single task ad-hoc (independent of its project's queue). Returns its run id. */
-  'task:run': (taskId: string) => Promise<{ runId: string }>;
+  /**
+   * Run a single task ad-hoc (independent of its project's queue).
+   *
+   * Resolves to the live run's id, or — for the one refusal the card itself records
+   * (`CARD_RECORDS_PARK`, i.e. a usage limit) — to `{ refused: 'limit' }`: the card is
+   * parked in the gate and starts by itself at the reset, so that is an outcome, not a
+   * failure. The other five refusals reject with `RUN_REFUSAL_MESSAGE[refused]`, because
+   * nothing will happen until a human does something about them.
+   */
+  'task:run': (taskId: string) => Promise<RunOutcome>;
   /**
    * Merge a finished card's branch back into its base, on the human's say-so (Phase 17).
    *
@@ -375,6 +389,24 @@ export interface IpcApi {
    * spinner and the card's "Merging branch…" are driven from.
    */
   'task:integrate': (taskId: string) => Promise<void>;
+  /**
+   * Push this card's branch to its remote and open a pull/merge request against base.
+   *
+   * The other half of `task:integrate`, and its alternative rather than its sequel: a card
+   * whose work goes out as a PR is NOT merged locally, or the pull request would be for
+   * changes base already has.
+   *
+   * Resolves with the PR's URL, how a human writes it (`#12` / `!12`), and whether it was
+   * **already open** — pressing the button twice is ordinary, and the second press reports
+   * the existing one rather than failing. Every refusal arrives as a thrown sentence naming
+   * the wall it hit: no remote, no token for that forge, nothing committed on the branch.
+   *
+   * A row is written into the card's merge requests before this resolves, so the card shows
+   * the PR immediately instead of after the next sync.
+   */
+  'task:createPullRequest': (
+    taskId: string,
+  ) => Promise<{ url: string; ref: string; existed: boolean }>;
   /**
    * Whether a project has release instructions on disk (`RELEASE.md` at its root).
    *
@@ -450,6 +482,13 @@ export interface IpcApi {
    */
   'task:setDescription': (taskId: string, description: string) => Promise<Task>;
   /**
+   * Rewrite the card's title. For a JIRA or GitHub card this edits the app's copy
+   * only: the next sync overwrites it with the issue's own summary, the same
+   * bargain `task:setDescription` strikes. Rejects a blank title. Returns the
+   * updated task.
+   */
+  'task:setTitle': (taskId: string, title: string) => Promise<Task>;
+  /**
    * Set a task's priority by name (`null` clears it). Unlike the description, this
    * one DOES write back: for a JIRA card the issue is updated first and the local row
    * only follows if JIRA accepted, so the two can never disagree. Allowed mid-run —
@@ -489,6 +528,12 @@ export interface IpcApi {
        */
       autoRelease?: boolean | null;
       /**
+       * Open a PR/MR for this card when its work finishes, instead of merging it here
+       * (`@shared/pullRequest`). `null` hands the decision back to the agent project's own
+       * preference, which is what an untouched card does.
+       */
+      autoCreatePr?: boolean | null;
+      /**
        * Merge this card's branch as soon as its work finishes (`@shared/integrate`). `null`
        * hands the decision back to the agent project — and through it to the app-wide
        * setting — which is what an untouched card does.
@@ -525,9 +570,15 @@ export interface IpcApi {
    * Delegate a My Tasks card to an agent: persist the assignment (agent project +
    * optional per-assignment model/mode), record the human's instructions as a comment
    * on the task's timeline, and start the run in the agent project's repo. The card
-   * stays on the Personal board; only the RUN happens in the other project. Rejects if
-   * the task is already mid-run, the target isn't an agent project, or a usage limit is
-   * holding all work. Returns the updated task.
+   * stays on the Personal board; only the RUN happens in the other project. Rejects if the
+   * task is already mid-run, the target isn't an agent project, or the start hit a wall the
+   * human has to clear.
+   *
+   * A usage limit is NOT one of those: the assignment stuck and the engine parked the card
+   * behind the gate, so this resolves with the delegated task (carrying `blocked-by-limit`)
+   * rather than throwing. Delegating a card while the account is walled is a perfectly good
+   * thing to want — the work is queued for the reset, and telling the human it failed would
+   * be describing an accepted card as a rejected one.
    */
   'task:assignAgent': (taskId: string, input: AssignAgentInput) => Promise<Task>;
   /**
@@ -541,9 +592,11 @@ export interface IpcApi {
    * on at the step that was interrupted rather than starting its own session beside the
    * chain, and the agent is rejoined by `--resume` where there is a conversation to rejoin.
    *
-   * Rejects with the reason it could not start (`RUN_REFUSAL_MESSAGE`) — the same six walls
-   * `task:run` names, including a gate, which parks the card and starts it by itself later.
-   * Returns the updated task either way, so a caller that catches still has the card.
+   * Rejects with the reason it could not start (`RUN_REFUSAL_MESSAGE`) — the same walls
+   * `task:run` names, minus the usage limit: that one parks the card (`CARD_RECORDS_PARK`)
+   * and starts it by itself at the reset, so it resolves with the re-read task, which now
+   * carries `blocked-by-limit` for the pane to explain. Returns the updated task either
+   * way, so a caller that catches still has the card.
    */
   'task:resumeAgent': (taskId: string) => Promise<Task>;
   /**
@@ -653,6 +706,14 @@ export interface IpcApi {
    * poll this. Live changes arrive via the same `usage:sample` event.
    */
   'usage:quotas': () => Promise<UsageQuotas>;
+  /**
+   * Session-by-session history of how fast the account burns through its rolling
+   * 5-hour token budget: one entry per reconstructed past session (see `SessionStat`),
+   * each with how long it took to exhaust the budget measured two ways — processing
+   * time alone and full wall-clock time. Behind the Performance screen's two "time to
+   * exhaust a session" charts. Live changes arrive via the same `usage:sample` event.
+   */
+  'usage:sessionStats': () => Promise<SessionStat[]>;
 
   /** The current global app settings (Phase 6). */
   'settings:get': () => Promise<AppSettings>;

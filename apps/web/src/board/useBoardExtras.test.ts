@@ -40,6 +40,11 @@ describe('the board card’s Resume, over the relay', () => {
     // A relayed command can be refused by the desktop (no worktree, no sign-in, a chain
     // already running). Re-reading anyway would be harmless but dishonest about ordering;
     // rejecting is what `BoardScreen` turns into the board's one error line.
+    //
+    // A usage limit is deliberately NOT one of those any more: `task:resumeAgent` parks the
+    // card and RESOLVES with it (`CARD_RECORDS_PARK`), so that path takes the branch above —
+    // two calls, and the pane reads `blocked-by-limit` off the card as "Paused — usage
+    // limit". What this case covers is the walls a human still has to clear.
     const transport = fakeTransport({ 'task:resumeAgent': new Error('nothing to resume into') });
 
     await expect(resumeTaskOver(transport, 't1')).rejects.toThrow('nothing to resume into');

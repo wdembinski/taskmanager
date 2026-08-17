@@ -17,6 +17,7 @@ const project = (over: Partial<Project>): Project => ({
   baseBranch: '',
   writeBackPlan: false,
   autoRelease: false,
+  autoCreatePr: false,
   autoIntegrate: null,
   planAligned: true,
   kind: 'agent',

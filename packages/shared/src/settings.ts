@@ -169,6 +169,35 @@ export interface GitLabSettings {
 }
 
 /**
+ * Upper bound for `syncIntervalMinutes`, matching the desktop Settings screen's own
+ * `SpinButton max`.
+ *
+ * `setInterval`/`setTimeout` take a 32-bit signed delay (`2_147_483_647`ms, ~24.8 days —
+ * `2**31 - 1`). A minutes value past that overflows the cast and Node/the browser silently
+ * clamp the delay to ~1ms instead of erroring, so an unvalidated interval does not fail loud
+ * — it turns "sync every N minutes" into "sync continuously", which is indistinguishable
+ * from the timer never having been throttled at all. 120 minutes is nowhere near that limit;
+ * it is chosen only because there is no legitimate reason for a background poll to be rarer
+ * than once every two hours.
+ */
+export const MAX_SYNC_INTERVAL_MINUTES = 120;
+
+/**
+ * Clamp a candidate `syncIntervalMinutes` to `[0, MAX_SYNC_INTERVAL_MINUTES]`, rounding to
+ * the nearest whole minute. Non-finite input (`NaN`, `Infinity`) becomes 0 — "off" is the
+ * safe reading of a value that cannot mean an actual cadence, not "sync forever".
+ *
+ * The one gate every writer of `syncIntervalMinutes` goes through — the two Settings
+ * screens, and `SyncPoller` itself against whatever a stored (or synced-from-elsewhere)
+ * blob actually contains, since a value that skipped this gate before it existed does not
+ * retroactively become safe.
+ */
+export function clampSyncInterval(minutes: number): number {
+  if (!Number.isFinite(minutes)) return 0;
+  return Math.min(MAX_SYNC_INTERVAL_MINUTES, Math.max(0, Math.round(minutes)));
+}
+
+/**
  * The one sync interval for a settings blob, migrating a pre-consolidation one.
  *
  * Takes the SMALLER of whatever the two integrations were separately set to, so a user who
