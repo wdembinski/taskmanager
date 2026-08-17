@@ -497,6 +497,13 @@ export interface AppSettings {
    * A card planned only once has no earlier rounds, so it is never in here.
    */
   shownEarlierStepCards: string[];
+  /**
+   * Which board the My Tasks screen shows: `'all'` (the default) unions every board's
+   * cards, `PERSONAL_PROJECT_ID` is the Personal board alone, and anything else names a
+   * project id — see `IpcApi['board:scopes']`. Persisted so the board comes back where
+   * you left it rather than resetting to the union on every launch.
+   */
+  boardScopeId: string;
   /** JIRA integration config for the Personal board (Phase B). */
   jira: JiraSettings;
   /** GitLab integration config — merge requests on the cards their ticket lives on. */
@@ -539,6 +546,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // Empty means every re-planned card shows its newest bunch of steps and folds the rounds
   // before it away — the behaviour, not the exception. See the field.
   shownEarlierStepCards: [],
+  boardScopeId: 'all',
   jira: DEFAULT_JIRA_SETTINGS,
   gitlab: DEFAULT_GITLAB_SETTINGS,
   github: DEFAULT_GITHUB_SETTINGS,

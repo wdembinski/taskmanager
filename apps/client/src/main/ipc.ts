@@ -32,6 +32,7 @@ import {
   type Rectangle,
 } from 'electron';
 import type {
+  BoardScope,
   IpcApi,
   IpcEvents,
   JiraIssueTypeOption,
@@ -42,6 +43,7 @@ import type {
 import {
   hasPlan,
   hasRepo,
+  isBoardProject,
   isManualStatus,
   isPersonalBoard,
   PERSONAL_PROJECT_ID,
@@ -2183,10 +2185,29 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   });
 
   // What the board asks for when it draws itself — so, by definition, the cards on it.
-  handle('board:tasks', async () => store.getPersonalTasks());
+  // Omitted/'all' unions every board; anything else names one board's own project id.
+  handle('board:tasks', async (scope) =>
+    !scope || scope === 'all' ? store.getAllBoardTasks() : store.getBoardTasks(scope),
+  );
 
   // And the cards that are NOT on it — the same rows, the other side of `archivedAt`.
-  handle('board:archived', async () => store.getArchivedTasks());
+  handle('board:archived', async (scope) =>
+    !scope || scope === 'all' ? store.getAllArchivedBoardTasks() : store.getArchivedTasksFor(scope),
+  );
+
+  // The boards the scope picker offers: Personal first, then every other project with
+  // no plan file — the ones `isBoardProject` says are a card list rather than a queue.
+  handle('board:scopes', async () => {
+    const personal = store.getProject(PERSONAL_PROJECT_ID);
+    const scopes: BoardScope[] = personal
+      ? [{ id: personal.id, name: personal.name, color: personal.color }]
+      : [];
+    for (const project of store.listProjects()) {
+      if (isPersonalBoard(project.id) || !isBoardProject(project)) continue;
+      scopes.push({ id: project.id, name: project.name, color: project.color });
+    }
+    return scopes;
+  });
 
   handle('task:restore', async (taskId) => {
     const task = store.getTask(taskId);

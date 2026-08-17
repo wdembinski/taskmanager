@@ -349,6 +349,19 @@ export interface Store {
    *  `getArchivedTasks`. */
   getArchivedTasksFor(projectId: string): Task[];
   /**
+   * Every board's cards, unioned — the Personal board plus every other project with no
+   * plan file (see `isBoardProject`), archived rows excluded. What `board:tasks` reads
+   * for the all-boards scope.
+   *
+   * Ordered `projectId, "order"` rather than by anything about the cards themselves: a
+   * mixed-project list has no natural sort of its own, and ordering by a mutable per-card
+   * field would jitter the whole thing on a write to a card the caller never touched.
+   */
+  getAllBoardTasks(): Task[];
+  /** The archived cards across every board — the union form of `getArchivedTasksFor`,
+   *  ordered the same way as `getAllBoardTasks` and for the same reason. */
+  getAllArchivedBoardTasks(): Task[];
+  /**
    * The Personal board (JIRA + internal ad-hoc), ordered — the cards that are ON it.
    *
    * Archived cards are excluded, and that is what makes this the safe default: every caller
@@ -1820,6 +1833,20 @@ export function createStore(dbPath: string): Store {
     `SELECT * FROM tasks WHERE projectId = ? AND archivedAt IS NOT NULL
      ORDER BY archivedAt DESC, "order"`,
   );
+  // The union read behind `getAllBoardTasks`/`getAllArchivedBoardTasks`: the same two
+  // queries above, with the `projectId = ?` predicate widened to "every project with no
+  // plan file" (a join against `projects`, since that is where `planPath` lives) and the
+  // order fixed to `projectId, "order"` so a card never jumps around a mixed column.
+  const selectAllBoardTasks = db.prepare(
+    `SELECT tasks.* FROM tasks JOIN projects ON projects.id = tasks.projectId
+     WHERE projects.planPath = '' AND tasks.archivedAt IS NULL
+     ORDER BY tasks.projectId, tasks."order"`,
+  );
+  const selectAllArchivedBoardTasks = db.prepare(
+    `SELECT tasks.* FROM tasks JOIN projects ON projects.id = tasks.projectId
+     WHERE projects.planPath = '' AND tasks.archivedAt IS NOT NULL
+     ORDER BY tasks.projectId, tasks."order"`,
+  );
   const selectTask = db.prepare(`SELECT * FROM tasks WHERE id = ?`);
   const deleteTasks = db.prepare(`DELETE FROM tasks WHERE projectId = ?`);
   const insertTask = db.prepare<[TaskRow]>(
@@ -2790,6 +2817,16 @@ export function createStore(dbPath: string): Store {
     return (selectArchivedBoardTasks.all(projectId) as TaskRow[]).map(rowToTask);
   }
 
+  /** Every board's cards, unioned. See the interface for the ordering rule. */
+  function getAllBoardTasks(): Task[] {
+    return (selectAllBoardTasks.all() as TaskRow[]).map(rowToTask);
+  }
+
+  /** Every board's archived cards, unioned. See `getAllBoardTasks`. */
+  function getAllArchivedBoardTasks(): Task[] {
+    return (selectAllArchivedBoardTasks.all() as TaskRow[]).map(rowToTask);
+  }
+
   function getTask(id: string): Task | undefined {
     const row = selectTask.get(id) as TaskRow | undefined;
     return row ? rowToTask(row) : undefined;
@@ -3264,6 +3301,10 @@ export function createStore(dbPath: string): Store {
     getBoardTasks,
 
     getArchivedTasksFor,
+
+    getAllBoardTasks,
+
+    getAllArchivedBoardTasks,
 
     // The Personal three, now wrappers on the general form above. They stay hard-wired to
     // PERSONAL_PROJECT_ID rather than growing an argument, and that is what keeps the JIRA

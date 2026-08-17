@@ -206,6 +206,19 @@ export interface AppInfo {
 }
 
 /**
+ * One board `board:tasks`/`board:archived`'s `scope` may select — what a scope picker
+ * offers. The Personal board first, then every OTHER project with no plan file (a bare
+ * repo or a ticket project): the ones a human arranges by hand rather than a queue the
+ * scheduler drains top-to-bottom. `color` is the same board-stripe hex as `Project.color`
+ * (`''` for none); Personal always carries `''`.
+ */
+export interface BoardScope {
+  id: string;
+  name: string;
+  color: string;
+}
+
+/**
  * INVOKE channels: request → response.
  *
  * Each key is a channel name; the function type documents its arguments and the
@@ -816,17 +829,25 @@ export interface IpcApi {
    * screen where a silent empty state hides a misconfiguration.
    */
   'jira:statuses': () => Promise<JiraStatusList>;
-  /** Every task on the standalone Personal board (JIRA tickets + internal ad-hoc). */
-  'board:tasks': () => Promise<Task[]>;
   /**
-   * The cards that have been taken OFF that board and not destroyed — most recently removed
-   * first. The complement of `board:tasks`, and the list "Removed cards" is drawn from.
+   * The cards on a board. `scope` names which one: omitted (or `'all'`, the default) is
+   * every board's cards unioned together — Personal plus every other project with no
+   * plan file — and any other value is one board's own project id, `PERSONAL_PROJECT_ID`
+   * included.
+   */
+  'board:tasks': (scope?: string) => Promise<Task[]>;
+  /**
+   * The cards that have been taken OFF a board and not destroyed — most recently removed
+   * first. The complement of `board:tasks`, same `scope` rule, and the list "Removed cards"
+   * is drawn from.
    *
    * Every one still has its timeline, its files, its arrows and its transcript; `archivedAt`
    * says when it left and `archivedReason` says which question's answer took it. They are kept
    * for `ARCHIVE_RETENTION_DAYS` and then destroyed by the boot sweep.
    */
-  'board:archived': () => Promise<Task[]>;
+  'board:archived': (scope?: string) => Promise<Task[]>;
+  /** The boards `board:tasks`/`board:archived`'s `scope` may select. See {@link BoardScope}. */
+  'board:scopes': () => Promise<BoardScope[]>;
   /**
    * Put a removed card back on the board, with the same id and everything hanging off it.
    * Returns the fresh board, so the caller does not have to ask for it again.

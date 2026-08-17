@@ -242,6 +242,7 @@ export const RELAY_POLICY: {
 
   'board:tasks': 'relay',
   'board:archived': 'relay',
+  'board:scopes': 'relay',
 
   'chain:links': 'relay',
   'chain:link': 'relay',
