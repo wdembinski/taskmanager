@@ -469,6 +469,69 @@ describe('CloudPoller', () => {
     expect(pruned).toEqual([1]);
   });
 
+  /** A store whose only pending work is `count` relayed answers of `bytes` each. */
+  function resultStore(count: number, bytes: number): { store: Store; markedSent: string[][] } {
+    const markedSent: string[][] = [];
+    const store = {
+      getCloudDelta: () => [],
+      pruneCloudOutbox: () => {},
+      loadCloudClientId: () => 'client-1',
+      loadCloudCursor: () => null,
+      saveCloudCursor: () => {},
+      getTask: () => undefined,
+      getProject: () => undefined,
+      getPendingCloudAcks: () => [],
+      markCloudAcksSent: () => {},
+      getPendingCloudResults: () =>
+        Array.from({ length: count }, (_v, i) => ({
+          commandId: `cmd-${i}`,
+          taskId: null,
+          projectId: null,
+          ok: true,
+          reason: null,
+          value: 'x'.repeat(bytes),
+        })),
+      markCloudResultsSent: (ids: readonly string[]) => markedSent.push([...ids]),
+    } as unknown as Store;
+    return { store, markedSent };
+  }
+
+  it('bounds the relayed answers a request carries, instead of sending every pending one', async () => {
+    // The 15 Aug 2026 wedge: 36 timeline answers of ~300 kB went out whole on every tick,
+    // built a 10 MB body, and were refused 413 forever — with every card queued behind them.
+    const { store, markedSent } = resultStore(36, 300_000);
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, json: async () => response() });
+    const { poller } = makePoller({ store, fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    await poller.tick();
+
+    const raw = fetchImpl.mock.calls[0]![1].body as string;
+    expect(Buffer.byteLength(raw, 'utf8')).toBeLessThan(2_000_000);
+    const body = JSON.parse(raw) as { results: Array<{ commandId: string }> };
+    expect(body.results.length).toBeLessThan(36);
+    // And only what actually went out is retired — the rest come back next tick.
+    expect(markedSent).toEqual([body.results.map((r) => r.commandId)]);
+  });
+
+  it('carries the answers left over on the following ticks', async () => {
+    const { store, markedSent } = resultStore(4, 400_000);
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, json: async () => response() });
+    const { poller } = makePoller({ store, fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    await poller.tick();
+    await poller.tick();
+
+    // The fake store keeps returning all four (nothing really clears), so what matters is
+    // that each tick sends a bounded slice rather than the whole pile.
+    expect(markedSent[0]!.length).toBeGreaterThan(0);
+    expect(markedSent[0]!.length).toBeLessThan(4);
+    expect(markedSent[1]).toEqual(markedSent[0]);
+  });
+
   it('does not run once disposed', async () => {
     const { poller, fetchImpl } = makePoller();
     poller.dispose();

@@ -167,6 +167,14 @@ The version lives in one place — `version` in `apps/client/package.json` — a
 feed and the tag all derive from it. The root `package.json` is the workspace
 manifest and stays at `0.0.0`; it is never bumped.
 
+That is true of the browser client too, and was not always: `apps/web` baked its
+own manifest's version into its status bar, and since nothing bumps that manifest
+it told users v0.78.2 for eight releases. It now reads `apps/client/package.json`
+at build time, `deploy.yml` treats a bump as a web change so the bundle is
+actually rebuilt, and `test/repo-invariants.test.ts` holds both facts. Every other
+workspace's `version` is frozen and means nothing — do not display one, and do not
+try to keep them in step.
+
 ### The rule
 
 **A commit that changes the product bumps the version, and the bump rides inside

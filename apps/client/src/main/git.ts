@@ -27,13 +27,21 @@ export interface GitResult {
  * `host` decides WHICH machine runs it — the default is the machine the GUI runs on,
  * so every existing caller behaves exactly as before. A project targeting WSL passes
  * its own host and the identical argv runs inside the distro instead.
+ *
+ * `env` is added to this process' environment for the one command, and is only ever passed
+ * by {@link pushBranch} — see {@link NO_PROMPT_ENV} for the single thing it is for. Omitted
+ * everywhere else, so no other git call's environment changes at all.
  */
 export async function git(
   cwd: string,
   args: string[],
   host: ExecHost = localHost(),
+  env?: Record<string, string>,
 ): Promise<GitResult> {
-  return host.exec(cwd, 'git', args, { maxBuffer: 32 * 1024 * 1024 });
+  return host.exec(cwd, 'git', args, {
+    maxBuffer: 32 * 1024 * 1024,
+    ...(env ? { env } : {}),
+  });
 }
 
 /** True if `dir` is inside a git work tree. */
@@ -515,6 +523,130 @@ export async function commitsAhead(
   if (res.code !== 0) return -1;
   const n = Number.parseInt(res.stdout.trim(), 10);
   return Number.isFinite(n) ? n : -1;
+}
+
+/**
+ * A remote's URL — `git remote get-url <remote>` — or **`''` when git won't say**.
+ *
+ * The empty answer is the same contract {@link currentBranch} documents: a repo with no
+ * `origin`, a `git` that could not run, and a remote nobody has configured all arrive here
+ * as one thing, and every caller has to treat that thing as "there is no remote" rather
+ * than passing it on. Nothing downstream may hand `''` to a URL parser and believe the
+ * result.
+ */
+export async function remoteUrl(cwd: string, remote = 'origin', host?: ExecHost): Promise<string> {
+  const res = await git(cwd, ['remote', 'get-url', remote], host);
+  return res.code === 0 ? res.stdout.trim() : '';
+}
+
+/** Where and how {@link pushBranch} should push. */
+export interface PushOptions {
+  /**
+   * Push to this URL instead of to `remote`'s configured one — an EPHEMERAL, tokenized
+   * URL, passed as argv and never written anywhere. See {@link pushBranch}.
+   */
+  url?: string;
+  /** Strings to strip out of the captured output before anybody reads it. */
+  secrets?: readonly string[];
+  host?: ExecHost;
+}
+
+/**
+ * Env that makes a push **fail rather than ask**.
+ *
+ * This runs in the main process, which has no terminal and no window a credential prompt
+ * could appear in — so a `git push` that decides to ask for a password does not ask
+ * anybody, it simply never returns, and the app is wedged with no error and nothing on
+ * screen to cancel. Every route git has to a prompt is closed here:
+ *
+ *  - `GIT_TERMINAL_PROMPT=0` — git's own tty prompt for a username/password.
+ *  - `GIT_ASKPASS=`, `SSH_ASKPASS=` — deliberately EMPTY rather than unset. Unset means
+ *    "fall back to `core.askpass`, then to `SSH_ASKPASS`, then to the terminal"; empty
+ *    means there is no helper to run, which is the instruction we actually want.
+ *  - `SSH_ASKPASS_REQUIRE=never` — newer OpenSSH will launch an askpass GUI even with no
+ *    tty, which is precisely the window nobody is looking at.
+ *  - `GIT_SSH_COMMAND` — `BatchMode=yes` turns an ssh passphrase/host-key question into a
+ *    failure, and the short timeout stops an unreachable host holding the process open.
+ */
+const NO_PROMPT_ENV: Record<string, string> = {
+  GIT_TERMINAL_PROMPT: '0',
+  GIT_ASKPASS: '',
+  SSH_ASKPASS: '',
+  SSH_ASKPASS_REQUIRE: 'never',
+  GIT_SSH_COMMAND: 'ssh -o BatchMode=yes -o ConnectTimeout=10',
+};
+
+/**
+ * Push the work tree's current commit onto `branch` on the remote.
+ *
+ * `HEAD:refs/heads/<branch>` rather than `<branch>:<branch>`: the worktree's HEAD is the
+ * thing that was actually worked on, and spelling the destination out in full stops git
+ * guessing at a ref that does not exist upstream yet.
+ *
+ * Two things are load-bearing and neither is obvious:
+ *
+ *  - **It must fail fast, never prompt.** See {@link NO_PROMPT_ENV}; `credential.interactive
+ *    =never` closes the same door on the credential *helpers* (Git Credential Manager and
+ *    friends), which have their own UI and do not care about `GIT_TERMINAL_PROMPT`.
+ *  - **`--set-upstream` is skipped for a tokenized URL.** `-u` records what it was given in
+ *    `.git/config` as `branch.<name>.remote`, and what it was given here is a URL with a
+ *    token in it — so the one thing this whole path exists to avoid (a secret written to
+ *    disk, in the user's repo, surviving the push) is exactly what `-u` would do. Pushing
+ *    to the named remote keeps it: there the recorded value is the word `origin`.
+ */
+export async function pushBranch(
+  cwd: string,
+  remote: string,
+  branch: string,
+  opts: PushOptions = {},
+): Promise<GitResult> {
+  const target = opts.url || remote;
+  const tokenized = Boolean(opts.url);
+  const res = await git(
+    cwd,
+    [
+      '-c',
+      'credential.interactive=never',
+      'push',
+      ...(tokenized ? [] : ['--set-upstream']),
+      target,
+      `HEAD:refs/heads/${branch}`,
+    ],
+    opts.host,
+    NO_PROMPT_ENV,
+  );
+  return {
+    code: res.code,
+    stdout: redactSecrets(res.stdout, opts.secrets),
+    stderr: redactSecrets(res.stderr, opts.secrets),
+  };
+}
+
+/**
+ * Replace every occurrence of each secret with `***`.
+ *
+ * Pure, and applied to git's output before that output can reach an error message, a
+ * timeline note or a log line. It is needed because git is helpful: a push to a URL it
+ * could not reach quotes the URL back — token and all — in its own error, and that error
+ * is precisely the string a refusal would show the human and a note would keep forever.
+ *
+ * The percent-encoded spelling is redacted too, because that is the form the token
+ * actually takes inside the URL we built (see `createPr.ts`), and a token containing a
+ * `/` or a `+` would otherwise sail straight through a search for its raw text.
+ *
+ * Empty and whitespace-only entries are skipped rather than matched: replacing `''`
+ * everywhere would turn the output into a wall of asterisks and hide the real error.
+ */
+export function redactSecrets(text: string, secrets: readonly string[] | undefined): string {
+  if (!secrets?.length) return text;
+  let out = text;
+  for (const secret of secrets) {
+    if (!secret.trim()) continue;
+    for (const form of new Set([secret, encodeURIComponent(secret)])) {
+      out = out.split(form).join('***');
+    }
+  }
+  return out;
 }
 
 /** Untracked, non-ignored files in the work tree (NUL-delimited). */

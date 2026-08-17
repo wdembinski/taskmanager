@@ -40,6 +40,7 @@ import {
 import { AddRegular, DismissRegular } from '@fluentui/react-icons';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
+import { clampSyncInterval, MAX_SYNC_INTERVAL_MINUTES } from '@shared/settings';
 import type {
   AppSettings,
   CloudSettings,
@@ -709,12 +710,15 @@ export function Settings(): JSX.Element {
             >
               <SpinButton
                 min={0}
-                max={120}
+                max={MAX_SYNC_INTERVAL_MINUTES}
                 value={settings.syncIntervalMinutes}
                 onChange={(_e, d) => {
                   const n = d.value ?? Number(d.displayValue);
-                  if (Number.isFinite(n))
-                    patch({ syncIntervalMinutes: Math.max(0, Math.round(n as number)) });
+                  // `clampSyncInterval`, not just `Number.isFinite`: `max` only constrains the
+                  // stepper buttons, not a value typed or pasted straight into the field, and
+                  // an unclamped one reaches `SyncPoller` — see its own docstring for why that
+                  // silently turns into a sync that never stops rather than a rejected save.
+                  if (Number.isFinite(n)) patch({ syncIntervalMinutes: clampSyncInterval(n) });
                 }}
               />
             </Field>
@@ -1362,10 +1366,11 @@ export function Settings(): JSX.Element {
 
             {/* The poller never reports a failure — it counts the tick and retries — so
                 without this, a wrong address, a missing sign-in and a refused account all
-                look identical: an empty board. */}
+                look identical: an empty board. It reads the SAVED settings, hence "Save
+                first" below: a URL typed and not saved is not the one being tested. */}
             <Field
               label="Check it works"
-              hint="Walks the whole chain — address, sign-in, then reading your board — and says which part fails."
+              hint="Save first, then test. Walks the whole chain — address, sign-in, this machine's own sync, then whether the server lists it as connected — and says which part fails."
             >
               <div className={styles.actions}>
                 <Button

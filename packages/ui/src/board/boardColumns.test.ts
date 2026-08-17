@@ -481,6 +481,7 @@ describe('sortCards', () => {
     const loudMr: MergeRequest = {
       id: 'gl-9-1',
       taskId: 'mr-card',
+      openedForTaskId: null,
       detailedMergeStatus: 'mergeable',
       hasConflicts: false,
       provider: 'gitlab',

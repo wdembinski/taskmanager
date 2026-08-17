@@ -1,11 +1,37 @@
 import { describe, expect, it } from 'vitest';
 import {
+  clampSyncInterval,
   DEFAULT_BOARD_DISPLAY,
   DEFAULT_JIRA_SETTINGS,
   DEFAULT_SETTINGS,
+  MAX_SYNC_INTERVAL_MINUTES,
   mergeAppSettings,
   resolveSyncInterval,
 } from './settings';
+
+describe('clampSyncInterval', () => {
+  it('rounds and floors at 0, as before', () => {
+    expect(clampSyncInterval(2.4)).toBe(2);
+    expect(clampSyncInterval(2.5)).toBe(3);
+    expect(clampSyncInterval(-5)).toBe(0);
+  });
+
+  // The actual bug: a value past the 32-bit `setInterval` delay overflows silently to a
+  // ~1ms timer instead of throwing, so an unbounded interval reads as "sync continuously"
+  // rather than "sync rarely". Anything past the UI's own max must be capped here too.
+  it('caps at MAX_SYNC_INTERVAL_MINUTES rather than passing an oversized value through', () => {
+    expect(clampSyncInterval(MAX_SYNC_INTERVAL_MINUTES + 1)).toBe(MAX_SYNC_INTERVAL_MINUTES);
+    expect(clampSyncInterval(999_999_999)).toBe(MAX_SYNC_INTERVAL_MINUTES);
+  });
+
+  // Non-finite input cannot mean an actual cadence, and `setInterval` clamps it to ~1ms the
+  // same as an overflow would — so it reads as "off", not "as fast as possible".
+  it('treats non-finite input as off, not as fast as possible', () => {
+    expect(clampSyncInterval(NaN)).toBe(0);
+    expect(clampSyncInterval(Infinity)).toBe(0);
+    expect(clampSyncInterval(-Infinity)).toBe(0);
+  });
+});
 
 describe('resolveSyncInterval', () => {
   it('leaves an already-migrated blob alone', () => {

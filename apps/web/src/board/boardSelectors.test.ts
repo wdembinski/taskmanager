@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { PERSONAL_PROJECT_ID, type Task } from '@tm/shared/model';
-import { selectArchivedTasks, selectBoardTasks, type BoardTaskState } from './boardSelectors';
+import { PERSONAL_PROJECT_ID, type Project, type Task } from '@tm/shared/model';
+import {
+  selectAgentProjects,
+  selectArchivedTasks,
+  selectBoardTasks,
+  type BoardTaskState,
+} from './boardSelectors';
 
 function task(overrides: Partial<Task> = {}): Task {
   return {
@@ -86,5 +91,87 @@ describe('scoping to a ticket project', () => {
 
   it('an explicit Personal id behaves exactly like the default', () => {
     expect(selectBoardTasks(board, PERSONAL_PROJECT_ID)).toEqual(selectBoardTasks(board));
+  });
+});
+
+function project(overrides: Partial<Project> = {}): Project {
+  return {
+    id: 'p1',
+    name: 'A repo',
+    path: '/repos/a',
+    kind: 'agent',
+    color: '',
+    jiraEpicKeys: [],
+    ...overrides,
+  } as Project;
+}
+
+/** The mirror's own shape — `CloudBoardState.projects` is keyed by id, not a list. */
+function mirrorOf(...projects: Project[]): Record<string, Project> {
+  return Object.fromEntries(projects.map((p) => [p.id, p]));
+}
+
+describe('selectAgentProjects', () => {
+  const mirroredAgent = project({ id: 'm1', name: 'Mirrored' });
+  const personalBoard = project({ id: 'personal', name: 'Personal', kind: 'plan' });
+  const mirror = mirrorOf(mirroredAgent, personalBoard);
+
+  it('falls back to the mirrored rows while the relay has not answered', () => {
+    expect(selectAgentProjects(mirror, [], false).map((p) => p.id)).toEqual(['m1']);
+  });
+
+  it('lets the relay win once it has answered', () => {
+    const relayed = [project({ id: 'r1', name: 'Relayed' })];
+    expect(selectAgentProjects(mirror, relayed, true).map((p) => p.id)).toEqual(['r1']);
+  });
+
+  it('answers nothing for an answered-but-empty relay, rather than the mirror', () => {
+    // The whole point of the flag: an account whose desktop really has no agent projects must
+    // show none. Reading emptiness as "nobody was home" would resurrect every deleted repo.
+    expect(selectAgentProjects(mirror, [], true)).toEqual([]);
+  });
+
+  it('drops every kind but agent, on both branches', () => {
+    const ticketProject = project({ id: 'tk', name: 'Tickets', kind: 'ticket' });
+    const planProject = project({ id: 'pl', name: 'Legacy', kind: 'plan' });
+    const agent = project({ id: 'ag', name: 'Repo' });
+
+    expect(
+      selectAgentProjects(mirrorOf(ticketProject, planProject, agent), [], false).map((p) => p.id),
+    ).toEqual(['ag']);
+    expect(
+      selectAgentProjects({}, [ticketProject, planProject, agent], true).map((p) => p.id),
+    ).toEqual(['ag']);
+  });
+
+  it('orders by name either way round, so the relay replacing the mirror does not reshuffle', () => {
+    const alpha = project({ id: 'z', name: 'Alpha' });
+    const zulu = project({ id: 'a', name: 'Zulu' });
+    expect(selectAgentProjects(mirrorOf(zulu, alpha), [], false).map((p) => p.name)).toEqual([
+      'Alpha',
+      'Zulu',
+    ]);
+    expect(selectAgentProjects({}, [zulu, alpha], true).map((p) => p.name)).toEqual([
+      'Alpha',
+      'Zulu',
+    ]);
+  });
+
+  it('breaks a name tie by id, so two repos of the same name keep one order', () => {
+    const first = project({ id: 'b', name: 'Same' });
+    const second = project({ id: 'a', name: 'Same' });
+    expect(selectAgentProjects({}, [first, second], true).map((p) => p.id)).toEqual(['a', 'b']);
+    expect(selectAgentProjects(mirrorOf(first, second), [], false).map((p) => p.id)).toEqual([
+      'a',
+      'b',
+    ]);
+  });
+
+  it('does not sort the relayed array in place', () => {
+    // It is `useBoardExtras`'s state: sorting the caller's array would mutate React state
+    // held elsewhere, which is the kind of thing that only shows up as a stale render.
+    const relayed = [project({ id: 'z', name: 'Zulu' }), project({ id: 'a', name: 'Alpha' })];
+    selectAgentProjects({}, relayed, true);
+    expect(relayed.map((p) => p.name)).toEqual(['Zulu', 'Alpha']);
   });
 });

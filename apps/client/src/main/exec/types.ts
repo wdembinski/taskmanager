@@ -42,6 +42,20 @@ export interface ExecOptions {
   timeoutMs?: number;
   /** Max captured output before the command is killed. */
   maxBuffer?: number;
+  /**
+   * Extra environment variables for this one command, ADDED to the ones this process
+   * already has rather than replacing them — a command run with a hand-built environment
+   * would lose `PATH`, `HOME` and everything else `git` needs to work at all.
+   *
+   * It exists for the push: a `git push` that cannot find a credential must FAIL rather
+   * than prompt, and the switches that say so (`GIT_TERMINAL_PROMPT`, `GIT_ASKPASS`,
+   * `SSH_ASKPASS`) are environment variables with no `-c` equivalent. A prompt in the main
+   * process has no window to answer it, so it would hang the app rather than ask anybody.
+   *
+   * The WSL host has to do real work to honour this — see `WslExecHost.exec` — because
+   * variables do NOT cross the Windows→Linux boundary by themselves.
+   */
+  env?: Record<string, string>;
 }
 
 /**
