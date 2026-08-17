@@ -1565,9 +1565,15 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // vipper.iam cloud sign-in (Phase 25's "Guard the cloud API with vipper.iam"). The refresh
   // token is the one credential of the three (JIRA/GitLab/IAM) this app itself is a party to
   // minting, but it still goes through the exact same encrypt-and-store path as the other two.
+  // `cloudToken` is declared further down this function (its `onStateChange` needs
+  // `pushSyncState` above it) — safe to reference here anyway, since this callback only runs
+  // once IPC is live, well after every `const` in this scope has been initialized.
   handle('iam:getConfigStatus', async () => ({
     signedIn: store.loadIamRefreshToken() !== null,
     encryptionAvailable: safeStorage.isEncryptionAvailable(),
+    authState: cloudToken.state(),
+    authError: cloudToken.state() === 'rejected' ? cloudToken.explain() : null,
+    lastTokenAt: cloudToken.lastMintedAt(),
   }));
 
   handle('iam:signIn', async () => {
@@ -3606,6 +3612,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     focus: focusTracker,
     getSettings: () => store.getSettings().cloud,
     getAccessToken: getCloudAccessToken,
+    // Turns a bare "no token" into the reason there isn't one — never signed in vs. revoked —
+    // so a failed tick's `syncClock.cloud.error` (and the SyncRing tooltip built from it) says
+    // something a user signed out on purpose can tell apart from a sign-in vipper.iam rejected.
+    describeMissingToken: () => cloudToken.explain(),
     // What a browser names this desktop by, once it has more than one to choose between —
     // see `ClientInfo` on `@protocol/wire`. Built here because this is the only side of
     // `cloudPoller.ts` that is allowed to touch Electron; read fresh per tick because

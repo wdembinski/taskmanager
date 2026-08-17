@@ -45,6 +45,10 @@ export interface CloudPollerDeps {
   /** A bearer access token for this tick, or null when not signed in — the tick then
    * fails like any other network error (counted, backed off, retried next time). */
   getAccessToken: () => Promise<string | null>;
+  /** Why `getAccessToken` just answered null, in the user's words — wired to
+   *  `cloudToken.explain()`. Optional so a test can omit it; a missing dep falls back to the
+   *  generic message this class used before it existed. */
+  describeMissingToken?: () => string;
   /**
    * Who this desktop is, for the browser to name it by — see `ClientInfo` on
    * `@protocol/wire`.
@@ -196,7 +200,9 @@ export class CloudPoller {
     if (!settings.enabled || !settings.baseUrl.trim()) return;
 
     const token = await this.deps.getAccessToken();
-    if (!token) throw new Error('Not signed in to vipper.iam.');
+    if (!token) {
+      throw new Error(this.deps.describeMissingToken?.() ?? 'Not signed in to vipper.iam.');
+    }
 
     const rows = this.deps.store.getCloudDelta(0, this.batchLimit);
     // Commands applied (or rejected) since the last successful sync — see

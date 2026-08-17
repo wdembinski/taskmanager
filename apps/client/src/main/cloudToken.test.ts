@@ -129,6 +129,20 @@ describe('CloudTokenProvider.get', () => {
     expect(refresh).toHaveBeenCalledTimes(2);
   });
 
+  it('lastMintedAt() is null until the first successful mint, then holds that mint time', async () => {
+    const clock = fakeClock(1_000);
+    const { deps } = makeDeps({ now: clock.now });
+    const provider = new CloudTokenProvider(deps);
+
+    expect(provider.lastMintedAt()).toBeNull();
+    await provider.get();
+    expect(provider.lastMintedAt()).toBe(1_000);
+
+    clock.advance(5_000);
+    await provider.get(); // cached — no re-mint, so the timestamp does not move
+    expect(provider.lastMintedAt()).toBe(1_000);
+  });
+
   it('invalidate() drops only the cached access token, forcing exactly one new mint', async () => {
     const { deps, refresh } = makeDeps();
     const provider = new CloudTokenProvider(deps);
@@ -149,12 +163,13 @@ describe('CloudTokenProvider.forget / renewed', () => {
 
     provider.forget();
     expect(provider.state()).toBe('signed-out');
+    expect(provider.lastMintedAt()).toBeNull();
 
     await provider.get(); // loadRefreshToken still answers 'rt-stored' in this fake, so it re-mints
     expect(refresh).toHaveBeenCalledTimes(2);
   });
 
-  it('renewed() (iam:signIn) leaves rejected for stored and drops the cache', async () => {
+  it('renewed() (iam:signIn) leaves rejected for stored, drops the cache, and clears lastMintedAt', async () => {
     const refresh = vi.fn().mockRejectedValue(new IamTokenError(400, 'x', 'invalid_grant', null));
     const provider = new CloudTokenProvider({
       config: () => CONFIG,
@@ -168,6 +183,35 @@ describe('CloudTokenProvider.forget / renewed', () => {
 
     provider.renewed();
     expect(provider.state()).toBe('stored');
+    expect(provider.lastMintedAt()).toBeNull();
+  });
+});
+
+describe('CloudTokenProvider.explain', () => {
+  it('names the actual reason for each state', async () => {
+    const refresh = vi.fn().mockRejectedValue(new IamTokenError(400, 'x', 'invalid_grant', null));
+    const provider = new CloudTokenProvider({
+      config: () => CONFIG,
+      loadRefreshToken: () => null,
+      saveRefreshToken: () => {},
+      refresh,
+      log: () => {},
+    });
+    expect(provider.explain()).toMatch(/not signed in/i);
+  });
+
+  it('says "revoked" once a mint hits invalid_grant', async () => {
+    const refresh = vi.fn().mockRejectedValue(new IamTokenError(400, 'x', 'invalid_grant', null));
+    const provider = new CloudTokenProvider({
+      config: () => CONFIG,
+      loadRefreshToken: () => 'rt-stored',
+      saveRefreshToken: () => {},
+      refresh,
+      log: () => {},
+    });
+    await provider.get();
+    expect(provider.state()).toBe('rejected');
+    expect(provider.explain()).toMatch(/revoked/i);
   });
 });
 

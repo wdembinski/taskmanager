@@ -188,6 +188,19 @@ export interface IamConfigStatus {
   signedIn: boolean;
   /** Whether the OS secure store is available to encrypt the token. */
   encryptionAvailable: boolean;
+  /**
+   * `CloudTokenProvider.state()` — mirrors its `CloudAuthState` (kept as a plain string union
+   * here rather than imported, since main's provider must not become a dependency of shared).
+   * `signedIn` above keeps meaning "a refresh token is on file"; this is the finer-grained fact
+   * of whether that token is actually working.
+   */
+  authState: 'signed-out' | 'stored' | 'active' | 'rejected';
+  /** `CloudTokenProvider.explain()`, but only when `authState` names an actual problem
+   *  (`'rejected'`) — null otherwise, including while merely signed out. */
+  authError: string | null;
+  /** When the access token behind this sign-in was last successfully minted, or null if it
+   *  never has been (including right after a fresh sign-in, before the first mint). */
+  lastTokenAt: number | null;
 }
 
 /** Result of one `iam:signIn` attempt. */

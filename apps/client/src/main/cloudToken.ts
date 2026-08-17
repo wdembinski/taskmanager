@@ -56,6 +56,10 @@ export class CloudTokenProvider {
   private cached: CachedToken | null = null;
   private inflight: Promise<string | null> | null = null;
   private authState: CloudAuthState;
+  /** When `mint()` last succeeded — for the Settings UI's "token last refreshed Ns ago".
+   *  Cleared by `forget()`/`renewed()`: a stale timestamp from a since-replaced sign-in would
+   *  read as freshness that never happened. */
+  private lastTokenAt: number | null = null;
 
   constructor(deps: CloudTokenDeps) {
     this.deps = deps;
@@ -68,7 +72,14 @@ export class CloudTokenProvider {
     return this.authState;
   }
 
-  /** Why there is no token right now, in the user's words — not yet wired to any UI. */
+  /** When the last mint succeeded, or null if it never has since construction or the last
+   *  `forget()`/`renewed()`. */
+  lastMintedAt(): number | null {
+    return this.lastTokenAt;
+  }
+
+  /** Why there is no token right now, in the user's words. Wired into `IamConfigStatus.authError`
+   *  and `CloudPollerDeps.describeMissingToken`. */
   explain(): string {
     switch (this.authState) {
       case 'signed-out':
@@ -106,12 +117,14 @@ export class CloudTokenProvider {
   forget(): void {
     this.cached = null;
     this.inflight = null;
+    this.lastTokenAt = null;
     this.setState('signed-out');
   }
 
   /** `iam:signIn` just stored a fresh refresh token — leave `rejected` behind. */
   renewed(): void {
     this.cached = null;
+    this.lastTokenAt = null;
     this.setState('stored');
   }
 
@@ -136,6 +149,7 @@ export class CloudTokenProvider {
         value: tokens.access_token,
         expiresAt: this.now() + tokens.expires_in * 1000,
       };
+      this.lastTokenAt = this.now();
       this.setState('active');
       return this.cached.value;
     } catch (e) {

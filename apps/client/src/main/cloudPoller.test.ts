@@ -545,4 +545,48 @@ describe('CloudPoller', () => {
       expect((poller as unknown as { consecutiveFailures: number }).consecutiveFailures).toBe(1);
     });
   });
+
+  describe('describeMissingToken', () => {
+    it('uses it to say why a null access token happened, instead of the generic message', async () => {
+      let thrown: unknown;
+      const { poller } = makePoller({
+        getAccessToken: async () => null,
+        describeMissingToken: () =>
+          'The cloud sign-in was revoked. Sign in again to resume syncing.',
+        runTracked: async (run) => {
+          try {
+            return await run();
+          } catch (e) {
+            thrown = e;
+            throw e;
+          }
+        },
+      });
+
+      await poller.tick();
+
+      expect((thrown as Error).message).toBe(
+        'The cloud sign-in was revoked. Sign in again to resume syncing.',
+      );
+    });
+
+    it('falls back to the generic message when omitted', async () => {
+      let thrown: unknown;
+      const { poller } = makePoller({
+        getAccessToken: async () => null,
+        runTracked: async (run) => {
+          try {
+            return await run();
+          } catch (e) {
+            thrown = e;
+            throw e;
+          }
+        },
+      });
+
+      await poller.tick();
+
+      expect((thrown as Error).message).toBe('Not signed in to vipper.iam.');
+    });
+  });
 });
