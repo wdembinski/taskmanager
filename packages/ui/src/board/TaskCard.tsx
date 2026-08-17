@@ -92,6 +92,7 @@ import {
   ACCENT,
   ATTENTION_TINT,
   FLUO,
+  MONO,
   PIPELINE_COLOR,
   RING,
   STATUS_INDICATOR_COLOR,
@@ -722,6 +723,14 @@ const useStyles = makeStyles({
     border: `1px solid ${ACCENT.unread}`,
     color: ACCENT.unreadInk,
   },
+  /**
+   * A native ticket's key (`Task.ticketKey`) — plain text, no link, because unlike a synced
+   * tracker's badge there is nowhere for a click to go. Monospace is the only thing it
+   * borrows from `ticketBadge`'s shape rather than its behaviour: it is not wrapped in an
+   * `<a>`, and it carries none of the tracker mark or unread tint a mirrored card's badge
+   * does — a native ticket has no separate thread to be unread about.
+   */
+  ticketKeyBadge: { fontFamily: MONO },
 });
 
 /**
@@ -1435,11 +1444,21 @@ export function TaskCard({
           </Caption1>
         )}
 
-        {(isExternal || showsPriority || chainChip !== null) && (
+        {(isExternal || showsPriority || chainChip !== null || task.ticketKey) && (
           <div className={styles.footer}>
             {/* First in the row, ahead of the ticket badge: it is the reason this card is
                 not moving, and that outranks where it came from. */}
             {chainChip}
+            {/* A native ticket's own key — plain text, no link: there is no tracker to open
+                it in, unlike the mirrored badge below. */}
+            {task.ticketKey && (
+              <span
+                className={mergeClasses(styles.ticketBadge, styles.ticketKeyBadge)}
+                title={task.ticketKey}
+              >
+                {task.ticketKey}
+              </span>
+            )}
             {isExternal && task.externalKey && (
               <a
                 className={styles.ticketLink}

@@ -44,6 +44,7 @@ import type {
   Task,
   TaskActivityEntry,
   TaskType,
+  TicketInput,
 } from './model';
 import type { TaskAttachment, UploadedAttachment } from './attachments';
 import type { GitGraph } from './gitGraph';
@@ -420,6 +421,17 @@ export interface IpcApi {
       projectTagId?: string | null;
     },
   ) => Promise<Task>;
+  /**
+   * Create a native ticket directly on a project's board (Phase 24, wired to the Add-task
+   * dialog's Board picker) — the ticket-project counterpart to `task:create`. Allocates the
+   * next key under the project's `ticketPrefix` via `store.createTicket`.
+   *
+   * Rejects an unknown project and a plan-driven one (that board's cards come from its plan
+   * file, not a manual add) with a clear reason; a blank title or a project with no ticket
+   * prefix to allocate from come back as the one generic refusal `store.createTicket` already
+   * gives `undefined` for.
+   */
+  'ticket:create': (projectId: string, input: TicketInput) => Promise<Task>;
   /** Delete a task (and its history, and any steps under it). Rejects if it is running. */
   'task:delete': (taskId: string) => Promise<void>;
   /**

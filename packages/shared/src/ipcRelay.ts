@@ -149,6 +149,7 @@ export const RELAY_POLICY: {
   'task:run': 'relay',
   'task:integrate': 'relay',
   'task:create': 'relay',
+  'ticket:create': 'relay',
   'task:delete': 'relay',
   'task:subtasks': 'relay',
   'task:addSubtask': 'relay',

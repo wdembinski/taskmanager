@@ -915,6 +915,21 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) });
     return task;
   });
+  handle('ticket:create', async (projectId, input) => {
+    const project = store.getProject(projectId);
+    if (!project) throw new Error('Unknown project.');
+    // That board's cards come from its plan file, not a manual add — the same board a
+    // plan-driven project already refuses `task:create`-style ad-hoc filing onto.
+    if (hasPlan(project)) {
+      throw new Error('This project is plan-driven — it has no manual ticket list to add to.');
+    }
+    const ticket = store.createTicket(projectId, input);
+    // Covers both remaining refusals `createTicket` gives `undefined` for: a blank title, or
+    // a project with no key prefix to allocate the ticket's name from.
+    if (!ticket) throw new Error('A ticket needs a title, and a project with a key prefix.');
+    send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) });
+    return ticket;
+  });
   handle('task:delete', async (taskId) => {
     const task = store.getTask(taskId);
     if (!task) return;
