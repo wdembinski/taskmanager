@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "//": "Type-checks the service worker entry (src/sw/serviceWorker.ts — see vite.sw.config.ts for why it is its own build too). It runs in a WebWorker global scope: `self` there is a ServiceWorkerGlobalScope, not a Window, so this needs WebWorker libs instead of DOM. `shouldHandle.ts` has to be listed too — a composite project must list every file it imports — but it has no self/caches/Request dependency of its own, so it type-checks the same way under either this project's WebWorker libs or tsconfig.app.json's DOM ones.",
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "WebWorker", "WebWorker.Iterable"],
+    "types": [],
+    "noEmit": true
+  },
+  "include": ["src/sw/serviceWorker.ts", "src/sw/shouldHandle.ts"]
+}

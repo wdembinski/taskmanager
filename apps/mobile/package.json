@@ -7,9 +7,12 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "npm run typecheck && vite build && vite build -c vite.sw.config.ts",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
+    "typecheck:app": "tsc --noEmit -p tsconfig.app.json",
+    "typecheck:sw": "tsc --noEmit -p tsconfig.sw.json",
+    "typecheck": "npm run typecheck:app && npm run typecheck:sw",
+    "icons": "node ../../scripts/make-mobile-icons.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },

@@ -13,6 +13,12 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
     />
+    <!-- Matches useGlobalStyles' page background (packages/ui/src/theme.ts) and the
+         manifest's own theme_color/background_color, so the browser chrome and the
+         install splash screen never flash a colour the app itself doesn't paint. -->
+    <meta name="theme-color" content="#1f1f1f" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icons/icon-192.png" />
     <title>VIPPER Task Manager</title>
   </head>
   <body>

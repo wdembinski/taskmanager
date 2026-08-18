@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "//": "Type-checks the app itself — the React UI, running in a browser window (DOM libs). The service worker gets its own tsconfig.sw.json one file over: it runs in a WebWorker global scope, not a window, and DOM + WebWorker in one program conflict (both declare `self` differently) — see that file's header.",
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["vite/client", "node"],
+    "noEmit": true
+  },
+  "include": ["src"],
+  "exclude": ["src/sw/serviceWorker.ts"]
+}

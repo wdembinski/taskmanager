@@ -8,12 +8,19 @@
  * rather than `100vh`, so the root shrinks with the browser chrome / PWA gesture strip
  * instead of running a viewport-height under it — `MobileShell`'s own root does the same,
  * stated here too because this is the outermost box the app ever draws into.
+ *
+ * The other difference is `registerServiceWorker()` below, called once at module scope —
+ * `apps/web` has no PWA manifest and registers nothing (Phase 27 Decision 1: mobile is
+ * its own app, not a responsive `apps/web`).
  */
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { FluentProvider, Toaster } from '@fluentui/react-components';
 import { appDarkTheme, BASE_FONT_PX, TOASTER_ID, scaleTheme, useGlobalStyles } from '@tm/ui/theme';
 import { App } from './App';
+import { registerServiceWorker } from './registerServiceWorker';
+
+registerServiceWorker();
 
 function ThemedApp(): JSX.Element {
   useGlobalStyles();

@@ -1,13 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/tsconfig",
-  "extends": "../../tsconfig.base.json",
-  "compilerOptions": {
-    "module": "ESNext",
-    "moduleResolution": "Bundler",
-    "jsx": "react-jsx",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "types": ["vite/client", "node"],
-    "noEmit": true
-  },
-  "include": ["src"]
+  "//": "Root config that ties the two project references together so editors and `tsc --build` understand the whole package. Two build targets because the app (DOM) and the service worker (WebWorker) need different libs — see tsconfig.app.json and tsconfig.sw.json.",
+  "files": [],
+  "references": [{ "path": "./tsconfig.app.json" }, { "path": "./tsconfig.sw.json" }]
 }
