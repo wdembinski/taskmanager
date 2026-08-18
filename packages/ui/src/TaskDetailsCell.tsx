@@ -103,7 +103,7 @@ const useStyles = makeStyles({
 
 export interface TaskDetailsCellProps {
   task: Task;
-  /** The projects a card can be filed under (Settings → Agents). */
+  /** The projects a card can be filed under (the Projects nav item). */
   agentProjects?: Project[];
   /**
    * This card's files, sliced out of the board's list. Passed in rather than fetched here

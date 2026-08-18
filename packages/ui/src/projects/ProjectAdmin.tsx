@@ -1,13 +1,17 @@
 /**
  * ProjectAdmin — the ticket-project list, and the drawer that adds or edits one.
  *
- * The same two-part shape as the desktop's `AgentProjects` pane (a `Card` per row, an
- * `OverlayDrawer` form), because that pane already worked out what "list projects, edit one
- * in a drawer" should look like in this app. What is deliberately absent is everything about
- * a REPO: no folder field, no `BaseBranchField`, no "Runs on" target picker. A ticket project
- * (`Project.kind === 'ticket'`) has no directory at all — `path` and `planPath` are forced to
- * `''` by the store regardless of what is sent — so a form offering to browse for one would be
- * offering a choice that does nothing.
+ * The same two-part shape as the desktop's `Projects` admin pane (a `Card` per row, an
+ * `OverlayDrawer` form) — a smaller, ticket-project-only alternative to it, embedded directly
+ * in the ticket workspace so a project can be created without leaving it. What is deliberately
+ * absent is everything about a REPO: no folder field, no `BaseBranchField`, no "Runs on"
+ * target picker. A ticket project (`ownsTickets(project)`, no `hasRepo`) has no directory at
+ * all — `path` and `planPath` are forced to `''` by the store regardless of what is sent — so
+ * a form offering to browse for one would be offering a choice that does nothing.
+ *
+ * Both list and drawer go through the unified `project:*` channels — the same ones the
+ * desktop's own admin pane uses — since a ticket project is simply a project with a prefix and
+ * no repo, not a separate kind with its own channel set.
  *
  * Lives in `packages/ui` because both hosts manage ticket projects the same way: unlike an
  * agent project (a folder on a machine, desktop-only by decision — see `shell-parity.test.ts`),
@@ -61,12 +65,17 @@ export interface ProjectAdminProps {
   projects: Project[];
   selectedProjectId: string | null;
   onSelect: (id: string) => void;
+  /** Re-read the project list — there is no `ticketProject:changed`-style push for a plain
+   *  `project:*` write, so the caller re-fetches after each one, like the desktop's own
+   *  admin pane does. */
+  onProjectsChanged: () => void;
 }
 
 export function ProjectAdmin({
   projects,
   selectedProjectId,
   onSelect,
+  onProjectsChanged,
 }: ProjectAdminProps): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
@@ -76,7 +85,8 @@ export function ProjectAdmin({
   async function remove(project: Project): Promise<void> {
     setError(null);
     try {
-      await transport.invoke('ticketProject:remove', project.id);
+      await transport.invoke('project:remove', project.id);
+      onProjectsChanged();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -165,7 +175,10 @@ export function ProjectAdmin({
         open={dialog.open}
         project={dialog.project}
         onClose={() => setDialog({ open: false })}
-        onSaved={(id) => onSelect(id)}
+        onSaved={(id) => {
+          onProjectsChanged();
+          onSelect(id);
+        }}
       />
     </div>
   );
@@ -205,7 +218,7 @@ function ProjectDialog({ open, project, onClose, onSaved }: ProjectDialogProps):
     setError(null);
     try {
       if (project) {
-        const updated = await transport.invoke('ticketProject:update', project.id, {
+        const updated = await transport.invoke('project:update', project.id, {
           name: name.trim() || undefined,
           ticketPrefix,
           color,
@@ -213,16 +226,16 @@ function ProjectDialog({ open, project, onClose, onSaved }: ProjectDialogProps):
         if (!updated) throw new Error('That project no longer exists.');
         onSaved(updated.id);
       } else {
-        const created = await transport.invoke('ticketProject:add', {
+        const created = await transport.invoke('project:add', {
           // A ticket project has no folder — the store forces `path`/`planPath` to `''`
-          // regardless of what is sent, but `AddProjectInput.path` is still required to type.
+          // regardless of what is sent, but `path` still defaults to `''` here for clarity.
           path: '',
+          planPath: '',
           name: name.trim() || undefined,
-          kind: 'ticket',
           ticketPrefix,
           color,
         });
-        onSaved(created.id);
+        onSaved(created.project.id);
       }
       onClose();
     } catch (e) {

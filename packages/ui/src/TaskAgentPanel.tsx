@@ -118,7 +118,7 @@ export interface TaskAgentPanelProps {
   task: Task;
   /** This card's steps, in order — the chain whose parked step the panel must surface. */
   subtasks?: Task[];
-  /** Every agent project (`agentProject:list`), owned by the board so it's fetched once. */
+  /** Every agent project (from `project:list`), owned by the board so it's fetched once. */
   agentProjects: Project[];
   /**
    * Everything the inbox is holding for this card and its steps, newest last, from the

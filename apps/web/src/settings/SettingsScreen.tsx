@@ -18,26 +18,26 @@
  * which are a form over a JSON blob and carry no rule at all.
  *
  * THE ONE SECTION THAT IS NOT SHARED, AND THE READ-ONLY HALF THAT IS
- * -------------------------------------------------------------------
- * `AgentProjects` is not in `@tm/ui` and does not belong there. It lives in
- * `apps/client/src/renderer/src/AgentProjects.tsx`, reaches the engine through `window.api`
- * directly rather than through the transport, and its first act is `project:pickDirectory` —
- * a native folder picker for a directory on the machine the engine runs on, which is why that
- * channel is `host-only` while `agentProject:add` itself is not. Choosing the folder is very
- * nearly the whole of CREATING one, and there is no useful half of *that* a browser could
- * draw: it would be an empty path field asking somebody to type an absolute path on a
- * computer they cannot see. Creating and editing therefore appear in
- * {@link HOST_ONLY_SECTIONS}, which is a decision rather than a gap — see the plan doc, "What
- * is deliberately out of scope".
+ * ---------------------------------------------------------------------
+ * `Projects` (the admin pane) is not in `@tm/ui` and does not belong there. It lives in
+ * `apps/client/src/renderer/src/projects/Projects.tsx`, reaches the engine through
+ * `window.api` directly rather than through the transport, and its first act is
+ * `project:pickDirectory` — a native folder picker for a directory on the machine the engine
+ * runs on, which is why that channel is `host-only` while `project:add` itself is not.
+ * Choosing the folder is very nearly the whole of CREATING a project with a repo, so there is
+ * no useful half of *that* a browser could draw: it would be an empty path field asking
+ * somebody to type an absolute path on a computer they cannot see. Creating and editing
+ * therefore appear in {@link HOST_ONLY_SECTIONS} instead, which is a decision rather than a
+ * gap — see the plan doc, "What is deliberately out of scope".
  *
- * *Looking* at what is configured is the useful half, and it is the Projects tab below. It
- * needs no picker, no `window.api` and no write channel: `ProjectsSection` is a list and
+ * *Looking* at what is configured is the useful half, and it is the `'projects'` tab below.
+ * It needs no picker, no `window.api` and no write channel: `ProjectsSection` is a list and
  * nothing else, fed from the same two sources the board resolves its repo pickers from — the
- * relayed `agentProject:list` when a desktop answers, and the mirrored `projects` rows when
- * none does (`selectAgentProjects`). So the pane survives a sleeping desktop, which the
- * desktop's own version has no need to. The earlier claim here — that there was no half of
- * this a browser could draw at all — was about the FORM, and read as though it were about the
- * whole pane.
+ * relayed `project:list` (filtered to a repo project) when a desktop answers, and the
+ * mirrored `projects` rows when none does (`selectAgentProjects`). So the pane survives a
+ * sleeping desktop. A ticket-only project (no repo at all) is not part of this pane — filing
+ * or browsing its tickets is the ticket workspace's job (`'tickets'` tab, desktop), not this
+ * one; giving the web app its own way into that is a follow-up, not part of this pass.
  *
  * WHAT THE HOST-ONLY SECTIONS DO INSTEAD
  * --------------------------------------
@@ -78,7 +78,7 @@ import { PlanningModelField } from '@tm/ui/PlanningModelField';
 import { PaneLoading } from '@tm/ui/PaneLoading';
 import { useInitialLoad } from '@tm/ui/useInitialLoad';
 import { useTransport } from '@tm/ui/transport';
-import { MODELS } from '@tm/shared/model';
+import { hasPlan, hasRepo, MODELS } from '@tm/shared/model';
 import type { Project } from '@tm/shared/model';
 import type { ClaudeModel, PermissionMode } from '@tm/shared/session';
 import { clampSyncInterval, MAX_SYNC_INTERVAL_MINUTES } from '@tm/shared/settings';
@@ -158,10 +158,12 @@ export function SettingsScreen({ projects }: SettingsScreenProps): JSX.Element {
   useEffect(() => {
     let live = true;
     void transport
-      .invoke('agentProject:list')
+      .invoke('project:list')
       .then((list) => {
         if (!live) return;
-        setRelayedProjects(list);
+        // A repo directory with no plan file — the same set `agentProject:list` used to
+        // answer, before the two channel sets merged into `project:*`.
+        setRelayedProjects(list.map((p) => p.project).filter((p) => hasRepo(p) && !hasPlan(p)));
         setProjectsLoaded(true);
       })
       .catch(() => {
@@ -589,13 +591,12 @@ const HOST_ONLY_SECTIONS: ReadonlyArray<{ title: string; why: string }> = [
       'the control you actually want here.',
   },
   {
-    title: 'Agent projects',
+    title: 'Adding and editing projects',
     why:
-      'ADDING and EDITING one happens over there: a project IS a folder on that machine, so ' +
-      'making one starts with a native folder picker there, and the rest — its defaults, its ' +
-      'base branch, the epics it owns — is configured beside it. Everything else is here. The ' +
-      'Projects tab shows what each one is configured to do, and the board lets you use them: ' +
-      'file a card under one, or assign a card to one and override the model and permission ' +
-      'mode for that card.',
+      'a project with a repo IS a folder on that machine, so making one starts with a native ' +
+      'folder picker there, and the rest — its defaults, its base branch, the epics it owns — ' +
+      'is configured beside it. The Projects tab shows what each one is configured to do, and ' +
+      'the board lets you use them: file a card under one, or assign a card to one and ' +
+      'override the model and permission mode for that card.',
   },
 ];

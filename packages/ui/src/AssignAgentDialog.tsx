@@ -2,7 +2,7 @@
  * AssignAgentDialog — delegate one My Tasks card to an agent.
  *
  * The card never leaves the Personal board; what this picks is the **agent project**
- * (a repo directory, managed in the desktop app's Settings → Agents) the run happens in,
+ * (a repo directory, managed in the desktop app's Projects screen) the run happens in,
  * plus the model and permission mode that run uses. The project is pre-filled from the
  * ticket's epic (`resolveAgentProject`), so for a linked epic the whole dialog is usually
  * one click.
@@ -16,9 +16,9 @@
  * This dialog renders in BOTH hosts — apps/web reaches it through the shared `TaskDetail`'s
  * `TaskAgentPanel` — which is why the empty state below names the desktop app explicitly.
  * Creating an agent project is deliberately desktop-only (it needs a folder picker on the
- * machine the engine runs on), and the web's Settings has no Agents section to send anyone
- * to: an instruction that is true in one host and a dead end in the other reads as a broken
- * screen rather than as the decision it is.
+ * machine the engine runs on), and the web app has no Projects screen of its own to send
+ * anyone to: an instruction that is true in one host and a dead end in the other reads as a
+ * broken screen rather than as the decision it is.
  */
 import { useEffect, useRef, useState } from 'react';
 import {
@@ -111,7 +111,7 @@ export interface AssignAgentDialogProps {
   open: boolean;
   /** The card being delegated (null closes the dialog's content). */
   task: Task | null;
-  /** Every agent project (from `agentProject:list`), for the picker. */
+  /** Every agent project (from `project:list`), for the picker. */
   agentProjects: Project[];
   onClose: () => void;
   /** The updated task, so the board can patch the card without a refresh. */
@@ -268,8 +268,8 @@ export function AssignAgentDialog({
               {agentProjects.length === 0 ? (
                 <MessageBar intent="warning">
                   <MessageBarBody>
-                    No agent projects yet. Add one in the desktop app, under Settings → Agents (a
-                    repository folder, plus the JIRA epics it owns), and then assign this card.
+                    No agent projects yet. Add one in the desktop app, under Projects (a repository
+                    folder, plus the JIRA epics it owns), and then assign this card.
                   </MessageBarBody>
                 </MessageBar>
               ) : (

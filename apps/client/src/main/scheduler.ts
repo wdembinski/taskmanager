@@ -34,7 +34,7 @@ import type {
   TaskActivityEntry,
   TaskStatus,
 } from '@shared/model';
-import { resolveRunModel } from '@shared/model';
+import { hasRepo, resolveRunModel } from '@shared/model';
 import { chainInFlight, chatTarget, hasAgentWorked, parkedStep } from '@shared/board';
 import { attachmentsInScope, type PromptAttachment } from '@shared/attachments';
 import type {
@@ -1876,13 +1876,13 @@ export class Scheduler {
    * agent project's repo while the card itself stays on the Personal board, so every
    * launch site resolves through here rather than reading `task.projectId` directly —
    * that is what makes limit-park → auto-resume, auto-retry and restart reconciliation
-   * behave identically for agent tasks and plan tasks. A stale/plan-kind
-   * `agentProjectId` falls back to the task's own project rather than refusing to run.
+   * behave identically for agent tasks and plan tasks. A stale/repo-less `agentProjectId`
+   * falls back to the task's own project rather than refusing to run.
    */
   private runProjectFor(task: Task): Project | undefined {
     if (task.agentProjectId) {
       const agentProject = this.store.getProject(task.agentProjectId);
-      if (agentProject?.kind === 'agent') return agentProject;
+      if (agentProject && hasRepo(agentProject)) return agentProject;
     }
     return this.store.getProject(task.projectId);
   }

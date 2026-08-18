@@ -1,7 +1,7 @@
 /**
  * The desktop's agent projects, read-only.
  *
- * The half of `apps/client/src/renderer/src/AgentProjects.tsx` a browser CAN honestly draw.
+ * The half of `apps/client/src/renderer/src/projects/Projects.tsx` a browser CAN honestly draw.
  * Creating one starts at a native folder picker on the machine the engine runs on, and
  * editing one is that same form — so neither is here, and `SettingsScreen`'s Desktop-only tab
  * says so. Looking at what is configured needs none of that, and is what somebody filing a
@@ -11,7 +11,7 @@
  * ----------------------------------------------------
  * No transport call, no direct engine bridge, no state, no dialog, no buttons: this file
  * takes a list and returns markup. That is a structural statement rather than a stylistic one
- * — the write channels (`agentProject:add|update|remove`) are classified `'relay'` and would
+ * — the write channels (`project:add|update|remove`) are classified `'relay'` and would
  * work from a browser, so nothing in `RELAY_POLICY` and nothing in `pnpm typecheck` stops a
  * control being added here. What holds the line is that there is nothing here to add one to,
  * and `test/shell-parity.test.ts` keeps it that way by reading this file for both spellings

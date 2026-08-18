@@ -2,11 +2,11 @@
  * Projects — the native ticket projects screen (Phase 24): manage the projects themselves
  * (`ProjectAdmin`) and browse the selected one's backlog (`BacklogTable`).
  *
- * Shared rather than desktop-only, unlike Settings' "Agent projects" section: a ticket
- * project is nothing but rows in the store (no folder, no native picker), reachable over the
- * same relayed channels either host can call — see `ProjectAdmin`'s own header and
- * `shell-parity.test.ts`'s "the one configuration the web deliberately does not mirror" block,
- * which is about *agent* projects and does not apply here.
+ * Shared rather than desktop-only, unlike the desktop's own repo-picker `Projects` admin
+ * screen: a ticket project is nothing but rows in the store (no folder, no native picker),
+ * reachable over the same relayed channels either host can call — see `ProjectAdmin`'s own
+ * header and `shell-parity.test.ts`'s "agent projects" block, which is about *repo* projects
+ * and does not apply here.
  *
  * The seed loads the four collections every part of this screen reads: the ticket projects
  * themselves, and the app-wide people/milestone/label registries a ticket can point at.
@@ -16,7 +16,13 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ToggleButton, makeStyles } from '@fluentui/react-components';
-import type { Milestone, Person, Project, TicketLabel } from '@tm/shared/model';
+import {
+  ownsTickets,
+  type Milestone,
+  type Person,
+  type Project,
+  type TicketLabel,
+} from '@tm/shared/model';
 import { PaneLoading } from '../PaneLoading';
 import { useTransport } from '../transport';
 import { useInitialLoad } from '../useInitialLoad';
@@ -45,26 +51,32 @@ export function Projects(): JSX.Element {
   const [view, setView] = useState<ProjectView>('backlog');
 
   const seed = useCallback(async () => {
-    const [ticketProjects, allPeople, allMilestones, allLabels] = await Promise.all([
-      transport.invoke('ticketProject:list'),
+    const [allProjects, allPeople, allMilestones, allLabels] = await Promise.all([
+      transport.invoke('project:list'),
       transport.invoke('person:list'),
       transport.invoke('milestone:list'),
       transport.invoke('label:list'),
     ]);
-    setProjects(ticketProjects);
+    setProjects(allProjects.map((p) => p.project).filter(ownsTickets));
     setPeople(allPeople);
     setMilestones(allMilestones);
     setLabels(allLabels);
   }, [transport]);
   const initial = useInitialLoad(seed);
 
+  // No `project:*`-list-changed push, unlike `person:*`/`milestone:*`/`label:*` below — a
+  // plain project write re-reads through `refreshProjects` instead (`ProjectAdmin`'s own
+  // `onProjectsChanged`), the same pattern the desktop's own admin pane uses.
+  const refreshProjects = useCallback(async () => {
+    const allProjects = await transport.invoke('project:list');
+    setProjects(allProjects.map((p) => p.project).filter(ownsTickets));
+  }, [transport]);
+
   useEffect(() => {
-    const offProjects = transport.on('ticketProject:changed', setProjects);
     const offPeople = transport.on('person:changed', setPeople);
     const offMilestones = transport.on('milestone:changed', setMilestones);
     const offLabels = transport.on('label:changed', setLabels);
     return () => {
-      offProjects();
       offPeople();
       offMilestones();
       offLabels();
@@ -111,6 +123,7 @@ export function Projects(): JSX.Element {
           projects={projects}
           selectedProjectId={selectedProjectId}
           onSelect={setSelectedProjectId}
+          onProjectsChanged={() => void refreshProjects()}
         />
       </div>
       <div className={styles.backlog}>

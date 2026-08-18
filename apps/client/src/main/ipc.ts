@@ -32,6 +32,7 @@ import {
   type Rectangle,
 } from 'electron';
 import type {
+  BoardScope,
   IpcApi,
   IpcEvents,
   JiraIssueTypeOption,
@@ -40,9 +41,12 @@ import type {
   JiraUserOption,
 } from '@shared/ipc';
 import {
+  hasPlan,
+  hasRepo,
+  isBoardProject,
   isManualStatus,
-  isPlanProject,
-  isRepoProject,
+  isPersonalBoard,
+  ownsTickets,
   PERSONAL_PROJECT_ID,
   type BoardColumn,
   type JiraStatusCategory,
@@ -57,7 +61,6 @@ import {
   type TicketLabel,
   type TicketLink,
 } from '@shared/model';
-import { boardScopes } from '@shared/boardScope';
 import { isEpic, isNativeTicket } from '@shared/tickets';
 import { normalizeTicketPrefix } from '@shared/ticketKey';
 import { canLinkTickets, type TicketLinkResult } from '@shared/ticketLinks';
@@ -628,10 +631,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   const targetsInUse = (): ExecTarget[] => {
     const targets = store
       .listProjects()
-      // `isRepoProject`, not "not the Personal board": a ticket project has no directory
+      // `hasRepo`, not "not the Personal board": a ticket project has no directory
       // either, so its target is only whatever the default was the day it was created, and
       // counting it would resurrect the very warning this filter exists to suppress.
-      .filter(isRepoProject)
+      .filter(hasRepo)
       .map((project) => project.target);
     return targets.length > 0 ? targets : [store.getSettings().defaultExecTarget];
   };
@@ -690,10 +693,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
   handle('project:add', async (input) => {
     const project = store.addProject(input);
-    // Only a plan project has a plan file: for an agent or a ticket project there is
-    // nothing to parse and nothing to watch. Asked as `isPlanProject` rather than as
-    // `kind === 'agent'`, so a fourth kind cannot inherit the plan-parsing path by default.
-    if (!isPlanProject(project)) return { project, tasks: [] };
+    // Only a project with a plan file has anything to parse or watch. Asked as `hasPlan`
+    // rather than as some notion of "kind", so any project shape that has no plan file
+    // takes this path — nothing has to opt in by name.
+    if (!hasPlan(project)) return { project, tasks: [] };
     const result = syncProjectPlan(store, project);
     watcher.watch(project); // pick up future edits to its plan file live
     return result;
@@ -702,12 +705,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('project:list', async () =>
     store
       .listProjects()
-      // Only plan projects belong on the Projects tab. The built-in Personal board is the
-      // standalone My Tasks board rather than a code project; agent projects belong to My
-      // Tasks (managed in Settings); a ticket project has its own surface. Stated as the
-      // kind we WANT — the old `!personal && kind !== 'agent'` would have listed every new
-      // kind on this tab by default.
-      .filter(isPlanProject)
+      // Every project shape (plan-driven, bare repo, ticket project) belongs on this list
+      // now — the only one that does not is the built-in Personal board, which is the
+      // standalone My Tasks board rather than something to list or manage as a project.
+      .filter((project) => !isPersonalBoard(project.id))
       .map((project) => {
         const tasks = store.getTasks(project.id);
         // A stored `dependsOn` is the persisted form of a plan `@needs:` marker, so a
@@ -718,6 +719,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   );
 
   handle('project:remove', async (id) => {
+    // Refuse deleting a project out from under a live run — a run keys off its project's
+    // directory, and still has to be integrated back into it. Folded in from the old
+    // `agentProject:remove`, which was the only caller that ever checked this.
+    if (scheduler.hasLiveRuns(id)) {
+      throw new Error('Stop the agent working in this project before removing it.');
+    }
     watcher.unwatch(id);
     store.removeProject(id);
   });
@@ -803,105 +810,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     return { runId, contractPhases: phases };
   });
 
-  // --- Agent projects -------------------------------------------------------
-  // A repo directory a My Tasks card can be delegated to. Stored in the same
-  // `projects` table (so worktrees, integration, usage attribution and the limit
-  // gate work unchanged) but never queued, watched, or listed on the Projects tab.
-
-  handle('agentProject:list', async () =>
-    store.listProjects().filter((project) => project.kind === 'agent'),
-  );
-
-  handle('agentProject:add', async (input) => store.addProject({ ...input, kind: 'agent' }));
-
-  handle('agentProject:update', async (id, patch) => {
-    const existing = store.getProject(id);
-    if (!existing || existing.kind !== 'agent') return null;
-    // Guard the plan-only fields: an agent project stays plan-less no matter what.
-    const { planPath: _planPath, writeBackPlan: _writeBackPlan, ...safe } = patch;
-    await retireRunStateIfTargetChanged(id, safe);
-    return store.updateProject(id, safe) ?? null;
-  });
-
-  handle('agentProject:remove', async (id) => {
-    if (scheduler.hasLiveRuns(id)) {
-      throw new Error('Stop the agent working in this project before removing it.');
-    }
-    store.removeProject(id);
-  });
-
-  // --- Ticket projects (Phase 24) --------------------------------------------
-  // A project with no repo at all: a key prefix and the tickets this app owns itself,
-  // stored in the same `projects` table as every other kind.
-
-  /** Push the ticket project list at the UI. The whole list, like `pushChainLinks`. */
-  function pushTicketProjects(): Project[] {
-    const projects = store.listProjects().filter((project) => project.kind === 'ticket');
-    send('ticketProject:changed', projects);
-    return projects;
-  }
-
-  /**
-   * A duplicate ticket prefix fails at the partial unique index, which throws the raw SQLite
-   * message. Turned into a sentence a human can read, rather than
-   * `UNIQUE constraint failed: projects.ticketPrefix`.
-   */
-  function ticketProjectSaveErrorMessage(err: unknown): string {
-    if (err instanceof Error && err.message.includes('ticketPrefix')) {
-      return 'Another project already uses that ticket prefix.';
-    }
-    return err instanceof Error ? err.message : 'Could not save that project.';
-  }
-
-  handle('ticketProject:list', async () =>
-    store.listProjects().filter((project) => project.kind === 'ticket'),
-  );
-
-  handle('ticketProject:add', async (input) => {
-    let project: Project;
-    try {
-      project = store.addProject({ ...input, kind: 'ticket' });
-    } catch (err) {
-      throw new Error(ticketProjectSaveErrorMessage(err));
-    }
-    pushTicketProjects();
-    return project;
-  });
-
-  handle('ticketProject:update', async (id, patch) => {
-    const existing = store.getProject(id);
-    if (!existing || existing.kind !== 'ticket') return null;
-    let updated: Project | undefined;
-    try {
-      updated = store.updateProject(id, patch);
-    } catch (err) {
-      throw new Error(ticketProjectSaveErrorMessage(err));
-    }
-    pushTicketProjects();
-    return updated ?? null;
-  });
-
-  handle('ticketProject:remove', async (id) => {
-    const existing = store.getProject(id);
-    if (!existing || existing.kind !== 'ticket') return;
-    store.removeProject(id);
-    pushTicketProjects();
-    // The board scope this project WAS is gone with it. Behind the UI's back, like the
-    // JIRA `lastCreateProjectKey` write above — a saved `boardScopeId` pointing at a
-    // now-deleted project would otherwise sit there until the next save from a screen that
-    // still has the stale value, silently reviving it. `resolveBoardScope` already falls
-    // back to Personal for a dangling id, so the board itself recovers either way; this is
-    // only what keeps the SETTING from lying once it does.
-    const settings = store.getSettings();
-    if (settings.boardScopeId === id) {
-      const next: AppSettings = { ...settings, boardScopeId: null };
-      store.saveSettings(next);
-      send('settings:changed', next);
-    }
-  });
-
-  handle('board:scopes', async () => boardScopes(store.listProjects()));
-
   handle('scheduler:start', async (projectId) => scheduler.start(projectId));
   handle('scheduler:pause', async (projectId) => scheduler.pause(projectId));
   handle('scheduler:stop', async (projectId) => scheduler.stop(projectId));
@@ -953,7 +861,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       throw new Error('This task already has an agent working on it.');
     }
     const target = store.getProject(input.agentProjectId);
-    if (!target || target.kind !== 'agent') {
+    if (!target || !hasRepo(target)) {
       throw new Error('Pick an agent project to delegate this task to.');
     }
     // The instructions become a timeline comment BEFORE the run starts, so they are
@@ -1061,7 +969,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // stripe nothing on the board could explain.
     if (input.projectTagId) {
       const target = store.getProject(input.projectTagId);
-      if (!target || target.kind !== 'agent') throw new Error('Unknown project.');
+      if (!target || !hasRepo(target)) throw new Error('Unknown project.');
     }
     const task = store.createTask(projectId, input);
     if (!task) throw new Error('A task needs a title.');
@@ -1167,7 +1075,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     if (!existing) throw new Error('Task not found.');
     if (projectTagId !== null) {
       const target = store.getProject(projectTagId);
-      if (!target || target.kind !== 'agent') throw new Error('Unknown project.');
+      if (!target || !hasRepo(target)) throw new Error('Unknown project.');
     }
     // Filing only, and now to its OWN column. This used to write `agentProjectId`, the
     // same field delegation writes, so tagging a card as "a Billing card" gave it the
@@ -2489,14 +2397,29 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   });
 
   // What the board asks for when it draws itself — so, by definition, the cards on it.
-  // `projectId` is OPTIONAL: a relayed call arrives with the argument simply absent, so the
-  // Personal default lives here rather than at any one call site.
-  handle('board:tasks', async (projectId) => store.getBoardTasks(projectId ?? PERSONAL_PROJECT_ID));
+  // Omitted/'all' unions every board; anything else names one board's own project id.
+  handle('board:tasks', async (scope) =>
+    !scope || scope === 'all' ? store.getAllBoardTasks() : store.getBoardTasks(scope),
+  );
 
   // And the cards that are NOT on it — the same rows, the other side of `archivedAt`.
-  handle('board:archived', async (projectId) =>
-    store.getArchivedTasksFor(projectId ?? PERSONAL_PROJECT_ID),
+  handle('board:archived', async (scope) =>
+    !scope || scope === 'all' ? store.getAllArchivedBoardTasks() : store.getArchivedTasksFor(scope),
   );
+
+  // The boards the scope picker offers: Personal first, then every other project with
+  // no plan file — the ones `isBoardProject` says are a card list rather than a queue.
+  handle('board:scopes', async () => {
+    const personal = store.getProject(PERSONAL_PROJECT_ID);
+    const scopes: BoardScope[] = personal
+      ? [{ id: personal.id, name: personal.name, color: personal.color }]
+      : [];
+    for (const project of store.listProjects()) {
+      if (isPersonalBoard(project.id) || !isBoardProject(project)) continue;
+      scopes.push({ id: project.id, name: project.name, color: project.color });
+    }
+    return scopes;
+  });
 
   handle('task:restore', async (taskId) => {
     const task = store.getTask(taskId);
@@ -2563,7 +2486,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('ticket:create', async (projectId, input) => {
     const project = store.getProject(projectId);
     if (!project) throw new Error('Unknown project.');
-    if (project.kind !== 'ticket') throw new Error('That project does not hold tickets.');
+    // That board's cards come from its plan file, not a manual add — the same board a
+    // plan-driven project already refuses `task:create`-style ad-hoc filing onto. Checked
+    // ahead of `ownsTickets`: a migrated plan project can carry a ticketPrefix (set before
+    // this rule existed, or by hand) without that prefix reviving manual filing on it.
+    if (hasPlan(project)) {
+      throw new Error('This project is plan-driven — it has no manual ticket list to add to.');
+    }
+    if (!ownsTickets(project)) throw new Error('That project does not hold tickets.');
     if (!normalizeTicketPrefix(project.ticketPrefix)) {
       throw new Error('Give this project a ticket key prefix before creating tickets in it.');
     }
@@ -2631,7 +2561,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   function labelsAcrossTicketProjects(): TicketLabel[] {
     return store
       .listProjects()
-      .filter((p) => p.kind === 'ticket')
+      .filter(ownsTickets)
       .flatMap((p) => store.listTicketLabels(p.id));
   }
 
@@ -2649,7 +2579,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
   handle('label:save', async (projectId, input) => {
     const project = store.getProject(projectId);
-    if (!project || project.kind !== 'ticket') throw new Error('Unknown ticket project.');
+    if (!project || !ownsTickets(project)) throw new Error('Unknown ticket project.');
     if (!input.name.trim()) throw new Error('A label needs a name.');
     const { id, ...fields } = input;
     let saved: TicketLabel | undefined;
@@ -2675,7 +2605,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   function milestonesAcrossTicketProjects(): Milestone[] {
     return store
       .listProjects()
-      .filter((p) => p.kind === 'ticket')
+      .filter(ownsTickets)
       .flatMap((p) => store.listMilestones(p.id));
   }
 
@@ -2692,7 +2622,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
   handle('milestone:save', async (projectId, input) => {
     const project = store.getProject(projectId);
-    if (!project || project.kind !== 'ticket') throw new Error('Unknown ticket project.');
+    if (!project || !ownsTickets(project)) throw new Error('Unknown ticket project.');
     if (!input.name.trim()) throw new Error('A milestone needs a name.');
     const { id, ...fields } = input;
     let saved: Milestone | undefined;

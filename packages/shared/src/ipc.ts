@@ -57,7 +57,6 @@ import type {
   TicketPatch,
 } from './model';
 import type { TaskAttachment, UploadedAttachment } from './attachments';
-import type { BoardScope } from './boardScope';
 import type { GitGraph } from './gitGraph';
 import type { ExecTarget, TargetReadiness } from './execTarget';
 import type { ActiveRun, RunOutcome, SchedulerChange, TaskChange } from './scheduler';
@@ -225,6 +224,19 @@ export interface AppInfo {
 }
 
 /**
+ * One board `board:tasks`/`board:archived`'s `scope` may select — what a scope picker
+ * offers. The Personal board first, then every OTHER project with no plan file (a bare
+ * repo or a ticket project): the ones a human arranges by hand rather than a queue the
+ * scheduler drains top-to-bottom. `color` is the same board-stripe hex as `Project.color`
+ * (`''` for none); Personal always carries `''`.
+ */
+export interface BoardScope {
+  id: string;
+  name: string;
+  color: string;
+}
+
+/**
  * INVOKE channels: request → response.
  *
  * Each key is a channel name; the function type documents its arguments and the
@@ -279,11 +291,22 @@ export interface IpcApi {
   'project:pickDirectory': () => Promise<string | null>;
   /** Open a native file picker (markdown), for choosing a custom plan file (Phase 8). */
   'project:pickFile': () => Promise<string | null>;
-  /** Add a project, parse its plan into tasks, and return it with those tasks. */
+  /**
+   * Add a project — a plan-driven queue, a bare repo, a ticket project, or any mix of the
+   * three, since capabilities are derived from which fields are set (see `hasPlan` /
+   * `hasRepo` / `ownsTickets` in `@shared/model`) rather than from a `kind` the caller picks.
+   * A project with no folder is legal: `path` is optional on {@link AddProjectInput}. Parses
+   * a plan into tasks when one exists, and returns it with those tasks (empty otherwise).
+   */
   'project:add': (input: AddProjectInput) => Promise<ProjectWithTasks>;
-  /** List every project, each bundled with its current tasks. */
+  /**
+   * Every project, each bundled with its current tasks — every SHAPE of project (plan-driven,
+   * bare repo, ticket project) in the one list, since none of them is a special case any more.
+   * The lone exclusion is the built-in Personal board (`PERSONAL_PROJECT_ID`): it is the
+   * standalone My Tasks board rather than something to list or manage as a project.
+   */
   'project:list': () => Promise<ProjectWithTasks[]>;
-  /** Remove a project and all its tasks. */
+  /** Remove a project and all its tasks. Rejects while one of its runs is still live. */
   'project:remove': (id: string) => Promise<void>;
   /** Re-read a project's plan file and reconcile it into the task list. */
   'project:syncPlan': (id: string) => Promise<Task[]>;
@@ -296,9 +319,10 @@ export interface IpcApi {
    */
   'project:setAligned': (id: string, aligned: boolean) => Promise<void>;
   /**
-   * Edit an existing project's name / plan file / model / permission mode /
-   * write-back (Phase 8). Returns the updated project, or null if unknown. Model
-   * and mode changes take effect on the next task run.
+   * Edit an existing project's name / folder / plan file / ticket prefix / model /
+   * permission mode / write-back (Phase 8) — every shape of project through the one patch,
+   * since none of them is a special case. Returns the updated project, or null if unknown.
+   * Model and mode changes take effect on the next task run.
    */
   'project:update': (id: string, patch: ProjectPatch) => Promise<Project | null>;
   /** Parse a project's plan file and check its `@needs:` dependencies (resolve + no cycles). */
@@ -339,47 +363,6 @@ export interface IpcApi {
    * Either way the plan watcher re-syncs once the file changes.
    */
   'project:alignPlan': (id: string) => Promise<{ runId: string | null; contractPhases: string[] }>;
-
-  /**
-   * List the agent projects — repo directories a My Tasks card can be delegated to
-   * (`kind: 'agent'`). Deliberately separate from `project:list`, which returns only
-   * the legacy plan-driven projects shown on the Projects tab.
-   */
-  'agentProject:list': () => Promise<Project[]>;
-  /**
-   * Create an agent project from a folder (+ optional name, epic keys, defaults).
-   * No plan file is parsed or watched. Returns the created project.
-   */
-  'agentProject:add': (input: AddProjectInput) => Promise<Project>;
-  /** Edit an agent project (folder, name, epic keys, model, mode). Null if unknown. */
-  'agentProject:update': (id: string, patch: ProjectPatch) => Promise<Project | null>;
-  /** Remove an agent project. Rejects while one of its runs is still live. */
-  'agentProject:remove': (id: string) => Promise<void>;
-
-  /**
-   * List the ticket projects — native ticket boards (`kind: 'ticket'`), each a key prefix and
-   * a set of tickets the app owns itself, with no repo and no plan file. Deliberately
-   * separate from `project:list` (the legacy plan-driven Projects tab) and from
-   * `agentProject:list` (delegation targets), the same argument `agentProject:*` already
-   * makes for its own four channels.
-   */
-  'ticketProject:list': () => Promise<Project[]>;
-  /** Create a ticket project (optionally with a key prefix). Returns the created project. */
-  'ticketProject:add': (input: AddProjectInput) => Promise<Project>;
-  /**
-   * Edit a ticket project (name, prefix, colour). Null if unknown or not a ticket project.
-   * Renaming the prefix re-keys every ticket the project owns, in one transaction.
-   */
-  'ticketProject:update': (id: string, patch: ProjectPatch) => Promise<Project | null>;
-  /** Remove a ticket project and every ticket it owns. */
-  'ticketProject:remove': (id: string) => Promise<void>;
-
-  /**
-   * Every board a project makes available — the Personal board plus one per ticket project —
-   * for the scope picker on My Tasks. Personal is always present and always first, even in a
-   * database with no ticket project at all.
-   */
-  'board:scopes': () => Promise<BoardScope[]>;
 
   /**
    * Start (or resume) a project's queue: the scheduler runs its `pending` tasks
@@ -481,6 +464,17 @@ export interface IpcApi {
       projectTagId?: string | null;
     },
   ) => Promise<Task>;
+  /**
+   * Create a native ticket directly on a project's board (Phase 24, wired to the Add-task
+   * dialog's Board picker) — the ticket-project counterpart to `task:create`. Allocates the
+   * next key under the project's `ticketPrefix` via `store.createTicket`.
+   *
+   * Rejects an unknown project and a plan-driven one (that board's cards come from its plan
+   * file, not a manual add) with a clear reason; a blank title or a project with no ticket
+   * prefix to allocate from come back as the one generic refusal `store.createTicket` already
+   * gives `undefined` for.
+   */
+  'ticket:create': (projectId: string, input: TicketInput) => Promise<Task>;
   /** Delete a task (and its history, and any steps under it). Rejects if it is running. */
   'task:delete': (taskId: string) => Promise<void>;
   /**
@@ -920,34 +914,25 @@ export interface IpcApi {
    */
   'jira:statuses': () => Promise<JiraStatusList>;
   /**
-   * Every task on a board — the standalone Personal board (JIRA tickets + internal ad-hoc) by
-   * default, or a native ticket project's own board when `projectId` names one.
-   *
-   * `projectId` is OPTIONAL, not merely defaulted at the call site: a relayed invoke arrives
-   * as a JSON array with the argument simply absent, and `App.tsx`'s and `MyTasks.tsx`'s
-   * argument-free calls must keep working unchanged. The default (Personal) lives in the
-   * handler.
+   * The cards on a board. `scope` names which one: omitted (or `'all'`, the default) is
+   * every board's cards unioned together — Personal plus every other project with no
+   * plan file — and any other value is one board's own project id, `PERSONAL_PROJECT_ID`
+   * included.
    */
-  'board:tasks': (projectId?: string) => Promise<Task[]>;
+  'board:tasks': (scope?: string) => Promise<Task[]>;
   /**
-   * The cards that have been taken OFF that board and not destroyed — most recently removed
-   * first. The complement of `board:tasks`, and the list "Removed cards" is drawn from. Same
-   * optional `projectId` as `board:tasks`, for the same reason.
+   * The cards that have been taken OFF a board and not destroyed — most recently removed
+   * first. The complement of `board:tasks`, same `scope` rule, and the list "Removed cards"
+   * is drawn from.
    *
    * Every one still has its timeline, its files, its arrows and its transcript; `archivedAt`
    * says when it left and `archivedReason` says which question's answer took it. They are kept
    * for `ARCHIVE_RETENTION_DAYS` and then destroyed by the boot sweep.
    */
-  'board:archived': (projectId?: string) => Promise<Task[]>;
+  'board:archived': (scope?: string) => Promise<Task[]>;
+  /** The boards `board:tasks`/`board:archived`'s `scope` may select. See {@link BoardScope}. */
+  'board:scopes': () => Promise<BoardScope[]>;
 
-  /**
-   * Create a native ticket in a ticket project, allocating its key. Rejects with a sentence a
-   * human can read: an unknown or non-ticket project, one with no key prefix yet, a blank
-   * title, or an `epicTaskId`/`milestoneId`/`assigneeId`/`reporterId` that does not resolve.
-   * No `ticket:backlog` channel — the Projects screen calls `board:tasks(projectId)` instead,
-   * so there is one truth about what is on a board.
-   */
-  'ticket:create': (projectId: string, input: TicketInput) => Promise<Task>;
   /**
    * Edit a native ticket's own fields (type, epic, milestone, labels, estimate, dates,
    * assignee, reporter). Title, description and priority go through the channels every other
@@ -1330,12 +1315,6 @@ export interface IpcEvents {
   'update:changed': UpdateState;
 
   // --- Native tickets (Phase 24) ---------------------------------------------
-  /**
-   * The ticket project list changed — one was added, edited or removed. The whole list,
-   * exactly as `chain:changed` and friends carry theirs, so the scope picker replaces rather
-   * than patches.
-   */
-  'ticketProject:changed': Project[];
   /**
    * A documented ticket relationship was added or removed — including cascaded away with a
    * deleted ticket. The whole list, like `chain:changed`.

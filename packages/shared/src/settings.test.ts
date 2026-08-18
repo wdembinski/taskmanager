@@ -133,12 +133,12 @@ describe('mergeAppSettings', () => {
     expect(current.jira.enabled).toBe(false);
   });
 
-  // `boardScopeId` is nullable, like `defaultPlanningModel` above — a save that resets the
-  // board to Personal must apply the `null`, not be mistaken for a field the caller omitted.
-  it('applies a null boardScopeId, resetting the board to Personal', () => {
+  // `boardScopeId` replaces wholesale like every other plain string field — a save that
+  // switches boards must apply the new value, not be mistaken for a field the caller omitted.
+  it('applies a new boardScopeId, switching boards', () => {
     const current = { ...DEFAULT_SETTINGS, boardScopeId: 'ticket-project-1' };
-    const merged = mergeAppSettings(current, { boardScopeId: null });
-    expect(merged.boardScopeId).toBeNull();
+    const merged = mergeAppSettings(current, { boardScopeId: 'all' });
+    expect(merged.boardScopeId).toBe('all');
   });
 });
 
@@ -146,8 +146,8 @@ describe('mergeAppSettings', () => {
 // and no `boardScopeId` at all — the defaults below are what such a blob fills in as, and
 // they are what keeps a board with no ticket project drawing exactly as it always has.
 describe('DEFAULT_SETTINGS / DEFAULT_BOARD_DISPLAY (Phase 24 fields)', () => {
-  it('scopes to nothing (Personal) out of the box', () => {
-    expect(DEFAULT_SETTINGS.boardScopeId).toBeNull();
+  it('scopes to every board out of the box', () => {
+    expect(DEFAULT_SETTINGS.boardScopeId).toBe('all');
   });
 
   it('draws no assignee avatar or points chip out of the box', () => {

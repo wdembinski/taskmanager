@@ -47,20 +47,19 @@ import {
   doneSwitchTitle,
   type HiddenDoneSummary,
 } from '@tm/ui/board/doneSwitchLabel';
-import { scopeLabel, type BoardScope } from '@tm/shared/boardScope';
 import type { BoardDisplaySettings } from '@tm/shared/settings';
+import type { BoardScope } from '@tm/shared/ipc';
 
 export interface BoardToolbarProps {
-  /**
-   * Every board this account's projects make available — Personal plus one per native
-   * ticket project (Phase 24). The picker below is rendered only when there is more than
-   * one: with just Personal, a dropdown for a choice that does not exist would be one more
-   * control that does nothing.
-   */
+  /** Which board is open — `'all'` unions every board's cards, or one board's own project
+   *  id. The desktop's own scope picker, mirrored from `settings.boardScopeId`. */
+  scope: string;
+  /** The Dropdown's closed-state label. */
+  scopeLabel: string;
+  /** The boards the picker offers, beyond the built-in "All boards" option — `board:scopes`'
+   *  own list, derived here from the mirrored projects. */
   scopes: BoardScope[];
-  /** Which of `scopes` is showing. */
-  scope: BoardScope;
-  onScopeChange: (projectId: string) => void;
+  onScopeChange: (scope: string) => void;
   showDone: boolean;
   /** What the DONE column is holding while it is shut — see `hiddenDoneSummary`. */
   hiddenDone: HiddenDoneSummary;
@@ -90,8 +89,9 @@ export interface BoardToolbarProps {
 }
 
 export function BoardToolbar({
-  scopes,
   scope,
+  scopeLabel,
+  scopes,
   onScopeChange,
   showDone,
   hiddenDone,
@@ -116,22 +116,25 @@ export function BoardToolbar({
   const layout = useBoardLayoutStyles();
   return (
     <div className={layout.toolbar}>
-      {/* Which board this is — absent entirely with only Personal to choose from, so a
-          database with no ticket project renders a toolbar byte-identical to before this
+      {/* Which board's cards are shown: every board unioned (the default), or one board
+          alone — the desktop's own scope picker (`MyTasks.tsx`), same options and same
+          persisted setting. Absent entirely with only Personal to choose from, so a
+          database with no other board renders a toolbar byte-identical to before this
           existed rather than one extra control that does nothing. */}
       {scopes.length > 1 && (
         <Dropdown
           size="small"
-          value={scopeLabel(scope)}
-          selectedOptions={[scope.projectId]}
-          title="Which project's board this shows"
+          value={scopeLabel}
+          selectedOptions={[scope]}
+          title="Which board this shows"
           onOptionSelect={(_e, d) => {
             if (d.optionValue) onScopeChange(d.optionValue);
           }}
         >
+          <Option value="all">All boards</Option>
           {scopes.map((s) => (
-            <Option key={s.projectId} value={s.projectId}>
-              {scopeLabel(s)}
+            <Option key={s.id} value={s.id}>
+              {s.name}
             </Option>
           ))}
         </Dropdown>

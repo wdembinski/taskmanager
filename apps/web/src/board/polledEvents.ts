@@ -95,7 +95,6 @@ const WHOLE_LIST_EVENTS = {
   // Native tickets (Phase 24). `label:list`/`milestone:list` take an optional `projectId`
   // for exactly this: called with none, as this bus always calls a read, they answer for
   // every ticket project at once — the same shape their `*:changed` event carries.
-  'ticketProject:changed': 'ticketProject:list',
   'ticketLink:changed': 'ticketLink:list',
   'person:changed': 'person:list',
   'label:changed': 'label:list',

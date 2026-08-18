@@ -15,6 +15,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { attachmentName } from '@tm/shared/attachments';
+import { PERSONAL_PROJECT_ID } from '@tm/shared/model';
 import { addTaskPlan, stageAttachments, type AddTaskForm } from './AddTaskDialog';
 
 const form = (over: Partial<AddTaskForm> = {}): AddTaskForm => ({
@@ -27,6 +28,7 @@ const form = (over: Partial<AddTaskForm> = {}): AddTaskForm => ({
   asJira: false,
   jiraProjectKey: '',
   jiraTypeId: '',
+  boardId: PERSONAL_PROJECT_ID,
   ...over,
 });
 
@@ -47,6 +49,7 @@ describe('addTaskPlan', () => {
     );
     expect(plan).toEqual({
       kind: 'card',
+      board: PERSONAL_PROJECT_ID,
       card: {
         title: 'Ship the thing',
         phase: 'Phase 1',
@@ -56,6 +59,11 @@ describe('addTaskPlan', () => {
       },
       ticket: null,
     });
+  });
+
+  it('carries the chosen board onto the card, for a project board rather than Personal', () => {
+    const plan = addTaskPlan(form({ boardId: 'p-billing' }));
+    expect(plan.kind === 'card' && plan.board).toBe('p-billing');
   });
 
   it('files nothing when no project was picked', () => {

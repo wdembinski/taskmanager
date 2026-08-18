@@ -139,19 +139,6 @@ export const RELAY_POLICY: {
 
   'git:graph': 'relay',
 
-  'agentProject:list': 'relay',
-  'agentProject:add': 'relay',
-  'agentProject:update': 'relay',
-  'agentProject:remove': 'relay',
-
-  'ticketProject:list': 'relay',
-  'ticketProject:add': 'relay',
-  'ticketProject:update': 'relay',
-  'ticketProject:remove': 'relay',
-
-  'board:scopes': 'relay',
-
-  'ticket:create': 'relay',
   'ticket:update': 'relay',
 
   'person:list': 'relay',
@@ -187,6 +174,7 @@ export const RELAY_POLICY: {
   // the same reason it gets `task:integrate`.
   'task:createPullRequest': 'relay',
   'task:create': 'relay',
+  'ticket:create': 'relay',
   'task:delete': 'relay',
   'task:subtasks': 'relay',
   'task:addSubtask': 'relay',
@@ -282,6 +270,7 @@ export const RELAY_POLICY: {
 
   'board:tasks': 'relay',
   'board:archived': 'relay',
+  'board:scopes': 'relay',
 
   'chain:links': 'relay',
   'chain:link': 'relay',

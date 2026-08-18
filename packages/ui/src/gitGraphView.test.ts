@@ -65,7 +65,6 @@ const project = (id: string): Project => ({
   autoCreatePr: false,
   autoIntegrate: null,
   planAligned: true,
-  kind: 'agent',
   jiraEpicKeys: [],
   ticketPrefix: '',
   target: LOCAL_TARGET,
