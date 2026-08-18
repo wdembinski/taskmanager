@@ -5823,6 +5823,59 @@ reads `0.86.0` on both sides, so there is no version bump for a merge to swallow
 normal case now that CI cuts releases from `development` rather than from a bump carried on
 this branch.
 
+### Step 12: verification, re-run one commit later on `9db1f5b`
+
+Step 11 landed its own fixes and measured the gates on the commit it produced; this step
+re-ran every one of them fresh on the tip that commit became (`9db1f5b`), plus the two
+checks step 11's numbers didn't carry forward, to confirm nothing regressed between
+"the step that fixed it" and "the step chartered to verify it."
+
+| Gate | Exit | Result |
+| --- | --- | --- |
+| `pnpm format:check` | **0** | clean — no drift since step 11's `--write` |
+| `pnpm exec turbo run typecheck --force` | **0** | 12 successful, 12 total — 0 cached, ~34s |
+| `pnpm exec turbo run build --force` | **0** | 8 successful, 8 total — 0 cached, ~44s |
+| `pnpm test` | **0** | 180 files passed, 1 skipped (181); 3005 passed, 11 skipped (3016) — identical to step 11's count |
+| `node scripts/verify-mobile-build.mjs` | **0** | all 21 checks pass — manifest, both icons, `sw.js`, and its registration in `index.html` |
+| `node apps/client/scripts/verify-remote-ipc.mjs` | **0** | 16 checks, still green after step 11's re-point |
+| `node apps/client/scripts/verify-remote-sse.mjs` | **0** | 36 checks, still green after step 11's re-point |
+
+`pnpm exec vitest list --filesOnly` gives the per-package test sum the root glob actually
+collects, rather than trusting the workspace layout: 181 files split
+`apps/client` 83, `packages/shared` 27, `apps/server` 27, `packages/ui` 23, `packages/cloud`
+13, `test` 4, `apps/mobile` 2, `scripts` 1, `packages/protocol` 1 — summing to the 181 the
+run itself reports. The two mobile-only files are exactly what the "no component tests"
+constraint predicts: `apps/mobile/src/nav/navStack.test.ts` and
+`apps/mobile/src/sw/shouldHandle.test.ts`, both pure modules. `packages/cloud`'s 13 are the
+board selectors, transports and stores step 3 moved out of `apps/web/src` — confirming
+step 11's `HOST_TREES` fix didn't just silence the shell-parity guard but that the moved
+modules are still exercised at all.
+
+No new test was written for this step: the constraints section ruled out anything a red-first
+assertion could check beyond what steps 1-11 already added, and the plan's own gate list
+(`pnpm format:check && pnpm typecheck && pnpm test && pnpm build`, plus
+`verify-mobile-build.mjs` for the parts a `noEmit` typecheck can't see) is exactly what ran
+above. Every number matches step 11's independently-measured ones on the prior commit, which
+is the outcome a verification step re-running someone else's fix should produce — agreement,
+not new findings.
+
+#### Owed to a human
+
+Nothing here can hold an Android phone. Specifically unverified by any command in this
+branch:
+
+- Installing the PWA from Chrome's "Add to Home screen" / install prompt on a real device.
+- Pressing the hardware/gesture Back button and confirming the nav-stack (step 8) pops the
+  right screen instead of exiting the app.
+- Tapping a card to move it (step 6) and watching the change land on the desktop board, and
+  the reverse — moving it on desktop and watching the phone update.
+- Opening a task full-screen (step 7) and confirming the layout, not just the route, reads
+  right on a phone-sized screen — `verify-mobile-build.mjs` and `shell-parity.test.ts` both
+  check structure and source text, neither renders a pixel.
+- That the CI deploy (step 10) actually reaches an installable URL — `deploy.yml`'s `mobile`
+  job existing and staying inert without its token is confirmed statically; a live deploy
+  needs `AZURE_STATIC_WEB_APPS_API_TOKEN_MOBILE` to be set and a run to complete.
+
 ---
 
 ## Conventions for every phase
