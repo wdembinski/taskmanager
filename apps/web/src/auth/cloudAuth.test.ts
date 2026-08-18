@@ -140,12 +140,37 @@ describe('CloudAuth', () => {
     await expect(auth.getAccessToken()).resolves.toBeNull();
   });
 
+  it('collapses concurrent getAccessToken() callers onto one /token POST', async () => {
+    const local = fakeStorage();
+    local.setItem('tm.cloud.refreshToken', 'rt-stored');
+    let resolveFetch!: (value: unknown) => void;
+    const fetchImpl = vi.fn().mockReturnValue(
+      new Promise((resolve) => {
+        resolveFetch = resolve;
+      }),
+    );
+    const auth = new CloudAuth({
+      config,
+      localStorage: local,
+      sessionStorage: fakeStorage(),
+      fetchImpl,
+    });
+
+    // Three callers race getAccessToken() before the single in-flight refresh settles — the
+    // board poller, the transport, and the presence heartbeat all do this in practice.
+    const calls = [auth.getAccessToken(), auth.getAccessToken(), auth.getAccessToken()];
+    resolveFetch({ ok: true, json: async () => tokenResponse({ access_token: 'at-shared' }) });
+
+    expect(await Promise.all(calls)).toEqual(['at-shared', 'at-shared', 'at-shared']);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   /**
    * The bug this pair exists for: a refresh token vipper.iam had revoked left the app looking
    * perfectly signed in, with an empty board and nothing on screen saying why — `isSignedIn`
    * is a claim about storage, and `useCloudAuth` reads it once at mount.
    */
-  it('ends the session when vipper.iam refuses the grant', async () => {
+  it('ends the session when vipper.iam refuses the grant, and stops requesting after', async () => {
     const local = fakeStorage();
     local.setItem('tm.cloud.refreshToken', 'rt-revoked');
     const fetchImpl = vi.fn().mockResolvedValue({
@@ -170,6 +195,11 @@ describe('CloudAuth', () => {
     expect(auth.isSignedIn()).toBe(false);
     expect(ended).toHaveLength(1);
     expect(ended[0]).toMatch(/expired/i);
+
+    // A caller that keeps polling after the grant is dead (the board poller doesn't know to
+    // stop on its own) must not keep spending a request on an already-revoked grant.
+    expect(await auth.getAccessToken()).toBeNull();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it('keeps the session through an outage, which ends on its own', async () => {

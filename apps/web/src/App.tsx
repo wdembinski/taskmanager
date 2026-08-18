@@ -27,6 +27,7 @@ import { Performance } from '@tm/ui/Performance';
 import { Projects } from '@tm/ui/projects/Projects';
 import { NavRail, type NavRailItem } from '@tm/ui/shell/NavRail';
 import { StatusBar, StatusDot, StatusSpacer } from '@tm/ui/shell/StatusBar';
+import { SyncCurtain } from '@tm/ui/SyncCurtain';
 import { TransportProvider } from '@tm/ui/transport';
 import { CloudAuth } from './auth/cloudAuth';
 import { SignInScreen } from './auth/SignInScreen';
@@ -36,6 +37,7 @@ import { SettingsScreen } from './settings/SettingsScreen';
 import { ClientPicker } from './board/ClientPicker';
 import { SkewBanner } from './board/SkewBanner';
 import { StaleBanner } from './board/StaleBanner';
+import { boardIsReady, syncCurtainText, syncStatusLabel } from './board/syncGate';
 import { UnreachableBanner } from './board/UnreachableBanner';
 import { versionSkew } from './board/targetClient';
 import { useCloudBoard } from './board/useCloudBoard';
@@ -262,19 +264,19 @@ function SignedInBoard({
               )}
             </Caption1>
             {/* A poll that comes back proves this tab's own connection, whether or not it
-                carried any deltas — which is a different claim from the dot's.
+                carried any deltas — which is a different claim from the dot's. Once the
+                board has latched ready, a later paged catch-up shows here as "syncing…"
+                rather than pulling the board back behind the curtain.
 
-                "first sync pending" is only honest before the first read has been ATTEMPTED.
-                It used to be what a tab said forever while every read failed, which reads as
-                "still loading" and is how an outage passed for a slow start. A tab that has
-                tried and failed says so. */}
+                `pollError` takes precedence over `syncStatusLabel`'s own reading: it is set
+                (and only cleared on a read that actually comes back) by every poll failure,
+                even one well after the board has latched ready, where `syncStatusLabel` would
+                otherwise still say a stale "synced Ns ago" from the last read that worked. */}
             <Caption1>
               ·{' '}
               {board.pollError
                 ? 'not syncing'
-                : board.lastPolledAt === null
-                  ? 'first sync pending'
-                  : `synced ${describeAge(now - board.lastPolledAt)}`}
+                : syncStatusLabel(board.syncProgress, board.lastPolledAt, now)}
             </Caption1>
             {attentionCount > 0 && <Caption1>· {attentionCount} waiting on you</Caption1>}
             <StatusSpacer />
@@ -285,14 +287,20 @@ function SignedInBoard({
         {/* Each screen is unmounted rather than hidden when you leave it — every one of
             them polls, and a Performance pane nobody is looking at should not be relaying a
             `usage:summary` every second. The desktop's own `App` folds them the same way. */}
-        {screen === 'mytasks' && (
-          <BoardScreen
-            state={board.state}
-            everSeenClient={board.targetClientId !== null}
-            onSetStatus={(taskId, status) => void board.setStatus(taskId, status)}
-            onStatusNoted={board.noteStatus}
-          />
-        )}
+        {screen === 'mytasks' &&
+          (boardIsReady(board.syncProgress) ? (
+            <BoardScreen
+              state={board.state}
+              everSeenClient={board.targetClientId !== null}
+              onSetStatus={(taskId, status) => void board.setStatus(taskId, status)}
+              onStatusNoted={board.noteStatus}
+            />
+          ) : (
+            <SyncCurtain
+              {...syncCurtainText(board.syncProgress)}
+              error={board.syncProgress.lastError}
+            />
+          ))}
         {screen === 'projects' && <Projects />}
         {screen === 'performance' && <Performance />}
         {screen === 'attention' && <Attention />}
@@ -314,13 +322,4 @@ function useTick(intervalMs: number): number {
     return () => clearInterval(id);
   }, [intervalMs]);
   return now;
-}
-
-/** A duration in ms as the coarsest unit that still says something — `12s ago`, `3m ago`. */
-function describeAge(ms: number): string {
-  const seconds = Math.max(0, Math.round(ms / 1000));
-  if (seconds < 60) return `${seconds}s ago`;
-  const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  return `${Math.round(minutes / 60)}h ago`;
 }

@@ -152,6 +152,31 @@ function readinessTargets(defaultTarget: ExecTarget, inUse: ExecTarget[]): ExecT
 /** Where an install that can't update itself goes to fetch a new build by hand. */
 const RELEASES_URL = 'https://github.com/wdembinski/taskmanager/releases';
 
+/**
+ * The vipper.iam account field's hint — state-driven so "signed in" and "signed in, but
+ * vipper.iam has since rejected the saved token" no longer read the same way. `rejected` and
+ * `active` are the two cases worth saying more about; `stored` (signed in, no mint attempted
+ * yet) and `signed-out` fall back to the plain in/out text they always had.
+ */
+function iamHint(status: IamConfigStatus | null): string {
+  if (status?.encryptionAvailable === false) {
+    return 'The OS secure store is unavailable, so a sign-in cannot be saved on this machine.';
+  }
+  if (status?.authState === 'rejected') {
+    return "vipper.iam rejected this machine's saved sign-in. Cloud sync is stopped until you sign in again.";
+  }
+  if (status?.authState === 'active') {
+    const secondsAgo =
+      status.lastTokenAt === null
+        ? null
+        : Math.max(0, Math.round((Date.now() - status.lastTokenAt) / 1000));
+    return secondsAgo === null
+      ? 'Signed in.'
+      : `Signed in — token last refreshed ${secondsAgo}s ago.`;
+  }
+  return status?.signedIn ? 'Signed in.' : 'Sign in to authorize this machine.';
+}
+
 const MODES: PermissionMode[] = ['acceptEdits', 'plan', 'manual', 'bypassPermissions'];
 
 /**
@@ -1330,19 +1355,18 @@ export function Settings(): JSX.Element {
               />
             </Field>
 
-            <Field
-              label="vipper.iam account"
-              hint={
-                iamStatus?.encryptionAvailable === false
-                  ? 'The OS secure store is unavailable, so a sign-in cannot be saved on this machine.'
-                  : iamStatus?.signedIn
-                    ? 'Signed in.'
-                    : 'Sign in to authorize this machine.'
-              }
-            >
+            <Field label="vipper.iam account" hint={iamHint(iamStatus)}>
+              {iamStatus?.authState === 'rejected' && (
+                <MessageBar intent="warning">
+                  <MessageBarBody>
+                    vipper.iam rejected this machine's saved sign-in. Cloud sync is stopped until
+                    you sign in again.
+                  </MessageBarBody>
+                </MessageBar>
+              )}
               <div className={styles.actions}>
                 <Button
-                  appearance="primary"
+                  appearance={iamStatus?.authState === 'rejected' ? 'primary' : 'secondary'}
                   disabled={iamBusy || iamStatus?.encryptionAvailable === false}
                   onClick={() => void signInToCloud()}
                 >

@@ -49,6 +49,8 @@ export interface CloudEventForwarderDeps {
   getAccessToken: () => Promise<string | null>;
   /** `Store.loadCloudClientId()`, which is also what `SyncRequest.clientId` carries. */
   getClientId: () => string;
+  /** A batch came back 401 — see `CloudPollerDeps.onAuthRejected`. Never called for a 403. */
+  onAuthRejected?: () => void;
   fetchImpl?: typeof fetch;
   now?: () => number;
 }
@@ -439,6 +441,10 @@ export class CloudEventForwarder {
       body: JSON.stringify(request),
     });
     if (!res.ok) {
+      // A rejected token — see `CloudPollerDeps.onAuthRejected`. This channel already
+      // re-attempts within its own backoff seconds later, so there is no inline retry here,
+      // just the signal that lets the next attempt use a fresh token.
+      if (res.status === 401) deps.onAuthRejected?.();
       // The one failure the next request can do something about — the route caps a batch at
       // 256 KB, and halving is what turns a permanent wedge into a couple of wasted batches.
       if (res.status === 413) this.batchLimit = Math.max(1, Math.floor(this.batchLimit / 2));

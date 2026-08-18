@@ -105,7 +105,7 @@ import {
 } from './jira/jiraMove';
 import { iamSignInConfig } from './iamConfig';
 import { signIn as runIamSignIn } from './iamSignIn';
-import { isDeadGrant, refreshTokens } from '@shared/iamPkce';
+import { CloudTokenProvider } from './cloudToken';
 import type { ClientInfo, CommandEnvelope } from '@protocol/wire';
 import { PROTOCOL_VERSION } from '@protocol/wire';
 import { applyCloudCommand, type CloudCommandOutcome } from './cloudCommands';
@@ -1683,9 +1683,15 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // vipper.iam cloud sign-in (Phase 25's "Guard the cloud API with vipper.iam"). The refresh
   // token is the one credential of the three (JIRA/GitLab/IAM) this app itself is a party to
   // minting, but it still goes through the exact same encrypt-and-store path as the other two.
+  // `cloudToken` is declared further down this function (its `onStateChange` needs
+  // `pushSyncState` above it) — safe to reference here anyway, since this callback only runs
+  // once IPC is live, well after every `const` in this scope has been initialized.
   handle('iam:getConfigStatus', async () => ({
     signedIn: store.loadIamRefreshToken() !== null,
     encryptionAvailable: safeStorage.isEncryptionAvailable(),
+    authState: cloudToken.state(),
+    authError: cloudToken.state() === 'rejected' ? cloudToken.explain() : null,
+    lastTokenAt: cloudToken.lastMintedAt(),
   }));
 
   handle('iam:signIn', async () => {
@@ -1703,6 +1709,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       store.saveIamRefreshToken(
         safeStorage.encryptString(sanitizeToken(tokens.refresh_token)).toString('base64'),
       );
+      cloudToken.renewed();
       return { ok: true, message: 'Signed in.' };
     } catch (e) {
       logMain('IAM sign-in failed', e);
@@ -1711,61 +1718,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   });
 
   handle('iam:signOut', async () => {
-    cloudAccessToken = null;
+    cloudToken.forget();
     store.clearIamRefreshToken();
   });
-
-  /**
-   * The cloud mirror's own access token — minted from the stored refresh token, cached in
-   * memory until it's close to expiry rather than reminted on every poll (the active tier
-   * is 2.5s; a mint-per-tick would cost `apps/server` a vipper.iam round trip every request
-   * for nothing a cache doesn't already answer). vipper.iam rotates the refresh token on
-   * every use, so a successful mint re-encrypts and re-saves it, exactly as `iam:signIn`
-   * does with the first one. Returns null — never throws — whenever there is nothing to
-   * mint from: `cloudPoller` treats that exactly like any other failed tick (counted,
-   * backed off, retried next time), not a special case.
-   */
-  let cloudAccessToken: { value: string; expiresAt: number } | null = null;
-  const getCloudAccessToken = async (): Promise<string | null> => {
-    if (cloudAccessToken && cloudAccessToken.expiresAt > Date.now() + 5_000) {
-      return cloudAccessToken.value;
-    }
-    const cipher = store.loadIamRefreshToken();
-    if (!cipher || !safeStorage.isEncryptionAvailable()) return null;
-    try {
-      const refreshToken = decryptSecret(cipher, 'vipper.iam');
-      // `redirectUri` is part of `IamPkceConfig`'s shape but only read for the
-      // authorization-code grant `signIn()` uses — the refresh-token grant never sends it,
-      // so an empty placeholder is fine here.
-      const tokens = await refreshTokens({ ...iamSignInConfig(), redirectUri: '' }, refreshToken);
-      if (tokens.refresh_token) {
-        store.saveIamRefreshToken(
-          safeStorage.encryptString(sanitizeToken(tokens.refresh_token)).toString('base64'),
-        );
-      }
-      cloudAccessToken = {
-        value: tokens.access_token,
-        expiresAt: Date.now() + tokens.expires_in * 1000,
-      };
-      return cloudAccessToken.value;
-    } catch (e) {
-      // A grant vipper.iam has refused is thrown away rather than retried until the end of
-      // time. `iam:getStatus` — and so Settings' "Signed in." — is "a refresh token is on
-      // file", the same claim about storage the web's `CloudAuth.isSignedIn` makes, so a dead
-      // token left in place makes that pane state something false while the poller fails
-      // silently behind it. Cleared, both tell the truth and `cloud:testConnection` stops at
-      // its sign-in rung with "you are not signed in", which is the actionable sentence.
-      //
-      // Only for a dead grant: an outage must not sign anybody out of their desktop app.
-      if (isDeadGrant(e)) {
-        logMain('vipper.iam refused the stored refresh token — signing out', e);
-        store.clearIamRefreshToken();
-        return null;
-      }
-      logMain('vipper.iam access token refresh failed', e);
-      return null;
-    }
-  };
 
   /**
    * What a browser names this desktop by — see `ClientInfo` on `@protocol/wire`.
@@ -1781,8 +1736,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     protocolVersion: PROTOCOL_VERSION,
   });
 
-  // Defined here rather than beside the other handlers because it needs
-  // `getCloudAccessToken`, which is declared just above.
   handle('cloud:testConnection', async () => {
     const result = await testCloudConnection({
       settings: store.getSettings().cloud,
@@ -1930,6 +1883,32 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       pushSyncState();
     }
   };
+
+  /**
+   * The cloud mirror's own access token — a single `CloudTokenProvider` shared by every
+   * caller that needs one (`getCloudAccessToken` below is kept as a one-line alias so its
+   * five existing call sites in this file are untouched). Its `onStateChange` pushes the
+   * sync state, so it's constructed here, after `pushSyncState`, rather than up beside the
+   * other IAM handlers above — declaring it there would be a forward reference.
+   */
+  const cloudToken = new CloudTokenProvider({
+    config: () => ({ ...iamSignInConfig(), redirectUri: '' }),
+    loadRefreshToken: () => {
+      const cipher = store.loadIamRefreshToken();
+      if (!cipher || !safeStorage.isEncryptionAvailable()) return null;
+      try {
+        return decryptSecret(cipher, 'vipper.iam');
+      } catch (e) {
+        logMain('vipper.iam refresh token could not be decrypted', e);
+        return null;
+      }
+    },
+    saveRefreshToken: (token) =>
+      store.saveIamRefreshToken(safeStorage.encryptString(sanitizeToken(token)).toString('base64')),
+    onStateChange: () => pushSyncState(),
+    log: logMain,
+  });
+  const getCloudAccessToken = (): Promise<string | null> => cloudToken.get();
 
   handle('sync:state', async () => syncState());
 
@@ -4029,6 +4008,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // The SAME id `SyncRequest.clientId` carries, so the server can tell a pushed event and a
     // mirrored row came from one desktop — which is what step 7 needs to name it in the web.
     getClientId: () => store.loadCloudClientId(),
+    onAuthRejected: () => cloudToken.invalidate(),
   });
 
   // The bytes half of the same mirror. Configured here for the same reason — it needs the
@@ -4046,6 +4026,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // How a browser finds out its thumbnail is ready: `attachment:changed` is forwarded, so
     // the row it already listens to comes back carrying `cloudBlobAt`.
     onUploaded: () => pushAttachments(),
+    onAuthRejected: () => cloudToken.invalidate(),
   });
   cloudAttachments.scan();
 
@@ -4058,6 +4039,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     focus: focusTracker,
     getSettings: () => store.getSettings().cloud,
     getAccessToken: getCloudAccessToken,
+    // Turns a bare "no token" into the reason there isn't one — never signed in vs. revoked —
+    // so a failed tick's `syncClock.cloud.error` (and the SyncRing tooltip built from it) says
+    // something a user signed out on purpose can tell apart from a sign-in vipper.iam rejected.
+    describeMissingToken: () => cloudToken.explain(),
     // What a browser names this desktop by, once it has more than one to choose between —
     // see `ClientInfo` on `@protocol/wire`. Built above rather than inline because this is
     // the only side of `cloudPoller.ts` that is allowed to touch Electron and the connection
@@ -4074,6 +4059,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // agent's transcript into the cloud for nobody.
     onEventListeners: (count) => cloudEvents.setListeners(count),
     runTracked: (run) => trackSync('cloud', run),
+    onAuthRejected: () => cloudToken.invalidate(),
   });
   cloudPoller.reschedule();
 

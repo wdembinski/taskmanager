@@ -22,7 +22,7 @@ import {
   createPkcePair,
   createState,
   exchangeCodeForTokens,
-  isDeadGrant,
+  isTerminalGrantError,
   refreshTokens,
   type IamPkceConfig,
   type TokenResponse,
@@ -83,6 +83,11 @@ export class CloudAuth {
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;
   private accessToken: AccessTokenCache | null = null;
+  /** Collapses concurrent `getAccessToken()` callers onto one `/token` exchange — same fix
+   *  as the desktop's `CloudTokenProvider`: two callers racing a refresh each spend the SAME
+   *  stored refresh token, and vipper.iam rotates it on every use, so the loser's exchange
+   *  fails `invalid_grant` against an already-spent token. */
+  private inflight: Promise<string | null> | null = null;
   private readonly sessionEndedListeners = new Set<(reason: string) => void>();
 
   constructor(deps: CloudAuthDeps) {
@@ -178,6 +183,24 @@ export class CloudAuth {
     if (isAccessTokenFresh(this.accessToken, this.now())) {
       return this.accessToken!.value;
     }
+    // Every caller racing here (the poller, the transport, the presence heartbeat) shares
+    // the one mint in flight rather than each spending the same stored refresh token.
+    if (!this.inflight) {
+      const run = this.mint();
+      this.inflight = run;
+      void run.finally(() => {
+        if (this.inflight === run) this.inflight = null;
+      });
+    }
+    return this.inflight;
+  }
+
+  signOut(): void {
+    this.accessToken = null;
+    this.localStorage.removeItem(REFRESH_TOKEN_KEY);
+  }
+
+  private async mint(): Promise<string | null> {
     const refreshToken = this.localStorage.getItem(REFRESH_TOKEN_KEY);
     if (!refreshToken) return null;
 
@@ -194,7 +217,7 @@ export class CloudAuth {
       // "there is nothing a special case could do differently here anyway", which was exactly
       // wrong: a revoked token fails every retry identically FOREVER, and the one thing worth
       // doing about that is to stop pretending to be signed in. See `onSessionEnded`.
-      if (isDeadGrant(e)) {
+      if (isTerminalGrantError(e)) {
         this.endSession(
           'Your session has expired. Sign in again to reconnect to your desktop app.',
         );
@@ -206,11 +229,6 @@ export class CloudAuth {
       console.warn('vipper.iam access token refresh failed', e);
       return null;
     }
-  }
-
-  signOut(): void {
-    this.accessToken = null;
-    this.localStorage.removeItem(REFRESH_TOKEN_KEY);
   }
 
   /**

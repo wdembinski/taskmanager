@@ -40,6 +40,10 @@ export interface CloudPollerDeps {
   /** A bearer access token for this tick, or null when not signed in — the tick then
    * fails like any other network error (counted, backed off, retried next time). */
   getAccessToken: () => Promise<string | null>;
+  /** Why `getAccessToken` just answered null, in the user's words — wired to
+   *  `cloudToken.explain()`. Optional so a test can omit it; a missing dep falls back to the
+   *  generic message this class used before it existed. */
+  describeMissingToken?: () => string;
   /**
    * Who this desktop is, for the browser to name it by — see `ClientInfo` on
    * `@protocol/wire`.
@@ -63,6 +67,13 @@ export interface CloudPollerDeps {
    * batches from interleaving; see its own header.
    */
   onCommands: (commands: CommandEnvelope[]) => void;
+  /**
+   * A cloud request came back 401 — the cached access token was rejected, not merely
+   * expired-by-the-clock. Never called for a 403, which means the token is fine but the
+   * account cannot do this. Wired in `ipc.ts` to `cloudToken.invalidate()`, so the retry
+   * this poller makes right after mints a fresh one instead of repeating the same request.
+   */
+  onAuthRejected?: () => void;
   /**
    * How many browsers are watching the pushed event stream, per this tick's response.
    *
@@ -199,7 +210,9 @@ export class CloudPoller {
     if (!settings.enabled || !settings.baseUrl.trim()) return;
 
     const token = await this.deps.getAccessToken();
-    if (!token) throw new Error('Not signed in to vipper.iam.');
+    if (!token) {
+      throw new Error(this.deps.describeMissingToken?.() ?? 'Not signed in to vipper.iam.');
+    }
 
     const rows = this.deps.store.getCloudDelta(0, this.batchLimit);
     // Commands applied (or rejected) since the last successful sync — see
@@ -260,12 +273,15 @@ export class CloudPoller {
       );
     }
 
-    const fetchImpl = this.deps.fetchImpl ?? fetch;
-    const res = await fetchImpl(`${settings.baseUrl.replace(/\/+$/, '')}/v1/sync`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-      body: payload,
-    });
+    let res = await this.post(settings, payload, token);
+    if (res.status === 401) {
+      // This poller carries "sync all the time" and backs off up to `CADENCE_MS`'s cap
+      // (300s) — waiting out a full curve for a fresh token would turn a hiccup into an
+      // outage, so it mints one and retries inline instead of waiting for the next tick.
+      this.deps.onAuthRejected?.();
+      const fresh = await this.deps.getAccessToken();
+      if (fresh && fresh !== token) res = await this.post(settings, payload, fresh);
+    }
     if (!res.ok) {
       // 413 is the one failure the NEXT request can do something about — see `batchLimit`.
       // BOTH halves shrink: the body is entities plus answers, and halving one while the
@@ -311,6 +327,15 @@ export class CloudPoller {
     this.lastServerIntervalMs = body.cadence.intervalMs;
     if (body.eventListeners !== undefined) this.deps.onEventListeners?.(body.eventListeners);
     if (body.commands.length > 0) this.deps.onCommands(body.commands);
+  }
+
+  private async post(settings: CloudSettings, payload: string, token: string): Promise<Response> {
+    const fetchImpl = this.deps.fetchImpl ?? fetch;
+    return fetchImpl(`${settings.baseUrl.replace(/\/+$/, '')}/v1/sync`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: payload,
+    });
   }
 
   dispose(): void {

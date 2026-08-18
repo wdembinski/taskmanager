@@ -4,9 +4,9 @@ import {
   createPkcePair,
   createState,
   exchangeCodeForTokens,
-  isDeadGrant,
-  refreshTokens,
   IamTokenError,
+  isTerminalGrantError,
+  refreshTokens,
 } from './iamPkce';
 
 const CONFIG = {
@@ -142,59 +142,86 @@ describe('refreshTokens', () => {
   });
 });
 
-describe('IamTokenError / isDeadGrant', () => {
-  const failing = (status: number, body: string) =>
-    vi.fn().mockResolvedValue({ ok: false, status, text: async () => body });
+function fakeFetchText(status: number, text: string): typeof fetch {
+  return vi.fn().mockResolvedValue({
+    ok: status >= 200 && status < 300,
+    status,
+    json: () => Promise.reject(new Error('not json')),
+    text: () => Promise.resolve(text),
+  }) as unknown as typeof fetch;
+}
 
-  it('carries the status and the OAuth2 error code off the body', async () => {
-    const error = await refreshTokens(
+describe('IamTokenError / isTerminalGrantError', () => {
+  it('keeps the existing message format verbatim', async () => {
+    await expect(
+      refreshTokens(CONFIG, 'rt', fakeFetch(400, { error: 'invalid_grant' })),
+    ).rejects.toThrow(/^vipper\.iam token request failed \(400 /);
+  });
+
+  it('reads oauthError from a JSON error body', async () => {
+    const err = await refreshTokens(
       CONFIG,
       'rt',
-      failing(400, JSON.stringify({ error: 'invalid_grant', error_description: 'grant expired' })),
-    ).catch((e: unknown) => e);
+      fakeFetch(400, { error: 'invalid_grant', error_description: 'Refresh token is invalid' }),
+    ).catch((e) => e);
 
-    expect(error).toBeInstanceOf(IamTokenError);
-    const typed = error as IamTokenError;
-    expect(typed.status).toBe(400);
-    expect(typed.code).toBe('invalid_grant');
-    expect(typed.detail).toContain('grant expired');
+    expect(err).toBeInstanceOf(IamTokenError);
+    expect((err as IamTokenError).status).toBe(400);
+    expect((err as IamTokenError).oauthError).toBe('invalid_grant');
+    expect((err as IamTokenError).oauthErrorDescription).toBe('Refresh token is invalid');
+    expect(isTerminalGrantError(err)).toBe(true);
+  });
+
+  it('falls back to scanning a form-encoded/non-JSON body for invalid_grant', async () => {
+    const err = await refreshTokens(
+      CONFIG,
+      'rt',
+      fakeFetchText(400, 'error=invalid_grant&error_description=revoked'),
+    ).catch((e) => e);
+
+    expect((err as IamTokenError).oauthError).toBe('invalid_grant');
+    expect(isTerminalGrantError(err)).toBe(true);
+  });
+
+  it('reports no oauthError — and is not terminal — for an HTML 502 from a gateway', async () => {
+    const err = await refreshTokens(
+      CONFIG,
+      'rt',
+      fakeFetchText(502, '<html><body>Bad Gateway</body></html>'),
+    ).catch((e) => e);
+
+    expect((err as IamTokenError).oauthError).toBeNull();
+    expect(isTerminalGrantError(err)).toBe(false);
   });
 
   /**
-   * The whole point of the split: a revoked token fails identically forever and must end the
+   * The whole point of the split: a revoked grant fails identically forever and must end the
    * session, while an outage ends on its own and must not. Signing somebody out because a
    * gateway hiccuped would be a worse bug than the one this distinction exists to fix.
    */
-  it('calls a refused grant dead', async () => {
+  it('is terminal for invalid_grant AND invalid_client, and nothing else', async () => {
     for (const code of ['invalid_grant', 'invalid_client']) {
-      const error = await refreshTokens(
-        CONFIG,
-        'rt',
-        failing(400, JSON.stringify({ error: code })),
-      ).catch((e: unknown) => e);
-      expect(isDeadGrant(error), code).toBe(true);
+      const err = await refreshTokens(CONFIG, 'rt', fakeFetch(400, { error: code })).catch(
+        (e) => e,
+      );
+      expect(isTerminalGrantError(err), code).toBe(true);
     }
-  });
 
-  it('calls everything else transient', async () => {
     const transient = [
       [503, 'upstream unavailable'],
       [500, JSON.stringify({ error: 'server_error' })],
       [429, JSON.stringify({ error: 'slow_down' })],
-      // A proxy answering HTML is not a grant decision, and parsing it must not throw.
-      [400, '<html><body>Bad Request</body></html>'],
     ] as const;
     for (const [status, body] of transient) {
-      const error = await refreshTokens(CONFIG, 'rt', failing(status, body)).catch(
-        (e: unknown) => e,
-      );
-      expect(isDeadGrant(error), `${status} ${body}`).toBe(false);
+      const err = await refreshTokens(CONFIG, 'rt', fakeFetchText(status, body)).catch((e) => e);
+      expect(isTerminalGrantError(err), `${status} ${body}`).toBe(false);
     }
   });
 
-  it('is false for anything that is not an IamTokenError at all', () => {
-    expect(isDeadGrant(new TypeError('Failed to fetch'))).toBe(false);
-    expect(isDeadGrant(new Error('invalid_grant'))).toBe(false);
-    expect(isDeadGrant(null)).toBe(false);
+  it('is false for a plain non-OAuth error', () => {
+    expect(isTerminalGrantError(new TypeError('Failed to fetch'))).toBe(false);
+    expect(isTerminalGrantError(new Error('network down'))).toBe(false);
+    expect(isTerminalGrantError(null)).toBe(false);
+    expect(isTerminalGrantError('nope')).toBe(false);
   });
 });

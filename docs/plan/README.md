@@ -6075,6 +6075,100 @@ guards, and the gates — the same shape `test/shell-parity.test.ts`'s own heade
 
 ---
 
+## Fix — Sync error
+
+**Goal.** A cloud sync that currently fails opaquely — a 401 dropped on the floor, a
+`refreshTokens` error string nobody can tell `invalid_grant` from a 503, a board that pages
+silently and can render an incomplete list as if it were the whole one — becomes a sync that
+recovers what it can and tells the truth about the rest, without a DOM harness to lean on for
+any of it.
+
+### Verified facts this rests on
+
+Every claim the plan was built on was re-read against this worktree before anything downstream
+gets to assume it. All four hold exactly as stated; nothing here needed correcting.
+
+- **Paging already round-trips.** `BoardResponse.hasMore` (`packages/protocol/src/wire.ts:368`)
+  is populated in `MirrorService.rowsSince`'s caller — `hasMore: tasks.hasMore ||
+  projects.hasMore || deletions.hasMore` at `mirror.service.ts:242`, itself built from the
+  per-page `{ rows, hasMore }` `rowsSince` returns at `mirror.service.ts:355-377` — and read on
+  the other end at `BoardPoller.ts:143` (`this.catchingUp = body.hasMore === true`), which is
+  what makes the next poll immediate instead of waiting out a cadence. **No server or protocol
+  change belongs in this fix.** Whatever step exposes progress to the UI reads `catchingUp`,
+  it does not invent a new signal.
+- **The guard's two failure codes are set at the framework level, not by convention.**
+  `iamAuth.guard.ts:60` throws `UnauthorizedException` (401) for a missing bearer token,
+  `:70` for one IAM introspects as inactive, and `:93` throws `ForbiddenException` (403) when
+  IAM's `authorize` call comes back disallowed. Nest resolves guards via `canActivate` before
+  the route handler ever runs (`mirror.controller.ts:37`'s `@UseGuards(IamAuthGuard)` covers
+  `@Post('sync')` at `:41`), so a 401'd `POST /v1/sync` never reached `MirrorController`'s
+  body-handling at all — the request can be replayed verbatim once a fresh token exists. A 403
+  means IAM said no to this subject for this action; retrying the same request changes nothing,
+  and any retry logic must not treat the two alike.
+- **`refreshTokens` fails through one shared, unstructured throw.** Both `exchangeCodeForTokens`
+  and `refreshTokens` (`packages/shared/src/iamPkce.ts:107-116`) funnel through the same
+  `postToken` (defined at `:119`); its error path is `:129-136`, and the actual `throw` —
+  `` `vipper.iam token request failed (${res.status} ${detail})` `` with `detail` as `res.text()`
+  read raw, no JSON parse — is at `:136`, seven lines past the function's own opening (the plan
+  cites `:119` for the function, not the throw; worth the seven-line correction since a later
+  step edits this exact line). There is today no way to tell `invalid_grant` (refresh token is
+  dead, re-authenticate) from a `503` (transient, retry) except by parsing that string.
+  `iamPkce.test.ts:120` asserts `.rejects.toThrow(/token request failed \(400/)` against
+  `exchangeCodeForTokens` — **that substring must survive** whatever structure gets added around
+  it; the fix is additive (a typed error / status code alongside the message), not a rewrite of
+  the message itself.
+- **There is no DOM harness in this workspace, and that is a standing, deliberate decision.**
+  `test/shell-parity.test.ts:5-8`: "no jsdom, no `@testing-library`... adding one is a
+  workspace-wide decision that the v0.82.0 branch deliberately left outside its scope." Any gate
+  logic this fix adds — what counts as "syncing," when the board curtains, when a retry is
+  attempted — has to be a plain exported function with its own `.test.ts`, not something proven
+  by rendering. The one available precedent for testing a main-process module without a
+  renderer is `iamSignIn.ts`'s own rule, stated in its header (`apps/client/src/main/
+  iamSignIn.ts:8`): "Electron-free by design (no `import('electron')`)... testable with a real
+  loopback server and `fetch`." Anything this fix adds to the token-refresh path on the desktop
+  side should hold to the same rule, for the same reason — it is what lets it run under vitest
+  at all.
+
+### The critical files, walked one by one on the finished tip (`13ca41c`)
+
+Step 9's table names twelve files across three areas — the shared token-error grammar, the
+desktop's single-flight minter and its call sites, and the web's own copies of the same two
+ideas (single-flight token, sync-progress gate). All twelve were re-opened on `13ca41c`, and
+all three gates re-run there rather than trusted from whatever step last measured them on the
+same commit.
+
+All twelve exist, and all twelve changed on this branch — unlike the wider Phase 26 round this
+convention comes from, this fix has no file the plan named as critical but left untouched, so
+there is no "unchanged, and which kind" list here.
+
+| File | What it had to end up as | On `13ca41c` |
+| --- | --- | --- |
+| `packages/shared/src/iamPkce.ts` | `IamTokenError`, `isTerminalGrantError`, error-body parsing, message text unchanged | ✅ `IamTokenError` at :125, `isTerminalGrantError` at :152 duck-typed on `oauthError` rather than `instanceof` (`@tm/shared` reaches `apps/client` as a source alias but `apps/web`/`apps/server` as built `dist` — two module instances); `postToken`'s throw at :190 still reads `` vipper.iam token request failed (${status} ${detail}) `` — `iamPkce.test.ts`'s pinned substring survives |
+| `apps/client/src/main/cloudToken.ts` | new — `CloudTokenProvider`, the single-flight | ✅ 163 lines; `get()` at :97 collapses concurrent callers onto one `inflight` promise; `mint()` at :137 sets `rejected` only on `isTerminalGrantError`, leaving every other failure (network blip, 503) retryable on the next tick |
+| `apps/client/src/main/ipc.ts` | status (plan cites :1568), signOut (:1595), the replaced block (:1610-1637), sender wiring (:3588/3601/3620) | ✅ present at :1571, :1602, :1607-1614, and :3584/3601/3618 — each a handful of lines off the plan's own citation because the file grew elsewhere on the branch since the plan was written, not because anything is missing: `iam:getConfigStatus` reads `cloudToken.state()`/`.explain()`/`.lastMintedAt()`, `iam:signOut` calls `cloudToken.forget()`, and `cloudEvents`/`cloudAttachments`/`cloudPoller` each wire `onAuthRejected: () => cloudToken.invalidate()` |
+| `apps/client/src/main/cloudPoller.ts` | `onAuthRejected`, `describeMissingToken`, `post()` extraction, retry-once | ✅ `describeMissingToken` read at :204 when `getAccessToken()` answers null; `post()` extracted at :292; a 401 at :256 calls `onAuthRejected` then re-mints and retries the SAME request once with the fresh token — never in a loop |
+| `apps/client/src/main/index.ts` | `app.requestSingleInstanceLock()` | ✅ :36, quitting every later copy outright and focusing the survivor on `second-instance`; the comment at :33 names the gap this closes — two copies racing the desktop's own refresh-token rotation would each spend the same grant |
+| `apps/client/src/renderer/src/Settings.tsx` | cloud section: state-driven hint + warning bar | ✅ `iamHint(iamStatus)` on the account `Field` at :1352, a `MessageBar intent="warning"` at :1353 gated on `authState === 'rejected'`, and the sign-in button's label/appearance flipping on the same state |
+| `apps/web/src/auth/cloudAuth.ts` | the same single-flight + terminal handling | ✅ `getAccessToken()` at :158 mirrors `CloudTokenProvider.get()`'s `inflight` guard; `mint()` at :189 calls every `onGrantRevoked` listener and drops the stored refresh token on `isTerminalGrantError` — what lets `useCloudAuth` stop curtaining a board that will never sync again |
+| `apps/web/src/board/syncGate.ts` | new — `boardIsReady`, `syncCurtainText`, `syncStatusLabel`, `describeAge` | ✅ 70 lines, all four exported; `boardIsReady` at :31 reads only the latched `initialSyncComplete`, never `draining` — the rule its own header states: ready is permanent once reached |
+| `apps/web/src/board/BoardPoller.ts` | `onPollingChange` | ✅ optional dep at :35, called `true` at the top of `tick()` (:113) and `false` in its `finally` (:123) — a fact about a request in flight, not about what `onResponse`/`onError` last said |
+| `apps/web/src/board/useCloudBoard.ts` | `SyncProgress` + the `hasMore` latch | ✅ `syncProgress` state at :77; the latch is the one-liner at :144 — `initialSyncComplete: p.initialSyncComplete \|\| response.hasMore !== true` — true forever once either side has been true once |
+| `apps/web/src/App.tsx` | board branch, status-bar clause | ✅ `boardIsReady(board.syncProgress)` gates the board render at :225, `<SyncCurtain>` (from `@tm/ui/SyncCurtain`, imported :28) takes over otherwise; the status bar's `syncStatusLabel(...)` clause at :210 |
+| `packages/ui/src/SyncCurtain.tsx` | new — the blue curtain | ✅ 57 lines; its own header explains why it is not `PaneLoading` — a network round trip worth seconds, not a millisecond-scale local read worth a skeleton |
+
+**The gates, forced, on `13ca41c`.** `pnpm typecheck --force`: 9/9, 0 cached. `pnpm build
+--force`: 6/6, 0 cached. `pnpm test`: 180 test files passed (1 skipped), 3020 tests passed (11
+skipped). Nothing here was trusted from an earlier step's numbers on this same commit — the
+point of forcing is that a cached green from before this walk would not have proven anything
+about the tip it walked.
+
+No file named in the table needed a code change. The walk found the intended behaviour already
+in place from steps 2-8; the only drift found was the plan's own `ipc.ts` line citations, which
+moved because the file grew elsewhere on the branch after the plan was written, not because any
+wiring is missing.
+
+---
+
 ## Conventions for every phase
 
 - **Contract first.** New data crossing the UI↔engine boundary gets its types in
