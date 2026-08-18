@@ -17,9 +17,9 @@ const project = (over: Partial<Project>): Project => ({
   baseBranch: '',
   writeBackPlan: false,
   autoRelease: false,
+  autoCreatePr: false,
   autoIntegrate: null,
   planAligned: true,
-  kind: 'agent',
   jiraEpicKeys: [],
   ticketPrefix: '',
   target: LOCAL_TARGET,
@@ -51,8 +51,8 @@ describe('normalizeEpicKey', () => {
 });
 
 describe('agentProjectsOf', () => {
-  it('keeps only agent projects', () => {
-    const projects = [project({ id: 'a' }), project({ id: 'b', kind: 'plan' })];
+  it('keeps only projects with a repo', () => {
+    const projects = [project({ id: 'a' }), project({ id: 'b', path: '' })];
     expect(agentProjectsOf(projects).map((p) => p.id)).toEqual(['a']);
   });
 });
@@ -78,9 +78,9 @@ describe('resolveAgentProject', () => {
     expect(resolveAgentProject(t, [alpha])?.id).toBe('alpha');
   });
 
-  it('never resolves to a plan project, even on an epic-key match', () => {
-    const legacy = project({ id: 'legacy', kind: 'plan', jiraEpicKeys: ['ABC-100'] });
-    expect(resolveAgentProject(task({ externalParentKey: 'ABC-100' }), [legacy])).toBeNull();
+  it('never resolves to a project with no repo, even on an epic-key match', () => {
+    const noRepo = project({ id: 'no-repo', path: '', jiraEpicKeys: ['ABC-100'] });
+    expect(resolveAgentProject(task({ externalParentKey: 'ABC-100' }), [noRepo])).toBeNull();
   });
 
   it('falls back to the epic match when the assigned project no longer exists', () => {

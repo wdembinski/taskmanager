@@ -25,7 +25,6 @@ const project = (over: Partial<Project>): Project =>
   ({
     id: 'p1',
     name: 'Some project',
-    kind: 'plan',
     ...over,
   }) as Project;
 

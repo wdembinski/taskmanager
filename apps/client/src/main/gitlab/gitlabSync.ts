@@ -62,6 +62,16 @@ export interface GitLabSyncOptions {
   knownKeys: readonly string[];
   /** JIRA key → board task id, for filing a matched MR. */
   taskIdByKey: ReadonlyMap<string, string>;
+  /**
+   * Every card id on the board, so a remembered link can be checked against it.
+   *
+   * `MergeRequest.openedForTaskId` outlives the card it names — a card can be deleted or
+   * archived while its merge request is still open upstream — and a row filed under a card
+   * that is no longer there is exactly the orphan `taskId: null` exists to describe. So the
+   * link is honoured only while the card is on the board, and falls back to matching by key
+   * the moment it is not.
+   */
+  knownTaskIds: ReadonlySet<string>;
   identity: GitLabIdentityCache | null;
   now: number;
 }
@@ -80,8 +90,16 @@ const BAD_PIPELINES: ReadonlySet<PipelineStatus> = new Set(['failed', 'canceled'
  *
  * `manual` and `unknown` are deliberately absent: both can sit unchanged indefinitely, so
  * treating them as in-flight would re-read those MRs on every single poll forever.
+ *
+ * Exported for the "read back a settled MR" pass in `ipc.ts` (both forges): an MR whose
+ * pipeline was still running the moment it merged must keep being read back — otherwise its
+ * last known stage keeps whatever it was mid-run, forever. See `describeMergeRequest.ts`.
  */
-const PIPELINE_IN_FLIGHT: ReadonlySet<PipelineStatus> = new Set(['created', 'pending', 'running']);
+export const PIPELINE_IN_FLIGHT: ReadonlySet<PipelineStatus> = new Set([
+  'created',
+  'pending',
+  'running',
+]);
 
 /**
  * Whether this MR is worth spending its detail calls on.
@@ -110,11 +128,17 @@ export function mergeRequestId(repoId: number, number: number): string {
  *
  * Re-matching only sees the fields we store, and the description is not one of them — so a
  * key discovered from the description on the last real sync is kept rather than forgotten.
+ *
+ * A card this app opened the MR FOR beats all of it, and that ordering is the point rather
+ * than a tie-break: everything below is an attempt to work out which card an MR belongs to
+ * from what the forge says about it, and `openedForTaskId` is not an attempt — it is the
+ * answer, recorded at the moment the button was pressed. See {@link MergeRequest.openedForTaskId}.
  */
 function matchTaskId(
-  mr: Pick<MergeRequest, 'title' | 'sourceBranch' | 'issueKeys'>,
-  opts: Pick<GitLabSyncOptions, 'knownKeys' | 'taskIdByKey'>,
+  mr: Pick<MergeRequest, 'title' | 'sourceBranch' | 'issueKeys' | 'openedForTaskId'>,
+  opts: Pick<GitLabSyncOptions, 'knownKeys' | 'taskIdByKey' | 'knownTaskIds'>,
 ): string | null {
+  if (mr.openedForTaskId && opts.knownTaskIds.has(mr.openedForTaskId)) return mr.openedForTaskId;
   const found = discoverIssueKeys(
     { title: mr.title, sourceBranch: mr.sourceBranch },
     opts.knownKeys,
@@ -162,7 +186,16 @@ export function reconcileMergeRequests(
       opts.knownKeys,
     );
     const key = pickTaskKey(issueKeys);
-    const taskId = key ? (opts.taskIdByKey.get(key) ?? null) : null;
+    // The card that opened it, if we opened it and that card is still on the board; the key
+    // this fetch found otherwise. A sync must not be able to un-file a merge request from
+    // the card it was opened for — see {@link matchTaskId}.
+    const openedForTaskId = prior?.openedForTaskId ?? null;
+    const taskId =
+      openedForTaskId && opts.knownTaskIds.has(openedForTaskId)
+        ? openedForTaskId
+        : key
+          ? (opts.taskIdByKey.get(key) ?? null)
+          : null;
 
     // Notes are only re-read for MRs that changed, so an absent list means "keep what
     // we knew" rather than "there are none".
@@ -192,6 +225,9 @@ export function reconcileMergeRequests(
     upserts.push({
       id,
       taskId,
+      // Carried, never re-derived — the same rule the read markers and the local rename
+      // follow, and for the same reason: GitLab has never heard of it.
+      openedForTaskId,
       provider: 'gitlab',
       repoId: mr.repoId,
       projectPath: mr.projectPath,
@@ -274,7 +310,7 @@ export function landedTaskIds(mrs: readonly MergeRequest[]): string[] {
  */
 export function rematchMergeRequests(
   existing: readonly MergeRequest[],
-  opts: Pick<GitLabSyncOptions, 'knownKeys' | 'taskIdByKey'>,
+  opts: Pick<GitLabSyncOptions, 'knownKeys' | 'taskIdByKey' | 'knownTaskIds'>,
 ): MergeRequest[] {
   const changed: MergeRequest[] = [];
   for (const mr of existing) {

@@ -22,7 +22,13 @@
  * on a card that already existed. The card is written locally first and the ticket is
  * linked onto it, so JIRA being unreachable costs you the ticket and not the card.
  *
- * Files are the fourth, and the one thing here that cannot be written when it is asked for:
+ * A fourth choice sits above all of them: **which board** the card is written to — Personal,
+ * the default, or any other project with no plan file. Personal writes an ordinary
+ * card (`task:create`); a project board writes a native ticket instead (`ticket:create`),
+ * keyed by that project's own prefix. Not the same question as *which project it is filed
+ * under* — that tags what the card is about and never moves it; this decides where it lives.
+ *
+ * Files are the fifth, and the one thing here that cannot be written when it is asked for:
  * an attachment hangs off a task id, and there is no task yet. So they are **staged** — held
  * as paths while the form is filled in, and copied once the row exists. See
  * {@link stageAttachments} for why the `@name` you cite before that is the name you get.
@@ -60,7 +66,8 @@ import {
 import { Switch } from '@fluentui/react-components';
 import { AttachRegular } from '@fluentui/react-icons';
 import type { Project, Task, TaskType } from '@tm/shared/model';
-import type { JiraIssueTypeOption, JiraProjectOption } from '@tm/shared/ipc';
+import { PERSONAL_PROJECT_ID } from '@tm/shared/model';
+import type { BoardScope, JiraIssueTypeOption, JiraProjectOption } from '@tm/shared/ipc';
 import { attachmentName, insertAttachmentRef } from '@tm/shared/attachments';
 import { LINK_GATE_LABEL, LINK_REFUSAL_MESSAGE } from '@tm/shared/taskChain';
 import { isFileDrag } from './AttachmentStrip';
@@ -139,6 +146,12 @@ export interface AddTaskForm {
   asJira: boolean;
   jiraProjectKey: string;
   jiraTypeId: string;
+  /**
+   * The board this card is created ON — `PERSONAL_PROJECT_ID` or a project with no plan
+   * file. Not the same question as {@link projectTagId}: this is *where the card lives*,
+   * that is *what the card is about*.
+   */
+  boardId: string;
 }
 
 /**
@@ -156,9 +169,15 @@ export type AddTaskPlan =
   | { kind: 'incomplete'; error: string | null }
   /** One step appended to `parentId`'s chain. */
   | { kind: 'step'; parentId: string; step: { title: string; description: string | null } }
-  /** A card, and — when `ticket` is set — a JIRA issue linked onto it afterwards. */
+  /**
+   * A card, and — when `ticket` is set — a JIRA issue linked onto it afterwards. `board`
+   * says which board it is written to (`PERSONAL_PROJECT_ID` calls `task:create`, anything
+   * else calls `ticket:create`) — the one choice a step never makes, since it joins its
+   * parent's board by inheriting it.
+   */
   | {
       kind: 'card';
+      board: string;
       card: {
         title: string;
         phase?: string;
@@ -196,6 +215,7 @@ export function addTaskPlan(form: AddTaskForm): AddTaskPlan {
 
   return {
     kind: 'card',
+    board: form.boardId,
     card: {
       title,
       phase: form.phase.trim() || undefined,
@@ -339,6 +359,11 @@ export function AddTaskDialog({
   const [description, setDescription] = useState('');
   /** The project the card is filed under — tagging, not delegation. */
   const [projectTagId, setProjectTagId] = useState<string>(NO_PROJECT);
+  /** The board this card is created ON — Personal, or a project with no plan file. */
+  const [boardId, setBoardId] = useState<string>(projectId ?? PERSONAL_PROJECT_ID);
+  /** What {@link boardId} may be set to — `board:scopes`' own list, fetched fresh each open
+   *  since a project can gain or lose its plan file between one Add and the next. */
+  const [boards, setBoards] = useState<BoardScope[]>([]);
   const [parentId, setParentId] = useState<string>(NO_PARENT);
   /** The card this one runs after, drawn as a link the moment the card exists. */
   const [runsAfterId, setRunsAfterId] = useState<string>(NO_LINK);
@@ -366,6 +391,7 @@ export function AddTaskDialog({
       setType('feature');
       setDescription('');
       setProjectTagId(NO_PROJECT);
+      setBoardId(projectId ?? PERSONAL_PROJECT_ID);
       setParentId(defaultParentId ?? NO_PARENT);
       setRunsAfterId(NO_LINK);
       setError(null);
@@ -375,7 +401,21 @@ export function AddTaskDialog({
       setStaged([]);
       setOver(false);
     }
-  }, [open, defaultParentId]);
+  }, [open, defaultParentId, projectId]);
+
+  // The board list, re-fetched on every open: a project can gain or lose its plan file (and
+  // so its eligibility as a board) between one Add and the next, and the switch itself is a
+  // network call not worth making while the dialog is closed.
+  useEffect(() => {
+    if (!open) return;
+    let live = true;
+    void transport.invoke('board:scopes').then((list) => {
+      if (live) setBoards(list);
+    });
+    return () => {
+      live = false;
+    };
+  }, [open, transport]);
 
   // The projects list is only worth fetching once the switch is on — it is a network
   // call, and most cards are still local. Seeded from what was created last time.
@@ -423,8 +463,17 @@ export function AddTaskDialog({
 
   const parent = useMemo(() => parents.find((p) => p.id === parentId) ?? null, [parents, parentId]);
   const isStep = parent !== null;
-  /** A ticket belongs to a card, so a step is never offered one (nor filed, nor typed). */
-  const canJira = jiraEnabled && !isStep;
+  /**
+   * A ticket belongs to a card, so a step is never offered one (nor filed, nor typed). Also
+   * Personal-only: JIRA sync only ever reconciles the Personal board, so raising one for a
+   * card written straight onto a project's own ticket list would adopt a card the sync can
+   * never find again.
+   */
+  const canJira = jiraEnabled && !isStep && boardId === PERSONAL_PROJECT_ID;
+  const selectedBoard = useMemo(
+    () => boards.find((b) => b.id === boardId) ?? null,
+    [boards, boardId],
+  );
   const filedProject = useMemo(
     () => projects.find((p) => p.id === projectTagId) ?? null,
     [projects, projectTagId],
@@ -551,7 +600,6 @@ export function AddTaskDialog({
   }
 
   async function save(): Promise<void> {
-    if (!projectId) return;
     const plan = addTaskPlan({
       title,
       description,
@@ -564,6 +612,7 @@ export function AddTaskDialog({
       asJira: canJira && asJira,
       jiraProjectKey,
       jiraTypeId,
+      boardId,
     });
     if (plan.kind === 'incomplete') {
       setError(plan.error);
@@ -583,10 +632,20 @@ export function AddTaskDialog({
       // the chain); everything else is an ordinary ad-hoc card.
       if (plan.kind === 'step') {
         createdId = (await transport.invoke('task:addSubtask', plan.parentId, plan.step)).id;
-      } else {
-        created = await transport.invoke('task:create', projectId, plan.card);
+      } else if (plan.board === PERSONAL_PROJECT_ID) {
+        created = await transport.invoke('task:create', plan.board, plan.card);
         createdId = created.id;
         if (plan.ticket) await ticketFor(created.id, plan.ticket);
+      } else {
+        // A project board: the card IS a native ticket, allocated its key by the project's
+        // own counter. `type` has no ticket equivalent (issueType defaults to 'task') and
+        // JIRA linking is Personal-only (`canJira`), so neither travels here.
+        created = await transport.invoke('ticket:create', plan.board, {
+          title: plan.card.title,
+          phase: plan.card.phase,
+          description: plan.card.description,
+        });
+        createdId = created.id;
       }
       // Only now is there a `taskId` to hang a file off — the whole reason they were staged.
       if (staged.length) {
@@ -624,6 +683,31 @@ export function AddTaskDialog({
                   placeholder="What should Claude do?"
                 />
               </Field>
+              {/* Where the card is WRITTEN — Personal, or a project with no plan file of its
+                  own. Never offered for a step, which joins its parent's board by
+                  inheriting it rather than choosing one of its own. */}
+              {boards.length > 1 && !isStep && (
+                <Field
+                  label="Board"
+                  hint={
+                    boardId === PERSONAL_PROJECT_ID
+                      ? 'A card on My Tasks.'
+                      : 'A native ticket on this project’s own board, keyed by its prefix.'
+                  }
+                >
+                  <Dropdown
+                    value={selectedBoard?.name ?? 'Personal'}
+                    selectedOptions={[boardId]}
+                    onOptionSelect={(_e, d) => setBoardId(d.optionValue ?? PERSONAL_PROJECT_ID)}
+                  >
+                    {boards.map((b) => (
+                      <Option key={b.id} value={b.id} text={b.name}>
+                        {b.name}
+                      </Option>
+                    ))}
+                  </Dropdown>
+                </Field>
+              )}
               {parents.length > 0 && (
                 <Field
                   label="Step of (optional)"
@@ -885,19 +969,24 @@ export function AddTaskDialog({
 
               {!isStep && !asJira && (
                 <>
-                  <Field label="Type">
-                    <Dropdown
-                      value={TASK_TYPES.find((t) => t.value === type)?.label ?? ''}
-                      selectedOptions={[type]}
-                      onOptionSelect={(_e, d) => setType(d.optionValue as TaskType)}
-                    >
-                      {TASK_TYPES.map((t) => (
-                        <Option key={t.value} value={t.value}>
-                          {t.label}
-                        </Option>
-                      ))}
-                    </Dropdown>
-                  </Field>
+                  {/* `type` (bug/feature) has no ticket equivalent — a native ticket's
+                      `issueType` defaults to 'task' and is edited afterwards, on the card —
+                      so the picker is only worth asking on the board it actually applies to. */}
+                  {boardId === PERSONAL_PROJECT_ID && (
+                    <Field label="Type">
+                      <Dropdown
+                        value={TASK_TYPES.find((t) => t.value === type)?.label ?? ''}
+                        selectedOptions={[type]}
+                        onOptionSelect={(_e, d) => setType(d.optionValue as TaskType)}
+                      >
+                        {TASK_TYPES.map((t) => (
+                          <Option key={t.value} value={t.value}>
+                            {t.label}
+                          </Option>
+                        ))}
+                      </Dropdown>
+                    </Field>
+                  )}
                   <Field
                     label="Phase / milestone (optional)"
                     hint={

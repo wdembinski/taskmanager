@@ -30,6 +30,12 @@
  * Then a third card is Started while the gate is up, to prove the wall holds the queue
  * rather than merely marking the run that hit it.
  *
+ * A fourth card is DELEGATED to an agent project against that same standing gate — the
+ * thing this phase is about, since a human may perfectly well hand a card to an agent while
+ * the account is walled — and then the gate is lifted, which is the half nothing else here
+ * covers: a park is only worth anything if the reset actually starts what it was holding.
+ * All three held cards must come back, including the two that never had a session to rejoin.
+ *
  * The app is NEVER launched (RELEASE.md rule 6 — there is no single-instance lock, and a
  * second instance killed a live session on 2026-08-02). Nothing outside the scratch
  * directory is written: no real profile, no git repository, no network. `hostFor` returns
@@ -342,6 +348,7 @@ const SCENARIOS = String.raw`
 import { readFileSync, writeFileSync } from 'node:fs';
 import { delimiter } from 'node:path';
 import { PERSONAL_PROJECT_ID } from '@shared/model';
+import { CARD_RECORDS_PARK, isParkedRefusal } from '@shared/scheduler';
 import { Scheduler } from '__REPO__/src/main/scheduler';
 import { SessionManager } from '__REPO__/src/main/sessionManager';
 import { createStore } from '__REPO__/src/main/store';
@@ -632,6 +639,170 @@ check(
   'and no third CLI was spawned',
   invocations().length === 2,
   invocations().length + ' invocation(s)',
+);
+
+// ---------------------------------------------------------------------------
+section('4. A card DELEGATED into the wall is queued, and the reset starts it');
+
+/**
+ * What this section can and cannot reach.
+ *
+ * The task:assignAgent handler itself is not called: ipc.ts needs Electron ipcMain, and
+ * registerIpcHandlers builds its OWN store, scheduler and background pollers — one of which
+ * (ClaudeUsagePoller) spawns the CLI on its own clock and would put invocations in the log
+ * that every count above asserts the absence of. So what runs here is what the handler runs,
+ * in its order: the assignment patch it writes before it starts anything (ipc.ts:884), the
+ * startTaskNow it calls, the re-read it hands back, and the shared rule it branches on —
+ * isReportablePark IS the two imports below, so flipping CARD_RECORDS_PARK.limit turns
+ * "resolves" back into "throws" here exactly as it does there. The handler own two lines are
+ * covered by their premises rather than executed.
+ *
+ * Measured, rather than assumed, on 16 Aug 2026 — and the answer is sharper than "covered by
+ * their premises", so do not read that sentence as reassurance. The premises really are live:
+ * flipping CARD_RECORDS_PARK.limit reddens the fourth check below AND packages/shared own unit
+ * tests. But neutering isReportablePark itself — which is the WHOLE of the behaviour change,
+ * all three handlers back to throwing — leaves format, typecheck, all fifteen test tasks and
+ * every one of this script 42 checks green. Nothing automated anywhere touches the branch that
+ * consumes the premises.
+ *
+ * So the one click that covers it is a human opening the assign dialog against a real standing
+ * limit and watching it close instead of erroring. That is not a nice-to-have on the owed list;
+ * for this line it is the only cover there is. The seam that would close it does not exist
+ * today: registerIpcHandlers takes only a BrowserWindow and builds everything else itself, so
+ * a test would need a refactor of ipc.ts rather than a new file.
+ */
+const delegated = store.createTask(PERSONAL_PROJECT_ID, { title: 'Delegate this into the wall' });
+if (!delegated) throw new Error('the store refused the delegated card');
+check(
+  'the new card is unassigned and unheld to begin with',
+  !delegated.agentProjectId && delegated.status !== 'blocked-by-limit',
+  delegated.status + ' / ' + JSON.stringify(delegated.agentProjectId),
+);
+
+// The delegation lands on the card BEFORE anything is started, which is the whole reason a
+// wall cannot turn it into a failed assignment: by the time the gate answers, the card
+// already belongs to the agent project.
+const assigned = store.updateTask(delegated.id, {
+  agentProjectId: agent.id,
+  projectTagId: agent.id,
+  agentMode: null,
+  agentModel: null,
+  agentBranch: null,
+  sessionId: null,
+});
+check(
+  'the assignment stuck',
+  assigned !== null && assigned.agentProjectId === agent.id,
+  JSON.stringify(assigned === null ? null : assigned.agentProjectId),
+);
+
+const assignOutcome = scheduler.startTaskNow(delegated.id);
+const assignRefusal = 'refused' in assignOutcome ? assignOutcome.refused : null;
+check(
+  'the start is held by the standing gate',
+  assignRefusal === 'limit',
+  JSON.stringify(assignOutcome),
+);
+check(
+  'and that refusal is a park the CARD records — which is what lets the handler RESOLVE',
+  assignRefusal !== null && isParkedRefusal(assignRefusal) && CARD_RECORDS_PARK[assignRefusal],
+  JSON.stringify(assignRefusal),
+);
+// Why the handler re-reads instead of returning the row it already had: the park is written
+// DURING startTaskNow, so the row it fetched a moment earlier still says nothing is held.
+check(
+  'the row fetched before the start does NOT yet say the card is held',
+  assigned !== null && assigned.status !== 'blocked-by-limit',
+  assigned === null ? 'no row' : assigned.status,
+);
+const rereadDelegated = store.getTask(delegated.id);
+check(
+  'the card the handler hands back explains itself: blocked-by-limit',
+  rereadDelegated.status === 'blocked-by-limit',
+  rereadDelegated.status,
+);
+check(
+  'and the gate ON DISK names it, so the reset will come for it',
+  ((store.loadLimitGate() ?? {}).parkedTaskIds ?? []).includes(delegated.id),
+  JSON.stringify(store.loadLimitGate()),
+);
+await sleep(400);
+check(
+  'delegating started no CLI of its own',
+  invocations().length === 2,
+  invocations().length + ' invocation(s)',
+);
+
+// ---------------------------------------------------------------------------
+// The reset. resumeLimitNow is what the banner "Resume now" hits, and what the gate's
+// own timer does an hour from now — the same lift either way. A park is only worth
+// something if this actually starts the work again, and the two cards that never ran have
+// nothing to resume BY: no session id, and (for the delegated one) no recipe either.
+const before = invocations().length;
+scheduler.resumeLimitNow();
+
+await waitFor('the reset to start the parked cards', () => invocations().length >= before + 3);
+await sleep(400);
+check(
+  'exactly the three cards the gate held were started, and nothing else',
+  invocations().length === before + 3,
+  invocations().length - before + ' new invocation(s)',
+);
+
+/**
+ * The argv of the run the reset started for one card, or null if it started none.
+ *
+ * Matched on the session id the CLI echoed back onto the task, because that is the only
+ * thing in an argv that names a task at all — the prompt goes over stdin, and all three runs
+ * share one cwd.
+ */
+async function resumedArgv(task, what) {
+  await waitFor(what + ' to be running again', () => {
+    const live = store.getTask(task.id);
+    return live.status === 'running' && typeof live.sessionId === 'string';
+  });
+  const sessionId = store.getTask(task.id).sessionId;
+  const found = invocations()
+    .slice(before)
+    .find((inv) => inv.argv.includes(sessionId));
+  return found ? found.argv : null;
+}
+
+const delegatedArgv = await resumedArgv(delegated, 'the delegated card');
+check(
+  'the card delegated into the wall got its own CLI at the reset',
+  delegatedArgv !== null,
+  JSON.stringify(store.getTask(delegated.id).status),
+);
+const nextArgv = await resumedArgv(next, 'the card Started against the gate');
+check('so did the card a human Started against the gate', nextArgv !== null, JSON.stringify(nextArgv));
+check(
+  'and it opened a FRESH session — it never had one to resume',
+  nextArgv !== null && nextArgv.includes('--session-id') && !nextArgv.includes('--resume'),
+  JSON.stringify(nextArgv),
+);
+const workerArgv = await resumedArgv(worker, 'the card that hit the wall');
+check(
+  'while the card that DID run is rejoined by --resume, not restarted from nothing',
+  workerArgv !== null && workerArgv.includes('--resume'),
+  JSON.stringify(workerArgv),
+);
+
+check('the gate is down', scheduler.currentLimit() === null, JSON.stringify(scheduler.currentLimit()));
+check(
+  'its row is gone from app_state, so a restart comes back holding nothing',
+  store.loadLimitGate() === null,
+  JSON.stringify(store.loadLimitGate()),
+);
+check(
+  'and the banner was told the wait is over',
+  limits.length > 0 && limits[limits.length - 1] === null,
+  JSON.stringify(limits[limits.length - 1]),
+);
+check(
+  'no card was left behind blocked-by-limit',
+  [worker, next, delegated].every((t) => store.getTask(t.id).status !== 'blocked-by-limit'),
+  JSON.stringify([worker, next, delegated].map((t) => store.getTask(t.id).status)),
 );
 
 // ===========================================================================

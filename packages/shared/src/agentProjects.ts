@@ -2,21 +2,22 @@
  * Which **agent project** (repo) a My Tasks card should be worked in.
  *
  * A card's own `projectId` always stays on the Personal board; the agent project is a
- * separate pointer that names the repo a delegated run happens in (see `ProjectKind`
- * in `model.ts`). Resolution is pure and lives in `shared` because both sides need the
+ * separate pointer that names the repo a delegated run happens in (see `hasRepo` in
+ * `model.ts`). Resolution is pure and lives in `shared` because both sides need the
  * same answer: the renderer pre-fills the assign dialog with it, and the main process
  * re-resolves when a run is launched.
  */
 import type { Project, Task } from './model';
+import { hasRepo } from './model';
 
 /** Canonical form of a JIRA epic key: trimmed and upper-cased (keys are case-insensitive). */
 export function normalizeEpicKey(key: string): string {
   return key.trim().toUpperCase();
 }
 
-/** Only agent projects can host a delegated task; plan projects are never candidates. */
+/** Only a project with a repo can host a delegated task — one with no directory never can. */
 export function agentProjectsOf(projects: Project[]): Project[] {
-  return projects.filter((p) => p.kind === 'agent');
+  return projects.filter(hasRepo);
 }
 
 /**
@@ -31,9 +32,9 @@ export function agentProjectsOf(projects: Project[]): Project[] {
  * 3. The agent project whose `jiraEpicKeys` contain the ticket's epic/parent key.
  * 4. `null` — nothing owns it, so the assign dialog has to ask.
  *
- * `projects` may be the full project list; plan projects are ignored. When two agent
- * projects claim the same epic the first in list order wins (creation order), which is
- * deterministic — the UI still lets the human override.
+ * `projects` may be the full project list; projects with no repo are ignored. When two
+ * agent projects claim the same epic the first in list order wins (creation order),
+ * which is deterministic — the UI still lets the human override.
  */
 export function resolveAgentProject(task: Task, projects: Project[]): Project | null {
   const candidates = agentProjectsOf(projects);

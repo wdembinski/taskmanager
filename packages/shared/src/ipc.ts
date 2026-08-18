@@ -37,6 +37,11 @@ import type {
   GitPreflight,
   JiraStatusCategory,
   ManualStatus,
+  Milestone,
+  MilestoneInput,
+  Person,
+  PersonInput,
+  PersonPatch,
   PlanValidation,
   Project,
   ProjectPatch,
@@ -44,20 +49,33 @@ import type {
   Task,
   TaskActivityEntry,
   TaskType,
+  TicketInput,
+  TicketLabel,
+  TicketLabelInput,
+  TicketLink,
+  TicketLinkType,
+  TicketPatch,
 } from './model';
 import type { TaskAttachment, UploadedAttachment } from './attachments';
 import type { GitGraph } from './gitGraph';
 import type { ExecTarget, TargetReadiness } from './execTarget';
-import type { ActiveRun, SchedulerChange, TaskChange } from './scheduler';
+import type { ActiveRun, RunOutcome, SchedulerChange, TaskChange } from './scheduler';
 import type { AttentionAnswer, AttentionItem } from './attention';
 import type { AuthState } from './auth';
 import type { LimitState } from './limit';
 import type { MergeRequest } from './mergeRequest';
 import type { LinkGate, LinkResult, TaskLink } from './taskChain';
+import type { TicketLinkResult } from './ticketLinks';
 import type { AppSettings } from './settings';
 import type { SyncState } from './sync';
 import type { UpdateState } from './update';
-import type { UsageQuotas, UsageSample, UsageSeriesPoint, UsageSummary } from './usage';
+import type {
+  SessionStat,
+  UsageQuotas,
+  UsageSample,
+  UsageSeriesPoint,
+  UsageSummary,
+} from './usage';
 
 /** Result of checking whether the local `claude` CLI is installed and logged in. */
 export interface ClaudeStatus {
@@ -219,6 +237,19 @@ export interface AppInfo {
 }
 
 /**
+ * One board `board:tasks`/`board:archived`'s `scope` may select — what a scope picker
+ * offers. The Personal board first, then every OTHER project with no plan file (a bare
+ * repo or a ticket project): the ones a human arranges by hand rather than a queue the
+ * scheduler drains top-to-bottom. `color` is the same board-stripe hex as `Project.color`
+ * (`''` for none); Personal always carries `''`.
+ */
+export interface BoardScope {
+  id: string;
+  name: string;
+  color: string;
+}
+
+/**
  * INVOKE channels: request → response.
  *
  * Each key is a channel name; the function type documents its arguments and the
@@ -273,11 +304,22 @@ export interface IpcApi {
   'project:pickDirectory': () => Promise<string | null>;
   /** Open a native file picker (markdown), for choosing a custom plan file (Phase 8). */
   'project:pickFile': () => Promise<string | null>;
-  /** Add a project, parse its plan into tasks, and return it with those tasks. */
+  /**
+   * Add a project — a plan-driven queue, a bare repo, a ticket project, or any mix of the
+   * three, since capabilities are derived from which fields are set (see `hasPlan` /
+   * `hasRepo` / `ownsTickets` in `@shared/model`) rather than from a `kind` the caller picks.
+   * A project with no folder is legal: `path` is optional on {@link AddProjectInput}. Parses
+   * a plan into tasks when one exists, and returns it with those tasks (empty otherwise).
+   */
   'project:add': (input: AddProjectInput) => Promise<ProjectWithTasks>;
-  /** List every project, each bundled with its current tasks. */
+  /**
+   * Every project, each bundled with its current tasks — every SHAPE of project (plan-driven,
+   * bare repo, ticket project) in the one list, since none of them is a special case any more.
+   * The lone exclusion is the built-in Personal board (`PERSONAL_PROJECT_ID`): it is the
+   * standalone My Tasks board rather than something to list or manage as a project.
+   */
   'project:list': () => Promise<ProjectWithTasks[]>;
-  /** Remove a project and all its tasks. */
+  /** Remove a project and all its tasks. Rejects while one of its runs is still live. */
   'project:remove': (id: string) => Promise<void>;
   /** Re-read a project's plan file and reconcile it into the task list. */
   'project:syncPlan': (id: string) => Promise<Task[]>;
@@ -290,9 +332,10 @@ export interface IpcApi {
    */
   'project:setAligned': (id: string, aligned: boolean) => Promise<void>;
   /**
-   * Edit an existing project's name / plan file / model / permission mode /
-   * write-back (Phase 8). Returns the updated project, or null if unknown. Model
-   * and mode changes take effect on the next task run.
+   * Edit an existing project's name / folder / plan file / ticket prefix / model /
+   * permission mode / write-back (Phase 8) — every shape of project through the one patch,
+   * since none of them is a special case. Returns the updated project, or null if unknown.
+   * Model and mode changes take effect on the next task run.
    */
   'project:update': (id: string, patch: ProjectPatch) => Promise<Project | null>;
   /** Parse a project's plan file and check its `@needs:` dependencies (resolve + no cycles). */
@@ -335,22 +378,6 @@ export interface IpcApi {
   'project:alignPlan': (id: string) => Promise<{ runId: string | null; contractPhases: string[] }>;
 
   /**
-   * List the agent projects — repo directories a My Tasks card can be delegated to
-   * (`kind: 'agent'`). Deliberately separate from `project:list`, which returns only
-   * the legacy plan-driven projects shown on the Projects tab.
-   */
-  'agentProject:list': () => Promise<Project[]>;
-  /**
-   * Create an agent project from a folder (+ optional name, epic keys, defaults).
-   * No plan file is parsed or watched. Returns the created project.
-   */
-  'agentProject:add': (input: AddProjectInput) => Promise<Project>;
-  /** Edit an agent project (folder, name, epic keys, model, mode). Null if unknown. */
-  'agentProject:update': (id: string, patch: ProjectPatch) => Promise<Project | null>;
-  /** Remove an agent project. Rejects while one of its runs is still live. */
-  'agentProject:remove': (id: string) => Promise<void>;
-
-  /**
    * Start (or resume) a project's queue: the scheduler runs its `pending` tasks
    * in order, one session at a time, until the queue drains or is paused/stopped.
    */
@@ -371,8 +398,16 @@ export interface IpcApi {
    * no status, no transcript line — so without this the UI has no way to know it started.
    */
   'scheduler:integrating': () => Promise<string[]>;
-  /** Run a single task ad-hoc (independent of its project's queue). Returns its run id. */
-  'task:run': (taskId: string) => Promise<{ runId: string }>;
+  /**
+   * Run a single task ad-hoc (independent of its project's queue).
+   *
+   * Resolves to the live run's id, or — for the one refusal the card itself records
+   * (`CARD_RECORDS_PARK`, i.e. a usage limit) — to `{ refused: 'limit' }`: the card is
+   * parked in the gate and starts by itself at the reset, so that is an outcome, not a
+   * failure. The other five refusals reject with `RUN_REFUSAL_MESSAGE[refused]`, because
+   * nothing will happen until a human does something about them.
+   */
+  'task:run': (taskId: string) => Promise<RunOutcome>;
   /**
    * Merge a finished card's branch back into its base, on the human's say-so (Phase 17).
    *
@@ -388,6 +423,24 @@ export interface IpcApi {
    * spinner and the card's "Merging branch…" are driven from.
    */
   'task:integrate': (taskId: string) => Promise<void>;
+  /**
+   * Push this card's branch to its remote and open a pull/merge request against base.
+   *
+   * The other half of `task:integrate`, and its alternative rather than its sequel: a card
+   * whose work goes out as a PR is NOT merged locally, or the pull request would be for
+   * changes base already has.
+   *
+   * Resolves with the PR's URL, how a human writes it (`#12` / `!12`), and whether it was
+   * **already open** — pressing the button twice is ordinary, and the second press reports
+   * the existing one rather than failing. Every refusal arrives as a thrown sentence naming
+   * the wall it hit: no remote, no token for that forge, nothing committed on the branch.
+   *
+   * A row is written into the card's merge requests before this resolves, so the card shows
+   * the PR immediately instead of after the next sync.
+   */
+  'task:createPullRequest': (
+    taskId: string,
+  ) => Promise<{ url: string; ref: string; existed: boolean }>;
   /**
    * Whether a project has release instructions on disk (`RELEASE.md` at its root).
    *
@@ -424,6 +477,17 @@ export interface IpcApi {
       projectTagId?: string | null;
     },
   ) => Promise<Task>;
+  /**
+   * Create a native ticket directly on a project's board (Phase 24, wired to the Add-task
+   * dialog's Board picker) — the ticket-project counterpart to `task:create`. Allocates the
+   * next key under the project's `ticketPrefix` via `store.createTicket`.
+   *
+   * Rejects an unknown project and a plan-driven one (that board's cards come from its plan
+   * file, not a manual add) with a clear reason; a blank title or a project with no ticket
+   * prefix to allocate from come back as the one generic refusal `store.createTicket` already
+   * gives `undefined` for.
+   */
+  'ticket:create': (projectId: string, input: TicketInput) => Promise<Task>;
   /** Delete a task (and its history, and any steps under it). Rejects if it is running. */
   'task:delete': (taskId: string) => Promise<void>;
   /**
@@ -462,6 +526,13 @@ export interface IpcApi {
    * says so). Empty clears it. Returns the updated task.
    */
   'task:setDescription': (taskId: string, description: string) => Promise<Task>;
+  /**
+   * Rewrite the card's title. For a JIRA or GitHub card this edits the app's copy
+   * only: the next sync overwrites it with the issue's own summary, the same
+   * bargain `task:setDescription` strikes. Rejects a blank title. Returns the
+   * updated task.
+   */
+  'task:setTitle': (taskId: string, title: string) => Promise<Task>;
   /**
    * Set a task's priority by name (`null` clears it). Unlike the description, this
    * one DOES write back: for a JIRA card the issue is updated first and the local row
@@ -502,6 +573,12 @@ export interface IpcApi {
        */
       autoRelease?: boolean | null;
       /**
+       * Open a PR/MR for this card when its work finishes, instead of merging it here
+       * (`@shared/pullRequest`). `null` hands the decision back to the agent project's own
+       * preference, which is what an untouched card does.
+       */
+      autoCreatePr?: boolean | null;
+      /**
        * Merge this card's branch as soon as its work finishes (`@shared/integrate`). `null`
        * hands the decision back to the agent project — and through it to the app-wide
        * setting — which is what an untouched card does.
@@ -538,9 +615,15 @@ export interface IpcApi {
    * Delegate a My Tasks card to an agent: persist the assignment (agent project +
    * optional per-assignment model/mode), record the human's instructions as a comment
    * on the task's timeline, and start the run in the agent project's repo. The card
-   * stays on the Personal board; only the RUN happens in the other project. Rejects if
-   * the task is already mid-run, the target isn't an agent project, or a usage limit is
-   * holding all work. Returns the updated task.
+   * stays on the Personal board; only the RUN happens in the other project. Rejects if the
+   * task is already mid-run, the target isn't an agent project, or the start hit a wall the
+   * human has to clear.
+   *
+   * A usage limit is NOT one of those: the assignment stuck and the engine parked the card
+   * behind the gate, so this resolves with the delegated task (carrying `blocked-by-limit`)
+   * rather than throwing. Delegating a card while the account is walled is a perfectly good
+   * thing to want — the work is queued for the reset, and telling the human it failed would
+   * be describing an accepted card as a rejected one.
    */
   'task:assignAgent': (taskId: string, input: AssignAgentInput) => Promise<Task>;
   /**
@@ -554,9 +637,11 @@ export interface IpcApi {
    * on at the step that was interrupted rather than starting its own session beside the
    * chain, and the agent is rejoined by `--resume` where there is a conversation to rejoin.
    *
-   * Rejects with the reason it could not start (`RUN_REFUSAL_MESSAGE`) — the same six walls
-   * `task:run` names, including a gate, which parks the card and starts it by itself later.
-   * Returns the updated task either way, so a caller that catches still has the card.
+   * Rejects with the reason it could not start (`RUN_REFUSAL_MESSAGE`) — the same walls
+   * `task:run` names, minus the usage limit: that one parks the card (`CARD_RECORDS_PARK`)
+   * and starts it by itself at the reset, so it resolves with the re-read task, which now
+   * carries `blocked-by-limit` for the pane to explain. Returns the updated task either
+   * way, so a caller that catches still has the card.
    */
   'task:resumeAgent': (taskId: string) => Promise<Task>;
   /**
@@ -666,6 +751,14 @@ export interface IpcApi {
    * poll this. Live changes arrive via the same `usage:sample` event.
    */
   'usage:quotas': () => Promise<UsageQuotas>;
+  /**
+   * Session-by-session history of how fast the account burns through its rolling
+   * 5-hour token budget: one entry per reconstructed past session (see `SessionStat`),
+   * each with how long it took to exhaust the budget measured two ways — processing
+   * time alone and full wall-clock time. Behind the Performance screen's two "time to
+   * exhaust a session" charts. Live changes arrive via the same `usage:sample` event.
+   */
+  'usage:sessionStats': () => Promise<SessionStat[]>;
 
   /** The current global app settings (Phase 6). */
   'settings:get': () => Promise<AppSettings>;
@@ -833,17 +926,104 @@ export interface IpcApi {
    * screen where a silent empty state hides a misconfiguration.
    */
   'jira:statuses': () => Promise<JiraStatusList>;
-  /** Every task on the standalone Personal board (JIRA tickets + internal ad-hoc). */
-  'board:tasks': () => Promise<Task[]>;
   /**
-   * The cards that have been taken OFF that board and not destroyed — most recently removed
-   * first. The complement of `board:tasks`, and the list "Removed cards" is drawn from.
+   * The cards on a board. `scope` names which one: omitted (or `'all'`, the default) is
+   * every board's cards unioned together — Personal plus every other project with no
+   * plan file — and any other value is one board's own project id, `PERSONAL_PROJECT_ID`
+   * included.
+   */
+  'board:tasks': (scope?: string) => Promise<Task[]>;
+  /**
+   * The cards that have been taken OFF a board and not destroyed — most recently removed
+   * first. The complement of `board:tasks`, same `scope` rule, and the list "Removed cards"
+   * is drawn from.
    *
    * Every one still has its timeline, its files, its arrows and its transcript; `archivedAt`
    * says when it left and `archivedReason` says which question's answer took it. They are kept
    * for `ARCHIVE_RETENTION_DAYS` and then destroyed by the boot sweep.
    */
-  'board:archived': () => Promise<Task[]>;
+  'board:archived': (scope?: string) => Promise<Task[]>;
+  /** The boards `board:tasks`/`board:archived`'s `scope` may select. See {@link BoardScope}. */
+  'board:scopes': () => Promise<BoardScope[]>;
+
+  /**
+   * Edit a native ticket's own fields (type, epic, milestone, labels, estimate, dates,
+   * assignee, reporter). Title, description and priority go through the channels every other
+   * card already uses (`task:setDescription`, `task:setPriority`); this one is the twelve
+   * ticket-only fields `TicketPatch` names. Same guards as `ticket:create`.
+   */
+  'ticket:update': (taskId: string, patch: TicketPatch) => Promise<Task>;
+
+  /**
+   * Everyone the app knows about, oldest first — app-wide, not per project (a person works
+   * across repos, and "assigned to me" would otherwise have several answers).
+   */
+  'person:list': () => Promise<Person[]>;
+  /** Add a person. Rejects on a blank name. */
+  'person:add': (input: PersonInput) => Promise<Person>;
+  /** Edit one. Null for an unknown id. Setting `isMe` clears it from whoever had it before. */
+  'person:update': (id: string, patch: PersonPatch) => Promise<Person | null>;
+  /**
+   * Forget a person; every ticket that had them as assignee or reporter is nulled, not
+   * cascaded away.
+   */
+  'person:remove': (id: string) => Promise<void>;
+  /**
+   * Mark this person as **you** — the shorthand for `person:update(id, { isMe: true })`. At
+   * most one person may carry the flag; setting it here clears it from whoever had it, in the
+   * same write. Null for an unknown id.
+   */
+  'person:setMe': (id: string) => Promise<Person | null>;
+
+  /**
+   * A project's label registry — what gives a chip its colour and the filter dropdown its
+   * list. `projectId` omitted reads every ticket project's labels at once, the shape
+   * `pollChannel` needs since it invokes with no arguments.
+   */
+  'label:list': (projectId?: string) => Promise<TicketLabel[]>;
+  /**
+   * Create or edit a label, one channel for both — matching `settings:save`, not an add/update
+   * pair. `id` present edits that label (a rename rewrites the name on every ticket wearing
+   * it); omitted creates one. Rejects on a blank name or a name already taken in the project.
+   */
+  'label:save': (
+    projectId: string,
+    input: TicketLabelInput & { id?: string },
+  ) => Promise<TicketLabel>;
+  /** Delete a label and strip its name from every ticket wearing it. */
+  'label:remove': (id: string) => Promise<void>;
+
+  /**
+   * A project's milestones, earliest due first. Same optional `projectId` as `label:list`, and
+   * for the same reason.
+   */
+  'milestone:list': (projectId?: string) => Promise<Milestone[]>;
+  /**
+   * Create or edit a milestone, one channel for both — see `label:save`. Rejects on a blank
+   * name.
+   */
+  'milestone:save': (
+    projectId: string,
+    input: MilestoneInput & { id?: string },
+  ) => Promise<Milestone>;
+  /** Delete a milestone; every ticket planned for it is nulled, not cascaded away. */
+  'milestone:remove': (id: string) => Promise<void>;
+
+  /** Every documented ticket relationship, oldest first — small enough to hand over whole. */
+  'ticketLink:list': () => Promise<TicketLink[]>;
+  /**
+   * Document a relationship between two tickets. Refusals come back as data
+   * (`TicketLinkResult`) — the same shape `chain:link`'s `LinkResult` uses — rather than a
+   * rejected promise, since "those two already relate that way" is something to tell the
+   * human, not an error.
+   */
+  'ticketLink:add': (
+    fromTaskId: string,
+    toTaskId: string,
+    type: TicketLinkType,
+  ) => Promise<TicketLinkResult>;
+  /** Erase one link by id; no-op if it is already gone. */
+  'ticketLink:remove': (id: string) => Promise<void>;
   /**
    * Put a removed card back on the board, with the same id and everything hanging off it.
    * Returns the fresh board, so the caller does not have to ask for it again.
@@ -1146,6 +1326,23 @@ export interface IpcEvents {
    * rather than merges.
    */
   'update:changed': UpdateState;
+
+  // --- Native tickets (Phase 24) ---------------------------------------------
+  /**
+   * A documented ticket relationship was added or removed — including cascaded away with a
+   * deleted ticket. The whole list, like `chain:changed`.
+   */
+  'ticketLink:changed': TicketLink[];
+  /** The person roster changed. The whole list, app-wide, like `chain:changed`. */
+  'person:changed': Person[];
+  /**
+   * A project's label registry changed. The whole list across every ticket project, matching
+   * what `label:list()` (no `projectId`) returns — the shape `polledEvents.ts` reproduces this
+   * from.
+   */
+  'label:changed': TicketLabel[];
+  /** A project's milestones changed. Same shape as `label:changed`, one table over. */
+  'milestone:changed': Milestone[];
 }
 
 /** Convenience: the set of valid invoke channel names. */

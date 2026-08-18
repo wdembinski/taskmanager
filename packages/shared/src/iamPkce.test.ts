@@ -166,6 +166,7 @@ describe('IamTokenError / isTerminalGrantError', () => {
     ).catch((e) => e);
 
     expect(err).toBeInstanceOf(IamTokenError);
+    expect((err as IamTokenError).status).toBe(400);
     expect((err as IamTokenError).oauthError).toBe('invalid_grant');
     expect((err as IamTokenError).oauthErrorDescription).toBe('Refresh token is invalid');
     expect(isTerminalGrantError(err)).toBe(true);
@@ -193,7 +194,32 @@ describe('IamTokenError / isTerminalGrantError', () => {
     expect(isTerminalGrantError(err)).toBe(false);
   });
 
+  /**
+   * The whole point of the split: a revoked grant fails identically forever and must end the
+   * session, while an outage ends on its own and must not. Signing somebody out because a
+   * gateway hiccuped would be a worse bug than the one this distinction exists to fix.
+   */
+  it('is terminal for invalid_grant AND invalid_client, and nothing else', async () => {
+    for (const code of ['invalid_grant', 'invalid_client']) {
+      const err = await refreshTokens(CONFIG, 'rt', fakeFetch(400, { error: code })).catch(
+        (e) => e,
+      );
+      expect(isTerminalGrantError(err), code).toBe(true);
+    }
+
+    const transient = [
+      [503, 'upstream unavailable'],
+      [500, JSON.stringify({ error: 'server_error' })],
+      [429, JSON.stringify({ error: 'slow_down' })],
+    ] as const;
+    for (const [status, body] of transient) {
+      const err = await refreshTokens(CONFIG, 'rt', fakeFetchText(status, body)).catch((e) => e);
+      expect(isTerminalGrantError(err), `${status} ${body}`).toBe(false);
+    }
+  });
+
   it('is false for a plain non-OAuth error', () => {
+    expect(isTerminalGrantError(new TypeError('Failed to fetch'))).toBe(false);
     expect(isTerminalGrantError(new Error('network down'))).toBe(false);
     expect(isTerminalGrantError(null)).toBe(false);
     expect(isTerminalGrantError('nope')).toBe(false);

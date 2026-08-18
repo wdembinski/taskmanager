@@ -82,7 +82,7 @@ describe('the channels that DO relay', () => {
     'scheduler:activeRuns',
     'scheduler:integrating',
     'mr:mergeRequests',
-    'agentProject:list',
+    'project:list',
     'settings:get',
     'settings:save',
     'git:graph',

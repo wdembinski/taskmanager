@@ -129,7 +129,7 @@ describe('CloudAuth', () => {
     local.setItem('tm.cloud.refreshToken', 'rt-stored');
     const fetchImpl = vi
       .fn()
-      .mockResolvedValue({ ok: false, status: 400, text: async () => 'invalid_grant' });
+      .mockResolvedValue({ ok: false, status: 503, text: async () => 'upstream unavailable' });
     const auth = new CloudAuth({
       config,
       localStorage: local,
@@ -165,29 +165,83 @@ describe('CloudAuth', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  it('drops the refresh token and stops requesting after invalid_grant', async () => {
+  /**
+   * The bug this pair exists for: a refresh token vipper.iam had revoked left the app looking
+   * perfectly signed in, with an empty board and nothing on screen saying why — `isSignedIn`
+   * is a claim about storage, and `useCloudAuth` reads it once at mount.
+   */
+  it('ends the session when vipper.iam refuses the grant, and stops requesting after', async () => {
     const local = fakeStorage();
-    local.setItem('tm.cloud.refreshToken', 'rt-stored');
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValue({ ok: false, status: 400, text: async () => 'invalid_grant' });
+    local.setItem('tm.cloud.refreshToken', 'rt-revoked');
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      text: async () => JSON.stringify({ error: 'invalid_grant' }),
+    });
     const auth = new CloudAuth({
       config,
       localStorage: local,
       sessionStorage: fakeStorage(),
       fetchImpl,
     });
-    const revoked = vi.fn();
-    auth.onGrantRevoked(revoked);
+    const ended: string[] = [];
+    auth.onSessionEnded((reason) => ended.push(reason));
 
-    expect(await auth.getAccessToken()).toBeNull();
-    expect(revoked).toHaveBeenCalledTimes(1);
+    await expect(auth.getAccessToken()).resolves.toBeNull();
+
+    expect(local.getItem('tm.cloud.refreshToken')).toBeNull();
+    // Cleared BEFORE the listener runs — one that re-read this and got `true` would put the
+    // board straight back up.
     expect(auth.isSignedIn()).toBe(false);
+    expect(ended).toHaveLength(1);
+    expect(ended[0]).toMatch(/expired/i);
 
     // A caller that keeps polling after the grant is dead (the board poller doesn't know to
     // stop on its own) must not keep spending a request on an already-revoked grant.
     expect(await auth.getAccessToken()).toBeNull();
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the session through an outage, which ends on its own', async () => {
+    const local = fakeStorage();
+    local.setItem('tm.cloud.refreshToken', 'rt-stored');
+    const fetchImpl = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+    const auth = new CloudAuth({
+      config,
+      localStorage: local,
+      sessionStorage: fakeStorage(),
+      fetchImpl,
+    });
+    const ended: string[] = [];
+    auth.onSessionEnded((reason) => ended.push(reason));
+
+    await expect(auth.getAccessToken()).resolves.toBeNull();
+
+    expect(local.getItem('tm.cloud.refreshToken')).toBe('rt-stored');
+    expect(auth.isSignedIn()).toBe(true);
+    expect(ended).toEqual([]);
+  });
+
+  it('stops notifying once the listener has unsubscribed', async () => {
+    const local = fakeStorage();
+    local.setItem('tm.cloud.refreshToken', 'rt-revoked');
+    const auth = new CloudAuth({
+      config,
+      localStorage: local,
+      sessionStorage: fakeStorage(),
+      fetchImpl: vi.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        text: async () => JSON.stringify({ error: 'invalid_grant' }),
+      }),
+    });
+    const ended: string[] = [];
+    const unsubscribe = auth.onSessionEnded((reason) => ended.push(reason));
+    unsubscribe();
+
+    await auth.getAccessToken();
+
+    expect(ended).toEqual([]);
   });
 
   it('signOut clears the stored refresh token and the cached access token', async () => {

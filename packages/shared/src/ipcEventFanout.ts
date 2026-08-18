@@ -115,6 +115,13 @@ export const EVENT_FANOUT = {
   'settings:changed': { kind: 'replace-last' },
   'update:changed': { kind: 'replace-last' },
 
+  // Native tickets (Phase 24) — every one a whole-list replacement, each reproducible from
+  // its own `*:list` read, exactly as `polledEvents.ts` does for the rest of this class.
+  'ticketLink:changed': { kind: 'replace-last' },
+  'person:changed': { kind: 'replace-last' },
+  'label:changed': { kind: 'replace-last' },
+  'milestone:changed': { kind: 'replace-last' },
+
   'window:maximizedChanged': {
     kind: 'drop',
     reason: 'a browser tab has no app window to maximize',

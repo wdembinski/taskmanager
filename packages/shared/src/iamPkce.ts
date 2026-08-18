@@ -143,15 +143,28 @@ export class IamTokenError extends Error {
 }
 
 /**
- * A refresh token vipper.iam will never honor again (revoked, expired, or rotated out from
- * under this caller) — retrying it is pointless until the user signs in again. Duck-typed on
- * `oauthError` rather than `instanceof IamTokenError`: `@tm/shared` reaches `apps/client` as a
- * source alias but `apps/web`/`apps/server` as built `dist`, two different module instances
- * whose classes fail `instanceof` against each other's errors.
+ * A refresh token (or client registration) vipper.iam will never honor again — retrying it is
+ * pointless until the user signs in again (or, for `invalid_client`, until this build is
+ * re-registered). Duck-typed on `oauthError` rather than `instanceof IamTokenError`: `@tm/shared`
+ * reaches `apps/client` as a source alias but `apps/web`/`apps/server` as built `dist`, two
+ * different module instances whose classes fail `instanceof` against each other's errors.
+ *
+ * The two codes, and why only these two:
+ *
+ *  - **`invalid_grant`** — the refresh token is expired, revoked, or was replayed. vipper.iam
+ *    rotates refresh tokens on every use and a replayed one revokes the whole family, which is
+ *    something two browser tabs can do to each other without anybody doing anything wrong.
+ *  - **`invalid_client`** — this build's client id is no longer registered. A token minted for
+ *    it is equally unusable, and no amount of retrying changes that.
+ *
+ * Everything else is transient by default, deliberately: a network throw, a 5xx, a 429, a
+ * proxy eating the request. Signing somebody out because their wifi dropped would be a worse
+ * bug than the one this exists to fix — so the rule is "only when the server named the grant".
  */
 export function isTerminalGrantError(e: unknown): boolean {
   if (typeof e !== 'object' || e === null) return false;
-  return (e as { oauthError?: unknown }).oauthError === 'invalid_grant';
+  const oauthError = (e as { oauthError?: unknown }).oauthError;
+  return oauthError === 'invalid_grant' || oauthError === 'invalid_client';
 }
 
 /** Best-effort `{ error, error_description }` out of a token error body, JSON or not. */

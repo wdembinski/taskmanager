@@ -12,10 +12,11 @@
  * is merely silent.
  */
 import { useEffect, useMemo, useState } from 'react';
-import { Caption1, makeStyles } from '@fluentui/react-components';
+import { Caption1, CounterBadge, makeStyles } from '@fluentui/react-components';
 import {
   AlertRegular,
   DataTrendingRegular,
+  FolderRegular,
   PlayRegular,
   SettingsRegular,
   TaskListSquareLtrRegular,
@@ -23,6 +24,7 @@ import {
 import { AppShell } from '@tm/ui/shell/AppShell';
 import { Attention } from '@tm/ui/Attention';
 import { Performance } from '@tm/ui/Performance';
+import { Projects } from '@tm/ui/projects/Projects';
 import { NavRail, type NavRailItem } from '@tm/ui/shell/NavRail';
 import { StatusBar, StatusDot, StatusSpacer } from '@tm/ui/shell/StatusBar';
 import { SyncCurtain } from '@tm/ui/SyncCurtain';
@@ -36,16 +38,16 @@ import { ClientPicker } from './board/ClientPicker';
 import { SkewBanner } from './board/SkewBanner';
 import { StaleBanner } from './board/StaleBanner';
 import { boardIsReady, syncCurtainText, syncStatusLabel } from './board/syncGate';
+import { UnreachableBanner } from './board/UnreachableBanner';
 import { versionSkew } from './board/targetClient';
 import { useCloudBoard } from './board/useCloudBoard';
 import { loadWebConfig } from './env';
 
 const useStyles = makeStyles({
   /**
-   * Sign out, in the status bar rather than on the board's toolbar — which is what lets
-   * that toolbar hold the same things `MyTasks`'s does. Same treatment as the desktop's
-   * update link: no colour of its own (the bar can change fill under it), underlined so it
-   * reads as the one clickable thing down here.
+   * The Client picker's own link styling, in the status bar. Same treatment as the
+   * desktop's update link: no colour of its own (the bar can change fill under it),
+   * underlined so it reads as the one clickable thing down here.
    */
   linkButton: {
     background: 'none',
@@ -64,14 +66,18 @@ const DESKTOP_ONLY = 'desktop only';
 /**
  * The desktop's rail, in the desktop's order — see `apps/client/src/renderer/src/App.tsx`.
  *
- * Four of the five are live now. Attention and Performance moved into `@tm/ui` whole (they
+ * Five of the six are live now. Attention and Performance moved into `@tm/ui` whole (they
  * had no host in them at all, only `window.api` calls that are `useTransport()` now), and
  * Settings is a fork: nine of its twenty-one channels are host-bound, so the shell is this
- * app's and the host-free sections are shared. Scratch run stays off — it drives a live
+ * app's and the host-free sections are shared. Projects is a native ticket project — no
+ * folder, no native picker — so it carries no `unavailable` here either; the *agent*-project
+ * kind is the one that stays desktop-only (`shell-parity.test.ts`, "the one configuration the
+ * web deliberately does not mirror"). Scratch run stays off — it drives a live
  * `session:start`, which is host-only by policy (`@tm/shared/ipcRelay`).
  */
 const NAV: readonly NavRailItem[] = [
   { id: 'mytasks', label: 'My Tasks', icon: <TaskListSquareLtrRegular /> },
+  { id: 'projects', label: 'Projects', icon: <FolderRegular /> },
   { id: 'performance', label: 'Performance', icon: <DataTrendingRegular /> },
   { id: 'attention', label: 'Attention', icon: <AlertRegular /> },
   { id: 'settings', label: 'Settings', icon: <SettingsRegular /> },
@@ -79,7 +85,7 @@ const NAV: readonly NavRailItem[] = [
 ];
 
 /** The rail's destinations that this app actually renders. */
-type Screen = 'mytasks' | 'performance' | 'attention' | 'settings';
+type Screen = 'mytasks' | 'projects' | 'performance' | 'attention' | 'settings';
 
 /** How often the status bar's "synced Ns ago" recomputes between polls. */
 const AGE_TICK_MS = 5_000;
@@ -151,6 +157,33 @@ function SignedInBoard({
   const board = useCloudBoard(auth, config);
   const now = useTick(AGE_TICK_MS);
   const [screen, setScreen] = useState<Screen>('mytasks');
+  // How many tasks are waiting on a human — the same badge and status-bar highlight the
+  // desktop shell shows (`apps/client/src/renderer/src/App.tsx`), read the same way over
+  // `board.transport`'s `attention:list`/`attention:new`/`attention:resolved`
+  // (`useBoardExtras` reads the identical channels for the board's own ring, on its own
+  // subscription). Held here rather than inside `BoardScreen` because the nav rail and
+  // status bar are the shell's, not the board's, and both need the count with every other
+  // screen closed.
+  const [attentionCount, setAttentionCount] = useState(0);
+
+  useEffect(() => {
+    let live = true;
+    void board.transport
+      .invoke('attention:list')
+      .then((items) => {
+        if (live) setAttentionCount(items.length);
+      })
+      .catch(() => undefined);
+    const offNew = board.transport.on('attention:new', () => setAttentionCount((n) => n + 1));
+    const offResolved = board.transport.on('attention:resolved', () =>
+      setAttentionCount((n) => Math.max(0, n - 1)),
+    );
+    return () => {
+      live = false;
+      offNew();
+      offResolved();
+    };
+  }, [board.transport]);
 
   const online = board.state.clients.length > 0;
   // Only ever about the Client this tab is actually driving. A second, older desktop on the
@@ -162,26 +195,53 @@ function SignedInBoard({
       <AppShell
         nav={
           // Scratch run refuses selection inside `NavRail` (it is the one tile still marked
-          // unavailable), so anything that reaches here is a real destination.
-          <NavRail items={NAV} selected={screen} onSelect={(id) => setScreen(id as Screen)} />
+          // unavailable), so anything that reaches here is a real destination. Sign out lives
+          // in the rail's own Account dropdown rather than the status bar — this is the only
+          // host with an account to sign back out of, so it is also the only one passing it.
+          <NavRail
+            items={NAV.map((item) =>
+              item.id === 'attention' && attentionCount > 0
+                ? {
+                    ...item,
+                    badge: (
+                      <CounterBadge
+                        count={attentionCount}
+                        color="danger"
+                        size="small"
+                        appearance="filled"
+                      />
+                    ),
+                  }
+                : item,
+            )}
+            selected={screen}
+            onSelect={(id) => setScreen(id as Screen)}
+            accountItems={[{ id: 'signout', label: 'Sign out', onClick: onSignOut }]}
+          />
         }
         banners={
           // The shell's own banner strip, which is where the desktop's outage bars go too —
           // above the screen rather than inside it, so the board below is the board and
           // nothing shifts the columns down but a thing that had to be said.
           //
-          // At most one of the two, and offline wins: a desktop that isn't polling is the
-          // bigger fact, and its version cannot matter until it comes back. (They are
-          // mutually exclusive anyway — skew is read off a LIVE Client — but stating the
-          // order here means the next banner added doesn't have to rediscover it.)
-          !online ? (
+          // At most one of the three, in this order, and the order is the point:
+          //
+          //  1. **This tab cannot read at all.** Everything below is a claim about what the
+          //     server said, and it has said nothing. Reporting "no desktop app has synced"
+          //     here would be blaming another machine for a failure in this one — which is
+          //     precisely what sent somebody hunting through a perfectly healthy desktop.
+          //  2. **No desktop client is polling.** The bigger fact once reads work.
+          //  3. **Version skew**, which cannot matter until a Client is back.
+          board.pollError ? (
+            <UnreachableBanner message={board.pollError} />
+          ) : !online ? (
             <StaleBanner everSeenClient={board.targetClientId !== null} />
           ) : skew && board.targetClient ? (
             <SkewBanner skew={skew} client={board.targetClient} />
           ) : null
         }
         status={
-          <StatusBar>
+          <StatusBar attention={attentionCount > 0}>
             {/* The dot's question is the only one that decides whether an edit made here
                 goes anywhere: a command is delivered to a desktop Client, so with none
                 polling there is nothing to apply it. */}
@@ -206,14 +266,20 @@ function SignedInBoard({
             {/* A poll that comes back proves this tab's own connection, whether or not it
                 carried any deltas — which is a different claim from the dot's. Once the
                 board has latched ready, a later paged catch-up shows here as "syncing…"
-                rather than pulling the board back behind the curtain. */}
-            <Caption1>· {syncStatusLabel(board.syncProgress, board.lastPolledAt, now)}</Caption1>
-            <StatusSpacer />
+                rather than pulling the board back behind the curtain.
+
+                `pollError` takes precedence over `syncStatusLabel`'s own reading: it is set
+                (and only cleared on a read that actually comes back) by every poll failure,
+                even one well after the board has latched ready, where `syncStatusLabel` would
+                otherwise still say a stale "synced Ns ago" from the last read that worked. */}
             <Caption1>
-              <button type="button" className={styles.linkButton} onClick={onSignOut}>
-                Sign out
-              </button>
+              ·{' '}
+              {board.pollError
+                ? 'not syncing'
+                : syncStatusLabel(board.syncProgress, board.lastPolledAt, now)}
             </Caption1>
+            {attentionCount > 0 && <Caption1>· {attentionCount} waiting on you</Caption1>}
+            <StatusSpacer />
             <Caption1>v{__APP_VERSION__}</Caption1>
           </StatusBar>
         }
@@ -235,9 +301,13 @@ function SignedInBoard({
               error={board.syncProgress.lastError}
             />
           ))}
+        {screen === 'projects' && <Projects />}
         {screen === 'performance' && <Performance />}
         {screen === 'attention' && <Attention />}
-        {screen === 'settings' && <SettingsScreen />}
+        {/* The mirrored `projects` rows, which this hook already holds for the board — so the
+            Settings screen's Projects tab still lists what is configured when no desktop is
+            awake to answer its own `agentProject:list`. */}
+        {screen === 'settings' && <SettingsScreen projects={board.state.projects} />}
       </AppShell>
     </TransportProvider>
   );
