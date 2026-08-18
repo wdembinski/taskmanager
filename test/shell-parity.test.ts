@@ -196,8 +196,23 @@ function topLevelKeys(literal: string): string[] {
  * purpose: the global-CSS guard below is only worth having if it covers a host from its
  * first commit, rather than retroactively blessing whatever landed there before anyone
  * thought to add it.
+ *
+ * `packages/cloud/src` joined this list here (Phase 27 step 11), to UNDO a coverage hole
+ * step 3 opened rather than to add new ground: `SettingsScreen.tsx` moved out of
+ * `apps/web/src/settings/` — inside the old `apps/web/src` entry — into
+ * `packages/cloud/src/settings/`, which this list did not yet name. Between step 3 and here
+ * a scrollbar or colour-scheme rule declared in that file would have compiled, rendered, and
+ * gone unnoticed by every assertion below. `packages/cloud` is a shared package like
+ * `packages/ui`, not a per-app host — but unlike `packages/ui`, it renders a whole screen
+ * rather than components a host assembles, which is exactly the shape of file the global-CSS
+ * guard exists to catch.
  */
-const HOST_TREES = ['apps/web/src', 'apps/client/src/renderer/src', 'apps/mobile/src'];
+const HOST_TREES = [
+  'apps/web/src',
+  'apps/client/src/renderer/src',
+  'apps/mobile/src',
+  'packages/cloud/src',
+];
 
 /**
  * Every file under a tree whose name `matches`, recursively and repo-relative.

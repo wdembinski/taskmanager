@@ -6,7 +6,7 @@
  * (`ipcEventFanout.test.ts`), the desktop's forwarder (`cloudEventForwarder.test.ts`), the
  * server's ring and its subscriptions (`eventBus.test.ts`), the SSE framing
  * (`sseStream.test.ts`), the browser's reader (`sseEvents.test.ts`) and the composite that
- * chooses between push and poll (`apps/web/src/board/eventBus.test.ts`). What none of them
+ * chooses between push and poll (`packages/cloud/src/board/eventBus.test.ts`). What none of them
  * covers is the thing that actually has to work: an agent's line, emitted on the desktop,
  * arriving in a browser — through the forwarder's queue, a real `POST /v1/events`, the
  * server's replay ring, real `text/event-stream` bytes, the browser's `ReadableStream`
@@ -48,7 +48,10 @@ const app = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repo = resolve(app, '..', '..');
 const sharedSrc = join(repo, 'packages', 'shared', 'src');
 const protocolSrc = join(repo, 'packages', 'protocol', 'src');
-const webSrc = join(repo, 'apps', 'web', 'src');
+// `SseEventStream` and `CloudEventBus` moved out of apps/web/src and into `@tm/cloud`
+// (Phase 27 step 3, so both apps/web and apps/mobile can share one sync layer) — this
+// reads their sources directly, same as it always has, just from their new home.
+const cloudSrc = join(repo, 'packages', 'cloud', 'src');
 const serverSrc = join(repo, 'apps', 'server', 'src');
 
 /**
@@ -113,7 +116,6 @@ async function bundle(entry, outDir) {
         '@tm/shared': sharedSrc,
         '@tm/protocol': protocolSrc,
         '@tm/ui/transport': empty,
-        '@web': webSrc,
         '@nestjs/common': nestStub,
         electron: electronStub,
       },
@@ -158,8 +160,8 @@ const SCENARIO = `
 import { CloudEventForwarder } from '${posix(join(app, 'src/main/cloudEventForwarder'))}';
 import { EventBus } from '${posix(join(serverSrc, 'events/eventBus'))}';
 import { openEventStream } from '${posix(join(serverSrc, 'events/sseStream'))}';
-import { SseEventStream } from '${posix(join(webSrc, 'board/sseEvents'))}';
-import { CloudEventBus } from '${posix(join(webSrc, 'board/eventBus'))}';
+import { SseEventStream } from '${posix(join(cloudSrc, 'board/sseEvents'))}';
+import { CloudEventBus } from '${posix(join(cloudSrc, 'board/eventBus'))}';
 import { MAX_EVENT_BYTES } from '${posix(join(sharedSrc, 'ipcEventFanout'))}';
 
 let failures = 0;

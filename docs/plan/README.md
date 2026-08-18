@@ -5720,6 +5720,109 @@ the detail view. The chain-link drag handle needs no forking work at all: `TaskC
 already renders it conditionally on `onLinkStart` being passed, so mobile gets the drop for
 free simply by never passing that prop.
 
+### Step 11: the critical files, walked one by one on `9c8eabd`
+
+The plan named ten files or file groups, across six areas, as the ones this round lives or
+dies on. Every one was re-opened here — none carried forward from the step that last touched
+it — and every gate was run fresh rather than trusted from a step that measured the same
+commit.
+
+| File | What it had to be | On `9c8eabd` |
+| --- | --- | --- |
+| `test/shell-parity.test.ts` | catch a browser/desktop/mobile drift as text, since there is no DOM harness | ⚠️ mostly right, one real hole — see below |
+| `apps/web/src/env.ts` | stay per-app; never move into `@tm/cloud`, since `import.meta.env` is a Vite build-time replacement esbuild cannot emit | ✅ unchanged; `apps/mobile/src/env.ts` mirrors it with its own `taskmanager-mobile` client id |
+| `packages/cloud/src/board/httpTransport.ts`, `useBoardExtras.ts` | the one runtime (not type-only) edge where `@tm/cloud` imports `@tm/ui` — `useTransport` and `buildAttentionIndex` as values | ✅ confirmed; this is exactly what `packages/cloud/tsup.config.ts`'s `external` exists to protect |
+| `packages/ui/tsup.config.ts` | the template `packages/cloud`'s own tsup config copies | ✅ unchanged; `packages/cloud/tsup.config.ts` copies its `entry`/`format`/`dts` shape and externalizes `@tm/ui` on top, with the two-copies-of-`TransportContext` reasoning written down |
+| `packages/ui/src/theme.ts` (`useGlobalStyles`, `:313`) | `'html, body, #root'` sized to `100dvh`, not `100%` | ✅ unchanged, `:316` |
+| `packages/ui/src/board/TaskCard.tsx` | reused as-is; drag props optional | ✅ unchanged; `draggable?`/`onDragStart?`/`onDragEnd?` (`:990`, `:994`–`:995`) default to `false`/absent at `:1030` |
+| `packages/ui/src/board/boardColumns.ts` | column metadata, sorting and counts the mobile chip row and menu read | ✅ unchanged; `ColumnChips.tsx` and `BoardCardRow.tsx` both import `COLUMN_META` from it, `BoardScreen.tsx` (mobile) drives its column view from `visibleColumns`/`sortCards`/`hiddenDoneSummary` |
+| `packages/ui/src/TaskDetail.tsx`, `Performance.tsx` | full-screen reuse; `Performance`'s grid stacks under `599px` | ⚠️ reuse is exact (`TaskScreen.tsx` wraps `TaskDetail` with nothing forked inside it; mobile's Performance destination renders `<Performance />` unmodified) — one stale comment fixed, see below |
+| `.github/workflows/deploy.yml` (filters, `changes` job) | `packages/cloud/**` in both the `web` and `mobile` filters; a `mobile` job that stays inert without its token | ✅ unchanged; `:104` and `:112` both list it, the `mobile` job's own step (not a job `if`) checks `AZURE_STATIC_WEB_APPS_API_TOKEN_MOBILE` |
+| `apps/web/staticwebapp.config.json`, `apps/mobile/staticwebapp.config.json` | the template, and the `webmanifest` exclusion a naive copy would drop | ✅ unchanged; `apps/web`'s has no manifest to exclude and correctly has none, `apps/mobile`'s exclude list already carries `webmanifest,json` |
+
+#### Two real breakages, both the same shape
+
+`test/shell-parity.test.ts` and `TaskDetail.tsx` are named critical for the same reason two
+of `apps/client/scripts/verify-*.mjs` turned out to be broken, and the pattern is worth
+naming once: **step 3 moved `httpTransport.ts`, `polledEvents.ts`, `eventBus.ts`,
+`sseEvents.ts`, `useBoardExtras.ts` and `SettingsScreen.tsx` out of `apps/web/src` and into
+`packages/cloud/src`, and every file that named their OLD location by path — rather than by
+import specifier — went stale silently, because none of them are on the module graph
+`pnpm typecheck` or `pnpm build` walks.** A prose comment and a script that reads a source
+file as text both sit outside that graph the same way.
+
+- **`apps/client/scripts/verify-remote-ipc.mjs` and `verify-remote-sse.mjs` no longer ran at
+  all.** Both bundle `HttpTransport`/`PolledEventBus` (the IPC harness) or
+  `SseEventStream`/`CloudEventBus` (the SSE harness) by resolving a literal path into
+  `apps/web/src/board/*`, which step 3 emptied out from under them. `verify-remote-ipc.mjs`
+  failed immediately — `Rollup failed to resolve import ".../apps/web/src/board/httpTransport"`
+  — the moment it was run for this walk; `verify-remote-sse.mjs` would have failed the same
+  way. Neither is wired into `ci.yml` or `RELEASE.md`'s gates (both are ad hoc, by-hand
+  verification, same as `verify-attachments.mjs` and the rest), which is exactly why nothing
+  red ever surfaced: eight steps of this branch ran green while both harnesses were dead.
+  Fixed by pointing both at `packages/cloud/src` instead, and dropping the `@web` Vite alias
+  neither script's bundle actually used any more (confirmed by grepping every file the two
+  entry points import for it — nothing does). Re-run clean: **16 remote-IPC checks, 36
+  push-channel checks**, both exit 0.
+- **`test/shell-parity.test.ts`'s global-CSS guard silently lost `packages/cloud/src`.**
+  `HOST_TREES` names every tree the `scrollbar`/`color-scheme` redeclaration check walks, and
+  before step 3 `apps/web/src` covered `apps/web/src/settings/SettingsScreen.tsx` inside it.
+  After the move that file sits in `packages/cloud/src/settings/`, which `HOST_TREES` never
+  named — so a global rule declared there from step 3 onward would have compiled, rendered,
+  and gone unflagged by every assertion in the file. Nothing had actually declared one (the
+  guard passes clean before and after), which is what makes this a coverage hole rather than
+  a caught bug — the failure mode is the one the file's own header names for
+  `iamAuth.guard.ts` in an earlier round: a hole nothing asserts is indistinguishable from an
+  omission until something is written into it. `packages/cloud/src` now joins `HOST_TREES`,
+  with the same "covered from day one" reasoning the header already gives for
+  `apps/mobile/src`. `packages/ui/src` deliberately still does not join it — that split
+  predates this phase and is not this round's call to revisit.
+- **`packages/ui/src/TaskDetail.tsx`'s `readOnlyNotice` docstring** named
+  `apps/web/src/board/httpTransport.ts` and, more substantively, still described the OLD
+  three-tier transport ("relays only a status change and a new card") that `httpTransport.ts`
+  itself says stopped being true before this phase — the stub tier is gone, and what is
+  refused now is only the host-only tier (file pickers, credentials, window buttons), which
+  is what `RELAY_NOTICE`'s actual on-screen text already says. Only the path is this phase's
+  doing; the substance predates it and is fixed here anyway since it sits inside a file this
+  step is chartered to walk — left half-corrected would have been worse than left alone.
+
+Two more stale path references to the same step-3 move were found by the same sweep —
+`packages/shared/src/ipcEventFanout.ts:19` and `ipcRelay.ts:58,63` both still name
+`apps/web/src/board/…` and `apps/web/src/settings/…` in prose. Neither file is on this
+step's named list, so they are recorded here rather than edited — a critical-files walk that
+starts fixing files nobody asked it to walk has exceeded itself the same way one that changes
+behaviour has. Whoever picks up `packages/shared` next should know they are there.
+
+#### The gates, forced, on `9c8eabd`
+
+| Gate | Exit | Result |
+| --- | --- | --- |
+| `pnpm format:check` | 1 → **0** | two files failed before `--write` (below); clean after |
+| `pnpm typecheck --force` | **0** | 12 successful, 12 total — 0 cached, ~33s |
+| `pnpm build --force` | **0** | 8 successful, 8 total — 0 cached, ~40s |
+| `pnpm test` | **0** | 180 files passed, 1 skipped (181); 3005 passed, 11 skipped (3016) |
+| `node apps/client/scripts/verify-remote-ipc.mjs` | 1 → **0** | broken before the fix above; **16 checks** after |
+| `node apps/client/scripts/verify-remote-sse.mjs` | (would have been 1) → **0** | same fix; **36 checks** |
+
+`pnpm format:check` failed on `apps/mobile/src/board/BoardCardRow.tsx` and
+`GitGraphSheet.tsx` — both an unwrapped `import { … } from '@fluentui/react-components'` and
+one unwrapped JSX attribute list over Prettier's line width, from step 6 and step 7. Neither
+is covered by `pnpm format:check`'s own glob for `test/*.ts` or `apps/client/scripts/*.mjs`,
+so those two were checked with `pnpm exec prettier --check` directly instead and came back
+clean. Fixed with `--write`; the diff is whitespace only. Every gate above was run a second
+time after all of this step's edits, with identical counts to what is written here — a
+measurement, not an assumption.
+
+#### The merge this branch is heading into
+
+`development` sits at `0079851`, exactly the merge-base of this branch — it has not moved
+since `feat/mobile-app-for-android` forked from it, so this is a plain fast-forward with
+**zero commits to reconcile and zero conflicts possible**, not merely zero found. A
+`git merge-tree` against it produces no output for the same reason. `apps/client/package.json`
+reads `0.86.0` on both sides, so there is no version bump for a merge to swallow either — the
+normal case now that CI cuts releases from `development` rather than from a bump carried on
+this branch.
+
 ---
 
 ## Conventions for every phase

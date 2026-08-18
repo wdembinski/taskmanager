@@ -45,7 +45,10 @@ const app = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repo = resolve(app, '..', '..');
 const sharedSrc = join(repo, 'packages', 'shared', 'src');
 const protocolSrc = join(repo, 'packages', 'protocol', 'src');
-const webSrc = join(repo, 'apps', 'web', 'src');
+// `HttpTransport` and `PolledEventBus` moved out of apps/web/src and into `@tm/cloud`
+// (Phase 27 step 3, so both apps/web and apps/mobile can share one sync layer) — this
+// reads their sources directly, same as it always has, just from their new home.
+const cloudSrc = join(repo, 'packages', 'cloud', 'src');
 
 /**
  * Everything this script writes lives here, INSIDE the app rather than in the temp dir, for
@@ -99,7 +102,6 @@ export default { app, ipcMain, safeStorage };
         '@tm/shared': sharedSrc,
         '@tm/protocol': protocolSrc,
         '@tm/ui/transport': empty,
-        '@web': webSrc,
         electron: electronStub,
       },
     },
@@ -138,8 +140,8 @@ import { createStore } from '${join(app, 'src/main/store').replace(/\\/g, '/')}'
 import { RelayRegistry } from '${join(app, 'src/main/ipcRegistry').replace(/\\/g, '/')}';
 import { CommandQueue } from '${join(app, 'src/main/commandQueue').replace(/\\/g, '/')}';
 import { applyCloudCommand } from '${join(app, 'src/main/cloudCommands').replace(/\\/g, '/')}';
-import { HttpTransport } from '${join(webSrc, 'board/httpTransport').replace(/\\/g, '/')}';
-import { PolledEventBus } from '${join(webSrc, 'board/polledEvents').replace(/\\/g, '/')}';
+import { HttpTransport } from '${join(cloudSrc, 'board/httpTransport').replace(/\\/g, '/')}';
+import { PolledEventBus } from '${join(cloudSrc, 'board/polledEvents').replace(/\\/g, '/')}';
 import {
   acknowledgeable,
   isDeliverable,

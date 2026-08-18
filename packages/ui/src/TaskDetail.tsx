@@ -214,8 +214,10 @@ export interface TaskDetailProps {
   priorityDisplay?: PriorityDisplay;
   /**
    * Why this pane's controls will not do anything, for a host that cannot back them — one
-   * sentence, drawn as a warning bar above the card (the web app's, whose transport relays
-   * only a status change and a new card; see `apps/web/src/board/httpTransport.ts`).
+   * sentence, drawn as a warning bar above the card (the web and mobile apps', whose shared
+   * `@tm/cloud` transport relays real edits to the desktop and refuses only its host-only
+   * tier — file pickers, credentials, window buttons; see
+   * `packages/cloud/src/board/httpTransport.ts`).
    *
    * A sentence rather than a `disabled` sweep because the pane degrades by prop ABSENCE
    * already — a host that passes no merge requests, no chain and no attention index simply

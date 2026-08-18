@@ -14,7 +14,15 @@
  * that corner on the desktop, and a control you can actually tap without missing wants a real
  * row of its own rather than a few pixels borrowed from the card underneath it.
  */
-import { Button, Menu, MenuItem, MenuList, MenuPopover, MenuTrigger, makeStyles } from '@fluentui/react-components';
+import {
+  Button,
+  Menu,
+  MenuItem,
+  MenuList,
+  MenuPopover,
+  MenuTrigger,
+  makeStyles,
+} from '@fluentui/react-components';
 import { ArrowRoutingRegular } from '@fluentui/react-icons';
 import type { BoardColumn } from '@tm/shared/model';
 import { COLUMN_META } from '@tm/ui/board/boardColumns';
@@ -26,7 +34,10 @@ const useStyles = makeStyles({
 });
 
 /** The four drag props this card never has a use for — see the header above. */
-type NoDragTaskCardProps = Omit<TaskCardProps, 'draggable' | 'dragging' | 'onDragStart' | 'onDragEnd'>;
+type NoDragTaskCardProps = Omit<
+  TaskCardProps,
+  'draggable' | 'dragging' | 'onDragStart' | 'onDragEnd'
+>;
 
 export interface BoardCardRowProps extends NoDragTaskCardProps {
   /** The column this card is actually in — left out of the menu, since moving there is a no-op. */

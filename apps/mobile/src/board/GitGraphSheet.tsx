@@ -10,7 +10,14 @@
  * at sideways. `GitGraphPane` itself is unchanged: its root is already `flex: column` with
  * its own internal scroll, so it fills whatever height this sheet gives it.
  */
-import { Button, Dialog, DialogSurface, Subtitle2, makeStyles, tokens } from '@fluentui/react-components';
+import {
+  Button,
+  Dialog,
+  DialogSurface,
+  Subtitle2,
+  makeStyles,
+  tokens,
+} from '@fluentui/react-components';
 import { DismissRegular } from '@fluentui/react-icons';
 import type { Project, Task } from '@tm/shared/model';
 import { GitGraphPane } from '@tm/ui/GitGraphPane';
@@ -63,7 +70,12 @@ export function GitGraphSheet({
       <DialogSurface className={styles.surface}>
         <div className={styles.header}>
           <Subtitle2>Commit graph</Subtitle2>
-          <Button appearance="subtle" icon={<DismissRegular />} aria-label="Close" onClick={onClose} />
+          <Button
+            appearance="subtle"
+            icon={<DismissRegular />}
+            aria-label="Close"
+            onClick={onClose}
+          />
         </div>
         <div className={styles.body}>
           <GitGraphPane
