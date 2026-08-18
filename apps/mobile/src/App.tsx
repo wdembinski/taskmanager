@@ -15,7 +15,7 @@
  * any more than a browser tab is.
  */
 import { useMemo, useState } from 'react';
-import { Body1, Caption1, makeStyles } from '@fluentui/react-components';
+import { makeStyles } from '@fluentui/react-components';
 import {
   AlertRegular,
   DataTrendingRegular,
@@ -36,6 +36,7 @@ import { SkewBanner } from '@tm/cloud/board/SkewBanner';
 import { StaleBanner } from '@tm/cloud/board/StaleBanner';
 import { versionSkew } from '@tm/cloud/board/targetClient';
 import { useCloudBoard } from '@tm/cloud/board/useCloudBoard';
+import { BoardScreen } from './board/BoardScreen';
 import { MobileShell } from './shell/MobileShell';
 import { loadMobileConfig } from './env';
 
@@ -49,7 +50,6 @@ const useStyles = makeStyles({
     cursor: 'pointer',
     textDecoration: 'underline',
   },
-  boardPlaceholder: { padding: '16px' },
 });
 
 /** Why a tile that isn't here is off. Appended to its tooltip — same string the web uses. */
@@ -178,13 +178,11 @@ function SignedInApp({
         {/* Same unmount-on-leave discipline as apps/web's App.tsx: a screen not being
             looked at should not keep polling. */}
         {screen === 'mytasks' && (
-          <div className={styles.boardPlaceholder}>
-            <Body1>My Tasks</Body1>
-            <Caption1 as="p">
-              The tap-to-move board lands in step 6 of this phase (docs/plan/README.md) — this
-              screen is wired into the shell now so its route exists before its content does.
-            </Caption1>
-          </div>
+          <BoardScreen
+            state={board.state}
+            everSeenClient={board.targetClientId !== null}
+            onSetStatus={(taskId, status) => void board.setStatus(taskId, status)}
+          />
         )}
         {screen === 'performance' && <Performance />}
         {screen === 'attention' && <Attention />}

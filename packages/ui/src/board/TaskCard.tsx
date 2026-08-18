@@ -980,13 +980,20 @@ export interface TaskCardProps {
    * restarting are one gesture apart, so they belong in one place.
    */
   onResume?: () => void;
-  draggable: boolean;
+  /**
+   * Whether the card can be picked up and dragged. Optional — and defaulted to `false` —
+   * because a host with no drag-and-drop (a phone has no mouse to drag with) has nothing
+   * to turn on: the four drag props below are the host difference, the same way
+   * `readOnlyNotice` is one on `TaskDetail`. `KanbanColumn` still passes all four,
+   * unconditionally, exactly as it always has.
+   */
+  draggable?: boolean;
   onSelect: () => void;
   /** Open a step in the detail pane (the row never drags or moves the card). */
   onSelectSubtask?: (taskId: string) => void;
-  onDragStart: (e: React.DragEvent) => void;
-  onDragEnd: (e: React.DragEvent) => void;
-  dragging: boolean;
+  onDragStart?: (e: React.DragEvent) => void;
+  onDragEnd?: (e: React.DragEvent) => void;
+  dragging?: boolean;
 }
 
 export function TaskCard({
@@ -1020,12 +1027,12 @@ export function TaskCard({
   onLinkArm,
   onStop,
   onResume,
-  draggable,
+  draggable = false,
   onSelect,
   onSelectSubtask,
   onDragStart,
   onDragEnd,
-  dragging,
+  dragging = false,
 }: TaskCardProps): JSX.Element {
   const styles = useStyles();
   const sprintShown = showSprint;
