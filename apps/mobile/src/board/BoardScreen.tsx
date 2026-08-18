@@ -7,34 +7,58 @@
  *
  * What differs from the web's board is the shape, not the data: one column at a time
  * (`ColumnChips`) instead of `KanbanColumn`'s side-by-side grid, a "Move to…" menu
- * (`BoardCardRow`) instead of HTML5 drag-and-drop, and no chain overlay, no detail pane and
- * no commit-graph SIDE pane — opening a card full-screen is the next step of this phase
- * (docs/plan/README.md, Phase 27 step 7); the commit graph opens as a full-screen sheet
- * instead (`GitGraphSheet`) rather than being left off.
+ * (`BoardCardRow`) instead of HTML5 drag-and-drop, and no chain overlay — a phone showing
+ * one column at a time has nothing for an arrow to span, so chain state surfaces through
+ * the shared `TaskChain` inside the detail screen instead (docs/plan/README.md, Phase 27
+ * step 2, "Dropped"). Selecting a card now pushes that screen full-screen (`TaskScreen`,
+ * step 7) rather than opening a side pane; the commit graph opens as its own full-screen
+ * sheet (`GitGraphSheet`) for the same reason.
  */
 import { useCallback, useMemo, useState } from 'react';
+import { Button, Caption1, Spinner, Switch, makeStyles, tokens } from '@fluentui/react-components';
 import {
-  Button,
-  Caption1,
-  Spinner,
-  Switch,
-  makeStyles,
-  tokens,
-} from '@fluentui/react-components';
-import { AddRegular, ArchiveRegular, ArrowSyncRegular, BranchForkRegular } from '@fluentui/react-icons';
+  AddRegular,
+  ArchiveRegular,
+  ArrowSyncRegular,
+  BranchForkRegular,
+} from '@fluentui/react-icons';
 import { columnForTask, statusForColumn } from '@tm/shared/board';
-import { PERSONAL_PROJECT_ID, type BoardColumn, type ManualStatus, type Task } from '@tm/shared/model';
-import { COLUMN_META, groupSubtasks, hiddenDoneSummary, sortCards, visibleColumns, type BoardCard } from '@tm/ui/board/boardColumns';
+import {
+  isManualStatus,
+  PERSONAL_PROJECT_ID,
+  type BoardColumn,
+  type ManualStatus,
+  type Task,
+} from '@tm/shared/model';
+import {
+  COLUMN_META,
+  groupSubtasks,
+  hiddenDoneSummary,
+  sortCards,
+  visibleColumns,
+  type BoardCard,
+} from '@tm/ui/board/boardColumns';
 import { AddTaskDialog } from '@tm/ui/AddTaskDialog';
-import { archivedCards, archivedCountLabel, archivedCountTitle, ArchivedCardsDialog } from '@tm/ui/board/ArchivedCardsDialog';
+import {
+  archivedCards,
+  archivedCountLabel,
+  archivedCountTitle,
+  ArchivedCardsDialog,
+} from '@tm/ui/board/ArchivedCardsDialog';
+import { chainStates } from '@tm/ui/board/chainStates';
 import { doneSwitchLabel, doneSwitchTitle } from '@tm/ui/board/doneSwitchLabel';
 import { useTransport } from '@tm/ui/transport';
 import { selectArchivedTasks, selectBoardTasks } from '@tm/cloud/board/boardSelectors';
-import { displayStatus, isTaskPending, type CloudBoardState } from '@tm/cloud/board/cloudBoardStore';
-import { mergeRequestsByTask, useBoardExtras } from '@tm/cloud/board/useBoardExtras';
+import {
+  displayStatus,
+  isTaskPending,
+  type CloudBoardState,
+} from '@tm/cloud/board/cloudBoardStore';
+import { byTask, mergeRequestsByTask, useBoardExtras } from '@tm/cloud/board/useBoardExtras';
 import { BoardCardRow } from './BoardCardRow';
 import { ColumnChips } from './ColumnChips';
 import { GitGraphSheet } from './GitGraphSheet';
+import { TaskScreen } from './TaskScreen';
 
 const useStyles = makeStyles({
   root: {
@@ -71,13 +95,25 @@ export interface BoardScreenProps {
   state: CloudBoardState;
   everSeenClient: boolean;
   onSetStatus: (taskId: string, status: ManualStatus) => void;
+  /**
+   * A status change the DETAIL SCREEN has already sent for itself: record the same pending
+   * overlay a "Move to…" pick gets, without putting a second identical command on the wire.
+   * `apps/web`'s own `BoardScreen`'s `onStatusNoted` — see `TaskDetail`'s `onStatusChanged`.
+   */
+  onStatusNoted: (taskId: string, status: ManualStatus) => void;
 }
 
-export function BoardScreen({ state, everSeenClient, onSetStatus }: BoardScreenProps): JSX.Element {
+export function BoardScreen({
+  state,
+  everSeenClient,
+  onSetStatus,
+  onStatusNoted,
+}: BoardScreenProps): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
   const extras = useBoardExtras();
   const [selectedColumn, setSelectedColumn] = useState<BoardColumn>('todo');
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
@@ -96,7 +132,10 @@ export function BoardScreen({ state, everSeenClient, onSetStatus }: BoardScreenP
   const projects = useMemo(() => Object.values(state.projects), [state.projects]);
   const boardTasks = useMemo(() => selectBoardTasks(state), [state]);
   const removedCards = useMemo(() => archivedCards(selectArchivedTasks(state)), [state]);
-  const mrsByTask = useMemo(() => mergeRequestsByTask(extras.mergeRequests), [extras.mergeRequests]);
+  const mrsByTask = useMemo(
+    () => mergeRequestsByTask(extras.mergeRequests),
+    [extras.mergeRequests],
+  );
 
   const projectNameOf = (task: Task): string | undefined =>
     task.externalSource ? task.phase || undefined : undefined;
@@ -109,25 +148,36 @@ export function BoardScreen({ state, everSeenClient, onSetStatus }: BoardScreenP
     // Same optimistic overlay the web board applies before columning: a card moved from this
     // screen jumps to its destination the instant the tap lands, from `displayStatus` rather
     // than waiting for the next poll to confirm it.
-    const displayTasks = boardTasks.map((task) => ({ ...task, status: displayStatus(state, task) }));
+    const displayTasks = boardTasks.map((task) => ({
+      ...task,
+      status: displayStatus(state, task),
+    }));
     const byColumn = new Map<BoardColumn, BoardCard[]>();
     for (const meta of COLUMN_META) byColumn.set(meta.column, []);
     for (const card of groupSubtasks(displayTasks, mrsByTask)) {
       byColumn.get(columnForTask(card.task))?.push(card);
     }
     for (const meta of COLUMN_META) {
-      byColumn.set(meta.column, sortCards(byColumn.get(meta.column) ?? [], extras.attention.taskIds));
+      byColumn.set(
+        meta.column,
+        sortCards(byColumn.get(meta.column) ?? [], extras.attention.taskIds),
+      );
     }
     return byColumn;
   }, [boardTasks, state, mrsByTask, extras.attention.taskIds]);
 
-  const hiddenDone = useMemo(() => hiddenDoneSummary(cardsByColumn.get('done') ?? []), [cardsByColumn]);
+  const hiddenDone = useMemo(
+    () => hiddenDoneSummary(cardsByColumn.get('done') ?? []),
+    [cardsByColumn],
+  );
 
   const visible = useMemo(() => visibleColumns(showDone), [showDone]);
   // Falls back to the first visible column the moment the current chip's column is hidden —
   // e.g. Show Done switched off while DONE was selected — rather than rendering a chip row
   // with nothing selected in it.
-  const effectiveColumn = visible.includes(selectedColumn) ? selectedColumn : (visible[0] ?? 'todo');
+  const effectiveColumn = visible.includes(selectedColumn)
+    ? selectedColumn
+    : (visible[0] ?? 'todo');
 
   const pendingTaskIds = useMemo(() => {
     const ids = new Set<string>();
@@ -139,6 +189,42 @@ export function BoardScreen({ state, everSeenClient, onSetStatus }: BoardScreenP
 
   const parentCandidates = useMemo(() => boardTasks.filter((t) => !t.parentTaskId), [boardTasks]);
   const tasksById = useMemo(() => new Map(boardTasks.map((t) => [t.id, t])), [boardTasks]);
+  const attachmentsByTask = useMemo(() => byTask(extras.attachments), [extras.attachments]);
+
+  /**
+   * The chain's own state, over the same links and tasks `TaskChain` inside the screen
+   * reads — `apps/web`'s own `chainState`, computed here so this board can answer the
+   * same "waiting on"/"merge held" chips the desktop's Agent panel shows.
+   */
+  const chainState = useMemo(
+    () => chainStates(extras.chainLinks, tasksById, extras.liveRunTaskIds),
+    [extras.chainLinks, tasksById, extras.liveRunTaskIds],
+  );
+
+  /**
+   * The card the full-screen route is showing — with the same pending overlay its column
+   * applies, so a card just tapped to DONE does not read "In progress" once it opens.
+   */
+  const selectedTask = useMemo(() => {
+    const task = selectedTaskId ? (state.tasks[selectedTaskId] ?? null) : null;
+    return task ? { ...task, status: displayStatus(state, task) } : null;
+  }, [state, selectedTaskId]);
+
+  /**
+   * The chain the screen needs: the selected card's own steps, or — when a STEP is
+   * selected — its siblings, so the pane can say "step 2 of 5". `apps/web`'s own `chain`.
+   */
+  const chain = useMemo(() => {
+    if (!selectedTask) return [];
+    const parentId = selectedTask.parentTaskId ?? selectedTask.id;
+    return boardTasks.filter((t) => t.parentTaskId === parentId).sort((a, b) => a.order - b.order);
+  }, [boardTasks, selectedTask]);
+
+  /** The card a shown step belongs to — the screen's own breadcrumb back out of it. */
+  const parentOfSelected = useMemo(
+    () => (selectedTask?.parentTaskId ? (state.tasks[selectedTask.parentTaskId] ?? null) : null),
+    [state.tasks, selectedTask],
+  );
 
   const move = useCallback(
     (taskId: string, column: BoardColumn) => {
@@ -242,11 +328,8 @@ export function BoardScreen({ state, everSeenClient, onSetStatus }: BoardScreenP
               liveRunTaskIds={extras.liveRunTaskIds}
               mergingTaskIds={extras.mergingTaskIds}
               display={settings.board}
-              // Nothing opens on a tap yet — that's the next step of this phase (see the file
-              // header). Selection stays permanently false rather than tracking a card nothing
-              // reads it back from.
-              selected={false}
-              onSelect={() => {}}
+              selected={task.id === selectedTaskId}
+              onSelect={() => setSelectedTaskId(task.id)}
               column={effectiveColumn}
               moveTargets={visible}
               onMove={(column) => move(task.id, column)}
@@ -299,6 +382,41 @@ export function BoardScreen({ state, everSeenClient, onSetStatus }: BoardScreenP
         tasksById={tasksById}
         runningTaskIds={extras.liveRunTaskIds}
       />
+
+      {/* The full-screen route a tap opens (Phase 27 step 7) — the desktop's own `TaskDetail`,
+          the same component, wrapped for a phone rather than sat in a 40% pane. */}
+      {selectedTask && (
+        <TaskScreen
+          task={selectedTask}
+          agentProjects={extras.agentProjects}
+          subtasks={chain}
+          parentTask={parentOfSelected}
+          mergeRequests={mrsByTask.get(selectedTask.id) ?? []}
+          attachments={attachmentsByTask.get(selectedTask.id) ?? []}
+          parentAttachments={
+            parentOfSelected ? (attachmentsByTask.get(parentOfSelected.id) ?? []) : []
+          }
+          statusKeywords={settings.statusKeywords}
+          priorityDisplay={settings.board.priorityDisplay}
+          attention={extras.attention}
+          liveRunTaskIds={extras.liveRunTaskIds}
+          mergingTaskIds={extras.mergingTaskIds}
+          chainWaitingOn={chainState.get(selectedTask.id)?.waitingOn}
+          chainMergeHeld={chainState.get(selectedTask.id)?.mergeHeld}
+          chainLinks={extras.chainLinks}
+          chainTasksById={tasksById}
+          onUnlinkChain={(linkId) => void extras.removeLink(linkId).catch(reportError)}
+          onOpenTask={setSelectedTaskId}
+          onClose={() => setSelectedTaskId(null)}
+          // The screen's State dropdown has already sent its own `task:setStatus` through the
+          // transport by the time this runs (`TaskDetailsCell`) — this only records the
+          // optimistic overlay a "Move to…" pick gets, and must not send a second command.
+          onStatusChanged={(updated) => {
+            if (isManualStatus(updated.status)) onStatusNoted(updated.id, updated.status);
+          }}
+          onSubtasksChanged={extras.refresh}
+        />
+      )}
     </div>
   );
 }

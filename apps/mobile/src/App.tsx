@@ -182,6 +182,7 @@ function SignedInApp({
             state={board.state}
             everSeenClient={board.targetClientId !== null}
             onSetStatus={(taskId, status) => void board.setStatus(taskId, status)}
+            onStatusNoted={board.noteStatus}
           />
         )}
         {screen === 'performance' && <Performance />}

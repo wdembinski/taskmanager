@@ -4,8 +4,15 @@
     <meta charset="UTF-8" />
     <!-- viewport-fit=cover is what lets env(safe-area-inset-*) resolve to the notch/gesture-bar
          insets instead of 0 — without it the tab bar in MobileShell would sit under Android's
-         gesture bar rather than padding above it. -->
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+         gesture bar rather than padding above it. interactive-widget=resizes-content (Chrome
+         108+, which is what an installed WebAPK runs on — Decision 2) makes the on-screen
+         keyboard shrink the layout viewport the same way the browser's own address bar
+         already does, so 100dvh — already relied on everywhere for that (MobileShell.tsx) —
+         also keeps TaskScreen's fixed composer band above the keyboard rather than under it. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
+    />
     <title>VIPPER Task Manager</title>
   </head>
   <body>
