@@ -13,8 +13,13 @@
  * Scratch run stays off for the same reason it's off on the web: it drives a live
  * `session:start`, host-only by policy (`@tm/shared/ipcRelay`), and a phone is not a host
  * any more than a browser tab is.
+ *
+ * The tab itself is no longer a plain `useState`: it is the `screen`-typed `tab` frame at the
+ * bottom of `useBackStack`'s nav stack (`nav/navStack.ts`), so switching tabs is one more thing
+ * Android's Back key can undo — see that file's header for why the whole stack, not just this
+ * tab, is the shared source of truth for what a phone screen is currently showing.
  */
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { makeStyles } from '@fluentui/react-components';
 import {
   AlertRegular,
@@ -39,6 +44,8 @@ import { useCloudBoard } from '@tm/cloud/board/useCloudBoard';
 import { BoardScreen } from './board/BoardScreen';
 import { MobileShell } from './shell/MobileShell';
 import { loadMobileConfig } from './env';
+import { topOverlay, topScreen, type Screen } from './nav/navStack';
+import { useBackStack } from './nav/useBackStack';
 
 const useStyles = makeStyles({
   linkButton: {
@@ -67,9 +74,6 @@ const NAV: readonly NavRailItem[] = [
   { id: 'settings', label: 'Settings', icon: <SettingsRegular /> },
   { id: 'scratch', label: 'Scratch run', icon: <PlayRegular />, unavailable: DESKTOP_ONLY },
 ];
-
-/** The rail's destinations that this app actually renders. */
-type Screen = 'mytasks' | 'performance' | 'attention' | 'settings';
 
 const SCREEN_TITLE: Record<Screen, string> = {
   mytasks: 'My Tasks',
@@ -139,7 +143,9 @@ function SignedInApp({
 }): JSX.Element {
   const styles = useStyles();
   const board = useCloudBoard(auth, config);
-  const [screen, setScreen] = useState<Screen>('mytasks');
+  const nav = useBackStack({ type: 'tab', screen: 'mytasks' });
+  const screen = topScreen(nav.stack);
+  const overlay = topOverlay(nav.stack);
 
   const online = board.state.clients.length > 0;
   const skew = versionSkew(board.targetClient);
@@ -173,7 +179,10 @@ function SignedInApp({
         }
         nav={NAV}
         selected={screen}
-        onSelect={(id) => setScreen(id as Screen)}
+        onSelect={(id) => {
+          const next = id as Screen;
+          if (next !== screen) nav.push({ type: 'tab', screen: next });
+        }}
       >
         {/* Same unmount-on-leave discipline as apps/web's App.tsx: a screen not being
             looked at should not keep polling. */}
@@ -183,6 +192,12 @@ function SignedInApp({
             everSeenClient={board.targetClientId !== null}
             onSetStatus={(taskId, status) => void board.setStatus(taskId, status)}
             onStatusNoted={board.noteStatus}
+            overlay={overlay}
+            onOpenTask={(taskId) => nav.push({ type: 'task', taskId })}
+            onOpenAddTask={() => nav.push({ type: 'addTask' })}
+            onOpenGraph={() => nav.push({ type: 'graph' })}
+            onOpenArchived={() => nav.push({ type: 'archived', openedAt: Date.now() })}
+            onBack={nav.back}
           />
         )}
         {screen === 'performance' && <Performance />}

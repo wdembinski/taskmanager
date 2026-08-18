@@ -13,6 +13,13 @@
  * step 2, "Dropped"). Selecting a card now pushes that screen full-screen (`TaskScreen`,
  * step 7) rather than opening a side pane; the commit graph opens as its own full-screen
  * sheet (`GitGraphSheet`) for the same reason.
+ *
+ * Which of those four is open is no longer this component's own state (step 8): a task screen,
+ * `AddTaskDialog`, `GitGraphSheet` and `ArchivedCardsDialog` each cover the toolbar buttons
+ * that would open one of the others, so only one is ever showing — exactly the single `overlay`
+ * `App.tsx`'s nav stack (`nav/navStack.ts`) tracks. Opening one pushes a frame; every close in
+ * this file calls the same `onBack` Android's hardware key does, so an in-app "x" and a real
+ * Back press can never fall out of sync with the browser history entry that represents it.
  */
 import { useCallback, useMemo, useState } from 'react';
 import { Button, Caption1, Spinner, Switch, makeStyles, tokens } from '@fluentui/react-components';
@@ -59,6 +66,7 @@ import { BoardCardRow } from './BoardCardRow';
 import { ColumnChips } from './ColumnChips';
 import { GitGraphSheet } from './GitGraphSheet';
 import { TaskScreen } from './TaskScreen';
+import type { Overlay } from '../nav/navStack';
 
 const useStyles = makeStyles({
   root: {
@@ -101,6 +109,14 @@ export interface BoardScreenProps {
    * `apps/web`'s own `BoardScreen`'s `onStatusNoted` — see `TaskDetail`'s `onStatusChanged`.
    */
   onStatusNoted: (taskId: string, status: ManualStatus) => void;
+  /** The task screen or sheet/dialog on top of this board, if any — `App.tsx`'s nav stack. */
+  overlay: Overlay | null;
+  onOpenTask: (taskId: string) => void;
+  onOpenAddTask: () => void;
+  onOpenGraph: () => void;
+  onOpenArchived: () => void;
+  /** Pops the current overlay — every close button below calls this, same as Android's Back key. */
+  onBack: () => void;
 }
 
 export function BoardScreen({
@@ -108,19 +124,24 @@ export function BoardScreen({
   everSeenClient,
   onSetStatus,
   onStatusNoted,
+  overlay,
+  onOpenTask,
+  onOpenAddTask,
+  onOpenGraph,
+  onOpenArchived,
+  onBack,
 }: BoardScreenProps): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
   const extras = useBoardExtras();
   const [selectedColumn, setSelectedColumn] = useState<BoardColumn>('todo');
-  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
-  const [addOpen, setAddOpen] = useState(false);
-  const [graphOpen, setGraphOpen] = useState(false);
-  /** See `BoardScreen.tsx` (web) — the timestamp, not a boolean, so relative labels don't
-   *  re-word themselves on an unrelated render. */
-  const [archivedOpenedAt, setArchivedOpenedAt] = useState<number | null>(null);
+
+  const selectedTaskId = overlay?.type === 'task' ? overlay.taskId : null;
+  const addOpen = overlay?.type === 'addTask';
+  const graphOpen = overlay?.type === 'graph';
+  const archivedOpenedAt = overlay?.type === 'archived' ? overlay.openedAt : null;
 
   const { settings, saveSettings } = extras;
   const showDone = settings.jira.showDoneColumn;
@@ -278,7 +299,7 @@ export function BoardScreen({
           icon={<BranchForkRegular />}
           title="Show the repository’s commit graph"
           aria-label="Show the commit graph"
-          onClick={() => setGraphOpen(true)}
+          onClick={onOpenGraph}
         />
         {removedCards.length > 0 && (
           <Button
@@ -287,7 +308,7 @@ export function BoardScreen({
             icon={<ArchiveRegular />}
             title={archivedCountTitle(removedCards.length)}
             aria-label={archivedCountTitle(removedCards.length)}
-            onClick={() => setArchivedOpenedAt(Date.now())}
+            onClick={onOpenArchived}
           >
             {archivedCountLabel(removedCards.length)}
           </Button>
@@ -329,7 +350,7 @@ export function BoardScreen({
               mergingTaskIds={extras.mergingTaskIds}
               display={settings.board}
               selected={task.id === selectedTaskId}
-              onSelect={() => setSelectedTaskId(task.id)}
+              onSelect={() => onOpenTask(task.id)}
               column={effectiveColumn}
               moveTargets={visible}
               onMove={(column) => move(task.id, column)}
@@ -347,7 +368,7 @@ export function BoardScreen({
         disabled={!everSeenClient}
         title={disabledReason}
         aria-label="Add task"
-        onClick={() => setAddOpen(true)}
+        onClick={onOpenAddTask}
       />
 
       <AddTaskDialog
@@ -361,7 +382,7 @@ export function BoardScreen({
         // No OS file picker and no path for a dropped `File` on a phone browser either — the
         // same reason the web's own dialog turns this off.
         filesEnabled={false}
-        onClose={() => setAddOpen(false)}
+        onClose={onBack}
         onCreated={extras.refresh}
         onNotice={setError}
       />
@@ -370,13 +391,13 @@ export function BoardScreen({
         open={archivedOpenedAt !== null}
         archived={removedCards}
         now={archivedOpenedAt ?? 0}
-        onClose={() => setArchivedOpenedAt(null)}
+        onClose={onBack}
         onRestore={(taskId) => extras.restoreTask(taskId).catch(reportError)}
       />
 
       <GitGraphSheet
         open={graphOpen}
-        onClose={() => setGraphOpen(false)}
+        onClose={onBack}
         projects={extras.agentProjects}
         selectedTask={null}
         tasksById={tasksById}
@@ -406,8 +427,8 @@ export function BoardScreen({
           chainLinks={extras.chainLinks}
           chainTasksById={tasksById}
           onUnlinkChain={(linkId) => void extras.removeLink(linkId).catch(reportError)}
-          onOpenTask={setSelectedTaskId}
-          onClose={() => setSelectedTaskId(null)}
+          onOpenTask={onOpenTask}
+          onClose={onBack}
           // The screen's State dropdown has already sent its own `task:setStatus` through the
           // transport by the time this runs (`TaskDetailsCell`) — this only records the
           // optimistic overlay a "Move to…" pick gets, and must not send a second command.
