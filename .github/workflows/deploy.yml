@@ -5,20 +5,29 @@
 #   - @tm/server changed  -> build the image, push to GHCR, run migrations, then point
 #                            the Azure Container App at the new image.
 #   - @tm/web changed     -> build the Vite bundle and upload it to the Static Web App.
-# A change to @tm/shared or @tm/protocol (used by both apps) or the lockfile triggers both.
-# @tm/ui and @tm/cloud are web-only and trigger just that job.
+#   - @tm/mobile changed  -> same, to ITS OWN Static Web App on its own subdomain
+#                            (docs/plan/README.md Phase 27, Decision 3).
+# A change to @tm/shared or @tm/protocol (used by all three) or the lockfile triggers every
+# job it applies to. @tm/ui and @tm/cloud are browser-only and trigger both `web` and `mobile`.
 #
 # It does NOT touch the desktop app. apps/client is released by release.yml, which runs off
 # the same push and follows RELEASE.md's procedure — and nothing here should ever try to do
 # that. A push containing only apps/client changes deploys nothing.
 #
+# The `mobile` job is written and merged independently of the one-time Azure setup it needs
+# (docs/09, "Adding apps/mobile's Static Web App") — its deploy step checks
+# AZURE_STATIC_WEB_APPS_API_TOKEN_MOBILE itself and stays inert, rather than the job failing
+# loudly on every push, until a human has done that setup. `job.if` cannot do this check: the
+# `secrets` context is not available there, only in a step's own `if`.
+#
 # ── One-time setup (repo Settings → Secrets and variables → Actions) ──
-#   AZURE_CLIENT_ID                   app registration (or user-assigned MI) client id
-#   AZURE_TENANT_ID                   Entra tenant id
-#   AZURE_SUBSCRIPTION_ID             the subscription holding the `taskmanager` RG
-#   AZURE_STATIC_WEB_APPS_API_TOKEN   az staticwebapp secrets list -n taskmanager-web \
-#                                       -g taskmanager --query properties.apiKey -o tsv
-#   VITE_CLOUD_IAM_CLIENT_ID          this web build's public vipper.iam client id
+#   AZURE_CLIENT_ID                          app registration (or user-assigned MI) client id
+#   AZURE_TENANT_ID                          Entra tenant id
+#   AZURE_SUBSCRIPTION_ID                    the subscription holding the `taskmanager` RG
+#   AZURE_STATIC_WEB_APPS_API_TOKEN          az staticwebapp secrets list -n taskmanager-web \
+#                                               -g taskmanager --query properties.apiKey -o tsv
+#   AZURE_STATIC_WEB_APPS_API_TOKEN_MOBILE   same, for -n taskmanager-mobile (docs/09)
+#   VITE_CLOUD_IAM_CLIENT_ID                 this web build's public vipper.iam client id
 #
 # Azure login uses OIDC — no stored credential. Create a federated credential on the app
 # registration and give its service principal a role on the `taskmanager` resource group:
@@ -73,6 +82,7 @@ jobs:
     outputs:
       server: ${{ steps.filter.outputs.server }}
       web: ${{ steps.filter.outputs.web }}
+      mobile: ${{ steps.filter.outputs.mobile }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -88,6 +98,14 @@ jobs:
               - '.github/workflows/deploy.yml'
             web:
               - 'apps/web/**'
+              - 'packages/shared/**'
+              - 'packages/protocol/**'
+              - 'packages/ui/**'
+              - 'packages/cloud/**'
+              - 'pnpm-lock.yaml'
+              - '.github/workflows/deploy.yml'
+            mobile:
+              - 'apps/mobile/**'
               - 'packages/shared/**'
               - 'packages/protocol/**'
               - 'packages/ui/**'
@@ -275,6 +293,75 @@ jobs:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
           action: upload
           app_location: apps/web/dist
+          skip_app_build: true
+          skip_api_build: true
+          output_location: ''
+
+  # ── @tm/mobile → its own Static Web App ─────────────────────────────────────
+  # Mirrors `web` above, deployed to a separate SWA on its own subdomain (docs/plan/README.md
+  # Phase 27, Decision 3) so a phone client never shares a route table or a deploy with the
+  # browser one.
+  mobile:
+    needs: changes
+    if: needs.changes.outputs.mobile == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Written and merged before the one-time Azure setup this job needs necessarily exists
+      # (docs/plan/README.md Phase 27, Decision 4) — checked in a STEP, not a job-level `if`,
+      # because the `secrets` context is unavailable there. Without this, a job whose token
+      # secret is still unset would fail the whole workflow on every push to `development`
+      # that touches apps/mobile, for everyone, until a human does the one-time setup in
+      # docs/09 ("Adding apps/mobile's Static Web App").
+      - name: Check the mobile Static Web Apps token is configured
+        id: token
+        run: |
+          if [ -n "${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_MOBILE }}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::AZURE_STATIC_WEB_APPS_API_TOKEN_MOBILE is not set — skipping the mobile deploy. See docs/09-deploying-the-cloud-service.md, 'Adding apps/mobile's Static Web App'."
+          fi
+
+      - uses: pnpm/action-setup@v4
+        if: steps.token.outputs.configured == 'true'
+      - uses: actions/setup-node@v4
+        if: steps.token.outputs.configured == 'true'
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        if: steps.token.outputs.configured == 'true'
+        run: pnpm install --frozen-lockfile
+
+      # Same reasoning as the web build's env block above — Vite compiles these into the
+      # bundle at build time. VITE_CLOUD_IAM_CLIENT_ID is `taskmanager-mobile` unconditionally
+      # (apps/mobile/.env.example): its own registered public vipper.iam client id, a separate
+      # registration from apps/web's `taskmanager-web`, so a redirect-URI allowlist entry for
+      # one build can never be replayed against the other. Not a secret, unlike the web job's
+      # (docs/11 explains that one is a secret only by storage, not by nature) — this one is
+      # never stored as one at all.
+      - name: Build the mobile client
+        if: steps.token.outputs.configured == 'true'
+        env:
+          VITE_CLOUD_API_BASE: https://tasks-api.vipper.network
+          VITE_CLOUD_IAM_ISSUER: https://auth.vipper.network/oidc
+          VITE_CLOUD_IAM_CLIENT_ID: taskmanager-mobile
+        run: pnpm exec turbo run build --filter=@tm/mobile
+
+      - name: Include the Static Web Apps config
+        if: steps.token.outputs.configured == 'true'
+        run: cp apps/mobile/staticwebapp.config.json apps/mobile/dist/
+
+      - name: Deploy to Static Web Apps
+        if: steps.token.outputs.configured == 'true'
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_MOBILE }}
+          action: upload
+          app_location: apps/mobile/dist
           skip_app_build: true
           skip_api_build: true
           output_location: ''

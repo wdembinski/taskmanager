@@ -8,7 +8,7 @@ Windows and Linux, and published, while the cloud service is deployed in paralle
 | ------------------------------------------------- | -------------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | [`ci.yml`](../.github/workflows/ci.yml)           | pull request → `development`                 | The gates, the server image, and (when the desktop app is touched) a full package                  |
 | [`release.yml`](../.github/workflows/release.yml) | push → `development`, or `workflow_dispatch` | Tags, drafts, packages Windows + Linux, publishes — [`RELEASE.md`](../RELEASE.md) run by a machine |
-| [`deploy.yml`](../.github/workflows/deploy.yml)   | push → `development`, or `workflow_dispatch` | Deploys `@tm/server` to Azure Container Apps and `@tm/web` to Static Web Apps                      |
+| [`deploy.yml`](../.github/workflows/deploy.yml)   | push → `development`, or `workflow_dispatch` | Deploys `@tm/server` to Azure Container Apps, `@tm/web` to its Static Web App, and `@tm/mobile` to its own    |
 
 There is no `main` in this repository; `development` is the integration branch, and it is
 the only branch anything is released or deployed from.
@@ -57,13 +57,14 @@ the tag exists.
 | `linux`   | ubuntu  | §6 — package into the draft, plus docs/07's ELF and ABI-symbol checks |
 | `promote` | ubuntu  | §7 — publish the draft, **even if `linux` failed** (rule 4)           |
 
-`deploy.yml` filters by path, and can run either half, both, or neither:
+`deploy.yml` filters by path, and can run any subset of the three:
 
-| Changed                                                             | Deployed                                         |
-| ------------------------------------------------------------------- | ------------------------------------------------ |
-| `apps/server`, `packages/shared`, `packages/protocol`, the lockfile | image → GHCR → **migration job** → Container App |
-| `apps/web`, `packages/ui`, and the same shared packages             | Vite build → Static Web Apps                     |
-| `apps/client` only                                                  | nothing                                          |
+| Changed                                                                       | Deployed                                         |
+| ------------------------------------------------------------------------------ | ------------------------------------------------ |
+| `apps/server`, `packages/shared`, `packages/protocol`, the lockfile          | image → GHCR → **migration job** → Container App |
+| `apps/web`, `packages/ui`, `packages/cloud`, and the same shared packages    | Vite build → Static Web Apps                     |
+| `apps/mobile`, `packages/ui`, `packages/cloud`, and the same shared packages | Vite build → its own Static Web App              |
+| `apps/client` only                                                            | nothing                                          |
 
 Both are `concurrency: cancel-in-progress: false` — a half-finished release or deploy costs
 far more than a queue. `ci.yml` is the opposite: a new push to a PR cancels the run still in
@@ -222,6 +223,7 @@ Repository → Settings → Secrets and variables → Actions. The complete list
 | `AZURE_TENANT_ID`                 | `deploy.yml`                | Entra tenant id                                                                                                                                                                                                                                |
 | `AZURE_SUBSCRIPTION_ID`           | `deploy.yml`                | The subscription holding the `taskmanager` resource group                                                                                                                                                                                      |
 | `AZURE_STATIC_WEB_APPS_API_TOKEN` | `deploy.yml`                | `az staticwebapp secrets list -n taskmanager-web -g taskmanager --query properties.apiKey -o tsv`                                                                                                                                              |
+| `AZURE_STATIC_WEB_APPS_API_TOKEN_MOBILE` | `deploy.yml`         | Same, for `-n taskmanager-mobile`. Read by the `mobile` job's own step, not a job-level `if` — see [`docs/09`](09-deploying-the-cloud-service.md#adding-appsmobiles-static-web-app-one-time) for the one-time setup this depends on           |
 | `VITE_CLOUD_IAM_CLIENT_ID`        | `deploy.yml`                | The web build's public vipper.iam client id — compiled into the bundle by Vite                                                                                                                                                                 |
 
 `ci.yml` needs **no** secrets at all. It publishes nothing, so it needs nothing to publish
@@ -229,6 +231,15 @@ with — which is also what makes it safe to run against a fork's pull request.
 
 `VITE_CLOUD_IAM_CLIENT_ID` is a secret only by storage, not by nature: a browser bundle has
 nowhere to hide anything, and PKCE is what secures the sign-in (see `apps/web/.env.example`).
+The mobile build's own client id, `taskmanager-mobile`, is not stored as a secret at all — it
+is hardcoded in the `mobile` job the same way it already is in `apps/mobile/.env.example`, for
+the same reason.
+
+`AZURE_STATIC_WEB_APPS_API_TOKEN_MOBILE` is the one secret in this table that is allowed to be
+**absent**: until a human does the one-time Azure setup in `docs/09`, the `mobile` job checks
+it in a step, logs a `::warning::`, and skips its build/deploy steps rather than failing the
+whole run — so `deploy.yml` could carry this job before that setup existed, and pushes that
+touch `apps/mobile` were never blocked on it.
 
 **Azure login uses OIDC — there is no stored Azure credential.** Create a federated
 credential on the app registration and give its service principal a role on the
