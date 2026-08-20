@@ -39,7 +39,9 @@ describe('autoMergeTooltip', () => {
       projectName: 'demo',
       inherited: true,
     });
-    expect(exception).toMatch(/demo merges automatically by default — this card is the exception\./);
+    expect(exception).toMatch(
+      /demo merges automatically by default — this card is the exception\./,
+    );
     expectClean(exception);
 
     const notInherited = autoMergeTooltip({
@@ -68,7 +70,9 @@ describe('autoMergeTooltip', () => {
       projectName: undefined,
       inherited: true,
     });
-    expect(text).toMatch(/This repo merges automatically by default — this card is the exception\./);
+    expect(text).toMatch(
+      /This repo merges automatically by default — this card is the exception\./,
+    );
     expectClean(text);
 
     const onText = autoMergeTooltip({

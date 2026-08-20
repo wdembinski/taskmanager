@@ -786,7 +786,11 @@ export function TaskAgentPanel({
             // The merge is the deadline this toggle is read at, so once one is running the
             // answer is already taken — changing it now could only mislead.
             disabled={busy || mergeBusy}
-            title={autoReleaseTooltip({ on: releasing, projectName: assigned?.name, hasReleaseDoc })}
+            title={autoReleaseTooltip({
+              on: releasing,
+              projectName: assigned?.name,
+              hasReleaseDoc,
+            })}
             aria-label={`Release after merge, ${releasing ? 'on' : 'off'}`}
             onClick={() => void setAutoRelease(!releasing)}
           />
