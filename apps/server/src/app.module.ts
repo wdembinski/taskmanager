@@ -16,6 +16,7 @@ import { EventsModule } from './events/events.module';
 import { HealthModule } from './health/health.module';
 import { MirrorModule } from './mirror/mirror.module';
 import { PresenceModule } from './presence/presence.module';
+import { TokensModule } from './tokens/tokens.module';
 
 @Module({
   imports: [
@@ -58,6 +59,7 @@ import { PresenceModule } from './presence/presence.module';
     EventsModule,
     MirrorModule,
     AttachmentsModule,
+    TokensModule,
   ],
 })
 export class AppModule {}
