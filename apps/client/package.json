@@ -1,6 +1,6 @@
 {
   "name": "claude-orchestrator",
-  "version": "0.95.0",
+  "version": "0.96.0",
   "description": "Desktop app that orchestrates the Claude CLI across many projects/tasks â€” runs one session per task, auto-respawns when usage limits reset, advances through a plan.md, and surfaces Claude's questions in a dashboard.",
   "private": true,
   "author": "Wojciech Dembinski",

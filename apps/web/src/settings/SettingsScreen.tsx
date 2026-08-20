@@ -5,7 +5,7 @@
  * ---------------------------------------------
  * `apps/client/src/renderer/src/Settings.tsx` is 1478 lines in ONE component, and nine of
  * its twenty-one channels are host-bound: the credential writes (`jira:setCredentials`,
- * `gitlab:*`, `iam:signOut`), the updater (`update:install` quits the app), the exec-target
+ * `gitlab:*`, `github:*`), the updater (`update:install` quits the app), the exec-target
  * pickers (`exec:listDistros` asks THIS machine what WSL distros it has), the sign-in flows,
  * and the font size (which scales an Electron window, not a browser tab). Sharing it whole
  * would mean roughly eight optional capability props the web passes `false` for — which is
