@@ -46,6 +46,7 @@ import { PriorityGlyph } from './PriorityGlyph';
 import { MANUAL_STATUS_OPTIONS, STATUS_LABEL } from './taskStatus';
 import { FoldToggle } from './FoldToggle';
 import { useTransport } from './transport';
+import { usePasteAttachments } from './usePasteAttachments';
 
 /** The dropdown entry for "no priority" — a real option, since clearing must be possible. */
 const NO_PRIORITY = 'None';
@@ -306,6 +307,15 @@ export function TaskDetailsCell({
     });
   }
 
+  /** Paste a screenshot straight into the description — the strip's drop, at the caret. */
+  const paste = usePasteAttachments({
+    taskId: task.id,
+    attachments,
+    onInsertRefs: insertRefs,
+    disabled: busy,
+    onError: setError,
+  });
+
   async function save(): Promise<void> {
     setBusy(true);
     setError(null);
@@ -502,6 +512,7 @@ export function TaskDetailsCell({
                 resize="vertical"
                 textarea={{ ref: textareaRef }}
                 onChange={(_e, d) => setDraft(d.value)}
+                onPaste={paste.onPaste}
                 placeholder="What this card is, and what done means…"
               />
               {isExternal && (
@@ -550,7 +561,7 @@ export function TaskDetailsCell({
           <AttachmentStrip
             taskId={task.id}
             attachments={attachments}
-            disabled={busy}
+            disabled={busy || paste.busy}
             onInsertRefs={editing ? insertRefs : undefined}
           />
         </>
