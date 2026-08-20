@@ -37,32 +37,22 @@ export function clipboardFiles(data: DataTransfer | null): File[] {
 }
 
 /**
- * Attach `files` to `taskId`, however this host does that, and return the board's whole
- * attachment list — the same contract `AttachmentStrip`'s `add`/`addFiles` already have,
- * so a caller diffs the result the same way the strip does.
+ * Resolve `files` to the paths `attachment:add` (or {@link stageAttachments}) takes — the
+ * desktop half of a paste, with no `taskId` opinion at all.
  *
- * The browser branch is taken WHENEVER `transport.attachFiles` exists, exactly the
- * condition `AttachmentStrip` branches on — a browser has no paths and no business being
- * asked to find one, so the bytes it already holds are handed over as-is.
- *
- * The desktop branch runs each file through `transport.pathForFile` first: one dropped
- * from a file manager, or otherwise backed by a real file, resolves to a path and is
- * copied in exactly like a picked file. Whatever is left with no path is bytes that exist
- * only in memory — read once, staged to disk in one `attachment:stagePasted` call, and
- * folded back into the SAME list its path-bearing siblings are in, so the final
- * `attachment:add` is one call carrying every path in the order `files` arrived in. One
- * call, not one per pathless file, because `attachmentName`'s `-2`/`-3` dedupe suffixes are
- * assigned against `taken` as it stood at the START of the call — a second call would not
- * yet see the names the first just took.
+ * Each file goes through `transport.pathForFile` first: one dropped from a file manager, or
+ * otherwise backed by a real file, resolves to a path and needs nothing further. Whatever is
+ * left with no path is bytes that exist only in memory — read once, staged to disk in one
+ * `attachment:stagePasted` call, and folded back into the SAME list its path-bearing
+ * siblings are in, so the result carries every path in the order `files` arrived in. One
+ * `stagePasted` call, not one per pathless file, because `attachmentName`'s `-2`/`-3` dedupe
+ * suffixes are assigned against `taken` as it stood at the START of the call — a second call
+ * would not yet see the names the first just took.
  */
-export async function attachFilesToTask(
+export async function pastedFilePaths(
   transport: Transport,
-  taskId: string,
   files: readonly File[],
-): Promise<TaskAttachment[]> {
-  if (!files.length) return [];
-  if (transport.attachFiles) return transport.attachFiles(taskId, files);
-
+): Promise<string[]> {
   const located = files.map((file) => ({ file, path: transport.pathForFile(file) }));
   const pathless = located.filter((f) => f.path === '');
   const staged = pathless.length
@@ -76,7 +66,28 @@ export async function attachFilesToTask(
   // in lockstep recombines the two into `located`'s own order — a picked-path file keeps
   // its path, a staged one takes the next path `stagePastedFiles` handed back for it.
   let next = 0;
-  const paths = located.map((f) => (f.path !== '' ? f.path : staged[next++]));
+  return located.map((f) => (f.path !== '' ? f.path : staged[next++]));
+}
+
+/**
+ * Attach `files` to `taskId`, however this host does that, and return the board's whole
+ * attachment list — the same contract `AttachmentStrip`'s `add`/`addFiles` already have,
+ * so a caller diffs the result the same way the strip does.
+ *
+ * The browser branch is taken WHENEVER `transport.attachFiles` exists, exactly the
+ * condition `AttachmentStrip` branches on — a browser has no paths and no business being
+ * asked to find one, so the bytes it already holds are handed over as-is. The desktop
+ * branch resolves paths through {@link pastedFilePaths} and makes the one `attachment:add`
+ * call the ordering comment above explains.
+ */
+export async function attachFilesToTask(
+  transport: Transport,
+  taskId: string,
+  files: readonly File[],
+): Promise<TaskAttachment[]> {
+  if (!files.length) return [];
+  if (transport.attachFiles) return transport.attachFiles(taskId, files);
+  const paths = await pastedFilePaths(transport, files);
   return transport.invoke('attachment:add', taskId, paths);
 }
 
