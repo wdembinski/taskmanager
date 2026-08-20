@@ -15,6 +15,12 @@
  *
  * Model and permission mode are shown read-only: both are captured when the run
  * starts, so changing them means reassigning (the button says so).
+ *
+ * Three icon toggles sit in the header row, beside the actions they pre-answer — Merge,
+ * Create PR, and (via the chain) a release — each a standing answer to "what happens
+ * without anyone pressing a button", rather than a stack of switches with their own hint
+ * text. Their explanations live in the tooltip and `aria-label` instead (see
+ * `agentAutoToggles`), since an icon-only control has no `Field` hint paragraph beside it.
  */
 import { Fragment, useCallback, useEffect, useState } from 'react';
 import {
@@ -25,19 +31,26 @@ import {
   MessageBar,
   MessageBarBody,
   Spinner,
-  Switch,
   Text,
   Textarea,
+  ToggleButton,
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
-import { PlayCircleRegular, RecordStopRegular } from '@fluentui/react-icons';
+import {
+  BranchRequestRegular,
+  MergeRegular,
+  PlayCircleRegular,
+  RecordStopRegular,
+  RocketRegular,
+} from '@fluentui/react-icons';
 import { AgentGlyph } from './AgentGlyph';
+import { autoCreatePrTooltip, autoMergeTooltip, autoReleaseTooltip } from './agentAutoToggles';
 import type { AttentionAnswer, AttentionItem } from '@tm/shared/attention';
 import { canResumeWork, canStopWork, hasAgentWorked, parkedStep } from '@tm/shared/board';
 import type { Project, Task } from '@tm/shared/model';
 import { autoIntegrateOn, projectAutoIntegrate } from '@tm/shared/integrate';
-import { autoReleaseOn, RELEASE_DOC } from '@tm/shared/release';
+import { autoReleaseOn } from '@tm/shared/release';
 import { autoCreatePrOn } from '@tm/shared/pullRequest';
 import { mrAbbrev, mrIsSettled, mrNoun, mrRef, type MergeRequest } from '@tm/shared/mergeRequest';
 import { PERMISSION_MODE_LABELS } from '@tm/shared/session';
@@ -58,7 +71,10 @@ const useStyles = makeStyles({
    * an alert, and it is meant to interrupt.
    */
   box: { display: 'flex', flexDirection: 'column', gap: '8px' },
-  head: { display: 'flex', alignItems: 'center', gap: '8px' },
+  // `flexWrap`/`rowGap`: the row can hold up to eight controls (four actions, three
+  // auto-toggles, Assign/Reassign) and the pane is narrow, so it wraps onto a second line
+  // rather than overflowing.
+  head: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', rowGap: '4px' },
   // White, matching the board card's delegation glyph.
   icon: { fontSize: '18px', display: 'flex', color: '#ffffff' },
   grow: { flex: 1, minWidth: 0 },
@@ -112,6 +128,9 @@ const useStyles = makeStyles({
   /** Whose ask this is, when it belongs to a step rather than to the card. */
   stepOwner: { color: ASK_ORANGE },
   answerRow: { display: 'flex', alignItems: 'flex-end', gap: '8px' },
+  /** The release toggle, when it is on but the repo has no RELEASE.md yet — the warning
+   * `Field.validationState` used to carry before the switch became an icon button. */
+  warn: { color: tokens.colorPaletteYellowForeground1 },
 });
 
 export interface TaskAgentPanelProps {
@@ -353,7 +372,7 @@ export function TaskAgentPanel({
    */
   const prNoun = openMr ? mrNoun(openMr.provider) : 'pull request';
   /**
-   * The same answer in two letters, for the button face and the switch label.
+   * The same answer in two letters, for the button face and the toggle's tooltip/aria-label.
    *
    * Read off the PROVIDER, not off `prNoun` — both of these used to ask whether the noun
    * happened to equal the string `'merge request'`, which is a question about how
@@ -443,7 +462,7 @@ export function TaskAgentPanel({
     void transport
       .invoke('project:hasReleaseDoc', projectId)
       .then((found) => live && setHasReleaseDoc(found))
-      // A failed lookup must not disable the switch — the engine checks the file again
+      // A failed lookup must not disable the toggle — the engine checks the file again
       // at merge time, and that check is the one that decides anything.
       .catch(() => live && setHasReleaseDoc(true));
     return () => {
@@ -544,7 +563,7 @@ export function TaskAgentPanel({
   /**
    * Turn auto-merge on or off for THIS card.
    *
-   * Same rule as the release switch above, one level deeper: choosing what the card would
+   * Same rule as the release toggle above, one level deeper: choosing what the card would
    * have done anyway stores `null`, which puts it back to inheriting from the project (and
    * through it from the app). Agreeing with a default is not disagreeing with it.
    */
@@ -567,7 +586,7 @@ export function TaskAgentPanel({
   /**
    * Turn "open a PR when finished" on or off for THIS card.
    *
-   * Same rule as the release switch: choosing what the project already prefers stores `null`
+   * Same rule as the release toggle: choosing what the project already prefers stores `null`
    * rather than the same value again, which puts the card back to inheriting.
    */
   async function setAutoCreatePr(on: boolean): Promise<void> {
@@ -708,6 +727,70 @@ export function TaskAgentPanel({
           <Caption1 className={styles.hint}>Not assigned</Caption1>
         )}
         <span className={styles.grow} />
+        {/* The three auto-toggles: what happens to this card's branch without anyone
+            pressing a button. They live here, in the header row, next to the actions they
+            pre-answer — Merge, Create PR, and (via the chain) a release — rather than in a
+            stack of their own, because each is a standing answer to "what does that button
+            do by itself", not a separate decision screen.
+
+            Offered on the same terms as Merge: a delegated card that has actually run, in a
+            worktree repo, and not a step (a step inherits the card's answers, it does not
+            hold its own). An icon-only control has no `Field` hint paragraph beside it, so
+            the full explanation — including the current on/off state, which the label used
+            to say — moves into the tooltip; see `agentAutoToggles`. */}
+        {canIntegrate && !isStep && (
+          <ToggleButton
+            size="small"
+            appearance="subtle"
+            icon={<MergeRegular />}
+            checked={autoMerging}
+            // Not while one is running: the answer has already been taken for this branch,
+            // and a toggle that appeared to change it would be describing the past.
+            disabled={busy || mergeBusy}
+            title={autoMergeTooltip({
+              on: autoMerging,
+              baseBranch: assigned?.baseBranch,
+              projectName: assigned?.name,
+              inherited: inheritedIntegrate,
+            })}
+            aria-label={`Merge when finished, ${autoMerging ? 'on' : 'off'}`}
+            onClick={() => void setAutoIntegrate(!autoMerging)}
+          />
+        )}
+        {canIntegrate && !isStep && (
+          <ToggleButton
+            size="small"
+            appearance="subtle"
+            icon={<BranchRequestRegular />}
+            checked={creatingPr}
+            // Read when the work settles, so once a merge is under way the answer has been
+            // taken and changing it could only describe the past.
+            disabled={busy || mergeBusy}
+            title={autoCreatePrTooltip({
+              on: creatingPr,
+              prNoun,
+              projectName: assigned?.name,
+              projectDefaultOn: Boolean(assigned?.autoCreatePr),
+            })}
+            aria-label={`Open a ${prAbbrev} when finished, ${creatingPr ? 'on' : 'off'}`}
+            onClick={() => void setAutoCreatePr(!creatingPr)}
+          />
+        )}
+        {canIntegrate && !isStep && (
+          <ToggleButton
+            size="small"
+            appearance="subtle"
+            icon={<RocketRegular />}
+            checked={releasing}
+            className={hasReleaseDoc === false && releasing ? styles.warn : undefined}
+            // The merge is the deadline this toggle is read at, so once one is running the
+            // answer is already taken — changing it now could only mislead.
+            disabled={busy || mergeBusy}
+            title={autoReleaseTooltip({ on: releasing, projectName: assigned?.name, hasReleaseDoc })}
+            aria-label={`Release after merge, ${releasing ? 'on' : 'off'}`}
+            onClick={() => void setAutoRelease(!releasing)}
+          />
+        )}
         {/* The one control that ends a run. Its branch and worktree are left where they
             are, so this is a pause you can pick up again — send the agent a message and
             the session resumes. Said in the tooltip, because a button that reads "Stop"
@@ -861,99 +944,6 @@ export function TaskAgentPanel({
           }
           {assigned ? ` · ${assigned.path}` : ''}
         </Caption1>
-      )}
-
-      {/* Whether there IS a merge to press, which is why it sits immediately above the
-          release switch — the two read as one sentence: merge this, then release it.
-
-          Offered on the same terms as the Merge button, and answerable right up to the
-          moment the run finishes: the engine reads it when the work settles, not when it
-          started, so turning it on mid-run still merges the branch being written. */}
-      {canIntegrate && !isStep && (
-        <Field
-          hint={
-            autoMerging
-              ? `The branch is merged into ${assigned?.baseBranch || 'the base branch'} as soon as this card's work finishes — no Merge button, no review pause.`
-              : `The branch is left for you to merge with the button above. ${
-                  inheritedIntegrate
-                    ? `${assigned?.name ?? 'This repo'} merges automatically by default — this card is the exception.`
-                    : ''
-                }`
-          }
-        >
-          <Switch
-            checked={autoMerging}
-            // Not while one is running: the answer has already been taken for this branch,
-            // and a switch that appeared to change it would be describing the past.
-            disabled={busy || mergeBusy}
-            label="Merge when finished"
-            onChange={(_e, d) => void setAutoIntegrate(d.checked)}
-          />
-        </Field>
-      )}
-
-      {/* The alternative to merging, so it sits directly under the merge switch: these two
-          answer the same question ("what happens to this branch when the work is done?") and
-          reading them together is the only way the either/or is legible.
-
-          The hint carries the assumption the whole feature rests on, in words, because it is
-          not something a switch label can say: turning this on means the branch is NOT
-          merged locally. */}
-      {canIntegrate && !isStep && (
-        <Field
-          hint={
-            creatingPr
-              ? 'The branch is pushed and a ' +
-                prNoun +
-                ' is opened when the last step finishes, instead of being merged locally.'
-              : `The branch is merged or left for you, and nothing is pushed. ${
-                  assigned?.autoCreatePr
-                    ? `${assigned.name} opens one by default — this card is the exception.`
-                    : ''
-                }`
-          }
-        >
-          <Switch
-            checked={creatingPr}
-            // Read when the work settles, so once a merge is under way the answer has been
-            // taken and changing it could only describe the past.
-            disabled={busy || mergeBusy}
-            label={`Open a ${prAbbrev} when finished`}
-            onChange={(_e, d) => void setAutoCreatePr(d.checked)}
-          />
-        </Field>
-      )}
-
-      {/* What happens AFTER the merge, so it sits with the Merge button rather than in the
-          assign dialog: this is a decision about the work, and it is worth being able to
-          change it while reading the work — right up to the moment you press Merge.
-          Offered on the same terms as that button (a delegated card in a worktree repo),
-          because a card with no branch has no merge to follow. */}
-      {canIntegrate && !isStep && (
-        <Field
-          hint={
-            hasReleaseDoc === false
-              ? `${assigned?.name ?? 'This repo'} has no ${RELEASE_DOC} yet, so nothing would run. ` +
-                `Add one describing how it is released — the next merge follows it.`
-              : releasing
-                ? `When this card's branch merges, an agent follows ${RELEASE_DOC} in the repo and releases it.`
-                : `The branch is merged and left there. ${
-                    assigned?.autoRelease
-                      ? `${assigned.name} releases by default — this card is the exception.`
-                      : ''
-                  }`
-          }
-          validationState={hasReleaseDoc === false && releasing ? 'warning' : 'none'}
-        >
-          <Switch
-            checked={releasing}
-            // The merge is the deadline this switch is read at, so once one is running the
-            // answer is already taken — changing it now could only mislead.
-            disabled={busy || mergeBusy}
-            label="Release after merge"
-            onChange={(_e, d) => void setAutoRelease(d.checked)}
-          />
-        </Field>
       )}
 
       {error && (
