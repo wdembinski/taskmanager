@@ -16,13 +16,13 @@ setting the GitHub secrets. **Read that first; none of what follows works until 
 [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml) runs on every push to
 `development` and works out what changed:
 
-| Changed                                       | What happens                                                    |
-| --------------------------------------------- | --------------------------------------------------------------- |
+| Changed                                                             | What happens                                            |
+| ------------------------------------------------------------------- | ------------------------------------------------------- |
 | `apps/server`, `packages/shared`, `packages/protocol`, the lockfile | image → GHCR → **migrations** → Container App repointed |
-| `apps/web`, `packages/ui`, and the same shared packages            | Vite build → uploaded to Static Web Apps |
-| `apps/client` only                            | **nothing** — the desktop app is never deployed from CI          |
+| `apps/web`, `packages/ui`, and the same shared packages             | Vite build → uploaded to Static Web Apps                |
+| `apps/client` only                                                  | **nothing** — the desktop app is never deployed from CI |
 
-Migrations run *before* the app is repointed, as an Azure Container Apps job executing the
+Migrations run _before_ the app is repointed, as an Azure Container Apps job executing the
 same image with `node dist/database/migrate.js`. A failed migration fails the deploy and
 leaves the old app serving the old — matching — schema.
 
@@ -88,14 +88,14 @@ running server does not read a `.env` file** — only `database/dataSource.ts` (
 migration CLI path) does. `apps/server/.env.example` documents the variables; it does not
 feed the process.
 
-| Variable                | Deployed value                                        |
-| ----------------------- | ----------------------------------------------------- |
-| `NODE_ENV`              | `production` — also what makes `CLOUD_DEV_NO_AUTH` refuse to start |
-| `CLOUD_ALLOWED_ORIGINS` | the Static Web App origin, and nothing else           |
-| `DB_HOST` / `DB_NAME` / `DB_USER` | the Azure SQL server, database and least-privilege user |
-| `AZURE_KEY_VAULT_URI`   | the vault holding `db-password` and `cloud-iam-client-secret` |
-| `CLOUD_IAM_*`           | the vipper.iam endpoint and this API's confidential client |
-| `CLOUD_BLOB_QUOTA_BYTES` | unset — 256 MB of attachment bytes per account, evicted coldest-first. Worth lowering if the SQL tier gets tight, since the bytes live in a `VARBINARY(MAX)` column there (`attachments/blobStore.ts`) |
+| Variable                          | Deployed value                                                                                                                                                                                         |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `NODE_ENV`                        | `production` — also what makes `CLOUD_DEV_NO_AUTH` refuse to start                                                                                                                                     |
+| `CLOUD_ALLOWED_ORIGINS`           | the Static Web App origin, and nothing else                                                                                                                                                            |
+| `DB_HOST` / `DB_NAME` / `DB_USER` | the Azure SQL server, database and least-privilege user                                                                                                                                                |
+| `AZURE_KEY_VAULT_URI`             | the vault holding `db-password` and `cloud-iam-client-secret`                                                                                                                                          |
+| `CLOUD_IAM_*`                     | the vipper.iam endpoint and this API's confidential client                                                                                                                                             |
+| `CLOUD_BLOB_QUOTA_BYTES`          | unset — 256 MB of attachment bytes per account, evicted coldest-first. Worth lowering if the SQL tier gets tight, since the bytes live in a `VARBINARY(MAX)` column there (`attachments/blobStore.ts`) |
 
 Two settings are derived rather than configured, so that a deployment cannot inherit a
 development default by forgetting a variable:
@@ -105,6 +105,33 @@ development default by forgetting a variable:
 - **CORS** allows any `localhost` origin outside production (Vite's port moves), and
   **nothing** in production when `CLOUD_ALLOWED_ORIGINS` is unset. A blocked browser call
   is a loud failure; a silently wide-open API is not.
+
+## Personal access tokens
+
+The desktop app no longer signs in to vipper.iam. It is pasted a personal access token,
+minted on the web app's Personal access tokens page and verified by `@tm/server` itself
+(`apps/server/src/iam/patService.ts`) — the one process that issues a token is the one that
+checks it, which is what makes revocation real rather than aspirational.
+
+A token is worth exactly one thing: full read-and-write access to the account's mirror, for
+as long as the holder chooses (30, 90, 365 days, or no expiry) or until it is revoked,
+whichever comes first. There is no narrower scope to grant — see `packages/protocol/src/
+wire.ts`'s own note on why a column with one legal value is a lie about what is enforced.
+
+**Revocation latency.** `PatService`'s resolution cache (`PAT_CACHE_TTL_MS`, 5 seconds) is
+instant on the process that took the revoke — `PatService.revoke` calls `invalidate()` on the
+same instance's cache — and up to `PAT_CACHE_TTL_MS` on any other. With `min_replicas =
+max_replicas = 1` (above) there is no "any other": the single-replica pin that already makes
+the auth caches, the event bus and the media-token registry safe is what makes this one
+instant in practice, not just in the best case.
+
+**`CLOUD_DEV_NO_AUTH=1` and `POST /v1/tokens`.** The flag still short-circuits `IamAuthGuard`
+to `DEV_ACCOUNT_ID` with nothing presented — but a request that reaches `POST /v1/tokens`
+under it mints a **durable** credential for `dev-account`, not a ten-minute media ticket. That
+is a real credential surviving the dev bypass being turned back off, which is exactly the kind
+of consequence `assertDevAuthGateSafe()` (`apps/server/src/config/devAuthGate.ts`) exists to
+keep out of production — it matters more now than it did when the flag only ever stood in for
+a read.
 
 ## Verifying a deploy
 
