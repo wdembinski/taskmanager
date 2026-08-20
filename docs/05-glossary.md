@@ -133,12 +133,15 @@ title. Independent tasks (no `@needs:`) run in parallel up to the concurrency ca
 ### Attachment / `@name` (attachment reference)
 
 A file attached to a card or to one of its steps: the screenshot of the bug, the
-mockup a layout has to match, the CSV that reproduces it. The bytes are **copied**
-into the app's own data (`userData/attachments/<taskId>/<name>`), so the original can
-be moved or deleted afterwards without breaking anything. Writing `@mockup.png` in a
-description or a step brief points at one; the prompt that starts the run carries a
-legend of every attached file and its real path, so the agent opens the actual file.
-A step can name its own attachments **and** its card's.
+mockup a layout has to match, the CSV that reproduces it. Picked, dropped, or
+**pasted** — a bitmap pasted into the description or a step's brief is attached
+under a generated name, `pasted-<timestamp>`, since a clipboard image has none of
+its own. The bytes are **copied** into the app's own data
+(`userData/attachments/<taskId>/<name>`), so the original can be moved or deleted
+afterwards without breaking anything. Writing `@mockup.png` in a description or a
+step brief points at one; the prompt that starts the run carries a legend of every
+attached file and its real path, so the agent opens the actual file. A step can
+name its own attachments **and** its card's.
 
 Not to be confused with `@needs:` above — different syntax, different place, different
 job. `@needs:` is a dependency clause in a **plan file**, resolved against task titles;
