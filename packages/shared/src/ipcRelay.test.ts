@@ -35,6 +35,7 @@ const HOST_ONLY: ReadonlyArray<readonly [string, HostOnlyReason]> = [
   ['session:start', 'live-session'],
   ['session:stop', 'live-session'],
   ['session:answer', 'live-session'],
+  ['attachment:stagePasted', 'host-path'],
 ];
 
 describe('the host-only channels', () => {
@@ -58,6 +59,7 @@ describe('the host-only channels', () => {
     expect(hostOnlyMessage('jira:setCredentials')).toContain('credential store');
     expect(hostOnlyMessage('session:start')).toContain('live Claude process');
     expect(hostOnlyMessage('window:close')).toContain('desktop app itself');
+    expect(hostOnlyMessage('attachment:stagePasted')).toContain('own disk');
   });
 });
 

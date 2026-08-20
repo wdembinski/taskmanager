@@ -170,6 +170,7 @@ import {
   sweepOrphanAttachments,
 } from './attachments';
 import { attachmentFile } from './attachmentPaths';
+import { stagePastedFiles, sweepPasteTemp } from './pastedAttachments';
 import { collectUploads } from './uploadedAttachments';
 import type { ServiceSyncState, SyncServiceId, SyncState } from '@shared/sync';
 import { hostFor, listWslDistros, readinessFor, statusForTargets } from './exec';
@@ -364,6 +365,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   void sweepOrphanAttachments(store, userData).catch((e) =>
     logMain('Sweeping orphaned attachments failed', e),
   );
+
+  // A pasted file's temp copy is never meant to outlive the run that made it — it either
+  // became a real attachment (whose bytes now live under `userData`, swept above) or the
+  // paste was never finished. One pass at boot removes whatever a crash left behind, the
+  // same backstop as the attachment sweep just above and for the same reason. Not awaited,
+  // for the same reason too.
+  void sweepPasteTemp().catch((e) => logMain('Sweeping pasted-file temp files failed', e));
 
   // A card taken off the board keeps its row forever unless something eventually lets go, and
   // "forever" is the wrong answer for a board that removes cards every sync. So one pass at
@@ -2794,6 +2802,16 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       await collected.cleanup();
     }
   });
+
+  /**
+   * Write clipboard bytes to a temp file and hand back where they landed — see
+   * `attachment:stagePasted` on `IpcApi` for why this is its own channel and its own
+   * host-only reason. No task lookup and no store call here at all: unlike every other
+   * `attachment:*` handler, this one never touches a row, only a disk write and a list of
+   * paths, which is what makes it safe to call before the task the paste is destined for is
+   * even known — the Add-task dialog stages files this way before a task id exists.
+   */
+  handle('attachment:stagePasted', async (files) => stagePastedFiles(files));
 
   handle('attachment:remove', async (id) => {
     // The row first, the bytes second — the order `task:delete` uses, and for the same
