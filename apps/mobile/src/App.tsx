@@ -7,10 +7,13 @@
  * What differs is the frame it's drawn inside: `MobileShell`, not `AppShell`/`NavRail`/
  * `StatusBar` — see that file's own header for why a phone gets its own.
  *
- * The nav carries the same five destinations, in the same order, as the desktop's and
+ * The nav carries the same destinations, in the same order, as the desktop's and
  * `apps/web`'s own (`apps/client/src/renderer/src/App.tsx`, `apps/web/src/App.tsx`) — a
  * structural fact `test/shell-parity.test.ts` now asserts rather than leaves to eyeballing.
- * Scratch run stays off for the same reason it's off on the web: it drives a live
+ * Projects joined that set post-merge (it is a native ticket project — no folder, no native
+ * picker — so, like on the web, it carries no `unavailable` here either) and renders the same
+ * shared `<Projects />` `@tm/ui` component unmodified, the same way Performance and Attention
+ * do. Scratch run stays off for the same reason it's off on the web: it drives a live
  * `session:start`, host-only by policy (`@tm/shared/ipcRelay`), and a phone is not a host
  * any more than a browser tab is.
  *
@@ -24,12 +27,14 @@ import { makeStyles } from '@fluentui/react-components';
 import {
   AlertRegular,
   DataTrendingRegular,
+  FolderRegular,
   PlayRegular,
   SettingsRegular,
   TaskListSquareLtrRegular,
 } from '@fluentui/react-icons';
 import { Attention } from '@tm/ui/Attention';
 import { Performance } from '@tm/ui/Performance';
+import { Projects } from '@tm/ui/projects/Projects';
 import type { NavRailItem } from '@tm/ui/shell/NavRail';
 import { TransportProvider } from '@tm/ui/transport';
 import { CloudAuth } from '@tm/cloud/auth/cloudAuth';
@@ -69,6 +74,7 @@ const DESKTOP_ONLY = 'desktop only';
  */
 const NAV: readonly NavRailItem[] = [
   { id: 'mytasks', label: 'My Tasks', icon: <TaskListSquareLtrRegular /> },
+  { id: 'projects', label: 'Projects', icon: <FolderRegular /> },
   { id: 'performance', label: 'Performance', icon: <DataTrendingRegular /> },
   { id: 'attention', label: 'Attention', icon: <AlertRegular /> },
   { id: 'settings', label: 'Settings', icon: <SettingsRegular /> },
@@ -77,6 +83,7 @@ const NAV: readonly NavRailItem[] = [
 
 const SCREEN_TITLE: Record<Screen, string> = {
   mytasks: 'My Tasks',
+  projects: 'Projects',
   performance: 'Performance',
   attention: 'Attention',
   settings: 'Settings',
@@ -200,9 +207,10 @@ function SignedInApp({
             onBack={nav.back}
           />
         )}
+        {screen === 'projects' && <Projects />}
         {screen === 'performance' && <Performance />}
         {screen === 'attention' && <Attention />}
-        {screen === 'settings' && <SettingsScreen />}
+        {screen === 'settings' && <SettingsScreen projects={board.state.projects} />}
       </MobileShell>
     </TransportProvider>
   );

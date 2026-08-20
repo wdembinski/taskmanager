@@ -211,10 +211,13 @@ describe('HttpTransport: a relayed invoke is a real round trip', () => {
       newCommandId: () => 'cmd-1',
     });
 
+    // A wall the human still has to clear, deliberately. A usage limit no longer REJECTS
+    // `task:run` — it parks the card and resolves with a `{ refused }` outcome — so wearing
+    // one here would illustrate an answer the desktop cannot send.
     const call = transport.invoke('task:run', 't1');
-    server.answer('cmd-1', { ok: false, error: 'A usage limit is holding all work.' });
+    server.answer('cmd-1', { ok: false, error: 'An agent is already working on this card.' });
 
-    await expect(call).rejects.toThrow('A usage limit is holding all work.');
+    await expect(call).rejects.toThrow('An agent is already working on this card.');
   });
 
   it('keeps two calls apart, resolving each with its own answer', async () => {

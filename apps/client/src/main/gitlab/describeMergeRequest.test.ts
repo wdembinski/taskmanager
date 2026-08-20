@@ -178,3 +178,91 @@ describe('describeMergeRequest — stages of a pipeline that moved on', () => {
     expect(result.pipelineStages).toHaveLength(2);
   });
 });
+
+describe('describeMergeRequest — a settled MR read back after it merged', () => {
+  /**
+   * The reported bug: the MR merged while its pipeline was still running, and the "read
+   * back a settled MR" pass in `ipc.ts` calls this with `stale: false` — nothing about
+   * approvals or notes can move once an MR has landed. But the overall status already
+   * updates off `head_pipeline` regardless of `stale`, and the stage row has to keep up
+   * with it or the last stage the runners were on stays lit "running" forever.
+   */
+  it('refreshes the stages when the pipeline finished, even though stale is false', async () => {
+    // `stale: false` means `describeMergeRequest` never calls `getMergeRequest` itself — the
+    // caller (`ipc.ts`'s "read back a settled MR" pass) already fetched the detail and hands
+    // it straight in as `listed`, exactly the way it does for real.
+    const result = await describeMergeRequest(
+      client({ jobs: [job('deploy', 'success'), job('test', 'success'), job('build', 'success')] }),
+      listed({ head_pipeline: { id: 222, status: 'success' } }),
+      { stale: false, prior: priorRed({ pipelineStatus: 'running' }) },
+    );
+
+    expect(result.pipelineStatus).toBe('success');
+    expect(result.pipelineStages).toEqual([
+      { name: 'build', status: 'success' },
+      { name: 'test', status: 'success' },
+      { name: 'deploy', status: 'success' },
+    ]);
+  });
+
+  /**
+   * The other half of the same fix: a pipeline that runs AFTER the merge — GitLab's own
+   * "merge pipeline" — arrives as a new `head_pipeline` id. The stage row must pick up ITS
+   * stages, not keep showing the ones from the pipeline that ran before the merge.
+   */
+  it('picks up a new pipeline that started after the merge, replacing the old stages', async () => {
+    const result = await describeMergeRequest(
+      client({ jobs: [job('deploy', 'running'), job('build', 'success')] }),
+      listed({ head_pipeline: { id: 333, status: 'running' } }),
+      {
+        stale: false,
+        prior: priorRed({
+          pipelineStatus: 'success',
+          pipelineStages: [
+            { name: 'build', status: 'success' },
+            { name: 'test', status: 'success' },
+          ],
+        }),
+      },
+    );
+
+    expect(result.pipelineStatus).toBe('running');
+    expect(result.pipelineStages).toEqual([
+      { name: 'build', status: 'success' },
+      { name: 'deploy', status: 'running' },
+    ]);
+  });
+
+  // A settled MR whose pipeline was already terminal, and stayed that way, needs no
+  // further calls — this is the case the `stale: false` skip still has to hold for.
+  it('does not refetch the jobs when nothing about the pipeline moved', async () => {
+    let jobCalls = 0;
+    const stub: GitLabClient = {
+      getMergeRequest: async () => listed({ head_pipeline: { id: 111, status: 'success' } }),
+      getApprovals: async () => {
+        throw new Error('tier-gated');
+      },
+      getReviewers: async () => [],
+      listNotes: async () => [],
+      listPipelineJobs: async () => {
+        jobCalls += 1;
+        return [];
+      },
+    } as unknown as GitLabClient;
+
+    const result = await describeMergeRequest(
+      stub,
+      listed({ head_pipeline: { id: 111, status: 'success' } }),
+      {
+        stale: false,
+        prior: priorRed({
+          pipelineStatus: 'success',
+          pipelineStages: [{ name: 'build', status: 'success' }],
+        }),
+      },
+    );
+
+    expect(jobCalls).toBe(0);
+    expect(result.pipelineStages).toEqual([{ name: 'build', status: 'success' }]);
+  });
+});

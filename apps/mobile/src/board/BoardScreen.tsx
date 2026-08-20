@@ -151,8 +151,12 @@ export function BoardScreen({
   }, []);
 
   const projects = useMemo(() => Object.values(state.projects), [state.projects]);
-  const boardTasks = useMemo(() => selectBoardTasks(state), [state]);
-  const removedCards = useMemo(() => archivedCards(selectArchivedTasks(state)), [state]);
+  // No scope picker here yet (unlike apps/web's BoardToolbar) — mobile keeps showing every
+  // board combined, the same behaviour it had before selectBoardTasks/selectArchivedTasks
+  // grew a `scope` param for the single-board feature. Giving mobile its own scope switcher
+  // is a follow-up, not part of this merge.
+  const boardTasks = useMemo(() => selectBoardTasks(state, 'all'), [state]);
+  const removedCards = useMemo(() => archivedCards(selectArchivedTasks(state, 'all')), [state]);
   const mrsByTask = useMemo(
     () => mergeRequestsByTask(extras.mergeRequests),
     [extras.mergeRequests],

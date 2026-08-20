@@ -1,16 +1,16 @@
 /**
- * Agent projects pane (Settings → Agents).
+ * Projects screen (nav rail) — the one place a project is created and edited.
  *
- * An *agent project* is the lightweight successor to the plan.md-driven Projects
- * tab: just a repo directory plus the JIRA epics it owns. When you delegate a My
- * Tasks card to an agent, the card's ticket is matched against these epics to pick
- * the repo the agent works in — and the model/permission mode below seed that
- * assignment's defaults.
+ * A project here is whatever it needs to be: a bare repo an agent can work in, a
+ * ticket-owning backlog with no folder at all, or both at once — capabilities are
+ * derived from which fields are set (`hasRepo`/`ownsTickets` in `@shared/model`)
+ * rather than picked from a `kind`. This screen replaces the old Settings → Agents
+ * pane (`AgentProjects.tsx`, gone) now that a project is a first-class nav item
+ * rather than something folded into settings.
  *
- * There is no plan file and no queue: an agent project never runs anything on its
- * own, it only ever answers "which directory does this card's agent work in?".
- * Managing them lives in Settings for now, until the replacement projects
- * framework exists.
+ * Every project `project:list` returns lands here — including one that predates
+ * this screen and still carries a `plan.md` (`hasPlan`), which just means the
+ * repo-only fields below apply to it exactly as they do to any other repo.
  */
 import { useCallback, useEffect, useState } from 'react';
 import {
@@ -42,6 +42,7 @@ import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
 import { MODELS, type Project } from '@shared/model';
 import { RELEASE_DOC } from '@shared/release';
+import { normalizeTicketPrefix } from '@shared/ticketKey';
 import {
   execTargetLabel,
   formatExecTarget,
@@ -51,7 +52,7 @@ import {
 } from '@shared/execTarget';
 import { distroFromWindowsPath, pathSuitsHost, windowsToLinux } from '@shared/wslPath';
 import { describeGitPreflight } from '@shared/gitPreflight';
-import { useGitPreflight } from './useGitPreflight';
+import { useGitPreflight } from '../useGitPreflight';
 import { BaseBranchField } from '@ui/BaseBranchField';
 import { ColorSwatches } from '@ui/ColorSwatches';
 import { modelCaption } from '@ui/modelChoice';
@@ -64,7 +65,7 @@ const useStyles = makeStyles({
     display: 'flex',
     flexDirection: 'column',
     gap: '16px',
-    maxWidth: '520px',
+    maxWidth: '760px',
     flex: 1,
     minHeight: 0,
     overflowY: 'auto',
@@ -97,14 +98,34 @@ function parseEpicKeys(text: string): string[] {
     .filter(Boolean);
 }
 
-export function AgentProjects(): JSX.Element {
+/**
+ * A starting guess for a ticket prefix, from the project's name — initials for a
+ * multi-word name ("Task Manager" → "TM"), the first few letters otherwise. Purely a
+ * convenience: the field stays freely editable, and `normalizeTicketPrefix` is what
+ * actually decides whether the result is usable.
+ */
+function suggestTicketPrefix(name: string): string {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return '';
+  const raw =
+    words.length > 1
+      ? words
+          .map((w) => w[0])
+          .join('')
+          .slice(0, 4)
+      : words[0].slice(0, 4);
+  return normalizeTicketPrefix(raw) ?? '';
+}
+
+export function Projects(): JSX.Element {
   const styles = useStyles();
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<{ open: boolean; project?: Project }>({ open: false });
 
   const refresh = useCallback(async () => {
-    setProjects(await window.api.invoke('agentProject:list'));
+    const all = await window.api.invoke('project:list');
+    setProjects(all.map((p) => p.project));
   }, []);
 
   const initial = useInitialLoad(refresh);
@@ -112,7 +133,7 @@ export function AgentProjects(): JSX.Element {
   async function remove(project: Project): Promise<void> {
     setError(null);
     try {
-      await window.api.invoke('agentProject:remove', project.id);
+      await window.api.invoke('project:remove', project.id);
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -122,7 +143,7 @@ export function AgentProjects(): JSX.Element {
   if (!projects) {
     return (
       <PaneLoading
-        label="Loading agent projects…"
+        label="Loading projects…"
         error={initial.error}
         onRetry={initial.retry}
         shape="rows"
@@ -132,11 +153,11 @@ export function AgentProjects(): JSX.Element {
 
   return (
     <div className={styles.pane}>
-      <Subtitle2>Agent projects</Subtitle2>
+      <Subtitle2>Projects</Subtitle2>
       <Body1 className={styles.hint}>
-        Repositories an agent can work in when you assign a My Tasks card to it. Link the JIRA epics
-        a repo owns and a ticket under one of them picks its project automatically. A repo can live
-        inside WSL — browse into the distro and the project runs there.
+        Every project the board knows about. Attach a repository so an agent can work a card&apos;s
+        tickets, or leave one bare and use it purely to file and number tickets. Link the JIRA epics
+        a repo owns and a ticket under one of them is assigned there automatically.
       </Body1>
 
       {error && (
@@ -147,12 +168,12 @@ export function AgentProjects(): JSX.Element {
 
       <div>
         <Button appearance="primary" onClick={() => setDialog({ open: true })}>
-          Add agent project
+          Add project
         </Button>
       </div>
 
       {projects.length === 0 ? (
-        <Body1 className={styles.hint}>No agent projects yet.</Body1>
+        <Body1 className={styles.hint}>No projects yet.</Body1>
       ) : (
         <div className={styles.list}>
           {projects.map((project) => (
@@ -169,12 +190,25 @@ export function AgentProjects(): JSX.Element {
                         />
                       )}
                       <Text weight="semibold">{project.name}</Text>
+                      {project.ticketPrefix && (
+                        <Badge appearance="tint" color="brand">
+                          {project.ticketPrefix}
+                        </Badge>
+                      )}
                     </div>
-                    <Caption1 className={styles.path}>{project.path}</Caption1>
-                    <Caption1 className={styles.hint}>
-                      {modelCaption(project)} ·{' '}
-                      {PERMISSION_MODE_LABELS[project.defaultPermissionMode]}
-                    </Caption1>
+                    {project.path ? (
+                      <>
+                        <Caption1 className={styles.path}>{project.path}</Caption1>
+                        <Caption1 className={styles.hint}>
+                          {modelCaption(project)} ·{' '}
+                          {PERMISSION_MODE_LABELS[project.defaultPermissionMode]}
+                        </Caption1>
+                      </>
+                    ) : (
+                      <Caption1 className={styles.hint}>
+                        No repository — files and numbers tickets only.
+                      </Caption1>
+                    )}
                   </div>
                 }
                 action={
@@ -202,9 +236,10 @@ export function AgentProjects(): JSX.Element {
         </div>
       )}
 
-      <AgentProjectDialog
+      <ProjectDialog
         open={dialog.open}
         project={dialog.project}
+        projects={projects}
         onClose={() => setDialog({ open: false })}
         onSaved={() => void refresh()}
       />
@@ -212,28 +247,36 @@ export function AgentProjects(): JSX.Element {
   );
 }
 
-interface AgentProjectDialogProps {
+interface ProjectDialogProps {
   open: boolean;
   /** The project being edited; absent means "add". */
   project?: Project;
+  /** Every other project, so a chosen ticket prefix can be checked against theirs. */
+  projects: Project[];
   onClose: () => void;
   onSaved: () => void;
 }
 
-/** Add / edit form. The folder is editable in both modes — an agent project is little else. */
-function AgentProjectDialog({
+/** Add / edit drawer. Repo-only fields (branch, merge, release, epics, models, mode) hide
+ *  while the folder is empty — there is nothing for them to mean yet. */
+function ProjectDialog({
   open,
   project,
+  projects,
   onClose,
   onSaved,
-}: AgentProjectDialogProps): JSX.Element {
+}: ProjectDialogProps): JSX.Element {
   const styles = useStyles();
   const [path, setPath] = useState('');
   const [name, setName] = useState('');
+  const [ticketPrefix, setTicketPrefix] = useState('');
+  // Once the human edits the prefix directly, a later name edit must stop overwriting it.
+  const [prefixTouched, setPrefixTouched] = useState(false);
   const [epics, setEpics] = useState('');
   const [color, setColor] = useState('');
   const [baseBranch, setBaseBranch] = useState('');
   const [autoRelease, setAutoRelease] = useState(false);
+  const [autoCreatePr, setAutoCreatePr] = useState(false);
   /** `null` = follow the app-wide setting, which is what a repo that never ruled does. */
   const [autoIntegrate, setAutoIntegrate] = useState<boolean | null>(null);
   /**
@@ -262,15 +305,18 @@ function AgentProjectDialog({
   useEffect(() => {
     if (!open) return;
     setError(null);
-    // Needed whichever mode this is; the defaults fetch below only runs for a new repo.
+    // Needed whichever mode this is; the defaults fetch below only runs for a new project.
     void window.api.invoke('settings:get').then((s) => setAppAutoIntegrate(s.autoIntegrate));
     if (project) {
       setPath(project.path);
       setName(project.name);
+      setTicketPrefix(project.ticketPrefix);
+      setPrefixTouched(true); // an existing prefix is never overwritten by editing the name
       setEpics(project.jiraEpicKeys.join(', '));
       setColor(project.color);
       setBaseBranch(project.baseBranch);
       setAutoRelease(project.autoRelease);
+      setAutoCreatePr(project.autoCreatePr);
       setAutoIntegrate(project.autoIntegrate);
       setModel(project.defaultModel);
       setPlanningModel(project.planningModel);
@@ -279,11 +325,13 @@ function AgentProjectDialog({
     } else {
       setPath('');
       setName('');
+      setTicketPrefix('');
+      setPrefixTouched(false);
       setEpics('');
       setColor('');
       setBaseBranch(''); // follow the checkout, exactly as before this field existed
       setAutoRelease(false); // releasing is opt-in, always
-      setAutoIntegrate(null); // and merging follows the app until this repo says otherwise
+      setAutoIntegrate(null); // and merging follows the app until this project says otherwise
       void window.api.invoke('settings:get').then((s) => {
         setModel(s.defaultModel);
         setPlanningModel(s.defaultPlanningModel);
@@ -293,17 +341,19 @@ function AgentProjectDialog({
     }
   }, [open, project]);
 
+  // Suggest a prefix from the name, until the human types one of their own.
+  useEffect(() => {
+    if (prefixTouched) return;
+    setTicketPrefix(suggestTicketPrefix(name));
+  }, [name, prefixTouched]);
+
   /**
    * Browse for the repo folder.
    *
    * The Windows picker can walk into a distro, where it hands back a
    * `\\wsl.localhost\<distro>\…` path. That one path says both WHERE the repo is and
    * WHICH machine it belongs to, so picking it selects the target too, and the path is
-   * stored in the Linux form the agent, git and the worktrees will actually use —
-   * handing a UNC path to a Linux shell would fail at the first `cd`.
-   *
-   * Same rule as the plan-project dialog: an agent project is a working directory like
-   * any other, and the two must not disagree about what picking a WSL folder means.
+   * stored in the Linux form the agent, git and the worktrees will actually use.
    */
   async function browseFolder(): Promise<void> {
     const picked = await window.api.invoke('project:pickDirectory');
@@ -318,40 +368,65 @@ function AgentProjectDialog({
     }
   }
 
+  const normalizedPrefix = ticketPrefix.trim() ? normalizeTicketPrefix(ticketPrefix) : null;
+  const takenBy = normalizedPrefix
+    ? projects.find(
+        (p) =>
+          p.id !== project?.id &&
+          p.ticketPrefix &&
+          p.ticketPrefix.toUpperCase() === normalizedPrefix,
+      )
+    : undefined;
+  const prefixError =
+    ticketPrefix.trim() && !normalizedPrefix
+      ? 'Not a usable prefix — needs at least one letter, and cannot be just digits.'
+      : takenBy
+        ? `Already used by ${takenBy.name}.`
+        : null;
+
   async function save(): Promise<void> {
-    if (!path) {
-      setError('Choose a repository folder first.');
+    if (prefixError) {
+      setError(prefixError);
       return;
     }
     setSaving(true);
     setError(null);
     try {
       if (project) {
-        await window.api.invoke('agentProject:update', project.id, {
+        await window.api.invoke('project:update', project.id, {
           path,
           name: name.trim() || undefined,
           defaultModel: model,
           planningModel,
           defaultPermissionMode: permMode,
           jiraEpicKeys: parseEpicKeys(epics),
+          ticketPrefix,
           color,
           target,
           baseBranch,
           autoRelease,
+          autoCreatePr,
           autoIntegrate,
         });
       } else {
-        await window.api.invoke('agentProject:add', {
+        await window.api.invoke('project:add', {
           path,
+          // Forced plan-less: this dialog never manages a plan.md-driven queue, and
+          // `project:add` otherwise defaults `planPath` to `<path>/plan.md` the moment a
+          // path is given — which would pull the project off the single board and onto
+          // the scheduler's queue instead.
+          planPath: '',
           name: name.trim() || undefined,
           defaultModel: model,
           planningModel,
           defaultPermissionMode: permMode,
           jiraEpicKeys: parseEpicKeys(epics),
+          ticketPrefix,
           color,
           target,
           baseBranch,
           autoRelease,
+          autoCreatePr,
           autoIntegrate,
         });
       }
@@ -369,8 +444,8 @@ function AgentProjectDialog({
   const targetMismatch = !pathSuitsHost(path, target.kind === 'wsl' ? 'linux' : 'windows');
 
   // Same principle, one layer deeper: the machine can be right and the folder still be unable
-  // to host a run. An agent project is ALWAYS worktree-enabled (`store.addProject`, there is no
-  // switch here), so every git state that breaks isolation applies — hence the hardcoded true.
+  // to host a run. A repo here is ALWAYS worktree-enabled, so every git state that breaks
+  // isolation applies — hence the hardcoded true.
   const preflight = useGitPreflight(path, target, open && !targetMismatch);
   const gitNote = describeGitPreflight(preflight, true);
 
@@ -392,7 +467,7 @@ function AgentProjectDialog({
             />
           }
         >
-          {project ? 'Edit agent project' : 'Add agent project'}
+          {project ? 'Edit project' : 'Add project'}
         </DrawerHeaderTitle>
       </DrawerHeader>
       <DrawerBody>
@@ -404,21 +479,27 @@ function AgentProjectDialog({
           )}
 
           <Field
+            label="Display name"
+            hint="Defaults to the folder name, or the ticket prefix if there is no folder."
+          >
+            <Input
+              value={name}
+              onChange={(_e, d) => setName(d.value)}
+              placeholder="(folder name)"
+            />
+          </Field>
+
+          <Field
             label="Repository folder"
-            required
             hint={
               distros.length > 0
-                ? 'Browse into a distro (\\\\wsl.localhost\\…) and both the path and "Runs on" follow — or type a Linux path such as /home/you/repo directly.'
-                : undefined
+                ? 'Optional. Browse into a distro (\\\\wsl.localhost\\…) and both the path and "Runs on" follow — or type a Linux path such as /home/you/repo directly.'
+                : 'Optional — leave it blank for a project that only files and numbers tickets.'
             }
             validationState={gitNote.severity}
             validationMessage={gitNote.message}
           >
             <div className={styles.row}>
-              {/* Typeable, unlike the plan dialog's: a distro folder the Windows
-                      picker cannot reach (a path outside \\wsl.localhost, or a headless
-                      distro) would otherwise be unreachable, and an agent project is
-                      nothing but this folder. */}
               <Input
                 className={`${styles.grow} ${styles.mono}`}
                 value={path}
@@ -429,7 +510,7 @@ function AgentProjectDialog({
             </div>
           </Field>
 
-          {distros.length > 0 && (
+          {path && distros.length > 0 && (
             <Field
               label="Runs on"
               hint={
@@ -461,124 +542,163 @@ function AgentProjectDialog({
             </Field>
           )}
 
-          <Field label="Display name" hint="Defaults to the folder name.">
+          <Field
+            label="Ticket key prefix"
+            hint="Tickets filed under this project are numbered TM-1, TM-2, … Leave it blank if this project doesn't own tickets of its own."
+            validationState={prefixError ? 'error' : undefined}
+            validationMessage={prefixError ?? undefined}
+          >
             <Input
-              value={name}
-              onChange={(_e, d) => setName(d.value)}
-              placeholder="(folder name)"
+              className={styles.mono}
+              value={ticketPrefix}
+              onChange={(_e, d) => {
+                setTicketPrefix(d.value);
+                setPrefixTouched(true);
+              }}
+              placeholder="TM"
             />
           </Field>
 
           <Field
             label="Colour"
-            hint="A card tagged with this project wears a stripe of this colour, so a mixed column says which repo each card is about."
+            hint="A card tagged with this project wears a stripe of this colour, so a mixed column says which project each card is about."
           >
             <ColorSwatches value={color} onChange={setColor} allowNone />
           </Field>
 
-          <BaseBranchField value={baseBranch} onChange={setBaseBranch} preflight={preflight} />
+          {path && (
+            <BaseBranchField value={baseBranch} onChange={setBaseBranch} preflight={preflight} />
+          )}
 
           {/* Whether a finished branch merges itself, decided per repo. Same three-state
               shape as the release switch below, one level up: this repo's answer, or the
               app's when it has none — and choosing the app's answer hands it back. */}
-          <Field
-            hint={
-              autoIntegrate === null
-                ? `Following the app-wide setting (${appAutoIntegrate ? 'merge automatically' : 'you merge from the card'}), so changing that changes this repo too. Set it here to decide for this repo alone.`
-                : autoIntegrate
-                  ? "Every card assigned here merges its branch into the base as soon as its work finishes. A card can still say otherwise on the board, right up to the moment it's merged."
-                  : 'Every card assigned here leaves its branch alone and offers a Merge button — so you merge work you have looked at. Nothing is discarded either way.'
-            }
-          >
-            <Switch
-              checked={autoIntegrate ?? appAutoIntegrate}
-              label={
+          {path && (
+            <Field
+              hint={
                 autoIntegrate === null
-                  ? `Merge finished branches automatically (app default: ${appAutoIntegrate ? 'on' : 'off'})`
-                  : 'Merge finished branches automatically'
+                  ? `Following the app-wide setting (${appAutoIntegrate ? 'merge automatically' : 'you merge from the card'}), so changing that changes this project too. Set it here to decide for this repo alone.`
+                  : autoIntegrate
+                    ? "Every card assigned here merges its branch into the base as soon as its work finishes. A card can still say otherwise on the board, right up to the moment it's merged."
+                    : 'Every card assigned here leaves its branch alone and offers a Merge button — so you merge work you have looked at. Nothing is discarded either way.'
               }
-              onChange={(_e, d) =>
-                setAutoIntegrate(d.checked === appAutoIntegrate ? null : d.checked)
-              }
-            />
-          </Field>
+            >
+              <Switch
+                checked={autoIntegrate ?? appAutoIntegrate}
+                label={
+                  autoIntegrate === null
+                    ? `Merge finished branches automatically (app default: ${appAutoIntegrate ? 'on' : 'off'})`
+                    : 'Merge finished branches automatically'
+                }
+                onChange={(_e, d) =>
+                  setAutoIntegrate(d.checked === appAutoIntegrate ? null : d.checked)
+                }
+              />
+            </Field>
+          )}
 
           {/* The project's PREFERENCE, not its decision: every card can still say
               otherwise in its Details Panel, and one that never does follows this. */}
-          <Field
-            hint={`Every card assigned here starts with "Release after merge" already on. When its branch merges, an agent reads ${RELEASE_DOC} in this repo and follows it — so the repo has to have one, and it is the repo's instructions that decide what releasing means.`}
-          >
-            <Switch
-              checked={autoRelease}
-              label="Release after merge by default"
-              onChange={(_e, d) => setAutoRelease(d.checked)}
-            />
-          </Field>
+          {path && (
+            <Field
+              hint={`Every card assigned here starts with "Release after merge" already on. When its branch merges, an agent reads ${RELEASE_DOC} in this repo and follows it — so the repo has to have one, and it is the repo's instructions that decide what releasing means.`}
+            >
+              <Switch
+                checked={autoRelease}
+                label="Release after merge by default"
+                onChange={(_e, d) => setAutoRelease(d.checked)}
+              />
+            </Field>
+          )}
 
-          <Field
-            label="JIRA epics"
-            hint="Epic keys this repo owns, comma separated (e.g. ABC-100, ABC-250). A ticket under one of them is assigned here by default."
-          >
-            <Input
-              className={styles.mono}
-              value={epics}
-              onChange={(_e, d) => setEpics(d.value)}
-              placeholder="ABC-100, ABC-250"
-            />
-          </Field>
+          {/* The alternative to merging, and a preference in exactly the same sense: a card
+              may still say otherwise, and one that never does follows this. */}
+          {path && (
+            <Field hint='Every card assigned here starts with "Open a PR when finished" already on: its branch is pushed to this repo&apos;s remote and a pull/merge request is opened against the base branch, INSTEAD of the branch being merged locally. Needs a GitHub or GitLab token in Settings.'>
+              <Switch
+                checked={autoCreatePr}
+                label="Open a PR when finished by default"
+                onChange={(_e, d) => setAutoCreatePr(d.checked)}
+              />
+            </Field>
+          )}
 
-          {/* Same pair, and the same reason for no hints inside the row, as the
-              plan-project dialog: planning is the run that reads this repo and decides
-              what the work is, execution the one that carries out a brief. */}
-          <div className={styles.row}>
-            <PlanningModelField
-              label="Planning model"
-              className={styles.grow}
-              value={planningModel}
-              executionModel={model}
-              onChange={setPlanningModel}
-            />
-            <Field label="Steps execution model" className={styles.grow}>
+          {path && (
+            <Field
+              label="JIRA epics"
+              hint="Epic keys this repo owns, comma separated (e.g. ABC-100, ABC-250). A ticket under one of them is assigned here by default."
+            >
+              <Input
+                className={styles.mono}
+                value={epics}
+                onChange={(_e, d) => setEpics(d.value)}
+                placeholder="ABC-100, ABC-250"
+              />
+            </Field>
+          )}
+
+          {/* Same pair, and the same reason for no hints inside the row, as the settings
+              screen: planning is the run that reads this repo and decides what the work
+              is, execution the one that carries out a brief. */}
+          {path && (
+            <div className={styles.row}>
+              <PlanningModelField
+                label="Planning model"
+                className={styles.grow}
+                value={planningModel}
+                executionModel={model}
+                onChange={setPlanningModel}
+              />
+              <Field label="Steps execution model" className={styles.grow}>
+                <Dropdown
+                  value={model}
+                  selectedOptions={[model]}
+                  onOptionSelect={(_e, d) => setModel(d.optionValue as ClaudeModel)}
+                >
+                  {MODELS.map((m) => (
+                    <Option key={m} value={m}>
+                      {m}
+                    </Option>
+                  ))}
+                </Dropdown>
+              </Field>
+            </div>
+          )}
+
+          {path && (
+            <Field label="Default permission mode">
               <Dropdown
-                value={model}
-                selectedOptions={[model]}
-                onOptionSelect={(_e, d) => setModel(d.optionValue as ClaudeModel)}
+                value={PERMISSION_MODE_LABELS[permMode]}
+                selectedOptions={[permMode]}
+                onOptionSelect={(_e, d) => setPermMode(d.optionValue as PermissionMode)}
               >
-                {MODELS.map((m) => (
+                {MODES.map((m) => (
                   <Option key={m} value={m}>
-                    {m}
+                    {PERMISSION_MODE_LABELS[m]}
                   </Option>
                 ))}
               </Dropdown>
             </Field>
-          </div>
+          )}
 
-          <Field label="Default permission mode">
-            <Dropdown
-              value={PERMISSION_MODE_LABELS[permMode]}
-              selectedOptions={[permMode]}
-              onOptionSelect={(_e, d) => setPermMode(d.optionValue as PermissionMode)}
-            >
-              {MODES.map((m) => (
-                <Option key={m} value={m}>
-                  {PERMISSION_MODE_LABELS[m]}
-                </Option>
-              ))}
-            </Dropdown>
-          </Field>
-
-          <Body1 className={styles.hint}>
-            Each assigned card runs on its own git branch in a separate worktree, merged back into
-            the base branch above when the agent finishes.
-          </Body1>
+          {path && (
+            <Body1 className={styles.hint}>
+              Each assigned card runs on its own git branch in a separate worktree, merged back into
+              the base branch above when the agent finishes.
+            </Body1>
+          )}
         </div>
       </DrawerBody>
       <DrawerFooter>
         <Button appearance="secondary" onClick={onClose} disabled={saving}>
           Cancel
         </Button>
-        <Button appearance="primary" onClick={() => void save()} disabled={saving}>
-          {project ? 'Save' : 'Add agent project'}
+        <Button
+          appearance="primary"
+          onClick={() => void save()}
+          disabled={saving || Boolean(prefixError)}
+        >
+          {project ? 'Save' : 'Add project'}
         </Button>
       </DrawerFooter>
     </OverlayDrawer>

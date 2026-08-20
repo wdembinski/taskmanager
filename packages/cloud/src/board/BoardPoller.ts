@@ -30,6 +30,9 @@ export interface BoardPollerDeps {
   getCursor: () => string | null;
   onResponse: (response: BoardResponse) => void;
   onError?: (error: unknown) => void;
+  /** A request is now in flight, or has just settled — the status bar's claim, which is
+   *  about a request in flight, not about what `onResponse`/`onError` last said. */
+  onPollingChange?: (polling: boolean) => void;
   fetchImpl?: typeof fetch;
   random?: () => number;
   /** Seed intervals before the first server directive has been heard back. Matches
@@ -107,6 +110,7 @@ export class BoardPoller {
   async tick(): Promise<void> {
     if (this.running || this.disposed) return;
     this.running = true;
+    this.deps.onPollingChange?.(true);
     this.lastPollAt = Date.now();
     try {
       await this.send();
@@ -116,6 +120,7 @@ export class BoardPoller {
       this.deps.onError?.(e);
     } finally {
       this.running = false;
+      this.deps.onPollingChange?.(false);
       this.reschedule();
     }
   }

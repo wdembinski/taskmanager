@@ -28,6 +28,7 @@ import {
   MessageBar,
   MessageBarBody,
   Option,
+  Spinner,
   Text,
   Textarea,
   makeStyles,
@@ -102,7 +103,7 @@ const useStyles = makeStyles({
 
 export interface TaskDetailsCellProps {
   task: Task;
-  /** The projects a card can be filed under (Settings → Agents). */
+  /** The projects a card can be filed under (the Projects nav item). */
   agentProjects?: Project[];
   /**
    * This card's files, sliced out of the board's list. Passed in rather than fetched here
@@ -526,9 +527,10 @@ export function TaskDetailsCell({
                   size="small"
                   appearance="primary"
                   disabled={busy}
+                  icon={busy ? <Spinner size="tiny" /> : undefined}
                   onClick={() => void save()}
                 >
-                  Save
+                  {busy ? 'Saving…' : 'Save'}
                 </Button>
               </div>
             </>
@@ -594,7 +596,12 @@ export function TaskDetailsCell({
                   >
                     Cancel
                   </Button>
-                  <Button appearance="primary" disabled={busy} onClick={() => void remove()}>
+                  <Button
+                    appearance="primary"
+                    disabled={busy}
+                    icon={busy ? <Spinner size="tiny" /> : undefined}
+                    onClick={() => void remove()}
+                  >
                     {busy ? 'Deleting…' : 'Delete'}
                   </Button>
                 </DialogActions>

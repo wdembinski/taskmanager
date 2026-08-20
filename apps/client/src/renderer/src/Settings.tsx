@@ -9,9 +9,9 @@
  * the next task, so no restart is needed.
  *
  * The vertical nav also hosts the Board pane (the status keywords that colour a card's
- * progress line), the JIRA connection — including the status-name → column map, the
- * only route to the IN REVIEW column — and the Agents pane (the repositories a My Tasks
- * card can be filed under or delegated to), which manages its own state.
+ * progress line) and the JIRA connection — including the status-name → column map, the
+ * only route to the IN REVIEW column. Managing the projects themselves (the repositories
+ * a My Tasks card can be filed under or delegated to) is its own nav item, `Projects`.
  */
 import { useCallback, useEffect, useState } from 'react';
 import {
@@ -40,6 +40,7 @@ import {
 import { AddRegular, DismissRegular } from '@fluentui/react-icons';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
+import { clampSyncInterval, MAX_SYNC_INTERVAL_MINUTES } from '@shared/settings';
 import type {
   AppSettings,
   CloudSettings,
@@ -86,9 +87,9 @@ import {
   parseExecTarget,
   type ExecTarget,
 } from '@shared/execTarget';
-import { AgentProjects } from './AgentProjects';
 import { ColorSwatches, PALETTE } from '@ui/ColorSwatches';
 import { PaneLoading } from '@ui/PaneLoading';
+import { PeopleSettings } from '@ui/projects/PeopleSettings';
 import { PlanningModelField } from '@ui/PlanningModelField';
 import { ReadinessPanel } from './ReadinessPanel';
 import { StatusMapViewer } from '@ui/StatusMapViewer';
@@ -151,6 +152,31 @@ function readinessTargets(defaultTarget: ExecTarget, inUse: ExecTarget[]): ExecT
 /** Where an install that can't update itself goes to fetch a new build by hand. */
 const RELEASES_URL = 'https://github.com/wdembinski/taskmanager/releases';
 
+/**
+ * The vipper.iam account field's hint — state-driven so "signed in" and "signed in, but
+ * vipper.iam has since rejected the saved token" no longer read the same way. `rejected` and
+ * `active` are the two cases worth saying more about; `stored` (signed in, no mint attempted
+ * yet) and `signed-out` fall back to the plain in/out text they always had.
+ */
+function iamHint(status: IamConfigStatus | null): string {
+  if (status?.encryptionAvailable === false) {
+    return 'The OS secure store is unavailable, so a sign-in cannot be saved on this machine.';
+  }
+  if (status?.authState === 'rejected') {
+    return "vipper.iam rejected this machine's saved sign-in. Cloud sync is stopped until you sign in again.";
+  }
+  if (status?.authState === 'active') {
+    const secondsAgo =
+      status.lastTokenAt === null
+        ? null
+        : Math.max(0, Math.round((Date.now() - status.lastTokenAt) / 1000));
+    return secondsAgo === null
+      ? 'Signed in.'
+      : `Signed in — token last refreshed ${secondsAgo}s ago.`;
+  }
+  return status?.signedIn ? 'Signed in.' : 'Sign in to authorize this machine.';
+}
+
 const MODES: PermissionMode[] = ['acceptEdits', 'plan', 'manual', 'bypassPermissions'];
 
 /**
@@ -162,7 +188,7 @@ const COLUMN_LABEL: Record<BoardColumn, string> = Object.fromEntries(
   COLUMN_META.map((c) => [c.column, STATUS_LABEL[statusForColumn(c.column)]]),
 ) as Record<BoardColumn, string>;
 
-type SettingsSection = 'general' | 'board' | 'jira' | 'gitlab' | 'github' | 'cloud' | 'agents';
+type SettingsSection = 'general' | 'board' | 'jira' | 'gitlab' | 'github' | 'cloud' | 'people';
 
 export function Settings(): JSX.Element {
   const styles = useStyles();
@@ -522,11 +548,13 @@ export function Settings(): JSX.Element {
         <Tab value="gitlab">GitLab</Tab>
         <Tab value="github">GitHub</Tab>
         <Tab value="cloud">Cloud</Tab>
-        <Tab value="agents">Agents</Tab>
+        <Tab value="people">People</Tab>
       </TabList>
 
-      {section === 'agents' ? (
-        <AgentProjects />
+      {section === 'people' ? (
+        <div className={styles.pane}>
+          <PeopleSettings />
+        </div>
       ) : section === 'board' ? (
         <div className={styles.pane}>
           <Subtitle2>Board</Subtitle2>
@@ -702,12 +730,15 @@ export function Settings(): JSX.Element {
             >
               <SpinButton
                 min={0}
-                max={120}
+                max={MAX_SYNC_INTERVAL_MINUTES}
                 value={settings.syncIntervalMinutes}
                 onChange={(_e, d) => {
                   const n = d.value ?? Number(d.displayValue);
-                  if (Number.isFinite(n))
-                    patch({ syncIntervalMinutes: Math.max(0, Math.round(n as number)) });
+                  // `clampSyncInterval`, not just `Number.isFinite`: `max` only constrains the
+                  // stepper buttons, not a value typed or pasted straight into the field, and
+                  // an unclamped one reaches `SyncPoller` — see its own docstring for why that
+                  // silently turns into a sync that never stops rather than a rejected save.
+                  if (Number.isFinite(n)) patch({ syncIntervalMinutes: clampSyncInterval(n) });
                 }}
               />
             </Field>
@@ -1324,19 +1355,18 @@ export function Settings(): JSX.Element {
               />
             </Field>
 
-            <Field
-              label="vipper.iam account"
-              hint={
-                iamStatus?.encryptionAvailable === false
-                  ? 'The OS secure store is unavailable, so a sign-in cannot be saved on this machine.'
-                  : iamStatus?.signedIn
-                    ? 'Signed in.'
-                    : 'Sign in to authorize this machine.'
-              }
-            >
+            <Field label="vipper.iam account" hint={iamHint(iamStatus)}>
+              {iamStatus?.authState === 'rejected' && (
+                <MessageBar intent="warning">
+                  <MessageBarBody>
+                    vipper.iam rejected this machine's saved sign-in. Cloud sync is stopped until
+                    you sign in again.
+                  </MessageBarBody>
+                </MessageBar>
+              )}
               <div className={styles.actions}>
                 <Button
-                  appearance="primary"
+                  appearance={iamStatus?.authState === 'rejected' ? 'primary' : 'secondary'}
                   disabled={iamBusy || iamStatus?.encryptionAvailable === false}
                   onClick={() => void signInToCloud()}
                 >
@@ -1355,10 +1385,11 @@ export function Settings(): JSX.Element {
 
             {/* The poller never reports a failure — it counts the tick and retries — so
                 without this, a wrong address, a missing sign-in and a refused account all
-                look identical: an empty board. */}
+                look identical: an empty board. It reads the SAVED settings, hence "Save
+                first" below: a URL typed and not saved is not the one being tested. */}
             <Field
               label="Check it works"
-              hint="Walks the whole chain — address, sign-in, then reading your board — and says which part fails."
+              hint="Save first, then test. Walks the whole chain — address, sign-in, this machine's own sync, then whether the server lists it as connected — and says which part fails."
             >
               <div className={styles.actions}>
                 <Button

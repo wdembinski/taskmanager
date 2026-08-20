@@ -10,8 +10,12 @@
  *
  * Two limits work together, and only both together are safe:
  *
- *  - the Client caps a batch at `SYNC_BYTES_LIMIT` (1 MB — see `cloudDelta.ts`), so a
- *    request is bounded at the only place that can split the work across ticks;
+ *  - the Client caps a batch at `SYNC_BYTES_LIMIT` (1 MB — see `cloudDelta.ts`) and its
+ *    relayed answers at `RESULTS_BYTES_LIMIT` (1 MB — see `cloudResults.ts`), so a request
+ *    is bounded at the only place that can split the work across ticks. **Both halves have
+ *    to be bounded**: the results half was not until 15 Aug 2026, and thirty-odd timeline
+ *    answers built a 10.4 MB body that this limit refused on every tick for a day, with the
+ *    whole outbox — and three cards nobody could see in the web — stuck behind it;
  *  - this limit is the server's backstop, deliberately several times larger. A cap that
  *    merely matches the Client's would turn every estimation error — the Client measures
  *    the entities, not the framing around them — into a 413.

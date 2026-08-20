@@ -39,6 +39,9 @@ const fetched = (over: Partial<FetchedMergeRequest> = {}): FetchedMergeRequest =
 const opts = {
   knownKeys: ['ENG-1'],
   taskIdByKey: new Map([['ENG-1', 'task-1']]),
+  // The card behind the key, plus one that carries no key at all — the shape a merge request
+  // opened by the button on a native ticket has to survive on.
+  knownTaskIds: new Set(['task-1', 'task-keyless']),
   identity: ME,
   now: NOW,
 };
@@ -215,6 +218,70 @@ describe('reconcileMergeRequests', () => {
     expect(again.upserts[0].title).toBe('ENG-1: retitled');
   });
 
+  /**
+   * The reported bug, and the shape it was reported in: press **Create PR** on a card, watch
+   * the row appear, and watch the next sync — manual or automatic — take it off the card.
+   *
+   * The card here carries no tracker key, which is the ordinary case for a native ticket and
+   * for a card somebody typed in. There is nothing in the merge request's own text to
+   * re-derive from, so every sync wrote `taskId: null` over a link the button had known for
+   * certain, and the row sat in the table belonging to nobody.
+   */
+  describe('a merge request this app opened itself', () => {
+    /** The row `createPr.rowFor` writes: filed under the card, and remembering which. */
+    const keyless = (): FetchedMergeRequest =>
+      fetched({ title: 'fix the login redirect', sourceBranch: 'wd/login', description: null });
+    const opened = (): MergeRequest => ({
+      ...reconcileMergeRequests([], [keyless()], opts).upserts[0],
+      taskId: 'task-keyless',
+      openedForTaskId: 'task-keyless',
+    });
+
+    // The half that makes the rest of it a bug rather than a preference: nothing in this
+    // merge request names a card, so matching by key has no answer to give.
+    it('has nothing to match on, which is why remembering is the fix', () => {
+      const { upserts } = reconcileMergeRequests([], [keyless()], opts);
+      expect(upserts[0]).toMatchObject({ taskId: null, issueKeys: [] });
+    });
+
+    it('stays on its card across a sync that can re-derive nothing', () => {
+      const { upserts } = reconcileMergeRequests([opened()], [keyless()], opts);
+      expect(upserts[0].taskId).toBe('task-keyless');
+      expect(upserts[0].openedForTaskId).toBe('task-keyless');
+    });
+
+    // Same board change, through the no-network path: `rematchStoredMergeRequests` runs after
+    // every JIRA and GitHub sync, so a link this did not honour would be undone anyway.
+    it('is not re-filed by a rematch either', () => {
+      expect(rematchMergeRequests([opened()], opts)).toEqual([]);
+    });
+
+    it('beats a key the merge request happens to name', () => {
+      // Its title says ENG-1 — task-1's ticket — but it was opened for another card, and
+      // that is not a guess to be overruled by one.
+      const mine = { ...opened(), title: 'ENG-1: fix login', sourceBranch: 'feature/ENG-1' };
+      const { upserts } = reconcileMergeRequests([mine], [fetched()], opts);
+      expect(upserts[0].taskId).toBe('task-keyless');
+    });
+
+    it('falls back to the key once the card it was opened for leaves the board', () => {
+      const mine = { ...opened(), title: 'ENG-1: fix login', sourceBranch: 'feature/ENG-1' };
+      const { upserts } = reconcileMergeRequests([mine], [fetched()], {
+        ...opts,
+        knownTaskIds: new Set(['task-1']),
+      });
+      expect(upserts[0].taskId).toBe('task-1');
+      // Remembered all the same: the card may come back from the archive.
+      expect(upserts[0].openedForTaskId).toBe('task-keyless');
+    });
+
+    it('keeps it once it merges, exactly as a key-matched one is kept', () => {
+      const merged = { ...opened(), state: 'merged' as const };
+      const { deleteIds } = reconcileMergeRequests([merged], [], opts);
+      expect(deleteIds).toEqual([]);
+    });
+  });
+
   it('deletes an MR that vanished while still open — it is no longer ours to track', () => {
     const stored = reconcileMergeRequests([], [fetched()], opts).upserts;
     const { upserts, deleteIds } = reconcileMergeRequests(stored, [], opts);
@@ -315,6 +382,7 @@ describe('rematchMergeRequests', () => {
     const changed = rematchMergeRequests([orphan], {
       knownKeys: ['ENG-1'],
       taskIdByKey: new Map([['ENG-1', 'task-1']]),
+      knownTaskIds: new Set(['task-1']),
     });
     expect(changed).toEqual([{ ...orphan, taskId: 'task-1' }]);
   });
@@ -323,6 +391,7 @@ describe('rematchMergeRequests', () => {
     const changed = rematchMergeRequests([stored()], {
       knownKeys: [],
       taskIdByKey: new Map(),
+      knownTaskIds: new Set(),
     });
     expect(changed[0].taskId).toBeNull();
   });
@@ -332,6 +401,7 @@ describe('rematchMergeRequests', () => {
       rematchMergeRequests([stored()], {
         knownKeys: ['ENG-1'],
         taskIdByKey: new Map([['ENG-1', 'task-1']]),
+        knownTaskIds: new Set(['task-1']),
       }),
     ).toEqual([]);
   });
@@ -347,6 +417,7 @@ describe('rematchMergeRequests', () => {
     const changed = rematchMergeRequests([fromDescription], {
       knownKeys: ['ENG-1'],
       taskIdByKey: new Map([['ENG-1', 'task-1']]),
+      knownTaskIds: new Set(['task-1']),
     });
     expect(changed[0].taskId).toBe('task-1');
   });

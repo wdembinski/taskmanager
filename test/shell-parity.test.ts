@@ -34,7 +34,9 @@
  *
  * The last block is the inverse of all the others and belongs here for that reason: parity
  * has exactly one deliberate hole in it, and a hole nothing asserts is indistinguishable
- * from an omission. See "the one configuration the web deliberately does not mirror".
+ * from an omission. See "agent projects: the web reads them and does not configure them" —
+ * which now guards the shape of the hole from both sides, since the read-only half of that
+ * pane has since been drawn.
  */
 import { describe, expect, it } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
@@ -286,24 +288,33 @@ describe('the destinations both the browser and the Android client expose', () =
    * would be a new rule invented in this step rather than the one asked for — mobile mirrors
    * web's ids, which is what "modelled on apps/web" means for this file.
    */
+  /**
+   * Scoped to the `NAV` array literal itself, not every `{ id: '…' }` in the file — `NavRail`
+   * also takes an `accountItems` prop (`[{ id: 'signout', … }]`) for its Account dropdown,
+   * and a whole-file scan would count that entry as a sixth destination that was never one.
+   */
   function navIds(source: string): string[] {
+    const nav = source.match(/const NAV: readonly NavRailItem\[\] = \[([\s\S]*?)\n\];/);
+    if (!nav) return [];
     const ids: string[] = [];
-    for (const match of source.matchAll(/\{\s*id:\s*'([a-z]+)'/g)) ids.push(match[1]);
+    for (const match of nav[1].matchAll(/\{\s*id:\s*'([a-z]+)'/g)) ids.push(match[1]);
     return ids;
   }
 
-  it('list the same five destination ids, in the same order', () => {
+  it('list the same destination ids, in the same order', () => {
     const web = navIds(read(WEB_APP));
     const mobile = navIds(read(MOBILE_APP));
 
     // A guard that found nothing to compare passes for the wrong reason — same discipline
-    // as the global-CSS block's own `toBeGreaterThan` below.
-    expect(web.length, `found no NAV ids in ${WEB_APP} — has its destinations moved?`).toBe(5);
+    // as the global-CSS block's own `toBeGreaterThan` below. Six, since Projects joined the
+    // rail post-merge — a count asserted so a destination silently dropped from BOTH sides
+    // at once (which `toEqual` below cannot see) still goes red here.
+    expect(web.length, `found no NAV ids in ${WEB_APP} — has its destinations moved?`).toBe(6);
 
     expect(
       mobile,
       `${MOBILE_APP}'s destination ids (${mobile.join(', ')}) must match ${WEB_APP}'s ` +
-        `(${web.join(', ')}), in the same order — the two hosts claim the same five ` +
+        `(${web.join(', ')}), in the same order — the two hosts claim the same ` +
         'destinations, and a mismatch here is that claim going false silently.',
     ).toEqual(web);
   });
@@ -503,6 +514,7 @@ describe('the shared screens fit a phone', () => {
   const ADD_TASK_DIALOG = 'packages/ui/src/AddTaskDialog.tsx';
   const ARCHIVED_CARDS_DIALOG = 'packages/ui/src/board/ArchivedCardsDialog.tsx';
   const SETTINGS_SCREEN = 'packages/cloud/src/settings/SettingsScreen.tsx';
+  const PROJECTS = 'packages/ui/src/projects/Projects.tsx';
 
   it('sizes the document to the visible viewport, not the large one', () => {
     const source = read(THEME);
@@ -555,17 +567,39 @@ describe('the shared screens fit a phone', () => {
         'on a phone.',
     ).toMatch(/'@media \(max-width: 599px\)':\s*\{\s*flexDirection:\s*'column',?\s*\}/);
   });
+
+  it("stacks Projects' admin rail above the backlog at phone width", () => {
+    // Projects joined the mobile rail after this merge (development's ticket-workspace
+    // feature postdates step 5's own sweep, so it never got a phone-fit pass until now).
+    const source = read(PROJECTS);
+    expect(
+      source,
+      `${PROJECTS}'s .root must switch to flexDirection: 'column' under a max-width media ` +
+        "query — its 320px admin rail beside a backlog table has nowhere to go on a phone.",
+    ).toMatch(/'@media \(max-width: 599px\)':\s*\{\s*flexDirection:\s*'column',?\s*\}/);
+  });
 });
 
-describe('the one configuration the web deliberately does not mirror', () => {
+describe('agent projects: the web reads them and does not configure them', () => {
   /**
    * Agent projects are created and edited on the DESKTOP, and that is a decision rather than
    * a piece of the mirror nobody got to (plan doc, "What is deliberately out of scope").
    *
+   * **Narrowed since, and narrowed rather than reversed** — which is why this block is no
+   * longer titled "the one configuration the web deliberately does not mirror". *Reading* the
+   * list is in scope on both hosts, survives a desktop that is not answering (the web falls
+   * back to the mirrored `projects` rows, filtered to a repo with no plan file
+   * (`hasRepo(project) && !hasPlan(project)`) exactly as `MyTasks.tsx`'s own `seed` filters
+   * them; plan doc, "Fix — agent projects when the desktop is asleep"), and has a pane of its
+   * own in the web's Settings.
+   * So the block now asserts BOTH halves: that the read-only view exists, and that nothing
+   * around it writes. Every pattern below still matches a WRITE channel or a native picker,
+   * and none of them should ever be read as forbidding a read.
+   *
    * An agent project IS a folder on the machine the engine runs on, so making one begins with
    * `project:pickDirectory` — a native picker, `host-only` for the reason every native modal
    * is. What makes this worth a guard is that the WRITE channels are not host-only:
-   * `agentProject:add`, `:update` and `:remove` are plain `'relay'`, correctly, because
+   * `project:add`, `:update` and `:remove` are plain `'relay'`, correctly, because
    * executed on the desktop they are ordinary store writes. So nothing in `RELAY_POLICY`
    * stops a browser calling them, and `pnpm typecheck` never will either. The only thing
    * holding the boundary is that no browser code does — which is exactly the kind of fact
@@ -579,10 +613,21 @@ describe('the one configuration the web deliberately does not mirror', () => {
   // scan that only ever walked apps/web/src again.
   const WEB_TREES = ['apps/web/src', 'packages/cloud/src'];
   const SHARED_UI_TREE = 'packages/ui/src';
-  const DESKTOP_PANE = 'apps/client/src/renderer/src/AgentProjects.tsx';
+  const DESKTOP_PANE = 'apps/client/src/renderer/src/projects/Projects.tsx';
+  // Both moved with the rest of the cloud sync layer (Phase 27 step 3) — SettingsScreen and
+  // its ProjectsSection tab live in packages/cloud/src/settings now, not apps/web/src/settings.
+  /** The web's half: a list, no form. Named here because three assertions below refer to it. */
+  const WEB_VIEW = 'packages/cloud/src/settings/ProjectsSection.tsx';
+  const WEB_SETTINGS = 'packages/cloud/src/settings/SettingsScreen.tsx';
 
-  /** A CALL, not a mention: both files below discuss these channels in prose, correctly. */
-  const AGENT_PROJECT_WRITE = /invoke\(\s*'agentProject:(?:add|update|remove)'/;
+  /**
+   * A CALL, not a mention: both files below discuss these channels in prose, correctly.
+   *
+   * `project:*` now carries every project write — agent projects and plan projects alike,
+   * since `agentProject:*` folded into it — so this guards the whole surface rather than a
+   * name that used to be agent-project-specific.
+   */
+  const PROJECT_WRITE = /invoke\(\s*'project:(?:add|update|remove)'/;
   const NATIVE_PICKER = /invoke\(\s*'project:pick(?:Directory|File)'/;
 
   it('has no browser code that creates, edits or removes one', () => {
@@ -596,13 +641,13 @@ describe('the one configuration the web deliberately does not mirror', () => {
       `found no non-test sources under ${WEB_TREES.join(', ')} — has a tree moved?`,
     ).toBeGreaterThan(10);
 
-    const writes = sources.filter((path) => AGENT_PROJECT_WRITE.test(read(path)));
+    const writes = sources.filter((path) => PROJECT_WRITE.test(read(path)));
     expect(
       writes,
-      `${writes.join(', ')} calls an agentProject write channel. Those relay, so it would ` +
-        'even work — and it would leave a browser holding a repo path on a machine it cannot ' +
-        'see. Creating and editing agent projects is desktop-only by decision (plan doc, ' +
-        '"What is deliberately out of scope"); reversing it is a plan change, not a patch.',
+      `${writes.join(', ')} calls a project write channel. Those relay, so it would even ` +
+        'work — and it would leave a browser holding a repo path on a machine it cannot see. ' +
+        'Creating and editing projects is desktop-only by decision (plan doc, "What is ' +
+        'deliberately out of scope"); reversing it is a plan change, not a patch.',
     ).toEqual([]);
 
     const pickers = sources.filter((path) => NATIVE_PICKER.test(read(path)));
@@ -613,19 +658,24 @@ describe('the one configuration the web deliberately does not mirror', () => {
     ).toEqual([]);
   });
 
-  it('keeps the pane itself in the desktop renderer, and nowhere else', () => {
-    const pattern = /^AgentProjects\.tsx?$/;
+  it('keeps the EDITING pane in the desktop renderer, and nowhere else', () => {
+    const pattern = /^Projects\.tsx?$/;
+    // `packages/ui/src/projects/Projects.tsx` is the ticket WORKSPACE, a different pane
+    // with the same base filename — excluded here by its known path, or this assertion
+    // would trip on its own fixture.
+    const TICKET_WORKSPACE = 'packages/ui/src/projects/Projects.tsx';
     const copies = [
       ...WEB_TREES.flatMap((tree) => filesUnder(tree, pattern)),
       ...filesUnder(SHARED_UI_TREE, pattern),
-    ];
+    ].filter((p) => p !== TICKET_WORKSPACE);
 
     expect(
       copies,
-      `${copies.join(', ')} is an agent-projects pane outside the desktop renderer. Unlike ` +
+      `${copies.join(', ')} is a projects-EDITING pane outside the desktop renderer. Unlike ` +
         'AddTaskDialog and GitGraphPane above, this one was deliberately NOT moved into ' +
         'packages/ui: it reaches the engine through window.api directly and opens a folder ' +
-        'picker, so a shared copy would be a pane only one host could ever run.',
+        'picker, so a shared copy would be a pane only one host could ever run. The web\'s ' +
+        `read-only view is ${WEB_VIEW} and is asserted below.`,
     ).toEqual([]);
 
     // The walk finding nothing must mean "nowhere else", not "walked the wrong trees".
@@ -639,12 +689,50 @@ describe('the one configuration the web deliberately does not mirror', () => {
   it('says so on the web, where somebody would go looking', () => {
     // The card is the whole of the user-facing answer: a section that is quietly absent reads
     // as a screen that is broken, and the fix for that is text, not a feature.
-    const settings = read('packages/cloud/src/settings/SettingsScreen.tsx');
+    const settings = read(WEB_SETTINGS);
     expect(
       settings,
-      'packages/cloud/src/settings/SettingsScreen.tsx must keep an "Agent projects" entry in ' +
-        'HOST_ONLY_SECTIONS. Dropping the entry does not remove the limit — it removes the ' +
-        'only explanation of it a browser user is ever offered.',
-    ).toMatch(/title:\s*'Agent projects'/);
+      `${WEB_SETTINGS} must keep an "Adding and editing projects" entry in HOST_ONLY_SECTIONS. ` +
+        'Dropping the entry does not remove the limit — it removes the only explanation of it ' +
+        'a browser user is ever offered.',
+    ).toMatch(/title:\s*'Adding and editing projects'/);
+  });
+
+  it('draws the read-only view, and renders it from the web Settings screen', () => {
+    // The other half of the decision. Reading the list is in scope, so a silent deletion of
+    // the pane that does it should go red here rather than be discovered on the screen — the
+    // same argument that put the write guard above in this file.
+    expect(
+      filesUnder('packages/cloud/src/settings', /^ProjectsSection\.tsx?$/),
+      `${WEB_VIEW} is the browser's read-only agent-projects view and is part of this ` +
+        'decision, not a convenience. Viewing what is configured is in scope (plan doc, ' +
+        '"What is deliberately out of scope"); removing the view narrows the web back without ' +
+        'anything saying so.',
+    ).toContain(WEB_VIEW);
+
+    expect(
+      read(WEB_SETTINGS),
+      `${WEB_SETTINGS} must render ProjectsSection. A pane nothing mounts is a file, not a ` +
+        'feature, and the tab it sits behind is the only place a browser user can see how a ' +
+        'project is configured.',
+    ).toMatch(/<ProjectsSection\b/);
+  });
+
+  it('keeps that view presentational, which is the whole of "read only"', () => {
+    // The cheapest structural statement of the boundary. The write channels RELAY, so the
+    // only thing stopping a control being added to this pane is that the pane has no way to
+    // send anything — no transport, no window.api. Say so here, so it stays true.
+    const source = read(WEB_VIEW);
+    for (const [pattern, what] of [
+      [/transport\.invoke\(/, 'calls the transport'],
+      [/window\.api/, 'reaches window.api'],
+    ] as const) {
+      expect(
+        pattern.test(source),
+        `${WEB_VIEW} ${what}. It takes a list of projects and returns markup, and that is the ` +
+          'whole of what makes it read-only: agentProject:add/update/remove are classified ' +
+          "'relay', so neither RELAY_POLICY nor pnpm typecheck would stop a write added here.",
+      ).toBe(false);
+    }
   });
 });

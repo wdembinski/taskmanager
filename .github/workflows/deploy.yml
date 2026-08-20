@@ -104,6 +104,15 @@ jobs:
               - 'packages/cloud/**'
               - 'pnpm-lock.yaml'
               - '.github/workflows/deploy.yml'
+              # The one apps/client path that is a WEB input. vite.config.ts bakes the
+              # version of record into the bundle for the status bar, so a bump changes
+              # what the web says about itself and the bundle has to be rebuilt to say it.
+              # Without this, the deployed web kept whatever number it was built with —
+              # it sat on v0.78.2 while the desktop was released at v0.86.0. Nothing else
+              # under apps/client belongs here: that app is release.yml's business. (Not
+              # mobile's filter below — apps/mobile/vite.config.ts bakes ITS OWN
+              # package.json's version, already covered by apps/mobile/** there.)
+              - 'apps/client/package.json'
             mobile:
               - 'apps/mobile/**'
               - 'packages/shared/**'

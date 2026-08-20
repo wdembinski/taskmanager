@@ -3,8 +3,9 @@
  * that is worth testing in isolation from the `popstate`/`history.pushState` wiring around it
  * (`useBackStack.ts`, one file over).
  *
- * A screen is not one flat value: it is a tab (`mytasks`/`performance`/`attention`/`settings`,
- * `App.tsx`'s own `Screen`) with, only on `mytasks`, at most one overlay on top of it — a task
+ * A screen is not one flat value: it is a tab (`mytasks`/`projects`/`performance`/`attention`/
+ * `settings`, `App.tsx`'s own `Screen`) with, only on `mytasks`, at most one overlay on top of
+ * it — a task
  * opened full-screen, or one of the board's sheets/dialogs (`BoardScreen.tsx`: `GitGraphSheet`,
  * `AddTaskDialog`, `ArchivedCardsDialog`) — since each of those, once open, covers the toolbar
  * button that would open one of the others. Every frame the user pushed (a tab switch or an
@@ -13,7 +14,7 @@
  * step is independently undoable" a native Back stack gives for free.
  */
 
-export type Screen = 'mytasks' | 'performance' | 'attention' | 'settings';
+export type Screen = 'mytasks' | 'projects' | 'performance' | 'attention' | 'settings';
 
 export type NavFrame =
   | { type: 'tab'; screen: Screen }

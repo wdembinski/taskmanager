@@ -328,6 +328,30 @@ describe('failure', () => {
     expect(() => forwarder.publish('session:event', cyclic as never)).not.toThrow();
   });
 
+  it('reports a 401 as an auth rejection', async () => {
+    const onAuthRejected = vi.fn();
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue({ ok: false, status: 401, statusText: 'Unauthorized' });
+    const { forwarder } = make({ onAuthRejected, fetchImpl: fetchImpl as never });
+    watched(forwarder);
+    forwarder.publish('session:event', line('run-1') as never);
+    await vi.advanceTimersByTimeAsync(EVENT_BATCH.maxDelayMs);
+    expect(onAuthRejected).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not report a 403 as an auth rejection', async () => {
+    const onAuthRejected = vi.fn();
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue({ ok: false, status: 403, statusText: 'Forbidden' });
+    const { forwarder } = make({ onAuthRejected, fetchImpl: fetchImpl as never });
+    watched(forwarder);
+    forwarder.publish('session:event', line('run-1') as never);
+    await vi.advanceTimersByTimeAsync(EVENT_BATCH.maxDelayMs);
+    expect(onAuthRejected).not.toHaveBeenCalled();
+  });
+
   it('stops forwarding when the cloud is switched off', async () => {
     let enabled = true;
     const { forwarder, fetchImpl } = make({

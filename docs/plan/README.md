@@ -2918,14 +2918,14 @@ picks up unplanned work it bumps for what it actually did and the rest shift wit
 ladder is a consequence of §4, not a schedule to be honoured against it.
 
 - [x] **1** — Add ticket schema and store methods · `feat` → 0.71.0
-- [ ] **2** — Expose ticket IPC and handlers · `feat` → 0.72.0
-- [ ] **3** — Verify ticket schema against SQLite · `test` → 0.72.1
+- [x] **2** — Expose ticket IPC and handlers · `feat` → 0.87.0
+- [x] **3** — Verify ticket schema against SQLite · `test` → 0.87.1
 - [ ] **4** — Add Projects screen with backlog table · `feat` → 0.73.0
 - [ ] **5** — Build ticket drawer, labels and milestones · `feat` → 0.74.0
 - [ ] **6** — Scope the Kanban board to a project · `feat` → 0.75.0
 - [ ] **7** — Draw the Gantt timeline read-only · `feat` → 0.76.0
 - [ ] **8** — Drag Gantt bars to reschedule · `feat` → 0.77.0
-- [ ] **9** — Verify ticket flows and document the model · `test` → 0.77.1
+- [x] **9** — Verify ticket flows and document the model · `test` → 0.77.1
 
 #### 1 — Add ticket schema and store methods · `feat` → 0.71.0
 
@@ -2973,7 +2973,7 @@ to `projectTagId` ([`store.ts:1119-1121`](../../src/main/store.ts)). `labels` ne
 `parseStringArray` on read ([`store.ts:1594`](../../src/main/store.ts)); `isMe` must be
 encoded 0/1 by hand, since better-sqlite3 refuses to bind a boolean.
 
-#### 2 — Expose ticket IPC and handlers · `feat` → 0.72.0
+#### 2 — Expose ticket IPC and handlers · `feat` → 0.87.0 (planned as 0.72.0; see outcome below)
 
 Contract first ([`docs/04`](../04-contributing-guide.md) Recipe A) — `src/shared/ipc.ts`
 before either side:
@@ -3001,7 +3001,22 @@ before either side:
   `setMe` clearing the previous Me. Preload needs no change (`invoke`/`on` are generic).
 - New `src/shared/ticketLinks.ts` + `.test.ts`.
 
-#### 3 — Verify ticket schema against SQLite · `test` → 0.72.1
+**Outcome, and two corrections.** Landed as `packages/shared/src/ipc.ts` →
+`apps/client/src/main/ipc.ts` — the monorepo split renamed both paths this section cites, but
+changed nothing about the shapes. Store side needed **no changes at all**: step 1's
+`getBoardTasks`/`getArchivedTasksFor`, `updateTask`'s ticket-field allowlist and the full
+people/milestone/label/ticket-link CRUD were already there, so this step was the IPC layer
+only, exactly as its title says. The version bump is **0.87.0**, not 0.72.0 — the ladder above
+was drafted against a `0.70`-era baseline and the app had already reached `0.86.0` by the time
+this step ran; CONTRIBUTING.md §4 pins the number to `apps/client/package.json`, not to a plan
+written earlier. New guards live in one `assertTicketRefs` helper shared by `ticket:create` and
+`ticket:update`, rather than duplicated per handler. The exhaustiveness gates
+(`ipcRelay.test.ts`'s host-only list needed no entry — every new channel relays) forced two
+files this section did not name: `packages/shared/src/ipcEventFanout.test.ts` (the `CLASSIFIED`
+table is asserted equal to `EVENT_FANOUT`'s keys) and `apps/web/src/board/polledEvents.ts`'s
+`WHOLE_LIST_EVENTS`, both updated for the same five events.
+
+#### 3 — Verify ticket schema against SQLite · `test` → 0.87.1
 
 `scripts/verify-tickets.mjs`, modelled line-for-line on
 [`scripts/verify-attachments.mjs`](../../scripts/verify-attachments.mjs) — Vite-bundle the
@@ -3024,6 +3039,32 @@ It must prove:
 - **migration from `v0.69.0`** via `git archive`, asserting every old row survives and that
   `PRAGMA foreign_key_list(tasks)` on the migrated DB is *identical* to the fresh one;
 - **JIRA isolation** — `getPersonalTasksForSync()` returns none of a ticket project's rows.
+
+**Outcome, and three corrections.** The version bump is **0.87.1**, not the drafted
+`0.72.1` — the same ladder drift step 2 already recorded, one patch further down. The
+migration leg downgrades to **`v0.72.0`**, not the drafted `v0.69.0`: both tags predate
+ticket columns (`git ls-tree <tag> -- src/main/store.ts` shows neither ever mentions
+`ticketKey`), so either proves the same thing, and `v0.72.0` is the more recent one. Both
+also predate the pnpm-workspace split (`apps/client` did not exist yet — the tree was
+`src/main`, `src/shared` at the repo root), which `verify-attachments.mjs` does not account
+for: its `git archive` runs with `cwd` at this package, and a pathspec resolved from a
+directory that is not part of the old tag's tree is a `fatal: current working directory is
+untracked`, not a silently-wrong answer. `verify-tickets.mjs` runs that one command from the
+repo's top level instead — everything else about the two scripts (the scratch layout, the
+Vite bundling, the Electron-as-Node run) is unchanged. Third: **both forges**, not JIRA
+alone — GitHub sync landed on this board after this section was drafted, so the isolation
+proof is two independent facts (a JIRA-sourced row and a GitHub-sourced row can each wear a
+ticket's key text as their own `externalKey` without either merging into the native ticket),
+not one.
+
+The harness also found a real gap while proving the cascade bullet: `deleteTaskDeep`
+(`store.ts`) nulled `milestoneId`/`assigneeId`/`reporterId` on delete, exactly as the
+`tasks` table's own comment promises for all four cross-reference columns, but never
+`epicTaskId` — a ticket whose epic was deleted kept a dangling pointer at the ROW, even
+though nothing writable could produce one afterwards (`assertTicketRefs` in `ipc.ts` only
+checks a field that is explicitly being set). Fixed in this step with one more prepared
+statement, `clearEpicOnTasks`, run in the same loop as the existing three; proven by
+mutation — the check goes red with the statement commented out and green with it restored.
 
 #### 4 — Add Projects screen with backlog table · `feat` → 0.73.0
 
@@ -5504,6 +5545,24 @@ permission mode (`task:assignAgent`, through the shared `AssignAgentDialog` that
 `TaskAgentPanel` opens). The line is between *using* them and *configuring* them, and it falls
 where the folder picker does.
 
+> **Narrowed later, and only on the reading half.** "Read them (`agentProject:list`, relayed)"
+> was the whole read path, and a relayed read needs a desktop awake to run it. Opened against
+> one that is not polling, the browser got an empty list — no project names, no project
+> colours, no Project dropdown, no picker in *Assign agent* — and read as an account with no
+> projects. The list is resolved from the mirror now when the relay does not answer;
+> *configuring* one is still desktop-only and the guard below still asserts exactly that. See
+> [Fix — agent projects when the desktop is asleep](#fix--agent-projects-when-the-desktop-is-asleep).
+>
+> **And viewing one is now a pane of its own.** *Seeing what a project is configured to do* —
+> its path, its models, its permission mode, its base branch, its execution target, its two
+> automation switches and its epics — is in scope and shipped, read-only, as the web Settings'
+> **Projects** tab (`apps/web/src/settings/ProjectsSection.tsx`). It is presentational: a list
+> in, markup out, with no transport call and no `window.api` in it, which is the whole of what
+> makes it read-only, since the write channels would relay perfectly well. **Creating, editing
+> and removing stay desktop-only**, for the folder-picker reason below and no other. The guard
+> block asserts both halves now, and is retitled *agent projects: the web reads them and does
+> not configure them* for it.
+
 **Where the boundary actually holds, in four places, only two of which were load-bearing
 before this step:**
 
@@ -5569,8 +5628,10 @@ them was the decision's own header.
 
 #### How this step is verified
 
-The guard is three assertions in `test/shell-parity.test.ts`, in a block called *the one
-configuration the web deliberately does not mirror* — the inverse of everything else in that
+The guard is three assertions in `test/shell-parity.test.ts`, in a block that was called *the
+one configuration the web deliberately does not mirror* and is now called *agent projects: the
+web reads them and does not configure them* (it grew two more assertions when the read-only
+Projects tab shipped — see the fix section below) — the inverse of everything else in that
 file, which is why it belongs there: parity has exactly one deliberate hole, and a hole
 nothing asserts is indistinguishable from an omission. It scans non-test sources under
 `apps/web/src` for an `invoke('agentProject:add'|…)` or a picker call (a *call*, matched as
@@ -5605,6 +5666,507 @@ before this step and the new block was written into it unformatted, which nothin
 caught, and it was formatted with `npx prettier --write` on that file alone. `docs/plan/
 README.md` has never satisfied Prettier and is deliberately left that way — reformatting a
 5,500-line document to satisfy a check that does not read it would bury this step's own diff.
+
+---
+
+## Fix — the cloud web does not connect to the desktop app
+
+**The report.** A browser signed in to the cloud shows the board and says *No desktop app has
+ever synced this account* (or *Desktop app offline — edits are queued*), while the desktop app
+is running on the other machine and its own **Settings → Cloud → Test connection** answers
+*"Connected. The server recognises this account."*
+
+**Why both of those can be true at once.** They are answers to different questions, and the
+probe was answering the easier one. A desktop becomes *reachable from a browser* by
+**writing**: `POST /v1/sync` is the only request that registers its presence, and
+`BoardResponse.clients` — built from that in-memory presence map — is the only reason a
+browser has a `targetClientId` to address a command to. The probe stopped at `GET /v1/board`
+answering 200, which proves this machine can **read** and nothing else. Three separate faults
+live in the gap, and every one of them printed that same "Connected":
+
+1. **Cloud sync switched off.** `CloudSettings.enabled` is the poller's master switch and it
+   is off out of the box. With it off nothing is ever mirrored and no presence is ever
+   registered — while the address, the sign-in and the account's access are all perfect.
+2. **An account granted `read` but not `write`.** `IamAuthGuard.actionFor` authorizes per HTTP
+   method: a GET is a read, everything else a write. A grant with only `read` lets both
+   clients fetch a board and 403s every single `POST /v1/sync`, silently, forever — the poller
+   counts the tick, backs off and retries.
+3. **A server that took the sync and does not list the machine.** Presence is an in-memory map
+   per server process (deliberately — Phase 25's cost model refuses a write per poll), so a
+   second replica answers the browser's board read from a map that never saw this desktop.
+
+So the ladder in [`cloudTestConnection.ts`](../../apps/client/src/main/cloudTestConnection.ts)
+now ends where the ticket does — *can a browser signed in to this account see THIS machine and
+send it a command* — and each new rung names the person whose problem it is. Address →
+sign-in → **the master switch** → **this machine's own `POST /v1/sync`** → **its id coming back
+in `BoardResponse.clients`**.
+
+Two details of that ladder are load-bearing rather than tidy:
+
+- **The switch is checked after the sign-in and before the sync.** After, because "reachable
+  and signed in" is worth confirming in the same breath as "and still switched off". Before,
+  because the sync **registers presence**: probing with the switch off would put this machine
+  in every browser's client list for the next ninety seconds and invite commands that nothing
+  is ever going to poll for.
+- **The probe's sync is a real one, so it takes real commands with it.** `POST /v1/sync`
+  *leases* what it delivers, so a probe that dropped a batch would delay a browser's click by
+  a full five-minute lease. It hands whatever it collected to the same serial drain the poller
+  uses. It sends empty deltas, no acks and no results, and discards the cursor, so the outbox,
+  the ledger and the stored cursor are untouched.
+
+### The other half: a healthy desktop that is invisible anyway
+
+`BACKOFF_CAP_MS` was five minutes, and it is the number that decides **how long a client stays
+missing from the board after an outage has ended**. Past `PRESENCE_TTL_MS` a Client has dropped
+out of `BoardResponse.clients`; the browser then draws its stale banner, has no target it can
+prove is live, and stays that way for the rest of the backoff while the desktop it is
+complaining about sits there perfectly well, waiting out a timer set by a blip that is over.
+
+That window is not hypothetical. **Every deployment restarts the API**, which both fails
+whatever tick was in flight and erases the presence map — so a routine deploy cost every
+desktop up to five minutes of invisibility. And the two ends recover asymmetrically: a
+browser's poll is pulled forward the moment its tab is focused (`BoardPoller.onFocusChange`)
+and the human *is* in the browser, so the tab comes straight back and the desktop nobody is
+touching does not.
+
+The cap is `PRESENCE_TTL_MS` now, and it is applied **after** the jitter rather than before —
+jittering a capped value pushed it back over the cap by up to `jitterRatio`, which was harmless
+while the cap was an arbitrary five minutes and is not now that it means "and therefore still
+visible to a browser". What the cap was protecting against is unchanged in kind: one request
+every ninety seconds per client, against a product whose cost model is written around a 2.5s
+active tier.
+
+### And the sentence the browser shows
+
+`StaleBanner`'s advice was *"Sign in and open the desktop app at least once before editing from
+here"* — the one instruction that does not work, because the app being open is not what makes
+it visible. It now points at where the answer actually lives: **Settings → Cloud → Test
+connection** on the desktop, which after this fix walks the whole chain and names the rung.
+
+### What is deliberately not in this fix
+
+- **No change to the presence map's home.** Moving presence into SQL would make it survive a
+  restart and a second replica, and it would put a write on every poll at the active tier's
+  2.5s — the exact write amplification Phase 25 costed out and refused. The probe *reports*
+  the multi-replica symptom instead, which is a deployment fact (`docs/09` already pins the
+  single replica the SSE stream needs) rather than something the client can fix.
+- **No automatic "turn cloud sync on for me".** The switch is off by default on purpose: this
+  app mirrors a private board to a server the user chose. A probe that flipped it would be
+  making that decision for them; naming it is the whole of what was missing.
+- **No new test harness for `registerIpcHandlers`.** Same answer as the JIRA fix above: the
+  decision moved into a pure module that already has one, and what is left in `ipc.ts` is the
+  four values it passes.
+
+### What it actually was: a session that had ended, and an app that could not tell
+
+v0.86.2 shipped the ladder above and the browser still showed nothing. The evidence that
+settled it was gathered rather than guessed, and it is worth recording because it eliminated
+every layer in one pass:
+
+- **The desktop's own SQLite** (a read-only snapshot): cloud enabled, correct URL, refresh
+  token on file, `cloud.cursor` advanced, and — the telling one — **`cloud_outbox` empty while
+  the app was actively writing rows**. The outbox is trigger-filled and pruned only after a
+  *successful* sync, so it had drained seconds earlier. The desktop was syncing perfectly.
+- **The server's SQL database**: one real account, `422` task mirrors (421 on `personal`),
+  6 project mirrors, `data` intact as `nvarchar(max)`, and the newest row was *this ticket's
+  own card*, mirrored seconds before. The client row read `WDEMBINS-DESKTOP · win32 · v0.86.2`.
+- **The relay**: 1,125 commands, **0 unacked**, delivered in ~1s, 445 results `ok=True`, from
+  three browser sessions — all under that same account. So the browser had been authenticating
+  as the right account and driving the desktop successfully.
+- **The API log**: no errors at all. **The last command from any browser: 08:35 that morning.**
+
+Nothing was wrong with the desktop, the server, the data, the account or the relay — and the
+web's own board filter would have passed 421 of those rows. The status bar said **"first sync
+pending"**, which was the whole answer: no board read had *ever* come back in that tab.
+
+`CloudAuth.isSignedIn()` is *"a refresh token string is in `localStorage`"*, and `useCloudAuth`
+read it **once, at mount, and never again**. vipper.iam rotates refresh tokens on every use and
+a replayed one revokes the family — something two tabs can do to each other without anybody
+doing anything wrong, and three sessions were on this account. After that, `getAccessToken()`
+returned `null` forever behind a `console.warn`, every poll threw *"Not signed in to
+vipper.iam"*, and the app went on rendering as fully signed in over an empty board.
+
+Three changes, and the first is the one that matters:
+
+1. **A refused grant ends the session.** `@tm/shared/iamPkce` now throws a typed
+   `IamTokenError` carrying the OAuth2 `error` code, and `isDeadGrant` is the single shared
+   rule: `invalid_grant` or `invalid_client` means the stored token can never work again;
+   **everything else — a network throw, a 5xx, a 429, an HTML body from a proxy — stays
+   transient**, because signing somebody out when their wifi blipped would be a worse bug than
+   this one. On a dead grant the web discards the token and fires `onSessionEnded`, and
+   `useCloudAuth` puts the sign-in screen back up carrying the reason.
+2. **A failing board read says so.** `UnreachableBanner` outranks `StaleBanner`, and the
+   status bar says *"not syncing"* instead of *"first sync pending"* forever. This half is
+   cause-agnostic and would have answered the question on day one whatever the reason: the old
+   pairing printed *"No desktop app has ever synced this account"* — blaming a machine that was
+   working — when the truth was that this tab had not heard from the server at all.
+3. **The desktop's twin.** `getCloudAccessToken` clears a dead token too, so Settings' "Signed
+   in." and `cloud:testConnection`'s sign-in rung stop making the same false claim.
+
+**Notes.**
+
+- No release step: per `RELEASE.md` rule 5 the tag is cut once this reaches `development`, and
+  since v0.83.x CI cuts it — so this branch carries no version bump and must not grow one.
+- Owed, and only a human with both ends running can retire it: pressing **Test connection**
+  against the live service and confirming the verdict names the machine, plus the browser's
+  banner read on a real account.
+
+| Gate | Exit | Result |
+| --- | --- | --- |
+| `pnpm format:check` | **0** | All matched files use Prettier code style |
+| `pnpm typecheck --force` | **0** | 9 successful, 9 total — **0 cached**, 34.07s |
+| `pnpm build` | **0** | 6 successful, 6 total |
+| `pnpm test` | **0** | 177 files passed, 1 skipped (178); **2973 passed, 11 skipped (2984)**, 62.21s |
+
+**2973, against 2958 before this fix — exactly the fifteen assertions added here.** Eight are
+the first round's (the probe's new rungs, `cloudTestConnection.test.ts` 8 → 14; the cap's,
+`cadence.test.ts` 12 → 14) and seven the session round's (`iamPkce.test.ts` 9 → 13,
+`cloudAuth.test.ts` 11 → 14). Nothing else moved: the remaining edits are comments, user-facing
+strings and documentation, none of which can change a test count, so a sixteenth pass or a
+single disappearance would have meant this touched something it did not mean to.
+
+**Four classifications, each proven red-first by mutation**, and in every case exactly the
+test written for it failed with the message it is supposed to produce:
+
+| Mutant | Test that caught it |
+| --- | --- |
+| `listed` forced true | *reports a sync the server took but did not turn into a connected client* |
+| the master-switch rung disabled | *names the master switch, and writes nothing while it is off* |
+| `isDeadGrant` widened to every `IamTokenError` | *calls everything else transient* |
+| `endSession` stops clearing the token | *ends the session when vipper.iam refuses the grant* |
+
+The third is the one worth the trouble: it is the "sign you out when the wifi blips" bug, and
+it is a mutation that looks *more* thorough than the real rule. The mutants were removed before
+the gates above.
+
+---
+
+## Fix — three cards the web never saw
+
+**The report.** Three cards — *Add button to Create PR/MR*, *Add user details page*, *Budget
+schema plan and implementation* — were on the desktop board and absent from the web one.
+
+**What it actually was.** Not a filter, not a selector, not the paging on `GET /v1/board`.
+The desktop's push had been failing for a day. `POST /v1/sync` was building a
+**10,427,787-byte** body every tick and the server was refusing it `413 Payload Too Large`;
+nothing was marked sent, so the next tick rebuilt the identical body. Forever.
+
+The body was not the board. `SyncRequest.results` — the answers to relayed `ipc-invoke`s —
+was read straight out of `cloud_applied_commands` and put on the wire **uncapped and
+unbatched**. A browser tab had asked for a card's activity timeline about thirty times in one
+burst; each answer was a few hundred kilobytes of timeline JSON, and all 36 of them went into
+every request. `SYNC_BYTES_LIMIT` did not help: it bounds the **entities**, and the entities
+in those requests were one 15 kB task. The 413 handler did not help either — it halves
+`batchLimit`, which is an entity count, so the client dutifully shrank the 15 kB half of a
+10 MB request until it was sending one entity, and stayed wedged.
+
+Everything downstream stopped with it. The outbox stopped draining, so the three cards, all
+created *after* the wedge, were never mirrored at all — the server has no row for them, which
+is exactly what a web board with no card looks like. They were noticed because they were new;
+every other card on that board was simply frozen at its last pre-wedge state.
+
+**The evidence, in the order it settled the question** (the sweep in
+[[a-session-that-had-ended]]'s terms, all read-only, ~20 minutes):
+
+1. A snapshot of `%APPDATA%\claude-orchestrator\orchestrator.db` (+`-wal`, `-shm`) read under
+   `ELECTRON_RUN_AS_NODE=1` — all three cards present, `projectId = 'personal'`,
+   `archivedAt IS NULL`, so both `selectBoardTasks` and the web's `selectBoardTasks` selector
+   should draw them.
+2. `cloud_outbox`: 139 rows over 22 tasks, oldest `seq` 1535 — the `insert` for *Add user
+   details page*. A trigger-filled log that pruning empties on every success does not hold
+   eleven hours of writes unless nothing has succeeded.
+3. `cloud_applied_commands WHERE resultSentAt IS NULL`: **36 rows, 10,382,246 bytes**, all
+   applied inside one 300 ms burst. That is the body, to within the framing.
+4. `logs/main.log`: `cloud sync batch over the byte cap: 1 entity, 10427787 bytes` followed by
+   `413`, on repeat. The log line had been printing the diagnosis all along — "1 entity" and
+   "10 MB" in the same sentence is the whole bug — and it was never read.
+
+**The fix.** [`cloudResults.ts`](../../apps/client/src/main/cloudResults.ts), a pure module
+that is to `SyncRequest.results` what `cloudDelta.ts` is to the entities: pack oldest-first
+within a byte budget, always at least one, and let the rest wait for the next tick.
+
+Its second rule is the one that matters, and it is deliberately *not* `cloudDelta`'s. An
+oversized task row is sent anyway, because a task row is durable state and dropping it would
+lose the card. An oversized **result** is replaced by a truthful `ok: false` error, because it
+is one browser interaction's return value: a body no hop will accept means the promise waiting
+on it never resolves either way, and carrying it forever costs every answer and every card
+queued behind it. Replacing it settles the promise, retires the row, and lets the queue move.
+
+Three smaller things ride along, each closing a way the same shape could recur:
+
+- **A 413 now halves both budgets.** The body is entities *plus* answers; shrinking one while
+  the other stays whole converges on a request that is still too large.
+- **The budget and the hard cap are separate parameters.** A shrunken budget only ever
+  *defers* an answer; only the fixed cap can *replace* one. A transient 413 must not start
+  discarding results that were perfectly sendable a minute ago.
+- **A wedge says so.** When a 413 arrives on a request that is already one entity and one
+  result, there is nothing left to halve — the client logs that in those words, instead of
+  leaving a bare 413 to be read as a hop being difficult.
+
+Nothing needs unwedging by hand: the next tick after this ships sends the backlog in ~1 MB
+slices, and the outbox drains behind it.
+
+**What is deliberately not in this fix.**
+
+- **A larger `CLOUD_BODY_LIMIT`.** The server's 8 MB backstop is not the fault — an unbounded
+  client will exceed any number picked here, and raising it only moves the wedge. The bound
+  belongs at the one place that can split work across ticks, which is the client.
+- **Rate-limiting the burst that made 36 identical timeline requests.** Real, and a different
+  bug: even one legitimate answer must not be able to wedge the mirror, which is what this
+  change guarantees. Left for whoever looks at why the tab asked thirty times.
+
+**Verification.** `cloudResults.test.ts` covers the packing, the always-one rule, the
+replacement, and the defer-don't-destroy split; two `cloudPoller.test.ts` cases reproduce the
+real wedge (36 × 300 kB) and assert the request that comes out is bounded and that only what
+went out is marked sent. Both poller cases were run against a mutant — `boundCloudResults`
+called with an unbounded budget — and fail there, which is the old behaviour exactly.
+
+| Gate | Exit | Result |
+| --- | --- | --- |
+| `pnpm format:check` | **0** | All matched files use Prettier code style |
+| `pnpm typecheck --force` | **0** | 9 successful, 9 total — **0 cached**, 31.67s |
+| `pnpm test` | **0** | 178 files passed, 1 skipped (179); **2979 passed, 11 skipped (2990)**, 67.68s |
+| `pnpm build --force` | **0** | 6 successful, 6 total — **0 cached**, 39.42s |
+
+Run on the **rebased** commit, not the one first written: `development` had moved on to
+v0.86.2 underneath this branch, so the pre-rebase run measured a tree nobody will merge. Of
+those 2979, eleven are this branch's — the nine `cloudResults` cases and the two added to
+`cloudPoller.test.ts`. Nothing else in the diff is a test, so that is the whole delta.
+
+No version bump, per `RELEASE.md` rule 5 and the two PRs before this one: CI cuts the tag when
+this reaches `development`. A bump written here is a guaranteed conflict on the version line
+against whatever the pipeline released in the meantime — this branch carried one to 0.86.3 and
+it collided with `development`'s 0.86.2 on the first rebase.
+
+**What no test here covers, and cannot.** That the live install actually unwedges. Nothing
+was launched (`RELEASE.md` rule 6) and the desktop's copy of this code is the packaged one, so
+the sequence a person will see — update, next tick sends ~1 MB of the backlog, the outbox
+drains, the three cards appear on the web board — is owed as live verification. What *is*
+established is that the queue those cards are stuck behind can no longer build a request the
+server refuses.
+
+---
+
+## Fix — agent projects when the desktop is asleep
+
+**Goal.** The web board draws agent projects in five places — a card's project name and its
+project colour (`BoardScreen.tsx:155`/`:157`), the Project dropdown in the detail pane
+(`TaskDetailsCell.tsx`), the picker in *Assign agent* (`AssignAgentDialog.tsx`), and the
+add-task dialog's Project field — and every one of them reads the single relayed
+`agentProject:list` that `useBoardExtras` fires on board load. A relayed read needs a desktop
+awake to run it. Against one that is closed, asleep, or simply not polling, that call does not
+even fail fast: it waits out `RPC_TIMEOUT_MS` — three minutes (`httpTransport.ts:100`) — and
+then rejects, and `useBoardExtras`'s deliberately silent `load` swallows the rejection and
+leaves the list `[]`. All five controls then render their empty state, which reads as *an
+account with no projects* rather than as *a desktop that is not answering*.
+
+The rows have been in the browser the whole time. `GET /v1/board`'s `deltas.projects` land in
+`cloudBoardStore`'s `state.projects`, mirrored whole from the desktop's `projects` table by
+`buildMirrorDelta` with no filtering of any kind, and `BoardScreen` already holds them
+(`BoardScreen.tsx:141`) for its own empty-state check. This round resolves the agent projects
+from those rows when the relay has nothing to say.
+
+### Decisions taken
+
+Four, taken before any code, because each is something a reviewer would otherwise have to
+infer from a diff — and two of them are choices whose *opposite* is the more obvious reading.
+
+**Relay wins when it answered; the mirror is the fallback.** Not a per-id merge, and not a
+union. Each source is internally consistent and a hybrid list would match neither: a live
+desktop's `agentProject:list` is authoritative *including its deletions*, so a project removed
+a moment ago is absent from that answer and still present in the mirror until the next sync
+lands — a union resurrects it, and resurrects it in a dropdown a human is about to file a card
+under. With no answer, the mirrored rows are what the account knows, which is the whole of
+what this browser can honestly say.
+
+Which way round they apply matters as much as which one wins, and it is the reason the fix is
+not "fall back on the rejection". The relay's silence costs three minutes; a fallback applied
+only after the timeout would leave the board projectless for exactly as long as the bug does
+today. The mirrored rows are what the list holds *first*, and the relay's answer replaces them
+if and when it arrives.
+
+**Only `kind === 'agent'`**, matching the desktop handler (`ipc.ts:772`) exactly — that
+handler is `store.listProjects().filter((project) => project.kind === 'agent')` and this is
+the same predicate over the same rows, which is the point. The mirror carries every `projects`
+row the desktop has: the Personal board (`kind: 'plan'`, from the column's own default at
+`store.ts:916`), legacy plan projects, and `kind: 'ticket'` projects. None of those is what
+either host means by an agent project — the Personal board is the card list this board *is*, a
+plan project comes with a queue the Projects tab owns, and a ticket project has no directory
+at all — and neither host lists them. Filtering by anything other than the kind (by "has a
+`path`", say) would be exactly the test-by-elimination that `isPlanProject`'s comment in
+`packages/shared/src/model.ts` already argues against: correct only until the next kind exists.
+
+**Read-only means read-only.** No web code calls `agentProject:add|update|remove` or
+`project:pickDirectory|pickFile`; those stay guarded by `test/shell-parity.test.ts`'s block
+*the one configuration the web deliberately does not mirror*, and this round adds nothing to
+that surface. The decision is *narrowed* — viewing the list is in scope now, and was already
+in scope whenever a desktop happened to be awake — rather than reversed, so the guard block
+and Phase 26's "What is deliberately out of scope" are both **edited** to say which half moved
+and which did not. Deleting either would turn a deliberate hole back into an omission, which
+is the failure that block exists to prevent. The Settings card's own wording ("What you can do
+from here is use them") needs no change: using them is precisely what this fixes.
+
+**No version bump on this branch.** Since v0.83.x, CI cuts the release from `development`
+after the merge lands ([`docs/11-ci-cd-pipeline.md`](../11-ci-cd-pipeline.md)), so a feature
+branch has no business writing a version line at all — Phase 26 said the same thing about
+itself above. A bump written here is not merely redundant: when the branch and `development`
+end up agreeing on the number, the three-way merge drops it with **no conflict and nothing
+red**, and a branch that "released itself" on paper released nothing. `scripts/next-version.mjs`
+run from this worktree answers against a tag list that is not the one that governs, and should
+not be acted on from this side.
+
+### Resolving the list, and showing it
+
+**One selector, beside the board's other two.** `selectAgentProjects(mirrored, relayed,
+relayAnswered)` in `apps/web/src/board/boardSelectors.ts` is the whole of the first decision as
+code: `relayAnswered` picks the source, `kind === 'agent'` filters *both* branches so the shape
+is the same either way, and the result is ordered by `name` (then `id`, to break a tie the same
+way every time) so the list does not visibly reshuffle when the relay's answer arrives and
+replaces the mirror's. It is pure, which matters here more than usual: this workspace has no
+jsdom and no `@testing-library`, so a pure function plus `boardSelectors.test.ts` is the only
+place any of this can actually be *proved* rather than eyeballed.
+
+The flag it turns on is `BoardExtras.agentProjectsLoaded`, set **only** on the successful branch
+of `useBoardExtras`'s `load()`. The hook's fail-soft `catch` is deliberately silent and leaves
+it `false`, which is exactly the distinction the whole fix rests on: *loaded and empty* means
+this account has no agent projects, *nobody was home* means the mirror is the better answer.
+Reading emptiness instead of the flag would resurrect every deleted repo the moment a desktop
+went quiet.
+
+`BoardScreen` computes the list once and hands the same array to all five sites that used to
+read `extras.agentProjects` — `agentNameOf`, `projectColorOf`, `TaskDetail`'s `agentProjects`,
+`GitGraphPane`'s `projects` and `AddTaskDialog`'s `projects` — so a card's stripe, the pane's
+Project dropdown, the commit graph and the add dialog can never disagree about which repos
+exist. Nothing downstream changed: the stripe is still `TaskCard`'s `projectNotch`, and the
+writes those lists sit behind (`task:setProject`, `task:assignAgent`) still relay and still
+refuse honestly.
+
+**The Projects tab** (`apps/web/src/settings/ProjectsSection.tsx`) is the read-only half of the
+desktop's pane. It shows what the desktop's list card shows *plus* what only its edit drawer
+shows — base branch, execution target, the auto-merge tri-state, auto-release — because there
+is no drawer here and no plan for one, so a fact that lives only in the drawer would be a fact
+this host cannot see at all. The words are the desktop's own (`PERMISSION_MODE_LABELS`,
+`modelCaption`, `execTargetLabel`) rather than a second vocabulary for the same settings.
+`SettingsScreen` keeps its own single `agentProject:list` read — one call, on a screen that
+unmounts when you leave it, rather than a second copy of `useBoardExtras`'s eight — and
+resolves it against the mirrored rows `App` passes down with the same `selectAgentProjects`.
+Its empty state distinguishes *no projects yet* from *nothing has synced yet*.
+
+### How the projects surface is verified
+
+No DOM harness exists in this workspace, so the proof is the pure selector, the structural
+guards, and the gates — the same shape `test/shell-parity.test.ts`'s own header argues for.
+
+- **The selector**, in `apps/web/src/board/boardSelectors.test.ts`: the mirror-only fallback,
+  the relay winning once it answered, an answered-but-empty relay yielding `[]` *and not the
+  mirror*, non-agent kinds dropped on both branches, the ordering stable across the swap, the
+  name tie broken by id, and the relayed array not sorted in place (it is React state held in
+  `useBoardExtras`, and sorting it there would be a mutation nothing would report).
+- **The guards**, in the block retitled *agent projects: the web reads them and does not
+  configure them*. `AGENT_PROJECT_WRITE` and `NATIVE_PICKER` still match no non-test source
+  under `apps/web/src` — those two are the whole of "read only", since the write channels relay
+  and neither `RELAY_POLICY` nor `pnpm typecheck` would stop a browser calling them. Two new
+  assertions say the read-only view exists and is rendered from `SettingsScreen`, and that it
+  contains no `transport.invoke(` and no `window.api` — the cheapest structural statement of
+  "presentational, therefore read-only". The `title: 'Agent projects'` assertion survives; the
+  entry's wording changed, not its existence.
+- **Red before green.** The new selector tests were run against an inverted `relayAnswered`
+  branch and went red before it was restored, so they are testing the predicate rather than
+  agreeing with it.
+
+---
+
+## Fix — Sync error
+
+**Goal.** A cloud sync that currently fails opaquely — a 401 dropped on the floor, a
+`refreshTokens` error string nobody can tell `invalid_grant` from a 503, a board that pages
+silently and can render an incomplete list as if it were the whole one — becomes a sync that
+recovers what it can and tells the truth about the rest, without a DOM harness to lean on for
+any of it.
+
+### Verified facts this rests on
+
+Every claim the plan was built on was re-read against this worktree before anything downstream
+gets to assume it. All four hold exactly as stated; nothing here needed correcting.
+
+- **Paging already round-trips.** `BoardResponse.hasMore` (`packages/protocol/src/wire.ts:368`)
+  is populated in `MirrorService.rowsSince`'s caller — `hasMore: tasks.hasMore ||
+  projects.hasMore || deletions.hasMore` at `mirror.service.ts:242`, itself built from the
+  per-page `{ rows, hasMore }` `rowsSince` returns at `mirror.service.ts:355-377` — and read on
+  the other end at `BoardPoller.ts:143` (`this.catchingUp = body.hasMore === true`), which is
+  what makes the next poll immediate instead of waiting out a cadence. **No server or protocol
+  change belongs in this fix.** Whatever step exposes progress to the UI reads `catchingUp`,
+  it does not invent a new signal.
+- **The guard's two failure codes are set at the framework level, not by convention.**
+  `iamAuth.guard.ts:60` throws `UnauthorizedException` (401) for a missing bearer token,
+  `:70` for one IAM introspects as inactive, and `:93` throws `ForbiddenException` (403) when
+  IAM's `authorize` call comes back disallowed. Nest resolves guards via `canActivate` before
+  the route handler ever runs (`mirror.controller.ts:37`'s `@UseGuards(IamAuthGuard)` covers
+  `@Post('sync')` at `:41`), so a 401'd `POST /v1/sync` never reached `MirrorController`'s
+  body-handling at all — the request can be replayed verbatim once a fresh token exists. A 403
+  means IAM said no to this subject for this action; retrying the same request changes nothing,
+  and any retry logic must not treat the two alike.
+- **`refreshTokens` fails through one shared, unstructured throw.** Both `exchangeCodeForTokens`
+  and `refreshTokens` (`packages/shared/src/iamPkce.ts:107-116`) funnel through the same
+  `postToken` (defined at `:119`); its error path is `:129-136`, and the actual `throw` —
+  `` `vipper.iam token request failed (${res.status} ${detail})` `` with `detail` as `res.text()`
+  read raw, no JSON parse — is at `:136`, seven lines past the function's own opening (the plan
+  cites `:119` for the function, not the throw; worth the seven-line correction since a later
+  step edits this exact line). There is today no way to tell `invalid_grant` (refresh token is
+  dead, re-authenticate) from a `503` (transient, retry) except by parsing that string.
+  `iamPkce.test.ts:120` asserts `.rejects.toThrow(/token request failed \(400/)` against
+  `exchangeCodeForTokens` — **that substring must survive** whatever structure gets added around
+  it; the fix is additive (a typed error / status code alongside the message), not a rewrite of
+  the message itself.
+- **There is no DOM harness in this workspace, and that is a standing, deliberate decision.**
+  `test/shell-parity.test.ts:5-8`: "no jsdom, no `@testing-library`... adding one is a
+  workspace-wide decision that the v0.82.0 branch deliberately left outside its scope." Any gate
+  logic this fix adds — what counts as "syncing," when the board curtains, when a retry is
+  attempted — has to be a plain exported function with its own `.test.ts`, not something proven
+  by rendering. The one available precedent for testing a main-process module without a
+  renderer is `iamSignIn.ts`'s own rule, stated in its header (`apps/client/src/main/
+  iamSignIn.ts:8`): "Electron-free by design (no `import('electron')`)... testable with a real
+  loopback server and `fetch`." Anything this fix adds to the token-refresh path on the desktop
+  side should hold to the same rule, for the same reason — it is what lets it run under vitest
+  at all.
+
+### The critical files, walked one by one on the finished tip (`13ca41c`)
+
+Step 9's table names twelve files across three areas — the shared token-error grammar, the
+desktop's single-flight minter and its call sites, and the web's own copies of the same two
+ideas (single-flight token, sync-progress gate). All twelve were re-opened on `13ca41c`, and
+all three gates re-run there rather than trusted from whatever step last measured them on the
+same commit.
+
+All twelve exist, and all twelve changed on this branch — unlike the wider Phase 26 round this
+convention comes from, this fix has no file the plan named as critical but left untouched, so
+there is no "unchanged, and which kind" list here.
+
+| File | What it had to end up as | On `13ca41c` |
+| --- | --- | --- |
+| `packages/shared/src/iamPkce.ts` | `IamTokenError`, `isTerminalGrantError`, error-body parsing, message text unchanged | ✅ `IamTokenError` at :125, `isTerminalGrantError` at :152 duck-typed on `oauthError` rather than `instanceof` (`@tm/shared` reaches `apps/client` as a source alias but `apps/web`/`apps/server` as built `dist` — two module instances); `postToken`'s throw at :190 still reads `` vipper.iam token request failed (${status} ${detail}) `` — `iamPkce.test.ts`'s pinned substring survives |
+| `apps/client/src/main/cloudToken.ts` | new — `CloudTokenProvider`, the single-flight | ✅ 163 lines; `get()` at :97 collapses concurrent callers onto one `inflight` promise; `mint()` at :137 sets `rejected` only on `isTerminalGrantError`, leaving every other failure (network blip, 503) retryable on the next tick |
+| `apps/client/src/main/ipc.ts` | status (plan cites :1568), signOut (:1595), the replaced block (:1610-1637), sender wiring (:3588/3601/3620) | ✅ present at :1571, :1602, :1607-1614, and :3584/3601/3618 — each a handful of lines off the plan's own citation because the file grew elsewhere on the branch since the plan was written, not because anything is missing: `iam:getConfigStatus` reads `cloudToken.state()`/`.explain()`/`.lastMintedAt()`, `iam:signOut` calls `cloudToken.forget()`, and `cloudEvents`/`cloudAttachments`/`cloudPoller` each wire `onAuthRejected: () => cloudToken.invalidate()` |
+| `apps/client/src/main/cloudPoller.ts` | `onAuthRejected`, `describeMissingToken`, `post()` extraction, retry-once | ✅ `describeMissingToken` read at :204 when `getAccessToken()` answers null; `post()` extracted at :292; a 401 at :256 calls `onAuthRejected` then re-mints and retries the SAME request once with the fresh token — never in a loop |
+| `apps/client/src/main/index.ts` | `app.requestSingleInstanceLock()` | ✅ :36, quitting every later copy outright and focusing the survivor on `second-instance`; the comment at :33 names the gap this closes — two copies racing the desktop's own refresh-token rotation would each spend the same grant |
+| `apps/client/src/renderer/src/Settings.tsx` | cloud section: state-driven hint + warning bar | ✅ `iamHint(iamStatus)` on the account `Field` at :1352, a `MessageBar intent="warning"` at :1353 gated on `authState === 'rejected'`, and the sign-in button's label/appearance flipping on the same state |
+| `apps/web/src/auth/cloudAuth.ts` | the same single-flight + terminal handling | ✅ `getAccessToken()` at :158 mirrors `CloudTokenProvider.get()`'s `inflight` guard; `mint()` at :189 calls every `onGrantRevoked` listener and drops the stored refresh token on `isTerminalGrantError` — what lets `useCloudAuth` stop curtaining a board that will never sync again |
+| `apps/web/src/board/syncGate.ts` | new — `boardIsReady`, `syncCurtainText`, `syncStatusLabel`, `describeAge` | ✅ 70 lines, all four exported; `boardIsReady` at :31 reads only the latched `initialSyncComplete`, never `draining` — the rule its own header states: ready is permanent once reached |
+| `apps/web/src/board/BoardPoller.ts` | `onPollingChange` | ✅ optional dep at :35, called `true` at the top of `tick()` (:113) and `false` in its `finally` (:123) — a fact about a request in flight, not about what `onResponse`/`onError` last said |
+| `apps/web/src/board/useCloudBoard.ts` | `SyncProgress` + the `hasMore` latch | ✅ `syncProgress` state at :77; the latch is the one-liner at :144 — `initialSyncComplete: p.initialSyncComplete \|\| response.hasMore !== true` — true forever once either side has been true once |
+| `apps/web/src/App.tsx` | board branch, status-bar clause | ✅ `boardIsReady(board.syncProgress)` gates the board render at :225, `<SyncCurtain>` (from `@tm/ui/SyncCurtain`, imported :28) takes over otherwise; the status bar's `syncStatusLabel(...)` clause at :210 |
+| `packages/ui/src/SyncCurtain.tsx` | new — the blue curtain | ✅ 57 lines; its own header explains why it is not `PaneLoading` — a network round trip worth seconds, not a millisecond-scale local read worth a skeleton |
+
+**The gates, forced, on `13ca41c`.** `pnpm typecheck --force`: 9/9, 0 cached. `pnpm build
+--force`: 6/6, 0 cached. `pnpm test`: 180 test files passed (1 skipped), 3020 tests passed (11
+skipped). Nothing here was trusted from an earlier step's numbers on this same commit — the
+point of forcing is that a cached green from before this walk would not have proven anything
+about the tip it walked.
+
+No file named in the table needed a code change. The walk found the intended behaviour already
+in place from steps 2-8; the only drift found was the plan's own `ipc.ts` line citations, which
+moved because the file grew elsewhere on the branch after the plan was written, not because any
+wiring is missing.
 
 ---
 
@@ -5875,6 +6437,7 @@ branch:
 - That the CI deploy (step 10) actually reaches an installable URL — `deploy.yml`'s `mobile`
   job existing and staying inert without its token is confirmed statically; a live deploy
   needs `AZURE_STATIC_WEB_APPS_API_TOKEN_MOBILE` to be set and a run to complete.
+
 
 ---
 

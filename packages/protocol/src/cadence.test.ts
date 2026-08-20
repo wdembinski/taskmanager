@@ -92,14 +92,16 @@ describe('nextPollDelayMs', () => {
   });
 
   it('grows the delay exponentially with consecutive failures', () => {
+    // From the ACTIVE tier, which is where the growth has room to be seen: the cap is the
+    // presence TTL now, so the idle tier reaches it on its second failure (25s → 50s → 90s).
     const delay = nextPollDelayMs({
-      serverIntervalMs: CADENCE_MS.idle,
-      localFocused: false,
+      serverIntervalMs: CADENCE_MS.active,
+      localFocused: true,
       consecutiveFailures: 2,
       jitterRatio: 0,
       random: midpoint,
     });
-    expect(delay).toBe(CADENCE_MS.idle * 4);
+    expect(delay).toBe(CADENCE_MS.active * 4);
   });
 
   it('caps exponential backoff at BACKOFF_CAP_MS', () => {
@@ -109,6 +111,28 @@ describe('nextPollDelayMs', () => {
       consecutiveFailures: 20,
       jitterRatio: 0,
       random: midpoint,
+    });
+    expect(delay).toBe(BACKOFF_CAP_MS);
+  });
+
+  /**
+   * The backoff decides how long a HEALTHY client stays missing from `BoardResponse.clients`
+   * after an outage ends — a browser draws "no desktop app has synced recently" for exactly
+   * that long. Anything past the TTL is a desktop that is fine and invisible.
+   */
+  it('never backs off past the presence TTL, so a recovered client is never invisible', () => {
+    expect(BACKOFF_CAP_MS).toBeLessThanOrEqual(PRESENCE_TTL_MS);
+  });
+
+  it('applies the cap after the jitter, not before it', () => {
+    // `random: () => 1` is the top of the jitter range: a capped value multiplied by
+    // 1 + jitterRatio, which used to land above the cap and back outside the TTL.
+    const delay = nextPollDelayMs({
+      serverIntervalMs: CADENCE_MS.idle,
+      localFocused: false,
+      consecutiveFailures: 20,
+      jitterRatio: 0.5,
+      random: () => 1,
     });
     expect(delay).toBe(BACKOFF_CAP_MS);
   });

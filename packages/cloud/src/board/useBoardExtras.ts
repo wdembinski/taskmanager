@@ -2,11 +2,11 @@
  * Everything the board needs that the MIRROR does not carry — read over the relay instead.
  *
  * `GET /v1/board` mirrors `Task` and `Project` rows and nothing else. The desktop's board
- * gets eight more lists from its engine (agent projects, merge requests, attachments, chain
- * links, the attention inbox, live runs, integrating cards, settings) and `BoardScreen`
- * simply did not pass them, which is why the shared detail pane rendered as a stub: with no
- * merge requests, no attachments, no chain and no agent projects, `TaskDetail` skips those
- * sections entirely.
+ * gets nine more lists from its engine (agent projects, merge requests, attachments, chain
+ * links, the attention inbox, live runs, integrating cards, the people roster, settings) and
+ * `BoardScreen` simply did not pass them, which is why the shared detail pane rendered as a
+ * stub: with no merge requests, no attachments, no chain and no agent projects, `TaskDetail`
+ * skips those sections entirely.
  *
  * Every one of them is a relayable `IpcApi` read now, so this hook is the whole fix: load
  * them at mount, keep them fresh through `Transport.on` — which the desktop satisfies with
@@ -27,7 +27,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTransport, type Transport } from '@tm/ui/transport';
-import type { Project, Task } from '@tm/shared/model';
+import { hasPlan, hasRepo, type Person, type Project, type Task } from '@tm/shared/model';
 import type { TaskAttachment } from '@tm/shared/attachments';
 import type { MergeRequest } from '@tm/shared/mergeRequest';
 import type { LinkGate, TaskLink } from '@tm/shared/taskChain';
@@ -37,12 +37,30 @@ import { buildAttentionIndex, type AttentionIndex } from '@tm/ui/attentionIndex'
 
 export interface BoardExtras {
   agentProjects: Project[];
+  /**
+   * Whether `agentProject:list` actually ANSWERED — not whether it returned anything.
+   *
+   * The one read here whose empty result is ambiguous. Every other list in this hook is a
+   * detail-pane section that simply does not draw when it is empty, so "none" and "nobody
+   * answered" look the same and it does not matter. Agent projects are different: they are
+   * the repo pickers, and an empty one reads as *this account has no projects* — a claim a
+   * browser talking to a sleeping desktop is in no position to make. So the caller resolves
+   * the list against the mirrored `projects` rows instead (`selectAgentProjects`), and this
+   * flag is the only thing that can tell it which of the two answers it is holding.
+   */
+  agentProjectsLoaded: boolean;
   mergeRequests: MergeRequest[];
   attachments: TaskAttachment[];
   chainLinks: TaskLink[];
   attention: AttentionIndex;
   liveRunTaskIds: ReadonlySet<string>;
   mergingTaskIds: ReadonlySet<string>;
+  /**
+   * Everyone the account knows about (Phase 24: native tickets) — app-wide, like the
+   * desktop's own `person:list`, so a ticket's assignee avatar can be resolved without a
+   * mirror round trip (`Person` rows are not part of `MirrorDelta`; see `cloudDelta.ts`).
+   */
+  people: Person[];
   settings: AppSettings;
   /** Persist a settings change and reflect it immediately — see {@link useBoardExtras}. */
   saveSettings: (next: AppSettings) => Promise<void>;
@@ -109,12 +127,14 @@ export function useBoardExtras(): BoardExtras {
   const transport = useTransport();
 
   const [agentProjects, setAgentProjects] = useState<Project[]>([]);
+  const [agentProjectsLoaded, setAgentProjectsLoaded] = useState(false);
   const [mergeRequests, setMergeRequests] = useState<MergeRequest[]>([]);
   const [attachments, setAttachments] = useState<TaskAttachment[]>([]);
   const [chainLinks, setChainLinks] = useState<TaskLink[]>([]);
   const [attentionItems, setAttentionItems] = useState<AttentionItem[]>([]);
   const [liveRunTaskIds, setLiveRuns] = useState<ReadonlySet<string>>(new Set());
   const [mergingTaskIds, setMerging] = useState<ReadonlySet<string>>(new Set());
+  const [people, setPeople] = useState<Person[]>([]);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [generation, setGeneration] = useState(0);
 
@@ -133,7 +153,18 @@ export function useBoardExtras(): BoardExtras {
       }
     };
 
-    void load(() => transport.invoke('agentProject:list'), setAgentProjects);
+    // The only read here that records HAVING answered. `load` applies on success and the
+    // `catch` above is silent, so setting the flag inside `apply` is exactly the statement
+    // "the desktop replied" — a rejection leaves it `false` by never running this at all.
+    void load(
+      () => transport.invoke('project:list'),
+      // A repo directory with no plan file — the same set `agentProject:list` used to
+      // answer, before the two channel sets merged into `project:*`.
+      (projects) => {
+        setAgentProjects(projects.map((p) => p.project).filter((p) => hasRepo(p) && !hasPlan(p)));
+        setAgentProjectsLoaded(true);
+      },
+    );
     void load(() => transport.invoke('mr:mergeRequests'), setMergeRequests);
     void load(() => transport.invoke('attachment:list'), setAttachments);
     void load(() => transport.invoke('chain:links'), setChainLinks);
@@ -146,6 +177,7 @@ export function useBoardExtras(): BoardExtras {
       () => transport.invoke('scheduler:integrating'),
       (ids) => setMerging(new Set(ids)),
     );
+    void load(() => transport.invoke('person:list'), setPeople);
     void load(() => transport.invoke('settings:get'), setSettings);
 
     return () => {
@@ -160,6 +192,7 @@ export function useBoardExtras(): BoardExtras {
       transport.on('mergeRequests:changed', setMergeRequests),
       transport.on('attachment:changed', setAttachments),
       transport.on('chain:changed', setChainLinks),
+      transport.on('person:changed', setPeople),
       transport.on('settings:changed', setSettings),
       transport.on('task:integrating', (ids) => setMerging(new Set(ids))),
       transport.on('attention:new', (item) =>
@@ -236,12 +269,14 @@ export function useBoardExtras(): BoardExtras {
 
   return {
     agentProjects,
+    agentProjectsLoaded,
     mergeRequests,
     attachments,
     chainLinks,
     attention,
     liveRunTaskIds,
     mergingTaskIds,
+    people,
     settings,
     saveSettings,
     drawLink,

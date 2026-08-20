@@ -469,11 +469,187 @@ describe('CloudPoller', () => {
     expect(pruned).toEqual([1]);
   });
 
+  /** A store whose only pending work is `count` relayed answers of `bytes` each. */
+  function resultStore(count: number, bytes: number): { store: Store; markedSent: string[][] } {
+    const markedSent: string[][] = [];
+    const store = {
+      getCloudDelta: () => [],
+      pruneCloudOutbox: () => {},
+      loadCloudClientId: () => 'client-1',
+      loadCloudCursor: () => null,
+      saveCloudCursor: () => {},
+      getTask: () => undefined,
+      getProject: () => undefined,
+      getPendingCloudAcks: () => [],
+      markCloudAcksSent: () => {},
+      getPendingCloudResults: () =>
+        Array.from({ length: count }, (_v, i) => ({
+          commandId: `cmd-${i}`,
+          taskId: null,
+          projectId: null,
+          ok: true,
+          reason: null,
+          value: 'x'.repeat(bytes),
+        })),
+      markCloudResultsSent: (ids: readonly string[]) => markedSent.push([...ids]),
+    } as unknown as Store;
+    return { store, markedSent };
+  }
+
+  it('bounds the relayed answers a request carries, instead of sending every pending one', async () => {
+    // The 15 Aug 2026 wedge: 36 timeline answers of ~300 kB went out whole on every tick,
+    // built a 10 MB body, and were refused 413 forever — with every card queued behind them.
+    const { store, markedSent } = resultStore(36, 300_000);
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, json: async () => response() });
+    const { poller } = makePoller({ store, fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    await poller.tick();
+
+    const raw = fetchImpl.mock.calls[0]![1].body as string;
+    expect(Buffer.byteLength(raw, 'utf8')).toBeLessThan(2_000_000);
+    const body = JSON.parse(raw) as { results: Array<{ commandId: string }> };
+    expect(body.results.length).toBeLessThan(36);
+    // And only what actually went out is retired — the rest come back next tick.
+    expect(markedSent).toEqual([body.results.map((r) => r.commandId)]);
+  });
+
+  it('carries the answers left over on the following ticks', async () => {
+    const { store, markedSent } = resultStore(4, 400_000);
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, json: async () => response() });
+    const { poller } = makePoller({ store, fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    await poller.tick();
+    await poller.tick();
+
+    // The fake store keeps returning all four (nothing really clears), so what matters is
+    // that each tick sends a bounded slice rather than the whole pile.
+    expect(markedSent[0]!.length).toBeGreaterThan(0);
+    expect(markedSent[0]!.length).toBeLessThan(4);
+    expect(markedSent[1]).toEqual(markedSent[0]);
+  });
+
   it('does not run once disposed', async () => {
     const { poller, fetchImpl } = makePoller();
     poller.dispose();
     poller.reschedule();
     await poller.tick();
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  describe('a 401', () => {
+    /** A `getAccessToken` that hands out a stale token first, then a fresh one. */
+    function staleThenFresh(): ReturnType<typeof vi.fn> {
+      let calls = 0;
+      return vi.fn(async () => {
+        calls += 1;
+        return calls === 1 ? 'stale' : 'fresh';
+      });
+    }
+
+    it('invalidates, refetches the token and retries once, counting the tick as a success', async () => {
+      const onAuthRejected = vi.fn();
+      const getAccessToken = staleThenFresh();
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce({ ok: false, status: 401, statusText: 'Unauthorized' })
+        .mockResolvedValueOnce({ ok: true, status: 200, json: async () => response() });
+      const { poller } = makePoller({
+        onAuthRejected,
+        getAccessToken,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+
+      await poller.tick();
+
+      expect(onAuthRejected).toHaveBeenCalledTimes(1);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(fetchImpl.mock.calls[0]![1].headers.authorization).toBe('Bearer stale');
+      expect(fetchImpl.mock.calls[1]![1].headers.authorization).toBe('Bearer fresh');
+      expect((poller as unknown as { consecutiveFailures: number }).consecutiveFailures).toBe(0);
+    });
+
+    it('makes only one retry attempt when the fresh token also comes back 401', async () => {
+      const onAuthRejected = vi.fn();
+      const getAccessToken = staleThenFresh();
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValue({ ok: false, status: 401, statusText: 'Unauthorized' });
+      const { poller } = makePoller({
+        onAuthRejected,
+        getAccessToken,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+
+      await poller.tick();
+
+      expect(onAuthRejected).toHaveBeenCalledTimes(1);
+      expect(fetchImpl).toHaveBeenCalledTimes(2); // no third request
+      expect((poller as unknown as { consecutiveFailures: number }).consecutiveFailures).toBe(1);
+    });
+
+    it('does not retry or invalidate on a 403 — only a 401 means the token is bad', async () => {
+      const onAuthRejected = vi.fn();
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValue({ ok: false, status: 403, statusText: 'Forbidden' });
+      const { poller } = makePoller({
+        onAuthRejected,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+
+      await poller.tick();
+
+      expect(onAuthRejected).not.toHaveBeenCalled();
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect((poller as unknown as { consecutiveFailures: number }).consecutiveFailures).toBe(1);
+    });
+  });
+
+  describe('describeMissingToken', () => {
+    it('uses it to say why a null access token happened, instead of the generic message', async () => {
+      let thrown: unknown;
+      const { poller } = makePoller({
+        getAccessToken: async () => null,
+        describeMissingToken: () =>
+          'The cloud sign-in was revoked. Sign in again to resume syncing.',
+        runTracked: async (run) => {
+          try {
+            return await run();
+          } catch (e) {
+            thrown = e;
+            throw e;
+          }
+        },
+      });
+
+      await poller.tick();
+
+      expect((thrown as Error).message).toBe(
+        'The cloud sign-in was revoked. Sign in again to resume syncing.',
+      );
+    });
+
+    it('falls back to the generic message when omitted', async () => {
+      let thrown: unknown;
+      const { poller } = makePoller({
+        getAccessToken: async () => null,
+        runTracked: async (run) => {
+          try {
+            return await run();
+          } catch (e) {
+            thrown = e;
+            throw e;
+          }
+        },
+      });
+
+      await poller.tick();
+
+      expect((thrown as Error).message).toBe('Not signed in to vipper.iam.');
+    });
   });
 });
