@@ -713,10 +713,17 @@ export interface Store {
   loadJiraToken(): string | null;
   /** Remove the stored JIRA token. */
   clearJiraToken(): void;
-  /** The vipper.iam refresh token ciphertext, alongside the JIRA/GitLab pair. */
-  saveIamRefreshToken(value: string): void;
-  loadIamRefreshToken(): string | null;
-  clearIamRefreshToken(): void;
+  /** The Task Manager personal access token ciphertext, alongside the JIRA/GitLab/GitHub trio. */
+  saveCloudPat(value: string): void;
+  loadCloudPat(): string | null;
+  clearCloudPat(): void;
+  /**
+   * One-shot cleanup: if a pre-PAT vipper.iam refresh token is still on disk from before this
+   * ticket, drop it — a dead credential should not sit encrypted on disk forever — and say so,
+   * so `ipc.ts` can tell a returning signed-in user their sign-in was replaced rather than
+   * silently going quiet. Returns `false` on every later call once the row is gone.
+   */
+  clearLegacyCloudSignIn(): boolean;
   /**
    * Cache the result of JIRA "Epic Link" field discovery so `/field` is queried once
    * per site rather than on every sync (see `jira/epicField.ts`).
@@ -2059,8 +2066,11 @@ export function createStore(dbPath: string): Store {
   /** The issue query the last GitHub sync ran — `JIRA_LAST_QUERY_KEY`'s counterpart. */
   const GITHUB_LAST_QUERY_KEY = 'github.lastQuery';
 
-  /** The vipper.iam refresh token ciphertext — see `../iamSignIn.ts` and `ipc.ts`'s `iam:*` handlers. */
+  /** A pre-PAT vipper.iam refresh token, if this database predates this ticket — see
+   *  `clearLegacyCloudSignIn`. Nothing writes this key any more. */
   const IAM_REFRESH_TOKEN_KEY = 'iam.refreshToken';
+  /** The Task Manager personal access token ciphertext — see `ipc.ts`'s `cloud:*` handlers. */
+  const CLOUD_PAT_KEY = 'cloud.pat';
   const CLOUD_CLIENT_ID_KEY = 'cloud.clientId';
   const CLOUD_CURSOR_KEY = 'cloud.cursor';
 
@@ -4228,17 +4238,24 @@ export function createStore(dbPath: string): Store {
       deleteState.run(JIRA_TOKEN_KEY);
     },
 
-    saveIamRefreshToken(value) {
-      upsertState.run(IAM_REFRESH_TOKEN_KEY, value);
+    saveCloudPat(value) {
+      upsertState.run(CLOUD_PAT_KEY, value);
     },
 
-    loadIamRefreshToken() {
-      const row = selectState.get(IAM_REFRESH_TOKEN_KEY) as { value: string } | undefined;
+    loadCloudPat() {
+      const row = selectState.get(CLOUD_PAT_KEY) as { value: string } | undefined;
       return row?.value ?? null;
     },
 
-    clearIamRefreshToken() {
+    clearCloudPat() {
+      deleteState.run(CLOUD_PAT_KEY);
+    },
+
+    clearLegacyCloudSignIn() {
+      const row = selectState.get(IAM_REFRESH_TOKEN_KEY) as { value: string } | undefined;
+      if (!row) return false;
       deleteState.run(IAM_REFRESH_TOKEN_KEY);
+      return true;
     },
 
     loadCloudClientId() {

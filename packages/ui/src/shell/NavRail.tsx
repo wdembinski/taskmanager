@@ -34,9 +34,9 @@ const useStyles = makeStyles({
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'stretch',
-    // 84px ÷ 1.5 — a rail narrow enough to give the content back the room it was costing,
-    // while staying its own deliberate edge of the window rather than a strip of buttons.
-    width: '56px',
+    // Narrower still than the 56px this rail used to be — a slim icon-only rail closer to
+    // an editor's activity bar, so it reads as a strip of destinations rather than a panel.
+    width: '44px',
     paddingTop: '8px',
     flexShrink: 0,
     // The same surface as the detail pane, so the window reads as content between two
@@ -47,11 +47,11 @@ const useStyles = makeStyles({
     // target. Scaled down with the rail itself so a tile still fills its share of it.
     '& button': {
       justifyContent: 'center',
-      height: '56px',
-      minWidth: '56px',
+      height: '44px',
+      minWidth: '44px',
       borderRadius: tokens.borderRadiusMedium,
     },
-    '& svg': { fontSize: '32px' },
+    '& svg': { fontSize: '22px' },
   },
   /** The destination tabs, growing to fill the rail so the Account tile sits at its foot. */
   tabs: { flex: 1 },

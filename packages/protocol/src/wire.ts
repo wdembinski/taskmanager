@@ -497,3 +497,69 @@ export interface MediaTokenGrant {
   token: string;
   expiresAt: number;
 }
+
+/**
+ * Every personal access token starts with this, immediately after minting and forever after.
+ * It earns its place twice: it lets `IamAuthGuard` route a bearer to the local PAT check
+ * without a database hit (an IAM-issued token never carries it), and it gives a secret
+ * scanner something fixed to match if one of these ever leaks into a log or a repo.
+ */
+export const PAT_PREFIX = 'tmpat_';
+
+/** The random part of a token: 32 CSPRNG bytes, base64url-encoded. */
+export const PAT_SECRET_LENGTH = 43;
+
+/** No token may outlive this many days — `POST /v1/tokens` rejects a longer `expiresInDays`. */
+export const MAX_PAT_EXPIRY_DAYS = 365;
+
+/**
+ * The expiry presets both the web create form and the server's validation agree on. `null`
+ * is "no expiry". Shared here, not just in the server, because the web dropdown and the
+ * server's cap have to offer and accept the same set of numbers.
+ */
+export const PAT_EXPIRY_CHOICES: ReadonlyArray<number | null> = [30, 90, 365, null];
+
+/** Preselected in the web create form when nothing else has been chosen. */
+export const PAT_DEFAULT_EXPIRY_DAYS = 90;
+
+/**
+ * One personal access token, as returned by the list route. Deliberately carries no secret
+ * and no hash — this is what the server is willing to show back to the account that owns it,
+ * which is everything except the thing that would let it be replayed. Timestamps are epoch
+ * ms, matching `attachment_blobs`' choice, so a caller compares them with plain arithmetic
+ * rather than parsing a date.
+ */
+export interface PersonalAccessToken {
+  id: string;
+  name: string;
+  hint: string;
+  createdAt: number;
+  /** `null` means the token never expires. */
+  expiresAt: number | null;
+  /** `null` means still live. */
+  revokedAt: number | null;
+  /** `null` means never used. */
+  lastUsedAt: number | null;
+}
+
+/** What `POST /v1/tokens` takes: a label and an optional expiry, in days from now. */
+export interface CreatePatRequest {
+  name: string;
+  /** Omitted or `null` means the token never expires. */
+  expiresInDays?: number | null;
+}
+
+/**
+ * What `POST /v1/tokens` answers. `token` is the ONLY time the secret exists outside the
+ * caller's own process — the server keeps a hash, never the token itself, so there is no
+ * later route that can show it again.
+ */
+export interface CreatedPersonalAccessToken {
+  token: string;
+  pat: PersonalAccessToken;
+}
+
+/** What `GET /v1/tokens` answers. */
+export interface PersonalAccessTokenList {
+  tokens: PersonalAccessToken[];
+}
