@@ -153,7 +153,11 @@ import {
   rematchMergeRequests,
   type FetchedMergeRequest,
 } from './gitlab/gitlabSync';
-import { reconcilePullRequests, rematchPullRequests } from './github/githubPrSync';
+import {
+  needsCiRefresh,
+  reconcilePullRequests,
+  rematchPullRequests,
+} from './github/githubPrSync';
 import {
   forgeName,
   mrIsSettled,
@@ -2004,6 +2008,34 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   });
 
   /**
+   * A check-runs or commit-status call that came back refused — logged every time, but
+   * raised on the board's notice bar only once per app run per repository/endpoint/status.
+   * Every stale PR in a repo hits the same missing scope on every poll, and repeating the
+   * warning that often would bury everything else on the bar.
+   */
+  const reportedCiRefusals = new Set<string>();
+  const reportCiRefusal = (
+    projectPath: string,
+    endpoint: 'check-runs' | 'commit-status',
+    error: unknown,
+  ): void => {
+    logMain(`GitHub sync: ${endpoint} for ${projectPath} refused`, error);
+    const status = error instanceof GitHubError ? error.status : 0;
+    if (status !== 401 && status !== 403 && status !== 404) return;
+    const key = `${projectPath}|${endpoint}|${status}`;
+    if (reportedCiRefusals.has(key)) return;
+    reportedCiRefusals.add(key);
+    const what = endpoint === 'check-runs' ? 'check runs' : 'commit statuses';
+    const scope = endpoint === 'check-runs' ? 'Checks: read' : 'Commit statuses: read';
+    send('board:notice', {
+      intent: 'warning',
+      text:
+        `GitHub refused to read ${what} for ${projectPath} (${status}). A fine-grained token ` +
+        `needs "${scope}"; a classic token needs "repo".`,
+    });
+  };
+
+  /**
    * One GitHub sync: list your open PRs, re-read detail only for the ones that moved,
    * reconcile, push. `syncGitLab` above, one forge over, and every decision it makes for a
    * stated reason is made here for the same one.
@@ -2047,7 +2079,32 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
         const prior = priorByRef.get(listedRef(item));
         const updatedAt = Date.parse(item.updated_at) || 0;
         const stale = needsDetailRefresh(prior, updatedAt);
-        detailed.push(await describePullRequest(client, item, { stale, prior }));
+        const onCiRefusal = (endpoint: 'check-runs' | 'commit-status', error: unknown): void =>
+          reportCiRefusal(prior?.projectPath ?? listedRef(item), endpoint, error);
+        /**
+         * Not otherwise stale, but the last CI answer was `unknown` or a freshly-seen `none`
+         * — GitHub never bumps `updated_at` for a check starting or finishing, so
+         * `needsDetailRefresh` alone would leave those PRs unread forever. One detail call,
+         * not the full ~seven-call stale pass: `describePullRequest` reads CI off a detail
+         * whenever it has one in hand, `stale` or not.
+         */
+        if (!stale && needsCiRefresh(prior, Date.now())) {
+          const { owner, repo } = repoRefFromApiUrl(item.repository_url);
+          const detail =
+            owner && repo
+              ? await client.getPullRequest(owner, repo, item.number).catch(() => null)
+              : null;
+          detailed.push(
+            await describePullRequest(client, item, {
+              stale: false,
+              prior,
+              detail: detail ?? undefined,
+              onCiRefusal,
+            }),
+          );
+          continue;
+        }
+        detailed.push(await describePullRequest(client, item, { stale, prior, onCiRefusal }));
       }
     };
     await Promise.all(Array.from({ length: Math.min(4, queue.length) }, worker));
@@ -2084,6 +2141,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
             stale: false,
             prior,
             detail,
+            onCiRefusal: (endpoint, error) => reportCiRefusal(prior.projectPath, endpoint, error),
           }),
         );
       }

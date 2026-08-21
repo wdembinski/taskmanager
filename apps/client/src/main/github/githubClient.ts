@@ -740,14 +740,29 @@ export class GitHubClient {
    * `pipelineStages.ts` has to dedupe by hand; here the server does it, and being explicit
    * stops a future default change quietly reintroducing the stale-red-stage bug.
    *
-   * One page of 100: more jobs than that would make the dot row unreadable anyway.
+   * Follows `Link: rel="next"` the same way {@link paged} does, and to the same `maxPages`
+   * cap — but is not written as a call to `paged` itself, because a page here comes back as
+   * `{ check_runs: [...] }` rather than the bare array `paged` expects. A repository whose
+   * commit has more than 100 check runs (a large monorepo's matrix build, say) would
+   * otherwise silently lose everything past the first page.
    */
-  async listCheckRuns(owner: string, repo: string, sha: string): Promise<GitHubCheckRun[]> {
-    const body = await this.request<unknown>(
+  async listCheckRuns(
+    owner: string,
+    repo: string,
+    sha: string,
+    maxPages = 5,
+  ): Promise<GitHubCheckRun[]> {
+    const all: GitHubCheckRun[] = [];
+    let url: string | null = this.url(
       `${repoPath(owner, repo)}/commits/${encodeURIComponent(sha)}/check-runs?per_page=100&filter=latest`,
     );
-    const runs = (body as { check_runs?: unknown } | null)?.check_runs;
-    return Array.isArray(runs) ? (runs as GitHubCheckRun[]) : [];
+    for (let i = 0; i < maxPages && url; i++) {
+      const { body, res }: { body: unknown; res: Response } = await this.rawUrl(url);
+      const runs = (body as { check_runs?: unknown } | null)?.check_runs;
+      if (Array.isArray(runs)) all.push(...(runs as GitHubCheckRun[]));
+      url = nextPageUrl(res.headers?.get('link'));
+    }
+    return all;
   }
 
   /**
