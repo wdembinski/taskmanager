@@ -40,9 +40,8 @@ import {
 import { DismissRegular } from '@fluentui/react-icons';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
-import { MODELS, type Project } from '@shared/model';
+import { MODELS, ownsTickets, type Project } from '@shared/model';
 import { RELEASE_DOC } from '@shared/release';
-import { normalizeTicketPrefix } from '@shared/ticketKey';
 import {
   execTargetLabel,
   formatExecTarget,
@@ -54,11 +53,12 @@ import { distroFromWindowsPath, pathSuitsHost, windowsToLinux } from '@shared/ws
 import { describeGitPreflight } from '@shared/gitPreflight';
 import { useGitPreflight } from '../useGitPreflight';
 import { BaseBranchField } from '@ui/BaseBranchField';
-import { ColorSwatches } from '@ui/ColorSwatches';
 import { modelCaption } from '@ui/modelChoice';
 import { PaneLoading } from '@ui/PaneLoading';
 import { PlanningModelField } from '@ui/PlanningModelField';
 import { useInitialLoad } from '@ui/useInitialLoad';
+import { ProjectBasicsFields } from '@ui/projects/ProjectBasicsFields';
+import { ticketModeOf, ticketPrefixError, type TicketMode } from '@ui/projects/projectBasics';
 
 const useStyles = makeStyles({
   pane: {
@@ -96,25 +96,6 @@ function parseEpicKeys(text: string): string[] {
     .split(/[\s,;]+/)
     .map((key) => key.trim())
     .filter(Boolean);
-}
-
-/**
- * A starting guess for a ticket prefix, from the project's name — initials for a
- * multi-word name ("Task Manager" → "TM"), the first few letters otherwise. Purely a
- * convenience: the field stays freely editable, and `normalizeTicketPrefix` is what
- * actually decides whether the result is usable.
- */
-function suggestTicketPrefix(name: string): string {
-  const words = name.trim().split(/\s+/).filter(Boolean);
-  if (words.length === 0) return '';
-  const raw =
-    words.length > 1
-      ? words
-          .map((w) => w[0])
-          .join('')
-          .slice(0, 4)
-      : words[0].slice(0, 4);
-  return normalizeTicketPrefix(raw) ?? '';
 }
 
 export function Projects(): JSX.Element {
@@ -205,8 +186,13 @@ export function Projects(): JSX.Element {
                         </Caption1>
                       </>
                     ) : (
+                      <Caption1 className={styles.hint}>No repository.</Caption1>
+                    )}
+                    {/* Independent of whether it has a repo — a project either owns tickets
+                        (the badge above says which prefix) or is a Personal space. */}
+                    {!ownsTickets(project) && (
                       <Caption1 className={styles.hint}>
-                        No repository — files and numbers tickets only.
+                        Personal space — no tickets of its own.
                       </Caption1>
                     )}
                   </div>
@@ -269,9 +255,8 @@ function ProjectDialog({
   const styles = useStyles();
   const [path, setPath] = useState('');
   const [name, setName] = useState('');
+  const [mode, setMode] = useState<TicketMode>('personal');
   const [ticketPrefix, setTicketPrefix] = useState('');
-  // Once the human edits the prefix directly, a later name edit must stop overwriting it.
-  const [prefixTouched, setPrefixTouched] = useState(false);
   const [epics, setEpics] = useState('');
   const [color, setColor] = useState('');
   const [baseBranch, setBaseBranch] = useState('');
@@ -310,8 +295,8 @@ function ProjectDialog({
     if (project) {
       setPath(project.path);
       setName(project.name);
+      setMode(ticketModeOf(project));
       setTicketPrefix(project.ticketPrefix);
-      setPrefixTouched(true); // an existing prefix is never overwritten by editing the name
       setEpics(project.jiraEpicKeys.join(', '));
       setColor(project.color);
       setBaseBranch(project.baseBranch);
@@ -325,8 +310,8 @@ function ProjectDialog({
     } else {
       setPath('');
       setName('');
+      setMode('personal');
       setTicketPrefix('');
-      setPrefixTouched(false);
       setEpics('');
       setColor('');
       setBaseBranch(''); // follow the checkout, exactly as before this field existed
@@ -340,12 +325,6 @@ function ProjectDialog({
       });
     }
   }, [open, project]);
-
-  // Suggest a prefix from the name, until the human types one of their own.
-  useEffect(() => {
-    if (prefixTouched) return;
-    setTicketPrefix(suggestTicketPrefix(name));
-  }, [name, prefixTouched]);
 
   /**
    * Browse for the repo folder.
@@ -368,21 +347,12 @@ function ProjectDialog({
     }
   }
 
-  const normalizedPrefix = ticketPrefix.trim() ? normalizeTicketPrefix(ticketPrefix) : null;
-  const takenBy = normalizedPrefix
-    ? projects.find(
-        (p) =>
-          p.id !== project?.id &&
-          p.ticketPrefix &&
-          p.ticketPrefix.toUpperCase() === normalizedPrefix,
-      )
-    : undefined;
-  const prefixError =
-    ticketPrefix.trim() && !normalizedPrefix
-      ? 'Not a usable prefix — needs at least one letter, and cannot be just digits.'
-      : takenBy
-        ? `Already used by ${takenBy.name}.`
-        : null;
+  const prefixError = ticketPrefixError({
+    mode,
+    prefix: ticketPrefix,
+    projects,
+    editingId: project?.id,
+  });
 
   async function save(): Promise<void> {
     if (prefixError) {
@@ -400,7 +370,7 @@ function ProjectDialog({
           planningModel,
           defaultPermissionMode: permMode,
           jiraEpicKeys: parseEpicKeys(epics),
-          ticketPrefix,
+          ticketPrefix: mode === 'tickets' ? ticketPrefix : '',
           color,
           target,
           baseBranch,
@@ -421,7 +391,7 @@ function ProjectDialog({
           planningModel,
           defaultPermissionMode: permMode,
           jiraEpicKeys: parseEpicKeys(epics),
-          ticketPrefix,
+          ticketPrefix: mode === 'tickets' ? ticketPrefix : '',
           color,
           target,
           baseBranch,
@@ -478,16 +448,19 @@ function ProjectDialog({
             </MessageBar>
           )}
 
-          <Field
-            label="Display name"
-            hint="Defaults to the folder name, or the ticket prefix if there is no folder."
-          >
-            <Input
-              value={name}
-              onChange={(_e, d) => setName(d.value)}
-              placeholder="(folder name)"
-            />
-          </Field>
+          <ProjectBasicsFields
+            name={name}
+            onNameChange={setName}
+            mode={mode}
+            onModeChange={setMode}
+            ticketPrefix={ticketPrefix}
+            onTicketPrefixChange={setTicketPrefix}
+            color={color}
+            onColorChange={setColor}
+            projects={projects}
+            editingId={project?.id}
+            hasIssuedTickets={Boolean(project && ownsTickets(project))}
+          />
 
           <Field
             label="Repository folder"
@@ -541,30 +514,6 @@ function ProjectDialog({
               </Dropdown>
             </Field>
           )}
-
-          <Field
-            label="Ticket key prefix"
-            hint="Tickets filed under this project are numbered TM-1, TM-2, … Leave it blank if this project doesn't own tickets of its own."
-            validationState={prefixError ? 'error' : undefined}
-            validationMessage={prefixError ?? undefined}
-          >
-            <Input
-              className={styles.mono}
-              value={ticketPrefix}
-              onChange={(_e, d) => {
-                setTicketPrefix(d.value);
-                setPrefixTouched(true);
-              }}
-              placeholder="TM"
-            />
-          </Field>
-
-          <Field
-            label="Colour"
-            hint="A card tagged with this project wears a stripe of this colour, so a mixed column says which project each card is about."
-          >
-            <ColorSwatches value={color} onChange={setColor} allowNone />
-          </Field>
 
           {path && (
             <BaseBranchField value={baseBranch} onChange={setBaseBranch} preflight={preflight} />
