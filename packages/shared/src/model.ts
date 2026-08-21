@@ -151,6 +151,36 @@ export function isBoardProject(project: Pick<Project, 'planPath'>): boolean {
   return !hasPlan(project);
 }
 
+/**
+ * Whether a project owns a board of its own — the non-Personal scopes `board:scopes`
+ * offers. `isBoardProject` alone is not enough: a bare repo and a repo-less personal-space
+ * project are both card lists rather than queues, but neither can actually receive a
+ * ticket (`store.createTicket` keys a new one off `ticketPrefix`), so switching a scope to
+ * one would open a board nothing could ever be added to. Their cards live on Personal
+ * instead — this is what keeps that true.
+ */
+export function ownsBoard(project: Pick<Project, 'planPath' | 'ticketPrefix'>): boolean {
+  return isBoardProject(project) && ownsTickets(project);
+}
+
+/**
+ * Whether a project can be named in a card's `projectTagId` — filing, not delegation (see
+ * `agentProjectsOf`/`resolveAgentProject` in `agentProjects.ts` for the narrower, repo-only
+ * list delegation needs). Wider than `hasRepo`: a personal-space project — no repo, no
+ * ticket prefix — is filed under fine, and simply resolves to no agent project the moment a
+ * run is delegated from it (`resolveAgentProject` already filters candidates by `hasRepo`).
+ *
+ * Excluded are a plan-driven project (a queue, not something to tag a card with) and a
+ * project that owns its own ticket board with no repo of its own (`ownsBoard`): that
+ * project already IS a board, so a native ticket belongs there directly rather than being
+ * filed onto a Personal-board card.
+ */
+export function isFilingProject(
+  project: Pick<Project, 'planPath' | 'path' | 'ticketPrefix'>,
+): boolean {
+  return !hasPlan(project) && (hasRepo(project) || !ownsTickets(project));
+}
+
 /** A project the app orchestrates: a directory plus the plan that drives it. */
 export interface Project {
   /** Stable app-assigned id (UUID). Not derived from the path, so a project can

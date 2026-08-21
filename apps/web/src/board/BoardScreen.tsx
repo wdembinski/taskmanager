@@ -57,8 +57,8 @@ import { useBoardLayoutStyles } from '@tm/ui/board/boardLayout';
 import { ArchivedCardsDialog, archivedCards } from '@tm/ui/board/ArchivedCardsDialog';
 import { chainComponent } from '@tm/shared/taskChain';
 import {
-  isBoardProject,
   isManualStatus,
+  ownsBoard,
   PERSONAL_PROJECT_ID,
   type BoardColumn,
   type ManualStatus,
@@ -67,7 +67,12 @@ import {
 } from '@tm/shared/model';
 import type { BoardScope } from '@tm/shared/ipc';
 import { BoardToolbar } from './BoardToolbar';
-import { selectAgentProjects, selectArchivedTasks, selectBoardTasks } from './boardSelectors';
+import {
+  selectAgentProjects,
+  selectArchivedTasks,
+  selectBoardTasks,
+  selectFilingProjects,
+} from './boardSelectors';
 import { displayStatus, isTaskPending, type CloudBoardState } from './cloudBoardStore';
 import { mergeRequestsByTask, useBoardExtras, byTask } from './useBoardExtras';
 
@@ -152,11 +157,11 @@ export function BoardScreen({
   const scope = settings.boardScopeId || 'all';
 
   /**
-   * The agent projects every repo control on this screen draws from — the relay's answer when
-   * the desktop gave one, and the mirrored `projects` rows when it did not. Computed once and
-   * passed to all five sites, so a card's stripe, its agent name, the pane's Project dropdown,
-   * the commit graph and the add-task dialog can never be looking at two different lists. See
-   * `selectAgentProjects` for why this replaces rather than merges.
+   * The agent projects every DELEGATION control on this screen draws from — the relay's
+   * answer when the desktop gave one, and the mirrored `projects` rows when it did not.
+   * Computed once and passed to every one of them, so a card's stripe, its agent name and
+   * the commit graph can never be looking at two different lists. See `selectAgentProjects`
+   * for why this replaces rather than merges.
    */
   const agentProjects = useMemo(
     () => selectAgentProjects(state.projects, extras.agentProjects, extras.agentProjectsLoaded),
@@ -164,11 +169,21 @@ export function BoardScreen({
   );
 
   /**
-   * The boards the toolbar's scope Dropdown offers — Personal plus every other project with
-   * no plan file, the desktop's own `board:scopes` rule (`isBoardProject`). Computed straight
-   * from the mirrored `Project` rows rather than a relayed round trip: the mirror already
-   * carries every project, and this is the same join `store.ts`'s `board:scopes` handler
-   * runs, just read from `state.projects` instead of SQLite.
+   * The wider FILING list — the pane's Project dropdown and the add-task dialog's Project
+   * field — computed the same way, over the wider relayed/mirrored source. See
+   * `selectFilingProjects` for what it adds over `agentProjects`.
+   */
+  const filingProjects = useMemo(
+    () => selectFilingProjects(state.projects, extras.filingProjects, extras.agentProjectsLoaded),
+    [state.projects, extras.filingProjects, extras.agentProjectsLoaded],
+  );
+
+  /**
+   * The boards the toolbar's scope Dropdown offers — Personal plus every other project that
+   * owns a ticket key prefix, the desktop's own `board:scopes` rule (`ownsBoard`). Computed
+   * straight from the mirrored `Project` rows rather than a relayed round trip: the mirror
+   * already carries every project, and this is the same join `store.ts`'s `board:scopes`
+   * handler runs, just read from `state.projects` instead of SQLite.
    */
   const scopes = useMemo<BoardScope[]>(() => {
     const personal = state.projects[PERSONAL_PROJECT_ID];
@@ -176,7 +191,7 @@ export function BoardScreen({
       ? [{ id: personal.id, name: personal.name, color: personal.color }]
       : [];
     for (const project of projects) {
-      if (project.id === PERSONAL_PROJECT_ID || !isBoardProject(project)) continue;
+      if (project.id === PERSONAL_PROJECT_ID || !ownsBoard(project)) continue;
       list.push({ id: project.id, name: project.name, color: project.color });
     }
     return list;
@@ -629,6 +644,7 @@ export function BoardScreen({
           <TaskDetail
             task={selectedTask}
             agentProjects={agentProjects}
+            projects={filingProjects}
             subtasks={chain}
             parentTask={parentOfSelected}
             mergeRequests={selectedTask ? (mrsByTask.get(selectedTask.id) ?? []) : []}
@@ -693,12 +709,12 @@ export function BoardScreen({
         parents={parentCandidates}
         // The same cards, asked a different question — see `parentCandidates`.
         chainCandidates={parentCandidates}
-        // The agent projects, resolved (`selectAgentProjects`): the relay's answer while a
-        // desktop is awake, and the mirrored rows filtered to a repo project while it is
-        // not — which is what keeps this field offering repos instead of nothing against a
+        // The filing projects, resolved (`selectFilingProjects`): the relay's answer while a
+        // desktop is awake, and the mirrored rows filtered the same way while it is not —
+        // which is what keeps this field offering something instead of nothing against a
         // desktop that is merely asleep. The detail pane's Project dropdown offers the same
         // list, because both are handed the one computed above.
-        projects={agentProjects}
+        projects={filingProjects}
         jiraEnabled={settings.jira.enabled}
         // A browser has no OS file picker and no path for a dropped `File`, so the whole
         // files section is one thing this host cannot do rather than a control to grey out.

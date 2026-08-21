@@ -43,9 +43,10 @@ import type {
 import {
   hasPlan,
   hasRepo,
-  isBoardProject,
+  isFilingProject,
   isManualStatus,
   isPersonalBoard,
+  ownsBoard,
   ownsTickets,
   PERSONAL_PROJECT_ID,
   type BoardColumn,
@@ -964,12 +965,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('task:chat', async (taskId, message) => scheduler.chatWithAgent(taskId, message));
   handle('task:replan', async (taskId, note) => scheduler.replanCard(taskId, note));
   handle('task:create', async (projectId, input) => {
-    // The same check `task:setProject` makes, for the same reason: filing is only ever
-    // under an agent project, and a card created with a dangling tag would wear a colour
-    // stripe nothing on the board could explain.
+    // The same check `task:setProject` makes, for the same reason: a card created with a
+    // dangling or unfileable tag would wear a colour stripe nothing on the board could
+    // explain.
     if (input.projectTagId) {
       const target = store.getProject(input.projectTagId);
-      if (!target || !hasRepo(target)) throw new Error('Unknown project.');
+      if (!target || !isFilingProject(target)) throw new Error('Unknown project.');
     }
     const task = store.createTask(projectId, input);
     if (!task) throw new Error('A task needs a title.');
@@ -1075,7 +1076,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     if (!existing) throw new Error('Task not found.');
     if (projectTagId !== null) {
       const target = store.getProject(projectTagId);
-      if (!target || !hasRepo(target)) throw new Error('Unknown project.');
+      if (!target || !isFilingProject(target)) throw new Error('Unknown project.');
     }
     // Filing only, and now to its OWN column. This used to write `agentProjectId`, the
     // same field delegation writes, so tagging a card as "a Billing card" gave it the
@@ -2386,15 +2387,17 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     !scope || scope === 'all' ? store.getAllArchivedBoardTasks() : store.getArchivedTasksFor(scope),
   );
 
-  // The boards the scope picker offers: Personal first, then every other project with
-  // no plan file — the ones `isBoardProject` says are a card list rather than a queue.
+  // The boards the scope picker offers: Personal first, then every project that owns a
+  // ticket key prefix — the ones `ownsBoard` says can actually receive a native ticket.
+  // A bare repo or a repo-less personal-space project is a card list too, but has no
+  // board of its own to switch to; its cards stay on Personal.
   handle('board:scopes', async () => {
     const personal = store.getProject(PERSONAL_PROJECT_ID);
     const scopes: BoardScope[] = personal
       ? [{ id: personal.id, name: personal.name, color: personal.color }]
       : [];
     for (const project of store.listProjects()) {
-      if (isPersonalBoard(project.id) || !isBoardProject(project)) continue;
+      if (isPersonalBoard(project.id) || !ownsBoard(project)) continue;
       scopes.push({ id: project.id, name: project.name, color: project.color });
     }
     return scopes;
