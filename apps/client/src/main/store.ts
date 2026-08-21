@@ -766,6 +766,37 @@ export interface Store {
   loadCloudCursor(): string | null;
   saveCloudCursor(cursor: string): void;
   /**
+   * The cursor from the last successful `GET /v1/board` pull (`cloudBoardPuller.ts`), or
+   * null before the first one. A separate row from {@link loadCloudCursor}: that one is
+   * `/v1/sync`'s own echo of this account's latest rowVersion, computed a different way
+   * (`MirrorService.currentRowVersion` vs. `board`'s per-stream `boardCursor`) and never
+   * read back by this Client — the two must not be conflated into one key.
+   */
+  loadCloudBoardCursor(): string | null;
+  saveCloudBoardCursor(cursor: string): void;
+  /**
+   * Whether entity `id` has a local edit not yet confirmed delivered to the cloud — an
+   * un-pruned `cloud_outbox` row. The guard `cloudBoardApply.ts` uses so a board pull can
+   * never clobber a change still in flight to the server with a pull that predates it.
+   */
+  hasPendingCloudPush(entity: 'task' | 'project', id: string): boolean;
+  /**
+   * Insert-or-fully-replace a cloud-authored/edited project row — the pull-side mirror of
+   * what `getCloudDelta` already pushes: a mirrored `Project` IS a `Project` (see
+   * `@tm/protocol/wire`'s own header), so every field is overwritten except the local ticket
+   * allocator (`ticketSeq`), which never travels on the wire — see `Project.ticketPrefix`'s
+   * own docstring.
+   */
+  upsertCloudProject(project: Project): void;
+  /**
+   * Insert-or-fully-replace a cloud-authored/edited task row — the pull-side mirror of
+   * `getCloudDelta`'s push. Also keeps the owning project's ticket allocator ahead of any
+   * ticket number this task carries: `ticketSeq` never travels on the wire, so a ticket
+   * project pulled down after the cloud had already issued some tickets would otherwise let
+   * this desktop mint a number one of them already holds.
+   */
+  upsertCloudTask(task: Task): void;
+  /**
    * What this relayed command (by `CommandEnvelope.id`) ANSWERED the first time, or null if
    * it has never been applied. `cloudCommands.ts` checks this before dispatching, so a
    * redelivery — at-least-once is all the poll loop guarantees — is replayed rather than
@@ -1995,6 +2026,8 @@ export function createStore(dbPath: string): Store {
   const IAM_REFRESH_TOKEN_KEY = 'iam.refreshToken';
   const CLOUD_CLIENT_ID_KEY = 'cloud.clientId';
   const CLOUD_CURSOR_KEY = 'cloud.cursor';
+  /** The cursor from the last successful `GET /v1/board` pull — see `loadCloudBoardCursor`. */
+  const CLOUD_BOARD_CURSOR_KEY = 'cloud.board.cursor';
 
   /** An attention_items row: `options`/`steps`/`questions`/`context` are JSON text. */
   interface AttentionRow {
@@ -2579,6 +2612,46 @@ export function createStore(dbPath: string): Store {
     };
   }
 
+  /**
+   * Serialize a `Project` to its stored row shape — `rowToProject`'s inverse, minus
+   * `ticketSeq`: the allocator is deliberately not on `Project` (see its own docstring) and
+   * a cloud pull must never reset it, so every caller of this helper decides that column for
+   * itself instead of getting one handed to it here.
+   */
+  function projectToRow(project: Project): Omit<ProjectRow, 'ticketSeq'> {
+    return {
+      id: project.id,
+      name: project.name,
+      path: project.path,
+      planPath: project.planPath,
+      defaultModel: project.defaultModel,
+      planningModel: project.planningModel ?? null,
+      defaultPermissionMode: project.defaultPermissionMode,
+      concurrency: project.concurrency,
+      useWorktrees: project.useWorktrees ? 1 : 0,
+      baseBranch: project.baseBranch,
+      writeBackPlan: project.writeBackPlan ? 1 : 0,
+      autoRelease: project.autoRelease ? 1 : 0,
+      autoIntegrate:
+        project.autoIntegrate === null || project.autoIntegrate === undefined
+          ? null
+          : project.autoIntegrate
+            ? 1
+            : 0,
+      planAligned: project.planAligned ? 1 : 0,
+      kind: project.kind,
+      jiraEpicKeys: JSON.stringify(project.jiraEpicKeys ?? []),
+      // '' goes in as NULL — see `addProject`'s own insert for why: the partial unique index
+      // ignores NULLs, and every project that is not a ticket project would otherwise
+      // collide with the next one on ''.
+      ticketPrefix: project.ticketPrefix || null,
+      target: formatExecTarget(project.target),
+      instructions: project.instructions,
+      color: project.color,
+      createdAt: project.createdAt,
+    };
+  }
+
   /** Read a JSON string-array column (`dependsOn`, `jiraEpicKeys`) back (NULL/garbage → []). */
   function parseStringArray(raw: string | null): string[] {
     if (!raw) return [];
@@ -2933,6 +3006,70 @@ export function createStore(dbPath: string): Store {
     `SELECT seq, entity, entityId, op, at FROM cloud_outbox WHERE seq > ? ORDER BY seq LIMIT ?`,
   );
   const deleteCloudOutboxThrough = db.prepare(`DELETE FROM cloud_outbox WHERE seq <= ?`);
+
+  // The cloud mirror's PULL half (this step): applying rows this account's other clients,
+  // or the server's own ticket CRUD, wrote that reached this desktop over
+  // `GET /v1/board?since=` rather than through a local write of its own.
+  const selectCloudOutboxPending = db.prepare(
+    `SELECT 1 FROM cloud_outbox WHERE entity = ? AND entityId = ? LIMIT 1`,
+  );
+  // `trg_{tasks,projects}_after_{insert,update}` above fire on ANY write to those tables —
+  // they cannot tell a human's edit from a row `upsertCloudTask`/`upsertCloudProject` just
+  // wrote FROM the cloud. Left alone, every pulled row would log itself as an unsent local
+  // edit: `hasPendingCloudPush` would then skip that same id on the very next pull (until
+  // this desktop's own next `/v1/sync` happened to flush it), and that push would echo the
+  // row right back up for no reason. Deleting the trace this write just made keeps the
+  // outbox meaning what its own docstring says — this Client's OWN changes — nothing more.
+  const clearCloudOutboxTrace = db.prepare(
+    `DELETE FROM cloud_outbox WHERE entity = ? AND entityId = ?`,
+  );
+  const updateCloudProjectStmt = db.prepare(
+    // `ticketSeq` is deliberately absent — see `projectToRow`.
+    `UPDATE projects SET
+       name = @name, path = @path, planPath = @planPath, defaultModel = @defaultModel,
+       planningModel = @planningModel, defaultPermissionMode = @defaultPermissionMode,
+       concurrency = @concurrency, useWorktrees = @useWorktrees, baseBranch = @baseBranch,
+       writeBackPlan = @writeBackPlan, autoRelease = @autoRelease, autoIntegrate = @autoIntegrate,
+       planAligned = @planAligned, kind = @kind, jiraEpicKeys = @jiraEpicKeys,
+       ticketPrefix = @ticketPrefix, target = @target, instructions = @instructions,
+       color = @color, createdAt = @createdAt
+     WHERE id = @id`,
+  );
+  const updateCloudTaskStmt = db.prepare(
+    `UPDATE tasks SET
+       projectId = @projectId, phase = @phase, title = @title, status = @status,
+       sessionId = @sessionId, "order" = @order, source = @source, dependsOn = @dependsOn,
+       isContract = @isContract, isScaffold = @isScaffold, type = @type,
+       parentTaskId = @parentTaskId, description = @description, statusNote = @statusNote,
+       statusNoteAt = @statusNoteAt, externalSource = @externalSource, externalKey = @externalKey,
+       externalId = @externalId, externalUrl = @externalUrl, externalStatus = @externalStatus,
+       externalStatusCategory = @externalStatusCategory, externalPriority = @externalPriority,
+       externalType = @externalType, externalLabel = @externalLabel,
+       externalParentKey = @externalParentKey, externalEpicName = @externalEpicName,
+       externalSprint = @externalSprint, externalDescription = @externalDescription,
+       preBlockStatus = @preBlockStatus, preRunStatus = @preRunStatus, retainedSince = @retainedSince,
+       archivedAt = @archivedAt, archivedReason = @archivedReason,
+       lastReadCommentAt = @lastReadCommentAt, latestCommentAt = @latestCommentAt,
+       projectTagId = @projectTagId, agentProjectId = @agentProjectId, agentMode = @agentMode,
+       agentModel = @agentModel, agentPlan = @agentPlan, agentBranch = @agentBranch,
+       planRound = @planRound, landedAt = @landedAt, chainLandedAt = @chainLandedAt,
+       workedAt = @workedAt, stoppedAt = @stoppedAt, autoRelease = @autoRelease,
+       autoIntegrate = @autoIntegrate, ticketKey = @ticketKey, ticketNumber = @ticketNumber,
+       issueType = @issueType, epicTaskId = @epicTaskId, milestoneId = @milestoneId,
+       labels = @labels, storyPoints = @storyPoints, estimateDays = @estimateDays,
+       startAt = @startAt, dueAt = @dueAt, assigneeId = @assigneeId, reporterId = @reporterId
+     WHERE id = @id`,
+  );
+  // See `upsertCloudTask`: keeps a project's ticket allocator ahead of any number a pulled
+  // ticket already carries, since `ticketSeq` itself never travels on the wire.
+  const bumpProjectTicketSeqAtLeast = db.prepare(
+    `UPDATE projects SET ticketSeq = MAX(ticketSeq, ?) WHERE id = ?`,
+  );
+  // See `upsertCloudProject`'s insert branch: what to seed a never-before-seen project's
+  // allocator with, from whatever tickets this pull already knows about.
+  const selectMaxTicketNumberForProject = db.prepare(
+    `SELECT COALESCE(MAX(ticketNumber), 0) n FROM tasks WHERE projectId = ?`,
+  );
 
   // The cloud mirror's applied-command ledger (Phase 25's "Apply queued cloud commands on
   // the client") — see the schema comment above `cloud_applied_commands`.
@@ -4140,6 +4277,53 @@ export function createStore(dbPath: string): Store {
 
     saveCloudCursor(cursor) {
       upsertState.run(CLOUD_CURSOR_KEY, cursor);
+    },
+
+    loadCloudBoardCursor() {
+      const row = selectState.get(CLOUD_BOARD_CURSOR_KEY) as { value: string } | undefined;
+      return row?.value ?? null;
+    },
+
+    saveCloudBoardCursor(cursor) {
+      upsertState.run(CLOUD_BOARD_CURSOR_KEY, cursor);
+    },
+
+    hasPendingCloudPush(entity, id) {
+      return selectCloudOutboxPending.get(entity, id) !== undefined;
+    },
+
+    upsertCloudProject(project) {
+      const existing = selectProject.get(project.id) as ProjectRow | undefined;
+      const row = projectToRow(project);
+      if (existing) {
+        updateCloudProjectStmt.run(row);
+      } else {
+        // A project this desktop has never seen before may already have issued tickets in
+        // the cloud (created via the server's own CRUD before this Client ever synced it
+        // down) — seed the allocator from whatever this pull already knows about, rather
+        // than 0, which `upsertCloudTask`'s own bump then keeps ahead of as later tickets
+        // arrive. Imperfect if this project's tickets haven't been pulled down yet (a
+        // separate page, or a later poll), but strictly safer than a guaranteed-stale 0.
+        const seeded = (selectMaxTicketNumberForProject.get(project.id) as { n: number }).n;
+        insertProject.run({ ...row, ticketSeq: seeded });
+      }
+      // See `clearCloudOutboxTrace`: this write is FROM the cloud, not a local edit — the
+      // trigger that just logged it otherwise has this desktop echo the row right back up.
+      clearCloudOutboxTrace.run('project', project.id);
+    },
+
+    upsertCloudTask(task) {
+      const row = taskToRow(task);
+      const existing = selectTask.get(task.id) as TaskRow | undefined;
+      if (existing) {
+        updateCloudTaskStmt.run(row);
+      } else {
+        insertTask.run(row);
+      }
+      if (task.ticketNumber != null) {
+        bumpProjectTicketSeqAtLeast.run(task.ticketNumber, task.projectId);
+      }
+      clearCloudOutboxTrace.run('task', task.id);
     },
 
     saveJiraEpicField(cache) {

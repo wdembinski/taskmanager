@@ -100,6 +100,7 @@ import { applyCloudCommand, type CloudCommandOutcome } from './cloudCommands';
 import { CommandQueue } from './commandQueue';
 import { relayRegistry } from './ipcRegistry';
 import { CloudAttachmentUploader, fetchUploadBytes } from './cloudAttachmentUploader';
+import { CloudBoardPuller } from './cloudBoardPuller';
 import { CloudEventForwarder } from './cloudEventForwarder';
 import { CloudPoller } from './cloudPoller';
 import { testCloudConnection } from './cloudTestConnection';
@@ -254,6 +255,9 @@ export interface Engine {
   /** The cloud mirror's own timer — seconds-scale, server-directed, and separate from
    * `syncPoller` on purpose; see `cloudPoller.ts`'s own header. */
   cloudPoller: CloudPoller;
+  /** The read half of the same mirror: `GET /v1/board?since=` on its own clock, applying
+   *  rows this desktop did not itself write — see `cloudBoardPuller.ts`'s own header. */
+  cloudBoardPuller: CloudBoardPuller;
   /** The push half of the same mirror: every `IpcEvents` push, batched to `POST /v1/events`.
    * Holds a timer and a queue, so it is disposed on quit like every other one. */
   cloudEvents: CloudEventForwarder;
@@ -1300,6 +1304,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // Same reason, on the cloud mirror's own clock — an edit to `cloud.enabled`/`baseUrl`
     // takes effect at once rather than waiting for whatever tick was already in flight.
     cloudPoller.reschedule();
+    cloudBoardPuller.reschedule();
     // The countdown is drawn from the interval, so a changed one has to reach the bar or
     // the ring would keep draining at the old rate until the next sync landed.
     pushSyncState();
@@ -3641,6 +3646,21 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   });
   cloudPoller.reschedule();
 
+  // The read half of the same mirror: rows this desktop never wrote itself — another
+  // desktop's edit, or a ticket created straight through the server's own CRUD API — reach
+  // it only over `GET /v1/board?since=`, which `CloudPoller`'s push-only `/v1/sync` never
+  // carries back. Its own clock, its own cursor (`loadCloudBoardCursor`), and its own
+  // `trackSync('cloud', …)` slot — the two are the same feature to a human watching the
+  // status bar, even though neither ever calls into the other.
+  const cloudBoardPuller = new CloudBoardPuller({
+    store,
+    focus: focusTracker,
+    getSettings: () => store.getSettings().cloud,
+    getAccessToken: getCloudAccessToken,
+    runTracked: (run) => trackSync('cloud', run),
+  });
+  cloudBoardPuller.reschedule();
+
   // The two quota bars' one real signal: `/usage` read straight from the CLI, on its
   // own clock (see `claudeUsage.ts` for why this never costs a token or a turn).
   const claudeUsagePoller = new ClaudeUsagePoller();
@@ -3658,6 +3678,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     watcher,
     syncPoller,
     cloudPoller,
+    cloudBoardPuller,
     cloudEvents,
     cloudAttachments,
     focusTracker,
