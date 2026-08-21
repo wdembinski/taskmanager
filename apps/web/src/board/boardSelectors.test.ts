@@ -250,7 +250,9 @@ describe('selectFilingProjects', () => {
     const projects = [personalSpace, agentRepo];
 
     expect(
-      selectFilingProjects(mirrorOf(...projects), [], false).map((p) => p.id).sort(),
+      selectFilingProjects(mirrorOf(...projects), [], false)
+        .map((p) => p.id)
+        .sort(),
     ).toEqual(['ag', 'ps']);
     expect(selectAgentProjects(mirrorOf(...projects), [], false).map((p) => p.id)).toEqual(['ag']);
   });
@@ -261,10 +263,15 @@ describe('selectFilingProjects', () => {
   });
 
   it('keeps a repo that also owns a ticket board — the repo projects already there', () => {
-    const repoWithTickets = project({ id: 'rt', name: 'Repo+Tickets', path: '/repos/rt', ticketPrefix: 'RT' });
-    expect(
-      selectFilingProjects(mirrorOf(repoWithTickets), [], false).map((p) => p.id),
-    ).toEqual(['rt']);
+    const repoWithTickets = project({
+      id: 'rt',
+      name: 'Repo+Tickets',
+      path: '/repos/rt',
+      ticketPrefix: 'RT',
+    });
+    expect(selectFilingProjects(mirrorOf(repoWithTickets), [], false).map((p) => p.id)).toEqual([
+      'rt',
+    ]);
   });
 
   it('excludes a plan-driven project on both branches', () => {
