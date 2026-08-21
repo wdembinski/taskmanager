@@ -29,18 +29,18 @@ import { NavRail, type NavRailItem } from '@tm/ui/shell/NavRail';
 import { StatusBar, StatusDot, StatusSpacer } from '@tm/ui/shell/StatusBar';
 import { SyncCurtain } from '@tm/ui/SyncCurtain';
 import { TransportProvider } from '@tm/ui/transport';
-import { CloudAuth } from './auth/cloudAuth';
-import { SignInScreen } from './auth/SignInScreen';
-import { useCloudAuth } from './auth/useCloudAuth';
+import { CloudAuth } from '@tm/cloud/auth/cloudAuth';
+import { SignInScreen } from '@tm/cloud/auth/SignInScreen';
+import { useCloudAuth } from '@tm/cloud/auth/useCloudAuth';
+import { SettingsScreen } from '@tm/cloud/settings/SettingsScreen';
+import { ClientPicker } from '@tm/cloud/board/ClientPicker';
+import { SkewBanner } from '@tm/cloud/board/SkewBanner';
+import { StaleBanner } from '@tm/cloud/board/StaleBanner';
+import { boardIsReady, syncCurtainText, syncStatusLabel } from '@tm/cloud/board/syncGate';
+import { versionSkew } from '@tm/cloud/board/targetClient';
+import { useCloudBoard } from '@tm/cloud/board/useCloudBoard';
 import { BoardScreen } from './board/BoardScreen';
-import { SettingsScreen } from './settings/SettingsScreen';
-import { ClientPicker } from './board/ClientPicker';
-import { SkewBanner } from './board/SkewBanner';
-import { StaleBanner } from './board/StaleBanner';
-import { boardIsReady, syncCurtainText, syncStatusLabel } from './board/syncGate';
 import { UnreachableBanner } from './board/UnreachableBanner';
-import { versionSkew } from './board/targetClient';
-import { useCloudBoard } from './board/useCloudBoard';
 import { loadWebConfig } from './env';
 
 const useStyles = makeStyles({

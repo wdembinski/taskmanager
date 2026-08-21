@@ -66,10 +66,18 @@ import {
   type Task,
 } from '@tm/shared/model';
 import type { BoardScope } from '@tm/shared/ipc';
+import {
+  selectAgentProjects,
+  selectArchivedTasks,
+  selectBoardTasks,
+} from '@tm/cloud/board/boardSelectors';
+import {
+  displayStatus,
+  isTaskPending,
+  type CloudBoardState,
+} from '@tm/cloud/board/cloudBoardStore';
+import { mergeRequestsByTask, useBoardExtras, byTask } from '@tm/cloud/board/useBoardExtras';
 import { BoardToolbar } from './BoardToolbar';
-import { selectAgentProjects, selectArchivedTasks, selectBoardTasks } from './boardSelectors';
-import { displayStatus, isTaskPending, type CloudBoardState } from './cloudBoardStore';
-import { mergeRequestsByTask, useBoardExtras, byTask } from './useBoardExtras';
 
 const useStyles = makeStyles({
   /** The empty state, in the board's own half of the screen rather than across all of it. */

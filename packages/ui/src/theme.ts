@@ -303,10 +303,20 @@ export const useGlobalStyles = makeStaticStyles({
   ':root': {
     colorScheme: 'dark',
   },
+  /*
+   * `100dvh` rather than `100%`: on a phone browser tab, before it is installed, `100%`
+   * resolves against the LARGE viewport — the one that assumes the address bar has
+   * scrolled away — while the visible area is the SMALL viewport, bar and all. `body`
+   * ends up taller than the screen, and since it does not scroll (see below) whatever
+   * sits at its bottom — `MobileShell`'s tab bar — ends up under the address bar and
+   * unreachable. `100dvh` tracks the viewport that is actually visible instead, and is
+   * a no-op everywhere else: neither the desktop window nor an installed PWA has a
+   * chrome that shrinks, so their large and small viewports are the same viewport.
+   */
   'html, body, #root': {
     margin: 0,
     padding: 0,
-    height: '100%',
+    height: '100dvh',
     backgroundColor: '#1f1f1f',
   },
 

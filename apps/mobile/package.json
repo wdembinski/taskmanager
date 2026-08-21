@@ -1,15 +1,18 @@
 {
-  "name": "@tm/web",
-  "version": "0.0.0",
-  "description": "VIPPER Task Manager Cloud — the browser client. Vite + React + Fluent UI, deployed to Azure Static Web Apps' free tier. Signs in to vipper.iam (authorization-code + PKCE), reads the account's board over GET /v1/board and edits it by queuing commands over POST /v1/commands — it never writes the mirror directly.",
+  "name": "@tm/mobile",
+  "version": "0.1.0",
+  "description": "VIPPER Task Manager Cloud — the Android client, an installable PWA. Vite + React + Fluent UI, deployed to its own Azure Static Web App (docs/plan/README.md, Phase 27). Same cloud sync as apps/web, through @tm/cloud; its own shell, because a phone has no rail and no mouse.",
   "license": "UNLICENSED",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "npm run typecheck && vite build && vite build -c vite.sw.config.ts",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
+    "typecheck:app": "tsc --noEmit -p tsconfig.app.json",
+    "typecheck:sw": "tsc --noEmit -p tsconfig.sw.json",
+    "typecheck": "npm run typecheck:app && npm run typecheck:sw",
+    "icons": "node ../../scripts/make-mobile-icons.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },

@@ -50,6 +50,7 @@ plan the orchestrator could one day run on its own repo.
 | 24 | Projects and their tickets (a tracker of our own) | 🚧 in progress on `feat/support-projects-and-their-tickets` — **the whole plan is written** (design, build steps, verification, critical files); build step 1 is next |
 | 25 | Cloud service (a hosted counterpart, sharing domain logic and UI) | 🚧 in progress on `feat/cloud-service` — target layout written, `apps/client`+`packages/shared` restructured, verified (found and fixed a broken per-package test run), Azure cost estimated, risks and open assumptions recorded, no-realtime-service/adaptive-polling design written; every package now scaffolded and the service deployed, with `apps/web` rebuilt on the desktop's own shell, board and detail pane (`feat/the-task-manager-web-should-look-like`, v0.82.0) and its layout matched to the desktop's (`feat/match-web-layout-to-desktop-client`, v0.82.5 — shared global CSS, the toolbar's Add button, a drift guard) — a human glance at the two UIs side by side is still owed |
 | 26 | Support all interactions in the web (relay the channel, not the command kind) | ✅ complete on `feat/support-all-interactions-in-the-web` — one `ipc-invoke` kind behind an exhaustive host-only policy, at-least-once delivery with a result-replay ledger, `PolledEventBus` in place of an event feed; gates green and forced, and the whole relay driven headlessly by [`verify-remote-ipc.mjs`](../../apps/client/scripts/verify-remote-ipc.mjs). A human pressing these controls against a real desktop is still owed, as is deploying the server with this schema |
+| 27 | Mobile app for Android (an installable PWA, not a native build) | 🚧 in progress on `feat/mobile-app-for-android` — four framing decisions taken (new `apps/mobile`, PWA not Capacitor/TWA, its own subdomain, one-time human setup precedes reachability); the share/fork boundary decided (new `packages/cloud` absorbs `apps/web`'s sync layer, `@tm/ui` is reused as-is, the shell/navigation/move/detail-route fork, the chain overlay and drag handle drop); nothing built yet |
 
 Phases 4 and 5 are already referenced by name in the docs
 ([`03-how-orchestration-works.md`](../03-how-orchestration-works.md) and the
@@ -6252,6 +6253,278 @@ prefix-guarantee step above. Harmless at runtime (the comparison is exactly what
 but real, and left for this round's own last step — "Verify projects and tickets end to end" —
 to catch and close out along with the rest of the gates, rather than fixed in passing by a step
 scoped to docs and a test file.
+
+---
+
+## Phase 27 — Mobile app for Android
+
+Twelve steps, approved before this phase started. Step 1 is not code — it is the four
+framing decisions the approved plan left for the first session to record, because the
+interactive prompt that would normally have taken them lives in a session nobody was
+watching. A headless step cannot guess and cannot ask twice; it writes the decision down
+instead, with the reasoning, so steps 2–12 build on a record rather than on an assumption
+buried in whichever session happened to make the call first.
+
+### Decision 1: a new `apps/mobile`, not a responsive `apps/web`
+
+`apps/web` already mirrors the desktop's shell, board and detail pane (Phases 25–26) at
+desktop proportions, with a shared `localStorage` namespace and service-worker scope. Making
+it respond to a phone viewport would mean every future desktop-shaped change — a new
+toolbar control, a wider dialog — carries a phone-shaped exception with it forever. A
+separate app pays a one-time cost (its own shell, routing, PWA manifest) in exchange for
+never having to ask "does this also make sense at 390px" for the rest of the project's life.
+Phase 26 already had to draw a share-vs-fork line once, between the desktop and `apps/web`;
+this decision draws the same kind of line one layer down. What mobile actually shares with
+web/desktop is a question for step 2, not something to settle by folding it into `apps/web`
+and finding out by accident which parts break at phone width.
+
+### Decision 2: an installable PWA, not a Capacitor/TWA native build
+
+There is no Android SDK, no JDK, and no keystore anywhere in this repo or on this machine,
+and code signing is already a deferred backlog item, unscheduled. A Capacitor or
+Trusted-Web-Activity build needs a Gradle project, and a Gradle project that nothing here can
+compile, sign, or run would land unproven, the same way an Electron build cannot be verified
+by actually launching it on this machine (that would kill the developer's own running copy —
+verification there has to work headlessly, past the native-module ABI split). A PWA installs
+as a WebAPK with its own icon and launches full-screen without any Android toolchain at all,
+and it is the only form of "Android app" this branch can actually build *and verify*
+headlessly. Play Store distribution — Bubblewrap/TWA, `assetlinks.json`, a keystore secret —
+is noted under *Out of scope* as a follow-up ticket, not designed here.
+
+### Decision 3: its own Azure Static Web App, on its own subdomain
+
+Serving the mobile app from the existing SWA under a `/m/` path was the alternative
+considered. It still needs a new IAM redirect URI regardless of which hosting shape is
+chosen, so that cost is not avoided by sharing — and sharing adds `base: '/m/'` routing,
+SWA route rules to keep it separate from the web app's own routes, and the same shared
+`localStorage` namespace and service-worker scope problem Decision 1 opted out of, this time
+between two *deployed* apps rather than two source trees. A dedicated subdomain (own SWA,
+own DNS record) costs one more one-time Azure resource and buys a clean scope boundary for
+the lifetime of the app.
+
+### Decision 4: one-time human setup is required before it is reachable, and blocks no coding step
+
+Creating the SWA, the DNS record, the `AZURE_STATIC_WEB_APPS_API_TOKEN_MOBILE` secret, and
+registering a `taskmanager-mobile` IAM client (or adding a redirect URI to the existing one)
+at `auth.vipper.network` are all actions on shared infrastructure — exactly the kind of
+action this project's own working agreement holds for a human to take deliberately, not
+something a session should do on its own authority. None of steps 2–9 need it to exist: they
+build the app itself. Step 10 (deploy from CI) writes the job, added to the existing secrets
+model in [`docs/11-ci-cd-pipeline.md`](../11-ci-cd-pipeline.md#secrets), and should condition
+the deploy step on `AZURE_STATIC_WEB_APPS_API_TOKEN_MOBILE` being set so the job stays inert
+rather than failing loudly while the secret does not exist yet — so the job can be written
+and merged before the human setup happens, in either order. Step 11 (critical files) is where
+the runbook for that one-time setup gets written down.
+
+### What this leaves for step 2
+
+Nothing here touches code. `apps/mobile` does not exist yet; no dependency was added; no
+config was written. Step 2 — what is shared and what is forked — is the first step that
+reads `packages/shared`, `packages/protocol` and `packages/ui` against these four decisions
+and decides, file by file, which of them a phone screen can use unchanged.
+
+### Step 2: what is shared and what is forked
+
+The repo already has a rule for this, applied once already at the desktop/`apps/web` line in
+Phase 26: share when a file has no host in it, fork when sharing it would mean threading a
+dozen optional props through to keep two hosts happy. Applying that same rule one layer down,
+between `apps/web` and the new `apps/mobile`, sorts every file in `apps/web/src` and
+`packages/ui` into one of three piles.
+
+**Shared, moved into a new `packages/cloud` (`@tm/cloud`).** Everything under `apps/web/src`
+that talks to the cloud rather than to a screen has no host in it today only by accident — it
+happens to sit in `apps/web` because `apps/web` was the only browser client that existed. Two
+browser clients cannot each own a copy of the same sync layer; the moment `apps/mobile` also
+polls the board and refreshes a token, one of the two copies drifts. This moves: `auth/`,
+`presence.ts`, and out of `board/` — `useCloudBoard`, `cloudBoardStore`, `BoardPoller`,
+`httpTransport`, `eventBus`, `sseEvents`, `polledEvents`, `mediaToken`, `clientId`,
+`targetClient`, `boardSelectors`, `browserFocusSignal`, and `useBoardExtras` — plus the three
+components that render cloud connection state rather than task data, `ClientPicker`,
+`SkewBanner`, `StaleBanner`, and `settings/SettingsScreen.tsx`. Step 3 does the actual
+extraction; this step only decides the boundary.
+
+**Already shared, staying in `@tm/ui` unchanged.** `TaskCard`, `TaskDetail` and its whole
+tree, `chat/*`, `Attention`, `Performance`, `AddTaskDialog`, `GitGraphPane`, and
+`ArchivedCardsDialog` render the same way regardless of host — they take data and callbacks,
+not a layout. The theme (`packages/ui/src/theme.ts`) is shared for the same reason. None of
+these move; mobile imports them from `@tm/ui` exactly as `apps/web` and the desktop already
+do.
+
+**Forked — mobile writes its own.** The shell (a header and a bottom tab bar, not the
+desktop's 84px rail — a phone has no room for a rail and no mouse to hover it), the board's
+navigation (one column at a time with a swipe or tab to move between them, not the grid
+`KanbanColumn` lays out for a wide viewport), the move interaction (a tap-to-move flow — see
+step 6 — has nothing in common with the desktop's drag handlers), and the detail *route*
+(a full screen push, not the 40% side pane `TaskDetail` sits in on desktop — `TaskDetail`
+itself is shared per above, only what wraps it differs). `env.ts` and `vite-env.d.ts` also
+stay forked, per-app, on purpose — Decision 1 in step 1 already ruled out a shared runtime
+config between hosts that build and deploy independently.
+
+**Dropped, per the same rule read in reverse: a control this host cannot act on is dropped
+rather than disabled.** The chain overlay (`ChainOverlay.tsx`, `chainArrows.ts`) draws arrows
+between cards across columns; on a phone showing one column at a time there is nothing for an
+arrow to span, so chain state instead surfaces through the already-shared `TaskChain` inside
+the detail view. The chain-link drag handle needs no forking work at all: `TaskCard.tsx:1247`
+already renders it conditionally on `onLinkStart` being passed, so mobile gets the drop for
+free simply by never passing that prop.
+
+### Step 11: the critical files, walked one by one on `9c8eabd`
+
+The plan named ten files or file groups, across six areas, as the ones this round lives or
+dies on. Every one was re-opened here — none carried forward from the step that last touched
+it — and every gate was run fresh rather than trusted from a step that measured the same
+commit.
+
+| File | What it had to be | On `9c8eabd` |
+| --- | --- | --- |
+| `test/shell-parity.test.ts` | catch a browser/desktop/mobile drift as text, since there is no DOM harness | ⚠️ mostly right, one real hole — see below |
+| `apps/web/src/env.ts` | stay per-app; never move into `@tm/cloud`, since `import.meta.env` is a Vite build-time replacement esbuild cannot emit | ✅ unchanged; `apps/mobile/src/env.ts` mirrors it with its own `taskmanager-mobile` client id |
+| `packages/cloud/src/board/httpTransport.ts`, `useBoardExtras.ts` | the one runtime (not type-only) edge where `@tm/cloud` imports `@tm/ui` — `useTransport` and `buildAttentionIndex` as values | ✅ confirmed; this is exactly what `packages/cloud/tsup.config.ts`'s `external` exists to protect |
+| `packages/ui/tsup.config.ts` | the template `packages/cloud`'s own tsup config copies | ✅ unchanged; `packages/cloud/tsup.config.ts` copies its `entry`/`format`/`dts` shape and externalizes `@tm/ui` on top, with the two-copies-of-`TransportContext` reasoning written down |
+| `packages/ui/src/theme.ts` (`useGlobalStyles`, `:313`) | `'html, body, #root'` sized to `100dvh`, not `100%` | ✅ unchanged, `:316` |
+| `packages/ui/src/board/TaskCard.tsx` | reused as-is; drag props optional | ✅ unchanged; `draggable?`/`onDragStart?`/`onDragEnd?` (`:990`, `:994`–`:995`) default to `false`/absent at `:1030` |
+| `packages/ui/src/board/boardColumns.ts` | column metadata, sorting and counts the mobile chip row and menu read | ✅ unchanged; `ColumnChips.tsx` and `BoardCardRow.tsx` both import `COLUMN_META` from it, `BoardScreen.tsx` (mobile) drives its column view from `visibleColumns`/`sortCards`/`hiddenDoneSummary` |
+| `packages/ui/src/TaskDetail.tsx`, `Performance.tsx` | full-screen reuse; `Performance`'s grid stacks under `599px` | ⚠️ reuse is exact (`TaskScreen.tsx` wraps `TaskDetail` with nothing forked inside it; mobile's Performance destination renders `<Performance />` unmodified) — one stale comment fixed, see below |
+| `.github/workflows/deploy.yml` (filters, `changes` job) | `packages/cloud/**` in both the `web` and `mobile` filters; a `mobile` job that stays inert without its token | ✅ unchanged; `:104` and `:112` both list it, the `mobile` job's own step (not a job `if`) checks `AZURE_STATIC_WEB_APPS_API_TOKEN_MOBILE` |
+| `apps/web/staticwebapp.config.json`, `apps/mobile/staticwebapp.config.json` | the template, and the `webmanifest` exclusion a naive copy would drop | ✅ unchanged; `apps/web`'s has no manifest to exclude and correctly has none, `apps/mobile`'s exclude list already carries `webmanifest,json` |
+
+#### Two real breakages, both the same shape
+
+`test/shell-parity.test.ts` and `TaskDetail.tsx` are named critical for the same reason two
+of `apps/client/scripts/verify-*.mjs` turned out to be broken, and the pattern is worth
+naming once: **step 3 moved `httpTransport.ts`, `polledEvents.ts`, `eventBus.ts`,
+`sseEvents.ts`, `useBoardExtras.ts` and `SettingsScreen.tsx` out of `apps/web/src` and into
+`packages/cloud/src`, and every file that named their OLD location by path — rather than by
+import specifier — went stale silently, because none of them are on the module graph
+`pnpm typecheck` or `pnpm build` walks.** A prose comment and a script that reads a source
+file as text both sit outside that graph the same way.
+
+- **`apps/client/scripts/verify-remote-ipc.mjs` and `verify-remote-sse.mjs` no longer ran at
+  all.** Both bundle `HttpTransport`/`PolledEventBus` (the IPC harness) or
+  `SseEventStream`/`CloudEventBus` (the SSE harness) by resolving a literal path into
+  `apps/web/src/board/*`, which step 3 emptied out from under them. `verify-remote-ipc.mjs`
+  failed immediately — `Rollup failed to resolve import ".../apps/web/src/board/httpTransport"`
+  — the moment it was run for this walk; `verify-remote-sse.mjs` would have failed the same
+  way. Neither is wired into `ci.yml` or `RELEASE.md`'s gates (both are ad hoc, by-hand
+  verification, same as `verify-attachments.mjs` and the rest), which is exactly why nothing
+  red ever surfaced: eight steps of this branch ran green while both harnesses were dead.
+  Fixed by pointing both at `packages/cloud/src` instead, and dropping the `@web` Vite alias
+  neither script's bundle actually used any more (confirmed by grepping every file the two
+  entry points import for it — nothing does). Re-run clean: **16 remote-IPC checks, 36
+  push-channel checks**, both exit 0.
+- **`test/shell-parity.test.ts`'s global-CSS guard silently lost `packages/cloud/src`.**
+  `HOST_TREES` names every tree the `scrollbar`/`color-scheme` redeclaration check walks, and
+  before step 3 `apps/web/src` covered `apps/web/src/settings/SettingsScreen.tsx` inside it.
+  After the move that file sits in `packages/cloud/src/settings/`, which `HOST_TREES` never
+  named — so a global rule declared there from step 3 onward would have compiled, rendered,
+  and gone unflagged by every assertion in the file. Nothing had actually declared one (the
+  guard passes clean before and after), which is what makes this a coverage hole rather than
+  a caught bug — the failure mode is the one the file's own header names for
+  `iamAuth.guard.ts` in an earlier round: a hole nothing asserts is indistinguishable from an
+  omission until something is written into it. `packages/cloud/src` now joins `HOST_TREES`,
+  with the same "covered from day one" reasoning the header already gives for
+  `apps/mobile/src`. `packages/ui/src` deliberately still does not join it — that split
+  predates this phase and is not this round's call to revisit.
+- **`packages/ui/src/TaskDetail.tsx`'s `readOnlyNotice` docstring** named
+  `apps/web/src/board/httpTransport.ts` and, more substantively, still described the OLD
+  three-tier transport ("relays only a status change and a new card") that `httpTransport.ts`
+  itself says stopped being true before this phase — the stub tier is gone, and what is
+  refused now is only the host-only tier (file pickers, credentials, window buttons), which
+  is what `RELAY_NOTICE`'s actual on-screen text already says. Only the path is this phase's
+  doing; the substance predates it and is fixed here anyway since it sits inside a file this
+  step is chartered to walk — left half-corrected would have been worse than left alone.
+
+Two more stale path references to the same step-3 move were found by the same sweep —
+`packages/shared/src/ipcEventFanout.ts:19` and `ipcRelay.ts:58,63` both still name
+`apps/web/src/board/…` and `apps/web/src/settings/…` in prose. Neither file is on this
+step's named list, so they are recorded here rather than edited — a critical-files walk that
+starts fixing files nobody asked it to walk has exceeded itself the same way one that changes
+behaviour has. Whoever picks up `packages/shared` next should know they are there.
+
+#### The gates, forced, on `9c8eabd`
+
+| Gate | Exit | Result |
+| --- | --- | --- |
+| `pnpm format:check` | 1 → **0** | two files failed before `--write` (below); clean after |
+| `pnpm typecheck --force` | **0** | 12 successful, 12 total — 0 cached, ~33s |
+| `pnpm build --force` | **0** | 8 successful, 8 total — 0 cached, ~40s |
+| `pnpm test` | **0** | 180 files passed, 1 skipped (181); 3005 passed, 11 skipped (3016) |
+| `node apps/client/scripts/verify-remote-ipc.mjs` | 1 → **0** | broken before the fix above; **16 checks** after |
+| `node apps/client/scripts/verify-remote-sse.mjs` | (would have been 1) → **0** | same fix; **36 checks** |
+
+`pnpm format:check` failed on `apps/mobile/src/board/BoardCardRow.tsx` and
+`GitGraphSheet.tsx` — both an unwrapped `import { … } from '@fluentui/react-components'` and
+one unwrapped JSX attribute list over Prettier's line width, from step 6 and step 7. Neither
+is covered by `pnpm format:check`'s own glob for `test/*.ts` or `apps/client/scripts/*.mjs`,
+so those two were checked with `pnpm exec prettier --check` directly instead and came back
+clean. Fixed with `--write`; the diff is whitespace only. Every gate above was run a second
+time after all of this step's edits, with identical counts to what is written here — a
+measurement, not an assumption.
+
+#### The merge this branch is heading into
+
+`development` sits at `0079851`, exactly the merge-base of this branch — it has not moved
+since `feat/mobile-app-for-android` forked from it, so this is a plain fast-forward with
+**zero commits to reconcile and zero conflicts possible**, not merely zero found. A
+`git merge-tree` against it produces no output for the same reason. `apps/client/package.json`
+reads `0.86.0` on both sides, so there is no version bump for a merge to swallow either — the
+normal case now that CI cuts releases from `development` rather than from a bump carried on
+this branch.
+
+### Step 12: verification, re-run one commit later on `9db1f5b`
+
+Step 11 landed its own fixes and measured the gates on the commit it produced; this step
+re-ran every one of them fresh on the tip that commit became (`9db1f5b`), plus the two
+checks step 11's numbers didn't carry forward, to confirm nothing regressed between
+"the step that fixed it" and "the step chartered to verify it."
+
+| Gate | Exit | Result |
+| --- | --- | --- |
+| `pnpm format:check` | **0** | clean — no drift since step 11's `--write` |
+| `pnpm exec turbo run typecheck --force` | **0** | 12 successful, 12 total — 0 cached, ~34s |
+| `pnpm exec turbo run build --force` | **0** | 8 successful, 8 total — 0 cached, ~44s |
+| `pnpm test` | **0** | 180 files passed, 1 skipped (181); 3005 passed, 11 skipped (3016) — identical to step 11's count |
+| `node scripts/verify-mobile-build.mjs` | **0** | all 21 checks pass — manifest, both icons, `sw.js`, and its registration in `index.html` |
+| `node apps/client/scripts/verify-remote-ipc.mjs` | **0** | 16 checks, still green after step 11's re-point |
+| `node apps/client/scripts/verify-remote-sse.mjs` | **0** | 36 checks, still green after step 11's re-point |
+
+`pnpm exec vitest list --filesOnly` gives the per-package test sum the root glob actually
+collects, rather than trusting the workspace layout: 181 files split
+`apps/client` 83, `packages/shared` 27, `apps/server` 27, `packages/ui` 23, `packages/cloud`
+13, `test` 4, `apps/mobile` 2, `scripts` 1, `packages/protocol` 1 — summing to the 181 the
+run itself reports. The two mobile-only files are exactly what the "no component tests"
+constraint predicts: `apps/mobile/src/nav/navStack.test.ts` and
+`apps/mobile/src/sw/shouldHandle.test.ts`, both pure modules. `packages/cloud`'s 13 are the
+board selectors, transports and stores step 3 moved out of `apps/web/src` — confirming
+step 11's `HOST_TREES` fix didn't just silence the shell-parity guard but that the moved
+modules are still exercised at all.
+
+No new test was written for this step: the constraints section ruled out anything a red-first
+assertion could check beyond what steps 1-11 already added, and the plan's own gate list
+(`pnpm format:check && pnpm typecheck && pnpm test && pnpm build`, plus
+`verify-mobile-build.mjs` for the parts a `noEmit` typecheck can't see) is exactly what ran
+above. Every number matches step 11's independently-measured ones on the prior commit, which
+is the outcome a verification step re-running someone else's fix should produce — agreement,
+not new findings.
+
+#### Owed to a human
+
+Nothing here can hold an Android phone. Specifically unverified by any command in this
+branch:
+
+- Installing the PWA from Chrome's "Add to Home screen" / install prompt on a real device.
+- Pressing the hardware/gesture Back button and confirming the nav-stack (step 8) pops the
+  right screen instead of exiting the app.
+- Tapping a card to move it (step 6) and watching the change land on the desktop board, and
+  the reverse — moving it on desktop and watching the phone update.
+- Opening a task full-screen (step 7) and confirming the layout, not just the route, reads
+  right on a phone-sized screen — `verify-mobile-build.mjs` and `shell-parity.test.ts` both
+  check structure and source text, neither renders a pixel.
+- That the CI deploy (step 10) actually reaches an installable URL — `deploy.yml`'s `mobile`
+  job existing and staying inert without its token is confirmed statically; a live deploy
+  needs `AZURE_STATIC_WEB_APPS_API_TOKEN_MOBILE` to be set and a run to complete.
+
+
 
 ---
 

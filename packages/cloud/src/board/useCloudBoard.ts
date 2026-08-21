@@ -10,7 +10,7 @@ import type { CadenceDirective } from '@tm/protocol/cadence';
 import type { ClientPresence } from '@tm/protocol/wire';
 import type { ManualStatus } from '@tm/shared/model';
 import type { CloudAuth } from '../auth/cloudAuth';
-import type { WebConfig } from '../env';
+import type { WebConfig } from '../config';
 import { createPresenceFocusSignal, PresenceHeartbeat } from '../presence';
 import { BoardPoller } from './BoardPoller';
 import { createBrowserFocusSignal } from './browserFocusSignal';

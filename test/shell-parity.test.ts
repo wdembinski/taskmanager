@@ -56,6 +56,7 @@ const WEB_BOARD = 'apps/web/src/board/BoardScreen.tsx';
 const DESKTOP_BOARD = 'apps/client/src/renderer/src/MyTasks.tsx';
 const WEB_MAIN = 'apps/web/src/main.tsx';
 const DESKTOP_MAIN = 'apps/client/src/renderer/src/main.tsx';
+const MOBILE_APP = 'apps/mobile/src/App.tsx';
 
 function read(path: string): string {
   return readFileSync(join(repoRoot, ...path.split('/')), 'utf8');
@@ -190,8 +191,30 @@ function topLevelKeys(literal: string): string[] {
   return keys;
 }
 
-/** Where each host's own source lives — `dist` and `node_modules` are nobody's source. */
-const HOST_TREES = ['apps/web/src', 'apps/client/src/renderer/src'];
+/**
+ * Where each host's own source lives — `dist` and `node_modules` are nobody's source.
+ *
+ * `apps/mobile/src` joined this list the same commit that created it (Phase 27 step 4), on
+ * purpose: the global-CSS guard below is only worth having if it covers a host from its
+ * first commit, rather than retroactively blessing whatever landed there before anyone
+ * thought to add it.
+ *
+ * `packages/cloud/src` joined this list here (Phase 27 step 11), to UNDO a coverage hole
+ * step 3 opened rather than to add new ground: `SettingsScreen.tsx` moved out of
+ * `apps/web/src/settings/` — inside the old `apps/web/src` entry — into
+ * `packages/cloud/src/settings/`, which this list did not yet name. Between step 3 and here
+ * a scrollbar or colour-scheme rule declared in that file would have compiled, rendered, and
+ * gone unnoticed by every assertion below. `packages/cloud` is a shared package like
+ * `packages/ui`, not a per-app host — but unlike `packages/ui`, it renders a whole screen
+ * rather than components a host assembles, which is exactly the shape of file the global-CSS
+ * guard exists to catch.
+ */
+const HOST_TREES = [
+  'apps/web/src',
+  'apps/client/src/renderer/src',
+  'apps/mobile/src',
+  'packages/cloud/src',
+];
 
 /**
  * Every file under a tree whose name `matches`, recursively and repo-relative.
@@ -250,6 +273,53 @@ describe('the shell both hosts render through', () => {
   }
 });
 
+describe('the destinations both the browser and the Android client expose', () => {
+  /**
+   * The ticket's whole claim for `apps/mobile` (docs/plan/README.md, Phase 27) is "same
+   * features" — and a nav rail is the one place that claim can be read off as a literal list.
+   * `apps/web/src/App.tsx` and `apps/mobile/src/App.tsx` each declare a `NAV`/destinations
+   * array of `{ id: '…', label: '…', icon: … }` objects; this reads the `id`s off both, in
+   * the order they're written, so a destination added, dropped, or reordered on one side and
+   * not the other goes red here instead of waiting to be noticed by eye on a phone.
+   *
+   * Not compared against the desktop's own `apps/client/src/renderer/src/App.tsx`: that one
+   * already has no counterpart-parity guard today (nothing here enforces `apps/web`'s NAV
+   * against the desktop's either), and giving mobile a stricter guard than web already has
+   * would be a new rule invented in this step rather than the one asked for — mobile mirrors
+   * web's ids, which is what "modelled on apps/web" means for this file.
+   */
+  /**
+   * Scoped to the `NAV` array literal itself, not every `{ id: '…' }` in the file — `NavRail`
+   * also takes an `accountItems` prop (`[{ id: 'signout', … }]`) for its Account dropdown,
+   * and a whole-file scan would count that entry as a sixth destination that was never one.
+   */
+  function navIds(source: string): string[] {
+    const nav = source.match(/const NAV: readonly NavRailItem\[\] = \[([\s\S]*?)\n\];/);
+    if (!nav) return [];
+    const ids: string[] = [];
+    for (const match of nav[1].matchAll(/\{\s*id:\s*'([a-z]+)'/g)) ids.push(match[1]);
+    return ids;
+  }
+
+  it('list the same destination ids, in the same order', () => {
+    const web = navIds(read(WEB_APP));
+    const mobile = navIds(read(MOBILE_APP));
+
+    // A guard that found nothing to compare passes for the wrong reason — same discipline
+    // as the global-CSS block's own `toBeGreaterThan` below. Six, since Projects joined the
+    // rail post-merge — a count asserted so a destination silently dropped from BOTH sides
+    // at once (which `toEqual` below cannot see) still goes red here.
+    expect(web.length, `found no NAV ids in ${WEB_APP} — has its destinations moved?`).toBe(6);
+
+    expect(
+      mobile,
+      `${MOBILE_APP}'s destination ids (${mobile.join(', ')}) must match ${WEB_APP}'s ` +
+        `(${web.join(', ')}), in the same order — the two hosts claim the same ` +
+        'destinations, and a mismatch here is that claim going false silently.',
+    ).toEqual(web);
+  });
+});
+
 describe('the board frame both hosts render through', () => {
   /**
    * The four rules that ARE the board's frame — the flex row, the board half, the scrolling
@@ -305,8 +375,12 @@ describe("the app's global CSS rules", () => {
     { pattern: /\bcolor-scheme\s*:|\bcolorScheme\s*:/, what: 'the dark colour-scheme' },
   ];
 
-  /** The two entry documents, which live above those trees and can carry a <style> block. */
-  const HOST_DOCUMENTS = ['apps/web/index.html', 'apps/client/src/renderer/index.html'];
+  /** The entry documents, which live above those trees and can carry a <style> block. */
+  const HOST_DOCUMENTS = [
+    'apps/web/index.html',
+    'apps/client/src/renderer/index.html',
+    'apps/mobile/index.html',
+  ];
   const STYLE_BEARING = /\.(ts|tsx|css|html)$/;
 
   it('are declared in packages/ui and nowhere else', () => {
@@ -427,6 +501,85 @@ describe('the theme both hosts mount', () => {
   }
 });
 
+describe('the shared screens fit a phone', () => {
+  /**
+   * Phase 27 step 5. There is no DOM harness in this repo (see the file header), so these
+   * read the source as text, the same way the theme block above reads for
+   * `scaleTheme(appDarkTheme,` — a CSS rule nobody asserts is a rule that silently reverts,
+   * and every one of these fixes is exactly the kind of one-line rule a later edit could
+   * undo without anything else here noticing.
+   */
+  const THEME = 'packages/ui/src/theme.ts';
+  const PERFORMANCE = 'packages/ui/src/Performance.tsx';
+  const ADD_TASK_DIALOG = 'packages/ui/src/AddTaskDialog.tsx';
+  const ARCHIVED_CARDS_DIALOG = 'packages/ui/src/board/ArchivedCardsDialog.tsx';
+  const SETTINGS_SCREEN = 'packages/cloud/src/settings/SettingsScreen.tsx';
+  const PROJECTS = 'packages/ui/src/projects/Projects.tsx';
+
+  it('sizes the document to the visible viewport, not the large one', () => {
+    const source = read(THEME);
+    expect(
+      source,
+      `${THEME}'s 'html, body, #root' rule must set height: '100dvh', not '100%'. Before a ` +
+        "phone install, '100%' resolves against the LARGE viewport (address bar excluded) " +
+        'while the visible area is the SMALL one — body ends up taller than the screen, and ' +
+        "since it does not scroll, MobileShell's bottom tab bar sits under the address bar " +
+        'and unreachable.',
+    ).toMatch(/'html, body, #root':\s*\{\s*margin:\s*0,\s*padding:\s*0,\s*height:\s*'100dvh'/);
+  });
+
+  it("stacks Performance's rail below the panel at phone width", () => {
+    const source = read(PERFORMANCE);
+    expect(
+      source,
+      `${PERFORMANCE}'s .main grid (gridTemplateColumns: 'minmax(220px, 1fr) minmax(0, 3fr)') ` +
+        'leaves the panel beside the rail ~130px wide at a 360px phone. It must collapse to a ' +
+        'single column under a max-width media query.',
+    ).toMatch(/'@media \(max-width: 599px\)':\s*\{\s*gridTemplateColumns:\s*'1fr',?\s*\}/);
+  });
+
+  it('caps AddTaskDialog to the viewport width on a phone', () => {
+    const source = read(ADD_TASK_DIALOG);
+    expect(
+      source,
+      `${ADD_TASK_DIALOG}'s dialog body must set minWidth: 'min(440px, calc(100vw - 32px))' — ` +
+        'a bare 440px overflows a 360px phone, and the calc side is a no-op once the viewport ' +
+        'is wide enough to afford the fixed one.',
+    ).toMatch(/minWidth:\s*'min\(440px, calc\(100vw - 32px\)\)'/);
+  });
+
+  it('caps ArchivedCardsDialog to the viewport width on a phone', () => {
+    const source = read(ARCHIVED_CARDS_DIALOG);
+    expect(
+      source,
+      `${ARCHIVED_CARDS_DIALOG}'s dialog body must set minWidth: 'min(520px, calc(100vw - ` +
+        "32px))' — a bare 520px overflows a 360px phone even worse than AddTaskDialog's own " +
+        '440px does.',
+    ).toMatch(/minWidth:\s*'min\(520px, calc\(100vw - 32px\)\)'/);
+  });
+
+  it("stacks SettingsScreen's two-column split under a breakpoint", () => {
+    const source = read(SETTINGS_SCREEN);
+    expect(
+      source,
+      `${SETTINGS_SCREEN}'s .row must switch to flexDirection: 'column' under a max-width ` +
+        'media query — its 160px nav beside a pane that wants up to 1100px has nowhere to go ' +
+        'on a phone.',
+    ).toMatch(/'@media \(max-width: 599px\)':\s*\{\s*flexDirection:\s*'column',?\s*\}/);
+  });
+
+  it("stacks Projects' admin rail above the backlog at phone width", () => {
+    // Projects joined the mobile rail after this merge (development's ticket-workspace
+    // feature postdates step 5's own sweep, so it never got a phone-fit pass until now).
+    const source = read(PROJECTS);
+    expect(
+      source,
+      `${PROJECTS}'s .root must switch to flexDirection: 'column' under a max-width media ` +
+        "query — its 320px admin rail beside a backlog table has nowhere to go on a phone.",
+    ).toMatch(/'@media \(max-width: 599px\)':\s*\{\s*flexDirection:\s*'column',?\s*\}/);
+  });
+});
+
 describe('agent projects: the web reads them and does not configure them', () => {
   /**
    * Agent projects are created and edited on the DESKTOP, and that is a decision rather than
@@ -471,12 +624,17 @@ describe('agent projects: the web reads them and does not configure them', () =>
    * The block asserts the decision, not the reasoning: if the decision is ever reversed, the
    * fix is to change it here and in the plan doc, not to delete the assertion.
    */
-  const WEB_TREE = 'apps/web/src';
+  // A list, not a single tree: the cloud sync layer moved out of apps/web/src into
+  // packages/cloud/src (Phase 27 step 3), so a breach introduced there would sail past a
+  // scan that only ever walked apps/web/src again.
+  const WEB_TREES = ['apps/web/src', 'packages/cloud/src'];
   const SHARED_UI_TREE = 'packages/ui/src';
   const DESKTOP_PANE = 'apps/client/src/renderer/src/projects/Projects.tsx';
+  // Both moved with the rest of the cloud sync layer (Phase 27 step 3) — SettingsScreen and
+  // its ProjectsSection tab live in packages/cloud/src/settings now, not apps/web/src/settings.
   /** The web's half: a list, no form. Named here because three assertions below refer to it. */
-  const WEB_VIEW = 'apps/web/src/settings/ProjectsSection.tsx';
-  const WEB_SETTINGS = 'apps/web/src/settings/SettingsScreen.tsx';
+  const WEB_VIEW = 'packages/cloud/src/settings/ProjectsSection.tsx';
+  const WEB_SETTINGS = 'packages/cloud/src/settings/SettingsScreen.tsx';
 
   /**
    * A CALL, not a mention: both files below discuss these channels in prose, correctly.
@@ -491,10 +649,12 @@ describe('agent projects: the web reads them and does not configure them', () =>
   it('has no browser code that creates, edits or removes one', () => {
     // Tests are excluded because the web's own suite calls `project:pickDirectory` on purpose
     // (`httpTransport.test.ts`) to assert the transport REFUSES it — the opposite of a breach.
-    const sources = filesUnder(WEB_TREE, /\.tsx?$/).filter((path) => !/\.test\.tsx?$/.test(path));
+    const sources = WEB_TREES.flatMap((tree) => filesUnder(tree, /\.tsx?$/)).filter(
+      (path) => !/\.test\.tsx?$/.test(path),
+    );
     expect(
       sources.length,
-      `found no non-test sources under ${WEB_TREE} — has the tree moved?`,
+      `found no non-test sources under ${WEB_TREES.join(', ')} — has a tree moved?`,
     ).toBeGreaterThan(10);
 
     const writes = sources.filter((path) => PROJECT_WRITE.test(read(path)));
@@ -521,7 +681,7 @@ describe('agent projects: the web reads them and does not configure them', () =>
     // would trip on its own fixture.
     const TICKET_WORKSPACE = 'packages/ui/src/projects/Projects.tsx';
     const copies = [
-      ...filesUnder(WEB_TREE, pattern),
+      ...WEB_TREES.flatMap((tree) => filesUnder(tree, pattern)),
       ...filesUnder(SHARED_UI_TREE, pattern),
     ].filter((p) => p !== TICKET_WORKSPACE);
 
@@ -559,7 +719,7 @@ describe('agent projects: the web reads them and does not configure them', () =>
     // the pane that does it should go red here rather than be discovered on the screen — the
     // same argument that put the write guard above in this file.
     expect(
-      filesUnder('apps/web/src/settings', /^ProjectsSection\.tsx?$/),
+      filesUnder('packages/cloud/src/settings', /^ProjectsSection\.tsx?$/),
       `${WEB_VIEW} is the browser's read-only agent-projects view and is part of this ` +
         'decision, not a convenience. Viewing what is configured is in scope (plan doc, ' +
         '"What is deliberately out of scope"); removing the view narrows the web back without ' +

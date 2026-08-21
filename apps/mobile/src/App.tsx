@@ -1,0 +1,223 @@
+/**
+ * The Android client's shell.
+ *
+ * Same sign-in and cloud-sync plumbing as `apps/web`'s own `App.tsx` — `CloudAuth`,
+ * `useCloudAuth`, `useCloudBoard`, the outage/skew banners — all unchanged, all from
+ * `@tm/cloud` (docs/plan/README.md, Phase 27 step 2: the sync layer has no host in it).
+ * What differs is the frame it's drawn inside: `MobileShell`, not `AppShell`/`NavRail`/
+ * `StatusBar` — see that file's own header for why a phone gets its own.
+ *
+ * The nav carries the same destinations, in the same order, as the desktop's and
+ * `apps/web`'s own (`apps/client/src/renderer/src/App.tsx`, `apps/web/src/App.tsx`) — a
+ * structural fact `test/shell-parity.test.ts` now asserts rather than leaves to eyeballing.
+ * Projects joined that set post-merge (it is a native ticket project — no folder, no native
+ * picker — so, like on the web, it carries no `unavailable` here either) and renders the same
+ * shared `<Projects />` `@tm/ui` component unmodified, the same way Performance and Attention
+ * do. Scratch run stays off for the same reason it's off on the web: it drives a live
+ * `session:start`, host-only by policy (`@tm/shared/ipcRelay`), and a phone is not a host
+ * any more than a browser tab is.
+ *
+ * The tab itself is no longer a plain `useState`: it is the `screen`-typed `tab` frame at the
+ * bottom of `useBackStack`'s nav stack (`nav/navStack.ts`), so switching tabs is one more thing
+ * Android's Back key can undo — see that file's header for why the whole stack, not just this
+ * tab, is the shared source of truth for what a phone screen is currently showing.
+ */
+import { useMemo } from 'react';
+import { makeStyles } from '@fluentui/react-components';
+import {
+  AlertRegular,
+  DataTrendingRegular,
+  FolderRegular,
+  PlayRegular,
+  SettingsRegular,
+  TaskListSquareLtrRegular,
+} from '@fluentui/react-icons';
+import { Attention } from '@tm/ui/Attention';
+import { Performance } from '@tm/ui/Performance';
+import { Projects } from '@tm/ui/projects/Projects';
+import type { NavRailItem } from '@tm/ui/shell/NavRail';
+import { TransportProvider } from '@tm/ui/transport';
+import { CloudAuth } from '@tm/cloud/auth/cloudAuth';
+import { SignInScreen } from '@tm/cloud/auth/SignInScreen';
+import { useCloudAuth } from '@tm/cloud/auth/useCloudAuth';
+import { SettingsScreen } from '@tm/cloud/settings/SettingsScreen';
+import { ClientPicker } from '@tm/cloud/board/ClientPicker';
+import { SkewBanner } from '@tm/cloud/board/SkewBanner';
+import { StaleBanner } from '@tm/cloud/board/StaleBanner';
+import { versionSkew } from '@tm/cloud/board/targetClient';
+import { useCloudBoard } from '@tm/cloud/board/useCloudBoard';
+import { BoardScreen } from './board/BoardScreen';
+import { MobileShell } from './shell/MobileShell';
+import { loadMobileConfig } from './env';
+import { topOverlay, topScreen, type Screen } from './nav/navStack';
+import { useBackStack } from './nav/useBackStack';
+
+const useStyles = makeStyles({
+  linkButton: {
+    background: 'none',
+    border: 'none',
+    padding: 0,
+    font: 'inherit',
+    color: 'inherit',
+    cursor: 'pointer',
+    textDecoration: 'underline',
+  },
+});
+
+/** Why a tile that isn't here is off. Appended to its tooltip — same string the web uses. */
+const DESKTOP_ONLY = 'desktop only';
+
+/**
+ * The desktop's rail, in the desktop's order — kept identical to `apps/web/src/App.tsx`'s
+ * own `NAV` on purpose. `test/shell-parity.test.ts` reads both arrays and fails the moment
+ * an id is added, dropped, or reordered on one side and not the other.
+ */
+const NAV: readonly NavRailItem[] = [
+  { id: 'mytasks', label: 'My Tasks', icon: <TaskListSquareLtrRegular /> },
+  { id: 'projects', label: 'Projects', icon: <FolderRegular /> },
+  { id: 'performance', label: 'Performance', icon: <DataTrendingRegular /> },
+  { id: 'attention', label: 'Attention', icon: <AlertRegular /> },
+  { id: 'settings', label: 'Settings', icon: <SettingsRegular /> },
+  { id: 'scratch', label: 'Scratch run', icon: <PlayRegular />, unavailable: DESKTOP_ONLY },
+];
+
+const SCREEN_TITLE: Record<Screen, string> = {
+  mytasks: 'My Tasks',
+  projects: 'Projects',
+  performance: 'Performance',
+  attention: 'Attention',
+  settings: 'Settings',
+};
+
+export function App(): JSX.Element {
+  const config = useMemo(loadMobileConfig, []);
+  const auth = useMemo(
+    () =>
+      new CloudAuth({
+        config: {
+          issuer: config.iamIssuer,
+          clientId: config.iamClientId,
+          redirectUri: `${window.location.origin}/callback`,
+        },
+      }),
+    [config],
+  );
+  const { signedIn, error, signIn, signOut } = useCloudAuth(auth);
+
+  return (
+    <AuthedApp
+      auth={auth}
+      config={config}
+      signedIn={signedIn}
+      error={error}
+      signIn={signIn}
+      signOut={signOut}
+    />
+  );
+}
+
+function AuthedApp({
+  auth,
+  config,
+  signedIn,
+  error,
+  signIn,
+  signOut,
+}: {
+  auth: CloudAuth;
+  config: ReturnType<typeof loadMobileConfig>;
+  signedIn: boolean | null;
+  error: string | null;
+  signIn: () => void;
+  signOut: () => void;
+}): JSX.Element {
+  // Same call as apps/web's own: starting the poll loop before sign-in would spend the
+  // whole backoff curve failing, and a shell around a sign-in prompt is dead weight.
+  if (signedIn !== true) {
+    return <SignInScreen loading={signedIn === null} error={error} onSignIn={signIn} />;
+  }
+  return <SignedInApp auth={auth} config={config} onSignOut={signOut} />;
+}
+
+function SignedInApp({
+  auth,
+  config,
+  onSignOut,
+}: {
+  auth: CloudAuth;
+  config: ReturnType<typeof loadMobileConfig>;
+  onSignOut: () => void;
+}): JSX.Element {
+  const styles = useStyles();
+  const board = useCloudBoard(auth, config);
+  const nav = useBackStack({ type: 'tab', screen: 'mytasks' });
+  const screen = topScreen(nav.stack);
+  const overlay = topOverlay(nav.stack);
+
+  const online = board.state.clients.length > 0;
+  const skew = versionSkew(board.targetClient);
+
+  return (
+    <TransportProvider transport={board.transport}>
+      <MobileShell
+        title={SCREEN_TITLE[screen]}
+        online={online}
+        status={
+          online && board.targetClient ? (
+            <ClientPicker
+              clients={board.state.clients}
+              selected={board.targetClient}
+              onSelect={board.selectTargetClient}
+              className={styles.linkButton}
+            />
+          ) : board.targetClientId !== null ? (
+            'Offline — queued'
+          ) : (
+            'Never synced'
+          )
+        }
+        onSignOut={onSignOut}
+        banners={
+          !online ? (
+            <StaleBanner everSeenClient={board.targetClientId !== null} />
+          ) : skew && board.targetClient ? (
+            <SkewBanner skew={skew} client={board.targetClient} />
+          ) : null
+        }
+        nav={NAV}
+        selected={screen}
+        onSelect={(id) => {
+          const next = id as Screen;
+          if (next !== screen) nav.push({ type: 'tab', screen: next });
+        }}
+      >
+        {/* Same unmount-on-leave discipline as apps/web's App.tsx: a screen not being
+            looked at should not keep polling. */}
+        {screen === 'mytasks' && (
+          <BoardScreen
+            state={board.state}
+            everSeenClient={board.targetClientId !== null}
+            onSetStatus={(taskId, status) => void board.setStatus(taskId, status)}
+            onStatusNoted={board.noteStatus}
+            overlay={overlay}
+            onOpenTask={(taskId) => nav.push({ type: 'task', taskId })}
+            onOpenAddTask={() => nav.push({ type: 'addTask' })}
+            onOpenGraph={() => nav.push({ type: 'graph' })}
+            onOpenArchived={() => nav.push({ type: 'archived', openedAt: Date.now() })}
+            onBack={nav.back}
+          />
+        )}
+        {screen === 'projects' && <Projects />}
+        {screen === 'performance' && <Performance />}
+        {screen === 'attention' && <Attention />}
+        {screen === 'settings' && (
+          <SettingsScreen
+            projects={board.state.projects}
+            apiBase={config.cloudApiBase}
+            getAccessToken={() => auth.getAccessToken()}
+          />
+        )}
+      </MobileShell>
+    </TransportProvider>
+  );
+}

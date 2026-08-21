@@ -33,8 +33,26 @@ import type { ProjectFormRepoCapability } from './ProjectForm';
 import { TimelinePane } from './TimelinePane';
 
 const useStyles = makeStyles({
-  root: { display: 'flex', gap: '20px', minHeight: 0, height: '100%' },
-  admin: { flex: '0 0 320px', minWidth: 0, overflowY: 'auto' },
+  root: {
+    display: 'flex',
+    gap: '20px',
+    minHeight: 0,
+    height: '100%',
+    // A phone has no room for a 320px admin rail beside a backlog table — stack instead,
+    // admin on top, same treatment as SettingsScreen's own `.row`.
+    '@media (max-width: 599px)': {
+      flexDirection: 'column',
+    },
+  },
+  admin: {
+    flex: '0 0 320px',
+    minWidth: 0,
+    overflowY: 'auto',
+    '@media (max-width: 599px)': {
+      flex: '0 0 auto',
+      maxHeight: '40vh',
+    },
+  },
   backlog: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '10px' },
   viewSwitch: { display: 'flex', gap: '4px' },
 });

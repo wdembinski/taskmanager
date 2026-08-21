@@ -87,6 +87,11 @@ const useStyles = makeStyles({
     gridTemplateColumns: 'minmax(220px, 1fr) minmax(0, 3fr)',
     gap: '16px',
     alignItems: 'start',
+    // The rail's own 220px minimum already overflows a phone: at 360px it leaves the
+    // panel beside it ~130px. Stack instead of squeezing a column that can't shrink.
+    '@media (max-width: 599px)': {
+      gridTemplateColumns: '1fr',
+    },
   },
   rail: { display: 'flex', flexDirection: 'column', gap: '8px' },
   panel: { display: 'flex', flexDirection: 'column', gap: '12px', minWidth: 0 },

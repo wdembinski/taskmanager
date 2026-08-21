@@ -19,10 +19,78 @@ setting the GitHub secrets. **Read that first; none of what follows works until 
 | Changed                                                             | What happens                                            |
 | ------------------------------------------------------------------- | ------------------------------------------------------- |
 | `apps/server`, `packages/shared`, `packages/protocol`, the lockfile | image → GHCR → **migrations** → Container App repointed |
-| `apps/web`, `packages/ui`, and the same shared packages             | Vite build → uploaded to Static Web Apps                |
-| `apps/client` only                                                  | **nothing** — the desktop app is never deployed from CI |
+| `apps/web`, `packages/ui`, `packages/cloud`, and the same shared packages | Vite build → uploaded to Static Web Apps |
+| `apps/mobile`, `packages/ui`, `packages/cloud`, and the same shared packages | Vite build → uploaded to its OWN Static Web App |
+| `apps/client` only                            | **nothing** — the desktop app is never deployed from CI          |
 
-Migrations run _before_ the app is repointed, as an Azure Container Apps job executing the
+## Adding apps/mobile's Static Web App (one-time)
+
+`apps/mobile` deploys to its own Azure Static Web App, on its own subdomain, rather than
+sharing `taskmanager-web` under a path — [`docs/plan/README.md` Phase 27, Decision
+3](plan/README.md) has the reasoning: a shared SWA would need `base: '/m/'` routing, its own
+route rules, and would still leave two deployed apps sharing one `localStorage` namespace and
+service-worker scope, which is exactly what the app split (Decision 1) opted out of one layer
+up. A dedicated SWA costs one more one-time Azure resource in exchange for never having that
+problem.
+
+None of steps 2–9 of that phase needed this to exist — they built the app itself. The `mobile`
+job in `deploy.yml` was written and merged ahead of this setup on purpose (Decision 4): its
+deploy step checks `AZURE_STATIC_WEB_APPS_API_TOKEN_MOBILE` itself and skips with a
+`::warning::` rather than failing the workflow while the secret is unset, so a push touching
+`apps/mobile` was never blocked on a human doing the following, and can keep not being blocked
+on it until this section's steps are done:
+
+1. **Create the Static Web App**, alongside `taskmanager-web` in the same resource group —
+   through the `infrastructure` repo's Terraform if it has grown a module for it by the time
+   you read this, otherwise directly:
+
+   ```bash
+   az staticwebapp create -n taskmanager-mobile -g taskmanager \
+     --sku Free --location "West Europe"
+   ```
+
+2. **Add the DNS record.** Pick a hostname consistent with the existing pair
+   (`tasks.vipper.network`, `tasks-api.vipper.network`) — `tasks-m.vipper.network` unless a
+   later decision changes it — and follow the same CNAME + custom-domain-validation dance
+   `docs/10` phase 3/6 describes for `tasks.vipper.network`, in the `vipper-network-dns`
+   resource group:
+
+   ```bash
+   az staticwebapp hostname set -n taskmanager-mobile -g taskmanager \
+     --hostname tasks-m.vipper.network
+   ```
+
+   Whatever hostname is chosen, it must also become `apps/mobile`'s deployed origin — nothing
+   in `deploy.yml` needs editing for this (the build has no `VITE_*` var for its own origin,
+   only for the API and IAM issuer it calls), but the redirect URI in step 4 below must match
+   it exactly.
+
+3. **Set the GitHub secret**, the same way `docs/10` phase 6 sets
+   `AZURE_STATIC_WEB_APPS_API_TOKEN`:
+
+   ```bash
+   gh secret set AZURE_STATIC_WEB_APPS_API_TOKEN_MOBILE --body "$(az staticwebapp secrets list \
+     -n taskmanager-mobile -g taskmanager --query properties.apiKey -o tsv)"
+   ```
+
+   The next push to `development` that touches `apps/mobile` (or a `workflow_dispatch`) picks
+   it up — nothing else needs re-running.
+
+4. **Register the IAM client**, or add a redirect URI to an existing one, at
+   `auth.vipper.network` — mirroring `docs/10` phase 5's `taskmanager-web` registration:
+   public, PKCE (`authorization_code` + `refresh_token`,
+   `token_endpoint_auth_method: none`), client id **`taskmanager-mobile`** (already hardcoded
+   into the `mobile` job and `apps/mobile/.env.example` — not a secret, same reasoning as
+   `taskmanager-web`'s), redirect URI `https://<the hostname from step 2>/callback`
+   (`packages/cloud/src/auth/cloudAuth.ts`'s `CALLBACK_PATH`). This is deliberately a
+   **separate** client registration from `taskmanager-web`, not a second redirect URI on it —
+   Decision 4 draws that line so a desktop or web build's redirect-URI allowlist entry can
+   never be replayed against the mobile one.
+
+Until all four are done, `apps/mobile` builds and typechecks in CI same as any other package,
+but nothing serves it and no phone can reach it.
+
+Migrations run *before* the app is repointed, as an Azure Container Apps job executing the
 same image with `node dist/database/migrate.js`. A failed migration fails the deploy and
 leaves the old app serving the old — matching — schema.
 
