@@ -3,9 +3,10 @@
  * workspace's `ProjectAdmin`, since a repo project and a ticket-only project are the same
  * `project:*` object, just missing a folder.
  *
- * Repo fields — the folder + Browse, "Runs on", `BaseBranchField`, and the three per-project
- * automation switches (auto-merge, auto-release, auto-PR) — render only when the host supplies
- * `repo`, a small capability object. `project:pickDirectory` is `host-only`
+ * Repo fields — the folder + Browse, "Runs on", the isolated-worktrees switch, `BaseBranchField`,
+ * and the three per-project automation switches (auto-merge, auto-release, auto-PR) — render
+ * only when the host supplies `repo`, a small capability object. `project:pickDirectory` is
+ * `host-only`
  * (`packages/shared/src/ipcRelay.ts`) — a browser tab pointed at a remote engine has no local
  * folder to browse for — so a host without `repo` (the Tickets workspace) gets a form with
  * nothing about a directory in it, same as `ProjectAdmin`'s own dialog did before this existed.
@@ -26,7 +27,9 @@ import {
   Field,
   Input,
   Option,
+  SpinButton,
   Switch,
+  Textarea,
   DrawerBody,
   DrawerFooter,
   DrawerHeader,
@@ -38,7 +41,7 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import { DismissRegular } from '@fluentui/react-icons';
-import { MODELS, type GitPreflight, type Project } from '@tm/shared/model';
+import { hasPlan, MODELS, type GitPreflight, type Project } from '@tm/shared/model';
 import { PERMISSION_MODE_LABELS, type ClaudeModel, type PermissionMode } from '@tm/shared/session';
 import { RELEASE_DOC } from '@tm/shared/release';
 import { normalizeTicketPrefix, suggestTicketPrefix } from '@tm/shared/ticketKey';
@@ -102,8 +105,10 @@ export interface ProjectFormProps {
   onFolderChange?: (path: string, target: ExecTarget) => void;
 }
 
-/** Add / edit drawer. Repo-only fields (branch, merge, release, epics, models, mode) hide
- *  while the folder is empty — there is nothing for them to mean yet. */
+/** Add / edit drawer. Repo-only fields (worktrees, branch, merge, release, epics, models, mode,
+ *  concurrency, standing instructions) hide while the folder is empty — there is nothing for
+ *  them to mean yet. The write-back switch is rarer still: it only surfaces for a legacy
+ *  plan-driven project being edited, since this drawer never creates one (see `save()`). */
 export function ProjectForm({
   open,
   project,
@@ -124,6 +129,7 @@ export function ProjectForm({
   const [epics, setEpics] = useState('');
   const [color, setColor] = useState('');
   const [baseBranch, setBaseBranch] = useState('');
+  const [useWorktrees, setUseWorktrees] = useState(true);
   const [autoRelease, setAutoRelease] = useState(false);
   const [autoCreatePr, setAutoCreatePr] = useState(false);
   /** `null` = follow the app-wide setting, which is what a repo that never ruled does. */
@@ -138,6 +144,9 @@ export function ProjectForm({
   /** `null` = plan on the execution model, which is what a repo that never ruled does. */
   const [planningModel, setPlanningModel] = useState<ClaudeModel | null>(null);
   const [permMode, setPermMode] = useState<PermissionMode>('acceptEdits');
+  const [concurrency, setConcurrency] = useState(1);
+  const [writeBackPlan, setWriteBackPlan] = useState(false);
+  const [instructions, setInstructions] = useState('');
   const [target, setTarget] = useState<ExecTarget>(LOCAL_TARGET);
   const [distros, setDistros] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
@@ -179,12 +188,16 @@ export function ProjectForm({
       setEpics(project.jiraEpicKeys.join(', '));
       setColor(project.color);
       setBaseBranch(project.baseBranch);
+      setUseWorktrees(project.useWorktrees);
       setAutoRelease(project.autoRelease);
       setAutoCreatePr(project.autoCreatePr);
       setAutoIntegrate(project.autoIntegrate);
       setModel(project.defaultModel);
       setPlanningModel(project.planningModel);
       setPermMode(project.defaultPermissionMode);
+      setConcurrency(project.concurrency);
+      setWriteBackPlan(project.writeBackPlan);
+      setInstructions(project.instructions);
       updateTarget(project.target);
     } else {
       updatePath('');
@@ -194,12 +207,16 @@ export function ProjectForm({
       setEpics('');
       setColor('');
       setBaseBranch(''); // follow the checkout, exactly as before this field existed
+      setUseWorktrees(true); // default on; only engages for git repos
       setAutoRelease(false); // releasing is opt-in, always
       setAutoIntegrate(null); // and merging follows the app until this project says otherwise
+      setWriteBackPlan(false); // moot here — this dialog always adds plan-less (see save())
+      setInstructions('');
       void transport.invoke('settings:get').then((s) => {
         setModel(s.defaultModel);
         setPlanningModel(s.defaultPlanningModel);
         setPermMode(s.defaultPermissionMode);
+        setConcurrency(s.concurrency);
         updateTarget(s.defaultExecTarget);
       });
     }
@@ -249,6 +266,10 @@ export function ProjectForm({
       : takenBy
         ? `Already used by ${takenBy.name}.`
         : null;
+  // This dialog always adds plan-less (see save()), and every board project is now
+  // guaranteed a prefix — only a legacy plan-driven project being edited can still go
+  // without one, so only that case leaves the field optional.
+  const prefixRequired = !project || !hasPlan(project);
 
   async function save(): Promise<void> {
     if (prefixError) {
@@ -265,14 +286,18 @@ export function ProjectForm({
           defaultModel: model,
           planningModel,
           defaultPermissionMode: permMode,
+          concurrency,
           jiraEpicKeys: parseEpicKeys(epics),
           ticketPrefix,
           color,
           target,
           baseBranch,
+          useWorktrees,
           autoRelease,
           autoCreatePr,
           autoIntegrate,
+          writeBackPlan,
+          instructions,
         });
         if (!updated) throw new Error('That project no longer exists.');
         onSaved(updated);
@@ -288,14 +313,18 @@ export function ProjectForm({
           defaultModel: model,
           planningModel,
           defaultPermissionMode: permMode,
+          concurrency,
           jiraEpicKeys: parseEpicKeys(epics),
           ticketPrefix,
           color,
           target,
           baseBranch,
+          useWorktrees,
           autoRelease,
           autoCreatePr,
           autoIntegrate,
+          writeBackPlan,
+          instructions,
         });
         onSaved(created.project);
       }
@@ -312,9 +341,9 @@ export function ProjectForm({
   const targetMismatch = !pathSuitsHost(path, target.kind === 'wsl' ? 'linux' : 'windows');
 
   // Same principle, one layer deeper: the machine can be right and the folder still be unable
-  // to host a run. A repo here is ALWAYS worktree-enabled, so every git state that breaks
-  // isolation applies — hence the hardcoded true.
-  const gitNote = describeGitPreflight(gitPreflight, true);
+  // to host a run — and which git states are worth interrupting someone over depends on
+  // whether this repo actually runs isolated, hence the live switch rather than a hardcoded true.
+  const gitNote = describeGitPreflight(gitPreflight, useWorktrees);
 
   return (
     <OverlayDrawer
@@ -413,7 +442,12 @@ export function ProjectForm({
 
           <Field
             label="Ticket key prefix"
-            hint="Tickets filed under this project are numbered TM-1, TM-2, … Leave it blank if this project doesn't own tickets of its own."
+            required={prefixRequired}
+            hint={
+              prefixRequired
+                ? 'Tickets filed under this project are numbered TM-1, TM-2, … Derived from the name below if left blank.'
+                : "Tickets filed under this project are numbered TM-1, TM-2, … Leave it blank if this project doesn't own tickets of its own."
+            }
             validationState={prefixError ? 'error' : undefined}
             validationMessage={prefixError ?? undefined}
           >
@@ -435,14 +469,29 @@ export function ProjectForm({
             <ColorSwatches value={color} onChange={setColor} allowNone />
           </Field>
 
+          {/* The whole hinge for the git-state note above and every switch below it: with
+              this off, a folder's git state is simply not this project's business — see
+              `describeGitPreflight`. */}
           {repo && path && (
+            <Field hint="Each task runs on its own git branch in a separate worktree, auto-merged back into the base branch when it completes. Only applies to git repositories — other projects run in the shared folder.">
+              <Switch
+                checked={useWorktrees}
+                label="Isolated worktrees (git)"
+                onChange={(_e, d) => setUseWorktrees(d.checked)}
+              />
+            </Field>
+          )}
+
+          {/* Only meaningful with isolation on: with it off there is no branch of this
+              card's own to name a base for, merge, or release. */}
+          {repo && path && useWorktrees && (
             <BaseBranchField value={baseBranch} onChange={setBaseBranch} preflight={gitPreflight} />
           )}
 
           {/* Whether a finished branch merges itself, decided per repo. Same three-state
               shape as the release switch below, one level up: this repo's answer, or the
               app's when it has none — and choosing the app's answer hands it back. */}
-          {repo && path && (
+          {repo && path && useWorktrees && (
             <Field
               hint={
                 autoIntegrate === null
@@ -468,7 +517,7 @@ export function ProjectForm({
 
           {/* The project's PREFERENCE, not its decision: every card can still say
               otherwise in its Details Panel, and one that never does follows this. */}
-          {repo && path && (
+          {repo && path && useWorktrees && (
             <Field
               hint={`Every card assigned here starts with "Release after merge" already on. When its branch merges, an agent reads ${RELEASE_DOC} in this repo and follows it — so the repo has to have one, and it is the repo's instructions that decide what releasing means.`}
             >
@@ -482,7 +531,7 @@ export function ProjectForm({
 
           {/* The alternative to merging, and a preference in exactly the same sense: a card
               may still say otherwise, and one that never does follows this. */}
-          {repo && path && (
+          {repo && path && useWorktrees && (
             <Field hint='Every card assigned here starts with "Open a PR when finished" already on: its branch is pushed to this repo&apos;s remote and a pull/merge request is opened against the base branch, INSTEAD of the branch being merged locally. Needs a GitHub or GitLab token in Settings.'>
               <Switch
                 checked={autoCreatePr}
@@ -490,6 +539,17 @@ export function ProjectForm({
                 onChange={(_e, d) => setAutoCreatePr(d.checked)}
               />
             </Field>
+          )}
+
+          {/* Only meaningful for a plan-driven project (see `hasPlan`) — this drawer always
+              adds plan-less (see `save()`), so an add form never has one to tick, and only a
+              legacy plan project reaches this screen with one at all. */}
+          {project && hasPlan(project) && (
+            <Switch
+              checked={writeBackPlan}
+              label="Tick completed checkboxes back into the plan file"
+              onChange={(_e, d) => setWriteBackPlan(d.checked)}
+            />
           )}
 
           {path && (
@@ -551,10 +611,41 @@ export function ProjectForm({
           )}
 
           {path && (
+            <Field
+              label="Concurrency"
+              hint="How many of this project's tasks run at once. 1 = strictly one at a time. Tasks with @needs: dependencies still wait for their prerequisites."
+            >
+              <SpinButton
+                min={1}
+                max={8}
+                value={concurrency}
+                onChange={(_e, d) => {
+                  const n = d.value ?? Number(d.displayValue);
+                  if (Number.isFinite(n)) setConcurrency(Math.max(1, Math.round(n as number)));
+                }}
+              />
+            </Field>
+          )}
+
+          {repo && path && useWorktrees && (
             <Body1 className={styles.hint}>
               Each assigned card runs on its own git branch in a separate worktree, merged back into
               the base branch above when the agent finishes.
             </Body1>
+          )}
+
+          {path && (
+            <Field
+              label="Standing instructions"
+              hint="Added to every run's prompt. For setup knowledge that belongs to your orchestrator — where a build tree lives, an environment to source first, a wrapper a command must run through. Knowledge about the code itself belongs in the repo's CLAUDE.md, which Claude reads on its own."
+            >
+              <Textarea
+                value={instructions}
+                resize="vertical"
+                onChange={(_e, d) => setInstructions(d.value)}
+                placeholder="e.g. The Yocto tree is at /opt/yocto; source oe-init-build-env before any bitbake command."
+              />
+            </Field>
           )}
         </div>
       </DrawerBody>
