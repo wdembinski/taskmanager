@@ -67,6 +67,13 @@ export interface CloudProbeDeps {
    * lease. Optional only because a test has no drain; `ipc.ts` always passes one.
    */
   onCommands?: (commands: CommandEnvelope[]) => void;
+  /**
+   * Why a bearer would be rejected, in the user's own words — `cloudToken.explain()`. Every
+   * rejection this probe can hit is now a fact about a pasted token, never about the
+   * server's own credentials, so this is what both 401 branches below say instead of a
+   * generic sentence.
+   */
+  describeRejection?: () => string;
   fetchImpl?: typeof fetch;
 }
 
@@ -96,13 +103,13 @@ export async function testCloudConnection(deps: CloudProbeDeps): Promise<JiraTes
     };
   }
 
-  // 2. Have we got a token? Distinguishes "never signed in" from "signed in and refused",
-  //    which look the same from the board.
+  // 2. Have we got a token? Distinguishes "nothing pasted" from "pasted and refused", which
+  //    look the same from the board.
   const token = await deps.getAccessToken();
   if (!token) {
     return {
       ok: false,
-      message: 'The server is reachable, but you are not signed in. Use Sign in above.',
+      message: `The server is reachable, but ${describeRejection(deps)}`,
     };
   }
 
@@ -152,7 +159,7 @@ export async function testCloudConnection(deps: CloudProbeDeps): Promise<JiraTes
       body: JSON.stringify(request),
     });
     if (!sync.ok) {
-      if (sync.status === 401) return { ok: false, message: REJECTED_TOKEN };
+      if (sync.status === 401) return { ok: false, message: describeRejection(deps) };
       if (sync.status === 403) {
         return {
           ok: false,
@@ -186,7 +193,7 @@ export async function testCloudConnection(deps: CloudProbeDeps): Promise<JiraTes
       headers: { authorization: `Bearer ${token}` },
     });
     if (!board.ok) {
-      if (board.status === 401) return { ok: false, message: REJECTED_TOKEN };
+      if (board.status === 401) return { ok: false, message: describeRejection(deps) };
       if (board.status === 403) {
         return {
           ok: false,
@@ -223,11 +230,16 @@ export async function testCloudConnection(deps: CloudProbeDeps): Promise<JiraTes
   }
 }
 
-/** Both routes answer a 401 the same way, and it is the same person's problem either way:
- *  the SERVER's own vipper.iam credentials, not anything in this dialog. */
-const REJECTED_TOKEN =
-  'Signed in, but the server rejected the token. Its own vipper.iam credentials are wrong ' +
-  'or expired — that is a server configuration problem, not something to fix here.';
+/**
+ * Why a bearer was refused, or nothing was sent at all — routed through `deps.describeRejection`
+ * so every rung says the same thing `cloudToken.explain()` would, rather than three sentences
+ * hand-written here and left to drift from it. The fallback is only ever seen by a caller (a
+ * test, mainly) that omits the dep — real usage always wires it to `cloudToken.explain()`,
+ * which is a fact about a PASTED token now, never about the server's own credentials.
+ */
+function describeRejection(deps: CloudProbeDeps): string {
+  return deps.describeRejection?.() ?? 'you are not signed in.';
+}
 
 function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);

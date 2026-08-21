@@ -200,31 +200,40 @@ export interface JiraTestResult {
   message: string;
 }
 
-/** Snapshot of the vipper.iam cloud sign-in state (for the Settings UI). */
-export interface IamConfigStatus {
-  /** Whether a refresh token has been stored (never the token itself). */
-  signedIn: boolean;
+/**
+ * Snapshot of the desktop's cloud personal-access-token state (for the Settings UI).
+ *
+ * The cloud follows the exact same four-channel convention as JIRA/GitLab/GitHub now — a
+ * pasted credential, not a sign-in — so this is shaped like `JiraConfigStatus` where the two
+ * overlap (`hasToken`, `encryptionAvailable`, `plainTextStorage`) plus the finer-grained facts
+ * only a cloud connection needs: whether the stored token has actually been used successfully.
+ */
+export interface CloudConfigStatus {
+  /** Whether a token has been stored (never the token itself). */
+  hasToken: boolean;
   /** Whether the OS secure store is available to encrypt the token. */
   encryptionAvailable: boolean;
+  /** Linux only: no keyring found, so the token is obfuscated rather than encrypted — see
+   *  `JiraConfigStatus.plainTextStorage`. */
+  plainTextStorage: boolean;
   /**
    * `CloudTokenProvider.state()` — mirrors its `CloudAuthState` (kept as a plain string union
    * here rather than imported, since main's provider must not become a dependency of shared).
-   * `signedIn` above keeps meaning "a refresh token is on file"; this is the finer-grained fact
-   * of whether that token is actually working.
    */
-  authState: 'signed-out' | 'stored' | 'active' | 'rejected';
+  authState: 'no-token' | 'stored' | 'active' | 'rejected';
   /** `CloudTokenProvider.explain()`, but only when `authState` names an actual problem
-   *  (`'rejected'`) — null otherwise, including while merely signed out. */
+   *  (`'rejected'`) — null otherwise, including while merely `'no-token'`. */
   authError: string | null;
-  /** When the access token behind this sign-in was last successfully minted, or null if it
-   *  never has been (including right after a fresh sign-in, before the first mint). */
-  lastTokenAt: number | null;
-}
-
-/** Result of one `iam:signIn` attempt. */
-export interface IamSignInResult {
-  ok: boolean;
-  message: string;
+  /** When a request last succeeded using the current token, or null if it never has
+   *  (including right after a fresh paste, before the first sync). */
+  lastAcceptedAt: number | null;
+  /**
+   * True for the rest of this app run if a pre-PAT vipper.iam refresh token was found (and
+   * dropped) on startup — see `Store.clearLegacyCloudSignIn`. Lets Settings tell a returning
+   * signed-in user their sign-in was replaced, rather than leaving them to notice a blank
+   * field and wonder what they did wrong.
+   */
+  legacySignInRetired: boolean;
 }
 
 /** Basic facts about the running app, shown in the UI footer / About. */
@@ -870,26 +879,25 @@ export interface IpcApi {
    */
   'mr:mergeRequests': () => Promise<MergeRequest[]>;
 
-  // --- vipper.iam cloud sign-in (Phase 25) -----------------------------------
-  /** Whether a refresh token is stored and the OS secure store can encrypt one. */
+  // --- Cloud personal access token — the same four-channel shape JIRA/GitLab/GitHub use. ---
+  /** Whether a token is stored, and whether the OS secure store can encrypt one. */
+  'cloud:getConfigStatus': () => Promise<CloudConfigStatus>;
   /**
-   * Walk the cloud mirror's chain — address, sign-in, then an authenticated board read —
-   * and report the first rung that fails. `cloudPoller` is silent by design (a failed tick
-   * is counted and retried, never surfaced), so without this every misconfiguration looks
-   * the same from the app: an empty board and no explanation.
+   * Store the pasted personal access token, encrypted via the OS secure store — created on
+   * the web app's Personal access tokens page, not minted here. Rejects (ok:false) if the OS
+   * secure store is unavailable, or the paste is not `tmpat_`-shaped; never persists one in
+   * plaintext.
+   */
+  'cloud:setCredentials': (token: string) => Promise<{ ok: boolean; message: string }>;
+  /** Remove the stored token. */
+  'cloud:clearCredentials': () => Promise<void>;
+  /**
+   * Walk the cloud mirror's chain — address, token, then an authenticated board read — and
+   * report the first rung that fails. `cloudPoller` is silent by design (a failed tick is
+   * counted and retried, never surfaced), so without this every misconfiguration looks the
+   * same from the app: an empty board and no explanation.
    */
   'cloud:testConnection': () => Promise<JiraTestResult>;
-
-  'iam:getConfigStatus': () => Promise<IamConfigStatus>;
-  /**
-   * Runs one authorization-code + PKCE sign-in: opens the system browser, waits for the
-   * loopback redirect, then stores the resulting refresh token encrypted (same path as the
-   * JIRA/GitLab PATs). `ok:false` on cancel, timeout, or an unavailable secure store —
-   * never persists a token in plaintext.
-   */
-  'iam:signIn': () => Promise<IamSignInResult>;
-  /** Remove the stored refresh token. */
-  'iam:signOut': () => Promise<void>;
 
   // --- Sync freshness (the status bar's countdown rings) --------------------
   /**

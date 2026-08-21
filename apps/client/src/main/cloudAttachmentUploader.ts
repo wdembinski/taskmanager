@@ -212,7 +212,7 @@ export class CloudAttachmentUploader {
       }
 
       const token = await deps.getAccessToken();
-      if (!token) throw new Error('Not signed in to vipper.iam.');
+      if (!token) throw new Error('No cloud token available.');
 
       const url = new URL(
         `${settings.baseUrl.replace(/\/+$/, '')}/v1/attachments/${encodeURIComponent(
@@ -290,7 +290,7 @@ export async function fetchUploadBytes(
     throw new Error('Cloud sync is off on this desktop, so it cannot collect uploaded files.');
   }
   const token = await deps.getAccessToken();
-  if (!token) throw new Error('Not signed in to vipper.iam.');
+  if (!token) throw new Error('No cloud token available.');
 
   const fetchImpl = deps.fetchImpl ?? fetch;
   const res = await fetchImpl(

@@ -56,9 +56,7 @@ export type HostOnlyReason =
  *
  * **Window / OS.** `window:*` moves a window nobody is looking at; `update:install` quits
  * the app out from under its user; `attachment:open` pops a file open on someone else's
- * screen via `shell.openPath`. `auth:signIn` opens an interactive terminal there, and
- * `iam:signIn` is a loopback PKCE flow the browser runs for itself (`apps/web/src/auth`) —
- * relaying it would sign the DESKTOP in when a browser tab asked to sign itself in.
+ * screen via `shell.openPath`. `auth:signIn` opens an interactive terminal there.
  *
  * **Credential writes.** A secret typed into a browser would cross the mirror as plaintext
  * inside a command payload and land in the server's `commands` table, which is an audit
@@ -90,7 +88,6 @@ const HOST_ONLY_REASONS = {
   'update:install': 'window-os',
   'attachment:open': 'window-os',
   'auth:signIn': 'window-os',
-  'iam:signIn': 'window-os',
 
   'jira:setCredentials': 'credential-write',
   'jira:clearCredentials': 'credential-write',
@@ -98,7 +95,8 @@ const HOST_ONLY_REASONS = {
   'gitlab:clearCredentials': 'credential-write',
   'github:setCredentials': 'credential-write',
   'github:clearCredentials': 'credential-write',
-  'iam:signOut': 'credential-write',
+  'cloud:setCredentials': 'credential-write',
+  'cloud:clearCredentials': 'credential-write',
 
   'session:start': 'live-session',
   'session:stop': 'live-session',
@@ -270,11 +268,10 @@ export const RELAY_POLICY: {
   'mr:markRead': 'relay',
   'mr:markEventsSeen': 'relay',
 
+  'cloud:getConfigStatus': 'relay',
+  'cloud:setCredentials': 'host-only',
+  'cloud:clearCredentials': 'host-only',
   'cloud:testConnection': 'relay',
-
-  'iam:getConfigStatus': 'relay',
-  'iam:signIn': 'host-only',
-  'iam:signOut': 'host-only',
 
   'sync:state': 'relay',
 

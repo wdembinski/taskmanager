@@ -114,13 +114,30 @@ describe('testCloudConnection', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1); // /health only
   });
 
-  it('calls a 401 a server-side credential problem, not the user’s', async () => {
-    // This is what a wrong CLOUD_IAM_CLIENT_ID looks like from the app, and it is emphatically
-    // not something the person reading the message can fix in this dialog.
-    const result = await probe({ fetchImpl: routedFetch({ sync: { status: 401 } }) });
+  it('routes a 401 through describeRejection — the PAT sentence, not the vipper.iam-server one', async () => {
+    // Under PATs this app mints nothing — a 401 is a fact about the token the user pasted,
+    // never about the server's own vipper.iam credentials, so the message must come from
+    // whatever `cloudToken.explain()` says, not a hard-coded "server configuration" sentence.
+    const describeRejection = () => 'The cloud rejected this token. It has been revoked.';
+    const result = await probe({
+      fetchImpl: routedFetch({ sync: { status: 401 } }),
+      describeRejection,
+    });
 
     expect(result.ok).toBe(false);
-    expect(result.message).toMatch(/server configuration/i);
+    expect(result.message).toBe(describeRejection());
+    expect(result.message).not.toMatch(/server configuration/i);
+  });
+
+  it('also routes a 401 on the board read through describeRejection', async () => {
+    const describeRejection = () => 'The cloud rejected this token. It has expired.';
+    const result = await probe({
+      fetchImpl: routedFetch({ board: { status: 401 } }),
+      describeRejection,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toBe(describeRejection());
   });
 
   it('calls a 403 on the sync a missing WRITE grant, and says what it costs', async () => {

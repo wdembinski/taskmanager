@@ -7,6 +7,7 @@ import { AttachmentUpload } from './entities/attachmentUpload.entity';
 import { Client } from './entities/client.entity';
 import { Command } from './entities/command.entity';
 import { CommandResultRow } from './entities/commandResult.entity';
+import { PersonalAccessToken } from './entities/personalAccessToken.entity';
 import { Tombstone } from './entities/tombstone.entity';
 import { ProjectMirror } from './entities/projectMirror.entity';
 import { TaskMirror } from './entities/taskMirror.entity';
@@ -15,6 +16,7 @@ import { EventsModule } from './events/events.module';
 import { HealthModule } from './health/health.module';
 import { MirrorModule } from './mirror/mirror.module';
 import { PresenceModule } from './presence/presence.module';
+import { TokensModule } from './tokens/tokens.module';
 
 @Module({
   imports: [
@@ -42,6 +44,7 @@ import { PresenceModule } from './presence/presence.module';
           Client,
           Command,
           CommandResultRow,
+          PersonalAccessToken,
           ProjectMirror,
           TaskMirror,
           Tombstone,
@@ -56,6 +59,7 @@ import { PresenceModule } from './presence/presence.module';
     EventsModule,
     MirrorModule,
     AttachmentsModule,
+    TokensModule,
   ],
 })
 export class AppModule {}

@@ -1,163 +1,122 @@
 /**
- * The desktop app's one vipper.iam access-token minter — a single-flight cache in front of
- * `refreshTokens`, shared by every caller that needs a cloud bearer token (the sync poller, a
- * manual sync, `cloud:testConnection`, …).
+ * The desktop app's cloud credential: a personal access token, pasted once into Settings and
+ * held as-is until it is replaced or the cloud rejects it. Keeps the class name and its
+ * `get()` / `invalidate()` / `state()` / `explain()` surface — the five existing call sites in
+ * `ipc.ts`, and the `onAuthRejected` wiring on `cloudPoller.ts`, all keep working unchanged.
+ * Everything BEHIND that surface collapses: no config, no network, no clock-driven expiry, no
+ * single-flight.
  *
- * The fix this exists for: without single-flight, two callers racing `get()` at once each
- * exchanged the SAME stored refresh token, and vipper.iam rotates a refresh token on every use —
- * the second exchange fails `invalid_grant` against an already-spent token, and the retry loop
- * that followed kept minting with the stale token every 2.5s, spending the *next* rotated token
- * as fast as it was saved. That is the grant-family revocation this class stops: only one
- * `mint()` is ever in flight, so there is only ever one token being spent at a time.
+ * This file used to open with the single-flight argument: vipper.iam rotates a refresh token
+ * on every use, so two callers racing a mint each spent the SAME stored token and the second
+ * exchange failed `invalid_grant` against an already-spent one. A pasted token is not
+ * exchanged for anything and does not rotate — there is nothing left here to race, which is
+ * why `get()` below is just a read.
  *
- * No `electron` import — `safeStorage` encryption stays in `ipc.ts`, which passes this class
- * already-decrypted strings in and takes already-plaintext strings back out.
+ * No `electron` import — `safeStorage` decryption stays in `ipc.ts`, which passes this class
+ * an already-decrypted string in and takes an already-plaintext string back out.
  */
-import {
-  isTerminalGrantError,
-  refreshTokens,
-  type IamPkceConfig,
-  type TokenResponse,
-} from '@shared/iamPkce';
 
 /**
- * - `signed-out` — no refresh token on file.
- * - `stored` — a refresh token is on file but hasn't been (re)tried yet, or was just replaced by
- *   a fresh sign-in.
- * - `active` — the last mint succeeded; `get()` is answering from cache or would mint cleanly.
- * - `rejected` — the last mint hit a terminal grant error (`invalid_grant`); `get()` short-
- *   circuits to `null` without a network call until `renewed()` moves it back to `stored`.
+ * - `no-token` — nothing stored.
+ * - `stored` — a token is on file but has not yet been used on a request that answered.
+ * - `active` — the last request that used this token succeeded.
+ * - `rejected` — the last request that used this token got a 401; `get()` short-circuits to
+ *   `null` without handing it out again until the stored token changes.
  */
-export type CloudAuthState = 'signed-out' | 'stored' | 'active' | 'rejected';
+export type CloudAuthState = 'no-token' | 'stored' | 'active' | 'rejected';
 
 export interface CloudTokenDeps {
-  config: () => IamPkceConfig;
   /** Already DECRYPTED — this class never touches `safeStorage`. */
-  loadRefreshToken: () => string | null;
-  saveRefreshToken: (token: string) => void;
-  refresh?: typeof refreshTokens;
+  loadPat: () => string | null;
   now?: () => number;
   onStateChange?: (state: CloudAuthState) => void;
   log?: (message: string, error?: unknown) => void;
 }
 
-/** Matches the buffer `ipc.ts` used before this class existed — mint a little ahead of expiry. */
-const EXPIRY_BUFFER_MS = 5_000;
-
-interface CachedToken {
-  value: string;
-  expiresAt: number;
-}
-
 export class CloudTokenProvider {
   private readonly deps: CloudTokenDeps;
-  private readonly refresh: typeof refreshTokens;
   private readonly now: () => number;
-  private cached: CachedToken | null = null;
-  private inflight: Promise<string | null> | null = null;
   private authState: CloudAuthState;
-  /** When `mint()` last succeeded — for the Settings UI's "token last refreshed Ns ago".
-   *  Cleared by `forget()`/`renewed()`: a stale timestamp from a since-replaced sign-in would
-   *  read as freshness that never happened. */
-  private lastTokenAt: number | null = null;
+  /** When a request using the current token last succeeded — for the Settings UI's "token
+   *  last confirmed Ns ago". Cleared by `invalidate()`/`reload()`: a stale timestamp from a
+   *  since-replaced token would read as freshness that never happened. */
+  private lastAcceptedAtValue: number | null = null;
 
   constructor(deps: CloudTokenDeps) {
     this.deps = deps;
-    this.refresh = deps.refresh ?? refreshTokens;
     this.now = deps.now ?? Date.now;
-    this.authState = deps.loadRefreshToken() !== null ? 'stored' : 'signed-out';
+    this.authState = deps.loadPat() !== null ? 'stored' : 'no-token';
   }
 
   state(): CloudAuthState {
     return this.authState;
   }
 
-  /** When the last mint succeeded, or null if it never has since construction or the last
-   *  `forget()`/`renewed()`. */
-  lastMintedAt(): number | null {
-    return this.lastTokenAt;
+  /** When the current token last confirmed working, or null if it never has since
+   *  construction or the last `invalidate()`/`reload()`. */
+  lastAcceptedAt(): number | null {
+    return this.lastAcceptedAtValue;
   }
 
-  /** Why there is no token right now, in the user's words. Wired into `IamConfigStatus.authError`
-   *  and `CloudPollerDeps.describeMissingToken`. */
+  /** Why there is no token right now, in the user's words. Wired into `CloudConfigStatus.
+   *  authError` and `CloudPollerDeps.describeMissingToken`. */
   explain(): string {
     switch (this.authState) {
-      case 'signed-out':
-        return 'Not signed in to the cloud.';
+      case 'no-token':
+        return 'No token stored. Create one in the web app and paste it into Cloud settings.';
       case 'rejected':
-        return 'The cloud sign-in was revoked. Sign in again to resume syncing.';
+        return 'The cloud rejected this token. It has been revoked or has expired — create a new one in the web app and paste it here.';
       case 'stored':
-        return 'Signed in, but no access token has been minted yet.';
+        return 'A token is stored, but it has not synced yet.';
       case 'active':
         return 'Signed in and syncing.';
     }
   }
 
-  /** Never throws — callers treat a `null` exactly like any other failed sync tick. */
+  /** Never throws. Null when nothing is stored, or the stored token was just rejected. */
   async get(): Promise<string | null> {
-    const now = this.now();
-    if (this.cached && this.cached.expiresAt > now + EXPIRY_BUFFER_MS) return this.cached.value;
-    if (this.authState === 'rejected') return null; // no network: the grant is dead
-    if (!this.inflight) {
-      const run = this.mint(); // mint() is contracted never to reject
-      this.inflight = run;
-      void run.finally(() => {
-        if (this.inflight === run) this.inflight = null;
-      });
+    if (this.authState === 'rejected') return null; // no network: this token is dead
+    const token = this.deps.loadPat();
+    if (!token) {
+      this.setState('no-token');
+      return null;
     }
-    return this.inflight;
+    if (this.authState === 'no-token') this.setState('stored');
+    return token;
   }
 
-  /** A 401 came back on a request that used the cached token — drop it, keep the auth state. */
+  /**
+   * A request using the current token came back 401. Sets `'rejected'`, not merely a cache
+   * drop — a token that only vanished from a cache would be re-read from `loadPat()` on the
+   * very next `get()` and handed out again unchanged, which is exactly the dead-token spam
+   * this state exists to stop. `cloudPoller.ts`'s inline retry calls `getAccessToken()` again
+   * right after this, gets `null`, and sends nothing — see its own header.
+   */
   invalidate(): void {
-    this.cached = null;
+    this.lastAcceptedAtValue = null;
+    this.setState('rejected');
   }
 
-  /** `iam:signOut`. */
-  forget(): void {
-    this.cached = null;
-    this.inflight = null;
-    this.lastTokenAt = null;
-    this.setState('signed-out');
+  /** A request using the current token just succeeded. Called from the poller's success path. */
+  accepted(now: number = this.now()): void {
+    this.lastAcceptedAtValue = now;
+    this.setState('active');
   }
 
-  /** `iam:signIn` just stored a fresh refresh token — leave `rejected` behind. */
-  renewed(): void {
-    this.cached = null;
-    this.lastTokenAt = null;
-    this.setState('stored');
+  /**
+   * The stored token changed underneath this provider — `cloud:setCredentials` just saved a
+   * fresh paste, or `cloud:clearCredentials` just removed one. Re-derives state from
+   * `loadPat()` so the very next `cloud:getConfigStatus` reflects the change immediately,
+   * rather than waiting for the next poll tick to notice.
+   */
+  reload(): void {
+    this.lastAcceptedAtValue = null;
+    this.setState(this.deps.loadPat() !== null ? 'stored' : 'no-token');
   }
 
   private setState(state: CloudAuthState): void {
     if (this.authState === state) return;
     this.authState = state;
     this.deps.onStateChange?.(state);
-  }
-
-  private async mint(): Promise<string | null> {
-    try {
-      const refreshToken = this.deps.loadRefreshToken();
-      if (!refreshToken) {
-        this.setState('signed-out');
-        return null;
-      }
-      const tokens: TokenResponse = await this.refresh(this.deps.config(), refreshToken);
-      // vipper.iam rotates the refresh token on every use — save it BEFORE returning the
-      // access token, so a crash between the two never leaves the old (now-spent) one on file.
-      if (tokens.refresh_token) this.deps.saveRefreshToken(tokens.refresh_token);
-      this.cached = {
-        value: tokens.access_token,
-        expiresAt: this.now() + tokens.expires_in * 1000,
-      };
-      this.lastTokenAt = this.now();
-      this.setState('active');
-      return this.cached.value;
-    } catch (e) {
-      // Anything else (network blip, 503, …) leaves the auth state exactly where it was, so
-      // the next get() retries instead of being locked out by one bad tick.
-      if (isTerminalGrantError(e)) this.setState('rejected');
-      this.deps.log?.('vipper.iam access token refresh failed', e);
-      return null;
-    }
   }
 }

@@ -420,7 +420,7 @@ export class CloudEventForwarder {
     gap: number,
   ): Promise<number> {
     const token = await deps.getAccessToken();
-    if (!token) throw new Error('Not signed in to vipper.iam.');
+    if (!token) throw new Error('No cloud token available.');
 
     const events: EventEnvelope[] = taken.map((entry) => ({
       channel: entry.channel,

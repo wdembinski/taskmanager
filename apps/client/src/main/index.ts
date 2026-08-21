@@ -25,14 +25,11 @@ import { runShutdownSteps, type ShutdownStep } from './shutdown';
 process.on('uncaughtException', (err) => reportFatal('Unexpected error', err));
 process.on('unhandledRejection', (reason) => reportFatal('Unexpected error', reason));
 
-// Two copies of this app share one `userData` — one SQLite file, one stored vipper.iam
-// refresh token — but each process would mint its own `CloudTokenProvider` in-memory cache,
-// so nothing in-process stops both from racing the SAME stored refresh token: vipper.iam
-// rotates it on every use, so the second copy's exchange fails `invalid_grant` against a
-// token the first copy just spent, and that's the same grant-family revocation the
-// single-flight fix in `cloudToken.ts` exists for — just triggered across processes instead
-// of within one. `requestSingleInstanceLock` closes that gap by quitting every copy after
-// the first outright; `second-instance` only needs to focus the survivor's window since the
+// Two copies of this app share one `userData` — one SQLite file, and every table in it,
+// including whichever ones each process holds open statements against. Two processes
+// writing the same SQLite file at once is reason enough on its own: `requestSingleInstanceLock`
+// quits every copy after the first outright, rather than let a second one open the database
+// underneath it. `second-instance` only needs to focus the survivor's window, since the
 // runner-up passed no launch arguments this app reads.
 if (!app.requestSingleInstanceLock()) {
   app.quit();
