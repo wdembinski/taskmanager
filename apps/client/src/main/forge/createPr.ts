@@ -335,6 +335,18 @@ interface CreatedRef {
   targetBranch: string;
   draft: boolean;
   existed: boolean;
+  /**
+   * The forge's own `updated_at` for the created (or already-open) row, or 0 when it did not
+   * say. This is what `rowFor` stamps the stored row's `updatedAt` with, and it has to be
+   * the FORGE's clock rather than the APP's: `needsDetailRefresh` decides a PR is worth
+   * re-reading by asking whether the next sync's `updated_at` is newer than what is stored,
+   * and the app's `Date.now()` — taken after the push and the create call both round-tripped
+   * — routinely reads later than GitHub's own timestamp for the same event. A row seeded
+   * ahead of the forge's clock looks already-current on the very next sync and never gets
+   * its first real detail read, so `pipelineStatus` stays `unknown` and `approvalsRequired`
+   * stays `null` until something else bumps `updated_at`.
+   */
+  updatedAt: number;
 }
 
 async function createOnGitHub(
@@ -378,6 +390,7 @@ async function createOnGitHub(
     targetBranch: pullRequest.base?.ref ?? base,
     draft: pullRequest.draft === true,
     existed,
+    updatedAt: Date.parse(pullRequest.updated_at ?? '') || 0,
   };
 }
 
@@ -409,6 +422,7 @@ async function createOnGitLab(
     targetBranch: mergeRequest.target_branch ?? base,
     draft: mergeRequest.draft === true || mergeRequest.work_in_progress === true,
     existed,
+    updatedAt: Date.parse(mergeRequest.updated_at) || 0,
   };
 }
 
@@ -430,8 +444,13 @@ async function createOnGitLab(
  * reference — supplies nothing to find. The row was appearing the moment the button was
  * pressed and dropping off the card on the very next poll, still open and belonging to
  * nobody. This is the one thing about it the forge cannot tell us, so it is remembered.
+ *
+ * `updatedAt` is `created.updatedAt` — the forge's own clock — rather than `now`, which is
+ * the app's; see {@link CreatedRef.updatedAt} for why seeding it from the wrong clock leaves
+ * a freshly opened row unread forever. `syncedAt` stays `now`: that field really does mean
+ * "when we looked", and we looked now.
  */
-function rowFor(created: CreatedRef, taskId: string, now: number): MergeRequest {
+export function rowFor(created: CreatedRef, taskId: string, now: number): MergeRequest {
   return {
     id:
       created.provider === 'github'
@@ -463,7 +482,7 @@ function rowFor(created: CreatedRef, taskId: string, now: number): MergeRequest 
     lastReadAt: null,
     lastEventAt: null,
     lastEventSeenAt: null,
-    updatedAt: now,
+    updatedAt: created.updatedAt,
     syncedAt: now,
   };
 }

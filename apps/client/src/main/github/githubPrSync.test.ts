@@ -5,7 +5,6 @@ import { mrAttentionReason, mrNeedsAttention } from '@shared/mergeRequest';
 // which mean the same thing whichever forge filled them in.
 import { landedTaskIds } from '../gitlab/gitlabSync';
 import {
-  needsDetailRefresh,
   pullRequestId,
   reconcilePullRequests,
   rematchPullRequests,
@@ -60,35 +59,9 @@ const note = (at: string, authorId: number): { createdAt: string; author: { id: 
   author: { id: authorId },
 });
 
-describe('needsDetailRefresh', () => {
-  const prior = (over: Partial<MergeRequest> = {}): MergeRequest =>
-    ({ ...reconcilePullRequests([], [fetched()], opts).upserts[0], ...over }) as MergeRequest;
-
-  it('always reads a pull request it has never seen', () => {
-    expect(needsDetailRefresh(undefined, 900)).toBe(true);
-  });
-
-  it('reads one whose updated_at moved', () => {
-    expect(needsDetailRefresh(prior({ updatedAt: 900 }), 901)).toBe(true);
-  });
-
-  // The same trap GitLab has: GitHub does not touch a pull request when its check suite
-  // finishes, so `updated_at` alone leaves a PR first seen mid-run reading "running" for
-  // good — Sync re-lists it, sees nothing has moved, and keeps the stale status.
-  it.each(['created', 'pending', 'running'] as const)(
-    're-reads an untouched PR whose checks are still %s',
-    (pipelineStatus) => {
-      expect(needsDetailRefresh(prior({ updatedAt: 900, pipelineStatus }), 900)).toBe(true);
-    },
-  );
-
-  it.each(['success', 'failed', 'canceled', 'skipped', 'manual', 'unknown'] as const)(
-    'leaves an untouched PR alone once its checks are %s',
-    (pipelineStatus) => {
-      expect(needsDetailRefresh(prior({ updatedAt: 900, pipelineStatus }), 900)).toBe(false);
-    },
-  );
-});
+// `needsDetailRefresh` and `PIPELINE_IN_FLIGHT` moved to `forge/refreshPolicy.test.ts` — the
+// rule they test is forge-neutral, and re-exported here only for callers that already import
+// this module.
 
 describe('reconcilePullRequests', () => {
   it('files a new PR under the card whose issue it closes', () => {

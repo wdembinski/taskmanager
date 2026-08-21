@@ -103,7 +103,10 @@ const PIPELINE_BADGE: Record<
   PipelineStatus,
   { color: 'success' | 'danger' | 'warning' | 'brand' | 'subtle'; label: string }
 > = {
-  unknown: { color: 'subtle', label: 'no pipeline' },
+  // Not "no pipeline" — that would claim a fact we don't have. We simply haven't gotten a
+  // clean answer yet; `none` below is the badge that gets to say there isn't one.
+  unknown: { color: 'subtle', label: 'pipeline unknown' },
+  none: { color: 'subtle', label: 'no pipeline' },
   created: { color: 'subtle', label: 'pipeline queued' },
   pending: { color: 'subtle', label: 'pipeline pending' },
   manual: { color: 'subtle', label: 'pipeline manual' },

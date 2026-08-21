@@ -25,6 +25,11 @@ import { gitlabAuthorIsMe, type GitLabIdentityCache } from './identity';
 import { discoverIssueKeys, pickTaskKey } from '../forge/issueKeys';
 import { latestForeignNoteAt, type ForgeNote } from '../forge/notes';
 
+// Both forge-neutral rules that happened to live here; moved out to `forge/refreshPolicy.ts`
+// and re-exported so every existing import site — `ipc.ts` and GitHub's `githubPrSync.ts` —
+// is untouched.
+export { needsDetailRefresh, PIPELINE_IN_FLIGHT } from '../forge/refreshPolicy';
+
 /** What one fetched MR looks like once the client's shapes are narrowed. */
 export interface FetchedMergeRequest {
   repoId: number;
@@ -84,40 +89,6 @@ export interface GitLabSyncResult {
 
 /** Pipelines that mean "something broke", as opposed to "still running". */
 const BAD_PIPELINES: ReadonlySet<PipelineStatus> = new Set(['failed', 'canceled']);
-
-/**
- * Pipeline states a runner will move on **its own**, with nobody touching the MR.
- *
- * `manual` and `unknown` are deliberately absent: both can sit unchanged indefinitely, so
- * treating them as in-flight would re-read those MRs on every single poll forever.
- *
- * Exported for the "read back a settled MR" pass in `ipc.ts` (both forges): an MR whose
- * pipeline was still running the moment it merged must keep being read back — otherwise its
- * last known stage keeps whatever it was mid-run, forever. See `describeMergeRequest.ts`.
- */
-export const PIPELINE_IN_FLIGHT: ReadonlySet<PipelineStatus> = new Set([
-  'created',
-  'pending',
-  'running',
-]);
-
-/**
- * Whether this MR is worth spending its detail calls on.
- *
- * `updated_at` alone is not enough, and that is not a small oversight: **GitLab does not
- * touch an MR when its pipeline finishes.** A run going from `running` to `success` moves
- * nothing the list endpoint reports, so an MR first seen mid-pipeline stayed "running" in
- * the app for good — pressing Sync re-listed it, decided nothing had moved, and kept the
- * status it already had. Approvals behave the same way.
- *
- * So a pipeline the runners are still working is itself a reason to look again. That is
- * bounded: it stops the moment the pipeline reaches a terminal state.
- */
-export function needsDetailRefresh(prior: MergeRequest | undefined, updatedAt: number): boolean {
-  if (!prior) return true;
-  if (updatedAt > prior.updatedAt) return true;
-  return PIPELINE_IN_FLIGHT.has(prior.pipelineStatus);
-}
 
 export function mergeRequestId(repoId: number, number: number): string {
   return `gl-${repoId}-${number}`;
