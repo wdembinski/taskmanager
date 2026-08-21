@@ -3086,6 +3086,15 @@ mutation — the check goes red with the statement commented out and green with 
   retired tab's dialog; `AgentProjects.tsx` is the live idiom. Do not reuse
   `BaseBranchField` — a ticket project has no repo (**D2**).
 
+**Amended by the "Tickets and Projects tabs" plan (2026-08-21).** This step put project
+CREATION on the same tab as the backlog table it read — one nav destination doing both jobs.
+A later pass split that: `ProjectAdmin.tsx` moved to `packages/ui/src/projects/` as the
+project-management pane for a `'projects'` tab of its own (browser included, over the same
+`project:*` calls), and what this step called the "Projects screen" narrowed to a `'tickets'`
+tab that only picks a project and browses its backlog/Gantt — see
+[`docs/12-the-ticket-model.md`](../12-the-ticket-model.md) and `test/shell-parity.test.ts`,
+"the web configures a project's identity, never its repo", for what shipped.
+
 #### 5 — Build ticket drawer, labels and milestones · `feat` → 0.74.0
 
 `projects/TicketDrawer.tsx` with `ticketFields.ts` + `.test.ts` (points/days parsing, label

@@ -11,6 +11,13 @@ the reference for what actually shipped, proved by
 [`scripts/verify-tickets.mjs`](../apps/client/scripts/verify-tickets.mjs) — the only thing in
 this repo that can open a real SQLite database, since Vitest's Node has no Electron ABI.
 
+Phase 24 put project creation and the ticket backlog on one nav destination. The later
+"Tickets and Projects tabs" plan split that in two: a `'projects'` tab manages a project's
+identity (name, colour, the tickets-or-personal choice, shared with the browser through
+`packages/ui/src/projects/ProjectAdmin.tsx`), and a `'tickets'` tab only picks a project and
+browses its backlog/Gantt. Nothing on this page about the schema, key allocation or the link
+vocabulary changed — the split is a UI reorganisation over the same `projects`/`tasks` rows.
+
 ---
 
 ## The schema

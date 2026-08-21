@@ -19,25 +19,25 @@
  *
  * THE ONE SECTION THAT IS NOT SHARED, AND THE READ-ONLY HALF THAT IS
  * ---------------------------------------------------------------------
- * `Projects` (the admin pane) is not in `@tm/ui` and does not belong there. It lives in
- * `apps/client/src/renderer/src/projects/Projects.tsx`, reaches the engine through
- * `window.api` directly rather than through the transport, and its first act is
+ * A project's IDENTITY — name, colour, the tickets-or-personal choice — is nothing but a row
+ * in the store, and the web's own Projects tab (`@tm/ui/projects/ProjectAdmin`, rendered from
+ * `App.tsx`) manages it exactly as the desktop's own admin pane does, over the same `project:*`
+ * transport calls. It is that project's REPO half that stays desktop-only:
+ * `apps/client/src/renderer/src/projects/Projects.tsx` reaches the engine through `window.api`
+ * directly rather than through the transport, and its first act when adding a folder is
  * `project:pickDirectory` — a native folder picker for a directory on the machine the engine
  * runs on, which is why that channel is `host-only` while `project:add` itself is not.
- * Choosing the folder is very nearly the whole of CREATING a project with a repo, so there is
- * no useful half of *that* a browser could draw: it would be an empty path field asking
- * somebody to type an absolute path on a computer they cannot see. Creating and editing
- * therefore appear in {@link HOST_ONLY_SECTIONS} instead, which is a decision rather than a
- * gap — see the plan doc, "What is deliberately out of scope".
+ * Choosing the folder is very nearly the whole of attaching a repo, so there is no useful half
+ * of *that* a browser could draw: it would be an empty path field asking somebody to type an
+ * absolute path on a computer they cannot see. Repository settings therefore appear in
+ * {@link HOST_ONLY_SECTIONS} instead, which is a decision rather than a gap.
  *
- * *Looking* at what is configured is the useful half, and it is the `'projects'` tab below.
- * It needs no picker, no `window.api` and no write channel: `ProjectsSection` is a list and
- * nothing else, fed from the same two sources the board resolves its repo pickers from — the
- * relayed `project:list` (filtered to a repo project) when a desktop answers, and the
- * mirrored `projects` rows when none does (`selectAgentProjects`). So the pane survives a
- * sleeping desktop. A ticket-only project (no repo at all) is not part of this pane — filing
- * or browsing its tickets is the ticket workspace's job (`'tickets'` tab, desktop), not this
- * one; giving the web app its own way into that is a follow-up, not part of this pass.
+ * *Looking* at what a repo is configured with is the useful half, and it is the `'projects'`
+ * tab below. It needs no picker, no `window.api` and no write channel: `ProjectsSection` is a
+ * list and nothing else, fed from the same two sources the board resolves its repo pickers
+ * from — the relayed `project:list` (filtered to a repo project) when a desktop answers, and
+ * the mirrored `projects` rows when none does (`selectAgentProjects`). So the pane survives a
+ * sleeping desktop.
  *
  * WHAT THE HOST-ONLY SECTIONS DO INSTEAD
  * --------------------------------------
@@ -438,20 +438,20 @@ export function SettingsScreen({ projects }: SettingsScreenProps): JSX.Element {
 
       {section === 'projects' && (
         <div className={styles.pane}>
-          <Subtitle2>Agent projects</Subtitle2>
+          <Subtitle2>Repository settings</Subtitle2>
           <Body1 className={styles.hint}>
-            The repositories an agent can work in, and what each one runs with. Filing a card under
-            one, or assigning a card to one, happens on the board — this is where you check what a
-            project is actually configured to do.
+            The repositories an agent can work in, and what each one runs with. A project&apos;s
+            name, colour and ticket prefix are on the Projects tab — this is where you check what
+            its repository is actually configured to do.
           </Body1>
 
           {/* The refusal, stated before the list rather than on a button that is not there:
               a pane with no controls in it reads as unfinished unless it says it is not. */}
           <MessageBar intent="info">
             <MessageBarBody>
-              Adding and editing these happens on the desktop app. A project <strong>is</strong> a
-              folder on the machine the engine runs on, so choosing one starts with that machine’s
-              own folder picker — which is most of what making a project is.
+              Attaching or changing a repository happens on the desktop app. A repository
+              <strong> is</strong> a folder on the machine the engine runs on, so choosing one
+              starts with that machine’s own folder picker — which is most of what attaching one is.
             </MessageBarBody>
           </MessageBar>
 
@@ -591,12 +591,12 @@ const HOST_ONLY_SECTIONS: ReadonlyArray<{ title: string; why: string }> = [
       'the control you actually want here.',
   },
   {
-    title: 'Adding and editing projects',
+    title: 'Repository settings',
     why:
-      'a project with a repo IS a folder on that machine, so making one starts with a native ' +
-      'folder picker there, and the rest — its defaults, its base branch, the epics it owns — ' +
-      'is configured beside it. The Projects tab shows what each one is configured to do, and ' +
-      'the board lets you use them: file a card under one, or assign a card to one and ' +
-      'override the model and permission mode for that card.',
+      'a repo IS a folder on that machine, so attaching one starts with a native folder ' +
+      'picker there, and the rest — the execution target, the base branch, the models, the ' +
+      'permission mode, the epics it owns — is configured beside it. A project’s name, ' +
+      'colour and ticket prefix are not part of this: those are rows in the store, and the ' +
+      'Projects tab lets you set them from here just as it does on the desktop.',
   },
 ];

@@ -1,11 +1,14 @@
 /**
- * The desktop's agent projects, read-only.
+ * A repo project's configuration, read-only.
  *
- * The half of `apps/client/src/renderer/src/projects/Projects.tsx` a browser CAN honestly draw.
- * Creating one starts at a native folder picker on the machine the engine runs on, and
- * editing one is that same form — so neither is here, and `SettingsScreen`'s Desktop-only tab
- * says so. Looking at what is configured needs none of that, and is what somebody filing a
- * card under a repo actually wants to check.
+ * Not "creating and editing a project" — that happens on the web's own Projects tab
+ * (`@tm/ui/projects/ProjectAdmin`), which manages a project's identity (name, colour, the
+ * tickets-or-personal choice) from a browser exactly as the desktop does. What is here instead
+ * is the half of `apps/client/src/renderer/src/projects/Projects.tsx` that is specifically
+ * about a REPO: attaching one starts at a native folder picker on the machine the engine runs
+ * on, and so does changing it, so neither is here, and `SettingsScreen`'s Desktop-only tab says
+ * so. Looking at what a repo is configured with needs none of that, and is what somebody
+ * filing a card under one actually wants to check.
  *
  * PRESENTATIONAL, AND THAT IS THE WHOLE OF "READ ONLY"
  * ----------------------------------------------------
