@@ -169,3 +169,28 @@ docker run --rm --add-host=host.docker.internal:host-gateway \
 
 Note the database itself is not created by `docker compose` or by the migration runner —
 `CREATE DATABASE taskmanager` is a one-time manual step on a fresh volume.
+
+Run the server itself the same way to check the PAT guard without a live `vipper.iam` —
+the `CLOUD_IAM_*` values below only need to satisfy `loadIamConfig`'s "is it set" check
+(`src/iam/iam.config.ts`), because a well-shaped-but-unknown PAT is exactly the case that
+should never reach them:
+
+```bash
+docker run --rm -p 3100:3100 --add-host=host.docker.internal:host-gateway \
+  -e DB_HOST=host.docker.internal -e DB_USER=sa -e DB_PASSWORD='Local_Dev_Password_123!' \
+  -e DB_NAME=taskmanager -e NODE_ENV=production \
+  -e CLOUD_IAM_API_BASE=https://auth.vipper.network/api/v1 \
+  -e CLOUD_IAM_CLIENT_ID=unused -e CLOUD_IAM_CLIENT_SECRET=unused \
+  taskmanager-server
+
+curl -o /dev/null -w '%{http_code}\n' localhost:3100/v1/board \
+  -H "authorization: Bearer tmpat_$(head -c32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=' | head -c43)"
+```
+
+`401`, and `docker logs` on the container shows no outbound call to `CLOUD_IAM_API_BASE`
+for that request — not a fast failure from `iam.client.ts`, but that file never being
+reached. `tmpat_` plus 43 base64url characters is exactly `PAT_PREFIX` + `PAT_SECRET_LENGTH`
+(`packages/protocol/src/wire.ts`), so `looksLikePat` routes `IamAuthGuard` into
+`PatService.resolve` before `vipper.iam` is ever a candidate — see `iamAuth.guard.ts`'s
+"route once, commit" rule. The same request against a real IAM bearer, or against nothing
+at all, is what would make that trip; this is the one shape of request that provably can't.
