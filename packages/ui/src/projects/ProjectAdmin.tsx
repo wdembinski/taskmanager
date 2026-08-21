@@ -1,47 +1,53 @@
 /**
- * ProjectAdmin — the ticket-project list, and the drawer that adds or edits one.
+ * ProjectAdmin — the browser's Projects tab: the list of every project, and the drawer that
+ * adds or edits one.
  *
- * The same two-part shape as the desktop's `Projects` admin pane (a `Card` per row, an
- * `OverlayDrawer` form) — embedded directly in the ticket workspace so a project can be
- * created without leaving it. The drawer itself is `ProjectForm`, the same one that pane
- * uses: whether it offers anything about a REPO — a folder field, `BaseBranchField`, a
- * "Runs on" target picker — is the host's call, not this file's, made by whether `repo` is
- * passed down (see `ProjectFormProps.repo`). A ticket project (`ownsTickets(project)`, no
- * `hasRepo`) never needs one — `path` and `planPath` are forced to `''` by the store
- * regardless of what is sent — but a host that CAN browse for a folder (the desktop) may
- * still offer to attach one here, same as its own admin pane.
+ * The shared half of what the desktop's own admin pane
+ * (`apps/client/src/renderer/src/projects/Projects.tsx`) draws — the same two-part shape (a
+ * `Card` per row, an `OverlayDrawer` form) over the same `project:*` transport calls, and as
+ * of the shared `ProjectForm` (`./ProjectForm.tsx`) the very same drawer, just without a
+ * `repo` capability: no folder field, no "Runs on" target picker, no `BaseBranchField`, no
+ * models, no permission mode, no JIRA epics. A repo is configured on the desktop client that
+ * owns the folder it points at — that machine is the only one that can browse it, run git
+ * against it or execute an agent in it — so this pane never passes `repo` to `ProjectForm`,
+ * and `ProjectForm` never renders anything about one without it. `test/shell-parity.test.ts`
+ * asserts this structurally rather than trusting the comment.
  *
- * Both list and drawer go through the unified `project:*` channels — the same ones the
- * desktop's own admin pane uses — since a ticket project is simply a project with a prefix and
- * no repo, not a separate kind with its own channel set.
+ * What IS shared with every host, because it is nothing but a row in the store: a project's
+ * name, its colour, and the tickets-or-personal choice `ProjectForm` draws — so a browser can
+ * create a ticket project, rename one, or flip a project between Personal and its own ticket
+ * board, exactly as the desktop can. Editing a project that already has a repo is the same
+ * form; the repo itself just isn't part of it, and the list shows that project's path
+ * read-only, since a browser can see what is configured even though it cannot set it.
  *
- * Lives in `packages/ui` because both hosts manage ticket projects the same way: unlike an
- * agent project (a folder on a machine, desktop-only by decision — see `shell-parity.test.ts`),
- * a ticket project is nothing but rows in the shared store, reachable over the same relayed
- * channels either host can call.
+ * `ProjectForm` still forces `planPath: ''` on add — this drawer creates a repo-less project.
+ * Turning one into a repo project happens on the desktop that will run it.
  */
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import {
   Badge,
   Body1,
   Button,
+  Caption1,
   Card,
   CardHeader,
   makeStyles,
   MessageBar,
   MessageBarBody,
+  Subtitle2,
   Text,
   tokens,
 } from '@fluentui/react-components';
-import type { Project } from '@tm/shared/model';
-import { ProjectForm, type ProjectFormRepoCapability } from './ProjectForm';
+import { hasRepo, ownsTickets, type Project } from '@tm/shared/model';
+import { PaneLoading } from '../PaneLoading';
+import { useInitialLoad } from '../useInitialLoad';
 import { useTransport } from '../transport';
+import { ProjectForm } from './ProjectForm';
 
 const useStyles = makeStyles({
-  root: { display: 'flex', flexDirection: 'column', gap: '12px' },
+  pane: { display: 'flex', flexDirection: 'column', gap: '16px' },
   list: { display: 'flex', flexDirection: 'column', gap: '8px' },
-  card: { padding: '4px', cursor: 'pointer' },
-  cardSelected: { border: `1px solid ${tokens.colorBrandStroke1}` },
+  card: { padding: '4px' },
   headerText: { display: 'flex', flexDirection: 'column', gap: '2px' },
   nameRow: { display: 'flex', alignItems: 'center', gap: '6px' },
   colorDot: { width: '10px', height: '10px', borderRadius: '3px', flexShrink: 0 },
@@ -49,47 +55,55 @@ const useStyles = makeStyles({
     fontFamily: 'ui-monospace, Consolas, monospace',
     color: tokens.colorNeutralForeground3,
   },
+  path: { color: tokens.colorNeutralForeground3, fontFamily: 'ui-monospace, Consolas, monospace' },
   cardActions: { display: 'flex', gap: '8px' },
   hint: { color: tokens.colorNeutralForeground3 },
 });
 
-export interface ProjectAdminProps {
-  projects: Project[];
-  selectedProjectId: string | null;
-  onSelect: (id: string) => void;
-  /** Re-read the project list — there is no `ticketProject:changed`-style push for a plain
-   *  `project:*` write, so the caller re-fetches after each one, like the desktop's own
-   *  admin pane does. */
-  onProjectsChanged: () => void;
-  /** Present only for a host that can attach a repo to a project — see `ProjectForm`'s own
-   *  `repo` prop and this file's header. Absent on the web, so its drawer stays repo-free. */
-  repo?: ProjectFormRepoCapability;
-}
-
-export function ProjectAdmin({
-  projects,
-  selectedProjectId,
-  onSelect,
-  onProjectsChanged,
-  repo,
-}: ProjectAdminProps): JSX.Element {
+export function ProjectAdmin(): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
+  const [projects, setProjects] = useState<Project[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<{ open: boolean; project?: Project }>({ open: false });
+
+  const refresh = useCallback(async () => {
+    const all = await transport.invoke('project:list');
+    setProjects(all.map((p) => p.project));
+  }, [transport]);
+  const initial = useInitialLoad(refresh);
 
   async function remove(project: Project): Promise<void> {
     setError(null);
     try {
       await transport.invoke('project:remove', project.id);
-      onProjectsChanged();
+      await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
   }
 
+  if (!projects) {
+    return (
+      <PaneLoading
+        label="Loading projects…"
+        error={initial.error}
+        onRetry={initial.retry}
+        shape="rows"
+      />
+    );
+  }
+
   return (
-    <div className={styles.root}>
+    <div className={styles.pane}>
+      <Subtitle2>Projects</Subtitle2>
+      <Body1 className={styles.hint}>
+        Every project the board knows about. Give one its own key prefix to file and number tickets
+        under it, or leave it Personal and use it purely to group cards. A project&apos;s
+        repository, execution target and models are configured on the desktop client that owns that
+        folder — this pane manages everything else.
+      </Body1>
+
       {error && (
         <MessageBar intent="error">
           <MessageBarBody>{error}</MessageBarBody>
@@ -103,22 +117,11 @@ export function ProjectAdmin({
       </div>
 
       {projects.length === 0 ? (
-        <Body1 className={styles.hint}>
-          No ticket projects yet — add one to start filing tickets this app tracks itself.
-        </Body1>
+        <Body1 className={styles.hint}>No projects yet.</Body1>
       ) : (
         <div className={styles.list}>
           {projects.map((project) => (
-            <Card
-              key={project.id}
-              className={
-                project.id === selectedProjectId
-                  ? `${styles.card} ${styles.cardSelected}`
-                  : styles.card
-              }
-              onClick={() => onSelect(project.id)}
-              selected={project.id === selectedProjectId}
-            >
+            <Card key={project.id} className={styles.card}>
               <CardHeader
                 header={
                   <div className={styles.headerText}>
@@ -137,26 +140,24 @@ export function ProjectAdmin({
                         </Badge>
                       )}
                     </div>
+                    {/* Read-only: a browser can see what a repo project is configured with
+                        even though it cannot set any of it — see the file header. */}
+                    {hasRepo(project) && (
+                      <Caption1 className={styles.path}>{project.path}</Caption1>
+                    )}
+                    {!ownsTickets(project) && (
+                      <Caption1 className={styles.hint}>
+                        Personal space — no tickets of its own.
+                      </Caption1>
+                    )}
                   </div>
                 }
                 action={
                   <div className={styles.cardActions}>
-                    <Button
-                      size="small"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setDialog({ open: true, project });
-                      }}
-                    >
+                    <Button size="small" onClick={() => setDialog({ open: true, project })}>
                       Edit
                     </Button>
-                    <Button
-                      size="small"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void remove(project);
-                      }}
-                    >
+                    <Button size="small" onClick={() => void remove(project)}>
                       Remove
                     </Button>
                   </div>
@@ -172,11 +173,7 @@ export function ProjectAdmin({
         project={dialog.project}
         projects={projects}
         onClose={() => setDialog({ open: false })}
-        onSaved={(saved) => {
-          onProjectsChanged();
-          onSelect(saved.id);
-        }}
-        repo={repo}
+        onSaved={() => void refresh()}
       />
     </div>
   );

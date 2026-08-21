@@ -191,6 +191,14 @@ export interface TaskDetailProps {
   /** The agent projects a card can be delegated to (owned by the board, fetched once). */
   agentProjects?: Project[];
   /**
+   * The projects a card can be FILED under (`Task.projectTagId`) — the Project dropdown in
+   * `TaskDetailsCell`. Wider than {@link agentProjects}: a Personal-space project with no
+   * repo is a fine thing to tag a card with, it simply cannot be delegated to. Falls back to
+   * `agentProjects` when omitted, which is the whole of what a caller that predates the
+   * split still gets.
+   */
+  projects?: Project[];
+  /**
    * The chain this task belongs to, in execution order: a card's own steps, or — when
    * a step is shown — its siblings, which is what makes "step 2 of 5" possible.
    */
@@ -281,6 +289,7 @@ const NO_TASKS: ReadonlyMap<string, Task> = new Map();
 export function TaskDetail({
   task,
   agentProjects = [],
+  projects = agentProjects,
   subtasks = [],
   parentTask = null,
   mergeRequests = [],
@@ -979,7 +988,7 @@ export function TaskDetail({
             )}
             <TaskDetailsCell
               task={task}
-              agentProjects={agentProjects}
+              projects={projects}
               attachments={attachments}
               priorityDisplay={priorityDisplay}
               onTaskChanged={(updated) => onStatusChanged?.(updated)}

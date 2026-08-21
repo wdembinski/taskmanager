@@ -6,15 +6,15 @@
  * `titleBar` — the desktop runs in a frameless window and has to paint its own drag region
  * and min/max/close; a browser tab already has all three above the page.
  *
- * The rail carries all five desktop destinations even though only one of them is mirrored
- * here. A rail with a single tile on it looks like a different application, and a tile
- * that is present-but-off with "desktop only" in its tooltip is honest where a missing one
- * is merely silent.
+ * The rail carries all seven desktop destinations even though one of them — Scratch run —
+ * stays off here. A tile that is present-but-off with "desktop only" in its tooltip is honest
+ * where a missing one is merely silent.
  */
 import { useEffect, useMemo, useState } from 'react';
 import { Caption1, CounterBadge, makeStyles } from '@fluentui/react-components';
 import {
   AlertRegular,
+  AppsListDetailRegular,
   DataTrendingRegular,
   FolderRegular,
   PlayRegular,
@@ -24,6 +24,7 @@ import {
 import { AppShell } from '@tm/ui/shell/AppShell';
 import { Attention } from '@tm/ui/Attention';
 import { Performance } from '@tm/ui/Performance';
+import { ProjectAdmin } from '@tm/ui/projects/ProjectAdmin';
 import { Projects } from '@tm/ui/projects/Projects';
 import { NavRail, type NavRailItem } from '@tm/ui/shell/NavRail';
 import { StatusBar, StatusDot, StatusSpacer } from '@tm/ui/shell/StatusBar';
@@ -66,18 +67,23 @@ const DESKTOP_ONLY = 'desktop only';
 /**
  * The desktop's rail, in the desktop's order — see `apps/client/src/renderer/src/App.tsx`.
  *
- * Five of the six are live now. Attention and Performance moved into `@tm/ui` whole (they
+ * Six of the seven are live now. Attention and Performance moved into `@tm/ui` whole (they
  * had no host in them at all, only `window.api` calls that are `useTransport()` now), and
  * Settings is a fork: nine of its twenty-one channels are host-bound, so the shell is this
- * app's and the host-free sections are shared. Projects is a native ticket project — no
- * folder, no native picker — so it carries no `unavailable` here either; the *agent*-project
- * kind is the one that stays desktop-only (`shell-parity.test.ts`, "the one configuration the
- * web deliberately does not mirror"). Scratch run stays off — it drives a live
- * `session:start`, which is host-only by policy (`@tm/shared/ipcRelay`).
+ * app's and the host-free sections are shared. Projects renders `ProjectAdmin` — a project's
+ * identity (name, colour, the tickets-or-personal choice) is nothing but a row in the store,
+ * so a browser manages it exactly as the desktop does; only a project's REPO half (folder,
+ * execution target, models, permission mode) stays desktop-only, because that is a fact about
+ * a machine only the desktop client sees (`shell-parity.test.ts`, "the web configures a
+ * project's identity, never its repo"). Tickets renders the same ticket-project workspace the
+ * desktop does — a picker plus its backlog/Gantt, no folder or native picker either. Scratch
+ * run stays off — it drives a live `session:start`, which is host-only by policy
+ * (`@tm/shared/ipcRelay`).
  */
 const NAV: readonly NavRailItem[] = [
   { id: 'mytasks', label: 'My Tasks', icon: <TaskListSquareLtrRegular /> },
   { id: 'projects', label: 'Projects', icon: <FolderRegular /> },
+  { id: 'tickets', label: 'Tickets', icon: <AppsListDetailRegular /> },
   { id: 'performance', label: 'Performance', icon: <DataTrendingRegular /> },
   { id: 'attention', label: 'Attention', icon: <AlertRegular /> },
   { id: 'settings', label: 'Settings', icon: <SettingsRegular /> },
@@ -85,7 +91,7 @@ const NAV: readonly NavRailItem[] = [
 ];
 
 /** The rail's destinations that this app actually renders. */
-type Screen = 'mytasks' | 'projects' | 'performance' | 'attention' | 'settings';
+type Screen = 'mytasks' | 'projects' | 'tickets' | 'performance' | 'attention' | 'settings';
 
 /** How often the status bar's "synced Ns ago" recomputes between polls. */
 const AGE_TICK_MS = 5_000;
@@ -301,7 +307,8 @@ function SignedInBoard({
               error={board.syncProgress.lastError}
             />
           ))}
-        {screen === 'projects' && <Projects />}
+        {screen === 'projects' && <ProjectAdmin />}
+        {screen === 'tickets' && <Projects />}
         {screen === 'performance' && <Performance />}
         {screen === 'attention' && <Attention />}
         {/* The mirrored `projects` rows, which this hook already holds for the board — so the

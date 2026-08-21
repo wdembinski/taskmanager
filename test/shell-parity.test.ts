@@ -427,10 +427,17 @@ describe('the theme both hosts mount', () => {
   }
 });
 
-describe('agent projects: the web reads them and does not configure them', () => {
+describe('agent projects: the web configures a project’s identity, never its repo', () => {
   /**
-   * Agent projects are created and edited on the DESKTOP, and that is a decision rather than
-   * a piece of the mirror nobody got to (plan doc, "What is deliberately out of scope").
+   * Narrowed a second time. The first narrowing (see git history of this block) let a
+   * browser READ what a repo project is configured with. This one lets a browser WRITE a
+   * project's identity too — name, colour, the tickets-or-personal choice — through the same
+   * shared `ProjectAdmin.tsx` (`packages/ui/src/projects/`) the Projects tab now renders on
+   * both hosts. What stays desktop-only is narrower still: the REPO half of a project — its
+   * folder, execution target, base branch, models, permission mode, JIRA epics — because that
+   * is a fact about a machine only the desktop client sees. `project:pickDirectory` is the
+   * clearest single tell of that boundary: a native folder picker can only ever mean "browse
+   * THIS machine", so it stays host-only regardless of who else can call `project:add`.
    *
    * **Narrowed since, and narrowed rather than reversed** — which is why this block is no
    * longer titled "the one configuration the web deliberately does not mirror". *Reading* the
@@ -448,16 +455,17 @@ describe('agent projects: the web reads them and does not configure them', () =>
    * `Projects` screen and the Tickets workspace's `ProjectAdmin` (the EDITING-PANE test below
    * still finds only the desktop's copy, because a shared FORM is not a shared PANE — the
    * pane wires up `window.api` and the picker; the form takes an optional capability object
-   * instead). `apps/web/src/App.tsx` renders that Tickets workspace bare — `<Projects />`,
-   * no `repo` prop — so it reaches `ProjectForm` too. That is not a hole in "creates, edits or
-   * removes one" above: a *ticket-only* project has no folder to protect and was already fair
-   * game for either host to write, by `ProjectAdmin.tsx`'s own header — this decision was
-   * always about the fields a folder makes desktop-only, not about the project row itself.
-   * What keeps those fields off the web is that `ProjectForm` renders its folder path,
-   * "Runs on", `BaseBranchField` and the three automation switches only when the host passes
-   * `repo`, and nothing under `apps/web/src` does. The write-channel/picker regexes above
-   * cannot see this — the calls they would need to catch live in `packages/ui`, not
-   * `apps/web/src` — so the assertion below checks the capability gate directly instead.
+   * instead). `apps/web/src/App.tsx` renders `ProjectAdmin` bare on its own `'projects'` tab —
+   * no `repo` prop — so it reaches `ProjectForm` too, name/colour/the tickets-or-personal
+   * choice and all. That is not a hole in "creates, edits or removes one" above: a
+   * *ticket-only* project has no folder to protect and was already fair game for either host
+   * to write, by `ProjectAdmin.tsx`'s own header — this decision was always about the fields a
+   * folder makes desktop-only, not about the project row itself. What keeps those fields off
+   * the web is that `ProjectForm` renders its folder path, "Runs on", `BaseBranchField` and
+   * the three automation switches only when the host passes `repo`, and nothing under
+   * `apps/web/src` does. The write-channel/picker regexes above cannot see this — the calls
+   * they would need to catch live in `packages/ui`, not `apps/web/src` — so the assertion
+   * below checks the capability gate directly instead.
    *
    * An agent project IS a folder on the machine the engine runs on, so making one begins with
    * `project:pickDirectory` — a native picker, `host-only` for the reason every native modal
@@ -474,21 +482,14 @@ describe('agent projects: the web reads them and does not configure them', () =>
   const WEB_TREE = 'apps/web/src';
   const SHARED_UI_TREE = 'packages/ui/src';
   const DESKTOP_PANE = 'apps/client/src/renderer/src/projects/Projects.tsx';
-  /** The web's half: a list, no form. Named here because three assertions below refer to it. */
+  const SHARED_ADMIN_PANE = 'packages/ui/src/projects/ProjectAdmin.tsx';
+  /** The web's read-only repo facts. Named here because two assertions below refer to it. */
   const WEB_VIEW = 'apps/web/src/settings/ProjectsSection.tsx';
   const WEB_SETTINGS = 'apps/web/src/settings/SettingsScreen.tsx';
 
-  /**
-   * A CALL, not a mention: both files below discuss these channels in prose, correctly.
-   *
-   * `project:*` now carries every project write — agent projects and plan projects alike,
-   * since `agentProject:*` folded into it — so this guards the whole surface rather than a
-   * name that used to be agent-project-specific.
-   */
-  const PROJECT_WRITE = /invoke\(\s*'project:(?:add|update|remove)'/;
   const NATIVE_PICKER = /invoke\(\s*'project:pick(?:Directory|File)'/;
 
-  it('has no browser code that creates, edits or removes one', () => {
+  it('has no browser code that calls the native folder picker', () => {
     // Tests are excluded because the web's own suite calls `project:pickDirectory` on purpose
     // (`httpTransport.test.ts`) to assert the transport REFUSES it — the opposite of a breach.
     const sources = filesUnder(WEB_TREE, /\.tsx?$/).filter((path) => !/\.test\.tsx?$/.test(path));
@@ -497,24 +498,16 @@ describe('agent projects: the web reads them and does not configure them', () =>
       `found no non-test sources under ${WEB_TREE} — has the tree moved?`,
     ).toBeGreaterThan(10);
 
-    const writes = sources.filter((path) => PROJECT_WRITE.test(read(path)));
-    expect(
-      writes,
-      `${writes.join(', ')} calls a project write channel. Those relay, so it would even ` +
-        'work — and it would leave a browser holding a repo path on a machine it cannot see. ' +
-        'Creating and editing projects is desktop-only by decision (plan doc, "What is ' +
-        'deliberately out of scope"); reversing it is a plan change, not a patch.',
-    ).toEqual([]);
-
     const pickers = sources.filter((path) => NATIVE_PICKER.test(read(path)));
     expect(
       pickers,
       `${pickers.join(', ')} calls a native file picker. It is host-only, so the transport ` +
-        'refuses it before the network — a caller here can only ever produce that refusal.',
+        'refuses it before the network — a caller here can only ever produce that refusal, ' +
+        'and a browser has no machine for the picker to browse in the first place.',
     ).toEqual([]);
   });
 
-  it('keeps the EDITING pane in the desktop renderer, and nowhere else', () => {
+  it('keeps the REPO-editing pane in the desktop renderer, and nowhere else', () => {
     const pattern = /^Projects\.tsx?$/;
     // `packages/ui/src/projects/Projects.tsx` is the ticket WORKSPACE, a different pane
     // with the same base filename — excluded here by its known path, or this assertion
@@ -527,11 +520,11 @@ describe('agent projects: the web reads them and does not configure them', () =>
 
     expect(
       copies,
-      `${copies.join(', ')} is a projects-EDITING pane outside the desktop renderer. Unlike ` +
-        'AddTaskDialog and GitGraphPane above, this one was deliberately NOT moved into ' +
-        'packages/ui: it reaches the engine through window.api directly and opens a folder ' +
-        "picker, so a shared copy would be a pane only one host could ever run. The web's " +
-        `read-only view is ${WEB_VIEW} and is asserted below.`,
+      `${copies.join(', ')} is a projects-editing pane outside the desktop renderer, named ` +
+        `like one. Unlike ${SHARED_ADMIN_PANE} (a project's IDENTITY, shared because it is ` +
+        'nothing but a row in the store), a pane over a REPO reaches the engine through ' +
+        'window.api directly and opens a folder picker, so a shared copy would be a pane only ' +
+        `one host could ever run. The web's read-only repo-facts view is ${WEB_VIEW}.`,
     ).toEqual([]);
 
     // The walk finding nothing must mean "nowhere else", not "walked the wrong trees".
@@ -542,35 +535,48 @@ describe('agent projects: the web reads them and does not configure them', () =>
     ).toContain(DESKTOP_PANE);
   });
 
+  it('never reaches for the native picker from the shared admin pane', () => {
+    // Payload construction itself moved into `ProjectForm` (see the block comment's third
+    // narrowing) — `SHARED_ADMIN_PANE` only lists projects and opens that form, so
+    // `REPO_FIELDS`/`path: ''`/`planPath: ''` no longer have anything to match here; the
+    // capability-gate test below covers that ground on the file that actually builds the
+    // payload. What is still this pane's own to get wrong is reaching for a picker directly.
+    const source = read(SHARED_ADMIN_PANE);
+
+    expect(
+      /project:pick/.test(source),
+      `${SHARED_ADMIN_PANE} mentions 'project:pick'. A browser has no machine for a native ` +
+        'folder picker to browse, and this pane runs on both hosts — it must never reach for one.',
+    ).toBe(false);
+  });
+
   it('says so on the web, where somebody would go looking', () => {
     // The card is the whole of the user-facing answer: a section that is quietly absent reads
     // as a screen that is broken, and the fix for that is text, not a feature.
     const settings = read(WEB_SETTINGS);
     expect(
       settings,
-      `${WEB_SETTINGS} must keep an "Adding and editing projects" entry in HOST_ONLY_SECTIONS. ` +
+      `${WEB_SETTINGS} must keep a "Repository settings" entry in HOST_ONLY_SECTIONS. ` +
         'Dropping the entry does not remove the limit — it removes the only explanation of it ' +
         'a browser user is ever offered.',
-    ).toMatch(/title:\s*'Adding and editing projects'/);
+    ).toMatch(/title:\s*'Repository settings'/);
   });
 
-  it('draws the read-only view, and renders it from the web Settings screen', () => {
-    // The other half of the decision. Reading the list is in scope, so a silent deletion of
-    // the pane that does it should go red here rather than be discovered on the screen — the
-    // same argument that put the write guard above in this file.
+  it('draws the read-only repo view, and renders it from the web Settings screen', () => {
+    // Reading the repo facts is in scope, so a silent deletion of the pane that does it
+    // should go red here rather than be discovered on the screen.
     expect(
       filesUnder('apps/web/src/settings', /^ProjectsSection\.tsx?$/),
-      `${WEB_VIEW} is the browser's read-only agent-projects view and is part of this ` +
-        'decision, not a convenience. Viewing what is configured is in scope (plan doc, ' +
-        '"What is deliberately out of scope"); removing the view narrows the web back without ' +
-        'anything saying so.',
+      `${WEB_VIEW} is the browser's read-only repo-facts view and is part of this decision, ` +
+        'not a convenience. Viewing what a repo project is configured with is in scope; ' +
+        'removing the view narrows the web back without anything saying so.',
     ).toContain(WEB_VIEW);
 
     expect(
       read(WEB_SETTINGS),
       `${WEB_SETTINGS} must render ProjectsSection. A pane nothing mounts is a file, not a ` +
         'feature, and the tab it sits behind is the only place a browser user can see how a ' +
-        'project is configured.',
+        'repo project is configured.',
     ).toMatch(/<ProjectsSection\b/);
   });
 
@@ -586,8 +592,8 @@ describe('agent projects: the web reads them and does not configure them', () =>
       expect(
         pattern.test(source),
         `${WEB_VIEW} ${what}. It takes a list of projects and returns markup, and that is the ` +
-          'whole of what makes it read-only: agentProject:add/update/remove are classified ' +
-          "'relay', so neither RELAY_POLICY nor pnpm typecheck would stop a write added here.",
+          "whole of what makes it read-only: project:add/update/remove are classified 'relay', " +
+          'so neither RELAY_POLICY nor pnpm typecheck would stop a write added here.',
       ).toBe(false);
     }
   });

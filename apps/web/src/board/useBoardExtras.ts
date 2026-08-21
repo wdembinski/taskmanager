@@ -27,7 +27,14 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTransport, type Transport } from '@tm/ui/transport';
-import { hasPlan, hasRepo, type Person, type Project, type Task } from '@tm/shared/model';
+import {
+  hasPlan,
+  hasRepo,
+  isFilingProject,
+  type Person,
+  type Project,
+  type Task,
+} from '@tm/shared/model';
 import type { TaskAttachment } from '@tm/shared/attachments';
 import type { MergeRequest } from '@tm/shared/mergeRequest';
 import type { LinkGate, TaskLink } from '@tm/shared/taskChain';
@@ -38,15 +45,24 @@ import { buildAttentionIndex, type AttentionIndex } from '@tm/ui/attentionIndex'
 export interface BoardExtras {
   agentProjects: Project[];
   /**
-   * Whether `agentProject:list` actually ANSWERED — not whether it returned anything.
+   * The wider, filing-eligible slice of the same `project:list` answer — everything
+   * {@link BoardExtras.agentProjects} carries, plus a personal-space project with no repo of
+   * its own. Kept apart from `agentProjects` rather than derived from it, because it is
+   * filtered from the raw response by a different predicate (`isFilingProject`), not a
+   * narrowing of it. Resolved against the mirror the same way, via `selectFilingProjects`.
+   */
+  filingProjects: Project[];
+  /**
+   * Whether `project:list` actually ANSWERED — not whether it returned anything.
    *
    * The one read here whose empty result is ambiguous. Every other list in this hook is a
    * detail-pane section that simply does not draw when it is empty, so "none" and "nobody
-   * answered" look the same and it does not matter. Agent projects are different: they are
-   * the repo pickers, and an empty one reads as *this account has no projects* — a claim a
+   * answered" look the same and it does not matter. Agent/filing projects are different: they
+   * are the repo pickers, and an empty one reads as *this account has no projects* — a claim a
    * browser talking to a sleeping desktop is in no position to make. So the caller resolves
-   * the list against the mirrored `projects` rows instead (`selectAgentProjects`), and this
-   * flag is the only thing that can tell it which of the two answers it is holding.
+   * both lists against the mirrored `projects` rows instead (`selectAgentProjects` /
+   * `selectFilingProjects`), and this flag is the only thing that can tell it which of the two
+   * answers it is holding.
    */
   agentProjectsLoaded: boolean;
   mergeRequests: MergeRequest[];
@@ -127,6 +143,7 @@ export function useBoardExtras(): BoardExtras {
   const transport = useTransport();
 
   const [agentProjects, setAgentProjects] = useState<Project[]>([]);
+  const [filingProjects, setFilingProjects] = useState<Project[]>([]);
   const [agentProjectsLoaded, setAgentProjectsLoaded] = useState(false);
   const [mergeRequests, setMergeRequests] = useState<MergeRequest[]>([]);
   const [attachments, setAttachments] = useState<TaskAttachment[]>([]);
@@ -158,10 +175,13 @@ export function useBoardExtras(): BoardExtras {
     // "the desktop replied" — a rejection leaves it `false` by never running this at all.
     void load(
       () => transport.invoke('project:list'),
-      // A repo directory with no plan file — the same set `agentProject:list` used to
-      // answer, before the two channel sets merged into `project:*`.
       (projects) => {
-        setAgentProjects(projects.map((p) => p.project).filter((p) => hasRepo(p) && !hasPlan(p)));
+        const list = projects.map((p) => p.project);
+        // A repo directory with no plan file — the same set `agentProject:list` used to
+        // answer, before the two channel sets merged into `project:*`.
+        setAgentProjects(list.filter((p) => hasRepo(p) && !hasPlan(p)));
+        // The wider filing-eligible set — see `isFilingProject`.
+        setFilingProjects(list.filter(isFilingProject));
         setAgentProjectsLoaded(true);
       },
     );
@@ -269,6 +289,7 @@ export function useBoardExtras(): BoardExtras {
 
   return {
     agentProjects,
+    filingProjects,
     agentProjectsLoaded,
     mergeRequests,
     attachments,

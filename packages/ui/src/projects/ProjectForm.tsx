@@ -23,6 +23,7 @@ import { useEffect, useState } from 'react';
 import {
   Body1,
   Button,
+  Caption1,
   Dropdown,
   Field,
   Input,
@@ -41,10 +42,17 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import { DismissRegular } from '@fluentui/react-icons';
-import { hasPlan, MODELS, type GitPreflight, type Project } from '@tm/shared/model';
+import {
+  hasPlan,
+  hasRepo,
+  ownsTickets,
+  MODELS,
+  type GitPreflight,
+  type Project,
+} from '@tm/shared/model';
 import { PERMISSION_MODE_LABELS, type ClaudeModel, type PermissionMode } from '@tm/shared/session';
 import { RELEASE_DOC } from '@tm/shared/release';
-import { normalizeTicketPrefix, suggestTicketPrefix } from '@tm/shared/ticketKey';
+import { suggestTicketPrefix } from '@tm/shared/ticketKey';
 import {
   execTargetLabel,
   formatExecTarget,
@@ -58,6 +66,8 @@ import { BaseBranchField } from '../BaseBranchField';
 import { ColorSwatches } from '../ColorSwatches';
 import { PlanningModelField } from '../PlanningModelField';
 import { useTransport } from '../transport';
+import { ProjectBasicsFields } from './ProjectBasicsFields';
+import { ticketModeOf, ticketPrefixError, type TicketMode } from './projectBasics';
 
 const useStyles = makeStyles({
   form: { display: 'flex', flexDirection: 'column', gap: '12px', minWidth: '380px' },
@@ -123,6 +133,10 @@ export function ProjectForm({
   const transport = useTransport();
   const [path, setPath] = useState('');
   const [name, setName] = useState('');
+  /** Only meaningful for a plan-less project — see `showModeChoice` below. Defaults to
+   *  'tickets': the guarantee a plan-less project gets a prefix is the default, and
+   *  Personal is the opt-out, not the other way round. */
+  const [mode, setMode] = useState<TicketMode>('tickets');
   const [ticketPrefix, setTicketPrefix] = useState('');
   // Once the human edits the prefix directly, a later name edit must stop overwriting it.
   const [prefixTouched, setPrefixTouched] = useState(false);
@@ -163,15 +177,15 @@ export function ProjectForm({
     onFolderChange?.(path, next);
   }
 
-  const hasRepo = Boolean(repo);
+  const hasRepoCapability = Boolean(repo);
 
   // Only offer targets that exist here: with no WSL installed the control never
   // appears, and the pane looks exactly as it did before. Meaningless without a folder to
   // run against, so skipped entirely for a host with no repo capability.
   useEffect(() => {
-    if (!hasRepo) return;
+    if (!hasRepoCapability) return;
     void transport.invoke('exec:listDistros').then(setDistros);
-  }, [hasRepo, transport]);
+  }, [hasRepoCapability, transport]);
 
   // Seed the form each time it opens — from the project when editing, from the
   // user's global defaults when adding.
@@ -183,6 +197,7 @@ export function ProjectForm({
     if (project) {
       updatePath(project.path);
       setName(project.name);
+      setMode(ticketModeOf(project));
       setTicketPrefix(project.ticketPrefix);
       setPrefixTouched(true); // an existing prefix is never overwritten by editing the name
       setEpics(project.jiraEpicKeys.join(', '));
@@ -202,6 +217,7 @@ export function ProjectForm({
     } else {
       updatePath('');
       setName('');
+      setMode('tickets');
       setTicketPrefix('');
       setPrefixTouched(false);
       setEpics('');
@@ -251,25 +267,23 @@ export function ProjectForm({
     }
   }
 
-  const normalizedPrefix = ticketPrefix.trim() ? normalizeTicketPrefix(ticketPrefix) : null;
-  const takenBy = normalizedPrefix
-    ? projects.find(
-        (p) =>
-          p.id !== project?.id &&
-          p.ticketPrefix &&
-          p.ticketPrefix.toUpperCase() === normalizedPrefix,
-      )
-    : undefined;
-  const prefixError =
-    ticketPrefix.trim() && !normalizedPrefix
-      ? 'Not a usable prefix — needs at least one letter, and cannot be just digits.'
-      : takenBy
-        ? `Already used by ${takenBy.name}.`
-        : null;
-  // This dialog always adds plan-less (see save()), and every board project is now
-  // guaranteed a prefix — only a legacy plan-driven project being edited can still go
-  // without one, so only that case leaves the field optional.
-  const prefixRequired = !project || !hasPlan(project);
+  // The tickets-or-personal choice only means anything for a plan-less project — this
+  // dialog always adds plan-less (see save()), and every plan-less board project is now
+  // guaranteed a prefix unless it opts out as Personal (`store.addProject`/`updateProject`).
+  // A legacy plan-driven project being edited was never part of either guarantee, so it
+  // keeps its own always-shown, always-optional prefix field below instead of this choice.
+  const showModeChoice = !project || !hasPlan(project);
+  // Outside `showModeChoice`, `mode` still holds whatever `ticketModeOf` read off the
+  // project being edited (usually 'personal' — a plan project rarely carries a prefix) but
+  // means nothing there: the legacy field's own validation reads as if this project were
+  // always in ticket mode, exactly as it did before this choice existed.
+  const prefixError = ticketPrefixError({
+    mode: showModeChoice ? mode : 'tickets',
+    prefix: ticketPrefix,
+    projects,
+    editingId: project?.id,
+  });
+  const isPersonalChoice = showModeChoice && mode === 'personal';
 
   async function save(): Promise<void> {
     if (prefixError) {
@@ -288,7 +302,8 @@ export function ProjectForm({
           defaultPermissionMode: permMode,
           concurrency,
           jiraEpicKeys: parseEpicKeys(epics),
-          ticketPrefix,
+          ticketPrefix: isPersonalChoice ? '' : ticketPrefix,
+          personal: isPersonalChoice,
           color,
           target,
           baseBranch,
@@ -315,7 +330,8 @@ export function ProjectForm({
           defaultPermissionMode: permMode,
           concurrency,
           jiraEpicKeys: parseEpicKeys(epics),
-          ticketPrefix,
+          ticketPrefix: isPersonalChoice ? '' : ticketPrefix,
+          personal: isPersonalChoice,
           color,
           target,
           baseBranch,
@@ -408,6 +424,18 @@ export function ProjectForm({
             </Field>
           )}
 
+          {/* Read-only: a host with no repo capability (the web) can see what a repo
+              project is configured with even though it cannot set any of it. */}
+          {!repo && project && hasRepo(project) && (
+            <Field label="Repository folder">
+              <Input value={project.path} readOnly className={styles.mono} />
+              <Caption1 className={styles.hint}>
+                Set on the desktop client that owns this folder, along with its execution target,
+                models and permission mode — not editable from here.
+              </Caption1>
+            </Field>
+          )}
+
           {repo && path && distros.length > 0 && (
             <Field
               label="Runs on"
@@ -440,27 +468,41 @@ export function ProjectForm({
             </Field>
           )}
 
-          <Field
-            label="Ticket key prefix"
-            required={prefixRequired}
-            hint={
-              prefixRequired
-                ? 'Tickets filed under this project are numbered TM-1, TM-2, … Derived from the name below if left blank.'
-                : "Tickets filed under this project are numbered TM-1, TM-2, … Leave it blank if this project doesn't own tickets of its own."
-            }
-            validationState={prefixError ? 'error' : undefined}
-            validationMessage={prefixError ?? undefined}
-          >
-            <Input
-              className={styles.mono}
-              value={ticketPrefix}
-              onChange={(_e, d) => {
-                setTicketPrefix(d.value);
+          {/* The tickets-or-personal choice, for anything the guaranteed prefix actually
+              applies to — see `showModeChoice`. A legacy plan-driven project being edited
+              keeps its own always-shown, always-optional field instead: that guarantee
+              never applied to it, and it is not a project this choice was ever about. */}
+          {showModeChoice ? (
+            <ProjectBasicsFields
+              mode={mode}
+              onModeChange={setMode}
+              ticketPrefix={ticketPrefix}
+              onTicketPrefixChange={(prefix) => {
+                setTicketPrefix(prefix);
                 setPrefixTouched(true);
               }}
-              placeholder="TM"
+              projects={projects}
+              editingId={project?.id}
+              hasIssuedTickets={Boolean(project && ownsTickets(project))}
             />
-          </Field>
+          ) : (
+            <Field
+              label="Ticket key prefix"
+              hint="Tickets filed under this project are numbered TM-1, TM-2, … Leave it blank if this project doesn't own tickets of its own."
+              validationState={prefixError ? 'error' : undefined}
+              validationMessage={prefixError ?? undefined}
+            >
+              <Input
+                className={styles.mono}
+                value={ticketPrefix}
+                onChange={(_e, d) => {
+                  setTicketPrefix(d.value);
+                  setPrefixTouched(true);
+                }}
+                placeholder="TM"
+              />
+            </Field>
+          )}
 
           <Field
             label="Colour"

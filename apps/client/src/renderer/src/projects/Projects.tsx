@@ -28,7 +28,7 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
-import type { Project } from '@shared/model';
+import { ownsTickets, type Project } from '@shared/model';
 import { LOCAL_TARGET, type ExecTarget } from '@shared/execTarget';
 import { pathSuitsHost } from '@shared/wslPath';
 import { useGitPreflight } from '../useGitPreflight';
@@ -161,8 +161,13 @@ export function Projects(): JSX.Element {
                         </Caption1>
                       </>
                     ) : (
+                      <Caption1 className={styles.hint}>No repository.</Caption1>
+                    )}
+                    {/* Independent of whether it has a repo — a project either owns tickets
+                        (the badge above says which prefix) or is a Personal space. */}
+                    {!ownsTickets(project) && (
                       <Caption1 className={styles.hint}>
-                        No repository — files and numbers tickets only.
+                        Personal space — no tickets of its own.
                       </Caption1>
                     )}
                   </div>

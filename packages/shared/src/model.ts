@@ -151,6 +151,36 @@ export function isBoardProject(project: Pick<Project, 'planPath'>): boolean {
   return !hasPlan(project);
 }
 
+/**
+ * Whether a project owns a board of its own — the non-Personal scopes `board:scopes`
+ * offers. `isBoardProject` alone is not enough: a bare repo and a repo-less personal-space
+ * project are both card lists rather than queues, but neither can actually receive a
+ * ticket (`store.createTicket` keys a new one off `ticketPrefix`), so switching a scope to
+ * one would open a board nothing could ever be added to. Their cards live on Personal
+ * instead — this is what keeps that true.
+ */
+export function ownsBoard(project: Pick<Project, 'planPath' | 'ticketPrefix'>): boolean {
+  return isBoardProject(project) && ownsTickets(project);
+}
+
+/**
+ * Whether a project can be named in a card's `projectTagId` — filing, not delegation (see
+ * `agentProjectsOf`/`resolveAgentProject` in `agentProjects.ts` for the narrower, repo-only
+ * list delegation needs). Wider than `hasRepo`: a personal-space project — no repo, no
+ * ticket prefix — is filed under fine, and simply resolves to no agent project the moment a
+ * run is delegated from it (`resolveAgentProject` already filters candidates by `hasRepo`).
+ *
+ * Excluded are a plan-driven project (a queue, not something to tag a card with) and a
+ * project that owns its own ticket board with no repo of its own (`ownsBoard`): that
+ * project already IS a board, so a native ticket belongs there directly rather than being
+ * filed onto a Personal-board card.
+ */
+export function isFilingProject(
+  project: Pick<Project, 'planPath' | 'path' | 'ticketPrefix'>,
+): boolean {
+  return !hasPlan(project) && (hasRepo(project) || !ownsTickets(project));
+}
+
 /** A project the app orchestrates: a directory plus the plan that drives it. */
 export interface Project {
   /** Stable app-assigned id (UUID). Not derived from the path, so a project can
@@ -336,11 +366,19 @@ export interface AddProjectInput {
   planAligned?: boolean;
   jiraEpicKeys?: string[];
   /**
-   * The ticket key prefix. Normalized on the way in. Omitted (or unusable) leaves the
-   * project prefix-less, which simply means it cannot allocate a key yet — see
-   * {@link Project.ticketPrefix}.
+   * The ticket key prefix. Normalized on the way in. Omitted (or unusable) on a plan-less,
+   * non-Personal project is ordinarily filled in for you — see {@link Project.ticketPrefix}
+   * and the `personal` field below for the one way to decline that.
    */
   ticketPrefix?: string;
+  /**
+   * Declines the guaranteed prefix a plan-less project would otherwise be given (see
+   * `ticketPrefix` above): this project is a Personal space, filing cards under it without
+   * ever numbering them. Ignored for a plan-driven project, which was never guaranteed one
+   * to begin with. Not stored on {@link Project} itself — it is read back off `ticketPrefix`
+   * being empty, the same fact {@link ownsTickets} already keys off.
+   */
+  personal?: boolean;
   /** Defaults to the global `defaultExecTarget`. */
   target?: ExecTarget;
   instructions?: string;
@@ -380,7 +418,15 @@ export type ProjectPatch = Partial<
     | 'instructions'
     | 'color'
   >
->;
+> & {
+  /** See {@link AddProjectInput.personal} — the same opt-out, on an edit rather than a
+   *  create, and overriding any `ticketPrefix` sent alongside it the same way. Only
+   *  meaningful together with a `ticketPrefix` patch (`updateProject` only reads either
+   *  field when the other is present) — it is what tells `updateProject` this edit means
+   *  "stay Personal" rather than "give this one a fresh one", the guarantee it otherwise
+   *  applies unconditionally. */
+  personal?: boolean;
+};
 
 /**
  * Every model a run may be launched on, cheapest first — the one list the dropdowns and

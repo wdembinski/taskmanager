@@ -25,6 +25,7 @@ import {
   hasPlan,
   hasRepo,
   isBoardProject,
+  isFilingProject,
   PERSONAL_PROJECT_ID,
   type Project,
   type Task,
@@ -61,16 +62,13 @@ export function selectArchivedTasks(state: BoardTaskState, scope: string): Task[
 }
 
 /**
- * The agent projects this browser can honestly name — the relay's answer when it gave one,
- * and the mirrored `projects` rows when it did not.
- *
- * Five controls draw this list (a card's agent name and its project colour, the detail pane's
- * Project dropdown, *Assign agent*'s picker, the add-task dialog's Project field) and every
- * one of them used to read a single relayed `agentProject:list`. A relayed read needs a
- * desktop awake to run it, and against one that is not polling it does not even fail fast: it
- * waits out `RPC_TIMEOUT_MS` and then rejects into `useBoardExtras`'s deliberately silent
- * `catch`. All five then rendered an empty state that reads as *an account with no projects*
- * rather than as *nobody answered* — while the rows sat in `state.projects` the whole time.
+ * The relay's answer when it gave one, and the mirrored `projects` rows when it did not —
+ * the resolution both {@link selectAgentProjects} and {@link selectFilingProjects} apply, over
+ * their own predicate. A relayed read needs a desktop awake to run it, and against one that is
+ * not polling it does not even fail fast: it waits out `RPC_TIMEOUT_MS` and then rejects into
+ * `useBoardExtras`'s deliberately silent `catch`, which used to leave every control reading
+ * this an empty state that looks exactly like *an account with no projects* rather than
+ * *nobody answered* — while the rows sat in `state.projects` the whole time.
  *
  * WHY A REPLACEMENT AND NOT A MERGE
  * ---------------------------------
@@ -82,25 +80,62 @@ export function selectArchivedTasks(state: BoardTaskState, scope: string): Task[
  * WHY `relayAnswered` RATHER THAN "IS THE RELAYED LIST EMPTY"
  * -----------------------------------------------------------
  * Because "loaded and empty" and "nobody was home" are different answers and only the caller
- * can tell them apart. An account whose desktop genuinely has no agent projects must show
+ * can tell them apart. An account whose desktop genuinely has no projects to offer must show
  * none, not the mirror's idea of some; hence the flag, which `useBoardExtras` sets on the
  * successful branch alone.
  *
- * `hasRepo(project) && !hasPlan(project)` is filtered on BOTH branches — the same predicate
- * `project:list`'s own consumers apply over the same rows (see `MyTasks.tsx`'s `seed`) — so
- * the shape is the same either way and neither branch can leak the Personal board, a
- * plan-driven project or a repo-less ticket project into a repo picker.
+ * `predicate` is applied on BOTH branches — the same one `project:list`'s own consumers apply
+ * over the same rows (see `MyTasks.tsx`'s `seed`) — so the shape is the same either way.
  *
  * Sorted by name (then id, to break a tie the same way every time), so the list does not
  * reshuffle under a reader's cursor when the relay's answer replaces the mirror's.
+ */
+function resolveProjects(
+  mirrored: Record<string, Project>,
+  relayed: readonly Project[],
+  relayAnswered: boolean,
+  predicate: (project: Project) => boolean,
+): Project[] {
+  const source = relayAnswered ? relayed : Object.values(mirrored);
+  return source
+    .filter(predicate)
+    .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+}
+
+/**
+ * The agent projects this browser can honestly name — a repo with no plan file, the only
+ * shape delegation can run in (`resolveAgentProject`). Three controls draw this list — a
+ * card's agent name and its project colour, and *Assign agent*'s picker — and every one of
+ * them used to read a single relayed `agentProject:list`; see {@link resolveProjects} for why
+ * that stopped being enough on its own.
+ *
+ * Deliberately narrower than {@link selectFilingProjects}: a repo-less project can be filed
+ * under a card just fine, but there is no folder for an agent to work in.
  */
 export function selectAgentProjects(
   mirrored: Record<string, Project>,
   relayed: readonly Project[],
   relayAnswered: boolean,
 ): Project[] {
-  const source = relayAnswered ? relayed : Object.values(mirrored);
-  return source
-    .filter((project) => hasRepo(project) && !hasPlan(project))
-    .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+  return resolveProjects(
+    mirrored,
+    relayed,
+    relayAnswered,
+    (project) => hasRepo(project) && !hasPlan(project),
+  );
+}
+
+/**
+ * The projects a card can be FILED under (`Task.projectTagId`) — the detail pane's Project
+ * dropdown and the add-task dialog's Project field. Wider than {@link selectAgentProjects}:
+ * a Personal-space project (no repo, no ticket prefix) is a fine thing to tag a card with,
+ * it simply resolves to no agent project if a run is later delegated from it. See
+ * `isFilingProject` for exactly what is (and is not) offered, and why.
+ */
+export function selectFilingProjects(
+  mirrored: Record<string, Project>,
+  relayed: readonly Project[],
+  relayAnswered: boolean,
+): Project[] {
+  return resolveProjects(mirrored, relayed, relayAnswered, isFilingProject);
 }

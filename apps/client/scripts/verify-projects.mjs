@@ -304,7 +304,7 @@ console.log(
 const SCENARIOS = String.raw`
 import { mkdirSync, readFileSync } from 'node:fs';
 import Database from 'better-sqlite3';
-import { PERSONAL_PROJECT_ID, hasPlan, hasRepo } from '@shared/model';
+import { PERSONAL_PROJECT_ID, hasPlan, hasRepo, ownsTickets } from '@shared/model';
 import { createStore } from '__REPO__/src/main/store';
 import { buildAgentTaskPrompt } from '__REPO__/src/main/agentTaskPrompt';
 
@@ -674,7 +674,84 @@ check(
   promptForSettingsProject,
 );
 
+// ---------------------------------------------------------------------------
+section("7. 'personal' opts a project out of the guaranteed prefix");
+
+const personalProject = store.addProject({ name: 'Alpha Personal', personal: true });
+check(
+  'a plan-less project added with personal: true gets no derived prefix',
+  personalProject.ticketPrefix === '',
+  personalProject.ticketPrefix,
+);
+check('and reads back as NOT owning tickets', !ownsTickets(personalProject));
+
+const contradictoryProject = store.addProject({
+  name: 'Contradiction Co',
+  personal: true,
+  ticketPrefix: 'CC',
+});
+check(
+  'personal: true wins even when a prefix is also supplied — the explicit choice, not the field order',
+  contradictoryProject.ticketPrefix === '',
+  contradictoryProject.ticketPrefix,
+);
+
+const switchable = store.addProject({ name: 'Switchable Co' });
+check(
+  'sanity check: this one got the ordinary guaranteed prefix',
+  Boolean(switchable.ticketPrefix),
+  switchable.ticketPrefix,
+);
+
+const backToPersonal = store.updateProject(switchable.id, { ticketPrefix: '', personal: true });
+check(
+  'switching an untouched board project back to Personal succeeds — no tickets issued yet',
+  Boolean(backToPersonal) && backToPersonal.ticketPrefix === '',
+  backToPersonal && backToPersonal.ticketPrefix,
+);
+check(
+  'and it now reads back as NOT owning tickets',
+  Boolean(backToPersonal) && !ownsTickets(backToPersonal),
+);
+
+const issuedProject = store.addProject({ name: 'Already Filing Co' });
+const issuedTicket = store.createTicket(issuedProject.id, { title: 'a ticket already on the books' });
+check('sanity check: the ticket was actually created', Boolean(issuedTicket), issuedTicket);
+
+const refusedPersonal = store.updateProject(issuedProject.id, {
+  ticketPrefix: '',
+  personal: true,
+});
+check(
+  'switching back to Personal is refused once the project has issued a ticket',
+  Boolean(refusedPersonal) && refusedPersonal.ticketPrefix === issuedProject.ticketPrefix,
+  refusedPersonal && refusedPersonal.ticketPrefix,
+);
+check(
+  'the ticket it already issued is untouched — still keyed under the old prefix',
+  issuedTicket.ticketKey === issuedProject.ticketPrefix + '-1',
+  issuedTicket.ticketKey,
+);
+
+// The exact bug this section exists to catch: the guaranteed-prefix backfill (section 5)
+// runs on every store OPEN, not just once ever — so a Personal project has to survive a
+// restart with no prefix, not merely survive the addProject/updateProject call that made
+// it Personal in the first place. Close and reopen the same database file to prove it.
 store.close();
+const reopened = createStore(scratch + '/fresh/orchestrator.db');
+const personalAfterRestart = reopened.getProject(personalProject.id);
+check(
+  'a project added as personal: true keeps no prefix after the store restarts',
+  Boolean(personalAfterRestart) && personalAfterRestart.ticketPrefix === '',
+  personalAfterRestart && personalAfterRestart.ticketPrefix,
+);
+const backToPersonalAfterRestart = reopened.getProject(backToPersonal.id);
+check(
+  'a project switched back to personal keeps no prefix after the store restarts too',
+  Boolean(backToPersonalAfterRestart) && backToPersonalAfterRestart.ticketPrefix === '',
+  backToPersonalAfterRestart && backToPersonalAfterRestart.ticketPrefix,
+);
+reopened.close();
 
 console.log('');
 if (failures > 0) {

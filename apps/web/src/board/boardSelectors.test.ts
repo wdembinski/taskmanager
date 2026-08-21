@@ -4,6 +4,7 @@ import {
   selectAgentProjects,
   selectArchivedTasks,
   selectBoardTasks,
+  selectFilingProjects,
   type BoardTaskState,
 } from './boardSelectors';
 
@@ -25,6 +26,7 @@ function project(overrides: Partial<Project> = {}): Project {
     name: 'A project',
     path: '',
     planPath: '',
+    ticketPrefix: '',
     color: '',
     ...overrides,
   } as Project;
@@ -238,5 +240,55 @@ describe('selectAgentProjects', () => {
     ];
     selectAgentProjects({}, relayed, true);
     expect(relayed.map((p) => p.name)).toEqual(['Zulu', 'Alpha']);
+  });
+});
+
+describe('selectFilingProjects', () => {
+  it('adds a personal-space project — no repo, no ticket prefix — that selectAgentProjects drops', () => {
+    const personalSpace = project({ id: 'ps', name: 'Personal-space' });
+    const agentRepo = project({ id: 'ag', name: 'Repo', path: '/repos/ag' });
+    const projects = [personalSpace, agentRepo];
+
+    expect(
+      selectFilingProjects(mirrorOf(...projects), [], false)
+        .map((p) => p.id)
+        .sort(),
+    ).toEqual(['ag', 'ps']);
+    expect(selectAgentProjects(mirrorOf(...projects), [], false).map((p) => p.id)).toEqual(['ag']);
+  });
+
+  it('excludes a repo-less ticket board — that project already owns a board of its own', () => {
+    const ticketBoard = project({ id: 'tk', name: 'Tickets', ticketPrefix: 'TK' });
+    expect(selectFilingProjects(mirrorOf(ticketBoard), [], false)).toEqual([]);
+  });
+
+  it('keeps a repo that also owns a ticket board — the repo projects already there', () => {
+    const repoWithTickets = project({
+      id: 'rt',
+      name: 'Repo+Tickets',
+      path: '/repos/rt',
+      ticketPrefix: 'RT',
+    });
+    expect(selectFilingProjects(mirrorOf(repoWithTickets), [], false).map((p) => p.id)).toEqual([
+      'rt',
+    ]);
+  });
+
+  it('excludes a plan-driven project on both branches', () => {
+    const planProject = project({
+      id: 'pl',
+      name: 'Legacy',
+      path: '/repos/pl',
+      planPath: '/repos/pl/plan.md',
+    });
+    expect(selectFilingProjects(mirrorOf(planProject), [], false)).toEqual([]);
+    expect(selectFilingProjects({}, [planProject], true)).toEqual([]);
+  });
+
+  it('lets the relay win once it has answered, same as selectAgentProjects', () => {
+    const mirrored = mirrorOf(project({ id: 'm1', name: 'Mirrored' }));
+    const relayed = [project({ id: 'r1', name: 'Relayed' })];
+    expect(selectFilingProjects(mirrored, relayed, true).map((p) => p.id)).toEqual(['r1']);
+    expect(selectFilingProjects(mirrored, [], true)).toEqual([]);
   });
 });

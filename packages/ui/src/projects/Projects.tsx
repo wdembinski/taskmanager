@@ -1,13 +1,14 @@
 /**
- * Projects — the native ticket projects screen (Phase 24): manage the projects themselves
- * (`ProjectAdmin`) and browse the selected one's backlog (`BacklogTable`).
+ * Projects — the Tickets tab: pick a ticket project (`ProjectPicker`) and browse the selected
+ * one's backlog (`BacklogTable`). Managing projects themselves — adding, renaming, choosing what
+ * a project owns — lives on the Projects tab's own `ProjectAdmin` pane, not here; this screen
+ * only reads the list, it never writes one.
  *
  * Shared rather than desktop-only, unlike the desktop's own repo-picker `Projects` admin
- * screen: a ticket project is nothing but rows in the store, reachable over the same relayed
- * channels either host can call — see `shell-parity.test.ts`'s "agent projects" block, which
- * is about *repo* projects and does not apply here. Whether the drawer this screen opens
- * offers anything about a folder is the `repo` prop's call, threaded straight through to
- * `ProjectAdmin` — see that file's own header for why.
+ * screen: a ticket project is nothing but rows in the store (no folder, no native picker),
+ * reachable over the same relayed channels either host can call — see `ProjectAdmin`'s own
+ * header and `shell-parity.test.ts`'s "agent projects" block, which is about *repo* projects
+ * and does not apply here.
  *
  * The seed loads the four collections every part of this screen reads: the ticket projects
  * themselves, and the app-wide people/milestone/label registries a ticket can point at.
@@ -28,8 +29,7 @@ import { PaneLoading } from '../PaneLoading';
 import { useTransport } from '../transport';
 import { useInitialLoad } from '../useInitialLoad';
 import { BacklogTable } from './BacklogTable';
-import { ProjectAdmin } from './ProjectAdmin';
-import type { ProjectFormRepoCapability } from './ProjectForm';
+import { ProjectPicker } from './ProjectPicker';
 import { TimelinePane } from './TimelinePane';
 
 const useStyles = makeStyles({
@@ -42,14 +42,7 @@ const useStyles = makeStyles({
 /** The Projects screen's own two views of one project's tickets. */
 type ProjectView = 'backlog' | 'timeline';
 
-export interface ProjectsProps {
-  /** Present only for a host that can attach a repo to a project (the desktop) — threaded
-   *  down to `ProjectAdmin`'s own `ProjectForm`. Absent on the web, so its drawer stays
-   *  repo-free. See `ProjectAdmin`'s file header. */
-  repo?: ProjectFormRepoCapability;
-}
-
-export function Projects({ repo }: ProjectsProps = {}): JSX.Element {
+export function Projects(): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
   const [projects, setProjects] = useState<Project[] | null>(null);
@@ -73,14 +66,6 @@ export function Projects({ repo }: ProjectsProps = {}): JSX.Element {
   }, [transport]);
   const initial = useInitialLoad(seed);
 
-  // No `project:*`-list-changed push, unlike `person:*`/`milestone:*`/`label:*` below — a
-  // plain project write re-reads through `refreshProjects` instead (`ProjectAdmin`'s own
-  // `onProjectsChanged`), the same pattern the desktop's own admin pane uses.
-  const refreshProjects = useCallback(async () => {
-    const allProjects = await transport.invoke('project:list');
-    setProjects(allProjects.map((p) => p.project).filter(ownsTickets));
-  }, [transport]);
-
   useEffect(() => {
     const offPeople = transport.on('person:changed', setPeople);
     const offMilestones = transport.on('milestone:changed', setMilestones);
@@ -93,7 +78,7 @@ export function Projects({ repo }: ProjectsProps = {}): JSX.Element {
   }, [transport]);
 
   // Keep a project selected once there is one to select — the backlog otherwise has nothing
-  // to show and the admin pane's list has nothing highlighted.
+  // to show and the picker's list has nothing highlighted.
   useEffect(() => {
     if (!projects || projects.length === 0) return;
     if (selectedProjectId && projects.some((p) => p.id === selectedProjectId)) return;
@@ -128,12 +113,10 @@ export function Projects({ repo }: ProjectsProps = {}): JSX.Element {
   return (
     <div className={styles.root}>
       <div className={styles.admin}>
-        <ProjectAdmin
+        <ProjectPicker
           projects={projects}
           selectedProjectId={selectedProjectId}
           onSelect={setSelectedProjectId}
-          onProjectsChanged={() => void refreshProjects()}
-          repo={repo}
         />
       </div>
       <div className={styles.backlog}>

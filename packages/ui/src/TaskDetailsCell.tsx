@@ -104,8 +104,12 @@ const useStyles = makeStyles({
 
 export interface TaskDetailsCellProps {
   task: Task;
-  /** The projects a card can be filed under (the Projects nav item). */
-  agentProjects?: Project[];
+  /**
+   * The projects a card can be FILED under (`Task.projectTagId`) — wider than the agent
+   * projects delegation offers, since filing a card under a Personal-space project (no repo)
+   * is fine; it simply cannot receive a delegated run. See `isFilingProject`.
+   */
+  projects?: Project[];
   /**
    * This card's files, sliced out of the board's list. Passed in rather than fetched here
    * for the reason the list exists at all: a JIRA sync rewrites whole `Task` literals on
@@ -125,7 +129,7 @@ export interface TaskDetailsCellProps {
 
 export function TaskDetailsCell({
   task,
-  agentProjects = [],
+  projects = [],
   attachments = [],
   priorityDisplay = 'color',
   onTaskChanged,
@@ -225,7 +229,7 @@ export function TaskDetailsCell({
   ).slice();
   const priority = task.externalPriority ?? null;
   // The FILING, not the delegation — this dropdown says what the card is about.
-  const project = agentProjects.find((p) => p.id === task.projectTagId) ?? null;
+  const project = projects.find((p) => p.id === task.projectTagId) ?? null;
   const resting = restingStatus(task);
 
   async function setStatus(next: ManualStatus): Promise<void> {
@@ -437,7 +441,7 @@ export function TaskDetailsCell({
 
         {/* Which project this card is about. Setting it files the card — starting an
             agent on it is the separate act in the panel above. */}
-        {agentProjects.length > 0 && (
+        {projects.length > 0 && (
           <div className={styles.trioCell}>
             <div className={styles.trioLabel}>
               <Caption1 className={styles.hint}>Project</Caption1>
@@ -451,13 +455,13 @@ export function TaskDetailsCell({
               value={project?.name ?? 'None'}
               selectedOptions={[task.projectTagId ?? NO_PROJECT]}
               disabled={busy}
-              title="The repo this card is about — filing it here does not start an agent"
+              title="The project this card is about — filing it here does not start an agent"
               onOptionSelect={(_e, d) => {
                 if (d.optionValue)
                   void setProject(d.optionValue === NO_PROJECT ? null : d.optionValue);
               }}
             >
-              {agentProjects.map((p) => (
+              {projects.map((p) => (
                 <Option key={p.id} value={p.id} text={p.name}>
                   {p.name}
                 </Option>
