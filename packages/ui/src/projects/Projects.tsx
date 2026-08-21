@@ -3,10 +3,11 @@
  * (`ProjectAdmin`) and browse the selected one's backlog (`BacklogTable`).
  *
  * Shared rather than desktop-only, unlike the desktop's own repo-picker `Projects` admin
- * screen: a ticket project is nothing but rows in the store (no folder, no native picker),
- * reachable over the same relayed channels either host can call — see `ProjectAdmin`'s own
- * header and `shell-parity.test.ts`'s "agent projects" block, which is about *repo* projects
- * and does not apply here.
+ * screen: a ticket project is nothing but rows in the store, reachable over the same relayed
+ * channels either host can call — see `shell-parity.test.ts`'s "agent projects" block, which
+ * is about *repo* projects and does not apply here. Whether the drawer this screen opens
+ * offers anything about a folder is the `repo` prop's call, threaded straight through to
+ * `ProjectAdmin` — see that file's own header for why.
  *
  * The seed loads the four collections every part of this screen reads: the ticket projects
  * themselves, and the app-wide people/milestone/label registries a ticket can point at.
@@ -28,6 +29,7 @@ import { useTransport } from '../transport';
 import { useInitialLoad } from '../useInitialLoad';
 import { BacklogTable } from './BacklogTable';
 import { ProjectAdmin } from './ProjectAdmin';
+import type { ProjectFormRepoCapability } from './ProjectForm';
 import { TimelinePane } from './TimelinePane';
 
 const useStyles = makeStyles({
@@ -58,7 +60,14 @@ const useStyles = makeStyles({
 /** The Projects screen's own two views of one project's tickets. */
 type ProjectView = 'backlog' | 'timeline';
 
-export function Projects(): JSX.Element {
+export interface ProjectsProps {
+  /** Present only for a host that can attach a repo to a project (the desktop) — threaded
+   *  down to `ProjectAdmin`'s own `ProjectForm`. Absent on the web, so its drawer stays
+   *  repo-free. See `ProjectAdmin`'s file header. */
+  repo?: ProjectFormRepoCapability;
+}
+
+export function Projects({ repo }: ProjectsProps = {}): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
   const [projects, setProjects] = useState<Project[] | null>(null);
@@ -142,6 +151,7 @@ export function Projects(): JSX.Element {
           selectedProjectId={selectedProjectId}
           onSelect={setSelectedProjectId}
           onProjectsChanged={() => void refreshProjects()}
+          repo={repo}
         />
       </div>
       <div className={styles.backlog}>

@@ -5,7 +5,7 @@
  * ---------------------------------------------
  * `apps/client/src/renderer/src/Settings.tsx` is 1478 lines in ONE component, and nine of
  * its twenty-one channels are host-bound: the credential writes (`jira:setCredentials`,
- * `gitlab:*`, `iam:signOut`), the updater (`update:install` quits the app), the exec-target
+ * `gitlab:*`, `github:*`), the updater (`update:install` quits the app), the exec-target
  * pickers (`exec:listDistros` asks THIS machine what WSL distros it has), the sign-in flows,
  * and the font size (which scales an Electron window, not a browser tab). Sharing it whole
  * would mean roughly eight optional capability props the web passes `false` for — which is
@@ -85,6 +85,7 @@ import { clampSyncInterval, MAX_SYNC_INTERVAL_MINUTES } from '@tm/shared/setting
 import type { AppSettings } from '@tm/shared/settings';
 import { selectAgentProjects } from '../board/boardSelectors';
 import { ProjectsEmpty, ProjectsSection } from './ProjectsSection';
+import { TokensSection } from './TokensSection';
 
 const useStyles = makeStyles({
   row: {
@@ -134,7 +135,7 @@ const useStyles = makeStyles({
 
 const MODES: PermissionMode[] = ['acceptEdits', 'plan', 'manual', 'bypassPermissions'];
 
-type Section = 'general' | 'board' | 'projects' | 'jira' | 'people' | 'desktop';
+type Section = 'general' | 'board' | 'projects' | 'jira' | 'tokens' | 'people' | 'desktop';
 
 export interface SettingsScreenProps {
   /**
@@ -144,9 +145,17 @@ export interface SettingsScreenProps {
    * here and back there would be two conversions to say one thing.
    */
   projects: Record<string, Project>;
+  /** Where `TokensSection` calls `POST`/`GET`/`DELETE /v1/tokens` — `config.cloudApiBase`. */
+  apiBase: string;
+  /** This tab's own bearer, for the same three calls — `AuthedApp`'s `auth.getAccessToken`. */
+  getAccessToken: () => Promise<string | null>;
 }
 
-export function SettingsScreen({ projects }: SettingsScreenProps): JSX.Element {
+export function SettingsScreen({
+  projects,
+  apiBase,
+  getAccessToken,
+}: SettingsScreenProps): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
   const [section, setSection] = useState<Section>('general');
@@ -240,6 +249,7 @@ export function SettingsScreen({ projects }: SettingsScreenProps): JSX.Element {
         <Tab value="board">Board</Tab>
         <Tab value="projects">Projects</Tab>
         <Tab value="jira">JIRA</Tab>
+        <Tab value="tokens">Personal access tokens</Tab>
         <Tab value="people">People</Tab>
         <Tab value="desktop">Desktop only</Tab>
       </TabList>
@@ -543,6 +553,12 @@ export function SettingsScreen({ projects }: SettingsScreenProps): JSX.Element {
         </div>
       )}
 
+      {section === 'tokens' && (
+        <div className={styles.pane}>
+          <TokensSection apiBase={apiBase} getAccessToken={getAccessToken} />
+        </div>
+      )}
+
       {section === 'people' && (
         <div className={styles.pane}>
           <PeopleSettings />
@@ -584,12 +600,6 @@ const HOST_ONLY_SECTIONS: ReadonlyArray<{ title: string; why: string }> = [
       'a token typed here would cross the network inside a relayed command and land in the ' +
       'server’s audit trail. The desktop app writes it straight into your machine’s own ' +
       'credential store and it never leaves.',
-  },
-  {
-    title: 'Cloud sign-in',
-    why:
-      'signing the DESKTOP app in is a different act from signing this tab in, and this tab ' +
-      'is already signed in. Use the desktop app’s Cloud section for its own connection.',
   },
   {
     title: 'Updates',

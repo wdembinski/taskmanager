@@ -307,7 +307,13 @@ function SignedInBoard({
         {/* The mirrored `projects` rows, which this hook already holds for the board — so the
             Settings screen's Projects tab still lists what is configured when no desktop is
             awake to answer its own `agentProject:list`. */}
-        {screen === 'settings' && <SettingsScreen projects={board.state.projects} />}
+        {screen === 'settings' && (
+          <SettingsScreen
+            projects={board.state.projects}
+            apiBase={config.cloudApiBase}
+            getAccessToken={() => auth.getAccessToken()}
+          />
+        )}
       </AppShell>
     </TransportProvider>
   );

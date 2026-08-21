@@ -44,6 +44,10 @@ import type { FetchedMergeRequest } from '../gitlab/gitlabSync';
 
 export { needsDetailRefresh } from '../gitlab/gitlabSync';
 export type { FetchedMergeRequest } from '../gitlab/gitlabSync';
+// `needsCiRefresh` has no GitLab half — `describeMergeRequest.ts` already reads GitLab's
+// pipeline unconditionally off the detail response — so it comes straight from the
+// forge-neutral module rather than by way of `gitlabSync.ts`.
+export { needsCiRefresh } from '../forge/refreshPolicy';
 
 export interface GitHubSyncOptions {
   /** Every `externalKey` on the board, so a key nothing carries is not a key. */

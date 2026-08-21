@@ -29,6 +29,18 @@ import { Injectable } from '@nestjs/common';
  * Tokens are 32 random bytes, base64url. Not a JWT: there is nothing to verify offline (the
  * one process that issues them is the one process that checks them), and a signed token
  * cannot be revoked by forgetting it — which is what expiry does here, for free.
+ *
+ * WHY `GET /v1/attachments/:id?mt=` DELIBERATELY DOES NOT ALSO ACCEPT A PAT
+ * ---------------------------------------------------------------------------
+ * `MediaTokenGuard` (`mediaToken.guard.ts`) reads `?mt=` and nothing else. A personal access
+ * token is exactly the long-lived, full-access credential a query string exists to keep OUT
+ * of a URL — referrers, browser history, proxy and server logs, a screenshot of a devtools
+ * network tab all see it in plain sight, and none of them expire it in ten minutes the way
+ * this ticket does. A PAT holder who wants blob bytes calls `POST /v1/media-tokens` with the
+ * PAT as a bearer **header** — already behind `IamAuthGuard`, so a PAT works there for free —
+ * and spends the ten-minute ticket this file mints instead. `GET /v1/events` is guarded the
+ * same ordinary way and a PAT already works there too; nobody should add a `?pat=` to either
+ * route.
  */
 
 /** How long a minted token is good for. */

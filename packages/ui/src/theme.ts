@@ -235,6 +235,9 @@ export const STATUS_INDICATOR_COLOR: Record<TaskStatus, string> = {
 export const PIPELINE_COLOR: Record<PipelineStatus, string> = {
   // Nothing is happening yet, or ever will: grey says that better than a colour would.
   unknown: tokens.colorNeutralForeground4,
+  // Same grey as `unknown` — the difference between "no pipeline we could read" and "asked,
+  // and there genuinely is none" is a labelling question, not a colour one.
+  none: tokens.colorNeutralForeground4,
   created: tokens.colorNeutralForeground4,
   pending: tokens.colorNeutralForeground4,
   manual: tokens.colorNeutralForeground4,

@@ -2136,9 +2136,12 @@ there is no single-instance lock, and a second instance killed a live session on
       build, and rule 4 makes promotion the one irreversible step.
 
       **Release notes, grouped as a user would notice them.** New: a card and each of its
-      steps can carry files — picked or dropped onto the Description fold, previewed inline
-      when they are images, opened with a click, and staged in the Add-task dialog before
-      the card exists. The bytes are copied into the profile, so moving or deleting the
+      steps can carry files — picked, dropped, or pasted onto the Description fold, previewed
+      inline when they are images, opened with a click, and staged in the Add-task dialog
+      before the card exists. Paste is a third way in, added after this phase shipped: a
+      bitmap on the clipboard is attached under a generated name, `pasted-<timestamp>`, since
+      it has none of its own, while a file copied in Explorer keeps the name it already has.
+      The bytes are copied into the profile, so moving or deleting the
       original afterwards costs nothing. An agent is handed the list and the real paths, so
       `@name` in a brief resolves to a file it can open — translated for WSL when the run
       is over there. Internal: a `task_attachments` table with a cascading foreign key, a
@@ -6170,6 +6173,89 @@ wiring is missing.
 
 ---
 
+## Fix — projects miss settings, and a plan-less project could not add tasks
+
+**Goal.** Two symptoms that trace back to one shape: a project with no `plan.md` — a bare repo,
+or a ticket-only board — is a ticket board the moment it exists, and both bugs are ways that
+promise didn't hold.
+
+1. **Cannot add tasks.** `ticket:create`'s `ownsTickets` refusal (`@shared/model`) means a
+   project with no `ticketPrefix` cannot allocate a single key, and nothing before this round
+   guaranteed one existed — a project created with the prefix field left blank, or edited down
+   to nothing, looked like an ordinary board and refused every "Add task" on it.
+2. **Projects miss settings.** The desktop's own add/edit dialog — the one place a project is
+   configured — no longer offered four fields it once did: standing instructions, concurrency,
+   the isolated-worktrees switch, and ticking completed work back into a legacy plan file. None
+   of the four needed an engine change to restore; both `project:add` and `project:update`
+   already accepted them. The dialog itself had simply stopped asking.
+
+### Decisions taken
+
+**Derive a prefix, don't merely accept one.** `addProject` and `updateProject` now derive a
+prefix (`uniqueTicketPrefix(suggestTicketPrefix(name), taken)`) for any plan-less, non-Personal
+project a caller left blank or tried to clear, rather than leaving the column `NULL` and hoping
+the UI always fills it in. A plan-driven project and the Personal board are untouched — the
+first keeps today's "refuse the clear once keys are issued" rule, the second never owns tickets
+at all. Existing rows got theirs from a one-time migration backfill, ordered **after** the
+`kind`-retirement backfill so a legacy plan row isn't caught before it has its `planPath` back.
+Recorded in full, with citations, in
+[`docs/12-the-ticket-model.md`](../12-the-ticket-model.md#every-plan-less-project-owns-a-prefix).
+`ticket:create`'s own refusal in `ipc.ts` stays, reworded as the backstop it now is — every
+board project is guaranteed a prefix, so the check should never actually fire outside a
+hand-edited row, and its error names where to fix one that does (`ipc.ts:2478-2481`).
+
+**Restore the fields as their own step, after a pure port.** The dialog was first extracted
+verbatim from the desktop's `Projects.tsx` into a shared `packages/ui/src/projects/ProjectForm.tsx`
+(no field gained or lost), and only *then* did a second step add the four fields back. Splitting
+it this way keeps each diff legible on its own: the port is provably a port, and "restore
+standing instructions, concurrency, the worktree toggle and write-back" is a diff that touches
+nothing else. The isolated-worktrees switch stopped being a hardcoded `true` in the process —
+it now drives `describeGitPreflight`'s live argument, and gates base branch, auto-merge,
+auto-release and auto-PR beneath it, since none of those mean anything without a branch of
+their own.
+
+**One form, a capability object for the repo-only half.** Rather than keeping a second,
+repo-free copy of the dialog for the Tickets workspace, `ProjectForm` takes an optional `repo`
+prop (`{ onBrowseFolder }`) and renders its folder path, "Runs on", `BaseBranchField` and the
+three automation switches only when it is supplied. The desktop's own `Projects` screen and the
+Tickets workspace's `ProjectAdmin` both render the same component; only the desktop passes
+`repo`. This is what let the Tickets workspace gain every other setting — model, permission
+mode, concurrency, standing instructions, ticket prefix, colour — for free, and it is also the
+fact `test/shell-parity.test.ts`'s "agent projects" block now asserts directly, since the block
+exists precisely to keep a folder capability off a host that has no picker to back it with.
+
+### The critical files
+
+| File | What changed |
+| --- | --- |
+| `packages/shared/src/ticketKey.ts` | `suggestTicketPrefix` moved here from the renderer; `uniqueTicketPrefix` added — appends `2`, `3`, … until a candidate is free of a taken set, case-blind, re-truncated to the length bound |
+| `apps/client/src/main/store.ts` | `addProject`/`updateProject` derive a prefix instead of accepting `NULL`/clearing one (`:3125-3140`, `:3316-3330`); a one-time backfill migration for rows that predate the guarantee (`:1457-1487`) |
+| `apps/client/src/main/ipc.ts` | `ticket:create`'s `ownsTickets` refusal reworded as a backstop; the redundant `normalizeTicketPrefix` check dropped |
+| `packages/ui/src/projects/ProjectForm.tsx` | new — the shared add/edit drawer, ported from the desktop dialog then restored to full parity with it; repo-only fields gated on an optional `repo` capability |
+| `packages/ui/src/projects/ProjectAdmin.tsx` | the Tickets workspace's list + drawer now renders `ProjectForm` (was a three-field local dialog); takes the same optional `repo` prop and threads it through |
+| `packages/ui/src/projects/Projects.tsx` | the Tickets workspace screen threads an optional `repo` prop down to `ProjectAdmin`, unused by the web, supplied by the desktop |
+| `apps/client/src/renderer/src/projects/Projects.tsx` | its own dialog body moved into `ProjectForm`; passes `repo={{ onBrowseFolder: () => window.api.invoke('project:pickDirectory') }}` to both its own drawer and the embedded Tickets workspace |
+| `apps/client/scripts/verify-projects.mjs`, `verify-tickets.mjs` | extended to cover the backfill and derivation behaviour |
+| `test/shell-parity.test.ts` | the "agent projects" block's comment records this round's narrowing on the writing half, and gains an assertion that `ProjectForm`'s repo-only fields are gated on `repo` |
+| `docs/05-glossary.md`, `docs/12-the-ticket-model.md` | the "Agent project" entry's stale `kind: 'agent'` / "Settings → Agents" wording dropped; the ticket model doc gains **Every plan-less project owns a prefix** |
+
+### How this step's own piece was verified
+
+The new `shell-parity.test.ts` assertion was written red-first: run against a mutant that
+changed the repository-folder field's `{repo && (` guard to `{true && (`, it failed with its
+own message (`must render the repository folder field only inside a \`{repo && …}\` guard`)
+before the mutant was reverted. The full file passes, 16/16, after the guard's other edits.
+
+**Not run here: the full gate suite.** `pnpm typecheck --force` on this step's tip still fails —
+`store.ts:3134`, `id !== PERSONAL_PROJECT_ID`, a narrowing comparison TypeScript refuses because
+`randomUUID()`'s return type and the `'personal'` literal don't structurally overlap, from the
+prefix-guarantee step above. Harmless at runtime (the comparison is exactly what it looks like),
+but real, and left for this round's own last step — "Verify projects and tickets end to end" —
+to catch and close out along with the rest of the gates, rather than fixed in passing by a step
+scoped to docs and a test file.
+
+---
+
 ## Phase 27 — Mobile app for Android
 
 Twelve steps, approved before this phase started. Step 1 is not code — it is the four
@@ -6437,6 +6523,7 @@ branch:
 - That the CI deploy (step 10) actually reaches an installable URL — `deploy.yml`'s `mobile`
   job existing and staying inert without its token is confirmed statically; a live deploy
   needs `AZURE_STATIC_WEB_APPS_API_TOKEN_MOBILE` to be set and a run to complete.
+
 
 
 ---

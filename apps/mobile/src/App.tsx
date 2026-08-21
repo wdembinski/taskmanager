@@ -210,7 +210,13 @@ function SignedInApp({
         {screen === 'projects' && <Projects />}
         {screen === 'performance' && <Performance />}
         {screen === 'attention' && <Attention />}
-        {screen === 'settings' && <SettingsScreen projects={board.state.projects} />}
+        {screen === 'settings' && (
+          <SettingsScreen
+            projects={board.state.projects}
+            apiBase={config.cloudApiBase}
+            getAccessToken={() => auth.getAccessToken()}
+          />
+        )}
       </MobileShell>
     </TransportProvider>
   );

@@ -40,7 +40,7 @@
  * what `filesEnabled` is for. Nothing else here is host-specific: the engine is reached
  * through {@link useTransport}, not through `window.api`.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent } from 'react';
 import {
   Badge,
   Button,
@@ -71,6 +71,7 @@ import type { BoardScope, JiraIssueTypeOption, JiraProjectOption } from '@tm/sha
 import { attachmentName, insertAttachmentRef } from '@tm/shared/attachments';
 import { LINK_GATE_LABEL, LINK_REFUSAL_MESSAGE } from '@tm/shared/taskChain';
 import { isFileDrag } from './AttachmentStrip';
+import { clipboardFiles, pastedFilePaths } from './attachFiles';
 import { useTransport } from './transport';
 
 /** The task types offered in the picker, with their display labels. */
@@ -606,6 +607,26 @@ export function AddTaskDialog({
     }
   }
 
+  /**
+   * Paste a screenshot straight into the brief — the same gesture `usePasteAttachments`
+   * gives an existing task, reached differently because there is no task id yet for it to
+   * attach onto. `pastedFilePaths` does the same path-or-stage resolution `attachFilesToTask`
+   * does for one, and hands back paths that join the picked-file model exactly: `stage`
+   * cannot tell a pasted path from a picked one, so it dedupes, names and cites it the same.
+   */
+  function onDescriptionPaste(event: ClipboardEvent<HTMLElement>): void {
+    if (saving) return;
+    const files = clipboardFiles(event.clipboardData);
+    // Nothing to stage: fall through untouched, so ordinary typing and text pastes are
+    // never affected by this handler existing.
+    if (!files.length) return;
+    event.preventDefault();
+    setError(null);
+    void pastedFilePaths(transport, files)
+      .then((paths) => stage(paths))
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+  }
+
   async function save(): Promise<void> {
     const plan = addTaskPlan({
       title,
@@ -810,6 +831,9 @@ export function AddTaskDialog({
                   resize="vertical"
                   textarea={{ ref: textareaRef }}
                   onChange={(_e, d) => setDescription(d.value)}
+                  // Only when files can be staged at all — a browser has no path for a
+                  // pasted file to resolve to, and keeps its own native paste here instead.
+                  onPaste={filesEnabled ? onDescriptionPaste : undefined}
                   placeholder={isStep ? 'What this step must deliver…' : 'What this card is about…'}
                 />
               </Field>
@@ -861,6 +885,7 @@ export function AddTaskDialog({
                       if (paths.length) stage(paths);
                       else setError('That has no file on disk to attach.');
                     }}
+                    onPaste={onDescriptionPaste}
                   >
                     {staged.length > 0 && (
                       <div className={styles.chips}>

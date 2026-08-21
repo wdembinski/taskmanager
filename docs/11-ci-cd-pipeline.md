@@ -2,12 +2,13 @@
 
 Three workflows, in [`.github/workflows/`](../.github/workflows/). Together they mean a
 merge into `development` is the whole release: the desktop app is tagged, packaged for
-Windows and Linux, and published, while the cloud service is deployed in parallel.
+Windows, and published, while the cloud service is deployed in parallel. Linux is no longer
+built or released — see [`RELEASE.md`](../RELEASE.md#6-linux-releases-are-discontinued).
 
 | Workflow                                          | Trigger                                      | What it does                                                                                       |
 | ------------------------------------------------- | -------------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | [`ci.yml`](../.github/workflows/ci.yml)           | pull request → `development`                 | The gates, the server image, and (when the desktop app is touched) a full package                  |
-| [`release.yml`](../.github/workflows/release.yml) | push → `development`, or `workflow_dispatch` | Tags, drafts, packages Windows + Linux, publishes — [`RELEASE.md`](../RELEASE.md) run by a machine |
+| [`release.yml`](../.github/workflows/release.yml) | push → `development`, or `workflow_dispatch` | Tags, drafts, packages Windows, publishes — [`RELEASE.md`](../RELEASE.md) run by a machine |
 | [`deploy.yml`](../.github/workflows/deploy.yml)   | push → `development`, or `workflow_dispatch` | Deploys `@tm/server` to Azure Container Apps, `@tm/web` to its Static Web App, and `@tm/mobile` to its own    |
 
 There is no `main` in this repository; `development` is the integration branch, and it is
@@ -54,8 +55,7 @@ the tag exists.
 | `gates`   | ubuntu  | §1 — nothing is tagged from a red tree                                |
 | `version` | ubuntu  | §0 idempotence, §2 the version, §3 the tag, §4 the **draft**          |
 | `windows` | windows | §5 — package into the draft, then the headless addon smoke test       |
-| `linux`   | ubuntu  | §6 — package into the draft, plus docs/07's ELF and ABI-symbol checks |
-| `promote` | ubuntu  | §7 — publish the draft, **even if `linux` failed** (rule 4)           |
+| `promote` | ubuntu  | §7 — publish the draft once Windows has uploaded (rule 4)             |
 
 `deploy.yml` filters by path, and can run any subset of the three:
 
@@ -115,7 +115,7 @@ pipeline could have grown a second, subtly different copy of something:
 
 | File                                                                                                       | Why the runner calls it rather than restating it                                                                                                                                                                                                                                                                                                     |
 | ---------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `package` / `package:linux` / `package:local` in [`apps/client/package.json`](../apps/client/package.json) | Each is already the whole chain — `electron-vite build` → `install-app-deps` → `ensure:abi` → `electron-builder` → `check:feed`. Spelling those steps out as separate workflow steps would let CI package by a route no human has ever used, and would make `--publish` a workflow decision rather than a script one. The jobs call one script each. |
+| `package` / `package:local` in [`apps/client/package.json`](../apps/client/package.json) | Each is already the whole chain — `electron-vite build` → `install-app-deps` → `ensure:abi` → `electron-builder` → `check:feed`. Spelling those steps out as separate workflow steps would let CI package by a route no human has ever used, and would make `--publish` a workflow decision rather than a script one. The jobs call one script each. |
 | [`apps/client/scripts/ensure-native-abi.mjs`](../apps/client/scripts/ensure-native-abi.mjs)                | The v0.25.0 gate: rebuild `better-sqlite3` against Electron's headers if the ABI is wrong, and fail if it still is. It runs _inside_ `package`, so the runner cannot skip it and no workflow step had to invoke it.                                                                                                                                  |
 | [`apps/client/scripts/check-update-feed.mjs`](../apps/client/scripts/check-update-feed.mjs)                | Refuses an update feed no installed client could act on — unexpanded macros, a `publisherName` with nothing signing, a `latest*.yml` naming files that are not there. Also inside `package`, and it runs after the upload deliberately: the upload goes to a **draft**, so failing here still stops it reaching anyone.                              |
 | [`apps/client/electron-builder.yml`](../apps/client/electron-builder.yml)                                  | The build's own configuration, including the `productName` the smoke test names the `.exe` by. `--publish onTagOrDraft` is passed on the command line by the `package` script, so nothing about publishing had to move into this file.                                                                                                               |
@@ -333,7 +333,7 @@ and the infrastructure repo, and none of it is repeated here.
 Which re-run to use depends on **whether the tag was pushed**, because that decides what
 `scripts/next-version.mjs` computes the second time.
 
-**The failure was in `windows`, `linux` or `promote`** — the tag exists and the draft exists.
+**The failure was in `windows` or `promote`** — the tag exists and the draft exists.
 Use **Re-run failed jobs** on the same run (Actions → the run → _Re-run failed jobs_). The
 successful `version` job is not re-run and its outputs — `version`, `tag`, `release` — are
 preserved, so the retried jobs package the same tag into the same draft. This is almost

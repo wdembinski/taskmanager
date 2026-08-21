@@ -18,8 +18,8 @@
  *  3. **Promoting before packaging.** electron-builder cannot upload into a *published*
  *     release — it says `skipped` and exits 0 — so a promote that runs early is a green run
  *     with an empty release (RELEASE.md rule 4). The inverse also has a body count: four
- *     finished drafts once sat unpublished waiting on a Linux build that was never coming,
- *     which is why `promote` must not be gated on the Linux job succeeding (§6).
+ *     finished drafts once sat unpublished waiting on a Linux build that was never coming —
+ *     which is why there is no Linux job left to wait on at all (§6).
  *  4. **The gates drifting from RELEASE.md §1.** `ci.yml` and `release.yml` deliberately
  *     duplicate §1's list rather than share a reusable workflow — one guards a merge, one
  *     guards a tag, and coupling them means a change made for one silently changes the
@@ -55,7 +55,7 @@
  *
  * Written red-first: every assertion here was confirmed to fail against a workflow mutated
  * to break it (a `version:` added, a `node-version: 20`, `promote` un-`needs`-ed from
- * `linux`, `--draft=false` moved into the `windows` job, a gate step deleted) before any of
+ * `windows`, `--draft=false` moved into the `windows` job, a gate step deleted) before any of
  * it was relied on.
  */
 import { describe, expect, it } from 'vitest';
@@ -226,24 +226,30 @@ describe('release.yml promotes the draft last, and does promote it (RELEASE.md r
     ).toContain('--draft');
   });
 
-  it('runs promote after both package jobs, and nothing after promote', () => {
+  it('runs promote after the windows package job, and nothing after promote', () => {
     const promote = job('release.yml', 'promote');
 
     expect(
       needsOf(promote),
-      "release.yml's `promote` job must `needs:` both package jobs. Without `windows` it can " +
-        'publish before the installer and latest.yml are uploaded, and electron-builder cannot ' +
-        'write into a published release (RELEASE.md rule 4).',
-    ).toEqual(expect.arrayContaining(['windows', 'linux']));
+      "release.yml's `promote` job must `needs:` `windows`. Without it, promote can publish " +
+        'before the installer and latest.yml are uploaded, and electron-builder cannot write ' +
+        'into a published release (RELEASE.md rule 4).',
+    ).toEqual(expect.arrayContaining(['windows']));
 
-    // Transitively: both package jobs wait for the tag and the draft to exist.
-    for (const id of ['windows', 'linux']) {
-      expect(
-        needsOf(job('release.yml', id)),
-        `release.yml's \`${id}\` job must wait for \`version\`, which is what creates the tag it ` +
-          'checks out and the draft it uploads into.',
-      ).toContain('version');
-    }
+    // Transitively: windows waits for the tag and the draft to exist.
+    expect(
+      needsOf(job('release.yml', 'windows')),
+      "release.yml's `windows` job must wait for `version`, which is what creates the tag it " +
+        'checks out and the draft it uploads into.',
+    ).toContain('version');
+
+    // There is deliberately no `linux` job any more — see RELEASE.md §6.
+    expect(
+      workflow('release.yml').jobs?.linux,
+      "release.yml has a `linux` job again. Linux releases were discontinued (RELEASE.md §6) " +
+        'after four drafts sat unpublished waiting on a Linux build that was never coming; if ' +
+        "it's back, this file's other assertions about `promote` need to widen with it.",
+    ).toBeUndefined();
 
     const jobs = workflow('release.yml').jobs ?? {};
     const after = Object.entries(jobs)
@@ -283,28 +289,25 @@ describe('release.yml promotes the draft last, and does promote it (RELEASE.md r
     ).toBeGreaterThan(feed);
   });
 
-  it('does not let a failed Linux build hold the release (RELEASE.md §6)', () => {
+  it('promotes once release is due, gated only on windows via the default needs check', () => {
     const condition = job('release.yml', 'promote').if ?? '';
 
     expect(
       condition,
-      'The promote job needs `always()`: it `needs:` the linux job, so without it a failed ' +
-        'Linux build skips the promotion entirely and the release stays a draft.',
-    ).toContain('always()');
+      "The promote job's `if:` must still gate on `release == 'true'` — otherwise it runs " +
+        "even when `version` decided there is nothing to release (RELEASE.md §0).",
+    ).toContain("needs.version.outputs.release == 'true'");
 
+    // No `always()` and no explicit `needs.windows.result` check: with `linux` gone, `promote`
+    // has exactly one package job left in its `needs:`, so GitHub's default `if: success()`
+    // already skips it when windows fails — the always()-plus-manual-check dance RELEASE.md
+    // §6 used to require existed only to let a failed LINUX job through.
     expect(
       condition,
-      'Promote must still require the WINDOWS build to have succeeded — that is the platform ' +
-        'whose artifacts the release is made of.',
-    ).toContain("needs.windows.result == 'success'");
-
-    expect(
-      condition.includes("needs.linux.result == 'success'"),
-      'Promote must NOT require the Linux job to have succeeded. RELEASE.md §6: four green ' +
-        'releases once piled up here unpublished, each waiting on a platform build that was ' +
-        'never going to happen. Ship what you have and say what is owed — the `Say what is ' +
-        'owed` step is how this workflow says it.',
-    ).toBe(false);
+      "`always()` is no longer needed in promote's `if:` — that existed only to let promote " +
+        'run despite a failed `linux` job, which no longer exists (RELEASE.md §6). Restoring ' +
+        'it now would let promote run even when `windows` failed.',
+    ).not.toContain('always()');
   });
 });
 

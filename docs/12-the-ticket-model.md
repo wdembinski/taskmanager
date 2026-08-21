@@ -17,8 +17,9 @@ this repo that can open a real SQLite database, since Vitest's Node has no Elect
 
 `projects` gains two columns ([`store.ts:918-924`](../apps/client/src/main/store.ts)):
 
-- `ticketPrefix TEXT COLLATE NOCASE` — the key prefix (`'TM'`), `NULL` for every project that
-  isn't a ticket project.
+- `ticketPrefix TEXT COLLATE NOCASE` — the key prefix (`'TM'`). `NULL` is possible only for a
+  plan-driven project or the Personal board; every other project is *guaranteed* one — see
+  **Every plan-less project owns a prefix** below.
 - `ticketSeq INTEGER NOT NULL DEFAULT 0` — the allocator. See **Key allocation** below for why
   this is not a field on `Project`.
 
@@ -155,6 +156,31 @@ prefix and the rest don't.
 Clearing a prefix (`ticketPrefix: ''`) is refused, not obeyed, once a project has issued at
 least one key: there is no way to write "no prefix" onto `TM-14` that leaves it still called
 anything.
+
+### Every plan-less project owns a prefix
+
+A project with no `plan.md` is a ticket board the moment it exists — its board tab lets you
+file a ticket on it right away — and `ticket:create`'s `ownsTickets` refusal (`@shared/model`)
+means a project with no prefix cannot accept one. So the prefix isn't merely settable for that
+whole class of project, it is guaranteed:
+
+- `addProject` derives one (`uniqueTicketPrefix(suggestTicketPrefix(name), taken)`) whenever
+  the caller left it blank and the new row is plan-less and isn't the Personal board
+  ([`store.ts:3125-3140`](../apps/client/src/main/store.ts)).
+- `updateProject` does the same instead of clearing the column: a patch that would otherwise
+  normalize the prefix to nothing derives a fresh one from whatever name the project will carry
+  ([`store.ts:3316-3330`](../apps/client/src/main/store.ts)) — the "refused once keys are
+  issued" rule above still governs a plan-driven project, which this derivation skips entirely.
+- Existing rows that predate the guarantee got theirs from a one-time backfill on open
+  ([`store.ts:1457-1487`](../apps/client/src/main/store.ts)): every plan-less, non-Personal
+  project sitting on a `NULL` prefix is assigned one the same way, seeded from every prefix
+  already in use so it can't collide with one. It runs **after** the `kind`-retirement backfill,
+  which is what gives a legacy plan-driven row its `planPath` in the first place — running
+  before it would hand a plan project a prefix it should never have had.
+
+`ProjectForm` (`packages/ui/src/projects/ProjectForm.tsx`) reflects the guarantee rather than
+re-deciding it: the field renders `required` whenever the project being added or edited will
+end up plan-less, and only a legacy plan-driven project being edited can still leave it blank.
 
 ---
 
