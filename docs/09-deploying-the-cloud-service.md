@@ -16,13 +16,13 @@ setting the GitHub secrets. **Read that first; none of what follows works until 
 [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml) runs on every push to
 `development` and works out what changed:
 
-| Changed                                       | What happens                                                    |
-| --------------------------------------------- | --------------------------------------------------------------- |
+| Changed                                                             | What happens                                            |
+| ------------------------------------------------------------------- | ------------------------------------------------------- |
 | `apps/server`, `packages/shared`, `packages/protocol`, the lockfile | image → GHCR → **migrations** → Container App repointed |
-| `apps/web`, `packages/ui`, and the same shared packages            | Vite build → uploaded to Static Web Apps |
-| `apps/client` only                            | **nothing** — the desktop app is never deployed from CI          |
+| `apps/web`, `packages/ui`, and the same shared packages             | Vite build → uploaded to Static Web Apps                |
+| `apps/client` only                                                  | **nothing** — the desktop app is never deployed from CI |
 
-Migrations run *before* the app is repointed, as an Azure Container Apps job executing the
+Migrations run _before_ the app is repointed, as an Azure Container Apps job executing the
 same image with `node dist/database/migrate.js`. A failed migration fails the deploy and
 leaves the old app serving the old — matching — schema.
 
@@ -88,14 +88,14 @@ running server does not read a `.env` file** — only `database/dataSource.ts` (
 migration CLI path) does. `apps/server/.env.example` documents the variables; it does not
 feed the process.
 
-| Variable                | Deployed value                                        |
-| ----------------------- | ----------------------------------------------------- |
-| `NODE_ENV`              | `production` — also what makes `CLOUD_DEV_NO_AUTH` refuse to start |
-| `CLOUD_ALLOWED_ORIGINS` | the Static Web App origin, and nothing else           |
-| `DB_HOST` / `DB_NAME` / `DB_USER` | the Azure SQL server, database and least-privilege user |
-| `AZURE_KEY_VAULT_URI`   | the vault holding `db-password` and `cloud-iam-client-secret` |
-| `CLOUD_IAM_*`           | the vipper.iam endpoint and this API's confidential client |
-| `CLOUD_BLOB_QUOTA_BYTES` | unset — 256 MB of attachment bytes per account, evicted coldest-first. Worth lowering if the SQL tier gets tight, since the bytes live in a `VARBINARY(MAX)` column there (`attachments/blobStore.ts`) |
+| Variable                          | Deployed value                                                                                                                                                                                         |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `NODE_ENV`                        | `production` — also what makes `CLOUD_DEV_NO_AUTH` refuse to start                                                                                                                                     |
+| `CLOUD_ALLOWED_ORIGINS`           | the Static Web App origin, and nothing else                                                                                                                                                            |
+| `DB_HOST` / `DB_NAME` / `DB_USER` | the Azure SQL server, database and least-privilege user                                                                                                                                                |
+| `AZURE_KEY_VAULT_URI`             | the vault holding `db-password` and `cloud-iam-client-secret`                                                                                                                                          |
+| `CLOUD_IAM_*`                     | the vipper.iam endpoint and this API's confidential client                                                                                                                                             |
+| `CLOUD_BLOB_QUOTA_BYTES`          | unset — 256 MB of attachment bytes per account, evicted coldest-first. Worth lowering if the SQL tier gets tight, since the bytes live in a `VARBINARY(MAX)` column there (`attachments/blobStore.ts`) |
 
 Two settings are derived rather than configured, so that a deployment cannot inherit a
 development default by forgetting a variable:
@@ -105,6 +105,33 @@ development default by forgetting a variable:
 - **CORS** allows any `localhost` origin outside production (Vite's port moves), and
   **nothing** in production when `CLOUD_ALLOWED_ORIGINS` is unset. A blocked browser call
   is a loud failure; a silently wide-open API is not.
+
+## Personal access tokens
+
+The desktop app no longer signs in to vipper.iam. It is pasted a personal access token,
+minted on the web app's Personal access tokens page and verified by `@tm/server` itself
+(`apps/server/src/iam/patService.ts`) — the one process that issues a token is the one that
+checks it, which is what makes revocation real rather than aspirational.
+
+A token is worth exactly one thing: full read-and-write access to the account's mirror, for
+as long as the holder chooses (30, 90, 365 days, or no expiry) or until it is revoked,
+whichever comes first. There is no narrower scope to grant — see `packages/protocol/src/
+wire.ts`'s own note on why a column with one legal value is a lie about what is enforced.
+
+**Revocation latency.** `PatService`'s resolution cache (`PAT_CACHE_TTL_MS`, 5 seconds) is
+instant on the process that took the revoke — `PatService.revoke` calls `invalidate()` on the
+same instance's cache — and up to `PAT_CACHE_TTL_MS` on any other. With `min_replicas =
+max_replicas = 1` (above) there is no "any other": the single-replica pin that already makes
+the auth caches, the event bus and the media-token registry safe is what makes this one
+instant in practice, not just in the best case.
+
+**`CLOUD_DEV_NO_AUTH=1` and `POST /v1/tokens`.** The flag still short-circuits `IamAuthGuard`
+to `DEV_ACCOUNT_ID` with nothing presented — but a request that reaches `POST /v1/tokens`
+under it mints a **durable** credential for `dev-account`, not a ten-minute media ticket. That
+is a real credential surviving the dev bypass being turned back off, which is exactly the kind
+of consequence `assertDevAuthGateSafe()` (`apps/server/src/config/devAuthGate.ts`) exists to
+keep out of production — it matters more now than it did when the flag only ever stood in for
+a read.
 
 ## Verifying a deploy
 
@@ -142,3 +169,89 @@ docker run --rm --add-host=host.docker.internal:host-gateway \
 
 Note the database itself is not created by `docker compose` or by the migration runner —
 `CREATE DATABASE taskmanager` is a one-time manual step on a fresh volume.
+
+Run the server itself the same way to check the PAT guard without a live `vipper.iam` —
+the `CLOUD_IAM_*` values below only need to satisfy `loadIamConfig`'s "is it set" check
+(`src/iam/iam.config.ts`), because a well-shaped-but-unknown PAT is exactly the case that
+should never reach them:
+
+```bash
+docker run --rm -p 3100:3100 --add-host=host.docker.internal:host-gateway \
+  -e DB_HOST=host.docker.internal -e DB_USER=sa -e DB_PASSWORD='Local_Dev_Password_123!' \
+  -e DB_NAME=taskmanager -e NODE_ENV=production \
+  -e CLOUD_IAM_API_BASE=https://auth.vipper.network/api/v1 \
+  -e CLOUD_IAM_CLIENT_ID=unused -e CLOUD_IAM_CLIENT_SECRET=unused \
+  taskmanager-server
+
+curl -o /dev/null -w '%{http_code}\n' localhost:3100/v1/board \
+  -H "authorization: Bearer tmpat_$(head -c32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=' | head -c43)"
+```
+
+`401`, and `docker logs` on the container shows no outbound call to `CLOUD_IAM_API_BASE`
+for that request — not a fast failure from `iam.client.ts`, but that file never being
+reached. `tmpat_` plus 43 base64url characters is exactly `PAT_PREFIX` + `PAT_SECRET_LENGTH`
+(`packages/protocol/src/wire.ts`), so `looksLikePat` routes `IamAuthGuard` into
+`PatService.resolve` before `vipper.iam` is ever a candidate — see `iamAuth.guard.ts`'s
+"route once, commit" rule. The same request against a real IAM bearer, or against nothing
+at all, is what would make that trip; this is the one shape of request that provably can't.
+
+## Revoking a token, end to end
+
+`PatService.revoke` (`apps/server/src/iam/patService.ts`) calls `invalidate()` on its own
+cache in the same call that writes `revokedAt` — the point of
+[the revocation-latency note above](#personal-access-tokens): on the single replica this
+deploys as, there is no window at all, not even `PAT_CACHE_TTL_MS`'s five seconds. The
+fastest way to see that against a live process, no browser involved, is the dev bypass:
+
+```bash
+CLOUD_DEV_NO_AUTH=1 pnpm --filter @tm/server dev
+
+TOK=$(curl -sS -XPOST localhost:3100/v1/tokens \
+  -H 'content-type: application/json' -d '{"name":"revoke-check"}' | jq -r '.token')
+curl -o /dev/null -w '%{http_code}\n' localhost:3100/v1/board \
+  -H "authorization: Bearer $TOK"                                  # 200
+
+ID=$(curl -sS localhost:3100/v1/tokens | jq -r '.tokens[0].id')
+curl -o /dev/null -w '%{http_code}\n' -XDELETE localhost:3100/v1/tokens/$ID   # 204
+curl -o /dev/null -w '%{http_code}\n' localhost:3100/v1/board \
+  -H "authorization: Bearer $TOK"                                  # 401
+```
+
+The last request 401s against the very same process that served the 200 two lines above —
+`patService.test.ts`'s "makes the very next resolve() fail even inside the TTL window" is
+this exact claim without a server in front of it.
+
+The desktop side needs a real `vipper.iam` (the dev bypass only stands in for the server's
+own auth, and there is no sign-in left for it to skip on the client), so this half is a
+walkthrough rather than a `curl` transcript:
+
+1. `pnpm --filter @tm/web dev`, sign in, Settings → Personal access tokens → create a token.
+   The secret is shown once, in the create response; the list row that follows carries only
+   `hint` (`TokensController.create`'s `Cache-Control: no-store`, above, is what keeps that
+   secret from being the thing a cache remembers).
+2. `pnpm --filter claude-orchestrator dev`, Settings → Cloud → paste the token → Save token →
+   **Test connection**. The only passing verdict is `cloudTestConnection.ts`'s
+   `` `Connected. The server lists this machine…` `` — every earlier rung (board reachable,
+   not a 403, this client actually listed) has to clear first.
+3. Restart the desktop app. `CloudTokenProvider` reads the same stored token back
+   (`cloudToken.ts`) and the board mirror resumes with no sign-in prompt — the entire premise
+   of a pasted, non-rotating credential.
+4. Revoke the token in the browser. Within a couple of `CADENCE_MS.active` ticks (~5s) the
+   next poll's `POST /v1/sync` comes back 401, `CloudPoller` calls `onAuthRejected` and
+   `CloudTokenProvider.invalidate()` moves to `'rejected'` — the sync ring shows an error,
+   Settings' hint becomes `cloudAuthHint.ts`'s "The cloud rejected this token…" text, and
+   every tick after that logs the same describeMissingToken message instead of a fresh 401:
+   `get()` short-circuits to `null` before a request ever goes out again, so the log reads as
+   stopped, not as a `401` repeating every 2.5s.
+5. Re-check `lastUsedAt` in the web token list: it moved once, when the token first synced,
+   not once per poll — `PatService.touch`'s `PAT_LAST_USED_FLUSH_MS` (60s) throttle is what
+   keeps a live desktop from writing that column on every tick.
+6. Upgrade path: launch a desktop profile whose database predates this ticket and still
+   holds an `iam.refreshToken` row. `store.ts`'s `clearLegacyCloudSignIn()` deletes it on
+   that boot and `ipc.ts` carries the fact as `legacySignInRetired`, which
+   `cloudAuthHint.ts` turns into "Cloud sign-in has been replaced by personal access
+   tokens…" — the row is gone from disk, not merely unused, and the pane says why the field
+   is empty instead of leaving it blank.
+
+`pnpm format:check && pnpm typecheck && pnpm test && pnpm build` all pass after this — none
+of the above needed a code change, only proving each claim still holds.

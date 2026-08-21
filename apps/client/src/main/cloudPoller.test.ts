@@ -129,6 +129,24 @@ describe('CloudPoller', () => {
     expect(body.clientId).toBe('client-1');
   });
 
+  it('calls onSynced once a tick succeeds, and not when it fails', async () => {
+    const onSynced = vi.fn();
+    const { poller, fetchImpl } = makePoller({
+      onSynced,
+      fetchImpl: vi
+        .fn()
+        .mockResolvedValueOnce({ ok: true, status: 200, json: async () => response() })
+        .mockResolvedValueOnce({ ok: false, status: 500, statusText: 'Internal Server Error' }),
+    });
+
+    await poller.tick();
+    expect(onSynced).toHaveBeenCalledTimes(1);
+
+    await poller.tick();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(onSynced).toHaveBeenCalledTimes(1);
+  });
+
   it('re-arms after a successful tick using the server-directed delay', async () => {
     const { poller, fetchImpl } = makePoller();
     poller.reschedule();
@@ -589,6 +607,31 @@ describe('CloudPoller', () => {
       expect(onAuthRejected).toHaveBeenCalledTimes(1);
       expect(fetchImpl).toHaveBeenCalledTimes(2); // no third request
       expect((poller as unknown as { consecutiveFailures: number }).consecutiveFailures).toBe(1);
+    });
+
+    it('makes exactly one POST when the provider answers null on the retry — PAT mode', async () => {
+      // `CloudTokenProvider.invalidate()` (now that a PAT does not rotate) moves straight to
+      // `'rejected'`, so the retry's `getAccessToken()` answers null rather than a second
+      // token. `fresh && fresh !== token` is then false, and nothing goes out a second time.
+      const onAuthRejected = vi.fn();
+      let rejected = false;
+      const getAccessToken = vi.fn(async () => (rejected ? null : 'tmpat_stale'));
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValue({ ok: false, status: 401, statusText: 'Unauthorized' });
+      const { poller } = makePoller({
+        onAuthRejected: () => {
+          rejected = true;
+          onAuthRejected();
+        },
+        getAccessToken,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+
+      await poller.tick();
+
+      expect(onAuthRejected).toHaveBeenCalledTimes(1);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
     });
 
     it('does not retry or invalidate on a 403 — only a 401 means the token is bad', async () => {
