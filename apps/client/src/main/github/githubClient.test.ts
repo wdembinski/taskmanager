@@ -151,7 +151,9 @@ describe('GitHubClient — pull requests and their checks', () => {
           link: '<https://api.github.com/repos/acme/web/commits/deadbeef/check-runs?per_page=100&filter=latest&page=2>; rel="next"',
         }),
       )
-      .mockResolvedValueOnce(jsonResponse({ total_count: 2, check_runs: [{ name: 'test' }] }, 200, {}));
+      .mockResolvedValueOnce(
+        jsonResponse({ total_count: 2, check_runs: [{ name: 'test' }] }, 200, {}),
+      );
     vi.stubGlobal('fetch', fetchMock);
 
     const runs = await client().listCheckRuns('acme', 'web', 'deadbeef');

@@ -151,11 +151,7 @@ import {
   rematchMergeRequests,
   type FetchedMergeRequest,
 } from './gitlab/gitlabSync';
-import {
-  needsCiRefresh,
-  reconcilePullRequests,
-  rematchPullRequests,
-} from './github/githubPrSync';
+import { needsCiRefresh, reconcilePullRequests, rematchPullRequests } from './github/githubPrSync';
 import {
   forgeName,
   mrIsSettled,

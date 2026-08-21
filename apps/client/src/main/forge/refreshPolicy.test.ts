@@ -67,23 +67,26 @@ describe('needsCiRefresh', () => {
   it('is true for an open PR reading unknown, regardless of age', () => {
     expect(needsCiRefresh(prior({ pipelineStatus: 'unknown', updatedAt: 0 }), 1_000)).toBe(true);
     expect(
-      needsCiRefresh(prior({ pipelineStatus: 'unknown', updatedAt: 1_000 - CI_SETTLE_GRACE_MS * 10 }), 1_000),
+      needsCiRefresh(
+        prior({ pipelineStatus: 'unknown', updatedAt: 1_000 - CI_SETTLE_GRACE_MS * 10 }),
+        1_000,
+      ),
     ).toBe(true);
   });
 
   // The "read back a settled MR" pass in `ipc.ts` already hands a settled row's detail
   // through unconditionally, so this predicate has nothing left to add for one.
-  it.each(['merged', 'closed'] as const)(
-    'is false for a %s PR reading unknown',
-    (state) => {
-      expect(needsCiRefresh(prior({ state, pipelineStatus: 'unknown' }), 1_000)).toBe(false);
-    },
-  );
+  it.each(['merged', 'closed'] as const)('is false for a %s PR reading unknown', (state) => {
+    expect(needsCiRefresh(prior({ state, pipelineStatus: 'unknown' }), 1_000)).toBe(false);
+  });
 
   it('is true for a freshly seen none, within the settle grace window', () => {
     const now = 1_000;
     expect(
-      needsCiRefresh(prior({ pipelineStatus: 'none', updatedAt: now - CI_SETTLE_GRACE_MS + 1 }), now),
+      needsCiRefresh(
+        prior({ pipelineStatus: 'none', updatedAt: now - CI_SETTLE_GRACE_MS + 1 }),
+        now,
+      ),
     ).toBe(true);
   });
 
@@ -94,13 +97,23 @@ describe('needsCiRefresh', () => {
       needsCiRefresh(prior({ pipelineStatus: 'none', updatedAt: now - CI_SETTLE_GRACE_MS }), now),
     ).toBe(false);
     expect(
-      needsCiRefresh(prior({ pipelineStatus: 'none', updatedAt: now - CI_SETTLE_GRACE_MS - 1 }), now),
+      needsCiRefresh(
+        prior({ pipelineStatus: 'none', updatedAt: now - CI_SETTLE_GRACE_MS - 1 }),
+        now,
+      ),
     ).toBe(false);
   });
 
-  it.each(
-    ['created', 'pending', 'running', 'success', 'failed', 'canceled', 'skipped', 'manual'] as const,
-  )('is false for every other pipeline status (%s)', (pipelineStatus: PipelineStatus) => {
+  it.each([
+    'created',
+    'pending',
+    'running',
+    'success',
+    'failed',
+    'canceled',
+    'skipped',
+    'manual',
+  ] as const)('is false for every other pipeline status (%s)', (pipelineStatus: PipelineStatus) => {
     expect(needsCiRefresh(prior({ pipelineStatus, updatedAt: 0 }), 1_000)).toBe(false);
   });
 });

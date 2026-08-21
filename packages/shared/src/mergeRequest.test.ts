@@ -80,12 +80,18 @@ describe('mrReadyToMerge', () => {
     expect(mrReadyToMerge(ready({ approvalsRequired: 0, approvalsGiven: 1 }))).toBe(true);
   });
 
-  it.each(['running', 'failed', 'canceled', 'skipped', 'manual', 'pending', 'unknown', 'none'] as const)(
-    'is false when the pipeline is %s rather than passed',
-    (pipelineStatus) => {
-      expect(mrReadyToMerge(ready({ pipelineStatus }))).toBe(false);
-    },
-  );
+  it.each([
+    'running',
+    'failed',
+    'canceled',
+    'skipped',
+    'manual',
+    'pending',
+    'unknown',
+    'none',
+  ] as const)('is false when the pipeline is %s rather than passed', (pipelineStatus) => {
+    expect(mrReadyToMerge(ready({ pipelineStatus }))).toBe(false);
+  });
 
   it('is false for a draft, a closed MR, or one with changes requested', () => {
     expect(mrReadyToMerge(ready({ draft: true }))).toBe(false);
