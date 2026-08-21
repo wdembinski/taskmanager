@@ -168,10 +168,15 @@ nobody could get an answer about is kept on the board. Archived cards are destro
 ### Agent project
 
 A **repo folder plus the JIRA epics it owns** — the target you delegate a My Tasks
-card to (managed in **Settings → Agents**). It has no `plan.md` and is never
-queued; it is stored as a project with `kind: 'agent'` so worktrees, auto-merge and
-the usage-limit gate work on it unchanged. The seed of the projects concept meant
-to replace the legacy plan.md/queue **Projects** tab.
+card to. It has no `plan.md` and is never queued; what makes a project row this
+rather than something else is simply that it carries a `path` (`hasRepo` in
+`@tm/shared/model`), not a stored `kind`, so worktrees, auto-merge and the
+usage-limit gate work on it unchanged. Created and edited from the desktop's
+**Projects** nav item, or from the Tickets workspace's own add/edit drawer — both
+are the same shared `ProjectForm` (`packages/ui/src/projects/ProjectForm.tsx`), with
+the folder-only fields simply hidden on a host with no way to browse for one. The
+seed of the projects concept meant to replace the legacy plan.md/queue **Projects**
+tab.
 
 ### Delegated task ("Assign to an agent")
 
