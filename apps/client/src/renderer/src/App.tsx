@@ -404,7 +404,9 @@ export function App(): JSX.Element {
       ) : tab === 'projects' ? (
         <Projects />
       ) : tab === 'tickets' ? (
-        <TicketWorkspace />
+        <TicketWorkspace
+          repo={{ onBrowseFolder: () => window.api.invoke('project:pickDirectory') }}
+        />
       ) : tab === 'performance' ? (
         <Performance />
       ) : tab === 'attention' ? (

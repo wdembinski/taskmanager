@@ -39,7 +39,12 @@ import {
   type TicketLinkType,
 } from '@shared/model';
 import { isIssueType, isTicketLinkType, normalizeLabels, seedInitials } from '@shared/tickets';
-import { formatTicketKey, normalizeTicketPrefix } from '@shared/ticketKey';
+import {
+  formatTicketKey,
+  normalizeTicketPrefix,
+  suggestTicketPrefix,
+  uniqueTicketPrefix,
+} from '@shared/ticketKey';
 import { formatExecTarget, parseExecTarget } from '@shared/execTarget';
 import { hostJoin } from '@shared/wslPath';
 import type { AuthState } from '@shared/auth';
@@ -1456,6 +1461,38 @@ export function createStore(dbPath: string): Store {
     }
   }
 
+  // Guarantee every board project a key prefix: a plan-less project (other than the
+  // Personal board) is a ticket board the moment it exists, and one with no prefix cannot
+  // allocate a key at all (`ticket:create`'s `ownsTickets` refusal in ipc.ts). `addProject`
+  // and `updateProject` now derive one for every NEW or edited row from here on; this is
+  // the one-time backfill for whatever was already sitting NULL, seeded from the prefixes
+  // already in use so it never collides with one added since.
+  //
+  // MUST run after the `kind`-retirement backfill above: that is what gives a legacy
+  // `kind = 'plan'` row its `planPath`, and running this first would hand a plan project a
+  // prefix it should never have had.
+  const prefixlessBoardProjects = db
+    .prepare(
+      `SELECT id, name FROM projects
+         WHERE ticketPrefix IS NULL AND (planPath IS NULL OR planPath = '') AND id <> ?`,
+    )
+    .all(PERSONAL_PROJECT_ID) as Array<{ id: string; name: string }>;
+  if (prefixlessBoardProjects.length > 0) {
+    const takenPrefixes = new Set(
+      (
+        db
+          .prepare(`SELECT ticketPrefix FROM projects WHERE ticketPrefix IS NOT NULL`)
+          .all() as Array<{ ticketPrefix: string }>
+      ).map((row) => row.ticketPrefix.toUpperCase()),
+    );
+    const backfillTicketPrefix = db.prepare(`UPDATE projects SET ticketPrefix = ? WHERE id = ?`);
+    for (const row of prefixlessBoardProjects) {
+      const prefix = uniqueTicketPrefix(suggestTicketPrefix(row.name), takenPrefixes);
+      takenPrefixes.add(prefix);
+      backfillTicketPrefix.run(prefix, row.id);
+    }
+  }
+
   // Migrate databases created before an attachment's bytes could be pushed to the cloud
   // (Phase 26). NULL on every pre-existing row is exactly right — nothing has ever been
   // pushed — and `cloudAttachmentUploader`'s backfill is what walks them afterwards.
@@ -1850,6 +1887,14 @@ export function createStore(dbPath: string): Store {
   );
   const selectProjects = db.prepare(`SELECT * FROM projects ORDER BY createdAt`);
   const selectProject = db.prepare(`SELECT * FROM projects WHERE id = ?`);
+  // Feeds `uniqueTicketPrefix` when a new or edited project needs one derived rather than
+  // supplied — every prefix already spoken for, so the guess never collides.
+  const selectTicketPrefixes = db.prepare(
+    `SELECT ticketPrefix FROM projects WHERE ticketPrefix IS NOT NULL`,
+  );
+  const selectOtherTicketPrefixes = db.prepare(
+    `SELECT ticketPrefix FROM projects WHERE ticketPrefix IS NOT NULL AND id <> ?`,
+  );
   const deleteProject = db.prepare(`DELETE FROM projects WHERE id = ?`);
   const updateWriteBack = db.prepare(`UPDATE projects SET writeBackPlan = ? WHERE id = ?`);
   const updatePlanAligned = db.prepare(`UPDATE projects SET planAligned = ? WHERE id = ?`);
@@ -3080,19 +3125,37 @@ export function createStore(dbPath: string): Store {
       // Personal board rather than a plan-driven one (see `hasPlan`/`hasRepo`/`ownsTickets`
       // in `@shared/model`).
       const defaults = getSettings();
-      const ticketPrefix = normalizeTicketPrefix(input.ticketPrefix ?? '') ?? '';
+      const id = randomUUID();
       const path = input.path ?? '';
+      // `hostJoin`, not `path.join`: for a WSL project the path is a Linux one, and joining
+      // it on Windows would produce `/home/you/repo\plan.md`. Only defaulted when there is
+      // a directory to put it in — a project with no `path` stays plan-less unless the
+      // caller names a `planPath` of its own.
+      const planPath = input.planPath ?? (path ? hostJoin(path, 'plan.md') : '');
+      let ticketPrefix = normalizeTicketPrefix(input.ticketPrefix ?? '') ?? '';
+      // A project with no directory has nothing to be named after — `basename('')` is
+      // `''` — so it falls back to the ticket prefix rather than going nameless.
+      let name = input.name?.trim() || basename(path) || ticketPrefix;
+      // Guarantee a board project a key prefix: a plan-less project (other than the
+      // Personal board) can create tickets on its board tab, and `ticket:create` refuses
+      // everything on one with no prefix (`ownsTickets` in `@shared/model`) — so a caller
+      // that left this blank gets one derived from the name instead of a project that
+      // looks addable but cannot hold a single ticket. No `id !== PERSONAL_PROJECT_ID`
+      // guard is needed here (unlike `updateProject`'s): the Personal board is seeded once,
+      // directly, when the schema is created (below); a freshly minted `randomUUID()` can
+      // never collide with it.
+      if (!ticketPrefix && planPath === '') {
+        const taken = (selectTicketPrefixes.all() as Array<{ ticketPrefix: string }>).map(
+          (row) => row.ticketPrefix,
+        );
+        ticketPrefix = uniqueTicketPrefix(suggestTicketPrefix(name), taken);
+        name = name || ticketPrefix;
+      }
       const project: Project = {
-        id: randomUUID(),
-        // A project with no directory has nothing to be named after `basename('')` is
-        // `''`, so it falls back to the ticket prefix rather than going nameless.
-        name: input.name?.trim() || basename(path) || ticketPrefix,
+        id,
+        name,
         path,
-        // `hostJoin`, not `path.join`: for a WSL project the path is a Linux one, and
-        // joining it on Windows would produce `/home/you/repo\plan.md`. Only defaulted
-        // when there is a directory to put it in — a project with no `path` stays
-        // plan-less unless the caller names a `planPath` of its own.
-        planPath: input.planPath ?? (path ? hostJoin(path, 'plan.md') : ''),
+        planPath,
         defaultModel: input.defaultModel ?? defaults.defaultModel,
         // Seeded from the app-wide default like `defaultModel`, and null all the way down
         // unless someone has set one — a new project plans on what it executes on.
@@ -3264,7 +3327,20 @@ export function createStore(dbPath: string): Store {
       const before = selectProject.get(id) as ProjectRow | undefined;
       let rekeyTo: string | null = null;
       if (before && patch.ticketPrefix !== undefined) {
-        const wanted = normalizeTicketPrefix(patch.ticketPrefix);
+        let wanted = normalizeTicketPrefix(patch.ticketPrefix);
+        const planPath = patch.planPath !== undefined ? patch.planPath : before.planPath;
+        // A plan-less project (other than the Personal board) always owns a prefix (see
+        // `addProject`), so a patch that normalizes to nothing is really asking for a fresh
+        // one, not for the project to go toothless — derive one from whatever name it will
+        // carry instead of clearing it. Plan-driven projects fall through unchanged: they
+        // keep today's behaviour of refusing the clear only once keys are issued.
+        if (wanted === null && planPath === '' && id !== PERSONAL_PROJECT_ID) {
+          const candidateName = patch.name?.trim() || before.name;
+          const taken = (selectOtherTicketPrefixes.all(id) as Array<{ ticketPrefix: string }>).map(
+            (row) => row.ticketPrefix,
+          );
+          wanted = uniqueTicketPrefix(suggestTicketPrefix(candidateName), taken);
+        }
         const issued = (countProjectTickets.get(id) as { n: number }).n;
         if (wanted !== null || issued === 0) {
           if (wanted !== (before.ticketPrefix ?? null)) {
