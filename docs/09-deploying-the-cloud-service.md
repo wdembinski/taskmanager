@@ -194,3 +194,64 @@ reached. `tmpat_` plus 43 base64url characters is exactly `PAT_PREFIX` + `PAT_SE
 `PatService.resolve` before `vipper.iam` is ever a candidate — see `iamAuth.guard.ts`'s
 "route once, commit" rule. The same request against a real IAM bearer, or against nothing
 at all, is what would make that trip; this is the one shape of request that provably can't.
+
+## Revoking a token, end to end
+
+`PatService.revoke` (`apps/server/src/iam/patService.ts`) calls `invalidate()` on its own
+cache in the same call that writes `revokedAt` — the point of
+[the revocation-latency note above](#personal-access-tokens): on the single replica this
+deploys as, there is no window at all, not even `PAT_CACHE_TTL_MS`'s five seconds. The
+fastest way to see that against a live process, no browser involved, is the dev bypass:
+
+```bash
+CLOUD_DEV_NO_AUTH=1 pnpm --filter @tm/server dev
+
+TOK=$(curl -sS -XPOST localhost:3100/v1/tokens \
+  -H 'content-type: application/json' -d '{"name":"revoke-check"}' | jq -r '.token')
+curl -o /dev/null -w '%{http_code}\n' localhost:3100/v1/board \
+  -H "authorization: Bearer $TOK"                                  # 200
+
+ID=$(curl -sS localhost:3100/v1/tokens | jq -r '.tokens[0].id')
+curl -o /dev/null -w '%{http_code}\n' -XDELETE localhost:3100/v1/tokens/$ID   # 204
+curl -o /dev/null -w '%{http_code}\n' localhost:3100/v1/board \
+  -H "authorization: Bearer $TOK"                                  # 401
+```
+
+The last request 401s against the very same process that served the 200 two lines above —
+`patService.test.ts`'s "makes the very next resolve() fail even inside the TTL window" is
+this exact claim without a server in front of it.
+
+The desktop side needs a real `vipper.iam` (the dev bypass only stands in for the server's
+own auth, and there is no sign-in left for it to skip on the client), so this half is a
+walkthrough rather than a `curl` transcript:
+
+1. `pnpm --filter @tm/web dev`, sign in, Settings → Personal access tokens → create a token.
+   The secret is shown once, in the create response; the list row that follows carries only
+   `hint` (`TokensController.create`'s `Cache-Control: no-store`, above, is what keeps that
+   secret from being the thing a cache remembers).
+2. `pnpm --filter claude-orchestrator dev`, Settings → Cloud → paste the token → Save token →
+   **Test connection**. The only passing verdict is `cloudTestConnection.ts`'s
+   `` `Connected. The server lists this machine…` `` — every earlier rung (board reachable,
+   not a 403, this client actually listed) has to clear first.
+3. Restart the desktop app. `CloudTokenProvider` reads the same stored token back
+   (`cloudToken.ts`) and the board mirror resumes with no sign-in prompt — the entire premise
+   of a pasted, non-rotating credential.
+4. Revoke the token in the browser. Within a couple of `CADENCE_MS.active` ticks (~5s) the
+   next poll's `POST /v1/sync` comes back 401, `CloudPoller` calls `onAuthRejected` and
+   `CloudTokenProvider.invalidate()` moves to `'rejected'` — the sync ring shows an error,
+   Settings' hint becomes `cloudAuthHint.ts`'s "The cloud rejected this token…" text, and
+   every tick after that logs the same describeMissingToken message instead of a fresh 401:
+   `get()` short-circuits to `null` before a request ever goes out again, so the log reads as
+   stopped, not as a `401` repeating every 2.5s.
+5. Re-check `lastUsedAt` in the web token list: it moved once, when the token first synced,
+   not once per poll — `PatService.touch`'s `PAT_LAST_USED_FLUSH_MS` (60s) throttle is what
+   keeps a live desktop from writing that column on every tick.
+6. Upgrade path: launch a desktop profile whose database predates this ticket and still
+   holds an `iam.refreshToken` row. `store.ts`'s `clearLegacyCloudSignIn()` deletes it on
+   that boot and `ipc.ts` carries the fact as `legacySignInRetired`, which
+   `cloudAuthHint.ts` turns into "Cloud sign-in has been replaced by personal access
+   tokens…" — the row is gone from disk, not merely unused, and the pane says why the field
+   is empty instead of leaving it blank.
+
+`pnpm format:check && pnpm typecheck && pnpm test && pnpm build` all pass after this — none
+of the above needed a code change, only proving each claim still holds.
