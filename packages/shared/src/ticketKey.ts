@@ -145,7 +145,7 @@ export function uniqueTicketPrefix(base: string, taken: Iterable<string>): strin
     const suffixStr = String(suffix);
     const truncatedBase = normalizedBase.slice(
       0,
-      Math.max(1, MAX_TICKET_PREFIX_LENGTH - suffixStr.length)
+      Math.max(1, MAX_TICKET_PREFIX_LENGTH - suffixStr.length),
     );
     const candidate = normalizeTicketPrefix(`${truncatedBase}${suffixStr}`);
     if (candidate && !takenSet.has(candidate)) return candidate;

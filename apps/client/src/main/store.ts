@@ -3140,8 +3140,11 @@ export function createStore(dbPath: string): Store {
       // Personal board) can create tickets on its board tab, and `ticket:create` refuses
       // everything on one with no prefix (`ownsTickets` in `@shared/model`) — so a caller
       // that left this blank gets one derived from the name instead of a project that
-      // looks addable but cannot hold a single ticket.
-      if (!ticketPrefix && planPath === '' && id !== PERSONAL_PROJECT_ID) {
+      // looks addable but cannot hold a single ticket. No `id !== PERSONAL_PROJECT_ID`
+      // guard is needed here (unlike `updateProject`'s): the Personal board is seeded once,
+      // directly, when the schema is created (below); a freshly minted `randomUUID()` can
+      // never collide with it.
+      if (!ticketPrefix && planPath === '') {
         const taken = (selectTicketPrefixes.all() as Array<{ ticketPrefix: string }>).map(
           (row) => row.ticketPrefix,
         );
@@ -3333,9 +3336,9 @@ export function createStore(dbPath: string): Store {
         // keep today's behaviour of refusing the clear only once keys are issued.
         if (wanted === null && planPath === '' && id !== PERSONAL_PROJECT_ID) {
           const candidateName = patch.name?.trim() || before.name;
-          const taken = (
-            selectOtherTicketPrefixes.all(id) as Array<{ ticketPrefix: string }>
-          ).map((row) => row.ticketPrefix);
+          const taken = (selectOtherTicketPrefixes.all(id) as Array<{ ticketPrefix: string }>).map(
+            (row) => row.ticketPrefix,
+          );
           wanted = uniqueTicketPrefix(suggestTicketPrefix(candidateName), taken);
         }
         const issued = (countProjectTickets.get(id) as { n: number }).n;
