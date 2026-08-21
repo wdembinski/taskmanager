@@ -2,7 +2,7 @@
  * Build gate: refuse to package if the compiled `better-sqlite3` addon targets a
  * different Node ABI than the Electron we ship.
  *
- * Run by `pnpm package` / `pnpm package:linux` (and standalone via `pnpm check:abi`)
+ * Run by `pnpm package` / `pnpm package:linux:local` (and standalone via `pnpm check:abi`)
  * AFTER `electron-builder install-app-deps`, so it verifies the very binary that is
  * about to be copied into `app.asar.unpacked`.
  *

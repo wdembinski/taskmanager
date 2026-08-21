@@ -22,12 +22,18 @@ vocabulary changed — the split is a UI reorganisation over the same `projects`
 
 ## The schema
 
-`projects` gains two columns ([`store.ts:918-924`](../apps/client/src/main/store.ts)):
+`projects` gains three columns ([`store.ts:928-957`](../apps/client/src/main/store.ts)):
 
-- `ticketPrefix TEXT COLLATE NOCASE` — the key prefix (`'TM'`), `NULL` for every project that
-  isn't a ticket project.
+- `ticketPrefix TEXT COLLATE NOCASE` — the key prefix (`'TM'`). `NULL` is possible for a
+  plan-driven project, the Personal board, or a plan-less project a human deliberately kept
+  Personal; every other project is *guaranteed* one — see **Every plan-less project owns a
+  prefix** below.
 - `ticketSeq INTEGER NOT NULL DEFAULT 0` — the allocator. See **Key allocation** below for why
   this is not a field on `Project`.
+- `personal INTEGER NOT NULL DEFAULT 0` — not a field on `Project` either, and not read
+  anywhere outside the guarantee itself: the one bit of state that lets the backfill below
+  tell "opted out of the guarantee" apart from "hasn't gotten one yet" for a row whose
+  `ticketPrefix` is `NULL` either way. See **Every plan-less project owns a prefix**.
 
 `tasks` gains twelve ([`store.ts:985-1002`](../apps/client/src/main/store.ts)): `ticketKey`,
 `ticketNumber`, `issueType`, `epicTaskId`, `milestoneId`, `labels`, `storyPoints`,
@@ -162,6 +168,47 @@ prefix and the rest don't.
 Clearing a prefix (`ticketPrefix: ''`) is refused, not obeyed, once a project has issued at
 least one key: there is no way to write "no prefix" onto `TM-14` that leaves it still called
 anything.
+
+### Every plan-less project owns a prefix — unless it opts out as Personal
+
+A project with no `plan.md` is a ticket board the moment it exists — its board tab lets you
+file a ticket on it right away — and `ticket:create`'s `ownsTickets` refusal (`@shared/model`)
+means a project with no prefix cannot accept one. So the prefix isn't merely settable for that
+whole class of project, it is guaranteed, with one explicit opt-out: a plan-less project can
+still choose to be a Personal space — no tickets of its own, its cards filed on My Tasks
+instead — via `AddProjectInput.personal` / `ProjectPatch.personal`
+([`model.ts`](../packages/shared/src/model.ts)).
+
+- `addProject` derives one (`uniqueTicketPrefix(suggestTicketPrefix(name), taken)`) whenever
+  the caller left it blank, the new row is plan-less, isn't the Personal board, and did not
+  send `personal: true` ([`store.ts:3142-3176`](../apps/client/src/main/store.ts)). Sending
+  `personal: true` forces the prefix empty even if a `ticketPrefix` was also supplied — a
+  caller sending both contradicted itself, and the explicit choice wins.
+- `updateProject` does the same instead of clearing the column: a patch that would otherwise
+  normalize the prefix to nothing derives a fresh one from whatever name the project will carry,
+  unless the patch also sends `personal: true`
+  ([`store.ts:3361-3392`](../apps/client/src/main/store.ts)) — the "refused once keys are
+  issued" rule above still governs both the plan-driven case (which this derivation skips
+  entirely) and going Personal: switching an existing board project back only succeeds while it
+  has issued no tickets.
+- Existing rows that predate the guarantee got theirs from a one-time backfill on open
+  ([`store.ts:1480-1509`](../apps/client/src/main/store.ts)): every plan-less, non-Personal
+  project sitting on a `NULL` prefix is assigned one the same way, seeded from every prefix
+  already in use so it can't collide with one. It runs **after** the `kind`-retirement backfill,
+  which is what gives a legacy plan-driven row its `planPath` in the first place — running
+  before it would hand a plan project a prefix it should never have had. It also **excludes**
+  any row with `personal = 1`: without that exclusion, this backfill — which runs on *every*
+  store open, not just once ever — would silently re-guarantee a prefix onto a project a human
+  chose to keep Personal, the next time the app started. That column is the only reason
+  "opted out" and "hasn't gotten one yet" can be told apart for a row whose `ticketPrefix` is
+  `NULL` either way; see [`verify-projects.mjs`](../apps/client/scripts/verify-projects.mjs)
+  §7 for the restart proving it.
+
+`ProjectForm` (`packages/ui/src/projects/ProjectForm.tsx`) draws the choice itself, in place
+of its own "Ticket key prefix" field, via `ProjectBasicsFields`
+(`packages/ui/src/projects/ProjectBasicsFields.tsx`) for any project the guarantee actually
+applies to — a legacy plan-driven project being edited keeps its own always-shown,
+always-optional field instead, since that guarantee (and this choice) never applied to it.
 
 ---
 

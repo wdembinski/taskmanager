@@ -1,17 +1,17 @@
 # Release — [`RELEASE.md`](../../RELEASE.md)'s procedure, run by a machine.
 #
 # Every push to `development` (this repo's integration branch — there is no `main`) tags a
-# version, drafts a GitHub release, packages the desktop app for Windows and Linux into that
-# draft, and then publishes it. The cloud service is NOT this workflow's business: the same
-# push runs `deploy.yml` in parallel, which is what the ticket asks for.
+# version, drafts a GitHub release, packages the desktop app for Windows into that draft, and
+# then publishes it. Linux is no longer built or released here (RELEASE.md §6). The cloud
+# service is NOT this workflow's business: the same push runs `deploy.yml` in parallel, which
+# is what the ticket asks for.
 #
 # The job order is RELEASE.md's section order, and each job is one of its rules:
 #
 #   gates    §1  nothing is tagged from a red tree (rule 1)
 #   version  §0  idempotence, §2 the version, §3 tag and push, §4 the DRAFT release
 #   windows  §5  package, the headless addon smoke test, then upload into the draft
-#   linux    §6  package, docs/07's ELF and ABI-symbol checks, then upload into the draft
-#   promote  §7  publish the draft — always, even if Linux failed (rule 4)
+#   promote  §6  publish the draft (rule 4)
 #
 # ── The two loop hazards, closed deliberately ──────────────────────────────────
 #
@@ -235,8 +235,8 @@ jobs:
           git push --follow-tags origin development
 
       # §4. The release must exist as a DRAFT before packaging, because that is what
-      # `gh release upload` in the windows/linux jobs below uploads into (their own comment
-      # explains why that upload is explicit and not electron-builder's `--publish`). Draft,
+      # `gh release upload` in the windows job below uploads into (its own comment explains
+      # why that upload is explicit and not electron-builder's `--publish`). Draft,
       # specifically, because `gh release upload` can write to a published release too — the
       # draft is what keeps a half-built version off the update feed until `promote` says so.
       - name: Draft the GitHub release
@@ -371,96 +371,13 @@ jobs:
             apps/client/dist/latest.yml
           if-no-files-found: error
 
-  # ── §6 Linux ───────────────────────────────────────────────────────────────
-  # RELEASE.md §6 calls this "usually a hand-back, not a step", because the machine releases
-  # were cut from could not build it. A runner can, so here it is a step — but the rule behind
-  # §6 is unchanged and lives in `promote`: a Linux build that fails does not hold the release.
-  linux:
-    needs: version
-    if: needs.version.outputs.release == 'true'
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout the tag
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.version.outputs.tag }}
-
-      # electron-builder shells out to fakeroot to build the .deb; without it the AppImage
-      # succeeds and the deb target dies.
-      - name: Install fakeroot
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y fakeroot
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Install Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build the shared packages
-        run: pnpm exec turbo run build --filter=./packages/*
-
-      # Same chain as Windows, with --linux and --publish never: AppImage + deb, plus
-      # latest-linux.yml, which an AppImage cannot self-update without. See the Windows job's
-      # "Upload the installer and feed to the draft" for why this no longer publishes itself.
-      - name: Package the Linux artifacts
-        run: pnpm --filter claude-orchestrator package:linux:local
-
-      # docs/07's "Building for Linux" checks. Both are about the same failure — a bundle
-      # carrying Windows-compiled native code, which is what a build from /mnt/c produces and
-      # what shipped as v0.25.0. `ensure:abi` has already run inside `package:linux`; these
-      # read the binaries that were actually written.
-      #
-      # NOTE the app.asar.unpacked path here is correct and is NOT the mistake §5 warns about:
-      # readelf reads the .node file, it does not require() it, and the unpacked copy is the
-      # only one on disk as a file.
-      - name: Check the artifacts are Linux binaries
-        run: |
-          set -euo pipefail
-          file apps/client/dist/linux-unpacked/claude-orchestrator
-          file apps/client/dist/linux-unpacked/claude-orchestrator | grep -q 'ELF 64-bit'
-
-          ADDON=apps/client/dist/linux-unpacked/resources/app.asar.unpacked/node_modules/better-sqlite3/build/Release/better_sqlite3.node
-          readelf -Ws "$ADDON" | grep node_register_module_v || true
-          # v130 is Electron 33's module ABI. Any other number is a bundle that boots to a
-          # permanent "Loading…" — the addon loads lazily, so nothing else catches it.
-          readelf -Ws "$ADDON" | grep -q 'node_register_module_v130'
-
-      # See the Windows job's "Upload the installer and feed to the draft" for why this is
-      # explicit rather than electron-builder's own `--publish`.
-      - name: Upload the Linux artifacts and feed to the draft
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.version.outputs.tag }}
-        run: |
-          set -euo pipefail
-          gh release upload "$TAG" --clobber \
-            apps/client/dist/*.AppImage \
-            apps/client/dist/*.deb \
-            apps/client/dist/latest-linux.yml
-
-  # ── §7 Promote ─────────────────────────────────────────────────────────────
-  # Rule 4: promote the draft LAST — but DO promote it. Last, because the windows/linux
-  # uploads have to land before there is anything to promote — `needs:` below enforces the
-  # order, this comment just says why it matters. And do it, because four green drafts once
-  # piled up here unpublished, each waiting on a platform build that was never going to
-  # happen on its own.
-  #
-  # Hence `always()` and a condition on Windows alone. §6 is explicit that a platform this
-  # build cannot produce is not a reason to withhold a release: ship what you have and say
-  # what is owed. `continue-on-error` on the linux job would have expressed the same thing far
-  # less visibly — a failed Linux build should look failed, and be tolerated here, on purpose.
+  # ── §6 Promote ─────────────────────────────────────────────────────────────
+  # Rule 4: promote the draft LAST — but DO promote it. Last, because the windows upload has
+  # to land before there is anything to promote — `needs:` below enforces the order, this
+  # comment just says why it matters.
   promote:
-    needs: [version, windows, linux]
-    if: always() && needs.version.outputs.release == 'true' && needs.windows.result == 'success'
+    needs: [version, windows]
+    if: needs.version.outputs.release == 'true'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -474,30 +391,16 @@ jobs:
         run: |
           set -euo pipefail
           gh release view "$TAG" --json assets --jq '.assets[].name' | tee assets.txt
-          # -F and -x: a whole line, matched literally. Unanchored, `latest.yml` as a regex
-          # would also be satisfied by `latest-linux.yml`, which is the wrong feed entirely.
           grep -qxF 'latest.yml' assets.txt || {
             echo "::error::$TAG has no latest.yml — promoting it would publish a release nobody can update to."
             exit 1
           }
-          if [ "${{ needs.linux.result }}" = "success" ] && ! grep -qxF 'latest-linux.yml' assets.txt; then
-            echo "::error::The Linux build succeeded but latest-linux.yml is not on $TAG."
-            exit 1
-          fi
 
       - name: Publish
         run: |
           set -euo pipefail
           gh release edit "$TAG" --draft=false
           echo "::notice::$TAG is published."
-
-      # Not a failure — a hand-back. RELEASE.md §6: publishing Windows-only means Linux
-      # artifacts for THIS version can no longer go up the normal way (builder cannot write to
-      # a published release), so the usual answer is to ship Linux in the next version.
-      - name: Say what is owed
-        if: needs.linux.result != 'success'
-        run: |
-          echo "::warning::$TAG was published WITHOUT Linux artifacts — the linux job ended '${{ needs.linux.result }}'. Linux users get the next version; attaching them to this one now would need gh release upload, which mangles filenames (RELEASE.md §6)."
 
       # The cloud is not this workflow's business — except for this one thread, which no
       # other workflow can pull.

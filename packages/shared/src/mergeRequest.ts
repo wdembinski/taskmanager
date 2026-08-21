@@ -23,9 +23,18 @@ export type ForgeProvider = 'gitlab' | 'github';
 /** The upstream state of an MR, as the forge reports it. */
 export type MergeRequestState = 'opened' | 'merged' | 'closed' | 'locked';
 
-/** A CI pipeline's outcome. `unknown` when the MR carries no pipeline we could read. */
+/**
+ * A CI pipeline's outcome.
+ *
+ * `unknown` and `none` are both "no pipeline is showing", but they are not the same claim.
+ * `unknown` means we have not (yet) gotten a clean answer out of every CI system this forge
+ * has — it is always worth re-asking. `none` means every system answered and this commit
+ * genuinely has no CI attached to it, which is believed rather than re-asked forever. See
+ * `forge/refreshPolicy.ts`'s `needsCiRefresh` for where that distinction earns its keep.
+ */
 export type PipelineStatus =
   | 'unknown'
+  | 'none'
   | 'created'
   | 'pending'
   | 'running'

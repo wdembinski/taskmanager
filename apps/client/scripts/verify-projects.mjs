@@ -238,6 +238,31 @@ const agentProject = store.addProject({
 const agentTask = store.createTask(agentProject.id, { title: 'an agent card from before' });
 if (!agentTask) throw new Error('old store refused the agent card');
 
+// Two genuinely PLAN-LESS, non-Personal projects — the other shape this branch's
+// guaranteed-prefix backfill (step 2 of this plan) exists for. planPath is set
+// explicitly to '': __OLD_REF__'s own addProject defaults a plan path from path alone
+// (see the comment above it), so a project with a real directory and no override would
+// come out plan-driven, not board-driven — the same trap 'legacy-boardish' avoids in
+// verify-tickets.mjs. Two of them, so the backfill can be shown to hand out DISTINCT
+// prefixes rather than just A prefix.
+const boardProjectA = store.addProject({
+  path: 'C:/repo/legacy-board-a',
+  name: 'legacy-board-a',
+  kind: 'agent',
+  planPath: '',
+});
+const boardTaskA = store.createTask(boardProjectA.id, { title: 'a board card from before (A)' });
+if (!boardTaskA) throw new Error('old store refused board card A');
+
+const boardProjectB = store.addProject({
+  path: 'C:/repo/legacy-board-b',
+  name: 'legacy-board-b',
+  kind: 'agent',
+  planPath: '',
+});
+const boardTaskB = store.createTask(boardProjectB.id, { title: 'a board card from before (B)' });
+if (!boardTaskB) throw new Error('old store refused board card B');
+
 store.close();
 
 // The anomaly the migration's backfill exists for: a real directory, but a blank planPath
@@ -254,9 +279,22 @@ writeFileSync(
     planTaskId: planTask.id,
     agentProjectId: agentProject.id,
     agentTaskId: agentTask.id,
+    boardProjectAId: boardProjectA.id,
+    boardTaskAId: boardTaskA.id,
+    boardProjectBId: boardProjectB.id,
+    boardTaskBId: boardTaskB.id,
   }),
 );
-console.log('  wrote an __OLD_REF__ database: plan project ' + planProject.id + ', agent project ' + agentProject.id);
+console.log(
+  '  wrote an __OLD_REF__ database: plan project ' +
+    planProject.id +
+    ', agent project ' +
+    agentProject.id +
+    ', board project A ' +
+    boardProjectA.id +
+    ', board project B ' +
+    boardProjectB.id,
+);
 `;
 
 /**
@@ -266,8 +304,9 @@ console.log('  wrote an __OLD_REF__ database: plan project ' + planProject.id + 
 const SCENARIOS = String.raw`
 import { mkdirSync, readFileSync } from 'node:fs';
 import Database from 'better-sqlite3';
-import { PERSONAL_PROJECT_ID, hasPlan, hasRepo } from '@shared/model';
+import { PERSONAL_PROJECT_ID, hasPlan, hasRepo, ownsTickets } from '@shared/model';
 import { createStore } from '__REPO__/src/main/store';
+import { buildAgentTaskPrompt } from '__REPO__/src/main/agentTaskPrompt';
 
 let failures = 0;
 function check(label, condition, detail) {
@@ -294,11 +333,26 @@ const before = new Database(oldDb, { readonly: true });
 const beforePlanPath = before
   .prepare('SELECT planPath FROM projects WHERE id = ?')
   .get(ids.planProjectId).planPath;
+const beforeBoardAPlanPath = before
+  .prepare('SELECT planPath, ticketPrefix FROM projects WHERE id = ?')
+  .get(ids.boardProjectAId);
+const beforeBoardBPlanPath = before
+  .prepare('SELECT planPath, ticketPrefix FROM projects WHERE id = ?')
+  .get(ids.boardProjectBId);
 before.close();
 check(
   'the __OLD_REF__ database genuinely has the anomaly this backfill exists for',
   beforePlanPath === '',
   JSON.stringify(beforePlanPath),
+);
+check(
+  'and both board projects genuinely have no plan and no ticket prefix either — the other ' +
+    "anomaly this step's migration proof exists for",
+  beforeBoardAPlanPath.planPath === '' &&
+    (beforeBoardAPlanPath.ticketPrefix === '' || beforeBoardAPlanPath.ticketPrefix === null) &&
+    beforeBoardBPlanPath.planPath === '' &&
+    (beforeBoardBPlanPath.ticketPrefix === '' || beforeBoardBPlanPath.ticketPrefix === null),
+  JSON.stringify({ boardA: beforeBoardAPlanPath, boardB: beforeBoardBPlanPath }),
 );
 
 const migrated = createStore(oldDb);
@@ -337,6 +391,67 @@ const agentTask = migrated.getTask(ids.agentTaskId);
 check(
   "the agent project's card kept its id and title too",
   Boolean(agentTask) && agentTask.id === ids.agentTaskId && agentTask.title === 'an agent card from before',
+);
+
+// The migration proof for step 2 of this plan (guaranteeing every board project a key
+// prefix): opening a real pre-prefix database with today's store must backfill every
+// plan-less, non-Personal project a DISTINCT prefix, leave every plan project's prefix
+// alone (both 'legacy-plan' above and the plan-driven 'legacy-agent', which — despite its
+// __OLD_REF__ kind of 'agent' — got a real directory and so a real plan path defaulted
+// onto it by __OLD_REF__'s own addProject, exactly like the plan project did), and let
+// createTicket succeed on a plan-less project where the __OLD_REF__ build refused it
+// outright.
+check(
+  "the plan-driven 'legacy-agent' project kept NO prefix — the guarantee is board-only, " +
+    'and this one has a plan whether or not its old kind said agent',
+  Boolean(agentProject) && hasPlan(agentProject) && agentProject.ticketPrefix === '',
+  agentProject && JSON.stringify({ planPath: agentProject.planPath, prefix: agentProject.ticketPrefix }),
+);
+check(
+  'the plan project kept NO prefix at all either',
+  Boolean(planProject) && planProject.ticketPrefix === '',
+  planProject && planProject.ticketPrefix,
+);
+
+const boardProjectA = migrated.getProject(ids.boardProjectAId);
+check(
+  'board project A survived the open, same id, genuinely plan-less',
+  Boolean(boardProjectA) && boardProjectA.id === ids.boardProjectAId && !hasPlan(boardProjectA),
+);
+check(
+  'and it was backfilled a real prefix',
+  Boolean(boardProjectA) && Boolean(boardProjectA.ticketPrefix),
+  boardProjectA && boardProjectA.ticketPrefix,
+);
+
+const boardProjectB = migrated.getProject(ids.boardProjectBId);
+check(
+  'board project B survived the open, same id, genuinely plan-less',
+  Boolean(boardProjectB) && boardProjectB.id === ids.boardProjectBId && !hasPlan(boardProjectB),
+);
+check(
+  'and it too was backfilled a real prefix',
+  Boolean(boardProjectB) && Boolean(boardProjectB.ticketPrefix),
+  boardProjectB && boardProjectB.ticketPrefix,
+);
+check(
+  'the two plan-less projects were handed DISTINCT prefixes, not a collision',
+  Boolean(boardProjectA) &&
+    Boolean(boardProjectB) &&
+    boardProjectA.ticketPrefix !== boardProjectB.ticketPrefix,
+  JSON.stringify({
+    boardA: boardProjectA && boardProjectA.ticketPrefix,
+    boardB: boardProjectB && boardProjectB.ticketPrefix,
+  }),
+);
+
+const ticketOnBoardA = migrated.createTicket(ids.boardProjectAId, {
+  title: 'a ticket the __OLD_REF__ build would have refused',
+});
+check(
+  'createTicket now succeeds on a migrated board project that used to refuse every ticket',
+  Boolean(ticketOnBoardA) && ticketOnBoardA.ticketKey === boardProjectA.ticketPrefix + '-1',
+  ticketOnBoardA && ticketOnBoardA.ticketKey,
 );
 
 migrated.close();
@@ -456,7 +571,187 @@ check(
   !inSync.has(bareCard.id) && !inSync.has(planCard.id) && !inSync.has(ticketCard.id),
 );
 
+// ---------------------------------------------------------------------------
+section('5. Guaranteeing every board project a key prefix');
+
+const derivedPrefix = store.addProject({ name: 'Derived Prefix Co' });
+check(
+  'a plan-less project added with no prefix comes back with a derived one',
+  Boolean(derivedPrefix.ticketPrefix),
+  derivedPrefix.ticketPrefix,
+);
+
+const derivedPrefixTwin = store.addProject({ name: 'Derived Prefix Co' });
+check(
+  'a second project of the same name gets a distinct prefix, not a collision',
+  Boolean(derivedPrefixTwin.ticketPrefix) &&
+    derivedPrefixTwin.ticketPrefix !== derivedPrefix.ticketPrefix,
+  JSON.stringify({ first: derivedPrefix.ticketPrefix, second: derivedPrefixTwin.ticketPrefix }),
+);
+
+const derivedPlanProject = store.addProject({
+  path: scratch + '/derived-plan',
+  name: 'Derived Plan Co',
+});
+check(
+  "it really is plan-driven, so the guarantee shouldn't reach it (sanity check)",
+  hasPlan(derivedPlanProject),
+);
+check(
+  'a plan project added with no prefix still has none — the guarantee is board-only',
+  derivedPlanProject.ticketPrefix === '',
+  derivedPlanProject.ticketPrefix,
+);
+
+// ---------------------------------------------------------------------------
+section('6. The four settings restored to ProjectForm round-trip through the store');
+
+// Step 4 of this plan restored standing instructions, concurrency, the isolated-worktrees
+// switch and write-back-to-plan to the UI. The engine side (addProject/updateProject) was
+// never the bug — this proves it, independently of any UI: add with all four set, read
+// back, edit all four, read back again.
+const settingsProject = store.addProject({
+  name: 'Settings Round Trip',
+  path: scratch + '/settings-rt',
+  instructions: 'Source ./env.sh before any command.',
+  concurrency: 3,
+  useWorktrees: false,
+  writeBackPlan: true,
+});
+check('instructions came back from addProject unchanged', settingsProject.instructions === 'Source ./env.sh before any command.');
+check('concurrency came back from addProject unchanged', settingsProject.concurrency === 3);
+check('useWorktrees came back from addProject unchanged', settingsProject.useWorktrees === false);
+check('writeBackPlan came back from addProject unchanged', settingsProject.writeBackPlan === true);
+
+const settingsAfterAdd = store.listProjects().find((p) => p.id === settingsProject.id);
+check(
+  'and all four read back the same way through a fresh listProjects',
+  Boolean(settingsAfterAdd) &&
+    settingsAfterAdd.instructions === 'Source ./env.sh before any command.' &&
+    settingsAfterAdd.concurrency === 3 &&
+    settingsAfterAdd.useWorktrees === false &&
+    settingsAfterAdd.writeBackPlan === true,
+  JSON.stringify(settingsAfterAdd),
+);
+
+const settingsAfterUpdate = store.updateProject(settingsProject.id, {
+  instructions: 'Run every command through ./scripts/wrapper.sh instead.',
+  concurrency: 6,
+  useWorktrees: true,
+  writeBackPlan: false,
+});
+check(
+  'instructions took the new value from updateProject',
+  settingsAfterUpdate.instructions === 'Run every command through ./scripts/wrapper.sh instead.',
+);
+check('concurrency took the new value from updateProject', settingsAfterUpdate.concurrency === 6);
+check('useWorktrees took the new value from updateProject', settingsAfterUpdate.useWorktrees === true);
+check('writeBackPlan took the new value from updateProject', settingsAfterUpdate.writeBackPlan === false);
+
+const settingsAfterUpdateReadBack = store.listProjects().find((p) => p.id === settingsProject.id);
+check(
+  'and all four read back the updated values too, through another fresh listProjects',
+  Boolean(settingsAfterUpdateReadBack) &&
+    settingsAfterUpdateReadBack.instructions === 'Run every command through ./scripts/wrapper.sh instead.' &&
+    settingsAfterUpdateReadBack.concurrency === 6 &&
+    settingsAfterUpdateReadBack.useWorktrees === true &&
+    settingsAfterUpdateReadBack.writeBackPlan === false,
+  JSON.stringify(settingsAfterUpdateReadBack),
+);
+
+// instructions is the one of the four with a second consumer: agentTaskPrompt.ts injects
+// it into every run's prompt. Prove the value that just round-tripped through the store
+// actually reaches that prompt, not merely that the store kept it.
+const promptForSettingsProject = buildAgentTaskPrompt(
+  settingsAfterUpdateReadBack.name,
+  { title: 'a task', externalKey: null, externalUrl: null, externalDescription: null },
+  { instructions: settingsAfterUpdateReadBack.instructions },
+);
+check(
+  "the project's instructions, read back from the store, reach the agent's own prompt",
+  promptForSettingsProject.includes('Project setup notes you must follow:') &&
+    promptForSettingsProject.includes(settingsAfterUpdateReadBack.instructions),
+  promptForSettingsProject,
+);
+
+// ---------------------------------------------------------------------------
+section("7. 'personal' opts a project out of the guaranteed prefix");
+
+const personalProject = store.addProject({ name: 'Alpha Personal', personal: true });
+check(
+  'a plan-less project added with personal: true gets no derived prefix',
+  personalProject.ticketPrefix === '',
+  personalProject.ticketPrefix,
+);
+check('and reads back as NOT owning tickets', !ownsTickets(personalProject));
+
+const contradictoryProject = store.addProject({
+  name: 'Contradiction Co',
+  personal: true,
+  ticketPrefix: 'CC',
+});
+check(
+  'personal: true wins even when a prefix is also supplied — the explicit choice, not the field order',
+  contradictoryProject.ticketPrefix === '',
+  contradictoryProject.ticketPrefix,
+);
+
+const switchable = store.addProject({ name: 'Switchable Co' });
+check(
+  'sanity check: this one got the ordinary guaranteed prefix',
+  Boolean(switchable.ticketPrefix),
+  switchable.ticketPrefix,
+);
+
+const backToPersonal = store.updateProject(switchable.id, { ticketPrefix: '', personal: true });
+check(
+  'switching an untouched board project back to Personal succeeds — no tickets issued yet',
+  Boolean(backToPersonal) && backToPersonal.ticketPrefix === '',
+  backToPersonal && backToPersonal.ticketPrefix,
+);
+check(
+  'and it now reads back as NOT owning tickets',
+  Boolean(backToPersonal) && !ownsTickets(backToPersonal),
+);
+
+const issuedProject = store.addProject({ name: 'Already Filing Co' });
+const issuedTicket = store.createTicket(issuedProject.id, { title: 'a ticket already on the books' });
+check('sanity check: the ticket was actually created', Boolean(issuedTicket), issuedTicket);
+
+const refusedPersonal = store.updateProject(issuedProject.id, {
+  ticketPrefix: '',
+  personal: true,
+});
+check(
+  'switching back to Personal is refused once the project has issued a ticket',
+  Boolean(refusedPersonal) && refusedPersonal.ticketPrefix === issuedProject.ticketPrefix,
+  refusedPersonal && refusedPersonal.ticketPrefix,
+);
+check(
+  'the ticket it already issued is untouched — still keyed under the old prefix',
+  issuedTicket.ticketKey === issuedProject.ticketPrefix + '-1',
+  issuedTicket.ticketKey,
+);
+
+// The exact bug this section exists to catch: the guaranteed-prefix backfill (section 5)
+// runs on every store OPEN, not just once ever — so a Personal project has to survive a
+// restart with no prefix, not merely survive the addProject/updateProject call that made
+// it Personal in the first place. Close and reopen the same database file to prove it.
 store.close();
+const reopened = createStore(scratch + '/fresh/orchestrator.db');
+const personalAfterRestart = reopened.getProject(personalProject.id);
+check(
+  'a project added as personal: true keeps no prefix after the store restarts',
+  Boolean(personalAfterRestart) && personalAfterRestart.ticketPrefix === '',
+  personalAfterRestart && personalAfterRestart.ticketPrefix,
+);
+const backToPersonalAfterRestart = reopened.getProject(backToPersonal.id);
+check(
+  'a project switched back to personal keeps no prefix after the store restarts too',
+  Boolean(backToPersonalAfterRestart) && backToPersonalAfterRestart.ticketPrefix === '',
+  backToPersonalAfterRestart && backToPersonalAfterRestart.ticketPrefix,
+);
+reopened.close();
 
 console.log('');
 if (failures > 0) {

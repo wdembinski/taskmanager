@@ -13,7 +13,7 @@
  * is deterministic — it compiles rather than resolving a prebuild — at the cost of a
  * couple of minutes, which is only paid when something is actually broken.
  *
- * Run by `pnpm package` / `pnpm package:linux`. `pnpm check:abi` is the check alone.
+ * Run by `pnpm package` / `pnpm package:linux:local`. `pnpm check:abi` is the check alone.
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';

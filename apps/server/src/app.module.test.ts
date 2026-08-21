@@ -70,8 +70,9 @@ describe('AppModule', () => {
 
     expect(options.synchronize).toBe(false);
     // Account, AttachmentBlob, AttachmentUpload, Client, Command, CommandResultRow,
-    // ProjectMirror, TaskMirror, Tombstone. A count rather than the names: this is a "did
-    // somebody drop one" guard, and every entity's own shape is asserted where it is used.
-    expect((options.entities as unknown[]).length).toBe(9);
+    // PersonalAccessToken, ProjectMirror, TaskMirror, Tombstone. A count rather than the
+    // names: this is a "did somebody drop one" guard, and every entity's own shape is
+    // asserted where it is used.
+    expect((options.entities as unknown[]).length).toBe(10);
   });
 });

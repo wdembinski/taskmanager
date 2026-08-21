@@ -366,11 +366,19 @@ export interface AddProjectInput {
   planAligned?: boolean;
   jiraEpicKeys?: string[];
   /**
-   * The ticket key prefix. Normalized on the way in. Omitted (or unusable) leaves the
-   * project prefix-less, which simply means it cannot allocate a key yet — see
-   * {@link Project.ticketPrefix}.
+   * The ticket key prefix. Normalized on the way in. Omitted (or unusable) on a plan-less,
+   * non-Personal project is ordinarily filled in for you — see {@link Project.ticketPrefix}
+   * and the `personal` field below for the one way to decline that.
    */
   ticketPrefix?: string;
+  /**
+   * Declines the guaranteed prefix a plan-less project would otherwise be given (see
+   * `ticketPrefix` above): this project is a Personal space, filing cards under it without
+   * ever numbering them. Ignored for a plan-driven project, which was never guaranteed one
+   * to begin with. Not stored on {@link Project} itself — it is read back off `ticketPrefix`
+   * being empty, the same fact {@link ownsTickets} already keys off.
+   */
+  personal?: boolean;
   /** Defaults to the global `defaultExecTarget`. */
   target?: ExecTarget;
   instructions?: string;
@@ -410,7 +418,15 @@ export type ProjectPatch = Partial<
     | 'instructions'
     | 'color'
   >
->;
+> & {
+  /** See {@link AddProjectInput.personal} — the same opt-out, on an edit rather than a
+   *  create, and overriding any `ticketPrefix` sent alongside it the same way. Only
+   *  meaningful together with a `ticketPrefix` patch (`updateProject` only reads either
+   *  field when the other is present) — it is what tells `updateProject` this edit means
+   *  "stay Personal" rather than "give this one a fresh one", the guarantee it otherwise
+   *  applies unconditionally. */
+  personal?: boolean;
+};
 
 /**
  * Every model a run may be launched on, cheapest first — the one list the dropdowns and

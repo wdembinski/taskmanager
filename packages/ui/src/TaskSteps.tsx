@@ -40,6 +40,7 @@ import { STATUS_LABEL } from './taskStatus';
 import { FLUO, STATUS_INDICATOR_COLOR } from './theme';
 import { FoldToggle } from './FoldToggle';
 import { useTransport } from './transport';
+import { usePasteAttachments } from './usePasteAttachments';
 
 const useStyles = makeStyles({
   /**
@@ -552,6 +553,15 @@ export function StepBrief({
     });
   }
 
+  /** Paste a screenshot straight into the brief — the strip's drop, at the caret. */
+  const paste = usePasteAttachments({
+    taskId: task.id,
+    attachments: scope,
+    onInsertRefs: insertRefs,
+    disabled: busy || live,
+    onError: setError,
+  });
+
   async function save(): Promise<void> {
     setBusy(true);
     setError(null);
@@ -625,6 +635,7 @@ export function StepBrief({
                 resize="vertical"
                 textarea={{ ref: textareaRef }}
                 onChange={(_e, d) => setDraft(d.value)}
+                onPaste={paste.onPaste}
                 placeholder="What this step must deliver…"
               />
               <div className={styles.formRow}>
@@ -668,7 +679,7 @@ export function StepBrief({
           <AttachmentStrip
             taskId={task.id}
             attachments={scope}
-            disabled={busy || live}
+            disabled={busy || live || paste.busy}
             disabledHint={live ? LIVE_HINT : undefined}
             onInsertRefs={editing ? insertRefs : undefined}
           />

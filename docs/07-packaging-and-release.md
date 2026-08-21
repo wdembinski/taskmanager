@@ -1,10 +1,14 @@
 # 7. Packaging & release
 
-How to turn the source into an installable Windows or Linux build, what the packaging
-has to get right, and the steps to cut a versioned release. Packaging config lives in
+How to turn the source into an installable Windows build, what the packaging has to get
+right, and the steps to cut a versioned release. Packaging config lives in
 [`apps/client/electron-builder.yml`](../apps/client/electron-builder.yml); the build
 itself is driven by electron-vite (see [`docs/02`](02-architecture.md) for the
-three-bundle layout).
+three-bundle layout). Linux releases are discontinued — see
+[*Building for Linux*](#building-for-linux) below and
+[`RELEASE.md`§6](../RELEASE.md#6-linux-releases-are-discontinued) — but the packaging config
+that still lets you build one **locally** is documented where it's relevant, rather than
+deleted outright.
 
 ---
 
@@ -13,11 +17,12 @@ three-bundle layout).
 ```bash
 pnpm install                                    # postinstall rebuilds better-sqlite3 for Electron's ABI
 pnpm build                                      # turbo run build -> apps/client/out (main / preload / renderer)
-pnpm --filter claude-orchestrator package       # build + install-app-deps + ABI gate + electron-builder
-                                                # --win, publishing to GitHub on a tag or draft release (needs GH_TOKEN)
-pnpm --filter claude-orchestrator package:linux # same, --linux (AppImage + deb) — MUST run on Linux
-pnpm --filter claude-orchestrator package:local # --win, --publish never: build the installer, upload nothing
-pnpm --filter claude-orchestrator check:abi     # the ABI gate on its own
+pnpm --filter claude-orchestrator package             # build + install-app-deps + ABI gate + electron-builder
+                                                       # --win, publishing to GitHub on a tag or draft release (needs GH_TOKEN)
+pnpm --filter claude-orchestrator package:local       # --win, --publish never: build the installer, upload nothing
+pnpm --filter claude-orchestrator package:linux:local # --linux, --publish never — MUST run on Linux; local build only,
+                                                       # see "Building for Linux" — there is no publishing variant any more
+pnpm --filter claude-orchestrator check:abi           # the ABI gate on its own
 ```
 
 `pnpm --filter claude-orchestrator package` produces, in `apps/client/dist/`:
@@ -91,20 +96,20 @@ Re-check these if the dependency or spawn model changes.
 ## Auto-update
 
 The app updates itself from its own GitHub Releases. `electron-builder` publishes the
-installers **and** a `latest.yml` / `latest-linux.yml` feed to the release;
-`apps/client/src/main/updater.ts` (wrapping `electron-updater`) reads that feed, downloads a newer
-build in the background, and applies it when the app quits. The status bar offers a
-"restart" shortcut once a build is ready; **Settings → General → Updates** shows the
-state, a *Check now* button and the download progress. A failure is never a dialog, but it
-is no longer silent either: the status bar shows *Update failed — see Settings*, and
-Settings names the electron-updater error code alongside a link to the releases page.
+installer **and** a `latest.yml` feed to the release; `apps/client/src/main/updater.ts`
+(wrapping `electron-updater`) reads that feed, downloads a newer build in the background,
+and applies it when the app quits. The status bar offers a "restart" shortcut once a build
+is ready; **Settings → General → Updates** shows the state, a *Check now* button and the
+download progress. A failure is never a dialog, but it is no longer silent either: the
+status bar shows *Update failed — see Settings*, and Settings names the electron-updater
+error code alongside a link to the releases page.
 
 **Not every install can update itself** (`apps/client/src/main/updateSupport.ts`):
 
 | Install | Mode | Why |
 | --- | --- | --- |
 | Windows NSIS | `auto` | Applies unsigned, with no prompt — the downloaded installer has no mark-of-the-web, so SmartScreen never sees it. |
-| Linux AppImage | `auto` | Only when actually run as the AppImage (`$APPIMAGE` is set). |
+| Linux AppImage | `auto` | Only when actually run as the AppImage (`$APPIMAGE` is set). Moot in practice now: nothing publishes a `latest-linux.yml`, so a locally-built AppImage (see *Building for Linux*) has no feed to check against. |
 | Linux `.deb` | `manual` | apt owns those files. Pointing the updater at them errors on **every** launch, so it is never armed; Settings links to the releases page instead. |
 | macOS | `manual` | macOS refuses an update that isn't signed and notarized. |
 | `pnpm dev` | `off` | Nothing to update. |
@@ -130,7 +135,6 @@ scope:
 export GH_TOKEN=ghp_…                            # PowerShell: $env:GH_TOKEN = 'ghp_…'
 gh release create v0.30.0 --draft --title "v0.30.0 — …" --notes-file notes.md
 pnpm --filter claude-orchestrator package        # uploads the exe, blockmap and latest.yml to the draft
-pnpm --filter claude-orchestrator package:linux  # same, from WSL, for the AppImage/deb + latest-linux.yml
 gh release edit v0.30.0 --draft=false
 ```
 
@@ -138,20 +142,21 @@ Nothing is served to users until the draft is promoted, and un-publishing it rol
 release back. `pnpm --filter claude-orchestrator package:local` is the escape hatch that
 uploads nothing.
 
-**Promote LAST — after every platform has uploaded.** `--publish onTagOrDraft` will only
-write to a *draft*, so once the release is published electron-builder refuses it:
+**Promote LAST — after Windows has uploaded.** `--publish onTagOrDraft` will only write to
+a *draft*, so once the release is published electron-builder refuses it:
 
 ```
 GitHub release not created  reason=existing type not compatible with publishing type
   tag=v0.33.0 existingType=release publishingType=draft
-skipped publishing  file=claude-orchestrator-0.33.0.AppImage
+skipped publishing  file=claude-orchestrator-0.33.0-setup.exe
 ```
 
-It says *skipped*, not *failed*, and exits 0 — so a Linux build that uploaded nothing
-looks exactly like one that worked. v0.33.0 was promoted after Windows and before Linux,
-and the artifacts had to go up with `gh release upload` afterwards. Either keep the draft
-until both platforms are done, or flip it back with `gh release edit vX.Y.Z --draft=true`
-before re-running.
+It says *skipped*, not *failed*, and exits 0 — so an upload that failed looks exactly like
+one that worked. This is also why Linux was removed from the release pipeline rather than
+kept as a second platform to coordinate around it (RELEASE.md §6): four releases once sat
+promoted-Windows-only because the Linux pass hadn't landed yet, each needing its artifacts
+patched in by hand with `gh release upload` afterwards. If a promote-before-upload ever
+happens again, flip it back with `gh release edit vX.Y.Z --draft=true` before re-running.
 
 **Why builder publishes instead of `gh release create`.** `gh` rewrites spaces in
 uploaded asset names to dots, while `latest.yml` records the filename electron-builder
@@ -329,13 +334,18 @@ same care.
 
 ## Building for Linux
 
-`pnpm --filter claude-orchestrator package:linux` **must run on Linux** so `better-sqlite3` compiles for Linux —
+Linux releases are discontinued (RELEASE.md §6) — nothing here is published to GitHub, and
+there is no update feed for it. What follows is for building a **local, unpublished**
+AppImage/`.deb` for yourself; `package:linux:local` is the only Linux script left, and it
+never uploads anything.
+
+`pnpm --filter claude-orchestrator package:linux:local` **must run on Linux** so `better-sqlite3` compiles for Linux —
 WSL is the usual path. Build from a clone in the WSL-native home, never from `/mnt/c`:
 the Windows `node_modules` holds win32 prebuilds. Ubuntu's system `node` may be far too
 old for electron-builder, so source nvm and select Node 22 first, and rebuild `PATH` from
 nvm's bin directory so `which pnpm` doesn't resolve to the Windows shim.
 
-Verify the artifacts before uploading anything:
+Verify the artifacts before relying on them:
 
 ```bash
 file apps/client/dist/linux-unpacked/claude-orchestrator          # must say: ELF 64-bit
@@ -361,9 +371,10 @@ an error dialog and writes `~/.config/claude-orchestrator/logs/main.log`. That p
 `apps/client/package.json`'s `name`, not the product name — which is exactly why the rename to VIPPER Task
 Manager left `name` alone: it is where the database lives.
 
-Since v0.30.0 electron-builder uploads the Linux artifacts too (`--publish onTagOrDraft`,
-same `GH_TOKEN`), which is also what writes `latest-linux.yml` — an AppImage cannot
-self-update without it.
+Nothing uploads this build anywhere — `package:linux:local` always passes `--publish
+never`, and there is no `latest-linux.yml` for it to write. From v0.30.0 until the `linux`
+CI job was removed, electron-builder did publish these artifacts and that feed; see
+RELEASE.md §6 for why that stopped.
 
 ---
 
@@ -393,19 +404,18 @@ self-update without it.
    no single-instance lock, and on 2026-08-02 doing this took down the copy the user had
    open. (Running the installer on a *clean* machine and taking one project end-to-end is
    still the ideal check — that is a different machine, and a human doing it.)
-6. For a Linux release, `pnpm --filter claude-orchestrator package:linux` on Linux and run the artifact checks
-   above. The ABI gate is not optional — a bundle that fails it is broken in a way
-   that only shows up after install.
-7. `pnpm --filter claude-orchestrator check:feed` — the packaging scripts already run it, so this is only needed after
+6. `pnpm --filter claude-orchestrator check:feed` — the packaging scripts already run it, so this is only needed after
    a hand-upload or a config change. It fails on an `app-update.yml` carrying an
    unexpanded macro or a `publisherName` with nothing signing the build, and on a
    `latest*.yml` naming a file that isn't there. It runs *after* the upload on purpose:
    the upload went to a **draft**, so failing here is still ahead of any user.
-8. Confirm the draft carries `latest.yml` (and `latest-linux.yml`) beside the
-   installers — without them nobody's app will ever see this release.
-9. Promote the draft (`gh release edit vX.Y.Z --draft=false`) — **only once every
-   platform's artifacts are on it**, for the reason above.
-10. Tag `vX.Y.Z` (annotated) and push with `--follow-tags`.
+7. Confirm the draft carries `latest.yml` beside the installer — without it nobody's
+   app will ever see this release. (Linux is not part of this checklist — see
+   [*Building for Linux*](#building-for-linux) for the unpublished local build, and
+   RELEASE.md §6 for why nothing here uploads it.)
+8. Promote the draft (`gh release edit vX.Y.Z --draft=false`), once Windows's artifacts
+   are on it.
+9. Tag `vX.Y.Z` (annotated) and push with `--follow-tags`.
 
 If artifacts have to be uploaded by hand after promotion, `gh release upload` works, but
 check the asset names against `latest*.yml` afterwards: `gh` rewrites spaces in filenames

@@ -1,15 +1,18 @@
 /**
- * The half of a project form that is not about a repo — name, the tickets-or-personal
- * choice, the prefix that choice unlocks, and the board colour. Both hosts draw a project
- * form around it: the desktop's `Projects.tsx` adds everything about a repo on top, the
- * browser's `ProjectAdmin.tsx` (step 3) has nothing else to add at all.
+ * The tickets-or-personal choice every project form makes, and the prefix field that choice
+ * unlocks — the one part of a project's identity `ProjectForm.tsx` does not draw inline,
+ * since the guarantee it sits on top of (`store.addProject`/`updateProject` deriving a
+ * prefix for any plan-less project that does not opt out) belongs to a plan-less project
+ * only. `ProjectForm` renders this in place of its own "Ticket key prefix" field for exactly
+ * that case, and keeps its legacy inline field — always shown, never required — for editing
+ * a plan-driven project, which this choice was never about.
  *
- * Fully controlled — every field and its setter is a prop — except for `prefixTouched`,
- * which stays internal because it is a UI-only fact about THIS form session (has the human
- * edited the prefix themselves yet), not a value either host would ever want to read or
- * seed from a project.
+ * Fully controlled, including `ticketPrefix`: the name-driven suggestion and the
+ * `prefixTouched` bookkeeping it depends on both live in `ProjectForm.tsx` already (it needs
+ * them regardless of which prefix field is on screen), so this component does not duplicate
+ * either — it only renders what the two already-computed values (`mode`, `ticketPrefix`) and
+ * their setters ask for.
  */
-import { useEffect, useState } from 'react';
 import {
   Caption1,
   Field,
@@ -21,11 +24,9 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import type { Project } from '@tm/shared/model';
-import { ColorSwatches } from '../ColorSwatches';
-import { suggestTicketPrefix, ticketPrefixError, type TicketMode } from './projectBasics';
+import { ticketPrefixError, type TicketMode } from './projectBasics';
 
 const useStyles = makeStyles({
-  form: { display: 'flex', flexDirection: 'column', gap: '12px' },
   options: { display: 'flex', flexDirection: 'column', gap: '6px' },
   option: {
     display: 'flex',
@@ -49,14 +50,10 @@ const useStyles = makeStyles({
 });
 
 export interface ProjectBasicsFieldsProps {
-  name: string;
-  onNameChange: (name: string) => void;
   mode: TicketMode;
   onModeChange: (mode: TicketMode) => void;
   ticketPrefix: string;
   onTicketPrefixChange: (prefix: string) => void;
-  color: string;
-  onColorChange: (color: string) => void;
   /** Every other project, so a chosen prefix can be checked against theirs. */
   projects: Project[];
   /** The project being edited, excluded from the prefix collision check against itself. */
@@ -70,52 +67,20 @@ export interface ProjectBasicsFieldsProps {
 }
 
 export function ProjectBasicsFields({
-  name,
-  onNameChange,
   mode,
   onModeChange,
   ticketPrefix,
   onTicketPrefixChange,
-  color,
-  onColorChange,
   projects,
   editingId,
   hasIssuedTickets,
 }: ProjectBasicsFieldsProps): JSX.Element {
   const styles = useStyles();
 
-  // Once the human edits the prefix directly, a later name edit must stop overwriting it.
-  // An existing project's prefix is never overwritten by editing the name either, so a form
-  // that opens already editing one starts touched.
-  const [prefixTouched, setPrefixTouched] = useState(() => Boolean(editingId));
-  useEffect(() => {
-    setPrefixTouched(Boolean(editingId));
-  }, [editingId]);
-
-  // Suggest a prefix from the name, until the human types one of their own — and only once
-  // there is a prefix to suggest for; a Personal project has nothing to suggest.
-  useEffect(() => {
-    if (mode !== 'tickets') return;
-    if (prefixTouched) return;
-    onTicketPrefixChange(suggestTicketPrefix(name));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [name, mode, prefixTouched]);
-
   const prefixError = ticketPrefixError({ mode, prefix: ticketPrefix, projects, editingId });
 
   return (
-    <div className={styles.form}>
-      <Field
-        label="Display name"
-        hint="Defaults to the folder name, or the ticket prefix if there is no folder."
-      >
-        <Input
-          value={name}
-          onChange={(_e, d) => onNameChange(d.value)}
-          placeholder="(folder name)"
-        />
-      </Field>
-
+    <>
       <Field label="Where its work lives">
         <RadioGroup value={mode} onChange={(_e, d) => onModeChange(d.value as TicketMode)}>
           <div className={styles.options}>
@@ -155,21 +120,11 @@ export function ProjectBasicsFields({
           <Input
             className={styles.mono}
             value={ticketPrefix}
-            onChange={(_e, d) => {
-              onTicketPrefixChange(d.value);
-              setPrefixTouched(true);
-            }}
+            onChange={(_e, d) => onTicketPrefixChange(d.value)}
             placeholder="TM"
           />
         </Field>
       )}
-
-      <Field
-        label="Colour"
-        hint="A card tagged with this project wears a stripe of this colour, so a mixed column says which project each card is about."
-      >
-        <ColorSwatches value={color} onChange={onColorChange} allowNone />
-      </Field>
-    </div>
+    </>
   );
 }

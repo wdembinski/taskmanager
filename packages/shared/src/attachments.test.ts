@@ -4,8 +4,10 @@ import {
   attachmentName,
   attachmentUrl,
   attachmentsInScope,
+  extensionForMime,
   insertAttachmentRef,
   parseAttachmentRefs,
+  pastedFileName,
   referencedAttachments,
 } from './attachments';
 
@@ -257,5 +259,61 @@ describe('attachmentIdFromUrl', () => {
     // The id is in the PATH for exactly this reason: a standard scheme's authority is not
     // ours to control, so nothing may be read out of it.
     expect(attachmentIdFromUrl('vipper-attachment://anything/abc-123')).toBe('abc-123');
+  });
+});
+
+describe('extensionForMime', () => {
+  it('maps the image types a clipboard produces', () => {
+    expect(extensionForMime('image/png')).toBe('png');
+    expect(extensionForMime('image/jpeg')).toBe('jpg');
+    expect(extensionForMime('image/gif')).toBe('gif');
+    expect(extensionForMime('image/webp')).toBe('webp');
+    expect(extensionForMime('image/bmp')).toBe('bmp');
+    expect(extensionForMime('image/svg+xml')).toBe('svg');
+  });
+
+  it('is case-insensitive, the way a MIME type is meant to be read', () => {
+    expect(extensionForMime('IMAGE/PNG')).toBe('png');
+  });
+
+  it('is null for nothing declared or a type this app never pastes', () => {
+    expect(extensionForMime(null)).toBeNull();
+    expect(extensionForMime('application/pdf')).toBeNull();
+    expect(extensionForMime('')).toBeNull();
+  });
+});
+
+describe('pastedFileName', () => {
+  // 2026-08-21T11:42:33.000Z
+  const at = Date.UTC(2026, 7, 21, 11, 42, 33);
+
+  it('stamps the moment of the paste rather than counting up from the source name', () => {
+    // Chromium calls every clipboard bitmap "image.png" — a second screenshot must not
+    // dedupe against the first by name, which is exactly what this avoids.
+    expect(pastedFileName('image.png', 'image/png', at)).toBe('pasted-20260821-114233.png');
+    expect(pastedFileName('image.png', 'image/png', at)).toBe(
+      pastedFileName('image.png', 'image/png', at),
+    );
+  });
+
+  it('prefers the MIME type over whatever the original name suggests', () => {
+    expect(pastedFileName('image.png', 'image/jpeg', at)).toBe('pasted-20260821-114233.jpg');
+  });
+
+  it("falls back to the original name's extension when the MIME type is unknown", () => {
+    expect(pastedFileName('mockup.webp', null, at)).toBe('pasted-20260821-114233.webp');
+    expect(pastedFileName('mockup.webp', 'application/octet-stream', at)).toBe(
+      'pasted-20260821-114233.webp',
+    );
+  });
+
+  it('falls back to .bin when neither says anything', () => {
+    expect(pastedFileName('clipboard', null, at)).toBe('pasted-20260821-114233.bin');
+    expect(pastedFileName('', null, at)).toBe('pasted-20260821-114233.bin');
+  });
+
+  it('pads every field to two digits', () => {
+    const early = Date.UTC(2026, 0, 5, 3, 7, 9);
+    expect(pastedFileName('a.png', 'image/png', early)).toBe('pasted-20260105-030709.png');
   });
 });

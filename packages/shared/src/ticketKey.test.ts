@@ -5,6 +5,8 @@ import {
   MAX_TICKET_PREFIX_LENGTH,
   normalizeTicketPrefix,
   parseTicketKey,
+  suggestTicketPrefix,
+  uniqueTicketPrefix,
 } from './ticketKey';
 
 describe('normalizeTicketPrefix', () => {
@@ -114,5 +116,57 @@ describe('isTicketKey', () => {
     expect(isTicketKey('TM-1')).toBe(true);
     expect(isTicketKey('TM-007')).toBe(false);
     expect(isTicketKey('nonsense')).toBe(false);
+  });
+});
+
+describe('suggestTicketPrefix', () => {
+  it('takes initials for a multi-word name', () => {
+    expect(suggestTicketPrefix('Task Manager')).toBe('TM');
+    expect(suggestTicketPrefix('  the quick brown fox  ')).toBe('TQBF');
+  });
+
+  it('takes the first few letters of a single-word name', () => {
+    expect(suggestTicketPrefix('platform')).toBe('PLAT');
+  });
+
+  it('falls back to empty when the name has nothing usable in it', () => {
+    expect(suggestTicketPrefix('')).toBe('');
+    expect(suggestTicketPrefix('   ')).toBe('');
+    expect(suggestTicketPrefix('123')).toBe('');
+  });
+});
+
+describe('uniqueTicketPrefix', () => {
+  it('uses the normalized base unchanged when it is free', () => {
+    expect(uniqueTicketPrefix('Task Manager', [])).toBe(normalizeTicketPrefix('Task Manager'));
+    expect(uniqueTicketPrefix('tm', ['PLAT'])).toBe('TM');
+  });
+
+  it('appends 2, 3, … until it finds one that is free', () => {
+    expect(uniqueTicketPrefix('TM', ['TM'])).toBe('TM2');
+    expect(uniqueTicketPrefix('TM', ['TM', 'TM2'])).toBe('TM3');
+    expect(uniqueTicketPrefix('TM', ['TM', 'TM2', 'TM3'])).toBe('TM4');
+  });
+
+  it('compares case-blind against what is taken', () => {
+    expect(uniqueTicketPrefix('tm', ['TM'])).toBe('TM2');
+    expect(uniqueTicketPrefix('TM', ['tm'])).toBe('TM2');
+  });
+
+  it('re-truncates to the length bound so a suffix never pushes it over', () => {
+    const base = 'ABCDEFGHIJ'; // already MAX_TICKET_PREFIX_LENGTH long
+    const result = uniqueTicketPrefix(base, [base]);
+    expect(result).toHaveLength(MAX_TICKET_PREFIX_LENGTH);
+    expect(result).toBe('ABCDEFGHI2');
+  });
+
+  it('falls back to a constant when the base is unusable, and still de-dupes it', () => {
+    const first = uniqueTicketPrefix('', []);
+    expect(first).not.toBe('');
+    expect(normalizeTicketPrefix(first)).toBe(first);
+
+    const second = uniqueTicketPrefix('', [first]);
+    expect(second).not.toBe(first);
+    expect(normalizeTicketPrefix(second)).toBe(second);
   });
 });

@@ -439,14 +439,42 @@ describe('agent projects: the web configures a project’s identity, never its r
    * clearest single tell of that boundary: a native folder picker can only ever mean "browse
    * THIS machine", so it stays host-only regardless of who else can call `project:add`.
    *
-   * The WRITE channels themselves — `project:add`, `:update`, `:remove` — are plain `'relay'`
-   * and always have been: executed on the desktop they are ordinary store writes, so nothing
-   * in `RELAY_POLICY` or `pnpm typecheck` stops a browser calling them with a repo field in
-   * the payload. The only thing holding that narrower boundary is that `ProjectAdmin.tsx`'s
-   * calls never carry one — which is exactly the kind of fact that survives right up until
-   * somebody adds a field to a shared form in good faith. So this block reads that one file's
-   * source for the shape of its `project:add`/`project:update` payloads, rather than banning
-   * the channels from a whole tree the way the first narrowing did.
+   * **Narrowed since, and narrowed rather than reversed** — which is why this block is no
+   * longer titled "the one configuration the web deliberately does not mirror". *Reading* the
+   * list is in scope on both hosts, survives a desktop that is not answering (the web falls
+   * back to the mirrored `projects` rows, filtered to a repo with no plan file
+   * (`hasRepo(project) && !hasPlan(project)`) exactly as `MyTasks.tsx`'s own `seed` filters
+   * them; plan doc, "Fix — agent projects when the desktop is asleep"), and has a pane of its
+   * own in the web's Settings.
+   * So the block now asserts BOTH halves: that the read-only view exists, and that nothing
+   * around it writes. Every pattern below still matches a WRITE channel or a native picker,
+   * and none of them should ever be read as forbidding a read.
+   *
+   * **Narrowed a third time, on the writing half.** The project add/edit FORM is shared code
+   * now too — `packages/ui/src/projects/ProjectForm.tsx`, used by both the desktop's own
+   * `Projects` screen and the Tickets workspace's `ProjectAdmin` (the EDITING-PANE test below
+   * still finds only the desktop's copy, because a shared FORM is not a shared PANE — the
+   * pane wires up `window.api` and the picker; the form takes an optional capability object
+   * instead). `apps/web/src/App.tsx` renders `ProjectAdmin` bare on its own `'projects'` tab —
+   * no `repo` prop — so it reaches `ProjectForm` too, name/colour/the tickets-or-personal
+   * choice and all. That is not a hole in "creates, edits or removes one" above: a
+   * *ticket-only* project has no folder to protect and was already fair game for either host
+   * to write, by `ProjectAdmin.tsx`'s own header — this decision was always about the fields a
+   * folder makes desktop-only, not about the project row itself. What keeps those fields off
+   * the web is that `ProjectForm` renders its folder path, "Runs on", `BaseBranchField` and
+   * the three automation switches only when the host passes `repo`, and nothing under
+   * `apps/web/src` does. The write-channel/picker regexes above cannot see this — the calls
+   * they would need to catch live in `packages/ui`, not `apps/web/src` — so the assertion
+   * below checks the capability gate directly instead.
+   *
+   * An agent project IS a folder on the machine the engine runs on, so making one begins with
+   * `project:pickDirectory` — a native picker, `host-only` for the reason every native modal
+   * is. What makes this worth a guard is that the WRITE channels are not host-only:
+   * `project:add`, `:update` and `:remove` are plain `'relay'`, correctly, because
+   * executed on the desktop they are ordinary store writes. So nothing in `RELAY_POLICY`
+   * stops a browser calling them, and `pnpm typecheck` never will either. The only thing
+   * holding the boundary is that no browser code does — which is exactly the kind of fact
+   * that survives right up until somebody adds a form in good faith.
    *
    * The block asserts the decision, not the reasoning: if the decision is ever reversed, the
    * fix is to change it here and in the plan doc, not to delete the assertion.
@@ -460,14 +488,6 @@ describe('agent projects: the web configures a project’s identity, never its r
   const WEB_SETTINGS = 'apps/web/src/settings/SettingsScreen.tsx';
 
   const NATIVE_PICKER = /invoke\(\s*'project:pick(?:Directory|File)'/;
-  /**
-   * The repo-only fields a browser has no machine to resolve. `path` is deliberately not in
-   * this list — `ProjectAdmin.tsx` sends `path: ''` on every add, the same forced-empty value
-   * a ticket project has always used, and that literal is asserted separately below rather
-   * than banned outright.
-   */
-  const REPO_FIELDS =
-    /\b(?:target|baseBranch|defaultModel|planningModel|defaultPermissionMode|jiraEpicKeys)\s*:/;
 
   it('has no browser code that calls the native folder picker', () => {
     // Tests are excluded because the web's own suite calls `project:pickDirectory` on purpose
@@ -515,7 +535,12 @@ describe('agent projects: the web configures a project’s identity, never its r
     ).toContain(DESKTOP_PANE);
   });
 
-  it('never sends a repo field from the shared admin pane', () => {
+  it('never reaches for the native picker from the shared admin pane', () => {
+    // Payload construction itself moved into `ProjectForm` (see the block comment's third
+    // narrowing) — `SHARED_ADMIN_PANE` only lists projects and opens that form, so
+    // `REPO_FIELDS`/`path: ''`/`planPath: ''` no longer have anything to match here; the
+    // capability-gate test below covers that ground on the file that actually builds the
+    // payload. What is still this pane's own to get wrong is reaching for a picker directly.
     const source = read(SHARED_ADMIN_PANE);
 
     expect(
@@ -523,22 +548,6 @@ describe('agent projects: the web configures a project’s identity, never its r
       `${SHARED_ADMIN_PANE} mentions 'project:pick'. A browser has no machine for a native ` +
         'folder picker to browse, and this pane runs on both hosts — it must never reach for one.',
     ).toBe(false);
-
-    expect(
-      REPO_FIELDS.test(source),
-      `${SHARED_ADMIN_PANE} carries a repo-only field (one of target/baseBranch/defaultModel/` +
-        'planningModel/defaultPermissionMode/jiraEpicKeys) in a project:add or project:update ' +
-        'payload. Those are configured on the desktop client that owns the folder they refer ' +
-        'to — a browser holding one would be a fact about a machine it cannot see.',
-    ).toBe(false);
-
-    expect(
-      source,
-      `${SHARED_ADMIN_PANE} must keep sending path: '' and planPath: '' on project:add — a ` +
-        'project created from a browser has no folder, the same forced-empty value a ticket ' +
-        'project has always used.',
-    ).toMatch(/path:\s*''/);
-    expect(source).toMatch(/planPath:\s*''/);
   });
 
   it('says so on the web, where somebody would go looking', () => {
@@ -586,6 +595,34 @@ describe('agent projects: the web configures a project’s identity, never its r
           "whole of what makes it read-only: project:add/update/remove are classified 'relay', " +
           'so neither RELAY_POLICY nor pnpm typecheck would stop a write added here.',
       ).toBe(false);
+    }
+  });
+
+  it("gates the shared ProjectForm's repo-only fields on the repo capability", () => {
+    // ProjectForm is shared code the web reaches through the Tickets workspace (see the
+    // block comment's third narrowing, above) with no `repo` prop supplied. Its folder path,
+    // "Runs on" target and the git-only switches below them are the whole of what a folder
+    // makes desktop-only, so gating them is the one thing standing between "a browser can
+    // file a ticket project" and "a browser can point a project at a path on a machine it
+    // cannot see" — and neither the write-channel nor the picker regex above can see this
+    // file at all, since the calls they match live here, not under apps/web/src.
+    const PROJECT_FORM = 'packages/ui/src/projects/ProjectForm.tsx';
+    const source = read(PROJECT_FORM);
+    const REPO_ONLY_FIELDS: Array<[RegExp, string]> = [
+      [/\{repo && \(\s*<Field\s+label="Repository folder"/, 'the repository folder field'],
+      [
+        /\{repo && path && distros\.length > 0 && \(\s*<Field\s+label="Runs on"/,
+        'the "Runs on" target field',
+      ],
+    ];
+    for (const [pattern, what] of REPO_ONLY_FIELDS) {
+      expect(
+        pattern.test(source),
+        `${PROJECT_FORM} must render ${what} only inside a \`{repo && …}\` guard. Ungating it ` +
+          'would need no new write channel — `project:add`/`:update` already relay — it would ' +
+          'just let a browser type an absolute path into a field the desktop meant to be the ' +
+          'only one offering.',
+      ).toBe(true);
     }
   });
 });

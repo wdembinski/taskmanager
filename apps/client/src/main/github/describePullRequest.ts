@@ -99,9 +99,18 @@ export interface DescribePullRequestOptions {
    * Used by the "read back a settled PR" pass in `ipc.ts`: it fetches the detail itself to
    * learn whether the PR merged, and passes it through here rather than making this
    * function fetch it again under `stale: true` — which would also re-spend the
-   * approvals/reviews/notes calls that this pass exists specifically to avoid.
+   * approvals/reviews/notes calls that this pass exists specifically to avoid. The same
+   * shape also lets a CI-only refresh (`needsCiRefresh` in `ipc.ts`) fetch just the detail
+   * and re-read CI off it without paying for those calls either.
    */
   detail?: GitHubPullRequest;
+  /**
+   * Told about a check-runs or commit-status call that came back refused, so the caller can
+   * log and, once per repository, surface it — a token missing the right scope reads as
+   * "this repo has no CI" otherwise, which is the wrong lesson to draw from a 403. This
+   * module does not import Electron's `log.ts` itself; the caller does the reporting.
+   */
+  onCiRefusal?: (endpoint: 'check-runs' | 'commit-status', error: unknown) => void;
 }
 
 /** What the reviews say, once the history has been folded down to a verdict per reviewer. */
@@ -192,11 +201,15 @@ interface CiReading {
  * runs, and a repo migrating between them has both — where the check runs are the ones
  * telling you about the CI anybody is still maintaining.
  *
- * Returns an empty reading (`unknown`, no stages, no url) only when BOTH answered and both
- * were empty. That is the GitHub spelling of `describeMergeRequest`'s `noPipeline`, and it
- * exists for the same reported bug: delete the workflow file, push, and the new head commit
- * genuinely has no CI — which must clear the row rather than leave the previous commit's
- * red sitting there forever.
+ * Returns an empty reading (`none`, no stages, no url) only when BOTH answered and both were
+ * empty — distinct from a call that threw, which is not an answer and keeps whatever status
+ * we already knew. That is the GitHub spelling of `describeMergeRequest`'s `noPipeline`, and
+ * it exists for the same reported bug: delete the workflow file, push, and the new head
+ * commit genuinely has no CI — which must clear the row rather than leave the previous
+ * commit's red sitting there forever. See `PipelineStatus.none` for why that is a distinct
+ * status from `unknown` rather than the same one: `unknown` is re-asked on every sync,
+ * `none` is not, and conflating them would either re-ask a CI-less repo forever or stop
+ * asking a repo whose checks simply have not started.
  */
 async function readCi(
   client: GitHubClient,
@@ -204,8 +217,12 @@ async function readCi(
   repo: string,
   sha: string,
   webUrl: string,
+  onCiRefusal?: DescribePullRequestOptions['onCiRefusal'],
 ): Promise<CiReading | null> {
-  const runs = await client.listCheckRuns(owner, repo, sha).catch(() => null);
+  const runs = await client.listCheckRuns(owner, repo, sha).catch((error: unknown) => {
+    onCiRefusal?.('check-runs', error);
+    return null;
+  });
   if (runs?.length) {
     return {
       status: overallCheckStatus(runs),
@@ -216,7 +233,10 @@ async function readCi(
     };
   }
 
-  const combined = await client.getCombinedStatus(owner, repo, sha).catch(() => null);
+  const combined = await client.getCombinedStatus(owner, repo, sha).catch((error: unknown) => {
+    onCiRefusal?.('commit-status', error);
+    return null;
+  });
   const statuses = combined?.statuses ?? [];
   if (statuses.length) {
     return {
@@ -228,7 +248,7 @@ async function readCi(
 
   // An empty answer from both is an answer: this commit has no CI. Silence from either —
   // a call that threw — is not, and keeps whatever we already knew.
-  if (runs && combined) return { status: 'unknown', stages: [], url: null };
+  if (runs && combined) return { status: 'none', stages: [], url: null };
   return null;
 }
 
@@ -268,7 +288,7 @@ async function readApprovalBar(
 export async function describePullRequest(
   client: GitHubClient,
   listed: GitHubSearchIssueItem,
-  { stale, prior, detail: knownDetail }: DescribePullRequestOptions,
+  { stale, prior, detail: knownDetail, onCiRefusal }: DescribePullRequestOptions,
 ): Promise<FetchedMergeRequest> {
   const { owner, repo } = repoRefFromApiUrl(listed.repository_url);
   const number = listed.number;
@@ -346,7 +366,14 @@ export async function describePullRequest(
    */
   const sha = detail?.head?.sha;
   if (sha && owner && repo) {
-    const ci = await readCi(client, owner, repo, sha, detail?.html_url ?? listed.html_url ?? '');
+    const ci = await readCi(
+      client,
+      owner,
+      repo,
+      sha,
+      detail?.html_url ?? listed.html_url ?? '',
+      onCiRefusal,
+    );
     if (ci) {
       pipelineStatus = ci.status;
       pipelineStages = ci.stages;

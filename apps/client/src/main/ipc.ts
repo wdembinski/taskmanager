@@ -63,7 +63,6 @@ import {
   type TicketLink,
 } from '@shared/model';
 import { isEpic, isNativeTicket } from '@shared/tickets';
-import { normalizeTicketPrefix } from '@shared/ticketKey';
 import { canLinkTickets, type TicketLinkResult } from '@shared/ticketLinks';
 import {
   ARCHIVE_RETENTION_DAYS,
@@ -104,11 +103,9 @@ import {
   type JiraTransitionTarget,
   type MoveResolution,
 } from './jira/jiraMove';
-import { iamSignInConfig } from './iamConfig';
-import { signIn as runIamSignIn } from './iamSignIn';
 import { CloudTokenProvider } from './cloudToken';
 import type { ClientInfo, CommandEnvelope } from '@protocol/wire';
-import { PROTOCOL_VERSION } from '@protocol/wire';
+import { PAT_PREFIX, PAT_SECRET_LENGTH, PROTOCOL_VERSION } from '@protocol/wire';
 import { applyCloudCommand, type CloudCommandOutcome } from './cloudCommands';
 import { CommandQueue } from './commandQueue';
 import { relayRegistry } from './ipcRegistry';
@@ -154,7 +151,7 @@ import {
   rematchMergeRequests,
   type FetchedMergeRequest,
 } from './gitlab/gitlabSync';
-import { reconcilePullRequests, rematchPullRequests } from './github/githubPrSync';
+import { needsCiRefresh, reconcilePullRequests, rematchPullRequests } from './github/githubPrSync';
 import {
   forgeName,
   mrIsSettled,
@@ -171,6 +168,7 @@ import {
   sweepOrphanAttachments,
 } from './attachments';
 import { attachmentFile } from './attachmentPaths';
+import { stagePastedFiles, sweepPasteTemp } from './pastedAttachments';
 import { collectUploads } from './uploadedAttachments';
 import type { ServiceSyncState, SyncServiceId, SyncState } from '@shared/sync';
 import { hostFor, listWslDistros, readinessFor, statusForTargets } from './exec';
@@ -273,6 +271,19 @@ function isReportablePark(refusal: RunRefusal): boolean {
 }
 
 /**
+ * Shape only — same rule `apps/server/src/iam/pat.ts`'s own `looksLikePat` enforces, kept as
+ * a small duplicate here rather than a cross-package import: the server's copy pulls in
+ * `node:crypto` for the parts of that file this one does not need, and the two processes
+ * checking the same shape independently is exactly the redundancy a client-side sanity check
+ * is for — the server is still the one that decides whether the token is REAL.
+ */
+function looksLikePat(bearer: string): boolean {
+  if (!bearer.startsWith(PAT_PREFIX)) return false;
+  if (bearer.length !== PAT_PREFIX.length + PAT_SECRET_LENGTH) return false;
+  return /^[A-Za-z0-9_-]+$/.test(bearer.slice(PAT_PREFIX.length));
+}
+
+/**
  * How long an archived card is kept before the boot sweep destroys it for good.
  *
  * Not a setting, and not `JiraSettings.doneRetentionDays` either — that one decides how long a
@@ -355,6 +366,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   const userData = app.getPath('userData');
   const store = createStore(join(userData, 'orchestrator.db'));
 
+  // One-shot: a database from before this ticket may still carry a vipper.iam refresh token.
+  // Nothing mints an access token from it any more, so it is dead weight — a credential
+  // encrypted on disk that nothing uses is worse than dropping it. `legacySignInRetired` lets
+  // the Settings pane tell a returning signed-in user their sign-in was replaced, rather than
+  // leaving a blank field to explain itself.
+  const legacySignInRetired = store.clearLegacyCloudSignIn();
+
   // Attachment rows cascade away with a deleted task; their FILES cannot — no cascade
   // reaches outside the database. Deleting a PROJECT is the path that proves one handler
   // is not enough: it takes its tasks with it (store.ts:446) without `task:delete` ever
@@ -365,6 +383,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   void sweepOrphanAttachments(store, userData).catch((e) =>
     logMain('Sweeping orphaned attachments failed', e),
   );
+
+  // A pasted file's temp copy is never meant to outlive the run that made it — it either
+  // became a real attachment (whose bytes now live under `userData`, swept above) or the
+  // paste was never finished. One pass at boot removes whatever a crash left behind, the
+  // same backstop as the attachment sweep just above and for the same reason. Not awaited,
+  // for the same reason too.
+  void sweepPasteTemp().catch((e) => logMain('Sweeping pasted-file temp files failed', e));
 
   // A card taken off the board keeps its row forever unless something eventually lets go, and
   // "forever" is the wrong answer for a board that removes cards every sync. So one pass at
@@ -1681,46 +1706,63 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   scheduler.setPullRequestOpener((taskId) => openPullRequest(createPrDeps(), taskId));
 
   // -------------------------------------------------------------------------
-  // vipper.iam cloud sign-in (Phase 25's "Guard the cloud API with vipper.iam"). The refresh
-  // token is the one credential of the three (JIRA/GitLab/IAM) this app itself is a party to
-  // minting, but it still goes through the exact same encrypt-and-store path as the other two.
-  // `cloudToken` is declared further down this function (its `onStateChange` needs
-  // `pushSyncState` above it) — safe to reference here anyway, since this callback only runs
-  // once IPC is live, well after every `const` in this scope has been initialized.
-  handle('iam:getConfigStatus', async () => ({
-    signedIn: store.loadIamRefreshToken() !== null,
+  // Cloud personal access token — the same four-channel shape JIRA/GitLab/GitHub use above,
+  // which is the whole point of this ticket: the cloud stopped being a special case. The
+  // server mints the token, on the web app's Personal access tokens page; this app only ever
+  // stores and spends a paste. `cloudToken` is declared further down this function (its
+  // `onStateChange` needs `pushSyncState` above it) — safe to reference here anyway, since
+  // these callbacks only run once IPC is live, well after every `const` in this scope has
+  // been initialized.
+  handle('cloud:getConfigStatus', async () => ({
+    hasToken: store.loadCloudPat() !== null,
     encryptionAvailable: safeStorage.isEncryptionAvailable(),
+    plainTextStorage: usesPlainTextStorage(),
     authState: cloudToken.state(),
     authError: cloudToken.state() === 'rejected' ? cloudToken.explain() : null,
-    lastTokenAt: cloudToken.lastMintedAt(),
+    lastAcceptedAt: cloudToken.lastAcceptedAt(),
+    legacySignInRetired,
   }));
 
-  handle('iam:signIn', async () => {
+  handle('cloud:setCredentials', async (token) => {
+    if (!token.trim()) {
+      store.clearCloudPat();
+      cloudToken.reload();
+      return { ok: true, message: 'Token cleared.' };
+    }
     if (!safeStorage.isEncryptionAvailable()) {
       return {
         ok: false,
-        message: 'OS secure storage is unavailable, so the sign-in was not saved.',
+        message: 'OS secure storage is unavailable, so the token was not saved.',
       };
     }
-    try {
-      const tokens = await runIamSignIn(iamSignInConfig(), (url) => shell.openExternal(url));
-      if (!tokens.refresh_token) {
-        return { ok: false, message: 'vipper.iam did not return a refresh token.' };
-      }
-      store.saveIamRefreshToken(
-        safeStorage.encryptString(sanitizeToken(tokens.refresh_token)).toString('base64'),
-      );
-      cloudToken.renewed();
-      return { ok: true, message: 'Signed in.' };
-    } catch (e) {
-      logMain('IAM sign-in failed', e);
-      return { ok: false, message: e instanceof Error ? e.message : String(e) };
+    // One check the forges do not need: a JIRA/GitLab/GitHub paste is opaque to this app, but
+    // a Task Manager token has a shape worth checking BEFORE it is stored — the sooner a
+    // mis-paste is caught, the sooner the real one gets typed instead.
+    const cleaned = sanitizeToken(token);
+    if (!looksLikePat(cleaned)) {
+      return {
+        ok: false,
+        message:
+          'That does not look like a Task Manager token — they start with tmpat_. Copy it ' +
+          'again from the web app’s Personal access tokens page.',
+      };
     }
+    const noise = tokenHadNoise(token);
+    store.saveCloudPat(safeStorage.encryptString(cleaned).toString('base64'));
+    cloudToken.reload();
+    return {
+      ok: true,
+      message: usesPlainTextStorage()
+        ? 'Token saved — but this machine has no keyring, so it is only obfuscated on disk.'
+        : noise
+          ? 'Token saved — whitespace came with the paste and was stripped.'
+          : 'Token saved.',
+    };
   });
 
-  handle('iam:signOut', async () => {
-    cloudToken.forget();
-    store.clearIamRefreshToken();
+  handle('cloud:clearCredentials', async () => {
+    store.clearCloudPat();
+    cloudToken.reload();
   });
 
   /**
@@ -1749,6 +1791,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       // The probe's own sync leases whatever was queued for this machine, exactly as a poll
       // tick does, so it hands the batch to the same serial drain rather than dropping it.
       onCommands: (commands) => cloudCommandQueue.enqueue(commands),
+      // Turns a 401 into the PAT sentence rather than the vipper.iam-server one — see
+      // `cloudTestConnection.ts`'s own note on why that message was backwards under a token
+      // this app itself did not mint.
+      describeRejection: () => cloudToken.explain(),
     });
     if (!result.ok) logMain('Cloud test connection failed', result.message);
     return result;
@@ -1888,24 +1934,21 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   /**
    * The cloud mirror's own access token — a single `CloudTokenProvider` shared by every
    * caller that needs one (`getCloudAccessToken` below is kept as a one-line alias so its
-   * five existing call sites in this file are untouched). Its `onStateChange` pushes the
-   * sync state, so it's constructed here, after `pushSyncState`, rather than up beside the
-   * other IAM handlers above — declaring it there would be a forward reference.
+   * existing call sites in this file are untouched). Its `onStateChange` pushes the sync
+   * state, so it's constructed here, after `pushSyncState`, rather than up beside the cloud
+   * handlers above — declaring it there would be a forward reference.
    */
   const cloudToken = new CloudTokenProvider({
-    config: () => ({ ...iamSignInConfig(), redirectUri: '' }),
-    loadRefreshToken: () => {
-      const cipher = store.loadIamRefreshToken();
+    loadPat: () => {
+      const cipher = store.loadCloudPat();
       if (!cipher || !safeStorage.isEncryptionAvailable()) return null;
       try {
-        return decryptSecret(cipher, 'vipper.iam');
+        return decryptSecret(cipher, 'Task Manager cloud');
       } catch (e) {
-        logMain('vipper.iam refresh token could not be decrypted', e);
+        logMain('cloud token could not be decrypted', e);
         return null;
       }
     },
-    saveRefreshToken: (token) =>
-      store.saveIamRefreshToken(safeStorage.encryptString(sanitizeToken(token)).toString('base64')),
     onStateChange: () => pushSyncState(),
     log: logMain,
   });
@@ -2005,6 +2048,34 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   });
 
   /**
+   * A check-runs or commit-status call that came back refused — logged every time, but
+   * raised on the board's notice bar only once per app run per repository/endpoint/status.
+   * Every stale PR in a repo hits the same missing scope on every poll, and repeating the
+   * warning that often would bury everything else on the bar.
+   */
+  const reportedCiRefusals = new Set<string>();
+  const reportCiRefusal = (
+    projectPath: string,
+    endpoint: 'check-runs' | 'commit-status',
+    error: unknown,
+  ): void => {
+    logMain(`GitHub sync: ${endpoint} for ${projectPath} refused`, error);
+    const status = error instanceof GitHubError ? error.status : 0;
+    if (status !== 401 && status !== 403 && status !== 404) return;
+    const key = `${projectPath}|${endpoint}|${status}`;
+    if (reportedCiRefusals.has(key)) return;
+    reportedCiRefusals.add(key);
+    const what = endpoint === 'check-runs' ? 'check runs' : 'commit statuses';
+    const scope = endpoint === 'check-runs' ? 'Checks: read' : 'Commit statuses: read';
+    send('board:notice', {
+      intent: 'warning',
+      text:
+        `GitHub refused to read ${what} for ${projectPath} (${status}). A fine-grained token ` +
+        `needs "${scope}"; a classic token needs "repo".`,
+    });
+  };
+
+  /**
    * One GitHub sync: list your open PRs, re-read detail only for the ones that moved,
    * reconcile, push. `syncGitLab` above, one forge over, and every decision it makes for a
    * stated reason is made here for the same one.
@@ -2048,7 +2119,32 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
         const prior = priorByRef.get(listedRef(item));
         const updatedAt = Date.parse(item.updated_at) || 0;
         const stale = needsDetailRefresh(prior, updatedAt);
-        detailed.push(await describePullRequest(client, item, { stale, prior }));
+        const onCiRefusal = (endpoint: 'check-runs' | 'commit-status', error: unknown): void =>
+          reportCiRefusal(prior?.projectPath ?? listedRef(item), endpoint, error);
+        /**
+         * Not otherwise stale, but the last CI answer was `unknown` or a freshly-seen `none`
+         * — GitHub never bumps `updated_at` for a check starting or finishing, so
+         * `needsDetailRefresh` alone would leave those PRs unread forever. One detail call,
+         * not the full ~seven-call stale pass: `describePullRequest` reads CI off a detail
+         * whenever it has one in hand, `stale` or not.
+         */
+        if (!stale && needsCiRefresh(prior, Date.now())) {
+          const { owner, repo } = repoRefFromApiUrl(item.repository_url);
+          const detail =
+            owner && repo
+              ? await client.getPullRequest(owner, repo, item.number).catch(() => null)
+              : null;
+          detailed.push(
+            await describePullRequest(client, item, {
+              stale: false,
+              prior,
+              detail: detail ?? undefined,
+              onCiRefusal,
+            }),
+          );
+          continue;
+        }
+        detailed.push(await describePullRequest(client, item, { stale, prior, onCiRefusal }));
       }
     };
     await Promise.all(Array.from({ length: Math.min(4, queue.length) }, worker));
@@ -2085,6 +2181,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
             stale: false,
             prior,
             detail,
+            onCiRefusal: (endpoint, error) => reportCiRefusal(prior.projectPath, endpoint, error),
           }),
         );
       }
@@ -2475,9 +2572,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     if (hasPlan(project)) {
       throw new Error('This project is plan-driven — it has no manual ticket list to add to.');
     }
-    if (!ownsTickets(project)) throw new Error('That project does not hold tickets.');
-    if (!normalizeTicketPrefix(project.ticketPrefix)) {
-      throw new Error('Give this project a ticket key prefix before creating tickets in it.');
+    // Every board project now gets a prefix the moment it's added or edited (see
+    // `addProject`/`updateProject` in store.ts), so this should never actually fire outside
+    // the Personal board — kept as a backstop for whatever legacy or hand-edited row still
+    // slips through with none.
+    if (!ownsTickets(project)) {
+      throw new Error(
+        'This project has no ticket key prefix yet — set one in Projects → Edit → Key prefix.',
+      );
     }
     if (!input.title.trim()) throw new Error('A ticket needs a title.');
     assertTicketRefs(projectId, null, input.issueType ?? 'task', input);
@@ -2797,6 +2899,16 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       await collected.cleanup();
     }
   });
+
+  /**
+   * Write clipboard bytes to a temp file and hand back where they landed — see
+   * `attachment:stagePasted` on `IpcApi` for why this is its own channel and its own
+   * host-only reason. No task lookup and no store call here at all: unlike every other
+   * `attachment:*` handler, this one never touches a row, only a disk write and a list of
+   * paths, which is what makes it safe to call before the task the paste is destined for is
+   * even known — the Add-task dialog stages files this way before a task id exists.
+   */
+  handle('attachment:stagePasted', async (files) => stagePastedFiles(files));
 
   handle('attachment:remove', async (id) => {
     // The row first, the bytes second — the order `task:delete` uses, and for the same
@@ -4042,10 +4154,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     focus: focusTracker,
     getSettings: () => store.getSettings().cloud,
     getAccessToken: getCloudAccessToken,
-    // Turns a bare "no token" into the reason there isn't one — never signed in vs. revoked —
+    // Turns a bare "no token" into the reason there isn't one — nothing pasted vs. revoked —
     // so a failed tick's `syncClock.cloud.error` (and the SyncRing tooltip built from it) says
-    // something a user signed out on purpose can tell apart from a sign-in vipper.iam rejected.
+    // something a user who never pasted a token can tell apart from one the cloud rejected.
     describeMissingToken: () => cloudToken.explain(),
+    // With no refresh cycle any more, a successful tick is the only signal that a pasted
+    // token actually works — the Settings pane's "confirmed Ns ago" is driven from it.
+    onSynced: () => cloudToken.accepted(),
     // What a browser names this desktop by, once it has more than one to choose between —
     // see `ClientInfo` on `@protocol/wire`. Built above rather than inline because this is
     // the only side of `cloudPoller.ts` that is allowed to touch Electron and the connection

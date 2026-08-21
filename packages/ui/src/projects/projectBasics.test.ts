@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Project } from '@tm/shared/model';
-import { ticketModeOf, ticketPrefixError, suggestTicketPrefix } from './projectBasics';
+import { ticketModeOf, ticketPrefixError } from './projectBasics';
 
 let seq = 0;
 /** A minimal project fixture — only the fields this module reads are worth naming. */
@@ -42,33 +42,15 @@ describe('ticketModeOf', () => {
   });
 });
 
-describe('suggestTicketPrefix', () => {
-  it('takes initials from a multi-word name', () => {
-    expect(suggestTicketPrefix('Task Manager')).toBe('TM');
-  });
-
-  it('takes the first few letters of a single-word name', () => {
-    expect(suggestTicketPrefix('backend')).toBe('BACK');
-  });
-
-  it('is blank for a blank name', () => {
-    expect(suggestTicketPrefix('  ')).toBe('');
-  });
-});
-
 describe('ticketPrefixError', () => {
   it('is always null in personal mode, even for an unusable prefix', () => {
     expect(ticketPrefixError({ mode: 'personal', prefix: '', projects: [] })).toBeNull();
     expect(ticketPrefixError({ mode: 'personal', prefix: '123', projects: [] })).toBeNull();
   });
 
-  it('requires a prefix in tickets mode', () => {
-    expect(ticketPrefixError({ mode: 'tickets', prefix: '', projects: [] })).toBe(
-      'A ticket board needs a key prefix.',
-    );
-    expect(ticketPrefixError({ mode: 'tickets', prefix: '   ', projects: [] })).toBe(
-      'A ticket board needs a key prefix.',
-    );
+  it('leaves an empty prefix in tickets mode for the store to derive one', () => {
+    expect(ticketPrefixError({ mode: 'tickets', prefix: '', projects: [] })).toBeNull();
+    expect(ticketPrefixError({ mode: 'tickets', prefix: '   ', projects: [] })).toBeNull();
   });
 
   it('rejects a prefix with no letters', () => {
