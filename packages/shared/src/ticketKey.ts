@@ -100,3 +100,54 @@ export function parseTicketKey(key: string): ParsedTicketKey | null {
 export function isTicketKey(key: string): boolean {
   return parseTicketKey(key) !== null;
 }
+
+/** Fallback base when a project's name has nothing usable in it (`normalizeTicketPrefix` refuses it). */
+const FALLBACK_TICKET_PREFIX_BASE = 'PROJECT';
+
+/**
+ * A starting guess for a ticket prefix, from a project's name — initials for a multi-word
+ * name ("Task Manager" → "TM"), the first few letters otherwise. Purely a convenience: the
+ * result still needs {@link normalizeTicketPrefix}, and callers that need one guaranteed
+ * free of collisions should feed this into {@link uniqueTicketPrefix}.
+ */
+export function suggestTicketPrefix(name: string): string {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return '';
+  const raw =
+    words.length > 1
+      ? words
+          .map((w) => w[0])
+          .join('')
+          .slice(0, 4)
+      : words[0].slice(0, 4);
+  return normalizeTicketPrefix(raw) ?? '';
+}
+
+/**
+ * A ticket prefix, normalized from `base`, guaranteed not to collide (case-blind) with
+ * anything in `taken`.
+ *
+ * Falls back to a constant when `base` normalizes to nothing — a prefix from an empty or
+ * symbols-only name would otherwise leave the caller without one to append a suffix to.
+ * Then appends `2`, `3`, … until free, re-truncating each candidate to
+ * {@link MAX_TICKET_PREFIX_LENGTH} so a suffix never pushes the result past the bound —
+ * and, since the truncated result could otherwise end up bare digits (which
+ * `normalizeTicketPrefix` refuses), routes every candidate back through it rather than
+ * concatenating by hand.
+ */
+export function uniqueTicketPrefix(base: string, taken: Iterable<string>): string {
+  const takenSet = new Set(Array.from(taken, (key) => key.toUpperCase()));
+  const normalizedBase = normalizeTicketPrefix(base) ?? FALLBACK_TICKET_PREFIX_BASE;
+
+  if (!takenSet.has(normalizedBase)) return normalizedBase;
+
+  for (let suffix = 2; ; suffix++) {
+    const suffixStr = String(suffix);
+    const truncatedBase = normalizedBase.slice(
+      0,
+      Math.max(1, MAX_TICKET_PREFIX_LENGTH - suffixStr.length)
+    );
+    const candidate = normalizeTicketPrefix(`${truncatedBase}${suffixStr}`);
+    if (candidate && !takenSet.has(candidate)) return candidate;
+  }
+}

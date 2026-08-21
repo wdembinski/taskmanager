@@ -42,7 +42,7 @@ import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
 import { MODELS, type Project } from '@shared/model';
 import { RELEASE_DOC } from '@shared/release';
-import { normalizeTicketPrefix } from '@shared/ticketKey';
+import { normalizeTicketPrefix, suggestTicketPrefix } from '@shared/ticketKey';
 import {
   execTargetLabel,
   formatExecTarget,
@@ -96,25 +96,6 @@ function parseEpicKeys(text: string): string[] {
     .split(/[\s,;]+/)
     .map((key) => key.trim())
     .filter(Boolean);
-}
-
-/**
- * A starting guess for a ticket prefix, from the project's name — initials for a
- * multi-word name ("Task Manager" → "TM"), the first few letters otherwise. Purely a
- * convenience: the field stays freely editable, and `normalizeTicketPrefix` is what
- * actually decides whether the result is usable.
- */
-function suggestTicketPrefix(name: string): string {
-  const words = name.trim().split(/\s+/).filter(Boolean);
-  if (words.length === 0) return '';
-  const raw =
-    words.length > 1
-      ? words
-          .map((w) => w[0])
-          .join('')
-          .slice(0, 4)
-      : words[0].slice(0, 4);
-  return normalizeTicketPrefix(raw) ?? '';
 }
 
 export function Projects(): JSX.Element {
