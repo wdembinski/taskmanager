@@ -4,7 +4,6 @@ import { mrAttentionReason, mrNeedsAttention } from '@shared/mergeRequest';
 import {
   landedTaskIds,
   mergeRequestId,
-  needsDetailRefresh,
   reconcileMergeRequests,
   rematchMergeRequests,
   type FetchedMergeRequest,
@@ -53,37 +52,9 @@ const note = (at: string, authorId: number): { createdAt: string; author: { id: 
   author: { id: authorId },
 });
 
-describe('needsDetailRefresh', () => {
-  const prior = (over: Partial<MergeRequest> = {}): MergeRequest =>
-    ({ ...reconcileMergeRequests([], [fetched()], opts).upserts[0], ...over }) as MergeRequest;
-
-  it('always reads an MR it has never seen', () => {
-    expect(needsDetailRefresh(undefined, 900)).toBe(true);
-  });
-
-  it('reads one whose updated_at moved', () => {
-    expect(needsDetailRefresh(prior({ updatedAt: 900 }), 901)).toBe(true);
-  });
-
-  // The bug: GitLab does not touch the MR when its pipeline finishes, so `updated_at`
-  // alone left an MR first seen mid-pipeline reading "running" for good — Sync re-listed
-  // it, saw nothing had moved, and kept the stale status.
-  it.each(['created', 'pending', 'running'] as const)(
-    're-reads an untouched MR whose pipeline is still %s',
-    (pipelineStatus) => {
-      expect(needsDetailRefresh(prior({ updatedAt: 900, pipelineStatus }), 900)).toBe(true);
-    },
-  );
-
-  // Bounded on purpose: the re-reading stops the moment the pipeline settles, and `manual`
-  // / `unknown` can sit unchanged forever so they must not keep it going.
-  it.each(['success', 'failed', 'canceled', 'skipped', 'manual', 'unknown'] as const)(
-    'leaves an untouched MR alone once its pipeline is %s',
-    (pipelineStatus) => {
-      expect(needsDetailRefresh(prior({ updatedAt: 900, pipelineStatus }), 900)).toBe(false);
-    },
-  );
-});
+// `needsDetailRefresh` and `PIPELINE_IN_FLIGHT` moved to `forge/refreshPolicy.test.ts` — the
+// rule they test is forge-neutral, and re-exported here only for callers that already import
+// this module.
 
 describe('reconcileMergeRequests', () => {
   it('files a new MR under the task whose key it names', () => {

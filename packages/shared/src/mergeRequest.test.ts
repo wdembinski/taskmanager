@@ -80,7 +80,7 @@ describe('mrReadyToMerge', () => {
     expect(mrReadyToMerge(ready({ approvalsRequired: 0, approvalsGiven: 1 }))).toBe(true);
   });
 
-  it.each(['running', 'failed', 'canceled', 'skipped', 'manual', 'pending', 'unknown'] as const)(
+  it.each(['running', 'failed', 'canceled', 'skipped', 'manual', 'pending', 'unknown', 'none'] as const)(
     'is false when the pipeline is %s rather than passed',
     (pipelineStatus) => {
       expect(mrReadyToMerge(ready({ pipelineStatus }))).toBe(false);

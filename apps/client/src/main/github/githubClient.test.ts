@@ -141,6 +141,43 @@ describe('GitHubClient — pull requests and their checks', () => {
     );
   });
 
+  // A large monorepo's matrix build can carry more than 100 check runs — `Link` pagination,
+  // the same as every other list endpoint, rather than losing everything past the first page.
+  it('follows Link rel="next" through check runs, up to the cap', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({ total_count: 2, check_runs: [{ name: 'build' }] }, 200, {
+          link: '<https://api.github.com/repos/acme/web/commits/deadbeef/check-runs?per_page=100&filter=latest&page=2>; rel="next"',
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ total_count: 2, check_runs: [{ name: 'test' }] }, 200, {}));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const runs = await client().listCheckRuns('acme', 'web', 'deadbeef');
+
+    expect(runs).toEqual([{ name: 'build' }, { name: 'test' }]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[1][0])).toBe(
+      'https://api.github.com/repos/acme/web/commits/deadbeef/check-runs?per_page=100&filter=latest&page=2',
+    );
+  });
+
+  it('stops paging check runs at maxPages rather than trusting the header forever', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        jsonResponse({ total_count: 1, check_runs: [{ name: 'build' }] }, 200, {
+          link: '<https://api.github.com/repos/acme/web/commits/deadbeef/check-runs?page=2>; rel="next"',
+        }),
+      ),
+    );
+
+    await client().listCheckRuns('acme', 'web', 'deadbeef', 3);
+
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
   it('reads a PR, its reviews and its combined status off the repo path', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse([]));
     vi.stubGlobal('fetch', fetchMock);

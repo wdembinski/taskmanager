@@ -439,7 +439,7 @@ describe('describePullRequest — degrade rather than guess', () => {
       { stale: true, prior: priorRed() },
     );
 
-    expect(result.pipelineStatus).toBe('unknown');
+    expect(result.pipelineStatus).toBe('none');
     expect(result.pipelineStages).toEqual([]);
     expect(result.pipelineUrl).toBeNull();
   });
@@ -454,6 +454,53 @@ describe('describePullRequest — degrade rather than guess', () => {
 
     expect(result.pipelineStatus).toBe('failed');
     expect(result.pipelineStages).toHaveLength(2);
+  });
+
+  it('reports a check-runs throw through onCiRefusal', async () => {
+    const onCiRefusal = vi.fn();
+    const boom = new GitHubError('GitHub 403 Forbidden', 403);
+    await describePullRequest(
+      client({ pull: detail(), reviews: [], checkRuns: boom, combined: { statuses: [] } }),
+      listed(),
+      { stale: true, prior: priorRed(), onCiRefusal },
+    );
+
+    expect(onCiRefusal).toHaveBeenCalledWith('check-runs', boom);
+    expect(onCiRefusal).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a commit-status throw through onCiRefusal', async () => {
+    const onCiRefusal = vi.fn();
+    const boom = new GitHubError('GitHub 403 Forbidden', 403);
+    await describePullRequest(
+      client({ pull: detail(), reviews: [], checkRuns: [], combined: boom }),
+      listed(),
+      { stale: true, prior: priorRed(), onCiRefusal },
+    );
+
+    expect(onCiRefusal).toHaveBeenCalledWith('commit-status', boom);
+    expect(onCiRefusal).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not call onCiRefusal when both CI systems answer', async () => {
+    const onCiRefusal = vi.fn();
+    await describePullRequest(
+      client({ pull: detail(), reviews: [], checkRuns: [], combined: { statuses: [] } }),
+      listed(),
+      { stale: true, prior: priorRed(), onCiRefusal },
+    );
+    await describePullRequest(
+      client({
+        pull: detail(),
+        reviews: [],
+        checkRuns: [run('build', 'completed', 'success')],
+        combined: { statuses: [] },
+      }),
+      listed(),
+      { stale: true, prior: priorRed(), onCiRefusal },
+    );
+
+    expect(onCiRefusal).not.toHaveBeenCalled();
   });
 });
 
