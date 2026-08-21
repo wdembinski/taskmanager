@@ -183,8 +183,18 @@ const store = createStore('${oldDb}');
 const project = store.addProject({ path: 'C:/repo/legacy', name: 'legacy' });
 const task = store.createTask(project.id, { title: 'a card from before tickets' });
 if (!task) throw new Error('${OLD_TAG} store refused the task');
+// A second legacy row with no path at all — ${OLD_TAG} predates tickets, so this is just
+// a bare, plan-less project of the kind that (in TODAY's code) can hold native tickets.
+// It has no ticketPrefix column yet (that arrives with the migration below), so it is
+// what the new backfill has to reach: unlike 'legacy' above, it has no planPath either.
+// planPath explicitly '' — the OLD store defaults one from the path unconditionally, even
+// for an empty path, so leaving it out would make this a plan project too.
+const boardish = store.addProject({ path: '', name: 'legacy-boardish', planPath: '' });
 store.close();
-console.log('  wrote a ${OLD_TAG} database: project ' + project.id + ', task ' + task.id);
+console.log(
+  '  wrote a ${OLD_TAG} database: project ' + project.id + ', task ' + task.id +
+    ', plan-less project ' + boardish.id,
+);
 `,
     'utf8',
   );
@@ -514,11 +524,42 @@ check(
   rt1After.ticketNumber === numbersBefore[0] && rt2After.ticketNumber === numbersBefore[1],
 );
 
+// renProj is plan-less, so this is no longer a bare refusal: the guaranteed-prefix rule
+// means a board project can never go back to having none, so a patch that clears it gets
+// a freshly derived prefix instead — and its already-issued tickets are rekeyed under it,
+// exactly as the earlier rename rekeyed them under NEWPFX.
 const clearAttempt = store.updateProject(renProj.id, { ticketPrefix: '' });
 check(
-  'clearing a prefix is refused once the project has issued tickets',
-  clearAttempt.ticketPrefix === 'NEWPFX',
+  "clearing a board project's prefix derives a fresh one instead of leaving it prefixless",
+  Boolean(clearAttempt.ticketPrefix) && clearAttempt.ticketPrefix !== 'NEWPFX',
   clearAttempt.ticketPrefix,
+);
+const rt1AfterClear = store.getTask(rt1.id);
+const rt2AfterClear = store.getTask(rt2.id);
+check(
+  'and its already-issued tickets were rekeyed under the derived prefix, not orphaned',
+  rt1AfterClear.ticketKey === clearAttempt.ticketPrefix + '-' + rt1.ticketNumber &&
+    rt2AfterClear.ticketKey === clearAttempt.ticketPrefix + '-' + rt2.ticketNumber,
+  rt1AfterClear.ticketKey + ',' + rt2AfterClear.ticketKey,
+);
+
+// A plan-driven project is untouched by any of this: it can carry a manual prefix (though
+// it can never allocate with it — createTicket refuses anything with a plan), and
+// clearing it is still obeyed outright, exactly as before this rule existed.
+const planProjForPrefix = store.addProject({
+  path: 'C:/repo/plan-prefix-test',
+  name: 'plan prefix test',
+  ticketPrefix: 'PLNX',
+});
+check(
+  'a plan project can still take a manual prefix',
+  planProjForPrefix.ticketPrefix === 'PLNX',
+);
+const planClearAttempt = store.updateProject(planProjForPrefix.id, { ticketPrefix: '' });
+check(
+  "clearing it is still obeyed outright \u2014 the derive-on-clear rule is board-only",
+  planClearAttempt.ticketPrefix === '',
+  planClearAttempt.ticketPrefix,
 );
 
 // ---------------------------------------------------------------------------
@@ -717,10 +758,24 @@ const migratedProjectRow = oldRawAfter
   .prepare("SELECT * FROM projects WHERE name = 'legacy'")
   .get();
 check(
+  "'legacy' is plan-driven, so the guaranteed-prefix backfill must leave it alone",
+  Boolean(migratedProjectRow) && migratedProjectRow.planPath !== '',
+);
+check(
   'the project survived, with a NULL prefix rather than a manufactured collision',
   Boolean(migratedProjectRow) &&
     migratedProjectRow.ticketPrefix === null &&
     migratedProjectRow.ticketSeq === 0,
+);
+const migratedBoardishRow = oldRawAfter
+  .prepare("SELECT * FROM projects WHERE name = 'legacy-boardish'")
+  .get();
+check(
+  "'legacy-boardish' is plan-less, so it DOES get backfilled a prefix",
+  Boolean(migratedBoardishRow) &&
+    migratedBoardishRow.planPath === '' &&
+    typeof migratedBoardishRow.ticketPrefix === 'string' &&
+    migratedBoardishRow.ticketPrefix.length > 0,
 );
 const migratedTaskRow = oldRawAfter.prepare('SELECT * FROM tasks').get();
 check(
@@ -757,6 +812,19 @@ check(
   "a migrated plan project can take a prefix but its kind never changes, so it still " +
     "can't allocate",
   updatedWithPrefix.ticketPrefix === 'MIG' && refusedOnOldPlanProject === undefined,
+);
+
+// The OTHER legacy row — plan-less — is exactly the case the guaranteed-prefix backfill
+// exists for: it comes out of the migration already able to allocate, with no manual
+// updateProject needed first.
+const migratedBoardish = migrated.listProjects().find((p) => p.name === 'legacy-boardish');
+const firstTicketOnBoardish = migrated.createTicket(migratedBoardish.id, {
+  title: 'first ticket on a backfilled legacy project',
+});
+check(
+  'the plan-less legacy project allocates a key using its backfilled prefix, unprompted',
+  Boolean(firstTicketOnBoardish) &&
+    firstTicketOnBoardish.ticketKey === migratedBoardish.ticketPrefix + '-1',
 );
 
 // What DOES work after the upgrade is a brand-new ticket project in the SAME database.

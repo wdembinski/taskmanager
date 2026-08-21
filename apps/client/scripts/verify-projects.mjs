@@ -456,6 +456,38 @@ check(
   !inSync.has(bareCard.id) && !inSync.has(planCard.id) && !inSync.has(ticketCard.id),
 );
 
+// ---------------------------------------------------------------------------
+section('5. Guaranteeing every board project a key prefix');
+
+const derivedPrefix = store.addProject({ name: 'Derived Prefix Co' });
+check(
+  'a plan-less project added with no prefix comes back with a derived one',
+  Boolean(derivedPrefix.ticketPrefix),
+  derivedPrefix.ticketPrefix,
+);
+
+const derivedPrefixTwin = store.addProject({ name: 'Derived Prefix Co' });
+check(
+  'a second project of the same name gets a distinct prefix, not a collision',
+  Boolean(derivedPrefixTwin.ticketPrefix) &&
+    derivedPrefixTwin.ticketPrefix !== derivedPrefix.ticketPrefix,
+  JSON.stringify({ first: derivedPrefix.ticketPrefix, second: derivedPrefixTwin.ticketPrefix }),
+);
+
+const derivedPlanProject = store.addProject({
+  path: scratch + '/derived-plan',
+  name: 'Derived Plan Co',
+});
+check(
+  "it really is plan-driven, so the guarantee shouldn't reach it (sanity check)",
+  hasPlan(derivedPlanProject),
+);
+check(
+  'a plan project added with no prefix still has none — the guarantee is board-only',
+  derivedPlanProject.ticketPrefix === '',
+  derivedPlanProject.ticketPrefix,
+);
+
 store.close();
 
 console.log('');

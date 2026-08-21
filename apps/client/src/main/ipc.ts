@@ -62,7 +62,6 @@ import {
   type TicketLink,
 } from '@shared/model';
 import { isEpic, isNativeTicket } from '@shared/tickets';
-import { normalizeTicketPrefix } from '@shared/ticketKey';
 import { canLinkTickets, type TicketLinkResult } from '@shared/ticketLinks';
 import {
   ARCHIVE_RETENTION_DAYS,
@@ -2570,9 +2569,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     if (hasPlan(project)) {
       throw new Error('This project is plan-driven — it has no manual ticket list to add to.');
     }
-    if (!ownsTickets(project)) throw new Error('That project does not hold tickets.');
-    if (!normalizeTicketPrefix(project.ticketPrefix)) {
-      throw new Error('Give this project a ticket key prefix before creating tickets in it.');
+    // Every board project now gets a prefix the moment it's added or edited (see
+    // `addProject`/`updateProject` in store.ts), so this should never actually fire outside
+    // the Personal board — kept as a backstop for whatever legacy or hand-edited row still
+    // slips through with none.
+    if (!ownsTickets(project)) {
+      throw new Error(
+        'This project has no ticket key prefix yet — set one in Projects → Edit → Key prefix.',
+      );
     }
     if (!input.title.trim()) throw new Error('A ticket needs a title.');
     assertTicketRefs(projectId, null, input.issueType ?? 'task', input);
