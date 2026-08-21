@@ -30,7 +30,7 @@ import type { IpcApi } from './ipc';
 export type RelayPolicy = 'relay' | 'host-only';
 
 /**
- * Why a channel is host-only. Four groups, not one flag, because the refusal a human reads
+ * Why a channel is host-only. Five groups, not one flag, because the refusal a human reads
  * should say what is actually in the way — "sign in from the desktop app" and "this opens a
  * file picker over there" are different problems with different fixes.
  */
@@ -42,7 +42,9 @@ export type HostOnlyReason =
   /** Writes a secret into the desktop machine's secure store. */
   | 'credential-write'
   /** Owns a live Claude process' lifetime or its open stdin. */
-  | 'live-session';
+  | 'live-session'
+  /** Answers with a path on the desktop's own disk, which means nothing in a browser. */
+  | 'host-path';
 
 /**
  * Every host-only channel and the reason it is one.
@@ -66,6 +68,12 @@ export type HostOnlyReason =
  * nothing in a browser, which has no way to have obtained a valid one. The card-level
  * equivalents (`task:run`, `task:stopAgent`, `task:chat`, `attention:answer`) DO relay —
  * they take a task id, which is mirrored, and are what the web UI actually presses.
+ *
+ * **Host paths.** `attachment:stagePasted` writes clipboard bytes to a temp file and hands
+ * back where they landed — a path on the desktop's own disk, unusable by the browser that
+ * would receive it over the relay. A browser pasting an image already has its own route
+ * (`attachFiles` → `POST /v1/uploads` → `attachment:addUploaded`) that keeps bytes out of
+ * the relay's `commands` audit table entirely; relaying this one would push them through it.
  */
 const HOST_ONLY_REASONS = {
   'project:pickDirectory': 'native-modal',
@@ -93,6 +101,8 @@ const HOST_ONLY_REASONS = {
   'session:start': 'live-session',
   'session:stop': 'live-session',
   'session:answer': 'live-session',
+
+  'attachment:stagePasted': 'host-path',
 } as const satisfies Partial<Record<keyof IpcApi, HostOnlyReason>>;
 
 /** The channels {@link HOST_ONLY_REASONS} names — a union of literals, not `string`. */
@@ -282,6 +292,7 @@ export const RELAY_POLICY: {
   // and only a browser has any. The desktop fetches those bytes itself, so nothing crosses
   // this wire that the engine then trusts as a local path.
   'attachment:addUploaded': 'relay',
+  'attachment:stagePasted': 'host-only',
   'attachment:remove': 'relay',
   'attachment:open': 'host-only',
 
@@ -311,6 +322,7 @@ const REASON_TEXT: Record<HostOnlyReason, string> = {
   'window-os': 'it controls the desktop app itself, or the machine it is running on',
   'credential-write': "it stores a secret in that machine's own credential store",
   'live-session': 'it drives a live Claude process, which only the desktop app holds',
+  'host-path': "it hands back a path on that machine's own disk, which a browser cannot use",
 };
 
 /**

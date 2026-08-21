@@ -2135,9 +2135,12 @@ there is no single-instance lock, and a second instance killed a live session on
       build, and rule 4 makes promotion the one irreversible step.
 
       **Release notes, grouped as a user would notice them.** New: a card and each of its
-      steps can carry files — picked or dropped onto the Description fold, previewed inline
-      when they are images, opened with a click, and staged in the Add-task dialog before
-      the card exists. The bytes are copied into the profile, so moving or deleting the
+      steps can carry files — picked, dropped, or pasted onto the Description fold, previewed
+      inline when they are images, opened with a click, and staged in the Add-task dialog
+      before the card exists. Paste is a third way in, added after this phase shipped: a
+      bitmap on the clipboard is attached under a generated name, `pasted-<timestamp>`, since
+      it has none of its own, while a file copied in Explorer keeps the name it already has.
+      The bytes are copied into the profile, so moving or deleting the
       original afterwards costs nothing. An agent is handed the list and the real paths, so
       `@name` in a brief resolves to a file it can open — translated for WSL when the run
       is over there. Internal: a `task_attachments` table with a cascading foreign key, a

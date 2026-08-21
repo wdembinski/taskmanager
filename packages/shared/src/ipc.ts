@@ -56,7 +56,7 @@ import type {
   TicketLinkType,
   TicketPatch,
 } from './model';
-import type { TaskAttachment, UploadedAttachment } from './attachments';
+import type { PastedAttachment, TaskAttachment, UploadedAttachment } from './attachments';
 import type { GitGraph } from './gitGraph';
 import type { ExecTarget, TargetReadiness } from './execTarget';
 import type { ActiveRun, RunOutcome, SchedulerChange, TaskChange } from './scheduler';
@@ -1178,6 +1178,26 @@ export interface IpcApi {
     taskId: string,
     uploads: UploadedAttachment[],
   ) => Promise<TaskAttachment[]>;
+  /**
+   * Write clipboard bytes to a temp file on THIS machine's disk and hand back where they
+   * landed — nothing is read from a task, nothing is written to the database, and the
+   * returned paths are not yet attachments. The caller (a description editor, the Add-task
+   * dialog) turns them into real ones afterward through `attachment:add`, the same way a
+   * picked file is: this channel only gets pasted bytes onto disk so that path can start.
+   *
+   * Its own channel rather than a bytes shape on `attachment:add`, for the reason
+   * `attachment:addUploaded` already gives for itself: the two differ in the one thing that
+   * matters about the handler — where the bytes come from — and that is the whole of what it
+   * has to be careful about. Here they come from the renderer's own clipboard read, over a
+   * structured clone bounded by `MAX_PASTE_BYTES`.
+   *
+   * Host-only (`'host-path'`): what comes back is a path on the desktop's own disk, which
+   * means nothing in a browser. A browser pasting an image has its own route already —
+   * `attachFiles` → `POST /v1/uploads` → `attachment:addUploaded` — chosen precisely so
+   * pasted bytes never ride through the relay's `commands` audit table; relaying this
+   * channel instead would push them through it after all.
+   */
+  'attachment:stagePasted': (files: PastedAttachment[]) => Promise<string[]>;
   /** Drop one attachment — the row and the bytes. Returns the whole list. */
   'attachment:remove': (id: string) => Promise<TaskAttachment[]>;
   /**

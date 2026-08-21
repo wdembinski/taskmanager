@@ -105,6 +105,105 @@ export interface UploadedAttachment {
 }
 
 /**
+ * One file lifted straight off the clipboard — `attachment:stagePasted`'s input, and the
+ * only shape here whose bytes never touched a disk or a network before reaching main.
+ *
+ * A `Uint8Array` rather than a path or an id, because a paste has neither: the renderer
+ * read it out of a `ClipboardEvent`/`DataTransferItem` a moment ago, and there is nothing
+ * on disk yet for a path to name and nothing parked in the cloud for an id to look up. This
+ * is the one attachment-shaped payload the app ever sends bytes-first over IPC, and
+ * {@link MAX_PASTE_BYTES} is what keeps that an acceptable thing to do.
+ */
+export interface PastedAttachment {
+  /** What the source app called it, if anything — a browser paste often has nothing. */
+  fileName: string;
+  /** The clipboard item's declared type, or null when it offered none. */
+  mimeType: string | null;
+  /** The bytes themselves, still raw — naming and sanitizing happen once they reach main. */
+  bytes: Uint8Array;
+}
+
+/**
+ * The most one pasted file's bytes may be, to cross into main at all.
+ *
+ * Far below {@link CLOUD_BLOB_MAX_BYTES}'s sibling `MAX_ATTACHMENT_BYTES` (100 MB,
+ * `apps/client/src/main/attachments.ts`), and deliberately: a picked file crosses IPC as a
+ * PATH (`attachment:add`), but a paste has no path to give, so its bytes ride a structured
+ * clone from renderer to main instead — held whole in memory on both sides of that clone,
+ * the way a cloud blob is held whole in memory on both sides of an HTTPS request. Set to the
+ * same ceiling as {@link CLOUD_BLOB_MAX_BYTES} and `MAX_PREVIEW_BYTES` for that reason: a
+ * clipboard image is a screenshot or a mockup, never a video, and 25 MB is generous for
+ * either without inviting the structured-clone cost `attachment:add` was built to avoid.
+ */
+export const MAX_PASTE_BYTES = 25 * 1024 * 1024;
+
+/**
+ * The extension a pasted file is written with, guessed from the clipboard's own MIME type —
+ * the inverse of main's `mimeForExtension` (`apps/client/src/main/attachmentPaths.ts`), which
+ * goes the other way (suffix to MIME) for a file that already has a name. A paste usually
+ * does not: Chromium hands the renderer a bitmap and a type, not a filename, so this is the
+ * one place the app has to go from type to suffix instead.
+ *
+ * Deliberately short — the image types a clipboard actually produces — rather than a mirror
+ * of `mimeForExtension`'s whole table: nothing pastes a `.docx` onto a card. Without the dot,
+ * to match the convention `mimeForExtension` reads its own keys by.
+ */
+const EXTENSION_BY_MIME: Readonly<Record<string, string>> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'image/bmp': 'bmp',
+  'image/svg+xml': 'svg',
+  'image/tiff': 'tiff',
+};
+
+/** {@link EXTENSION_BY_MIME}, or null when the type is missing or not one this app pastes. */
+export function extensionForMime(mimeType: string | null): string | null {
+  if (!mimeType) return null;
+  return EXTENSION_BY_MIME[mimeType.toLowerCase()] ?? null;
+}
+
+/** The suffix off `name`, without the dot — the same slice `mimeForExtension` looks up by. */
+function extensionFromName(name: string): string | null {
+  const bare = name.split(/[\\/]/).pop() ?? '';
+  const dot = bare.lastIndexOf('.');
+  return dot > 0 ? bare.slice(dot + 1).toLowerCase() : null;
+}
+
+/**
+ * What a just-pasted file is called before {@link attachmentName} ever sees it.
+ *
+ * Chromium calls every clipboard bitmap `image.png` — no exceptions, no counter of its own —
+ * so a second screenshot pasted onto the same card would otherwise reach `attachmentName`
+ * with the exact name the first one already took, and land as `image-2.png` purely because
+ * it arrived second. That is a name that describes an arrival order nobody asked about
+ * instead of the moment the picture was taken, which `pasted-20260821-114233.png` does.
+ *
+ * The extension is decided in the order that trusts the strongest fact first: the
+ * clipboard's own MIME type via {@link extensionForMime}, since that describes the bytes
+ * actually being written; then the extension already on `originalName`, for a paste that
+ * did carry one; and only when neither says anything, `bin`.
+ *
+ * Pure, and not a substitute for {@link attachmentName} — it decides what the file is
+ * called, not whether that name is safe to write or unique on the task; the result is meant
+ * to be fed through `attachmentName` exactly as a picked file's name already is.
+ */
+export function pastedFileName(originalName: string, mimeType: string | null, at: number): string {
+  const ext = extensionForMime(mimeType) ?? extensionFromName(originalName) ?? 'bin';
+  return `pasted-${pasteStamp(at)}.${ext}`;
+}
+
+/** `YYYYMMDD-HHMMSS`, in UTC so the same instant names the same file on every machine. */
+function pasteStamp(at: number): string {
+  const d = new Date(at);
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  const date = `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}`;
+  const time = `${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}`;
+  return `${date}-${time}`;
+}
+
+/**
  * The MIME prefix a browser may show INLINE — everything else is served as a download.
  *
  * The whole preview story is `<img src>`, so this is not a taste call about which files

@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { app, BrowserWindow, dialog, protocol, safeStorage, shell } from 'electron';
 import { ATTACHMENT_SCHEME } from '@shared/attachments';
 import { PRODUCT_NAME } from '@shared/product';
+import { registerContextMenu } from './contextMenu';
 import { registerIpcHandlers, type Engine } from './ipc';
 import { formatError, getLogPath, logMain } from './log';
 import { runShutdownSteps, type ShutdownStep } from './shutdown';
@@ -128,6 +129,11 @@ function createWindow(): BrowserWindow {
     void shell.openExternal(url);
     return { action: 'deny' };
   });
+
+  // Right-click Cut/Copy/Paste/Select all. `role: 'paste'` dispatches a real paste
+  // into the focused element, so a right-click paste feeds an attachment through the
+  // same `onPaste` path as Ctrl+V — see contextMenu.ts.
+  registerContextMenu(window);
 
   // In development electron-vite serves the renderer over HTTP with hot-reload;
   // in production we load the built HTML file from disk.
