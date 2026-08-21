@@ -11,7 +11,7 @@
  *
  * See `update-feed.mjs` for the two shipped releases that motivated each check.
  *
- * Run by `pnpm package` / `pnpm package:linux` / `pnpm package:local`, and standalone via
+ * Run by `pnpm package` / `pnpm package:linux:local` / `pnpm package:local`, and standalone via
  * `pnpm check:feed`. On the publishing scripts it runs AFTER the upload, which is fine and
  * deliberate: `--publish onTagOrDraft` only writes to a **draft**, so nothing reaches a
  * user until the draft is promoted. Failing before promotion is the gate that matters.

@@ -1,6 +1,6 @@
 {
   "name": "claude-orchestrator",
-  "version": "0.90.2",
+  "version": "0.97.2",
   "description": "Desktop app that orchestrates the Claude CLI across many projects/tasks â€” runs one session per task, auto-respawns when usage limits reset, advances through a plan.md, and surfaces Claude's questions in a dashboard.",
   "private": true,
   "author": "Wojciech Dembinski",
@@ -23,7 +23,6 @@
     "verify:tickets": "node scripts/verify-tickets.mjs",
     "check:feed": "node scripts/check-update-feed.mjs",
     "package": "electron-vite build && electron-builder install-app-deps && npm run ensure:abi && electron-builder --win --publish onTagOrDraft && npm run check:feed",
-    "package:linux": "electron-vite build && electron-builder install-app-deps && npm run ensure:abi && electron-builder --linux --publish onTagOrDraft && npm run check:feed",
     "package:local": "electron-vite build && electron-builder install-app-deps && npm run ensure:abi && electron-builder --win --publish never && npm run check:feed",
     "package:linux:local": "electron-vite build && electron-builder install-app-deps && npm run ensure:abi && electron-builder --linux --publish never && npm run check:feed",
     "postinstall": "electron-builder install-app-deps"

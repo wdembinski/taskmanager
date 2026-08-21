@@ -44,6 +44,7 @@ import {
 } from '@fluentui/react-components';
 import { AttachRegular } from '@fluentui/react-icons';
 import { attachmentUrl, type TaskAttachment } from '@tm/shared/attachments';
+import { attachFilesToTask } from './attachFiles';
 import { useTransport } from './transport';
 
 /**
@@ -241,6 +242,17 @@ export function AttachmentStrip({
     await attach(() => upload(taskId, files));
   }
 
+  /**
+   * A drop, however it lands: `attachFilesToTask` is the same host branch `add`/`addFiles`
+   * are, plus the one thing a drop never needed before — a file with no path on disk (an
+   * image dragged out of a browser window, not backed by anything on this machine's
+   * filesystem) is staged and attached instead of refused.
+   */
+  async function dropFiles(files: File[]): Promise<void> {
+    if (!files.length) return;
+    await attach(() => attachFilesToTask(transport, taskId, files));
+  }
+
   /** The OS picker, then the copy. Main owns both — the renderer only relays the paths. */
   async function pick(): Promise<void> {
     setError(null);
@@ -318,21 +330,7 @@ export function AttachmentStrip({
         if (!isFileDrag(e.dataTransfer.types) || locked) return;
         e.preventDefault();
         setOver(false);
-        const files = Array.from(e.dataTransfer.files);
-        if (transport.attachFiles) {
-          // The bytes are what this host has, so they are what it sends. No `pathForFile`
-          // here — in a browser it answers '' for everything, which would read as "that has
-          // no file on disk" for a perfectly ordinary drop.
-          if (files.length) void addFiles(files);
-          else setError('That drop carried no files.');
-          return;
-        }
-        // `File.path` was removed in Electron 32, so the path comes from the preload
-        // bridge — the one thing it knows about this feature. Something with no path on
-        // disk (a dragged selection, a virtual file) answers '' and is dropped here.
-        const paths = files.map((file) => transport.pathForFile(file)).filter((p) => p !== '');
-        if (paths.length) void add(paths);
-        else setError('That has no file on disk to attach.');
+        void dropFiles(Array.from(e.dataTransfer.files));
       }}
     >
       {attachments.length > 0 && (

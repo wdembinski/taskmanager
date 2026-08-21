@@ -75,6 +75,12 @@ export interface CloudPollerDeps {
    */
   onAuthRejected?: () => void;
   /**
+   * A tick's request just succeeded — wired in `ipc.ts` to `cloudToken.accepted()`. With no
+   * refresh cycle any more, a successful sync is the only signal that a pasted token actually
+   * works, and the Settings pane's "token last confirmed Ns ago" is driven from it.
+   */
+  onSynced?: () => void;
+  /**
    * How many browsers are watching the pushed event stream, per this tick's response.
    *
    * `CloudPoller` does not use the number itself — `cloudEventForwarder.ts` does, and this is
@@ -194,6 +200,7 @@ export class CloudPoller {
     try {
       await this.deps.runTracked(() => this.send());
       this.consecutiveFailures = 0;
+      this.deps.onSynced?.();
     } catch (e) {
       this.consecutiveFailures += 1;
       logMain('cloud sync failed', e);

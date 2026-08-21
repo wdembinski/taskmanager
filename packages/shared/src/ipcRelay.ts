@@ -30,7 +30,7 @@ import type { IpcApi } from './ipc';
 export type RelayPolicy = 'relay' | 'host-only';
 
 /**
- * Why a channel is host-only. Four groups, not one flag, because the refusal a human reads
+ * Why a channel is host-only. Five groups, not one flag, because the refusal a human reads
  * should say what is actually in the way — "sign in from the desktop app" and "this opens a
  * file picker over there" are different problems with different fixes.
  */
@@ -42,7 +42,9 @@ export type HostOnlyReason =
   /** Writes a secret into the desktop machine's secure store. */
   | 'credential-write'
   /** Owns a live Claude process' lifetime or its open stdin. */
-  | 'live-session';
+  | 'live-session'
+  /** Answers with a path on the desktop's own disk, which means nothing in a browser. */
+  | 'host-path';
 
 /**
  * Every host-only channel and the reason it is one.
@@ -54,9 +56,7 @@ export type HostOnlyReason =
  *
  * **Window / OS.** `window:*` moves a window nobody is looking at; `update:install` quits
  * the app out from under its user; `attachment:open` pops a file open on someone else's
- * screen via `shell.openPath`. `auth:signIn` opens an interactive terminal there, and
- * `iam:signIn` is a loopback PKCE flow the browser runs for itself (`apps/web/src/auth`) —
- * relaying it would sign the DESKTOP in when a browser tab asked to sign itself in.
+ * screen via `shell.openPath`. `auth:signIn` opens an interactive terminal there.
  *
  * **Credential writes.** A secret typed into a browser would cross the mirror as plaintext
  * inside a command payload and land in the server's `commands` table, which is an audit
@@ -68,6 +68,12 @@ export type HostOnlyReason =
  * nothing in a browser, which has no way to have obtained a valid one. The card-level
  * equivalents (`task:run`, `task:stopAgent`, `task:chat`, `attention:answer`) DO relay —
  * they take a task id, which is mirrored, and are what the web UI actually presses.
+ *
+ * **Host paths.** `attachment:stagePasted` writes clipboard bytes to a temp file and hands
+ * back where they landed — a path on the desktop's own disk, unusable by the browser that
+ * would receive it over the relay. A browser pasting an image already has its own route
+ * (`attachFiles` → `POST /v1/uploads` → `attachment:addUploaded`) that keeps bytes out of
+ * the relay's `commands` audit table entirely; relaying this one would push them through it.
  */
 const HOST_ONLY_REASONS = {
   'project:pickDirectory': 'native-modal',
@@ -82,7 +88,6 @@ const HOST_ONLY_REASONS = {
   'update:install': 'window-os',
   'attachment:open': 'window-os',
   'auth:signIn': 'window-os',
-  'iam:signIn': 'window-os',
 
   'jira:setCredentials': 'credential-write',
   'jira:clearCredentials': 'credential-write',
@@ -90,11 +95,14 @@ const HOST_ONLY_REASONS = {
   'gitlab:clearCredentials': 'credential-write',
   'github:setCredentials': 'credential-write',
   'github:clearCredentials': 'credential-write',
-  'iam:signOut': 'credential-write',
+  'cloud:setCredentials': 'credential-write',
+  'cloud:clearCredentials': 'credential-write',
 
   'session:start': 'live-session',
   'session:stop': 'live-session',
   'session:answer': 'live-session',
+
+  'attachment:stagePasted': 'host-path',
 } as const satisfies Partial<Record<keyof IpcApi, HostOnlyReason>>;
 
 /** The channels {@link HOST_ONLY_REASONS} names — a union of literals, not `string`. */
@@ -260,11 +268,10 @@ export const RELAY_POLICY: {
   'mr:markRead': 'relay',
   'mr:markEventsSeen': 'relay',
 
+  'cloud:getConfigStatus': 'relay',
+  'cloud:setCredentials': 'host-only',
+  'cloud:clearCredentials': 'host-only',
   'cloud:testConnection': 'relay',
-
-  'iam:getConfigStatus': 'relay',
-  'iam:signIn': 'host-only',
-  'iam:signOut': 'host-only',
 
   'sync:state': 'relay',
 
@@ -285,6 +292,7 @@ export const RELAY_POLICY: {
   // and only a browser has any. The desktop fetches those bytes itself, so nothing crosses
   // this wire that the engine then trusts as a local path.
   'attachment:addUploaded': 'relay',
+  'attachment:stagePasted': 'host-only',
   'attachment:remove': 'relay',
   'attachment:open': 'host-only',
 
@@ -314,6 +322,7 @@ const REASON_TEXT: Record<HostOnlyReason, string> = {
   'window-os': 'it controls the desktop app itself, or the machine it is running on',
   'credential-write': "it stores a secret in that machine's own credential store",
   'live-session': 'it drives a live Claude process, which only the desktop app holds',
+  'host-path': "it hands back a path on that machine's own disk, which a browser cannot use",
 };
 
 /**
