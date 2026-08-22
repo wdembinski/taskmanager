@@ -670,6 +670,201 @@ describe('Scheduler.onRunEvent — a late `started` must not resurrect a settled
   });
 });
 
+/**
+ * A `result` that arrives while a human is still parked on the run.
+ *
+ * Seen in the wild (22 Aug 2026, "Cloud as a central control for projects", last step):
+ * the agent called `AskUserQuestion`, the CLI waited 1800s for the permission relay to
+ * answer, gave the tool call up as a timeout, wrote its closing message and emitted
+ * `result` — success. `onRunEvent` refused to settle under the parked item, so the run
+ * never reached `settle`; `exited` never came either, because the process is deliberately
+ * kept alive on an open stdin. Two and a half minutes later the human answered the item,
+ * `answerAttention` resolved a promise nobody was reading and wrote `status: 'running'`,
+ * and the step spun on the board for hours with its work finished and committed.
+ *
+ * The rule these pin: **a `result` is the CLI's own statement that it is holding no
+ * tool.** Everything the run was holding is abandoned at that moment, the answer has to
+ * go down the one channel still connected (the input stream), and the outcome has to be
+ * remembered so the run can still settle if nobody ever answers.
+ */
+describe('Scheduler.onRunEvent — a `result` under a parked question', () => {
+  function setup() {
+    const project = {
+      id: 'p',
+      path: 'C:/w',
+      planPath: 'C:/w/plan.md',
+      name: 'P',
+      concurrency: 1,
+      defaultModel: 'sonnet',
+      defaultPermissionMode: 'acceptEdits',
+    } as Project;
+    const task: Task = {
+      id: 't1',
+      projectId: 'p',
+      phase: '',
+      title: 'x',
+      status: 'running',
+      sessionId: 's1',
+      order: 0,
+      source: 'plan',
+      dependsOn: [],
+      isContract: false,
+      isScaffold: false,
+    } as Task;
+    const store = {
+      getTasks: () => [task],
+      getProject: () => project,
+      getTask: (id: string) => (id === 't1' ? task : undefined),
+      updateTask: (id: string, patch: Partial<Task>) => {
+        if (id === 't1') Object.assign(task, patch);
+        return task;
+      },
+      appendTaskEvent: vi.fn(),
+      getSubtasks: () => [],
+      listTaskLinks: () => [],
+      saveAuthGate: vi.fn(),
+      loadAuthGate: () => null,
+      saveLimitGate: vi.fn(),
+      addComment: vi.fn(),
+      getSettings: () => ({ maxAutoRetries: 0, limitJitterMs: 0, concurrency: 1 }),
+      ...INERT_ATTENTION_STORE,
+    } as unknown as Store;
+    const send = vi.fn();
+    const stop = vi.fn();
+    const sessions = { send, stop, start: vi.fn() } as unknown as SessionManager;
+    const emitAttention = vi.fn();
+    const scheduler = new Scheduler(
+      store,
+      sessions,
+      vi.fn(),
+      vi.fn(),
+      emitAttention,
+      vi.fn(),
+      vi.fn(),
+    );
+    (scheduler as unknown as { runs: Map<string, unknown> }).runs.set('r1', {
+      taskId: 't1',
+      projectId: 'p',
+      runId: 'r1',
+      settled: false,
+    });
+    (scheduler as unknown as { inFlight: Set<string> }).inFlight.add('t1');
+    const fire = (event: unknown): Promise<void> =>
+      (scheduler as unknown as { onRunEvent: (r: string, e: unknown) => Promise<void> }).onRunEvent(
+        'r1',
+        event,
+      );
+    return { scheduler, task, send, stop, emitAttention, fire };
+  }
+
+  const ask = {
+    runId: 'r1',
+    toolName: 'AskUserQuestion',
+    input: {
+      questions: [
+        {
+          header: 'Push',
+          question: 'Should I push this merge to origin now?',
+          multiSelect: false,
+          options: [{ label: 'Push now' }, { label: "Don't push" }],
+        },
+      ],
+    },
+  };
+
+  const okResult = {
+    kind: 'result',
+    success: true,
+    resultText: 'The merge is committed locally but not pushed.',
+    costUsd: null,
+    durationMs: null,
+    stopReason: 'end_turn',
+    terminalReason: null,
+  };
+
+  it('releases the tool the CLI has already given up on', async () => {
+    const { scheduler, fire } = setup();
+    const decision = scheduler.decidePermission(ask);
+    let released = false;
+    void decision.then(() => {
+      released = true;
+    });
+    await fire(okResult);
+    await Promise.resolve();
+    // The CLI cannot have ended its turn while still blocked on this call, so holding the
+    // promise open past the `result` only keeps a dead request alive until the app exits.
+    expect(released).toBe(true);
+    const result = (await decision) as { behavior: string };
+    expect(result.behavior).toBe('deny');
+  });
+
+  it('keeps the question on screen — the human’s answer is still wanted', async () => {
+    const { scheduler, task, emitAttention, fire } = setup();
+    void scheduler.decidePermission(ask);
+    await fire(okResult);
+    expect(emitAttention).toHaveBeenCalledTimes(1);
+    expect(task.status).toBe('waiting-input'); // parked, not silently finished
+  });
+
+  it('delivers a late answer into the live session instead of the dead tool', async () => {
+    const { scheduler, send, emitAttention, fire } = setup();
+    void scheduler.decidePermission(ask);
+    await fire(okResult);
+
+    const item = emitAttention.mock.calls[0][0] as { id: string };
+    scheduler.answerAttention(item.id, { decision: 'answers', selections: [['Push now']] });
+
+    // The tool call is gone, so this is the only channel left that reaches the process —
+    // and it does reach it: the CLI takes another turn and settles itself as usual.
+    expect(send).toHaveBeenCalledWith('r1', expect.stringContaining('→ Push now'));
+  });
+
+  it('settles the run when the last parked item is dismissed instead', async () => {
+    const { scheduler, task, stop, fire } = setup();
+    void scheduler.decidePermission(ask);
+    await fire(okResult);
+
+    scheduler.dismissAttentionForCard('t1');
+
+    // Nothing is left that could ever move this run, so the outcome the `result` carried
+    // is the outcome — written, not left spinning. (`in-progress`: the orchestrator
+    // finishes work, it does not close cards.)
+    expect(task.status).toBe('in-progress');
+    expect(stop).toHaveBeenCalledWith('r1');
+  });
+
+  it('settles rather than claims `running` when the answer can reach nothing', async () => {
+    // A parked PERMISSION, abandoned the same way. Unlike a question there is no second
+    // channel for it — an approve/deny only means anything to the tool call that asked,
+    // and that call is gone — so answering it can start nothing. Before the fix this branch
+    // returned early and left the item in the inbox for ever; the run had no terminal path
+    // left either way.
+    const { scheduler, task, stop, emitAttention, fire } = setup();
+    void scheduler.decidePermission({
+      runId: 'r1',
+      toolName: 'Bash',
+      input: { command: 'git push' },
+    });
+    await fire(okResult);
+
+    const item = emitAttention.mock.calls[0][0] as { id: string };
+    scheduler.answerAttention(item.id, { decision: 'approve' });
+
+    expect(task.status).toBe('in-progress');
+    expect(stop).toHaveBeenCalledWith('r1');
+  });
+
+  it('still lets a run whose turn is NOT over resume on an answer', () => {
+    // The ordinary parked question: no `result` has arrived, the CLI is genuinely blocked
+    // on the tool, and answering releases it and puts the task back to `running`.
+    const { scheduler, task, emitAttention } = setup();
+    void scheduler.decidePermission(ask);
+    const item = emitAttention.mock.calls[0][0] as { id: string };
+    scheduler.answerAttention(item.id, { decision: 'answers', selections: [['Push now']] });
+    expect(task.status).toBe('running');
+  });
+});
+
 describe('Scheduler.schedulerStates', () => {
   function bareScheduler() {
     const emitScheduler = vi.fn();
