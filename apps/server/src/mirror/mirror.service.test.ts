@@ -336,3 +336,84 @@ describe('MirrorService.updateTask / deleteTask', () => {
     expect(board.deltas.deletedTaskIds).toEqual(expect.arrayContaining([card.id, stepId]));
   });
 });
+
+describe('MirrorService.createProject / updateProject / deleteProject', () => {
+  function buildService(): { service: MirrorService; store: FakeStore } {
+    const store = new FakeStore();
+    const service = new MirrorService(
+      fakeDataSource(store),
+      fakeRepository<Client>([] as unknown as Client[]),
+      fakeRepository(store.taskRows),
+      fakeRepository(store.projectRows),
+      fakeRepository(store.tombstoneRows),
+      fakeRepository<CommandResultRow>([] as unknown as CommandResultRow[]),
+      new PresenceService(new PresenceRegistry()),
+      new EventBus(),
+    );
+    return { service, store };
+  }
+
+  it('writes a project directly, and it shows up on GET /v1/board', async () => {
+    const { service } = buildService();
+    const accountId = 'account-1';
+
+    const project = await service.createProject(accountId, { path: '/repo', kind: 'agent' });
+
+    expect(project.path).toBe('/repo');
+    expect(project.kind).toBe('agent');
+
+    const board = await service.board(accountId, undefined, undefined, false);
+    expect(board.deltas.projects).toHaveLength(1);
+    expect(board.deltas.projects[0]?.id).toBe(project.id);
+  });
+
+  it('edits a project, reflected on GET /v1/board', async () => {
+    const { service } = buildService();
+    const accountId = 'account-1';
+    const project = await service.createProject(accountId, { path: '/repo', kind: 'plan' });
+
+    const edited = await service.updateProject(accountId, project.id, {
+      name: 'Renamed',
+      color: '  #0091FF  ',
+      instructions: '  Build with pnpm  ',
+      jiraEpicKeys: ['abc-100', 'ABC-100', ' '],
+    });
+
+    expect(edited.name).toBe('Renamed');
+    expect(edited.color).toBe('#0091FF');
+    expect(edited.instructions).toBe('Build with pnpm');
+    expect(edited.jiraEpicKeys).toEqual(['ABC-100']);
+
+    const board = await service.board(accountId, undefined, undefined, false);
+    expect(board.deltas.projects[0]?.name).toBe('Renamed');
+  });
+
+  it('throws 404 for a project belonging to another account', async () => {
+    const { service } = buildService();
+    const project = await service.createProject('account-1', { path: '/repo' });
+
+    await expect(
+      service.updateProject('account-2', project.id, { name: 'Hijacked' }),
+    ).rejects.toThrow('Project not found.');
+  });
+
+  it('deletes a project, cascading to its mirrored tasks', async () => {
+    const { service } = buildService();
+    const accountId = 'account-1';
+    const project = await service.createProject(accountId, { path: '/repo', kind: 'agent' });
+    const task = await service.createTask(accountId, { projectId: project.id, title: 'A task' });
+
+    await service.deleteProject(accountId, project.id);
+
+    const board = await service.board(accountId, undefined, undefined, false);
+    expect(board.deltas.projects).toHaveLength(0);
+    expect(board.deltas.tasks).toHaveLength(0);
+    expect(board.deltas.deletedProjectIds).toContain(project.id);
+    expect(board.deltas.deletedTaskIds).toContain(task.id);
+  });
+
+  it('deleteProject is a silent no-op for an id that names nothing', async () => {
+    const { service } = buildService();
+    await expect(service.deleteProject('account-1', 'no-such-project')).resolves.toBeUndefined();
+  });
+});

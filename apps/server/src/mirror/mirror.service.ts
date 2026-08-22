@@ -6,18 +6,23 @@ import type {
   ClientPresence,
   CommandRequest,
   CommandResult,
+  CreateProjectRequest,
   CreateTaskRequest,
   ResultsResponse,
   SyncRequest,
   SyncResponse,
+  UpdateProjectRequest,
   UpdateTaskRequest,
 } from '@tm/protocol/wire';
 import { PROTOCOL_VERSION } from '@tm/protocol/wire';
 import { columnForStatus, restingStatus } from '@tm/shared/board';
 import { isManualStatus } from '@tm/shared/model';
-import type { Task } from '@tm/shared/model';
+import type { Project, Task } from '@tm/shared/model';
 import { resolveMove } from '@tm/shared/moveResolve';
+import { buildProject, normalizeEpicKeys } from '@tm/shared/projectBuilders';
+import { DEFAULT_SETTINGS } from '@tm/shared/settings';
 import { buildAdhocTask } from '@tm/shared/taskBuilders';
+import { normalizeTicketPrefix } from '@tm/shared/ticketKey';
 import { Client } from '../entities/client.entity';
 import { Command } from '../entities/command.entity';
 import { CommandResultRow } from '../entities/commandResult.entity';
@@ -342,6 +347,123 @@ export class MirrorService {
   }
 
   /**
+   * `POST /v1/projects` — a project written directly rather than relayed, the project
+   * sibling of `createTask` above. Builds the row with `@tm/shared/projectBuilders`'s
+   * `buildProject` — the SAME object-construction path `ipc.ts`'s `project:add` handler
+   * uses via `store.addProject`, so a project made this way is byte-for-byte what the
+   * desktop would have produced from the same input.
+   *
+   * `DEFAULT_SETTINGS` stands in for `getSettings()`: there is no per-account settings row
+   * on the server, so every field the request didn't specify falls back to the app's stock
+   * defaults rather than a caller's own — the same fallback an account's very first desktop
+   * Client would see before ever changing a setting.
+   */
+  async createProject(accountId: string, request: CreateProjectRequest): Promise<Project> {
+    const project = buildProject(request, DEFAULT_SETTINGS);
+
+    await this.dataSource.transaction((manager) =>
+      applyMirrorDelta(manager, accountId, {
+        tasks: [],
+        projects: [project],
+        deletedTaskIds: [],
+        deletedProjectIds: [],
+      }),
+    );
+
+    return project;
+  }
+
+  /**
+   * `PATCH /v1/projects/:id` — edit a mirrored project directly, the project sibling of
+   * `updateTask` above. Every field is optional and independent, mirroring `ipc.ts`'s own
+   * `project:update` → `store.updateProject`.
+   *
+   * `ticketPrefix` skips that handler's re-keying step on purpose: rewriting every ticket a
+   * project owns to a new prefix is `store.ts`'s own `rekeyProjectTickets`, over the
+   * desktop's relational `tickets`/`tasks` tables, and nothing reaches this route family
+   * with an issued ticket to rekey yet — `POST /v1/tasks` only ever builds an ad-hoc task
+   * (`source: 'adhoc'`), never a native one. The prefix itself is still normalized and
+   * written, so a project made through this route family can be given one.
+   */
+  async updateProject(
+    accountId: string,
+    projectId: string,
+    request: UpdateProjectRequest,
+  ): Promise<Project> {
+    const existing = await this.ownedProject(accountId, projectId);
+    const next: Project = { ...existing };
+
+    if (request.name !== undefined) next.name = request.name;
+    if (request.path !== undefined) next.path = request.path;
+    if (request.planPath !== undefined) next.planPath = request.planPath;
+    if (request.defaultModel !== undefined) next.defaultModel = request.defaultModel;
+    if (request.planningModel !== undefined) next.planningModel = request.planningModel ?? null;
+    if (request.defaultPermissionMode !== undefined) {
+      next.defaultPermissionMode = request.defaultPermissionMode;
+    }
+    if (request.concurrency !== undefined) {
+      next.concurrency = Math.max(1, Math.round(request.concurrency));
+    }
+    if (request.useWorktrees !== undefined) next.useWorktrees = request.useWorktrees;
+    if (request.baseBranch !== undefined) next.baseBranch = request.baseBranch.trim();
+    if (request.writeBackPlan !== undefined) next.writeBackPlan = request.writeBackPlan;
+    if (request.autoRelease !== undefined) next.autoRelease = request.autoRelease;
+    if (request.autoIntegrate !== undefined) next.autoIntegrate = request.autoIntegrate;
+    if (request.planAligned !== undefined) next.planAligned = request.planAligned;
+    if (request.jiraEpicKeys !== undefined) {
+      next.jiraEpicKeys = normalizeEpicKeys(request.jiraEpicKeys);
+    }
+    if (request.ticketPrefix !== undefined) {
+      next.ticketPrefix = normalizeTicketPrefix(request.ticketPrefix) ?? '';
+    }
+    if (request.target !== undefined) next.target = request.target;
+    if (request.instructions !== undefined) next.instructions = request.instructions.trim();
+    if (request.color !== undefined) next.color = request.color.trim();
+
+    await this.dataSource.transaction((manager) =>
+      applyMirrorDelta(manager, accountId, {
+        tasks: [],
+        projects: [next],
+        deletedTaskIds: [],
+        deletedProjectIds: [],
+      }),
+    );
+
+    return next;
+  }
+
+  /**
+   * `DELETE /v1/projects/:id` — drop a mirrored project, and every task mirrored under it
+   * (steps included), straight from `project_mirrors`/`task_mirrors`. The server's own
+   * stand-in for the desktop's `ON DELETE CASCADE` foreign key (`store.ts`'s
+   * `tasks.projectId REFERENCES projects(id)`) — the two mirror tables carry no such
+   * constraint, so the cascade is done here in JS instead, the same way `deleteTask`
+   * cascades to a card's steps.
+   *
+   * Idempotent, like `deleteTask`: an id that names nothing is a silent no-op. Unlike
+   * `deleteTask`, there is no running-task guard — `ipc.ts`'s own `project:remove` has none
+   * either, so a project (and whatever it has mid-run) can be removed regardless.
+   */
+  async deleteProject(accountId: string, projectId: string): Promise<void> {
+    const row = await this.projectMirrors.findOne({ where: { id: projectId, accountId } });
+    if (!row) return;
+
+    const tasks = await this.taskMirrors.find({
+      where: { accountId, projectId },
+      select: { id: true },
+    });
+
+    await this.dataSource.transaction((manager) =>
+      applyMirrorDelta(manager, accountId, {
+        tasks: [],
+        projects: [],
+        deletedTaskIds: tasks.map((t) => t.id),
+        deletedProjectIds: [projectId],
+      }),
+    );
+  }
+
+  /**
    * The web app's read path: every task/project whose `rowVersion` is past `since`, in
    * rowVersion order, plus the ids deleted since then.
    *
@@ -552,6 +674,13 @@ export class MirrorService {
   private async ownedTask(accountId: string, taskId: string): Promise<Task> {
     const row = await this.taskMirrors.findOne({ where: { id: taskId, accountId } });
     if (!row) throw new NotFoundException('Task not found.');
+    return row.data;
+  }
+
+  /** `Project not found.` for both a missing id and another account's row — see `assertProject`. */
+  private async ownedProject(accountId: string, projectId: string): Promise<Project> {
+    const row = await this.projectMirrors.findOne({ where: { id: projectId, accountId } });
+    if (!row) throw new NotFoundException('Project not found.');
     return row.data;
   }
 

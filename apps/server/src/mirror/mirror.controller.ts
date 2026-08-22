@@ -17,13 +17,15 @@ import {
   BOARD_FOCUS_HEADER,
   type BoardResponse,
   type CommandRequest,
+  type CreateProjectRequest,
   type CreateTaskRequest,
   type ResultsResponse,
   type SyncRequest,
   type SyncResponse,
+  type UpdateProjectRequest,
   type UpdateTaskRequest,
 } from '@tm/protocol/wire';
-import type { Task } from '@tm/shared/model';
+import type { Project, Task } from '@tm/shared/model';
 import { AccountId } from '../iam/accountId.decorator';
 import { IamAuthGuard } from '../iam/iamAuth.guard';
 import { MirrorService } from './mirror.service';
@@ -71,6 +73,33 @@ export class MirrorController {
   @HttpCode(HttpStatus.NO_CONTENT)
   async deleteTask(@AccountId() accountId: string, @Param('id') id: string): Promise<void> {
     await this.mirror.deleteTask(accountId, id);
+  }
+
+  /** A project, written directly rather than relayed — see `CreateProjectRequest` on the wire. */
+  @Post('projects')
+  @HttpCode(HttpStatus.CREATED)
+  createProject(
+    @AccountId() accountId: string,
+    @Body() body: CreateProjectRequest,
+  ): Promise<Project> {
+    return this.mirror.createProject(accountId, body);
+  }
+
+  /** Edit a mirrored project — see `UpdateProjectRequest` on the wire. */
+  @Patch('projects/:id')
+  updateProject(
+    @AccountId() accountId: string,
+    @Param('id') id: string,
+    @Body() body: UpdateProjectRequest,
+  ): Promise<Project> {
+    return this.mirror.updateProject(accountId, id, body);
+  }
+
+  /** Drop a mirrored project (and its tasks) — see `MirrorService.deleteProject`. */
+  @Delete('projects/:id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async deleteProject(@AccountId() accountId: string, @Param('id') id: string): Promise<void> {
+    await this.mirror.deleteProject(accountId, id);
   }
 
   @Post('commands')

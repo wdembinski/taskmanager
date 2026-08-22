@@ -5,7 +5,15 @@
  * mirrored task IS a Task, not a wire-shaped lookalike that would need to be kept in sync
  * with it by hand.
  */
-import type { BoardColumn, ManualStatus, Project, Task, TaskType } from '@tm/shared/model';
+import type {
+  AddProjectInput,
+  BoardColumn,
+  ManualStatus,
+  Project,
+  ProjectPatch,
+  Task,
+  TaskType,
+} from '@tm/shared/model';
 import type { CadenceDirective } from './cadence';
 
 /**
@@ -417,6 +425,26 @@ export interface UpdateTaskRequest {
   description?: string | null;
   projectTagId?: string | null;
 }
+
+/**
+ * Body of `POST /v1/projects` — a browser creating a project directly, without going
+ * through a desktop Client at all — the project sibling of {@link CreateTaskRequest}.
+ *
+ * Reuses `@tm/shared/model`'s own {@link AddProjectInput} rather than a narrower wire-only
+ * shape: unlike an ad-hoc task, which only ever fills a handful of `Task`'s many fields,
+ * `buildProject` (`@tm/shared/projectBuilders`) already IS the one object-construction path
+ * for every kind of project, on the desktop and here alike — inventing a second, narrower
+ * input type would just be a copy of the fields it already accepts.
+ */
+export type CreateProjectRequest = AddProjectInput;
+
+/**
+ * Body of `PATCH /v1/projects/:id` — edit a mirrored project directly, the project sibling
+ * of {@link UpdateTaskRequest}. Reuses `@tm/shared/model`'s own {@link ProjectPatch} for the
+ * same reason {@link CreateProjectRequest} reuses `AddProjectInput`: it already is the "what
+ * may be edited after creation" contract the desktop's own `project:update` uses.
+ */
+export type UpdateProjectRequest = ProjectPatch;
 
 /** Body of `POST /v1/commands` — one Client asking the server to relay an action to another. */
 export interface CommandRequest {
