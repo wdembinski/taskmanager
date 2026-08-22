@@ -167,6 +167,11 @@ export const RELAY_POLICY: {
   'ticketLink:add': 'relay',
   'ticketLink:remove': 'relay',
 
+  'agentProfile:list': 'relay',
+  'agentProfile:add': 'relay',
+  'agentProfile:update': 'relay',
+  'agentProfile:remove': 'relay',
+
   'scheduler:start': 'relay',
   'scheduler:pause': 'relay',
   'scheduler:stop': 'relay',

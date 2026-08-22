@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { buildMssqlConnectionOptions } from './database/typeormOptions';
 import { Account } from './entities/account.entity';
+import { AgentProfile } from './entities/agentProfile.entity';
+import { Assignment } from './entities/assignment.entity';
 import { AttachmentBlob } from './entities/attachmentBlob.entity';
 import { AttachmentUpload } from './entities/attachmentUpload.entity';
 import { Client } from './entities/client.entity';
@@ -11,6 +13,7 @@ import { PersonalAccessToken } from './entities/personalAccessToken.entity';
 import { Tombstone } from './entities/tombstone.entity';
 import { ProjectMirror } from './entities/projectMirror.entity';
 import { TaskMirror } from './entities/taskMirror.entity';
+import { AgentsModule } from './agents/agents.module';
 import { AttachmentsModule } from './attachments/attachments.module';
 import { EventsModule } from './events/events.module';
 import { HealthModule } from './health/health.module';
@@ -39,6 +42,8 @@ import { TokensModule } from './tokens/tokens.module';
         ...buildMssqlConnectionOptions(),
         entities: [
           Account,
+          AgentProfile,
+          Assignment,
           AttachmentBlob,
           AttachmentUpload,
           Client,
@@ -59,6 +64,7 @@ import { TokensModule } from './tokens/tokens.module';
     EventsModule,
     MirrorModule,
     AttachmentsModule,
+    AgentsModule,
     TokensModule,
   ],
 })

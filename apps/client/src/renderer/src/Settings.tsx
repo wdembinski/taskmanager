@@ -9,9 +9,11 @@
  * the next task, so no restart is needed.
  *
  * The vertical nav also hosts the Board pane (the status keywords that colour a card's
- * progress line) and the JIRA connection — including the status-name → column map, the
- * only route to the IN REVIEW column. Managing the projects themselves (the repositories
- * a My Tasks card can be filed under or delegated to) is its own nav item, `Projects`.
+ * progress line), the JIRA connection — including the status-name → column map, the
+ * only route to the IN REVIEW column — and the Agent profiles pane (the reusable run
+ * configurations a ticket can be queued against from the cloud, `@shared/agent`), which
+ * manages its own state. Managing the projects themselves (the repositories a My Tasks
+ * card can be filed under or delegated to) is its own nav item, `Projects`.
  */
 import { useCallback, useEffect, useState } from 'react';
 import {
@@ -87,6 +89,7 @@ import {
   parseExecTarget,
   type ExecTarget,
 } from '@shared/execTarget';
+import { AgentProfiles } from './AgentProfiles';
 import { ColorSwatches, PALETTE } from '@ui/ColorSwatches';
 import { PaneLoading } from '@ui/PaneLoading';
 import { PeopleSettings } from '@ui/projects/PeopleSettings';
@@ -163,7 +166,8 @@ const COLUMN_LABEL: Record<BoardColumn, string> = Object.fromEntries(
   COLUMN_META.map((c) => [c.column, STATUS_LABEL[statusForColumn(c.column)]]),
 ) as Record<BoardColumn, string>;
 
-type SettingsSection = 'general' | 'board' | 'jira' | 'gitlab' | 'github' | 'cloud' | 'people';
+type SettingsSection =
+  'general' | 'board' | 'jira' | 'gitlab' | 'github' | 'cloud' | 'people' | 'agentProfiles';
 
 export function Settings(): JSX.Element {
   const styles = useStyles();
@@ -524,12 +528,15 @@ export function Settings(): JSX.Element {
         <Tab value="github">GitHub</Tab>
         <Tab value="cloud">Cloud</Tab>
         <Tab value="people">People</Tab>
+        <Tab value="agentProfiles">Agent profiles</Tab>
       </TabList>
 
       {section === 'people' ? (
         <div className={styles.pane}>
           <PeopleSettings />
         </div>
+      ) : section === 'agentProfiles' ? (
+        <AgentProfiles />
       ) : section === 'board' ? (
         <div className={styles.pane}>
           <Subtitle2>Board</Subtitle2>

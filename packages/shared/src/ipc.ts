@@ -56,6 +56,7 @@ import type {
   TicketLinkType,
   TicketPatch,
 } from './model';
+import type { AddAgentProfileInput, AgentProfile, AgentProfilePatch } from './agent';
 import type { PastedAttachment, TaskAttachment, UploadedAttachment } from './attachments';
 import type { GitGraph } from './gitGraph';
 import type { ExecTarget, TargetReadiness } from './execTarget';
@@ -385,6 +386,22 @@ export interface IpcApi {
    * Either way the plan watcher re-syncs once the file changes.
    */
   'project:alignPlan': (id: string) => Promise<{ runId: string | null; contractPhases: string[] }>;
+
+  // --- Agent profiles (cloud as central control for projects, step 7) -------
+  // A reusable run configuration a ticket can be queued against (`@shared/agent`). Unlike
+  // an ordinary project, a profile has no local row — it lives on the server only — so
+  // every one of these calls the cloud API directly, the same way `AssignmentPoller` does.
+  // Rejects with "Not signed in…" / "Cloud sync isn’t set up…" exactly as those calls do
+  // when there is no token or no server configured. `defaultProjectId` names one of the
+  // projects `project:list` already returns — there is no separate project list for it,
+  // now that the single-board refactor folded agent/plan/ticket projects into one kind.
+  'agentProfile:list': () => Promise<AgentProfile[]>;
+  /** Create a profile. */
+  'agentProfile:add': (input: AddAgentProfileInput) => Promise<AgentProfile>;
+  /** Edit a profile's name, model, permission mode, or default project. */
+  'agentProfile:update': (id: string, patch: AgentProfilePatch) => Promise<AgentProfile>;
+  /** Remove a profile. Rejects while a queued, claimed, or running assignment against it exists. */
+  'agentProfile:remove': (id: string) => Promise<void>;
 
   /**
    * Start (or resume) a project's queue: the scheduler runs its `pending` tasks

@@ -110,6 +110,15 @@ import { applyCloudCommand, type CloudCommandOutcome } from './cloudCommands';
 import { CommandQueue } from './commandQueue';
 import { relayRegistry } from './ipcRegistry';
 import { CloudAttachmentUploader, fetchUploadBytes } from './cloudAttachmentUploader';
+import {
+  addAgentProfile,
+  listAgentProfiles,
+  removeAgentProfile,
+  updateAgentProfile,
+  type AgentProfilesApiDeps,
+} from './agentProfilesApi';
+import { AssignmentPoller } from './assignmentPoller';
+import { CloudBoardPuller } from './cloudBoardPuller';
 import { CloudEventForwarder } from './cloudEventForwarder';
 import { CloudPoller } from './cloudPoller';
 import { testCloudConnection } from './cloudTestConnection';
@@ -308,6 +317,13 @@ export interface Engine {
   /** The cloud mirror's own timer — seconds-scale, server-directed, and separate from
    * `syncPoller` on purpose; see `cloudPoller.ts`'s own header. */
   cloudPoller: CloudPoller;
+  /** The read half of the same mirror: `GET /v1/board?since=` on its own clock, applying
+   *  rows this desktop did not itself write — see `cloudBoardPuller.ts`'s own header. */
+  cloudBoardPuller: CloudBoardPuller;
+  /** Claims and starts queued cloud `Assignment`s for the ticket projects this desktop
+   *  serves — "desktop is the worker" half of step 5; see `assignmentPoller.ts`'s own
+   *  header for why it is a separate poller rather than a change to `Scheduler` itself. */
+  assignmentPoller: AssignmentPoller;
   /** The push half of the same mirror: every `IpcEvents` push, batched to `POST /v1/events`.
    * Holds a timer and a queue, so it is disposed on quit like every other one. */
   cloudEvents: CloudEventForwarder;
@@ -1397,6 +1413,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // Same reason, on the cloud mirror's own clock — an edit to `cloud.enabled`/`baseUrl`
     // takes effect at once rather than waiting for whatever tick was already in flight.
     cloudPoller.reschedule();
+    cloudBoardPuller.reschedule();
     // The countdown is drawn from the interval, so a changed one has to reach the bar or
     // the ring would keep draining at the old rate until the next sync landed.
     pushSyncState();
@@ -1799,6 +1816,29 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     if (!result.ok) logMain('Cloud test connection failed', result.message);
     return result;
   });
+
+  /**
+   * Agent profiles (cloud as central control for projects, step 7) — same "no local row"
+   * shape as `AssignmentPoller`'s own calls: every one of these is a direct request to the
+   * cloud server, gated on cloud sync being configured and signed in exactly like that
+   * poller's `send()` is, rather than a `store.*` call.
+   */
+  const agentProfilesDeps = async (): Promise<AgentProfilesApiDeps> => {
+    const cloud = store.getSettings().cloud;
+    if (!cloud.enabled || !cloud.baseUrl.trim()) {
+      throw new Error('Cloud sync isn’t set up — add a server address in Settings → Cloud first.');
+    }
+    const token = await getCloudAccessToken();
+    if (!token) throw new Error('Not signed in to vipper.iam.');
+    return { baseUrl: cloud.baseUrl, token };
+  };
+
+  handle('agentProfile:list', async () => listAgentProfiles(await agentProfilesDeps()));
+  handle('agentProfile:add', async (input) => addAgentProfile(await agentProfilesDeps(), input));
+  handle('agentProfile:update', async (id, patch) =>
+    updateAgentProfile(await agentProfilesDeps(), id, patch),
+  );
+  handle('agentProfile:remove', async (id) => removeAgentProfile(await agentProfilesDeps(), id));
 
   /** The account behind the GitLab token, cached per instance. Fails soft to null. */
   const gitlabIdentity = async (
@@ -4181,6 +4221,38 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   });
   cloudPoller.reschedule();
 
+  // The read half of the same mirror: rows this desktop never wrote itself — another
+  // desktop's edit, or a ticket created straight through the server's own CRUD API — reach
+  // it only over `GET /v1/board?since=`, which `CloudPoller`'s push-only `/v1/sync` never
+  // carries back. Its own clock, its own cursor (`loadCloudBoardCursor`), and its own
+  // `trackSync('cloud', …)` slot — the two are the same feature to a human watching the
+  // status bar, even though neither ever calls into the other.
+  const cloudBoardPuller = new CloudBoardPuller({
+    store,
+    focus: focusTracker,
+    getSettings: () => store.getSettings().cloud,
+    getAccessToken: getCloudAccessToken,
+    runTracked: (run) => trackSync('cloud', run),
+  });
+  cloudBoardPuller.reschedule();
+
+  // "Desktop is the worker": claims and starts queued cloud assignments for the ticket
+  // projects this desktop serves. Its own clock and its own `trackSync('cloud', …)` slot,
+  // same reasoning as `cloudBoardPuller` above — a human watching the status bar sees one
+  // cloud feature, even though this never calls into `CloudBoardPuller` or vice versa.
+  // `runTask` is `Scheduler.runTask` itself, unmodified: a claimed assignment starts a
+  // session through the exact same `sessionManager`/`chainRunner` path a human's own Start
+  // click does.
+  const assignmentPoller = new AssignmentPoller({
+    store,
+    focus: focusTracker,
+    getSettings: () => store.getSettings().cloud,
+    getAccessToken: getCloudAccessToken,
+    runTracked: (run) => trackSync('cloud', run),
+    runTask: (taskId) => scheduler.runTask(taskId),
+  });
+  assignmentPoller.reschedule();
+
   // The two quota bars' one real signal: `/usage` read straight from the CLI, on its
   // own clock (see `claudeUsage.ts` for why this never costs a token or a turn).
   const claudeUsagePoller = new ClaudeUsagePoller();
@@ -4198,6 +4270,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     watcher,
     syncPoller,
     cloudPoller,
+    cloudBoardPuller,
+    assignmentPoller,
     cloudEvents,
     cloudAttachments,
     focusTracker,

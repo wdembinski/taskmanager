@@ -18,6 +18,8 @@ import { join } from 'path';
 import * as dotenv from 'dotenv';
 import { DataSource } from 'typeorm';
 import { Account } from '../entities/account.entity';
+import { AgentProfile } from '../entities/agentProfile.entity';
+import { Assignment } from '../entities/assignment.entity';
 import { AttachmentBlob } from '../entities/attachmentBlob.entity';
 import { AttachmentUpload } from '../entities/attachmentUpload.entity';
 import { Client } from '../entities/client.entity';
@@ -36,6 +38,8 @@ export const AppDataSource = new DataSource({
   ...buildMssqlConnectionOptions(),
   entities: [
     Account,
+    AgentProfile,
+    Assignment,
     AttachmentBlob,
     AttachmentUpload,
     Client,
