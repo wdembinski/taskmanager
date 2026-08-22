@@ -16,28 +16,22 @@
  * polls `GET /v1/results` until the desktop answers. The desktop runs its OWN handler for
  * that channel (`apps/client/src/main/ipcRegistry.ts`), so the answer is the real one.
  *
- * Two tiers are left:
- *  1. **Relayed** — anything `@tm/shared/ipcRelay` marks `'relay'`, which is most of `IpcApi`.
- *  2. **Host-only** — refused locally, with the reason from that same shared policy, so the
+ * Three tiers now:
+ *  1. **Direct** — `task:create`, `task:setStatus`, `task:move` and `task:setDescription`
+ *     post straight to the write endpoints Step 3/4 added (`POST /v1/tasks`,
+ *     `PATCH /v1/tasks/:id`) instead of relaying at all. These four are the edits a browser
+ *     with no desktop Client ever synced still has to be able to make — creating and working
+ *     a card is the whole reason cloud web has to stand on its own — and the server applies
+ *     the write to the mirror itself and replays it to every desktop Client on record
+ *     (`mirror.service.ts`), so a Client that is offline right now still catches up later
+ *     instead of the edit never having happened at all.
+ *  2. **Relayed** — anything else `@tm/shared/ipcRelay` marks `'relay'`, still an `ipc-invoke`
+ *     command held open and polled for through `GET /v1/results`, answered by the desktop's
+ *     own handler.
+ *  3. **Host-only** — refused locally, with the reason from that same shared policy, so the
  *     sentence a human reads is written once and not once per side. The engine refuses these
  *     again if a command reaches it anyway; this refusal is the courtesy that makes the click
  *     fail immediately instead of after a round trip.
- *
- * `task:setStatus` keeps its own path as the older, narrower `set-status` command kind: its
- * effect is observed through the mirror and needs no result to come back at all, so it
- * resolves as soon as the command is queued rather than waiting on a desktop poll. That is
- * not a shortcut — it is the discipline this file already established, that an RPC's EFFECT
- * is observed through the mirror and not through its return value. `BoardScreen` owns the
- * optimistic overlay for the gap (`cloudBoardStore.ts`).
- *
- * `task:create` USED to have the same treatment and no longer does. The difference is what
- * the two calls' return values are worth. Nobody reads what a status change hands back; the
- * add-task dialog reads the created `Task` and keeps working on it — a JIRA ticket adopts its
- * id, a chain link is drawn to it, files are copied onto it — and the fabricated
- * `pending:<uuid>` row this returned could not be any of those things. Worse, `create-task`
- * carries four fields, so everything else the shared dialog asks for (type, filing, parent)
- * was dropped on the floor by the kind itself. Relayed, the desktop runs its own
- * `task:create` handler and answers with the real row.
  *
  * RESULTS ARE POLLED; EVENTS ARE PUSHED
  * -------------------------------------
@@ -59,14 +53,16 @@ import {
   PROTOCOL_VERSION,
   type CommandEnvelope,
   type CommandRequest,
+  type CreateTaskRequest,
   type ResultsResponse,
+  type UpdateTaskRequest,
   type UploadTicket,
 } from '@tm/protocol/wire';
 import { CLOUD_BLOB_MAX_BYTES } from '@tm/shared/attachments';
 import type { TaskAttachment, UploadedAttachment } from '@tm/shared/attachments';
 import { hostOnlyMessage, isRelayable } from '@tm/shared/ipcRelay';
 import type { IpcApi, IpcEvents } from '@tm/shared/ipc';
-import type { ManualStatus, Task } from '@tm/shared/model';
+import type { Task } from '@tm/shared/model';
 import { BOARD_CLIENT_HEADER } from '@tm/protocol/wire';
 import type { Transport } from '@tm/ui/transport';
 import type { FocusSignal } from './BoardPoller';
@@ -184,11 +180,33 @@ export class HttpTransport implements Transport {
     channel: K,
     ...args: Parameters<IpcApi[K]>
   ): ReturnType<IpcApi[K]> {
-    // The one kind that predates the relay and still earns its place: its effect is observed
-    // through the mirror, so waiting for a result would be waiting for nothing.
+    // The direct tier — see the docstring's "Three tiers now". These four never need a
+    // desktop Client on record, unlike everything relayed below.
+    if (channel === 'task:create') {
+      const [projectId, input] = args as Parameters<IpcApi['task:create']>;
+      const body: CreateTaskRequest = { projectId, ...input };
+      return this.writeTask('/v1/tasks', 'POST', body) as ReturnType<IpcApi[K]>;
+    }
     if (channel === 'task:setStatus') {
       const [taskId, status] = args as Parameters<IpcApi['task:setStatus']>;
-      return this.setStatus(taskId, status) as ReturnType<IpcApi[K]>;
+      const body: UpdateTaskRequest = { status };
+      return this.writeTask(`/v1/tasks/${encodeURIComponent(taskId)}`, 'PATCH', body) as ReturnType<
+        IpcApi[K]
+      >;
+    }
+    if (channel === 'task:move') {
+      const [taskId, toColumn] = args as Parameters<IpcApi['task:move']>;
+      const body: UpdateTaskRequest = { toColumn };
+      return this.writeTask(`/v1/tasks/${encodeURIComponent(taskId)}`, 'PATCH', body) as ReturnType<
+        IpcApi[K]
+      >;
+    }
+    if (channel === 'task:setDescription') {
+      const [taskId, description] = args as Parameters<IpcApi['task:setDescription']>;
+      const body: UpdateTaskRequest = { description };
+      return this.writeTask(`/v1/tasks/${encodeURIComponent(taskId)}`, 'PATCH', body) as ReturnType<
+        IpcApi[K]
+      >;
     }
     if (!isRelayable(channel)) {
       return Promise.reject(new Error(hostOnlyMessage(channel))) as ReturnType<IpcApi[K]>;
@@ -402,12 +420,27 @@ export class HttpTransport implements Transport {
     }
   }
 
-  private async setStatus(taskId: string, status: ManualStatus): Promise<Task> {
-    await this.sendCommand('set-status', { taskId, status });
-    // Never read: `BoardScreen` computes and owns its own optimistic overlay
-    // (`cloudBoardStore.queuePendingStatusChange`) rather than trust this call's return
-    // value, which cannot know the task's real other fields.
-    return { id: taskId, status } as Task;
+  /**
+   * `POST /v1/tasks` or `PATCH /v1/tasks/:id` — the direct tier's one shape. Unlike
+   * {@link sendCommand}, this needs no `targetClientId` at all: the server applies the write
+   * to the mirror itself before this resolves, and replays it to whichever desktop Clients
+   * are on record on its own — see `mirror.service.ts`.
+   */
+  private async writeTask(path: string, method: 'POST' | 'PATCH', body: unknown): Promise<Task> {
+    const token = await this.deps.getAccessToken();
+    if (!token) throw new Error('Not signed in to vipper.iam.');
+
+    const fetchImpl = this.deps.fetchImpl ?? fetch;
+    const res = await fetchImpl(`${this.deps.apiBase}${path}`, {
+      method,
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`request failed (${res.status} ${res.statusText})`);
+    return (await res.json()) as Task;
   }
 
   private async sendCommand(
