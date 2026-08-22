@@ -184,6 +184,54 @@ describe('HttpTransport: the direct tier', () => {
     expect(JSON.parse(init.body)).toEqual({ description: 'new brief' });
   });
 
+  it('posts project:add to POST /v1/projects and wraps the row as ProjectWithTasks', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 201,
+      json: async () => ({ id: 'proj-real', name: 'New project', path: '/repo' }),
+    });
+    const { transport } = makeTransport({ fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    const call = transport.invoke('project:add', { path: '/repo', name: 'New project' });
+
+    await expect(call).resolves.toEqual({
+      project: { id: 'proj-real', name: 'New project', path: '/repo' },
+      tasks: [],
+    });
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe('https://api.example.com/v1/projects');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ path: '/repo', name: 'New project' });
+  });
+
+  it('patches project:update to PATCH /v1/projects/:id', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ id: 'proj-1', name: 'Renamed' }),
+    });
+    const { transport } = makeTransport({ fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    await expect(
+      transport.invoke('project:update', 'proj-1', { name: 'Renamed' }),
+    ).resolves.toEqual({ id: 'proj-1', name: 'Renamed' });
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe('https://api.example.com/v1/projects/proj-1');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(init.body)).toEqual({ name: 'Renamed' });
+  });
+
+  it('deletes project:remove at DELETE /v1/projects/:id with no body', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, status: 204 });
+    const { transport } = makeTransport({ fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    await expect(transport.invoke('project:remove', 'proj-1')).resolves.toBeUndefined();
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe('https://api.example.com/v1/projects/proj-1');
+    expect(init.method).toBe('DELETE');
+    expect(init.body).toBeUndefined();
+  });
+
   it('works with no desktop Client ever synced, unlike the relayed tier', async () => {
     const fetchImpl = vi.fn().mockResolvedValue({
       ok: true,

@@ -17,14 +17,15 @@
  * that channel (`apps/client/src/main/ipcRegistry.ts`), so the answer is the real one.
  *
  * Three tiers now:
- *  1. **Direct** — `task:create`, `task:setStatus`, `task:move` and `task:setDescription`
- *     post straight to the write endpoints Step 3/4 added (`POST /v1/tasks`,
- *     `PATCH /v1/tasks/:id`) instead of relaying at all. These four are the edits a browser
- *     with no desktop Client ever synced still has to be able to make — creating and working
- *     a card is the whole reason cloud web has to stand on its own — and the server applies
- *     the write to the mirror itself and replays it to every desktop Client on record
- *     (`mirror.service.ts`), so a Client that is offline right now still catches up later
- *     instead of the edit never having happened at all.
+ *  1. **Direct** — `task:create`, `task:setStatus`, `task:move`, `task:setDescription`,
+ *     `project:add`, `project:update` and `project:remove` post straight to the write
+ *     endpoints Step 3/4/5 added (`POST`/`PATCH`/`DELETE /v1/tasks` and `/v1/projects`)
+ *     instead of relaying at all. These are the edits a browser with no desktop Client ever
+ *     synced still has to be able to make — creating and working a card, and filing it under
+ *     a project of its own, is the whole reason cloud web has to stand on its own — and the
+ *     server applies the write to the mirror itself and replays it to every desktop Client on
+ *     record (`mirror.service.ts`), so a Client that is offline right now still catches up
+ *     later instead of the edit never having happened at all.
  *  2. **Relayed** — anything else `@tm/shared/ipcRelay` marks `'relay'`, still an `ipc-invoke`
  *     command held open and polled for through `GET /v1/results`, answered by the desktop's
  *     own handler.
@@ -53,8 +54,10 @@ import {
   PROTOCOL_VERSION,
   type CommandEnvelope,
   type CommandRequest,
+  type CreateProjectRequest,
   type CreateTaskRequest,
   type ResultsResponse,
+  type UpdateProjectRequest,
   type UpdateTaskRequest,
   type UploadTicket,
 } from '@tm/protocol/wire';
@@ -62,7 +65,7 @@ import { CLOUD_BLOB_MAX_BYTES } from '@tm/shared/attachments';
 import type { TaskAttachment, UploadedAttachment } from '@tm/shared/attachments';
 import { hostOnlyMessage, isRelayable } from '@tm/shared/ipcRelay';
 import type { IpcApi, IpcEvents } from '@tm/shared/ipc';
-import type { Task } from '@tm/shared/model';
+import type { Project, Task } from '@tm/shared/model';
 import { BOARD_CLIENT_HEADER } from '@tm/protocol/wire';
 import type { Transport } from '@tm/ui/transport';
 import type { FocusSignal } from './BoardPoller';
@@ -207,6 +210,27 @@ export class HttpTransport implements Transport {
       return this.writeTask(`/v1/tasks/${encodeURIComponent(taskId)}`, 'PATCH', body) as ReturnType<
         IpcApi[K]
       >;
+    }
+    if (channel === 'project:add') {
+      const [input] = args as Parameters<IpcApi['project:add']>;
+      const body: CreateProjectRequest = input;
+      return this.writeProject('/v1/projects', 'POST', body).then((project) => ({
+        project,
+        tasks: [],
+      })) as ReturnType<IpcApi[K]>;
+    }
+    if (channel === 'project:update') {
+      const [projectId, patch] = args as Parameters<IpcApi['project:update']>;
+      const body: UpdateProjectRequest = patch;
+      return this.writeProject(
+        `/v1/projects/${encodeURIComponent(projectId)}`,
+        'PATCH',
+        body,
+      ) as ReturnType<IpcApi[K]>;
+    }
+    if (channel === 'project:remove') {
+      const [projectId] = args as Parameters<IpcApi['project:remove']>;
+      return this.deleteProject(projectId) as ReturnType<IpcApi[K]>;
     }
     if (!isRelayable(channel)) {
       return Promise.reject(new Error(hostOnlyMessage(channel))) as ReturnType<IpcApi[K]>;
@@ -441,6 +465,41 @@ export class HttpTransport implements Transport {
     });
     if (!res.ok) throw new Error(`request failed (${res.status} ${res.statusText})`);
     return (await res.json()) as Task;
+  }
+
+  /** `POST /v1/projects` or `PATCH /v1/projects/:id` — the project sibling of {@link writeTask}. */
+  private async writeProject(
+    path: string,
+    method: 'POST' | 'PATCH',
+    body: unknown,
+  ): Promise<Project> {
+    const token = await this.deps.getAccessToken();
+    if (!token) throw new Error('Not signed in to vipper.iam.');
+
+    const fetchImpl = this.deps.fetchImpl ?? fetch;
+    const res = await fetchImpl(`${this.deps.apiBase}${path}`, {
+      method,
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`request failed (${res.status} ${res.statusText})`);
+    return (await res.json()) as Project;
+  }
+
+  /** `DELETE /v1/projects/:id` — the direct tier's one no-body shape. */
+  private async deleteProject(projectId: string): Promise<void> {
+    const token = await this.deps.getAccessToken();
+    if (!token) throw new Error('Not signed in to vipper.iam.');
+
+    const fetchImpl = this.deps.fetchImpl ?? fetch;
+    const res = await fetchImpl(
+      `${this.deps.apiBase}/v1/projects/${encodeURIComponent(projectId)}`,
+      { method: 'DELETE', headers: { authorization: `Bearer ${token}` } },
+    );
+    if (!res.ok) throw new Error(`request failed (${res.status} ${res.statusText})`);
   }
 
   private async sendCommand(
