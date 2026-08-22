@@ -9,6 +9,7 @@ import { ProjectMirror } from '../entities/projectMirror.entity';
 import { TaskMirror } from '../entities/taskMirror.entity';
 import { Tombstone } from '../entities/tombstone.entity';
 import { Client } from '../entities/client.entity';
+import { Command } from '../entities/command.entity';
 import { CommandResultRow } from '../entities/commandResult.entity';
 import { MirrorService } from './mirror.service';
 
@@ -24,6 +25,8 @@ class FakeStore {
   readonly projectRows: ProjectMirror[] = [];
   readonly taskRows: TaskMirror[] = [];
   readonly tombstoneRows: Tombstone[] = [];
+  readonly clientRows: Client[] = [];
+  readonly commandRows: Command[] = [];
   private counter = 0n;
 
   /** Mimics SQL Server's ROWVERSION: an 8-byte value strictly greater on every write. */
@@ -38,6 +41,7 @@ class FakeStore {
     if (entity === ProjectMirror) return this.projectRows as unknown as T[];
     if (entity === TaskMirror) return this.taskRows as unknown as T[];
     if (entity === Tombstone) return this.tombstoneRows as unknown as T[];
+    if (entity === Command) return this.commandRows as unknown as T[];
     throw new Error(`FakeStore: unhandled entity ${String(entity)}`);
   }
 }
@@ -138,8 +142,18 @@ function fakeDataSource(store: FakeStore): DataSource {
         arr.push({ ...row, rowVersion: store.nextRowVersion() });
       }
     },
+    // `enqueueCommand` (via `replayToDesktops`) reads and writes `Command` rows straight off
+    // `dataSource.manager`, outside any `.transaction()` call — so this has to work standalone,
+    // not only as the callback argument above.
+    findOne: async (entity: unknown, { where }: { where: Record<string, unknown> }) => {
+      const arr = store.arrayFor<Record<string, unknown>>(entity);
+      return (
+        arr.find((row) => Object.entries(where).every(([key, value]) => row[key] === value)) ?? null
+      );
+    },
   };
   return {
+    manager,
     transaction: async (cb: (manager: unknown) => Promise<unknown>) => cb(manager),
   } as unknown as DataSource;
 }
@@ -149,7 +163,7 @@ describe('MirrorService.createTask', () => {
     const store = new FakeStore();
     const service = new MirrorService(
       fakeDataSource(store),
-      fakeRepository<Client>([] as unknown as Client[]),
+      fakeRepository(store.clientRows),
       fakeRepository(store.taskRows),
       fakeRepository(store.projectRows),
       fakeRepository(store.tombstoneRows),
@@ -191,7 +205,7 @@ describe('MirrorService.updateTask / deleteTask', () => {
     const store = new FakeStore();
     const service = new MirrorService(
       fakeDataSource(store),
-      fakeRepository<Client>([] as unknown as Client[]),
+      fakeRepository(store.clientRows),
       fakeRepository(store.taskRows),
       fakeRepository(store.projectRows),
       fakeRepository(store.tombstoneRows),
@@ -342,7 +356,7 @@ describe('MirrorService.createProject / updateProject / deleteProject', () => {
     const store = new FakeStore();
     const service = new MirrorService(
       fakeDataSource(store),
-      fakeRepository<Client>([] as unknown as Client[]),
+      fakeRepository(store.clientRows),
       fakeRepository(store.taskRows),
       fakeRepository(store.projectRows),
       fakeRepository(store.tombstoneRows),
@@ -415,5 +429,134 @@ describe('MirrorService.createProject / updateProject / deleteProject', () => {
   it('deleteProject is a silent no-op for an id that names nothing', async () => {
     const { service } = buildService();
     await expect(service.deleteProject('account-1', 'no-such-project')).resolves.toBeUndefined();
+  });
+});
+
+describe('MirrorService replay to a desktop Client', () => {
+  function buildService(): { service: MirrorService; store: FakeStore } {
+    const store = new FakeStore();
+    const service = new MirrorService(
+      fakeDataSource(store),
+      fakeRepository(store.clientRows),
+      fakeRepository(store.taskRows),
+      fakeRepository(store.projectRows),
+      fakeRepository(store.tombstoneRows),
+      fakeRepository<CommandResultRow>([] as unknown as CommandResultRow[]),
+      new PresenceService(new PresenceRegistry()),
+      new EventBus(),
+    );
+    return { service, store };
+  }
+
+  it('queues an ipc-invoke replay for a known desktop Client that is offline right now', async () => {
+    const { service, store } = buildService();
+    const accountId = 'account-1';
+    const project = buildProject({ path: '/repo', kind: 'agent' }, DEFAULT_SETTINGS);
+    store.projectRows.push({
+      id: project.id,
+      accountId,
+      data: project,
+      rowVersion: store.nextRowVersion(),
+    });
+
+    // A desktop this account has synced from before — its Client row is on record, but there
+    // is no presence beat for it (no `sync()` call in this test), i.e. it is offline right now.
+    store.clientRows.push({
+      id: 'desktop-1',
+      accountId,
+      name: 'WORKSTATION',
+      platform: 'win32',
+      appVersion: '0.90.0',
+      protocolVersion: 2,
+      createdAt: new Date(),
+    });
+
+    const task = await service.createTask(accountId, { projectId: project.id, title: 'Ship it' });
+
+    expect(store.commandRows).toHaveLength(1);
+    const command = store.commandRows[0]!;
+    expect(command.targetClientId).toBe('desktop-1');
+    expect(command.accountId).toBe(accountId);
+    expect(command.kind).toBe('ipc-invoke');
+    expect(command.payload).toMatchObject({
+      channel: 'task:create',
+      args: [project.id, { title: 'Ship it' }],
+    });
+    // The mirror's own row and the desktop's future replay are deliberately different tasks —
+    // see `createTask`'s own comment on why `task:create` cannot be told to reuse an id.
+    expect((command.payload as { args: unknown[] }).args[0]).toBe(task.projectId);
+  });
+
+  it('queues nothing when the account has no desktop Client on record', async () => {
+    const { service, store } = buildService();
+    const accountId = 'account-1';
+    const project = buildProject({ path: '/repo', kind: 'agent' }, DEFAULT_SETTINGS);
+    store.projectRows.push({
+      id: project.id,
+      accountId,
+      data: project,
+      rowVersion: store.nextRowVersion(),
+    });
+
+    await service.createTask(accountId, { projectId: project.id, title: 'Ship it' });
+
+    expect(store.commandRows).toHaveLength(0);
+  });
+
+  it('replays an edit as one command per changed, replayable field', async () => {
+    const { service, store } = buildService();
+    const accountId = 'account-1';
+    const project = buildProject({ path: '/repo', kind: 'agent' }, DEFAULT_SETTINGS);
+    store.projectRows.push({
+      id: project.id,
+      accountId,
+      data: project,
+      rowVersion: store.nextRowVersion(),
+    });
+    store.clientRows.push({
+      id: 'desktop-1',
+      accountId,
+      name: null,
+      platform: null,
+      appVersion: null,
+      protocolVersion: null,
+      createdAt: new Date(),
+    });
+
+    const task = await service.createTask(accountId, { projectId: project.id, title: 'A task' });
+    store.commandRows.length = 0; // Only care about the update's own replays from here.
+
+    await service.updateTask(accountId, task.id, {
+      description: 'New brief',
+      toColumn: 'in-progress',
+    });
+
+    const channels = store.commandRows.map((row) => (row.payload as { channel: string }).channel);
+    expect(channels).toEqual(expect.arrayContaining(['task:setDescription', 'task:move']));
+    expect(channels).toHaveLength(2);
+  });
+
+  it('replays a project delete to a known desktop Client, by the same id', async () => {
+    const { service, store } = buildService();
+    const accountId = 'account-1';
+    const project = await service.createProject(accountId, { path: '/repo', kind: 'agent' });
+    store.clientRows.push({
+      id: 'desktop-1',
+      accountId,
+      name: null,
+      platform: null,
+      appVersion: null,
+      protocolVersion: null,
+      createdAt: new Date(),
+    });
+    store.commandRows.length = 0;
+
+    await service.deleteProject(accountId, project.id);
+
+    expect(store.commandRows).toHaveLength(1);
+    expect(store.commandRows[0]?.payload).toMatchObject({
+      channel: 'project:remove',
+      args: [project.id],
+    });
   });
 });

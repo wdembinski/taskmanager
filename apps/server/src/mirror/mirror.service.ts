@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, IsNull, LessThan, Repository } from 'typeorm';
@@ -69,6 +70,16 @@ export const BOARD_PAGE_LIMIT = 500;
  * than an empty one. Matches `SYNC_BYTES_LIMIT`'s order on the push side.
  */
 export const BOARD_BYTES_LIMIT = 1_000_000;
+
+/**
+ * `CommandEnvelope.issuedBy` for a replay command this service enqueues on its own behalf
+ * (see `replayToDesktops` below) — as opposed to a browser tab holding a pending promise for
+ * a relayed `ipc-invoke`. Nothing ever reads `GET /v1/results` for this issuer: the caller of
+ * `createTask`/`updateTask`/etc. already has its answer from the canonical write, and a
+ * desktop's eventual result for a replay is stored and left unread, same as any other command
+ * result nobody is polling for.
+ */
+const REPLAY_ISSUED_BY = 'server';
 
 @Injectable()
 export class MirrorService {
@@ -202,6 +213,55 @@ export class MirrorService {
   }
 
   /**
+   * Queues `channel(...args)` as an `ipc-invoke` for every desktop Client this account has
+   * ever synced from — so `createTask`/`updateTask`/`deleteTask`/`createProject`/
+   * `updateProject`/`deleteProject`'s direct-to-mirror write is not the only place that
+   * mutation exists: a desktop that is offline right now still applies it into its own local
+   * `Store` on its next sync, through the exact path a browser's own relayed calls already use
+   * (`cloudCommands.ts`'s `applyIpcInvoke` → `ipcRegistry.ts`).
+   *
+   * One command per Client on record, not just the account's most recently seen one: each
+   * desktop keeps its own independent local Store, so a mutation made through the web is
+   * missing from ALL of them until each is told, not only the one a browser happens to be
+   * polling.
+   *
+   * Fire-and-forget in the sense the wire contract already establishes for `ipc-invoke`: the
+   * caller (a `POST`/`PATCH`/`DELETE /v1/*` request) does not wait for, or ever learn, whether
+   * a desktop actually applied it — the canonical write already landed in the mirror before
+   * this is even called, and this method's own promise resolves once the command rows are
+   * queued, not once anything has run.
+   *
+   * A caller-supplied id here — rather than an id the browser minted — would let a browser
+   * that retried its own request enqueue the same replay twice; `randomUUID()` is fine because
+   * `enqueueCommand`'s dedupe is keyed on THIS id, not on the mutation it describes, and a
+   * repeated write already produced its own new row upstream (there is no idempotency to lose).
+   */
+  private async replayToDesktops(
+    accountId: string,
+    channel: string,
+    args: unknown[],
+  ): Promise<void> {
+    const clients = await this.clients.find({ where: { accountId }, select: { id: true } });
+    if (clients.length === 0) return;
+
+    const issuedAt = Date.now();
+    await Promise.all(
+      clients.map((client) =>
+        this.enqueueCommand(accountId, {
+          targetClientId: client.id,
+          command: {
+            id: randomUUID(),
+            issuedAt,
+            issuedBy: REPLAY_ISSUED_BY,
+            kind: 'ipc-invoke',
+            payload: { channel, args },
+          },
+        }),
+      ),
+    );
+  }
+
+  /**
    * `POST /v1/tasks` — an ad-hoc task, written straight into `task_mirrors` rather than
    * relayed to a desktop Client. See `CreateTaskRequest` on the wire for why this route
    * exists at all: a relayed `task:create` does nothing for an account no desktop Client is
@@ -234,6 +294,23 @@ export class MirrorService {
         deletedProjectIds: [],
       }),
     );
+
+    // `task:create` mints its OWN id on the desktop — there is no argument that lets a
+    // relayed invoke ask for a specific one — so a desktop that was offline when this ran
+    // gets a second, differently-id'd card once it reconnects, rather than adopting `task.id`.
+    // Accepted for the same reason `POST /v1/tasks` exists at all: the alternative is not
+    // relaying at all, and a duplicate a human can merge or delete beats a card that silently
+    // never reached the desktop.
+    await this.replayToDesktops(accountId, 'task:create', [
+      request.projectId,
+      {
+        title,
+        phase: request.phase,
+        type: request.type,
+        description: request.description,
+        projectTagId: request.projectTagId,
+      },
+    ]);
 
     return task;
   }
@@ -302,6 +379,30 @@ export class MirrorService {
       }),
     );
 
+    // One replay per field that has a matching `IpcApi` channel — there is no single desktop
+    // handler this whole patch maps onto, unlike `task:create`/`project:add`/`project:update`.
+    // `title`/`phase`/`type` are NOT replayed: no channel exists to edit them after creation
+    // (`task:create`'s `input` is write-once on the desktop today), so an edit to one of those
+    // through this route lands in the mirror only until a future channel closes that gap.
+    // `toColumn`/`status` keep `updateTask`'s own precedence, matching `ipc.ts`'s split into
+    // `task:move` (the drag) and `task:setStatus` (the dropdown).
+    const replays: Array<{ channel: string; args: unknown[] }> = [];
+    if (request.description !== undefined) {
+      replays.push({
+        channel: 'task:setDescription',
+        args: [taskId, next.externalDescription ?? ''],
+      });
+    }
+    if (request.projectTagId !== undefined) {
+      replays.push({ channel: 'task:setProject', args: [taskId, next.projectTagId ?? null] });
+    }
+    if (request.toColumn !== undefined) {
+      replays.push({ channel: 'task:move', args: [taskId, request.toColumn] });
+    } else if (request.status !== undefined) {
+      replays.push({ channel: 'task:setStatus', args: [taskId, request.status] });
+    }
+    await Promise.all(replays.map((r) => this.replayToDesktops(accountId, r.channel, r.args)));
+
     return next;
   }
 
@@ -344,6 +445,12 @@ export class MirrorService {
         deletedProjectIds: [],
       }),
     );
+
+    // Unlike `task:create`'s replay, this ONE lines up exactly: `task.id` here is whatever
+    // created the row in the first place, so a desktop that has this task locally (mirrored
+    // down from an earlier sync, its own or another Client's) deletes the SAME row — and
+    // `ipc.ts`'s own `task:delete` cascades to steps locally too, so one command covers both.
+    await this.replayToDesktops(accountId, 'task:delete', [existing.id]);
   }
 
   /**
@@ -369,6 +476,11 @@ export class MirrorService {
         deletedProjectIds: [],
       }),
     );
+
+    // Same accepted gap as `task:create`'s replay above: `project:add` mints its own id, so a
+    // desktop reconnecting later gets a second row for this project rather than adopting
+    // `project.id`.
+    await this.replayToDesktops(accountId, 'project:add', [request]);
 
     return project;
   }
@@ -429,6 +541,11 @@ export class MirrorService {
       }),
     );
 
+    // Unlike `updateTask`, `UpdateProjectRequest` IS `ProjectPatch` verbatim — the exact shape
+    // `project:update` already accepts — so this whole patch replays as one command instead of
+    // being split field by field.
+    await this.replayToDesktops(accountId, 'project:update', [projectId, request]);
+
     return next;
   }
 
@@ -461,6 +578,10 @@ export class MirrorService {
         deletedProjectIds: [projectId],
       }),
     );
+
+    // Lines up exactly, like `task:delete`'s replay: `projectId` is whatever created the row,
+    // and `ipc.ts`'s own `project:remove` cascades to its tasks locally too.
+    await this.replayToDesktops(accountId, 'project:remove', [projectId]);
   }
 
   /**
