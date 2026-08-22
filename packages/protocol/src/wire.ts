@@ -5,7 +5,15 @@
  * mirrored task IS a Task, not a wire-shaped lookalike that would need to be kept in sync
  * with it by hand.
  */
-import type { ManualStatus, Project, Task } from '@tm/shared/model';
+import type {
+  AddProjectInput,
+  BoardColumn,
+  ManualStatus,
+  Project,
+  ProjectPatch,
+  Task,
+  TaskType,
+} from '@tm/shared/model';
 import type { CadenceDirective } from './cadence';
 
 /**
@@ -367,6 +375,76 @@ export interface BoardResponse {
    */
   hasMore?: boolean;
 }
+
+/**
+ * Body of `POST /v1/tasks` — a browser creating an ad-hoc task directly, without going
+ * through a desktop Client at all.
+ *
+ * Every other write a browser makes travels as a relayed `CommandRequest` (`ipc-invoke` of
+ * `task:create`, applied by whichever desktop Client picks it up on its next sync) — which
+ * means it does nothing at all for an account no desktop Client is currently polling for.
+ * This route is the server applying the SAME shape itself: `mirror.service.ts`'s
+ * `createTask` runs the identical checks `ipc.ts`'s `task:create` handler does against its
+ * local store, but against `project_mirrors`, and builds the row with `@tm/shared`'s own
+ * `buildAdhocTask` — so a card made this way is byte-for-byte what a desktop would have
+ * produced from the same input, not a wire-shaped lookalike.
+ */
+export interface CreateTaskRequest {
+  projectId: string;
+  title: string;
+  phase?: string;
+  type?: TaskType | null;
+  /** The card's brief — lands in `Task.externalDescription`, same as `task:create`'s. */
+  description?: string | null;
+  projectTagId?: string | null;
+}
+
+/**
+ * Body of `PATCH /v1/tasks/:id` — a browser editing, moving or hand-setting the status of
+ * a mirrored task directly, the write-endpoint sibling of {@link CreateTaskRequest}.
+ *
+ * Every field is optional and independent, so a request patches only what it names: a title
+ * edit does not also require a column. `toColumn` and `status` are mutually meaningful but
+ * not mutually exclusive to send — `mirror.service.ts`'s `updateTask` reads `toColumn` first
+ * (the board drag) and falls back to `status` (the detail pane's dropdown), the same
+ * precedence `ipc.ts`'s `task:move`/`task:setStatus` split into two handlers for.
+ *
+ * `resolveMove` (`@tm/shared/moveResolve`, lifted out of the desktop's own `jiraMove.ts` for
+ * this route) decides the effect of either one; there is no JIRA transition to apply here,
+ * because an ad-hoc task made through this same route family never carries a linked issue.
+ */
+export interface UpdateTaskRequest {
+  /** Move to this board column — the drag-and-drop path. */
+  toColumn?: BoardColumn;
+  /** Hand-set this status directly — the detail pane's dropdown path. */
+  status?: ManualStatus;
+  title?: string;
+  phase?: string;
+  type?: TaskType | null;
+  /** Lands in `Task.externalDescription`, same as {@link CreateTaskRequest.description}. */
+  description?: string | null;
+  projectTagId?: string | null;
+}
+
+/**
+ * Body of `POST /v1/projects` — a browser creating a project directly, without going
+ * through a desktop Client at all — the project sibling of {@link CreateTaskRequest}.
+ *
+ * Reuses `@tm/shared/model`'s own {@link AddProjectInput} rather than a narrower wire-only
+ * shape: unlike an ad-hoc task, which only ever fills a handful of `Task`'s many fields,
+ * `buildProject` (`@tm/shared/projectBuilders`) already IS the one object-construction path
+ * for every kind of project, on the desktop and here alike — inventing a second, narrower
+ * input type would just be a copy of the fields it already accepts.
+ */
+export type CreateProjectRequest = AddProjectInput;
+
+/**
+ * Body of `PATCH /v1/projects/:id` — edit a mirrored project directly, the project sibling
+ * of {@link UpdateTaskRequest}. Reuses `@tm/shared/model`'s own {@link ProjectPatch} for the
+ * same reason {@link CreateProjectRequest} reuses `AddProjectInput`: it already is the "what
+ * may be edited after creation" contract the desktop's own `project:update` uses.
+ */
+export type UpdateProjectRequest = ProjectPatch;
 
 /** Body of `POST /v1/commands` — one Client asking the server to relay an action to another. */
 export interface CommandRequest {

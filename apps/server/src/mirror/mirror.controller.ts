@@ -1,10 +1,13 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Headers,
   HttpCode,
   HttpStatus,
+  Param,
+  Patch,
   Post,
   Query,
   UseGuards,
@@ -14,10 +17,15 @@ import {
   BOARD_FOCUS_HEADER,
   type BoardResponse,
   type CommandRequest,
+  type CreateProjectRequest,
+  type CreateTaskRequest,
   type ResultsResponse,
   type SyncRequest,
   type SyncResponse,
+  type UpdateProjectRequest,
+  type UpdateTaskRequest,
 } from '@tm/protocol/wire';
+import type { Project, Task } from '@tm/shared/model';
 import { AccountId } from '../iam/accountId.decorator';
 import { IamAuthGuard } from '../iam/iamAuth.guard';
 import { MirrorService } from './mirror.service';
@@ -41,6 +49,57 @@ export class MirrorController {
   @Post('sync')
   sync(@AccountId() accountId: string, @Body() body: SyncRequest): Promise<SyncResponse> {
     return this.mirror.sync(accountId, body);
+  }
+
+  /** An ad-hoc task, written directly rather than relayed — see `CreateTaskRequest` on the wire. */
+  @Post('tasks')
+  @HttpCode(HttpStatus.CREATED)
+  createTask(@AccountId() accountId: string, @Body() body: CreateTaskRequest): Promise<Task> {
+    return this.mirror.createTask(accountId, body);
+  }
+
+  /** Edit, move or hand-set a mirrored task's status — see `UpdateTaskRequest` on the wire. */
+  @Patch('tasks/:id')
+  updateTask(
+    @AccountId() accountId: string,
+    @Param('id') id: string,
+    @Body() body: UpdateTaskRequest,
+  ): Promise<Task> {
+    return this.mirror.updateTask(accountId, id, body);
+  }
+
+  /** Drop a mirrored task (and its steps) — see `MirrorService.deleteTask`. */
+  @Delete('tasks/:id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async deleteTask(@AccountId() accountId: string, @Param('id') id: string): Promise<void> {
+    await this.mirror.deleteTask(accountId, id);
+  }
+
+  /** A project, written directly rather than relayed — see `CreateProjectRequest` on the wire. */
+  @Post('projects')
+  @HttpCode(HttpStatus.CREATED)
+  createProject(
+    @AccountId() accountId: string,
+    @Body() body: CreateProjectRequest,
+  ): Promise<Project> {
+    return this.mirror.createProject(accountId, body);
+  }
+
+  /** Edit a mirrored project — see `UpdateProjectRequest` on the wire. */
+  @Patch('projects/:id')
+  updateProject(
+    @AccountId() accountId: string,
+    @Param('id') id: string,
+    @Body() body: UpdateProjectRequest,
+  ): Promise<Project> {
+    return this.mirror.updateProject(accountId, id, body);
+  }
+
+  /** Drop a mirrored project (and its tasks) — see `MirrorService.deleteProject`. */
+  @Delete('projects/:id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async deleteProject(@AccountId() accountId: string, @Param('id') id: string): Promise<void> {
+    await this.mirror.deleteProject(accountId, id);
   }
 
   @Post('commands')

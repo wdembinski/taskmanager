@@ -15,10 +15,14 @@
  * thing on the desktop.
  *
  * Every one of those lists is a relayed `IpcApi` read now (`useBoardExtras`), so they are
- * passed, and the pane draws what it always could. The two things that stay different are
- * honest ones: an edit is applied by a desktop client rather than in-process, so it lands on
- * the next poll rather than instantly; and the host-only channels (`@tm/shared/ipcRelay`)
- * refuse with the reason they are host-only.
+ * passed, and the pane draws what it always could. Most of what a person actually clicks —
+ * creating or filing a card, setting its status or column, editing its description, adding
+ * or editing a project — now applies straight to the mirror over `HttpTransport`'s direct
+ * tier (`httpTransport.ts`) and needs no desktop Client on record at all. What is left honest
+ * is narrower: a handful of sections (live agent runs, chat, comments, attachments,
+ * credentials) are still carried out BY a desktop client, so they land on its next poll
+ * rather than instantly, and the host-only channels (`@tm/shared/ipcRelay`) refuse with the
+ * reason they are host-only.
  *
  * The board's own preferences live in `settings:get`/`settings:save` now rather than in this
  * app's `localStorage`, so the switches match the desktop's instead of being a second set of
@@ -26,8 +30,9 @@
  *
  * And making a card is the desktop's own dialog (`@tm/ui/AddTaskDialog`), not this app's fork
  * of it. The fork asked for a title and a phase because that is all the `create-task` command
- * kind could carry; the shared one calls `task:create` over the relay, so the desktop runs its
- * own handler and every field — type, description, filing, parent, chain link, ticket — lands.
+ * kind could carry; the shared one calls `task:create`, which posts straight to `POST
+ * /v1/tasks` now, so every field — type, description, filing, parent, chain link, ticket —
+ * lands without needing a desktop Client to apply it.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button, Caption1, makeStyles } from '@fluentui/react-components';
@@ -85,14 +90,18 @@ const useStyles = makeStyles({
 /**
  * The one sentence the pane wears (`TaskDetail`'s `readOnlyNotice`).
  *
- * It no longer says "read-only", because that stopped being true. What it says instead is
- * the thing a reader genuinely cannot infer from a pane that looks fully live: an edit here
- * is carried out by the desktop app, so it needs one to be running, and the result appears
- * when it next reports back rather than the instant the button settles.
+ * It no longer says "read-only", because that stopped being true — nor does it say every
+ * edit needs a desktop, because that stopped being true too. Creating a card, moving it,
+ * setting its status or description, and adding or editing a project all apply straight from
+ * this tab (`httpTransport.ts`'s direct tier). What this notice flags is what a reader
+ * genuinely cannot infer from a pane that looks fully live: a few sections — running an
+ * agent, chat, comments, attachments — are still carried out BY the desktop app, so those
+ * need one running and land on its next sync rather than instantly.
  */
 const RELAY_NOTICE =
-  'Edits here are carried out by your desktop app and show up on its next sync — a few ' +
-  'seconds. A few controls (file pickers, credentials, window buttons) only work over there.';
+  'Creating and editing cards works from here directly. Running an agent, chat, comments ' +
+  'and attachments are still carried out by your desktop app and show up on its next sync — ' +
+  'a few seconds. A few controls (file pickers, credentials, window buttons) only work over there.';
 
 const COLUMN_LABEL: Record<BoardColumn, string> = Object.fromEntries(
   COLUMN_META.map((c) => [c.column, c.label]),
@@ -100,7 +109,6 @@ const COLUMN_LABEL: Record<BoardColumn, string> = Object.fromEntries(
 
 export interface BoardScreenProps {
   state: CloudBoardState;
-  everSeenClient: boolean;
   onSetStatus: (taskId: string, status: ManualStatus) => void;
   /**
    * A status change the DETAIL PANE has already sent for itself: record the same pending
@@ -109,12 +117,7 @@ export interface BoardScreenProps {
   onStatusNoted: (taskId: string, status: ManualStatus) => void;
 }
 
-export function BoardScreen({
-  state,
-  everSeenClient,
-  onSetStatus,
-  onStatusNoted,
-}: BoardScreenProps): JSX.Element {
+export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenProps): JSX.Element {
   const layout = useBoardLayoutStyles();
   const styles = useStyles();
   const transport = useTransport();
@@ -444,10 +447,6 @@ export function BoardScreen({
     [linkDrag, extras, reportError],
   );
 
-  const disabledReason = everSeenClient
-    ? undefined
-    : 'No desktop app has ever synced this account — sign in and open it once first.';
-
   return (
     <div className={layout.root}>
       <div className={layout.board}>
@@ -505,13 +504,7 @@ export function BoardScreen({
           // sits in a row of small controls, and a default-size button would set the
           // toolbar's height and make the two boards visibly different.
           addTask={
-            <Button
-              size="small"
-              appearance="primary"
-              disabled={!everSeenClient}
-              title={disabledReason}
-              onClick={() => setAddOpen(true)}
-            >
+            <Button size="small" appearance="primary" onClick={() => setAddOpen(true)}>
               Add task…
             </Button>
           }
@@ -598,7 +591,6 @@ export function BoardScreen({
                 onDragEndTask={() => setDraggingId(null)}
                 onDropInColumn={(taskId, dropColumn) => {
                   setDraggingId(null);
-                  if (!everSeenClient) return;
                   if (pendingTaskIds.has(taskId)) return; // one edit in flight at a time per card
                   onSetStatus(taskId, statusForColumn(dropColumn));
                 }}

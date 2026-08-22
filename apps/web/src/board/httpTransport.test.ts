@@ -88,47 +88,23 @@ function t(): HttpTransport {
   return makeTransport().transport;
 }
 
-describe('HttpTransport: the one mirror-observed kind', () => {
-  it('posts a set-status command and resolves without waiting for a result', async () => {
-    nextId = 0;
-    const { transport, fetchImpl } = makeTransport({ newCommandId: () => 'cmd-1' });
-    await transport.invoke('task:setStatus', 't1', 'in-progress');
-
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchImpl.mock.calls[0];
-    expect(url).toBe('https://api.example.com/v1/commands');
-    const body = JSON.parse(init.body);
-    expect(body).toEqual({
-      targetClientId: 'desktop-1',
-      command: {
-        id: 'cmd-1',
-        issuedAt: 1000,
-        issuedBy: 'web-1',
-        kind: 'set-status',
-        payload: { taskId: 't1', status: 'in-progress' },
-      },
-    });
-    expect(init.headers.authorization).toBe('Bearer token');
-  });
-
+describe('HttpTransport: the direct tier', () => {
   /**
-   * The inverse of what this file asserted before, because the answer changed. `task:create`
-   * used to be the second mirror-observed kind: it posted a `create-task` command, which can
-   * carry a project, a title, a phase and a description, and answered a fabricated
-   * `pending:<uuid>` row.
-   *
-   * Both halves were wrong once the shared dialog started making cards here. The kind drops
-   * every other field the dialog collects (type, filing, parent), and its caller does not
-   * throw the answer away the way a status change's caller does — it adopts a JIRA ticket
-   * onto the returned id, draws a chain link to it and copies files onto it, none of which a
-   * made-up id can be the subject of. So it relays, and the row that comes back is real.
+   * `task:create`, `task:setStatus`, `task:move` and `task:setDescription` used to relay —
+   * `task:setStatus` as the older, narrower `set-status` command kind that resolved as soon
+   * as it was queued, `task:create` as a full `ipc-invoke` round trip. Both needed a desktop
+   * Client to have synced at least once (`getTargetClientId`), which is exactly what an
+   * account with no desktop yet does not have. They now post straight to the Step 3/4 write
+   * endpoints instead, so none of the four ever touches `POST /v1/commands` or needs a
+   * `targetClientId` at all.
    */
-  it('relays task:create, so the created card comes back whole', async () => {
-    const server = makeServer();
-    const { transport } = makeTransport({
-      fetchImpl: server.fetchImpl as unknown as typeof fetch,
-      newCommandId: () => 'cmd-9',
+  it('posts task:create to POST /v1/tasks and resolves with the real row', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 201,
+      json: async () => ({ id: 'real-1', title: 'New card' }),
     });
+    const { transport } = makeTransport({ fetchImpl: fetchImpl as unknown as typeof fetch });
 
     const call = transport.invoke('task:create', 'personal', {
       title: 'New card',
@@ -137,25 +113,160 @@ describe('HttpTransport: the one mirror-observed kind', () => {
       description: 'what it is about',
       projectTagId: 'proj-1',
     });
-    server.answer('cmd-9', { ok: true, value: { id: 'real-1', title: 'New card' } });
 
-    await expect(call).resolves.toMatchObject({ id: 'real-1' });
-    expect(server.queued[0]).toMatchObject({
-      kind: 'ipc-invoke',
-      payload: {
-        channel: 'task:create',
-        args: [
-          'personal',
-          {
-            title: 'New card',
-            phase: 'Phase 1',
-            type: 'bug',
-            description: 'what it is about',
-            projectTagId: 'proj-1',
-          },
-        ],
-      },
+    await expect(call).resolves.toEqual({ id: 'real-1', title: 'New card' });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe('https://api.example.com/v1/tasks');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({
+      projectId: 'personal',
+      title: 'New card',
+      phase: 'Phase 1',
+      type: 'bug',
+      description: 'what it is about',
+      projectTagId: 'proj-1',
     });
+    expect(init.headers.authorization).toBe('Bearer token');
+  });
+
+  it('patches task:setStatus to PATCH /v1/tasks/:id', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ id: 't1', status: 'in-progress' }),
+    });
+    const { transport } = makeTransport({ fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    await expect(transport.invoke('task:setStatus', 't1', 'in-progress')).resolves.toEqual({
+      id: 't1',
+      status: 'in-progress',
+    });
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe('https://api.example.com/v1/tasks/t1');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(init.body)).toEqual({ status: 'in-progress' });
+  });
+
+  it('patches task:move to PATCH /v1/tasks/:id', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ id: 't1', status: 'done' }),
+    });
+    const { transport } = makeTransport({ fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    await expect(transport.invoke('task:move', 't1', 'done')).resolves.toEqual({
+      id: 't1',
+      status: 'done',
+    });
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe('https://api.example.com/v1/tasks/t1');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(init.body)).toEqual({ toColumn: 'done' });
+  });
+
+  it('patches task:setDescription to PATCH /v1/tasks/:id', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ id: 't1', externalDescription: 'new brief' }),
+    });
+    const { transport } = makeTransport({ fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    await expect(transport.invoke('task:setDescription', 't1', 'new brief')).resolves.toEqual({
+      id: 't1',
+      externalDescription: 'new brief',
+    });
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe('https://api.example.com/v1/tasks/t1');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(init.body)).toEqual({ description: 'new brief' });
+  });
+
+  it('posts project:add to POST /v1/projects and wraps the row as ProjectWithTasks', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 201,
+      json: async () => ({ id: 'proj-real', name: 'New project', path: '/repo' }),
+    });
+    const { transport } = makeTransport({ fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    const call = transport.invoke('project:add', { path: '/repo', name: 'New project' });
+
+    await expect(call).resolves.toEqual({
+      project: { id: 'proj-real', name: 'New project', path: '/repo' },
+      tasks: [],
+    });
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe('https://api.example.com/v1/projects');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ path: '/repo', name: 'New project' });
+  });
+
+  it('patches project:update to PATCH /v1/projects/:id', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ id: 'proj-1', name: 'Renamed' }),
+    });
+    const { transport } = makeTransport({ fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    await expect(
+      transport.invoke('project:update', 'proj-1', { name: 'Renamed' }),
+    ).resolves.toEqual({ id: 'proj-1', name: 'Renamed' });
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe('https://api.example.com/v1/projects/proj-1');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(init.body)).toEqual({ name: 'Renamed' });
+  });
+
+  it('deletes project:remove at DELETE /v1/projects/:id with no body', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, status: 204 });
+    const { transport } = makeTransport({ fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    await expect(transport.invoke('project:remove', 'proj-1')).resolves.toBeUndefined();
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe('https://api.example.com/v1/projects/proj-1');
+    expect(init.method).toBe('DELETE');
+    expect(init.body).toBeUndefined();
+  });
+
+  it('works with no desktop Client ever synced, unlike the relayed tier', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ id: 't1', status: 'done' }),
+    });
+    const { transport } = makeTransport({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      getTargetClientId: () => null,
+    });
+
+    await expect(transport.invoke('task:setStatus', 't1', 'done')).resolves.toEqual({
+      id: 't1',
+      status: 'done',
+    });
+  });
+
+  it('rejects when the write endpoint itself fails', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: false, status: 500, statusText: 'err' });
+    const { transport } = makeTransport({ fetchImpl: fetchImpl as unknown as typeof fetch });
+    await expect(transport.invoke('task:setStatus', 't1', 'done')).rejects.toThrow(
+      /request failed/,
+    );
+  });
+
+  it('refuses to send when signed out', async () => {
+    const fetchImpl = vi.fn();
+    const { transport } = makeTransport({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      getAccessToken: async () => null,
+    });
+    await expect(transport.invoke('task:setStatus', 't1', 'done')).rejects.toThrow(
+      /not signed in/i,
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
 
@@ -252,16 +363,6 @@ describe('HttpTransport: a relayed invoke is a real round trip', () => {
     // Let a generous number of microtask turns pass; nothing is pending, so nothing polls.
     for (let i = 0; i < 20; i++) await Promise.resolve();
     expect(server.resultReads()).toBe(settled);
-  });
-
-  it('does not poll for results at all until something is pending', async () => {
-    const server = makeServer();
-    const { transport } = makeTransport({
-      fetchImpl: server.fetchImpl as unknown as typeof fetch,
-    });
-    await transport.invoke('task:setStatus', 't1', 'done');
-    for (let i = 0; i < 20; i++) await Promise.resolve();
-    expect(server.resultReads()).toBe(0);
   });
 
   it('survives a failed results poll and resolves on the next one', async () => {
@@ -402,19 +503,18 @@ describe('HttpTransport: the two silences it tells apart', () => {
 });
 
 describe('HttpTransport: preconditions', () => {
-  it('refuses to send when no desktop Client has ever synced this account', async () => {
+  it('refuses to send a relayed call when no desktop Client has ever synced this account', async () => {
     const { transport, fetchImpl } = makeTransport({ getTargetClientId: () => null });
-    await expect(transport.invoke('task:setStatus', 't1', 'done')).rejects.toThrow(
-      /no desktop client/i,
+    await expect(transport.invoke('board:tasks')).rejects.toThrow(/no desktop client/i);
+    const commandCalls = fetchImpl.mock.calls.filter(([url]) =>
+      String(url).includes('/v1/commands'),
     );
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(commandCalls).toHaveLength(0);
   });
 
-  it('refuses to send when signed out', async () => {
+  it('refuses to send a relayed call when signed out', async () => {
     const { transport, fetchImpl } = makeTransport({ getAccessToken: async () => null });
-    await expect(transport.invoke('task:setStatus', 't1', 'done')).rejects.toThrow(
-      /not signed in/i,
-    );
+    await expect(transport.invoke('board:tasks')).rejects.toThrow(/not signed in/i);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 

@@ -1,19 +1,13 @@
 import { MessageBar, MessageBarBody, MessageBarTitle } from '@fluentui/react-components';
 
 /**
- * The honesty check this step's own brief asks for: a card whose command is queued reads
- * as pending (`TaskCard`'s badge, driven by `displayStatus`), and THIS says why a queued
- * command might sit there a while — no desktop Client, which is the only thing that
- * actually applies a command, has synced recently enough for the mirror API to see it (see
- * `ClientPresence`'s own docstring on `@tm/protocol/wire`).
- *
- * The second sentence names the fix, and it is on the OTHER machine. "Open the desktop app",
- * which is what this used to say, is the one instruction that does not work: the app being
- * open is not what makes it visible here — `POST /v1/sync` is, and that only happens with
- * cloud sync switched on, a vipper.iam sign-in on that machine, and an account allowed to
- * write. All three fail silently over there (the poller counts a failed tick and retries),
- * so the useful thing to say is where the answer lives: Settings → Cloud → Test connection
- * on the desktop walks that whole chain and names the rung that is broken.
+ * The honesty check this step's own brief asks for — but a narrower one than it used to be.
+ * Creating and editing cards and projects applies straight from this tab regardless of any
+ * desktop Client (`httpTransport.ts`'s direct tier), so a missing or stale Client is no
+ * longer a reason to warn someone off editing. What is still true without one: relayed
+ * commands — running an agent, chat, comments, attachments, credentials, native pickers —
+ * have nobody to carry them out, and any of THOSE queued now sit there until a desktop
+ * Client syncs (see `ClientPresence`'s own docstring on `@tm/protocol/wire`).
  */
 export function StaleBanner({ everSeenClient }: { everSeenClient: boolean }): JSX.Element {
   return (
@@ -24,11 +18,9 @@ export function StaleBanner({ everSeenClient }: { everSeenClient: boolean }): JS
             ? 'No desktop app has synced recently.'
             : 'No desktop app has ever synced this account.'}
         </MessageBarTitle>
-        {everSeenClient
-          ? 'Changes made here are queued and apply the next time it does. If it is running, ' +
-            'check Settings → Cloud → Test connection on that machine.'
-          : 'On the desktop app, open Settings → Cloud: switch cloud sync on, sign in to the ' +
-            'same account, then press Test connection — it says which part is failing.'}
+        Creating and editing cards and projects still works from here. Running an agent, chat,
+        comments, attachments and credentials need a desktop app open and{' '}
+        {everSeenClient ? 'apply the next time it syncs.' : 'have never had one to run them.'}
       </MessageBarBody>
     </MessageBar>
   );

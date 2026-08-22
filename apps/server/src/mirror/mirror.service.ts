@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, IsNull, LessThan, Repository } from 'typeorm';
 import type {
@@ -6,11 +7,23 @@ import type {
   ClientPresence,
   CommandRequest,
   CommandResult,
+  CreateProjectRequest,
+  CreateTaskRequest,
   ResultsResponse,
   SyncRequest,
   SyncResponse,
+  UpdateProjectRequest,
+  UpdateTaskRequest,
 } from '@tm/protocol/wire';
 import { PROTOCOL_VERSION } from '@tm/protocol/wire';
+import { columnForStatus, restingStatus } from '@tm/shared/board';
+import { hasRepo, isManualStatus } from '@tm/shared/model';
+import type { Project, Task } from '@tm/shared/model';
+import { resolveMove } from '@tm/shared/moveResolve';
+import { buildProject, normalizeEpicKeys } from '@tm/shared/projectBuilders';
+import { DEFAULT_SETTINGS } from '@tm/shared/settings';
+import { buildAdhocTask } from '@tm/shared/taskBuilders';
+import { normalizeTicketPrefix } from '@tm/shared/ticketKey';
 import { Client } from '../entities/client.entity';
 import { Command } from '../entities/command.entity';
 import { CommandResultRow } from '../entities/commandResult.entity';
@@ -57,6 +70,16 @@ export const BOARD_PAGE_LIMIT = 500;
  * than an empty one. Matches `SYNC_BYTES_LIMIT`'s order on the push side.
  */
 export const BOARD_BYTES_LIMIT = 1_000_000;
+
+/**
+ * `CommandEnvelope.issuedBy` for a replay command this service enqueues on its own behalf
+ * (see `replayToDesktops` below) — as opposed to a browser tab holding a pending promise for
+ * a relayed `ipc-invoke`. Nothing ever reads `GET /v1/results` for this issuer: the caller of
+ * `createTask`/`updateTask`/etc. already has its answer from the canonical write, and a
+ * desktop's eventual result for a replay is stored and left unread, same as any other command
+ * result nobody is polling for.
+ */
+const REPLAY_ISSUED_BY = 'server';
 
 @Injectable()
 export class MirrorService {
@@ -187,6 +210,378 @@ export class MirrorService {
       deliveredAt: null,
       ackedAt: null,
     });
+  }
+
+  /**
+   * Queues `channel(...args)` as an `ipc-invoke` for every desktop Client this account has
+   * ever synced from — so `createTask`/`updateTask`/`deleteTask`/`createProject`/
+   * `updateProject`/`deleteProject`'s direct-to-mirror write is not the only place that
+   * mutation exists: a desktop that is offline right now still applies it into its own local
+   * `Store` on its next sync, through the exact path a browser's own relayed calls already use
+   * (`cloudCommands.ts`'s `applyIpcInvoke` → `ipcRegistry.ts`).
+   *
+   * One command per Client on record, not just the account's most recently seen one: each
+   * desktop keeps its own independent local Store, so a mutation made through the web is
+   * missing from ALL of them until each is told, not only the one a browser happens to be
+   * polling.
+   *
+   * Fire-and-forget in the sense the wire contract already establishes for `ipc-invoke`: the
+   * caller (a `POST`/`PATCH`/`DELETE /v1/*` request) does not wait for, or ever learn, whether
+   * a desktop actually applied it — the canonical write already landed in the mirror before
+   * this is even called, and this method's own promise resolves once the command rows are
+   * queued, not once anything has run.
+   *
+   * A caller-supplied id here — rather than an id the browser minted — would let a browser
+   * that retried its own request enqueue the same replay twice; `randomUUID()` is fine because
+   * `enqueueCommand`'s dedupe is keyed on THIS id, not on the mutation it describes, and a
+   * repeated write already produced its own new row upstream (there is no idempotency to lose).
+   */
+  private async replayToDesktops(
+    accountId: string,
+    channel: string,
+    args: unknown[],
+  ): Promise<void> {
+    const clients = await this.clients.find({ where: { accountId }, select: { id: true } });
+    if (clients.length === 0) return;
+
+    const issuedAt = Date.now();
+    await Promise.all(
+      clients.map((client) =>
+        this.enqueueCommand(accountId, {
+          targetClientId: client.id,
+          command: {
+            id: randomUUID(),
+            issuedAt,
+            issuedBy: REPLAY_ISSUED_BY,
+            kind: 'ipc-invoke',
+            payload: { channel, args },
+          },
+        }),
+      ),
+    );
+  }
+
+  /**
+   * `POST /v1/tasks` — an ad-hoc task, written straight into `task_mirrors` rather than
+   * relayed to a desktop Client. See `CreateTaskRequest` on the wire for why this route
+   * exists at all: a relayed `task:create` does nothing for an account no desktop Client is
+   * currently polling for, and this is the server making the identical row itself.
+   *
+   * `projectId` and (if given) `projectTagId` are checked against `project_mirrors` for THIS
+   * account — the same check `ipc.ts`'s `task:create` handler makes against its local store
+   * before filing a card under an agent project, just re-pointed at the mirror because a
+   * caller-supplied id here could as easily name another account's project as a typo.
+   * `order` is computed the same way the desktop's own `nextOrder` query does: one past the
+   * highest `order` any mirrored task in that project already has, or 0 for the first.
+   */
+  async createTask(accountId: string, request: CreateTaskRequest): Promise<Task> {
+    const title = request.title.trim();
+    if (!title) throw new BadRequestException('A task needs a title.');
+
+    await this.assertProject(accountId, request.projectId);
+    if (request.projectTagId) {
+      await this.assertProject(accountId, request.projectTagId, { agentOnly: true });
+    }
+
+    const order = await this.nextTaskOrder(accountId, request.projectId);
+    const task = buildAdhocTask(request.projectId, order, title, request);
+
+    await this.dataSource.transaction((manager) =>
+      applyMirrorDelta(manager, accountId, {
+        tasks: [task],
+        projects: [],
+        deletedTaskIds: [],
+        deletedProjectIds: [],
+      }),
+    );
+
+    // `task:create` mints its OWN id on the desktop — there is no argument that lets a
+    // relayed invoke ask for a specific one — so a desktop that was offline when this ran
+    // gets a second, differently-id'd card once it reconnects, rather than adopting `task.id`.
+    // Accepted for the same reason `POST /v1/tasks` exists at all: the alternative is not
+    // relaying at all, and a duplicate a human can merge or delete beats a card that silently
+    // never reached the desktop.
+    await this.replayToDesktops(accountId, 'task:create', [
+      request.projectId,
+      {
+        title,
+        phase: request.phase,
+        type: request.type,
+        description: request.description,
+        projectTagId: request.projectTagId,
+      },
+    ]);
+
+    return task;
+  }
+
+  /**
+   * `PATCH /v1/tasks/:id` — edit, move or hand-set the status of a mirrored task directly,
+   * the write-endpoint sibling of `createTask` above. See `UpdateTaskRequest` on the wire for
+   * why every field is optional and independent.
+   *
+   * `toColumn` is read before `status`, matching the precedence `ipc.ts` splits into two
+   * handlers (`task:move` for the drag, `task:setStatus` for the dropdown): a request naming
+   * both is answering the same "where does this card go" question twice, and the drag is the
+   * more literal of the two. Either path goes through `resolveMove` (`@tm/shared/moveResolve`,
+   * pure and lifted out of the desktop's own `jiraMove.ts` for exactly this) to decide the new
+   * local status and, for a drop into Blocked, the column to restore later.
+   *
+   * There is no forge write-back here, unlike the desktop's `task:move`/`task:setStatus`: an
+   * ad-hoc task made through this route family never carries a linked JIRA/GitHub issue (see
+   * `createTask`), so `resolveMove`'s `jiraTransition` is always null for it and there is
+   * nothing for `writeMoveToForge` to do. A task that DOES carry a link (mirrored down from a
+   * desktop Client that has since gone offline) still gets its local status moved — the
+   * tracker write simply waits for a Client to relay it, the same gap `POST /v1/commands`
+   * already lives with.
+   */
+  async updateTask(accountId: string, taskId: string, request: UpdateTaskRequest): Promise<Task> {
+    const existing = await this.ownedTask(accountId, taskId);
+
+    if (request.projectTagId) {
+      await this.assertProject(accountId, request.projectTagId, { agentOnly: true });
+    }
+
+    let next: Task = { ...existing };
+    if (request.title !== undefined) {
+      const title = request.title.trim();
+      if (!title) throw new BadRequestException('A task needs a title.');
+      next.title = title;
+    }
+    if (request.phase !== undefined) next.phase = request.phase.trim();
+    if (request.type !== undefined) next.type = request.type;
+    if (request.description !== undefined) {
+      next.externalDescription = request.description?.trim() || null;
+    }
+    if (request.projectTagId !== undefined) next.projectTagId = request.projectTagId;
+
+    if (request.toColumn !== undefined) {
+      const move = resolveMove(next, request.toColumn);
+      if (!move.noop) {
+        next = { ...next, status: move.localStatus, preBlockStatus: move.preBlockStatus };
+      }
+    } else if (request.status !== undefined) {
+      if (!isManualStatus(request.status)) {
+        throw new BadRequestException(`"${request.status}" is not a hand-settable status.`);
+      }
+      if (restingStatus(next) !== request.status) {
+        const move = resolveMove(next, columnForStatus(request.status));
+        next = { ...next, status: request.status, preBlockStatus: move.preBlockStatus };
+      }
+    }
+
+    await this.dataSource.transaction((manager) =>
+      applyMirrorDelta(manager, accountId, {
+        tasks: [next],
+        projects: [],
+        deletedTaskIds: [],
+        deletedProjectIds: [],
+      }),
+    );
+
+    // One replay per field that has a matching `IpcApi` channel — there is no single desktop
+    // handler this whole patch maps onto, unlike `task:create`/`project:add`/`project:update`.
+    // `title`/`phase`/`type` are NOT replayed: no channel exists to edit them after creation
+    // (`task:create`'s `input` is write-once on the desktop today), so an edit to one of those
+    // through this route lands in the mirror only until a future channel closes that gap.
+    // `toColumn`/`status` keep `updateTask`'s own precedence, matching `ipc.ts`'s split into
+    // `task:move` (the drag) and `task:setStatus` (the dropdown).
+    const replays: Array<{ channel: string; args: unknown[] }> = [];
+    if (request.description !== undefined) {
+      replays.push({
+        channel: 'task:setDescription',
+        args: [taskId, next.externalDescription ?? ''],
+      });
+    }
+    if (request.projectTagId !== undefined) {
+      replays.push({ channel: 'task:setProject', args: [taskId, next.projectTagId ?? null] });
+    }
+    if (request.toColumn !== undefined) {
+      replays.push({ channel: 'task:move', args: [taskId, request.toColumn] });
+    } else if (request.status !== undefined) {
+      replays.push({ channel: 'task:setStatus', args: [taskId, request.status] });
+    }
+    await Promise.all(replays.map((r) => this.replayToDesktops(accountId, r.channel, r.args)));
+
+    return next;
+  }
+
+  /**
+   * `DELETE /v1/tasks/:id` — drop a mirrored task, and every step mirrored under it, straight
+   * from `task_mirrors`. The same cascade `store.ts`'s `deleteTaskDeep` does locally: an
+   * orphaned step has no board column of its own and would be unreachable everywhere else.
+   *
+   * Idempotent: an id that names nothing (already deleted, or never this account's) is a
+   * silent no-op, matching `ipc.ts`'s own `task:delete`, which returns rather than throws for
+   * the same case. A live run DOES still refuse — a status a desktop's scheduler is holding
+   * must not be deleted out from under it — the same guard `task:delete` applies before its
+   * own `deleteTask`.
+   */
+  async deleteTask(accountId: string, taskId: string): Promise<void> {
+    const row = await this.taskMirrors.findOne({ where: { id: taskId, accountId } });
+    if (!row) return;
+    const existing = row.data;
+
+    // Steps mirror the same way a card does — their own `task_mirrors` row, scoped by
+    // `parentTaskId` inside `data` rather than a column, so this reads the project the same
+    // way `nextTaskOrder` does and filters in JS.
+    const projectRows = await this.taskMirrors.find({
+      where: { accountId, projectId: existing.projectId },
+      select: { data: true },
+    });
+    const steps = projectRows.map((r) => r.data).filter((task) => task.parentTaskId === taskId);
+
+    for (const task of [existing, ...steps]) {
+      if (task.status === 'running' || task.status === 'waiting-input') {
+        throw new BadRequestException('Stop the task before deleting it.');
+      }
+    }
+
+    await this.dataSource.transaction((manager) =>
+      applyMirrorDelta(manager, accountId, {
+        tasks: [],
+        projects: [],
+        deletedTaskIds: [existing.id, ...steps.map((s) => s.id)],
+        deletedProjectIds: [],
+      }),
+    );
+
+    // Unlike `task:create`'s replay, this ONE lines up exactly: `task.id` here is whatever
+    // created the row in the first place, so a desktop that has this task locally (mirrored
+    // down from an earlier sync, its own or another Client's) deletes the SAME row — and
+    // `ipc.ts`'s own `task:delete` cascades to steps locally too, so one command covers both.
+    await this.replayToDesktops(accountId, 'task:delete', [existing.id]);
+  }
+
+  /**
+   * `POST /v1/projects` — a project written directly rather than relayed, the project
+   * sibling of `createTask` above. Builds the row with `@tm/shared/projectBuilders`'s
+   * `buildProject` — the SAME object-construction path `ipc.ts`'s `project:add` handler
+   * uses via `store.addProject`, so a project made this way is byte-for-byte what the
+   * desktop would have produced from the same input.
+   *
+   * `DEFAULT_SETTINGS` stands in for `getSettings()`: there is no per-account settings row
+   * on the server, so every field the request didn't specify falls back to the app's stock
+   * defaults rather than a caller's own — the same fallback an account's very first desktop
+   * Client would see before ever changing a setting.
+   */
+  async createProject(accountId: string, request: CreateProjectRequest): Promise<Project> {
+    const project = buildProject(request, DEFAULT_SETTINGS);
+
+    await this.dataSource.transaction((manager) =>
+      applyMirrorDelta(manager, accountId, {
+        tasks: [],
+        projects: [project],
+        deletedTaskIds: [],
+        deletedProjectIds: [],
+      }),
+    );
+
+    // Same accepted gap as `task:create`'s replay above: `project:add` mints its own id, so a
+    // desktop reconnecting later gets a second row for this project rather than adopting
+    // `project.id`.
+    await this.replayToDesktops(accountId, 'project:add', [request]);
+
+    return project;
+  }
+
+  /**
+   * `PATCH /v1/projects/:id` — edit a mirrored project directly, the project sibling of
+   * `updateTask` above. Every field is optional and independent, mirroring `ipc.ts`'s own
+   * `project:update` → `store.updateProject`.
+   *
+   * `ticketPrefix` skips that handler's re-keying step on purpose: rewriting every ticket a
+   * project owns to a new prefix is `store.ts`'s own `rekeyProjectTickets`, over the
+   * desktop's relational `tickets`/`tasks` tables, and nothing reaches this route family
+   * with an issued ticket to rekey yet — `POST /v1/tasks` only ever builds an ad-hoc task
+   * (`source: 'adhoc'`), never a native one. The prefix itself is still normalized and
+   * written, so a project made through this route family can be given one.
+   */
+  async updateProject(
+    accountId: string,
+    projectId: string,
+    request: UpdateProjectRequest,
+  ): Promise<Project> {
+    const existing = await this.ownedProject(accountId, projectId);
+    const next: Project = { ...existing };
+
+    if (request.name !== undefined) next.name = request.name;
+    if (request.path !== undefined) next.path = request.path;
+    if (request.planPath !== undefined) next.planPath = request.planPath;
+    if (request.defaultModel !== undefined) next.defaultModel = request.defaultModel;
+    if (request.planningModel !== undefined) next.planningModel = request.planningModel ?? null;
+    if (request.defaultPermissionMode !== undefined) {
+      next.defaultPermissionMode = request.defaultPermissionMode;
+    }
+    if (request.concurrency !== undefined) {
+      next.concurrency = Math.max(1, Math.round(request.concurrency));
+    }
+    if (request.useWorktrees !== undefined) next.useWorktrees = request.useWorktrees;
+    if (request.baseBranch !== undefined) next.baseBranch = request.baseBranch.trim();
+    if (request.writeBackPlan !== undefined) next.writeBackPlan = request.writeBackPlan;
+    if (request.autoRelease !== undefined) next.autoRelease = request.autoRelease;
+    if (request.autoIntegrate !== undefined) next.autoIntegrate = request.autoIntegrate;
+    if (request.planAligned !== undefined) next.planAligned = request.planAligned;
+    if (request.jiraEpicKeys !== undefined) {
+      next.jiraEpicKeys = normalizeEpicKeys(request.jiraEpicKeys);
+    }
+    if (request.ticketPrefix !== undefined) {
+      next.ticketPrefix = normalizeTicketPrefix(request.ticketPrefix) ?? '';
+    }
+    if (request.target !== undefined) next.target = request.target;
+    if (request.instructions !== undefined) next.instructions = request.instructions.trim();
+    if (request.color !== undefined) next.color = request.color.trim();
+
+    await this.dataSource.transaction((manager) =>
+      applyMirrorDelta(manager, accountId, {
+        tasks: [],
+        projects: [next],
+        deletedTaskIds: [],
+        deletedProjectIds: [],
+      }),
+    );
+
+    // Unlike `updateTask`, `UpdateProjectRequest` IS `ProjectPatch` verbatim — the exact shape
+    // `project:update` already accepts — so this whole patch replays as one command instead of
+    // being split field by field.
+    await this.replayToDesktops(accountId, 'project:update', [projectId, request]);
+
+    return next;
+  }
+
+  /**
+   * `DELETE /v1/projects/:id` — drop a mirrored project, and every task mirrored under it
+   * (steps included), straight from `project_mirrors`/`task_mirrors`. The server's own
+   * stand-in for the desktop's `ON DELETE CASCADE` foreign key (`store.ts`'s
+   * `tasks.projectId REFERENCES projects(id)`) — the two mirror tables carry no such
+   * constraint, so the cascade is done here in JS instead, the same way `deleteTask`
+   * cascades to a card's steps.
+   *
+   * Idempotent, like `deleteTask`: an id that names nothing is a silent no-op. Unlike
+   * `deleteTask`, there is no running-task guard — `ipc.ts`'s own `project:remove` has none
+   * either, so a project (and whatever it has mid-run) can be removed regardless.
+   */
+  async deleteProject(accountId: string, projectId: string): Promise<void> {
+    const row = await this.projectMirrors.findOne({ where: { id: projectId, accountId } });
+    if (!row) return;
+
+    const tasks = await this.taskMirrors.find({
+      where: { accountId, projectId },
+      select: { id: true },
+    });
+
+    await this.dataSource.transaction((manager) =>
+      applyMirrorDelta(manager, accountId, {
+        tasks: [],
+        projects: [],
+        deletedTaskIds: tasks.map((t) => t.id),
+        deletedProjectIds: [projectId],
+      }),
+    );
+
+    // Lines up exactly, like `task:delete`'s replay: `projectId` is whatever created the row,
+    // and `ipc.ts`'s own `project:remove` cascades to its tasks locally too.
+    await this.replayToDesktops(accountId, 'project:remove', [projectId]);
   }
 
   /**
@@ -375,6 +770,48 @@ export class MirrorService {
       rows.push(row);
     }
     return { rows, hasMore };
+  }
+
+  /**
+   * `Unknown project.` for both an id that names nothing and one that names another
+   * account's row — same as `readAttachmentBlob`'s reasoning: distinguishing the two would
+   * confirm the id exists, which a caller with no claim to it should never get for free.
+   */
+  private async assertProject(
+    accountId: string,
+    projectId: string,
+    opts?: { agentOnly?: boolean },
+  ): Promise<void> {
+    const project = await this.projectMirrors.findOne({
+      where: { id: projectId, accountId },
+      select: { id: true, data: true },
+    });
+    if (!project || (opts?.agentOnly && !hasRepo(project.data))) {
+      throw new BadRequestException('Unknown project.');
+    }
+  }
+
+  /** `Task not found.` for both a missing id and another account's row — see `assertProject`. */
+  private async ownedTask(accountId: string, taskId: string): Promise<Task> {
+    const row = await this.taskMirrors.findOne({ where: { id: taskId, accountId } });
+    if (!row) throw new NotFoundException('Task not found.');
+    return row.data;
+  }
+
+  /** `Project not found.` for both a missing id and another account's row — see `assertProject`. */
+  private async ownedProject(accountId: string, projectId: string): Promise<Project> {
+    const row = await this.projectMirrors.findOne({ where: { id: projectId, accountId } });
+    if (!row) throw new NotFoundException('Project not found.');
+    return row.data;
+  }
+
+  /** One past the highest `order` any mirrored task in this project already has. */
+  private async nextTaskOrder(accountId: string, projectId: string): Promise<number> {
+    const rows = await this.taskMirrors.find({
+      where: { accountId, projectId },
+      select: { data: true },
+    });
+    return rows.reduce((max, row) => Math.max(max, row.data.order), -1) + 1;
   }
 
   private async currentRowVersion(accountId: string): Promise<Buffer> {
