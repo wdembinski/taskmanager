@@ -26,28 +26,32 @@ const step = task({ id: 'step', parentTaskId: 'live', order: 0 });
 const board = stateOf(live, archived, otherProject, step);
 
 describe('selectBoardTasks', () => {
-  it('keeps only the un-archived Personal rows', () => {
-    expect(selectBoardTasks(board).map((t) => t.id)).toEqual(['step', 'live']);
+  it('keeps only the given project’s un-archived rows', () => {
+    expect(selectBoardTasks(board, PERSONAL_PROJECT_ID).map((t) => t.id)).toEqual(['step', 'live']);
+  });
+
+  it('reads a different project when asked for one', () => {
+    expect(selectBoardTasks(board, 'p2').map((t) => t.id)).toEqual(['other']);
   });
 
   it('keeps a step, which groupSubtasks needs to hang under its parent', () => {
-    expect(selectBoardTasks(board).some((t) => t.id === 'step')).toBe(true);
+    expect(selectBoardTasks(board, PERSONAL_PROJECT_ID).some((t) => t.id === 'step')).toBe(true);
   });
 
   it('sorts by order', () => {
     const state = stateOf(task({ id: 'c', order: 2 }), task({ id: 'a', order: 0 }));
-    expect(selectBoardTasks(state).map((t) => t.id)).toEqual(['a', 'c']);
+    expect(selectBoardTasks(state, PERSONAL_PROJECT_ID).map((t) => t.id)).toEqual(['a', 'c']);
   });
 
   it('treats a missing archivedAt as not archived', () => {
     const state = stateOf(task({ id: 'undef', archivedAt: undefined }));
-    expect(selectBoardTasks(state).map((t) => t.id)).toEqual(['undef']);
+    expect(selectBoardTasks(state, PERSONAL_PROJECT_ID).map((t) => t.id)).toEqual(['undef']);
   });
 });
 
 describe('selectArchivedTasks', () => {
-  it('keeps only the archived Personal rows', () => {
-    expect(selectArchivedTasks(board).map((t) => t.id)).toEqual(['archived']);
+  it('keeps only the given project’s archived rows', () => {
+    expect(selectArchivedTasks(board, PERSONAL_PROJECT_ID).map((t) => t.id)).toEqual(['archived']);
   });
 
   it('ignores another project, archived or not', () => {
@@ -55,8 +59,8 @@ describe('selectArchivedTasks', () => {
       task({ id: 'otherArchived', projectId: 'p2', archivedAt: 1 }),
       otherProject,
     );
-    expect(selectArchivedTasks(state)).toEqual([]);
-    expect(selectBoardTasks(state)).toEqual([]);
+    expect(selectArchivedTasks(state, PERSONAL_PROJECT_ID)).toEqual([]);
+    expect(selectBoardTasks(state, PERSONAL_PROJECT_ID)).toEqual([]);
   });
 
   it('sorts most recently archived first, then by order', () => {
@@ -65,6 +69,10 @@ describe('selectArchivedTasks', () => {
       task({ id: 'new', archivedAt: 9_000, order: 3 }),
       task({ id: 'newAlso', archivedAt: 9_000, order: 1 }),
     );
-    expect(selectArchivedTasks(state).map((t) => t.id)).toEqual(['newAlso', 'new', 'old']);
+    expect(selectArchivedTasks(state, PERSONAL_PROJECT_ID).map((t) => t.id)).toEqual([
+      'newAlso',
+      'new',
+      'old',
+    ]);
   });
 });

@@ -6,16 +6,37 @@
  * `titleBar` — the desktop runs in a frameless window and has to paint its own drag region
  * and min/max/close; a browser tab already has all three above the page.
  *
- * The rail carries all five desktop destinations even though only one of them is mirrored
+ * The rail carries all six desktop destinations even though only two of them are mirrored
  * here. A rail with a single tile on it looks like a different application, and a tile
  * that is present-but-off with "desktop only" in its tooltip is honest where a missing one
  * is merely silent.
+ *
+ * REAL URLS
+ * ---------
+ * Screens used to be an in-memory `useState<Screen>` — a reload always landed back on My
+ * Tasks, and a project's board had no address to bookmark or hand to somebody else. A
+ * `BrowserRouter` now owns that instead: `/tasks` is the Personal board, `/projects` is the
+ * hub (`ProjectsHub`), `/projects/:projectId` is that project's own board (the same
+ * `BoardScreen`, pointed at a different queue — see `ProjectBoardRoute`). It sits above the
+ * sign-in gate rather than inside it: the `/callback` redirect is resolved by
+ * `useCloudAuth` reading `window.location` directly and replaces the URL itself before this
+ * tree ever renders a route, so the two never race.
  */
 import { useEffect, useMemo, useState } from 'react';
+import {
+  BrowserRouter,
+  Link,
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+} from 'react-router-dom';
 import { Caption1, makeStyles } from '@fluentui/react-components';
 import {
   AlertRegular,
   DataTrendingRegular,
+  FolderRegular,
   PlayRegular,
   SettingsRegular,
   TaskListSquareLtrRegular,
@@ -26,12 +47,15 @@ import { Performance } from '@tm/ui/Performance';
 import { NavRail, type NavRailItem } from '@tm/ui/shell/NavRail';
 import { StatusBar, StatusDot, StatusSpacer } from '@tm/ui/shell/StatusBar';
 import { TransportProvider } from '@tm/ui/transport';
+import { PERSONAL_PROJECT_ID } from '@tm/shared/model';
 import { CloudAuth } from './auth/cloudAuth';
 import { SignInScreen } from './auth/SignInScreen';
 import { useCloudAuth } from './auth/useCloudAuth';
 import { BoardScreen } from './board/BoardScreen';
 import { SettingsScreen } from './settings/SettingsScreen';
 import { ClientPicker } from './board/ClientPicker';
+import { ProjectBoardRoute } from './projects/ProjectBoardRoute';
+import { ProjectsHub } from './projects/ProjectsHub';
 import { SkewBanner } from './board/SkewBanner';
 import { StaleBanner } from './board/StaleBanner';
 import { versionSkew } from './board/targetClient';
@@ -54,15 +78,18 @@ const useStyles = makeStyles({
     cursor: 'pointer',
     textDecoration: 'underline',
   },
+  empty: { padding: '8px 4px' },
 });
 
 /** Why a tile that isn't here is off. Appended to its tooltip. */
 const DESKTOP_ONLY = 'desktop only';
 
 /**
- * The desktop's rail, in the desktop's order — see `apps/client/src/renderer/src/App.tsx`.
+ * The desktop's rail, in the desktop's order — see `apps/client/src/renderer/src/App.tsx` —
+ * plus Projects, which the desktop does not have yet: the hub is this step's own addition,
+ * ahead of the desktop side of the same plan.
  *
- * Four of the five are live now. Attention and Performance moved into `@tm/ui` whole (they
+ * Five of the six are live now. Attention and Performance moved into `@tm/ui` whole (they
  * had no host in them at all, only `window.api` calls that are `useTransport()` now), and
  * Settings is a fork: nine of its twenty-one channels are host-bound, so the shell is this
  * app's and the host-free sections are shared. Scratch run stays off — it drives a live
@@ -70,6 +97,7 @@ const DESKTOP_ONLY = 'desktop only';
  */
 const NAV: readonly NavRailItem[] = [
   { id: 'mytasks', label: 'My Tasks', icon: <TaskListSquareLtrRegular /> },
+  { id: 'projects', label: 'Projects', icon: <FolderRegular /> },
   { id: 'performance', label: 'Performance', icon: <DataTrendingRegular /> },
   { id: 'attention', label: 'Attention', icon: <AlertRegular /> },
   { id: 'settings', label: 'Settings', icon: <SettingsRegular /> },
@@ -77,7 +105,25 @@ const NAV: readonly NavRailItem[] = [
 ];
 
 /** The rail's destinations that this app actually renders. */
-type Screen = 'mytasks' | 'performance' | 'attention' | 'settings';
+type Screen = 'mytasks' | 'projects' | 'performance' | 'attention' | 'settings';
+
+/** Where each nav tile actually lives. */
+const NAV_PATH: Record<Screen, string> = {
+  mytasks: '/tasks',
+  projects: '/projects',
+  performance: '/performance',
+  attention: '/attention',
+  settings: '/settings',
+};
+
+/** Which tile a path lights up — `/projects/:id` is still under the Projects tile. */
+function screenForPath(pathname: string): Screen {
+  if (pathname.startsWith('/projects')) return 'projects';
+  if (pathname.startsWith('/performance')) return 'performance';
+  if (pathname.startsWith('/attention')) return 'attention';
+  if (pathname.startsWith('/settings')) return 'settings';
+  return 'mytasks';
+}
 
 /** How often the status bar's "synced Ns ago" recomputes between polls. */
 const AGE_TICK_MS = 5_000;
@@ -98,14 +144,16 @@ export function App(): JSX.Element {
   const { signedIn, error, signIn, signOut } = useCloudAuth(auth);
 
   return (
-    <AuthedApp
-      auth={auth}
-      config={config}
-      signedIn={signedIn}
-      error={error}
-      signIn={signIn}
-      signOut={signOut}
-    />
+    <BrowserRouter>
+      <AuthedApp
+        auth={auth}
+        config={config}
+        signedIn={signedIn}
+        error={error}
+        signIn={signIn}
+        signOut={signOut}
+      />
+    </BrowserRouter>
   );
 }
 
@@ -148,12 +196,23 @@ function SignedInBoard({
   const styles = useStyles();
   const board = useCloudBoard(auth, config);
   const now = useTick(AGE_TICK_MS);
-  const [screen, setScreen] = useState<Screen>('mytasks');
+  const navigate = useNavigate();
+  const location = useLocation();
+  const screen = screenForPath(location.pathname);
 
   const online = board.state.clients.length > 0;
   // Only ever about the Client this tab is actually driving. A second, older desktop on the
   // account is nothing to warn about while nothing is being sent to it.
   const skew = versionSkew(board.targetClient);
+
+  /** What `ProjectsHub`/`ProjectFormDialog` write through — see `projectsApi.ts`. Plain
+   *  fetch, not the transport: these are direct REST writes to the server's own store. */
+  const apiDeps = useMemo(
+    () => ({ apiBase: config.cloudApiBase, getAccessToken: () => auth.getAccessToken() }),
+    [config.cloudApiBase, auth],
+  );
+
+  const personalProject = board.state.projects[PERSONAL_PROJECT_ID];
 
   return (
     <TransportProvider transport={board.transport}>
@@ -161,7 +220,11 @@ function SignedInBoard({
         nav={
           // Scratch run refuses selection inside `NavRail` (it is the one tile still marked
           // unavailable), so anything that reaches here is a real destination.
-          <NavRail items={NAV} selected={screen} onSelect={(id) => setScreen(id as Screen)} />
+          <NavRail
+            items={NAV}
+            selected={screen}
+            onSelect={(id) => navigate(NAV_PATH[id as Screen])}
+          />
         }
         banners={
           // The shell's own banner strip, which is where the desktop's outage bars go too —
@@ -219,20 +282,59 @@ function SignedInBoard({
           </StatusBar>
         }
       >
-        {/* Each screen is unmounted rather than hidden when you leave it — every one of
-            them polls, and a Performance pane nobody is looking at should not be relaying a
-            `usage:summary` every second. The desktop's own `App` folds them the same way. */}
-        {screen === 'mytasks' && (
-          <BoardScreen
-            state={board.state}
-            everSeenClient={board.targetClientId !== null}
-            onSetStatus={(taskId, status) => void board.setStatus(taskId, status)}
-            onStatusNoted={board.noteStatus}
+        {/* Each route is unmounted rather than hidden when you leave it — every screen
+            polls, and a Performance pane nobody is looking at should not be relaying a
+            `usage:summary` every second. The desktop's own `App` folds them the same way;
+            `Routes` gives the browser tab that behaviour for free. */}
+        <Routes>
+          <Route path="/" element={<Navigate to="/tasks" replace />} />
+          <Route
+            path="/tasks"
+            element={
+              <BoardScreen
+                state={board.state}
+                projectId={PERSONAL_PROJECT_ID}
+                projectName={personalProject?.name ?? 'Personal'}
+                everSeenClient={board.targetClientId !== null}
+                onSetStatus={(taskId, status) => void board.setStatus(taskId, status)}
+                onStatusNoted={board.noteStatus}
+              />
+            }
           />
-        )}
-        {screen === 'performance' && <Performance />}
-        {screen === 'attention' && <Attention />}
-        {screen === 'settings' && <SettingsScreen />}
+          <Route
+            path="/projects"
+            element={
+              <ProjectsHub
+                state={board.state}
+                apiDeps={apiDeps}
+                onOpenProject={(projectId) => navigate(`/projects/${projectId}`)}
+                onProjectSaved={board.upsertProject}
+              />
+            }
+          />
+          <Route
+            path="/projects/:projectId"
+            element={
+              <ProjectBoardRoute
+                state={board.state}
+                everSeenClient={board.targetClientId !== null}
+                onSetStatus={(taskId, status) => void board.setStatus(taskId, status)}
+                onStatusNoted={board.noteStatus}
+              />
+            }
+          />
+          <Route path="/performance" element={<Performance />} />
+          <Route path="/attention" element={<Attention />} />
+          <Route path="/settings" element={<SettingsScreen />} />
+          <Route
+            path="*"
+            element={
+              <Caption1 className={styles.empty}>
+                Nothing here — <Link to="/tasks">back to My Tasks</Link>.
+              </Caption1>
+            }
+          />
+        </Routes>
       </AppShell>
     </TransportProvider>
   );

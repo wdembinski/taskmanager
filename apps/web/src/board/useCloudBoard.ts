@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CadenceDirective } from '@tm/protocol/cadence';
 import type { ClientPresence } from '@tm/protocol/wire';
-import type { ManualStatus } from '@tm/shared/model';
+import type { ManualStatus, Project } from '@tm/shared/model';
 import type { CloudAuth } from '../auth/cloudAuth';
 import type { WebConfig } from '../env';
 import { createPresenceFocusSignal, PresenceHeartbeat } from '../presence';
@@ -20,6 +20,7 @@ import {
   applyBoardResponse,
   clearPendingStatusChange,
   expirePendingStatusChanges,
+  mergeProject,
   queuePendingStatusChange,
   type CloudBoardState,
 } from './cloudBoardStore';
@@ -64,6 +65,9 @@ export interface CloudBoardApi {
   // No `createTask` here any more: the shared add-task dialog calls `task:create` on the
   // transport itself, like every other write under `TaskDetail`, and a second path through
   // this hook could only ever be the narrower one (see `httpTransport.ts`).
+  /** Drop a project the hub just created or edited straight into the mirror — see
+   *  `cloudBoardStore.mergeProject`. */
+  upsertProject: (project: Project) => void;
 }
 
 export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi {
@@ -192,6 +196,10 @@ export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi
     );
   }, []);
 
+  const upsertProject = useCallback((project: Project) => {
+    setState((s) => mergeProject(s, project));
+  }, []);
+
   return {
     state,
     cadence: state.cadence,
@@ -202,5 +210,6 @@ export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi
     transport,
     setStatus,
     noteStatus,
+    upsertProject,
   };
 }

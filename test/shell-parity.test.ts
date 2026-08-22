@@ -441,6 +441,19 @@ describe('the one configuration the web deliberately does not mirror', () => {
    *
    * The block asserts the decision, not the reasoning: if the decision is ever reversed, the
    * fix is to change it here and in the plan doc, not to delete the assertion.
+   *
+   * NARROWER THAN IT SOUNDS, ON PURPOSE
+   * ------------------------------------
+   * "Creates, edits or removes one" means an AGENT project specifically — an `invoke` of an
+   * `agentProject:*` channel or a native picker. It has never meant "the web may create no
+   * project of any kind": `apps/web/src/projects/projectsApi.ts` calls `POST /v1/projects`
+   * and `PATCH /v1/projects/:id` (`TicketsController`, added the same round as this guard's
+   * ticket-project prerequisites) to create and rename `kind: 'ticket'` projects, and that is
+   * a different door — plain `fetch` against the server's own REST surface, not `invoke` on
+   * the relay this block scans, and the server itself refuses any `kind` other than
+   * `'ticket'` there (`TicketsService.createProject`). A ticket project has no folder and no
+   * machine to name, which is the whole reason the desktop-only line falls where it does:
+   * between a project that IS a directory and one that is only ever a queue of cards.
    */
   const WEB_TREE = 'apps/web/src';
   const SHARED_UI_TREE = 'packages/ui/src';
@@ -450,7 +463,7 @@ describe('the one configuration the web deliberately does not mirror', () => {
   const AGENT_PROJECT_WRITE = /invoke\(\s*'agentProject:(?:add|update|remove)'/;
   const NATIVE_PICKER = /invoke\(\s*'project:pick(?:Directory|File)'/;
 
-  it('has no browser code that creates, edits or removes one', () => {
+  it('has no browser code that creates, edits or removes an agent project', () => {
     // Tests are excluded because the web's own suite calls `project:pickDirectory` on purpose
     // (`httpTransport.test.ts`) to assert the transport REFUSES it — the opposite of a breach.
     const sources = filesUnder(WEB_TREE, /\.tsx?$/).filter((path) => !/\.test\.tsx?$/.test(path));

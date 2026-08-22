@@ -56,13 +56,7 @@ import { useTransport } from '@tm/ui/transport';
 import { useBoardLayoutStyles } from '@tm/ui/board/boardLayout';
 import { ArchivedCardsDialog, archivedCards } from '@tm/ui/board/ArchivedCardsDialog';
 import { chainComponent } from '@tm/shared/taskChain';
-import {
-  isManualStatus,
-  PERSONAL_PROJECT_ID,
-  type BoardColumn,
-  type ManualStatus,
-  type Task,
-} from '@tm/shared/model';
+import { isManualStatus, type BoardColumn, type ManualStatus, type Task } from '@tm/shared/model';
 import { BoardToolbar } from './BoardToolbar';
 import { selectArchivedTasks, selectBoardTasks } from './boardSelectors';
 import { displayStatus, isTaskPending, type CloudBoardState } from './cloudBoardStore';
@@ -92,6 +86,13 @@ const COLUMN_LABEL: Record<BoardColumn, string> = Object.fromEntries(
 
 export interface BoardScreenProps {
   state: CloudBoardState;
+  /**
+   * Whose queue this board draws — the Personal board's sentinel id, or any other project's
+   * (`boardSelectors.ts` reads every row against this, and a new card files under it too).
+   */
+  projectId: string;
+  /** The project's own name, for the empty state ("No cards on Foo's board."). */
+  projectName: string;
   everSeenClient: boolean;
   onSetStatus: (taskId: string, status: ManualStatus) => void;
   /**
@@ -103,6 +104,8 @@ export interface BoardScreenProps {
 
 export function BoardScreen({
   state,
+  projectId,
+  projectName,
   everSeenClient,
   onSetStatus,
   onStatusNoted,
@@ -143,9 +146,9 @@ export function BoardScreen({
   /**
    * The card's optional lines, read the desktop's way: `projectNameOf` is the tracker's own
    * container for the card (`phase` — JIRA's project name, or GitHub's `owner/repo`), not the
-   * local project — every card on this board is in Personal, so that one would say the same
-   * word on all of them — and the stripe is the repo the card is tagged with, which is what
-   * the desktop colours it by.
+   * local project — every card on THIS board is in the same one project, so that one would
+   * say the same word on all of them — and the stripe is the repo the card is tagged with,
+   * which is what the desktop colours it by.
    *
    * Both now read the real agent-project list rather than the mirrored `Project` rows, so a
    * card's stripe is the same colour it is on the desktop.
@@ -157,8 +160,8 @@ export function BoardScreen({
   const projectColorOf = (task: Task): string | undefined =>
     extras.agentProjects.find((p) => p.id === task.projectTagId)?.color || undefined;
 
-  /** The desktop's own card set — Personal, un-archived. See `boardSelectors.ts`. */
-  const boardTasks = useMemo(() => selectBoardTasks(state), [state]);
+  /** This project's own card set, un-archived. See `boardSelectors.ts`. */
+  const boardTasks = useMemo(() => selectBoardTasks(state, projectId), [state, projectId]);
 
   /**
    * The cards that have LEFT this board. No fetch and no `board:archived` equivalent: the
@@ -166,7 +169,10 @@ export function BoardScreen({
    * `boardSelectors.ts` says why ingest must not drop them), so this is the same list the
    * desktop's dialog shows, minus the step rows `archivedCards` filters out.
    */
-  const removedCards = useMemo(() => archivedCards(selectArchivedTasks(state)), [state]);
+  const removedCards = useMemo(
+    () => archivedCards(selectArchivedTasks(state, projectId)),
+    [state, projectId],
+  );
 
   const mrsByTask = useMemo(
     () => mergeRequestsByTask(extras.mergeRequests),
@@ -425,7 +431,7 @@ export function BoardScreen({
           <Caption1 className={styles.empty}>
             {projects.length === 0 && Object.keys(state.tasks).length === 0
               ? 'No board data yet — waiting on the first sync from your desktop app.'
-              : 'No cards on your Personal board.'}
+              : `No cards on the ${projectName} board.`}
           </Caption1>
         ) : (
           <div className={layout.columns} onClick={() => setSelectedLinkId(null)}>
@@ -598,7 +604,7 @@ export function BoardScreen({
           collects is applied by the desktop's own handler and lands in full. */}
       <AddTaskDialog
         open={addOpen}
-        projectId={PERSONAL_PROJECT_ID}
+        projectId={projectId}
         phases={[]}
         parents={parentCandidates}
         // The same cards, asked a different question — see `parentCandidates`.

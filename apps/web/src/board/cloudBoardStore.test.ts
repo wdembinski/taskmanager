@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardResponse } from '@tm/protocol/wire';
-import type { Task } from '@tm/shared/model';
+import type { Project, Task } from '@tm/shared/model';
 import {
   EMPTY_BOARD_STATE,
   PENDING_STATUS_TIMEOUT_MS,
@@ -8,6 +8,7 @@ import {
   displayStatus,
   expirePendingStatusChanges,
   isTaskPending,
+  mergeProject,
   queuePendingStatusChange,
 } from './cloudBoardStore';
 
@@ -21,6 +22,19 @@ function task(overrides: Partial<Task> = {}): Task {
     order: 0,
     ...overrides,
   } as Task;
+}
+
+function project(overrides: Partial<Project> = {}): Project {
+  return {
+    id: 'p1',
+    name: 'A project',
+    path: '',
+    planPath: '',
+    kind: 'ticket',
+    ticketPrefix: 'TM',
+    createdAt: 0,
+    ...overrides,
+  } as Project;
 }
 
 function boardResponse(overrides: Partial<BoardResponse> = {}): BoardResponse {
@@ -169,6 +183,26 @@ describe('displayStatus', () => {
       issuedAt: 100,
     });
     expect(displayStatus(state, task({ status: 'pending' }))).toBe('done');
+  });
+});
+
+describe('mergeProject', () => {
+  it('adds a project the hub just created, ahead of any poll', () => {
+    const state = mergeProject(EMPTY_BOARD_STATE, project());
+    expect(state.projects['p1']?.name).toBe('A project');
+  });
+
+  it('overwrites the same id with an edit', () => {
+    const seeded = mergeProject(EMPTY_BOARD_STATE, project({ name: 'Old name' }));
+    const state = mergeProject(seeded, project({ name: 'New name' }));
+    expect(state.projects['p1']?.name).toBe('New name');
+  });
+
+  it('leaves every other project and the rest of the state untouched', () => {
+    const seeded = mergeProject(EMPTY_BOARD_STATE, project({ id: 'other' }));
+    const state = mergeProject(seeded, project({ id: 'p1' }));
+    expect(state.projects['other']).toBeDefined();
+    expect(state.tasks).toBe(seeded.tasks);
   });
 });
 
