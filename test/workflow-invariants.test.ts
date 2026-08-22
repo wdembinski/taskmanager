@@ -18,16 +18,18 @@
  *  3. **Promoting before packaging.** electron-builder cannot upload into a *published*
  *     release — it says `skipped` and exits 0 — so a promote that runs early is a green run
  *     with an empty release (RELEASE.md rule 4). The inverse also has a body count: four
- *     finished drafts once sat unpublished waiting on a Linux build that was never coming,
- *     which is why `promote` must not be gated on the Linux job succeeding (§6).
+ *     finished drafts once sat unpublished waiting on a Linux build that was never coming —
+ *     which is why there is no Linux job left to wait on at all (§6).
  *  4. **The gates drifting from RELEASE.md §1.** `ci.yml` and `release.yml` deliberately
  *     duplicate §1's list rather than share a reusable workflow — one guards a merge, one
  *     guards a tag, and coupling them means a change made for one silently changes the
  *     other. Duplication is the right call there and it is also how three lists quietly stop
  *     agreeing. This is the guard that makes "keep them in step by hand" a checkable claim.
  *
- * A fifth group was added afterwards and is a different kind of claim: not a mistake anyone
- * has made here yet, but the one part of `docs/11-ci-cd-pipeline.md` that can go wrong
+ * Two more groups were added afterwards, both a different kind of claim from the four above.
+ * The sixth is documented on itself, at the bottom of this file: how a released version
+ * reaches the deployed web client, which is two links in two files that are invisible from
+ * each other. The fifth is the one part of `docs/11-ci-cd-pipeline.md` that can go wrong
  * silently. Its "The files it is made of" section is a map of every file the pipeline is
  * made of, and a map is exactly the sort of prose that survives a rename unchanged. So the
  * paths in it are read back and required to exist, and every workflow on disk is required to
@@ -53,7 +55,7 @@
  *
  * Written red-first: every assertion here was confirmed to fail against a workflow mutated
  * to break it (a `version:` added, a `node-version: 20`, `promote` un-`needs`-ed from
- * `linux`, `--draft=false` moved into the `windows` job, a gate step deleted) before any of
+ * `windows`, `--draft=false` moved into the `windows` job, a gate step deleted) before any of
  * it was relied on.
  */
 import { describe, expect, it } from 'vitest';
@@ -70,6 +72,7 @@ interface Step {
   uses?: string;
   with?: Record<string, unknown>;
   run?: string;
+  if?: string;
 }
 
 interface Job {
@@ -80,6 +83,7 @@ interface Job {
 
 interface Workflow {
   name?: string;
+  permissions?: Record<string, string>;
   jobs?: Record<string, Job>;
 }
 
@@ -222,24 +226,30 @@ describe('release.yml promotes the draft last, and does promote it (RELEASE.md r
     ).toContain('--draft');
   });
 
-  it('runs promote after both package jobs, and nothing after promote', () => {
+  it('runs promote after the windows package job, and nothing after promote', () => {
     const promote = job('release.yml', 'promote');
 
     expect(
       needsOf(promote),
-      "release.yml's `promote` job must `needs:` both package jobs. Without `windows` it can " +
-        'publish before the installer and latest.yml are uploaded, and electron-builder cannot ' +
-        'write into a published release (RELEASE.md rule 4).',
-    ).toEqual(expect.arrayContaining(['windows', 'linux']));
+      "release.yml's `promote` job must `needs:` `windows`. Without it, promote can publish " +
+        'before the installer and latest.yml are uploaded, and electron-builder cannot write ' +
+        'into a published release (RELEASE.md rule 4).',
+    ).toEqual(expect.arrayContaining(['windows']));
 
-    // Transitively: both package jobs wait for the tag and the draft to exist.
-    for (const id of ['windows', 'linux']) {
-      expect(
-        needsOf(job('release.yml', id)),
-        `release.yml's \`${id}\` job must wait for \`version\`, which is what creates the tag it ` +
-          'checks out and the draft it uploads into.',
-      ).toContain('version');
-    }
+    // Transitively: windows waits for the tag and the draft to exist.
+    expect(
+      needsOf(job('release.yml', 'windows')),
+      "release.yml's `windows` job must wait for `version`, which is what creates the tag it " +
+        'checks out and the draft it uploads into.',
+    ).toContain('version');
+
+    // There is deliberately no `linux` job any more — see RELEASE.md §6.
+    expect(
+      workflow('release.yml').jobs?.linux,
+      "release.yml has a `linux` job again. Linux releases were discontinued (RELEASE.md §6) " +
+        'after four drafts sat unpublished waiting on a Linux build that was never coming; if ' +
+        "it's back, this file's other assertions about `promote` need to widen with it.",
+    ).toBeUndefined();
 
     const jobs = workflow('release.yml').jobs ?? {};
     const after = Object.entries(jobs)
@@ -279,28 +289,25 @@ describe('release.yml promotes the draft last, and does promote it (RELEASE.md r
     ).toBeGreaterThan(feed);
   });
 
-  it('does not let a failed Linux build hold the release (RELEASE.md §6)', () => {
+  it('promotes once release is due, gated only on windows via the default needs check', () => {
     const condition = job('release.yml', 'promote').if ?? '';
 
     expect(
       condition,
-      'The promote job needs `always()`: it `needs:` the linux job, so without it a failed ' +
-        'Linux build skips the promotion entirely and the release stays a draft.',
-    ).toContain('always()');
+      "The promote job's `if:` must still gate on `release == 'true'` — otherwise it runs " +
+        "even when `version` decided there is nothing to release (RELEASE.md §0).",
+    ).toContain("needs.version.outputs.release == 'true'");
 
+    // No `always()` and no explicit `needs.windows.result` check: with `linux` gone, `promote`
+    // has exactly one package job left in its `needs:`, so GitHub's default `if: success()`
+    // already skips it when windows fails — the always()-plus-manual-check dance RELEASE.md
+    // §6 used to require existed only to let a failed LINUX job through.
     expect(
       condition,
-      'Promote must still require the WINDOWS build to have succeeded — that is the platform ' +
-        'whose artifacts the release is made of.',
-    ).toContain("needs.windows.result == 'success'");
-
-    expect(
-      condition.includes("needs.linux.result == 'success'"),
-      'Promote must NOT require the Linux job to have succeeded. RELEASE.md §6: four green ' +
-        'releases once piled up here unpublished, each waiting on a platform build that was ' +
-        'never going to happen. Ship what you have and say what is owed — the `Say what is ' +
-        'owed` step is how this workflow says it.',
-    ).toBe(false);
+      "`always()` is no longer needed in promote's `if:` — that existed only to let promote " +
+        'run despite a failed `linux` job, which no longer exists (RELEASE.md §6). Restoring ' +
+        'it now would let promote run even when `windows` failed.',
+    ).not.toContain('always()');
   });
 });
 
@@ -437,5 +444,112 @@ describe("docs/11's map of the pipeline's files stays true", () => {
           'nobody reading that section would think to look for.',
       ).toBe(true);
     }
+  });
+});
+
+/**
+ * A sixth group, and the second of the "not a mistake yet, but silent when it goes wrong"
+ * kind — except this one HAS gone wrong, for eight releases.
+ *
+ * apps/web's bundle bakes the version of record into the status bar at build time (that is
+ * apps/web/vite.config.ts's job, and repo-invariants.test.ts asserts it). A baked number only
+ * moves when the bundle is rebuilt, so the *deployment* is half of whether the web ever
+ * agrees with the desktop — and a deployment that does not happen looks exactly like one
+ * that did: green pipeline, nothing in the log, a browser still serving the old bundle.
+ *
+ * Two links carry it, one per way a bump can arrive on `development`:
+ *
+ *  1. **Inside the work commit** (CONTRIBUTING.md §4's rule). The push triggers `deploy.yml`,
+ *     which deploys the web only if a filtered path changed — so `apps/client/package.json`
+ *     has to be one of the web filter's paths. It is the one apps/client path that is a web
+ *     input, and it looks like a mistake to anyone tidying up.
+ *  2. **In CI's own `chore(release):` commit** (RELEASE.md §2's fallback, which this repo
+ *     reaches often). That push is made with `GITHUB_TOKEN` and triggers nothing at all, so
+ *     `promote` dispatches the deploy itself once the release is published.
+ *
+ * Neither is visible from the other file, and deleting either leaves a pipeline that passes
+ * every other assertion here while quietly freezing the number the web shows.
+ */
+describe('a released version reaches the deployed web client', () => {
+  /** deploy.yml's `filters:` block is YAML inside a YAML scalar — parsed, not grepped. */
+  function deployFilters(): Record<string, string[]> {
+    const step = (job('deploy.yml', 'changes').steps ?? []).find((entry) =>
+      (entry.uses ?? '').startsWith('dorny/paths-filter'),
+    );
+    expect(
+      step,
+      "deploy.yml's `changes` job no longer uses dorny/paths-filter. If the filtering moved, " +
+        'move this group with it — what it is guarding is that a version bump still reaches ' +
+        'the web bundle, not the action that happens to implement it.',
+    ).toBeDefined();
+
+    const filters = parse(String((step as Step).with?.filters ?? '')) as Record<string, string[]>;
+    expect(
+      Object.keys(filters),
+      'The parsed filters do not contain the two halves of the deploy. The selector or the ' +
+        'inner parse has stopped seeing them, and the assertion below is vacuous.',
+    ).toEqual(expect.arrayContaining(['server', 'web']));
+    return filters;
+  }
+
+  it('rebuilds the web when the version of record changes', () => {
+    const filters = deployFilters();
+
+    expect(
+      filters.web,
+      "deploy.yml's web filter no longer watches apps/client/package.json. The web bundle " +
+        'bakes that version for its status bar (apps/web/vite.config.ts), so a bump that ' +
+        'never triggers a web deploy leaves the browser showing the previous release for ' +
+        'ever — which is how it sat on v0.78.2 while the desktop shipped v0.86.0.',
+    ).toContain('apps/client/package.json');
+
+    expect(
+      filters.server,
+      'The SERVER filter now watches apps/client/package.json too. A version bump is not a ' +
+        'server change: this would rebuild the image and re-run the migration job on every ' +
+        'release, for a version string the API never reads.',
+    ).not.toContain('apps/client/package.json');
+  });
+
+  it("redeploys the web after a release CI had to bump itself", () => {
+    const steps = job('release.yml', 'promote').steps ?? [];
+    const dispatch = steps.filter((step) => (step.run ?? '').includes('gh workflow run deploy.yml'));
+
+    expect(
+      dispatch,
+      "release.yml's `promote` job no longer dispatches deploy.yml. When RELEASE.md §2's " +
+        'fallback applies, the version lives in a `chore(release):` commit pushed with ' +
+        'GITHUB_TOKEN — a push that triggers no workflow by design — so this dispatch is the ' +
+        'only thing that ever rebuilds the web bundle with the released version in it.',
+    ).toHaveLength(1);
+
+    expect(
+      dispatch[0].if,
+      'The dispatch must be conditioned on `needsCommit`: that is the case no push can reach. ' +
+        'When the bump rode inside the work commit, that push already ran deploy.yml, and ' +
+        'dispatching again redeploys whatever else that commit touched — the server included.',
+    ).toContain("needs.version.outputs.needsCommit == 'true'");
+
+    // Publishing is the release; a redeploy that cannot be dispatched must not turn a good
+    // release red. The `||` is what makes the failure a warning instead.
+    expect(
+      dispatch[0].run,
+      'The dispatch has to tolerate its own failure. It runs AFTER the release is published, ' +
+        'so a red step here reports a release that in fact succeeded — and sends whoever ' +
+        'reads it looking for a broken release rather than a stale web bundle.',
+    ).toMatch(/\|\|/);
+
+    const publish = steps.findIndex((step) => (step.run ?? '').includes('--draft=false'));
+    expect(
+      steps.indexOf(dispatch[0]),
+      'The redeploy belongs after the publish. Before it, a release that fails its feed check ' +
+        'would still have advertised its version to the web.',
+    ).toBeGreaterThan(publish);
+
+    expect(
+      workflow('release.yml').permissions?.actions,
+      "release.yml needs `actions: write` at the top level for `gh workflow run`. Without it " +
+        'the dispatch fails with a 403 on every release — and, being tolerated, fails quietly.',
+    ).toBe('write');
   });
 });

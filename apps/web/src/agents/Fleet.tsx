@@ -5,13 +5,12 @@
  * queued ticket currently stands, across every project the account has — the GitHub-Actions /
  * Copilot-dashboard piece of the ask.
  *
- * REST, not `Transport`: profiles and assignments have no IPC channel — `@tm/shared/agent`'s
- * own docstring explains why (they live on the server only, for ANY desktop serving the
- * project to claim on its next poll, not one open Client to relay a command to) — so this
- * polls `agentsApi.ts` directly the same way `ProjectsHub`/`TicketDetailPage` write over
- * `projectsApi.ts`, rather than `useTransport()` like `Performance`/`Attention` in `@tm/ui`.
- * The loading/retry/collapsible-drilldown shape below still follows those two: the DATA being
- * cross-project is the same problem regardless of which transport reaches it.
+ * REST, not `Transport`: assignments have no IPC channel — `@tm/shared/agent`'s own docstring
+ * explains why (an assignment lives on the server only, for ANY desktop serving the project
+ * to claim on its next poll, not one open Client to relay a command to) — so this polls
+ * `agentsApi.ts` directly rather than `useTransport()` like `Performance`/`Attention` in
+ * `@tm/ui`. Agent profiles do have IPC channels now (step 7), but stay on the same REST call
+ * here so this view has one transport, not two.
  */
 import { useCallback, useEffect, useState } from 'react';
 import { Body1, Caption1, Text, makeStyles, tokens } from '@fluentui/react-components';
@@ -21,9 +20,8 @@ import { PERMISSION_MODE_LABELS } from '@tm/shared/session';
 import { PaneLoading } from '@tm/ui/PaneLoading';
 import { useInitialLoad } from '@tm/ui/useInitialLoad';
 import type { CloudBoardState } from '../board/cloudBoardStore';
-import { listAgentProfiles, listAssignments } from './agentsApi';
+import { listAgentProfiles, listAssignments, type AgentsApiDeps } from './agentsApi';
 import { AssignmentStatusBadge } from './AssignmentStatusBadge';
-import type { ProjectsApiDeps } from '../projects/projectsApi';
 
 /** Refresh cadence for the queue view. Assignments change on the order of a desktop's own
  *  poll (seconds, not the per-second usage telemetry `Performance` ticks), so a slower,
@@ -118,7 +116,7 @@ const useStyles = makeStyles({
 
 export interface FleetProps {
   state: CloudBoardState;
-  apiDeps: ProjectsApiDeps;
+  apiDeps: AgentsApiDeps;
 }
 
 interface FleetData {

@@ -1,10 +1,37 @@
 import { describe, expect, it } from 'vitest';
 import {
+  clampSyncInterval,
+  DEFAULT_BOARD_DISPLAY,
   DEFAULT_JIRA_SETTINGS,
   DEFAULT_SETTINGS,
+  MAX_SYNC_INTERVAL_MINUTES,
   mergeAppSettings,
   resolveSyncInterval,
 } from './settings';
+
+describe('clampSyncInterval', () => {
+  it('rounds and floors at 0, as before', () => {
+    expect(clampSyncInterval(2.4)).toBe(2);
+    expect(clampSyncInterval(2.5)).toBe(3);
+    expect(clampSyncInterval(-5)).toBe(0);
+  });
+
+  // The actual bug: a value past the 32-bit `setInterval` delay overflows silently to a
+  // ~1ms timer instead of throwing, so an unbounded interval reads as "sync continuously"
+  // rather than "sync rarely". Anything past the UI's own max must be capped here too.
+  it('caps at MAX_SYNC_INTERVAL_MINUTES rather than passing an oversized value through', () => {
+    expect(clampSyncInterval(MAX_SYNC_INTERVAL_MINUTES + 1)).toBe(MAX_SYNC_INTERVAL_MINUTES);
+    expect(clampSyncInterval(999_999_999)).toBe(MAX_SYNC_INTERVAL_MINUTES);
+  });
+
+  // Non-finite input cannot mean an actual cadence, and `setInterval` clamps it to ~1ms the
+  // same as an overflow would — so it reads as "off", not "as fast as possible".
+  it('treats non-finite input as off, not as fast as possible', () => {
+    expect(clampSyncInterval(NaN)).toBe(0);
+    expect(clampSyncInterval(Infinity)).toBe(0);
+    expect(clampSyncInterval(-Infinity)).toBe(0);
+  });
+});
 
 describe('resolveSyncInterval', () => {
   it('leaves an already-migrated blob alone', () => {
@@ -104,5 +131,41 @@ describe('mergeAppSettings', () => {
     mergeAppSettings(current, { concurrency: 9, jira: { enabled: true } });
     expect(current.concurrency).toBe(DEFAULT_SETTINGS.concurrency);
     expect(current.jira.enabled).toBe(false);
+  });
+
+  // `boardScopeId` replaces wholesale like every other plain string field — a save that
+  // switches boards must apply the new value, not be mistaken for a field the caller omitted.
+  it('applies a new boardScopeId, switching boards', () => {
+    const current = { ...DEFAULT_SETTINGS, boardScopeId: 'ticket-project-1' };
+    const merged = mergeAppSettings(current, { boardScopeId: 'all' });
+    expect(merged.boardScopeId).toBe('all');
+  });
+});
+
+// A blob written before Phase 24 (native tickets) has no `board.showAssignee`/`showPoints`
+// and no `boardScopeId` at all — the defaults below are what such a blob fills in as, and
+// they are what keeps a board with no ticket project drawing exactly as it always has.
+describe('DEFAULT_SETTINGS / DEFAULT_BOARD_DISPLAY (Phase 24 fields)', () => {
+  it('scopes to every board out of the box', () => {
+    expect(DEFAULT_SETTINGS.boardScopeId).toBe('all');
+  });
+
+  it('draws no assignee avatar or points chip out of the box', () => {
+    expect(DEFAULT_BOARD_DISPLAY.showAssignee).toBe(false);
+    expect(DEFAULT_BOARD_DISPLAY.showPoints).toBe(false);
+  });
+});
+
+// The Gantt timeline's own settings group (Phase 24 step 6) — a blob written before it has
+// no `gantt` field at all, and this is what a missing field fills in as.
+describe('DEFAULT_SETTINGS.gantt', () => {
+  it('opens every epic expanded out of the box', () => {
+    expect(DEFAULT_SETTINGS.gantt.collapsedEpicIds).toEqual([]);
+  });
+
+  it('merges field-by-field and replaces its array wholesale, like every other nested group', () => {
+    const current = { ...DEFAULT_SETTINGS, gantt: { collapsedEpicIds: ['e1', 'e2'] } };
+    const merged = mergeAppSettings(current, { gantt: { collapsedEpicIds: ['e1'] } });
+    expect(merged.gantt.collapsedEpicIds).toEqual(['e1']);
   });
 });

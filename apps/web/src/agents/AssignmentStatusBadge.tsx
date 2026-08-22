@@ -1,5 +1,5 @@
-/** How an `AssignmentStatus` reads at a glance — shared by `Fleet` and `AssignAgentSection`
- *  so a status means the same color everywhere it appears. */
+/** How an `AssignmentStatus` reads at a glance — `Fleet`'s own colour for a status, so it
+ *  means the same thing everywhere it appears. */
 import { Badge } from '@fluentui/react-components';
 import type { AssignmentStatus } from '@tm/shared/agent';
 

@@ -110,48 +110,75 @@ export function isPersonalBoard(projectId: string): boolean {
 }
 
 /**
- * What kind of project a row describes.
- *
- * - `plan` — the legacy Projects tab: a directory plus a plan.md whose checkboxes
- *   become a queue of tasks the scheduler drains.
- * - `agent` — the lightweight "agent project": just a repo directory (plus the JIRA
- *   epics it owns) that a single My Tasks card can be delegated to. It has no plan
- *   file and no queue — work only ever starts because a human assigned one card to
- *   an agent. Agent projects are hidden from the Projects tab and skipped by the
- *   plan watcher; they exist as `projects` rows so worktrees, integration, usage
- *   attribution and the usage-limit gate all work on them unchanged.
- * - `ticket` — a **native ticket project** (Phase 24): a key prefix (`TM`) and a set of
- *   tickets the app itself owns, rather than mirrors from somebody else's tracker. It
- *   has no repo directory and no plan file at all (see {@link Project.ticketPrefix});
- *   its tickets are `tasks` rows with `source: 'ticket'`, so the board, the timeline,
- *   the attachments and the chain of execution all work on them unchanged.
+ * A project's capabilities are derived from its fields rather than from a stored
+ * discriminator — there is no `kind` column to branch on any more. The Personal board,
+ * a bare repo, a plan-driven project and a ticket project each simply carry the fields
+ * that mean something for them and leave the rest `''`, so these predicates read true
+ * regardless of which shape a project happens to be.
  */
-export type ProjectKind = 'plan' | 'agent' | 'ticket';
 
 /**
- * Whether a project is the **legacy plan-driven kind** — the one the Projects tab lists,
+ * Whether a project has a plan file to parse — the one the legacy Projects tab lists,
  * the plan watcher watches, and the scheduler drains a queue for.
- *
- * Deliberately a whitelist. Every one of these tests used to be written by *elimination*
- * (`!isPersonalBoard(id) && kind !== 'agent'`), which is only correct while `plan` and
- * `agent` are the only two kinds there are: the moment a third exists every one of them
- * silently adopts it, and a ticket project would appear on the Projects tab with a plan
- * file watched for a directory it does not have. Naming the kind you mean cannot do that.
  */
-export function isPlanProject(project: Pick<Project, 'id' | 'kind'>): boolean {
-  return !isPersonalBoard(project.id) && project.kind === 'plan';
+export function hasPlan(project: Pick<Project, 'planPath'>): boolean {
+  return project.planPath !== '';
 }
 
 /**
- * Whether a project is **a directory on a machine** — the kinds for which `path` and
+ * Whether a project is **a directory on a machine** — the one for which `path` and
  * `target` mean something, so git, worktrees and "which distro does this run on" apply.
  *
- * The Personal board and a ticket project are both card lists rather than codebases: their
- * `path` is `''` and their `target` is only whatever the default happened to be the day
- * they were created. See {@link isPlanProject} for why this is a whitelist too.
+ * The Personal board and a ticket-only project are both card lists rather than
+ * codebases: their `path` is `''`.
  */
-export function isRepoProject(project: Pick<Project, 'id' | 'kind'>): boolean {
-  return !isPersonalBoard(project.id) && (project.kind === 'plan' || project.kind === 'agent');
+export function hasRepo(project: Pick<Project, 'path'>): boolean {
+  return project.path !== '';
+}
+
+/** Whether a project owns a ticket key prefix, and so can allocate native tickets. */
+export function ownsTickets(project: Pick<Project, 'ticketPrefix'>): boolean {
+  return project.ticketPrefix !== '';
+}
+
+/**
+ * Whether a project belongs on the single My Tasks board rather than being drained as a
+ * plan's queue — the rule the board scopes use. A project with a plan file is worked
+ * top-to-bottom by the scheduler; everything else (a bare repo, a ticket project, the
+ * Personal board) is a set of cards a human moves by hand.
+ */
+export function isBoardProject(project: Pick<Project, 'planPath'>): boolean {
+  return !hasPlan(project);
+}
+
+/**
+ * Whether a project owns a board of its own — the non-Personal scopes `board:scopes`
+ * offers. `isBoardProject` alone is not enough: a bare repo and a repo-less personal-space
+ * project are both card lists rather than queues, but neither can actually receive a
+ * ticket (`store.createTicket` keys a new one off `ticketPrefix`), so switching a scope to
+ * one would open a board nothing could ever be added to. Their cards live on Personal
+ * instead — this is what keeps that true.
+ */
+export function ownsBoard(project: Pick<Project, 'planPath' | 'ticketPrefix'>): boolean {
+  return isBoardProject(project) && ownsTickets(project);
+}
+
+/**
+ * Whether a project can be named in a card's `projectTagId` — filing, not delegation (see
+ * `agentProjectsOf`/`resolveAgentProject` in `agentProjects.ts` for the narrower, repo-only
+ * list delegation needs). Wider than `hasRepo`: a personal-space project — no repo, no
+ * ticket prefix — is filed under fine, and simply resolves to no agent project the moment a
+ * run is delegated from it (`resolveAgentProject` already filters candidates by `hasRepo`).
+ *
+ * Excluded are a plan-driven project (a queue, not something to tag a card with) and a
+ * project that owns its own ticket board with no repo of its own (`ownsBoard`): that
+ * project already IS a board, so a native ticket belongs there directly rather than being
+ * filed onto a Personal-board card.
+ */
+export function isFilingProject(
+  project: Pick<Project, 'planPath' | 'path' | 'ticketPrefix'>,
+): boolean {
+  return !hasPlan(project) && (hasRepo(project) || !ownsTickets(project));
 }
 
 /** A project the app orchestrates: a directory plus the plan that drives it. */
@@ -226,6 +253,16 @@ export interface Project {
    */
   autoRelease: boolean;
   /**
+   * The project's PREFERENCE for opening a pull/merge request: when a card's work finishes,
+   * push its branch to the forge and open a PR against base **instead of** merging locally
+   * (see `@shared/pullRequest`).
+   *
+   * A default, not a decision, exactly like {@link Project.autoRelease} — every card may
+   * override it in the Details Panel, and a card that never did follows this. Off for every
+   * project that predates the field, so an upgrade opens nothing by itself.
+   */
+  autoCreatePr: boolean;
+  /**
    * The project's PREFERENCE for auto-merge: when a card's run finishes, merge its branch
    * back into base without waiting to be asked (see `@shared/integrate`).
    *
@@ -244,11 +281,6 @@ export interface Project {
    * UI hint — it never changes how a project runs.
    */
   planAligned: boolean;
-  /**
-   * Whether this is a legacy plan-driven project or an agent project (see
-   * {@link ProjectKind}). Rows that predate agent projects migrate in as `plan`.
-   */
-  kind: ProjectKind;
   /**
    * For an agent project: the JIRA epic/parent keys this repo owns (e.g.
    * `['ABC-100']`). A My Tasks card whose ticket hangs off one of these epics
@@ -304,11 +336,15 @@ export interface Project {
 }
 
 /**
- * What the UI sends to add a project. Only `path` is required; the engine fills
+ * What the UI sends to add a project. Every field is optional; the engine fills
  * sensible defaults (name = folder name, plan = `<path>/plan.md`, etc.).
+ *
+ * `path` itself is one of them now: a project with no folder is legal — a ticket
+ * project or the odd card list has nothing to check out — and omitting it is how the
+ * caller says so. See {@link Project.path} / {@link hasRepo}.
  */
 export interface AddProjectInput {
-  path: string;
+  path?: string;
   name?: string;
   planPath?: string;
   defaultModel?: ClaudeModel;
@@ -323,21 +359,26 @@ export interface AddProjectInput {
   writeBackPlan?: boolean;
   /** Release after a card's branch merges, per the repo's `RELEASE.md`. Defaults to off. */
   autoRelease?: boolean;
+  /** Open a PR/MR when a card's work finishes instead of merging it. Defaults to off. */
+  autoCreatePr?: boolean;
   /** Merge a finished card's branch by itself; defaults to `null` = follow the app setting. */
   autoIntegrate?: boolean | null;
   planAligned?: boolean;
-  /**
-   * Defaults to `plan`. `agent` forces a plan-less, worktree-isolated project; `ticket`
-   * forces a project with no repo at all (`path`/`planPath` both `''`).
-   */
-  kind?: ProjectKind;
   jiraEpicKeys?: string[];
   /**
-   * The ticket key prefix, for `kind: 'ticket'`. Normalized on the way in and ignored for
-   * every other kind. Omitted (or unusable) leaves the project prefix-less, which simply
-   * means it cannot allocate a key yet — see {@link Project.ticketPrefix}.
+   * The ticket key prefix. Normalized on the way in. Omitted (or unusable) on a plan-less,
+   * non-Personal project is ordinarily filled in for you — see {@link Project.ticketPrefix}
+   * and the `personal` field below for the one way to decline that.
    */
   ticketPrefix?: string;
+  /**
+   * Declines the guaranteed prefix a plan-less project would otherwise be given (see
+   * `ticketPrefix` above): this project is a Personal space, filing cards under it without
+   * ever numbering them. Ignored for a plan-driven project, which was never guaranteed one
+   * to begin with. Not stored on {@link Project} itself — it is read back off `ticketPrefix`
+   * being empty, the same fact {@link ownsTickets} already keys off.
+   */
+  personal?: boolean;
   /** Defaults to the global `defaultExecTarget`. */
   target?: ExecTarget;
   instructions?: string;
@@ -346,11 +387,11 @@ export interface AddProjectInput {
 }
 
 /**
- * The subset of a project the user may edit after it's created (Phase 8). The
- * `id` and `kind` are immutable — a project keeps its identity/history even if its
- * plan file, name, model, or mode change. The plan-project dialog never sends
- * `path` (its folder is fixed once added); agent projects do allow re-pointing the
- * folder, since they are nothing but a directory plus a few defaults.
+ * The subset of a project the user may edit after it's created (Phase 8). `id` is
+ * immutable — a project keeps its identity/history even if its path, plan file, name,
+ * model, or mode change. The plan-project dialog never sends `path` (its folder is
+ * fixed once added); agent projects do allow re-pointing the folder, since they are
+ * nothing but a directory plus a few defaults.
  */
 export type ProjectPatch = Partial<
   Pick<
@@ -366,6 +407,7 @@ export type ProjectPatch = Partial<
     | 'baseBranch'
     | 'writeBackPlan'
     | 'autoRelease'
+    | 'autoCreatePr'
     | 'autoIntegrate'
     | 'planAligned'
     | 'jiraEpicKeys'
@@ -376,7 +418,15 @@ export type ProjectPatch = Partial<
     | 'instructions'
     | 'color'
   >
->;
+> & {
+  /** See {@link AddProjectInput.personal} — the same opt-out, on an edit rather than a
+   *  create, and overriding any `ticketPrefix` sent alongside it the same way. Only
+   *  meaningful together with a `ticketPrefix` patch (`updateProject` only reads either
+   *  field when the other is present) — it is what tells `updateProject` this edit means
+   *  "stay Personal" rather than "give this one a fresh one", the guarantee it otherwise
+   *  applies unconditionally. */
+  personal?: boolean;
+};
 
 /**
  * Every model a run may be launched on, cheapest first — the one list the dropdowns and
@@ -551,8 +601,9 @@ export interface Task {
    *               for `blocked` that now turns on WHO blocked it (`preBlockStatus`), since
    *               a Blocked ticket is something JIRA can say for itself (see `jiraSync`).
    *   - `github`: mirrored from a GitHub issue, the same way — see `githubIssueSync`.
-   *   - `ticket`: a **native ticket** of a `kind: 'ticket'` project (Phase 24) — this app
-   *               is the tracker, so nothing external ever refreshes or removes it.
+   *   - `ticket`: a **native ticket** of a ticket-owning project (Phase 24; see
+   *               `ownsTickets`) — this app is the tracker, so nothing external ever
+   *               refreshes or removes it.
    *
    * `ticket` is a value of its own rather than a flag beside `adhoc`, and that is the
    * *structural* guarantee that `reconcileJiraTasks` can never adopt, rewrite or archive a
@@ -811,7 +862,7 @@ export interface Task {
 
   // --- Agent delegation (My Tasks → an agent project). Null until assigned. ---
   /**
-   * The **agent project** (see {@link ProjectKind}) this card has been delegated to —
+   * The **agent project** (see {@link hasRepo}) this card has been delegated to —
    * the repo a delegated run happens in. The task's own `projectId` stays on the
    * Personal board, so the card never leaves My Tasks while its run is attributed to
    * the real repo. Null for a card nobody assigned to an agent.
@@ -853,6 +904,15 @@ export interface Task {
    * cards nobody has ruled on. See `@shared/release`.
    */
   autoRelease?: boolean | null;
+  /**
+   * This card's answer to "open a PR/MR when the work is finished?" — `true`/`false` when the
+   * human has said so in the Details Panel, `null` (the default, and every pre-existing card)
+   * when they have not, which follows the agent project's `autoCreatePr` preference.
+   *
+   * Three states rather than two for the same reason {@link Task.autoRelease} has three: a
+   * card that merely inherits must keep inheriting. See `@shared/pullRequest`.
+   */
+  autoCreatePr?: boolean | null;
   /**
    * This card's answer to "merge the branch when the work is finished?" — `true`/`false`
    * when the human has said so on the board, `null` (the default, and every pre-existing

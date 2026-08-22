@@ -22,6 +22,7 @@ import {
   Caption1,
   Dropdown,
   Option,
+  Spinner,
   Textarea,
   makeStyles,
   tokens,
@@ -45,6 +46,18 @@ import {
 } from './mentions';
 
 const MODES: PermissionMode[] = ['acceptEdits', 'plan', 'manual', 'bypassPermissions'];
+
+/**
+ * Which of the composer's own sends is in flight, or `null` for none — and `'other'` for a
+ * busy TaskDetail is sitting on for a reason that belongs to none of them (dismissing the
+ * card's attention ring). Every write here is relayed to the desktop on the web client
+ * (`task:addComment`, `task:setStatusNote`, `task:chat`, the ticket comment channels), so it
+ * settles on the next drain rather than in the microsecond an in-process write takes — the
+ * same reason `AddTaskDialog`'s Add button wears a spinner. Naming WHICH send is busy, rather
+ * than a plain boolean, is what lets the button actually pressed be the one that answers,
+ * instead of all four disabling with no way to tell which is doing the work.
+ */
+export type ComposerBusy = 'chat' | 'note' | 'status' | 'ticket' | 'other' | null;
 
 const useStyles = makeStyles({
   root: { display: 'flex', flexDirection: 'column', gap: '4px' },
@@ -116,7 +129,8 @@ export interface ComposerProps {
   /** Text, the people named in it, and the files to attach. */
   value: ComposerValue;
   onChange: (value: ComposerValue) => void;
-  busy: boolean;
+  /** See {@link ComposerBusy}. */
+  busy: ComposerBusy;
   /**
    * The tracker this card is linked to, or null for a card that is nobody's ticket — which
    * is what decides whether the fourth action (comment on the ticket) is offered at all, and
@@ -165,6 +179,7 @@ export function Composer({
   const styles = useStyles();
   const canChat = chat?.offered === true && chat.can;
   const empty = !value.text.trim();
+  const isBusy = busy !== null;
   // The card's own model, or `null` while it follows its agent project — which is offered
   // here as a choice of its own rather than resolved away. A project now plans and executes
   // on different models, so showing its execution model as if the card had picked it would
@@ -302,7 +317,7 @@ export function Composer({
             // Enter sends, Shift+Enter is a newline — the CLI's own contract.
             if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
-              if (!busy && !empty) (canChat ? onSendChat : onAddNote)();
+              if (!isBusy && !empty) (canChat ? onSendChat : onAddNote)();
             }
           }}
           placeholder={
@@ -317,43 +332,45 @@ export function Composer({
             <Button
               size="small"
               appearance={canChat ? 'primary' : 'secondary'}
-              icon={<SendRegular />}
+              icon={busy === 'chat' ? <Spinner size="tiny" /> : <SendRegular />}
               title={chat.hint}
-              disabled={busy || empty || !chat.can}
+              disabled={isBusy || empty || !chat.can}
               onClick={onSendChat}
             >
-              Chat with agent
+              {busy === 'chat' ? 'Sending…' : 'Chat with agent'}
             </Button>
           )}
           <Button
             size="small"
             appearance={canChat ? 'secondary' : 'primary'}
+            icon={busy === 'note' ? <Spinner size="tiny" /> : undefined}
             title="Save this text on the card — only you ever read it"
-            disabled={busy || empty}
+            disabled={isBusy || empty}
             onClick={onAddNote}
           >
-            Add note
+            {busy === 'note' ? 'Saving…' : 'Add note'}
           </Button>
           {/* A note you also want to see from the board. Separate from "Add note"
               because only one line can be the card's headline, and replacing it is a
               deliberate act — the ones it replaces stay in this conversation. */}
           <Button
             size="small"
-            icon={<FlagRegular />}
+            icon={busy === 'status' ? <Spinner size="tiny" /> : <FlagRegular />}
             title="Show this on the card as where you are — it replaces the current status line"
-            disabled={busy || empty}
+            disabled={isBusy || empty}
             onClick={onPostStatus}
           >
-            Post status
+            {busy === 'status' ? 'Posting…' : 'Post status'}
           </Button>
           {tracker !== null && (
             <Button
               size="small"
+              icon={busy === 'ticket' ? <Spinner size="tiny" /> : undefined}
               title={`Post this text on the linked ${TRACKER_NAME[tracker]} issue`}
-              disabled={busy || (empty && !value.attachments.length)}
+              disabled={isBusy || (empty && !value.attachments.length)}
               onClick={onAddTicketComment}
             >
-              Add {TRACKER_NAME[tracker]} comment
+              {busy === 'ticket' ? 'Posting…' : `Add ${TRACKER_NAME[tracker]} comment`}
             </Button>
           )}
           {tracker !== null && onPickAttachments && (
@@ -363,7 +380,7 @@ export function Composer({
               icon={<AttachRegular />}
               title="Attach files to the JIRA issue and cite them in the comment"
               aria-label="Attach files"
-              disabled={busy}
+              disabled={isBusy}
               onClick={() => void attach()}
             />
           )}

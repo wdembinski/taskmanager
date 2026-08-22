@@ -51,6 +51,8 @@ export function BoardDisplayMenu({
               ...(display.showLabels ? ['labels'] : []),
               ...(display.showProjectName ? ['project'] : []),
               ...(display.showEpicName ? ['epic'] : []),
+              ...(display.showAssignee ? ['assignee'] : []),
+              ...(display.showPoints ? ['points'] : []),
             ],
           }}
           onCheckedValueChange={(_e, { checkedItems }) =>
@@ -59,6 +61,8 @@ export function BoardDisplayMenu({
               showLabels: checkedItems.includes('labels'),
               showProjectName: checkedItems.includes('project'),
               showEpicName: checkedItems.includes('epic'),
+              showAssignee: checkedItems.includes('assignee'),
+              showPoints: checkedItems.includes('points'),
             })
           }
         >
@@ -70,6 +74,12 @@ export function BoardDisplayMenu({
           </MenuItemCheckbox>
           <MenuItemCheckbox name="display" value="epic" disabled={disabled}>
             Epic
+          </MenuItemCheckbox>
+          <MenuItemCheckbox name="display" value="assignee" disabled={disabled}>
+            Assignee
+          </MenuItemCheckbox>
+          <MenuItemCheckbox name="display" value="points" disabled={disabled}>
+            Story points
           </MenuItemCheckbox>
         </MenuList>
       </MenuPopover>

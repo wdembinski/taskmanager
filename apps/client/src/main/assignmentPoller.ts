@@ -29,6 +29,7 @@
  */
 import { CADENCE_MS, nextPollDelayMs } from '@protocol/cadence';
 import type { Assignment } from '@shared/agent';
+import { ownsTickets } from '@shared/model';
 import type { CloudSettings } from '@shared/settings';
 import type { FocusSignal } from './cloudPoller';
 import { logMain } from './log';
@@ -154,7 +155,7 @@ export class AssignmentPoller {
     const servedProjectIds = new Set(
       this.deps.store
         .listProjects()
-        .filter((project) => project.kind === 'ticket')
+        .filter((project) => ownsTickets(project))
         .map((project) => project.id),
     );
     const clientId = this.deps.store.loadCloudClientId();

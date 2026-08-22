@@ -95,6 +95,44 @@ export interface GitLabReviewer {
   state?: string;
 }
 
+/** What {@link GitLabClient.createMergeRequest} is asked to open. */
+export interface CreateMergeRequestInput {
+  source_branch: string;
+  target_branch: string;
+  title: string;
+  description?: string;
+  /** Delete the source branch on merge. Off unless the caller says otherwise. */
+  remove_source_branch?: boolean;
+}
+
+/**
+ * A merge request that now exists, and whether **we** are the ones who made it.
+ *
+ * The GitLab half of `CreatedPullRequest` in `github/githubClient.ts`, and it exists for
+ * exactly the same reason: pressing the button twice is ordinary, and the second press must
+ * report the MR that is already open rather than fail over something that is not wrong.
+ */
+export interface CreatedMergeRequest {
+  mergeRequest: GitLabMergeRequest;
+  existed: boolean;
+}
+
+/**
+ * GitLab's way of saying "there is already one of these": **409**, with
+ * `Another open merge request already exists for this source branch: !12`.
+ *
+ * The status is checked as well as the text because 409 is also GitLab's answer to a couple
+ * of genuine conflicts, and the text as well as the status because reading every 409 as
+ * "already open" would send the caller hunting for an MR that was never made.
+ */
+function isAlreadyExists(err: unknown): boolean {
+  return (
+    err instanceof GitLabError &&
+    err.status === 409 &&
+    /merge request already exists/i.test(err.message)
+  );
+}
+
 /** Narrow GitLab's `state` string to ours; anything unexpected reads as closed. */
 export function toMergeRequestState(raw: string | undefined): MergeRequestState {
   switch (raw) {
@@ -153,6 +191,45 @@ export class GitLabClient {
 
   private async request<T>(path: string): Promise<T> {
     return (await this.raw(path)).body as T;
+  }
+
+  /**
+   * One WRITE — the only calls in this client that change anything on the instance.
+   *
+   * A deliberate mirror of `GitHubClient.write`, down to the reasoning: it is a separate
+   * method rather than a `method` parameter on {@link raw} so that **every read stays a
+   * read by construction**. A method argument defaulting to GET is one careless call away
+   * from a POST, and this client is otherwise entirely read-only — the board mirrors
+   * GitLab, it does not drive it.
+   *
+   * Same {@link GitLabError} on failure, carrying the same status, because the callers
+   * distinguish outcomes by status (a 409 is "already open", not a fault) and a second
+   * error type would mean a second set of those checks.
+   */
+  private async write<T>(
+    path: string,
+    method: 'POST' | 'PUT' | 'DELETE',
+    body?: unknown,
+  ): Promise<T> {
+    const headers: Record<string, string> = {
+      'PRIVATE-TOKEN': sanitizeToken(this.config.token),
+      Accept: 'application/json',
+    };
+    if (body !== undefined) headers['Content-Type'] = 'application/json';
+    const res = await fetch(this.url(path), {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new GitLabError(
+        `GitLab ${res.status} ${res.statusText}${text ? `: ${text.slice(0, 300)}` : ''}`,
+        res.status,
+      );
+    }
+    if (res.status === 204) return undefined as T;
+    return (await res.json().catch(() => undefined)) as T;
   }
 
   /** GET /user — the "Test connection" call, and the identity every note is compared to. */
@@ -219,6 +296,59 @@ export class GitLabClient {
       `/projects/${projectId}/pipelines/${pipelineId}/jobs?per_page=100`,
     );
     return Array.isArray(body) ? (body as GitLabJob[]) : [];
+  }
+
+  /**
+   * Open a merge request — `POST /projects/{path}/merge_requests`.
+   *
+   * Addressed by the **URL-encoded project path** (`group%2Fsub%2Fproj`) rather than by the
+   * numeric id, which GitLab accepts everywhere an id is taken. That saves a whole extra
+   * round trip: the path is what a git remote already carries, whereas the numeric id is
+   * something only the API knows — and looking it up first would mean a lookup that can
+   * fail for its own reasons before the create has even been attempted.
+   *
+   * **An existing merge request is a SUCCESS**, exactly as on GitHub: a 409 is what pressing
+   * the button twice looks like, and the open MR for that source branch is fetched and
+   * returned with `existed: true`. See {@link CreatedMergeRequest}.
+   */
+  async createMergeRequest(
+    projectPath: string,
+    input: CreateMergeRequestInput,
+  ): Promise<CreatedMergeRequest> {
+    const project = encodeURIComponent(projectPath);
+    try {
+      const mergeRequest = await this.write<GitLabMergeRequest>(
+        `/projects/${project}/merge_requests`,
+        'POST',
+        {
+          source_branch: input.source_branch,
+          target_branch: input.target_branch,
+          title: input.title,
+          // Sent even when empty, so a card with no description clears rather than inherits.
+          description: input.description ?? '',
+          remove_source_branch: input.remove_source_branch ?? false,
+        },
+      );
+      return { mergeRequest, existed: false };
+    } catch (err) {
+      if (!isAlreadyExists(err)) throw err;
+      const open = await this.findOpenMergeRequest(projectPath, input.source_branch);
+      if (!open) throw err;
+      return { mergeRequest: open, existed: true };
+    }
+  }
+
+  /** The open MR whose source branch is `branch`, or null when there is none. */
+  async findOpenMergeRequest(
+    projectPath: string,
+    branch: string,
+  ): Promise<GitLabMergeRequest | null> {
+    const project = encodeURIComponent(projectPath);
+    const body = await this.request<unknown>(
+      `/projects/${project}/merge_requests?state=opened&source_branch=${encodeURIComponent(branch)}&per_page=1`,
+    );
+    const list = Array.isArray(body) ? (body as GitLabMergeRequest[]) : [];
+    return list[0] ?? null;
   }
 
   /**

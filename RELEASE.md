@@ -5,8 +5,8 @@ specification the pipeline was built from.**
 
 Every push to `development` runs
 [`.github/workflows/release.yml`](.github/workflows/release.yml), which performs every step
-below — gates, version, tag, draft, Windows, Linux, promote — and publishes the result.
-An ordinary release needs nobody to open this file.
+below — gates, version, tag, draft, Windows, promote — and publishes the result. Linux is no
+longer part of a release; see §6. An ordinary release needs nobody to open this file.
 [`docs/11-ci-cd-pipeline.md`](docs/11-ci-cd-pipeline.md) is that pipeline described end to
 end: what triggers what, the secrets it needs, and how to re-run one that failed halfway.
 
@@ -44,10 +44,9 @@ This file is the _procedure_; that one is the _reasons_. Read it if a step surpr
 4. **Promote the draft LAST — but DO promote it.** Last, because electron-builder refuses to
    write to a published release and says _skipped_ while exiting 0, so anything still to
    upload must go up first. And do it, because a release nobody can install is not a release:
-   four green drafts once piled up here unpublished, each waiting on a platform build that
-   was never going to happen on its own. Rules 1 and 3 are the only things that may leave a
-   release unpublished. A platform this machine cannot build for is **not** one of them —
-   ship what you have and say what is owed (see §6).
+   four green drafts once piled up here unpublished, each waiting on a Linux build that was
+   never going to happen on its own — which is why Linux is no longer part of a release at all
+   (see §6). Rules 1 and 3 are the only things that may leave a release unpublished.
 5. **Never release from a branch.** Only the integration branch (`development`, or whatever
    the project's base branch is) is releasable. If the checkout is on something else, say so
    and stop.
@@ -64,9 +63,9 @@ is. Each one is now also mechanised:
 | Rule                     | Where CI keeps it                                                                                                                                                                                          |
 | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1 A failing gate ends it | `gates` is a `needs:` of everything. Nothing is tagged from a red tree, and no job retries one.                                                                                                            |
-| 2 Never bypass the gates | `windows` and `linux` run the real `package` scripts, which run `ensure:abi` and `check:feed` inside themselves. There is no flag here that skips them.                                                    |
+| 2 Never bypass the gates | `windows` runs the real `package` script, which runs `ensure:abi` and `check:feed` inside itself. There is no flag here that skips them.                                                                   |
 | 3 Stop and ask           | A workflow cannot ask, so it must never reach a question. `scripts/next-version.mjs` decides the version by rule instead of by judgement, and the one credential is `GITHUB_TOKEN`, which is issued to it. |
-| 4 Promote last, and do   | `promote` runs `if: always()` and needs only `windows` — a failed Linux build cannot hold the release, it only earns a `::warning`. It is the last job, so every upload precedes it.                       |
+| 4 Promote last, and do   | `promote` needs only `windows` — the only platform this pipeline packages, now that Linux is gone (§6). It is the last job, so the Windows upload always precedes it.                                      |
 | 5 Never from a branch    | **Structural now.** The workflow's only push trigger is `branches: [development]`; the `version` job's first step fails the run if a `workflow_dispatch` was aimed at anything else.                       |
 | 6 Never launch the app   | No job starts the app. The smoke test runs the packaged binary under `ELECTRON_RUN_AS_NODE` — as plain Node, no window — the same way §5 does, and on a runner with nobody's copy open in the first place. |
 
@@ -233,70 +232,55 @@ addon. If a human wants the window looked at, say in your report that it is owed
 > (`--publish never`). Since a merge into `development` is now the thing that tags, an ABI
 > break is much better caught on the PR than after the tag exists.
 
-## 6. Linux — built by the `linux` job
+## 6. Linux releases are discontinued
 
-> **CI does this** — `release.yml`'s `linux` job, on `ubuntu-latest`: `fakeroot` (which the
-> `.deb` target shells out to), the shared packages, `package:linux`, then
-> [`docs/07`](docs/07-packaging-and-release.md#building-for-linux)'s two artifact checks —
-> the ELF check and the `node_register_module_v130` symbol check. A runner is a real Linux
-> machine, so what this section used to call a hand-back is now just a job.
+There is no Linux job. `release.yml` packages and publishes Windows only — nothing here builds
+an AppImage or a `.deb`, and nothing uploads a `latest-linux.yml` feed. `promote` (§7) publishes
+as soon as Windows is on the draft; it is not waiting on Linux and never has anything to say is
+owed.
 
-Everything below is the by-hand case, and the rule the `promote` job still enforces.
+This used to be a `linux` job that packaged on `ubuntu-latest` and uploaded into the same
+draft. It was removed rather than left to fail: a platform build that nobody maintains is worse
+than no platform build, and four green Windows-only drafts once sat unpublished for a version
+each, waiting on a Linux pass that was never coming (see rule 4 and "Things that have gone
+wrong before").
 
-`pnpm --filter claude-orchestrator package:linux` **must run on Linux**, from a clone in the WSL-native home (never
-`/mnt/c`, whose `node_modules` holds win32 prebuilds). Unless you are already running there
-with a working Node 22 toolchain, do **not** try to improvise it.
+If you need a Linux build for yourself, `pnpm --filter claude-orchestrator package:linux:local`
+still packages an AppImage/`.deb` **on Linux** (see
+[`docs/07`](docs/07-packaging-and-release.md#building-for-linux)) but uploads nothing — there
+is no supported way to attach it to a GitHub release, and no update feed for it either.
 
-Instead: **publish the Windows release anyway**, and say plainly in your summary that the
-Linux artifacts are owed. Windows users get the release; the Linux build catches up in a
-later version.
-
-This used to say the opposite — leave it a draft until Linux is up — and the result was four
-green releases nobody could install, because the Linux pass never came. An unattended run
-holding a finished release hostage to a build it cannot perform is not caution, it is a
-release that silently never happened. **This is why `promote` needs `windows` and not
-`linux`**: a failed Linux job leaves a `::warning` saying what is owed, and publishes.
-
-Publishing Windows-only does cost something, so know what you are choosing: electron-builder
-cannot upload into a published release, so Linux artifacts for **that version** can no longer
-go up the normal way. Attaching them afterwards means `gh release upload`, which mangles
-filenames containing spaces — check the name against `latest-linux.yml` if you try it. The
-usual answer is simply to ship Linux in the next version instead.
+> **CI does this** — nothing. See `release.yml`'s header comment.
 
 ## 7. Promote
 
-Not optional, and not conditional on Linux (rule 4, §6). Once every artifact you are
-**able** to build is on the draft:
+Not optional (rule 4). Once Windows is on the draft:
 
 ```bash
 gh release edit vX.Y.Z --draft=false
 ```
 
-Confirm first that `latest.yml` (and `latest-linux.yml`, if Linux shipped) sit beside the
-installers. Without them, no installed app will ever see this release.
+Confirm first that `latest.yml` sits beside the installer. Without it, no installed app will
+ever see this release.
 
 The only ways to finish without publishing are a failed gate (rule 1) or a decision you had
-to stop and ask about (rule 3). Both are reportable outcomes. "Left as a draft because
-something else is owed" is not — say what is owed in your report instead.
+to stop and ask about (rule 3). Both are reportable outcomes.
 
-> **CI does this** — `release.yml`'s `promote` job, which checks the feed is on the release
-> before it publishes: `latest.yml` matched as a whole line (`grep -qxF`, because
-> `latest-linux.yml` also contains the string `latest.yml` and is the wrong feed entirely),
-> and `latest-linux.yml` too whenever the `linux` job succeeded. A published release with no
-> feed beside it is invisible to every installed app, so this fails rather than promotes.
+> **CI does this** — `release.yml`'s `promote` job, which checks `latest.yml` is on the release
+> (matched as a whole line, `grep -qxF`) before it publishes. A published release with no feed
+> beside it is invisible to every installed app, so this fails rather than promotes.
 
 ## 8. Report
 
-Finish with, in one short paragraph: the version, the tag, whether the release is published
-or still a draft, which platforms' artifacts are on it, and anything still owed (a Linux
-build, a clean-machine install test, notes a human should reword). If you stopped early, say
-exactly which step and why — that is more useful than a summary of the steps that worked.
+Finish with, in one short paragraph: the version, the tag, whether the release is published or
+still a draft, and anything still owed (a clean-machine install test, notes a human should
+reword). If you stopped early, say exactly which step and why — that is more useful than a
+summary of the steps that worked.
 
-> **CI does this** — as annotations on the run: a `::notice` when the tag is published or
-> when there was nothing to release, and a `::warning` naming what is owed when Linux did
-> not build. What no workflow can report is the part that was always owed to a person —
-> installing the build on a **clean machine** and taking one project end to end. Nothing in
-> the pipeline does that, and nothing in it pretends to.
+> **CI does this** — as annotations on the run: a `::notice` when the tag is published or when
+> there was nothing to release. What no workflow can report is the part that was always owed to
+> a person — installing the build on a **clean machine** and taking one project end to end.
+> Nothing in the pipeline does that, and nothing in it pretends to.
 
 ---
 
@@ -310,8 +294,10 @@ Each of these cost a release. They are here so they cost nothing again.
 - **`publisherName` must stay unset while nothing is signed.** Its mere presence tells
   electron-updater to verify an Authenticode signature that does not exist, and every update
   from v0.30.0–v0.33.0 was refused _after_ a complete download. `check:feed` guards it.
-- **Promoting before Linux uploads leaves an empty release.** electron-builder cannot write
-  to a published release and reports it as `skipped` with exit code 0.
+- **Promoting before every artifact is uploaded leaves gaps nothing can fill afterwards.**
+  electron-builder cannot write to a published release and reports it as `skipped` with exit
+  code 0. This is what four unpublished Windows-only drafts, each waiting on a Linux build
+  that never came, cost before Linux was removed from the pipeline entirely (§6).
 - **Never upload assets with `gh` if you can avoid it.** It rewrites spaces in filenames to
   dots, and `latest.yml` names the file electron-builder wrote — a mismatch is a release
   nobody can update to.

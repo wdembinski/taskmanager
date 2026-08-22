@@ -4,16 +4,15 @@
  * A reusable run configuration (`@shared/agent`'s own docstring has the full
  * "profile + assignment queue, not `agentProjectId`" story) a ticket can be queued
  * against — from the web fleet view, or a ticket's own "assign to an agent" picker,
- * once one of those exists. Unlike an *agent project* (`AgentProjects.tsx`, a repo
- * folder this app runs in), a profile has no local row: it lives on the cloud server
- * only, so this pane talks to it over the plain REST calls in `agentProfilesApi.ts`
- * (relayed through IPC) rather than the local SQLite store — the same list every
- * desktop and the web app's Fleet view read.
+ * once one of those exists. A profile has no local row of its own: it lives on the
+ * cloud server only, so this pane talks to it over the plain REST calls in
+ * `agentProfilesApi.ts` (relayed through IPC) rather than the local SQLite store —
+ * the same list every desktop and the web app's Fleet view read.
  *
- * Modeled on `AgentProjects.tsx`'s list/dialog shape, minus everything a profile
- * doesn't have (no folder, no git target, no JIRA epics) plus the one field a
- * profile has that an agent project doesn't: a default TICKET project
- * (`ticketProject:list`), not an agent project.
+ * `AgentProfile.defaultProjectId` names one of the ordinary projects `project:list`
+ * already returns (there is no separate "agent project" list any more — the
+ * single-board refactor folded that distinction away), so this pane's default-project
+ * picker reads the same channel every other project picker in this app does.
  */
 import { useCallback, useEffect, useState } from 'react';
 import {
@@ -83,12 +82,12 @@ export function AgentProfiles(): JSX.Element {
   });
 
   const refresh = useCallback(async () => {
-    const [loadedProfiles, ticketProjects] = await Promise.all([
+    const [loadedProfiles, projectsWithTasks] = await Promise.all([
       window.api.invoke('agentProfile:list'),
-      window.api.invoke('ticketProject:list'),
+      window.api.invoke('project:list'),
     ]);
     setProfiles(loadedProfiles);
-    setProjects(ticketProjects);
+    setProjects(projectsWithTasks.map((p) => p.project));
   }, []);
 
   const initial = useInitialLoad(refresh);
@@ -124,9 +123,8 @@ export function AgentProfiles(): JSX.Element {
       <Subtitle2>Agent profiles</Subtitle2>
       <Body1 className={styles.hint}>
         Reusable run configurations a ticket can be queued against — from the web fleet view, or a
-        ticket&apos;s own assign-to-an-agent picker. Unlike an agent project (a repo folder this app
-        runs in), a profile lives on the cloud server, so it&apos;s the same list every desktop and
-        the web app see.
+        ticket&apos;s own assign-to-an-agent picker. A profile lives on the cloud server, not on
+        this machine, so it&apos;s the same list every desktop and the web app see.
       </Body1>
 
       {error && (
@@ -331,7 +329,7 @@ function AgentProfileDialog({
 
           <Field
             label="Default project"
-            hint="Which ticket project an assignment queued against this profile belongs to, when nothing else says otherwise."
+            hint="Which project an assignment queued against this profile belongs to, when nothing else says otherwise."
           >
             <Dropdown
               value={selectedProject?.name ?? 'None'}

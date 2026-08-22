@@ -5,7 +5,7 @@
  * ---------------------------------------------
  * `apps/client/src/renderer/src/Settings.tsx` is 1478 lines in ONE component, and nine of
  * its twenty-one channels are host-bound: the credential writes (`jira:setCredentials`,
- * `gitlab:*`, `iam:signOut`), the updater (`update:install` quits the app), the exec-target
+ * `gitlab:*`, `github:*`), the updater (`update:install` quits the app), the exec-target
  * pickers (`exec:listDistros` asks THIS machine what WSL distros it has), the sign-in flows,
  * and the font size (which scales an Electron window, not a browser tab). Sharing it whole
  * would mean roughly eight optional capability props the web passes `false` for — which is
@@ -17,17 +17,27 @@
  * stayed on the desktop — and this file is the shell plus the plain `AppSettings` fields,
  * which are a form over a JSON blob and carry no rule at all.
  *
- * THE ONE SECTION THAT IS NOT SHARED, AND WILL NOT BE
- * ---------------------------------------------------
- * `AgentProjects` is not in `@tm/ui` and does not belong there. It lives in
- * `apps/client/src/renderer/src/AgentProjects.tsx`, reaches the engine through `window.api`
- * directly rather than through the transport, and its first act is `project:pickDirectory` —
- * a native folder picker for a directory on the machine the engine runs on, which is why that
- * channel is `host-only` while `agentProject:add` itself is not. Choosing the folder is very
- * nearly the whole of creating one, so there is no useful half of this pane a browser could
- * draw: it would be an empty path field asking somebody to type an absolute path on a
- * computer they cannot see. It appears in {@link HOST_ONLY_SECTIONS} instead, which is a
- * decision rather than a gap — see the plan doc, "What is deliberately out of scope".
+ * THE ONE SECTION THAT IS NOT SHARED, AND THE READ-ONLY HALF THAT IS
+ * ---------------------------------------------------------------------
+ * A project's IDENTITY — name, colour, the tickets-or-personal choice — is nothing but a row
+ * in the store, and the web's own Projects tab (`@tm/ui/projects/ProjectAdmin`, rendered from
+ * `App.tsx`) manages it exactly as the desktop's own admin pane does, over the same `project:*`
+ * transport calls. It is that project's REPO half that stays desktop-only:
+ * `apps/client/src/renderer/src/projects/Projects.tsx` reaches the engine through `window.api`
+ * directly rather than through the transport, and its first act when adding a folder is
+ * `project:pickDirectory` — a native folder picker for a directory on the machine the engine
+ * runs on, which is why that channel is `host-only` while `project:add` itself is not.
+ * Choosing the folder is very nearly the whole of attaching a repo, so there is no useful half
+ * of *that* a browser could draw: it would be an empty path field asking somebody to type an
+ * absolute path on a computer they cannot see. Repository settings therefore appear in
+ * {@link HOST_ONLY_SECTIONS} instead, which is a decision rather than a gap.
+ *
+ * *Looking* at what a repo is configured with is the useful half, and it is the `'projects'`
+ * tab below. It needs no picker, no `window.api` and no write channel: `ProjectsSection` is a
+ * list and nothing else, fed from the same two sources the board resolves its repo pickers
+ * from — the relayed `project:list` (filtered to a repo project) when a desktop answers, and
+ * the mirrored `projects` rows when none does (`selectAgentProjects`). So the pane survives a
+ * sleeping desktop.
  *
  * WHAT THE HOST-ONLY SECTIONS DO INSTEAD
  * --------------------------------------
@@ -63,13 +73,19 @@ import {
 } from '@fluentui/react-components';
 import { AddRegular, DismissRegular } from '@fluentui/react-icons';
 import { ColorSwatches, PALETTE } from '@tm/ui/ColorSwatches';
+import { PeopleSettings } from '@tm/ui/projects/PeopleSettings';
 import { PlanningModelField } from '@tm/ui/PlanningModelField';
 import { PaneLoading } from '@tm/ui/PaneLoading';
 import { useInitialLoad } from '@tm/ui/useInitialLoad';
 import { useTransport } from '@tm/ui/transport';
-import { MODELS } from '@tm/shared/model';
+import { hasPlan, hasRepo, MODELS } from '@tm/shared/model';
+import type { Project } from '@tm/shared/model';
 import type { ClaudeModel, PermissionMode } from '@tm/shared/session';
+import { clampSyncInterval, MAX_SYNC_INTERVAL_MINUTES } from '@tm/shared/settings';
 import type { AppSettings } from '@tm/shared/settings';
+import { selectAgentProjects } from '../board/boardSelectors';
+import { ProjectsEmpty, ProjectsSection } from './ProjectsSection';
+import { TokensSection } from './TokensSection';
 
 const useStyles = makeStyles({
   row: { display: 'flex', gap: '16px', height: '100%', minHeight: 0 },
@@ -102,20 +118,73 @@ const useStyles = makeStyles({
 
 const MODES: PermissionMode[] = ['acceptEdits', 'plan', 'manual', 'bypassPermissions'];
 
-type Section = 'general' | 'board' | 'jira' | 'desktop';
+type Section = 'general' | 'board' | 'projects' | 'jira' | 'tokens' | 'people' | 'desktop';
 
-export function SettingsScreen(): JSX.Element {
+export interface SettingsScreenProps {
+  /**
+   * The MIRRORED `projects` rows, in `CloudBoardState`'s own by-id shape — passed straight
+   * through from `App`, which already holds them for the board. Not a list, because that is
+   * exactly what {@link selectAgentProjects} takes as its fallback source, and re-shaping it
+   * here and back there would be two conversions to say one thing.
+   */
+  projects: Record<string, Project>;
+  /** Where `TokensSection` calls `POST`/`GET`/`DELETE /v1/tokens` — `config.cloudApiBase`. */
+  apiBase: string;
+  /** This tab's own bearer, for the same three calls — `AuthedApp`'s `auth.getAccessToken`. */
+  getAccessToken: () => Promise<string | null>;
+}
+
+export function SettingsScreen({
+  projects,
+  apiBase,
+  getAccessToken,
+}: SettingsScreenProps): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
   const [section, setSection] = useState<Section>('general');
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * This screen's own agent-project read, and its own "did anybody answer" flag.
+   *
+   * One call, not a subscription: the screen unmounts when you leave it (`App.tsx`), agent
+   * projects are edited on the desktop rather than from here, and a list that changes while
+   * you look at it is worth exactly one relayed read on arrival. Deliberately NOT
+   * `useBoardExtras` — that hook fires eight reads and owns the board's liveness, and
+   * mounting it from Settings would put a second copy of all eight behind this tab.
+   */
+  const [relayedProjects, setRelayedProjects] = useState<Project[]>([]);
+  const [projectsLoaded, setProjectsLoaded] = useState(false);
 
   const load = useCallback(async () => {
     setSettings(await transport.invoke('settings:get'));
   }, [transport]);
   const initial = useInitialLoad(load);
+
+  // Fails soft, like every relayed read in this app: a desktop that is not answering leaves
+  // the flag `false`, and the pane falls back to the mirrored rows rather than to "none".
+  useEffect(() => {
+    let live = true;
+    void transport
+      .invoke('project:list')
+      .then((list) => {
+        if (!live) return;
+        // A repo directory with no plan file — the same set `agentProject:list` used to
+        // answer, before the two channel sets merged into `project:*`.
+        setRelayedProjects(list.map((p) => p.project).filter((p) => hasRepo(p) && !hasPlan(p)));
+        setProjectsLoaded(true);
+      })
+      .catch(() => {
+        // Silent on purpose. The Projects pane below says which of the two answers it is
+        // showing, which is the only thing a banner here could add.
+      });
+    return () => {
+      live = false;
+    };
+  }, [transport]);
+
+  const agentProjects = selectAgentProjects(projects, relayedProjects, projectsLoaded);
 
   // The engine can change settings under an open screen — it learns a JIRA status→column
   // mapping from a successful drag, for one — and this tab may sit here for an hour.
@@ -161,7 +230,10 @@ export function SettingsScreen(): JSX.Element {
       >
         <Tab value="general">General</Tab>
         <Tab value="board">Board</Tab>
+        <Tab value="projects">Projects</Tab>
         <Tab value="jira">JIRA</Tab>
+        <Tab value="tokens">Personal access tokens</Tab>
+        <Tab value="people">People</Tab>
         <Tab value="desktop">Desktop only</Tab>
       </TabList>
 
@@ -235,9 +307,15 @@ export function SettingsScreen(): JSX.Element {
             >
               <Input
                 type="number"
+                min={0}
+                max={MAX_SYNC_INTERVAL_MINUTES}
                 value={String(settings.syncIntervalMinutes)}
+                // `clampSyncInterval`: a plain number input has no upper bound of its own, and
+                // an unclamped value reaches `SyncPoller` on the desktop — see its docstring
+                // for why that overflows the timer's delay into "sync continuously" rather
+                // than failing loud.
                 onChange={(_e, d) =>
-                  patch({ syncIntervalMinutes: Math.max(0, Number(d.value) || 0) })
+                  patch({ syncIntervalMinutes: clampSyncInterval(Number(d.value) || 0) })
                 }
               />
             </Field>
@@ -368,6 +446,36 @@ export function SettingsScreen(): JSX.Element {
         </div>
       )}
 
+      {section === 'projects' && (
+        <div className={styles.pane}>
+          <Subtitle2>Repository settings</Subtitle2>
+          <Body1 className={styles.hint}>
+            The repositories an agent can work in, and what each one runs with. A project&apos;s
+            name, colour and ticket prefix are on the Projects tab — this is where you check what
+            its repository is actually configured to do.
+          </Body1>
+
+          {/* The refusal, stated before the list rather than on a button that is not there:
+              a pane with no controls in it reads as unfinished unless it says it is not. */}
+          <MessageBar intent="info">
+            <MessageBarBody>
+              Attaching or changing a repository happens on the desktop app. A repository
+              <strong> is</strong> a folder on the machine the engine runs on, so choosing one
+              starts with that machine’s own folder picker — which is most of what attaching one is.
+            </MessageBarBody>
+          </MessageBar>
+
+          {agentProjects.length === 0 ? (
+            // Two different sentences, and the difference is the whole point of the flag: a
+            // desktop that answered with nothing means there are none, while a mirror that has
+            // never carried a row means nobody has told this browser anything yet.
+            <ProjectsEmpty synced={projectsLoaded || Object.keys(projects).length > 0} />
+          ) : (
+            <ProjectsSection projects={agentProjects} />
+          )}
+        </div>
+      )}
+
       {section === 'jira' && (
         <div className={styles.pane}>
           <Subtitle2>JIRA (My Tasks board)</Subtitle2>
@@ -428,6 +536,18 @@ export function SettingsScreen(): JSX.Element {
         </div>
       )}
 
+      {section === 'tokens' && (
+        <div className={styles.pane}>
+          <TokensSection apiBase={apiBase} getAccessToken={getAccessToken} />
+        </div>
+      )}
+
+      {section === 'people' && (
+        <div className={styles.pane}>
+          <PeopleSettings />
+        </div>
+      )}
+
       {section === 'desktop' && (
         <div className={styles.pane}>
           <Subtitle2>Set these from the desktop app</Subtitle2>
@@ -465,12 +585,6 @@ const HOST_ONLY_SECTIONS: ReadonlyArray<{ title: string; why: string }> = [
       'credential store and it never leaves.',
   },
   {
-    title: 'Cloud sign-in',
-    why:
-      'signing the DESKTOP app in is a different act from signing this tab in, and this tab ' +
-      'is already signed in. Use the desktop app’s Cloud section for its own connection.',
-  },
-  {
     title: 'Updates',
     why: 'installing one quits and restarts the app, on somebody else’s screen.',
   },
@@ -487,11 +601,12 @@ const HOST_ONLY_SECTIONS: ReadonlyArray<{ title: string; why: string }> = [
       'the control you actually want here.',
   },
   {
-    title: 'Agent projects',
+    title: 'Repository settings',
     why:
-      'one IS a folder on that machine, so adding it starts with a native folder picker there ' +
-      'and the rest — its defaults, its base branch, the epics it owns — is configured beside ' +
-      'it. What you can do from here is use them: file a card under one, or assign a card to ' +
-      'one and override the model and permission mode for that card.',
+      'a repo IS a folder on that machine, so attaching one starts with a native folder ' +
+      'picker there, and the rest — the execution target, the base branch, the models, the ' +
+      'permission mode, the epics it owns — is configured beside it. A project’s name, ' +
+      'colour and ticket prefix are not part of this: those are rows in the store, and the ' +
+      'Projects tab lets you set them from here just as it does on the desktop.',
   },
 ];

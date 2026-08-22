@@ -95,3 +95,95 @@ describe('state and pipeline narrowing', () => {
     expect(toPipelineStatus('who-knows')).toBe('unknown');
   });
 });
+
+describe('GitLabClient.createMergeRequest', () => {
+  it('POSTs to the URL-ENCODED project path, so no id lookup is needed', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        id: 90,
+        iid: 12,
+        project_id: 42,
+        title: 'Add SSO',
+        state: 'opened',
+        web_url: 'https://gitlab.com/g/s/p/-/merge_requests/12',
+        source_branch: 'feat/sso',
+        target_branch: 'main',
+        updated_at: '2026-08-15T00:00:00Z',
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const created = await client().createMergeRequest('g/s/p', {
+      source_branch: 'feat/sso',
+      target_branch: 'main',
+      title: 'Add SSO',
+      description: 'body',
+    });
+
+    expect(created.existed).toBe(false);
+    expect(created.mergeRequest.iid).toBe(12);
+    expect(created.mergeRequest.project_id).toBe(42);
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      'https://gitlab.com/api/v4/projects/g%2Fs%2Fp/merge_requests',
+    );
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(String(init.body))).toEqual({
+      source_branch: 'feat/sso',
+      target_branch: 'main',
+      title: 'Add SSO',
+      description: 'body',
+      remove_source_branch: false,
+    });
+  });
+
+  it('treats a 409 "already exists" as a success and hands back the open one', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse(
+          { message: ['Another open merge request already exists for this source branch: !5'] },
+          409,
+        ),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse([{ id: 1, iid: 5, project_id: 42, state: 'opened', web_url: 'u' }]),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const created = await client().createMergeRequest('g/p', {
+      source_branch: 'feat/sso',
+      target_branch: 'main',
+      title: 'Add SSO',
+    });
+
+    expect(created.existed).toBe(true);
+    expect(created.mergeRequest.iid).toBe(5);
+    expect(String(fetchMock.mock.calls[1][0])).toContain('source_branch=feat%2Fsso');
+  });
+
+  it('re-throws a 409 that is not a duplicate merge request', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ message: 'Base branch is protected' }, 409));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      client().createMergeRequest('g/p', {
+        source_branch: 'x',
+        target_branch: 'main',
+        title: 't',
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps every read a read — a create failure never falls back to a GET of the list', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ message: 'forbidden' }, 403));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(
+      client().createMergeRequest('g/p', { source_branch: 'x', target_branch: 'y', title: 't' }),
+    ).rejects.toBeInstanceOf(GitLabError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});

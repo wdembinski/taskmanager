@@ -54,11 +54,10 @@ function toAssignment(row: Assignment): AssignmentModel {
  * Agent profiles and the assignment queue's server-side writes — `@tm/shared/agent`'s
  * own docstring has the "why a queue, not `Task.agentProjectId`" story.
  *
- * Every write goes through `manager.upsert(..., ['id'])`, the same convention
- * `TicketsService` uses; the claim/report transitions additionally run inside
- * `dataSource.transaction(...)` because they read-then-write a status guard
- * (queued-only for a claim, claimant-only for a report) that a bare upsert can't
- * express atomically.
+ * Every write goes through `manager.upsert(..., ['id'])`; the claim/report transitions
+ * additionally run inside `dataSource.transaction(...)` because they read-then-write a
+ * status guard (queued-only for a claim, claimant-only for a report) that a bare upsert
+ * can't express atomically.
  */
 @Injectable()
 export class AgentsService {
@@ -137,8 +136,8 @@ export class AgentsService {
 
   /**
    * Removes a profile — refused while any assignment still queued, claimed, or running
-   * against it exists, the same "stop the live work first" rule `agentProject:remove`
-   * applies on the desktop side. A `done`/`failed` assignment is history, not live work,
+   * against it exists, the same "stop the live work first" rule `project:remove` applies
+   * against a live scheduler run. A `done`/`failed` assignment is history, not live work,
    * so it never blocks this.
    */
   async deleteProfile(accountId: string, id: string): Promise<void> {

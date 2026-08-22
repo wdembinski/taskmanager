@@ -10,10 +10,10 @@
  *
  * The vertical nav also hosts the Board pane (the status keywords that colour a card's
  * progress line), the JIRA connection — including the status-name → column map, the
- * only route to the IN REVIEW column — the Agents pane (the repositories a My Tasks
- * card can be filed under or delegated to), and the Agent profiles pane (the reusable
- * run configurations a ticket can be queued against from the cloud, `@shared/agent`) —
- * each of which manages its own state.
+ * only route to the IN REVIEW column — and the Agent profiles pane (the reusable run
+ * configurations a ticket can be queued against from the cloud, `@shared/agent`), which
+ * manages its own state. Managing the projects themselves (the repositories a My Tasks
+ * card can be filed under or delegated to) is its own nav item, `Projects`.
  */
 import { useCallback, useEffect, useState } from 'react';
 import {
@@ -42,6 +42,7 @@ import {
 import { AddRegular, DismissRegular } from '@fluentui/react-icons';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
+import { clampSyncInterval, MAX_SYNC_INTERVAL_MINUTES } from '@shared/settings';
 import type {
   AppSettings,
   CloudSettings,
@@ -63,12 +64,12 @@ const PRIORITY_DISPLAY_LABELS: Record<PriorityDisplay, string> = {
 import { MODELS, type BoardColumn } from '@shared/model';
 import type {
   AppInfo,
-  IamConfigStatus,
-  IamSignInResult,
+  CloudConfigStatus,
   JiraConfigStatus,
   JiraStatusOption,
   JiraTestResult,
 } from '@shared/ipc';
+import { cloudAuthHint, cloudTokenPlaceholder } from './cloudAuthHint';
 import { describeUpdate, type UpdateState } from '@shared/update';
 import { isCloudHost } from '@shared/jiraUrl';
 import { ARCHIVE_RETENTION_DAYS, JIRA_BOARD_LIMIT } from '@shared/board';
@@ -89,9 +90,9 @@ import {
   type ExecTarget,
 } from '@shared/execTarget';
 import { AgentProfiles } from './AgentProfiles';
-import { AgentProjects } from './AgentProjects';
 import { ColorSwatches, PALETTE } from '@ui/ColorSwatches';
 import { PaneLoading } from '@ui/PaneLoading';
+import { PeopleSettings } from '@ui/projects/PeopleSettings';
 import { PlanningModelField } from '@ui/PlanningModelField';
 import { ReadinessPanel } from './ReadinessPanel';
 import { StatusMapViewer } from '@ui/StatusMapViewer';
@@ -166,7 +167,7 @@ const COLUMN_LABEL: Record<BoardColumn, string> = Object.fromEntries(
 ) as Record<BoardColumn, string>;
 
 type SettingsSection =
-  'general' | 'board' | 'jira' | 'gitlab' | 'github' | 'cloud' | 'agents' | 'agentProfiles';
+  'general' | 'board' | 'jira' | 'gitlab' | 'github' | 'cloud' | 'people' | 'agentProfiles';
 
 export function Settings(): JSX.Element {
   const styles = useStyles();
@@ -213,11 +214,11 @@ export function Settings(): JSX.Element {
   // way — once, so a blank row somebody is part-way through filling in survives a Save.
   const [labelRows, setLabelRows] = useState<StatusMapRow[]>([]);
   // Cloud: the poller (`cloudPoller.ts`) needs `enabled` + `baseUrl` from this pane, plus a
-  // vipper.iam sign-in — everything the poller actually authenticates with, not a form
-  // field, so only the signed-in/out state and a couple of buttons live here.
-  const [iamStatus, setIamStatus] = useState<IamConfigStatus | null>(null);
-  const [iamResult, setIamResult] = useState<IamSignInResult | null>(null);
-  const [iamBusy, setIamBusy] = useState(false);
+  // pasted personal access token — everything the poller actually authenticates with, not a
+  // form field saved with the rest, so it gets its own save/clear pair beside GitLab's.
+  const [cloudToken, setCloudToken] = useState('');
+  const [cloudTokenMsg, setCloudTokenMsg] = useState<string | null>(null);
+  const [cloudStatus, setCloudStatus] = useState<CloudConfigStatus | null>(null);
 
   // Only offer targets that exist here: with no WSL installed the control never
   // appears, so the screen stays exactly as it was.
@@ -243,7 +244,7 @@ export function Settings(): JSX.Element {
     setJiraStatus(status);
     setGitlabStatus(await window.api.invoke('gitlab:getConfigStatus'));
     setGithubStatus(await window.api.invoke('github:getConfigStatus'));
-    setIamStatus(await window.api.invoke('iam:getConfigStatus'));
+    setCloudStatus(await window.api.invoke('cloud:getConfigStatus'));
     void loadJiraStatuses();
   }, []);
 
@@ -262,21 +263,21 @@ export function Settings(): JSX.Element {
     setSaved(false);
   }
 
-  async function signInToCloud(): Promise<void> {
-    setIamBusy(true);
-    setIamResult(null);
-    try {
-      setIamResult(await window.api.invoke('iam:signIn'));
-      setIamStatus(await window.api.invoke('iam:getConfigStatus'));
-    } finally {
-      setIamBusy(false);
-    }
+  async function saveCloudToken(): Promise<void> {
+    // Save the form first, exactly as the GitLab path does: main reads the STORED settings,
+    // so a token saved against an unsaved URL would be paired with stale config and fail in
+    // a way that looks like a bad token.
+    await save();
+    const res = await window.api.invoke('cloud:setCredentials', cloudToken);
+    setCloudTokenMsg(res.message);
+    setCloudToken('');
+    setCloudStatus(await window.api.invoke('cloud:getConfigStatus'));
   }
 
-  async function signOutOfCloud(): Promise<void> {
-    await window.api.invoke('iam:signOut');
-    setIamResult({ ok: true, message: 'Signed out.' });
-    setIamStatus(await window.api.invoke('iam:getConfigStatus'));
+  async function clearCloudToken(): Promise<void> {
+    await window.api.invoke('cloud:clearCredentials');
+    setCloudTokenMsg('Token cleared.');
+    setCloudStatus(await window.api.invoke('cloud:getConfigStatus'));
   }
 
   async function saveGitLabToken(): Promise<void> {
@@ -526,12 +527,14 @@ export function Settings(): JSX.Element {
         <Tab value="gitlab">GitLab</Tab>
         <Tab value="github">GitHub</Tab>
         <Tab value="cloud">Cloud</Tab>
-        <Tab value="agents">Agents</Tab>
+        <Tab value="people">People</Tab>
         <Tab value="agentProfiles">Agent profiles</Tab>
       </TabList>
 
-      {section === 'agents' ? (
-        <AgentProjects />
+      {section === 'people' ? (
+        <div className={styles.pane}>
+          <PeopleSettings />
+        </div>
       ) : section === 'agentProfiles' ? (
         <AgentProfiles />
       ) : section === 'board' ? (
@@ -709,12 +712,15 @@ export function Settings(): JSX.Element {
             >
               <SpinButton
                 min={0}
-                max={120}
+                max={MAX_SYNC_INTERVAL_MINUTES}
                 value={settings.syncIntervalMinutes}
                 onChange={(_e, d) => {
                   const n = d.value ?? Number(d.displayValue);
-                  if (Number.isFinite(n))
-                    patch({ syncIntervalMinutes: Math.max(0, Math.round(n as number)) });
+                  // `clampSyncInterval`, not just `Number.isFinite`: `max` only constrains the
+                  // stepper buttons, not a value typed or pasted straight into the field, and
+                  // an unclamped one reaches `SyncPoller` — see its own docstring for why that
+                  // silently turns into a sync that never stops rather than a rejected save.
+                  if (Number.isFinite(n)) patch({ syncIntervalMinutes: clampSyncInterval(n) });
                 }}
               />
             </Field>
@@ -1331,53 +1337,52 @@ export function Settings(): JSX.Element {
               />
             </Field>
 
-            <Field
-              label="vipper.iam account"
-              hint={
-                iamStatus?.encryptionAvailable === false
-                  ? 'The OS secure store is unavailable, so a sign-in cannot be saved on this machine.'
-                  : iamStatus?.signedIn
-                    ? 'Signed in.'
-                    : 'Sign in to authorize this machine.'
-              }
-            >
-              <div className={styles.actions}>
-                <Button
-                  appearance="primary"
-                  disabled={iamBusy || iamStatus?.encryptionAvailable === false}
-                  onClick={() => void signInToCloud()}
-                >
-                  {iamStatus?.signedIn ? 'Sign in again' : 'Sign in'}
-                </Button>
-                <Button
-                  appearance="secondary"
-                  disabled={!iamStatus?.signedIn}
-                  onClick={() => void signOutOfCloud()}
-                >
-                  Sign out
-                </Button>
-                {iamBusy && <Spinner size="tiny" />}
-              </div>
+            <Field label="Personal access token" hint={cloudAuthHint(cloudStatus)}>
+              {cloudStatus?.legacySignInRetired && (
+                <MessageBar intent="warning">
+                  <MessageBarBody>
+                    Cloud sign-in has been replaced by personal access tokens — create one in the
+                    web app’s Personal access tokens page and paste it below.
+                  </MessageBarBody>
+                </MessageBar>
+              )}
+              {cloudStatus?.authState === 'rejected' && !cloudStatus?.legacySignInRetired && (
+                <MessageBar intent="warning">
+                  <MessageBarBody>
+                    The cloud rejected this token. It has been revoked or has expired — create a new
+                    one in the web app and paste it here.
+                  </MessageBarBody>
+                </MessageBar>
+              )}
+              <Input
+                type="password"
+                value={cloudToken}
+                placeholder={cloudTokenPlaceholder(cloudStatus)}
+                onChange={(_e, d) => setCloudToken(d.value)}
+              />
             </Field>
 
-            {/* The poller never reports a failure — it counts the tick and retries — so
-                without this, a wrong address, a missing sign-in and a refused account all
-                look identical: an empty board. */}
-            <Field
-              label="Check it works"
-              hint="Walks the whole chain — address, sign-in, then reading your board — and says which part fails."
-            >
-              <div className={styles.actions}>
-                <Button
-                  appearance="secondary"
-                  disabled={cloudTesting}
-                  onClick={() => void testCloudConnection()}
-                >
-                  Test connection
-                </Button>
-                {cloudTesting && <Spinner size="tiny" />}
-              </div>
-            </Field>
+            <div className={styles.actions}>
+              <Button
+                appearance="secondary"
+                disabled={!cloudToken.trim() || cloudStatus?.encryptionAvailable === false}
+                onClick={() => void saveCloudToken()}
+              >
+                Save token
+              </Button>
+              <Button
+                appearance="secondary"
+                disabled={!cloudStatus?.hasToken}
+                onClick={() => void clearCloudToken()}
+              >
+                Clear token
+              </Button>
+              <Button appearance="primary" onClick={() => void testCloudConnection()}>
+                Test connection
+              </Button>
+              {cloudTesting && <Spinner size="tiny" />}
+              {cloudTokenMsg && <Caption1 className={styles.saved}>{cloudTokenMsg}</Caption1>}
+            </div>
 
             {cloudTest && (
               <MessageBar intent={cloudTest.ok ? 'success' : 'error'}>
@@ -1386,18 +1391,21 @@ export function Settings(): JSX.Element {
             )}
           </div>
 
+          <Body1 className={styles.hint}>
+            Tokens are created on the web app’s Personal access tokens page — signed in there, not
+            here — then pasted above. The poller never reports a failure on its own — it counts the
+            tick and retries — so “Test connection” is what tells a wrong address, a missing token
+            and a refused account apart: it walks the whole chain (address, token, this machine’s
+            own sync, then whether the server lists it as connected) and says which part failed.
+            Save the form first — it reads what is stored, not what is typed.
+          </Body1>
+
           <div className={styles.actions}>
             <Button appearance="primary" onClick={() => void save()}>
               Save
             </Button>
             {saved && <Caption1 className={styles.saved}>Saved.</Caption1>}
           </div>
-
-          {iamResult && (
-            <MessageBar intent={iamResult.ok ? 'success' : 'error'}>
-              <MessageBarBody>{iamResult.message}</MessageBarBody>
-            </MessageBar>
-          )}
         </div>
       ) : (
         <div className={styles.pane}>

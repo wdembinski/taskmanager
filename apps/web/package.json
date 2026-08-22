@@ -1,6 +1,6 @@
 {
   "name": "@tm/web",
-  "version": "0.78.2",
+  "version": "0.0.0",
   "description": "VIPPER Task Manager Cloud — the browser client. Vite + React + Fluent UI, deployed to Azure Static Web Apps' free tier. Signs in to vipper.iam (authorization-code + PKCE), reads the account's board over GET /v1/board and edits it by queuing commands over POST /v1/commands — it never writes the mirror directly.",
   "license": "UNLICENSED",
   "private": true,
@@ -20,8 +20,7 @@
     "@tm/shared": "workspace:*",
     "@tm/ui": "workspace:*",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "react-router-dom": "^6.30.6"
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",

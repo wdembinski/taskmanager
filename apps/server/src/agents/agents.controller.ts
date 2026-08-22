@@ -25,7 +25,7 @@ import { AgentsService } from './agents.service';
 
 /**
  * Agent profiles and the assignment queue — `@tm/shared/agent`'s own docstring has the
- * full "why a queue" story. Guarded exactly like `TicketsController`: `GET` reads,
+ * full "why a queue" story. Guarded exactly like every other `/v1/*` route: `GET` reads,
  * everything else writes (`IamAuthGuard`'s `actionFor`).
  */
 @Controller('v1')

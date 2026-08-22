@@ -21,17 +21,6 @@ export class ProjectMirror {
   @Column({ type: 'simple-json' })
   data!: Project;
 
-  /**
-   * The ticket-number allocator for a `kind: 'ticket'` project — mirrors the desktop's own
-   * `projects.ticketSeq` column (`apps/client/src/main/store.ts`). Deliberately NOT part of
-   * `data`/`Project`: `Project.ticketPrefix`'s docstring explains why the allocator is a
-   * counter, not a property, and folding it into the JSON blob would let a naive whole-object
-   * write silently reset it. Zero for every project that is not a ticket project, and for a
-   * ticket project that has not issued a key yet.
-   */
-  @Column({ type: 'int', default: 0 })
-  ticketSeq!: number;
-
   @Index()
   @Column({ type: 'rowversion', insert: false, update: false })
   rowVersion!: Buffer;

@@ -55,6 +55,7 @@ function makeUploader(
     settings?: CloudSettings;
     readBytes?: (a: TaskAttachment) => Promise<Uint8Array>;
     token?: string | null;
+    onAuthRejected?: () => void;
   } = {},
 ): Harness {
   const fetchImpl = over.fetchImpl ?? vi.fn(async () => ok({ storedAt: 555, size: 4 }));
@@ -71,6 +72,7 @@ function makeUploader(
       // The store would; this is what makes a second pass skip what the first one pushed.
       if (row) row.cloudBlobAt = at;
     },
+    onAuthRejected: over.onAuthRejected,
     fetchImpl: fetchImpl as unknown as typeof fetch,
     // Never actually waits: the gap between files is real behaviour but nothing to sit
     // through, and a test that slept a second per row would be a test nobody runs.
@@ -170,6 +172,28 @@ describe('CloudAttachmentUploader', () => {
     h.uploader.scan();
     await h.settle();
     expect(h.marked).toEqual([['a1', 777]]);
+  });
+
+  it('reports a 401 as an auth rejection', async () => {
+    const onAuthRejected = vi.fn();
+    const fetchImpl = vi.fn(async () => fail(401));
+    const h = makeUploader([attachment()], { fetchImpl, onAuthRejected });
+
+    h.uploader.scan();
+    await h.settle();
+
+    expect(onAuthRejected).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not report a 403 as an auth rejection', async () => {
+    const onAuthRejected = vi.fn();
+    const fetchImpl = vi.fn(async () => fail(403));
+    const h = makeUploader([attachment()], { fetchImpl, onAuthRejected });
+
+    h.uploader.scan();
+    await h.settle();
+
+    expect(onAuthRejected).not.toHaveBeenCalled();
   });
 
   it('never asks again after a 413', async () => {

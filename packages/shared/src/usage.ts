@@ -182,3 +182,51 @@ export interface UsageQuotas {
  */
 export const DEFAULT_SESSION_TOKEN_BUDGET = 100_000_000;
 export const DEFAULT_WEEKLY_TOKEN_BUDGET = 2_500_000_000;
+
+/**
+ * One reconstructed rolling-5-hour session's history: how long it took to burn
+ * through the session token budget, measured two ways.
+ *
+ * There is no session table — Claude's own reset events are read live, never kept —
+ * so a "session" here is reconstructed from `token_usage`'s own timestamps: a run of
+ * samples starting wherever the previous one left off, up to `USAGE_WINDOW_MS` wide.
+ * See `rollupSessionStats` (`apps/client/src/main/usageRollup.ts`) for the algorithm.
+ */
+export interface SessionStat {
+  /** Ordinal position, oldest first, 0-based — stable across a fetch, not a database id. */
+  index: number;
+  /** When this session's first sample landed (epoch ms). */
+  startedAt: number;
+  /** When cumulative spend crossed `limit` (epoch ms), or null if it never did. */
+  exhaustedAt: number | null;
+  /** Total tokens spent by the point the session ended (exhausted, or the last sample seen). */
+  tokens: number;
+  /** The budget this session was measured against, in tokens (Settings' session budget). */
+  limit: number;
+  /**
+   * Wall-clock ms from `startedAt` to `exhaustedAt` — the real-world time it took,
+   * idle stretches and any time the computer was off included. Null unless `exhausted`.
+   */
+  wallClockMs: number | null;
+  /**
+   * Active ms it took to reach the budget: the same span as `wallClockMs` but with any
+   * gap between consecutive samples wider than the idle threshold excluded, on the
+   * theory that no tokens were being generated during a gap that long. Null unless
+   * `exhausted`.
+   */
+  processingMs: number | null;
+  /** Whether the session actually ran its budget out (false = it never got there). */
+  exhausted: boolean;
+}
+
+/**
+ * A gap between two consecutive usage samples at or above this is treated as
+ * non-processing time (away from Claude, or the machine off) rather than a pause
+ * inside otherwise-continuous work — see `SessionStat.processingMs`.
+ *
+ * There is no direct signal for "Claude is generating right now", only the CLI's own
+ * per-turn token counts arriving as discrete samples, so this is a heuristic: a single
+ * turn or a short thinking pause rarely runs longer than a few minutes, while the gap
+ * between one task finishing and the next one starting routinely does.
+ */
+export const SESSION_IDLE_GAP_MS = 10 * 60 * 1000;

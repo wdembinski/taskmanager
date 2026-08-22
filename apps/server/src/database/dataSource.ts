@@ -25,6 +25,7 @@ import { AttachmentUpload } from '../entities/attachmentUpload.entity';
 import { Client } from '../entities/client.entity';
 import { Command } from '../entities/command.entity';
 import { CommandResultRow } from '../entities/commandResult.entity';
+import { PersonalAccessToken } from '../entities/personalAccessToken.entity';
 import { Tombstone } from '../entities/tombstone.entity';
 import { ProjectMirror } from '../entities/projectMirror.entity';
 import { TaskMirror } from '../entities/taskMirror.entity';
@@ -44,6 +45,7 @@ export const AppDataSource = new DataSource({
     Client,
     Command,
     CommandResultRow,
+    PersonalAccessToken,
     ProjectMirror,
     TaskMirror,
     Tombstone,

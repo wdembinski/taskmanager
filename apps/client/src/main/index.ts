@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { app, BrowserWindow, dialog, protocol, safeStorage, shell } from 'electron';
 import { ATTACHMENT_SCHEME } from '@shared/attachments';
 import { PRODUCT_NAME } from '@shared/product';
+import { registerContextMenu } from './contextMenu';
 import { registerIpcHandlers, type Engine } from './ipc';
 import { formatError, getLogPath, logMain } from './log';
 import { runShutdownSteps, type ShutdownStep } from './shutdown';
@@ -23,6 +24,23 @@ import { runShutdownSteps, type ShutdownStep } from './shutdown';
 // forever with no clue why. These two handlers make any such failure loud.
 process.on('uncaughtException', (err) => reportFatal('Unexpected error', err));
 process.on('unhandledRejection', (reason) => reportFatal('Unexpected error', reason));
+
+// Two copies of this app share one `userData` — one SQLite file, and every table in it,
+// including whichever ones each process holds open statements against. Two processes
+// writing the same SQLite file at once is reason enough on its own: `requestSingleInstanceLock`
+// quits every copy after the first outright, rather than let a second one open the database
+// underneath it. `second-instance` only needs to focus the survivor's window, since the
+// runner-up passed no launch arguments this app reads.
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    const [window] = BrowserWindow.getAllWindows();
+    if (!window) return;
+    if (window.isMinimized()) window.restore();
+    window.focus();
+  });
+}
 
 // Windows white-flash-on-restore fix. Chromium's "native window occlusion"
 // detection marks a minimized window as occluded and discards its rendered frame;
@@ -111,6 +129,11 @@ function createWindow(): BrowserWindow {
     void shell.openExternal(url);
     return { action: 'deny' };
   });
+
+  // Right-click Cut/Copy/Paste/Select all. `role: 'paste'` dispatches a real paste
+  // into the focused element, so a right-click paste feeds an attachment through the
+  // same `onPaste` path as Ctrl+V — see contextMenu.ts.
+  registerContextMenu(window);
 
   // In development electron-vite serves the renderer over HTTP with hot-reload;
   // in production we load the built HTML file from disk.

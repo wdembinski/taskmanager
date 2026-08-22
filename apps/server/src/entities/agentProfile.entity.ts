@@ -9,9 +9,8 @@ import type { ClaudeModel, PermissionMode } from '@tm/shared/session';
  * drift to guard against by carrying the whole shared type in one column.
  *
  * `updatedAt` is a plain column the service stamps on every write, not
- * `@UpdateDateColumn()`: every write here goes through `manager.upsert(...)`
- * (`TicketsService`'s own convention), and an upsert is a raw INSERT/UPDATE that does
- * not run through the listener a decorator like that relies on.
+ * `@UpdateDateColumn()`: every write here goes through `manager.upsert(...)`, which is a
+ * raw INSERT/UPDATE that does not run through the listener a decorator like that relies on.
  */
 @Entity('agent_profiles')
 export class AgentProfile {
