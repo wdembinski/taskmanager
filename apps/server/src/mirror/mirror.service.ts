@@ -17,7 +17,7 @@ import type {
 } from '@tm/protocol/wire';
 import { PROTOCOL_VERSION } from '@tm/protocol/wire';
 import { columnForStatus, restingStatus } from '@tm/shared/board';
-import { isManualStatus } from '@tm/shared/model';
+import { hasRepo, isManualStatus } from '@tm/shared/model';
 import type { Project, Task } from '@tm/shared/model';
 import { resolveMove } from '@tm/shared/moveResolve';
 import { buildProject, normalizeEpicKeys } from '@tm/shared/projectBuilders';
@@ -786,7 +786,7 @@ export class MirrorService {
       where: { id: projectId, accountId },
       select: { id: true, data: true },
     });
-    if (!project || (opts?.agentOnly && project.data.kind !== 'agent')) {
+    if (!project || (opts?.agentOnly && !hasRepo(project.data))) {
       throw new BadRequestException('Unknown project.');
     }
   }

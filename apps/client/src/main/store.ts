@@ -928,21 +928,6 @@ export interface PendingCloudResult extends StoredCloudOutcome {
 }
 
 /**
- * Clean up a user-entered list of JIRA epic keys: trim, drop blanks, upper-case
- * (JIRA keys are case-insensitive but canonically upper), and de-duplicate — so
- * epic → agent-project matching later compares like with like.
- */
-function normalizeEpicKeys(keys: string[] | undefined): string[] {
-  if (!keys) return [];
-  const seen = new Set<string>();
-  for (const key of keys) {
-    const trimmed = key.trim().toUpperCase();
-    if (trimmed) seen.add(trimmed);
-  }
-  return [...seen];
-}
-
-/**
  * Open (or create) the database at `dbPath` and return the store API.
  * `join(app.getPath('userData'), 'orchestrator.db')` is the production path.
  */

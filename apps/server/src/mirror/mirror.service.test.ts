@@ -175,7 +175,7 @@ describe('MirrorService.createTask', () => {
     const accountId = 'account-1';
     // Standing in for a project this account already has — WITHOUT any `POST /v1/sync` ever
     // having run for it, which is exactly the gap this route exists to close.
-    const project = buildProject({ path: '/repo', kind: 'agent' }, DEFAULT_SETTINGS);
+    const project = buildProject({ path: '/repo', planPath: '' }, DEFAULT_SETTINGS);
     store.projectRows.push({
       id: project.id,
       accountId,
@@ -219,7 +219,7 @@ describe('MirrorService.updateTask / deleteTask', () => {
   it('edits, moves and deletes an ad-hoc task, each reflected on GET /v1/board', async () => {
     const { service, store } = buildService();
     const accountId = 'account-1';
-    const project = buildProject({ path: '/repo', kind: 'agent' }, DEFAULT_SETTINGS);
+    const project = buildProject({ path: '/repo', planPath: '' }, DEFAULT_SETTINGS);
     store.projectRows.push({
       id: project.id,
       accountId,
@@ -268,7 +268,7 @@ describe('MirrorService.updateTask / deleteTask', () => {
   it('refuses an unknown project on projectTagId, and a blank title', async () => {
     const { service, store } = buildService();
     const accountId = 'account-1';
-    const project = buildProject({ path: '/repo', kind: 'agent' }, DEFAULT_SETTINGS);
+    const project = buildProject({ path: '/repo', planPath: '' }, DEFAULT_SETTINGS);
     store.projectRows.push({
       id: project.id,
       accountId,
@@ -291,7 +291,7 @@ describe('MirrorService.updateTask / deleteTask', () => {
 
   it('throws 404 for a task belonging to another account', async () => {
     const { service, store } = buildService();
-    const project = buildProject({ path: '/repo', kind: 'agent' }, DEFAULT_SETTINGS);
+    const project = buildProject({ path: '/repo', planPath: '' }, DEFAULT_SETTINGS);
     store.projectRows.push({
       id: project.id,
       accountId: 'account-1',
@@ -316,7 +316,7 @@ describe('MirrorService.updateTask / deleteTask', () => {
   it('deleteTask refuses while the task is running, and cascades to its steps', async () => {
     const { service, store } = buildService();
     const accountId = 'account-1';
-    const project = buildProject({ path: '/repo', kind: 'agent' }, DEFAULT_SETTINGS);
+    const project = buildProject({ path: '/repo', planPath: '' }, DEFAULT_SETTINGS);
     store.projectRows.push({
       id: project.id,
       accountId,
@@ -371,10 +371,10 @@ describe('MirrorService.createProject / updateProject / deleteProject', () => {
     const { service } = buildService();
     const accountId = 'account-1';
 
-    const project = await service.createProject(accountId, { path: '/repo', kind: 'agent' });
+    const project = await service.createProject(accountId, { path: '/repo', planPath: '' });
 
     expect(project.path).toBe('/repo');
-    expect(project.kind).toBe('agent');
+    expect(project.planPath).toBe('');
 
     const board = await service.board(accountId, undefined, undefined, false);
     expect(board.deltas.projects).toHaveLength(1);
@@ -384,7 +384,7 @@ describe('MirrorService.createProject / updateProject / deleteProject', () => {
   it('edits a project, reflected on GET /v1/board', async () => {
     const { service } = buildService();
     const accountId = 'account-1';
-    const project = await service.createProject(accountId, { path: '/repo', kind: 'plan' });
+    const project = await service.createProject(accountId, { path: '/repo' });
 
     const edited = await service.updateProject(accountId, project.id, {
       name: 'Renamed',
@@ -414,7 +414,7 @@ describe('MirrorService.createProject / updateProject / deleteProject', () => {
   it('deletes a project, cascading to its mirrored tasks', async () => {
     const { service } = buildService();
     const accountId = 'account-1';
-    const project = await service.createProject(accountId, { path: '/repo', kind: 'agent' });
+    const project = await service.createProject(accountId, { path: '/repo', planPath: '' });
     const task = await service.createTask(accountId, { projectId: project.id, title: 'A task' });
 
     await service.deleteProject(accountId, project.id);
@@ -451,7 +451,7 @@ describe('MirrorService replay to a desktop Client', () => {
   it('queues an ipc-invoke replay for a known desktop Client that is offline right now', async () => {
     const { service, store } = buildService();
     const accountId = 'account-1';
-    const project = buildProject({ path: '/repo', kind: 'agent' }, DEFAULT_SETTINGS);
+    const project = buildProject({ path: '/repo', planPath: '' }, DEFAULT_SETTINGS);
     store.projectRows.push({
       id: project.id,
       accountId,
@@ -490,7 +490,7 @@ describe('MirrorService replay to a desktop Client', () => {
   it('queues nothing when the account has no desktop Client on record', async () => {
     const { service, store } = buildService();
     const accountId = 'account-1';
-    const project = buildProject({ path: '/repo', kind: 'agent' }, DEFAULT_SETTINGS);
+    const project = buildProject({ path: '/repo', planPath: '' }, DEFAULT_SETTINGS);
     store.projectRows.push({
       id: project.id,
       accountId,
@@ -506,7 +506,7 @@ describe('MirrorService replay to a desktop Client', () => {
   it('replays an edit as one command per changed, replayable field', async () => {
     const { service, store } = buildService();
     const accountId = 'account-1';
-    const project = buildProject({ path: '/repo', kind: 'agent' }, DEFAULT_SETTINGS);
+    const project = buildProject({ path: '/repo', planPath: '' }, DEFAULT_SETTINGS);
     store.projectRows.push({
       id: project.id,
       accountId,
@@ -539,7 +539,7 @@ describe('MirrorService replay to a desktop Client', () => {
   it('replays a project delete to a known desktop Client, by the same id', async () => {
     const { service, store } = buildService();
     const accountId = 'account-1';
-    const project = await service.createProject(accountId, { path: '/repo', kind: 'agent' });
+    const project = await service.createProject(accountId, { path: '/repo', planPath: '' });
     store.clientRows.push({
       id: 'desktop-1',
       accountId,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_SETTINGS } from './settings';
-import { buildProject, normalizeEpicKeys, toProjectKind } from './projectBuilders';
+import { buildProject, normalizeEpicKeys } from './projectBuilders';
 
 describe('buildProject', () => {
   it('builds a plan project from a path, seeding unspecified fields from defaults', () => {
@@ -9,16 +9,17 @@ describe('buildProject', () => {
     expect(project.name).toBe('my-app');
     expect(project.path).toBe('C:\\Repositories\\my-app');
     expect(project.planPath).toBe('C:\\Repositories\\my-app\\plan.md');
-    expect(project.kind).toBe('plan');
     expect(project.defaultModel).toBe(DEFAULT_SETTINGS.defaultModel);
     expect(project.planningModel).toBeNull();
     expect(project.useWorktrees).toBe(true);
     expect(project.baseBranch).toBe('');
     expect(project.writeBackPlan).toBe(DEFAULT_SETTINGS.writeBackPlan);
     expect(project.autoRelease).toBe(false);
+    expect(project.autoCreatePr).toBe(false);
     expect(project.autoIntegrate).toBeNull();
     expect(project.planAligned).toBe(true);
     expect(project.jiraEpicKeys).toEqual([]);
+    // A plan project has a plan file, so the ticket-prefix guarantee never fires.
     expect(project.ticketPrefix).toBe('');
     expect(project.target).toEqual(DEFAULT_SETTINGS.defaultExecTarget);
     expect(project.instructions).toBe('');
@@ -39,28 +40,34 @@ describe('buildProject', () => {
     expect(declined.planningModel).toBeNull();
   });
 
-  it('forces an agent project to worktrees-on, plan-less and path-less-planPath', () => {
-    const project = buildProject({ path: '/home/me/repo', kind: 'agent' }, DEFAULT_SETTINGS);
-    expect(project.kind).toBe('agent');
+  it('guarantees a bare repo (an explicit empty planPath) a ticket prefix derived from its name', () => {
+    const project = buildProject({ path: '/home/me/repo', planPath: '' }, DEFAULT_SETTINGS);
     expect(project.path).toBe('/home/me/repo');
     expect(project.planPath).toBe('');
+    expect(project.ticketPrefix).toBe('REPO');
     expect(project.useWorktrees).toBe(true);
-    expect(project.writeBackPlan).toBe(false);
   });
 
-  it('forces a ticket project to have no path, no planPath, no worktrees, and names it after the prefix', () => {
-    const project = buildProject(
-      { path: '/wherever', kind: 'ticket', ticketPrefix: 'tm' },
-      DEFAULT_SETTINGS,
-    );
-    expect(project.kind).toBe('ticket');
+  it('builds a ticket project (no path) from an explicit prefix, and names it after the prefix', () => {
+    const project = buildProject({ ticketPrefix: 'tm' }, DEFAULT_SETTINGS);
     expect(project.path).toBe('');
     expect(project.planPath).toBe('');
-    expect(project.useWorktrees).toBe(false);
     expect(project.baseBranch).toBe('');
-    expect(project.writeBackPlan).toBe(false);
     expect(project.ticketPrefix).toBe('TM');
     expect(project.name).toBe('TM');
+  });
+
+  it('leaves a Personal-space project (`personal: true`) with no ticket prefix even though it is plan-less', () => {
+    const project = buildProject({ personal: true }, DEFAULT_SETTINGS);
+    expect(project.ticketPrefix).toBe('');
+    expect(project.planPath).toBe('');
+  });
+
+  it('avoids colliding with an already-taken ticket prefix', () => {
+    const project = buildProject({ path: '/home/me/repo', planPath: '' }, DEFAULT_SETTINGS, [
+      'REPO',
+    ]);
+    expect(project.ticketPrefix).toBe('REPO2');
   });
 
   it('trims a caller-given name, instructions and color, and prefers an explicit name over the path', () => {
@@ -87,14 +94,5 @@ describe('normalizeEpicKeys', () => {
 
   it('returns an empty array for undefined', () => {
     expect(normalizeEpicKeys(undefined)).toEqual([]);
-  });
-});
-
-describe('toProjectKind', () => {
-  it('whitelists known kinds and degrades anything else to plan', () => {
-    expect(toProjectKind('agent')).toBe('agent');
-    expect(toProjectKind('ticket')).toBe('ticket');
-    expect(toProjectKind('plan')).toBe('plan');
-    expect(toProjectKind('bogus')).toBe('plan');
   });
 });
