@@ -100,6 +100,7 @@ import { applyCloudCommand, type CloudCommandOutcome } from './cloudCommands';
 import { CommandQueue } from './commandQueue';
 import { relayRegistry } from './ipcRegistry';
 import { CloudAttachmentUploader, fetchUploadBytes } from './cloudAttachmentUploader';
+import { AssignmentPoller } from './assignmentPoller';
 import { CloudBoardPuller } from './cloudBoardPuller';
 import { CloudEventForwarder } from './cloudEventForwarder';
 import { CloudPoller } from './cloudPoller';
@@ -258,6 +259,10 @@ export interface Engine {
   /** The read half of the same mirror: `GET /v1/board?since=` on its own clock, applying
    *  rows this desktop did not itself write — see `cloudBoardPuller.ts`'s own header. */
   cloudBoardPuller: CloudBoardPuller;
+  /** Claims and starts queued cloud `Assignment`s for the ticket projects this desktop
+   *  serves — "desktop is the worker" half of step 5; see `assignmentPoller.ts`'s own
+   *  header for why it is a separate poller rather than a change to `Scheduler` itself. */
+  assignmentPoller: AssignmentPoller;
   /** The push half of the same mirror: every `IpcEvents` push, batched to `POST /v1/events`.
    * Holds a timer and a queue, so it is disposed on quit like every other one. */
   cloudEvents: CloudEventForwarder;
@@ -3661,6 +3666,23 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   });
   cloudBoardPuller.reschedule();
 
+  // "Desktop is the worker": claims and starts queued cloud assignments for the ticket
+  // projects this desktop serves. Its own clock and its own `trackSync('cloud', …)` slot,
+  // same reasoning as `cloudBoardPuller` above — a human watching the status bar sees one
+  // cloud feature, even though this never calls into `CloudBoardPuller` or vice versa.
+  // `runTask` is `Scheduler.runTask` itself, unmodified: a claimed assignment starts a
+  // session through the exact same `sessionManager`/`chainRunner` path a human's own Start
+  // click does.
+  const assignmentPoller = new AssignmentPoller({
+    store,
+    focus: focusTracker,
+    getSettings: () => store.getSettings().cloud,
+    getAccessToken: getCloudAccessToken,
+    runTracked: (run) => trackSync('cloud', run),
+    runTask: (taskId) => scheduler.runTask(taskId),
+  });
+  assignmentPoller.reschedule();
+
   // The two quota bars' one real signal: `/usage` read straight from the CLI, on its
   // own clock (see `claudeUsage.ts` for why this never costs a token or a turn).
   const claudeUsagePoller = new ClaudeUsagePoller();
@@ -3679,6 +3701,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     syncPoller,
     cloudPoller,
     cloudBoardPuller,
+    assignmentPoller,
     cloudEvents,
     cloudAttachments,
     focusTracker,
