@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, IsNull, LessThan, Repository } from 'typeorm';
 import type {
@@ -6,11 +6,14 @@ import type {
   ClientPresence,
   CommandRequest,
   CommandResult,
+  CreateTaskRequest,
   ResultsResponse,
   SyncRequest,
   SyncResponse,
 } from '@tm/protocol/wire';
 import { PROTOCOL_VERSION } from '@tm/protocol/wire';
+import type { Task } from '@tm/shared/model';
+import { buildAdhocTask } from '@tm/shared/taskBuilders';
 import { Client } from '../entities/client.entity';
 import { Command } from '../entities/command.entity';
 import { CommandResultRow } from '../entities/commandResult.entity';
@@ -187,6 +190,43 @@ export class MirrorService {
       deliveredAt: null,
       ackedAt: null,
     });
+  }
+
+  /**
+   * `POST /v1/tasks` — an ad-hoc task, written straight into `task_mirrors` rather than
+   * relayed to a desktop Client. See `CreateTaskRequest` on the wire for why this route
+   * exists at all: a relayed `task:create` does nothing for an account no desktop Client is
+   * currently polling for, and this is the server making the identical row itself.
+   *
+   * `projectId` and (if given) `projectTagId` are checked against `project_mirrors` for THIS
+   * account — the same check `ipc.ts`'s `task:create` handler makes against its local store
+   * before filing a card under an agent project, just re-pointed at the mirror because a
+   * caller-supplied id here could as easily name another account's project as a typo.
+   * `order` is computed the same way the desktop's own `nextOrder` query does: one past the
+   * highest `order` any mirrored task in that project already has, or 0 for the first.
+   */
+  async createTask(accountId: string, request: CreateTaskRequest): Promise<Task> {
+    const title = request.title.trim();
+    if (!title) throw new BadRequestException('A task needs a title.');
+
+    await this.assertProject(accountId, request.projectId);
+    if (request.projectTagId) {
+      await this.assertProject(accountId, request.projectTagId, { agentOnly: true });
+    }
+
+    const order = await this.nextTaskOrder(accountId, request.projectId);
+    const task = buildAdhocTask(request.projectId, order, title, request);
+
+    await this.dataSource.transaction((manager) =>
+      applyMirrorDelta(manager, accountId, {
+        tasks: [task],
+        projects: [],
+        deletedTaskIds: [],
+        deletedProjectIds: [],
+      }),
+    );
+
+    return task;
   }
 
   /**
@@ -375,6 +415,34 @@ export class MirrorService {
       rows.push(row);
     }
     return { rows, hasMore };
+  }
+
+  /**
+   * `Unknown project.` for both an id that names nothing and one that names another
+   * account's row — same as `readAttachmentBlob`'s reasoning: distinguishing the two would
+   * confirm the id exists, which a caller with no claim to it should never get for free.
+   */
+  private async assertProject(
+    accountId: string,
+    projectId: string,
+    opts?: { agentOnly?: boolean },
+  ): Promise<void> {
+    const project = await this.projectMirrors.findOne({
+      where: { id: projectId, accountId },
+      select: { id: true, data: true },
+    });
+    if (!project || (opts?.agentOnly && project.data.kind !== 'agent')) {
+      throw new BadRequestException('Unknown project.');
+    }
+  }
+
+  /** One past the highest `order` any mirrored task in this project already has. */
+  private async nextTaskOrder(accountId: string, projectId: string): Promise<number> {
+    const rows = await this.taskMirrors.find({
+      where: { accountId, projectId },
+      select: { data: true },
+    });
+    return rows.reduce((max, row) => Math.max(max, row.data.order), -1) + 1;
   }
 
   private async currentRowVersion(accountId: string): Promise<Buffer> {

@@ -14,10 +14,12 @@ import {
   BOARD_FOCUS_HEADER,
   type BoardResponse,
   type CommandRequest,
+  type CreateTaskRequest,
   type ResultsResponse,
   type SyncRequest,
   type SyncResponse,
 } from '@tm/protocol/wire';
+import type { Task } from '@tm/shared/model';
 import { AccountId } from '../iam/accountId.decorator';
 import { IamAuthGuard } from '../iam/iamAuth.guard';
 import { MirrorService } from './mirror.service';
@@ -41,6 +43,13 @@ export class MirrorController {
   @Post('sync')
   sync(@AccountId() accountId: string, @Body() body: SyncRequest): Promise<SyncResponse> {
     return this.mirror.sync(accountId, body);
+  }
+
+  /** An ad-hoc task, written directly rather than relayed — see `CreateTaskRequest` on the wire. */
+  @Post('tasks')
+  @HttpCode(HttpStatus.CREATED)
+  createTask(@AccountId() accountId: string, @Body() body: CreateTaskRequest): Promise<Task> {
+    return this.mirror.createTask(accountId, body);
   }
 
   @Post('commands')

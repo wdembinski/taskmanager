@@ -5,7 +5,7 @@
  * mirrored task IS a Task, not a wire-shaped lookalike that would need to be kept in sync
  * with it by hand.
  */
-import type { ManualStatus, Project, Task } from '@tm/shared/model';
+import type { ManualStatus, Project, Task, TaskType } from '@tm/shared/model';
 import type { CadenceDirective } from './cadence';
 
 /**
@@ -366,6 +366,29 @@ export interface BoardResponse {
    * response. See `mirror.service.ts`'s `rowsSince`.
    */
   hasMore?: boolean;
+}
+
+/**
+ * Body of `POST /v1/tasks` — a browser creating an ad-hoc task directly, without going
+ * through a desktop Client at all.
+ *
+ * Every other write a browser makes travels as a relayed `CommandRequest` (`ipc-invoke` of
+ * `task:create`, applied by whichever desktop Client picks it up on its next sync) — which
+ * means it does nothing at all for an account no desktop Client is currently polling for.
+ * This route is the server applying the SAME shape itself: `mirror.service.ts`'s
+ * `createTask` runs the identical checks `ipc.ts`'s `task:create` handler does against its
+ * local store, but against `project_mirrors`, and builds the row with `@tm/shared`'s own
+ * `buildAdhocTask` — so a card made this way is byte-for-byte what a desktop would have
+ * produced from the same input, not a wire-shaped lookalike.
+ */
+export interface CreateTaskRequest {
+  projectId: string;
+  title: string;
+  phase?: string;
+  type?: TaskType | null;
+  /** The card's brief — lands in `Task.externalDescription`, same as `task:create`'s. */
+  description?: string | null;
+  projectTagId?: string | null;
 }
 
 /** Body of `POST /v1/commands` — one Client asking the server to relay an action to another. */
