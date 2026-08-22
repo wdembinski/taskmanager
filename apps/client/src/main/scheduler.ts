@@ -3364,6 +3364,26 @@ export class Scheduler {
         break;
 
       case 'result':
+        // This run's outcome was decided by something other than its own turn — a gate
+        // parked it, a human stopped it, a plan was approved out from under it — and
+        // `settled` is the flag that says so. Read it here for the same reason `exited`
+        // reads it: a decided run must not be re-decided by a message that was already in
+        // flight when the decision was made.
+        //
+        // The card this was found on: the CLI sent `rate_limit_event` (rejected) and its
+        // `result` 13ms apart. `engageLimit` parked the step `blocked-by-limit`, put it in
+        // the gate's set and marked the run settled — and then this case ran anyway on the
+        // `result`, whose text ("You've hit your session limit · resets 11:30pm") names no
+        // wall `detectLimitFailure` can read and whose label is a bare `api_error`. So the
+        // park was settled over as an ordinary failure: `handleRunFailure` wrote the step
+        // back to `pending` and queued a retry. Five hours later the reset fired,
+        // `resumeParked` asked its one question — is this task still `blocked-by-limit`? —
+        // and skipped it. The gate held the id and the status no longer agreed with it, so
+        // the step never came back and the chain stopped for good at 8 of 17.
+        //
+        // Deliberately ABOVE `sessions.stop` too: every path that settles a run early
+        // stops its process itself, and a second stop on a dead run buys nothing.
+        if (run.settled) break;
         // The turn ended. A proposer mid-negotiation (Phase D) stopped after its
         // `@@PROPOSE@@` and is waiting on its teammates — record that it's now idle
         // (so a concluded decision can be delivered) and keep it alive; do NOT settle.
@@ -3785,7 +3805,18 @@ export class Scheduler {
       const rebuild = this.resumeOpts(taskId);
       const task = this.store.getTask(taskId);
       // Only resume tasks still parked by the limit (not since stopped/deleted).
-      if (!task || task.status !== 'blocked-by-limit') continue;
+      //
+      // `pending` counts as still parked. It is not a status a human can reach from a
+      // parked card — the board's own menu cannot set `blocked-by-limit` and cannot leave
+      // it either (`MANUAL_STATUSES` excludes the AI states) — so on a task the gate is
+      // holding it means the ENGINE re-queued it underneath the park. That is what
+      // `handleRunFailure` does, and the `settled` guard in `case 'result'` closes the way
+      // it got there; this is the same rule read from the other end, and it is the cheap
+      // half. The gate's id set is what remembers this work across a five-hour reset (see
+      // `LimitState.parkedTaskIds`); a status is a much weaker fact, written by a dozen
+      // paths, and letting the weaker one silently veto the stronger one is how a card
+      // stops for good with no note anywhere saying why.
+      if (!task || (task.status !== 'blocked-by-limit' && task.status !== 'pending')) continue;
       if (!task.parentTaskId && chainInFlight(this.store.getSubtasks(task.id))) {
         // The steps ARE this card's work; give the field back and let the chain run.
         this.updateTask(task.id, { status: 'in-progress' }, null);
