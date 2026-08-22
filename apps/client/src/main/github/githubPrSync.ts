@@ -44,12 +44,21 @@ import type { FetchedMergeRequest } from '../gitlab/gitlabSync';
 
 export { needsDetailRefresh } from '../gitlab/gitlabSync';
 export type { FetchedMergeRequest } from '../gitlab/gitlabSync';
+// `needsCiRefresh` has no GitLab half — `describeMergeRequest.ts` already reads GitLab's
+// pipeline unconditionally off the detail response — so it comes straight from the
+// forge-neutral module rather than by way of `gitlabSync.ts`.
+export { needsCiRefresh } from '../forge/refreshPolicy';
 
 export interface GitHubSyncOptions {
   /** Every `externalKey` on the board, so a key nothing carries is not a key. */
   knownKeys: readonly string[];
   /** Board key → task id, for filing a matched pull request. */
   taskIdByKey: ReadonlyMap<string, string>;
+  /**
+   * Every card id on the board, so a remembered link can be checked against it. See the
+   * same field on `GitLabSyncOptions`, and {@link MergeRequest.openedForTaskId}.
+   */
+  knownTaskIds: ReadonlySet<string>;
   /**
    * Who you are on this GitHub instance, so your own comments are not news. Required rather
    * than optional — the same shape `GitLabSyncOptions` uses — because forgetting it has a
@@ -100,11 +109,20 @@ function pathRef(pr: Pick<MergeRequest, 'projectPath' | 'number'>): string | nul
  * ahead of anything re-discoverable from the title or branch. Without that, a PR saying
  * "Closes #123" in its body on a branch mentioning a JIRA ticket would be filed under the
  * issue by the sync and under the ticket by the next re-match.
+ *
+ * A card this app opened the pull request FOR beats every one of those, because it is not a
+ * re-derivation at all — see {@link MergeRequest.openedForTaskId}. It matters more here than
+ * on GitLab, too: `prBody` writes a GitHub card's key as `Closes owner/repo#12` in the BODY,
+ * and the body is the one field re-matching never gets to read.
  */
 function matchTaskId(
-  pr: Pick<MergeRequest, 'title' | 'sourceBranch' | 'projectPath' | 'issueKeys'>,
-  opts: Pick<GitHubSyncOptions, 'knownKeys' | 'taskIdByKey'>,
+  pr: Pick<
+    MergeRequest,
+    'title' | 'sourceBranch' | 'projectPath' | 'issueKeys' | 'openedForTaskId'
+  >,
+  opts: Pick<GitHubSyncOptions, 'knownKeys' | 'taskIdByKey' | 'knownTaskIds'>,
 ): string | null {
+  if (pr.openedForTaskId && opts.knownTaskIds.has(pr.openedForTaskId)) return pr.openedForTaskId;
   const remembered = pr.issueKeys.filter((k) => opts.knownKeys.includes(k));
   const found = discoverPullRequestKeys(
     { title: pr.title, sourceBranch: pr.sourceBranch, projectPath: pr.projectPath },
@@ -157,7 +175,17 @@ export function reconcilePullRequests(
       opts.knownKeys,
     );
     const key = pickTaskKey(issueKeys);
-    const taskId = key ? (opts.taskIdByKey.get(key) ?? null) : null;
+    // The card that opened it wins over the card its text names — see {@link matchTaskId}.
+    // `prior` here may have been found by PATH rather than by id, which is exactly the case
+    // that needs it: a pull request the button filed under `gh-0-{number}` hands its
+    // remembered card over along with its read markers when the real repo id is learned.
+    const openedForTaskId = prior?.openedForTaskId ?? null;
+    const taskId =
+      openedForTaskId && opts.knownTaskIds.has(openedForTaskId)
+        ? openedForTaskId
+        : key
+          ? (opts.taskIdByKey.get(key) ?? null)
+          : null;
 
     // The discussion is only re-read for PRs that changed, so an absent list means "keep what
     // we knew" rather than "there are none" — the same ternary `gitlabSync` uses, and the same
@@ -187,6 +215,9 @@ export function reconcilePullRequests(
     upserts.push({
       id,
       taskId,
+      // Carried, never re-derived — GitHub has never heard of it, so the same rule the read
+      // markers and the local rename follow applies.
+      openedForTaskId,
       provider: 'github',
       repoId: pr.repoId,
       projectPath: pr.projectPath,
@@ -248,7 +279,7 @@ export function reconcilePullRequests(
  */
 export function rematchPullRequests(
   existing: readonly MergeRequest[],
-  opts: Pick<GitHubSyncOptions, 'knownKeys' | 'taskIdByKey'>,
+  opts: Pick<GitHubSyncOptions, 'knownKeys' | 'taskIdByKey' | 'knownTaskIds'>,
 ): MergeRequest[] {
   const changed: MergeRequest[] = [];
   for (const pr of existing) {

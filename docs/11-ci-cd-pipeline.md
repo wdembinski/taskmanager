@@ -2,12 +2,13 @@
 
 Three workflows, in [`.github/workflows/`](../.github/workflows/). Together they mean a
 merge into `development` is the whole release: the desktop app is tagged, packaged for
-Windows and Linux, and published, while the cloud service is deployed in parallel.
+Windows, and published, while the cloud service is deployed in parallel. Linux is no longer
+built or released — see [`RELEASE.md`](../RELEASE.md#6-linux-releases-are-discontinued).
 
 | Workflow                                          | Trigger                                      | What it does                                                                                       |
 | ------------------------------------------------- | -------------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | [`ci.yml`](../.github/workflows/ci.yml)           | pull request → `development`                 | The gates, the server image, and (when the desktop app is touched) a full package                  |
-| [`release.yml`](../.github/workflows/release.yml) | push → `development`, or `workflow_dispatch` | Tags, drafts, packages Windows + Linux, publishes — [`RELEASE.md`](../RELEASE.md) run by a machine |
+| [`release.yml`](../.github/workflows/release.yml) | push → `development`, or `workflow_dispatch` | Tags, drafts, packages Windows, publishes — [`RELEASE.md`](../RELEASE.md) run by a machine         |
 | [`deploy.yml`](../.github/workflows/deploy.yml)   | push → `development`, or `workflow_dispatch` | Deploys `@tm/server` to Azure Container Apps and `@tm/web` to Static Web Apps                      |
 
 There is no `main` in this repository; `development` is the integration branch, and it is
@@ -54,16 +55,24 @@ the tag exists.
 | `gates`   | ubuntu  | §1 — nothing is tagged from a red tree                                |
 | `version` | ubuntu  | §0 idempotence, §2 the version, §3 the tag, §4 the **draft**          |
 | `windows` | windows | §5 — package into the draft, then the headless addon smoke test       |
-| `linux`   | ubuntu  | §6 — package into the draft, plus docs/07's ELF and ABI-symbol checks |
-| `promote` | ubuntu  | §7 — publish the draft, **even if `linux` failed** (rule 4)           |
+| `promote` | ubuntu  | §7 — publish the draft once Windows has uploaded (rule 4)             |
 
 `deploy.yml` filters by path, and can run either half, both, or neither:
 
-| Changed                                                             | Deployed                                         |
-| ------------------------------------------------------------------- | ------------------------------------------------ |
-| `apps/server`, `packages/shared`, `packages/protocol`, the lockfile | image → GHCR → **migration job** → Container App |
-| `apps/web`, `packages/ui`, and the same shared packages             | Vite build → Static Web Apps                     |
-| `apps/client` only                                                  | nothing                                          |
+| Changed                                                                | Deployed                                         |
+| ---------------------------------------------------------------------- | ------------------------------------------------ |
+| `apps/server`, `packages/shared`, `packages/protocol`, the lockfile    | image → GHCR → **migration job** → Container App |
+| `apps/web`, `packages/ui`, and the same shared packages                | Vite build → Static Web Apps                     |
+| `apps/client/package.json` — the version of record, and only that file | Vite build → Static Web Apps                     |
+| anything else under `apps/client`                                      | nothing                                          |
+
+That third row is the one that looks wrong. The web bundle bakes the version of record into
+its status bar at build time (`apps/web/vite.config.ts`) because a browser has no `app:getInfo`
+to ask, so a bump genuinely changes the web and the bundle has to be rebuilt to say so. It was
+missing for eight releases: the deployed web client sat on `v0.78.2` — the version `apps/web`'s
+own manifest happened to carry the day the monorepo was split — while the desktop shipped
+`v0.86.0`. Nothing else under `apps/client` belongs in that filter; that app is `release.yml`'s
+business, and `test/workflow-invariants.test.ts` asserts both halves of that sentence.
 
 Both are `concurrency: cancel-in-progress: false` — a half-finished release or deploy costs
 far more than a queue. `ci.yml` is the opposite: a new push to a PR cancels the run still in
@@ -83,7 +92,7 @@ list — what it deliberately did not rewrite.
 | [`.github/workflows/release.yml`](../.github/workflows/release.yml)       | Every section of `RELEASE.md`, as five jobs. The only file in this repository that pushes a tag or publishes a release.                                                                                                                                                  |
 | [`scripts/next-version.mjs`](../scripts/next-version.mjs)                 | The one decision the workflow would otherwise have had to make in YAML — which version the next release carries, and whether the manifest has to be committed first. No dependencies, so the `version` job runs it without a `pnpm install`.                             |
 | [`scripts/next-version.test.mjs`](../scripts/next-version.test.mjs)       | 25 cases over that rule: the bump, the reuse, the first release, the manifest left behind by a merge, and `'0.8.0' > '0.82.6'` — which is what a string compare gets wrong and both of whose tags exist here.                                                            |
-| [`test/workflow-invariants.test.ts`](../test/workflow-invariants.test.ts) | 11 assertions over all three workflows: the toolchain every job installs, the promote ordering, that the gates cannot drift from `RELEASE.md` §1, and that this section's own map still names files that exist. The only thing in the repo that reads a workflow at all. |
+| [`test/workflow-invariants.test.ts`](../test/workflow-invariants.test.ts) | Assertions over all three workflows: the toolchain every job installs, the promote ordering, that the gates cannot drift from `RELEASE.md` §1, that a released version reaches the deployed web client, and that this section's own map still names files that exist. The only thing in the repo that reads a workflow at all. |
 | [`docs/11-ci-cd-pipeline.md`](11-ci-cd-pipeline.md)                       | This file — what runs when, the secrets, the settings that live outside every diff, and how to re-run a release that failed halfway.                                                                                                                                     |
 
 **Changed:**
@@ -91,7 +100,7 @@ list — what it deliberately did not rewrite.
 | File                                                              | The change, and what stayed                                                                                                                                                                                 |
 | ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)         | Gained the `changes` path filter and the Windows `package` job. `gates` and `docker` are untouched: they were already right, and the new job answers a question that only exists now that a merge tags.     |
-| [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml) | Gained the wait for the new revision to actually run, the `/health` poll and the 401 check on `/v1/board`. **What it deploys did not change** — only whether it believes itself.                            |
+| [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml) | Gained the wait for the new revision to actually run, the `/health` poll and the 401 check on `/v1/board`. It later gained one path: a version bump now redeploys the **web**, because the bundle carries that number (see the deploy table above).                            |
 | [`RELEASE.md`](../RELEASE.md)                                     | Still the procedure, and still what an agent follows when a release is cut by hand. Each section now also names the job that performs it. §1's fenced block is the specification the gate-drift test reads. |
 | [`CONTRIBUTING.md`](../CONTRIBUTING.md)                           | §4 now says what the pipeline does with the version — and what happens to a branch that forgets to bump one, which is `scripts/next-version.mjs`'s fallback rather than a lost release.                     |
 | [`apps/client/package.json`](../apps/client/package.json)         | The version, bumped as any change bumps it (§4). Its `scripts` are untouched — see below.                                                                                                                   |
@@ -102,7 +111,7 @@ pipeline could have grown a second, subtly different copy of something:
 
 | File                                                                                                       | Why the runner calls it rather than restating it                                                                                                                                                                                                                                                                                                     |
 | ---------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `package` / `package:linux` / `package:local` in [`apps/client/package.json`](../apps/client/package.json) | Each is already the whole chain — `electron-vite build` → `install-app-deps` → `ensure:abi` → `electron-builder` → `check:feed`. Spelling those steps out as separate workflow steps would let CI package by a route no human has ever used, and would make `--publish` a workflow decision rather than a script one. The jobs call one script each. |
+| `package` / `package:local` in [`apps/client/package.json`](../apps/client/package.json) | Each is already the whole chain — `electron-vite build` → `install-app-deps` → `ensure:abi` → `electron-builder` → `check:feed`. Spelling those steps out as separate workflow steps would let CI package by a route no human has ever used, and would make `--publish` a workflow decision rather than a script one. The jobs call one script each. |
 | [`apps/client/scripts/ensure-native-abi.mjs`](../apps/client/scripts/ensure-native-abi.mjs)                | The v0.25.0 gate: rebuild `better-sqlite3` against Electron's headers if the ABI is wrong, and fail if it still is. It runs _inside_ `package`, so the runner cannot skip it and no workflow step had to invoke it.                                                                                                                                  |
 | [`apps/client/scripts/check-update-feed.mjs`](../apps/client/scripts/check-update-feed.mjs)                | Refuses an update feed no installed client could act on — unexpanded macros, a `publisherName` with nothing signing, a `latest*.yml` naming files that are not there. Also inside `package`, and it runs after the upload deliberately: the upload goes to a **draft**, so failing here still stops it reaching anyone.                              |
 | [`apps/client/electron-builder.yml`](../apps/client/electron-builder.yml)                                  | The build's own configuration, including the `productName` the smoke test names the `.exe` by. `--publish onTagOrDraft` is passed on the command line by the `package` script, so nothing about publishing had to move into this file.                                                                                                               |
@@ -203,8 +212,27 @@ that starts a release. Two independent things stop it, and both are deliberate:
    to get the push signed or to trigger something downstream, at which point guard 1
    evaporates silently.
 
-The bump commit also touches only `apps/client/package.json`, which matches no filter in
-`deploy.yml` — so even if it did trigger, it would deploy nothing.
+The bump commit touches only `apps/client/package.json`. That used to match no filter in
+`deploy.yml`, so it would have deployed nothing even if it had triggered; it now matches the
+**web** one, on purpose — see the third row of the deploy table above. Guard 1 still means the
+push triggers nothing, which is precisely the problem that row alone cannot solve, so
+`promote`'s last step dispatches that deploy itself:
+
+```yaml
+- name: Redeploy the web client so it carries the released version
+  if: needs.version.outputs.needsCommit == 'true'
+```
+
+`workflow_dispatch` is the documented exception to guard 1 — an event raised with
+`GITHUB_TOKEN` **does** create a run for it — and `needsCommit` narrows this to the only case
+no push can reach: §2's fallback, where the version arrives in a `chore(release):` commit CI
+made itself. When the bump rode inside the work commit instead, that push already ran
+`deploy.yml`. The step tolerates its own failure and warns: it runs after the release is
+published, and a red run there describes a release that in fact succeeded. `release.yml`
+therefore also carries `actions: write`, which is what `gh workflow run` needs.
+
+Neither path is a loop. `deploy.yml` pushes no commits, so nothing it does can come back
+around; the two guards above are about `release.yml` alone.
 
 If you ever replace `GITHUB_TOKEN` with a PAT for the push, **keep guard 2**. It is the only
 one left at that point.
@@ -291,7 +319,7 @@ and the infrastructure repo, and none of it is repeated here.
 Which re-run to use depends on **whether the tag was pushed**, because that decides what
 `scripts/next-version.mjs` computes the second time.
 
-**The failure was in `windows`, `linux` or `promote`** — the tag exists and the draft exists.
+**The failure was in `windows` or `promote`** — the tag exists and the draft exists.
 Use **Re-run failed jobs** on the same run (Actions → the run → _Re-run failed jobs_). The
 successful `version` job is not re-run and its outputs — `version`, `tag`, `release` — are
 preserved, so the retried jobs package the same tag into the same draft. This is almost
@@ -321,6 +349,11 @@ resumes into it rather than creating a second one.
 
 `deploy.yml` has the same dispatch trigger for the same reason. It compares against the
 previous commit, so a dispatch may deploy nothing if nothing changed in the filtered paths.
+`release.yml`'s `promote` job relies on exactly that: it dispatches a deploy right after a
+`chore(release):` bump commit, whose diff against the previous commit is that one manifest —
+so the web is rebuilt with the new version and the server is left alone. It is also the
+command to run by hand if that dispatch ever warns instead of working: Actions → **Deploy** →
+_Run workflow_ → `development`.
 
 ---
 

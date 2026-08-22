@@ -315,11 +315,12 @@ import {
   repoRefFromApiUrl,
 } from '__REPO__/src/main/github/describePullRequest';
 import {
+  needsCiRefresh,
   needsDetailRefresh,
   reconcilePullRequests,
   rematchPullRequests,
 } from '__REPO__/src/main/github/githubPrSync';
-import { landedTaskIds } from '__REPO__/src/main/gitlab/gitlabSync';
+import { landedTaskIds, PIPELINE_IN_FLIGHT } from '__REPO__/src/main/gitlab/gitlabSync';
 import { githubIdentityFrom } from '__REPO__/src/main/github/identity';
 import { resolveMove } from '__REPO__/src/main/jira/jiraMove';
 
@@ -889,13 +890,31 @@ async function syncPullRequests(now) {
     const prior = priorByRef.get(listedRef(item));
     const updatedAt = Date.parse(item.updated_at) || 0;
     const stale = needsDetailRefresh(prior, updatedAt);
+    // Mirrors ipc.ts: not otherwise stale, but the last CI answer was 'unknown' or a
+    // freshly-seen 'none' — one detail call, not the full stale pass, so describePullRequest
+    // can read CI off it regardless of 'stale'.
+    if (!stale && needsCiRefresh(prior, now)) {
+      const ref = repoRefFromApiUrl(item.repository_url);
+      const detail =
+        ref.owner && ref.repo
+          ? await client.getPullRequest(ref.owner, ref.repo, item.number).catch(() => null)
+          : null;
+      detailed.push(
+        await describePullRequest(client, item, { stale: false, prior, detail: detail ?? undefined }),
+      );
+      continue;
+    }
     detailed.push(await describePullRequest(client, item, { stale, prior }));
   }
 
-  // Read back the open PRs that dropped out of the list, so their ENDING is a fact.
+  // Read back the open PRs that dropped out of the list, so their ENDING is a fact. One
+  // whose checks were still running when it dropped out keeps being read back — with
+  // 'detail' passed through so the checks are still read — until they finish; see
+  // PIPELINE_IN_FLIGHT and the matching comment in ipc.ts.
   const listedRefs = new Set(list.map(listedRef));
   for (const prior of stored) {
-    if (listedRefs.has(prRef(prior.projectPath, prior.number)) || mrIsSettled(prior)) continue;
+    if (listedRefs.has(prRef(prior.projectPath, prior.number))) continue;
+    if (mrIsSettled(prior) && !PIPELINE_IN_FLIGHT.has(prior.pipelineStatus)) continue;
     const parts = prior.projectPath.split('/');
     if (!parts[0] || !parts[1]) continue;
     const detail = await client.getPullRequest(parts[0], parts[1], prior.number).catch(() => null);
@@ -904,6 +923,7 @@ async function syncPullRequests(now) {
         await describePullRequest(client, listedFromDetail(detail, parts[0], parts[1]), {
           stale: false,
           prior,
+          detail,
         }),
       );
     }

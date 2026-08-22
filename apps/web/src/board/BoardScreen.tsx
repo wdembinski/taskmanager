@@ -58,13 +58,21 @@ import { ArchivedCardsDialog, archivedCards } from '@tm/ui/board/ArchivedCardsDi
 import { chainComponent } from '@tm/shared/taskChain';
 import {
   isManualStatus,
+  ownsBoard,
   PERSONAL_PROJECT_ID,
   type BoardColumn,
   type ManualStatus,
+  type Person,
   type Task,
 } from '@tm/shared/model';
+import type { BoardScope } from '@tm/shared/ipc';
 import { BoardToolbar } from './BoardToolbar';
-import { selectArchivedTasks, selectBoardTasks } from './boardSelectors';
+import {
+  selectAgentProjects,
+  selectArchivedTasks,
+  selectBoardTasks,
+  selectFilingProjects,
+} from './boardSelectors';
 import { displayStatus, isTaskPending, type CloudBoardState } from './cloudBoardStore';
 import { mergeRequestsByTask, useBoardExtras, byTask } from './useBoardExtras';
 
@@ -140,25 +148,102 @@ export function BoardScreen({
   const display = settings.board;
 
   const projects = useMemo(() => Object.values(state.projects), [state.projects]);
-  /**
-   * The card's optional lines, read the desktop's way: `projectNameOf` is the tracker's own
-   * container for the card (`phase` — JIRA's project name, or GitHub's `owner/repo`), not the
-   * local project — every card on this board is in Personal, so that one would say the same
-   * word on all of them — and the stripe is the repo the card is tagged with, which is what
-   * the desktop colours it by.
-   *
-   * Both now read the real agent-project list rather than the mirrored `Project` rows, so a
-   * card's stripe is the same colour it is on the desktop.
-   */
-  const projectNameOf = (task: Task): string | undefined =>
-    task.externalSource ? task.phase || undefined : undefined;
-  const agentNameOf = (task: Task): string | undefined =>
-    extras.agentProjects.find((p) => p.id === task.agentProjectId)?.name;
-  const projectColorOf = (task: Task): string | undefined =>
-    extras.agentProjects.find((p) => p.id === task.projectTagId)?.color || undefined;
 
-  /** The desktop's own card set — Personal, un-archived. See `boardSelectors.ts`. */
-  const boardTasks = useMemo(() => selectBoardTasks(state), [state]);
+  /**
+   * Which board is open — `'all'` unions every board's cards, or one board's own project id.
+   * Mirrors `settings.boardScopeId`, the desktop's own persisted choice (`MyTasks.tsx`), so
+   * the two apps open on the same board.
+   */
+  const scope = settings.boardScopeId || 'all';
+
+  /**
+   * The agent projects every DELEGATION control on this screen draws from — the relay's
+   * answer when the desktop gave one, and the mirrored `projects` rows when it did not.
+   * Computed once and passed to every one of them, so a card's stripe, its agent name and
+   * the commit graph can never be looking at two different lists. See `selectAgentProjects`
+   * for why this replaces rather than merges.
+   */
+  const agentProjects = useMemo(
+    () => selectAgentProjects(state.projects, extras.agentProjects, extras.agentProjectsLoaded),
+    [state.projects, extras.agentProjects, extras.agentProjectsLoaded],
+  );
+
+  /**
+   * The wider FILING list — the pane's Project dropdown and the add-task dialog's Project
+   * field — computed the same way, over the wider relayed/mirrored source. See
+   * `selectFilingProjects` for what it adds over `agentProjects`.
+   */
+  const filingProjects = useMemo(
+    () => selectFilingProjects(state.projects, extras.filingProjects, extras.agentProjectsLoaded),
+    [state.projects, extras.filingProjects, extras.agentProjectsLoaded],
+  );
+
+  /**
+   * The boards the toolbar's scope Dropdown offers — Personal plus every other project that
+   * owns a ticket key prefix, the desktop's own `board:scopes` rule (`ownsBoard`). Computed
+   * straight from the mirrored `Project` rows rather than a relayed round trip: the mirror
+   * already carries every project, and this is the same join `store.ts`'s `board:scopes`
+   * handler runs, just read from `state.projects` instead of SQLite.
+   */
+  const scopes = useMemo<BoardScope[]>(() => {
+    const personal = state.projects[PERSONAL_PROJECT_ID];
+    const list: BoardScope[] = personal
+      ? [{ id: personal.id, name: personal.name, color: personal.color }]
+      : [];
+    for (const project of projects) {
+      if (project.id === PERSONAL_PROJECT_ID || !ownsBoard(project)) continue;
+      list.push({ id: project.id, name: project.name, color: project.color });
+    }
+    return list;
+  }, [state.projects, projects]);
+  const boardsById = useMemo(() => new Map(scopes.map((s) => [s.id, s])), [scopes]);
+  /** The scope Dropdown's closed-state label. */
+  const scopeLabel = useMemo(
+    () =>
+      scope === 'all' ? 'All boards' : (scopes.find((s) => s.id === scope)?.name ?? 'All boards'),
+    [scope, scopes],
+  );
+
+  /**
+   * What the cards actually draw: `display`, with the project name forced on while the board
+   * mixes projects together — `MyTasks.tsx`'s own `boardDisplay`. A single-board scope already
+   * says which project every card is on (the scope picker itself), so the saved preference is
+   * left alone there.
+   */
+  const boardDisplay = useMemo(
+    () => (scope === 'all' ? { ...display, showProjectName: true } : display),
+    [display, scope],
+  );
+
+  /**
+   * The card's optional lines, read the desktop's way: `projectNameOf` is, on a single-board
+   * scope, the tracker's own container for the card (`phase` — JIRA's project name, or
+   * GitHub's `owner/repo`) — every card on that board is in the same project, so the local
+   * one would say the same word on all of them. On the All scope a mixed board needs to say
+   * which BOARD a card is on before it needs to say which tracker phase it's in, so that wins
+   * where the two would both have something to say. The stripe is the repo the card is
+   * tagged with (`projectTagId`), with the card's own board project as a fallback on the All
+   * scope — a card added straight onto a project's board carries no tag at all.
+   */
+  const projectNameOf = (task: Task): string | undefined => {
+    if (scope === 'all') {
+      const board = boardsById.get(task.projectId);
+      if (board && board.id !== PERSONAL_PROJECT_ID) return board.name;
+    }
+    return task.externalSource ? task.phase || undefined : undefined;
+  };
+  const agentNameOf = (task: Task): string | undefined =>
+    agentProjects.find((p) => p.id === task.agentProjectId)?.name;
+  const projectColorOf = (task: Task): string | undefined => {
+    const tagColor = agentProjects.find((p) => p.id === task.projectTagId)?.color;
+    if (tagColor) return tagColor;
+    if (scope !== 'all') return undefined;
+    const board = boardsById.get(task.projectId);
+    return board && board.id !== PERSONAL_PROJECT_ID ? board.color || undefined : undefined;
+  };
+
+  /** The desktop's own card set for this scope, un-archived. See `boardSelectors.ts`. */
+  const boardTasks = useMemo(() => selectBoardTasks(state, scope), [state, scope]);
 
   /**
    * The cards that have LEFT this board. No fetch and no `board:archived` equivalent: the
@@ -166,7 +251,10 @@ export function BoardScreen({
    * `boardSelectors.ts` says why ingest must not drop them), so this is the same list the
    * desktop's dialog shows, minus the step rows `archivedCards` filters out.
    */
-  const removedCards = useMemo(() => archivedCards(selectArchivedTasks(state)), [state]);
+  const removedCards = useMemo(
+    () => archivedCards(selectArchivedTasks(state, scope)),
+    [state, scope],
+  );
 
   const mrsByTask = useMemo(
     () => mergeRequestsByTask(extras.mergeRequests),
@@ -174,6 +262,13 @@ export function BoardScreen({
   );
   const attachmentsByTask = useMemo(() => byTask(extras.attachments), [extras.attachments]);
   const tasksById = useMemo(() => new Map(boardTasks.map((t) => [t.id, t])), [boardTasks]);
+  const peopleById = useMemo(() => new Map(extras.people.map((p) => [p.id, p])), [extras.people]);
+  /** A native ticket's parent epic, by name (Phase 24) — `TaskCard`'s own `epicName` prop. */
+  const epicNameOf = (task: Task): string | undefined =>
+    task.epicTaskId ? tasksById.get(task.epicTaskId)?.title : undefined;
+  /** A native ticket's assignee (Phase 24) — `TaskCard`'s own `assignee` prop. */
+  const assigneeOf = (task: Task): Person | undefined =>
+    task.assigneeId ? peopleById.get(task.assigneeId) : undefined;
 
   /**
    * Cards the add-task dialog may hang a hand-written step under, and — asked the other way
@@ -357,6 +452,12 @@ export function BoardScreen({
     <div className={layout.root}>
       <div className={layout.board}>
         <BoardToolbar
+          scope={scope}
+          scopeLabel={scopeLabel}
+          scopes={scopes}
+          onScopeChange={(next) =>
+            void saveSettings({ ...settings, boardScopeId: next }).catch(reportError)
+          }
           showDone={showDone}
           hiddenDone={hiddenDone}
           onShowDoneChange={(next) =>
@@ -425,7 +526,7 @@ export function BoardScreen({
           <Caption1 className={styles.empty}>
             {projects.length === 0 && Object.keys(state.tasks).length === 0
               ? 'No board data yet — waiting on the first sync from your desktop app.'
-              : 'No cards on your Personal board.'}
+              : `No cards on ${scope === 'all' ? 'any board' : `the ${scopeLabel} board`}.`}
           </Caption1>
         ) : (
           <div className={layout.columns} onClick={() => setSelectedLinkId(null)}>
@@ -436,9 +537,11 @@ export function BoardScreen({
                 label={COLUMN_LABEL[column]}
                 cards={cardsByColumn.get(column) ?? []}
                 projectNameOf={projectNameOf}
+                epicNameOf={epicNameOf}
+                assigneeOf={assigneeOf}
                 agentNameOf={agentNameOf}
                 projectColorOf={projectColorOf}
-                display={display}
+                display={boardDisplay}
                 // With the sprint filter on, every card carries the same chip — the desktop
                 // hides it for exactly that reason, and now so does this.
                 showSprint={!settings.jira.currentSprintOnly}
@@ -540,7 +643,8 @@ export function BoardScreen({
         <div className={layout.right}>
           <TaskDetail
             task={selectedTask}
-            agentProjects={extras.agentProjects}
+            agentProjects={agentProjects}
+            projects={filingProjects}
             subtasks={chain}
             parentTask={parentOfSelected}
             mergeRequests={selectedTask ? (mrsByTask.get(selectedTask.id) ?? []) : []}
@@ -580,7 +684,7 @@ export function BoardScreen({
       {showGraph && (
         <div className={layout.graph}>
           <GitGraphPane
-            projects={extras.agentProjects}
+            projects={agentProjects}
             selectedTask={selectedTask}
             // The whole board, so a branch can carry the CARD's title instead of `orch/…`.
             tasksById={tasksById}
@@ -598,15 +702,19 @@ export function BoardScreen({
           collects is applied by the desktop's own handler and lands in full. */}
       <AddTaskDialog
         open={addOpen}
-        projectId={PERSONAL_PROJECT_ID}
+        // The board open when Add is pressed — a project's own scope preselects that board
+        // in the dialog's Board dropdown, rather than always defaulting to Personal.
+        projectId={scope === 'all' ? PERSONAL_PROJECT_ID : scope}
         phases={[]}
         parents={parentCandidates}
         // The same cards, asked a different question — see `parentCandidates`.
         chainCandidates={parentCandidates}
-        // The REAL projects (`agentProject:list`, relayed), not the mirrored `Project` rows:
-        // filing a card is about a repo the engine knows, and the mirror's rows are the
-        // queues that hold tasks. The detail pane's Project dropdown offers this same list.
-        projects={extras.agentProjects}
+        // The filing projects, resolved (`selectFilingProjects`): the relay's answer while a
+        // desktop is awake, and the mirrored rows filtered the same way while it is not —
+        // which is what keeps this field offering something instead of nothing against a
+        // desktop that is merely asleep. The detail pane's Project dropdown offers the same
+        // list, because both are handed the one computed above.
+        projects={filingProjects}
         jiraEnabled={settings.jira.enabled}
         // A browser has no OS file picker and no path for a dropped `File`, so the whole
         // files section is one thing this host cannot do rather than a control to grey out.

@@ -113,9 +113,9 @@ jobs:
           cache-to: type=gha,mode=max
 
   # The desktop app's equivalent of `docker`: prove the artefact still builds, and prove the
-  # native addon inside it loads. Windows because that is the platform releases are cut for —
-  # release.yml publishes on Windows alone and hands Linux back (RELEASE.md §6), so this is
-  # where an ABI break would actually reach a user.
+  # native addon inside it loads. Windows because that is the only platform releases are cut
+  # for — release.yml no longer builds or publishes Linux (RELEASE.md §6) — so this is where
+  # an ABI break would actually reach a user.
   #
   # Gated on the `changes` filter only, NOT on `gates`. It runs alongside them so a red
   # typecheck and a broken bundle are both known after one wait rather than two; the cost is

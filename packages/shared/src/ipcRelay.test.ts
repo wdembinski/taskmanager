@@ -24,18 +24,18 @@ const HOST_ONLY: ReadonlyArray<readonly [string, HostOnlyReason]> = [
   ['update:install', 'window-os'],
   ['attachment:open', 'window-os'],
   ['auth:signIn', 'window-os'],
-  ['iam:signIn', 'window-os'],
   ['jira:setCredentials', 'credential-write'],
   ['jira:clearCredentials', 'credential-write'],
   ['gitlab:setCredentials', 'credential-write'],
   ['gitlab:clearCredentials', 'credential-write'],
   ['github:setCredentials', 'credential-write'],
   ['github:clearCredentials', 'credential-write'],
-  ['iam:signOut', 'credential-write'],
-  ['iam:linkWithToken', 'credential-write'],
+  ['cloud:setCredentials', 'credential-write'],
+  ['cloud:clearCredentials', 'credential-write'],
   ['session:start', 'live-session'],
   ['session:stop', 'live-session'],
   ['session:answer', 'live-session'],
+  ['attachment:stagePasted', 'host-path'],
 ];
 
 describe('the host-only channels', () => {
@@ -59,6 +59,7 @@ describe('the host-only channels', () => {
     expect(hostOnlyMessage('jira:setCredentials')).toContain('credential store');
     expect(hostOnlyMessage('session:start')).toContain('live Claude process');
     expect(hostOnlyMessage('window:close')).toContain('desktop app itself');
+    expect(hostOnlyMessage('attachment:stagePasted')).toContain('own disk');
   });
 });
 
@@ -83,7 +84,7 @@ describe('the channels that DO relay', () => {
     'scheduler:activeRuns',
     'scheduler:integrating',
     'mr:mergeRequests',
-    'agentProject:list',
+    'project:list',
     'settings:get',
     'settings:save',
     'git:graph',

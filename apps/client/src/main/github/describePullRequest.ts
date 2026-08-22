@@ -93,6 +93,24 @@ export interface DescribePullRequestOptions {
   stale: boolean;
   /** What we already knew, reused when `stale` is false or a detail call fails. */
   prior?: MergeRequest;
+  /**
+   * A detail response the caller already fetched, so CI is not re-read off a second one.
+   *
+   * Used by the "read back a settled PR" pass in `ipc.ts`: it fetches the detail itself to
+   * learn whether the PR merged, and passes it through here rather than making this
+   * function fetch it again under `stale: true` — which would also re-spend the
+   * approvals/reviews/notes calls that this pass exists specifically to avoid. The same
+   * shape also lets a CI-only refresh (`needsCiRefresh` in `ipc.ts`) fetch just the detail
+   * and re-read CI off it without paying for those calls either.
+   */
+  detail?: GitHubPullRequest;
+  /**
+   * Told about a check-runs or commit-status call that came back refused, so the caller can
+   * log and, once per repository, surface it — a token missing the right scope reads as
+   * "this repo has no CI" otherwise, which is the wrong lesson to draw from a 403. This
+   * module does not import Electron's `log.ts` itself; the caller does the reporting.
+   */
+  onCiRefusal?: (endpoint: 'check-runs' | 'commit-status', error: unknown) => void;
 }
 
 /** What the reviews say, once the history has been folded down to a verdict per reviewer. */
@@ -183,11 +201,15 @@ interface CiReading {
  * runs, and a repo migrating between them has both — where the check runs are the ones
  * telling you about the CI anybody is still maintaining.
  *
- * Returns an empty reading (`unknown`, no stages, no url) only when BOTH answered and both
- * were empty. That is the GitHub spelling of `describeMergeRequest`'s `noPipeline`, and it
- * exists for the same reported bug: delete the workflow file, push, and the new head commit
- * genuinely has no CI — which must clear the row rather than leave the previous commit's
- * red sitting there forever.
+ * Returns an empty reading (`none`, no stages, no url) only when BOTH answered and both were
+ * empty — distinct from a call that threw, which is not an answer and keeps whatever status
+ * we already knew. That is the GitHub spelling of `describeMergeRequest`'s `noPipeline`, and
+ * it exists for the same reported bug: delete the workflow file, push, and the new head
+ * commit genuinely has no CI — which must clear the row rather than leave the previous
+ * commit's red sitting there forever. See `PipelineStatus.none` for why that is a distinct
+ * status from `unknown` rather than the same one: `unknown` is re-asked on every sync,
+ * `none` is not, and conflating them would either re-ask a CI-less repo forever or stop
+ * asking a repo whose checks simply have not started.
  */
 async function readCi(
   client: GitHubClient,
@@ -195,8 +217,12 @@ async function readCi(
   repo: string,
   sha: string,
   webUrl: string,
+  onCiRefusal?: DescribePullRequestOptions['onCiRefusal'],
 ): Promise<CiReading | null> {
-  const runs = await client.listCheckRuns(owner, repo, sha).catch(() => null);
+  const runs = await client.listCheckRuns(owner, repo, sha).catch((error: unknown) => {
+    onCiRefusal?.('check-runs', error);
+    return null;
+  });
   if (runs?.length) {
     return {
       status: overallCheckStatus(runs),
@@ -207,7 +233,10 @@ async function readCi(
     };
   }
 
-  const combined = await client.getCombinedStatus(owner, repo, sha).catch(() => null);
+  const combined = await client.getCombinedStatus(owner, repo, sha).catch((error: unknown) => {
+    onCiRefusal?.('commit-status', error);
+    return null;
+  });
   const statuses = combined?.statuses ?? [];
   if (statuses.length) {
     return {
@@ -219,7 +248,7 @@ async function readCi(
 
   // An empty answer from both is an answer: this commit has no CI. Silence from either —
   // a call that threw — is not, and keeps whatever we already knew.
-  if (runs && combined) return { status: 'unknown', stages: [], url: null };
+  if (runs && combined) return { status: 'none', stages: [], url: null };
   return null;
 }
 
@@ -259,7 +288,7 @@ async function readApprovalBar(
 export async function describePullRequest(
   client: GitHubClient,
   listed: GitHubSearchIssueItem,
-  { stale, prior }: DescribePullRequestOptions,
+  { stale, prior, detail: knownDetail, onCiRefusal }: DescribePullRequestOptions,
 ): Promise<FetchedMergeRequest> {
   const { owner, repo } = repoRefFromApiUrl(listed.repository_url);
   const number = listed.number;
@@ -272,7 +301,7 @@ export async function describePullRequest(
    * `mergeable_state` — and `detail !== null` is exactly the "did we actually look?"
    * question every field below has to ask.
    */
-  let detail: GitHubPullRequest | null = null;
+  let detail: GitHubPullRequest | null = knownDetail ?? null;
   let approvalsRequired = prior?.approvalsRequired ?? null;
   let approvalsGiven = prior?.approvalsGiven ?? 0;
   let changesRequested = prior?.changesRequested ?? false;
@@ -283,7 +312,7 @@ export async function describePullRequest(
   let notes: FetchedMergeRequest['notes'];
 
   if (stale && owner && repo) {
-    detail = await client.getPullRequest(owner, repo, number).catch(() => null);
+    if (!detail) detail = await client.getPullRequest(owner, repo, number).catch(() => null);
 
     const reviews = await client.listReviews(owner, repo, number).catch(() => null);
     if (reviews) {
@@ -318,17 +347,37 @@ export async function describePullRequest(
         prior?.approvalsRequired ?? null,
       );
     }
+  }
 
-    // Check runs hang off the head SHA, which only the detail carries. No detail, no CI
-    // read — and therefore no change to what we knew about it.
-    const sha = detail?.head?.sha;
-    if (sha) {
-      const ci = await readCi(client, owner, repo, sha, detail?.html_url ?? listed.html_url ?? '');
-      if (ci) {
-        pipelineStatus = ci.status;
-        pipelineStages = ci.stages;
-        pipelineUrl = ci.url;
-      }
+  /**
+   * CI, read whenever a detail response is in hand — from `stale` above, or handed in by
+   * the caller — rather than gated on `stale` itself.
+   *
+   * That decoupling is the point: checks keep running after a PR merges, and the "read
+   * back a settled PR" pass in `ipc.ts` calls this with `stale: false` (nothing about
+   * approvals or notes can move once it has landed) but still passes `detail`, because its
+   * whole reason for existing is to learn whether THIS moved. Gating the read on `stale`
+   * left a check still `in_progress` at the moment of merge frozen that way forever — the
+   * same bug GitLab's half of this file never had, since its overall status already reads
+   * off `head_pipeline` unconditionally.
+   *
+   * Check runs hang off the head SHA, which only the detail carries. No detail, no CI read
+   * — and therefore no change to what we knew about it.
+   */
+  const sha = detail?.head?.sha;
+  if (sha && owner && repo) {
+    const ci = await readCi(
+      client,
+      owner,
+      repo,
+      sha,
+      detail?.html_url ?? listed.html_url ?? '',
+      onCiRefusal,
+    );
+    if (ci) {
+      pipelineStatus = ci.status;
+      pipelineStages = ci.stages;
+      pipelineUrl = ci.url;
     }
   }
 

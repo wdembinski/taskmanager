@@ -139,3 +139,30 @@ export function displayStatus(state: CloudBoardState, task: Task): Task['status'
 export function isTaskPending(state: CloudBoardState, taskId: string): boolean {
   return Object.values(state.pendingStatusChanges).some((c) => c.taskId === taskId);
 }
+
+/**
+ * Drop a project the server just created or edited straight into the mirror, ahead of the
+ * next `GET /v1/board` poll.
+ *
+ * `POST /v1/projects` and `PATCH /v1/projects/:id` (`projectsApi.ts`) are writes to the same
+ * authoritative store `applyBoardResponse` reads back from — the write bumps `rowVersion`, so
+ * the next poll would fold it in regardless — but a hub that only showed a new project once a
+ * poll happened to land would read as broken for however long that takes. This is the same
+ * optimism `queuePendingStatusChange` gives a dragged card, applied to a row this tab wrote
+ * itself rather than merely asked the desktop to.
+ */
+export function mergeProject(state: CloudBoardState, project: Project): CloudBoardState {
+  return { ...state, projects: { ...state.projects, [project.id]: project } };
+}
+
+/**
+ * The same optimism as {@link mergeProject}, for a ticket the server just created or
+ * edited (`TicketsController`, over `projectsApi.ts`'s `createTicket`/`updateTicket`) — the
+ * backlog and ticket-detail pages' own write path, straight to the server's authoritative
+ * store rather than relayed to a desktop Client. The write bumps the same `rowVersion` a
+ * mirrored delta does, so the next poll would fold it in regardless; this is what makes it
+ * show up before that poll happens.
+ */
+export function mergeTask(state: CloudBoardState, task: Task): CloudBoardState {
+  return { ...state, tasks: { ...state.tasks, [task.id]: task } };
+}

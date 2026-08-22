@@ -18,11 +18,14 @@ import { join } from 'path';
 import * as dotenv from 'dotenv';
 import { DataSource } from 'typeorm';
 import { Account } from '../entities/account.entity';
+import { AgentProfile } from '../entities/agentProfile.entity';
+import { Assignment } from '../entities/assignment.entity';
 import { AttachmentBlob } from '../entities/attachmentBlob.entity';
 import { AttachmentUpload } from '../entities/attachmentUpload.entity';
 import { Client } from '../entities/client.entity';
 import { Command } from '../entities/command.entity';
 import { CommandResultRow } from '../entities/commandResult.entity';
+import { PersonalAccessToken } from '../entities/personalAccessToken.entity';
 import { Tombstone } from '../entities/tombstone.entity';
 import { ProjectMirror } from '../entities/projectMirror.entity';
 import { TaskMirror } from '../entities/taskMirror.entity';
@@ -35,11 +38,14 @@ export const AppDataSource = new DataSource({
   ...buildMssqlConnectionOptions(),
   entities: [
     Account,
+    AgentProfile,
+    Assignment,
     AttachmentBlob,
     AttachmentUpload,
     Client,
     Command,
     CommandResultRow,
+    PersonalAccessToken,
     ProjectMirror,
     TaskMirror,
     Tombstone,

@@ -32,7 +32,7 @@ import {
   type Rectangle,
 } from 'electron';
 import type {
-  IamConfigStatus,
+  BoardScope,
   IpcApi,
   IpcEvents,
   JiraIssueTypeOption,
@@ -41,18 +41,29 @@ import type {
   JiraUserOption,
 } from '@shared/ipc';
 import {
+  hasPlan,
+  hasRepo,
+  isFilingProject,
   isManualStatus,
-  isPlanProject,
-  isRepoProject,
+  isPersonalBoard,
+  ownsBoard,
+  ownsTickets,
   PERSONAL_PROJECT_ID,
   type BoardColumn,
   type JiraStatusCategory,
+  type Milestone,
+  type Person,
   type Project,
   type ProjectPatch,
   type ProjectWithTasks,
   type Task,
   type TaskStatus,
+  type TicketInput,
+  type TicketLabel,
+  type TicketLink,
 } from '@shared/model';
+import { isEpic, isNativeTicket } from '@shared/tickets';
+import { canLinkTickets, type TicketLinkResult } from '@shared/ticketLinks';
 import {
   ARCHIVE_RETENTION_DAYS,
   categoryFromKey,
@@ -62,7 +73,7 @@ import {
 } from '@shared/board';
 import { assignmentStatusPatch, humanStatusPatch } from './cardStatusGuard';
 import { isBlockedishStatus, resolveGitHubColumn } from '@shared/statusResolve';
-import type { AppSettings } from '@shared/settings';
+import { clampSyncInterval, type AppSettings } from '@shared/settings';
 import { sameExecTarget, type ExecTarget } from '@shared/execTarget';
 import { normalizeBaseUrl } from '@shared/jiraUrl';
 import { sanitizeToken, tokenHadNoise } from '@shared/secretToken';
@@ -92,15 +103,22 @@ import {
   type JiraTransitionTarget,
   type MoveResolution,
 } from './jira/jiraMove';
-import { iamSignInConfig } from './iamConfig';
-import { signIn as runIamSignIn } from './iamSignIn';
-import { refreshTokens } from '@shared/iamPkce';
+import { CloudTokenProvider } from './cloudToken';
 import type { ClientInfo, CommandEnvelope } from '@protocol/wire';
-import { PROTOCOL_VERSION } from '@protocol/wire';
+import { PAT_PREFIX, PAT_SECRET_LENGTH, PROTOCOL_VERSION } from '@protocol/wire';
 import { applyCloudCommand, type CloudCommandOutcome } from './cloudCommands';
 import { CommandQueue } from './commandQueue';
 import { relayRegistry } from './ipcRegistry';
 import { CloudAttachmentUploader, fetchUploadBytes } from './cloudAttachmentUploader';
+import {
+  addAgentProfile,
+  listAgentProfiles,
+  removeAgentProfile,
+  updateAgentProfile,
+  type AgentProfilesApiDeps,
+} from './agentProfilesApi';
+import { AssignmentPoller } from './assignmentPoller';
+import { CloudBoardPuller } from './cloudBoardPuller';
 import { CloudEventForwarder } from './cloudEventForwarder';
 import { CloudPoller } from './cloudPoller';
 import { testCloudConnection } from './cloudTestConnection';
@@ -137,12 +155,18 @@ import {
   landedTaskIds,
   mergeRequestId,
   needsDetailRefresh,
+  PIPELINE_IN_FLIGHT,
   reconcileMergeRequests,
   rematchMergeRequests,
   type FetchedMergeRequest,
 } from './gitlab/gitlabSync';
-import { reconcilePullRequests, rematchPullRequests } from './github/githubPrSync';
-import { mrIsSettled, type MergeRequest } from '@shared/mergeRequest';
+import { needsCiRefresh, reconcilePullRequests, rematchPullRequests } from './github/githubPrSync';
+import {
+  forgeName,
+  mrIsSettled,
+  type ForgeProvider,
+  type MergeRequest,
+} from '@shared/mergeRequest';
 import { canLink, isLinkGate, type LinkResult, type TaskLink } from '@shared/taskChain';
 import type { TaskAttachment } from '@shared/attachments';
 import {
@@ -153,6 +177,7 @@ import {
   sweepOrphanAttachments,
 } from './attachments';
 import { attachmentFile } from './attachmentPaths';
+import { stagePastedFiles, sweepPasteTemp } from './pastedAttachments';
 import { collectUploads } from './uploadedAttachments';
 import type { ServiceSyncState, SyncServiceId, SyncState } from '@shared/sync';
 import { hostFor, listWslDistros, readinessFor, statusForTargets } from './exec';
@@ -164,7 +189,14 @@ import { sanitizeWindowState } from './windowState';
 import { createWindowStateFlusher, type WindowStateFlusher } from './windowFlush';
 import { appPlanPath, appProjectFile } from './projectPaths';
 import { RELEASE_DOC } from '@shared/release';
-import { RUN_REFUSAL_MESSAGE } from '@shared/scheduler';
+import { openPullRequest, type CreatePrDeps } from './forge/createPr';
+import { forgeBaseUrl } from './forge/baseUrl';
+import {
+  CARD_RECORDS_PARK,
+  isParkedRefusal,
+  RUN_REFUSAL_MESSAGE,
+  type RunRefusal,
+} from '@shared/scheduler';
 import { logMain } from './log';
 import { parsePlan } from './planParser';
 import { planHasAlignmentMarkers, validatePlan } from './planValidate';
@@ -181,7 +213,7 @@ import { LIMIT_PROBE_TIMEOUT_MS, Scheduler } from './scheduler';
 import { SessionManager } from './sessionManager';
 import { createStore, type Store } from './store';
 import { Updater } from './updater';
-import { bucketSeries, rollupQuotas, rollupWindow } from './usageRollup';
+import { bucketSeries, rollupQuotas, rollupSessionStats, rollupWindow } from './usageRollup';
 import { WorktreeManager } from './worktreeManager';
 
 /**
@@ -231,6 +263,36 @@ function ensureAligned(store: Store, project: Project, hasMarkers: boolean): Pro
 }
 
 /**
+ * Whether a refusal may be REPORTED rather than thrown.
+ *
+ * Two things have to be true: the engine parked the work (so it starts by itself, and telling
+ * the human to press something would be a lie), and the park is written on the card
+ * (`CARD_RECORDS_PARK`), so the row a handler hands back actually says it is held. A usage
+ * limit satisfies both — `parkForLimit` stamps `blocked-by-limit` — and is the only refusal
+ * that does today.
+ *
+ * A sign-out park satisfies only the first: the card stays plain `pending`, so returning it
+ * would render as "assigned, idle, nobody knows why" and the one fix (sign in) would go
+ * unsaid. That one keeps throwing.
+ */
+function isReportablePark(refusal: RunRefusal): boolean {
+  return isParkedRefusal(refusal) && CARD_RECORDS_PARK[refusal];
+}
+
+/**
+ * Shape only — same rule `apps/server/src/iam/pat.ts`'s own `looksLikePat` enforces, kept as
+ * a small duplicate here rather than a cross-package import: the server's copy pulls in
+ * `node:crypto` for the parts of that file this one does not need, and the two processes
+ * checking the same shape independently is exactly the redundancy a client-side sanity check
+ * is for — the server is still the one that decides whether the token is REAL.
+ */
+function looksLikePat(bearer: string): boolean {
+  if (!bearer.startsWith(PAT_PREFIX)) return false;
+  if (bearer.length !== PAT_PREFIX.length + PAT_SECRET_LENGTH) return false;
+  return /^[A-Za-z0-9_-]+$/.test(bearer.slice(PAT_PREFIX.length));
+}
+
+/**
  * How long an archived card is kept before the boot sweep destroys it for good.
  *
  * Not a setting, and not `JiraSettings.doneRetentionDays` either — that one decides how long a
@@ -255,6 +317,13 @@ export interface Engine {
   /** The cloud mirror's own timer — seconds-scale, server-directed, and separate from
    * `syncPoller` on purpose; see `cloudPoller.ts`'s own header. */
   cloudPoller: CloudPoller;
+  /** The read half of the same mirror: `GET /v1/board?since=` on its own clock, applying
+   *  rows this desktop did not itself write — see `cloudBoardPuller.ts`'s own header. */
+  cloudBoardPuller: CloudBoardPuller;
+  /** Claims and starts queued cloud `Assignment`s for the ticket projects this desktop
+   *  serves — "desktop is the worker" half of step 5; see `assignmentPoller.ts`'s own
+   *  header for why it is a separate poller rather than a change to `Scheduler` itself. */
+  assignmentPoller: AssignmentPoller;
   /** The push half of the same mirror: every `IpcEvents` push, batched to `POST /v1/events`.
    * Holds a timer and a queue, so it is disposed on quit like every other one. */
   cloudEvents: CloudEventForwarder;
@@ -313,6 +382,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   const userData = app.getPath('userData');
   const store = createStore(join(userData, 'orchestrator.db'));
 
+  // One-shot: a database from before this ticket may still carry a vipper.iam refresh token.
+  // Nothing mints an access token from it any more, so it is dead weight — a credential
+  // encrypted on disk that nothing uses is worse than dropping it. `legacySignInRetired` lets
+  // the Settings pane tell a returning signed-in user their sign-in was replaced, rather than
+  // leaving a blank field to explain itself.
+  const legacySignInRetired = store.clearLegacyCloudSignIn();
+
   // Attachment rows cascade away with a deleted task; their FILES cannot — no cascade
   // reaches outside the database. Deleting a PROJECT is the path that proves one handler
   // is not enough: it takes its tasks with it (store.ts:446) without `task:delete` ever
@@ -323,6 +399,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   void sweepOrphanAttachments(store, userData).catch((e) =>
     logMain('Sweeping orphaned attachments failed', e),
   );
+
+  // A pasted file's temp copy is never meant to outlive the run that made it — it either
+  // became a real attachment (whose bytes now live under `userData`, swept above) or the
+  // paste was never finished. One pass at boot removes whatever a crash left behind, the
+  // same backstop as the attachment sweep just above and for the same reason. Not awaited,
+  // for the same reason too.
+  void sweepPasteTemp().catch((e) => logMain('Sweeping pasted-file temp files failed', e));
 
   // A card taken off the board keeps its row forever unless something eventually lets go, and
   // "forever" is the wrong answer for a board that removes cards every sync. So one pass at
@@ -590,10 +673,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   const targetsInUse = (): ExecTarget[] => {
     const targets = store
       .listProjects()
-      // `isRepoProject`, not "not the Personal board": a ticket project has no directory
+      // `hasRepo`, not "not the Personal board": a ticket project has no directory
       // either, so its target is only whatever the default was the day it was created, and
       // counting it would resurrect the very warning this filter exists to suppress.
-      .filter(isRepoProject)
+      .filter(hasRepo)
       .map((project) => project.target);
     return targets.length > 0 ? targets : [store.getSettings().defaultExecTarget];
   };
@@ -652,10 +735,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
   handle('project:add', async (input) => {
     const project = store.addProject(input);
-    // Only a plan project has a plan file: for an agent or a ticket project there is
-    // nothing to parse and nothing to watch. Asked as `isPlanProject` rather than as
-    // `kind === 'agent'`, so a fourth kind cannot inherit the plan-parsing path by default.
-    if (!isPlanProject(project)) return { project, tasks: [] };
+    // Only a project with a plan file has anything to parse or watch. Asked as `hasPlan`
+    // rather than as some notion of "kind", so any project shape that has no plan file
+    // takes this path — nothing has to opt in by name.
+    if (!hasPlan(project)) return { project, tasks: [] };
     const result = syncProjectPlan(store, project);
     watcher.watch(project); // pick up future edits to its plan file live
     return result;
@@ -664,12 +747,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('project:list', async () =>
     store
       .listProjects()
-      // Only plan projects belong on the Projects tab. The built-in Personal board is the
-      // standalone My Tasks board rather than a code project; agent projects belong to My
-      // Tasks (managed in Settings); a ticket project has its own surface. Stated as the
-      // kind we WANT — the old `!personal && kind !== 'agent'` would have listed every new
-      // kind on this tab by default.
-      .filter(isPlanProject)
+      // Every project shape (plan-driven, bare repo, ticket project) belongs on this list
+      // now — the only one that does not is the built-in Personal board, which is the
+      // standalone My Tasks board rather than something to list or manage as a project.
+      .filter((project) => !isPersonalBoard(project.id))
       .map((project) => {
         const tasks = store.getTasks(project.id);
         // A stored `dependsOn` is the persisted form of a plan `@needs:` marker, so a
@@ -680,6 +761,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   );
 
   handle('project:remove', async (id) => {
+    // Refuse deleting a project out from under a live run — a run keys off its project's
+    // directory, and still has to be integrated back into it. Folded in from the old
+    // `agentProject:remove`, which was the only caller that ever checked this.
+    if (scheduler.hasLiveRuns(id)) {
+      throw new Error('Stop the agent working in this project before removing it.');
+    }
     watcher.unwatch(id);
     store.removeProject(id);
   });
@@ -765,33 +852,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     return { runId, contractPhases: phases };
   });
 
-  // --- Agent projects -------------------------------------------------------
-  // A repo directory a My Tasks card can be delegated to. Stored in the same
-  // `projects` table (so worktrees, integration, usage attribution and the limit
-  // gate work unchanged) but never queued, watched, or listed on the Projects tab.
-
-  handle('agentProject:list', async () =>
-    store.listProjects().filter((project) => project.kind === 'agent'),
-  );
-
-  handle('agentProject:add', async (input) => store.addProject({ ...input, kind: 'agent' }));
-
-  handle('agentProject:update', async (id, patch) => {
-    const existing = store.getProject(id);
-    if (!existing || existing.kind !== 'agent') return null;
-    // Guard the plan-only fields: an agent project stays plan-less no matter what.
-    const { planPath: _planPath, writeBackPlan: _writeBackPlan, ...safe } = patch;
-    await retireRunStateIfTargetChanged(id, safe);
-    return store.updateProject(id, safe) ?? null;
-  });
-
-  handle('agentProject:remove', async (id) => {
-    if (scheduler.hasLiveRuns(id)) {
-      throw new Error('Stop the agent working in this project before removing it.');
-    }
-    store.removeProject(id);
-  });
-
   handle('scheduler:start', async (projectId) => scheduler.start(projectId));
   handle('scheduler:pause', async (projectId) => scheduler.pause(projectId));
   handle('scheduler:stop', async (projectId) => scheduler.stop(projectId));
@@ -804,7 +864,15 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // reads. This used to guess — "already running, or a usage limit" — for all six
     // reasons at once, which meant a signed-out account was reported as a usage limit and
     // the one action that would fix it (sign in) went unsaid.
-    if ('refused' in outcome) throw new Error(RUN_REFUSAL_MESSAGE[outcome.refused]);
+    //
+    // A park the CARD records is returned rather than thrown: `parkForLimit` wrote
+    // `blocked-by-limit` onto the task, so the hold is a fact every later reader can see
+    // and the caller has something truthful to render. The other refusals — including the
+    // sign-out park, which leaves nothing on the card (`CARD_RECORDS_PARK`) — still throw,
+    // because a thrown sentence is the only place they are ever told to the human.
+    if ('refused' in outcome && !isReportablePark(outcome.refused)) {
+      throw new Error(RUN_REFUSAL_MESSAGE[outcome.refused]);
+    }
     return outcome;
   });
   handle('task:integrate', async (taskId) => {
@@ -835,7 +903,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       throw new Error('This task already has an agent working on it.');
     }
     const target = store.getProject(input.agentProjectId);
-    if (!target || target.kind !== 'agent') {
+    if (!target || !hasRepo(target)) {
       throw new Error('Pick an agent project to delegate this task to.');
     }
     // The instructions become a timeline comment BEFORE the run starts, so they are
@@ -893,7 +961,16 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       // start it is parked behind that gate and will begin by itself. Say so before
       // throwing, or the board would keep drawing an undelegated card and the human would
       // assign it a second time.
-      send('task:changed', { task, runId: null });
+      //
+      // Re-read first: the park is written DURING `startTaskNow`, after the row above was
+      // fetched, so `task` predates `blocked-by-limit` and announcing it would put a card
+      // on the board that looks assigned-and-idle.
+      const parked = store.getTask(taskId) ?? task;
+      send('task:changed', { task: parked, runId: null });
+      // A usage limit is not a failed assignment — it is a queued one. Returning the card
+      // is what lets the dialog close on its own success instead of reporting a wall the
+      // human can do nothing about, and the pane reads the hold off the card itself.
+      if (isReportablePark(outcome.refused)) return parked;
       throw new Error(RUN_REFUSAL_MESSAGE[outcome.refused]);
     }
     send('task:changed', { task, runId: outcome.runId });
@@ -918,18 +995,23 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // as `task:assignAgent` above, and the same refusal vocabulary as `task:run`.
     const task = store.getTask(taskId) ?? existing;
     send('task:changed', { task, runId: 'runId' in outcome ? outcome.runId : null });
-    if ('refused' in outcome) throw new Error(RUN_REFUSAL_MESSAGE[outcome.refused]);
+    // ...and the one park the card records is not raised at all: the re-read above already
+    // carries `blocked-by-limit`, so resolving hands the caller a card that explains itself.
+    // Same rule as `task:run` and `task:assignAgent`; a sign-out still throws.
+    if ('refused' in outcome && !isReportablePark(outcome.refused)) {
+      throw new Error(RUN_REFUSAL_MESSAGE[outcome.refused]);
+    }
     return task;
   });
   handle('task:chat', async (taskId, message) => scheduler.chatWithAgent(taskId, message));
   handle('task:replan', async (taskId, note) => scheduler.replanCard(taskId, note));
   handle('task:create', async (projectId, input) => {
-    // The same check `task:setProject` makes, for the same reason: filing is only ever
-    // under an agent project, and a card created with a dangling tag would wear a colour
-    // stripe nothing on the board could explain.
+    // The same check `task:setProject` makes, for the same reason: a card created with a
+    // dangling or unfileable tag would wear a colour stripe nothing on the board could
+    // explain.
     if (input.projectTagId) {
       const target = store.getProject(input.projectTagId);
-      if (!target || target.kind !== 'agent') throw new Error('Unknown project.');
+      if (!target || !isFilingProject(target)) throw new Error('Unknown project.');
     }
     const task = store.createTask(projectId, input);
     if (!task) throw new Error('A task needs a title.');
@@ -960,6 +1042,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     pushChainLinks();
     // Its attachment rows went the same way, and the same argument applies to the chips.
     pushAttachments();
+    // A deleted TICKET takes its documented relationships with it too, for the identical
+    // reason: `ticket_links` cascades on both `fromTaskId` and `toTaskId`, so a link left
+    // drawn to a card that is gone is a lie no ordinary task will ever leave behind, but a
+    // ticket does every time it is removed.
+    pushTicketLinks();
     // The BYTES did not: no cascade reaches outside the database. After `deleteTask` has
     // returned, never inside its transaction — a throw in there would roll the row
     // deletion back and leave a card half-deleted, which is worse than either half alone.
@@ -1012,13 +1099,25 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     send('task:changed', { task, runId: null });
     return task;
   });
+  handle('task:setTitle', async (taskId, title) => {
+    const existing = store.getTask(taskId);
+    if (!existing) throw new Error('Task not found.');
+    const trimmed = title.trim();
+    if (!trimmed) throw new Error('A task needs a title.');
+    // The app's copy only — a JIRA or GitHub sync overwrites `title` from the
+    // issue's own summary on the next poll, same bargain as the description.
+    const task = store.updateTask(taskId, { title: trimmed });
+    if (!task) throw new Error('Task not found.');
+    send('task:changed', { task, runId: null });
+    return task;
+  });
 
   handle('task:setProject', async (taskId, projectTagId) => {
     const existing = store.getTask(taskId);
     if (!existing) throw new Error('Task not found.');
     if (projectTagId !== null) {
       const target = store.getProject(projectTagId);
-      if (!target || target.kind !== 'agent') throw new Error('Unknown project.');
+      if (!target || !isFilingProject(target)) throw new Error('Unknown project.');
     }
     // Filing only, and now to its OWN column. This used to write `agentProjectId`, the
     // same field delegation writes, so tagging a card as "a Billing card" gave it the
@@ -1083,6 +1182,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       // Read at merge time, not at run time, so flipping it while the agent works still
       // decides what happens when that work lands.
       ...(options.autoRelease !== undefined ? { autoRelease: options.autoRelease } : {}),
+      // Read when the work SETTLES, like the two below, so turning it on mid-run still
+      // decides what happens to the branch the agent is writing right now.
+      ...(options.autoCreatePr !== undefined ? { autoCreatePr: options.autoCreatePr } : {}),
       // Read the moment the run FINISHES, likewise, so changing your mind while the agent
       // works still decides what happens to the branch it is writing.
       ...(options.autoIntegrate !== undefined ? { autoIntegrate: options.autoIntegrate } : {}),
@@ -1268,6 +1370,16 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     });
   });
 
+  // Session-by-session "how fast do I burn through a 5-hour budget" history, behind
+  // the Performance screen's two charts. Reconstructed from the whole sample history
+  // (not just the current window) — see `rollupSessionStats`'s own docs for why there
+  // is no session table to read this from instead.
+  handle('usage:sessionStats', async () =>
+    rollupSessionStats(store.getUsageSamples(0), {
+      limit: store.getSettings().sessionTokenBudget,
+    }),
+  );
+
   handle('settings:get', async () => store.getSettings());
   handle('settings:save', async (settings) => {
     // Normalize the JIRA URL once, on the way in, so every consumer sees the same
@@ -1301,6 +1413,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // Same reason, on the cloud mirror's own clock — an edit to `cloud.enabled`/`baseUrl`
     // takes effect at once rather than waiting for whatever tick was already in flight.
     cloudPoller.reschedule();
+    cloudBoardPuller.reschedule();
     // The countdown is drawn from the interval, so a changed one has to reach the bar or
     // the ring would keep draining at the old rate until the next sync landed.
     pushSyncState();
@@ -1439,11 +1552,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // GitLab. Mirrors the JIRA block above; the token is encrypted the same way and
   // never leaves this process.
   const buildGitLabClient = (): GitLabClient => {
-    const { gitlab } = store.getSettings();
-    if (!gitlab.baseUrl.trim()) throw new Error('Set the GitLab URL in Settings first.');
+    // The URL first and the token second, which is the order they are obtained in: nobody has
+    // a token for an instance they have not named yet. `forgeBaseUrl` owns that refusal now —
+    // `forge/createPr.ts` builds its own clients and has to make the same one.
+    const baseUrl = forgeBaseUrl('gitlab', store.getSettings());
     const cipher = store.loadGitLabToken();
     if (!cipher) throw new Error('No GitLab token saved — add one in Settings.');
-    return new GitLabClient({ baseUrl: gitlab.baseUrl, token: decryptSecret(cipher, 'GitLab') });
+    return new GitLabClient({ baseUrl, token: decryptSecret(cipher, forgeName('gitlab')) });
   };
 
   handle('gitlab:getConfigStatus', async () => {
@@ -1500,11 +1615,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // GitHub. The GitLab block again, one forge over: same encryption path, same paste
   // hygiene, same refusal to store anything when the OS secure store is unavailable.
   const buildGitHubClient = (): GitHubClient => {
-    const { github } = store.getSettings();
-    if (!github.baseUrl.trim()) throw new Error('Set the GitHub API URL in Settings first.');
+    // The GitLab builder above, one forge over — same guard, same order, same reason.
+    const baseUrl = forgeBaseUrl('github', store.getSettings());
     const cipher = store.loadGitHubToken();
     if (!cipher) throw new Error('No GitHub token saved — add one in Settings.');
-    return new GitHubClient({ baseUrl: github.baseUrl, token: decryptSecret(cipher, 'GitHub') });
+    return new GitHubClient({ baseUrl, token: decryptSecret(cipher, forgeName('github')) });
   };
 
   handle('github:getConfigStatus', async () => {
@@ -1563,136 +1678,167 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   });
 
   // -------------------------------------------------------------------------
-  // vipper.iam cloud sign-in (Phase 25's "Guard the cloud API with vipper.iam"). The refresh
-  // token is the one credential of the three (JIRA/GitLab/IAM) this app itself is a party to
-  // minting, but it still goes through the exact same encrypt-and-store path as the other two.
-  handle('iam:getConfigStatus', async () => {
-    const linkMethod: IamConfigStatus['linkMethod'] = store.loadIamPat()
-      ? 'token'
-      : store.loadIamRefreshToken()
-        ? 'oauth'
-        : null;
-    return {
-      signedIn: linkMethod !== null,
-      linkMethod,
-      encryptionAvailable: safeStorage.isEncryptionAvailable(),
-    };
+  // Opening a pull request for a card (`forge/createPr.ts`).
+  //
+  // The token reader is the only thing this file adds: `decryptSecret` lives in this closure
+  // because it is the one place `safeStorage` is reachable, and a **null** rather than a
+  // throw is what "no token saved" means — `openPullRequest` turns that into a sentence
+  // naming the forge, which is more use than a decryption error.
+  const forgeToken = (provider: ForgeProvider): string | null => {
+    const cipher = provider === 'github' ? store.loadGitHubToken() : store.loadGitLabToken();
+    if (!cipher) return null;
+    // `forgeName`, not a ternary: the label goes into a sentence the human reads ("The stored
+    // GitHub token could not be decrypted…"), and it is the same name the two other places
+    // that say it out loud already use.
+    return decryptSecret(cipher, forgeName(provider));
+  };
+
+  const createPrDeps = (): CreatePrDeps => ({
+    getTask: (id) => store.getTask(id),
+    getProject: (id) => store.getProject(id),
+    getSettings: () => store.getSettings(),
+    listMergeRequests: () => store.listMergeRequests(),
+    upsertMergeRequest: (mr) => {
+      store.upsertMergeRequest(mr);
+      // Pushed straight out, for the reason the row is written here at all: the card's
+      // merge-request section must show the PR on the next paint rather than after the
+      // next poll, and nothing else would tell the renderer it exists.
+      send('mergeRequests:changed', store.listMergeRequests());
+    },
+    inspect: (project, ownerTaskId, branchName) =>
+      worktrees.inspect(project, ownerTaskId, branchName),
+    tokenFor: forgeToken,
+    note: (projectId, taskId, body) => {
+      store.addComment(projectId, taskId, body);
+      send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) });
+    },
+    now: () => Date.now(),
   });
 
-  handle('iam:signIn', async () => {
-    if (!safeStorage.isEncryptionAvailable()) {
-      return {
-        ok: false,
-        message: 'OS secure storage is unavailable, so the sign-in was not saved.',
-      };
-    }
-    try {
-      const tokens = await runIamSignIn(iamSignInConfig(), (url) => shell.openExternal(url));
-      if (!tokens.refresh_token) {
-        return { ok: false, message: 'vipper.iam did not return a refresh token.' };
-      }
-      // An OAuth sign-in replaces a linked PAT — the two are mutually exclusive, and
-      // leaving a stale PAT in place would make `getCloudAccessToken` keep using it instead
-      // of the fresh sign-in this call just did.
-      store.clearIamPat();
-      cloudAccessToken = null;
-      store.saveIamRefreshToken(
-        safeStorage.encryptString(sanitizeToken(tokens.refresh_token)).toString('base64'),
-      );
-      return { ok: true, message: 'Signed in.' };
-    } catch (e) {
-      logMain('IAM sign-in failed', e);
-      return { ok: false, message: e instanceof Error ? e.message : String(e) };
-    }
-  });
+  handle('task:createPullRequest', async (taskId) => openPullRequest(createPrDeps(), taskId));
 
-  handle('iam:linkWithToken', async (token) => {
+  // The scheduler opens the same PR, through the same function, when a card finishes with
+  // "Open a PR when finished" on — so it is handed the deps rather than growing its own way
+  // in. Set here because only this closure can read a secret out of `safeStorage`.
+  scheduler.setPullRequestOpener((taskId) => openPullRequest(createPrDeps(), taskId));
+
+  // -------------------------------------------------------------------------
+  // Cloud personal access token — the same four-channel shape JIRA/GitLab/GitHub use above,
+  // which is the whole point of this ticket: the cloud stopped being a special case. The
+  // server mints the token, on the web app's Personal access tokens page; this app only ever
+  // stores and spends a paste. `cloudToken` is declared further down this function (its
+  // `onStateChange` needs `pushSyncState` above it) — safe to reference here anyway, since
+  // these callbacks only run once IPC is live, well after every `const` in this scope has
+  // been initialized.
+  handle('cloud:getConfigStatus', async () => ({
+    hasToken: store.loadCloudPat() !== null,
+    encryptionAvailable: safeStorage.isEncryptionAvailable(),
+    plainTextStorage: usesPlainTextStorage(),
+    authState: cloudToken.state(),
+    authError: cloudToken.state() === 'rejected' ? cloudToken.explain() : null,
+    lastAcceptedAt: cloudToken.lastAcceptedAt(),
+    legacySignInRetired,
+  }));
+
+  handle('cloud:setCredentials', async (token) => {
+    if (!token.trim()) {
+      store.clearCloudPat();
+      cloudToken.reload();
+      return { ok: true, message: 'Token cleared.' };
+    }
     if (!safeStorage.isEncryptionAvailable()) {
       return {
         ok: false,
         message: 'OS secure storage is unavailable, so the token was not saved.',
       };
     }
+    // One check the forges do not need: a JIRA/GitLab/GitHub paste is opaque to this app, but
+    // a Task Manager token has a shape worth checking BEFORE it is stored — the sooner a
+    // mis-paste is caught, the sooner the real one gets typed instead.
     const cleaned = sanitizeToken(token);
-    if (!cleaned) {
-      return { ok: false, message: 'Paste the token created in the web app’s Settings.' };
+    if (!looksLikePat(cleaned)) {
+      return {
+        ok: false,
+        message:
+          'That does not look like a Task Manager token — they start with tmpat_. Copy it ' +
+          'again from the web app’s Personal access tokens page.',
+      };
     }
-    // Replaces an OAuth sign-in the same way `iam:signIn` replaces a linked PAT.
-    store.clearIamRefreshToken();
-    cloudAccessToken = null;
-    store.saveIamPat(safeStorage.encryptString(cleaned).toString('base64'));
-    return { ok: true, message: 'Linked.' };
+    const noise = tokenHadNoise(token);
+    store.saveCloudPat(safeStorage.encryptString(cleaned).toString('base64'));
+    cloudToken.reload();
+    return {
+      ok: true,
+      message: usesPlainTextStorage()
+        ? 'Token saved — but this machine has no keyring, so it is only obfuscated on disk.'
+        : noise
+          ? 'Token saved — whitespace came with the paste and was stripped.'
+          : 'Token saved.',
+    };
   });
 
-  handle('iam:signOut', async () => {
-    cloudAccessToken = null;
-    store.clearIamRefreshToken();
-    store.clearIamPat();
+  handle('cloud:clearCredentials', async () => {
+    store.clearCloudPat();
+    cloudToken.reload();
   });
 
   /**
-   * The cloud mirror's own access token — minted from the stored refresh token, cached in
-   * memory until it's close to expiry rather than reminted on every poll (the active tier
-   * is 2.5s; a mint-per-tick would cost `apps/server` a vipper.iam round trip every request
-   * for nothing a cache doesn't already answer). vipper.iam rotates the refresh token on
-   * every use, so a successful mint re-encrypts and re-saves it, exactly as `iam:signIn`
-   * does with the first one. Returns null — never throws — whenever there is nothing to
-   * mint from: `cloudPoller` treats that exactly like any other failed tick (counted,
-   * backed off, retried next time), not a special case.
+   * What a browser names this desktop by — see `ClientInfo` on `@protocol/wire`.
+   *
+   * One definition for the two senders: the poller writes it on every tick, and
+   * `cloud:testConnection` writes it on the one sync it makes itself. A probe that sent no
+   * identity would register the machine anonymously and the verdict could not name it.
    */
-  let cloudAccessToken: { value: string; expiresAt: number } | null = null;
-  const getCloudAccessToken = async (): Promise<string | null> => {
-    if (cloudAccessToken && cloudAccessToken.expiresAt > Date.now() + 5_000) {
-      return cloudAccessToken.value;
-    }
-    // A linked PAT is already a bearer credential — nothing to mint, no expiry this app
-    // tracks (vipper.iam introspects it fresh on every request; a revoked or expired one
-    // fails there, the same way a revoked OAuth grant fails the refresh below). Checked
-    // first because `iam:linkWithToken` and `iam:signIn` keep the two mutually exclusive,
-    // but a leftover refresh token from before a link should never win.
-    const patCipher = store.loadIamPat();
-    if (patCipher && safeStorage.isEncryptionAvailable()) {
-      try {
-        return decryptSecret(patCipher, 'vipper.iam');
-      } catch (e) {
-        logMain('vipper.iam linked token could not be read', e);
-        return null;
-      }
-    }
-    const cipher = store.loadIamRefreshToken();
-    if (!cipher || !safeStorage.isEncryptionAvailable()) return null;
-    try {
-      const refreshToken = decryptSecret(cipher, 'vipper.iam');
-      // `redirectUri` is part of `IamPkceConfig`'s shape but only read for the
-      // authorization-code grant `signIn()` uses — the refresh-token grant never sends it,
-      // so an empty placeholder is fine here.
-      const tokens = await refreshTokens({ ...iamSignInConfig(), redirectUri: '' }, refreshToken);
-      if (tokens.refresh_token) {
-        store.saveIamRefreshToken(
-          safeStorage.encryptString(sanitizeToken(tokens.refresh_token)).toString('base64'),
-        );
-      }
-      cloudAccessToken = {
-        value: tokens.access_token,
-        expiresAt: Date.now() + tokens.expires_in * 1000,
-      };
-      return cloudAccessToken.value;
-    } catch (e) {
-      logMain('vipper.iam access token refresh failed', e);
-      return null;
-    }
-  };
+  const cloudClientInfo = (): ClientInfo => ({
+    name: hostname(),
+    platform: process.platform,
+    appVersion: app.getVersion(),
+    protocolVersion: PROTOCOL_VERSION,
+  });
 
-  // Defined here rather than beside the other handlers because it needs
-  // `getCloudAccessToken`, which is declared just above.
   handle('cloud:testConnection', async () => {
     const result = await testCloudConnection({
       settings: store.getSettings().cloud,
       getAccessToken: getCloudAccessToken,
+      // The id a browser addresses a command to — the probe registers it and then looks for
+      // it coming back in `BoardResponse.clients`, which is the actual question people press
+      // this button to ask.
+      clientId: store.loadCloudClientId(),
+      clientInfo: cloudClientInfo(),
+      // The probe's own sync leases whatever was queued for this machine, exactly as a poll
+      // tick does, so it hands the batch to the same serial drain rather than dropping it.
+      onCommands: (commands) => cloudCommandQueue.enqueue(commands),
+      // Turns a 401 into the PAT sentence rather than the vipper.iam-server one — see
+      // `cloudTestConnection.ts`'s own note on why that message was backwards under a token
+      // this app itself did not mint.
+      describeRejection: () => cloudToken.explain(),
     });
     if (!result.ok) logMain('Cloud test connection failed', result.message);
     return result;
   });
+
+  /**
+   * Agent profiles (cloud as central control for projects, step 7) — same "no local row"
+   * shape as `AssignmentPoller`'s own calls: every one of these is a direct request to the
+   * cloud server, gated on cloud sync being configured and signed in exactly like that
+   * poller's `send()` is, rather than a `store.*` call.
+   */
+  const agentProfilesDeps = async (): Promise<AgentProfilesApiDeps> => {
+    const cloud = store.getSettings().cloud;
+    if (!cloud.enabled || !cloud.baseUrl.trim()) {
+      throw new Error('Cloud sync isn’t set up — add a server address in Settings → Cloud first.');
+    }
+    const token = await getCloudAccessToken();
+    if (!token) throw new Error('Not signed in to vipper.iam.');
+    return { baseUrl: cloud.baseUrl, token };
+  };
+
+  handle('agentProfile:list', async () => listAgentProfiles(await agentProfilesDeps()));
+  handle('agentProfile:add', async (input) => addAgentProfile(await agentProfilesDeps(), input));
+  handle('agentProfile:update', async (id, patch) =>
+    updateAgentProfile(await agentProfilesDeps(), id, patch),
+  );
+  handle('agentProfile:remove', async (id) => removeAgentProfile(await agentProfilesDeps(), id));
 
   /** The account behind the GitLab token, cached per instance. Fails soft to null. */
   const gitlabIdentity = async (
@@ -1711,24 +1857,45 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   };
 
   /**
-   * The board's keys and the cards behind them, for matching MRs to tasks.
+   * The board's keys and the cards behind them, for matching MRs to tasks — plus the set of
+   * card ids, which is what a merge request's *remembered* card is checked against.
    *
    * The archived-excluding read, deliberately: an MR is matched to a card so the card can show
    * it, and a card that is off the board has nowhere to show anything. Including archived rows
    * here would have a removed card silently claim a live merge request, which then appears
-   * nowhere at all — worse than the orphan an unmatched MR already handles.
+   * nowhere at all — worse than the orphan an unmatched MR already handles. That applies to
+   * `knownTaskIds` for the same reason, which is why the link is checked against it at all.
    */
-  const boardKeyIndex = (): { knownKeys: string[]; taskIdByKey: Map<string, string> } => {
+  const boardKeyIndex = (): {
+    knownKeys: string[];
+    taskIdByKey: Map<string, string>;
+    knownTaskIds: Set<string>;
+  } => {
     const taskIdByKey = new Map<string, string>();
+    const knownTaskIds = new Set<string>();
     for (const task of store.getPersonalTasks()) {
+      knownTaskIds.add(task.id);
       // Any tracker's key, not JIRA's alone: a GitHub pull request names its issue as
       // `owner/repo#123`, which is the same kind of fact about the same kind of card. The
       // upper-casing is what makes the lookup case-insensitive on both spellings.
       if (task.externalSource && task.externalKey) {
         taskIdByKey.set(task.externalKey.toUpperCase(), task.id);
       }
+      // A NATIVE ticket's key (`TM-12`) counts too, and leaving it out was a hole rather
+      // than a decision: it is the key this app puts in front of the title of every pull
+      // request it opens (`prTitle`), the key a human types into a branch name, and the one
+      // the card itself prints — but nothing here indexed it, so no merge request naming it
+      // could ever be matched to it. A card with a native ticket behind it looked, to every
+      // reconciler, exactly like a card with no key at all.
+      const ticketKey = task.ticketKey?.trim();
+      // Never over a tracker's own: `externalKey` is the mirrored issue's real name, and if
+      // some board somehow spells both the same, the mirrored card is the one whose key the
+      // forge's text is quoting.
+      if (ticketKey && !taskIdByKey.has(ticketKey.toUpperCase())) {
+        taskIdByKey.set(ticketKey.toUpperCase(), task.id);
+      }
     }
-    return { knownKeys: [...taskIdByKey.keys()], taskIdByKey };
+    return { knownKeys: [...taskIdByKey.keys()], taskIdByKey, knownTaskIds };
   };
 
   // -------------------------------------------------------------------------
@@ -1768,7 +1935,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       .map((s) => s.lastSyncAt)
       .filter((t): t is number => t !== null);
     return {
-      intervalMs: Math.max(0, Math.round(settings.syncIntervalMinutes ?? 0)) * 60_000,
+      intervalMs: clampSyncInterval(settings.syncIntervalMinutes ?? 0) * 60_000,
       lastSyncAt: stamps.length ? Math.max(...stamps) : null,
       syncing: Object.values(syncClock).some((c) => c.syncing),
       services,
@@ -1803,6 +1970,29 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       pushSyncState();
     }
   };
+
+  /**
+   * The cloud mirror's own access token — a single `CloudTokenProvider` shared by every
+   * caller that needs one (`getCloudAccessToken` below is kept as a one-line alias so its
+   * existing call sites in this file are untouched). Its `onStateChange` pushes the sync
+   * state, so it's constructed here, after `pushSyncState`, rather than up beside the cloud
+   * handlers above — declaring it there would be a forward reference.
+   */
+  const cloudToken = new CloudTokenProvider({
+    loadPat: () => {
+      const cipher = store.loadCloudPat();
+      if (!cipher || !safeStorage.isEncryptionAvailable()) return null;
+      try {
+        return decryptSecret(cipher, 'Task Manager cloud');
+      } catch (e) {
+        logMain('cloud token could not be decrypted', e);
+        return null;
+      }
+    },
+    onStateChange: () => pushSyncState(),
+    log: logMain,
+  });
+  const getCloudAccessToken = (): Promise<string | null> => cloudToken.get();
 
   handle('sync:state', async () => syncState());
 
@@ -1849,22 +2039,31 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
      * moment it merged; asking GitLab what actually happened costs one call per MR, once,
      * because the answer is terminal and the guard below never asks again.
      *
-     * `stale: false` keeps the pipeline, approvals and notes we already hold — none of them
-     * can move now, and re-reading four endpoints to learn nothing would be waste.
+     * `stale: false` keeps the approvals and notes we already hold — none of them can move
+     * now, and re-reading four endpoints to learn nothing would be waste. The pipeline is
+     * the exception: `describeMergeRequest` reads it off this same detail response and
+     * refreshes its stages regardless of `stale` whenever it moved, because CI does not
+     * stop the moment an MR merges — see the comment there.
      */
     const listedIds = new Set(list.map((mr) => mergeRequestId(mr.project_id, mr.iid)));
     for (const prior of stored) {
-      if (listedIds.has(prior.id) || mrIsSettled(prior)) continue;
+      if (listedIds.has(prior.id)) continue;
+      // Once settled, an MR whose pipeline had already finished needs no further calls —
+      // it is done. One that was still running when it dropped out of the list keeps being
+      // read back until THAT pipeline (or the merge pipeline that follows it) reaches a
+      // terminal state, or its "running" stage would stay lit forever. See PIPELINE_IN_FLIGHT.
+      if (mrIsSettled(prior) && !PIPELINE_IN_FLIGHT.has(prior.pipelineStatus)) continue;
       const fetched = await client.getMergeRequest(prior.repoId, prior.number).catch(() => null);
       // Unreadable or gone: leave it out, and the reconciler deletes it as it always did.
       if (fetched)
         detailed.push(await describeMergeRequest(client, fetched, { stale: false, prior }));
     }
 
-    const { knownKeys, taskIdByKey } = boardKeyIndex();
+    const { knownKeys, taskIdByKey, knownTaskIds } = boardKeyIndex();
     const { upserts, deleteIds } = reconcileMergeRequests(stored, detailed, {
       knownKeys,
       taskIdByKey,
+      knownTaskIds,
       identity,
       now: Date.now(),
     });
@@ -1887,6 +2086,34 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       throw new Error(e instanceof Error ? e.message : String(e));
     }
   });
+
+  /**
+   * A check-runs or commit-status call that came back refused — logged every time, but
+   * raised on the board's notice bar only once per app run per repository/endpoint/status.
+   * Every stale PR in a repo hits the same missing scope on every poll, and repeating the
+   * warning that often would bury everything else on the bar.
+   */
+  const reportedCiRefusals = new Set<string>();
+  const reportCiRefusal = (
+    projectPath: string,
+    endpoint: 'check-runs' | 'commit-status',
+    error: unknown,
+  ): void => {
+    logMain(`GitHub sync: ${endpoint} for ${projectPath} refused`, error);
+    const status = error instanceof GitHubError ? error.status : 0;
+    if (status !== 401 && status !== 403 && status !== 404) return;
+    const key = `${projectPath}|${endpoint}|${status}`;
+    if (reportedCiRefusals.has(key)) return;
+    reportedCiRefusals.add(key);
+    const what = endpoint === 'check-runs' ? 'check runs' : 'commit statuses';
+    const scope = endpoint === 'check-runs' ? 'Checks: read' : 'Commit statuses: read';
+    send('board:notice', {
+      intent: 'warning',
+      text:
+        `GitHub refused to read ${what} for ${projectPath} (${status}). A fine-grained token ` +
+        `needs "${scope}"; a classic token needs "repo".`,
+    });
+  };
 
   /**
    * One GitHub sync: list your open PRs, re-read detail only for the ones that moved,
@@ -1932,7 +2159,32 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
         const prior = priorByRef.get(listedRef(item));
         const updatedAt = Date.parse(item.updated_at) || 0;
         const stale = needsDetailRefresh(prior, updatedAt);
-        detailed.push(await describePullRequest(client, item, { stale, prior }));
+        const onCiRefusal = (endpoint: 'check-runs' | 'commit-status', error: unknown): void =>
+          reportCiRefusal(prior?.projectPath ?? listedRef(item), endpoint, error);
+        /**
+         * Not otherwise stale, but the last CI answer was `unknown` or a freshly-seen `none`
+         * — GitHub never bumps `updated_at` for a check starting or finishing, so
+         * `needsDetailRefresh` alone would leave those PRs unread forever. One detail call,
+         * not the full ~seven-call stale pass: `describePullRequest` reads CI off a detail
+         * whenever it has one in hand, `stale` or not.
+         */
+        if (!stale && needsCiRefresh(prior, Date.now())) {
+          const { owner, repo } = repoRefFromApiUrl(item.repository_url);
+          const detail =
+            owner && repo
+              ? await client.getPullRequest(owner, repo, item.number).catch(() => null)
+              : null;
+          detailed.push(
+            await describePullRequest(client, item, {
+              stale: false,
+              prior,
+              detail: detail ?? undefined,
+              onCiRefusal,
+            }),
+          );
+          continue;
+        }
+        detailed.push(await describePullRequest(client, item, { stale, prior, onCiRefusal }));
       }
     };
     await Promise.all(Array.from({ length: Math.min(4, queue.length) }, worker));
@@ -1946,12 +2198,19 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
      * at once; asking costs one call per PR, once, because the answer is terminal and the
      * guard below never asks again.
      *
-     * `stale: false` keeps the checks and approvals we already hold — none of them can move
-     * now, and re-reading four endpoints to learn nothing would be waste.
+     * `stale: false` keeps the approvals and notes we already hold — none of them can move
+     * now, and re-reading them would be waste. Checks are the exception: `detail` is passed
+     * straight through, so `describePullRequest` still reads the checks off its head SHA
+     * regardless of `stale` — see the comment there for why a merge must not freeze a check
+     * that was still `in_progress`.
      */
     const listedRefs = new Set(list.map(listedRef));
     for (const prior of stored) {
-      if (listedRefs.has(prRef(prior.projectPath, prior.number)) || mrIsSettled(prior)) continue;
+      if (listedRefs.has(prRef(prior.projectPath, prior.number))) continue;
+      // Same rule as GitLab's half of this sync: a settled PR whose checks had already
+      // finished needs no further calls, but one still running when it dropped out of the
+      // open list keeps being read back until they do. See PIPELINE_IN_FLIGHT.
+      if (mrIsSettled(prior) && !PIPELINE_IN_FLIGHT.has(prior.pipelineStatus)) continue;
       const [owner, repo] = prior.projectPath.split('/');
       if (!owner || !repo) continue;
       const detail = await client.getPullRequest(owner, repo, prior.number).catch(() => null);
@@ -1961,15 +2220,18 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
           await describePullRequest(client, listedFromDetail(detail, owner, repo), {
             stale: false,
             prior,
+            detail,
+            onCiRefusal: (endpoint, error) => reportCiRefusal(prior.projectPath, endpoint, error),
           }),
         );
       }
     }
 
-    const { knownKeys, taskIdByKey } = boardKeyIndex();
+    const { knownKeys, taskIdByKey, knownTaskIds } = boardKeyIndex();
     const { upserts, deleteIds } = reconcilePullRequests(stored, detailed, {
       knownKeys,
       taskIdByKey,
+      knownTaskIds,
       identity,
       now: Date.now(),
     });
@@ -2252,10 +2514,31 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   });
 
   // What the board asks for when it draws itself — so, by definition, the cards on it.
-  handle('board:tasks', async () => store.getPersonalTasks());
+  // Omitted/'all' unions every board; anything else names one board's own project id.
+  handle('board:tasks', async (scope) =>
+    !scope || scope === 'all' ? store.getAllBoardTasks() : store.getBoardTasks(scope),
+  );
 
   // And the cards that are NOT on it — the same rows, the other side of `archivedAt`.
-  handle('board:archived', async () => store.getArchivedTasks());
+  handle('board:archived', async (scope) =>
+    !scope || scope === 'all' ? store.getAllArchivedBoardTasks() : store.getArchivedTasksFor(scope),
+  );
+
+  // The boards the scope picker offers: Personal first, then every project that owns a
+  // ticket key prefix — the ones `ownsBoard` says can actually receive a native ticket.
+  // A bare repo or a repo-less personal-space project is a card list too, but has no
+  // board of its own to switch to; its cards stay on Personal.
+  handle('board:scopes', async () => {
+    const personal = store.getProject(PERSONAL_PROJECT_ID);
+    const scopes: BoardScope[] = personal
+      ? [{ id: personal.id, name: personal.name, color: personal.color }]
+      : [];
+    for (const project of store.listProjects()) {
+      if (isPersonalBoard(project.id) || !ownsBoard(project)) continue;
+      scopes.push({ id: project.id, name: project.name, color: project.color });
+    }
+    return scopes;
+  });
 
   handle('task:restore', async (taskId) => {
     const task = store.getTask(taskId);
@@ -2275,6 +2558,240 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     pushChainLinks();
     pushAttachments();
     return tasks;
+  });
+
+  // --- Native tickets, people, labels, milestones, ticket links (Phase 24) --
+  //
+  // A ticket is a `Task` row with `source: 'ticket'`; the twelve ticket-only fields
+  // (`TicketPatch`) are what this section guards, since `createTicketTx`/`updateTask` write
+  // them blindly and neither can afford a query per field on every card save. Every guard
+  // below is its own sentence for exactly that reason — a thrown `UNIQUE constraint failed`
+  // or a silent `undefined` teaches a human nothing.
+
+  /**
+   * Validate the cross-references a ticket create/update carries: `epicTaskId` must name an
+   * EPIC in the SAME project and not itself; an epic may not itself hang under another epic;
+   * `milestoneId`/`assigneeId`/`reporterId` must resolve. Throws the first refusal found.
+   */
+  function assertTicketRefs(
+    projectId: string,
+    ticketId: string | null,
+    issueType: NonNullable<TicketInput['issueType']>,
+    fields: Pick<TicketInput, 'epicTaskId' | 'milestoneId' | 'assigneeId' | 'reporterId'>,
+  ): void {
+    if (fields.epicTaskId != null) {
+      if (issueType === 'epic') throw new Error('An epic cannot itself hang under another epic.');
+      if (fields.epicTaskId === ticketId) throw new Error('A ticket cannot be its own epic.');
+      const epic = store.getTask(fields.epicTaskId);
+      if (!epic) throw new Error('That epic no longer exists.');
+      if (epic.projectId !== projectId) {
+        throw new Error("The epic must belong to the ticket's own project.");
+      }
+      if (!isEpic(epic)) throw new Error('That ticket is not an epic.');
+    }
+    if (fields.milestoneId != null) {
+      if (!store.listMilestones(projectId).some((m) => m.id === fields.milestoneId)) {
+        throw new Error('That milestone no longer exists.');
+      }
+    }
+    if (fields.assigneeId != null && !store.listPeople().some((p) => p.id === fields.assigneeId)) {
+      throw new Error('That assignee no longer exists.');
+    }
+    if (fields.reporterId != null && !store.listPeople().some((p) => p.id === fields.reporterId)) {
+      throw new Error('That reporter no longer exists.');
+    }
+  }
+
+  handle('ticket:create', async (projectId, input) => {
+    const project = store.getProject(projectId);
+    if (!project) throw new Error('Unknown project.');
+    // That board's cards come from its plan file, not a manual add — the same board a
+    // plan-driven project already refuses `task:create`-style ad-hoc filing onto. Checked
+    // ahead of `ownsTickets`: a migrated plan project can carry a ticketPrefix (set before
+    // this rule existed, or by hand) without that prefix reviving manual filing on it.
+    if (hasPlan(project)) {
+      throw new Error('This project is plan-driven — it has no manual ticket list to add to.');
+    }
+    // Every board project now gets a prefix the moment it's added or edited (see
+    // `addProject`/`updateProject` in store.ts), so this should never actually fire outside
+    // the Personal board — kept as a backstop for whatever legacy or hand-edited row still
+    // slips through with none.
+    if (!ownsTickets(project)) {
+      throw new Error(
+        'This project has no ticket key prefix yet — set one in Projects → Edit → Key prefix.',
+      );
+    }
+    if (!input.title.trim()) throw new Error('A ticket needs a title.');
+    assertTicketRefs(projectId, null, input.issueType ?? 'task', input);
+    const task = store.createTicket(projectId, input);
+    if (!task) throw new Error('Could not create that ticket.');
+    send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) });
+    return task;
+  });
+
+  handle('ticket:update', async (taskId, patch) => {
+    const existing = store.getTask(taskId);
+    if (!existing) throw new Error('Unknown ticket.');
+    if (!isNativeTicket(existing)) throw new Error('That card is not a native ticket.');
+    const issueType =
+      patch.issueType !== undefined ? (patch.issueType ?? 'task') : (existing.issueType ?? 'task');
+    assertTicketRefs(existing.projectId, taskId, issueType, patch);
+    const updated = store.updateTask(taskId, patch);
+    if (!updated) throw new Error('Could not update that ticket.');
+    send('project:tasksChanged', {
+      projectId: existing.projectId,
+      tasks: store.getTasks(existing.projectId),
+    });
+    return updated;
+  });
+
+  // --- People (app-wide, not per project) ------------------------------------
+  function pushPeople(): Person[] {
+    const people = store.listPeople();
+    send('person:changed', people);
+    return people;
+  }
+
+  handle('person:list', async () => store.listPeople());
+
+  handle('person:add', async (input) => {
+    if (!input.name.trim()) throw new Error('A person needs a name.');
+    const person = store.addPerson(input);
+    if (!person) throw new Error('Could not add that person.');
+    pushPeople();
+    return person;
+  });
+
+  handle('person:update', async (id, patch) => {
+    const updated = store.updatePerson(id, patch) ?? null;
+    if (updated) pushPeople();
+    return updated;
+  });
+
+  handle('person:remove', async (id) => {
+    store.deletePerson(id);
+    pushPeople();
+  });
+
+  handle('person:setMe', async (id) => {
+    // Setting `isMe` clears it from whoever had it before, in the same write — the store's
+    // own guarantee (the partial unique index on `people.isMe`), not re-implemented here.
+    const updated = store.updatePerson(id, { isMe: true }) ?? null;
+    if (updated) pushPeople();
+    return updated;
+  });
+
+  // --- Labels (per ticket project) --------------------------------------------
+  function labelsAcrossTicketProjects(): TicketLabel[] {
+    return store
+      .listProjects()
+      .filter(ownsTickets)
+      .flatMap((p) => store.listTicketLabels(p.id));
+  }
+
+  function pushLabels(): TicketLabel[] {
+    const labels = labelsAcrossTicketProjects();
+    send('label:changed', labels);
+    return labels;
+  }
+
+  // `projectId` optional so `pollChannel` (apps/web, which invokes with no arguments) still
+  // gets a real answer — every ticket project's labels at once.
+  handle('label:list', async (projectId) =>
+    projectId ? store.listTicketLabels(projectId) : labelsAcrossTicketProjects(),
+  );
+
+  handle('label:save', async (projectId, input) => {
+    const project = store.getProject(projectId);
+    if (!project || !ownsTickets(project)) throw new Error('Unknown ticket project.');
+    if (!input.name.trim()) throw new Error('A label needs a name.');
+    const { id, ...fields } = input;
+    let saved: TicketLabel | undefined;
+    if (id) {
+      if (!store.listTicketLabels(projectId).some((l) => l.id === id)) {
+        throw new Error('That label is not in this project.');
+      }
+      saved = store.updateTicketLabel(id, fields);
+    } else {
+      saved = store.addTicketLabel(projectId, fields);
+    }
+    if (!saved) throw new Error('A label with that name already exists in this project.');
+    pushLabels();
+    return saved;
+  });
+
+  handle('label:remove', async (id) => {
+    store.deleteTicketLabel(id);
+    pushLabels();
+  });
+
+  // --- Milestones (per ticket project) ----------------------------------------
+  function milestonesAcrossTicketProjects(): Milestone[] {
+    return store
+      .listProjects()
+      .filter(ownsTickets)
+      .flatMap((p) => store.listMilestones(p.id));
+  }
+
+  function pushMilestones(): Milestone[] {
+    const milestones = milestonesAcrossTicketProjects();
+    send('milestone:changed', milestones);
+    return milestones;
+  }
+
+  // Same optional `projectId` as `label:list`, and for the same reason.
+  handle('milestone:list', async (projectId) =>
+    projectId ? store.listMilestones(projectId) : milestonesAcrossTicketProjects(),
+  );
+
+  handle('milestone:save', async (projectId, input) => {
+    const project = store.getProject(projectId);
+    if (!project || !ownsTickets(project)) throw new Error('Unknown ticket project.');
+    if (!input.name.trim()) throw new Error('A milestone needs a name.');
+    const { id, ...fields } = input;
+    let saved: Milestone | undefined;
+    if (id) {
+      if (!store.listMilestones(projectId).some((m) => m.id === id)) {
+        throw new Error('That milestone is not in this project.');
+      }
+      saved = store.updateMilestone(id, fields);
+    } else {
+      saved = store.addMilestone(projectId, fields);
+    }
+    if (!saved) throw new Error('Could not save that milestone.');
+    pushMilestones();
+    return saved;
+  });
+
+  handle('milestone:remove', async (id) => {
+    store.deleteMilestone(id);
+    pushMilestones();
+  });
+
+  // --- Ticket links (documentation, not the chain of execution) --------------
+  function pushTicketLinks(): TicketLink[] {
+    const links = store.listTicketLinks();
+    send('ticketLink:changed', links);
+    return links;
+  }
+
+  handle('ticketLink:list', async () => store.listTicketLinks());
+
+  handle('ticketLink:add', async (fromTaskId, toTaskId, type): Promise<TicketLinkResult> => {
+    const links = store.listTicketLinks();
+    const refusal = canLinkTickets(links, store.getTask(fromTaskId), store.getTask(toTaskId), type);
+    if (refusal) return { status: 'refused', reason: refusal };
+    const created = store.addTicketLink(fromTaskId, toTaskId, type);
+    // `canLinkTickets` already passed, so a miss here is a race with another writer rather
+    // than a refusal we can explain — report it as the duplicate the unique index caught,
+    // exactly as `chain:link` does for its own race.
+    if (!created) return { status: 'refused', reason: 'duplicate' };
+    return { status: 'ok', links: pushTicketLinks() };
+  });
+
+  handle('ticketLink:remove', async (id) => {
+    store.deleteTicketLink(id);
+    pushTicketLinks();
   });
 
   // --- The chain of execution ------------------------------------------------
@@ -2422,6 +2939,16 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       await collected.cleanup();
     }
   });
+
+  /**
+   * Write clipboard bytes to a temp file and hand back where they landed — see
+   * `attachment:stagePasted` on `IpcApi` for why this is its own channel and its own
+   * host-only reason. No task lookup and no store call here at all: unlike every other
+   * `attachment:*` handler, this one never touches a row, only a disk write and a list of
+   * paths, which is what makes it safe to call before the task the paste is destined for is
+   * even known — the Add-task dialog stages files this way before a task id exists.
+   */
+  handle('attachment:stagePasted', async (files) => stagePastedFiles(files));
 
   handle('attachment:remove', async (id) => {
     // The row first, the bytes second — the order `task:delete` uses, and for the same
@@ -3636,6 +4163,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // The SAME id `SyncRequest.clientId` carries, so the server can tell a pushed event and a
     // mirrored row came from one desktop — which is what step 7 needs to name it in the web.
     getClientId: () => store.loadCloudClientId(),
+    onAuthRejected: () => cloudToken.invalidate(),
   });
 
   // The bytes half of the same mirror. Configured here for the same reason — it needs the
@@ -3653,6 +4181,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // How a browser finds out its thumbnail is ready: `attachment:changed` is forwarded, so
     // the row it already listens to comes back carrying `cloudBlobAt`.
     onUploaded: () => pushAttachments(),
+    onAuthRejected: () => cloudToken.invalidate(),
   });
   cloudAttachments.scan();
 
@@ -3665,16 +4194,19 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     focus: focusTracker,
     getSettings: () => store.getSettings().cloud,
     getAccessToken: getCloudAccessToken,
+    // Turns a bare "no token" into the reason there isn't one — nothing pasted vs. revoked —
+    // so a failed tick's `syncClock.cloud.error` (and the SyncRing tooltip built from it) says
+    // something a user who never pasted a token can tell apart from one the cloud rejected.
+    describeMissingToken: () => cloudToken.explain(),
+    // With no refresh cycle any more, a successful tick is the only signal that a pasted
+    // token actually works — the Settings pane's "confirmed Ns ago" is driven from it.
+    onSynced: () => cloudToken.accepted(),
     // What a browser names this desktop by, once it has more than one to choose between —
-    // see `ClientInfo` on `@protocol/wire`. Built here because this is the only side of
-    // `cloudPoller.ts` that is allowed to touch Electron; read fresh per tick because
-    // nothing forces it to be constant and pinning it would only be a way to go stale.
-    getClientInfo: (): ClientInfo => ({
-      name: hostname(),
-      platform: process.platform,
-      appVersion: app.getVersion(),
-      protocolVersion: PROTOCOL_VERSION,
-    }),
+    // see `ClientInfo` on `@protocol/wire`. Built above rather than inline because this is
+    // the only side of `cloudPoller.ts` that is allowed to touch Electron and the connection
+    // probe needs the same four fields; read fresh per tick because nothing forces it to be
+    // constant and pinning it would only be a way to go stale.
+    getClientInfo: cloudClientInfo,
     // Hand the batch to the serial drain and return. Applying is `cloudCommands.ts`'s job,
     // ordering and one-at-a-time is `commandQueue.ts`'s, and acking is free: each command
     // records itself in the ledger, which the next tick's `SyncRequest.ackedCommandIds` and
@@ -3685,8 +4217,41 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // agent's transcript into the cloud for nobody.
     onEventListeners: (count) => cloudEvents.setListeners(count),
     runTracked: (run) => trackSync('cloud', run),
+    onAuthRejected: () => cloudToken.invalidate(),
   });
   cloudPoller.reschedule();
+
+  // The read half of the same mirror: rows this desktop never wrote itself — another
+  // desktop's edit, or a ticket created straight through the server's own CRUD API — reach
+  // it only over `GET /v1/board?since=`, which `CloudPoller`'s push-only `/v1/sync` never
+  // carries back. Its own clock, its own cursor (`loadCloudBoardCursor`), and its own
+  // `trackSync('cloud', …)` slot — the two are the same feature to a human watching the
+  // status bar, even though neither ever calls into the other.
+  const cloudBoardPuller = new CloudBoardPuller({
+    store,
+    focus: focusTracker,
+    getSettings: () => store.getSettings().cloud,
+    getAccessToken: getCloudAccessToken,
+    runTracked: (run) => trackSync('cloud', run),
+  });
+  cloudBoardPuller.reschedule();
+
+  // "Desktop is the worker": claims and starts queued cloud assignments for the ticket
+  // projects this desktop serves. Its own clock and its own `trackSync('cloud', …)` slot,
+  // same reasoning as `cloudBoardPuller` above — a human watching the status bar sees one
+  // cloud feature, even though this never calls into `CloudBoardPuller` or vice versa.
+  // `runTask` is `Scheduler.runTask` itself, unmodified: a claimed assignment starts a
+  // session through the exact same `sessionManager`/`chainRunner` path a human's own Start
+  // click does.
+  const assignmentPoller = new AssignmentPoller({
+    store,
+    focus: focusTracker,
+    getSettings: () => store.getSettings().cloud,
+    getAccessToken: getCloudAccessToken,
+    runTracked: (run) => trackSync('cloud', run),
+    runTask: (taskId) => scheduler.runTask(taskId),
+  });
+  assignmentPoller.reschedule();
 
   // The two quota bars' one real signal: `/usage` read straight from the CLI, on its
   // own clock (see `claudeUsage.ts` for why this never costs a token or a turn).
@@ -3705,6 +4270,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     watcher,
     syncPoller,
     cloudPoller,
+    cloudBoardPuller,
+    assignmentPoller,
     cloudEvents,
     cloudAttachments,
     focusTracker,

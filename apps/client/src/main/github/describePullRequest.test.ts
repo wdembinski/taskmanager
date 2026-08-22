@@ -439,7 +439,7 @@ describe('describePullRequest — degrade rather than guess', () => {
       { stale: true, prior: priorRed() },
     );
 
-    expect(result.pipelineStatus).toBe('unknown');
+    expect(result.pipelineStatus).toBe('none');
     expect(result.pipelineStages).toEqual([]);
     expect(result.pipelineUrl).toBeNull();
   });
@@ -454,6 +454,97 @@ describe('describePullRequest — degrade rather than guess', () => {
 
     expect(result.pipelineStatus).toBe('failed');
     expect(result.pipelineStages).toHaveLength(2);
+  });
+
+  it('reports a check-runs throw through onCiRefusal', async () => {
+    const onCiRefusal = vi.fn();
+    const boom = new GitHubError('GitHub 403 Forbidden', 403);
+    await describePullRequest(
+      client({ pull: detail(), reviews: [], checkRuns: boom, combined: { statuses: [] } }),
+      listed(),
+      { stale: true, prior: priorRed(), onCiRefusal },
+    );
+
+    expect(onCiRefusal).toHaveBeenCalledWith('check-runs', boom);
+    expect(onCiRefusal).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a commit-status throw through onCiRefusal', async () => {
+    const onCiRefusal = vi.fn();
+    const boom = new GitHubError('GitHub 403 Forbidden', 403);
+    await describePullRequest(
+      client({ pull: detail(), reviews: [], checkRuns: [], combined: boom }),
+      listed(),
+      { stale: true, prior: priorRed(), onCiRefusal },
+    );
+
+    expect(onCiRefusal).toHaveBeenCalledWith('commit-status', boom);
+    expect(onCiRefusal).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not call onCiRefusal when both CI systems answer', async () => {
+    const onCiRefusal = vi.fn();
+    await describePullRequest(
+      client({ pull: detail(), reviews: [], checkRuns: [], combined: { statuses: [] } }),
+      listed(),
+      { stale: true, prior: priorRed(), onCiRefusal },
+    );
+    await describePullRequest(
+      client({
+        pull: detail(),
+        reviews: [],
+        checkRuns: [run('build', 'completed', 'success')],
+        combined: { statuses: [] },
+      }),
+      listed(),
+      { stale: true, prior: priorRed(), onCiRefusal },
+    );
+
+    expect(onCiRefusal).not.toHaveBeenCalled();
+  });
+});
+
+describe('describePullRequest — a settled PR read back after it merged', () => {
+  /**
+   * The reported bug, GitHub's half: the PR merged while a check was still `in_progress`,
+   * and the "read back a settled PR" pass in `ipc.ts` calls this with `stale: false` —
+   * nothing about approvals or notes can move once it has landed. But it hands `detail`
+   * straight through, and the checks must still be read off it or the stage row freezes on
+   * whatever the last poll caught mid-run — the same bug GitLab's half never had, since its
+   * overall status already reads off `head_pipeline` unconditionally.
+   */
+  it('reads the checks when detail is handed in, even though stale is false', async () => {
+    const stub = client({
+      checkRuns: [run('build', 'completed', 'success'), run('test', 'completed', 'success')],
+    });
+    const result = await describePullRequest(stub, listed(), {
+      stale: false,
+      prior: priorRed({ pipelineStatus: 'running' }),
+      detail: detail({ state: 'closed', merged: true, merged_at: '2026-08-11T11:00:00Z' }),
+    });
+
+    // Nothing about approvals or notes can move on a landed PR, so those calls are still
+    // skipped — only the checks read decouples from `stale`.
+    expect(stub.getPullRequest).not.toHaveBeenCalled();
+    expect(stub.listReviews).not.toHaveBeenCalled();
+    expect(result.pipelineStatus).toBe('success');
+    expect(result.pipelineStages).toEqual([
+      { name: 'build', status: 'success' },
+      { name: 'test', status: 'success' },
+    ]);
+  });
+
+  // Without a `detail` to read a head SHA off, there is nothing to check CI against — the
+  // ordinary "not worth re-reading" case keeps costing nothing at all.
+  it('reads no checks when the caller has no detail to hand in', async () => {
+    const stub = client();
+    const result = await describePullRequest(stub, listed(), {
+      stale: false,
+      prior: priorRed(),
+    });
+
+    expect(stub.listCheckRuns).not.toHaveBeenCalled();
+    expect(result.pipelineStatus).toBe('failed');
   });
 });
 

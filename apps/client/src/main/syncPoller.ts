@@ -15,6 +15,7 @@
  * read the interval fresh on every (re)schedule, so a Settings change takes effect at once;
  * and never stack a tick on a sweep that is still running.
  */
+import { clampSyncInterval } from '@shared/settings';
 import { logMain } from './log';
 import type { Store } from './store';
 
@@ -36,10 +37,19 @@ export class SyncPoller {
     private readonly services: readonly SyncService[],
   ) {}
 
-  /** (Re)arm from current settings. No-op while the interval is 0 ("off"). */
+  /**
+   * (Re)arm from current settings. No-op while the interval is 0 ("off").
+   *
+   * `clampSyncInterval`, not a bare `Math.max(0, Math.round(...))`: a value past
+   * `MAX_SYNC_INTERVAL_MINUTES` overflows `setInterval`'s 32-bit delay, and the runtime
+   * clamps THAT silently to ~1ms rather than throwing — turning an oversized interval into
+   * a sync that never stops. Guarding here, not just in the Settings screens that write it,
+   * because a value can reach the store from before this guard existed or from a synced
+   * blob this build did not write itself.
+   */
   reschedule(): void {
     this.stop();
-    const minutes = Math.max(0, Math.round(this.store.getSettings().syncIntervalMinutes ?? 0));
+    const minutes = clampSyncInterval(this.store.getSettings().syncIntervalMinutes ?? 0);
     if (minutes <= 0) return; // 0 = off; the manual Sync button still works.
     this.timer = setInterval(() => void this.tick(), minutes * 60_000);
   }

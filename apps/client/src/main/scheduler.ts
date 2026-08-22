@@ -34,7 +34,7 @@ import type {
   TaskActivityEntry,
   TaskStatus,
 } from '@shared/model';
-import { resolveRunModel } from '@shared/model';
+import { hasRepo, resolveRunModel } from '@shared/model';
 import { chainInFlight, chatTarget, hasAgentWorked, parkedStep } from '@shared/board';
 import { attachmentsInScope, type PromptAttachment } from '@shared/attachments';
 import type {
@@ -118,6 +118,7 @@ import { tickPlanCheckbox } from './planParser';
 import { buildReleasePrompt } from './releasePrompt';
 import { autoIntegrateOn } from '@shared/integrate';
 import { autoReleaseOn, RELEASE_DOC } from '@shared/release';
+import { autoCreatePrOn } from '@shared/pullRequest';
 import {
   extractPlanMarkdown,
   splitPlanIntoSteps,
@@ -151,6 +152,16 @@ const DEFAULT_DENY_MESSAGE =
 const DISMISSED_MESSAGE =
   'The human dismissed this request without answering it — they are done with this task. ' +
   'Do not perform the action, and do not ask again: stop and explain where you got to.';
+
+/**
+ * Sent to a held tool that the CLI has already stopped waiting for — see
+ * {@link Scheduler.deferResult}. It reaches nobody (that is the point: the request it
+ * would answer is gone), and is written down anyway so a relay that does still have the
+ * socket open gets an honest release rather than a silent hang.
+ */
+const ABANDONED_TOOL_MESSAGE =
+  'This tool call was abandoned — the session ended its turn before an answer arrived. ' +
+  'Nothing was approved.';
 
 /**
  * Sent back to a planning session when the human APPROVES its plan (Phase 11). The
@@ -811,6 +822,21 @@ interface Run {
   expectsPlan?: boolean;
   /** Set once we've decided the task's outcome, so a trailing `exited` doesn't re-settle it. */
   settled: boolean;
+  /**
+   * The outcome of a `result` that arrived while a human was still parked on this run —
+   * held rather than acted on, because the answer may yet start another turn.
+   *
+   * The gap it closes: `onRunEvent` declines to settle under an open inbox item, and used
+   * to throw the result away doing so. A run in that state has no terminal path left —
+   * `exited` never comes either, since the process is kept alive on an open stdin — so
+   * whatever happened next, the task never got a status written and span `running` with
+   * nothing executing. Remembering the verdict means every way the item can end (answered
+   * and delivered, answered and undeliverable, dismissed) still reaches a settle.
+   *
+   * Cleared the moment an answer really is delivered: the CLI is taking another turn, and
+   * that turn's own `result` is the outcome now.
+   */
+  deferredResult?: { status: 'done' | 'failed'; reason: string };
   /** (Worktree mode) the task's branch, set once the worktree is prepared. */
   branch?: string;
   /** (Worktree mode) the base branch this task integrates back into. */
@@ -1118,6 +1144,12 @@ export class Scheduler {
    */
   private attachmentRoot: string | null = null;
   /**
+   * Push a card's branch and open a pull request for it — see {@link setPullRequestOpener}.
+   * Null until `ipc.ts` wires it, which is also how the unit tests run without one.
+   */
+  private openPullRequest:
+    ((taskId: string) => Promise<{ url: string; ref: string; existed?: boolean }>) | null = null;
+  /**
    * The account-wide usage-limit gate (Phase 5). When active, ALL scheduling is
    * held; when its timer fires, every parked task resumes by its saved session id.
    */
@@ -1292,6 +1324,21 @@ export class Scheduler {
   /** Wire the "these branches are mid-merge" notifier (see {@link Scheduler.integrating}). */
   setIntegratingNotifier(notify: (taskIds: string[]) => void): void {
     this.integratingChanged = notify;
+  }
+
+  /**
+   * Wire the "push this card's branch and open a pull request" call (`forge/createPr.ts`).
+   *
+   * Injected rather than imported for the same reason {@link setAttachmentRoot} is: opening
+   * a PR needs a decrypted token, and only `ipc.ts` can reach Electron's `safeStorage` — so
+   * the scheduler is handed the finished call rather than the means to build it. Optional,
+   * and the absence is not silent: a card with "open a PR when finished" on and nothing
+   * wired says so on its timeline instead of quietly doing nothing.
+   */
+  setPullRequestOpener(
+    open: (taskId: string) => Promise<{ url: string; ref: string; existed?: boolean }>,
+  ): void {
+    this.openPullRequest = open;
   }
 
   /**
@@ -1854,13 +1901,13 @@ export class Scheduler {
    * agent project's repo while the card itself stays on the Personal board, so every
    * launch site resolves through here rather than reading `task.projectId` directly —
    * that is what makes limit-park → auto-resume, auto-retry and restart reconciliation
-   * behave identically for agent tasks and plan tasks. A stale/plan-kind
-   * `agentProjectId` falls back to the task's own project rather than refusing to run.
+   * behave identically for agent tasks and plan tasks. A stale/repo-less `agentProjectId`
+   * falls back to the task's own project rather than refusing to run.
    */
   private runProjectFor(task: Task): Project | undefined {
     if (task.agentProjectId) {
       const agentProject = this.store.getProject(task.agentProjectId);
-      if (agentProject?.kind === 'agent') return agentProject;
+      if (agentProject && hasRepo(agentProject)) return agentProject;
     }
     return this.store.getProject(task.projectId);
   }
@@ -2358,7 +2405,9 @@ export class Scheduler {
         const message = note || PLAN_REJECTED_MESSAGE;
         if (pending) pending.resolve({ behavior: 'deny', message });
         else this.sessions.send(item.runId, message);
-        this.updateTask(item.taskId, { status: 'running' }, item.runId);
+        // `sessions.send` on a run that is no longer live is a silent no-op, so whether
+        // the planner actually heard this decides whether it is re-planning or finished.
+        this.resumeAfterAnswer(item, pending !== undefined || this.runs.has(item.runId));
       }
       return;
     }
@@ -2385,12 +2434,15 @@ export class Scheduler {
         message = note ? `${DECLINED_ANSWER_MESSAGE}\n\n${note}` : DECLINED_ANSWER_MESSAGE;
       }
 
+      // The held tool releases the CLI's own turn, so it always reaches it. Without one,
+      // whether the agent hears this at all is `deliverOrResume`'s answer, not an
+      // assumption — a run whose turn already ended (`deferResult`) arrives here on
+      // exactly that branch.
+      let delivered = true;
       if (pending) pending.resolve({ behavior: 'deny', message });
-      else this.deliverOrResume(item, message);
+      else delivered = this.deliverOrResume(item, message);
 
-      if (!this.hasPendingAttention(item.runId)) {
-        this.updateTask(item.taskId, { status: 'running' }, item.runId);
-      }
+      this.resumeAfterAnswer(item, delivered);
       return;
     }
 
@@ -2415,31 +2467,36 @@ export class Scheduler {
       return;
     }
 
+    let delivered: boolean;
     if (item.kind === 'permission') {
       const pending = this.pendingDecisions.get(itemId);
-      if (!pending) return; // its run already ended — nothing to release
       this.pendingDecisions.delete(itemId);
       const note = 'note' in answer ? answer.note?.trim() : undefined;
-      if (answer.decision === 'approve') {
+      if (!pending) {
+        // The tool this item was holding is gone — its run ended, or the CLI abandoned the
+        // call and said so with a `result` (see `deferResult`). There is nothing left to
+        // approve or deny, but the item must still clear: leaving it in the inbox is a
+        // decision nobody can make, on a run that will never act on it either way.
+        delivered = false;
+      } else if (answer.decision === 'approve') {
         pending.resolve({ behavior: 'allow', updatedInput: pending.input });
         // A note on approve is extra guidance queued for Claude's next turn.
         if (note) this.sessions.send(item.runId, note);
+        delivered = true;
       } else {
         pending.resolve({ behavior: 'deny', message: note || DEFAULT_DENY_MESSAGE });
+        delivered = true;
       }
     } else {
       // A question: deliver the human's reply into the open input stream — or, for an item
       // restored after a restart, resume the conversation with it.
       const text =
         answer.decision === 'reply' ? answer.text : ('note' in answer && answer.note) || '';
-      this.deliverOrResume(item, text);
+      delivered = this.deliverOrResume(item, text);
     }
 
     this.resolveAttention(itemId);
-    // If nothing else is parked on this run, it is live again.
-    if (!this.hasPendingAttention(item.runId)) {
-      this.updateTask(item.taskId, { status: 'running' }, item.runId);
-    }
+    this.resumeAfterAnswer(item, delivered);
   }
 
   /**
@@ -2471,6 +2528,7 @@ export class Scheduler {
     if (this.disposed) return 0;
     const ids = new Set([taskId, ...this.store.getSubtasks(taskId).map((s) => s.id)]);
     let dropped = 0;
+    const touchedRuns = new Set<string>();
     // Snapshotted: `resolveAttention` mutates the map we would otherwise be iterating.
     for (const item of [...this.attention.values()]) {
       if (!ids.has(item.taskId) || item.kind === 'merge-conflict') continue;
@@ -2482,8 +2540,19 @@ export class Scheduler {
       // The stored context behind a parked failure goes with its item; leaving it would
       // keep a resolution alive for an item no one can reach any more.
       this.pendingFailures.delete(item.id);
+      if (item.runId) touchedRuns.add(item.runId);
       this.resolveAttention(item.id);
       dropped++;
+    }
+    // A run whose turn already ended under one of those items (`deferResult`) has just lost
+    // the last thing that could have started another one. Dismissing is the human saying
+    // they are done — it is not a reason for the card to keep spinning, so the verdict that
+    // was being held is written now.
+    for (const runId of touchedRuns) {
+      const run = this.runs.get(runId);
+      if (run?.deferredResult && !this.hasPendingAttention(runId)) {
+        this.settleDeferred(run, run.deferredResult);
+      }
     }
     return dropped;
   }
@@ -3312,7 +3381,10 @@ export class Scheduler {
         // and then hit this line: it never settled, so the rebase was never continued, and
         // the card sat unstartable behind a stranded worktree and an approval for a plan the
         // agent had already abandoned. What holds a live tool is released by `settle` itself.
-        if (this.hasPendingAttention(runId) && !this.pendingConflictFix.has(run.taskId)) break;
+        if (this.hasPendingAttention(runId) && !this.pendingConflictFix.has(run.taskId)) {
+          this.deferResult(run, event);
+          break;
+        }
         run.settled = true;
         {
           // A dead sign-in is not this task's failure, it is the account's — so it must not
@@ -3919,16 +3991,22 @@ export class Scheduler {
    * runId is a silent no-op, and the human's answer would vanish. Resuming turns it into
    * the opening prompt of a `--resume` run instead, which is the same conversation
    * continued rather than a new one.
+   *
+   * Returns whether the message reached anything at all — the third case, and the reason
+   * this is not `void`. `resumeForChat` legitimately refuses (no session to continue, a
+   * usage limit, a chain mid-flight), and its caller must not then go on to report that the
+   * task is `running`: nothing is. See {@link resumeAfterAnswer}.
    */
-  private deliverOrResume(item: AttentionItem, message: string): void {
+  private deliverOrResume(item: AttentionItem, message: string): boolean {
     if (item.runId && this.runs.has(item.runId)) {
       this.sessions.send(item.runId, message);
-      return;
+      return true;
     }
     const task = this.store.getTask(item.taskId);
     // `resumeForChat` already refuses for every reason a run must not start (no session,
     // usage limit, chain busy) and says so; there is no better answer available here.
-    if (task) this.resumeForChat(task, message);
+    if (!task) return false;
+    return this.resumeForChat(task, message).status !== 'refused';
   }
 
   /** True if any inbox item is still open for this run. */
@@ -4072,6 +4150,73 @@ export class Scheduler {
   }
 
   /**
+   * A `result` arrived while a human is still parked on this run. Hold the verdict rather
+   * than acting on it — and let go of everything the run was holding.
+   *
+   * **A `result` is the CLI's own statement that it is holding no tool.** It cannot end a
+   * turn while blocked on the permission gate, so any decision still in `pendingDecisions`
+   * for this run belongs to a call the CLI has given up on — a 1800s MCP timeout is what
+   * produced the incident this exists for. Left registered, that dead promise silently ate
+   * the human's answer: `answerAttention` resolves it in preference to the input stream,
+   * so the reply went into a socket nobody was reading and the agent never heard it.
+   * Dropped here, the same answer takes the other branch — `deliverOrResume`, into the
+   * process's still-open stdin — which is the one channel that can still start a turn.
+   *
+   * The item itself stays open on purpose: the question was real and the answer is still
+   * wanted. Only its claim on a tool is gone.
+   */
+  private deferResult(run: Run, event: SettledResult & { success: boolean }): void {
+    const empty = describeEmptyOutcome(
+      run.permissionMode,
+      run.planPresented,
+      event,
+      run.expectsPlan,
+    );
+    run.deferredResult = {
+      status: empty || !event.success ? 'failed' : 'done',
+      reason:
+        empty ?? (event.terminalReason || event.stopReason || 'the session ended without success'),
+    };
+    for (const [itemId, decision] of [...this.pendingDecisions.entries()]) {
+      if (decision.runId !== run.runId) continue;
+      this.pendingDecisions.delete(itemId);
+      decision.resolve({ behavior: 'deny', message: ABANDONED_TOOL_MESSAGE });
+    }
+  }
+
+  /**
+   * Where a run goes once an inbox item is answered and nothing else is parked on it.
+   *
+   * Two outcomes, and which one applies turns entirely on whether the answer actually
+   * reached anything (`delivered`) — because `running` is a claim about a process, not a
+   * mood. An answer pushed into a live session starts another turn, and that turn settles
+   * the run itself. An answer that reached nothing leaves a run with no future events at
+   * all, and the verdict {@link deferResult} kept is then the last word there will ever be:
+   * writing `running` over it is exactly how a finished step span for hours.
+   */
+  private resumeAfterAnswer(item: AttentionItem, delivered: boolean): void {
+    if (this.hasPendingAttention(item.runId)) return; // something else still holds this run
+    const run = this.runs.get(item.runId);
+    const deferred = run?.deferredResult;
+    if (run && deferred && !delivered) {
+      this.settleDeferred(run, deferred);
+      return;
+    }
+    if (run) run.deferredResult = undefined;
+    this.updateTask(item.taskId, { status: 'running' }, item.runId);
+  }
+
+  /** Finish a run whose turn ended under a parked item that has now gone. */
+  private settleDeferred(run: Run, deferred: { status: 'done' | 'failed'; reason: string }): void {
+    run.settled = true;
+    run.deferredResult = undefined;
+    this.settle(run, deferred.status, deferred.reason);
+    // As the ordinary `result` path does: stdin is held open, so the process will not end
+    // by itself, and `exited` is what clears `runs`/`inFlight` and pumps the queue.
+    this.sessions.stop(run.runId);
+  }
+
+  /**
    * Apply a terminal status to a task and, on success, optionally tick the plan.
    *
    * A worktree run that finished successfully is NOT marked done here — its branch
@@ -4192,6 +4337,39 @@ export class Scheduler {
         // work its steps only contributed to.
         const settling = this.store.getTask(run.taskId);
         const owner = settling?.parentTaskId ? this.store.getTask(settling.parentTaskId) : settling;
+        // Open a pull request INSTEAD of merging, when the card asks for it.
+        //
+        // Asked before auto-merge and asked of the OWNER, both deliberately. Before, because
+        // the two are alternatives: merging first and then opening a PR would open one for
+        // work base already has. Of the owner, for the same reason `autoIntegrateOn` is —
+        // a plan's steps share one branch, so one pull request opens for the whole plan when
+        // its LAST step lands, rather than each step opening its own.
+        //
+        // The work has already reached this point past `hasPendingSibling`, so "the card's
+        // work is written" and "all the steps are done" are the same moment here.
+        if (autoCreatePrOn(owner, project)) {
+          this.attempts.delete(run.taskId);
+          // The branch stays exactly where it is, offer and all: a pull request is opened
+          // ON it, not instead of it, and if the create fails the human still has the Merge
+          // button and the Create PR button pointing at an untouched branch.
+          this.readyToIntegrate.set(run.taskId, { projectId: project.id, ...ctx });
+          void this.openPullRequestFor(project, ctx, owner?.id ?? run.taskId);
+          // The same status split as every other path out of here: a STEP must reach `done`
+          // or the chain machinery breaks, and a CARD must not — only the human moves a card.
+          const settledForPr = this.store.getTask(run.taskId);
+          this.updateTask(
+            run.taskId,
+            { status: settledForPr?.parentTaskId ? 'done' : 'in-progress' },
+            null,
+          );
+          this.maybeWriteBackPlan(run.taskId);
+          void this.finishParentChain(run.taskId, {
+            branch: ctx.branch,
+            base: ctx.base,
+            merged: false,
+          });
+          return;
+        }
         if (autoIntegrateOn(owner, project, this.store.getSettings())) {
           void this.integrateWorktree(project, ctx);
           return;
@@ -5111,11 +5289,15 @@ export class Scheduler {
    * the task is left `pending` for the caller's next pass.
    */
   private parkForLimit(task: Task): void {
-    if (this.limitGate.park([task.id]).length === 0) return;
     // Nothing was running, so there is no recipe to keep and an older one would be a lie:
     // what this park holds is an ordinary work run that has not started yet, whatever the
-    // task's last parked run happened to be (see {@link ParkedRun}).
+    // task's last parked run happened to be (see {@link ParkedRun}). Cleared ABOVE the gate's
+    // answer, not below it: a card already in the parked set is the case that most needs it —
+    // a chat reply parked by the limit, then a Start pressed against the same gate, would
+    // otherwise resume as the chat run the human has since moved on from. The recipe is a
+    // statement about the run being held, and this park holds a different one either way.
     this.forgetParkedRuns([task.id]);
+    if (this.limitGate.park([task.id]).length === 0) return;
     this.updateTask(task.id, { status: 'blocked-by-limit' }, null);
     this.noteRun(
       task.projectId,
@@ -5136,8 +5318,8 @@ export class Scheduler {
    * looking at the card tomorrow can tell "waiting for you to sign in" from "idle".
    */
   private parkForSignIn(task: Task): void {
-    if (this.authGate.park([task.id]).length === 0) return;
-    this.forgetParkedRuns([task.id]); // no live run, so no recipe — as in `parkForLimit`
+    this.forgetParkedRuns([task.id]); // no live run, so no recipe — as in `parkForLimit`,
+    if (this.authGate.park([task.id]).length === 0) return; // stale whether or not it re-parks
     this.noteRun(
       task.projectId,
       task.id,
@@ -5336,6 +5518,71 @@ export class Scheduler {
       }),
     });
     return true;
+  }
+
+  /**
+   * Push a finished card's branch and open a pull request for it — the automatic half of
+   * the **Create PR** button, run when the card's work settles with the switch on.
+   *
+   * **A failure must not lose the branch.** It parks the way `startReleaseRun`'s failures do
+   * — a note on the timeline plus an inbox item naming the wall — and nothing about the
+   * repository changes: the branch, the worktree and the merge offer are all exactly where
+   * they were, so the human presses Create PR again (or Merge) once they have fixed whatever
+   * was named. That is the whole reason this is fire-and-forget rather than awaited into the
+   * settle path: a create that cannot happen is a thing to tell somebody about, not a reason
+   * to leave a card mid-settle.
+   *
+   * `runId` is the settling run's, so the parked item answers into the same conversation the
+   * work happened in.
+   */
+  private async openPullRequestFor(
+    project: Project,
+    ctx: { taskId: string; runId: string; branch: string; base: string; worktree: string },
+    ownerId: string,
+  ): Promise<void> {
+    if (!this.openPullRequest) {
+      // Wired by `ipc.ts` and by nothing else, so an unwired scheduler is a test or a
+      // half-built app — either way the card must not silently do nothing.
+      this.noteCard(
+        project.id,
+        ownerId,
+        `"Open a PR when finished" is on for this card, but this build cannot reach a forge ` +
+          `— the branch "${ctx.branch}" is untouched, and Merge still works.`,
+      );
+      return;
+    }
+    try {
+      const opened = await this.openPullRequest(ownerId);
+      if (this.disposed) return;
+      // Two sentences rather than one, because a card that runs more than once reaches here
+      // more than once: the FIRST settle opens the pull request, and every settle after it
+      // pushes into the one that is already open. Saying "opened" both times would describe a
+      // second pull request that does not exist.
+      this.noteCard(
+        project.id,
+        ownerId,
+        opened.existed
+          ? `Finished on branch "${ctx.branch}". It has NOT been merged into ${ctx.base} — it ` +
+              `was pushed to ${opened.ref}, which was already open for it: ${opened.url}`
+          : `Finished on branch "${ctx.branch}". It has NOT been merged into ${ctx.base} — it ` +
+              `was pushed and ${opened.ref} was opened for it: ${opened.url}`,
+      );
+    } catch (err) {
+      if (this.disposed) return;
+      const why = err instanceof Error ? err.message : String(err);
+      this.raiseTaskFailed({
+        kind: 'integration',
+        projectId: project.id,
+        taskId: ctx.taskId,
+        runId: ctx.runId,
+        reason:
+          `The work is finished on "${ctx.branch}", but the pull request could not be ` +
+          `opened: ${why} Nothing was merged and the branch is untouched.`,
+        branch: ctx.branch,
+        base: ctx.base,
+        worktree: ctx.worktree,
+      });
+    }
   }
 
   // ---- Cross-agent negotiation coordinator (Phase D) ----------------------

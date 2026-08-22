@@ -3,7 +3,7 @@
  * git is a system binary (no Electron ABI split), so these run fine under vitest.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -23,8 +23,11 @@ import {
   isRepo,
   listBranches,
   mergeFfOnly,
+  pushBranch,
   rebasingBranch,
   rebaseOnto,
+  redactSecrets,
+  remoteUrl,
   removeWorktree,
 } from './git';
 
@@ -312,5 +315,89 @@ describe('git helpers — a repo with no commits yet', () => {
     } finally {
       rmSync(plain, { recursive: true, force: true });
     }
+  });
+});
+
+describe('git helpers — reading a remote and pushing to it', () => {
+  let bare = '';
+
+  beforeEach(async () => {
+    bare = mkdtempSync(join(tmpdir(), 'orch-bare-'));
+    await git(bare, ['init', '--bare']);
+    await git(repo, ['remote', 'add', 'origin', bare]);
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(bare, { recursive: true, force: true });
+    } catch {
+      // best effort
+    }
+  });
+
+  it('reads origin, and answers the empty string for a remote nobody configured', async () => {
+    expect(await remoteUrl(repo)).toBe(bare);
+    // The `currentBranch` contract: git could not say, so we say nothing rather than guess.
+    expect(await remoteUrl(repo, 'upstream')).toBe('');
+  });
+
+  it('pushes the branch into the bare repo and sets its upstream', async () => {
+    const branch = 'feat/push-me';
+    await git(repo, ['checkout', '-b', branch]);
+    await commitFile(repo, 'b.txt', 'work\n', 'work');
+
+    const res = await pushBranch(repo, 'origin', branch);
+
+    expect(res.code).toBe(0);
+    // The commit really landed on the far side, under the ref we named.
+    const there = await git(bare, ['rev-parse', `refs/heads/${branch}`]);
+    expect(there.code).toBe(0);
+    expect(there.stdout.trim()).toBe((await git(repo, ['rev-parse', 'HEAD'])).stdout.trim());
+    const upstream = await git(repo, ['config', `branch.${branch}.remote`]);
+    expect(upstream.stdout.trim()).toBe('origin');
+  });
+
+  it('pushing to an explicit URL writes NOTHING into .git/config', async () => {
+    // The tokenized-URL path in miniature: given a URL, `--set-upstream` is skipped,
+    // because `-u` would record the URL — token and all — in the user's own repository.
+    const branch = 'feat/by-url';
+    await git(repo, ['checkout', '-b', branch]);
+    await commitFile(repo, 'c.txt', 'work\n', 'work');
+
+    const res = await pushBranch(repo, 'origin', branch, { url: bare });
+
+    expect(res.code).toBe(0);
+    expect((await git(bare, ['rev-parse', `refs/heads/${branch}`])).code).toBe(0);
+    const config = readFileSync(join(repo, '.git', 'config'), 'utf8');
+    expect(config).not.toContain(`branch "${branch}"`);
+  });
+
+  it('fails rather than hangs when the remote is not there', async () => {
+    const branch = 'feat/nowhere';
+    await git(repo, ['checkout', '-b', branch]);
+    await commitFile(repo, 'd.txt', 'work\n', 'work');
+
+    const res = await pushBranch(repo, 'origin', branch, {
+      url: join(bare, 'does-not-exist'),
+    });
+
+    expect(res.code).not.toBe(0);
+  });
+});
+
+describe('redactSecrets', () => {
+  it('strips a token out of text, in raw and URL-encoded form', () => {
+    const token = 'ghp_a/b+c';
+    const text = `remote: rejected https://x-access-token:${encodeURIComponent(token)}@h/o/r (${token})`;
+    const out = redactSecrets(text, [token]);
+    expect(out).not.toContain('ghp_a');
+    expect(out).toContain('***');
+  });
+
+  it('leaves the text alone when there is nothing to hide', () => {
+    expect(redactSecrets('all fine', [])).toBe('all fine');
+    expect(redactSecrets('all fine', undefined)).toBe('all fine');
+    // An empty secret must not match everywhere and bury the real error.
+    expect(redactSecrets('all fine', ['', '   '])).toBe('all fine');
   });
 });

@@ -5,7 +5,6 @@ import { mrAttentionReason, mrNeedsAttention } from '@shared/mergeRequest';
 // which mean the same thing whichever forge filled them in.
 import { landedTaskIds } from '../gitlab/gitlabSync';
 import {
-  needsDetailRefresh,
   pullRequestId,
   reconcilePullRequests,
   rematchPullRequests,
@@ -47,6 +46,9 @@ const opts = {
     ['acme/web#123', 'task-1'],
     ['ENG-1', 'task-9'],
   ]),
+  // Both cards, plus one that carries no key at all — the shape a pull request opened by the
+  // button on a native ticket has to survive on.
+  knownTaskIds: new Set(['task-1', 'task-9', 'task-keyless']),
   identity: ME,
   now: NOW,
 };
@@ -57,35 +59,9 @@ const note = (at: string, authorId: number): { createdAt: string; author: { id: 
   author: { id: authorId },
 });
 
-describe('needsDetailRefresh', () => {
-  const prior = (over: Partial<MergeRequest> = {}): MergeRequest =>
-    ({ ...reconcilePullRequests([], [fetched()], opts).upserts[0], ...over }) as MergeRequest;
-
-  it('always reads a pull request it has never seen', () => {
-    expect(needsDetailRefresh(undefined, 900)).toBe(true);
-  });
-
-  it('reads one whose updated_at moved', () => {
-    expect(needsDetailRefresh(prior({ updatedAt: 900 }), 901)).toBe(true);
-  });
-
-  // The same trap GitLab has: GitHub does not touch a pull request when its check suite
-  // finishes, so `updated_at` alone leaves a PR first seen mid-run reading "running" for
-  // good — Sync re-lists it, sees nothing has moved, and keeps the stale status.
-  it.each(['created', 'pending', 'running'] as const)(
-    're-reads an untouched PR whose checks are still %s',
-    (pipelineStatus) => {
-      expect(needsDetailRefresh(prior({ updatedAt: 900, pipelineStatus }), 900)).toBe(true);
-    },
-  );
-
-  it.each(['success', 'failed', 'canceled', 'skipped', 'manual', 'unknown'] as const)(
-    'leaves an untouched PR alone once its checks are %s',
-    (pipelineStatus) => {
-      expect(needsDetailRefresh(prior({ updatedAt: 900, pipelineStatus }), 900)).toBe(false);
-    },
-  );
-});
+// `needsDetailRefresh` and `PIPELINE_IN_FLIGHT` moved to `forge/refreshPolicy.test.ts` — the
+// rule they test is forge-neutral, and re-exported here only for callers that already import
+// this module.
 
 describe('reconcilePullRequests', () => {
   it('files a new PR under the card whose issue it closes', () => {
@@ -316,6 +292,86 @@ describe('reconcilePullRequests', () => {
     expect(deleteIds).toEqual([pullRequestId(0, 1)]);
   });
 
+  /**
+   * The reported bug: the row the **Create PR** button puts on a card is gone off it again by
+   * the next sync. GitLab's copy of this describes the keyless card; here there is a second
+   * way to lose the link that is GitHub's alone — `prBody` writes a card's own issue as
+   * `Closes owner/repo#12` in the BODY, and the body is not a field we store, so an opened
+   * pull request whose title a human tidies up on GitHub has nothing left to match on either.
+   */
+  describe('a pull request this app opened itself', () => {
+    const keyless = (): FetchedMergeRequest =>
+      fetched({ title: 'fix the login redirect', sourceBranch: 'wd/login', description: null });
+    const opened = (): MergeRequest => ({
+      ...reconcilePullRequests([], [keyless()], opts).upserts[0],
+      taskId: 'task-keyless',
+      openedForTaskId: 'task-keyless',
+    });
+
+    it('has nothing to match on, which is why remembering is the fix', () => {
+      expect(reconcilePullRequests([], [keyless()], opts).upserts[0]).toMatchObject({
+        taskId: null,
+        issueKeys: [],
+      });
+    });
+
+    it('stays on its card across a sync that can re-derive nothing', () => {
+      const { upserts } = reconcilePullRequests([opened()], [keyless()], opts);
+      expect(upserts[0].taskId).toBe('task-keyless');
+      expect(upserts[0].openedForTaskId).toBe('task-keyless');
+    });
+
+    it('is not re-filed by a rematch either', () => {
+      expect(rematchPullRequests([opened()], opts)).toEqual([]);
+    });
+
+    it('beats both a closing reference and a tracker key the text names', () => {
+      const mine = { ...opened(), title: 'ENG-1: fix login', sourceBranch: 'feature/ENG-1' };
+      const { upserts } = reconcilePullRequests([mine], [fetched()], opts);
+      expect(upserts[0].taskId).toBe('task-keyless');
+    });
+
+    it('falls back to the text once the card it was opened for leaves the board', () => {
+      const mine = { ...opened(), title: 'ENG-1: fix login', sourceBranch: 'feature/ENG-1' };
+      const { upserts } = reconcilePullRequests([mine], [fetched()], {
+        ...opts,
+        knownTaskIds: new Set(['task-1', 'task-9']),
+      });
+      expect(upserts[0].taskId).toBe('task-1');
+      expect(upserts[0].openedForTaskId).toBe('task-keyless');
+    });
+
+    /**
+     * The two halves together, and the reason this is not only the GitLab fix twice. The
+     * button stores a fresh pull request as `gh-0-{number}` when GitHub's create response
+     * carried no repository id, so the very first sync moves the row to its real id — and it
+     * has to take the remembered card with it, or the handoff itself loses the link.
+     */
+    it('carries the remembered card over to the real id with the read markers', () => {
+      const placeholder: MergeRequest = {
+        ...opened(),
+        id: pullRequestId(0, 1),
+        repoId: 0,
+        lastReadAt: 500,
+      };
+      const { upserts, deleteIds } = reconcilePullRequests([placeholder], [keyless()], opts);
+      expect(upserts[0].id).toBe(pullRequestId(42, 1));
+      expect(upserts[0].taskId).toBe('task-keyless');
+      expect(upserts[0].openedForTaskId).toBe('task-keyless');
+      expect(upserts[0].lastReadAt).toBe(500);
+      expect(deleteIds).toEqual([pullRequestId(0, 1)]);
+    });
+
+    it('keeps it once it merges, exactly as a key-matched one is kept', () => {
+      const { deleteIds } = reconcilePullRequests(
+        [{ ...opened(), state: 'merged' as const }],
+        [],
+        opts,
+      );
+      expect(deleteIds).toEqual([]);
+    });
+  });
+
   describe('a settled PR is the card’s history, not a row to delete', () => {
     /** What the IPC layer hands back after reading a dropped-out PR by number. */
     const settled = (state: 'merged' | 'closed'): MergeRequest =>
@@ -390,7 +446,11 @@ describe('rematchPullRequests', () => {
   });
 
   it('lets go when the issue leaves the board, rather than pointing at nothing', () => {
-    const changed = rematchPullRequests([stored()], { knownKeys: [], taskIdByKey: new Map() });
+    const changed = rematchPullRequests([stored()], {
+      knownKeys: [],
+      taskIdByKey: new Map(),
+      knownTaskIds: new Set(),
+    });
     expect(changed[0].taskId).toBeNull();
   });
 
@@ -416,6 +476,7 @@ describe('rematchPullRequests', () => {
     const changed = rematchPullRequests([fromBody], {
       knownKeys: ['ENG-1'],
       taskIdByKey: new Map([['ENG-1', 'task-9']]),
+      knownTaskIds: new Set(['task-9']),
     });
     expect(changed[0].taskId).toBe('task-9');
   });
