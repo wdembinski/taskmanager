@@ -12,7 +12,6 @@
  * Electron's ABI, not the Node that runs Vitest.
  */
 import { randomUUID } from 'node:crypto';
-import { basename } from 'node:path';
 import Database from 'better-sqlite3';
 import {
   type AddProjectInput,
@@ -41,6 +40,7 @@ import {
 import { isIssueType, isTicketLinkType, normalizeLabels, seedInitials } from '@shared/tickets';
 import { normalizeTicketPrefix, suggestTicketPrefix, uniqueTicketPrefix } from '@shared/ticketKey';
 import { buildAdhocTask, buildTicketTask } from '@shared/taskBuilders';
+import { buildProject, normalizeEpicKeys } from '@shared/projectBuilders';
 import { formatExecTarget, parseExecTarget } from '@shared/execTarget';
 import { hostJoin } from '@shared/wslPath';
 import type { AuthState } from '@shared/auth';
@@ -3253,88 +3253,17 @@ export function createStore(dbPath: string): Store {
 
   return {
     addProject(input) {
-      // Unspecified project fields inherit the user's global defaults (Phase 6). No
+      // Unspecified project fields inherit the user's global defaults (Phase 6); the
+      // object-construction itself is `@shared/projectBuilders`'s `buildProject`, so the
+      // server's own write endpoint builds the identical row later (Phase 25). No
       // branching on a `kind` any more — a project simply carries whatever the caller
       // gave it, and empty fields are what make it a bare repo, a ticket project, or the
       // Personal board rather than a plan-driven one (see `hasPlan`/`hasRepo`/`ownsTickets`
       // in `@shared/model`).
-      const defaults = getSettings();
-      const id = randomUUID();
-      const path = input.path ?? '';
-      // `hostJoin`, not `path.join`: for a WSL project the path is a Linux one, and joining
-      // it on Windows would produce `/home/you/repo\plan.md`. Only defaulted when there is
-      // a directory to put it in — a project with no `path` stays plan-less unless the
-      // caller names a `planPath` of its own.
-      const planPath = input.planPath ?? (path ? hostJoin(path, 'plan.md') : '');
-      // `input.personal` overrides any supplied prefix too, not just the guarantee below —
-      // a Personal space genuinely has no prefix, so a caller sending both is a caller that
-      // contradicted itself, and the explicit choice wins. See `AddProjectInput.personal`.
-      let ticketPrefix = input.personal
-        ? ''
-        : (normalizeTicketPrefix(input.ticketPrefix ?? '') ?? '');
-      // A project with no directory has nothing to be named after — `basename('')` is
-      // `''` — so it falls back to the ticket prefix rather than going nameless.
-      let name = input.name?.trim() || basename(path) || ticketPrefix;
-      // Guarantee a board project a key prefix: a plan-less project (other than the
-      // Personal board) can create tickets on its board tab, and `ticket:create` refuses
-      // everything on one with no prefix (`ownsTickets` in `@shared/model`) — so a caller
-      // that left this blank gets one derived from the name instead of a project that
-      // looks addable but cannot hold a single ticket. No `id !== PERSONAL_PROJECT_ID`
-      // guard is needed here (unlike `updateProject`'s): the Personal board is seeded once,
-      // directly, when the schema is created (below); a freshly minted `randomUUID()` can
-      // never collide with it.
-      //
-      // `input.personal` opts a caller out of the guarantee — a project the human chose to
-      // keep as a Personal space, not merely one that forgot to type a prefix.
-      if (!ticketPrefix && planPath === '' && !input.personal) {
-        const taken = (selectTicketPrefixes.all() as Array<{ ticketPrefix: string }>).map(
-          (row) => row.ticketPrefix,
-        );
-        ticketPrefix = uniqueTicketPrefix(suggestTicketPrefix(name), taken);
-        name = name || ticketPrefix;
-      }
-      const project: Project = {
-        id,
-        name,
-        path,
-        planPath,
-        defaultModel: input.defaultModel ?? defaults.defaultModel,
-        // Seeded from the app-wide default like `defaultModel`, and null all the way down
-        // unless someone has set one — a new project plans on what it executes on.
-        //
-        // `undefined` and `null` part company here, unlike every other field on this
-        // object: the add dialogs offer "Same as steps execution" as a real choice and
-        // submit it as `null`, so `??` would quietly hand that project the app-wide seed
-        // the human just declined. Only a caller that omits the key gets the seed.
-        planningModel:
-          input.planningModel !== undefined
-            ? input.planningModel
-            : (defaults.defaultPlanningModel ?? null),
-        defaultPermissionMode: input.defaultPermissionMode ?? defaults.defaultPermissionMode,
-        concurrency: Math.max(1, Math.round(input.concurrency ?? defaults.concurrency)),
-        useWorktrees: input.useWorktrees ?? true,
-        baseBranch: input.baseBranch?.trim() ?? '',
-        writeBackPlan: input.writeBackPlan ?? defaults.writeBackPlan,
-        // Off unless asked for: releasing is the one thing a human is entitled to have
-        // never happen by accident.
-        autoRelease: input.autoRelease ?? false,
-        // Off unless asked for, for the same reason: pushing a branch to somebody's forge
-        // and opening a pull request on it is not something to start doing by surprise.
-        autoCreatePr: input.autoCreatePr ?? false,
-        // `null` unless the caller ruled: a new project inherits the app-wide switch and
-        // keeps inheriting it, rather than freezing today's value into the row.
-        autoIntegrate: input.autoIntegrate ?? null,
-        // New projects are trusted as aligned; legacy projects backfill to false via
-        // the migration above. A plan carrying `@needs:`/`@contract` is also confirmed
-        // aligned on its next sync (see ipc `syncProjectPlan`).
-        planAligned: input.planAligned ?? true,
-        jiraEpicKeys: normalizeEpicKeys(input.jiraEpicKeys),
-        ticketPrefix,
-        target: input.target ?? defaults.defaultExecTarget,
-        instructions: input.instructions?.trim() ?? '',
-        color: input.color?.trim() ?? '',
-        createdAt: Date.now(),
-      };
+      const taken = (selectTicketPrefixes.all() as Array<{ ticketPrefix: string }>).map(
+        (row) => row.ticketPrefix,
+      );
+      const project = buildProject(input, getSettings(), taken);
       insertProject.run({
         ...project,
         useWorktrees: project.useWorktrees ? 1 : 0,
