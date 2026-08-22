@@ -128,6 +128,16 @@ function fakeDataSource(store: FakeStore): DataSource {
       arr.length = 0;
       arr.push(...kept);
     },
+    // `writeTombstones` (applyMirrorDelta.ts) always deletes then inserts, so `deleteTask`'s
+    // path is the first thing in this suite to exercise it — the earlier `createTask` test
+    // never deletes anything.
+    insert: async (entity: unknown, entityOrArray: unknown) => {
+      const rows = Array.isArray(entityOrArray) ? entityOrArray : [entityOrArray];
+      const arr = store.arrayFor<Record<string, unknown>>(entity);
+      for (const row of rows as Record<string, unknown>[]) {
+        arr.push({ ...row, rowVersion: store.nextRowVersion() });
+      }
+    },
   };
   return {
     transaction: async (cb: (manager: unknown) => Promise<unknown>) => cb(manager),
@@ -173,5 +183,156 @@ describe('MirrorService.createTask', () => {
     expect(board.deltas.tasks).toHaveLength(1);
     expect(board.deltas.tasks[0]?.id).toBe(task.id);
     expect(board.deltas.tasks[0]?.title).toBe('Ship the write endpoint');
+  });
+});
+
+describe('MirrorService.updateTask / deleteTask', () => {
+  function buildService(): { service: MirrorService; store: FakeStore } {
+    const store = new FakeStore();
+    const service = new MirrorService(
+      fakeDataSource(store),
+      fakeRepository<Client>([] as unknown as Client[]),
+      fakeRepository(store.taskRows),
+      fakeRepository(store.projectRows),
+      fakeRepository(store.tombstoneRows),
+      fakeRepository<CommandResultRow>([] as unknown as CommandResultRow[]),
+      new PresenceService(new PresenceRegistry()),
+      new EventBus(),
+    );
+    return { service, store };
+  }
+
+  it('edits, moves and deletes an ad-hoc task, each reflected on GET /v1/board', async () => {
+    const { service, store } = buildService();
+    const accountId = 'account-1';
+    const project = buildProject({ path: '/repo', kind: 'agent' }, DEFAULT_SETTINGS);
+    store.projectRows.push({
+      id: project.id,
+      accountId,
+      data: project,
+      rowVersion: store.nextRowVersion(),
+    });
+
+    const created = await service.createTask(accountId, {
+      projectId: project.id,
+      title: 'Write the endpoint',
+    });
+
+    // Field edit.
+    const edited = await service.updateTask(accountId, created.id, {
+      title: '  Ship the write endpoint  ',
+      description: 'Covers edit, move and delete',
+    });
+    expect(edited.title).toBe('Ship the write endpoint');
+    expect(edited.externalDescription).toBe('Covers edit, move and delete');
+    expect(edited.status).toBe('pending');
+
+    let board = await service.board(accountId, undefined, undefined, false);
+    expect(board.deltas.tasks[0]?.title).toBe('Ship the write endpoint');
+
+    // Move — the board drag path.
+    const moved = await service.updateTask(accountId, created.id, { toColumn: 'in-progress' });
+    expect(moved.status).toBe('in-progress');
+
+    board = await service.board(accountId, undefined, undefined, false);
+    expect(board.deltas.tasks[0]?.status).toBe('in-progress');
+
+    // Hand-set status — the detail pane's dropdown path.
+    const statused = await service.updateTask(accountId, created.id, { status: 'blocked' });
+    expect(statused.status).toBe('blocked');
+    // Blocked locally (this ad-hoc task has no linked issue), so the column it came from
+    // is remembered for un-blocking.
+    expect(statused.preBlockStatus).toBe('in-progress');
+
+    // Delete.
+    await service.deleteTask(accountId, created.id);
+    board = await service.board(accountId, undefined, undefined, false);
+    expect(board.deltas.tasks).toHaveLength(0);
+    expect(board.deltas.deletedTaskIds).toContain(created.id);
+  });
+
+  it('refuses an unknown project on projectTagId, and a blank title', async () => {
+    const { service, store } = buildService();
+    const accountId = 'account-1';
+    const project = buildProject({ path: '/repo', kind: 'agent' }, DEFAULT_SETTINGS);
+    store.projectRows.push({
+      id: project.id,
+      accountId,
+      data: project,
+      rowVersion: store.nextRowVersion(),
+    });
+    const created = await service.createTask(accountId, {
+      projectId: project.id,
+      title: 'A task',
+    });
+
+    await expect(
+      service.updateTask(accountId, created.id, { projectTagId: 'no-such-project' }),
+    ).rejects.toThrow('Unknown project.');
+
+    await expect(service.updateTask(accountId, created.id, { title: '   ' })).rejects.toThrow(
+      'A task needs a title.',
+    );
+  });
+
+  it('throws 404 for a task belonging to another account', async () => {
+    const { service, store } = buildService();
+    const project = buildProject({ path: '/repo', kind: 'agent' }, DEFAULT_SETTINGS);
+    store.projectRows.push({
+      id: project.id,
+      accountId: 'account-1',
+      data: project,
+      rowVersion: store.nextRowVersion(),
+    });
+    const created = await service.createTask('account-1', {
+      projectId: project.id,
+      title: 'A task',
+    });
+
+    await expect(
+      service.updateTask('account-2', created.id, { title: 'Hijacked' }),
+    ).rejects.toThrow('Task not found.');
+  });
+
+  it('deleteTask is a silent no-op for an id that names nothing', async () => {
+    const { service } = buildService();
+    await expect(service.deleteTask('account-1', 'no-such-task')).resolves.toBeUndefined();
+  });
+
+  it('deleteTask refuses while the task is running, and cascades to its steps', async () => {
+    const { service, store } = buildService();
+    const accountId = 'account-1';
+    const project = buildProject({ path: '/repo', kind: 'agent' }, DEFAULT_SETTINGS);
+    store.projectRows.push({
+      id: project.id,
+      accountId,
+      data: project,
+      rowVersion: store.nextRowVersion(),
+    });
+    const card = await service.createTask(accountId, { projectId: project.id, title: 'Card' });
+
+    // A step mirrored under the card — same task_mirrors table, `parentTaskId` set.
+    const stepId = 'step-1';
+    store.taskRows.push({
+      id: stepId,
+      accountId,
+      projectId: project.id,
+      data: { ...card, id: stepId, parentTaskId: card.id, title: 'Step 1' },
+      rowVersion: store.nextRowVersion(),
+    });
+
+    // Running blocks the delete.
+    const runningRow = store.taskRows.find((r) => r.id === card.id)!;
+    runningRow.data = { ...runningRow.data, status: 'running' };
+    await expect(service.deleteTask(accountId, card.id)).rejects.toThrow(
+      'Stop the task before deleting it.',
+    );
+
+    // Settled: deleting the card takes its step with it.
+    runningRow.data = { ...runningRow.data, status: 'done' };
+    await service.deleteTask(accountId, card.id);
+    const board = await service.board(accountId, undefined, undefined, false);
+    expect(board.deltas.tasks).toHaveLength(0);
+    expect(board.deltas.deletedTaskIds).toEqual(expect.arrayContaining([card.id, stepId]));
   });
 });

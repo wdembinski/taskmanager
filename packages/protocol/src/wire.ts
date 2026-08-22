@@ -5,7 +5,7 @@
  * mirrored task IS a Task, not a wire-shaped lookalike that would need to be kept in sync
  * with it by hand.
  */
-import type { ManualStatus, Project, Task, TaskType } from '@tm/shared/model';
+import type { BoardColumn, ManualStatus, Project, Task, TaskType } from '@tm/shared/model';
 import type { CadenceDirective } from './cadence';
 
 /**
@@ -387,6 +387,33 @@ export interface CreateTaskRequest {
   phase?: string;
   type?: TaskType | null;
   /** The card's brief — lands in `Task.externalDescription`, same as `task:create`'s. */
+  description?: string | null;
+  projectTagId?: string | null;
+}
+
+/**
+ * Body of `PATCH /v1/tasks/:id` — a browser editing, moving or hand-setting the status of
+ * a mirrored task directly, the write-endpoint sibling of {@link CreateTaskRequest}.
+ *
+ * Every field is optional and independent, so a request patches only what it names: a title
+ * edit does not also require a column. `toColumn` and `status` are mutually meaningful but
+ * not mutually exclusive to send — `mirror.service.ts`'s `updateTask` reads `toColumn` first
+ * (the board drag) and falls back to `status` (the detail pane's dropdown), the same
+ * precedence `ipc.ts`'s `task:move`/`task:setStatus` split into two handlers for.
+ *
+ * `resolveMove` (`@tm/shared/moveResolve`, lifted out of the desktop's own `jiraMove.ts` for
+ * this route) decides the effect of either one; there is no JIRA transition to apply here,
+ * because an ad-hoc task made through this same route family never carries a linked issue.
+ */
+export interface UpdateTaskRequest {
+  /** Move to this board column — the drag-and-drop path. */
+  toColumn?: BoardColumn;
+  /** Hand-set this status directly — the detail pane's dropdown path. */
+  status?: ManualStatus;
+  title?: string;
+  phase?: string;
+  type?: TaskType | null;
+  /** Lands in `Task.externalDescription`, same as {@link CreateTaskRequest.description}. */
   description?: string | null;
   projectTagId?: string | null;
 }

@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, IsNull, LessThan, Repository } from 'typeorm';
 import type {
@@ -10,9 +10,13 @@ import type {
   ResultsResponse,
   SyncRequest,
   SyncResponse,
+  UpdateTaskRequest,
 } from '@tm/protocol/wire';
 import { PROTOCOL_VERSION } from '@tm/protocol/wire';
+import { columnForStatus, restingStatus } from '@tm/shared/board';
+import { isManualStatus } from '@tm/shared/model';
 import type { Task } from '@tm/shared/model';
+import { resolveMove } from '@tm/shared/moveResolve';
 import { buildAdhocTask } from '@tm/shared/taskBuilders';
 import { Client } from '../entities/client.entity';
 import { Command } from '../entities/command.entity';
@@ -230,6 +234,114 @@ export class MirrorService {
   }
 
   /**
+   * `PATCH /v1/tasks/:id` — edit, move or hand-set the status of a mirrored task directly,
+   * the write-endpoint sibling of `createTask` above. See `UpdateTaskRequest` on the wire for
+   * why every field is optional and independent.
+   *
+   * `toColumn` is read before `status`, matching the precedence `ipc.ts` splits into two
+   * handlers (`task:move` for the drag, `task:setStatus` for the dropdown): a request naming
+   * both is answering the same "where does this card go" question twice, and the drag is the
+   * more literal of the two. Either path goes through `resolveMove` (`@tm/shared/moveResolve`,
+   * pure and lifted out of the desktop's own `jiraMove.ts` for exactly this) to decide the new
+   * local status and, for a drop into Blocked, the column to restore later.
+   *
+   * There is no forge write-back here, unlike the desktop's `task:move`/`task:setStatus`: an
+   * ad-hoc task made through this route family never carries a linked JIRA/GitHub issue (see
+   * `createTask`), so `resolveMove`'s `jiraTransition` is always null for it and there is
+   * nothing for `writeMoveToForge` to do. A task that DOES carry a link (mirrored down from a
+   * desktop Client that has since gone offline) still gets its local status moved — the
+   * tracker write simply waits for a Client to relay it, the same gap `POST /v1/commands`
+   * already lives with.
+   */
+  async updateTask(accountId: string, taskId: string, request: UpdateTaskRequest): Promise<Task> {
+    const existing = await this.ownedTask(accountId, taskId);
+
+    if (request.projectTagId) {
+      await this.assertProject(accountId, request.projectTagId, { agentOnly: true });
+    }
+
+    let next: Task = { ...existing };
+    if (request.title !== undefined) {
+      const title = request.title.trim();
+      if (!title) throw new BadRequestException('A task needs a title.');
+      next.title = title;
+    }
+    if (request.phase !== undefined) next.phase = request.phase.trim();
+    if (request.type !== undefined) next.type = request.type;
+    if (request.description !== undefined) {
+      next.externalDescription = request.description?.trim() || null;
+    }
+    if (request.projectTagId !== undefined) next.projectTagId = request.projectTagId;
+
+    if (request.toColumn !== undefined) {
+      const move = resolveMove(next, request.toColumn);
+      if (!move.noop) {
+        next = { ...next, status: move.localStatus, preBlockStatus: move.preBlockStatus };
+      }
+    } else if (request.status !== undefined) {
+      if (!isManualStatus(request.status)) {
+        throw new BadRequestException(`"${request.status}" is not a hand-settable status.`);
+      }
+      if (restingStatus(next) !== request.status) {
+        const move = resolveMove(next, columnForStatus(request.status));
+        next = { ...next, status: request.status, preBlockStatus: move.preBlockStatus };
+      }
+    }
+
+    await this.dataSource.transaction((manager) =>
+      applyMirrorDelta(manager, accountId, {
+        tasks: [next],
+        projects: [],
+        deletedTaskIds: [],
+        deletedProjectIds: [],
+      }),
+    );
+
+    return next;
+  }
+
+  /**
+   * `DELETE /v1/tasks/:id` — drop a mirrored task, and every step mirrored under it, straight
+   * from `task_mirrors`. The same cascade `store.ts`'s `deleteTaskDeep` does locally: an
+   * orphaned step has no board column of its own and would be unreachable everywhere else.
+   *
+   * Idempotent: an id that names nothing (already deleted, or never this account's) is a
+   * silent no-op, matching `ipc.ts`'s own `task:delete`, which returns rather than throws for
+   * the same case. A live run DOES still refuse — a status a desktop's scheduler is holding
+   * must not be deleted out from under it — the same guard `task:delete` applies before its
+   * own `deleteTask`.
+   */
+  async deleteTask(accountId: string, taskId: string): Promise<void> {
+    const row = await this.taskMirrors.findOne({ where: { id: taskId, accountId } });
+    if (!row) return;
+    const existing = row.data;
+
+    // Steps mirror the same way a card does — their own `task_mirrors` row, scoped by
+    // `parentTaskId` inside `data` rather than a column, so this reads the project the same
+    // way `nextTaskOrder` does and filters in JS.
+    const projectRows = await this.taskMirrors.find({
+      where: { accountId, projectId: existing.projectId },
+      select: { data: true },
+    });
+    const steps = projectRows.map((r) => r.data).filter((task) => task.parentTaskId === taskId);
+
+    for (const task of [existing, ...steps]) {
+      if (task.status === 'running' || task.status === 'waiting-input') {
+        throw new BadRequestException('Stop the task before deleting it.');
+      }
+    }
+
+    await this.dataSource.transaction((manager) =>
+      applyMirrorDelta(manager, accountId, {
+        tasks: [],
+        projects: [],
+        deletedTaskIds: [existing.id, ...steps.map((s) => s.id)],
+        deletedProjectIds: [],
+      }),
+    );
+  }
+
+  /**
    * The web app's read path: every task/project whose `rowVersion` is past `since`, in
    * rowVersion order, plus the ids deleted since then.
    *
@@ -434,6 +546,13 @@ export class MirrorService {
     if (!project || (opts?.agentOnly && project.data.kind !== 'agent')) {
       throw new BadRequestException('Unknown project.');
     }
+  }
+
+  /** `Task not found.` for both a missing id and another account's row — see `assertProject`. */
+  private async ownedTask(accountId: string, taskId: string): Promise<Task> {
+    const row = await this.taskMirrors.findOne({ where: { id: taskId, accountId } });
+    if (!row) throw new NotFoundException('Task not found.');
+    return row.data;
   }
 
   /** One past the highest `order` any mirrored task in this project already has. */

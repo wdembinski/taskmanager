@@ -1,10 +1,13 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Headers,
   HttpCode,
   HttpStatus,
+  Param,
+  Patch,
   Post,
   Query,
   UseGuards,
@@ -18,6 +21,7 @@ import {
   type ResultsResponse,
   type SyncRequest,
   type SyncResponse,
+  type UpdateTaskRequest,
 } from '@tm/protocol/wire';
 import type { Task } from '@tm/shared/model';
 import { AccountId } from '../iam/accountId.decorator';
@@ -50,6 +54,23 @@ export class MirrorController {
   @HttpCode(HttpStatus.CREATED)
   createTask(@AccountId() accountId: string, @Body() body: CreateTaskRequest): Promise<Task> {
     return this.mirror.createTask(accountId, body);
+  }
+
+  /** Edit, move or hand-set a mirrored task's status — see `UpdateTaskRequest` on the wire. */
+  @Patch('tasks/:id')
+  updateTask(
+    @AccountId() accountId: string,
+    @Param('id') id: string,
+    @Body() body: UpdateTaskRequest,
+  ): Promise<Task> {
+    return this.mirror.updateTask(accountId, id, body);
+  }
+
+  /** Drop a mirrored task (and its steps) — see `MirrorService.deleteTask`. */
+  @Delete('tasks/:id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async deleteTask(@AccountId() accountId: string, @Param('id') id: string): Promise<void> {
+    await this.mirror.deleteTask(accountId, id);
   }
 
   @Post('commands')
