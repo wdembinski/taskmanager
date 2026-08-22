@@ -91,6 +91,7 @@ const HOST_ONLY_REASONS = {
   'github:setCredentials': 'credential-write',
   'github:clearCredentials': 'credential-write',
   'iam:signOut': 'credential-write',
+  'iam:linkWithToken': 'credential-write',
 
   'session:start': 'live-session',
   'session:stop': 'live-session',
@@ -241,6 +242,7 @@ export const RELAY_POLICY: {
 
   'iam:getConfigStatus': 'relay',
   'iam:signIn': 'host-only',
+  'iam:linkWithToken': 'host-only',
   'iam:signOut': 'host-only',
 
   'sync:state': 'relay',

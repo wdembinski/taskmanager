@@ -54,6 +54,7 @@ import {
   MessageBar,
   MessageBarBody,
   Option,
+  Spinner,
   Subtitle2,
   Switch,
   Tab,
@@ -61,7 +62,7 @@ import {
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
-import { AddRegular, DismissRegular } from '@fluentui/react-icons';
+import { AddRegular, CopyRegular, DismissRegular } from '@fluentui/react-icons';
 import { ColorSwatches, PALETTE } from '@tm/ui/ColorSwatches';
 import { PlanningModelField } from '@tm/ui/PlanningModelField';
 import { PaneLoading } from '@tm/ui/PaneLoading';
@@ -70,6 +71,12 @@ import { useTransport } from '@tm/ui/transport';
 import { MODELS } from '@tm/shared/model';
 import type { ClaudeModel, PermissionMode } from '@tm/shared/session';
 import type { AppSettings } from '@tm/shared/settings';
+import {
+  createDeviceToken,
+  listDeviceTokens,
+  revokeDeviceToken,
+  type DeviceToken,
+} from '../auth/deviceTokens';
 
 const useStyles = makeStyles({
   row: { display: 'flex', gap: '16px', height: '100%', minHeight: 0 },
@@ -98,19 +105,49 @@ const useStyles = makeStyles({
   switchRow: { display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' },
   saved: { color: tokens.colorPaletteGreenForeground1 },
   hint: { color: tokens.colorNeutralForeground3 },
+  secretRow: { display: 'flex', alignItems: 'center', gap: '8px' },
+  secretValue: { fontFamily: 'monospace', wordBreak: 'break-all' },
+  tokenList: { display: 'flex', flexDirection: 'column', gap: '8px' },
+  tokenRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px',
+    padding: '8px 0',
+    borderBottom: `1px solid ${tokens.colorNeutralStroke2}`,
+  },
+  tokenName: { flex: 1, minWidth: 0 },
 });
 
 const MODES: PermissionMode[] = ['acceptEdits', 'plan', 'manual', 'bypassPermissions'];
 
-type Section = 'general' | 'board' | 'jira' | 'desktop';
+type Section = 'general' | 'board' | 'jira' | 'link' | 'desktop';
 
-export function SettingsScreen(): JSX.Element {
+export interface SettingsScreenProps {
+  /** The same accessor `CloudAuth.getAccessToken` exposes — this tab's own bearer, used to
+   *  authenticate the "Link desktop" pane's calls to vipper.iam. */
+  getAccessToken: () => Promise<string | null>;
+  /** `WebConfig.iamApiBase` — vipper.iam's REST API base. */
+  iamApiBase: string;
+}
+
+export function SettingsScreen({ getAccessToken, iamApiBase }: SettingsScreenProps): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
   const [section, setSection] = useState<Section>('general');
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // "Link desktop": the tokens this account already holds, a name field for a new one, and
+  // the one-time secret from the most recent create — kept separate from `tokens` because it
+  // has to survive a list refresh (the create response is the ONLY time the secret is ever
+  // seen; a re-fetched list never carries it again).
+  const [deviceTokens, setDeviceTokens] = useState<DeviceToken[] | null>(null);
+  const [deviceTokensError, setDeviceTokensError] = useState<string | null>(null);
+  const [newTokenName, setNewTokenName] = useState('');
+  const [creatingToken, setCreatingToken] = useState(false);
+  const [createdSecret, setCreatedSecret] = useState<string | null>(null);
+  const [revokingId, setRevokingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setSettings(await transport.invoke('settings:get'));
@@ -134,6 +171,59 @@ export function SettingsScreen(): JSX.Element {
       setSaved(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const deviceTokenDeps = { apiBase: iamApiBase, getAccessToken };
+
+  const refreshDeviceTokens = useCallback(async () => {
+    const result = await listDeviceTokens(deviceTokenDeps);
+    if (result.ok) {
+      setDeviceTokens(result.tokens);
+      setDeviceTokensError(null);
+    } else {
+      setDeviceTokensError(result.message);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `getAccessToken` is a stable
+    // per-mount accessor (App.tsx's `auth` is memoized); only `iamApiBase` ever actually changes.
+  }, [iamApiBase]);
+
+  // Lazy: the pane's first visit is what loads the list, not mount — a tab nobody opens
+  // should not spend a vipper.iam round trip on every Settings load.
+  useEffect(() => {
+    if (section === 'link' && deviceTokens === null) {
+      void refreshDeviceTokens();
+    }
+  }, [section, deviceTokens, refreshDeviceTokens]);
+
+  const createToken = async (): Promise<void> => {
+    setCreatingToken(true);
+    setDeviceTokensError(null);
+    try {
+      const result = await createDeviceToken(deviceTokenDeps, newTokenName);
+      if (result.ok) {
+        setCreatedSecret(result.secret);
+        setNewTokenName('');
+        await refreshDeviceTokens();
+      } else {
+        setDeviceTokensError(result.message);
+      }
+    } finally {
+      setCreatingToken(false);
+    }
+  };
+
+  const revokeToken = async (id: string): Promise<void> => {
+    setRevokingId(id);
+    try {
+      const result = await revokeDeviceToken(deviceTokenDeps, id);
+      if (result.ok) {
+        await refreshDeviceTokens();
+      } else {
+        setDeviceTokensError(result.message);
+      }
+    } finally {
+      setRevokingId(null);
     }
   };
 
@@ -162,6 +252,7 @@ export function SettingsScreen(): JSX.Element {
         <Tab value="general">General</Tab>
         <Tab value="board">Board</Tab>
         <Tab value="jira">JIRA</Tab>
+        <Tab value="link">Link desktop</Tab>
         <Tab value="desktop">Desktop only</Tab>
       </TabList>
 
@@ -428,6 +519,95 @@ export function SettingsScreen(): JSX.Element {
         </div>
       )}
 
+      {section === 'link' && (
+        <div className={styles.pane}>
+          <Subtitle2>Link desktop</Subtitle2>
+          <Body1 className={styles.hint}>
+            The desktop app normally signs in to the cloud itself, opening a browser of its own. On
+            a machine that can't do that, create a token here instead — this tab is already signed
+            in — and paste it into the desktop app's Cloud settings under "Link with a token".
+          </Body1>
+
+          <div className={styles.grid}>
+            <Field
+              label="New token"
+              hint="A name to recognise it by later, e.g. the machine it's for."
+            >
+              <div className={styles.actions}>
+                <Input
+                  value={newTokenName}
+                  placeholder="My laptop"
+                  onChange={(_e, d) => setNewTokenName(d.value)}
+                />
+                <Button
+                  appearance="primary"
+                  disabled={creatingToken || !newTokenName.trim()}
+                  onClick={() => void createToken()}
+                >
+                  Create token
+                </Button>
+                {creatingToken && <Spinner size="tiny" />}
+              </div>
+            </Field>
+
+            {createdSecret && (
+              <MessageBar intent="success">
+                <MessageBarBody>
+                  <strong>Copy this now</strong> — it's shown once and never again.
+                  <div className={styles.secretRow}>
+                    <Caption1 className={styles.secretValue}>{createdSecret}</Caption1>
+                    <Button
+                      size="small"
+                      icon={<CopyRegular />}
+                      onClick={() => void navigator.clipboard.writeText(createdSecret)}
+                    >
+                      Copy
+                    </Button>
+                  </div>
+                </MessageBarBody>
+              </MessageBar>
+            )}
+
+            {deviceTokensError && (
+              <MessageBar intent="error">
+                <MessageBarBody>{deviceTokensError}</MessageBarBody>
+              </MessageBar>
+            )}
+
+            <Field label="Tokens on this account">
+              <div className={styles.tokenList}>
+                {deviceTokens === null ? (
+                  <Spinner size="tiny" label="Loading…" />
+                ) : deviceTokens.length === 0 ? (
+                  <Caption1 className={styles.hint}>No tokens yet.</Caption1>
+                ) : (
+                  deviceTokens.map((t) => (
+                    <div key={t.id} className={styles.tokenRow}>
+                      <div className={styles.tokenName}>
+                        <Body1>{t.name}</Body1>
+                        <Caption1 className={styles.hint}>
+                          {t.tokenPrefix} · created {new Date(t.createdAt).toLocaleDateString()}
+                          {t.revokedAt ? ' · revoked' : ''}
+                        </Caption1>
+                      </div>
+                      <Button
+                        size="small"
+                        appearance="subtle"
+                        icon={<DismissRegular />}
+                        disabled={revokingId === t.id || t.revokedAt !== null}
+                        onClick={() => void revokeToken(t.id)}
+                      >
+                        Revoke
+                      </Button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </Field>
+          </div>
+        </div>
+      )}
+
       {section === 'desktop' && (
         <div className={styles.pane}>
           <Subtitle2>Set these from the desktop app</Subtitle2>
@@ -468,7 +648,8 @@ const HOST_ONLY_SECTIONS: ReadonlyArray<{ title: string; why: string }> = [
     title: 'Cloud sign-in',
     why:
       'signing the DESKTOP app in is a different act from signing this tab in, and this tab ' +
-      'is already signed in. Use the desktop app’s Cloud section for its own connection.',
+      'is already signed in. Use the desktop app’s Cloud section for its own connection, or ' +
+      'the Link desktop tab here to hand it a token instead.',
   },
   {
     title: 'Updates',

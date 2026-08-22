@@ -214,6 +214,9 @@ export function Settings(): JSX.Element {
   const [iamStatus, setIamStatus] = useState<IamConfigStatus | null>(null);
   const [iamResult, setIamResult] = useState<IamSignInResult | null>(null);
   const [iamBusy, setIamBusy] = useState(false);
+  // The pasted-token alternative to the browser round trip — a write-only field, same
+  // shape as the JIRA/GitLab/GitHub token inputs above.
+  const [iamToken, setIamToken] = useState('');
 
   // Only offer targets that exist here: with no WSL installed the control never
   // appears, so the screen stays exactly as it was.
@@ -273,6 +276,18 @@ export function Settings(): JSX.Element {
     await window.api.invoke('iam:signOut');
     setIamResult({ ok: true, message: 'Signed out.' });
     setIamStatus(await window.api.invoke('iam:getConfigStatus'));
+  }
+
+  async function linkCloudWithToken(): Promise<void> {
+    setIamBusy(true);
+    setIamResult(null);
+    try {
+      setIamResult(await window.api.invoke('iam:linkWithToken', iamToken));
+      setIamToken('');
+      setIamStatus(await window.api.invoke('iam:getConfigStatus'));
+    } finally {
+      setIamBusy(false);
+    }
   }
 
   async function saveGitLabToken(): Promise<void> {
@@ -1329,9 +1344,11 @@ export function Settings(): JSX.Element {
               hint={
                 iamStatus?.encryptionAvailable === false
                   ? 'The OS secure store is unavailable, so a sign-in cannot be saved on this machine.'
-                  : iamStatus?.signedIn
-                    ? 'Signed in.'
-                    : 'Sign in to authorize this machine.'
+                  : iamStatus?.linkMethod === 'token'
+                    ? 'Linked with a token created in the web app.'
+                    : iamStatus?.signedIn
+                      ? 'Signed in.'
+                      : 'Sign in, or link with a token created in the web app’s Settings.'
               }
             >
               <div className={styles.actions}>
@@ -1350,6 +1367,27 @@ export function Settings(): JSX.Element {
                   Sign out
                 </Button>
                 {iamBusy && <Spinner size="tiny" />}
+              </div>
+            </Field>
+
+            <Field
+              label="Or link with a token"
+              hint="Sign in to the web app, open Settings → Link desktop, and paste the token it creates here — useful when this machine can't open a browser to sign in itself."
+            >
+              <div className={styles.actions}>
+                <Input
+                  type="password"
+                  value={iamToken}
+                  placeholder="vip_…"
+                  onChange={(_e, d) => setIamToken(d.value)}
+                />
+                <Button
+                  appearance="secondary"
+                  disabled={iamBusy || !iamToken.trim() || iamStatus?.encryptionAvailable === false}
+                  onClick={() => void linkCloudWithToken()}
+                >
+                  Link
+                </Button>
               </div>
             </Field>
 

@@ -32,6 +32,7 @@ import {
   type Rectangle,
 } from 'electron';
 import type {
+  IamConfigStatus,
   IpcApi,
   IpcEvents,
   JiraIssueTypeOption,
@@ -1565,10 +1566,18 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // vipper.iam cloud sign-in (Phase 25's "Guard the cloud API with vipper.iam"). The refresh
   // token is the one credential of the three (JIRA/GitLab/IAM) this app itself is a party to
   // minting, but it still goes through the exact same encrypt-and-store path as the other two.
-  handle('iam:getConfigStatus', async () => ({
-    signedIn: store.loadIamRefreshToken() !== null,
-    encryptionAvailable: safeStorage.isEncryptionAvailable(),
-  }));
+  handle('iam:getConfigStatus', async () => {
+    const linkMethod: IamConfigStatus['linkMethod'] = store.loadIamPat()
+      ? 'token'
+      : store.loadIamRefreshToken()
+        ? 'oauth'
+        : null;
+    return {
+      signedIn: linkMethod !== null,
+      linkMethod,
+      encryptionAvailable: safeStorage.isEncryptionAvailable(),
+    };
+  });
 
   handle('iam:signIn', async () => {
     if (!safeStorage.isEncryptionAvailable()) {
@@ -1582,6 +1591,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       if (!tokens.refresh_token) {
         return { ok: false, message: 'vipper.iam did not return a refresh token.' };
       }
+      // An OAuth sign-in replaces a linked PAT — the two are mutually exclusive, and
+      // leaving a stale PAT in place would make `getCloudAccessToken` keep using it instead
+      // of the fresh sign-in this call just did.
+      store.clearIamPat();
+      cloudAccessToken = null;
       store.saveIamRefreshToken(
         safeStorage.encryptString(sanitizeToken(tokens.refresh_token)).toString('base64'),
       );
@@ -1592,9 +1606,28 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     }
   });
 
+  handle('iam:linkWithToken', async (token) => {
+    if (!safeStorage.isEncryptionAvailable()) {
+      return {
+        ok: false,
+        message: 'OS secure storage is unavailable, so the token was not saved.',
+      };
+    }
+    const cleaned = sanitizeToken(token);
+    if (!cleaned) {
+      return { ok: false, message: 'Paste the token created in the web app’s Settings.' };
+    }
+    // Replaces an OAuth sign-in the same way `iam:signIn` replaces a linked PAT.
+    store.clearIamRefreshToken();
+    cloudAccessToken = null;
+    store.saveIamPat(safeStorage.encryptString(cleaned).toString('base64'));
+    return { ok: true, message: 'Linked.' };
+  });
+
   handle('iam:signOut', async () => {
     cloudAccessToken = null;
     store.clearIamRefreshToken();
+    store.clearIamPat();
   });
 
   /**
@@ -1611,6 +1644,20 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   const getCloudAccessToken = async (): Promise<string | null> => {
     if (cloudAccessToken && cloudAccessToken.expiresAt > Date.now() + 5_000) {
       return cloudAccessToken.value;
+    }
+    // A linked PAT is already a bearer credential — nothing to mint, no expiry this app
+    // tracks (vipper.iam introspects it fresh on every request; a revoked or expired one
+    // fails there, the same way a revoked OAuth grant fails the refresh below). Checked
+    // first because `iam:linkWithToken` and `iam:signIn` keep the two mutually exclusive,
+    // but a leftover refresh token from before a link should never win.
+    const patCipher = store.loadIamPat();
+    if (patCipher && safeStorage.isEncryptionAvailable()) {
+      try {
+        return decryptSecret(patCipher, 'vipper.iam');
+      } catch (e) {
+        logMain('vipper.iam linked token could not be read', e);
+        return null;
+      }
     }
     const cipher = store.loadIamRefreshToken();
     if (!cipher || !safeStorage.isEncryptionAvailable()) return null;

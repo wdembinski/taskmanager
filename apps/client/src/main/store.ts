@@ -694,6 +694,10 @@ export interface Store {
   saveIamRefreshToken(value: string): void;
   loadIamRefreshToken(): string | null;
   clearIamRefreshToken(): void;
+  /** The vipper.iam Personal Access Token ciphertext — `iam:linkWithToken`'s credential. */
+  saveIamPat(value: string): void;
+  loadIamPat(): string | null;
+  clearIamPat(): void;
   /**
    * Cache the result of JIRA "Epic Link" field discovery so `/field` is queried once
    * per site rather than on every sync (see `jira/epicField.ts`).
@@ -1993,6 +1997,14 @@ export function createStore(dbPath: string): Store {
 
   /** The vipper.iam refresh token ciphertext — see `../iamSignIn.ts` and `ipc.ts`'s `iam:*` handlers. */
   const IAM_REFRESH_TOKEN_KEY = 'iam.refreshToken';
+  /**
+   * The vipper.iam Personal Access Token ciphertext — the `iam:linkWithToken` alternative to
+   * the refresh token above. A separate row rather than reusing `IAM_REFRESH_TOKEN_KEY`
+   * because the two are read differently downstream: a refresh token has to be exchanged for
+   * an access token before use, a PAT is already a bearer credential. Only one is ever
+   * present at a time — linking with one clears the other.
+   */
+  const IAM_PAT_KEY = 'iam.pat';
   const CLOUD_CLIENT_ID_KEY = 'cloud.clientId';
   const CLOUD_CURSOR_KEY = 'cloud.cursor';
 
@@ -4123,6 +4135,19 @@ export function createStore(dbPath: string): Store {
 
     clearIamRefreshToken() {
       deleteState.run(IAM_REFRESH_TOKEN_KEY);
+    },
+
+    saveIamPat(value) {
+      upsertState.run(IAM_PAT_KEY, value);
+    },
+
+    loadIamPat() {
+      const row = selectState.get(IAM_PAT_KEY) as { value: string } | undefined;
+      return row?.value ?? null;
+    },
+
+    clearIamPat() {
+      deleteState.run(IAM_PAT_KEY);
     },
 
     loadCloudClientId() {

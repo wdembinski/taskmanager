@@ -184,8 +184,16 @@ export interface JiraTestResult {
 
 /** Snapshot of the vipper.iam cloud sign-in state (for the Settings UI). */
 export interface IamConfigStatus {
-  /** Whether a refresh token has been stored (never the token itself). */
+  /** Whether a refresh token or a linked PAT has been stored (never the credential itself). */
   signedIn: boolean;
+  /**
+   * Which credential is behind `signedIn` — `null` when not signed in at all. `'oauth'` is
+   * the loopback PKCE sign-in (`iam:signIn`); `'token'` is a Personal Access Token pasted in
+   * from `apps/web`'s "Link the desktop app" pane (`iam:linkWithToken`). They are mutually
+   * exclusive — linking with a token replaces an OAuth sign-in and vice versa, since both
+   * ultimately answer the same question ("what does `getCloudAccessToken` mint from?").
+   */
+  linkMethod: 'oauth' | 'token' | null;
   /** Whether the OS secure store is available to encrypt the token. */
   encryptionAvailable: boolean;
 }
@@ -782,7 +790,17 @@ export interface IpcApi {
    * never persists a token in plaintext.
    */
   'iam:signIn': () => Promise<IamSignInResult>;
-  /** Remove the stored refresh token. */
+  /**
+   * Links this machine with a Personal Access Token instead of the browser round trip —
+   * minted from `apps/web`'s "Link the desktop app" pane (vipper.iam's own `/me/tokens`,
+   * which authenticates as whichever account is signed into that browser tab). A PAT is a
+   * bearer credential already, so there is no exchange to do here: it is stored as-is and
+   * used directly by `getCloudAccessToken` from then on — no validation beyond a non-empty
+   * check happens at link time; `cloud:testConnection` is what proves it actually works.
+   * Replaces any stored OAuth refresh token, the same way `iam:signIn` replaces a stored PAT.
+   */
+  'iam:linkWithToken': (token: string) => Promise<IamSignInResult>;
+  /** Remove the stored refresh token or linked PAT, whichever is present. */
   'iam:signOut': () => Promise<void>;
 
   // --- Sync freshness (the status bar's countdown rings) --------------------

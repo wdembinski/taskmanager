@@ -32,6 +32,7 @@ const HOST_ONLY: ReadonlyArray<readonly [string, HostOnlyReason]> = [
   ['github:setCredentials', 'credential-write'],
   ['github:clearCredentials', 'credential-write'],
   ['iam:signOut', 'credential-write'],
+  ['iam:linkWithToken', 'credential-write'],
   ['session:start', 'live-session'],
   ['session:stop', 'live-session'],
   ['session:answer', 'live-session'],

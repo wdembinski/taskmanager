@@ -11,7 +11,7 @@
  * that is present-but-off with "desktop only" in its tooltip is honest where a missing one
  * is merely silent.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Caption1, makeStyles } from '@fluentui/react-components';
 import {
   AlertRegular,
@@ -149,6 +149,9 @@ function SignedInBoard({
   const board = useCloudBoard(auth, config);
   const now = useTick(AGE_TICK_MS);
   const [screen, setScreen] = useState<Screen>('mytasks');
+  // `SettingsScreen`'s "Link desktop" pane authenticates its own vipper.iam calls with
+  // whatever bearer this tab already holds — same accessor `httpTransport` mints from.
+  const getAccessToken = useCallback(() => auth.getAccessToken(), [auth]);
 
   const online = board.state.clients.length > 0;
   // Only ever about the Client this tab is actually driving. A second, older desktop on the
@@ -232,7 +235,9 @@ function SignedInBoard({
         )}
         {screen === 'performance' && <Performance />}
         {screen === 'attention' && <Attention />}
-        {screen === 'settings' && <SettingsScreen />}
+        {screen === 'settings' && (
+          <SettingsScreen getAccessToken={getAccessToken} iamApiBase={config.iamApiBase} />
+        )}
       </AppShell>
     </TransportProvider>
   );

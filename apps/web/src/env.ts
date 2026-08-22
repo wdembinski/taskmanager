@@ -12,6 +12,13 @@ export interface WebConfig {
   iamIssuer: string;
   /** This build's own registered PUBLIC vipper.iam client id (PKCE, no secret). */
   iamClientId: string;
+  /**
+   * vipper.iam's REST management API — no trailing slash. Separate from `iamIssuer`
+   * because that one is an OIDC issuer URL (`/oidc`) and this is `/api/v1`; same host,
+   * different path, per `docs/04-how-to/use-personal-access-tokens.md` in the vipper.iam
+   * repo. Used for `/me/tokens` — the "Link desktop" pane's PAT create/list/revoke calls.
+   */
+  iamApiBase: string;
 }
 
 export function loadWebConfig(): WebConfig {
@@ -20,5 +27,9 @@ export function loadWebConfig(): WebConfig {
     cloudApiBase: (env.VITE_CLOUD_API_BASE ?? 'http://localhost:3100').replace(/\/+$/, ''),
     iamIssuer: env.VITE_CLOUD_IAM_ISSUER ?? 'https://auth.vipper.network/oidc',
     iamClientId: env.VITE_CLOUD_IAM_CLIENT_ID ?? 'taskmanager-web',
+    iamApiBase: (env.VITE_CLOUD_IAM_API_BASE ?? 'https://auth.vipper.network/api/v1').replace(
+      /\/+$/,
+      '',
+    ),
   };
 }
