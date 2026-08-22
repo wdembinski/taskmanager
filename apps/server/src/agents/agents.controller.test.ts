@@ -48,6 +48,12 @@ class FakeMirrorDb {
         table.set(row.id as string, row as never);
       }
     },
+    delete: async (entity: unknown, where: Record<string, unknown>) => {
+      const table = this.tableFor(entity);
+      for (const [id, row] of [...table.entries()]) {
+        if (this.matches(where)(row as Record<string, unknown>)) table.delete(id);
+      }
+    },
   };
 
   dataSource = {
@@ -166,6 +172,69 @@ describe('AgentsController', () => {
     await expect(
       controller.updateProfile('acct-2', profile.id, { name: 'Hijacked' }),
     ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('removes a profile with no assignments against it', async () => {
+    const profile = await controller.createProfile('acct-1', {
+      name: 'Reviewer',
+      model: 'sonnet',
+      permissionMode: 'acceptEdits',
+    });
+
+    await controller.removeProfile('acct-1', profile.id);
+
+    expect(await controller.listProfiles('acct-1')).toEqual([]);
+  });
+
+  it('is a 404 removing a profile on somebody else’s account', async () => {
+    const profile = await controller.createProfile('acct-1', {
+      name: 'Reviewer',
+      model: 'sonnet',
+      permissionMode: 'acceptEdits',
+    });
+    await expect(controller.removeProfile('acct-2', profile.id)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+  });
+
+  it('refuses to remove a profile with a queued or running assignment', async () => {
+    seedTicket(db, 'acct-1', 'proj-1', 'ticket-1');
+    const profile = await controller.createProfile('acct-1', {
+      name: 'Reviewer',
+      model: 'sonnet',
+      permissionMode: 'acceptEdits',
+    });
+    await controller.createAssignment('acct-1', {
+      projectId: 'proj-1',
+      ticketId: 'ticket-1',
+      profileId: profile.id,
+    });
+
+    await expect(controller.removeProfile('acct-1', profile.id)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+  });
+
+  it('allows removing a profile whose assignments already finished', async () => {
+    seedTicket(db, 'acct-1', 'proj-1', 'ticket-1');
+    const profile = await controller.createProfile('acct-1', {
+      name: 'Reviewer',
+      model: 'sonnet',
+      permissionMode: 'acceptEdits',
+    });
+    const assignment = await controller.createAssignment('acct-1', {
+      projectId: 'proj-1',
+      ticketId: 'ticket-1',
+      profileId: profile.id,
+    });
+    await controller.claim('acct-1', assignment.id, { clientId: 'desktop-a' });
+    await controller.complete('acct-1', assignment.id, {
+      status: 'done',
+      clientId: 'desktop-a',
+    });
+
+    await controller.removeProfile('acct-1', profile.id);
+    expect(await controller.listProfiles('acct-1')).toEqual([]);
   });
 
   it('queues an assignment for a ticket the account owns', async () => {

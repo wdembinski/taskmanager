@@ -10,8 +10,10 @@
  *
  * The vertical nav also hosts the Board pane (the status keywords that colour a card's
  * progress line), the JIRA connection — including the status-name → column map, the
- * only route to the IN REVIEW column — and the Agents pane (the repositories a My Tasks
- * card can be filed under or delegated to), which manages its own state.
+ * only route to the IN REVIEW column — the Agents pane (the repositories a My Tasks
+ * card can be filed under or delegated to), and the Agent profiles pane (the reusable
+ * run configurations a ticket can be queued against from the cloud, `@shared/agent`) —
+ * each of which manages its own state.
  */
 import { useCallback, useEffect, useState } from 'react';
 import {
@@ -86,6 +88,7 @@ import {
   parseExecTarget,
   type ExecTarget,
 } from '@shared/execTarget';
+import { AgentProfiles } from './AgentProfiles';
 import { AgentProjects } from './AgentProjects';
 import { ColorSwatches, PALETTE } from '@ui/ColorSwatches';
 import { PaneLoading } from '@ui/PaneLoading';
@@ -162,7 +165,8 @@ const COLUMN_LABEL: Record<BoardColumn, string> = Object.fromEntries(
   COLUMN_META.map((c) => [c.column, STATUS_LABEL[statusForColumn(c.column)]]),
 ) as Record<BoardColumn, string>;
 
-type SettingsSection = 'general' | 'board' | 'jira' | 'gitlab' | 'github' | 'cloud' | 'agents';
+type SettingsSection =
+  'general' | 'board' | 'jira' | 'gitlab' | 'github' | 'cloud' | 'agents' | 'agentProfiles';
 
 export function Settings(): JSX.Element {
   const styles = useStyles();
@@ -523,10 +527,13 @@ export function Settings(): JSX.Element {
         <Tab value="github">GitHub</Tab>
         <Tab value="cloud">Cloud</Tab>
         <Tab value="agents">Agents</Tab>
+        <Tab value="agentProfiles">Agent profiles</Tab>
       </TabList>
 
       {section === 'agents' ? (
         <AgentProjects />
+      ) : section === 'agentProfiles' ? (
+        <AgentProfiles />
       ) : section === 'board' ? (
         <div className={styles.pane}>
           <Subtitle2>Board</Subtitle2>

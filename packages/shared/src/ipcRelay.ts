@@ -144,6 +144,13 @@ export const RELAY_POLICY: {
   'agentProject:update': 'relay',
   'agentProject:remove': 'relay',
 
+  'ticketProject:list': 'relay',
+
+  'agentProfile:list': 'relay',
+  'agentProfile:add': 'relay',
+  'agentProfile:update': 'relay',
+  'agentProfile:remove': 'relay',
+
   'scheduler:start': 'relay',
   'scheduler:pause': 'relay',
   'scheduler:stop': 'relay',

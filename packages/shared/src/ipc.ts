@@ -45,6 +45,7 @@ import type {
   TaskActivityEntry,
   TaskType,
 } from './model';
+import type { AddAgentProfileInput, AgentProfile, AgentProfilePatch } from './agent';
 import type { TaskAttachment, UploadedAttachment } from './attachments';
 import type { GitGraph } from './gitGraph';
 import type { ExecTarget, TargetReadiness } from './execTarget';
@@ -336,6 +337,27 @@ export interface IpcApi {
   'agentProject:update': (id: string, patch: ProjectPatch) => Promise<Project | null>;
   /** Remove an agent project. Rejects while one of its runs is still live. */
   'agentProject:remove': (id: string) => Promise<void>;
+
+  /**
+   * The ticket projects pulled down locally (`kind: 'ticket'`, cloud-authored projects —
+   * step 2 of this same plan). This is the source for `AgentProfile.defaultProjectId`'s
+   * picker: a profile's default project is one of THESE, never an agent project.
+   */
+  'ticketProject:list': () => Promise<Project[]>;
+
+  // --- Agent profiles (cloud as central control for projects, step 7) -------
+  // A reusable run configuration a ticket can be queued against (`@shared/agent`). Unlike
+  // an agent project, a profile has no local row — it lives on the server only — so every
+  // one of these calls the cloud API directly, the same way `AssignmentPoller` does.
+  // Rejects with "Not signed in…" / "Cloud sync isn’t set up…" exactly as those calls do
+  // when there is no token or no server configured.
+  'agentProfile:list': () => Promise<AgentProfile[]>;
+  /** Create a profile. */
+  'agentProfile:add': (input: AddAgentProfileInput) => Promise<AgentProfile>;
+  /** Edit a profile's name, model, permission mode, or default project. */
+  'agentProfile:update': (id: string, patch: AgentProfilePatch) => Promise<AgentProfile>;
+  /** Remove a profile. Rejects while a queued, claimed, or running assignment against it exists. */
+  'agentProfile:remove': (id: string) => Promise<void>;
 
   /**
    * Start (or resume) a project's queue: the scheduler runs its `pending` tasks

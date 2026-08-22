@@ -100,6 +100,13 @@ import { applyCloudCommand, type CloudCommandOutcome } from './cloudCommands';
 import { CommandQueue } from './commandQueue';
 import { relayRegistry } from './ipcRegistry';
 import { CloudAttachmentUploader, fetchUploadBytes } from './cloudAttachmentUploader';
+import {
+  addAgentProfile,
+  listAgentProfiles,
+  removeAgentProfile,
+  updateAgentProfile,
+  type AgentProfilesApiDeps,
+} from './agentProfilesApi';
 import { AssignmentPoller } from './assignmentPoller';
 import { CloudBoardPuller } from './cloudBoardPuller';
 import { CloudEventForwarder } from './cloudEventForwarder';
@@ -799,6 +806,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     }
     store.removeProject(id);
   });
+
+  // The ticket projects pulled down locally — the source for an agent profile's
+  // "default project" picker (`AgentProfile.defaultProjectId` names one of these).
+  handle('ticketProject:list', async () =>
+    store.listProjects().filter((project) => project.kind === 'ticket'),
+  );
 
   handle('scheduler:start', async (projectId) => scheduler.start(projectId));
   handle('scheduler:pause', async (projectId) => scheduler.pause(projectId));
@@ -1656,6 +1669,29 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     if (!result.ok) logMain('Cloud test connection failed', result.message);
     return result;
   });
+
+  /**
+   * Agent profiles (cloud as central control for projects, step 7) — same "no local row"
+   * shape as `AssignmentPoller`'s own calls: every one of these is a direct request to the
+   * cloud server, gated on cloud sync being configured and signed in exactly like that
+   * poller's `send()` is, rather than a `store.*` call.
+   */
+  const agentProfilesDeps = async (): Promise<AgentProfilesApiDeps> => {
+    const cloud = store.getSettings().cloud;
+    if (!cloud.enabled || !cloud.baseUrl.trim()) {
+      throw new Error('Cloud sync isn’t set up — add a server address in Settings → Cloud first.');
+    }
+    const token = await getCloudAccessToken();
+    if (!token) throw new Error('Not signed in to vipper.iam.');
+    return { baseUrl: cloud.baseUrl, token };
+  };
+
+  handle('agentProfile:list', async () => listAgentProfiles(await agentProfilesDeps()));
+  handle('agentProfile:add', async (input) => addAgentProfile(await agentProfilesDeps(), input));
+  handle('agentProfile:update', async (id, patch) =>
+    updateAgentProfile(await agentProfilesDeps(), id, patch),
+  );
+  handle('agentProfile:remove', async (id) => removeAgentProfile(await agentProfilesDeps(), id));
 
   /** The account behind the GitLab token, cached per instance. Fails soft to null. */
   const gitlabIdentity = async (

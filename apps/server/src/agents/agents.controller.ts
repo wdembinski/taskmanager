@@ -1,4 +1,14 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import type {
   AddAgentProfileInput,
   AgentProfile,
@@ -43,6 +53,11 @@ export class AgentsController {
     @Body() body: AgentProfilePatch,
   ): Promise<AgentProfile> {
     return this.agents.updateProfile(accountId, id, body);
+  }
+
+  @Delete('agent-profiles/:id')
+  removeProfile(@AccountId() accountId: string, @Param('id') id: string): Promise<void> {
+    return this.agents.deleteProfile(accountId, id);
   }
 
   @Get('assignments')

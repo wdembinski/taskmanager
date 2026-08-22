@@ -135,6 +135,27 @@ export class AgentsService {
     return toProfile(row);
   }
 
+  /**
+   * Removes a profile — refused while any assignment still queued, claimed, or running
+   * against it exists, the same "stop the live work first" rule `agentProject:remove`
+   * applies on the desktop side. A `done`/`failed` assignment is history, not live work,
+   * so it never blocks this.
+   */
+  async deleteProfile(accountId: string, id: string): Promise<void> {
+    const row = await this.profiles.findOne({ where: { id, accountId } });
+    if (!row) throw new NotFoundException(`No agent profile ${id} on this account.`);
+
+    const assignments = await this.assignments.find({ where: { profileId: id, accountId } });
+    const active = assignments.filter((a) => a.status !== 'done' && a.status !== 'failed');
+    if (active.length > 0) {
+      throw new BadRequestException(
+        `Cannot remove: ${active.length} assignment(s) against this profile are still queued, claimed, or running.`,
+      );
+    }
+
+    await this.dataSource.manager.delete(AgentProfile, { id, accountId });
+  }
+
   async listAssignments(
     accountId: string,
     filter: { status?: AssignmentStatus; projectId?: string },
