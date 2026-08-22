@@ -39,12 +39,8 @@ import {
   type TicketLinkType,
 } from '@shared/model';
 import { isIssueType, isTicketLinkType, normalizeLabels, seedInitials } from '@shared/tickets';
-import {
-  formatTicketKey,
-  normalizeTicketPrefix,
-  suggestTicketPrefix,
-  uniqueTicketPrefix,
-} from '@shared/ticketKey';
+import { normalizeTicketPrefix, suggestTicketPrefix, uniqueTicketPrefix } from '@shared/ticketKey';
+import { buildAdhocTask, buildTicketTask } from '@shared/taskBuilders';
 import { formatExecTarget, parseExecTarget } from '@shared/execTarget';
 import { hostJoin } from '@shared/wslPath';
 import type { AuthState } from '@shared/auth';
@@ -3099,40 +3095,12 @@ export function createStore(dbPath: string): Store {
 
       bumpTicketSeq.run(projectId);
       const ticketNumber = (readTicketSeq.get(projectId) as { ticketSeq: number }).ticketSeq;
+      const order = (nextOrder.get(projectId) as { next: number }).next;
 
-      const task: Task = {
-        id: randomUUID(),
-        projectId,
-        phase: input.phase?.trim() ?? '',
-        title,
-        status: 'pending',
-        sessionId: null,
-        order: (nextOrder.get(projectId) as { next: number }).next,
-        // Its own value, not `adhoc`: this is the structural guarantee that the JIRA
-        // reconciler — which filters on `source === 'jira'` in both directions — can never
-        // adopt, rewrite or archive a ticket this app owns.
-        source: 'ticket',
-        dependsOn: [],
-        isContract: false,
-        isScaffold: false,
-        // The card's brief goes where every other surface already reads one from
-        // (`Task.description` is a step's brief, which a ticket is not).
-        externalDescription: input.description?.trim() || null,
-        // Native tickets reuse the priority column JIRA cards use — see `TicketInput.priority`.
-        externalPriority: input.priority?.trim() || null,
-        ticketKey: formatTicketKey(prefix, ticketNumber),
-        ticketNumber,
-        issueType: input.issueType ?? 'task',
-        epicTaskId: input.epicTaskId ?? null,
-        milestoneId: input.milestoneId ?? null,
-        labels: normalizeLabels(input.labels),
-        storyPoints: input.storyPoints ?? null,
-        estimateDays: input.estimateDays ?? null,
-        startAt: input.startAt ?? null,
-        dueAt: input.dueAt ?? null,
-        assigneeId: input.assigneeId ?? null,
-        reporterId: input.reporterId ?? null,
-      };
+      // Its own `source`, not `adhoc`: this is the structural guarantee that the JIRA
+      // reconciler — which filters on `source === 'jira'` in both directions — can never
+      // adopt, rewrite or archive a ticket this app owns.
+      const task = buildTicketTask(projectId, order, prefix, ticketNumber, title, input);
       insertTask.run(taskToRow(task));
       return getTask(task.id);
     },
@@ -3738,24 +3706,8 @@ export function createStore(dbPath: string): Store {
     createTask(projectId, input) {
       const title = input.title.trim();
       if (!title) return undefined;
-      const task: Task = {
-        id: randomUUID(),
-        projectId,
-        phase: input.phase?.trim() || '',
-        title,
-        status: 'pending',
-        sessionId: null,
-        order: (nextOrder.get(projectId) as { next: number }).next,
-        source: 'adhoc',
-        dependsOn: [],
-        isContract: false,
-        isScaffold: false,
-        type: input.type ?? null,
-        // The card's own brief, in the field every other surface reads a card's
-        // description from — see the interface above.
-        externalDescription: input.description?.trim() || null,
-        projectTagId: input.projectTagId ?? null,
-      };
+      const order = (nextOrder.get(projectId) as { next: number }).next;
+      const task = buildAdhocTask(projectId, order, title, input);
       insertTask.run(taskToRow(task));
       return task;
     },
