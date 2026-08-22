@@ -6,6 +6,7 @@ import { EventBus } from '../events/eventBus';
 import { PresenceRegistry } from '../presence/presence.registry';
 import { PresenceService } from '../presence/presence.service';
 import { ProjectMirror } from '../entities/projectMirror.entity';
+import { SettingsMirror } from '../entities/settingsMirror.entity';
 import { TaskMirror } from '../entities/taskMirror.entity';
 import { Tombstone } from '../entities/tombstone.entity';
 import { Client } from '../entities/client.entity';
@@ -24,6 +25,7 @@ import { MirrorService } from './mirror.service';
 class FakeStore {
   readonly projectRows: ProjectMirror[] = [];
   readonly taskRows: TaskMirror[] = [];
+  readonly settingsRows: SettingsMirror[] = [];
   readonly tombstoneRows: Tombstone[] = [];
   readonly clientRows: Client[] = [];
   readonly commandRows: Command[] = [];
@@ -40,7 +42,9 @@ class FakeStore {
   arrayFor<T>(entity: unknown): T[] {
     if (entity === ProjectMirror) return this.projectRows as unknown as T[];
     if (entity === TaskMirror) return this.taskRows as unknown as T[];
+    if (entity === SettingsMirror) return this.settingsRows as unknown as T[];
     if (entity === Tombstone) return this.tombstoneRows as unknown as T[];
+    if (entity === Client) return this.clientRows as unknown as T[];
     if (entity === Command) return this.commandRows as unknown as T[];
     throw new Error(`FakeStore: unhandled entity ${String(entity)}`);
   }
@@ -54,7 +58,8 @@ interface AccountRow {
 class FakeQueryBuilder<T extends AccountRow> {
   private accountId?: string;
   private since?: Buffer;
-  private limit?: number;
+  private max?: number;
+  private descending = false;
 
   constructor(private readonly rows: T[]) {}
 
@@ -68,12 +73,19 @@ class FakeQueryBuilder<T extends AccountRow> {
     return this;
   }
 
-  orderBy(): this {
+  orderBy(_column?: string, direction?: 'ASC' | 'DESC'): this {
+    this.descending = direction === 'DESC';
     return this;
   }
 
   take(n: number): this {
-    this.limit = n;
+    this.max = n;
+    return this;
+  }
+
+  /** `currentRowVersion` uses `.limit(1)`, not `.take` — same effect for this fake. */
+  limit(n: number): this {
+    this.max = n;
     return this;
   }
 
@@ -81,14 +93,32 @@ class FakeQueryBuilder<T extends AccountRow> {
     const matching = this.rows
       .filter((row) => this.accountId === undefined || row.accountId === this.accountId)
       .filter((row) => this.since === undefined || Buffer.compare(row.rowVersion, this.since) > 0)
-      .sort((a, b) => Buffer.compare(a.rowVersion, b.rowVersion));
-    return this.limit === undefined ? matching : matching.slice(0, this.limit);
+      .sort((a, b) => (this.descending ? -1 : 1) * Buffer.compare(a.rowVersion, b.rowVersion));
+    return this.max === undefined ? matching : matching.slice(0, this.max);
+  }
+
+  /** `currentRowVersion`'s DESC-ordered `.limit(1).getOne()`. */
+  async getOne(): Promise<T | null> {
+    const rows = await this.getMany();
+    return rows[0] ?? null;
   }
 }
 
 function fakeRepository<T extends object>(rows: T[]): Repository<T> {
   return {
     createQueryBuilder: () => new FakeQueryBuilder(rows as unknown as (T & AccountRow)[]),
+    // `putSettings` upserts the settings row through the repo directly (not the transaction
+    // manager) — the same conflict-path shape the manager's `upsert` uses above.
+    upsert: async (entityOrArray: unknown, conflictPaths: string[]) => {
+      const toWrite = Array.isArray(entityOrArray) ? entityOrArray : [entityOrArray];
+      const key = conflictPaths[0]!;
+      const arr = rows as unknown as Record<string, unknown>[];
+      for (const row of toWrite as Record<string, unknown>[]) {
+        const idx = arr.findIndex((r) => r[key] === row[key]);
+        if (idx >= 0) arr[idx] = { ...arr[idx], ...row };
+        else arr.push({ ...row });
+      }
+    },
     findOne: async ({ where }: { where: Record<string, unknown> }) =>
       rows.find((row) =>
         Object.entries(where).every(
@@ -151,6 +181,23 @@ function fakeDataSource(store: FakeStore): DataSource {
         arr.find((row) => Object.entries(where).every(([key, value]) => row[key] === value)) ?? null
       );
     },
+    // `sync()` reads the account's queued commands with `find`. The settings-push test drives
+    // it with no command rows, so a plain-equality filter (FindOperators like `IsNull()` treated
+    // as "matches") is enough — nothing is in the array to match wrongly.
+    find: async (entity: unknown, options?: { where?: unknown }) => {
+      const arr = store.arrayFor<Record<string, unknown>>(entity);
+      const where = options?.where;
+      if (where === undefined) return [...arr];
+      const clauses = Array.isArray(where) ? where : [where];
+      return arr.filter((row) =>
+        (clauses as Record<string, unknown>[]).some((clause) =>
+          Object.entries(clause).every(([key, value]) => {
+            if (value && typeof value === 'object' && 'value' in (value as object)) return true;
+            return row[key] === value;
+          }),
+        ),
+      );
+    },
   };
   return {
     manager,
@@ -166,6 +213,7 @@ describe('MirrorService.createTask', () => {
       fakeRepository(store.clientRows),
       fakeRepository(store.taskRows),
       fakeRepository(store.projectRows),
+      fakeRepository(store.settingsRows),
       fakeRepository(store.tombstoneRows),
       fakeRepository<CommandResultRow>([] as unknown as CommandResultRow[]),
       new PresenceService(new PresenceRegistry()),
@@ -208,6 +256,7 @@ describe('MirrorService.updateTask / deleteTask', () => {
       fakeRepository(store.clientRows),
       fakeRepository(store.taskRows),
       fakeRepository(store.projectRows),
+      fakeRepository(store.settingsRows),
       fakeRepository(store.tombstoneRows),
       fakeRepository<CommandResultRow>([] as unknown as CommandResultRow[]),
       new PresenceService(new PresenceRegistry()),
@@ -359,6 +408,7 @@ describe('MirrorService.createProject / updateProject / deleteProject', () => {
       fakeRepository(store.clientRows),
       fakeRepository(store.taskRows),
       fakeRepository(store.projectRows),
+      fakeRepository(store.settingsRows),
       fakeRepository(store.tombstoneRows),
       fakeRepository<CommandResultRow>([] as unknown as CommandResultRow[]),
       new PresenceService(new PresenceRegistry()),
@@ -440,6 +490,7 @@ describe('MirrorService replay to a desktop Client', () => {
       fakeRepository(store.clientRows),
       fakeRepository(store.taskRows),
       fakeRepository(store.projectRows),
+      fakeRepository(store.settingsRows),
       fakeRepository(store.tombstoneRows),
       fakeRepository<CommandResultRow>([] as unknown as CommandResultRow[]),
       new PresenceService(new PresenceRegistry()),
@@ -558,5 +609,110 @@ describe('MirrorService replay to a desktop Client', () => {
       channel: 'project:remove',
       args: [project.id],
     });
+  });
+});
+
+describe('MirrorService settings mirror', () => {
+  function buildService(): { service: MirrorService; store: FakeStore } {
+    const store = new FakeStore();
+    const service = new MirrorService(
+      fakeDataSource(store),
+      fakeRepository(store.clientRows),
+      fakeRepository(store.taskRows),
+      fakeRepository(store.projectRows),
+      fakeRepository(store.settingsRows),
+      fakeRepository(store.tombstoneRows),
+      fakeRepository<CommandResultRow>([] as unknown as CommandResultRow[]),
+      new PresenceService(new PresenceRegistry()),
+      new EventBus(),
+    );
+    return { service, store };
+  }
+
+  function knownDesktop(store: FakeStore, accountId: string): void {
+    store.clientRows.push({
+      id: 'desktop-1',
+      accountId,
+      name: null,
+      platform: null,
+      appVersion: null,
+      protocolVersion: null,
+      createdAt: new Date(),
+    });
+  }
+
+  it('getSettings returns stock defaults for an account that has never synced or saved', async () => {
+    const { service } = buildService();
+    expect(await service.getSettings('account-1')).toEqual(DEFAULT_SETTINGS);
+  });
+
+  it('putSettings merges a global patch, returns the whole blob, and reads back the same', async () => {
+    const { service } = buildService();
+
+    const saved = await service.putSettings('account-1', { branchPrefix: 'wd', concurrency: 3 });
+
+    expect(saved.branchPrefix).toBe('wd');
+    expect(saved.concurrency).toBe(3);
+    expect(saved.defaultModel).toBe(DEFAULT_SETTINGS.defaultModel); // untouched fields keep defaults
+    expect(await service.getSettings('account-1')).toEqual(saved);
+  });
+
+  it('putSettings never stores a machine-local field, even when a browser echoes one back', async () => {
+    const { service } = buildService();
+
+    // Cloud web loads the whole blob and saves it whole, so `fontSizePx` rides along at its
+    // default — it must be dropped, not written, or one browser would set every desktop's font.
+    const saved = await service.putSettings('account-1', { branchPrefix: 'wd', fontSizePx: 99 });
+
+    expect(saved.branchPrefix).toBe('wd');
+    expect(saved.fontSizePx).toBe(DEFAULT_SETTINGS.fontSizePx);
+  });
+
+  it('putSettings replays ONLY the global keys to desktops — never a machine-local field', async () => {
+    const { service, store } = buildService();
+    knownDesktop(store, 'account-1');
+
+    await service.putSettings('account-1', { branchPrefix: 'wd', fontSizePx: 99 });
+
+    expect(store.commandRows).toHaveLength(1);
+    const payload = store.commandRows[0]!.payload as { channel: string; args: unknown[] };
+    expect(payload.channel).toBe('settings:save');
+    // The load-bearing invariant: the replayed patch carries the global key and NOT the local
+    // one, so the desktop's `mergeAppSettings` leaves its own `fontSizePx` untouched.
+    expect(payload.args[0]).toEqual({ branchPrefix: 'wd' });
+  });
+
+  it('a desktop sync push seeds the mirror (global only) and replays nothing back to it', async () => {
+    const { service, store } = buildService();
+
+    await service.sync('account-1', {
+      clientId: 'desktop-1',
+      cursor: null,
+      focused: false,
+      deltas: { tasks: [], projects: [], deletedTaskIds: [], deletedProjectIds: [] },
+      ackedCommandIds: [],
+      settings: { branchPrefix: 'from-desktop', fontSizePx: 30 },
+    });
+
+    const stored = await service.getSettings('account-1');
+    expect(stored.branchPrefix).toBe('from-desktop');
+    expect(stored.fontSizePx).toBe(DEFAULT_SETTINGS.fontSizePx); // local field stripped on the way in
+    // The pushing desktop is the source — nothing is replayed back to it.
+    expect(store.commandRows).toHaveLength(0);
+  });
+
+  it('a sync with no settings field leaves the mirror untouched', async () => {
+    const { service } = buildService();
+    await service.putSettings('account-1', { branchPrefix: 'wd' });
+
+    await service.sync('account-1', {
+      clientId: 'desktop-1',
+      cursor: null,
+      focused: false,
+      deltas: { tasks: [], projects: [], deletedTaskIds: [], deletedProjectIds: [] },
+      ackedCommandIds: [],
+    });
+
+    expect((await service.getSettings('account-1')).branchPrefix).toBe('wd');
   });
 });

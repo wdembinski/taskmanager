@@ -73,7 +73,7 @@ import {
 } from '@shared/board';
 import { assignmentStatusPatch, humanStatusPatch } from './cardStatusGuard';
 import { isBlockedishStatus, resolveGitHubColumn } from '@shared/statusResolve';
-import { clampSyncInterval, type AppSettings } from '@shared/settings';
+import { clampSyncInterval, pickGlobalSettings, type AppSettings } from '@shared/settings';
 import { sameExecTarget, type ExecTarget } from '@shared/execTarget';
 import { normalizeBaseUrl } from '@shared/jiraUrl';
 import { sanitizeToken, tokenHadNoise } from '@shared/secretToken';
@@ -4193,6 +4193,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     store,
     focus: focusTracker,
     getSettings: () => store.getSettings().cloud,
+    // The account-scoped slice of THIS desktop's settings, pushed up to seed the server's
+    // settings mirror so cloud web can read them with no desktop polling. `pickGlobalSettings`
+    // strips every machine-local field (font size, exec target, this desktop's own cloud
+    // connection) so none of them ever leaves this machine — see `@tm/shared/settings`.
+    getGlobalSettings: () => pickGlobalSettings(store.getSettings()),
     getAccessToken: getCloudAccessToken,
     // Turns a bare "no token" into the reason there isn't one — nothing pasted vs. revoked —
     // so a failed tick's `syncClock.cloud.error` (and the SyncRing tooltip built from it) says

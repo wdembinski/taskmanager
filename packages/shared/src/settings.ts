@@ -651,3 +651,71 @@ export function mergeAppSettings(current: AppSettings, incoming: unknown): AppSe
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
+
+/**
+ * The top-level {@link AppSettings} keys the CLOUD is authoritative for — account-scoped
+ * configuration and shared display preferences that mean the same thing on any machine or
+ * surface. The server's settings mirror stores exactly these: cloud web reads and writes
+ * them, the desktop pushes them up on sync and adopts them back, and everything here
+ * converges to one value per account.
+ *
+ * Everything NOT listed is either MACHINE-local — `defaultExecTarget` (a path only that
+ * machine has), `fontSizePx` (that window's type scale), `cloud` (this desktop's own
+ * connection to the server), `toastsEnabled` (that app's toasts) — or per-SURFACE view-state:
+ * `boardScopeId` / `foldedStepCards` / `shownEarlierStepCards` name where you left one screen,
+ * `gantt.collapsedEpicIds` the same for the timeline. A browser and a desktop each keep their
+ * own of those, so they never leave the surface they were set on.
+ *
+ * A WHITELIST, not a denylist, and that direction is the safety: a field newly added to
+ * `AppSettings` is LOCAL until someone deliberately lists it here, so a new machine-specific
+ * field can never silently begin syncing to every other client. `settings.test.ts` asserts
+ * this list plus the local ones accounts for every key, so adding a field fails the suite
+ * until it is classified.
+ */
+export const GLOBAL_SETTINGS_KEYS = [
+  'defaultModel',
+  'defaultPlanningModel',
+  'defaultPermissionMode',
+  'concurrency',
+  'syncIntervalMinutes',
+  'limitJitterMs',
+  'sessionTokenBudget',
+  'weeklyTokenBudget',
+  'writeBackPlan',
+  'maxAutoRetries',
+  'statusKeywords',
+  'branchPrefix',
+  'autoIntegrate',
+  'showTaskDetail',
+  'showGitGraph',
+  'board',
+  'jira',
+  'gitlab',
+  'github',
+] as const satisfies ReadonlyArray<keyof AppSettings>;
+
+/** One of the account-scoped keys — a union of literals, not `string`. */
+export type GlobalSettingsKey = (typeof GLOBAL_SETTINGS_KEYS)[number];
+
+/**
+ * The subset of a settings object the cloud is authoritative for: global keys only, with
+ * every machine-local and per-surface field stripped.
+ *
+ * Applied on EVERY crossing of the mirror boundary — the desktop's push up, cloud web's `PUT`,
+ * AND the server's replay back down to desktops — so a local field cannot travel in either
+ * direction. That last one is the load-bearing case: a replay carrying a full blob would set
+ * a desktop's `fontSizePx`/`defaultExecTarget` to whatever the mirror happened to hold, so the
+ * replay MUST be narrowed to global keys first (see `mergeAppSettings`, which folds this
+ * partial over the desktop's current settings and leaves its local fields untouched).
+ *
+ * `incoming` is `unknown` because it arrives over HTTP as JSON; only the global keys actually
+ * present are copied, and anything that is not an object yields `{}`.
+ */
+export function pickGlobalSettings(incoming: unknown): Partial<AppSettings> {
+  if (!isPlainObject(incoming)) return {};
+  const out: Record<string, unknown> = {};
+  for (const key of GLOBAL_SETTINGS_KEYS) {
+    if (incoming[key] !== undefined) out[key] = incoming[key];
+  }
+  return out as Partial<AppSettings>;
+}

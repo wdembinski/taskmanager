@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { Client } from '../entities/client.entity';
 import { Command } from '../entities/command.entity';
 import { CommandResultRow } from '../entities/commandResult.entity';
+import { SettingsMirror } from '../entities/settingsMirror.entity';
 import { Tombstone } from '../entities/tombstone.entity';
 import { ProjectMirror } from '../entities/projectMirror.entity';
 import { TaskMirror } from '../entities/taskMirror.entity';
@@ -19,6 +20,7 @@ import { MirrorService } from './mirror.service';
       Command,
       CommandResultRow,
       ProjectMirror,
+      SettingsMirror,
       TaskMirror,
       Tombstone,
     ]),

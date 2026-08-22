@@ -18,14 +18,15 @@
  *
  * Three tiers now:
  *  1. **Direct** — `task:create`, `task:setStatus`, `task:move`, `task:setDescription`,
- *     `project:add`, `project:update` and `project:remove` post straight to the write
- *     endpoints Step 3/4/5 added (`POST`/`PATCH`/`DELETE /v1/tasks` and `/v1/projects`)
- *     instead of relaying at all. These are the edits a browser with no desktop Client ever
- *     synced still has to be able to make — creating and working a card, and filing it under
- *     a project of its own, is the whole reason cloud web has to stand on its own — and the
- *     server applies the write to the mirror itself and replays it to every desktop Client on
- *     record (`mirror.service.ts`), so a Client that is offline right now still catches up
- *     later instead of the edit never having happened at all.
+ *     `project:add`, `project:update`, `project:remove`, `settings:get` and `settings:save`
+ *     post straight to the write/read endpoints (`POST`/`PATCH`/`DELETE /v1/tasks` and
+ *     `/v1/projects`, `GET`/`PUT /v1/settings`) instead of relaying at all. These are the
+ *     edits a browser with no desktop Client ever synced still has to be able to make —
+ *     creating and working a card, filing it under a project of its own, and reading and
+ *     changing the account's global settings is the whole reason cloud web has to stand on its
+ *     own — and the server applies each write to the mirror itself and replays it to every
+ *     desktop Client on record (`mirror.service.ts`), so a Client that is offline right now
+ *     still catches up later instead of the edit never having happened at all.
  *  2. **Relayed** — anything else `@tm/shared/ipcRelay` marks `'relay'`, still an `ipc-invoke`
  *     command held open and polled for through `GET /v1/results`, answered by the desktop's
  *     own handler.
@@ -57,6 +58,7 @@ import {
   type CreateProjectRequest,
   type CreateTaskRequest,
   type ResultsResponse,
+  type SettingsResponse,
   type UpdateProjectRequest,
   type UpdateTaskRequest,
   type UploadTicket,
@@ -66,6 +68,7 @@ import type { TaskAttachment, UploadedAttachment } from '@tm/shared/attachments'
 import { hostOnlyMessage, isRelayable } from '@tm/shared/ipcRelay';
 import type { IpcApi, IpcEvents } from '@tm/shared/ipc';
 import type { Project, Task } from '@tm/shared/model';
+import type { AppSettings } from '@tm/shared/settings';
 import { BOARD_CLIENT_HEADER } from '@tm/protocol/wire';
 import type { Transport } from '@tm/ui/transport';
 import type { FocusSignal } from './BoardPoller';
@@ -231,6 +234,16 @@ export class HttpTransport implements Transport {
     if (channel === 'project:remove') {
       const [projectId] = args as Parameters<IpcApi['project:remove']>;
       return this.deleteProject(projectId) as ReturnType<IpcApi[K]>;
+    }
+    // Settings are account-scoped and mirrored server-side (`GET`/`PUT /v1/settings`), so both
+    // read and write go direct — a browser must be able to see and change them with no desktop
+    // Client on record. The server narrows a save to global keys and replays it to desktops.
+    if (channel === 'settings:get') {
+      return this.readSettings() as ReturnType<IpcApi[K]>;
+    }
+    if (channel === 'settings:save') {
+      const [settings] = args as Parameters<IpcApi['settings:save']>;
+      return this.writeSettings(settings) as ReturnType<IpcApi[K]>;
     }
     if (!isRelayable(channel)) {
       return Promise.reject(new Error(hostOnlyMessage(channel))) as ReturnType<IpcApi[K]>;
@@ -487,6 +500,47 @@ export class HttpTransport implements Transport {
     });
     if (!res.ok) throw new Error(`request failed (${res.status} ${res.statusText})`);
     return (await res.json()) as Project;
+  }
+
+  /**
+   * `GET /v1/settings` — the account's global settings, mirrored server-side so this reads with
+   * no desktop Client polling. The response is a complete `AppSettings`; its machine-local
+   * fields are stock defaults (only global keys are ever mirrored — see `pickGlobalSettings`),
+   * which is exactly what the Settings screen renders and never more.
+   */
+  private async readSettings(): Promise<AppSettings> {
+    const token = await this.deps.getAccessToken();
+    if (!token) throw new Error('Not signed in to vipper.iam.');
+
+    const fetchImpl = this.deps.fetchImpl ?? fetch;
+    const res = await fetchImpl(`${this.deps.apiBase}/v1/settings`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) throw new Error(`request failed (${res.status} ${res.statusText})`);
+    const body = (await res.json()) as SettingsResponse;
+    return body.settings;
+  }
+
+  /**
+   * `PUT /v1/settings` — cloud web writing global settings directly. Sends the whole blob the
+   * Settings screen loaded and saves back (it has no partial-save path); the SERVER narrows it
+   * to global keys, so the machine-local fields riding along at their defaults are dropped
+   * rather than stored, and replays the change to every desktop Client on record.
+   */
+  private async writeSettings(settings: AppSettings): Promise<void> {
+    const token = await this.deps.getAccessToken();
+    if (!token) throw new Error('Not signed in to vipper.iam.');
+
+    const fetchImpl = this.deps.fetchImpl ?? fetch;
+    const res = await fetchImpl(`${this.deps.apiBase}/v1/settings`, {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(settings),
+    });
+    if (!res.ok) throw new Error(`request failed (${res.status} ${res.statusText})`);
   }
 
   /** `DELETE /v1/projects/:id` — the direct tier's one no-body shape. */
