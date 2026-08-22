@@ -34,6 +34,7 @@ import { DEFAULT_PRIORITIES } from '@tm/shared/priority';
 import { ISSUE_TYPES, isEpic } from '@tm/shared/tickets';
 import { typeIcon } from '@tm/ui/board/TaskCard';
 import { MANUAL_STATUS_OPTIONS } from '@tm/ui/taskStatus';
+import { AssignAgentSection } from '../agents/AssignAgentSection';
 import { updateTicket, type ProjectsApiDeps } from './projectsApi';
 
 const useStyles = makeStyles({
@@ -296,6 +297,8 @@ export function TicketDetailPage({
         )}
         {!dirty && <Body1 style={{ color: tokens.colorNeutralForeground3 }}>Up to date</Body1>}
       </div>
+
+      <AssignAgentSection task={task} apiDeps={apiDeps} />
     </div>
   );
 }

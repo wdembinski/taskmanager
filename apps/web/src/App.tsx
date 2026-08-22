@@ -35,6 +35,7 @@ import {
 import { Caption1, makeStyles } from '@fluentui/react-components';
 import {
   AlertRegular,
+  BotRegular,
   DataTrendingRegular,
   FolderRegular,
   PlayRegular,
@@ -48,6 +49,7 @@ import { NavRail, type NavRailItem } from '@tm/ui/shell/NavRail';
 import { StatusBar, StatusDot, StatusSpacer } from '@tm/ui/shell/StatusBar';
 import { TransportProvider } from '@tm/ui/transport';
 import { PERSONAL_PROJECT_ID } from '@tm/shared/model';
+import { Fleet } from './agents/Fleet';
 import { CloudAuth } from './auth/cloudAuth';
 import { SignInScreen } from './auth/SignInScreen';
 import { useCloudAuth } from './auth/useCloudAuth';
@@ -89,10 +91,11 @@ const DESKTOP_ONLY = 'desktop only';
 
 /**
  * The desktop's rail, in the desktop's order — see `apps/client/src/renderer/src/App.tsx` —
- * plus Projects, which the desktop does not have yet: the hub is this step's own addition,
- * ahead of the desktop side of the same plan.
+ * plus Projects and Fleet, which the desktop does not have yet: both are this same plan's own
+ * additions, ahead of the desktop side of it (Fleet's REST calls have no IPC channel to relay
+ * through yet either — see `agents/agentsApi.ts`).
  *
- * Five of the six are live now. Attention and Performance moved into `@tm/ui` whole (they
+ * Six of the seven are live now. Attention and Performance moved into `@tm/ui` whole (they
  * had no host in them at all, only `window.api` calls that are `useTransport()` now), and
  * Settings is a fork: nine of its twenty-one channels are host-bound, so the shell is this
  * app's and the host-free sections are shared. Scratch run stays off — it drives a live
@@ -101,6 +104,7 @@ const DESKTOP_ONLY = 'desktop only';
 const NAV: readonly NavRailItem[] = [
   { id: 'mytasks', label: 'My Tasks', icon: <TaskListSquareLtrRegular /> },
   { id: 'projects', label: 'Projects', icon: <FolderRegular /> },
+  { id: 'fleet', label: 'Fleet', icon: <BotRegular /> },
   { id: 'performance', label: 'Performance', icon: <DataTrendingRegular /> },
   { id: 'attention', label: 'Attention', icon: <AlertRegular /> },
   { id: 'settings', label: 'Settings', icon: <SettingsRegular /> },
@@ -108,12 +112,13 @@ const NAV: readonly NavRailItem[] = [
 ];
 
 /** The rail's destinations that this app actually renders. */
-type Screen = 'mytasks' | 'projects' | 'performance' | 'attention' | 'settings';
+type Screen = 'mytasks' | 'projects' | 'fleet' | 'performance' | 'attention' | 'settings';
 
 /** Where each nav tile actually lives. */
 const NAV_PATH: Record<Screen, string> = {
   mytasks: '/tasks',
   projects: '/projects',
+  fleet: '/fleet',
   performance: '/performance',
   attention: '/attention',
   settings: '/settings',
@@ -122,6 +127,7 @@ const NAV_PATH: Record<Screen, string> = {
 /** Which tile a path lights up — `/projects/:id` is still under the Projects tile. */
 function screenForPath(pathname: string): Screen {
   if (pathname.startsWith('/projects')) return 'projects';
+  if (pathname.startsWith('/fleet')) return 'fleet';
   if (pathname.startsWith('/performance')) return 'performance';
   if (pathname.startsWith('/attention')) return 'attention';
   if (pathname.startsWith('/settings')) return 'settings';
@@ -348,6 +354,7 @@ function SignedInBoard({
               />
             }
           />
+          <Route path="/fleet" element={<Fleet state={board.state} apiDeps={apiDeps} />} />
           <Route path="/performance" element={<Performance />} />
           <Route path="/attention" element={<Attention />} />
           <Route path="/settings" element={<SettingsScreen />} />
