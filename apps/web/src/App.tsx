@@ -54,8 +54,11 @@ import { useCloudAuth } from './auth/useCloudAuth';
 import { BoardScreen } from './board/BoardScreen';
 import { SettingsScreen } from './settings/SettingsScreen';
 import { ClientPicker } from './board/ClientPicker';
+import { BacklogRoute } from './projects/BacklogRoute';
+import { EpicsRoute } from './projects/EpicsRoute';
 import { ProjectBoardRoute } from './projects/ProjectBoardRoute';
 import { ProjectsHub } from './projects/ProjectsHub';
+import { TicketDetailRoute } from './projects/TicketDetailRoute';
 import { SkewBanner } from './board/SkewBanner';
 import { StaleBanner } from './board/StaleBanner';
 import { versionSkew } from './board/targetClient';
@@ -320,6 +323,28 @@ function SignedInBoard({
                 everSeenClient={board.targetClientId !== null}
                 onSetStatus={(taskId, status) => void board.setStatus(taskId, status)}
                 onStatusNoted={board.noteStatus}
+              />
+            }
+          />
+          <Route
+            path="/projects/:projectId/backlog"
+            element={
+              <BacklogRoute state={board.state} apiDeps={apiDeps} onTaskSaved={board.upsertTask} />
+            }
+          />
+          <Route
+            path="/projects/:projectId/epics"
+            element={
+              <EpicsRoute state={board.state} apiDeps={apiDeps} onTaskSaved={board.upsertTask} />
+            }
+          />
+          <Route
+            path="/projects/:projectId/tickets/:ticketId"
+            element={
+              <TicketDetailRoute
+                state={board.state}
+                apiDeps={apiDeps}
+                onTaskSaved={board.upsertTask}
               />
             }
           />

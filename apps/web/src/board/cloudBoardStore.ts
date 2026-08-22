@@ -154,3 +154,15 @@ export function isTaskPending(state: CloudBoardState, taskId: string): boolean {
 export function mergeProject(state: CloudBoardState, project: Project): CloudBoardState {
   return { ...state, projects: { ...state.projects, [project.id]: project } };
 }
+
+/**
+ * The same optimism as {@link mergeProject}, for a ticket the server just created or
+ * edited (`TicketsController`, over `projectsApi.ts`'s `createTicket`/`updateTicket`) — the
+ * backlog and ticket-detail pages' own write path, straight to the server's authoritative
+ * store rather than relayed to a desktop Client. The write bumps the same `rowVersion` a
+ * mirrored delta does, so the next poll would fold it in regardless; this is what makes it
+ * show up before that poll happens.
+ */
+export function mergeTask(state: CloudBoardState, task: Task): CloudBoardState {
+  return { ...state, tasks: { ...state.tasks, [task.id]: task } };
+}

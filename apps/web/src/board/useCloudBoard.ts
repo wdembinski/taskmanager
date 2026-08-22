@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CadenceDirective } from '@tm/protocol/cadence';
 import type { ClientPresence } from '@tm/protocol/wire';
-import type { ManualStatus, Project } from '@tm/shared/model';
+import type { ManualStatus, Project, Task } from '@tm/shared/model';
 import type { CloudAuth } from '../auth/cloudAuth';
 import type { WebConfig } from '../env';
 import { createPresenceFocusSignal, PresenceHeartbeat } from '../presence';
@@ -21,6 +21,7 @@ import {
   clearPendingStatusChange,
   expirePendingStatusChanges,
   mergeProject,
+  mergeTask,
   queuePendingStatusChange,
   type CloudBoardState,
 } from './cloudBoardStore';
@@ -68,6 +69,9 @@ export interface CloudBoardApi {
   /** Drop a project the hub just created or edited straight into the mirror — see
    *  `cloudBoardStore.mergeProject`. */
   upsertProject: (project: Project) => void;
+  /** Drop a ticket the backlog/epics/ticket-detail pages just created or edited straight
+   *  into the mirror — see `cloudBoardStore.mergeTask`. */
+  upsertTask: (task: Task) => void;
 }
 
 export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi {
@@ -200,6 +204,10 @@ export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi
     setState((s) => mergeProject(s, project));
   }, []);
 
+  const upsertTask = useCallback((task: Task) => {
+    setState((s) => mergeTask(s, task));
+  }, []);
+
   return {
     state,
     cadence: state.cadence,
@@ -211,5 +219,6 @@ export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi
     setStatus,
     noteStatus,
     upsertProject,
+    upsertTask,
   };
 }

@@ -16,7 +16,15 @@
  * `GET /v1/board` poll picks it up unprompted — `cloudBoardStore.mergeProject` is only the
  * optimistic head start.
  */
-import type { AddProjectInput, Project, ProjectPatch } from '@tm/shared/model';
+import type {
+  AddProjectInput,
+  ManualStatus,
+  Project,
+  ProjectPatch,
+  Task,
+  TicketInput,
+  TicketPatch,
+} from '@tm/shared/model';
 
 export interface ProjectsApiDeps {
   /** The `@tm/server` root — no trailing slash. */
@@ -24,6 +32,20 @@ export interface ProjectsApiDeps {
   getAccessToken: () => Promise<string | null>;
   fetchImpl?: typeof fetch;
 }
+
+/**
+ * What `PATCH /v1/tickets/:id` accepts — {@link TicketPatch}'s ticket-only fields plus the
+ * handful every other card already edits through, mirroring `TicketsService`'s own
+ * `TicketUpdateRequest` (`apps/server/src/tickets/tickets.service.ts`). Declared again here
+ * rather than imported: the server package is not something a browser bundle pulls in.
+ */
+export type TicketUpdateRequest = TicketPatch & {
+  title?: string;
+  phase?: string;
+  status?: ManualStatus;
+  description?: string | null;
+  priority?: string | null;
+};
 
 export function createProject(deps: ProjectsApiDeps, input: AddProjectInput): Promise<Project> {
   return send(deps, 'POST', '/v1/projects', input);
@@ -35,6 +57,30 @@ export function updateProject(
   patch: ProjectPatch,
 ): Promise<Project> {
   return send(deps, 'PATCH', `/v1/projects/${encodeURIComponent(id)}`, patch);
+}
+
+/**
+ * Create a native ticket under a `kind: 'ticket'` project (`TicketsService.createTicket`) —
+ * the backlog and epics views' own "New ticket", a straight REST write rather than a
+ * `task:create` relayed to a desktop Client, so it works whether or not one has ever synced
+ * this account.
+ */
+export function createTicket(
+  deps: ProjectsApiDeps,
+  projectId: string,
+  input: TicketInput,
+): Promise<Task> {
+  return send(deps, 'POST', `/v1/projects/${encodeURIComponent(projectId)}/tickets`, input);
+}
+
+/** Edit a native ticket — the backlog row's quick edit and the ticket-detail page's save,
+ *  both over the same REST write as {@link createTicket}. */
+export function updateTicket(
+  deps: ProjectsApiDeps,
+  id: string,
+  patch: TicketUpdateRequest,
+): Promise<Task> {
+  return send(deps, 'PATCH', `/v1/tickets/${encodeURIComponent(id)}`, patch);
 }
 
 async function send<T>(
