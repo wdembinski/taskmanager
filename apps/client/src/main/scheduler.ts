@@ -2513,48 +2513,70 @@ export class Scheduler {
    * — a card executing an approved plan holds no session of its own, so every item raised
    * under it is filed against a step.
    *
-   * Two deliberate exceptions to "just delete it":
-   *
-   *  - **A held tool is released, not abandoned.** `pendingDecisions` holds the broker's
-   *    `resolve` for a permission / plan-approval / agent-question; deleting the item
-   *    without calling it leaves the CLI process blocked on that request until the app
-   *    exits. Denied, because nobody decided (see {@link DISMISSED_MESSAGE}).
-   *  - **`merge-conflict` items are never dropped.** That item is not a card shouting, it
-   *    is a rebase stopped halfway with markers in a worktree, and its answer is what
-   *    finishes or abandons the integration. Dismissing it would strand the repo with no
-   *    control left that could finish the job.
+   * Each item is dropped through {@link dismissAttentionItem} one at a time, which is where
+   * the two exceptions to "just delete it" — a held tool is released rather than abandoned,
+   * and a `merge-conflict` item is refused outright — actually live.
    */
   dismissAttentionForCard(taskId: string): number {
     if (this.disposed) return 0;
     const ids = new Set([taskId, ...this.store.getSubtasks(taskId).map((s) => s.id)]);
     let dropped = 0;
-    const touchedRuns = new Set<string>();
-    // Snapshotted: `resolveAttention` mutates the map we would otherwise be iterating.
+    // Snapshotted: `dismissAttentionItem` (via `resolveAttention`) mutates the map we would
+    // otherwise be iterating.
     for (const item of [...this.attention.values()]) {
-      if (!ids.has(item.taskId) || item.kind === 'merge-conflict') continue;
-      const pending = this.pendingDecisions.get(item.id);
-      if (pending) {
-        this.pendingDecisions.delete(item.id);
-        pending.resolve({ behavior: 'deny', message: DISMISSED_MESSAGE });
-      }
-      // The stored context behind a parked failure goes with its item; leaving it would
-      // keep a resolution alive for an item no one can reach any more.
-      this.pendingFailures.delete(item.id);
-      if (item.runId) touchedRuns.add(item.runId);
-      this.resolveAttention(item.id);
-      dropped++;
-    }
-    // A run whose turn already ended under one of those items (`deferResult`) has just lost
-    // the last thing that could have started another one. Dismissing is the human saying
-    // they are done — it is not a reason for the card to keep spinning, so the verdict that
-    // was being held is written now.
-    for (const runId of touchedRuns) {
-      const run = this.runs.get(runId);
-      if (run?.deferredResult && !this.hasPendingAttention(runId)) {
-        this.settleDeferred(run, run.deferredResult);
-      }
+      if (!ids.has(item.taskId)) continue;
+      if (this.dismissAttentionItem(item.id)) dropped++;
     }
     return dropped;
+  }
+
+  /**
+   * Drop exactly ONE inbox item, without answering it. The single-item sibling of
+   * {@link dismissAttentionForCard} (which is now built on this) — that one sweeps a whole
+   * card and its steps because closing a card, or its detail pane's Dismiss, both mean "the
+   * human is done with all of it". But a card can hold more than one open ask at once (two
+   * parked steps, or a chain that asked twice before either was answered), and the inbox
+   * offers each as its own item — the human should be able to get rid of one without being
+   * forced to also drop, or first answer, whatever else that card is asking.
+   *
+   * Same two exceptions as the sweep, for the same reasons:
+   *
+   *  - **A held tool is released, not abandoned.** Deleting the item without resolving the
+   *    broker's promise would leave the CLI process blocked on that request until the app
+   *    exits. Denied, because nobody decided (see {@link DISMISSED_MESSAGE}).
+   *  - **`merge-conflict` items are never dropped.** That item is a rebase stopped halfway
+   *    with markers in a worktree, not a card shouting — dismissing it would strand the
+   *    repo with no control left that could finish the job.
+   *
+   * Returns whether anything was actually dropped, so a caller (and `dismissAttentionForCard`'s
+   * count) can tell "already gone" or "refused" from "worked".
+   */
+  dismissAttentionItem(itemId: string): boolean {
+    if (this.disposed) return false;
+    const item = this.attention.get(itemId);
+    if (!item || item.kind === 'merge-conflict') return false;
+
+    const pending = this.pendingDecisions.get(itemId);
+    if (pending) {
+      this.pendingDecisions.delete(itemId);
+      pending.resolve({ behavior: 'deny', message: DISMISSED_MESSAGE });
+    }
+    // The stored context behind a parked failure goes with its item; leaving it would keep
+    // a resolution alive for an item no one can reach any more.
+    this.pendingFailures.delete(itemId);
+    const runId = item.runId;
+    this.resolveAttention(itemId);
+
+    // A run whose turn already ended under this item (`deferResult`) has just lost the last
+    // thing that could have started another one — but only if nothing ELSE is still parked
+    // on it (a card can hold two items on the same run). Dismissing is the human saying they
+    // are done; it is not a reason for the card to keep spinning, so the verdict that was
+    // being held is written now.
+    const run = runId ? this.runs.get(runId) : undefined;
+    if (run?.deferredResult && !this.hasPendingAttention(runId)) {
+      this.settleDeferred(run, run.deferredResult);
+    }
+    return true;
   }
 
   /**

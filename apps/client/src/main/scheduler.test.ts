@@ -854,6 +854,36 @@ describe('Scheduler.onRunEvent — a `result` under a parked question', () => {
     expect(stop).toHaveBeenCalledWith('r1');
   });
 
+  it('holds the deferred result open while a SIBLING item on the same run is still parked', async () => {
+    // Two independent asks land on the one run — an agent question and, separately, a
+    // risky tool wanting approval — the shape `dismissAttentionItem` exists for: a card can
+    // hold more than one open item at once, and getting rid of one must not silently decide
+    // the other.
+    const { scheduler, task, stop, emitAttention, fire } = setup();
+    void scheduler.decidePermission(ask);
+    void scheduler.decidePermission({
+      runId: 'r1',
+      toolName: 'Bash',
+      input: { command: 'git push' },
+    });
+    await fire(okResult);
+
+    expect(emitAttention).toHaveBeenCalledTimes(2);
+    const [first, second] = emitAttention.mock.calls.map((c) => (c[0] as { id: string }).id);
+
+    scheduler.dismissAttentionItem(first);
+    // The Bash approval is still open — the run's held verdict must not be written yet, or
+    // the second item would be answering a task no longer waiting for it.
+    expect(task.status).toBe('waiting-input');
+    expect(stop).not.toHaveBeenCalled();
+
+    scheduler.dismissAttentionItem(second);
+    // Nothing is left that could ever move this run, so the `result` the CLI already sent
+    // is the outcome now.
+    expect(task.status).toBe('in-progress');
+    expect(stop).toHaveBeenCalledWith('r1');
+  });
+
   it('still lets a run whose turn is NOT over resume on an answer', () => {
     // The ordinary parked question: no `result` has arrived, the CLI is genuinely blocked
     // on the tool, and answering releases it and puts the task back to `running`.
@@ -4793,6 +4823,130 @@ describe('dismissAttentionForCard', () => {
   it('is a no-op for a card with nothing parked on it', () => {
     const { scheduler, resolved } = setup([item({ id: 'i4', taskId: 'other' })]);
     expect(scheduler.dismissAttentionForCard('c1')).toBe(0);
+    expect(resolved).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * A single item, not a whole card — {@link Scheduler.dismissAttentionItem}.
+ *
+ * `dismissAttentionForCard` sweeps everything a card (and its steps) is asking at once,
+ * which is right for closing the card and its detail pane's Dismiss. But the inbox can hold
+ * more than one open ask on the same card at a time — two parked steps, or a chain that
+ * asked twice before either was answered — and a per-item Dismiss in the inbox must drop
+ * exactly the one the human clicked, leaving any sibling ask exactly as parked as it was.
+ */
+describe('dismissAttentionItem', () => {
+  const mkTask = (over: Partial<Task>): Task =>
+    ({
+      id: 'c1',
+      projectId: 'agent-p',
+      phase: '',
+      title: 'card',
+      status: 'done',
+      sessionId: null,
+      order: 0,
+      source: 'adhoc',
+      dependsOn: [],
+      isContract: false,
+      isScaffold: false,
+      ...over,
+    }) as Task;
+
+  const item = (over: Record<string, unknown>): Record<string, unknown> => ({
+    id: 'i1',
+    runId: 'r1',
+    taskId: 'c1',
+    projectId: 'agent-p',
+    taskTitle: 'card',
+    kind: 'question',
+    prompt: 'which one?',
+    options: [],
+    toolName: null,
+    reason: null,
+    createdAt: 0,
+    ...over,
+  });
+
+  function setup(items: Array<Record<string, unknown>>): {
+    scheduler: Scheduler;
+    resolved: ReturnType<typeof vi.fn>;
+    open: () => string[];
+  } {
+    const card = mkTask({ id: 'c1' });
+    const all = [card, mkTask({ id: 'other', title: 'someone else' })];
+    const store = {
+      getTask: (id: string) => all.find((t) => t.id === id),
+      getTasks: () => all,
+      getSubtasks: () => [],
+      updateTask: (id: string, patch: Partial<Task>) => {
+        const t = all.find((x) => x.id === id);
+        if (t) Object.assign(t, patch);
+        return t;
+      },
+      getSettings: () => ({ limitJitterMs: 0, concurrency: 1, maxAutoRetries: 0 }),
+      saveLimitGate: () => undefined,
+      ...INERT_ATTENTION_STORE,
+    } as unknown as Store;
+    const resolved = vi.fn();
+    const scheduler = new Scheduler(
+      store,
+      { start: vi.fn(), stop: vi.fn(), send: vi.fn() } as unknown as SessionManager,
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      resolved,
+      vi.fn(),
+    );
+    const map = (scheduler as unknown as { attention: Map<string, unknown> }).attention;
+    for (const i of items) map.set(i.id as string, i);
+    return { scheduler, resolved, open: () => [...map.keys()] };
+  }
+
+  it('drops exactly the one item, leaving a sibling ask on the same card parked', () => {
+    const { scheduler, resolved, open } = setup([
+      item({ id: 'i1', kind: 'permission' }),
+      item({ id: 'i2', kind: 'question' }),
+    ]);
+
+    expect(scheduler.dismissAttentionItem('i1')).toBe(true);
+    expect(open()).toEqual(['i2']);
+    expect(resolved).toHaveBeenCalledWith('i1');
+    expect(resolved).not.toHaveBeenCalledWith('i2');
+  });
+
+  it('releases the tool a held decision was blocking, denied', () => {
+    const { scheduler } = setup([item({ id: 'i1', kind: 'permission' })]);
+    const resolve = vi.fn();
+    (scheduler as unknown as { pendingDecisions: Map<string, unknown> }).pendingDecisions.set(
+      'i1',
+      { runId: 'r1', input: {}, resolve },
+    );
+
+    expect(scheduler.dismissAttentionItem('i1')).toBe(true);
+
+    // Dropping the item without this leaves the CLI process parked on its HTTP request until
+    // the app exits. Denied, because nobody approved anything.
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(resolve.mock.calls[0][0]).toMatchObject({ behavior: 'deny' });
+    expect(
+      (scheduler as unknown as { pendingDecisions: Map<string, unknown> }).pendingDecisions.size,
+    ).toBe(0);
+  });
+
+  it('refuses to dismiss a merge conflict — its answer is what finishes the rebase', () => {
+    const { scheduler, resolved, open } = setup([item({ id: 'i1', kind: 'merge-conflict' })]);
+
+    expect(scheduler.dismissAttentionItem('i1')).toBe(false);
+    // A rebase stopped halfway with markers in a worktree is not a card shouting; hiding it
+    // would strand the repo with no control left that could finish the job.
+    expect(open()).toEqual(['i1']);
+    expect(resolved).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op for an id the inbox no longer holds', () => {
+    const { scheduler, resolved } = setup([item({ id: 'i4', taskId: 'other' })]);
+    expect(scheduler.dismissAttentionItem('ghost')).toBe(false);
     expect(resolved).not.toHaveBeenCalled();
   });
 });
