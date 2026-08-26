@@ -20,10 +20,13 @@ import {
   Caption1,
   Field,
   makeStyles,
+  MessageBar,
+  MessageBarBody,
   Text,
   Textarea,
   tokens,
 } from '@fluentui/react-components';
+import { DismissRegular } from '@fluentui/react-icons';
 import type { AttentionAnswer, AttentionItem } from '@tm/shared/attention';
 import { AgentQuestionForm } from './AgentQuestionForm';
 import { Markdown } from './chat/MarkdownView';
@@ -64,6 +67,7 @@ const useStyles = makeStyles({
     color: tokens.colorNeutralForeground2,
   },
   empty: { color: tokens.colorNeutralForeground3 },
+  dismissError: { marginTop: '-4px' },
 });
 
 function KindBadge({ kind }: { kind: AttentionItem['kind'] }): JSX.Element {
@@ -120,18 +124,33 @@ function KindBadge({ kind }: { kind: AttentionItem['kind'] }): JSX.Element {
 function InboxItem({
   item,
   onAnswer,
+  onDismiss,
 }: {
   item: AttentionItem;
   onAnswer: (id: string, answer: AttentionAnswer) => Promise<void>;
+  onDismiss: (id: string) => Promise<void>;
 }): JSX.Element {
   const styles = useStyles();
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
+  const [dismissError, setDismissError] = useState<string | null>(null);
 
   const answer = async (a: AttentionAnswer): Promise<void> => {
     setBusy(true);
     try {
       await onAnswer(item.id, a);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const dismiss = async (): Promise<void> => {
+    setBusy(true);
+    setDismissError(null);
+    try {
+      await onDismiss(item.id);
+    } catch (e) {
+      setDismissError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
@@ -147,7 +166,26 @@ function InboxItem({
         <Caption1 className={styles.reason}>
           {new Date(item.createdAt).toLocaleTimeString()}
         </Caption1>
+        {/* A merge-conflict item must be resolved or abandoned below, not dropped —
+            the scheduler refuses it, so don't offer a button that would just error. */}
+        {item.kind !== 'merge-conflict' && (
+          <Button
+            size="small"
+            appearance="subtle"
+            icon={<DismissRegular />}
+            disabled={busy}
+            title="Dismiss — clear this item without answering it"
+            aria-label="Dismiss"
+            onClick={() => void dismiss()}
+          />
+        )}
       </div>
+
+      {dismissError && (
+        <MessageBar intent="error" className={styles.dismissError}>
+          <MessageBarBody>{dismissError}</MessageBarBody>
+        </MessageBar>
+      )}
 
       <div className={styles.prompt}>
         <Markdown source={item.prompt} />
@@ -327,6 +365,12 @@ export function Attention(): JSX.Element {
     setItems((prev) => (prev ? prev.filter((i) => i.id !== id) : prev));
   };
 
+  const dismiss = async (id: string): Promise<void> => {
+    await transport.invoke('attention:dismiss', id);
+    // Throws (and leaves the item in place) if the channel refuses it — see InboxItem.
+    setItems((prev) => (prev ? prev.filter((i) => i.id !== id) : prev));
+  };
+
   if (items === null) {
     return (
       <PaneLoading
@@ -350,7 +394,7 @@ export function Attention(): JSX.Element {
   return (
     <div className={styles.root}>
       {items.map((item) => (
-        <InboxItem key={item.id} item={item} onAnswer={answer} />
+        <InboxItem key={item.id} item={item} onAnswer={answer} onDismiss={dismiss} />
       ))}
     </div>
   );
