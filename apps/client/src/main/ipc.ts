@@ -1266,6 +1266,19 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
   handle('attention:list', async () => scheduler.listAttention());
   handle('attention:answer', async (itemId, answer) => scheduler.answerAttention(itemId, answer));
+  /**
+   * The inbox's per-item Dismiss. `dismissAttentionItem` reports `false` for an item that is
+   * already gone or a `merge-conflict` it refuses to drop — thrown here (rather than
+   * swallowed) so the UI can say why the button did nothing, the same shape every other
+   * refused-but-expected mutation in this file uses.
+   */
+  handle('attention:dismiss', async (itemId) => {
+    if (!scheduler.dismissAttentionItem(itemId)) {
+      throw new Error(
+        'Could not dismiss that item — it may already be gone, or it needs to be resolved instead.',
+      );
+    }
+  });
 
   /**
    * Hush a card that is shouting but is NOT done — you have read the comment, you know the
