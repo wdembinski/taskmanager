@@ -854,6 +854,36 @@ describe('Scheduler.onRunEvent — a `result` under a parked question', () => {
     expect(stop).toHaveBeenCalledWith('r1');
   });
 
+  it('holds the deferred result open while a SIBLING item on the same run is still parked', async () => {
+    // Two independent asks land on the one run — an agent question and, separately, a
+    // risky tool wanting approval — the shape `dismissAttentionItem` exists for: a card can
+    // hold more than one open item at once, and getting rid of one must not silently decide
+    // the other.
+    const { scheduler, task, stop, emitAttention, fire } = setup();
+    void scheduler.decidePermission(ask);
+    void scheduler.decidePermission({
+      runId: 'r1',
+      toolName: 'Bash',
+      input: { command: 'git push' },
+    });
+    await fire(okResult);
+
+    expect(emitAttention).toHaveBeenCalledTimes(2);
+    const [first, second] = emitAttention.mock.calls.map((c) => (c[0] as { id: string }).id);
+
+    scheduler.dismissAttentionItem(first);
+    // The Bash approval is still open — the run's held verdict must not be written yet, or
+    // the second item would be answering a task no longer waiting for it.
+    expect(task.status).toBe('waiting-input');
+    expect(stop).not.toHaveBeenCalled();
+
+    scheduler.dismissAttentionItem(second);
+    // Nothing is left that could ever move this run, so the `result` the CLI already sent
+    // is the outcome now.
+    expect(task.status).toBe('in-progress');
+    expect(stop).toHaveBeenCalledWith('r1');
+  });
+
   it('still lets a run whose turn is NOT over resume on an answer', () => {
     // The ordinary parked question: no `result` has arrived, the CLI is genuinely blocked
     // on the tool, and answering releases it and puts the task back to `running`.
@@ -1981,6 +2011,8 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       integrateResult?: Record<string, unknown>;
       /** What continuing the paused rebase reports back; `undefined` = it merged. */
       finishResult?: Record<string, unknown>;
+      /** The setting that decides whether a failure is re-queued or parked for a human. */
+      maxAutoRetries?: number;
     },
   ) {
     const agentProject = {
@@ -2071,7 +2103,7 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       // `autoIntegrate` on: these cases are ABOUT the integration path, and Phase 17 made
       // merging manual by default. The manual case has its own test below.
       getSettings: () => ({
-        maxAutoRetries: 0,
+        maxAutoRetries: opts?.maxAutoRetries ?? 0,
         limitJitterMs: 0,
         concurrency: 1,
         autoIntegrate: opts?.autoIntegrate ?? true,
@@ -2703,6 +2735,83 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       await flush();
       // Nothing to resume, so it starts from its brief — which is still the whole point:
       // skipping it left the step parked behind a gate that no longer existed.
+      expect(h.prepared).toEqual([{ taskId: 's1', owner: 't1' }]);
+    });
+
+    /**
+     * The reported bug (22 Aug 2026), and the fourth hole in the same wall: **a step
+     * parked by the gate and then settled over by its own `result` 13ms later.**
+     *
+     * The live trail, off `task_events` for "Port the Mongo-to-SQL migration tooling":
+     * `rate_limit_event` (rejected, `resetsAt` 21:30) at `.697`, `engageLimit` parks the
+     * step and notes "…picks up by itself then — nothing to press" at `.698`, and the
+     * turn's own `result` lands at `.710`. That result names the wall only as *"You've hit
+     * your session limit · resets 11:30pm (Europe/Warsaw)"* — a sentence
+     * `detectLimitFailure` does not read (`LIMIT_PHRASE` wants "usage limit reached") —
+     * over a bare `api_error` label it deliberately ignores. So `case 'result'` settled it
+     * as this card's own failure: `handleRunFailure` wrote the step back to `pending` and
+     * queued a retry, over the park written 13ms earlier.
+     *
+     * Five hours later the reset fired and `resumeParked` asked its one question — is this
+     * task still `blocked-by-limit`? It was `pending`, so it was skipped in silence, and
+     * the chain stopped for good at 8 of 17 with a gate that had held its id all along.
+     */
+    it('does not settle a step over the park its own gate has just written', async () => {
+      // The live setting, and what makes this the destructive shape: a queued retry is what
+      // rewrites the status. With retries off the same interleaving parks it for a human,
+      // which is wrong in the same way and just as unresumable.
+      const h = setup(undefined, { maxAutoRetries: 1 });
+      h.seedRun('r1', 's1');
+
+      h.fire('r1', limited); // the CLI's structured signal, first
+      expect(h.children[0].status).toBe('blocked-by-limit');
+
+      await h.fire('r1', {
+        kind: 'result',
+        success: false,
+        resultText: "You've hit your session limit · resets 11:30pm (Europe/Warsaw)",
+        costUsd: null,
+        durationMs: null,
+        stopReason: 'stop_sequence',
+        terminalReason: 'api_error',
+      });
+
+      // The park stands: the run's outcome was decided by the gate, and a message already
+      // in flight when that decision was made does not get to re-decide it.
+      expect(h.children[0].status).toBe('blocked-by-limit');
+      expect(h.emitAttention).not.toHaveBeenCalled();
+      const privates = h.scheduler as unknown as {
+        retryQueue: Set<string>;
+        attempts: Map<string, number>;
+      };
+      expect(privates.retryQueue.size).toBe(0);
+      expect(privates.attempts.size).toBe(0);
+
+      h.fire('r1', { kind: 'exited', code: 1 });
+      expect(h.prepared).toEqual([]); // nothing relaunched into the wall
+
+      h.scheduler.resumeLimitNow(); // the reset, five hours later
+      await flush();
+      expect(h.prepared).toEqual([{ taskId: 's1', owner: 't1' }]);
+    });
+
+    /**
+     * The cheap half of the same rule, read from the other end.
+     *
+     * The gate's id set is what remembers this work across the reset; a status is a much
+     * weaker fact that a dozen paths write. `pending` on a task the gate is holding can
+     * only mean the ENGINE re-queued it underneath the park — the board's own menu cannot
+     * set or clear `blocked-by-limit` — so it is still ours to resume, not a reason to drop
+     * it without a word.
+     */
+    it('still resumes a parked step whose status was re-queued underneath the gate', async () => {
+      const h = setup();
+      const gate = gateOf(h.scheduler);
+      gate.engage(limited, ['s1']);
+      h.children[0].status = 'pending'; // whatever wrote over the park
+
+      h.scheduler.resumeLimitNow();
+      await flush();
       expect(h.prepared).toEqual([{ taskId: 's1', owner: 't1' }]);
     });
 
@@ -4714,6 +4823,130 @@ describe('dismissAttentionForCard', () => {
   it('is a no-op for a card with nothing parked on it', () => {
     const { scheduler, resolved } = setup([item({ id: 'i4', taskId: 'other' })]);
     expect(scheduler.dismissAttentionForCard('c1')).toBe(0);
+    expect(resolved).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * A single item, not a whole card — {@link Scheduler.dismissAttentionItem}.
+ *
+ * `dismissAttentionForCard` sweeps everything a card (and its steps) is asking at once,
+ * which is right for closing the card and its detail pane's Dismiss. But the inbox can hold
+ * more than one open ask on the same card at a time — two parked steps, or a chain that
+ * asked twice before either was answered — and a per-item Dismiss in the inbox must drop
+ * exactly the one the human clicked, leaving any sibling ask exactly as parked as it was.
+ */
+describe('dismissAttentionItem', () => {
+  const mkTask = (over: Partial<Task>): Task =>
+    ({
+      id: 'c1',
+      projectId: 'agent-p',
+      phase: '',
+      title: 'card',
+      status: 'done',
+      sessionId: null,
+      order: 0,
+      source: 'adhoc',
+      dependsOn: [],
+      isContract: false,
+      isScaffold: false,
+      ...over,
+    }) as Task;
+
+  const item = (over: Record<string, unknown>): Record<string, unknown> => ({
+    id: 'i1',
+    runId: 'r1',
+    taskId: 'c1',
+    projectId: 'agent-p',
+    taskTitle: 'card',
+    kind: 'question',
+    prompt: 'which one?',
+    options: [],
+    toolName: null,
+    reason: null,
+    createdAt: 0,
+    ...over,
+  });
+
+  function setup(items: Array<Record<string, unknown>>): {
+    scheduler: Scheduler;
+    resolved: ReturnType<typeof vi.fn>;
+    open: () => string[];
+  } {
+    const card = mkTask({ id: 'c1' });
+    const all = [card, mkTask({ id: 'other', title: 'someone else' })];
+    const store = {
+      getTask: (id: string) => all.find((t) => t.id === id),
+      getTasks: () => all,
+      getSubtasks: () => [],
+      updateTask: (id: string, patch: Partial<Task>) => {
+        const t = all.find((x) => x.id === id);
+        if (t) Object.assign(t, patch);
+        return t;
+      },
+      getSettings: () => ({ limitJitterMs: 0, concurrency: 1, maxAutoRetries: 0 }),
+      saveLimitGate: () => undefined,
+      ...INERT_ATTENTION_STORE,
+    } as unknown as Store;
+    const resolved = vi.fn();
+    const scheduler = new Scheduler(
+      store,
+      { start: vi.fn(), stop: vi.fn(), send: vi.fn() } as unknown as SessionManager,
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      resolved,
+      vi.fn(),
+    );
+    const map = (scheduler as unknown as { attention: Map<string, unknown> }).attention;
+    for (const i of items) map.set(i.id as string, i);
+    return { scheduler, resolved, open: () => [...map.keys()] };
+  }
+
+  it('drops exactly the one item, leaving a sibling ask on the same card parked', () => {
+    const { scheduler, resolved, open } = setup([
+      item({ id: 'i1', kind: 'permission' }),
+      item({ id: 'i2', kind: 'question' }),
+    ]);
+
+    expect(scheduler.dismissAttentionItem('i1')).toBe(true);
+    expect(open()).toEqual(['i2']);
+    expect(resolved).toHaveBeenCalledWith('i1');
+    expect(resolved).not.toHaveBeenCalledWith('i2');
+  });
+
+  it('releases the tool a held decision was blocking, denied', () => {
+    const { scheduler } = setup([item({ id: 'i1', kind: 'permission' })]);
+    const resolve = vi.fn();
+    (scheduler as unknown as { pendingDecisions: Map<string, unknown> }).pendingDecisions.set(
+      'i1',
+      { runId: 'r1', input: {}, resolve },
+    );
+
+    expect(scheduler.dismissAttentionItem('i1')).toBe(true);
+
+    // Dropping the item without this leaves the CLI process parked on its HTTP request until
+    // the app exits. Denied, because nobody approved anything.
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(resolve.mock.calls[0][0]).toMatchObject({ behavior: 'deny' });
+    expect(
+      (scheduler as unknown as { pendingDecisions: Map<string, unknown> }).pendingDecisions.size,
+    ).toBe(0);
+  });
+
+  it('refuses to dismiss a merge conflict — its answer is what finishes the rebase', () => {
+    const { scheduler, resolved, open } = setup([item({ id: 'i1', kind: 'merge-conflict' })]);
+
+    expect(scheduler.dismissAttentionItem('i1')).toBe(false);
+    // A rebase stopped halfway with markers in a worktree is not a card shouting; hiding it
+    // would strand the repo with no control left that could finish the job.
+    expect(open()).toEqual(['i1']);
+    expect(resolved).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op for an id the inbox no longer holds', () => {
+    const { scheduler, resolved } = setup([item({ id: 'i4', taskId: 'other' })]);
+    expect(scheduler.dismissAttentionItem('ghost')).toBe(false);
     expect(resolved).not.toHaveBeenCalled();
   });
 });
