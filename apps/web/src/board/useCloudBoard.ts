@@ -67,6 +67,11 @@ export interface CloudBoardApi {
    * `UnreachableBanner`.
    */
   pollError: string | null;
+  /** How many relayed calls are still awaiting an answer from the desktop right now — see
+   *  `httpTransport.ts`'s `onPendingChange`. Data this tab asked for but does not have yet,
+   *  distinct from `syncProgress.polling`: a board read landing does not mean a relayed
+   *  `task:activity` or `attachment:list` it kicked off has. */
+  pendingRelays: number;
   /** The desktop Client a command would be sent to, or null if none has ever synced. */
   targetClientId: string | null;
   /**
@@ -157,6 +162,11 @@ export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi
   // for the picked target: nothing reads the counter's value.
   const [, noteMediaToken] = useState(0);
   useEffect(() => transport.onMediaTokenChange(() => noteMediaToken((n) => n + 1)), [transport]);
+
+  // Same one-hop-out-of-React shape as the media token above: the pending count lives on the
+  // transport, outside React, so a change to it renders nothing on its own.
+  const [pendingRelays, setPendingRelays] = useState(0);
+  useEffect(() => transport.onPendingChange(setPendingRelays), [transport]);
 
   useEffect(() => {
     const focus = createBrowserFocusSignal();
@@ -264,6 +274,7 @@ export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi
     missingSince,
     syncProgress,
     pollError,
+    pendingRelays,
     targetClientId,
     targetClient,
     selectTargetClient,

@@ -34,6 +34,7 @@ import { NavRail, type NavRailItem } from '@tm/ui/shell/NavRail';
 import { StatusBar, StatusBusy, StatusDot, StatusSpacer } from '@tm/ui/shell/StatusBar';
 import { SyncCurtain } from '@tm/ui/SyncCurtain';
 import { TransportProvider } from '@tm/ui/transport';
+import { useDelayedFlag } from '@tm/ui/useDelayedFlag';
 import { Fleet } from './agents/Fleet';
 import { CloudAuth } from './auth/cloudAuth';
 import { SignInScreen } from './auth/SignInScreen';
@@ -44,7 +45,7 @@ import { ClientPicker } from './board/ClientPicker';
 import { desktopPresence } from './board/desktopPresence';
 import { SkewBanner } from './board/SkewBanner';
 import { StaleBanner } from './board/StaleBanner';
-import { boardIsReady, syncCurtainText, syncStatusLabel } from './board/syncGate';
+import { boardIsReady, syncBusyLabel, syncCurtainText, syncStatusLabel } from './board/syncGate';
 import { UnreachableBanner } from './board/UnreachableBanner';
 import { versionSkew } from './board/targetClient';
 import { useCloudBoard } from './board/useCloudBoard';
@@ -174,6 +175,13 @@ function SignedInBoard({
   const styles = useStyles();
   const board = useCloudBoard(auth, config);
   const now = useTick(AGE_TICK_MS);
+  // Both sources, one indicator: `polling` alone strobes ~24x/min against a 2.5s cadence of
+  // sub-200ms requests, and relays alone hide the time the board read itself is in flight.
+  // The 500ms delay is what keeps a normal, fast poll from ever lighting it at all.
+  const busy = useDelayedFlag(
+    board.syncProgress.polling || board.syncProgress.draining || board.pendingRelays > 0,
+    500,
+  );
   const presence = desktopPresence({
     clients: board.state.clients,
     missingSince: board.missingSince,
@@ -319,6 +327,14 @@ function SignedInBoard({
                 ? 'not syncing'
                 : syncStatusLabel(board.syncProgress, board.lastPolledAt, now)}
             </Caption1>
+            {/* Data this tab has asked for but does not have yet — a relayed call still in
+                flight, or a paged catch-up still draining — distinct from the age caption
+                above, which is only about the last read that already landed. */}
+            {busy && (
+              <StatusBusy
+                label={syncBusyLabel(board.syncProgress, board.pendingRelays) ?? undefined}
+              />
+            )}
             {attentionCount > 0 && <Caption1>· {attentionCount} waiting on you</Caption1>}
             <StatusSpacer />
             <Caption1>v{__APP_VERSION__}</Caption1>

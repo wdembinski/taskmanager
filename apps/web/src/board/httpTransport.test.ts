@@ -435,6 +435,67 @@ describe('HttpTransport: a relayed invoke is a real round trip', () => {
   });
 });
 
+describe('HttpTransport: onPendingChange', () => {
+  it('counts up to 1 the moment a relayed call is queued', async () => {
+    const server = makeServer();
+    const { transport } = makeTransport({
+      fetchImpl: server.fetchImpl as unknown as typeof fetch,
+      newCommandId: () => 'cmd-1',
+    });
+    const seen: number[] = [];
+    transport.onPendingChange((n) => seen.push(n));
+
+    const call = transport.invoke('board:tasks');
+    expect(seen).toEqual([1]);
+
+    server.answer('cmd-1', { ok: true, value: [] });
+    await call;
+    expect(seen).toEqual([1, 0]);
+  });
+
+  it('drops back to 0 when the send itself fails, before any result could land', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: false, status: 500, statusText: 'err' });
+    const { transport } = makeTransport({ fetchImpl: fetchImpl as unknown as typeof fetch });
+    const seen: number[] = [];
+    transport.onPendingChange((n) => seen.push(n));
+
+    await expect(transport.invoke('board:tasks')).rejects.toThrow();
+    expect(seen).toEqual([1, 0]);
+  });
+
+  it('reports 0 on dispose, before clearing its own listeners', async () => {
+    const server = makeServer();
+    const { transport } = makeTransport({
+      fetchImpl: server.fetchImpl as unknown as typeof fetch,
+    });
+    const seen: number[] = [];
+    transport.onPendingChange((n) => seen.push(n));
+
+    const call = transport.invoke('board:tasks');
+    const settled = call.catch(() => undefined);
+    transport.dispose();
+    await settled;
+    expect(seen).toEqual([1, 0]);
+  });
+
+  it('stops notifying once unsubscribed', async () => {
+    const server = makeServer();
+    const { transport } = makeTransport({
+      fetchImpl: server.fetchImpl as unknown as typeof fetch,
+      newCommandId: () => 'cmd-1',
+    });
+    const seen: number[] = [];
+    const unsubscribe = transport.onPendingChange((n) => seen.push(n));
+    unsubscribe();
+
+    const call = transport.invoke('board:tasks');
+    server.answer('cmd-1', { ok: true, value: [] });
+    await call;
+
+    expect(seen).toEqual([]);
+  });
+});
+
 describe('HttpTransport: host-only channels', () => {
   /** One per group in `@tm/shared/ipcRelay` — the refusal must name the reason, not "no". */
   const CASES: Array<{ channel: keyof IpcApi; call: () => Promise<unknown>; says: RegExp }> = [
