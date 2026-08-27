@@ -695,4 +695,71 @@ describe('CloudPoller', () => {
       expect((thrown as Error).message).toBe('Not signed in to vipper.iam.');
     });
   });
+
+  describe('global settings push', () => {
+    it('pushes global settings on the first tick, to seed the mirror', async () => {
+      const { poller, fetchImpl } = makePoller({
+        getGlobalSettings: () => ({ branchPrefix: 'wd' }),
+      });
+
+      await poller.tick();
+
+      expect(JSON.parse(fetchImpl.mock.calls[0]![1].body).settings).toEqual({ branchPrefix: 'wd' });
+    });
+
+    it('does not resend settings on a later tick when they have not changed', async () => {
+      const { poller, fetchImpl } = makePoller({
+        getGlobalSettings: () => ({ branchPrefix: 'wd' }),
+      });
+
+      await poller.tick();
+      await poller.tick();
+
+      expect(JSON.parse(fetchImpl.mock.calls[0]![1].body).settings).toEqual({ branchPrefix: 'wd' });
+      expect(JSON.parse(fetchImpl.mock.calls[1]![1].body)).not.toHaveProperty('settings');
+    });
+
+    it('resends settings once they change', async () => {
+      let prefix = 'wd';
+      const { poller, fetchImpl } = makePoller({
+        getGlobalSettings: () => ({ branchPrefix: prefix }),
+      });
+
+      await poller.tick();
+      prefix = 'feat';
+      await poller.tick();
+
+      expect(JSON.parse(fetchImpl.mock.calls[1]![1].body).settings).toEqual({
+        branchPrefix: 'feat',
+      });
+    });
+
+    it('keeps settings pending when the sync that carried them failed', async () => {
+      // Same rule as the acks and outbox prune: a change is only remembered as pushed once the
+      // request that carried it actually landed, so a failed tick's settings ride the next one.
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce({ ok: false, status: 500, statusText: 'Server Error' })
+        .mockResolvedValue({ ok: true, status: 200, json: async () => response() });
+      const { poller } = makePoller({
+        getGlobalSettings: () => ({ branchPrefix: 'wd' }),
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+
+      await poller.tick(); // fails
+      await poller.tick(); // retries — must still carry the settings
+
+      expect(JSON.parse((fetchImpl.mock.calls[1]![1] as { body: string }).body).settings).toEqual({
+        branchPrefix: 'wd',
+      });
+    });
+
+    it('never carries settings when no getGlobalSettings dep is wired', async () => {
+      const { poller, fetchImpl } = makePoller();
+
+      await poller.tick();
+
+      expect(JSON.parse(fetchImpl.mock.calls[0]![1].body)).not.toHaveProperty('settings');
+    });
+  });
 });

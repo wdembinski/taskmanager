@@ -85,6 +85,7 @@ import { clampSyncInterval, MAX_SYNC_INTERVAL_MINUTES } from '@tm/shared/setting
 import type { AppSettings } from '@tm/shared/settings';
 import { selectAgentProjects } from '../board/boardSelectors';
 import { ProjectsEmpty, ProjectsSection } from './ProjectsSection';
+import { sectionNeedsSettings, type SettingsSection } from './settingsSections';
 import { TokensSection } from './TokensSection';
 
 const useStyles = makeStyles({
@@ -118,7 +119,7 @@ const useStyles = makeStyles({
 
 const MODES: PermissionMode[] = ['acceptEdits', 'plan', 'manual', 'bypassPermissions'];
 
-type Section = 'general' | 'board' | 'projects' | 'jira' | 'tokens' | 'people' | 'desktop';
+type Section = SettingsSection;
 
 export interface SettingsScreenProps {
   /**
@@ -206,9 +207,12 @@ export function SettingsScreen({
     }
   };
 
-  if (!settings) {
-    return <PaneLoading label="Loading settings…" error={initial.error} onRetry={initial.retry} />;
-  }
+  // NOT an early return over the whole screen any more. `settings` comes from the relayed
+  // `settings:get`, which a browser with no desktop polling never gets an answer to — and
+  // gating the shell on it trapped the Personal access tokens pane, the one page that exists
+  // to connect the FIRST desktop. Only the panes that render `AppSettings` fields wait; the
+  // rest draw regardless. See `settingsSections.ts` for the seam and its test.
+  const waitingForSettings = sectionNeedsSettings(section) && !settings;
 
   const actions = (
     <div className={styles.actions}>
@@ -237,7 +241,13 @@ export function SettingsScreen({
         <Tab value="desktop">Desktop only</Tab>
       </TabList>
 
-      {section === 'general' && (
+      {waitingForSettings && (
+        <div className={styles.pane}>
+          <PaneLoading label="Loading settings…" error={initial.error} onRetry={initial.retry} />
+        </div>
+      )}
+
+      {section === 'general' && settings && (
         <div className={styles.pane}>
           <Subtitle2>Settings</Subtitle2>
           <Body1 className={styles.hint}>
@@ -348,7 +358,7 @@ export function SettingsScreen({
         </div>
       )}
 
-      {section === 'board' && (
+      {section === 'board' && settings && (
         <div className={styles.pane}>
           <Subtitle2>Board</Subtitle2>
           <Body1 className={styles.hint}>
@@ -476,7 +486,7 @@ export function SettingsScreen({
         </div>
       )}
 
-      {section === 'jira' && (
+      {section === 'jira' && settings && (
         <div className={styles.pane}>
           <Subtitle2>JIRA (My Tasks board)</Subtitle2>
           <Body1 className={styles.hint}>

@@ -9,6 +9,7 @@ import {
   Param,
   Patch,
   Post,
+  Put,
   Query,
   UseGuards,
 } from '@nestjs/common';
@@ -20,6 +21,7 @@ import {
   type CreateProjectRequest,
   type CreateTaskRequest,
   type ResultsResponse,
+  type SettingsResponse,
   type SyncRequest,
   type SyncResponse,
   type UpdateProjectRequest,
@@ -100,6 +102,30 @@ export class MirrorController {
   @HttpCode(HttpStatus.NO_CONTENT)
   async deleteProject(@AccountId() accountId: string, @Param('id') id: string): Promise<void> {
     await this.mirror.deleteProject(accountId, id);
+  }
+
+  /**
+   * The account's global settings, complete, for cloud web to render with no desktop polling —
+   * see `MirrorService.getSettings`. A `GET`, so no body: its whole scope is the authenticated
+   * account.
+   */
+  @Get('settings')
+  async getSettings(@AccountId() accountId: string): Promise<SettingsResponse> {
+    return { settings: await this.mirror.getSettings(accountId) };
+  }
+
+  /**
+   * Cloud web writing global settings directly — `MirrorService.putSettings` narrows the body
+   * to global keys, so a machine-local field a browser echoes back (it loads the whole blob) is
+   * dropped rather than stored. Returns the merged result the same way `PATCH /v1/projects/:id`
+   * returns the updated project.
+   */
+  @Put('settings')
+  async putSettings(
+    @AccountId() accountId: string,
+    @Body() body: unknown,
+  ): Promise<SettingsResponse> {
+    return { settings: await this.mirror.putSettings(accountId, body) };
   }
 
   @Post('commands')

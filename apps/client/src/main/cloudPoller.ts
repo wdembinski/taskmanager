@@ -20,7 +20,7 @@
 import { CADENCE_MS, nextPollDelayMs } from '@protocol/cadence';
 import type { ClientInfo, CommandEnvelope, SyncRequest, SyncResponse } from '@protocol/wire';
 import { PROTOCOL_VERSION } from '@protocol/wire';
-import type { CloudSettings } from '@shared/settings';
+import type { AppSettings, CloudSettings } from '@shared/settings';
 import { SYNC_BYTES_LIMIT, buildMirrorDeltaWithin } from './cloudDelta';
 import { RESULTS_BYTES_LIMIT, boundCloudResults } from './cloudResults';
 import { logMain } from './log';
@@ -54,6 +54,21 @@ export interface CloudPollerDeps {
    * so a mocked `fetch` can drive it whole. `ipc.ts` builds the value; this just sends it.
    */
   getClientInfo: () => ClientInfo;
+  /**
+   * This desktop's GLOBAL settings — `@tm/shared`'s `pickGlobalSettings(store.getSettings())`,
+   * wired in `ipc.ts` — sent on `SyncRequest.settings` to seed and update the server's settings
+   * mirror so cloud web can read them with no desktop polling.
+   *
+   * Sent only on the ticks where the value CHANGED since the last successful push, not every
+   * tick: this poller runs on a seconds-scale clock and the blob would otherwise ride every
+   * request for nothing. The first tick always sends (nothing has been pushed yet), which is
+   * what seeds an account whose desktop predates the mirror.
+   *
+   * Optional so every existing test — and a build wired before this dep existed — keeps
+   * working: absent, no settings are ever pushed and the mirror simply stays empty until a
+   * newer wiring fills it.
+   */
+  getGlobalSettings?: () => Partial<AppSettings>;
   /**
    * Commands the server relayed for this client this tick. `CloudPoller` only hands them
    * off — applying them (`cloudCommands.ts`, drained by `main/commandQueue.ts` and wired in
@@ -138,6 +153,14 @@ export class CloudPoller {
    * a tick.
    */
   private resultBytesLimit = RESULTS_BYTES_LIMIT;
+  /**
+   * The global settings this poller last SUCCESSFULLY pushed, JSON-serialized for a cheap
+   * equality check — `null` until the first push lands, which is what makes the first tick
+   * always send. Updated only after a successful sync, the same rule the outbox prune and the
+   * ack marks follow: a push marked done on a request that failed is a change the mirror never
+   * heard about and nothing would resend.
+   */
+  private lastPushedSettingsJson: string | null = null;
   private readonly unsubscribeFocus: () => void;
 
   constructor(private readonly deps: CloudPollerDeps) {
@@ -253,6 +276,16 @@ export class CloudPoller {
       this.deps.store.getProject,
       SYNC_BYTES_LIMIT,
     );
+    // The global settings to push THIS tick, and its serialization — computed before the
+    // request so `res.ok` below can decide whether to remember it as pushed. `undefined` when
+    // the dep is absent (feature off) or the value is unchanged since the last successful push.
+    const globalSettings = this.deps.getGlobalSettings?.();
+    const settingsJson = globalSettings ? JSON.stringify(globalSettings) : null;
+    const settingsToPush =
+      settingsJson !== null && settingsJson !== this.lastPushedSettingsJson
+        ? globalSettings
+        : undefined;
+
     const request: SyncRequest = {
       clientId: this.deps.store.loadCloudClientId(),
       cursor: this.deps.store.loadCloudCursor(),
@@ -264,6 +297,8 @@ export class CloudPoller {
       // Every tick, not once: there is no registration step to send it on, and it is four
       // short strings against a request that already carries whole task rows.
       info: this.deps.getClientInfo(),
+      // Only when it changed — see `getGlobalSettings` and `lastPushedSettingsJson`.
+      ...(settingsToPush !== undefined ? { settings: settingsToPush } : {}),
     };
 
     const payload = JSON.stringify(request);
@@ -330,6 +365,10 @@ export class CloudPoller {
     if (sentResultIds.length > 0) {
       this.deps.store.markCloudResultsSent(sentResultIds);
     }
+    // Remember the pushed settings only now the request that carried them succeeded — same rule
+    // as the acks and outbox prune above. `settingsJson`, not the live value: a change made
+    // between building the request and this line is a change the NEXT tick must still push.
+    if (settingsToPush !== undefined) this.lastPushedSettingsJson = settingsJson;
     this.deps.store.saveCloudCursor(body.cursor);
     this.lastServerIntervalMs = body.cadence.intervalMs;
     if (body.eventListeners !== undefined) this.deps.onEventListeners?.(body.eventListeners);

@@ -4,9 +4,12 @@ import {
   DEFAULT_BOARD_DISPLAY,
   DEFAULT_JIRA_SETTINGS,
   DEFAULT_SETTINGS,
+  GLOBAL_SETTINGS_KEYS,
   MAX_SYNC_INTERVAL_MINUTES,
   mergeAppSettings,
+  pickGlobalSettings,
   resolveSyncInterval,
+  type AppSettings,
 } from './settings';
 
 describe('clampSyncInterval', () => {
@@ -167,5 +170,69 @@ describe('DEFAULT_SETTINGS.gantt', () => {
     const current = { ...DEFAULT_SETTINGS, gantt: { collapsedEpicIds: ['e1', 'e2'] } };
     const merged = mergeAppSettings(current, { gantt: { collapsedEpicIds: ['e1'] } });
     expect(merged.gantt.collapsedEpicIds).toEqual(['e1']);
+  });
+});
+
+/**
+ * The machine-local / per-surface keys — the complement of {@link GLOBAL_SETTINGS_KEYS}.
+ * Spelled out rather than derived, so the "every key is classified" test below is a real gate:
+ * a field added to `AppSettings` and to neither list fails the suite until it is classified.
+ */
+const LOCAL_SETTINGS_KEYS: ReadonlyArray<keyof AppSettings> = [
+  'defaultExecTarget',
+  'fontSizePx',
+  'toastsEnabled',
+  'cloud',
+  'boardScopeId',
+  'foldedStepCards',
+  'shownEarlierStepCards',
+  'gantt',
+];
+
+describe('pickGlobalSettings', () => {
+  it('keeps account-scoped fields', () => {
+    const picked = pickGlobalSettings(DEFAULT_SETTINGS);
+    expect(picked.defaultModel).toBe(DEFAULT_SETTINGS.defaultModel);
+    expect(picked.jira).toEqual(DEFAULT_SETTINGS.jira);
+    expect(picked.board).toEqual(DEFAULT_SETTINGS.board);
+    expect(picked.statusKeywords).toEqual(DEFAULT_SETTINGS.statusKeywords);
+  });
+
+  it('strips every machine-local and per-surface field — they never cross the wire', () => {
+    const picked = pickGlobalSettings({
+      ...DEFAULT_SETTINGS,
+      fontSizePx: 20,
+      boardScopeId: 'proj-1',
+      foldedStepCards: ['t1'],
+      cloud: { ...DEFAULT_SETTINGS.cloud, baseUrl: 'https://mine.example' },
+    });
+    for (const key of LOCAL_SETTINGS_KEYS) {
+      expect(picked, `local key ${String(key)} must be absent`).not.toHaveProperty(String(key));
+    }
+  });
+
+  it('copies only keys that are present — a partial patch stays partial', () => {
+    const picked = pickGlobalSettings({ branchPrefix: 'wd', fontSizePx: 18 });
+    expect(picked).toEqual({ branchPrefix: 'wd' });
+  });
+
+  it('ignores unknown keys and non-objects', () => {
+    expect(pickGlobalSettings({ nonsense: 1, defaultModel: 'opus' })).toEqual({
+      defaultModel: 'opus',
+    });
+    expect(pickGlobalSettings(null)).toEqual({});
+    expect(pickGlobalSettings('nope')).toEqual({});
+    expect(pickGlobalSettings(['a'])).toEqual({});
+  });
+
+  it('classifies every AppSettings key exactly once — global XOR local', () => {
+    const global = new Set<string>(GLOBAL_SETTINGS_KEYS);
+    const local = new Set<string>(LOCAL_SETTINGS_KEYS.map(String));
+    const allKeys = Object.keys(DEFAULT_SETTINGS);
+
+    for (const key of global) {
+      expect(local.has(key), `${key} is in both global and local`).toBe(false);
+    }
+    expect(new Set([...global, ...local])).toEqual(new Set(allKeys));
   });
 });

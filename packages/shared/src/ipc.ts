@@ -700,6 +700,15 @@ export interface IpcApi {
    * way the item clears and its task returns to `running`.
    */
   'attention:answer': (itemId: string, answer: AttentionAnswer) => Promise<void>;
+  /**
+   * Drop exactly ONE inbox item, without answering it — the inbox's own per-item Dismiss,
+   * as opposed to `task:dismissAttention` which sweeps a whole card and its steps. Same two
+   * exceptions as the sweep: a held tool is released as a deny rather than abandoned, and a
+   * `merge-conflict` item is refused outright since its answer is what finishes the rebase.
+   * Rejects (rather than silently no-op'ing) when the item is unknown or refused, so the UI
+   * can say why the button did nothing.
+   */
+  'attention:dismiss': (itemId: string) => Promise<void>;
 
   /**
    * **Hush a card that is shouting.** Everything the inbox holds for it and its steps is

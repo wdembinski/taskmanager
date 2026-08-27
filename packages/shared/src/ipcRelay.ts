@@ -216,6 +216,7 @@ export const RELAY_POLICY: {
 
   'attention:list': 'relay',
   'attention:answer': 'relay',
+  'attention:dismiss': 'relay',
 
   'limit:current': 'relay',
   'limit:resumeNow': 'relay',

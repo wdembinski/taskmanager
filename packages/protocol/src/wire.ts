@@ -14,6 +14,7 @@ import type {
   Task,
   TaskType,
 } from '@tm/shared/model';
+import type { AppSettings } from '@tm/shared/settings';
 import type { CadenceDirective } from './cadence';
 
 /**
@@ -123,6 +124,31 @@ export interface SyncRequest {
    * and a desktop that gets renamed or updated has to be able to say so without one.
    */
   info?: ClientInfo;
+  /**
+   * This desktop's GLOBAL settings (`@tm/shared`'s `pickGlobalSettings` — account-scoped keys
+   * only, never its machine-local ones), sent to SEED and update the server's settings mirror
+   * so cloud web can read them with no desktop polling. Sent only on the ticks where they
+   * changed since the last successful push, not every tick — see `cloudPoller.ts`.
+   *
+   * Optional and safe to ignore: a server that predates the settings mirror drops it, and the
+   * only cost is that cloud web falls back to defaults until a newer server catches the next
+   * push — an older peer being behind, not wrong, so no `PROTOCOL_VERSION` bump.
+   */
+  settings?: Partial<AppSettings>;
+}
+
+/**
+ * Response to `GET /v1/settings`, and the body of a `PUT /v1/settings` reply — the account's
+ * global settings as the server's mirror currently holds them, filled out over
+ * `DEFAULT_SETTINGS` so cloud web always receives a COMPLETE {@link AppSettings} to render.
+ *
+ * The machine-local fields in it are stock defaults, never a real desktop's values: only
+ * global keys are ever written into the mirror (`pickGlobalSettings` gates every write), and
+ * cloud web renders only global fields anyway. A `PUT` body is a `Partial<AppSettings>`; the
+ * server narrows it to global keys and folds it over what the mirror holds.
+ */
+export interface SettingsResponse {
+  settings: AppSettings;
 }
 
 /**

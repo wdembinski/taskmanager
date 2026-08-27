@@ -232,6 +232,48 @@ describe('HttpTransport: the direct tier', () => {
     expect(init.body).toBeUndefined();
   });
 
+  it('reads settings:get from GET /v1/settings and unwraps the blob', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ settings: DEFAULT_SETTINGS }),
+    });
+    const { transport } = makeTransport({ fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    await expect(transport.invoke('settings:get')).resolves.toEqual(DEFAULT_SETTINGS);
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe('https://api.example.com/v1/settings');
+    expect(init.method).toBeUndefined(); // a GET
+    expect(init.headers.authorization).toBe('Bearer token');
+  });
+
+  it('writes settings:save to PUT /v1/settings with the whole blob', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({}) });
+    const { transport } = makeTransport({ fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    await expect(
+      transport.invoke('settings:save', { ...DEFAULT_SETTINGS, branchPrefix: 'wd' }),
+    ).resolves.toBeUndefined();
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe('https://api.example.com/v1/settings');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(init.body)).toEqual({ ...DEFAULT_SETTINGS, branchPrefix: 'wd' });
+  });
+
+  it('reads and writes settings with no desktop Client ever synced', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ settings: DEFAULT_SETTINGS }),
+    });
+    const { transport } = makeTransport({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      getTargetClientId: () => null,
+    });
+
+    await expect(transport.invoke('settings:get')).resolves.toEqual(DEFAULT_SETTINGS);
+  });
+
   it('works with no desktop Client ever synced, unlike the relayed tier', async () => {
     const fetchImpl = vi.fn().mockResolvedValue({
       ok: true,
@@ -437,12 +479,10 @@ describe('HttpTransport: channels that used to be stubbed', () => {
   const RELAYED: Array<{ channel: keyof IpcApi; call: (x: HttpTransport) => Promise<unknown> }> = [
     { channel: 'task:activity', call: (x) => x.invoke('task:activity', 't1') },
     { channel: 'scheduler:activeRuns', call: (x) => x.invoke('scheduler:activeRuns') },
-    { channel: 'settings:get', call: (x) => x.invoke('settings:get') },
     { channel: 'project:hasReleaseDoc', call: (x) => x.invoke('project:hasReleaseDoc', 'p1') },
     { channel: 'jira:priorities', call: (x) => x.invoke('jira:priorities') },
     { channel: 'jira:fetchComments', call: (x) => x.invoke('jira:fetchComments', 't1') },
     { channel: 'jira:markRead', call: (x) => x.invoke('jira:markRead', 't1') },
-    { channel: 'settings:save', call: (x) => x.invoke('settings:save', DEFAULT_SETTINGS) },
     { channel: 'task:setPriority', call: (x) => x.invoke('task:setPriority', 't1', 'High') },
     { channel: 'task:chat', call: (x) => x.invoke('task:chat', 't1', 'hello') },
     { channel: 'task:run', call: (x) => x.invoke('task:run', 't1') },

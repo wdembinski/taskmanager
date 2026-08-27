@@ -21,13 +21,15 @@ import { hasRepo, isManualStatus } from '@tm/shared/model';
 import type { Project, Task } from '@tm/shared/model';
 import { resolveMove } from '@tm/shared/moveResolve';
 import { buildProject, normalizeEpicKeys } from '@tm/shared/projectBuilders';
-import { DEFAULT_SETTINGS } from '@tm/shared/settings';
+import type { AppSettings } from '@tm/shared/settings';
+import { DEFAULT_SETTINGS, mergeAppSettings, pickGlobalSettings } from '@tm/shared/settings';
 import { buildAdhocTask } from '@tm/shared/taskBuilders';
 import { normalizeTicketPrefix } from '@tm/shared/ticketKey';
 import { Client } from '../entities/client.entity';
 import { Command } from '../entities/command.entity';
 import { CommandResultRow } from '../entities/commandResult.entity';
 import { ProjectMirror } from '../entities/projectMirror.entity';
+import { SettingsMirror } from '../entities/settingsMirror.entity';
 import { TaskMirror } from '../entities/taskMirror.entity';
 import { Tombstone } from '../entities/tombstone.entity';
 import { EventBus } from '../events/eventBus';
@@ -88,6 +90,7 @@ export class MirrorService {
     @InjectRepository(Client) private readonly clients: Repository<Client>,
     @InjectRepository(TaskMirror) private readonly taskMirrors: Repository<TaskMirror>,
     @InjectRepository(ProjectMirror) private readonly projectMirrors: Repository<ProjectMirror>,
+    @InjectRepository(SettingsMirror) private readonly settingsMirrors: Repository<SettingsMirror>,
     @InjectRepository(Tombstone) private readonly tombstones: Repository<Tombstone>,
     @InjectRepository(CommandResultRow) private readonly results: Repository<CommandResultRow>,
     private readonly presence: PresenceService,
@@ -125,6 +128,16 @@ export class MirrorService {
       );
 
       await applyMirrorDelta(manager, accountId, request.deltas);
+
+      // The desktop's global settings, when this tick carried them (it only sends them when
+      // they changed — see `cloudPoller.ts`). Seeds and updates the settings mirror so cloud
+      // web can read them with no desktop polling. No replay from here: the desktop IS the
+      // source of this write, and a `settings:save` bounced back to it would be a no-op it
+      // then pushes up again. `pickGlobalSettings` gates it, so a machine-local field can
+      // never enter the mirror even if a buggy client puts one in the request.
+      if (request.settings !== undefined) {
+        await this.applySettingsFromSync(manager, accountId, request.settings);
+      }
 
       // Results first: a result names a command this Client is about to ack, and storing it
       // after the ack would leave a window where the row is retired and its answer is not
@@ -582,6 +595,64 @@ export class MirrorService {
     // Lines up exactly, like `task:delete`'s replay: `projectId` is whatever created the row,
     // and `ipc.ts`'s own `project:remove` cascades to its tasks locally too.
     await this.replayToDesktops(accountId, 'project:remove', [projectId]);
+  }
+
+  /**
+   * `GET /v1/settings` — the account's global settings, as a COMPLETE {@link AppSettings} for
+   * cloud web to render. `DEFAULT_SETTINGS` when no desktop has ever pushed and no browser has
+   * ever saved: a fresh account reads stock defaults rather than an error, exactly as its very
+   * first desktop Client would (the same stand-in `createProject` already leans on).
+   *
+   * The machine-local fields in the returned object are those same defaults, never a real
+   * desktop's — only global keys are ever written here (`pickGlobalSettings` gates every
+   * write), and cloud web renders only global fields regardless.
+   */
+  async getSettings(accountId: string): Promise<AppSettings> {
+    const row = await this.settingsMirrors.findOne({ where: { accountId } });
+    return row?.data ?? DEFAULT_SETTINGS;
+  }
+
+  /**
+   * `PUT /v1/settings` — cloud web writing global settings directly, the settings sibling of
+   * `updateProject`. Narrows the body to global keys (`pickGlobalSettings`), folds it over
+   * what the mirror holds (`mergeAppSettings`, one level — so a partial `jira` patch keeps the
+   * engine-learned sub-fields it didn't send), stores the result and returns it whole.
+   *
+   * The replay carries the GLOBAL PARTIAL, not the merged blob — that is the one thing this
+   * method must get right. A desktop's `settings:save` handler merges whatever it is handed
+   * over its own current settings (`cloudCommands.ts`), so replaying the full blob would set
+   * that desktop's `fontSizePx`/`defaultExecTarget`/`cloud` to the mirror's stock defaults.
+   * Sending only the keys the browser actually touched leaves every machine-local field alone.
+   */
+  async putSettings(accountId: string, incoming: unknown): Promise<AppSettings> {
+    const global = pickGlobalSettings(incoming);
+    const current = await this.getSettings(accountId);
+    const next = mergeAppSettings(current, global);
+
+    await this.settingsMirrors.upsert({ accountId, data: next }, ['accountId']);
+    await this.replayToDesktops(accountId, 'settings:save', [global]);
+
+    return next;
+  }
+
+  /**
+   * Fold a desktop's pushed global settings into the mirror, inside the sync transaction the
+   * caller already opened. Same merge as `putSettings`, minus the replay: the pushing desktop
+   * is the source, so there is nothing to send back to it. An empty (or all-local) push is a
+   * no-op — the desktop only sends this field when its GLOBAL settings changed, but a client
+   * that sent an empty object should still not churn a mirror write for nothing.
+   */
+  private async applySettingsFromSync(
+    manager: DataSource['manager'],
+    accountId: string,
+    incoming: unknown,
+  ): Promise<void> {
+    const global = pickGlobalSettings(incoming);
+    if (Object.keys(global).length === 0) return;
+
+    const row = await manager.findOne(SettingsMirror, { where: { accountId } });
+    const next = mergeAppSettings(row?.data ?? DEFAULT_SETTINGS, global);
+    await manager.upsert(SettingsMirror, { accountId, data: next }, ['accountId']);
   }
 
   /**
