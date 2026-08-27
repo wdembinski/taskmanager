@@ -31,7 +31,7 @@ import { Performance } from '@tm/ui/Performance';
 import { ProjectAdmin } from '@tm/ui/projects/ProjectAdmin';
 import { Projects } from '@tm/ui/projects/Projects';
 import { NavRail, type NavRailItem } from '@tm/ui/shell/NavRail';
-import { StatusBar, StatusDot, StatusSpacer } from '@tm/ui/shell/StatusBar';
+import { StatusBar, StatusBusy, StatusDot, StatusSpacer } from '@tm/ui/shell/StatusBar';
 import { SyncCurtain } from '@tm/ui/SyncCurtain';
 import { TransportProvider } from '@tm/ui/transport';
 import { Fleet } from './agents/Fleet';
@@ -41,6 +41,7 @@ import { useCloudAuth } from './auth/useCloudAuth';
 import { BoardScreen } from './board/BoardScreen';
 import { SettingsScreen } from './settings/SettingsScreen';
 import { ClientPicker } from './board/ClientPicker';
+import { desktopPresence } from './board/desktopPresence';
 import { SkewBanner } from './board/SkewBanner';
 import { StaleBanner } from './board/StaleBanner';
 import { boardIsReady, syncCurtainText, syncStatusLabel } from './board/syncGate';
@@ -173,6 +174,12 @@ function SignedInBoard({
   const styles = useStyles();
   const board = useCloudBoard(auth, config);
   const now = useTick(AGE_TICK_MS);
+  const presence = desktopPresence({
+    clients: board.state.clients,
+    missingSince: board.missingSince,
+    lastPolledAt: board.lastPolledAt,
+    now,
+  });
   const [screen, setScreen] = useState<Screen>('mytasks');
   // How many tasks are waiting on a human — the same badge and status-bar highlight the
   // desktop shell shows (`apps/client/src/renderer/src/App.tsx`), read the same way over
@@ -202,7 +209,6 @@ function SignedInBoard({
     };
   }, [board.transport]);
 
-  const online = board.state.clients.length > 0;
   // Only ever about the Client this tab is actually driving. A second, older desktop on the
   // account is nothing to warn about while nothing is being sent to it.
   const skew = versionSkew(board.targetClient);
@@ -253,11 +259,13 @@ function SignedInBoard({
           //     server said, and it has said nothing. Reporting "no desktop app has synced"
           //     here would be blaming another machine for a failure in this one — which is
           //     precisely what sent somebody hunting through a perfectly healthy desktop.
-          //  2. **No desktop client is polling.** The bigger fact once reads work.
+          //  2. **No desktop client is polling, and the outage has outlasted the grace
+          //     window** (`desktopPresence.ts`) — never on the strength of one empty response,
+          //     since a healthy desktop can legitimately vanish for a deploy's worth of time.
           //  3. **Version skew**, which cannot matter until a Client is back.
           board.pollError ? (
             <UnreachableBanner message={board.pollError} />
-          ) : !online ? (
+          ) : presence === 'offline' ? (
             <StaleBanner everSeenClient={board.targetClientId !== null} />
           ) : skew && board.targetClient ? (
             <SkewBanner skew={skew} client={board.targetClient} />
@@ -265,27 +273,37 @@ function SignedInBoard({
         }
         status={
           <StatusBar attention={attentionCount > 0}>
-            {/* The dot's question is the only one that decides whether an edit made here
-                goes anywhere: a command is delivered to a desktop Client, so with none
-                polling there is nothing to apply it. */}
-            <StatusDot ok={online} />
-            {/* Named, not counted. "2 clients" told you the size of a set you could neither
-                see nor choose from, while every edit made here goes to exactly ONE of them —
-                so the bar says which, and offers the others when there are any. */}
-            <Caption1>
-              {online && board.targetClient ? (
-                <ClientPicker
-                  clients={board.state.clients}
-                  selected={board.targetClient}
-                  onSelect={board.selectTargetClient}
-                  className={styles.linkButton}
-                />
-              ) : board.targetClientId !== null ? (
-                'Desktop app offline — edits are queued'
-              ) : (
-                'No desktop app has ever synced this account'
-              )}
-            </Caption1>
+            {presence === 'unknown' ? (
+              // Still finding out whether a desktop exists — the dot and its caption both
+              // presuppose an answer this tab doesn't have yet, so a busy indicator replaces
+              // both rather than guessing "offline" from one empty response.
+              <StatusBusy label="Checking for a desktop app…" />
+            ) : (
+              <>
+                {/* The dot's question is the only one that decides whether an edit made here
+                    goes anywhere: a command is delivered to a desktop Client, so with none
+                    polling there is nothing to apply it. */}
+                <StatusDot ok={presence === 'online'} />
+                {/* Named, not counted. "2 clients" told you the size of a set you could
+                    neither see nor choose from, while every edit made here goes to exactly
+                    ONE of them — so the bar says which, and offers the others when there are
+                    any. */}
+                <Caption1>
+                  {presence === 'online' && board.targetClient ? (
+                    <ClientPicker
+                      clients={board.state.clients}
+                      selected={board.targetClient}
+                      onSelect={board.selectTargetClient}
+                      className={styles.linkButton}
+                    />
+                  ) : board.targetClientId !== null ? (
+                    'Desktop app offline — edits are queued'
+                  ) : (
+                    'No desktop app has ever synced this account'
+                  )}
+                </Caption1>
+              </>
+            )}
             {/* A poll that comes back proves this tab's own connection, whether or not it
                 carried any deltas — which is a different claim from the dot's. Once the
                 board has latched ready, a later paged catch-up shows here as "syncing…"

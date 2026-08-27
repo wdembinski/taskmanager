@@ -45,6 +45,14 @@ export interface CloudBoardApi {
    * claim. Folding it into the store would also churn a value four tests construct.
    */
   lastPolledAt: number | null;
+  /**
+   * Epoch ms the most recent response first came back with an empty `clients` list, or
+   * `null` while a live Client has been in every response since the tab opened (or none has
+   * come back yet). The raw fact only — turning it into `unknown`/`online`/`offline` needs
+   * `now`, which is not reactive in this hook, so that's `desktopPresence.ts`'s job, computed
+   * where a render actually happens (`App.tsx`).
+   */
+  missingSince: number | null;
   /** How far the board's own read loop has gotten — see `syncGate.ts`'s `boardIsReady` for
    *  the latch rule this drives. */
   syncProgress: SyncProgress;
@@ -93,6 +101,7 @@ export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi
   const clientId = useMemo(() => getOrCreateClientId(window.localStorage), []);
   const [state, setState] = useState<CloudBoardState>(EMPTY_BOARD_STATE);
   const [lastPolledAt, setLastPolledAt] = useState<number | null>(null);
+  const [missingSince, setMissingSince] = useState<number | null>(null);
   const [syncProgress, setSyncProgress] = useState<SyncProgress>(EMPTY_SYNC_PROGRESS);
   const [pollError, setPollError] = useState<string | null>(null);
 
@@ -127,7 +136,9 @@ export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi
           resolveTargetClientId(window.localStorage, stateRef.current.clients),
         // Read through the ref for the same reason the target is: the transport outlives
         // every poll, and this has to be the freshest answer at the moment a call times out
-        // rather than the one that was true when it was built.
+        // rather than the one that was true when it was built. Deliberately immediate and
+        // ungraced, unlike `desktopPresence.ts`'s tri-state: this only picks between two
+        // timeout sentences, so it needs no grace window — don't "unify" the two.
         hasLiveClient: () => stateRef.current.clients.length > 0,
         // Its own signal rather than the poller's below: both are the same `visibilitychange`
         // reading, and the transport outlives the effect that builds the poller.
@@ -158,6 +169,7 @@ export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi
       onResponse: (response) => {
         setState((s) => applyBoardResponse(s, response));
         setLastPolledAt(Date.now());
+        setMissingSince((prev) => (response.clients.length > 0 ? null : (prev ?? Date.now())));
         setSyncProgress((p) => ({
           ...p,
           draining: response.hasMore === true,
@@ -249,6 +261,7 @@ export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi
     state,
     cadence: state.cadence,
     lastPolledAt,
+    missingSince,
     syncProgress,
     pollError,
     targetClientId,
