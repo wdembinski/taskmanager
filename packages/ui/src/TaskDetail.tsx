@@ -56,13 +56,22 @@ import { foldTurns } from './chat/turns';
 import { EMPTY_COMPOSER, type ComposerValue } from './chat/mentions';
 import { draftKey, useDraft } from './drafts';
 import { MergeRequests } from './MergeRequests';
+import { PaneLoading } from './PaneLoading';
 import { TaskChain } from './TaskChain';
 import { StepBrief, TaskSteps } from './TaskSteps';
 import { TaskAgentPanel } from './TaskAgentPanel';
 import { TaskDetailsCell } from './TaskDetailsCell';
 import { chatAvailability, REFUSAL_HINT } from './taskChat';
+import {
+  EMPTY_TIMELINE,
+  timelineActivityArrived,
+  timelineCommentsArrived,
+  timelineLoadStarted,
+  type TimelineState,
+} from './taskTimeline';
 import { TrackerMark, shortTicketKey, trackerName, trackerOf } from './tracker';
 import { runPhase } from '@tm/shared/board';
+import { useDelayedFlag } from './useDelayedFlag';
 import { useTransport } from './transport';
 import type { AttentionIndex } from './attentionIndex';
 
@@ -312,9 +321,13 @@ export function TaskDetail({
 }: TaskDetailProps): JSX.Element {
   const transport = useTransport();
   const styles = useStyles();
-  const [activity, setActivity] = useState<TaskActivityEntry[]>([]);
-  /** The linked ticket's own thread — JIRA's or GitHub's — fetched live, never stored. */
-  const [ticketComments, setTicketComments] = useState<TaskActivityEntry[]>([]);
+  /**
+   * The card's activity and its linked ticket's comments — see `./taskTimeline`. A plain
+   * `useState` rather than `useReducer`: the transitions already live as pure functions
+   * there, unit-tested on their own, so the hook only needs to apply whichever one
+   * `loadActivity` calls.
+   */
+  const [timeline, setTimeline] = useState<TimelineState>(EMPTY_TIMELINE);
   const [liveEvents, setLiveEvents] = useState<TaskActivityEntry[]>([]);
   /**
    * Which write is in flight, so the button actually pressed is the one that answers — see
@@ -335,6 +348,30 @@ export function TaskDetail({
   const titleDraft = useDraft(task ? draftKey(task.id, 'title') : null, task?.title ?? '');
 
   const taskId = task?.id ?? null;
+  /**
+   * Only the newest load may land its activity (`applied`); once a newer load has
+   * started, this load's tail — the ticket comments and the mark-read report — is
+   * abandoned on `issued` instead, not `applied`: gating the tail on `applied` would let
+   * load N's comments land after load N+1's activity, since N's own activity write
+   * already advances `applied` to N before N's tail runs. Same pattern as
+   * `GitGraphPane.tsx`'s `issued`/`applied` refs, extended for a two-step fetch.
+   */
+  const issued = useRef(0);
+  const applied = useRef(0);
+
+  // A card switch must clear the previous card's timeline in the SAME step that starts
+  // showing the new one — an effect fires after paint, which is one frame of task B's
+  // title over task A's chat, the reported symptom exactly. React's own pattern for
+  // this: compare against what was last rendered and adjust state inline, never in an
+  // effect. Reusing the current `applied` (rather than minting a new one) keeps this
+  // idempotent — `loadActivity`'s effect mints the real sequence number a moment later.
+  const [renderedTaskId, setRenderedTaskId] = useState(taskId);
+  if (taskId !== renderedTaskId) {
+    setRenderedTaskId(taskId);
+    setTimeline((prev) => timelineLoadStarted(prev, taskId, prev.applied));
+    setLiveEvents([]);
+    setError(null);
+  }
   // A card switch abandons whatever title edit was open on the previous one — the same
   // rule `TaskDetailsCell` applies to the description's Edit toggle.
   useEffect(() => {
@@ -375,11 +412,12 @@ export function TaskDetail({
 
   const loadActivity = useCallback(async () => {
     if (!taskId) {
-      setActivity([]);
-      setTicketComments([]);
+      setTimeline(EMPTY_TIMELINE);
       setLiveEvents([]);
       return;
     }
+    const seq = ++issued.current;
+    setTimeline((prev) => timelineLoadStarted(prev, taskId, seq));
     // The reload already contains everything streamed so far (events are persisted as
     // they arrive), so drop the live buffer to avoid showing each line twice.
     setLiveEvents([]);
@@ -387,16 +425,24 @@ export function TaskDetail({
     // channel started crossing a network: a rejection was an unhandled rejection AND left the
     // previously selected card's timeline on screen under the new card's title. An empty
     // timeline is the honest answer for a card whose history could not be fetched.
-    setActivity(await transport.invoke('task:activity', taskId).catch(() => []));
+    const fetchedActivity = await transport.invoke('task:activity', taskId).catch(() => []);
+    // Only the newest load's activity may land — see `applied`'s doc above.
+    if (seq <= applied.current) return;
+    applied.current = seq;
+    setTimeline((prev) => timelineActivityArrived(prev, taskId, seq, fetchedActivity));
+    let comments: TaskActivityEntry[] = [];
     if (tracker) {
       // The ticket's comments are fetched live and merged in; failures shouldn't blank the
       // pane. Which channel is the only tracker-shaped thing here — both answer with the same
       // `TaskActivityEntry[]`, in the kind that names where each comment came from.
       const channel = tracker === 'github' ? 'github:fetchComments' : 'jira:fetchComments';
-      setTicketComments(await transport.invoke(channel, taskId).catch(() => []));
-    } else {
-      setTicketComments([]);
+      comments = await transport.invoke(channel, taskId).catch(() => []);
     }
+    // A newer load may have started while the comments were in flight. Its own activity
+    // write already claimed `applied`, so the tail is abandoned on `issued` instead — see
+    // `issued`'s doc above.
+    if (seq !== issued.current) return;
+    setTimeline((prev) => timelineCommentsArrived(prev, taskId, seq, comments));
     // Opening the task clears its unread border — for ANY tracker, and outside the branch
     // above on purpose. The border is raised by whichever sync fetched the thread, so a card
     // whose comments this pane could not show would otherwise stay orange no matter how
@@ -404,7 +450,11 @@ export function TaskDetail({
     if (tracker) {
       await transport
         .invoke(tracker === 'github' ? 'github:markRead' : 'jira:markRead', taskId)
-        .then((updated) => onStatusChangedRef.current?.(updated))
+        .then((updated) => {
+          // A superseded load must not stamp its optimistic overlay on the card this one
+          // left — the human already opened whatever card is showing now.
+          if (seq === issued.current) onStatusChangedRef.current?.(updated);
+        })
         .catch(() => undefined);
     }
     // `onStatusChanged` is read through a ref (below), not named here: a caller that rebuilds
@@ -534,20 +584,27 @@ export function TaskDetail({
   // One chronological story: persisted activity + live JIRA comments + live output.
   // Nothing is filtered here — `foldTurns` decides what the conversation shows and what
   // collapses into a single "worked with N tools" line.
-  const timeline = useMemo(
-    () => [...activity, ...ticketComments, ...liveEvents].sort((a, b) => a.createdAt - b.createdAt),
-    [activity, ticketComments, liveEvents],
+  const timelineEntries = useMemo(
+    () =>
+      [...timeline.activity, ...timeline.ticketComments, ...liveEvents].sort(
+        (a, b) => a.createdAt - b.createdAt,
+      ),
+    [timeline.activity, timeline.ticketComments, liveEvents],
   );
-  const turns = useMemo(() => foldTurns(timeline), [timeline]);
+  const turns = useMemo(() => foldTurns(timelineEntries), [timelineEntries]);
+  // A skeleton only once the load has actually taken a moment, and only while there is
+  // nothing already on screen — the four reload-the-same-card paths keep a correct
+  // timeline visible while they refresh it, and must not be replaced with grey rows.
+  const showTimelineSkeleton = useDelayedFlag(timeline.loading && turns.length === 0, 150);
 
   // Sub-agents the main agent spawned and is still waiting on, derived from the
   // UNFILTERED stream (the tool calls the conversation folds are exactly the evidence).
   const subAgents = useMemo(() => {
-    const events = [...activity, ...liveEvents]
+    const events = [...timeline.activity, ...liveEvents]
       .sort((a, b) => a.createdAt - b.createdAt)
       .flatMap((e) => (e.kind === 'event' ? [e.event as SessionEvent] : []));
     return runningSubAgents(events);
-  }, [activity, liveEvents]);
+  }, [timeline.activity, liveEvents]);
 
   // Who a typed message would reach and whether it can be sent (Phase 12). The target
   // may be a live STEP — a card executing an approved plan holds no session of its own —
@@ -1044,7 +1101,17 @@ export function TaskDetail({
 
       <div className={styles.scrollWrap}>
         <div className={styles.scroll} ref={scrollRef} onScroll={handleScroll}>
-          {turns.length === 0 && !managedByAI ? (
+          {showTimelineSkeleton ? (
+            // This load deliberately swallows failures into an empty timeline (see
+            // `loadActivity`'s `.catch`), so there is never an error to show here — the
+            // retry is a no-op because there is nothing this pane would retry.
+            <PaneLoading
+              label="Loading conversation…"
+              error={null}
+              onRetry={() => {}}
+              shape="rows"
+            />
+          ) : turns.length === 0 && !managedByAI ? (
             <Caption1 className={styles.empty}>
               Nothing said yet — write a note, or send the agent a message.
             </Caption1>
