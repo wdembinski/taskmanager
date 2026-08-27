@@ -149,6 +149,12 @@ export class HttpTransport implements Transport {
   /** The `?mt=` ticket every thumbnail's URL carries — see `mediaToken.ts`. */
   private readonly mediaToken: MediaTokenHolder;
   private readonly mediaTokenListeners = new Set<() => void>();
+  /** How many relayed calls are still awaiting a result — see {@link onPendingChange}. */
+  private readonly pendingListeners = new Set<(count: number) => void>();
+  /** The count last handed to {@link pendingListeners} — {@link notePending} is called from
+   *  several sites that run on every poll pass whether or not anything actually changed
+   *  (`pollOnce`, `expire`), and this is what keeps those from renotifying an unchanged count. */
+  private lastNotifiedPendingCount = 0;
 
   constructor(private readonly deps: HttpTransportDeps) {
     this.mediaToken = new MediaTokenHolder({
@@ -348,6 +354,25 @@ export class HttpTransport implements Transport {
     return () => this.mediaTokenListeners.delete(cb);
   }
 
+  /**
+   * Run `cb` with the current count of relayed calls still awaiting a result, every time that
+   * count changes. This is the "loading" half of the busy indicator — a browser tab reading
+   * the board through a desktop Client is never done just because the poll came back; a
+   * relayed call still in flight is data that hasn't arrived yet. Same one-hop-out-of-React
+   * shape as {@link onMediaTokenChange}.
+   */
+  onPendingChange(cb: (count: number) => void): () => void {
+    this.pendingListeners.add(cb);
+    return () => this.pendingListeners.delete(cb);
+  }
+
+  private notePending(): void {
+    const count = this.pending.size;
+    if (count === this.lastNotifiedPendingCount) return;
+    this.lastNotifiedPendingCount = count;
+    for (const listener of this.pendingListeners) listener(count);
+  }
+
   /** Stop the result poll and fail everything still waiting. Called when the tab tears down. */
   dispose(): void {
     this.events.dispose();
@@ -357,15 +382,21 @@ export class HttpTransport implements Transport {
       entry.reject(new Error('The page is closing.'));
     }
     this.pending.clear();
+    // Reported before the listener set is cleared, so a component unmounting mid-call sees
+    // the count it's holding go back to 0 rather than being left stuck on whatever it was.
+    this.notePending();
+    this.pendingListeners.clear();
   }
 
   private relay(channel: string, args: readonly unknown[]): Promise<unknown> {
     const id = this.mintId();
     return new Promise<unknown>((resolve, reject) => {
       this.pending.set(id, { resolve, reject, channel, startedAt: this.clock() });
+      this.notePending();
       void this.sendCommand('ipc-invoke', { channel, args }, id).catch((e: unknown) => {
         // The command never made it onto the queue, so no result will ever come back for it.
         this.pending.delete(id);
+        this.notePending();
         reject(e instanceof Error ? e : new Error(String(e)));
       });
       this.startPolling();
@@ -431,6 +462,9 @@ export class HttpTransport implements Transport {
       if (result.ok) entry.resolve(result.value);
       else entry.reject(new Error(result.error || 'The desktop app refused this.'));
     }
+    // Once per poll rather than once per result: a page draining ten results at once is one
+    // size change for a listener to react to, not ten renders of the same final count.
+    this.notePending();
   }
 
   /**
@@ -455,6 +489,7 @@ export class HttpTransport implements Transport {
         ),
       );
     }
+    this.notePending();
   }
 
   /**

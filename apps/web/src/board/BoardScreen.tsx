@@ -429,6 +429,16 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
     [settings, saveSettings, onBoardIds, reportError],
   );
 
+  // Stable identity for `TaskDetail`'s `onStatusChanged`: the pane keys `loadActivity`'s own
+  // effect on this prop's identity, so an inline arrow rebuilt every render forced a reload —
+  // and its own `jira:markRead`/`github:markRead` reply — on every poll.
+  const handleStatusChanged = useCallback(
+    (updated: Task) => {
+      if (isManualStatus(updated.status)) onStatusNoted(updated.id, updated.status);
+    },
+    [onStatusNoted],
+  );
+
   /** Picking a card — and, while a link is armed from the keyboard, drawing it instead. */
   const selectTask = useCallback(
     (id: string) => {
@@ -661,9 +671,7 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
             // the optimistic overlay a drag gets — it must not send a second command. The
             // task it hands back is the transport's stub (`{ id, status }`), never a row
             // worth merging into `state.tasks`; the next poll brings the real one.
-            onStatusChanged={(updated) => {
-              if (isManualStatus(updated.status)) onStatusNoted(updated.id, updated.status);
-            }}
+            onStatusChanged={handleStatusChanged}
             onSubtasksChanged={extras.refresh}
           />
         </div>
