@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { boardIsReady, syncCurtainText, syncStatusLabel, type SyncProgress } from './syncGate';
+import {
+  boardIsReady,
+  syncBusyLabel,
+  syncCurtainText,
+  syncStatusLabel,
+  type SyncProgress,
+} from './syncGate';
 
 function progress(overrides: Partial<SyncProgress> = {}): SyncProgress {
   return {
@@ -74,5 +80,23 @@ describe('syncStatusLabel', () => {
     expect(
       syncStatusLabel(progress({ initialSyncComplete: true, draining: true }), 0, 12_000),
     ).toBe('syncing…');
+  });
+});
+
+describe('syncBusyLabel', () => {
+  it('is null when nothing is outstanding', () => {
+    expect(syncBusyLabel(progress(), 0)).toBeNull();
+  });
+
+  it('says loading while relays are outstanding', () => {
+    expect(syncBusyLabel(progress(), 1)).toBe('loading…');
+  });
+
+  it('says syncing while draining, with no relays outstanding', () => {
+    expect(syncBusyLabel(progress({ draining: true }), 0)).toBe('syncing…');
+  });
+
+  it('lets outstanding relays win over draining — the ticket’s actual complaint', () => {
+    expect(syncBusyLabel(progress({ draining: true }), 1)).toBe('loading…');
   });
 });

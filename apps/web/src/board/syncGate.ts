@@ -60,6 +60,20 @@ export function syncStatusLabel(p: SyncProgress, lastPolledAt: number | null, no
   return `synced ${describeAge(now - lastPolledAt)}`;
 }
 
+/**
+ * What the status bar's busy indicator should say, once the board is already up (this is not
+ * {@link syncCurtainText} — that gates the whole screen before the first page lands). Relays
+ * outstanding wins over a draining board read: relays are data this tab explicitly asked for
+ * and does not have yet — the ticket's actual complaint — while draining is a keepalive that
+ * happens to be paging. Returns `null` when neither is true, so the caller can hide the
+ * indicator entirely rather than render an empty label.
+ */
+export function syncBusyLabel(p: SyncProgress, pendingRelays: number): string | null {
+  if (pendingRelays > 0) return 'loading…';
+  if (p.draining) return 'syncing…';
+  return null;
+}
+
 /** A duration in ms as the coarsest unit that still says something — `12s ago`, `3m ago`. */
 export function describeAge(ms: number): string {
   const seconds = Math.max(0, Math.round(ms / 1000));
