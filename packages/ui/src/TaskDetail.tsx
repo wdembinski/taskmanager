@@ -404,10 +404,14 @@ export function TaskDetail({
     if (tracker) {
       await transport
         .invoke(tracker === 'github' ? 'github:markRead' : 'jira:markRead', taskId)
-        .then((updated) => onStatusChanged?.(updated))
+        .then((updated) => onStatusChangedRef.current?.(updated))
         .catch(() => undefined);
     }
-  }, [taskId, tracker, onStatusChanged]);
+    // `onStatusChanged` is read through a ref (below), not named here: a caller that rebuilds
+    // it every render — as the web board's inline arrow used to — must not force this callback
+    // to a new identity too, since the effect below reruns `loadActivity` on every identity
+    // change and each run re-fires `jira:markRead`/`github:markRead` against the tracker.
+  }, [taskId, tracker, transport]);
 
   useEffect(() => {
     setError(null);
@@ -422,6 +426,13 @@ export function TaskDetail({
   // prop changes identity — it would drop events in the gap.
   const reloadRef = useRef(loadActivity);
   reloadRef.current = loadActivity;
+  // Written every render, same rule as `reloadRef` just above: `loadActivity` calls this
+  // rather than closing over `onStatusChanged` directly, so a caller whose prop is a fresh
+  // arrow on every render (an inline closure, not a `useCallback`) does not force
+  // `loadActivity` itself to a new identity — which used to re-run the mount effect below on
+  // every poll and, on the web, resend `jira:markRead`/`github:markRead` each time too.
+  const onStatusChangedRef = useRef(onStatusChanged);
+  onStatusChangedRef.current = onStatusChanged;
   useEffect(() => {
     runIdRef.current = null;
     if (!taskId) return;
@@ -515,6 +526,9 @@ export function TaskDetail({
     if (!wasMerging.current) return;
     wasMerging.current = false;
     void reloadRef.current();
+    // `merging` looks like it could churn every poll, but it is a boolean collapsed from
+    // `mergingTaskIds` (a `Set` whose identity IS fresh each poll) above — the effect only
+    // re-fires on an actual true/false flip, not on every new Set the board hands down.
   }, [merging, taskId]);
 
   // One chronological story: persisted activity + live JIRA comments + live output.
