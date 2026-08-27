@@ -106,6 +106,24 @@ describe('RelayRegistry', () => {
     expect(result.error).toContain('cannot be sent to a browser');
   });
 
+  it('relays attention:dismiss and carries a refusal through as an error, not a throw', async () => {
+    const registry = new RelayRegistry();
+    registry.register('attention:dismiss', async (itemId: string) => {
+      if (itemId === 'gone') {
+        throw new Error(
+          'Could not dismiss that item — it may already be gone, or it needs to be resolved instead.',
+        );
+      }
+    });
+
+    const ok = await registry.invoke('attention:dismiss', ['item-1']);
+    expect(ok).toEqual({ ok: true, value: undefined });
+
+    const refused = await registry.invoke('attention:dismiss', ['gone']);
+    expect(refused.ok).toBe(false);
+    expect(refused.error).toContain('already be gone');
+  });
+
   it('reports what it can invoke', () => {
     const registry = new RelayRegistry();
     expect(registry.canInvoke('board:tasks')).toBe(false);
