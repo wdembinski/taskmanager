@@ -204,7 +204,7 @@ import { buildContractScaffold, CONTRACT_DOC, insertContractTasks } from './plan
 import { buildAlignPrompt } from './alignPrompt';
 import { PermissionBroker } from './permissionBroker';
 import { writePermissionServer } from './permissionServerSource';
-import { openInteractiveSignIn, watchForSignIn } from './signIn';
+import { openInteractiveSignIn, SignInProbe, watchForSignIn } from './signIn';
 import { PlanWatcher } from './planWatcher';
 import { SyncPoller } from './syncPoller';
 import { ClaudeUsagePoller, readClaudeUsage } from './claudeUsage';
@@ -543,7 +543,18 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // The sign-in gate drives both the banner and the status bar's dot, so it goes out on
   // its own channel rather than being folded into `claude:getStatus` — that one answers
   // "is there a credentials file", which stayed true for the whole outage this exists for.
-  scheduler.setAuthNotifier((state) => send('auth:changed', state));
+  //
+  // The SAME notifier drives `signInProbe`: it is the one place every gate change passes
+  // through (engage, a later park, restore, lift), so starting/stopping it here can never
+  // drift from what the banner is showing. A WSL gate's credential lives inside the
+  // distro, which the local `fs.watch` below can never see — this is the only path that
+  // can notice a sign-in there at all.
+  const signInProbe = new SignInProbe({ onSignIn: () => scheduler.signedIn() });
+  scheduler.setAuthNotifier((state) => {
+    send('auth:changed', state);
+    if (state) signInProbe.start(state);
+    else signInProbe.stop();
+  });
 
   // The corroborating witness for a usage limit the CLI only stated in prose: `/usage` is a
   // LOCAL meta-command (no tokens, no turns — see `claudeUsage.ts`), so the scheduler can
@@ -582,10 +593,20 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // that the gate can lift WITHOUT the human coming back to tell us — so the common path
   // is: banner appears, they press Sign in, they log in, work resumes on its own. Guarded
   // on the gate being up so an unrelated credential refresh never nudges the scheduler.
+  //
+  // Guarded on LOCAL too: this only ever watches the machine the GUI runs on, so if the
+  // standing gate names a WSL distro, a Windows login rewriting THIS machine's credential
+  // is not the sign-in the gate is waiting for. Reacting anyway is defect (3) — it lifts
+  // the gate, the next task launches straight into the distro's still-dead credential, and
+  // one outage becomes a loop. `signInProbe` above is what actually watches that host.
   const stopSignInWatch = watchForSignIn(() => {
-    if (scheduler.currentAuth()) scheduler.signedIn();
+    const auth = scheduler.currentAuth();
+    if (auth && (!auth.target || auth.target.kind === 'local')) scheduler.signedIn();
   });
-  mainWindow.on('close', () => stopSignInWatch());
+  mainWindow.on('close', () => {
+    stopSignInWatch();
+    signInProbe.stop();
+  });
 
   // The permission broker gives the scheduler a TRUE pre-execution veto: the CLI
   // asks it (via an MCP relay) before running each tool, and the scheduler either
@@ -1329,7 +1350,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('limit:resumeNow', async () => scheduler.resumeLimitNow());
   handle('auth:current', async () => scheduler.currentAuth());
   handle('auth:signedIn', async () => scheduler.signedIn());
-  handle('auth:signIn', async () => openInteractiveSignIn());
+  // Opens the failing gate's OWN host, not just wherever the GUI runs — a WSL project's
+  // credential can only be re-minted from inside that distro.
+  handle('auth:signIn', async () => openInteractiveSignIn(scheduler.currentAuth()?.target));
 
   // Performance dashboard: roll the rolling-5h-window samples into a summary, and
   // serve the time-bucketed series for the live chart. All computed by the app from

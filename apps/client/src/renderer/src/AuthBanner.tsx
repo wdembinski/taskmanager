@@ -20,7 +20,7 @@ import {
   MessageBarTitle,
   tokens,
 } from '@fluentui/react-components';
-import { SIGN_IN_COMMAND, type AuthState } from '@shared/auth';
+import { signInCommandText, type AuthState } from '@shared/auth';
 
 const useStyles = makeStyles({
   reason: { display: 'block', color: tokens.colorNeutralForeground2 },
@@ -54,6 +54,11 @@ export function AuthBanner(): JSX.Element | null {
   if (!auth) return null;
 
   const parked = auth.parkedTaskIds.length;
+  // Named in the title exactly as `describeAuthFailure`'s timeline sentence names it and
+  // the readiness panel's fix text names it — the distro, nothing more, since "signed out
+  // in Ubuntu-24.04" already says which machine without also saying WSL.
+  const host = auth.target?.kind === 'wsl' ? ` in ${auth.target.distro}` : '';
+  const command = signInCommandText(auth.target);
 
   async function signIn(): Promise<void> {
     const opened = await window.api.invoke('auth:signIn');
@@ -63,8 +68,8 @@ export function AuthBanner(): JSX.Element | null {
   return (
     <MessageBar intent="error" politeness="assertive">
       <MessageBarBody>
-        <MessageBarTitle>Claude is signed out</MessageBarTitle> All work is held until you sign in
-        again.{' '}
+        <MessageBarTitle>Claude is signed out{host}</MessageBarTitle> All work is held until you
+        sign in again.{' '}
         {parked > 0 &&
           `${parked} task${parked === 1 ? '' : 's'} will resume automatically once you do.`}
         {/* The CLI's own sentence, verbatim: an expired session, a paid-API key and a
@@ -73,13 +78,14 @@ export function AuthBanner(): JSX.Element | null {
           {auth.source === 'restored' ? 'When the app last ran: ' : ''}
           {auth.reason}
         </Caption1>
-        {manual && (
-          <Caption1 className={styles.reason}>
-            Couldn&apos;t open a terminal here — run{' '}
-            <span className={styles.command}>{SIGN_IN_COMMAND}</span> yourself, then press I&apos;ve
-            signed in.
-          </Caption1>
-        )}
+        {/* Shown ALWAYS, not only once the button has failed: on a WSL setup the app cannot
+            open the distro's terminal from every desktop, and the command is the whole
+            answer either way — it should not wait on a button having failed first. */}
+        <Caption1 className={styles.reason}>
+          {manual ? "Couldn't open a terminal here — run " : 'Or run '}
+          <span className={styles.command}>{command}</span>
+          {manual ? " yourself, then press I've signed in." : ' yourself.'}
+        </Caption1>
       </MessageBarBody>
       <MessageBarActions>
         {/* Opens an interactive `claude`; the OAuth flow needs a terminal and a browser,
