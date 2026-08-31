@@ -3,7 +3,12 @@
  * panel all share, so naming a WSL distro's host cannot drift between the three.
  */
 import { describe, expect, it } from 'vitest';
-import { describeAuthFailure, signInCommandText, type AuthState } from './auth';
+import {
+  describeAuthFailure,
+  localSignInMatchesGate,
+  signInCommandText,
+  type AuthState,
+} from './auth';
 
 const WSL = { kind: 'wsl', distro: 'Ubuntu-24.04' } as const;
 
@@ -45,5 +50,31 @@ describe('describeAuthFailure', () => {
     expect(describeAuthFailure(state({ target: WSL, source: 'restored' }))).toBe(
       'Claude could not authenticate on wsl:Ubuntu-24.04 when the app last ran: OAuth session expired',
     );
+  });
+});
+
+describe('localSignInMatchesGate', () => {
+  function state(over: Partial<AuthState> = {}): AuthState {
+    return {
+      since: 0,
+      reason: 'OAuth session expired',
+      source: 'run',
+      parkedTaskIds: [],
+      ...over,
+    };
+  }
+
+  it('is false when no gate is up — nothing to react to', () => {
+    expect(localSignInMatchesGate(null)).toBe(false);
+  });
+
+  it('is true for a gate with no target (an old persisted gate) and one explicitly local', () => {
+    expect(localSignInMatchesGate(state())).toBe(true);
+    expect(localSignInMatchesGate(state({ target: { kind: 'local' } }))).toBe(true);
+  });
+
+  /** A Windows login rewriting this machine's credential is not the distro's sign-in. */
+  it('is false once the gate names a WSL distro', () => {
+    expect(localSignInMatchesGate(state({ target: WSL }))).toBe(false);
   });
 });

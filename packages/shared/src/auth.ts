@@ -74,6 +74,19 @@ export function signInCommandText(target?: ExecTarget): string {
   return target && target.kind === 'wsl' ? `wsl -d ${target.distro} claude` : 'claude';
 }
 
+/**
+ * Whether a LOCAL credential rewrite (`watchForSignIn`, which can only ever see the
+ * machine the GUI runs on) is the sign-in `state` is actually waiting for.
+ *
+ * False for a gate that named a WSL distro: that credential lives inside the distro, so a
+ * Windows login rewriting THIS machine's file proves nothing about it. Lifting anyway would
+ * send the next resumed run straight back into the distro's still-dead credential, turning
+ * one outage into a loop. `SignInProbe` is what actually watches a non-local host.
+ */
+export function localSignInMatchesGate(state: AuthState | null): boolean {
+  return state !== null && (!state.target || state.target.kind === 'local');
+}
+
 /** One line naming what is wrong and what to do — shared so banner and timeline agree. */
 export function describeAuthFailure(state: AuthState): string {
   const host =

@@ -6,9 +6,19 @@
  * as the window TITLE, so `cmd /c start "cmd /k claude"` opens an empty console named
  * after the command — a button that appears to work and signs nobody in.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { AuthState } from '@shared/auth';
 import type { ExecHost } from './exec';
-import { credentialsPath, credentialsStamp, signInCommand } from './signIn';
+import { credentialsPath, credentialsStamp, signInCommand, SignInProbe } from './signIn';
+
+/**
+ * `SignInProbe` resolves its host through `./exec`'s `hostFor`, not a constructor
+ * argument, so the seam under test is that function rather than the class itself —
+ * mocked here to a controllable `ExecHost` instead of touching a real filesystem or a
+ * real WSL distro.
+ */
+const hostForMock = vi.hoisted(() => vi.fn());
+vi.mock('./exec', () => ({ hostFor: hostForMock }));
 
 describe('signInCommand', () => {
   it('passes an empty title on Windows so the command is not eaten by start', () => {
@@ -85,5 +95,97 @@ describe('credentialsStamp', () => {
   it('is null when the host answers with something that is not a number', async () => {
     const exec = vi.fn().mockResolvedValue({ code: 0, stdout: 'not-a-number\n', stderr: '' });
     expect(await credentialsStamp(fakeHost(exec))).toBeNull();
+  });
+});
+
+/**
+ * The one comparison the whole probe exists to make: a credential's stamp against the
+ * gate's own `since`. Restoring a stale gate must not clear on a credential that has sat
+ * there, untouched, since before the failure — only a stamp strictly NEWER than `since`
+ * is a login that happened after the gate went up.
+ */
+describe('SignInProbe', () => {
+  function fakeHost(exec: ExecHost['exec']): ExecHost {
+    return {
+      target: { kind: 'wsl', distro: 'Ubuntu-24.04' },
+      exec,
+      spawn: vi.fn(),
+      toNative: (p: string) => p,
+      toApp: (p: string) => p,
+      relaySpec: vi.fn(),
+      homeDir: () => Promise.resolve('/home/w'),
+    };
+  }
+
+  function gate(since: number): AuthState {
+    return {
+      since,
+      reason: 'OAuth session expired',
+      source: 'run',
+      parkedTaskIds: [],
+      target: { kind: 'wsl', distro: 'Ubuntu-24.04' },
+    };
+  }
+
+  afterEach(() => {
+    hostForMock.mockReset();
+  });
+
+  it('does not lift a gate whose credential stamp is no newer than `since`', async () => {
+    // Stat reports seconds; 1000s === the gate's own `since` in ms, so this is the SAME
+    // moment, not a later one.
+    const exec = vi.fn().mockResolvedValue({ code: 0, stdout: '1000\n', stderr: '' });
+    hostForMock.mockReturnValue(fakeHost(exec));
+    const onSignIn = vi.fn();
+    const probe = new SignInProbe({ onSignIn, pollMs: 1_000_000 });
+    probe.start(gate(1_000_000));
+    await vi.waitFor(() => expect(exec).toHaveBeenCalled());
+    // Give the async check a beat to run past its await — there is nothing else to wait on.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(onSignIn).not.toHaveBeenCalled();
+    probe.stop();
+  });
+
+  it('lifts the gate once the credential stamp is strictly newer than `since`', async () => {
+    const exec = vi.fn().mockResolvedValue({ code: 0, stdout: '1001\n', stderr: '' }); // 1_001_000ms
+    hostForMock.mockReturnValue(fakeHost(exec));
+    const onSignIn = vi.fn();
+    const probe = new SignInProbe({ onSignIn, pollMs: 1_000_000 });
+    probe.start(gate(1_000_000));
+    await vi.waitFor(() => expect(onSignIn).toHaveBeenCalledTimes(1));
+    probe.stop();
+  });
+
+  it('does not lift on a host with no credential to stat at all', async () => {
+    const exec = vi.fn().mockResolvedValue({ code: 1, stdout: '', stderr: 'No such file' });
+    hostForMock.mockReturnValue(fakeHost(exec));
+    const onSignIn = vi.fn();
+    const probe = new SignInProbe({ onSignIn, pollMs: 1_000_000 });
+    probe.start(gate(1_000_000));
+    await vi.waitFor(() => expect(exec).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(onSignIn).not.toHaveBeenCalled();
+    probe.stop();
+  });
+
+  it('checks immediately on start, catching a sign-in that happened while the app was closed', () => {
+    const exec = vi.fn().mockResolvedValue({ code: 0, stdout: '1001\n', stderr: '' });
+    hostForMock.mockReturnValue(fakeHost(exec));
+    const probe = new SignInProbe({ onSignIn: vi.fn(), pollMs: 1_000_000 });
+    probe.start(gate(1_000_000));
+    // Called synchronously by `start`, well before the (huge) poll interval could fire.
+    expect(exec).toHaveBeenCalledTimes(1);
+    probe.stop();
+  });
+
+  it('a check already in flight cannot fire once stopped — no dangling onSignIn', async () => {
+    const exec = vi.fn().mockResolvedValue({ code: 0, stdout: '1001\n', stderr: '' });
+    hostForMock.mockReturnValue(fakeHost(exec));
+    const onSignIn = vi.fn();
+    const probe = new SignInProbe({ onSignIn, pollMs: 1_000_000 });
+    probe.start(gate(1_000_000));
+    probe.stop(); // stopped before the in-flight `exec` above resolves
+    await new Promise((r) => setTimeout(r, 20));
+    expect(onSignIn).not.toHaveBeenCalled();
   });
 });

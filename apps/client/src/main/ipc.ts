@@ -205,6 +205,7 @@ import { buildAlignPrompt } from './alignPrompt';
 import { PermissionBroker } from './permissionBroker';
 import { writePermissionServer } from './permissionServerSource';
 import { openInteractiveSignIn, SignInProbe, watchForSignIn } from './signIn';
+import { localSignInMatchesGate } from '@shared/auth';
 import { PlanWatcher } from './planWatcher';
 import { SyncPoller } from './syncPoller';
 import { ClaudeUsagePoller, readClaudeUsage } from './claudeUsage';
@@ -594,14 +595,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // is: banner appears, they press Sign in, they log in, work resumes on its own. Guarded
   // on the gate being up so an unrelated credential refresh never nudges the scheduler.
   //
-  // Guarded on LOCAL too: this only ever watches the machine the GUI runs on, so if the
-  // standing gate names a WSL distro, a Windows login rewriting THIS machine's credential
-  // is not the sign-in the gate is waiting for. Reacting anyway is defect (3) — it lifts
-  // the gate, the next task launches straight into the distro's still-dead credential, and
-  // one outage becomes a loop. `signInProbe` above is what actually watches that host.
+  // Guarded on LOCAL too (`localSignInMatchesGate`): this only ever watches the machine the
+  // GUI runs on, so if the standing gate names a WSL distro, a Windows login rewriting THIS
+  // machine's credential is not the sign-in the gate is waiting for. Reacting anyway is
+  // defect (3) — it lifts the gate, the next task launches straight into the distro's
+  // still-dead credential, and one outage becomes a loop. `signInProbe` above is what
+  // actually watches that host.
   const stopSignInWatch = watchForSignIn(() => {
-    const auth = scheduler.currentAuth();
-    if (auth && (!auth.target || auth.target.kind === 'local')) scheduler.signedIn();
+    if (localSignInMatchesGate(scheduler.currentAuth())) scheduler.signedIn();
   });
   mainWindow.on('close', () => {
     stopSignInWatch();
