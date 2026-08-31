@@ -38,6 +38,7 @@
  */
 import type { SessionEvent } from '@shared/session';
 import type { AuthState } from '@shared/auth';
+import type { ExecTarget } from '@shared/execTarget';
 
 /**
  * Phrases that are the CLI's (or this app's) own voice, never an agent's answer.
@@ -162,12 +163,14 @@ export class AuthGate {
   }
 
   /**
-   * Raise the gate for `reason`, parking `taskIds`. Engaging an already-raised gate only
-   * adds to the parked set: the FIRST reason is kept, because it is the one that has a
-   * live run's failure behind it, while later ones are just the queue draining into the
-   * same wall and would otherwise rewrite the banner every few hundred milliseconds.
+   * Raise the gate for `reason`, parking `taskIds` on behalf of `target`. Engaging an
+   * already-raised gate only adds to the parked set: the FIRST reason — and the FIRST
+   * target — are kept, because they are the ones a live run's failure actually proved,
+   * while later ones are just the queue draining into the same wall from whatever host
+   * each task happens to run on, and would otherwise rewrite the banner every few
+   * hundred milliseconds (or worse, claim the wall is on a host that never failed).
    */
-  engage(reason: string, taskIds: readonly string[]): AuthState {
+  engage(reason: string, taskIds: readonly string[], target?: ExecTarget): AuthState {
     this.current = this.current
       ? { ...this.current, parkedTaskIds: merge(this.current.parkedTaskIds, taskIds) }
       : {
@@ -175,6 +178,7 @@ export class AuthGate {
           reason,
           source: 'run',
           parkedTaskIds: [...new Set(taskIds)],
+          target,
         };
     this.deps.onChanged(this.current);
     return this.current;
@@ -192,6 +196,12 @@ export class AuthGate {
    * case this exists for, exactly as it is for the usage limit: nothing else re-enters a
    * chain, so a step merely left `pending` here is a card that stops at 2/4 for good.
    * Returns the ids actually added (none if no gate is up — then just run them).
+   *
+   * Deliberately takes no target of its own: a task parked here may belong to a project
+   * on a different host than the one that raised the gate, and attaching it does not mean
+   * the gate now watches two credentials. Parking it is still correct — nothing else
+   * remembers work across the pause — but the gate's `target` stays whichever host's run
+   * actually failed, so the banner and the credential poll keep naming the true culprit.
    */
   park(taskIds: readonly string[]): string[] {
     if (!this.current) return [];

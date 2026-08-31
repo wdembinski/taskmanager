@@ -25,6 +25,7 @@ import { MAX_PLAN_STEPS } from '@shared/board';
 import type { PermissionMode } from '@shared/session';
 import type { Project, Task } from '@shared/model';
 import type { LimitState } from '@shared/limit';
+import type { AuthState } from '@shared/auth';
 import { RUN_REFUSAL_MESSAGE } from '@shared/scheduler';
 import type { SessionManager } from './sessionManager';
 import type { Store } from './store';
@@ -5154,6 +5155,143 @@ describe('Scheduler.startTaskNow — the reason a Start was refused', () => {
   it('still answers runTask with a plain null', () => {
     const { scheduler } = setup({ authGate: true });
     expect(scheduler.runTask('t1')).toBeNull();
+  });
+});
+
+/**
+ * What the sign-in gate tells each parked card once it lifts — {@link Scheduler.resumeAfterSignIn}.
+ *
+ * Four cards can be sitting in one gate's `parkedTaskIds` when it lifts, and only one of
+ * them is the ordinary case (nothing else has touched it, so it just restarts). The other
+ * three all left it a different way — closed by a human, already running again, or its
+ * project gone — and each has to say so on the card rather than silently doing nothing,
+ * which is what made a "stuck" card indistinguishable from a card the gate had simply
+ * decided not to touch.
+ */
+describe('Scheduler.resumeAfterSignIn — what it tells each parked card', () => {
+  function setup(): {
+    scheduler: Scheduler;
+    tasks: Map<string, Task>;
+    start: ReturnType<typeof vi.fn>;
+    notes: { taskId: string; body: string }[];
+  } {
+    const project = {
+      id: 'p',
+      path: 'C:/w',
+      planPath: 'C:/w/plan.md',
+      name: 'P',
+      concurrency: 1,
+      defaultModel: 'sonnet',
+      defaultPermissionMode: 'acceptEdits',
+    } as Project;
+    const base = (id: string, over: Partial<Task>): Task =>
+      ({
+        id,
+        projectId: 'p',
+        phase: '',
+        title: id,
+        status: 'pending',
+        sessionId: null,
+        order: 0,
+        source: 'board',
+        dependsOn: [],
+        isContract: false,
+        isScaffold: false,
+        agentProjectId: null,
+        parentTaskId: null,
+        ...over,
+      }) as unknown as Task;
+    const tasks = new Map<string, Task>([
+      ['restart1', base('restart1', {})],
+      ['closed1', base('closed1', { status: 'done' })],
+      ['running1', base('running1', {})],
+      ['noproject1', base('noproject1', { projectId: 'ghost' })],
+    ]);
+    const notes: { taskId: string; body: string }[] = [];
+    const store = {
+      getTask: (id: string) => tasks.get(id),
+      getTasks: () => [...tasks.values()],
+      getProject: (id: string) => (id === 'p' ? project : undefined),
+      getSubtasks: () => [],
+      updateTask: (id: string, patch: Partial<Task>) => {
+        const found = tasks.get(id);
+        if (found) Object.assign(found, patch);
+        return found;
+      },
+      listProjects: () => [project],
+      listTaskLinks: () => [],
+      appendTaskEvent: vi.fn(
+        (_p: string, taskId: string, _runId: string, event: { text?: string }) => {
+          notes.push({ taskId, body: event.text ?? '' });
+        },
+      ),
+      getSettings: () => ({ maxAutoRetries: 0, limitJitterMs: 0, concurrency: 1 }),
+      saveLimitGate: vi.fn(),
+      loadLimitGate: () => null,
+      saveAuthGate: vi.fn(),
+      loadAuthGate: () => null,
+      ...INERT_ATTENTION_STORE,
+    } as unknown as Store;
+    const start = vi.fn(() => ({ runId: 'r-resumed' }));
+    const sessions = { start, stop: vi.fn() } as unknown as SessionManager;
+    const scheduler = new Scheduler(store, sessions, vi.fn(), vi.fn(), vi.fn(), vi.fn(), vi.fn());
+    // `running1` already has a live run by the time the gate lifts — a human pressed Run
+    // themselves while it was still up.
+    (scheduler as unknown as { runs: Map<string, unknown> }).runs.set('r-live', {
+      taskId: 'running1',
+      projectId: 'p',
+      runId: 'r-live',
+      settled: false,
+    });
+    return { scheduler, tasks, start, notes };
+  }
+
+  function lift(scheduler: Scheduler): void {
+    const state: AuthState = {
+      since: 1,
+      reason: 'OAuth session expired',
+      source: 'run',
+      parkedTaskIds: ['restart1', 'closed1', 'running1', 'noproject1'],
+    };
+    (scheduler as unknown as { resumeAfterSignIn: (s: AuthState) => void }).resumeAfterSignIn(
+      state,
+    );
+  }
+
+  const noteFor = (notes: { taskId: string; body: string }[], taskId: string): string =>
+    notes
+      .filter((n) => n.taskId === taskId)
+      .map((n) => n.body)
+      .join('\n');
+
+  it('restarts the ordinary case — nothing else has touched the card since', () => {
+    const { scheduler, start, notes } = setup();
+    lift(scheduler);
+    // The only one of the four with nothing to say for itself: it just runs again.
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(notes.some((n) => n.taskId === 'restart1')).toBe(false);
+  });
+
+  it('says a closed card was not restarted, and names the status it closed at', () => {
+    const { scheduler, notes } = setup();
+    lift(scheduler);
+    expect(noteFor(notes, 'closed1')).toMatch(/closed \(done\).*not restarted/);
+  });
+
+  it('says nothing new was started for a card a human already re-ran by hand', () => {
+    const { scheduler, notes, start } = setup();
+    lift(scheduler);
+    expect(noteFor(notes, 'running1')).toMatch(/already in progress.*nothing new was started/);
+    // Only the ordinary card actually launched a session.
+    expect(start).toHaveBeenCalledTimes(1);
+  });
+
+  it('says a card with no resolvable project was not restarted, but keeps its session', () => {
+    const { scheduler, notes } = setup();
+    lift(scheduler);
+    expect(noteFor(notes, 'noproject1')).toMatch(
+      /no longer resolves to a project to run in.*not restarted/,
+    );
   });
 });
 

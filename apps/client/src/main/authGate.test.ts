@@ -137,6 +137,26 @@ describe('AuthGate', () => {
     expect(state.parkedTaskIds).toEqual(['t1', 't2']);
   });
 
+  /** The gate names the host whose run actually proved the credential dead. */
+  it('stamps the failing host on first engage', () => {
+    const { g } = gate();
+    const target = { kind: 'wsl', distro: 'Ubuntu-24.04' } as const;
+    const state = g.engage('OAuth session expired', ['t1'], target);
+    expect(state.target).toEqual(target);
+  });
+
+  /**
+   * A task parked from a DIFFERENT host must not repaint the gate as though that host
+   * failed — the gate keeps naming the one that did, exactly as it keeps the first reason.
+   */
+  it('does not let a later task from another host repaint the gate', () => {
+    const { g } = gate();
+    const failing = { kind: 'wsl', distro: 'Ubuntu-24.04' } as const;
+    g.engage('OAuth session expired', ['t1'], failing);
+    const state = g.engage('unrelated', ['t2'], { kind: 'local' });
+    expect(state.target).toEqual(failing);
+  });
+
   /**
    * The rule the usage-limit gate had to learn the hard way: nothing else re-enters a
    * chain, so a step stopped by the gate has to be parked IN the gate or the card sits

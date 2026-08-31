@@ -3912,7 +3912,12 @@ export class Scheduler {
     // Only the FIRST failure gets the timeline entries. The queue drains into this wall
     // within seconds, and one note per card per attempt would bury the run's real history.
     const first = !this.authGate.active;
-    this.authGate.engage(reason, [failing.taskId, ...casualties.map((r) => r.taskId)]);
+    // The host THIS run proved dead — a WSL project's credential is not the one on the
+    // machine the GUI runs on. Read once, on the failure that actually raises the gate;
+    // `AuthGate.engage` keeps it exactly as it keeps `reason`, so a casualty from another
+    // host queued into the same wall a moment later cannot repaint who actually failed.
+    const target = this.store.getProject(failing.projectId)?.target;
+    this.authGate.engage(reason, [failing.taskId, ...casualties.map((r) => r.taskId)], target);
     // The same as the limit's, and including `failing` for the same reason the gate's own
     // parked set does: a run whose `exited` has already removed it from `runs` is still a
     // run this gate is holding, and it is the one that proved the credential is dead.
@@ -3955,15 +3960,47 @@ export class Scheduler {
       // for this task whichever way it leaves the loop.
       const rebuild = this.resumeOpts(taskId);
       const task = this.store.getTask(taskId);
-      if (!task || closed.has(task.status)) continue;
+      // A card that vanished entirely has nowhere to note this — there is no card left to
+      // read it. Every OTHER drop below is noted first, so a lift is never mistaken for
+      // nothing having happened (modelled on `releaseStrandedPark`).
+      if (!task) continue;
+      if (closed.has(task.status)) {
+        this.noteRun(
+          task.projectId,
+          task.id,
+          'auth',
+          `The sign-in gate lifted, but this card was closed (${task.status}) while it was ` +
+            `held, so it was not restarted.`,
+        );
+        continue;
+      }
       if (!task.parentTaskId && chainInFlight(this.store.getSubtasks(task.id))) {
         chains.add(task.id);
         continue;
       }
       // Something live already owns it — a human pressed Run as the gate lifted.
-      if (this.hasLiveRunFor([task])) continue;
+      if (this.hasLiveRunFor([task])) {
+        this.noteRun(
+          task.projectId,
+          task.id,
+          'auth',
+          `The sign-in gate lifted, but a run was already in progress for this task, so ` +
+            `nothing new was started.`,
+        );
+        continue;
+      }
       const project = this.runProjectFor(task);
-      if (!project) continue;
+      if (!project) {
+        this.noteRun(
+          task.projectId,
+          task.id,
+          'auth',
+          `The sign-in gate lifted, but this no longer resolves to a project to run in, so ` +
+            `it was not restarted. Its session is kept — running it again continues the ` +
+            `same conversation.`,
+        );
+        continue;
+      }
       // …as the run it was (a release, a chat reply, or plain work — see `resumeOpts`).
       // Resumes by task.sessionId when there is one.
       this.startTask(project, task, rebuild);
@@ -4501,6 +4538,18 @@ export class Scheduler {
    *     attempt verbatim. On a resumed session that costs a short note, not a re-brief.
    */
   private handleRunFailure(run: Run, reason: string): void {
+    // The account's failure, wearing this card's clothes. The `result` case above already
+    // classifies most of these, but a reason can reach here by another road that never
+    // passed `detectAuthFailure` — a worktree preflight, a restored gate's note, a run
+    // that died with no `result` at all — and `isRetryableFailure` already trusts the
+    // same predicate to refuse a retry (S3). This diverts on it instead of merely
+    // refusing: filing an account outage as one card's failure is what the gate exists
+    // to stop, wherever the CLI's own wording turns up.
+    if (isAuthFailureText(reason)) {
+      this.engageAuthFailure(run, reason);
+      this.sessions.stop(run.runId);
+      return;
+    }
     const attempted = this.attempts.get(run.taskId) ?? 0;
     const max = Math.max(0, this.store.getSettings().maxAutoRetries);
     if (isRetryableFailure(reason) && shouldAutoRetry(attempted, max)) {

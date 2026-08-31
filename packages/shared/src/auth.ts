@@ -15,6 +15,7 @@
  * this gate is lifted by an event instead — the CLI rewriting its credentials file, or
  * the human pressing the button.
  */
+import { formatExecTarget, type ExecTarget } from './execTarget';
 
 /** How the gate found out, which decides how much the banner may promise. */
 export type AuthFailureSource =
@@ -48,6 +49,17 @@ export interface AuthState {
    * `pending` with a comment hoping someone re-runs it.
    */
   parkedTaskIds: string[];
+  /**
+   * The exec target of the run that proved the credential dead — a WSL distro has its
+   * OWN sign-in, separate from the one on the machine the GUI runs on. Optional so a gate
+   * persisted by a build that predates this field restores as "unknown host", which reads
+   * as `local` everywhere it is consulted: there is no migration for a JSON blob, and a
+   * wrong guess here would send the Sign in button (or the credential poll) at the wrong
+   * machine. Set once, on the first `engage` — later tasks parked into an already-raised
+   * gate never move it, because the gate names the host that actually failed, not
+   * whichever host happened to queue into it next.
+   */
+  target?: ExecTarget;
 }
 
 /**
@@ -55,12 +67,31 @@ export interface AuthState {
  *
  * Running `claude` interactively is what re-mints the credential; there is no headless
  * form of it, which is the whole reason this gate ends with a human rather than a timer.
+ * Host-aware because a WSL target's credential lives inside the distro: signing in on
+ * Windows would re-mint the wrong one.
  */
-export const SIGN_IN_COMMAND = 'claude';
+export function signInCommandText(target?: ExecTarget): string {
+  return target && target.kind === 'wsl' ? `wsl -d ${target.distro} claude` : 'claude';
+}
+
+/**
+ * Whether a LOCAL credential rewrite (`watchForSignIn`, which can only ever see the
+ * machine the GUI runs on) is the sign-in `state` is actually waiting for.
+ *
+ * False for a gate that named a WSL distro: that credential lives inside the distro, so a
+ * Windows login rewriting THIS machine's file proves nothing about it. Lifting anyway would
+ * send the next resumed run straight back into the distro's still-dead credential, turning
+ * one outage into a loop. `SignInProbe` is what actually watches a non-local host.
+ */
+export function localSignInMatchesGate(state: AuthState | null): boolean {
+  return state !== null && (!state.target || state.target.kind === 'local');
+}
 
 /** One line naming what is wrong and what to do — shared so banner and timeline agree. */
 export function describeAuthFailure(state: AuthState): string {
+  const host =
+    state.target && state.target.kind !== 'local' ? ` on ${formatExecTarget(state.target)}` : '';
   return state.source === 'restored'
-    ? `Claude could not authenticate when the app last ran: ${state.reason}`
-    : `Claude could not authenticate: ${state.reason}`;
+    ? `Claude could not authenticate${host} when the app last ran: ${state.reason}`
+    : `Claude could not authenticate${host}: ${state.reason}`;
 }

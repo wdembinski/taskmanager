@@ -271,6 +271,15 @@ function SignedInBoard({
           //     window** (`desktopPresence.ts`) — never on the strength of one empty response,
           //     since a healthy desktop can legitimately vanish for a deploy's worth of time.
           //  3. **Version skew**, which cannot matter until a Client is back.
+          //
+          // A fourth cause is missing on purpose: a desktop parked behind the sign-in gate
+          // (`AuthGate`/`AuthBanner.tsx` on the desktop side) still polls, so this tab reads it
+          // as perfectly healthy and shows an empty board with no banner at all. `auth:current`
+          // and `auth:signedIn` already relay (`packages/shared/src/ipcRelay.ts`) — the desktop
+          // state reaches this tab today — but nothing here reads either channel yet. That is a
+          // different gap from the three above (each of those is about *this tab* losing the
+          // desktop; this one is about the desktop itself being stuck) and is left for its own
+          // ticket rather than folded in here.
           board.pollError ? (
             <UnreachableBanner message={board.pollError} />
           ) : presence === 'offline' ? (

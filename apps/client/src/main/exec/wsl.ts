@@ -15,6 +15,7 @@
  *    wrappers) present, which is the entire point of running the work in WSL.
  */
 import { execFile } from 'node:child_process';
+import { signInCommandText } from '@shared/auth';
 import type { ReadinessCheck, TargetReadiness } from '@shared/execTarget';
 import { RESOLVE_CLAUDE, WSL_PATH_PRELUDE } from './wslHost';
 
@@ -138,7 +139,11 @@ export async function probeWslTarget(distro: string): Promise<TargetReadiness> {
     label: 'Logged in',
     ok: authOk,
     detail: authOk ? 'subscription credentials present' : 'no credentials file',
-    fix: authOk ? undefined : `Run \`claude\` once inside ${distro} and sign in.`,
+    // The same helper the sign-in banner and its timeline sentence use, so this fix and
+    // that button can never disagree about the command that reaches this distro's login.
+    fix: authOk
+      ? undefined
+      : `Run \`${signInCommandText({ kind: 'wsl', distro })}\` once and sign in.`,
   });
 
   // Interop lets the CLI (running in Linux) launch our relay as a WINDOWS process, so
