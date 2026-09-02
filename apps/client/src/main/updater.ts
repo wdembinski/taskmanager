@@ -140,8 +140,11 @@ export class Updater {
    */
   install(): void {
     if (this.mode !== 'auto' || this.state.status !== 'downloaded') return;
-    // `isSilent: false` shows the NSIS progress; `isForceRunAfter: true` relaunches us.
-    autoUpdater.quitAndInstall(false, true);
+    // `isSilent: true` skips every NSIS page (including the directory-choice one) and
+    // installs straight into the existing `$INSTDIR` from the registry — nobody is
+    // watching a background quit-time install, so there's no progress UI to preserve.
+    // `isForceRunAfter: true` relaunches us.
+    autoUpdater.quitAndInstall(true, true);
   }
 
   /** Stop for good (app shutdown). */
