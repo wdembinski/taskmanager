@@ -33,6 +33,7 @@ import { LOCAL_TARGET, type ExecTarget } from '@shared/execTarget';
 import { pathSuitsHost } from '@shared/wslPath';
 import { useGitPreflight } from '../useGitPreflight';
 import { modelCaption } from '@ui/modelChoice';
+import { useModelLabels } from '@ui/ModelField';
 import { PaneLoading } from '@ui/PaneLoading';
 import { ProjectForm } from '@ui/projects/ProjectForm';
 import { useInitialLoad } from '@ui/useInitialLoad';
@@ -63,6 +64,7 @@ const useStyles = makeStyles({
 
 export function Projects(): JSX.Element {
   const styles = useStyles();
+  const modelLabel = useModelLabels();
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<{ open: boolean; project?: Project }>({ open: false });
@@ -156,7 +158,7 @@ export function Projects(): JSX.Element {
                       <>
                         <Caption1 className={styles.path}>{project.path}</Caption1>
                         <Caption1 className={styles.hint}>
-                          {modelCaption(project)} ·{' '}
+                          {modelCaption(project, modelLabel)} ·{' '}
                           {PERMISSION_MODE_LABELS[project.defaultPermissionMode]}
                         </Caption1>
                       </>

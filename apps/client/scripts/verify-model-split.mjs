@@ -23,6 +23,14 @@
  * Each of those spawns is a different rung of the ladder, and the model on the command
  * line is what is asserted at every rung.
  *
+ * Sections 1-6 exercise the three aliases (`opus`/`sonnet`/`haiku`) — the only shapes the
+ * ladder had before the model catalog widened `ClaudeModel` to any dated version id or
+ * custom string. Sections 7-8 repeat the same end-to-end claim against that wider shape: a
+ * project pinned to two of the catalog's actual dated versions (`claude-fable-5-1` for
+ * planning, `claude-opus-4-7` for steps), and a card pinned to an id that is not in the
+ * catalog at all — proving the override outranks both project models on the strength of
+ * `isUsableModel`'s shape check alone, and that a step still never inherits it.
+ *
  * The app is NEVER launched (RELEASE.md rule 6 — there is no single-instance lock, and a
  * second instance killed a live session on 2026-08-02). Nothing outside the scratch
  * directory is written: no real profile, no git repository, no network. `hostFor` returns
@@ -33,6 +41,19 @@
  *
  * Exits non-zero on the first failed assertion, naming it. Same bundle-then-run-under-
  * Electron shape as `scripts/verify-round.mjs`, whose comments explain the ABI dance.
+ *
+ * **Proving it can fail.** 33 green checks say nothing until a mutation turns them red. Run
+ * on 2026-09-07, restored afterward with `git status` showing `model.ts` byte-identical
+ * again: swap `resolveRunModel`'s return to
+ * `(planning ? (project.planningModel ?? null) : null) ?? task.agentModel ?? project.defaultModel`
+ * — i.e. let the project's planning model outrank a card's own override. Sections 7 and 8
+ * go red exactly where that lie shows up, and nowhere else: section 7's versioned project
+ * stays green (its card carries no override to be out-ranked), but section 8's custom-pinned
+ * card fails both of its planning-run checks — the CLI is given `--model claude-fable-5-1`,
+ * the project's planning model, instead of the card's own `claude-internal-eval-3`. The
+ * other three checks in that section stay green (the step still doesn't inherit the pin,
+ * and still runs on the execution model), which is itself evidence the mutation is scoped to
+ * planning runs exactly as the line it changed is.
  */
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -604,6 +625,125 @@ check(
   'so it runs on --model haiku, the project execution model — not the parent sonnet',
   flag(pinnedStep, '--model') === 'haiku',
   pinnedStep.argv.join(' '),
+);
+
+// ---------------------------------------------------------------------------
+section('7. A project pinned to real dated versions, not aliases');
+
+// Fable 5.1 for planning, a specific dated Opus snapshot for steps — two catalog entries
+// sections 1-6 never touch, since MODELS/the ladder never cared whether an id was an
+// alias or a version. Concurrency 2 so section 8 can run its own card on this same
+// project without queuing behind this one's still-open step.
+const versioned = store.addProject({
+  path: SCRATCH + '/repo',
+  name: 'a project on dated versions',
+  kind: 'agent',
+  defaultModel: 'claude-opus-4-7',
+  planningModel: 'claude-fable-5-1',
+  defaultPermissionMode: 'acceptEdits',
+  concurrency: 2,
+  useWorktrees: false,
+});
+
+const versionedCard = card('A card someone versions', {
+  agentProjectId: versioned.id,
+  agentMode: 'plan',
+  agentModel: null,
+});
+
+scheduler.runTask(versionedCard.id);
+const versionedPlanning = await nthInvocation(9, 'the versioned planning run to spawn');
+check(
+  'the CLI was given --model claude-fable-5-1 — the project\'s planning model',
+  flag(versionedPlanning, '--model') === 'claude-fable-5-1',
+  versionedPlanning.argv.join(' '),
+);
+check(
+  'as a real argv PAIR, not a substring of the joined command line',
+  versionedPlanning.argv[versionedPlanning.argv.indexOf('--model') + 1] === 'claude-fable-5-1',
+);
+
+await waitFor(
+  'the versioned plan to reach the inbox',
+  () => raised.some((i) => i.kind === 'plan-approval' && i.taskId === versionedCard.id),
+);
+const versionedApproval = raised.find(
+  (i) => i.kind === 'plan-approval' && i.taskId === versionedCard.id,
+);
+scheduler.answerAttention(versionedApproval.id, { decision: 'approve' });
+await waitFor(
+  'the versioned steps to be created',
+  () => store.getSubtasks(versionedCard.id).length === 3,
+);
+
+const versionedStepOne = await nthInvocation(10, 'versioned step 1 to spawn');
+check(
+  'step 1 was given --model claude-opus-4-7 — the project\'s execution model, not the one it was planned on',
+  flag(versionedStepOne, '--model') === 'claude-opus-4-7',
+  versionedStepOne.argv.join(' '),
+);
+check(
+  'again a real argv pair',
+  versionedStepOne.argv[versionedStepOne.argv.indexOf('--model') + 1] === 'claude-opus-4-7',
+);
+// Left running (never proceed(10)'d), same as invocation 8 above — nothing past this
+// point needs it to finish, and the final cleanup tears it down regardless.
+
+// ---------------------------------------------------------------------------
+section('8. A card-level custom override still outranks both project models, and a step never inherits it');
+
+// A string not in MODEL_CATALOG at all — only isUsableModel's shape check gates an
+// override, so this proves the ladder does not secretly require catalog membership.
+const CUSTOM_MODEL = 'claude-internal-eval-3';
+const customPinned = card('A card someone pins to a custom build', {
+  agentProjectId: versioned.id,
+  agentMode: 'plan',
+  agentModel: CUSTOM_MODEL,
+});
+
+scheduler.runTask(customPinned.id);
+const customPlanning = await nthInvocation(11, 'the custom-pinned planning run to spawn');
+check(
+  'the override outranks the PLANNING model — --model claude-internal-eval-3, not claude-fable-5-1',
+  flag(customPlanning, '--model') === CUSTOM_MODEL,
+  customPlanning.argv.join(' '),
+);
+check(
+  'as a real argv pair, not a substring of the joined command line',
+  customPlanning.argv[customPlanning.argv.indexOf('--model') + 1] === CUSTOM_MODEL,
+);
+
+await waitFor(
+  'the custom-pinned plan to reach the inbox',
+  () => raised.some((i) => i.kind === 'plan-approval' && i.taskId === customPinned.id),
+);
+const customApproval = raised.find(
+  (i) => i.kind === 'plan-approval' && i.taskId === customPinned.id,
+);
+scheduler.answerAttention(customApproval.id, { decision: 'approve' });
+
+const customSteps = await (async () => {
+  await waitFor(
+    'the custom-pinned steps to be created',
+    () => store.getSubtasks(customPinned.id).length === 3,
+  );
+  return store.getSubtasks(customPinned.id);
+})();
+check(
+  'no step inherited the parent\'s custom pin — NULL is still "follow the project"',
+  customSteps.every((s) => s.agentModel === null),
+  JSON.stringify(customSteps.map((s) => s.agentModel)),
+);
+
+const customStepOne = await nthInvocation(12, 'the custom-pinned step 1 to spawn');
+check(
+  'so it runs on --model claude-opus-4-7 — the project execution model, not the parent\'s custom pin',
+  flag(customStepOne, '--model') === 'claude-opus-4-7',
+  customStepOne.argv.join(' '),
+);
+check(
+  'and outranks the EXECUTION model just as clearly — the override never surfaces on this step',
+  flag(customStepOne, '--model') !== CUSTOM_MODEL,
 );
 
 // ===========================================================================

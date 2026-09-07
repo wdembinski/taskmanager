@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { isFilingProject, MODELS, ownsBoard, resolveRunModel, type Project } from './model';
+import {
+  isFilingProject,
+  isUsableModel,
+  MODEL_CATALOG,
+  MODELS,
+  ownsBoard,
+  resolveRunModel,
+  type Project,
+} from './model';
 import type { ClaudeModel } from './session';
 
 /** A project literal with just the fields these two predicates read. */
@@ -43,6 +51,53 @@ describe('resolveRunModel', () => {
     const project = repo('haiku', 'opus');
     expect(resolveRunModel({ agentModel: 'sonnet' }, project, true)).toBe('sonnet');
     expect(resolveRunModel({ agentModel: 'sonnet' }, project, false)).toBe('sonnet');
+  });
+
+  it('still resolves correctly with a full version id in every slot', () => {
+    const project = repo('claude-haiku-4-5', 'claude-opus-4-8');
+    expect(resolveRunModel({ agentModel: null }, project, true)).toBe('claude-opus-4-8');
+    expect(resolveRunModel({ agentModel: null }, project, false)).toBe('claude-haiku-4-5');
+    expect(resolveRunModel({ agentModel: 'claude-sonnet-5' }, project, true)).toBe(
+      'claude-sonnet-5',
+    );
+  });
+});
+
+describe('MODEL_CATALOG', () => {
+  it('has no duplicate ids', () => {
+    const ids = MODEL_CATALOG.map((entry) => entry.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('every entry passes isUsableModel', () => {
+    for (const entry of MODEL_CATALOG) {
+      expect(isUsableModel(entry.id)).toBe(true);
+    }
+  });
+});
+
+describe('isUsableModel', () => {
+  it('accepts an alias, a full version id, and a plausible custom id', () => {
+    expect(isUsableModel('sonnet')).toBe(true);
+    expect(isUsableModel('claude-opus-4-8')).toBe(true);
+    expect(isUsableModel('my-custom-model_v2.1')).toBe(true);
+  });
+
+  it('rejects empty and whitespace-only ids', () => {
+    expect(isUsableModel('')).toBe(false);
+    expect(isUsableModel('   ')).toBe(false);
+  });
+
+  it('rejects an id over 64 characters', () => {
+    expect(isUsableModel('a'.repeat(65))).toBe(false);
+    expect(isUsableModel('a'.repeat(64))).toBe(true);
+  });
+
+  it('rejects shell metacharacters and injection attempts', () => {
+    expect(isUsableModel(';rm -rf /')).toBe(false);
+    expect(isUsableModel('opus; rm -rf /')).toBe(false);
+    expect(isUsableModel('opus && echo hi')).toBe(false);
+    expect(isUsableModel('../../etc/passwd')).toBe(false);
   });
 });
 

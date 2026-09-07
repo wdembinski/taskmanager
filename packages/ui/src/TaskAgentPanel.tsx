@@ -58,6 +58,7 @@ import { AssignAgentDialog } from './AssignAgentDialog';
 import { stepPosition } from './board/boardColumns';
 import { draftKey, useDraft } from './drafts';
 import { cardModelCaption } from './modelChoice';
+import { useModelLabels } from './ModelField';
 import { STATUS_LABEL } from './taskStatus';
 import { AgentQuestionForm } from './AgentQuestionForm';
 import { Markdown } from './chat/MarkdownView';
@@ -221,6 +222,7 @@ export function TaskAgentPanel({
 }: TaskAgentPanelProps): JSX.Element {
   const transport = useTransport();
   const styles = useStyles();
+  const modelLabel = useModelLabels();
   const [assignOpen, setAssignOpen] = useState(false);
   // The card's own ask, or one belonging to a step: a card executing a plan stays
   // `in-progress` while a STEP holds the run, so its inbox item is keyed to the step and
@@ -940,7 +942,7 @@ export function TaskAgentPanel({
       {task.agentProjectId && (
         <Caption1 className={styles.hint}>
           {task.agentBranch ? `${task.agentBranch} · ` : ''}
-          {cardModelCaption(task, assigned)} ·{' '}
+          {cardModelCaption(task, assigned, modelLabel)} ·{' '}
           {
             PERMISSION_MODE_LABELS[
               task.agentMode ?? assigned?.defaultPermissionMode ?? 'acceptEdits'

@@ -19,6 +19,7 @@ import {
   type Milestone,
   type MilestoneInput,
   type MilestonePatch,
+  type ModelResolution,
   PERSONAL_PROJECT_ID,
   type Person,
   type PersonInput,
@@ -703,6 +704,13 @@ export interface Store {
   setMergeRequestName(id: string, name: string | null): MergeRequest | undefined;
   markMergeRequestRead(id: string, at: number): MergeRequest | undefined;
   markMergeRequestEventsSeen(id: string, at: number): MergeRequest | undefined;
+  /**
+   * The last `probeModelCatalog` sweep, so a model picker opens with a real reading
+   * instead of an empty list on every app start. `null` before the first sweep ever
+   * completes (or if the stored value is corrupt).
+   */
+  saveModelCatalog(rows: ModelResolution[]): void;
+  loadModelCatalog(): ModelResolution[] | null;
   /** The GitLab token ciphertext, beside the JIRA trio. */
   saveGitLabToken(value: string): void;
   loadGitLabToken(): string | null;
@@ -2132,6 +2140,13 @@ export function createStore(dbPath: string): Store {
 
   /** Guard for the one-shot claim of blocks that predate `preBlockStatus` meaning ownership. */
   const BLOCK_OWNER_KEY = 'migration.blockOwner';
+
+  /**
+   * The last `probeModelCatalog` sweep (`claudeModels.ts`), so a model picker opens with a
+   * real reading instead of a blank list on every app start — a fresh sweep is a few seconds
+   * of subprocesses, one per catalog entry, which no dropdown should pay for on every render.
+   */
+  const MODEL_CATALOG_KEY = 'claude.modelCatalog';
 
   /** The GitLab PAT ciphertext, and the cached `GET /user` for the configured instance. */
   const GITLAB_TOKEN_KEY = 'gitlab.pat';
@@ -4295,6 +4310,31 @@ export function createStore(dbPath: string): Store {
       markMrEventsSeen.run(at, id);
       const row = selectMergeRequest.get(id) as MergeRequestRow | undefined;
       return row ? rowToMergeRequest(row) : undefined;
+    },
+
+    saveModelCatalog(rows) {
+      upsertState.run(MODEL_CATALOG_KEY, JSON.stringify(rows));
+    },
+
+    loadModelCatalog() {
+      const row = selectState.get(MODEL_CATALOG_KEY) as { value: string } | undefined;
+      if (!row) return null;
+      try {
+        const parsed: unknown = JSON.parse(row.value);
+        if (!Array.isArray(parsed)) return null;
+        const rows = parsed as ModelResolution[];
+        const valid = rows.every(
+          (entry) =>
+            typeof entry === 'object' &&
+            entry !== null &&
+            typeof entry.id === 'string' &&
+            typeof entry.label === 'string' &&
+            typeof entry.known === 'boolean',
+        );
+        return valid ? rows : null;
+      } catch {
+        return null; // corrupt value — re-probe
+      }
     },
 
     saveGitLabToken(value) {

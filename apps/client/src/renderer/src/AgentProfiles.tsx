@@ -40,8 +40,9 @@ import {
 import { DismissRegular } from '@fluentui/react-icons';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode } from '@shared/session';
-import { MODELS, type Project } from '@shared/model';
+import type { Project } from '@shared/model';
 import type { AgentProfile } from '@shared/agent';
+import { ModelField } from '@ui/ModelField';
 import { PaneLoading } from '@ui/PaneLoading';
 import { useInitialLoad } from '@ui/useInitialLoad';
 
@@ -297,20 +298,7 @@ function AgentProfileDialog({
           </Field>
 
           <div className={styles.row}>
-            <Field label="Model" className={styles.grow}>
-              <Dropdown
-                className={styles.grow}
-                value={model}
-                selectedOptions={[model]}
-                onOptionSelect={(_e, d) => setModel(d.optionValue as ClaudeModel)}
-              >
-                {MODELS.map((m) => (
-                  <Option key={m} value={m}>
-                    {m}
-                  </Option>
-                ))}
-              </Dropdown>
-            </Field>
+            <ModelField label="Model" className={styles.grow} value={model} onChange={setModel} />
             <Field label="Permission mode" className={styles.grow}>
               <Dropdown
                 className={styles.grow}

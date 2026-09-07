@@ -31,6 +31,7 @@ import { ChevronDownRegular, ChevronRightRegular, DeleteRegular } from '@fluentu
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode, SessionEvent, SessionStatus } from '@shared/session';
 import { Transcript } from './Transcript';
+import { ModelField } from '@ui/ModelField';
 import { MONO } from '@ui/theme';
 
 const useStyles = makeStyles({
@@ -99,7 +100,6 @@ const useStyles = makeStyles({
   empty: { color: tokens.colorNeutralForeground4, padding: '12px 2px' },
 });
 
-const MODELS: ClaudeModel[] = ['haiku', 'sonnet', 'opus'];
 const MODES: PermissionMode[] = ['acceptEdits', 'plan', 'manual', 'bypassPermissions'];
 
 function statusBadge(status: SessionStatus): {
@@ -306,19 +306,7 @@ export function SessionRunner(): JSX.Element {
         <Field label="Working directory" className={styles.grow}>
           <Textarea value={cwd} onChange={(_e, d) => setCwd(d.value)} resize="none" />
         </Field>
-        <Field label="Model" className={styles.narrow}>
-          <Dropdown
-            value={model}
-            selectedOptions={[model]}
-            onOptionSelect={(_e, d) => setModel(d.optionValue as ClaudeModel)}
-          >
-            {MODELS.map((m) => (
-              <Option key={m} value={m}>
-                {m}
-              </Option>
-            ))}
-          </Dropdown>
-        </Field>
+        <ModelField label="Model" className={styles.narrow} value={model} onChange={setModel} />
         <Field label="Permission mode" className={styles.narrow}>
           <Dropdown
             value={PERMISSION_MODE_LABELS[mode]}

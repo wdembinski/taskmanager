@@ -42,14 +42,7 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import { DismissRegular } from '@fluentui/react-icons';
-import {
-  hasPlan,
-  hasRepo,
-  ownsTickets,
-  MODELS,
-  type GitPreflight,
-  type Project,
-} from '@tm/shared/model';
+import { hasPlan, hasRepo, ownsTickets, type GitPreflight, type Project } from '@tm/shared/model';
 import { PERMISSION_MODE_LABELS, type ClaudeModel, type PermissionMode } from '@tm/shared/session';
 import { RELEASE_DOC } from '@tm/shared/release';
 import { suggestTicketPrefix } from '@tm/shared/ticketKey';
@@ -64,6 +57,7 @@ import { distroFromWindowsPath, pathSuitsHost, windowsToLinux } from '@tm/shared
 import { describeGitPreflight } from '@tm/shared/gitPreflight';
 import { BaseBranchField } from '../BaseBranchField';
 import { ColorSwatches } from '../ColorSwatches';
+import { ModelField } from '../ModelField';
 import { PlanningModelField } from '../PlanningModelField';
 import { useTransport } from '../transport';
 import { ProjectBasicsFields } from './ProjectBasicsFields';
@@ -430,8 +424,8 @@ export function ProjectForm({
             <Field label="Repository folder">
               <Input value={project.path} readOnly className={styles.mono} />
               <Caption1 className={styles.hint}>
-                Set on the desktop client that owns this folder, along with its execution target,
-                models and permission mode — not editable from here.
+                Set on the desktop client that owns this folder, along with its execution target —
+                not editable from here.
               </Caption1>
             </Field>
           )}
@@ -620,19 +614,12 @@ export function ProjectForm({
                 executionModel={model}
                 onChange={setPlanningModel}
               />
-              <Field label="Steps execution model" className={styles.grow}>
-                <Dropdown
-                  value={model}
-                  selectedOptions={[model]}
-                  onOptionSelect={(_e, d) => setModel(d.optionValue as ClaudeModel)}
-                >
-                  {MODELS.map((m) => (
-                    <Option key={m} value={m}>
-                      {m}
-                    </Option>
-                  ))}
-                </Dropdown>
-              </Field>
+              <ModelField
+                label="Steps execution model"
+                className={styles.grow}
+                value={model}
+                onChange={setModel}
+              />
             </div>
           )}
 

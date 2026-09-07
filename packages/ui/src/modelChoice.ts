@@ -10,6 +10,13 @@
  * and the panel's echo — so the sentinel they carry and the words they use live here rather
  * than three times over. Exactly why `PlanningModelField` exists for the project side of the
  * same question.
+ *
+ * `modelCaption`/`projectDefaultLabel`/`cardModelCaption` take an optional `labelOf` lookup —
+ * a model id to the CLI's own display name (`ModelResolution.label`, `@tm/shared/model`) — so
+ * a project that has split planning from execution reads `Opus 4.7 planning · Haiku 4.5 steps`
+ * rather than the raw ids the ladder deals in. It defaults to the identity function, so every
+ * call site that has not been wired to a catalog lookup yet (every one of them, until "Wire
+ * every model picker to the catalog") keeps reading exactly as it did before this.
  */
 import { resolveRunModel } from '@tm/shared/model';
 import type { Project, Task } from '@tm/shared/model';
@@ -36,18 +43,27 @@ export function cardModelFromOption(optionValue: string | undefined): ClaudeMode
 /** Just the two fields any of this depends on, so a caller can pass a half-built project. */
 type ProjectModels = Pick<Project, 'defaultModel' | 'planningModel'>;
 
+/** A model id, verbatim — the default `labelOf`, for every caller with no catalog to ask. */
+const RAW_ID = (id: string): string => id;
+
 /**
  * How a project's models read. One name while planning follows execution — which is every
  * project until someone splits them — and both, labelled, once they differ, since at that
  * point "sonnet" alone would be a half-truth about what this repo costs.
  *
  * Both names come from {@link resolveRunModel} rather than being read off the fields, so this
- * caption can never disagree with the ladder that actually decides what a run costs.
+ * caption can never disagree with the ladder that actually decides what a run costs. `labelOf`
+ * turns each id into what the CLI actually calls it — see the file header.
  */
-export function modelCaption(project: ProjectModels): string {
+export function modelCaption(
+  project: ProjectModels,
+  labelOf: (id: string) => string = RAW_ID,
+): string {
   const steps = resolveRunModel({ agentModel: null }, project, false);
   const planning = resolveRunModel({ agentModel: null }, project, true);
-  return planning === steps ? steps : `${planning} planning · ${steps} steps`;
+  const stepsLabel = labelOf(steps);
+  const planningLabel = labelOf(planning);
+  return planning === steps ? stepsLabel : `${planningLabel} planning · ${stepsLabel} steps`;
 }
 
 /**
@@ -56,14 +72,19 @@ export function modelCaption(project: ProjectModels): string {
  * no agent project yet: there is nothing to quote, and inventing `sonnet` there is the
  * hardcoded fallback this replaces.
  */
-export function projectDefaultLabel(project: ProjectModels | null): string {
-  return project ? `Project default · ${modelCaption(project)}` : 'Project default';
+export function projectDefaultLabel(
+  project: ProjectModels | null,
+  labelOf: (id: string) => string = RAW_ID,
+): string {
+  return project ? `Project default · ${modelCaption(project, labelOf)}` : 'Project default';
 }
 
 /** How a card's model reads back: its own override, else what its project resolves to. */
 export function cardModelCaption(
   task: Pick<Task, 'agentModel'>,
   project: ProjectModels | null,
+  labelOf: (id: string) => string = RAW_ID,
 ): string {
-  return task.agentModel ?? (project ? modelCaption(project) : 'project default');
+  if (task.agentModel != null) return labelOf(task.agentModel);
+  return project ? modelCaption(project, labelOf) : 'project default';
 }

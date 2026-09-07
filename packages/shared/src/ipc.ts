@@ -39,6 +39,7 @@ import type {
   ManualStatus,
   Milestone,
   MilestoneInput,
+  ModelResolution,
   Person,
   PersonInput,
   PersonPatch,
@@ -285,6 +286,19 @@ export interface IpcApi {
    * rather than failing when it is absent, so the manual paste path always stands.
    */
   'claude:listSessions': (cwd: string, target?: ExecTarget) => Promise<ClaudeSessionSummary[]>;
+  /**
+   * The desktop's cached read of which `MODEL_CATALOG` entries the installed CLI
+   * actually recognizes right now — one {@link ModelResolution} per entry, in catalog
+   * order. Answered from an in-memory cache seeded from disk at boot, so opening a
+   * model picker never waits on a subprocess; pass `{ refresh: true }` to force a fresh
+   * sweep (a few seconds, zero tokens — `/model` is a local meta-command like `/usage`).
+   */
+  'model:catalog': (opts?: { refresh: boolean }) => Promise<ModelResolution[]>;
+  /**
+   * Resolve ONE model id the same way, for the model picker's "Custom…" box — a value
+   * that was never in `MODEL_CATALOG` and so was never part of the cached sweep above.
+   */
+  'model:resolve': (id: ClaudeModel) => Promise<ModelResolution>;
 
   /** Installed WSL distros, for the execution-target picker. Empty when WSL is absent. */
   'exec:listDistros': () => Promise<string[]>;

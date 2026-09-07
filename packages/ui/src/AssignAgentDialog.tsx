@@ -42,9 +42,9 @@ import {
 } from '@fluentui/react-components';
 import { PERMISSION_MODE_LABELS } from '@tm/shared/session';
 import type { ClaudeModel, PermissionMode } from '@tm/shared/session';
-import { MODELS } from '@tm/shared/model';
 import type { Project, Task } from '@tm/shared/model';
 import { cardModelFromOption, projectDefaultLabel, PROJECT_DEFAULT } from './modelChoice';
+import { ModelField } from './ModelField';
 import {
   BRANCH_TYPES,
   buildBranchName,
@@ -297,27 +297,15 @@ export function AssignAgentDialog({
                     {/* Left alone, this card runs on whatever the repo above resolves to —
                         including its planning model when the run is a planning one. Picking
                         a name here overrides BOTH, for every run of this card. */}
-                    <Field
+                    <ModelField
                       label="Model"
                       className={styles.grow}
+                      dropdownClassName={styles.dropdown}
                       hint={model ? 'Overrides the project, planning included.' : undefined}
-                    >
-                      <Dropdown
-                        className={styles.dropdown}
-                        value={model ?? projectDefaultLabel(selected)}
-                        selectedOptions={[model ?? PROJECT_DEFAULT]}
-                        onOptionSelect={(_e, d) => setModel(cardModelFromOption(d.optionValue))}
-                      >
-                        <Option value={PROJECT_DEFAULT} text={projectDefaultLabel(selected)}>
-                          {projectDefaultLabel(selected)}
-                        </Option>
-                        {MODELS.map((m) => (
-                          <Option key={m} value={m}>
-                            {m}
-                          </Option>
-                        ))}
-                      </Dropdown>
-                    </Field>
+                      value={model ?? PROJECT_DEFAULT}
+                      onChange={(v) => setModel(cardModelFromOption(v))}
+                      sentinel={{ value: PROJECT_DEFAULT, label: projectDefaultLabel(selected) }}
+                    />
                     <Field label="Permission mode" className={styles.grow}>
                       <Dropdown
                         className={styles.dropdown}

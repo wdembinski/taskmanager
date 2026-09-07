@@ -74,13 +74,14 @@ import {
 import { AddRegular, DismissRegular } from '@fluentui/react-icons';
 import { ColorSwatches, PALETTE } from '@tm/ui/ColorSwatches';
 import { PeopleSettings } from '@tm/ui/projects/PeopleSettings';
+import { ModelField } from '@tm/ui/ModelField';
 import { PlanningModelField } from '@tm/ui/PlanningModelField';
 import { PaneLoading } from '@tm/ui/PaneLoading';
 import { useInitialLoad } from '@tm/ui/useInitialLoad';
 import { useTransport } from '@tm/ui/transport';
-import { hasPlan, hasRepo, MODELS } from '@tm/shared/model';
+import { hasPlan, hasRepo } from '@tm/shared/model';
 import type { Project } from '@tm/shared/model';
-import type { ClaudeModel, PermissionMode } from '@tm/shared/session';
+import type { PermissionMode } from '@tm/shared/session';
 import { clampSyncInterval, MAX_SYNC_INTERVAL_MINUTES } from '@tm/shared/settings';
 import type { AppSettings } from '@tm/shared/settings';
 import { selectAgentProjects } from '../board/boardSelectors';
@@ -256,22 +257,12 @@ export function SettingsScreen({
           </Body1>
 
           <div className={styles.grid}>
-            <Field
+            <ModelField
               label="Default model"
               hint="What a new project runs on unless it says otherwise."
-            >
-              <Dropdown
-                value={settings.defaultModel}
-                selectedOptions={[settings.defaultModel]}
-                onOptionSelect={(_e, d) => patch({ defaultModel: d.optionValue as ClaudeModel })}
-              >
-                {MODELS.map((m) => (
-                  <Option key={m} value={m}>
-                    {m}
-                  </Option>
-                ))}
-              </Dropdown>
-            </Field>
+              value={settings.defaultModel}
+              onChange={(defaultModel) => patch({ defaultModel })}
+            />
 
             <PlanningModelField
               label="Default planning model for new projects"
