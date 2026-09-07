@@ -46,6 +46,7 @@ import {
   isFilingProject,
   isManualStatus,
   isPersonalBoard,
+  isUsableModel,
   ownsBoard,
   ownsTickets,
   PERSONAL_PROJECT_ID,
@@ -754,6 +755,18 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   });
 
   handle('project:add', async (input) => {
+    // A relayed write from the web can name any model string — see the identical guard
+    // in `task:assignAgent`.
+    if (input.defaultModel !== undefined && !isUsableModel(input.defaultModel)) {
+      throw new Error(`Not a usable model: ${input.defaultModel}`);
+    }
+    if (
+      input.planningModel !== undefined &&
+      input.planningModel !== null &&
+      !isUsableModel(input.planningModel)
+    ) {
+      throw new Error(`Not a usable model: ${input.planningModel}`);
+    }
     const project = store.addProject(input);
     // Only a project with a plan file has anything to parse or watch. Asked as `hasPlan`
     // rather than as some notion of "kind", so any project shape that has no plan file
@@ -800,6 +813,18 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('project:setWriteBack', async (id, enabled) => store.setWriteBack(id, enabled));
   handle('project:setAligned', async (id, aligned) => store.setPlanAligned(id, aligned));
   handle('project:update', async (id, patch) => {
+    // A relayed write from the web can name any model string — see the identical guard
+    // in `task:assignAgent`.
+    if (patch.defaultModel !== undefined && !isUsableModel(patch.defaultModel)) {
+      throw new Error(`Not a usable model: ${patch.defaultModel}`);
+    }
+    if (
+      patch.planningModel !== undefined &&
+      patch.planningModel !== null &&
+      !isUsableModel(patch.planningModel)
+    ) {
+      throw new Error(`Not a usable model: ${patch.planningModel}`);
+    }
     await retireRunStateIfTargetChanged(id, patch);
     const updated = store.updateProject(id, patch);
     if (updated) watcher.watch(updated); // re-point the watcher if the plan path changed
@@ -938,6 +963,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     if (branch) {
       const check = validateBranchName(branch);
       if (!check.ok) throw new Error(`That branch name won't work: ${check.reason}.`);
+    }
+
+    // A relayed write from the web can name any model string — this is the one gate
+    // between that and a spawned CLI's argv, so it runs before the model ever reaches
+    // `agentModel`. Same shape check the server runs on a profile's own model.
+    if (input.model !== undefined && !isUsableModel(input.model)) {
+      throw new Error(`Not a usable model: ${input.model}`);
     }
 
     const task = store.updateTask(taskId, {
@@ -1193,6 +1225,15 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('task:setAgentOptions', async (taskId, options) => {
     const existing = store.getTask(taskId);
     if (!existing) throw new Error('Task not found.');
+    // A relayed write from the web can name any model string — see the identical guard
+    // in `task:assignAgent`.
+    if (
+      options.model !== undefined &&
+      options.model !== null &&
+      !isUsableModel(options.model)
+    ) {
+      throw new Error(`Not a usable model: ${options.model}`);
+    }
     // Deliberately allowed mid-run: the live run captured its own model/mode when it
     // started (see `Run`), so this only decides what the NEXT run uses. Reassigning is
     // still what you want if you mean "start over with these settings".
@@ -1415,6 +1456,15 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
   handle('settings:get', async () => store.getSettings());
   handle('settings:save', async (settings) => {
+    // A relayed write from the web can name any model string — see the identical guard
+    // in `task:assignAgent`. `defaultModel`/`defaultPlanningModel` are both replayed
+    // straight from the cloud settings mirror (see `settings.ts`'s global-keys list).
+    if (!isUsableModel(settings.defaultModel)) {
+      throw new Error(`Not a usable model: ${settings.defaultModel}`);
+    }
+    if (settings.defaultPlanningModel !== null && !isUsableModel(settings.defaultPlanningModel)) {
+      throw new Error(`Not a usable model: ${settings.defaultPlanningModel}`);
+    }
     // Normalize the JIRA URL once, on the way in, so every consumer sees the same
     // origin — the client, the epic-field and identity caches (both keyed by baseUrl),
     // and the issue links written onto cards.

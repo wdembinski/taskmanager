@@ -24,7 +24,7 @@ export class AgentProfile {
   @Column({ type: 'nvarchar', length: 255 })
   name!: string;
 
-  @Column({ type: 'varchar', length: 16 })
+  @Column({ type: 'varchar', length: 64 })
   model!: ClaudeModel;
 
   @Column({ type: 'varchar', length: 32 })

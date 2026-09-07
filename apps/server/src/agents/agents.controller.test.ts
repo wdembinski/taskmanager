@@ -112,11 +112,22 @@ describe('AgentsController', () => {
     expect(profile.defaultProjectId).toBeNull();
   });
 
+  it('accepts a model outside the static catalog, as long as it is shaped like one', async () => {
+    const profile = await controller.createProfile('acct-1', {
+      name: 'X',
+      model: 'claude-opus-4-8',
+      permissionMode: 'acceptEdits',
+    });
+    expect(profile.model).toBe('claude-opus-4-8');
+  });
+
   it('refuses a profile with an unusable model or permission mode', async () => {
     await expect(
       controller.createProfile('acct-1', {
         name: 'X',
-        model: 'gpt-5' as never,
+        // Not shaped like a model id at all — a space and a slash are both outside
+        // `isUsableModel`'s `[A-Za-z0-9._-]` allowance.
+        model: 'not a/model' as never,
         permissionMode: 'acceptEdits',
       }),
     ).rejects.toBeInstanceOf(BadRequestException);

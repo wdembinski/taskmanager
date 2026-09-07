@@ -12,13 +12,12 @@ import type {
   CreateAssignmentInput,
   ReportAssignmentInput,
 } from '@tm/shared/agent';
-import { MODELS } from '@tm/shared/model';
+import { isUsableModel } from '@tm/shared/model';
 import { PERMISSION_MODE_LABELS } from '@tm/shared/session';
 import { AgentProfile } from '../entities/agentProfile.entity';
 import { Assignment } from '../entities/assignment.entity';
 import { TaskMirror } from '../entities/taskMirror.entity';
 
-const MODEL_SET = new Set<string>(MODELS);
 const PERMISSION_MODE_SET = new Set<string>(Object.keys(PERMISSION_MODE_LABELS));
 
 function toProfile(row: AgentProfile): AgentProfileModel {
@@ -76,7 +75,7 @@ export class AgentsService {
   async createProfile(accountId: string, input: AddAgentProfileInput): Promise<AgentProfileModel> {
     const name = input.name?.trim();
     if (!name) throw new BadRequestException('name is required.');
-    if (!MODEL_SET.has(input.model)) {
+    if (!isUsableModel(input.model)) {
       throw new BadRequestException(`Not a usable model: ${String(input.model)}`);
     }
     if (!PERMISSION_MODE_SET.has(input.permissionMode)) {
@@ -114,7 +113,7 @@ export class AgentsService {
       row.name = name;
     }
     if (patch.model !== undefined) {
-      if (!MODEL_SET.has(patch.model)) {
+      if (!isUsableModel(patch.model)) {
         throw new BadRequestException(`Not a usable model: ${String(patch.model)}`);
       }
       row.model = patch.model;
