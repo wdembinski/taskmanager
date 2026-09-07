@@ -122,6 +122,10 @@ export const RELAY_POLICY: {
   'app:getInfo': 'relay',
   'claude:getStatus': 'relay',
   'claude:listSessions': 'relay',
+  // The browser has no CLI of its own to ask, so both read through a desktop exactly
+  // as `claude:getStatus` does.
+  'model:catalog': 'relay',
+  'model:resolve': 'relay',
 
   'exec:listDistros': 'relay',
   'exec:readiness': 'relay',

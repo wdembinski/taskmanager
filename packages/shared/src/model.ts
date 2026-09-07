@@ -501,6 +501,23 @@ export function isUsableModel(id: string): boolean {
 }
 
 /**
+ * What the installed CLI actually said about one model id (`claudeModels.ts`'s
+ * `resolveModel` / `probeModelCatalog`) — the live counterpart to a static
+ * {@link ModelCatalogEntry}, which only says the app knows how to OFFER the id.
+ *
+ * `label` is the CLI's own display name for it ("Sonnet 5", "Opus 5", …). `known` is
+ * `label !== id`: the CLI echoes an id it doesn't recognize back verbatim (so an
+ * unresolved probe — a missing/logged-out/upgrading CLI — folds into the same shape as
+ * a genuine unknown, `{ id, label: id, known: false }`) and echoes a friendly name for
+ * one it does, including a retired id it has quietly remapped to a live model.
+ */
+export interface ModelResolution {
+  id: ClaudeModel;
+  label: string;
+  known: boolean;
+}
+
+/**
  * Which model a run costs: the card's own choice, else the project's model **for that kind
  * of run**, else the project's execution model.
  *

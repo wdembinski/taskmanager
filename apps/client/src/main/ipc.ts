@@ -52,6 +52,7 @@ import {
   type BoardColumn,
   type JiraStatusCategory,
   type Milestone,
+  type ModelResolution,
   type Person,
   type Project,
   type ProjectPatch,
@@ -208,6 +209,7 @@ import { openInteractiveSignIn, watchForSignIn } from './signIn';
 import { PlanWatcher } from './planWatcher';
 import { SyncPoller } from './syncPoller';
 import { ClaudeUsagePoller, readClaudeUsage } from './claudeUsage';
+import { probeModelCatalog, resolveModel } from './claudeModels';
 import { validateBranchName } from '@shared/branchName';
 import { LIMIT_PROBE_TIMEOUT_MS, Scheduler } from './scheduler';
 import { SessionManager } from './sessionManager';
@@ -683,6 +685,24 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
   handle('claude:getStatus', () => statusForTargets(targetsInUse()));
   handle('claude:listSessions', (cwd, target) => listClaudeSessions(cwd, hostFor(target)));
+
+  // Seeded from whatever the last sweep found, so a model picker opens instantly on
+  // every boot after the first rather than paying for a subprocess per catalog entry
+  // on every render. `null` only until the very first sweep (this app run's or a past
+  // one's) completes.
+  let modelCatalogCache: ModelResolution[] | null = store.loadModelCatalog();
+
+  const refreshModelCatalog = async (): Promise<ModelResolution[]> => {
+    const rows = await probeModelCatalog();
+    modelCatalogCache = rows;
+    store.saveModelCatalog(rows);
+    return rows;
+  };
+
+  handle('model:catalog', async (opts) =>
+    opts?.refresh || !modelCatalogCache ? refreshModelCatalog() : modelCatalogCache,
+  );
+  handle('model:resolve', async (id) => resolveModel(undefined, id));
 
   handle('exec:listDistros', () => listWslDistros());
   handle('exec:readiness', (target) => readinessFor(target));
