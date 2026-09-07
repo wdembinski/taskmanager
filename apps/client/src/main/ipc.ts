@@ -1227,11 +1227,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     if (!existing) throw new Error('Task not found.');
     // A relayed write from the web can name any model string — see the identical guard
     // in `task:assignAgent`.
-    if (
-      options.model !== undefined &&
-      options.model !== null &&
-      !isUsableModel(options.model)
-    ) {
+    if (options.model !== undefined && options.model !== null && !isUsableModel(options.model)) {
       throw new Error(`Not a usable model: ${options.model}`);
     }
     // Deliberately allowed mid-run: the live run captured its own model/mode when it
