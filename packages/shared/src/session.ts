@@ -7,8 +7,16 @@
  * here; the UI only ever sees these tidy events.
  */
 
-/** Which model to run. We expose the friendly aliases the CLI understands. */
-export type ClaudeModel = 'opus' | 'sonnet' | 'haiku';
+/** The friendly aliases the CLI understands, cheapest first. */
+export type ModelAlias = 'haiku' | 'sonnet' | 'opus' | 'fable';
+
+/**
+ * Which model to run. Keeps autocomplete for the well-known aliases while staying
+ * open to a full model id (`claude-opus-4-6`, …) or a custom string — see
+ * `MODEL_CATALOG` / `isUsableModel` in `./model` for the shape a caller may pick from
+ * and the validity check that replaces membership-testing against a closed set.
+ */
+export type ClaudeModel = ModelAlias | (string & {});
 
 /**
  * How much Claude may do without asking. Mirrors the CLI's `--permission-mode`

@@ -435,8 +435,70 @@ export type ProjectPatch = Partial<
  * It lives here rather than in `session.ts` (where {@link ClaudeModel} is declared) because
  * `model.ts` already imports from there, and a project's models are the reason the list is
  * needed at all. Six renderer files each carried their own copy of it before this.
+ *
+ * Kept alongside {@link MODEL_CATALOG} rather than folded into it: this is the closed
+ * 3-alias list the existing pickers render, unchanged until they're wired to the fuller
+ * catalog (see the "Wire every model picker to the catalog" step); the server's
+ * membership check against it is widened in its own step, not this one.
  */
 export const MODELS: readonly ClaudeModel[] = ['haiku', 'sonnet', 'opus'];
+
+/**
+ * A family a catalog entry belongs to — cheapest-to-priciest is the ordering convention
+ * {@link MODEL_CATALOG} follows, matching {@link MODELS} above.
+ */
+export type ModelFamily = 'haiku' | 'sonnet' | 'opus' | 'fable';
+
+/** One selectable model: a friendly alias, or a specific dated/numbered version. */
+export interface ModelCatalogEntry {
+  id: ClaudeModel;
+  family: ModelFamily;
+  kind: 'alias' | 'version';
+}
+
+/**
+ * Every model the app knows how to offer, cheapest family first, aliases before that
+ * family's own versions — the catalog {@link isUsableModel} and the shared model picker
+ * (a later step) both read.
+ *
+ * Versions are pinned exact ids that the CLI resolves to themselves rather than remapping
+ * to a different snapshot — picking one is a promise about which model actually runs, not
+ * just today's meaning of an alias like `sonnet`. `ClaudeModel` accepts any string beyond
+ * this list too (a custom/future model id) — this catalog is what the picker OFFERS, not
+ * the full set of values the type allows; see {@link isUsableModel} for the shape check
+ * that validates a value the catalog doesn't happen to list.
+ */
+export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
+  { id: 'haiku', family: 'haiku', kind: 'alias' },
+  { id: 'claude-haiku-4-5', family: 'haiku', kind: 'version' },
+  { id: 'sonnet', family: 'sonnet', kind: 'alias' },
+  { id: 'claude-sonnet-4-5', family: 'sonnet', kind: 'version' },
+  { id: 'claude-sonnet-4-6', family: 'sonnet', kind: 'version' },
+  { id: 'claude-sonnet-5', family: 'sonnet', kind: 'version' },
+  { id: 'opus', family: 'opus', kind: 'alias' },
+  { id: 'claude-opus-4-6', family: 'opus', kind: 'version' },
+  { id: 'claude-opus-4-7', family: 'opus', kind: 'version' },
+  { id: 'claude-opus-4-8', family: 'opus', kind: 'version' },
+  { id: 'claude-opus-5', family: 'opus', kind: 'version' },
+  { id: 'fable', family: 'fable', kind: 'alias' },
+  { id: 'claude-fable-5', family: 'fable', kind: 'version' },
+  { id: 'claude-fable-5-1', family: 'fable', kind: 'version' },
+];
+
+/**
+ * The shape a model id must have to be worth sending to the CLI at all — the one check
+ * the server and the desktop IPC handlers both run now that a custom model is legal and
+ * membership-testing against a closed set (`MODEL_SET.has(...)`) is no longer possible.
+ *
+ * Deliberately permissive: it says nothing about whether the id names a model that
+ * actually exists (only the CLI/API can answer that — see the "Probe the CLI for
+ * available models" step), only that it is *shaped* like one, so it can't carry shell
+ * metacharacters, path separators, or absurd lengths into a spawned process or a column.
+ */
+export function isUsableModel(id: string): boolean {
+  const trimmed = id.trim();
+  return trimmed.length > 0 && trimmed.length <= 64 && /^[A-Za-z0-9._-]+$/.test(trimmed);
+}
 
 /**
  * Which model a run costs: the card's own choice, else the project's model **for that kind

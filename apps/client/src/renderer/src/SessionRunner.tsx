@@ -28,6 +28,7 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import { ChevronDownRegular, ChevronRightRegular, DeleteRegular } from '@fluentui/react-icons';
+import { MODELS } from '@shared/model';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { ClaudeModel, PermissionMode, SessionEvent, SessionStatus } from '@shared/session';
 import { Transcript } from './Transcript';
@@ -99,7 +100,6 @@ const useStyles = makeStyles({
   empty: { color: tokens.colorNeutralForeground4, padding: '12px 2px' },
 });
 
-const MODELS: ClaudeModel[] = ['haiku', 'sonnet', 'opus'];
 const MODES: PermissionMode[] = ['acceptEdits', 'plan', 'manual', 'bypassPermissions'];
 
 function statusBadge(status: SessionStatus): {
