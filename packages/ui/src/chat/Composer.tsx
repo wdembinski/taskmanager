@@ -30,12 +30,12 @@ import {
 import { AgentsRegular, AttachRegular, FlagRegular, SendRegular } from '@fluentui/react-icons';
 import type { ClaudeModel, PermissionMode } from '@tm/shared/session';
 import { PERMISSION_MODE_LABELS } from '@tm/shared/session';
-import { MODELS } from '@tm/shared/model';
 import type { Project, Task } from '@tm/shared/model';
 import type { JiraUserOption } from '@tm/shared/ipc';
 import { TRACKER_NAME, type TurnTracker } from './turns';
 import type { ChatAvailability } from '../taskChat';
 import { cardModelFromOption, projectDefaultLabel, PROJECT_DEFAULT } from '../modelChoice';
+import { ModelField } from '../ModelField';
 import { MentionPicker } from './MentionPicker';
 import {
   findMentionQuery,
@@ -431,12 +431,15 @@ export function Composer({
             : 'Not delegated — run by Claude once you assign it'}
         </Caption1>
         <span className={styles.grow} />
-        <Dropdown
+        {/* No room here for a text box and its live resolve caption — typing a custom model
+            lives in the assign dialog. `allowCustom={false}` still shows the card's own value
+            if it is already pinned to one the catalog doesn't list, just not editable to a new
+            one from this crowded strip. */}
+        <ModelField
           className={styles.picker}
           size="small"
           appearance="underline"
-          value={model ?? projectDefault}
-          selectedOptions={[model ?? PROJECT_DEFAULT]}
+          allowCustom={false}
           title={
             live
               ? 'Applies to the next run — this one keeps its model'
@@ -444,19 +447,10 @@ export function Composer({
                 ? 'Model — this card overrides its project'
                 : `Model — ${projectDefault}`
           }
-          onOptionSelect={(_e, d) => onAgentOptions({ model: cardModelFromOption(d.optionValue) })}
-        >
-          {/* First, and naming what it defers to: a card that has never been told otherwise
-              is already on this option, so it has to say what that costs. */}
-          <Option value={PROJECT_DEFAULT} text={projectDefault}>
-            {projectDefault}
-          </Option>
-          {MODELS.map((m) => (
-            <Option key={m} value={m}>
-              {m}
-            </Option>
-          ))}
-        </Dropdown>
+          value={model ?? PROJECT_DEFAULT}
+          onChange={(v) => onAgentOptions({ model: cardModelFromOption(v) })}
+          sentinel={{ value: PROJECT_DEFAULT, label: projectDefault }}
+        />
         <Dropdown
           className={styles.picker}
           size="small"

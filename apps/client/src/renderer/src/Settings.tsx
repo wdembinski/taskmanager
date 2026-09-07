@@ -41,7 +41,7 @@ import {
 } from '@fluentui/react-components';
 import { AddRegular, DismissRegular } from '@fluentui/react-icons';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
-import type { ClaudeModel, PermissionMode } from '@shared/session';
+import type { PermissionMode } from '@shared/session';
 import { clampSyncInterval, MAX_SYNC_INTERVAL_MINUTES } from '@shared/settings';
 import type {
   AppSettings,
@@ -61,7 +61,7 @@ const PRIORITY_DISPLAY_LABELS: Record<PriorityDisplay, string> = {
   mono: 'Rank glyph (no colour)',
   off: 'Don’t show it',
 };
-import { MODELS, type BoardColumn } from '@shared/model';
+import type { BoardColumn } from '@shared/model';
 import type {
   AppInfo,
   CloudConfigStatus,
@@ -93,6 +93,7 @@ import { AgentProfiles } from './AgentProfiles';
 import { ColorSwatches, PALETTE } from '@ui/ColorSwatches';
 import { PaneLoading } from '@ui/PaneLoading';
 import { PeopleSettings } from '@ui/projects/PeopleSettings';
+import { ModelField } from '@ui/ModelField';
 import { PlanningModelField } from '@ui/PlanningModelField';
 import { ReadinessPanel } from './ReadinessPanel';
 import { StatusMapViewer } from '@ui/StatusMapViewer';
@@ -760,19 +761,11 @@ export function Settings(): JSX.Element {
               hint="Planning is the run whose whole output is judgement: it reads a repo and decides what the work is, where a step is handed a brief that already says what to do. Leave it following execution to keep planning priced exactly as it is today."
             />
 
-            <Field label="Default steps-execution model for new projects">
-              <Dropdown
-                value={settings.defaultModel}
-                selectedOptions={[settings.defaultModel]}
-                onOptionSelect={(_e, d) => patch({ defaultModel: d.optionValue as ClaudeModel })}
-              >
-                {MODELS.map((m) => (
-                  <Option key={m} value={m}>
-                    {m}
-                  </Option>
-                ))}
-              </Dropdown>
-            </Field>
+            <ModelField
+              label="Default steps-execution model for new projects"
+              value={settings.defaultModel}
+              onChange={(defaultModel) => patch({ defaultModel })}
+            />
 
             <Field label="Default permission mode for new projects">
               <Dropdown

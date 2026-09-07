@@ -10,9 +10,12 @@
  * The empty choice is the FIRST option and names the model it defers to, so the dropdown
  * answers "what will planning actually run on?" without the reader having to look at the
  * field next to it.
+ *
+ * Renders through {@link ModelField} for the catalog, the CLI-probed captions and the custom-id
+ * box — `SAME_AS_EXECUTION` and the "Same as steps execution (…)" wording are this file's own
+ * sentinel, passed through as {@link ModelFieldSentinel} rather than `ModelField` inventing one.
  */
-import { Dropdown, Field, Option } from '@fluentui/react-components';
-import { MODELS } from '@tm/shared/model';
+import { ModelField } from './ModelField';
 import type { ClaudeModel } from '@tm/shared/session';
 
 /**
@@ -57,19 +60,13 @@ export function PlanningModelField({
   className,
 }: PlanningModelFieldProps): JSX.Element {
   return (
-    <Field label={label} hint={hint} className={className}>
-      <Dropdown
-        value={value ?? sameLabel(executionModel)}
-        selectedOptions={[value ?? SAME_AS_EXECUTION]}
-        onOptionSelect={(_e, d) => onChange(planningModelFromOption(d.optionValue))}
-      >
-        <Option value={SAME_AS_EXECUTION}>{sameLabel(executionModel)}</Option>
-        {MODELS.map((m) => (
-          <Option key={m} value={m}>
-            {m}
-          </Option>
-        ))}
-      </Dropdown>
-    </Field>
+    <ModelField
+      label={label}
+      hint={hint}
+      className={className}
+      value={value ?? SAME_AS_EXECUTION}
+      onChange={(v) => onChange(planningModelFromOption(v))}
+      sentinel={{ value: SAME_AS_EXECUTION, label: sameLabel(executionModel) }}
+    />
   );
 }

@@ -18,6 +18,15 @@
  * without the labels. It must never gate its own render on that relayed call: that is the
  * bootstrap deadlock the web Settings PAT page already had to be rescued from (a whole page
  * blocked on one relayed read, including the read that would have fixed the relay).
+ *
+ * **No Field, no custom box.** `label` is optional: omitting it skips the `Field` wrapper
+ * entirely and renders a bare `Dropdown`, for a caller that already supplies its own label
+ * (the composer's footer strip, which names itself with a glyph and a `Caption1` beside the
+ * picker). `allowCustom` (default `true`) is the composer's other reason to exist: its footer
+ * has no room for a text box and a live resolve caption, so it renders the catalog and the
+ * sentinel only — but a card already pinned to a model the catalog doesn't list must still
+ * show and stay selectable, so a `false` value renders that one value as a plain option of its
+ * own rather than silently dropping it. Typing a NEW custom id stays the assign dialog's job.
  */
 import {
   Caption1,
@@ -133,9 +142,16 @@ export interface ModelFieldSentinel {
 }
 
 export interface ModelFieldProps {
-  label: string;
+  /** Omitted for a bare `Dropdown` with no `Field`/label of its own — see the file header. */
+  label?: string;
   hint?: string;
+  /** Applied to the `Field` wrapper when `label` is given; to the `Dropdown` itself when it's
+   *  not, since there is no `Field` to apply it to. */
   className?: string;
+  /** Applied to the `Dropdown` itself regardless of `label` — for a caller that needs both a
+   *  Field-sized class and a Dropdown-sized one (Fluent's `Dropdown` hard-codes its own
+   *  `minWidth`, which a `Field` cannot override from the outside). */
+  dropdownClassName?: string;
   /** The stored value: the sentinel's value, a catalog id, or a custom model id. */
   value: string;
   /**
@@ -146,6 +162,15 @@ export interface ModelFieldProps {
   onChange: (value: string) => void;
   /** A leading option standing for "not one of these" — see {@link ModelFieldSentinel}. */
   sentinel?: ModelFieldSentinel;
+  /** Whether "Custom…" and its text box are offered. Default `true` — see the file header. */
+  allowCustom?: boolean;
+  /** Forwarded to the underlying `Dropdown`. */
+  size?: 'small' | 'medium' | 'large';
+  /** Forwarded to the underlying `Dropdown`. */
+  appearance?: 'outline' | 'underline' | 'filled-darker' | 'filled-lighter';
+  /** Forwarded to the underlying `Dropdown` — a hover tooltip, for a caller with no `hint`
+   *  (no `Field`) to hang one off instead. */
+  title?: string;
 }
 
 const useStyles = makeStyles({
@@ -155,20 +180,13 @@ const useStyles = makeStyles({
   error: { color: tokens.colorPaletteRedForeground1 },
 });
 
-export function ModelField({
-  label,
-  hint,
-  className,
-  value,
-  onChange,
-  sentinel,
-}: ModelFieldProps): JSX.Element {
-  const styles = useStyles();
+/**
+ * The live `model:catalog` probe, shared by {@link ModelField} and {@link useModelLabels} — a
+ * `null` map (the transport-tier fallback, see the file header) until the fetch resolves, then
+ * every id the CLI has answered for so far.
+ */
+function useModelResolutions(): Map<string, ModelResolution> | null {
   const transport = useTransport();
-  const { aliases, versionGroups } = groupCatalog();
-
-  // Seeded null — unlabelled catalog — until `model:catalog` answers. Never awaited before
-  // the first render: the fallback IS the initial render.
   const [resolutions, setResolutions] = useState<Map<string, ModelResolution> | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -179,25 +197,58 @@ export function ModelField({
         setResolutions(new Map(rows.map((r) => [r.id, r])));
       })
       .catch(() => {
-        // No desktop reachable, or the probe itself failed — the static catalog already
-        // rendered unlabelled; there is nothing more to do.
+        // No desktop reachable, or the probe itself failed — the caller's own fallback (an
+        // unlabelled catalog, or a raw id) already covers this.
       });
     return () => {
       cancelled = true;
     };
   }, [transport]);
+  return resolutions;
+}
 
-  const startsCustom = isCustomValue(value, sentinel?.value);
+/**
+ * A model id to the CLI's own display name, for a read-only echo that isn't `ModelField`
+ * itself — `cardModelCaption`/`modelCaption` (`./modelChoice`) take a `labelOf` lookup for
+ * exactly this, so a project or card reads "Opus 5" rather than "claude-opus-5". Falls back to
+ * the bare id until the probe answers, or forever if it never does — the same transport-tier
+ * fallback `ModelField` itself uses, and for the same reason: this must never gate a render on
+ * a relayed call resolving.
+ */
+export function useModelLabels(): (id: string) => string {
+  const resolutions = useModelResolutions();
+  return (id: string): string => resolutions?.get(id)?.label ?? id;
+}
+
+export function ModelField({
+  label,
+  hint,
+  className,
+  dropdownClassName,
+  value,
+  onChange,
+  sentinel,
+  allowCustom = true,
+  size,
+  appearance,
+  title,
+}: ModelFieldProps): JSX.Element {
+  const styles = useStyles();
+  const transport = useTransport();
+  const resolutions = useModelResolutions();
+  const { aliases, versionGroups } = groupCatalog();
+
+  const startsCustom = allowCustom && isCustomValue(value, sentinel?.value);
   const [customOpen, setCustomOpen] = useState(startsCustom);
   const [customText, setCustomText] = useState(startsCustom ? value : '');
   const [customResolution, setCustomResolution] = useState<ModelResolution | null>(null);
 
   // The caller reset `value` out from under us (Cancel, a fresh card, …) — follow it.
   useEffect(() => {
-    const custom = isCustomValue(value, sentinel?.value);
+    const custom = allowCustom && isCustomValue(value, sentinel?.value);
     setCustomOpen(custom);
     setCustomText(custom ? value : '');
-  }, [value, sentinel?.value]);
+  }, [value, sentinel?.value, allowCustom]);
 
   const probeGeneration = useRef(0);
   useEffect(() => {
@@ -221,7 +272,7 @@ export function ModelField({
 
   function handleSelect(data: OptionOnSelectData): void {
     if (data.optionValue === undefined) return;
-    if (data.optionValue === CUSTOM_MODEL) {
+    if (allowCustom && data.optionValue === CUSTOM_MODEL) {
       setCustomOpen(true);
       setCustomText('');
       return;
@@ -248,51 +299,88 @@ export function ModelField({
       ? (sentinel?.label ?? '')
       : optionCaption(value, resolutions?.get(value) ?? undefined);
 
+  // A value already pinned outside the catalog has to stay visible and selectable even with
+  // custom typing turned off — see the file header.
+  const pinnedCustom = !allowCustom && isCustomValue(value, sentinel?.value);
+
+  // No `Field` to carry `className` when there is no `label` — the Dropdown wears it instead.
+  const dropdownClass =
+    [label === undefined ? className : undefined, dropdownClassName].filter(Boolean).join(' ') ||
+    undefined;
+
+  const dropdown = (
+    <Dropdown
+      className={dropdownClass}
+      size={size}
+      appearance={appearance}
+      title={title}
+      value={displayValue}
+      selectedOptions={[selectedOption]}
+      onOptionSelect={(_e, data) => handleSelect(data)}
+    >
+      {sentinel && <Option value={sentinel.value}>{sentinel.label}</Option>}
+      <OptionGroup label="Aliases">
+        {aliases.map((entry) => (
+          <Option key={entry.id} value={entry.id} text={entry.id}>
+            {optionCaption(entry.id, resolutions?.get(entry.id))}
+          </Option>
+        ))}
+      </OptionGroup>
+      {versionGroups.map(({ family, entries }) => (
+        <OptionGroup key={family} label={FAMILY_LABEL[family]}>
+          {entries.map((entry) => (
+            <Option key={entry.id} value={entry.id} text={entry.id}>
+              {optionCaption(entry.id, resolutions?.get(entry.id))}
+            </Option>
+          ))}
+        </OptionGroup>
+      ))}
+      {pinnedCustom && (
+        <Option value={value} text={value}>
+          {optionCaption(value, resolutions?.get(value))}
+        </Option>
+      )}
+      {allowCustom && (
+        <Option value={CUSTOM_MODEL} text="Custom…">
+          Custom…
+        </Option>
+      )}
+    </Dropdown>
+  );
+
+  const customBox = allowCustom && customOpen && (
+    <>
+      <Input
+        value={customText}
+        onChange={(_e, data) => handleCustomTextChange(data.value)}
+        placeholder="claude-opus-4-7, or any model id the CLI accepts"
+      />
+      {shapeError ? (
+        <Caption1 className={styles.error}>{shapeError}</Caption1>
+      ) : caption ? (
+        <Caption1 className={customResolution?.known ? styles.note : styles.warning}>
+          {caption}
+        </Caption1>
+      ) : null}
+    </>
+  );
+
+  if (label === undefined) {
+    return customBox ? (
+      <div className={styles.stack}>
+        {dropdown}
+        {customBox}
+      </div>
+    ) : (
+      dropdown
+    );
+  }
+
   return (
     <Field label={label} hint={hint} className={className}>
       <div className={styles.stack}>
-        <Dropdown
-          value={displayValue}
-          selectedOptions={[selectedOption]}
-          onOptionSelect={(_e, data) => handleSelect(data)}
-        >
-          {sentinel && <Option value={sentinel.value}>{sentinel.label}</Option>}
-          <OptionGroup label="Aliases">
-            {aliases.map((entry) => (
-              <Option key={entry.id} value={entry.id} text={entry.id}>
-                {optionCaption(entry.id, resolutions?.get(entry.id))}
-              </Option>
-            ))}
-          </OptionGroup>
-          {versionGroups.map(({ family, entries }) => (
-            <OptionGroup key={family} label={FAMILY_LABEL[family]}>
-              {entries.map((entry) => (
-                <Option key={entry.id} value={entry.id} text={entry.id}>
-                  {optionCaption(entry.id, resolutions?.get(entry.id))}
-                </Option>
-              ))}
-            </OptionGroup>
-          ))}
-          <Option value={CUSTOM_MODEL} text="Custom…">
-            Custom…
-          </Option>
-        </Dropdown>
-        {customOpen && (
-          <>
-            <Input
-              value={customText}
-              onChange={(_e, data) => handleCustomTextChange(data.value)}
-              placeholder="claude-opus-4-7, or any model id the CLI accepts"
-            />
-            {shapeError ? (
-              <Caption1 className={styles.error}>{shapeError}</Caption1>
-            ) : caption ? (
-              <Caption1 className={customResolution?.known ? styles.note : styles.warning}>
-                {caption}
-              </Caption1>
-            ) : null}
-          </>
-        )}
+        {dropdown}
+        {customBox}
       </div>
     </Field>
   );
