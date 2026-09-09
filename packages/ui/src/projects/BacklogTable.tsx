@@ -16,6 +16,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Avatar,
   Badge,
+  Button,
   Caption1,
   Input,
   Table,
@@ -30,6 +31,7 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import {
+  AddRegular,
   BeakerRegular,
   BugRegular,
   BookmarkRegular,
@@ -46,6 +48,7 @@ import { PaneLoading } from '../PaneLoading';
 import { useTransport } from '../transport';
 import { useInitialLoad } from '../useInitialLoad';
 import { type BacklogSortKey, backlogRows } from './backlogView';
+import { NewTicketDialog } from './NewTicketDialog';
 import { TicketDrawer } from './TicketDrawer';
 
 const useStyles = makeStyles({
@@ -56,6 +59,7 @@ const useStyles = makeStyles({
   typeCell: { display: 'flex', alignItems: 'center', color: tokens.colorNeutralForeground2 },
   groupRow: { backgroundColor: tokens.colorNeutralBackground2 },
   groupCell: { fontWeight: tokens.fontWeightSemibold },
+  groupHeader: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
   muted: { color: tokens.colorNeutralForeground3 },
   labelsCell: { display: 'flex', flexWrap: 'wrap', gap: '4px' },
   empty: { color: tokens.colorNeutralForeground3, padding: '8px 0' },
@@ -114,6 +118,12 @@ export function BacklogTable({
   const [query, setQuery] = useState('');
   const [sortKey, setSortKey] = useState<BacklogSortKey>('key');
   const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
+  /** `NewTicketDialog`'s own open state, folded into the epic it should preset — `null`
+   *  means closed, `{ epicTaskId: null }` is the toolbar's plain "New ticket", and a group
+   *  header's "Add child" sets it to that epic's id. */
+  const [newTicketDialog, setNewTicketDialog] = useState<{ epicTaskId: string | null } | null>(
+    null,
+  );
 
   const seed = useCallback(
     async () => setTickets(await transport.invoke('board:tasks', projectId)),
@@ -185,6 +195,14 @@ export function BacklogTable({
         >
           Sort by due date
         </ToggleButton>
+        <Button
+          size="small"
+          appearance="primary"
+          icon={<AddRegular />}
+          onClick={() => setNewTicketDialog({ epicTaskId: null })}
+        >
+          New ticket
+        </Button>
       </div>
 
       {tickets.length === 0 ? (
@@ -209,7 +227,24 @@ export function BacklogTable({
                 <Fragment key={`group:${group.epicId ?? 'none'}`}>
                   <TableRow className={styles.groupRow}>
                     <TableCell colSpan={8} className={styles.groupCell}>
-                      {group.epicTitle} · {group.tickets.length}
+                      <div className={styles.groupHeader}>
+                        <span>
+                          {group.epicTitle} · {group.tickets.length}
+                        </span>
+                        {/* Only a real epic can be filed under — the "No epic" bucket has no
+                            id to preset, and "adding a child" to it would just be another
+                            plain "New ticket". */}
+                        {group.epicId && (
+                          <Button
+                            size="small"
+                            appearance="subtle"
+                            icon={<AddRegular />}
+                            onClick={() => setNewTicketDialog({ epicTaskId: group.epicId })}
+                          >
+                            Add child
+                          </Button>
+                        )}
+                      </div>
                     </TableCell>
                   </TableRow>
                   {group.tickets.map((ticket) => (
@@ -281,6 +316,14 @@ export function BacklogTable({
         labels={labels}
         milestones={milestones}
         onClose={() => setSelectedTicketId(null)}
+      />
+
+      <NewTicketDialog
+        open={newTicketDialog !== null}
+        projectId={projectId}
+        tickets={tickets}
+        defaultEpicTaskId={newTicketDialog?.epicTaskId ?? null}
+        onClose={() => setNewTicketDialog(null)}
       />
     </div>
   );
