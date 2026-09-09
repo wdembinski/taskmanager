@@ -22,6 +22,8 @@ const form = (over: Partial<AddTaskForm> = {}): AddTaskForm => ({
   title: 'Ship the thing',
   description: '',
   type: 'feature',
+  issueType: 'task',
+  epicTaskId: '',
   phase: '',
   projectTagId: '',
   parentId: '',
@@ -64,6 +66,29 @@ describe('addTaskPlan', () => {
   it('carries the chosen board onto the card, for a project board rather than Personal', () => {
     const plan = addTaskPlan(form({ boardId: 'p-billing' }));
     expect(plan.kind === 'card' && plan.board).toBe('p-billing');
+  });
+
+  it('carries issueType and epicTaskId onto the card for a ticket board', () => {
+    const plan = addTaskPlan(
+      form({ boardId: 'p-billing', issueType: 'story', epicTaskId: 'epic-1' }),
+    );
+    expect(plan.kind).toBe('card');
+    if (plan.kind !== 'card') return;
+    expect(plan.card.issueType).toBe('story');
+    expect(plan.card.epicTaskId).toBe('epic-1');
+  });
+
+  it('gives a ticket-board card a null epicTaskId, not an empty one', () => {
+    const plan = addTaskPlan(form({ boardId: 'p-billing', issueType: 'story' }));
+    expect(plan.kind === 'card' && plan.card.epicTaskId).toBe(null);
+  });
+
+  it('carries neither issueType nor epicTaskId for a Personal-board plan', () => {
+    const plan = addTaskPlan(form({ issueType: 'epic', epicTaskId: 'epic-1' }));
+    expect(plan.kind).toBe('card');
+    if (plan.kind !== 'card') return;
+    expect(plan.card.issueType).toBeUndefined();
+    expect(plan.card.epicTaskId).toBeUndefined();
   });
 
   it('files nothing when no project was picked', () => {

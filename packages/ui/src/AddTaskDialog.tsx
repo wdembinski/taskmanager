@@ -65,13 +65,15 @@ import {
 } from '@fluentui/react-components';
 import { Switch } from '@fluentui/react-components';
 import { AttachRegular } from '@fluentui/react-icons';
-import type { Project, Task, TaskType } from '@tm/shared/model';
+import type { IssueType, Project, Task, TaskType } from '@tm/shared/model';
 import { PERSONAL_PROJECT_ID } from '@tm/shared/model';
 import type { BoardScope, JiraIssueTypeOption, JiraProjectOption } from '@tm/shared/ipc';
 import { attachmentName, insertAttachmentRef } from '@tm/shared/attachments';
+import { isEpic } from '@tm/shared/tickets';
 import { LINK_GATE_LABEL, LINK_REFUSAL_MESSAGE } from '@tm/shared/taskChain';
 import { isFileDrag } from './AttachmentStrip';
 import { clipboardFiles, pastedFilePaths } from './attachFiles';
+import { TicketTypeFields } from './projects/TicketTypeFields';
 import { useTransport } from './transport';
 
 /** The task types offered in the picker, with their display labels. */
@@ -123,6 +125,9 @@ const useStyles = makeStyles({
   },
   row: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' },
   hint: { color: tokens.colorNeutralForeground3 },
+  /** `TicketTypeFields`' two pickers, side by side — same layout as `TicketDrawer`'s. */
+  fieldsRow: { display: 'flex', gap: '12px' },
+  fieldsCell: { flex: 1, minWidth: 0 },
 });
 
 /** Sentinel for "no parent" in the parent dropdown (an Option needs a value). */
@@ -131,6 +136,8 @@ const NO_PARENT = '';
 const NO_LINK = '';
 /** The same again, for a card filed under no project at all. */
 const NO_PROJECT = '';
+/** The same again, for a ticket with no epic. */
+const NO_EPIC = '';
 
 /** Everything the form holds, as the plan below reads it. */
 export interface AddTaskForm {
@@ -138,6 +145,11 @@ export interface AddTaskForm {
   /** The card's brief, or the step's — see {@link AddTaskPlan}. */
   description: string;
   type: TaskType;
+  /** Only meaningful on a ticket board — Personal has no `issueType` of its own; a
+   *  Personal-board plan never carries it (see {@link addTaskPlan}). */
+  issueType: IssueType;
+  /** `''` for none. Same rule as {@link issueType}: ticket-board-only. */
+  epicTaskId: string;
   phase: string;
   /** The project the card is filed under; `''` for none. */
   projectTagId: string;
@@ -185,6 +197,10 @@ export type AddTaskPlan =
         type: TaskType;
         description?: string;
         projectTagId: string | null;
+        /** Set only when {@link board} is a ticket board — absent for Personal, which has
+         *  no `issueType`/`epicTaskId` of its own and would only ignore them anyway. */
+        issueType?: IssueType;
+        epicTaskId?: string | null;
       };
       ticket: {
         projectKey: string;
@@ -214,6 +230,8 @@ export function addTaskPlan(form: AddTaskForm): AddTaskPlan {
     return { kind: 'incomplete', error: 'Pick a JIRA project and issue type first.' };
   }
 
+  const isTicketBoard = form.boardId !== PERSONAL_PROJECT_ID;
+
   return {
     kind: 'card',
     board: form.boardId,
@@ -223,6 +241,10 @@ export function addTaskPlan(form: AddTaskForm): AddTaskPlan {
       type: form.type,
       description: description || undefined,
       projectTagId: form.projectTagId || null,
+      // Absent rather than defaulted for Personal: that board has no `issueType` of its
+      // own, and sending one would only invite `task:create` to ignore a field the form
+      // never actually asked about.
+      ...(isTicketBoard ? { issueType: form.issueType, epicTaskId: form.epicTaskId || null } : {}),
     },
     // The same text on both: the description you typed is what the ticket is about.
     ticket: form.asJira
@@ -357,6 +379,13 @@ export function AddTaskDialog({
   const [title, setTitle] = useState('');
   const [phase, setPhase] = useState('');
   const [type, setType] = useState<TaskType>('feature');
+  /** Ticket-board-only — see {@link AddTaskForm.issueType}. */
+  const [issueType, setIssueType] = useState<IssueType>('task');
+  const [epicTaskId, setEpicTaskId] = useState<string>(NO_EPIC);
+  /** The selected board's own tickets, fetched fresh whenever it changes — the source of
+   *  the Epic picker's candidates, same as the drawer's own `tickets` prop. Empty on
+   *  Personal, which has no epics to offer. */
+  const [boardTickets, setBoardTickets] = useState<Task[]>([]);
   const [description, setDescription] = useState('');
   /** The project the card is filed under — tagging, not delegation. */
   const [projectTagId, setProjectTagId] = useState<string>(NO_PROJECT);
@@ -390,6 +419,8 @@ export function AddTaskDialog({
       setTitle('');
       setPhase('');
       setType('feature');
+      setIssueType('task');
+      setEpicTaskId(NO_EPIC);
       setDescription('');
       setProjectTagId(NO_PROJECT);
       setBoardId(projectId ?? PERSONAL_PROJECT_ID);
@@ -417,6 +448,32 @@ export function AddTaskDialog({
       live = false;
     };
   }, [open, transport]);
+
+  // A different board's epics are not this one's, and Personal has none at all — reset
+  // both the moment the board changes, exactly as a fresh ticket would start. Also covers
+  // the open-effect above setting the initial board, so a dialog reopened on a different
+  // board never inherits the last one's picks.
+  useEffect(() => {
+    setIssueType('task');
+    setEpicTaskId(NO_EPIC);
+  }, [boardId]);
+
+  // The Epic picker's candidates — this board's own tickets, filtered to epics. Fetched
+  // only for a ticket board; Personal writes an ordinary `Task` with no `issueType` of its
+  // own, so there is nothing here worth a network call for.
+  useEffect(() => {
+    if (!open || boardId === PERSONAL_PROJECT_ID) {
+      setBoardTickets([]);
+      return;
+    }
+    let live = true;
+    void transport.invoke('board:tasks', boardId).then((tasks) => {
+      if (live) setBoardTickets(tasks);
+    });
+    return () => {
+      live = false;
+    };
+  }, [open, boardId, transport]);
 
   // The projects list is only worth fetching once the switch is on — it is a network
   // call, and most cards are still local. Seeded from what was created last time.
@@ -483,6 +540,7 @@ export function AddTaskDialog({
     () => chainCandidates.find((c) => c.id === runsAfterId) ?? null,
     [chainCandidates, runsAfterId],
   );
+  const epicCandidates = useMemo(() => boardTickets.filter(isEpic), [boardTickets]);
 
   /**
    * Draw the arrow the picker asked for — `created` runs after `fromTaskId`.
@@ -625,6 +683,8 @@ export function AddTaskDialog({
       title,
       description,
       type,
+      issueType,
+      epicTaskId,
       phase,
       projectTagId,
       // A step is created through its parent whatever else the form says, so this is the
@@ -659,12 +719,15 @@ export function AddTaskDialog({
         if (plan.ticket) await ticketFor(created.id, plan.ticket);
       } else {
         // A project board: the card IS a native ticket, allocated its key by the project's
-        // own counter. `type` has no ticket equivalent (issueType defaults to 'task') and
-        // JIRA linking is Personal-only (`canJira`), so neither travels here.
+        // own counter. `type` has no ticket equivalent — `issueType`/`epicTaskId` are its
+        // replacement — and JIRA linking is Personal-only (`canJira`), so `type` never
+        // travels here.
         created = await transport.invoke('ticket:create', plan.board, {
           title: plan.card.title,
           phase: plan.card.phase,
           description: plan.card.description,
+          issueType: plan.card.issueType,
+          epicTaskId: plan.card.epicTaskId,
         });
         createdId = created.id;
       }
@@ -994,10 +1057,10 @@ export function AddTaskDialog({
 
               {!isStep && !asJira && (
                 <>
-                  {/* `type` (bug/feature) has no ticket equivalent — a native ticket's
-                      `issueType` defaults to 'task' and is edited afterwards, on the card —
-                      so the picker is only worth asking on the board it actually applies to. */}
-                  {boardId === PERSONAL_PROJECT_ID && (
+                  {/* `type` (bug/feature) has no ticket equivalent — a native ticket has
+                      `issueType`/`epicTaskId` instead, so the board decides which pair of
+                      pickers apply, never both. */}
+                  {boardId === PERSONAL_PROJECT_ID ? (
                     <Field label="Type">
                       <Dropdown
                         value={TASK_TYPES.find((t) => t.value === type)?.label ?? ''}
@@ -1011,6 +1074,17 @@ export function AddTaskDialog({
                         ))}
                       </Dropdown>
                     </Field>
+                  ) : (
+                    <div className={styles.fieldsRow}>
+                      <TicketTypeFields
+                        issueType={issueType}
+                        epicTaskId={epicTaskId}
+                        epicCandidates={epicCandidates}
+                        onIssueTypeChange={setIssueType}
+                        onEpicTaskIdChange={setEpicTaskId}
+                        className={styles.fieldsCell}
+                      />
+                    </div>
                   )}
                   <Field
                     label="Phase / milestone (optional)"
