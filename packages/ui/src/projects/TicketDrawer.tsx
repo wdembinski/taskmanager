@@ -46,7 +46,7 @@ import {
 } from '@fluentui/react-components';
 import { DismissRegular, SettingsRegular } from '@fluentui/react-icons';
 import type { IssueType, Milestone, Person, Task, TicketLabel } from '@tm/shared/model';
-import { ISSUE_TYPES } from '@tm/shared/tickets';
+import { isEpic } from '@tm/shared/tickets';
 import { draftKey, useDraft } from '../drafts';
 import { useTransport } from '../transport';
 import { LabelRegistry } from './LabelRegistry';
@@ -54,6 +54,7 @@ import { MilestoneList } from './MilestoneList';
 import { PersonAvatar } from './PersonAvatar';
 import { dateToInput, splitLabels, ticketPatchFrom, type TicketDraft } from './ticketFields';
 import { TicketLinksEditor } from './TicketLinksEditor';
+import { TicketTypeFields } from './TicketTypeFields';
 
 const NONE = '';
 
@@ -148,7 +149,7 @@ export function TicketDrawer({
     dateToInput(ticket?.dueAt ?? null),
   );
 
-  const epicCandidates = tickets.filter((t) => t.issueType === 'epic' && t.id !== ticket?.id);
+  const epicCandidates = tickets.filter((t) => isEpic(t) && t.id !== ticket?.id);
   const otherTickets = tickets.filter((t) => t.id !== ticket?.id);
   const previewLabels = splitLabels(labelsDraft.value);
 
@@ -225,38 +226,14 @@ export function TicketDrawer({
               )}
 
               <div className={styles.row}>
-                <Field label="Type" className={styles.cell}>
-                  <Dropdown
-                    value={issueType}
-                    selectedOptions={[issueType]}
-                    onOptionSelect={(_e, d) => {
-                      if (d.optionValue) setIssueType(d.optionValue as IssueType);
-                    }}
-                  >
-                    {ISSUE_TYPES.map((t) => (
-                      <Option key={t} value={t}>
-                        {t}
-                      </Option>
-                    ))}
-                  </Dropdown>
-                </Field>
-
-                <Field label="Epic" className={styles.cell}>
-                  <Dropdown
-                    value={epicCandidates.find((e) => e.id === epicTaskId)?.title ?? 'None'}
-                    selectedOptions={[epicTaskId || NONE]}
-                    onOptionSelect={(_e, d) => {
-                      if (d.optionValue !== undefined) setEpicTaskId(d.optionValue);
-                    }}
-                  >
-                    {epicCandidates.map((e) => (
-                      <Option key={e.id} value={e.id} text={e.title}>
-                        {e.title}
-                      </Option>
-                    ))}
-                    <Option value={NONE}>None</Option>
-                  </Dropdown>
-                </Field>
+                <TicketTypeFields
+                  issueType={issueType}
+                  epicTaskId={epicTaskId}
+                  epicCandidates={epicCandidates}
+                  onIssueTypeChange={setIssueType}
+                  onEpicTaskIdChange={setEpicTaskId}
+                  className={styles.cell}
+                />
               </div>
 
               <div className={styles.row}>
