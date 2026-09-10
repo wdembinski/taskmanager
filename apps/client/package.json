@@ -21,6 +21,7 @@
     "ensure:abi": "node scripts/ensure-native-abi.mjs",
     "verify:github": "node scripts/verify-github.mjs",
     "verify:tickets": "node scripts/verify-tickets.mjs",
+    "verify:connections": "node scripts/verify-connections.mjs",
     "check:feed": "node scripts/check-update-feed.mjs",
     "package": "electron-vite build && electron-builder install-app-deps && npm run ensure:abi && electron-builder --win --publish onTagOrDraft && npm run check:feed",
     "package:local": "electron-vite build && electron-builder install-app-deps && npm run ensure:abi && electron-builder --win --publish never && npm run check:feed",
