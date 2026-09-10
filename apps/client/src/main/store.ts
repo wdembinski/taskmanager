@@ -31,6 +31,7 @@ import {
   type TaskArchiveReason,
   type TaskStatus,
   type TaskType,
+  type TicketGraphPosition,
   type TicketInput,
   type TicketLabel,
   type TicketLabelInput,
@@ -651,6 +652,17 @@ export interface Store {
   addTicketLink(fromTaskId: string, toTaskId: string, type: TicketLinkType): TicketLink | undefined;
   /** Erase one. No-op when it is already gone. */
   deleteTicketLink(id: string): void;
+
+  /** A project's saved Graph-view node positions. Empty until a node in it has been
+   *  dragged — `GraphPane` grid-places any ticket missing from this list. */
+  getTicketGraphLayout(projectId: string): TicketGraphPosition[];
+  /**
+   * Upsert the given positions — one row per ticket, replacing any existing saved
+   * position for that ticket. Not scoped to `projectId` beyond what it stamps on new
+   * rows: the caller (`GraphPane`, via `ticketGraph:saveLayout`) only ever sends
+   * positions for tickets in the project it is showing.
+   */
+  saveTicketGraphLayout(projectId: string, positions: TicketGraphPosition[]): void;
 
   // --- Attachments (see `@shared/attachments`). ---
   /** Every attachment on the board, oldest first — the whole list `attachment:list` hands over. */
@@ -1312,6 +1324,20 @@ export function createStore(dbPath: string): Store {
     );
     CREATE INDEX IF NOT EXISTS idx_ticket_links_from ON ticket_links(fromTaskId);
     CREATE INDEX IF NOT EXISTS idx_ticket_links_to   ON ticket_links(toTaskId);
+    -- GraphPane's saved node layout (chaining-tickets plan step 14): one row per ticket
+    -- that has ever been dragged, keyed on the ticket alone since a ticket belongs to
+    -- exactly one project — projectId is carried anyway so getTicketGraphLayout can index
+    -- straight off it rather than joining through tasks. Both ends cascade, same reasoning
+    -- as ticket_links: a deleted ticket (or its whole project) must not leave a saved
+    -- position for a node that no longer exists. A NEW table, so nothing to migrate.
+    CREATE TABLE IF NOT EXISTS ticket_graph_positions (
+      projectId TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      taskId    TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      x         REAL NOT NULL,
+      y         REAL NOT NULL,
+      PRIMARY KEY (taskId)
+    );
+    CREATE INDEX IF NOT EXISTS idx_ticket_graph_positions_project ON ticket_graph_positions(projectId);
     -- The client's outgoing half of the cloud mirror (Phase 25): one row per write to
     -- tasks/projects, append-only, filled by triggers rather than by any of the
     -- ~90 Store methods that touch those tables (see the triggers below). A NEW
@@ -2527,6 +2553,31 @@ export function createStore(dbPath: string): Store {
      ON CONFLICT DO NOTHING`,
   );
   const deleteTicketLinkStmt = db.prepare(`DELETE FROM ticket_links WHERE id = ?`);
+
+  interface TicketGraphPositionRow {
+    projectId: string;
+    taskId: string;
+    x: number;
+    y: number;
+  }
+
+  const selectTicketGraphLayout = db.prepare(
+    `SELECT taskId, x, y FROM ticket_graph_positions WHERE projectId = ?`,
+  );
+  // taskId alone is the primary key (a ticket belongs to one project), so a re-save after
+  // a ticket somehow changed project would leave its OLD project's row stale rather than
+  // move it — cheap to fix by writing projectId on every upsert, which this does.
+  const upsertTicketGraphPosition = db.prepare<[TicketGraphPositionRow]>(
+    `INSERT INTO ticket_graph_positions (projectId, taskId, x, y)
+     VALUES (@projectId, @taskId, @x, @y)
+     ON CONFLICT(taskId) DO UPDATE SET projectId = excluded.projectId, x = excluded.x, y = excluded.y`,
+  );
+  const saveTicketGraphLayoutTx = db.transaction(
+    (projectId: string, positions: TicketGraphPosition[]) => {
+      for (const p of positions)
+        upsertTicketGraphPosition.run({ projectId, taskId: p.taskId, x: p.x, y: p.y });
+    },
+  );
 
   const selectAttachments = db.prepare(`SELECT * FROM task_attachments ORDER BY createdAt, rowid`);
   const selectAttachmentsForTask = db.prepare(
@@ -4191,6 +4242,14 @@ export function createStore(dbPath: string): Store {
 
     deleteTicketLink(id) {
       deleteTicketLinkStmt.run(id);
+    },
+
+    getTicketGraphLayout(projectId) {
+      return selectTicketGraphLayout.all(projectId) as TicketGraphPosition[];
+    },
+
+    saveTicketGraphLayout(projectId, positions) {
+      saveTicketGraphLayoutTx(projectId, positions);
     },
 
     // The eight columns ARE `TaskAttachment`, in order, so these rows need no mapper —

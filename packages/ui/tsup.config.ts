@@ -25,5 +25,6 @@ export default defineConfig({
     'react/jsx-runtime',
     '@fluentui/react-components',
     '@fluentui/react-icons',
+    '@xyflow/react',
   ],
 });

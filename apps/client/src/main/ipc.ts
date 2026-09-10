@@ -2873,6 +2873,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     pushTicketLinks();
   });
 
+  // --- Graph-view node layout (per project) -----------------------------------
+  handle('ticketGraph:getLayout', async (projectId) => store.getTicketGraphLayout(projectId));
+
+  handle('ticketGraph:saveLayout', async (projectId, positions) => {
+    store.saveTicketGraphLayout(projectId, positions);
+  });
+
   // --- The chain of execution ------------------------------------------------
   /** Push the whole link list at the board. Returns it, so handlers can also reply with it. */
   function pushChainLinks(): TaskLink[] {

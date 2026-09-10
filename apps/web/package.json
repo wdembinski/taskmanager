@@ -19,6 +19,7 @@
     "@tm/protocol": "workspace:*",
     "@tm/shared": "workspace:*",
     "@tm/ui": "workspace:*",
+    "@xyflow/react": "^12.8.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
