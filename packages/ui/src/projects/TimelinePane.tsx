@@ -55,8 +55,19 @@
  * from where the knob itself sits (`ConnectDragState.origin`), not a DOM measurement — the
  * one thing this pane already knows about every other drag it runs — and draws the band with
  * `rubberBandPath`, the exact function `ChainOverlay` draws its own with, so the two panes'
- * gestures read as one gesture with two skins. This step only draws it: letting go creates no
- * link yet.
+ * gestures read as one gesture with two skins.
+ *
+ * **Dropping the knob** on another bar draws a `blocks` dependency, predecessor → successor —
+ * the knob's own ticket is `from`, the bar it lands on is `to`. The landing bar is found by
+ * `elementFromPoint` at the release coordinates rather than a DOM measurement, the same reason
+ * `origin`/`at` are: a pointer capture keeps EVENTS routed to the knob, but `elementFromPoint`
+ * still reads the real geometry underneath, which is what a drop target has to be found from.
+ * `CONNECT_TARGET_ATTR` sits on the row's `<g>` rather than the bar `<rect>` itself so a drop on
+ * a resize handle (which overlaps the bar) still resolves to the row's own ticket. Before
+ * calling `ticketLink:add`, `canLinkTickets` runs the same self/duplicate checks the store's own
+ * handler will, so a refusal it already knows about (drop on your own bar, or the pair is
+ * already linked that way) reads through this pane's `dragError` `MessageBar` — the exact bar a
+ * failed reschedule already uses — without a round trip.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -72,6 +83,7 @@ import {
 import type { Milestone, Person, Project, Task, TicketLabel, TicketLink } from '@tm/shared/model';
 import type { AppSettings } from '@tm/shared/settings';
 import type { TaskLink } from '@tm/shared/taskChain';
+import { canLinkTickets, TICKET_LINK_REFUSAL_MESSAGE } from '@tm/shared/ticketLinks';
 import { rubberBandPath, type AnchorRect } from '../board/chainArrows';
 import { FoldToggle } from '../FoldToggle';
 import { PaneLoading } from '../PaneLoading';
@@ -108,6 +120,11 @@ const CONNECT_HANDLE_RADIUS_PX = 5;
 /** How far past the bar's own right edge the knob sits — clear of the resize strip's hit
  *  area (which lives INSIDE the bar), so the two never fight over the same pixel. */
 const CONNECT_HANDLE_OFFSET_PX = 9;
+
+/** The attribute a row's `<g>` carries so a connect drag's release point can be resolved back
+ *  to the ticket it landed on — `chainDrag.ts`'s own `TASK_ID_ATTR` trick, for an
+ *  `elementFromPoint` lookup instead of a `dragover`'s own target. */
+const CONNECT_TARGET_ATTR = 'data-timeline-ticket-id';
 
 /** Marker ids, namespaced against `ChainOverlay`'s own (a ticket drawer can be open over a
  *  board, so both overlays' `<defs>` can end up in the same document at once). */
@@ -562,14 +579,55 @@ export function TimelinePane({
     });
   }, []);
 
-  // No link is created yet (that is a later step) — releasing, however it releases, simply
-  // ends the gesture and drops the band.
-  const endConnectDrag = useCallback((e: React.PointerEvent<SVGCircleElement>) => {
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    }
-    setConnectDrag((prev) => (prev && prev.pointerId === e.pointerId ? null : prev));
-  }, []);
+  /**
+   * Draw the `blocks` dependency a finished connect drag asked for, predecessor (the knob's
+   * own ticket) → successor (whatever it landed on). `canLinkTickets` runs the same
+   * self/duplicate checks the store's own `ticketLink:add` handler will, against the `links`
+   * this pane already holds — so the common refusals surface without a round trip, and the
+   * handler's own (data, not thrown) refusal is shown the same way if one comes back anyway.
+   */
+  const commitConnect = useCallback(
+    async (fromTicketId: string, toTicketId: string) => {
+      const refusal = canLinkTickets(links, { id: fromTicketId }, { id: toTicketId }, 'blocks');
+      if (refusal) {
+        setDragError(TICKET_LINK_REFUSAL_MESSAGE[refusal]);
+        return;
+      }
+      setDragError(null);
+      const result = await transport.invoke('ticketLink:add', fromTicketId, toTicketId, 'blocks');
+      if (result.status === 'refused') {
+        setDragError(TICKET_LINK_REFUSAL_MESSAGE[result.reason]);
+      }
+    },
+    [links, transport],
+  );
+
+  /**
+   * Releasing the knob over another bar draws a dependency; releasing it anywhere else just
+   * drops the band. The landing ticket is read from the real geometry under the release point
+   * (`elementFromPoint`), not the event's own target — a pointer capture keeps every event
+   * routed to the knob itself, so `e.target` would always be the knob, never the bar under it.
+   */
+  const endConnectDrag = useCallback(
+    (e: React.PointerEvent<SVGCircleElement>) => {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+      const clientX = e.clientX;
+      const clientY = e.clientY;
+      setConnectDrag((prev) => {
+        if (!prev || prev.pointerId !== e.pointerId) return prev;
+        const hit = document.elementFromPoint(clientX, clientY);
+        const toTicketId =
+          hit instanceof Element
+            ? (hit.closest(`[${CONNECT_TARGET_ATTR}]`)?.getAttribute(CONNECT_TARGET_ATTR) ?? null)
+            : null;
+        if (toTicketId) void commitConnect(prev.ticketId, toTicketId);
+        return null;
+      });
+    },
+    [commitConnect],
+  );
 
   const ticks = useMemo(() => ganttTicks(scale), [scale]);
   const markers = useMemo(() => ganttMarkers(milestones, scale), [milestones, scale]);
@@ -763,6 +821,7 @@ export function TimelinePane({
                       <g
                         key={row.id}
                         className={styles.rowGroup}
+                        {...{ [CONNECT_TARGET_ATTR]: row.id }}
                         onClick={() => {
                           if (justDraggedRef.current) {
                             justDraggedRef.current = false;
