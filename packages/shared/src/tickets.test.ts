@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { PERSONAL_PROJECT_ID, type Task } from './model';
 import {
+  delegatedAgentName,
   ISSUE_TYPES,
   isEpic,
   isIssueType,
@@ -50,6 +51,34 @@ describe('isNativeTicket', () => {
     expect(isNativeTicket({ source: 'jira' })).toBe(false);
     expect(isNativeTicket({ source: 'adhoc' })).toBe(false);
     expect(isNativeTicket({ source: 'plan' })).toBe(false);
+  });
+});
+
+describe('delegatedAgentName', () => {
+  it('shows the agent for a native ticket that is delegated', () => {
+    const t = task({ source: 'ticket', agentProjectId: 'agent-1' });
+    expect(delegatedAgentName(t, 'Bot Repo')).toBe('Bot Repo');
+  });
+
+  it('shows nothing for a native ticket nobody delegated', () => {
+    const t = task({ source: 'ticket', agentProjectId: null });
+    expect(delegatedAgentName(t, undefined)).toBeUndefined();
+  });
+
+  // `agentProjectId` is a plain column — a JIRA or GitHub mirror could carry one in
+  // principle (or a ticket demoted from native) — and this is the one place that stops
+  // it from reading as "assigned to an agent" on a row this app does not own.
+  it('is gated to native tickets even when agentProjectId is set', () => {
+    const jira = task({ source: 'jira', agentProjectId: 'agent-1' });
+    expect(delegatedAgentName(jira, 'Bot Repo')).toBeUndefined();
+
+    const github = task({ source: 'github', agentProjectId: 'agent-1' });
+    expect(delegatedAgentName(github, 'Bot Repo')).toBeUndefined();
+  });
+
+  it('shows nothing when the id resolved to no name', () => {
+    const t = task({ source: 'ticket', agentProjectId: 'agent-1' });
+    expect(delegatedAgentName(t, undefined)).toBeUndefined();
   });
 });
 

@@ -76,7 +76,7 @@ import {
 } from '@tm/shared/board';
 import type { ChainDecline } from '@tm/shared/taskChain';
 import { priorityIndicatorShown } from '@tm/shared/priority';
-import { isNativeTicket } from '@tm/shared/tickets';
+import { delegatedAgentName } from '@tm/shared/tickets';
 import { statusNoteColor, type StatusKeyword } from '@tm/shared/statusKeywords';
 import { DEFAULT_BOARD_DISPLAY, type BoardDisplaySettings } from '@tm/shared/settings';
 import { AgentGlyph } from '../AgentGlyph';
@@ -1096,9 +1096,10 @@ export function TaskCard({
    * The agent this card is delegated to, for the "Assigned to" corner — only for a native
    * ticket (Phase 24). A mirrored card has no `assigneeId` either way, but `agentName` is
    * resolved from `task.agentProjectId` alone (see `KanbanColumn`'s `agentNameOf`), so this
-   * is gated explicitly rather than trusted to come back empty on its own.
+   * is gated explicitly (`delegatedAgentName`) rather than trusted to come back empty on
+   * its own.
    */
-  const assigneeAgentName = isNativeTicket(task) ? agentName : undefined;
+  const assigneeAgentName = delegatedAgentName(task, agentName);
   /** The assignee corner — nothing to draw without the switch and a person or an agent. */
   const showsAssignee = display.showAssignee && Boolean(assignee || assigneeAgentName);
   /**

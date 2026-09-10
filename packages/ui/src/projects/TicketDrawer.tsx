@@ -47,7 +47,7 @@ import {
 } from '@fluentui/react-components';
 import { DismissRegular, SettingsRegular } from '@fluentui/react-icons';
 import type { IssueType, Milestone, Person, Project, Task, TicketLabel } from '@tm/shared/model';
-import { isEpic, isNativeTicket } from '@tm/shared/tickets';
+import { delegatedAgentName, isEpic } from '@tm/shared/tickets';
 import { draftKey, useDraft } from '../drafts';
 import { useTransport } from '../transport';
 import { AssigneeDisplay } from './AssigneeDisplay';
@@ -162,10 +162,9 @@ export function TicketDrawer({
   const previewLabels = splitLabels(labelsDraft.value);
   // Read-only — delegation happens from the assign dialog, not this dropdown, so this drawer
   // only ever displays `agentProjectId`, never edits it.
-  const agentName =
-    ticket && isNativeTicket(ticket) && ticket.agentProjectId
-      ? agentProjects.find((p) => p.id === ticket.agentProjectId)?.name
-      : undefined;
+  const agentName = ticket
+    ? delegatedAgentName(ticket, agentProjects.find((p) => p.id === ticket.agentProjectId)?.name)
+    : undefined;
 
   async function save(): Promise<void> {
     if (!ticket) return;

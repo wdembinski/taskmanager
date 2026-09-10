@@ -41,7 +41,7 @@ import {
   TaskListSquareLtrRegular,
 } from '@fluentui/react-icons';
 import type { Milestone, Person, Project, Task, TicketLabel } from '@tm/shared/model';
-import { isNativeTicket, typeIconKeyFor, type TypeIconKey } from '@tm/shared/tickets';
+import { delegatedAgentName, typeIconKeyFor, type TypeIconKey } from '@tm/shared/tickets';
 import { PriorityGlyph } from '../PriorityGlyph';
 import { PaneLoading } from '../PaneLoading';
 import { useTransport } from '../transport';
@@ -105,10 +105,12 @@ function milestoneName(milestones: Milestone[], id: string | null | undefined): 
 }
 
 /** The agent delegated to a ticket, by name — `undefined` for anything not native or
- *  not delegated, same gate `TaskCard` applies before showing one. */
+ *  not delegated, the same `delegatedAgentName` gate `TaskCard` applies before showing one. */
 function agentNameOf(agentProjects: Project[], ticket: Task): string | undefined {
-  if (!isNativeTicket(ticket) || !ticket.agentProjectId) return undefined;
-  return agentProjects.find((p) => p.id === ticket.agentProjectId)?.name;
+  return delegatedAgentName(
+    ticket,
+    agentProjects.find((p) => p.id === ticket.agentProjectId)?.name,
+  );
 }
 
 export function BacklogTable({

@@ -51,6 +51,27 @@ export function isEpic(task: Pick<Task, 'issueType'>): boolean {
 }
 
 /**
+ * The name to show for a ticket's delegated agent, or `undefined` when there is none to
+ * show — the one gate every "Assigned to" surface (the board card, the backlog table, the
+ * ticket drawer) applies before handing a name to `AssigneeDisplay`.
+ *
+ * Only a **native** ticket's own delegation counts. `agentProjectId` is a plain column, so
+ * in principle it could be set on a mirrored JIRA/GitHub row too (or survive one being
+ * demoted from native); this is what stops that from ever reading as "assigned to an
+ * agent" on a card this app does not own the assignment for.
+ *
+ * Takes the name already resolved from `agentProjectId` — an id lookup — rather than the
+ * project list itself, so a caller that has already looked one up (`TaskCard`'s
+ * `agentNameOf` prop) does not have to look it up twice.
+ */
+export function delegatedAgentName(
+  ticket: Pick<Task, 'source' | 'agentProjectId'>,
+  agentName: string | undefined,
+): string | undefined {
+  return isNativeTicket(ticket) && ticket.agentProjectId ? agentName : undefined;
+}
+
+/**
  * Which icon a card's type should be drawn with — the resolved answer over all three type
  * fields, so the board, the detail pane and the backlog cannot disagree.
  *

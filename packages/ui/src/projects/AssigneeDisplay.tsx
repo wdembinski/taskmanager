@@ -17,6 +17,7 @@
 import { Text, makeStyles, tokens } from '@fluentui/react-components';
 import { AgentsRegular } from '@fluentui/react-icons';
 import type { Person } from '@tm/shared/model';
+import { assigneeDisplayParts } from './assigneeParts';
 import { PersonAvatar } from './PersonAvatar';
 
 const useStyles = makeStyles({
@@ -81,25 +82,24 @@ export function AssigneeDisplay({
   title,
 }: AssigneeDisplayProps): JSX.Element | null {
   const styles = useStyles();
-  if (!assignee && !agentName) return null;
-
-  const resolvedTitle = title ?? [assignee?.name, agentName].filter(Boolean).join(' / ');
+  const parts = assigneeDisplayParts(assignee, agentName, title);
+  if (!parts) return null;
 
   return (
-    <span className={styles.row} title={resolvedTitle}>
-      {assignee && (
+    <span className={styles.row} title={parts.title}>
+      {parts.assignee && (
         <>
-          <PersonAvatar person={assignee} size={size} />
-          {variant === 'text' && <Text className={styles.name}>{assignee.name}</Text>}
+          <PersonAvatar person={parts.assignee} size={size} />
+          {variant === 'text' && <Text className={styles.name}>{parts.assignee.name}</Text>}
         </>
       )}
-      {assignee && agentName && <Text className={styles.sep}>/</Text>}
-      {agentName && (
+      {parts.assignee && parts.agentName && <Text className={styles.sep}>/</Text>}
+      {parts.agentName && (
         <>
           <span className={styles.agentIcon} style={{ fontSize: `${size - 4}px` }}>
             <AgentsRegular />
           </span>
-          <Text className={styles.name}>{agentName}</Text>
+          <Text className={styles.name}>{parts.agentName}</Text>
         </>
       )}
     </span>
