@@ -324,6 +324,28 @@ export function ganttDependencyPath(
   return `M ${x1} ${y1} C ${x1 + bow} ${y1}, ${x2 - bow} ${y2}, ${x2} ${y2}`;
 }
 
+/**
+ * The id of the bar a content-space point falls in, or null — the timeline analogue of
+ * `board/chainDrag.ts`'s `taskIdUnder`, kept as pure geometry (no DOM) so the Ctrl-drag hit
+ * test can be exercised headlessly, the same reason the rest of this file's maths is.
+ *
+ * `bars` is the scheduled rows' bars in DRAW order: row `i` owns `y ∈ [i * GANTT_ROW_HEIGHT,
+ * (i+1) * GANTT_ROW_HEIGHT)`, so the row is found by dividing `y` rather than by searching —
+ * exactly how `TimelinePane` lays the rows out one `GANTT_ROW_HEIGHT` apart.
+ */
+export function ganttBarAtPoint(
+  bars: readonly { id: string; bar: GanttBar }[],
+  x: number,
+  y: number,
+): string | null {
+  if (y < 0) return null;
+  const row = Math.floor(y / GANTT_ROW_HEIGHT);
+  const entry = bars[row];
+  if (!entry) return null;
+  if (x < entry.bar.x || x > entry.bar.x + entry.bar.width) return null;
+  return entry.id;
+}
+
 /** The set a row's collapse toggle reads from — see `board/foldedSteps.ts`'s `foldedCardSet`. */
 export function collapsedEpicSet(collapsed: readonly string[] | undefined): ReadonlySet<string> {
   return new Set(collapsed ?? []);
