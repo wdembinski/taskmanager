@@ -138,10 +138,7 @@ async function main() {
     const entry = join(work, 'entry.ts');
     writeFileSync(
       entry,
-      SCENARIOS.replaceAll('__SCRATCH__', scratch).replaceAll(
-        '__REPO__',
-        repo.replace(/\\/g, '/'),
-      ),
+      SCENARIOS.replaceAll('__SCRATCH__', scratch).replaceAll('__REPO__', repo.replace(/\\/g, '/')),
       'utf8',
     );
     log('\nRunning the connection scenarios against the real store...');
@@ -365,6 +362,36 @@ store.deleteTask(cascadeLayoutTask.id);
 check(
   'deleting a ticket takes its saved graph position with it',
   !store.getTicketGraphLayout(projA.id).some((p) => p.taskId === cascadeLayoutTask.id),
+);
+
+// The chaining-tickets fix round (plan step 22) added epic-as-a-zone grouping to the Graph
+// view (layoutNodes nests a child under its epic's zone with a parentId, packages/ui's own
+// graphLayout.test.ts proves that) and to the Timeline (ganttEpicBands, ganttLayout.test.ts).
+// Neither of those is store-backed — layoutNodes/ganttEpicBands are pure functions that never
+// touch the database — but the saved POSITIONS an epic and its children drag to are, through
+// this same getTicketGraphLayout/saveTicketGraphLayout pair, and the store treats every taskId
+// identically whether or not it names an epic. This proves that indifference rather than
+// assuming it: an epic's own position and a child's both round-trip, independently, exactly
+// like the plain tickets above.
+const epicForLayout = store.createTask(projA.id, { title: 'Epic with a zone', issueType: 'epic' });
+const childForLayout = store.createTask(projA.id, {
+  title: 'Child in the zone',
+  epicTaskId: epicForLayout.id,
+});
+store.saveTicketGraphLayout(projA.id, [
+  { taskId: epicForLayout.id, x: 0, y: 500 },
+  { taskId: childForLayout.id, x: 40, y: 540 },
+]);
+const epicLayout = store.getTicketGraphLayout(projA.id);
+check(
+  "an epic's own saved position round-trips",
+  epicLayout.some((p) => p.taskId === epicForLayout.id && p.x === 0 && p.y === 500),
+  JSON.stringify(epicLayout),
+);
+check(
+  "its child's saved position round-trips independently of the epic's",
+  epicLayout.some((p) => p.taskId === childForLayout.id && p.x === 40 && p.y === 540),
+  JSON.stringify(epicLayout),
 );
 
 const doomedProj = store.addProject({ path: '', kind: 'ticket', ticketPrefix: 'CXD', name: 'doomed' });

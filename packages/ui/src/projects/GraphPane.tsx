@@ -302,7 +302,7 @@ export type GraphNode = Node<TicketNodeData, 'ticket'> | Node<EpicZoneData, 'epi
  * dangling edge for) falls back to an ordinary top-level `ticket` node instead of a stray
  * `parentId` React Flow would refuse to resolve.
  */
-function layoutNodes(
+export function layoutNodes(
   tickets: Task[],
   saved: Record<string, { x: number; y: number }>,
 ): GraphNode[] {
