@@ -10,17 +10,26 @@
  * deterministic grid keyed only by array order, which a later step replaces with a saved
  * per-project position.
  *
- * **Edges — `blocks` dependencies and execution-chain links, read-only in this step.** Loaded
- * and kept live the exact way `TimelinePane` loads its own: seed via `ticketLink:list` /
- * `chain:links`, then replace-on-change off `ticketLink:changed` / `chain:changed` (both send
- * the WHOLE list, never a patch — see `ipc.ts`'s own doc on `chain:changed`). Only the
- * `blocks` type renders, the same filter `TimelinePane`'s `dependencyPaths` applies — the
- * other `TicketLinkType`s (`relates`, `duplicates`, …) are documentary and drawn nowhere yet.
- * Grey for a dependency, cyan for a chain — `FLUO.cyan` is the app's one colour for "moving",
- * the same one `TimelinePane`'s own `chain` style and `ChainOverlay`'s `releasing` state use.
- * A link whose endpoint ticket is not among this project's own nodes (can't happen today, since
- * both link kinds are project-scoped the same way a ticket is, but cheap to guard) is dropped
- * rather than handed to React Flow, which would otherwise warn about a dangling edge.
+ * **Edges — `blocks` dependencies and execution-chain links.** Loaded and kept live the exact
+ * way `TimelinePane` loads its own: seed via `ticketLink:list` / `chain:links`, then
+ * replace-on-change off `ticketLink:changed` / `chain:changed` (both send the WHOLE list, never
+ * a patch — see `ipc.ts`'s own doc on `chain:changed`). Only the `blocks` type renders, the
+ * same filter `TimelinePane`'s `dependencyPaths` applies — the other `TicketLinkType`s
+ * (`relates`, `duplicates`, …) are documentary and drawn nowhere yet. Grey for a dependency,
+ * cyan for a chain — `FLUO.cyan` is the app's one colour for "moving", the same one
+ * `TimelinePane`'s own `chain` style and `ChainOverlay`'s `releasing` state use. A link whose
+ * endpoint ticket is not among this project's own nodes (can't happen today, since both link
+ * kinds are project-scoped the same way a ticket is, but cheap to guard) is dropped rather than
+ * handed to React Flow, which would otherwise warn about a dangling edge.
+ *
+ * **Creating a link.** React Flow's own `onConnect` fires once a drag from one node's `Handle`
+ * lands on another's, with nothing more than the two node ids — unlike the timeline's connect
+ * knob, there is no ctrl-drag mid-gesture on this canvas to also ask for a chain, so the choice
+ * of kind moves to `GraphLinkPicker`, a small dialog opened over the resolved `Task` pair
+ * (`handleConnect`). It runs `canLinkTickets`/`canLink` itself before calling `ticketLink:add`
+ * / `chain:link`, so a refusal it already knows about — self, duplicate, a would-be cycle —
+ * reads inline without a round trip, `TimelinePane.commitConnect`'s own reasoning. Deleting a
+ * link drawn here is a later step.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Caption1, makeStyles, tokens } from '@fluentui/react-components';
@@ -41,6 +50,7 @@ import {
   Position,
   ReactFlow,
   ReactFlowProvider,
+  type Connection,
   type Edge,
   type Node,
   type NodeProps,
@@ -52,6 +62,7 @@ import { PaneLoading } from '../PaneLoading';
 import { FLUO } from '../theme';
 import { useTransport } from '../transport';
 import { useInitialLoad } from '../useInitialLoad';
+import { GraphLinkPicker } from './GraphLinkPicker';
 
 const useStyles = makeStyles({
   root: {
@@ -190,6 +201,10 @@ export function GraphPane({ projectId }: GraphPaneProps): JSX.Element {
   const [tickets, setTickets] = useState<Task[] | null>(null);
   const [links, setLinks] = useState<TicketLink[]>([]);
   const [chainLinks, setChainLinks] = useState<TaskLink[]>([]);
+  // The pending connect gesture — `GraphLinkPicker`'s own controlled-open prop, `null` while
+  // its dialog is closed. Resolved from `tickets` (not the raw ids `onConnect` hands back) so
+  // the picker gets full `Task`s to show titles from and run `canLinkTickets`/`canLink` against.
+  const [pendingConnection, setPendingConnection] = useState<{ from: Task; to: Task } | null>(null);
 
   const seed = useCallback(
     async () => setTickets(await transport.invoke('board:tasks', projectId)),
@@ -247,6 +262,22 @@ export function GraphPane({ projectId }: GraphPaneProps): JSX.Element {
     [links, chainLinks, nodeIds],
   );
 
+  /**
+   * Opens `GraphLinkPicker` over the pair a React Flow drag just named — the endpoints come
+   * back as bare ids (`Connection.source`/`target`), resolved here against `tickets` since the
+   * picker needs each end's own title, not just its id. A connection whose endpoint has left
+   * `tickets` between the drag starting and ending (a delete mid-gesture) is silently dropped
+   * rather than opening a picker over a ticket that is no longer there.
+   */
+  const handleConnect = useCallback(
+    (connection: Connection) => {
+      const from = (tickets ?? []).find((t) => t.id === connection.source);
+      const to = (tickets ?? []).find((t) => t.id === connection.target);
+      if (from && to) setPendingConnection({ from, to });
+    },
+    [tickets],
+  );
+
   if (tickets === null) {
     return <PaneLoading label="Loading graph…" error={initial.error} onRetry={initial.retry} />;
   }
@@ -258,6 +289,7 @@ export function GraphPane({ projectId }: GraphPaneProps): JSX.Element {
           nodes={nodes}
           edges={edges}
           nodeTypes={NODE_TYPES}
+          onConnect={handleConnect}
           fitView
           proOptions={{ hideAttribution: true }}
         >
@@ -265,6 +297,12 @@ export function GraphPane({ projectId }: GraphPaneProps): JSX.Element {
           <Controls />
         </ReactFlow>
       </ReactFlowProvider>
+      <GraphLinkPicker
+        connection={pendingConnection}
+        links={links}
+        chainLinks={chainLinks}
+        onClose={() => setPendingConnection(null)}
+      />
     </div>
   );
 }
