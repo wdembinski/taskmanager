@@ -41,14 +41,16 @@ import {
   PopoverSurface,
   PopoverTrigger,
   Subtitle2,
+  Text,
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
 import { DismissRegular, SettingsRegular } from '@fluentui/react-icons';
-import type { IssueType, Milestone, Person, Task, TicketLabel } from '@tm/shared/model';
-import { isEpic } from '@tm/shared/tickets';
+import type { IssueType, Milestone, Person, Project, Task, TicketLabel } from '@tm/shared/model';
+import { isEpic, isNativeTicket } from '@tm/shared/tickets';
 import { draftKey, useDraft } from '../drafts';
 import { useTransport } from '../transport';
+import { AssigneeDisplay } from './AssigneeDisplay';
 import { LabelRegistry } from './LabelRegistry';
 import { MilestoneList } from './MilestoneList';
 import { PersonAvatar } from './PersonAvatar';
@@ -66,6 +68,8 @@ const useStyles = makeStyles({
   chips: { display: 'flex', flexWrap: 'wrap', gap: '4px' },
   saved: { color: tokens.colorPaletteGreenForeground1 },
   optionRow: { display: 'flex', alignItems: 'center', gap: '6px' },
+  agentRow: { display: 'flex', alignItems: 'center', gap: '4px', marginTop: '4px' },
+  agentSep: { color: tokens.colorNeutralForeground3 },
   key: {
     fontFamily: 'ui-monospace, Consolas, monospace',
     color: tokens.colorNeutralForeground3,
@@ -79,6 +83,9 @@ export interface TicketDrawerProps {
   tickets: Task[];
   /** App-wide roster, for the assignee/reporter pickers. */
   people: Person[];
+  /** The repos a ticket can be delegated to — resolves `ticket.agentProjectId` to a name
+   *  for the read-only agent indicator beside the (still human-editable) Assignee field. */
+  agentProjects: Project[];
   /** This project's label registry. */
   labels: TicketLabel[];
   /** This project's milestones. */
@@ -94,6 +101,7 @@ export function TicketDrawer({
   ticket,
   tickets,
   people,
+  agentProjects,
   labels,
   milestones,
   onClose,
@@ -152,6 +160,12 @@ export function TicketDrawer({
   const epicCandidates = tickets.filter((t) => isEpic(t) && t.id !== ticket?.id);
   const otherTickets = tickets.filter((t) => t.id !== ticket?.id);
   const previewLabels = splitLabels(labelsDraft.value);
+  // Read-only — delegation happens from the assign dialog, not this dropdown, so this drawer
+  // only ever displays `agentProjectId`, never edits it.
+  const agentName =
+    ticket && isNativeTicket(ticket) && ticket.agentProjectId
+      ? agentProjects.find((p) => p.id === ticket.agentProjectId)?.name
+      : undefined;
 
   async function save(): Promise<void> {
     if (!ticket) return;
@@ -372,6 +386,12 @@ export function TicketDrawer({
                     ))}
                     <Option value={NONE}>Unassigned</Option>
                   </Dropdown>
+                  {agentName && (
+                    <div className={styles.agentRow}>
+                      <Text className={styles.agentSep}>/</Text>
+                      <AssigneeDisplay agentName={agentName} variant="text" size={20} />
+                    </div>
+                  )}
                 </Field>
                 <Field label="Reporter" className={styles.cell}>
                   <Dropdown

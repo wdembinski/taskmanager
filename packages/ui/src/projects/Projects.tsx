@@ -18,6 +18,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ToggleButton, makeStyles } from '@fluentui/react-components';
+import { agentProjectsOf } from '@tm/shared/agentProjects';
 import {
   ownsTickets,
   type Milestone,
@@ -46,6 +47,9 @@ export function Projects(): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
   const [projects, setProjects] = useState<Project[] | null>(null);
+  /** The repos a ticket can be delegated to — for resolving `agentProjectId` to a name
+   *  wherever a ticket surface shows its assignee, alongside the human `people` roster. */
+  const [agentProjects, setAgentProjects] = useState<Project[]>([]);
   const [people, setPeople] = useState<Person[]>([]);
   const [milestones, setMilestones] = useState<Milestone[]>([]);
   const [labels, setLabels] = useState<TicketLabel[]>([]);
@@ -59,7 +63,9 @@ export function Projects(): JSX.Element {
       transport.invoke('milestone:list'),
       transport.invoke('label:list'),
     ]);
-    setProjects(allProjects.map((p) => p.project).filter(ownsTickets));
+    const projectList = allProjects.map((p) => p.project);
+    setProjects(projectList.filter(ownsTickets));
+    setAgentProjects(agentProjectsOf(projectList));
     setPeople(allPeople);
     setMilestones(allMilestones);
     setLabels(allLabels);
@@ -150,6 +156,7 @@ export function Projects(): JSX.Element {
                 key={selectedProject.id}
                 projectId={selectedProject.id}
                 people={people}
+                agentProjects={agentProjects}
                 labels={projectLabels}
                 milestones={projectMilestones}
               />
@@ -158,6 +165,7 @@ export function Projects(): JSX.Element {
                 key={selectedProject.id}
                 projectId={selectedProject.id}
                 people={people}
+                agentProjects={agentProjects}
                 labels={projectLabels}
                 milestones={projectMilestones}
               />

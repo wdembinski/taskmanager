@@ -14,7 +14,6 @@
  */
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Avatar,
   Badge,
   Button,
   Caption1,
@@ -41,12 +40,13 @@ import {
   SparkleRegular,
   TaskListSquareLtrRegular,
 } from '@fluentui/react-icons';
-import type { Milestone, Person, Task, TicketLabel } from '@tm/shared/model';
-import { typeIconKeyFor, type TypeIconKey } from '@tm/shared/tickets';
+import type { Milestone, Person, Project, Task, TicketLabel } from '@tm/shared/model';
+import { isNativeTicket, typeIconKeyFor, type TypeIconKey } from '@tm/shared/tickets';
 import { PriorityGlyph } from '../PriorityGlyph';
 import { PaneLoading } from '../PaneLoading';
 import { useTransport } from '../transport';
 import { useInitialLoad } from '../useInitialLoad';
+import { AssigneeDisplay } from './AssigneeDisplay';
 import { type BacklogSortKey, backlogRows } from './backlogView';
 import { NewTicketDialog } from './NewTicketDialog';
 import { TicketDrawer } from './TicketDrawer';
@@ -86,15 +86,13 @@ export interface BacklogTableProps {
   projectId: string;
   /** App-wide roster, for the assignee column. */
   people: Person[];
+  /** The repos a ticket can be delegated to — resolves `agentProjectId` to a name for the
+   *  assignee column's `<human> / <agent>` display. */
+  agentProjects: Project[];
   /** This project's label registry, for chip colours — tickets carry label NAMES, not ids. */
   labels: TicketLabel[];
   /** This project's milestones, for the milestone column — tickets carry only `milestoneId`. */
   milestones: Milestone[];
-}
-
-function personName(people: Person[], id: string | null | undefined): string | null {
-  if (!id) return null;
-  return people.find((p) => p.id === id)?.name ?? null;
 }
 
 function labelColor(labels: TicketLabel[], name: string): string | undefined {
@@ -106,9 +104,17 @@ function milestoneName(milestones: Milestone[], id: string | null | undefined): 
   return milestones.find((m) => m.id === id)?.name ?? null;
 }
 
+/** The agent delegated to a ticket, by name — `undefined` for anything not native or
+ *  not delegated, same gate `TaskCard` applies before showing one. */
+function agentNameOf(agentProjects: Project[], ticket: Task): string | undefined {
+  if (!isNativeTicket(ticket) || !ticket.agentProjectId) return undefined;
+  return agentProjects.find((p) => p.id === ticket.agentProjectId)?.name;
+}
+
 export function BacklogTable({
   projectId,
   people,
+  agentProjects,
   labels,
   milestones,
 }: BacklogTableProps): JSX.Element {
@@ -259,14 +265,17 @@ export function BacklogTable({
                       <TableCell>{ticket.ticketKey ?? '—'}</TableCell>
                       <TableCell>{ticket.title}</TableCell>
                       <TableCell>
-                        {ticket.assigneeId ? (
-                          <Avatar
-                            name={personName(people, ticket.assigneeId) ?? undefined}
-                            size={20}
-                          />
-                        ) : (
-                          <Caption1 className={styles.muted}>Unassigned</Caption1>
-                        )}
+                        {(() => {
+                          const assignee = ticket.assigneeId
+                            ? people.find((p) => p.id === ticket.assigneeId)
+                            : undefined;
+                          const agentName = agentNameOf(agentProjects, ticket);
+                          return assignee || agentName ? (
+                            <AssigneeDisplay assignee={assignee} agentName={agentName} size={20} />
+                          ) : (
+                            <Caption1 className={styles.muted}>Unassigned</Caption1>
+                          );
+                        })()}
                       </TableCell>
                       <TableCell>
                         <PriorityGlyph mode="mono" priority={ticket.externalPriority} size={16} />
@@ -313,6 +322,7 @@ export function BacklogTable({
         ticket={selectedTicket}
         tickets={tickets}
         people={people}
+        agentProjects={agentProjects}
         labels={labels}
         milestones={milestones}
         onClose={() => setSelectedTicketId(null)}
