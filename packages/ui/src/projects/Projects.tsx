@@ -31,6 +31,7 @@ import { PaneLoading } from '../PaneLoading';
 import { useTransport } from '../transport';
 import { useInitialLoad } from '../useInitialLoad';
 import { BacklogTable } from './BacklogTable';
+import { GraphPane } from './GraphPane';
 import { ProjectPicker } from './ProjectPicker';
 import { TimelinePane } from './TimelinePane';
 
@@ -41,8 +42,8 @@ const useStyles = makeStyles({
   viewSwitch: { display: 'flex', gap: '4px' },
 });
 
-/** The Projects screen's own two views of one project's tickets. */
-type ProjectView = 'backlog' | 'timeline';
+/** The Projects screen's own views of one project's tickets. */
+type ProjectView = 'backlog' | 'timeline' | 'graph';
 
 export function Projects(): JSX.Element {
   const styles = useStyles();
@@ -146,13 +147,21 @@ export function Projects(): JSX.Element {
               >
                 Timeline
               </ToggleButton>
+              <ToggleButton
+                size="small"
+                appearance="subtle"
+                checked={view === 'graph'}
+                onClick={() => setView('graph')}
+              >
+                Graph
+              </ToggleButton>
             </div>
             {/* Keyed on the project: switching the selection is rare enough that a clean
-                remount — a fresh seed load, a fresh subscription — beats reconciling either
-                pane's state onto a different project mid-life. The two views are a SWITCH,
+                remount — a fresh seed load, a fresh subscription — beats reconciling any
+                pane's state onto a different project mid-life. The three views are a SWITCH,
                 never mounted together, so there is nothing for their independent ticket
                 loads to disagree about. */}
-            {view === 'backlog' ? (
+            {view === 'backlog' && (
               <BacklogTable
                 key={selectedProject.id}
                 projectId={selectedProject.id}
@@ -161,7 +170,8 @@ export function Projects(): JSX.Element {
                 labels={projectLabels}
                 milestones={projectMilestones}
               />
-            ) : (
+            )}
+            {view === 'timeline' && (
               <TimelinePane
                 key={selectedProject.id}
                 projectId={selectedProject.id}
@@ -170,6 +180,9 @@ export function Projects(): JSX.Element {
                 labels={projectLabels}
                 milestones={projectMilestones}
               />
+            )}
+            {view === 'graph' && (
+              <GraphPane key={selectedProject.id} projectId={selectedProject.id} />
             )}
           </>
         )}
