@@ -19,6 +19,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ToggleButton, makeStyles } from '@fluentui/react-components';
 import { agentProjectsOf } from '@tm/shared/agentProjects';
+import '@xyflow/react/dist/style.css';
 import {
   ownsTickets,
   type Milestone,

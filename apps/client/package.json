@@ -37,6 +37,7 @@
     "@tm/shared": "workspace:*",
     "@tm/ui": "workspace:*",
     "@fluentui/react-icons": "^2.0.270",
+    "@xyflow/react": "^12.8.0",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.9.0",
     "@types/react": "^18.3.12",
