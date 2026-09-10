@@ -28,11 +28,26 @@
  * of kind moves to `GraphLinkPicker`, a small dialog opened over the resolved `Task` pair
  * (`handleConnect`). It runs `canLinkTickets`/`canLink` itself before calling `ticketLink:add`
  * / `chain:link`, so a refusal it already knows about — self, duplicate, a would-be cycle —
- * reads inline without a round trip, `TimelinePane.commitConnect`'s own reasoning. Deleting a
- * link drawn here is a later step.
+ * reads inline without a round trip, `TimelinePane.commitConnect`'s own reasoning.
+ *
+ * **Deleting a link.** React Flow edges are selectable and deletable by default, so selecting
+ * one and pressing Delete/Backspace fires `onEdgesDelete` with the removed `Edge`s — the
+ * affordance is React Flow's own, nothing custom drawn on the canvas. `handleEdgesDelete`
+ * resolves each deleted edge's id back to a kind the same way `TimelinePane`'s
+ * `selectedChainLink`/`selectedTicketLink` split does: check `links` first, then `chainLinks` —
+ * the two id spaces never collide (same invariant, see `TimelinePane`'s own doc on it) — and
+ * calls `ticketLink:remove` or `chain:unlink`. `ticketLink:remove` returns nothing, so that half
+ * removes optimistically and re-fetches the list on refusal; `chain:unlink` returns the fresh
+ * list itself, `TimelinePane.removeChainLink`'s own shape.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Caption1, makeStyles, tokens } from '@fluentui/react-components';
+import {
+  Caption1,
+  MessageBar,
+  MessageBarBody,
+  makeStyles,
+  tokens,
+} from '@fluentui/react-components';
 import {
   BeakerRegular,
   BookmarkRegular,
@@ -66,12 +81,15 @@ import { GraphLinkPicker } from './GraphLinkPicker';
 
 const useStyles = makeStyles({
   root: {
+    display: 'flex',
+    flexDirection: 'column',
     flex: 1,
     minHeight: 0,
     height: '100%',
     border: `1px solid ${tokens.colorNeutralStroke2}`,
     borderRadius: tokens.borderRadiusMedium,
   },
+  canvas: { flex: 1, minHeight: 0 },
   card: {
     display: 'flex',
     flexDirection: 'column',
@@ -205,6 +223,7 @@ export function GraphPane({ projectId }: GraphPaneProps): JSX.Element {
   // its dialog is closed. Resolved from `tickets` (not the raw ids `onConnect` hands back) so
   // the picker gets full `Task`s to show titles from and run `canLinkTickets`/`canLink` against.
   const [pendingConnection, setPendingConnection] = useState<{ from: Task; to: Task } | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const seed = useCallback(
     async () => setTickets(await transport.invoke('board:tasks', projectId)),
@@ -278,25 +297,82 @@ export function GraphPane({ projectId }: GraphPaneProps): JSX.Element {
     [tickets],
   );
 
+  /** `ticketLink:remove`'s own half of a delete — `TimelinePane.removeTicketLink`'s own shape:
+   *  remove locally first (the IPC returns nothing to replace it with), then re-fetch the list
+   *  on refusal rather than leaving a stale edge gone from screen but still linked underneath. */
+  const removeTicketLink = useCallback(
+    async (linkId: string) => {
+      setLinks((cur) => cur.filter((l) => l.id !== linkId));
+      try {
+        await transport.invoke('ticketLink:remove', linkId);
+      } catch (e) {
+        setDeleteError(e instanceof Error ? e.message : String(e));
+        setLinks(await transport.invoke('ticketLink:list'));
+      }
+    },
+    [transport],
+  );
+
+  /** `chain:unlink`'s own half — it returns the fresh list itself, so there is nothing to
+   *  optimistically remove first, `TimelinePane.removeChainLink`'s own shape. */
+  const removeChainLink = useCallback(
+    async (linkId: string) => {
+      try {
+        setChainLinks(await transport.invoke('chain:unlink', linkId));
+      } catch (e) {
+        setDeleteError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [transport],
+  );
+
+  /**
+   * React Flow's own delete affordance — edges are selectable and deletable by default, so
+   * selecting one and pressing Delete/Backspace lands here with the removed `Edge`s. An edge's
+   * id alone does not say which kind it is (`dependencyEdges`/`chainEdges` set no `data`
+   * discriminator), so it is resolved against `links` first, then `chainLinks` — the same
+   * membership check `TimelinePane`'s `selectedChainLink`/`selectedTicketLink` split relies on,
+   * safe because the two id spaces never collide.
+   */
+  const handleEdgesDelete = useCallback(
+    (deleted: Edge[]) => {
+      setDeleteError(null);
+      for (const edge of deleted) {
+        if (links.some((l) => l.id === edge.id)) void removeTicketLink(edge.id);
+        else if (chainLinks.some((l) => l.id === edge.id)) void removeChainLink(edge.id);
+      }
+    },
+    [links, chainLinks, removeTicketLink, removeChainLink],
+  );
+
   if (tickets === null) {
     return <PaneLoading label="Loading graph…" error={initial.error} onRetry={initial.retry} />;
   }
 
   return (
     <div className={styles.root}>
-      <ReactFlowProvider>
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          nodeTypes={NODE_TYPES}
-          onConnect={handleConnect}
-          fitView
-          proOptions={{ hideAttribution: true }}
-        >
-          <Background />
-          <Controls />
-        </ReactFlow>
-      </ReactFlowProvider>
+      {deleteError && (
+        <MessageBar intent="error">
+          <MessageBarBody>{deleteError}</MessageBarBody>
+        </MessageBar>
+      )}
+      <div className={styles.canvas}>
+        <ReactFlowProvider>
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            nodeTypes={NODE_TYPES}
+            onConnect={handleConnect}
+            onEdgesDelete={handleEdgesDelete}
+            deleteKeyCode={['Backspace', 'Delete']}
+            fitView
+            proOptions={{ hideAttribution: true }}
+          >
+            <Background />
+            <Controls />
+          </ReactFlow>
+        </ReactFlowProvider>
+      </div>
       <GraphLinkPicker
         connection={pendingConnection}
         links={links}
