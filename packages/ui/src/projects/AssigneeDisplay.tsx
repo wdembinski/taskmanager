@@ -66,6 +66,11 @@ export interface AssigneeDisplayProps {
   variant?: AssigneeDisplayVariant;
   /** The avatar/icon size in px, in `PersonAvatar`'s own steps. */
   size?: 16 | 20 | 24 | 28 | 32;
+  /**
+   * Overrides the plain name-join this draws as a tooltip by default, for a surface that
+   * already has its own wording (the board card's "Assigned to …").
+   */
+  title?: string;
 }
 
 export function AssigneeDisplay({
@@ -73,14 +78,15 @@ export function AssigneeDisplay({
   agentName,
   variant = 'compact',
   size = 20,
+  title,
 }: AssigneeDisplayProps): JSX.Element | null {
   const styles = useStyles();
   if (!assignee && !agentName) return null;
 
-  const title = [assignee?.name, agentName].filter(Boolean).join(' / ');
+  const resolvedTitle = title ?? [assignee?.name, agentName].filter(Boolean).join(' / ');
 
   return (
-    <span className={styles.row} title={title}>
+    <span className={styles.row} title={resolvedTitle}>
       {assignee && (
         <>
           <PersonAvatar person={assignee} size={size} />
