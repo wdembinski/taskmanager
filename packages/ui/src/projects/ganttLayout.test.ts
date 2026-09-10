@@ -8,6 +8,7 @@ import {
   ganttBar,
   ganttBarAtPoint,
   ganttDependencyPath,
+  ganttEpicBands,
   ganttMarkers,
   ganttRange,
   ganttRows,
@@ -197,18 +198,90 @@ describe('ganttRows', () => {
     expect(rows[0].bar!.x).toBeCloseTo(scale.xOf(10 * DAY_MS), 6);
     const rightEdge = rows[0].bar!.x + rows[0].bar!.width;
     expect(rightEdge).toBeCloseTo(scale.xOf(18 * DAY_MS), 6);
+    expect(rows[0].barFromChildren).toBe(true);
+  });
+
+  it('unions an EXPANDED epic’s own bar across its children too, not just collapsed', () => {
+    const epic = ticket({ id: 'e1', issueType: 'epic', title: 'Epic' });
+    const c1 = ticket({ epicTaskId: 'e1', startAt: 10 * DAY_MS, dueAt: 12 * DAY_MS });
+    const c2 = ticket({ epicTaskId: 'e1', startAt: 15 * DAY_MS, dueAt: 18 * DAY_MS });
+    const rows = ganttRows([epic, c1, c2], scale, new Set());
+    const epicRow = rows[0];
+    expect(epicRow.barFromChildren).toBe(true);
+    expect(epicRow.bar!.x).toBeCloseTo(scale.xOf(10 * DAY_MS), 6);
+    const rightEdge = epicRow.bar!.x + epicRow.bar!.width;
+    expect(rightEdge).toBeCloseTo(scale.xOf(18 * DAY_MS), 6);
+  });
+
+  it('falls back to the epic’s own dates, marked not-from-children, when no child is dated', () => {
+    const epic = ticket({ id: 'e1', issueType: 'epic', startAt: 1 * DAY_MS, dueAt: 2 * DAY_MS });
+    const c1 = ticket({ epicTaskId: 'e1', startAt: null, dueAt: null });
+    const rows = ganttRows([epic, c1], scale, new Set());
+    expect(rows[0].barFromChildren).toBe(false);
+    expect(rows[0].bar!.x).toBeCloseTo(scale.xOf(1 * DAY_MS), 6);
   });
 
   it('gives an epic-less ticket its own top-level row', () => {
     const orphan = ticket({ startAt: 1 * DAY_MS, dueAt: 2 * DAY_MS });
     const rows = ganttRows([orphan], scale, new Set());
-    expect(rows).toEqual([{ id: orphan.id, ticket: orphan, depth: 0, bar: rows[0].bar }]);
+    expect(rows).toEqual([
+      { id: orphan.id, ticket: orphan, depth: 0, bar: rows[0].bar, barFromChildren: false },
+    ]);
   });
 
   it('carries a null bar through to the row for an undated ticket', () => {
     const orphan = ticket({ startAt: null, dueAt: null });
     const rows = ganttRows([orphan], scale, new Set());
     expect(rows[0].bar).toBeNull();
+  });
+});
+
+describe('ganttEpicBands', () => {
+  const scale = ganttScale({ start: 0, end: 100 * DAY_MS }, 1000);
+
+  it('bands an expanded epic and its children as one contiguous run', () => {
+    const epic = ticket({ id: 'e1', issueType: 'epic' });
+    const c1 = ticket({ epicTaskId: 'e1', startAt: 10 * DAY_MS, dueAt: 12 * DAY_MS });
+    const c2 = ticket({ epicTaskId: 'e1', startAt: 15 * DAY_MS, dueAt: 18 * DAY_MS });
+    const rows = ganttRows([epic, c1, c2], scale, new Set());
+    const bands = ganttEpicBands(rows);
+    expect(bands).toEqual([{ epicId: 'e1', startIndex: 0, rowCount: 3 }]);
+  });
+
+  it('emits no band for a collapsed epic — nothing to group on screen', () => {
+    const epic = ticket({ id: 'e1', issueType: 'epic' });
+    const c1 = ticket({ epicTaskId: 'e1', startAt: 10 * DAY_MS, dueAt: 12 * DAY_MS });
+    const rows = ganttRows([epic, c1], scale, new Set(['e1']));
+    expect(ganttEpicBands(rows)).toEqual([]);
+  });
+
+  it('emits no band for a childless epic', () => {
+    const epic = ticket({ id: 'e1', issueType: 'epic', startAt: 1 * DAY_MS, dueAt: 2 * DAY_MS });
+    const rows = ganttRows([epic], scale, new Set());
+    expect(ganttEpicBands(rows)).toEqual([]);
+  });
+
+  it('bands two epics independently, each at its own row range', () => {
+    const e1 = ticket({ id: 'e1', issueType: 'epic' });
+    const c1 = ticket({ epicTaskId: 'e1', startAt: 1 * DAY_MS, dueAt: 2 * DAY_MS });
+    const orphan = ticket({ startAt: 3 * DAY_MS, dueAt: 4 * DAY_MS });
+    const e2 = ticket({ id: 'e2', issueType: 'epic' });
+    const c2 = ticket({ epicTaskId: 'e2', startAt: 5 * DAY_MS, dueAt: 6 * DAY_MS });
+    const rows = ganttRows([e1, c1, orphan, e2, c2], scale, new Set());
+    expect(ganttEpicBands(rows)).toEqual([
+      { epicId: 'e1', startIndex: 0, rowCount: 2 },
+      { epicId: 'e2', startIndex: 3, rowCount: 2 },
+    ]);
+  });
+
+  it('keeps a band contiguous over the SCHEDULED row list, matching what TimelinePane draws', () => {
+    const epic = ticket({ id: 'e1', issueType: 'epic' });
+    const c1 = ticket({ epicTaskId: 'e1', startAt: 10 * DAY_MS, dueAt: 12 * DAY_MS });
+    const undatedChild = ticket({ epicTaskId: 'e1', startAt: null, dueAt: null });
+    const c2 = ticket({ epicTaskId: 'e1', startAt: 15 * DAY_MS, dueAt: 18 * DAY_MS });
+    const rows = ganttRows([epic, c1, undatedChild, c2], scale, new Set());
+    const scheduledRows = rows.filter((r) => r.bar !== null);
+    expect(ganttEpicBands(scheduledRows)).toEqual([{ epicId: 'e1', startIndex: 0, rowCount: 3 }]);
   });
 });
 
