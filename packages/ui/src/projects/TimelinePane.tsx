@@ -192,6 +192,15 @@ interface ConnectDragState {
   at: { x: number; y: number };
 }
 
+/** One drawn dependency/chain arrow, plus its two endpoints — kept alongside `d` rather than
+ *  re-derived from it, since the endpoint dots only need to exist for the selected arrow. */
+interface LinkPath {
+  key: string;
+  d: string;
+  start: { x: number; y: number };
+  end: { x: number; y: number };
+}
+
 /** `bar`, shifted by an in-flight drag's live `deltaPx` — a pure preview, nothing snapped or
  *  clamped yet (that happens once on release, in `ganttLayout.ts`'s `rescheduleTo`). */
 function previewBar(bar: GanttBar, drag: DragState | null, rowId: string): GanttBar {
@@ -322,6 +331,25 @@ const useStyles = makeStyles({
   today: { stroke: tokens.colorBrandStroke1, strokeWidth: '1.5px', strokeDasharray: '4 3' },
   dependency: { fill: 'none', stroke: tokens.colorNeutralStroke1, strokeWidth: '1.5px' },
   chain: { fill: 'none', stroke: FLUO.cyan, strokeWidth: '1.5px' },
+  /**
+   * The arrow you have SELECTED — `ChainOverlay.selected`'s own look, thicker and in the
+   * brand colour regardless of which kind of arrow it is. Declared after `dependency`/`chain`
+   * so Griffel resolves the clash in this class's favour when both are present.
+   */
+  linkSelected: { stroke: tokens.colorBrandStroke1, strokeWidth: '3px' },
+  linkEndpoint: { fill: tokens.colorBrandStroke1, stroke: 'none' },
+  /**
+   * An invisible stroke under each dependency/chain path, purely to be clicked —
+   * `ChainOverlay.hit`'s own trick: the visible line stays a thin 1.5px, but the clickable
+   * band is 14px wide so the pointer has something worth aiming at.
+   */
+  linkHit: {
+    fill: 'none',
+    stroke: 'transparent',
+    strokeWidth: '14px',
+    pointerEvents: 'stroke',
+    cursor: 'pointer',
+  },
   headDependency: { fill: tokens.colorNeutralStroke1 },
   headChain: { fill: FLUO.cyan },
   tray: {
@@ -374,6 +402,11 @@ export function TimelinePane({
   const [chainLinks, setChainLinks] = useState<TaskLink[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
+  // The arrow you clicked — `ChainOverlay.selectedLinkId`'s own state, for a Gantt bar's
+  // dependency/chain arrows instead of a board card's. Dependency and chain link ids share no
+  // namespace with each other, so one field is enough to tell which single arrow (of either
+  // kind) is selected.
+  const [selectedLinkId, setSelectedLinkId] = useState<string | null>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
   const [dragError, setDragError] = useState<string | null>(null);
   const [connectDrag, setConnectDrag] = useState<ConnectDragState | null>(null);
@@ -697,7 +730,7 @@ export function TimelinePane({
   }, [scheduledRows]);
 
   const dependencyPaths = useMemo(() => {
-    const out: { key: string; d: string }[] = [];
+    const out: LinkPath[] = [];
     for (const link of links) {
       if (link.type !== 'blocks') continue;
       const fromIdx = rowIndexById.get(link.fromTaskId);
@@ -706,21 +739,24 @@ export function TimelinePane({
       const fromBar = scheduledRows[fromIdx].bar;
       const toBar = scheduledRows[toIdx].bar;
       if (!fromBar || !toBar) continue;
-      const d = ganttDependencyPath(
-        {
-          x: fromBar.x,
-          width: fromBar.width,
-          y: fromIdx * GANTT_ROW_HEIGHT + GANTT_ROW_HEIGHT / 2,
-        },
-        { x: toBar.x, y: toIdx * GANTT_ROW_HEIGHT + GANTT_ROW_HEIGHT / 2 },
-      );
-      out.push({ key: link.id, d });
+      const from = {
+        x: fromBar.x,
+        width: fromBar.width,
+        y: fromIdx * GANTT_ROW_HEIGHT + GANTT_ROW_HEIGHT / 2,
+      };
+      const to = { x: toBar.x, y: toIdx * GANTT_ROW_HEIGHT + GANTT_ROW_HEIGHT / 2 };
+      out.push({
+        key: link.id,
+        d: ganttDependencyPath(from, to),
+        start: { x: from.x + from.width, y: from.y },
+        end: to,
+      });
     }
     return out;
   }, [links, rowIndexById, scheduledRows]);
 
   const chainPaths = useMemo(() => {
-    const out: { key: string; d: string }[] = [];
+    const out: LinkPath[] = [];
     for (const link of chainLinks) {
       const fromIdx = rowIndexById.get(link.fromTaskId);
       const toIdx = rowIndexById.get(link.toTaskId);
@@ -728,15 +764,18 @@ export function TimelinePane({
       const fromBar = scheduledRows[fromIdx].bar;
       const toBar = scheduledRows[toIdx].bar;
       if (!fromBar || !toBar) continue;
-      const d = ganttDependencyPath(
-        {
-          x: fromBar.x,
-          width: fromBar.width,
-          y: fromIdx * GANTT_ROW_HEIGHT + GANTT_ROW_HEIGHT / 2,
-        },
-        { x: toBar.x, y: toIdx * GANTT_ROW_HEIGHT + GANTT_ROW_HEIGHT / 2 },
-      );
-      out.push({ key: link.id, d });
+      const from = {
+        x: fromBar.x,
+        width: fromBar.width,
+        y: fromIdx * GANTT_ROW_HEIGHT + GANTT_ROW_HEIGHT / 2,
+      };
+      const to = { x: toBar.x, y: toIdx * GANTT_ROW_HEIGHT + GANTT_ROW_HEIGHT / 2 };
+      out.push({
+        key: link.id,
+        d: ganttDependencyPath(from, to),
+        start: { x: from.x + from.width, y: from.y },
+        end: to,
+      });
     }
     return out;
   }, [chainLinks, rowIndexById, scheduledRows]);
@@ -834,21 +873,23 @@ export function TimelinePane({
                     />
                   )}
                   {dependencyPaths.map((p) => (
-                    <path
+                    <LinkArrow
                       key={p.key}
-                      className={styles.dependency}
-                      d={p.d}
-                      markerEnd={`url(#${MARKER.dependency})`}
-                      aria-hidden="true"
+                      link={p}
+                      baseClassName={styles.dependency}
+                      markerId={MARKER.dependency}
+                      selected={p.key === selectedLinkId}
+                      onSelect={setSelectedLinkId}
                     />
                   ))}
                   {chainPaths.map((p) => (
-                    <path
+                    <LinkArrow
                       key={p.key}
-                      className={styles.chain}
-                      d={p.d}
-                      markerEnd={`url(#${MARKER.chain})`}
-                      aria-hidden="true"
+                      link={p}
+                      baseClassName={styles.chain}
+                      markerId={MARKER.chain}
+                      selected={p.key === selectedLinkId}
+                      onSelect={setSelectedLinkId}
                     />
                   ))}
                   {scheduledRows.map((row, i) => {
@@ -873,6 +914,10 @@ export function TimelinePane({
                         className={styles.rowGroup}
                         {...{ [CONNECT_TARGET_ATTR]: row.id }}
                         onClick={() => {
+                          // A row click reaches the chart the same way a board click reaches
+                          // `ChainOverlay`'s cards — it is never aimed at an arrow's own
+                          // hit-stroke, which stops its own click from bubbling this far.
+                          setSelectedLinkId(null);
                           if (justDraggedRef.current) {
                             justDraggedRef.current = false;
                             return;
@@ -1018,6 +1063,52 @@ export function TimelinePane({
         onClose={() => setSelectedTicketId(null)}
       />
     </div>
+  );
+}
+
+/**
+ * One dependency or chain arrow, made selectable — `ChainOverlay`'s own shape, redrawn for a
+ * Gantt path instead of a board curve: a transparent wide hit-stroke UNDER the thin visible
+ * line so there is something worth clicking, and a heavier brand-coloured stroke plus a dot
+ * at each end once selected, so the arrow it names is never ambiguous.
+ */
+function LinkArrow({
+  link,
+  baseClassName,
+  markerId,
+  selected,
+  onSelect,
+}: {
+  link: LinkPath;
+  baseClassName: string;
+  markerId: string;
+  selected: boolean;
+  onSelect: (linkId: string) => void;
+}): JSX.Element {
+  const styles = useStyles();
+  return (
+    <g data-link-id={link.key}>
+      <path
+        d={link.d}
+        className={styles.linkHit}
+        onClick={(e) => {
+          e.stopPropagation();
+          onSelect(link.key);
+        }}
+      />
+      <path
+        d={link.d}
+        className={mergeClasses(baseClassName, selected && styles.linkSelected)}
+        markerEnd={`url(#${markerId})`}
+        aria-hidden="true"
+      />
+      {selected && (
+        <>
+          <circle cx={link.start.x} cy={link.start.y} r={3.5} className={styles.linkEndpoint} />
+          <circle cx={link.end.x} cy={link.end.y} r={3.5} className={styles.linkEndpoint} />
+        </>
+      )}
+    </g>
   );
 }
 
