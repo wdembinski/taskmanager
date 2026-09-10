@@ -68,6 +68,16 @@
  * handler will, so a refusal it already knows about (drop on your own bar, or the pair is
  * already linked that way) reads through this pane's `dragError` `MessageBar` — the exact bar a
  * failed reschedule already uses — without a round trip.
+ *
+ * **Ctrl/Cmd-drag also chains.** Held at release, the drop asks for two things over the same
+ * pair rather than one: the `blocks` dependency above, AND an execution-chain edge
+ * (`chain:link`, gated `after-merge` — the same default `MyTasks`' own arrow-drag takes). They
+ * are asked independently, so the request can half land — a dependency that goes through
+ * followed by a chain `canLink` refuses as a cycle, say. `canLink` runs the same
+ * self/step/duplicate/cycle checks the chain handler will, against the `chainLinks` this pane
+ * already holds, for the same no-round-trip reason `canLinkTickets` runs first above. Either
+ * half's refusal reads through the same `dragError` `MessageBar`, worded to say which half
+ * landed.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -82,7 +92,7 @@ import {
 } from '@fluentui/react-components';
 import type { Milestone, Person, Project, Task, TicketLabel, TicketLink } from '@tm/shared/model';
 import type { AppSettings } from '@tm/shared/settings';
-import type { TaskLink } from '@tm/shared/taskChain';
+import { canLink, LINK_REFUSAL_MESSAGE, type TaskLink } from '@tm/shared/taskChain';
 import { canLinkTickets, TICKET_LINK_REFUSAL_MESSAGE } from '@tm/shared/ticketLinks';
 import { rubberBandPath, type AnchorRect } from '../board/chainArrows';
 import { FoldToggle } from '../FoldToggle';
@@ -581,25 +591,60 @@ export function TimelinePane({
 
   /**
    * Draw the `blocks` dependency a finished connect drag asked for, predecessor (the knob's
-   * own ticket) → successor (whatever it landed on). `canLinkTickets` runs the same
-   * self/duplicate checks the store's own `ticketLink:add` handler will, against the `links`
-   * this pane already holds — so the common refusals surface without a round trip, and the
-   * handler's own (data, not thrown) refusal is shown the same way if one comes back anyway.
+   * own ticket) → successor (whatever it landed on), and — when `chain` is true, i.e. Ctrl/Cmd
+   * was held at release — the execution-chain edge for the same pair. `canLinkTickets` and
+   * `canLink` each run the same checks their own store handler will, against the `links` /
+   * `chainLinks` this pane already holds, so the common refusals surface without a round trip.
+   *
+   * The two asks are independent: a chain refusal does not undo a dependency that already
+   * went through, and vice versa. `dragError` ends up naming whichever half (or both) did not
+   * land, rather than a single boolean success/failure.
    */
   const commitConnect = useCallback(
-    async (fromTicketId: string, toTicketId: string) => {
-      const refusal = canLinkTickets(links, { id: fromTicketId }, { id: toTicketId }, 'blocks');
-      if (refusal) {
-        setDragError(TICKET_LINK_REFUSAL_MESSAGE[refusal]);
+    async (fromTicketId: string, toTicketId: string, chain: boolean) => {
+      setDragError(null);
+      const linkRefusal = canLinkTickets(links, { id: fromTicketId }, { id: toTicketId }, 'blocks');
+      let linkError: string | null = null;
+      if (linkRefusal) {
+        linkError = TICKET_LINK_REFUSAL_MESSAGE[linkRefusal];
+      } else {
+        const result = await transport.invoke('ticketLink:add', fromTicketId, toTicketId, 'blocks');
+        if (result.status === 'refused') linkError = TICKET_LINK_REFUSAL_MESSAGE[result.reason];
+      }
+
+      if (!chain) {
+        if (linkError) setDragError(linkError);
         return;
       }
-      setDragError(null);
-      const result = await transport.invoke('ticketLink:add', fromTicketId, toTicketId, 'blocks');
-      if (result.status === 'refused') {
-        setDragError(TICKET_LINK_REFUSAL_MESSAGE[result.reason]);
+
+      const from = (tickets ?? []).find((t) => t.id === fromTicketId);
+      const to = (tickets ?? []).find((t) => t.id === toTicketId);
+      const chainRefusal = canLink(chainLinks, from, to);
+      let chainError: string | null = null;
+      if (chainRefusal) {
+        chainError = LINK_REFUSAL_MESSAGE[chainRefusal];
+      } else {
+        const chainResult = await transport.invoke(
+          'chain:link',
+          fromTicketId,
+          toTicketId,
+          'after-merge',
+        );
+        if (chainResult.status === 'refused') chainError = LINK_REFUSAL_MESSAGE[chainResult.reason];
+      }
+
+      if (!linkError && !chainError) return;
+      if (!linkError && chainError) {
+        setDragError(`The dependency was created, but it could not be chained — ${chainError}.`);
+      } else if (linkError && !chainError) {
+        setDragError(
+          `The tickets were chained, but the dependency could not be added — ${linkError}.`,
+        );
+      } else {
+        setDragError(`Neither the dependency nor the chain could be created — ${linkError}.`);
       }
     },
-    [links, transport],
+    [links, chainLinks, tickets, transport],
   );
 
   /**
@@ -607,6 +652,10 @@ export function TimelinePane({
    * drops the band. The landing ticket is read from the real geometry under the release point
    * (`elementFromPoint`), not the event's own target — a pointer capture keeps every event
    * routed to the knob itself, so `e.target` would always be the knob, never the bar under it.
+   *
+   * `ctrlKey`/`metaKey` are read off the release event itself, the same primitive-capture
+   * trick `clientX`/`clientY` already use here — by the time the `setConnectDrag` updater
+   * runs, `e` may no longer be the event a modifier key was held during.
    */
   const endConnectDrag = useCallback(
     (e: React.PointerEvent<SVGCircleElement>) => {
@@ -615,6 +664,7 @@ export function TimelinePane({
       }
       const clientX = e.clientX;
       const clientY = e.clientY;
+      const chain = e.ctrlKey || e.metaKey;
       setConnectDrag((prev) => {
         if (!prev || prev.pointerId !== e.pointerId) return prev;
         const hit = document.elementFromPoint(clientX, clientY);
@@ -622,7 +672,7 @@ export function TimelinePane({
           hit instanceof Element
             ? (hit.closest(`[${CONNECT_TARGET_ATTR}]`)?.getAttribute(CONNECT_TARGET_ATTR) ?? null)
             : null;
-        if (toTicketId) void commitConnect(prev.ticketId, toTicketId);
+        if (toTicketId) void commitConnect(prev.ticketId, toTicketId, chain);
         return null;
       });
     },
