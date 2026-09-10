@@ -92,8 +92,9 @@ import {
 } from '@fluentui/react-components';
 import type { Milestone, Person, Project, Task, TicketLabel, TicketLink } from '@tm/shared/model';
 import type { AppSettings } from '@tm/shared/settings';
-import { canLink, LINK_REFUSAL_MESSAGE, type TaskLink } from '@tm/shared/taskChain';
+import { canLink, LINK_REFUSAL_MESSAGE, type LinkGate, type TaskLink } from '@tm/shared/taskChain';
 import { canLinkTickets, TICKET_LINK_REFUSAL_MESSAGE } from '@tm/shared/ticketLinks';
+import { ChainLinkPopover } from '../board/ChainLinkPopover';
 import { rubberBandPath, type AnchorRect } from '../board/chainArrows';
 import { FoldToggle } from '../FoldToggle';
 import { PaneLoading } from '../PaneLoading';
@@ -119,6 +120,7 @@ import {
 } from './ganttLayout';
 import { GanttHeader } from './GanttHeader';
 import { TicketDrawer } from './TicketDrawer';
+import { TicketLinkPopover } from './TicketLinkPopover';
 
 /** How far a pointer has to move, in px, before a press on a bar counts as a drag. Below
  *  this it is a click — opening the drawer — the same threshold a native DnD would apply. */
@@ -535,6 +537,43 @@ export function TimelinePane({
     [transport, patchTicket],
   );
 
+  /**
+   * Erase a chain-of-execution edge. `chain:unlink` hands back the full list (not a void, the
+   * way `ticketLink:remove` does) because erasing one can immediately release a card that was
+   * waiting on it — `scheduler.reconsiderChains` runs inside the same handler — so there is
+   * always a fresh list to paint rather than a local filter to guess at.
+   */
+  const removeChainLink = useCallback(
+    async (linkId: string) => setChainLinks(await transport.invoke('chain:unlink', linkId)),
+    [transport],
+  );
+
+  /** Loosen or tighten a chain edge's gate — `ChainLinkPopover`'s own board-side callback. */
+  const setChainLinkGate = useCallback(
+    async (linkId: string, gate: LinkGate) =>
+      setChainLinks(await transport.invoke('chain:setGate', linkId, gate)),
+    [transport],
+  );
+
+  /**
+   * Erase a documentary dependency link. `ticketLink:remove` resolves to nothing — there is no
+   * gated card behind it to reschedule the way a chain edge has — so this filters the row out
+   * locally the instant it is asked for, and refetches the list to reconcile if the round trip
+   * throws (there is no "previous list" to restore verbatim the way `chain:unlink` gives one).
+   */
+  const removeTicketLink = useCallback(
+    async (linkId: string) => {
+      setLinks((cur) => cur.filter((l) => l.id !== linkId));
+      try {
+        await transport.invoke('ticketLink:remove', linkId);
+      } catch (e) {
+        setDragError(e instanceof Error ? e.message : String(e));
+        setLinks(await transport.invoke('ticketLink:list'));
+      }
+    },
+    [transport],
+  );
+
   const handleBarPointerDown = useCallback(
     (e: React.PointerEvent<SVGRectElement>, ticketId: string, edge: RescheduleEdge) => {
       if (e.button !== 0) return;
@@ -779,6 +818,49 @@ export function TimelinePane({
     }
     return out;
   }, [chainLinks, rowIndexById, scheduledRows]);
+
+  // The selected arrow's own kind — dependency and chain ids share no namespace (see
+  // `selectedLinkId`'s doc), so checking `chainLinks` first and falling back to `links` is
+  // enough to tell which popover, if either, belongs on screen.
+  const selectedChainLink = useMemo(
+    () => chainLinks.find((l) => l.id === selectedLinkId) ?? null,
+    [chainLinks, selectedLinkId],
+  );
+  const selectedTicketLink = useMemo(
+    () => (selectedChainLink ? null : (links.find((l) => l.id === selectedLinkId) ?? null)),
+    [links, selectedLinkId, selectedChainLink],
+  );
+  // The selected arrow's own midpoint — read off the path already drawn for it rather than
+  // recomputed, so the popover never disagrees with the curve it hangs from.
+  const selectedLinkAt = useMemo(() => {
+    if (!selectedLinkId) return null;
+    const path = [...dependencyPaths, ...chainPaths].find((p) => p.key === selectedLinkId);
+    if (!path) return null;
+    return { x: (path.start.x + path.end.x) / 2, y: (path.start.y + path.end.y) / 2 };
+  }, [selectedLinkId, dependencyPaths, chainPaths]);
+
+  // Delete or Backspace erases the selected arrow, Escape lets it go — the board's own
+  // (`BoardScreen.tsx`) keyboard contract, on the window rather than the path because an SVG
+  // `<path>` cannot hold focus.
+  useEffect(() => {
+    if (!selectedLinkId) return;
+    const onKey = (e: KeyboardEvent): void => {
+      const el = e.target as HTMLElement | null;
+      if (el?.isContentEditable) return;
+      if (el && ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)) return;
+      if (e.key === 'Escape') {
+        setSelectedLinkId(null);
+        return;
+      }
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        e.preventDefault();
+        if (selectedChainLink) void removeChainLink(selectedLinkId);
+        else if (selectedTicketLink) void removeTicketLink(selectedLinkId);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selectedLinkId, selectedChainLink, selectedTicketLink, removeChainLink, removeTicketLink]);
 
   // The rubber band, from the knob to the pointer — `ChainOverlay.bandFor`'s own shape, an
   // `AnchorRect` collapsed to a single point since the knob's `origin` already IS the exact
@@ -1028,6 +1110,47 @@ export function TimelinePane({
                     <path d={connectBand} className={styles.connectBand} aria-hidden="true" />
                   )}
                 </svg>
+
+                {/* Offset to match the chart `<svg>`'s own `left` — `selectedLinkAt` is in
+                    chart space, not the label column's, and the two popovers below position
+                    themselves as if they were that `<svg>`'s own sibling. */}
+                {selectedChainLink && selectedLinkAt && (
+                  <div style={{ position: 'absolute', left: `${LABEL_WIDTH}px`, top: 0 }}>
+                    <ChainLinkPopover
+                      link={selectedChainLink}
+                      fromTitle={
+                        tickets.find((t) => t.id === selectedChainLink.fromTaskId)?.title ??
+                        'another ticket'
+                      }
+                      toTitle={
+                        tickets.find((t) => t.id === selectedChainLink.toTaskId)?.title ??
+                        'another ticket'
+                      }
+                      at={selectedLinkAt}
+                      boardWidth={chartWidth}
+                      onSetGate={(gate) => void setChainLinkGate(selectedChainLink.id, gate)}
+                      onRemove={() => void removeChainLink(selectedChainLink.id)}
+                    />
+                  </div>
+                )}
+                {selectedTicketLink && selectedLinkAt && (
+                  <div style={{ position: 'absolute', left: `${LABEL_WIDTH}px`, top: 0 }}>
+                    <TicketLinkPopover
+                      link={selectedTicketLink}
+                      fromTitle={
+                        tickets.find((t) => t.id === selectedTicketLink.fromTaskId)?.title ??
+                        'another ticket'
+                      }
+                      toTitle={
+                        tickets.find((t) => t.id === selectedTicketLink.toTaskId)?.title ??
+                        'another ticket'
+                      }
+                      at={selectedLinkAt}
+                      boardWidth={chartWidth}
+                      onRemove={() => void removeTicketLink(selectedTicketLink.id)}
+                    />
+                  </div>
+                )}
               </div>
             )}
           </div>
