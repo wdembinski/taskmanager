@@ -6,9 +6,21 @@
  *
  * Loads its own tickets the same way `BacklogTable`/`TimelinePane` do: seed via `board:tasks`,
  * then stay live off `task:changed` (per-ticket patch) and `project:tasksChanged` (whole-list
- * replace — a ticket can also leave this way). No edges yet, and no persisted layout: nodes sit
- * in a deterministic grid keyed only by array order, which a later step replaces with a saved
+ * replace — a ticket can also leave this way). No persisted layout: nodes sit in a
+ * deterministic grid keyed only by array order, which a later step replaces with a saved
  * per-project position.
+ *
+ * **Edges — `blocks` dependencies and execution-chain links, read-only in this step.** Loaded
+ * and kept live the exact way `TimelinePane` loads its own: seed via `ticketLink:list` /
+ * `chain:links`, then replace-on-change off `ticketLink:changed` / `chain:changed` (both send
+ * the WHOLE list, never a patch — see `ipc.ts`'s own doc on `chain:changed`). Only the
+ * `blocks` type renders, the same filter `TimelinePane`'s `dependencyPaths` applies — the
+ * other `TicketLinkType`s (`relates`, `duplicates`, …) are documentary and drawn nowhere yet.
+ * Grey for a dependency, cyan for a chain — `FLUO.cyan` is the app's one colour for "moving",
+ * the same one `TimelinePane`'s own `chain` style and `ChainOverlay`'s `releasing` state use.
+ * A link whose endpoint ticket is not among this project's own nodes (can't happen today, since
+ * both link kinds are project-scoped the same way a ticket is, but cheap to guard) is dropped
+ * rather than handed to React Flow, which would otherwise warn about a dangling edge.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Caption1, makeStyles, tokens } from '@fluentui/react-components';
@@ -25,15 +37,19 @@ import {
   Background,
   Controls,
   Handle,
+  MarkerType,
   Position,
   ReactFlow,
   ReactFlowProvider,
+  type Edge,
   type Node,
   type NodeProps,
 } from '@xyflow/react';
-import type { Task } from '@tm/shared/model';
+import type { Task, TicketLink } from '@tm/shared/model';
+import type { TaskLink } from '@tm/shared/taskChain';
 import { typeIconKeyFor, type TypeIconKey } from '@tm/shared/tickets';
 import { PaneLoading } from '../PaneLoading';
+import { FLUO } from '../theme';
 import { useTransport } from '../transport';
 import { useInitialLoad } from '../useInitialLoad';
 
@@ -131,6 +147,39 @@ function gridLayout(tickets: Task[]): Node<{ ticket: Task }>[] {
   }));
 }
 
+/** Grey `blocks` dependency — `TimelinePane.dependency`'s own colour, `tokens.colorNeutralStroke1`. */
+const DEPENDENCY_STROKE = tokens.colorNeutralStroke1;
+/** Cyan execution chain — `TimelinePane.chain`'s own colour, `FLUO.cyan`. */
+const CHAIN_STROKE = FLUO.cyan;
+
+/** One `blocks` dependency edge per link of that type — the others (`relates`, `duplicates`,
+ *  …) are documentary and drawn nowhere in this app yet. Dropped, not just unstyled, if either
+ *  end is not among `nodeIds` — a React Flow edge naming a missing node warns to the console. */
+function dependencyEdges(links: TicketLink[], nodeIds: Set<string>): Edge[] {
+  return links
+    .filter((l) => l.type === 'blocks' && nodeIds.has(l.fromTaskId) && nodeIds.has(l.toTaskId))
+    .map((l) => ({
+      id: l.id,
+      source: l.fromTaskId,
+      target: l.toTaskId,
+      style: { stroke: DEPENDENCY_STROKE, strokeWidth: 1.5 },
+      markerEnd: { type: MarkerType.ArrowClosed, color: DEPENDENCY_STROKE },
+    }));
+}
+
+/** One execution-chain edge per chain link — same shape as {@link dependencyEdges}, cyan. */
+function chainEdges(links: TaskLink[], nodeIds: Set<string>): Edge[] {
+  return links
+    .filter((l) => nodeIds.has(l.fromTaskId) && nodeIds.has(l.toTaskId))
+    .map((l) => ({
+      id: l.id,
+      source: l.fromTaskId,
+      target: l.toTaskId,
+      style: { stroke: CHAIN_STROKE, strokeWidth: 1.5 },
+      markerEnd: { type: MarkerType.ArrowClosed, color: CHAIN_STROKE },
+    }));
+}
+
 export interface GraphPaneProps {
   projectId: string;
 }
@@ -139,6 +188,8 @@ export function GraphPane({ projectId }: GraphPaneProps): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
   const [tickets, setTickets] = useState<Task[] | null>(null);
+  const [links, setLinks] = useState<TicketLink[]>([]);
+  const [chainLinks, setChainLinks] = useState<TaskLink[]>([]);
 
   const seed = useCallback(
     async () => setTickets(await transport.invoke('board:tasks', projectId)),
@@ -163,7 +214,38 @@ export function GraphPane({ projectId }: GraphPaneProps): JSX.Element {
     };
   }, [transport, projectId]);
 
+  // Seed-and-subscribe, `TimelinePane`'s own shape: both events hand back the WHOLE list, so
+  // there is nothing to patch, only to replace.
+  useEffect(() => {
+    let live = true;
+    void transport.invoke('ticketLink:list').then((all) => {
+      if (live) setLinks(all);
+    });
+    const off = transport.on('ticketLink:changed', setLinks);
+    return () => {
+      live = false;
+      off();
+    };
+  }, [transport]);
+
+  useEffect(() => {
+    let live = true;
+    void transport.invoke('chain:links').then((all) => {
+      if (live) setChainLinks(all);
+    });
+    const off = transport.on('chain:changed', setChainLinks);
+    return () => {
+      live = false;
+      off();
+    };
+  }, [transport]);
+
   const nodes = useMemo(() => gridLayout(tickets ?? []), [tickets]);
+  const nodeIds = useMemo(() => new Set(nodes.map((n) => n.id)), [nodes]);
+  const edges = useMemo(
+    () => [...dependencyEdges(links, nodeIds), ...chainEdges(chainLinks, nodeIds)],
+    [links, chainLinks, nodeIds],
+  );
 
   if (tickets === null) {
     return <PaneLoading label="Loading graph…" error={initial.error} onRetry={initial.retry} />;
@@ -174,7 +256,7 @@ export function GraphPane({ projectId }: GraphPaneProps): JSX.Element {
       <ReactFlowProvider>
         <ReactFlow
           nodes={nodes}
-          edges={[]}
+          edges={edges}
           nodeTypes={NODE_TYPES}
           fitView
           proOptions={{ hideAttribution: true }}
