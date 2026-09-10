@@ -59,6 +59,7 @@ import {
 } from '@fluentui/react-components';
 import type { Milestone, Person, Project, Task, TicketLabel, TicketLink } from '@tm/shared/model';
 import type { AppSettings } from '@tm/shared/settings';
+import type { TaskLink } from '@tm/shared/taskChain';
 import { FoldToggle } from '../FoldToggle';
 import { PaneLoading } from '../PaneLoading';
 import { FLUO } from '../theme';
@@ -95,8 +96,8 @@ const HANDLE_WIDTH_PX = 6;
 const MARKER = {
   /** The bare grey `blocks` dependency arrows this pane has always drawn. */
   dependency: 'gantt-head-dependency',
-  /** Unused until the execution-chain arrows land (next step) — defined here because both
-   *  colours are one shared arrowhead shape, not two features to keep in sync later. */
+  /** The execution-chain arrows — cyan, the app's own colour for "moving", same as
+   *  `ChainOverlay`'s `releasing` state and every running band and spinner. */
   chain: 'gantt-head-chain',
 } as const;
 
@@ -223,6 +224,7 @@ const useStyles = makeStyles({
   guide: { stroke: tokens.colorNeutralStroke2, strokeDasharray: '3 3' },
   today: { stroke: tokens.colorBrandStroke1, strokeWidth: '1.5px', strokeDasharray: '4 3' },
   dependency: { fill: 'none', stroke: tokens.colorNeutralStroke1, strokeWidth: '1.5px' },
+  chain: { fill: 'none', stroke: FLUO.cyan, strokeWidth: '1.5px' },
   headDependency: { fill: tokens.colorNeutralStroke1 },
   headChain: { fill: FLUO.cyan },
   tray: {
@@ -272,6 +274,7 @@ export function TimelinePane({
   const transport = useTransport();
   const [tickets, setTickets] = useState<Task[] | null>(null);
   const [links, setLinks] = useState<TicketLink[]>([]);
+  const [chainLinks, setChainLinks] = useState<TaskLink[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
@@ -320,6 +323,18 @@ export function TimelinePane({
       if (live) setLinks(all);
     });
     const off = transport.on('ticketLink:changed', setLinks);
+    return () => {
+      live = false;
+      off();
+    };
+  }, [transport]);
+
+  useEffect(() => {
+    let live = true;
+    void transport.invoke('chain:links').then((all) => {
+      if (live) setChainLinks(all);
+    });
+    const off = transport.on('chain:changed', setChainLinks);
     return () => {
       live = false;
       off();
@@ -475,6 +490,28 @@ export function TimelinePane({
     return out;
   }, [links, rowIndexById, scheduledRows]);
 
+  const chainPaths = useMemo(() => {
+    const out: { key: string; d: string }[] = [];
+    for (const link of chainLinks) {
+      const fromIdx = rowIndexById.get(link.fromTaskId);
+      const toIdx = rowIndexById.get(link.toTaskId);
+      if (fromIdx === undefined || toIdx === undefined) continue;
+      const fromBar = scheduledRows[fromIdx].bar;
+      const toBar = scheduledRows[toIdx].bar;
+      if (!fromBar || !toBar) continue;
+      const d = ganttDependencyPath(
+        {
+          x: fromBar.x,
+          width: fromBar.width,
+          y: fromIdx * GANTT_ROW_HEIGHT + GANTT_ROW_HEIGHT / 2,
+        },
+        { x: toBar.x, y: toIdx * GANTT_ROW_HEIGHT + GANTT_ROW_HEIGHT / 2 },
+      );
+      out.push({ key: link.id, d });
+    }
+    return out;
+  }, [chainLinks, rowIndexById, scheduledRows]);
+
   if (tickets === null) {
     return (
       <PaneLoading
@@ -556,6 +593,15 @@ export function TimelinePane({
                       className={styles.dependency}
                       d={p.d}
                       markerEnd={`url(#${MARKER.dependency})`}
+                      aria-hidden="true"
+                    />
+                  ))}
+                  {chainPaths.map((p) => (
+                    <path
+                      key={p.key}
+                      className={styles.chain}
+                      d={p.d}
+                      markerEnd={`url(#${MARKER.chain})`}
                       aria-hidden="true"
                     />
                   ))}
