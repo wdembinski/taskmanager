@@ -42,9 +42,12 @@
  * seconds, not milliseconds — so the optimistic paint is what makes the drag read as a drag
  * there, not merely a nicety.
  *
- * A collapsed epic's row draws the UNION of its children's bars (see `ganttRows`), which is
- * not `row.ticket`'s own `startAt`/`dueAt` — there is nothing coherent to reschedule TO, so
- * that one row's bar stays inert; expand it and its children drag individually.
+ * An epic's row draws the UNION of its children's bars (see `ganttRows`) whenever it has any
+ * dated children, collapsed or expanded alike — that is not `row.ticket`'s own `startAt`/
+ * `dueAt`, so there is nothing coherent to reschedule TO, and `row.barFromChildren` is what
+ * keeps that one row's bar inert; expand it and its children drag individually. The same
+ * grouping is what lets `ganttEpicBands` paint a shaded zone behind an epic and its children —
+ * this pane's analogue of the graph view's `epicZone` container node.
  *
  * **The connect knob.** A small circle hanging off the bar's right edge, past the resize
  * strip so the two gestures never share a pixel — the strip changes THIS ticket's dates, the
@@ -106,6 +109,7 @@ import {
   GANTT_ROW_HEIGHT,
   collapsedEpicSet,
   ganttDependencyPath,
+  ganttEpicBands,
   ganttMarkers,
   ganttRange,
   ganttRows,
@@ -271,6 +275,11 @@ const useStyles = makeStyles({
     cursor: 'pointer',
   },
   labelChild: { paddingLeft: '24px' },
+  // The label half of an epic band (`epicBand`'s own zone, continued into the sticky label
+  // column) — declared after `label` so Griffel resolves the `backgroundColor` clash in this
+  // class's favour, `linkSelected`'s own trick. `colorNeutralBackground2`, the same token
+  // `GraphPane`'s `epicZone` shades its container with — the Timeline's one zone colour.
+  labelBanded: { backgroundColor: tokens.colorNeutralBackground2 },
   key: { color: tokens.colorNeutralForeground3, flexShrink: 0 },
   title: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   // `overflow: visible` — same reasoning as `ChainOverlay.layer`: the connect knob sits
@@ -291,10 +300,27 @@ const useStyles = makeStyles({
   },
   barStatic: { cursor: 'pointer' },
   barEpic: { fill: tokens.colorBrandBackground, opacity: 0.85 },
+  /** The chart half of an epic band — one rect per `GanttEpicBand`, drawn first so every bar,
+   *  arrow and guide line paints over it. Same fill as `labelBanded`, so the zone reads as one
+   *  continuous region across the sticky label column and the scrollable chart. */
+  epicBand: { fill: tokens.colorNeutralBackground2, pointerEvents: 'none' },
   handle: {
     fill: 'transparent',
     pointerEvents: 'auto',
     cursor: 'ew-resize',
+  },
+  /**
+   * The gap between the bar's own right edge and the knob (`CONNECT_HANDLE_OFFSET_PX` minus
+   * its radius) is unpainted, so a pointer crossing it rides over no hit-testable descendant
+   * of `rowGroup` — its `:hover` (and with it the knob's visibility) drops mid-crossing,
+   * which is exactly the vanishing-dot bug. This strip closes that gap: transparent, but
+   * `pointerEvents: 'auto'` (the `handle` resize strips' own trick) keeps it hit-testable so
+   * `:hover` never lets go between the bar and the knob. No `onClick` of its own — a click
+   * here bubbles to the row `<g>` and opens the drawer, same as clicking the bar.
+   */
+  connectBridge: {
+    fill: 'transparent',
+    pointerEvents: 'auto',
   },
   /**
    * The connect knob — `TaskCard.linkHandle`'s own dot, redrawn for an SVG bar instead of an
@@ -762,6 +788,19 @@ export function TimelinePane({
   const scheduledRows = useMemo(() => rows.filter((r) => r.bar !== null), [rows]);
   const unscheduledRows = useMemo(() => rows.filter((r) => r.bar === null), [rows]);
 
+  // The epic zones this pane draws — one per epic with at least one dated child row directly
+  // under it, over the SAME row list the chart and labels below actually render.
+  const epicBands = useMemo(() => ganttEpicBands(scheduledRows), [scheduledRows]);
+  // Every row id a band covers (the epic's own row plus its children) — `RowLabel`'s own tint,
+  // the label-column half of the zone `epicBand` paints in the chart.
+  const bandedRowIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const band of epicBands) {
+      for (let i = 0; i < band.rowCount; i++) set.add(scheduledRows[band.startIndex + i].id);
+    }
+    return set;
+  }, [epicBands, scheduledRows]);
+
   const rowIndexById = useMemo(() => {
     const map = new Map<string, number>();
     scheduledRows.forEach((r, i) => map.set(r.id, i));
@@ -918,6 +957,7 @@ export function TimelinePane({
                     row={row}
                     labelWidth={LABEL_WIDTH}
                     collapsed={collapsedEpicIds.has(row.ticket.id)}
+                    banded={bandedRowIds.has(row.id)}
                     onToggle={toggleEpic}
                     onSelect={setSelectedTicketId}
                   />
@@ -933,6 +973,17 @@ export function TimelinePane({
                     <Head id={MARKER.dependency} className={styles.headDependency} />
                     <Head id={MARKER.chain} className={styles.headChain} />
                   </defs>
+                  {epicBands.map((band) => (
+                    <rect
+                      key={band.epicId}
+                      x={0}
+                      y={band.startIndex * GANTT_ROW_HEIGHT}
+                      width={chartWidth}
+                      height={band.rowCount * GANTT_ROW_HEIGHT}
+                      className={styles.epicBand}
+                      aria-hidden="true"
+                    />
+                  ))}
                   {markers.map((m) => (
                     <line
                       key={m.milestoneId}
@@ -976,9 +1027,9 @@ export function TimelinePane({
                   ))}
                   {scheduledRows.map((row, i) => {
                     const isEpic = row.ticket.issueType === 'epic';
-                    // A collapsed epic's bar unions its children's — it is not the epic
-                    // ticket's own dates, so there is nothing coherent to drag it TO.
-                    const draggable = !(isEpic && collapsedEpicIds.has(row.ticket.id));
+                    // A bar unioned from an epic's children is not the epic ticket's own
+                    // dates — there is nothing coherent to drag it TO, collapsed or expanded.
+                    const draggable = !(isEpic && row.barFromChildren);
                     const bar = draggable ? previewBar(row.bar!, drag, row.id) : row.bar!;
                     const y = i * GANTT_ROW_HEIGHT + BAR_INSET;
                     const height = GANTT_ROW_HEIGHT - BAR_INSET * 2;
@@ -1070,6 +1121,14 @@ export function TimelinePane({
                               onPointerMove={handleBarPointerMove}
                               onPointerUp={(e) => endDrag(e, true)}
                               onPointerCancel={(e) => endDrag(e, false)}
+                            />
+                            <rect
+                              aria-hidden="true"
+                              x={bar.x + bar.width}
+                              y={y}
+                              width={CONNECT_HANDLE_OFFSET_PX + CONNECT_HANDLE_RADIUS_PX}
+                              height={height}
+                              className={styles.connectBridge}
                             />
                             <circle
                               data-connect-handle=""
@@ -1240,12 +1299,16 @@ function RowLabel({
   row,
   labelWidth,
   collapsed,
+  banded,
   onToggle,
   onSelect,
 }: {
   row: GanttRow;
   labelWidth: number;
   collapsed: boolean;
+  /** True when this row sits inside an epic band (`GanttEpicBand`) — tints the label to match
+   *  the shaded zone `TimelinePane` draws behind it in the chart. */
+  banded: boolean;
   onToggle: (epicId: string) => void;
   onSelect: (ticketId: string) => void;
 }): JSX.Element {
@@ -1258,7 +1321,12 @@ function RowLabel({
   // the drawer, which stays reachable from any of its (still-clickable) child rows instead.
   return (
     <div
-      className={mergeClasses(styles.row, styles.label, row.depth === 1 && styles.labelChild)}
+      className={mergeClasses(
+        styles.row,
+        styles.label,
+        row.depth === 1 && styles.labelChild,
+        banded && styles.labelBanded,
+      )}
       style={{ width: `${labelWidth}px` }}
       onClick={isEpic ? undefined : () => onSelect(row.ticket.id)}
     >

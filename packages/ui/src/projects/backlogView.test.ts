@@ -55,7 +55,7 @@ describe('filterTickets', () => {
 });
 
 describe('groupTickets', () => {
-  it('never drops a ticket, whatever the grouping', () => {
+  it('never drops a non-epic ticket, whatever the grouping', () => {
     const epic = ticket({ id: 'e1', issueType: 'epic', title: 'Epic one' });
     const tickets = [
       epic,
@@ -66,7 +66,8 @@ describe('groupTickets', () => {
     ];
     const groups = groupTickets(tickets);
     const total = groups.reduce((sum, g) => sum + g.tickets.length, 0);
-    expect(total).toBe(tickets.length);
+    // The epic itself only ever heads a group — it is never one of the counted rows.
+    expect(total).toBe(tickets.length - 1);
   });
 
   it('collects every orphan into one "No epic" group instead of vanishing', () => {
@@ -89,6 +90,35 @@ describe('groupTickets', () => {
     const epicGroup = groups.find((g) => g.epicId === 'e1');
     expect(epicGroup?.epicTitle).toBe('Epic one');
     expect(epicGroup?.tickets).toEqual([child]);
+  });
+
+  it('never lists an epic as a row of its own group — only ever as its header', () => {
+    const epic = ticket({ id: 'e1', issueType: 'epic', title: 'Epic one' });
+    const child = ticket({ epicTaskId: 'e1' });
+    const groups = groupTickets([epic, child]);
+    for (const group of groups) {
+      expect(group.tickets).not.toContain(epic);
+    }
+  });
+
+  it('never lists an epic in NO_EPIC_GROUP, even though its own epicTaskId is null', () => {
+    // Regression: an epic's own `epicTaskId` is null, exactly like a true orphan's, so
+    // without a carve-out the epic fell into "No epic" alongside `orphan` — and rendered
+    // twice, once as the header its child promoted it to and once as this ordinary row.
+    const epic = ticket({ id: 'e1', issueType: 'epic', title: 'Epic one' });
+    const child = ticket({ epicTaskId: 'e1' });
+    const orphan = ticket({ epicTaskId: null });
+    const groups = groupTickets([epic, child, orphan]);
+    const noEpicGroup = groups.find((g) => g.epicId === null);
+    expect(noEpicGroup?.tickets).toEqual([orphan]);
+  });
+
+  it('still headers a childless epic as an empty group instead of vanishing', () => {
+    const epic = ticket({ id: 'e1', issueType: 'epic', title: 'Epic one' });
+    const groups = groupTickets([epic]);
+    const epicGroup = groups.find((g) => g.epicId === 'e1');
+    expect(epicGroup?.epicTitle).toBe('Epic one');
+    expect(epicGroup?.tickets).toEqual([]);
   });
 });
 
@@ -121,7 +151,8 @@ describe('backlogRows', () => {
     ];
     const rows = backlogRows(tickets, '', 'key');
     const total = rows.reduce((sum, g) => sum + g.tickets.length, 0);
-    expect(total).toBe(tickets.length);
+    // The epic itself only ever heads a group — it is never one of the counted rows.
+    expect(total).toBe(tickets.length - 1);
     const epicGroup = rows.find((g) => g.epicId === 'e1');
     expect(epicGroup?.tickets.map((t) => t.ticketKey)).toEqual(['TM-2', 'TM-10']);
   });

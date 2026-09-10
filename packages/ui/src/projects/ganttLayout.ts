@@ -57,10 +57,29 @@ export interface GanttRow {
   /** 0 — an epic or an epic-less ticket; 1 — a child under an EXPANDED epic. */
   depth: 0 | 1;
   /**
-   * The bar to draw, or null for an undated ticket (→ the unscheduled tray). A collapsed
-   * epic's row carries the UNION of its children's bars, not its own dates.
+   * The bar to draw, or null for an undated ticket (→ the unscheduled tray). An epic's row
+   * carries the UNION of its children's bars whenever it has any dated children — collapsed
+   * or expanded alike — falling back to the epic ticket's own dates only when none of its
+   * children are dated at all.
    */
   bar: GanttBar | null;
+  /**
+   * True when `bar` is that UNION rather than the ticket's own `startAt`/`dueAt` — the one
+   * thing that tells a caller this bar has nothing coherent to reschedule TO (see `ganttRows`'s
+   * own doc). Always false for a non-epic row.
+   */
+  barFromChildren: boolean;
+}
+
+/** One epic's shaded zone in the timeline — the Gantt analogue of the graph view's `epicZone`
+ *  container node (`GraphPane.tsx`). Spans the epic's own row plus every child row directly
+ *  under it, in whatever row list (e.g. `TimelinePane`'s `scheduledRows`) the caller drew. */
+export interface GanttEpicBand {
+  epicId: string;
+  /** Index, into the same row list, of the epic's own row — where the band's top aligns. */
+  startIndex: number;
+  /** How many rows the band spans, including the epic's own row. */
+  rowCount: number;
 }
 
 export interface GanttTick {
@@ -233,9 +252,12 @@ function unionBar(children: readonly Task[], scale: GanttScale): GanttBar | null
  * Every row the timeline draws, in the tickets' own order: each epic (one row, or, expanded,
  * one row plus a row per child), then every ticket with no resolvable epic.
  *
- * A collapsed epic's bar is the UNION of its children's — the whole point of collapsing being
- * "show me when this epic runs", not "show me when it happens to be dated itself" — falling
- * back to the epic ticket's own dates only when none of its children carry any.
+ * An epic's bar is the UNION of its children's, whenever it has any dated children — the whole
+ * point of an epic zone being "show me when this epic runs", not "show me when it happens to be
+ * dated itself" — falling back to the epic ticket's own dates only when none of its children
+ * carry any. This holds collapsed or expanded alike: an epic with dated children but no dates
+ * of its own must still draw A row (and so a band, see {@link ganttEpicBands}), or its children
+ * would appear ungrouped even though `ganttRows` groups them contiguously either way.
  */
 export function ganttRows(
   tickets: readonly Task[],
@@ -260,24 +282,56 @@ export function ganttRows(
     if (t.issueType === 'epic') {
       const children = childrenByEpic.get(t.id) ?? [];
       const collapsed = collapsedEpicIds.has(t.id);
+      const union = unionBar(children, scale);
       rows.push({
         id: t.id,
         ticket: t,
         depth: 0,
-        bar: collapsed ? (unionBar(children, scale) ?? ganttBar(t, scale)) : ganttBar(t, scale),
+        bar: union ?? ganttBar(t, scale),
+        barFromChildren: union !== null,
       });
       if (!collapsed) {
         for (const child of children) {
-          rows.push({ id: child.id, ticket: child, depth: 1, bar: ganttBar(child, scale) });
+          rows.push({
+            id: child.id,
+            ticket: child,
+            depth: 1,
+            bar: ganttBar(child, scale),
+            barFromChildren: false,
+          });
         }
       }
       continue;
     }
     if (!t.epicTaskId || !epicsById.has(t.epicTaskId)) {
-      rows.push({ id: t.id, ticket: t, depth: 0, bar: ganttBar(t, scale) });
+      rows.push({ id: t.id, ticket: t, depth: 0, bar: ganttBar(t, scale), barFromChildren: false });
     }
   }
   return rows;
+}
+
+/**
+ * One band per epic that has at least one child row directly under it — the shaded zone
+ * `TimelinePane` paints behind an epic and its children, this pane's analogue of the graph
+ * view's `epicZone` container node. Rows are already grouped contiguously by `ganttRows` (an
+ * expanded epic immediately followed by its own children, nothing else between them), so a
+ * band is simply the run of `depth === 1` rows right after a `depth === 0` epic row — no
+ * separate epic/child lookup needed, and it works over whatever row list the caller drew
+ * (`TimelinePane` calls it on `scheduledRows`, since only those rows are actually on screen).
+ *
+ * A collapsed epic (no child rows to group, by construction) and a childless epic both yield no
+ * band — there is nothing for a zone to visually enclose.
+ */
+export function ganttEpicBands(rows: readonly GanttRow[]): GanttEpicBand[] {
+  const bands: GanttEpicBand[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    if (row.depth !== 0 || row.ticket.issueType !== 'epic') continue;
+    let rowCount = 1;
+    while (i + rowCount < rows.length && rows[i + rowCount].depth === 1) rowCount++;
+    if (rowCount > 1) bands.push({ epicId: row.ticket.id, startIndex: i, rowCount });
+  }
+  return bands;
 }
 
 /**
