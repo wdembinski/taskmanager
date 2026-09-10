@@ -4,6 +4,7 @@
  */
 import type { Task } from '@tm/shared/model';
 import { parseTicketKey } from '@tm/shared/ticketKey';
+import { isEpic } from '@tm/shared/tickets';
 
 /**
  * The bucket every ticket with no epic — or one that names an epic not on this board — lands
@@ -75,32 +76,39 @@ export function sortBacklog(tickets: readonly Task[], sortKey: BacklogSortKey): 
  * `tickets`, bucketed under the epic each names — an epic resolved from WITHIN the same list,
  * since a ticket's epic is just another row on the same board. A ticket whose `epicTaskId` is
  * null, or names an epic that isn't in this list (filtered out elsewhere, or simply gone),
- * lands in {@link NO_EPIC_GROUP} rather than being dropped: every input ticket appears in
- * exactly one output group, always.
+ * lands in {@link NO_EPIC_GROUP} rather than being dropped: every non-epic input ticket
+ * appears in exactly one output group's `tickets`, always.
+ *
+ * An epic ticket itself is never one of those rows. It only ever supplies a group's header
+ * (`epicId`/`epicTitle`) — never its own `epicTaskId` (always null), so without this
+ * carve-out it would fall into {@link NO_EPIC_GROUP} right alongside the true orphans, and a
+ * ticket with children would then render twice: once as the header its children promoted it
+ * to, once as an ordinary "No epic" row. Every epic in the input gets a header, even one with
+ * no children yet — an empty group, not a vanished one.
  */
 export function groupTickets(tickets: readonly Task[]): BacklogGroup[] {
   const epicsById = new Map<string, Task>();
   for (const ticket of tickets) {
-    if (ticket.issueType === 'epic') epicsById.set(ticket.id, ticket);
+    if (isEpic(ticket)) epicsById.set(ticket.id, ticket);
   }
 
   const epicOrder: string[] = [];
   const epicBuckets = new Map<string, Task[]>();
-  const orphans: Task[] = [];
-
   for (const ticket of tickets) {
+    if (!isEpic(ticket) || epicBuckets.has(ticket.id)) continue;
+    epicBuckets.set(ticket.id, []);
+    epicOrder.push(ticket.id);
+  }
+
+  const orphans: Task[] = [];
+  for (const ticket of tickets) {
+    if (isEpic(ticket)) continue;
     const epic = ticket.epicTaskId ? epicsById.get(ticket.epicTaskId) : undefined;
     if (!epic) {
       orphans.push(ticket);
       continue;
     }
-    let bucket = epicBuckets.get(epic.id);
-    if (!bucket) {
-      bucket = [];
-      epicBuckets.set(epic.id, bucket);
-      epicOrder.push(epic.id);
-    }
-    bucket.push(ticket);
+    epicBuckets.get(epic.id)!.push(ticket);
   }
 
   const groups: BacklogGroup[] = epicOrder.map((epicId) => ({
