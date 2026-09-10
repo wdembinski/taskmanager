@@ -6,6 +6,7 @@ import {
   clampSpan,
   collapsedEpicSet,
   ganttBar,
+  ganttBarAtPoint,
   ganttDependencyPath,
   ganttMarkers,
   ganttRange,
@@ -278,6 +279,35 @@ describe('collapsedEpicSet / toggleCollapsedEpic', () => {
 
   it('is empty when nothing has been saved yet', () => {
     expect(collapsedEpicSet(undefined).size).toBe(0);
+  });
+});
+
+describe('ganttBarAtPoint', () => {
+  const bars = [
+    { id: 'a', bar: { x: 10, width: 20 } },
+    { id: 'b', bar: { x: 50, width: 15 } },
+  ];
+
+  it('returns the id of the bar a point falls inside', () => {
+    expect(ganttBarAtPoint(bars, 15, GANTT_ROW_HEIGHT * 0.5)).toBe('a');
+  });
+
+  it('returns null for a point in the row but past the bar’s ends', () => {
+    expect(ganttBarAtPoint(bars, 40, GANTT_ROW_HEIGHT * 0.5)).toBeNull();
+  });
+
+  it('returns null for a point below all rows', () => {
+    expect(ganttBarAtPoint(bars, 15, GANTT_ROW_HEIGHT * bars.length + 5)).toBeNull();
+  });
+
+  it('returns null for a point left of every bar, in the label gutter', () => {
+    expect(ganttBarAtPoint(bars, -5, GANTT_ROW_HEIGHT * 0.5)).toBeNull();
+  });
+
+  it('picks the correct row at a row boundary', () => {
+    const boundary = GANTT_ROW_HEIGHT * 1;
+    expect(ganttBarAtPoint(bars, 55, boundary)).toBe('b');
+    expect(ganttBarAtPoint(bars, 15, boundary - 1)).toBe('a');
   });
 });
 
