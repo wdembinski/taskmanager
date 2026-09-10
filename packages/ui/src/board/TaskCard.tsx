@@ -76,6 +76,7 @@ import {
 } from '@tm/shared/board';
 import type { ChainDecline } from '@tm/shared/taskChain';
 import { priorityIndicatorShown } from '@tm/shared/priority';
+import { delegatedAgentName } from '@tm/shared/tickets';
 import { statusNoteColor, type StatusKeyword } from '@tm/shared/statusKeywords';
 import { DEFAULT_BOARD_DISPLAY, type BoardDisplaySettings } from '@tm/shared/settings';
 import { AgentGlyph } from '../AgentGlyph';
@@ -97,7 +98,7 @@ import {
   STATUS_INDICATOR_COLOR,
 } from '../theme';
 import { PriorityGlyph } from '../PriorityGlyph';
-import { PersonAvatar } from '../projects/PersonAvatar';
+import { AssigneeDisplay } from '../projects/AssigneeDisplay';
 import { TrackerMark, shortTicketKey } from '../tracker';
 import {
   mrAttentionReason,
@@ -1091,8 +1092,16 @@ export function TaskCard({
   const showsTicketKey = Boolean(task.ticketKey);
   /** Story points, gated the same way `showsPriority` gates the priority glyph. */
   const showsPoints = display.showPoints && task.storyPoints != null;
-  /** The assignee avatar — nothing to draw without both the switch and a resolved person. */
-  const showsAssignee = display.showAssignee && Boolean(assignee);
+  /**
+   * The agent this card is delegated to, for the "Assigned to" corner — only for a native
+   * ticket (Phase 24). A mirrored card has no `assigneeId` either way, but `agentName` is
+   * resolved from `task.agentProjectId` alone (see `KanbanColumn`'s `agentNameOf`), so this
+   * is gated explicitly (`delegatedAgentName`) rather than trusted to come back empty on
+   * its own.
+   */
+  const assigneeAgentName = delegatedAgentName(task, agentName);
+  /** The assignee corner — nothing to draw without the switch and a person or an agent. */
+  const showsAssignee = display.showAssignee && Boolean(assignee || assigneeAgentName);
   /**
    * Where this card stands in its chain, as one chip — or null, which is the answer for
    * every card nobody has drawn an arrow to.
@@ -1554,12 +1563,23 @@ export function TaskCard({
                 {task.storyPoints} pts
               </span>
             )}
-            {/* The assignee's avatar (Phase 24) — last before priority, the corner a card's
-                owner conventionally sits in. */}
-            {showsAssignee && assignee && (
-              <span title={`Assigned to ${assignee.name}`}>
-                <PersonAvatar person={assignee} size={20} />
-              </span>
+            {/* The assignee's avatar, and the agent it is delegated to (Phase 24 / "Assigned
+                to AI Agent") — last before priority, the corner a card's owner conventionally
+                sits in. The pulse glyph up in the title row is a different signal (it also
+                carries run state); this is the standing "who owns this" fact. */}
+            {showsAssignee && (
+              <AssigneeDisplay
+                assignee={assignee}
+                agentName={assigneeAgentName}
+                size={20}
+                title={
+                  assignee && assigneeAgentName
+                    ? `Assigned to ${assignee.name} · delegated to ${assigneeAgentName}`
+                    : assignee
+                      ? `Assigned to ${assignee.name}`
+                      : `Assigned to an agent · ${assigneeAgentName}`
+                }
+              />
             )}
             {/* Square, chevron or nothing — whichever this board is set to. */}
             <PriorityGlyph

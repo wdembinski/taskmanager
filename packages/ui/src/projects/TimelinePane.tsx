@@ -57,7 +57,7 @@ import {
   mergeClasses,
   tokens,
 } from '@fluentui/react-components';
-import type { Milestone, Person, Task, TicketLabel, TicketLink } from '@tm/shared/model';
+import type { Milestone, Person, Project, Task, TicketLabel, TicketLink } from '@tm/shared/model';
 import type { AppSettings } from '@tm/shared/settings';
 import { FoldToggle } from '../FoldToggle';
 import { PaneLoading } from '../PaneLoading';
@@ -214,6 +214,9 @@ const useStyles = makeStyles({
 export interface TimelinePaneProps {
   projectId: string;
   people: Person[];
+  /** The repos a ticket can be delegated to — threaded through only for `TicketDrawer`'s
+   *  own agent indicator; this pane's bars and row labels don't show an assignee at all. */
+  agentProjects: Project[];
   labels: TicketLabel[];
   milestones: Milestone[];
 }
@@ -228,6 +231,7 @@ function rowLabel(ticket: Pick<Task, 'ticketKey' | 'title'>): {
 export function TimelinePane({
   projectId,
   people,
+  agentProjects,
   labels,
   milestones,
 }: TimelinePaneProps): JSX.Element {
@@ -633,6 +637,7 @@ export function TimelinePane({
         ticket={selectedTicket}
         tickets={tickets}
         people={people}
+        agentProjects={agentProjects}
         labels={labels}
         milestones={milestones}
         onClose={() => setSelectedTicketId(null)}
