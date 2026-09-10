@@ -69,13 +69,13 @@ import {
   TaskListSquareLtrRegular,
 } from '@fluentui/react-icons';
 import {
-  Background,
   Controls,
   Handle,
   MarkerType,
   Position,
   ReactFlow,
   ReactFlowProvider,
+  useNodesState,
   type Connection,
   type Edge,
   type Node,
@@ -312,7 +312,24 @@ export function GraphPane({ projectId }: GraphPaneProps): JSX.Element {
     };
   }, [transport]);
 
-  const nodes = useMemo(() => layoutNodes(tickets ?? [], positions), [tickets, positions]);
+  // Managed node state (`useNodesState`, React Flow's own `applyNodeChanges` wrapper) rather
+  // than a plain `useMemo` — a fully-controlled `nodes` prop with no `onNodesChange` can't
+  // absorb React Flow's live position deltas mid-drag, so nothing moved on screen until
+  // `onNodeDragStop` finally updated `positions` and the memo recomputed. `layoutNodes` still
+  // supplies the saved/grid position for a ticket this state has never seen; a ticket already
+  // on screen keeps whatever position the drag (in progress or since finished) put it at, only
+  // its `data` gets refreshed, so an in-flight drag is never reset out from under the pointer.
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node<{ ticket: Task }>>([]);
+  useEffect(() => {
+    const laidOut = layoutNodes(tickets ?? [], positions);
+    setNodes((current) => {
+      const currentById = new Map(current.map((n) => [n.id, n]));
+      return laidOut.map((n) => {
+        const existing = currentById.get(n.id);
+        return existing ? { ...existing, data: n.data } : n;
+      });
+    });
+  }, [tickets, positions, setNodes]);
   const nodeIds = useMemo(() => new Set(nodes.map((n) => n.id)), [nodes]);
   const edges = useMemo(
     () => [...dependencyEdges(links, nodeIds), ...chainEdges(chainLinks, nodeIds)],
@@ -435,6 +452,7 @@ export function GraphPane({ projectId }: GraphPaneProps): JSX.Element {
             nodes={nodes}
             edges={edges}
             nodeTypes={NODE_TYPES}
+            onNodesChange={onNodesChange}
             onConnect={handleConnect}
             onNodeDragStop={handleNodeDragStop}
             onEdgesDelete={handleEdgesDelete}
@@ -442,7 +460,6 @@ export function GraphPane({ projectId }: GraphPaneProps): JSX.Element {
             fitView
             proOptions={{ hideAttribution: true }}
           >
-            <Background />
             <Controls />
           </ReactFlow>
         </ReactFlowProvider>
