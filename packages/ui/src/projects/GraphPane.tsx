@@ -50,6 +50,16 @@
  * calls `ticketLink:remove` or `chain:unlink`. `ticketLink:remove` returns nothing, so that half
  * removes optimistically and re-fetches the list on refusal; `chain:unlink` returns the fresh
  * list itself, `TimelinePane.removeChainLink`'s own shape.
+ *
+ * **Editing a link.** Delete-only was the one thing Delete/Backspace could never cover: there
+ * was no way to retype an edge from a dependency into a chain (or back) without erasing it and
+ * dragging a brand new one. `onEdgeClick` (`handleEdgeClick`) resolves the clicked edge's id
+ * back to a kind the exact same way `handleEdgesDelete` already does — `links` then
+ * `chainLinks` — and opens `GraphLinkPicker` in its edit mode over the resolved pair. The
+ * picker itself owns the switch-or-delete logic; this pane only hands it the two removal
+ * functions (`removeTicketLink`/`removeChainLink`) it already had for the Delete-key path, so a
+ * type switch's remove half surfaces through the same `deleteError` `MessageBar` a Delete-key
+ * removal would.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -89,7 +99,7 @@ import { PaneLoading } from '../PaneLoading';
 import { FLUO } from '../theme';
 import { useTransport } from '../transport';
 import { useInitialLoad } from '../useInitialLoad';
-import { GraphLinkPicker } from './GraphLinkPicker';
+import { GraphLinkPicker, type EditingGraphLink } from './GraphLinkPicker';
 
 const useStyles = makeStyles({
   root: {
@@ -254,6 +264,9 @@ export function GraphPane({ projectId }: GraphPaneProps): JSX.Element {
   // its dialog is closed. Resolved from `tickets` (not the raw ids `onConnect` hands back) so
   // the picker gets full `Task`s to show titles from and run `canLinkTickets`/`canLink` against.
   const [pendingConnection, setPendingConnection] = useState<{ from: Task; to: Task } | null>(null);
+  // The edge an `onEdgeClick` resolved a kind for — `GraphLinkPicker`'s own edit-mode prop,
+  // `null` while its dialog is closed the same way `pendingConnection` is for create mode.
+  const [editingLink, setEditingLink] = useState<EditingGraphLink | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   // Both in one seed so `positions` is already populated the first time `tickets` goes
@@ -435,6 +448,37 @@ export function GraphPane({ projectId }: GraphPaneProps): JSX.Element {
     [links, chainLinks, removeTicketLink, removeChainLink],
   );
 
+  /**
+   * A click on an edge — the entry point for editing a link. Resolves the clicked edge's id
+   * back to a kind the exact same way `handleEdgesDelete` does (check `links` first, then
+   * `chainLinks`), then resolves BOTH endpoints back to full `Task`s (the picker needs titles
+   * to show and full tickets to run `canLinkTickets`/`canLink` against, `handleConnect`'s own
+   * reasoning) and opens `GraphLinkPicker` in edit mode over the result. Either half missing —
+   * an endpoint ticket gone from `tickets`, or an edge id that resolves to neither list, which
+   * `dependencyEdges`/`chainEdges` guarantee cannot actually happen — is silently dropped
+   * rather than opening a picker with a hole in it.
+   */
+  const handleEdgeClick = useCallback(
+    (_event: unknown, edge: Edge) => {
+      const ticketLink = links.find((l) => l.id === edge.id);
+      if (ticketLink) {
+        const from = (tickets ?? []).find((t) => t.id === ticketLink.fromTaskId);
+        const to = (tickets ?? []).find((t) => t.id === ticketLink.toTaskId);
+        if (from && to) setEditingLink({ id: ticketLink.id, kind: 'blocks', from, to });
+        return;
+      }
+      const chainLink = chainLinks.find((l) => l.id === edge.id);
+      if (chainLink) {
+        const from = (tickets ?? []).find((t) => t.id === chainLink.fromTaskId);
+        const to = (tickets ?? []).find((t) => t.id === chainLink.toTaskId);
+        if (from && to) {
+          setEditingLink({ id: chainLink.id, kind: 'chain', gate: chainLink.gate, from, to });
+        }
+      }
+    },
+    [links, chainLinks, tickets],
+  );
+
   if (tickets === null) {
     return <PaneLoading label="Loading graph…" error={initial.error} onRetry={initial.retry} />;
   }
@@ -456,6 +500,7 @@ export function GraphPane({ projectId }: GraphPaneProps): JSX.Element {
             onConnect={handleConnect}
             onNodeDragStop={handleNodeDragStop}
             onEdgesDelete={handleEdgesDelete}
+            onEdgeClick={handleEdgeClick}
             deleteKeyCode={['Backspace', 'Delete']}
             fitView
             proOptions={{ hideAttribution: true }}
@@ -466,9 +511,15 @@ export function GraphPane({ projectId }: GraphPaneProps): JSX.Element {
       </div>
       <GraphLinkPicker
         connection={pendingConnection}
+        editingLink={editingLink}
         links={links}
         chainLinks={chainLinks}
-        onClose={() => setPendingConnection(null)}
+        onClose={() => {
+          setPendingConnection(null);
+          setEditingLink(null);
+        }}
+        onDeleteTicketLink={removeTicketLink}
+        onDeleteChainLink={removeChainLink}
       />
     </div>
   );
