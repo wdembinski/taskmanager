@@ -171,6 +171,9 @@ export const RELAY_POLICY: {
   'ticketLink:add': 'relay',
   'ticketLink:remove': 'relay',
 
+  'ticketGraph:getLayout': 'relay',
+  'ticketGraph:saveLayout': 'relay',
+
   'agentProfile:list': 'relay',
   'agentProfile:add': 'relay',
   'agentProfile:update': 'relay',

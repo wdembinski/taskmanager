@@ -50,6 +50,7 @@ import type {
   Task,
   TaskActivityEntry,
   TaskType,
+  TicketGraphPosition,
   TicketInput,
   TicketLabel,
   TicketLabelInput,
@@ -1072,6 +1073,18 @@ export interface IpcApi {
   ) => Promise<TicketLinkResult>;
   /** Erase one link by id; no-op if it is already gone. */
   'ticketLink:remove': (id: string) => Promise<void>;
+
+  /**
+   * A project's saved Graph-view node positions — `GraphPane`'s own layout. Empty until a
+   * node has been dragged; the caller grid-places whichever tickets are missing from it.
+   */
+  'ticketGraph:getLayout': (projectId: string) => Promise<TicketGraphPosition[]>;
+  /**
+   * Persist node positions for a project, one row per ticket. `GraphPane` debounces this on
+   * node drag rather than calling it per pixel, and sends the whole visible layout each
+   * time — there is no per-node granularity on this channel.
+   */
+  'ticketGraph:saveLayout': (projectId: string, positions: TicketGraphPosition[]) => Promise<void>;
   /**
    * Put a removed card back on the board, with the same id and everything hanging off it.
    * Returns the fresh board, so the caller does not have to ask for it again.

@@ -6,9 +6,20 @@
  *
  * Loads its own tickets the same way `BacklogTable`/`TimelinePane` do: seed via `board:tasks`,
  * then stay live off `task:changed` (per-ticket patch) and `project:tasksChanged` (whole-list
- * replace — a ticket can also leave this way). No persisted layout: nodes sit in a
- * deterministic grid keyed only by array order, which a later step replaces with a saved
- * per-project position.
+ * replace — a ticket can also leave this way).
+ *
+ * **Layout.** `ticketGraph:getLayout` is fetched alongside `board:tasks` in the same seed
+ * (one `Promise.all`, so the saved layout is already in state by the time `tickets` first
+ * goes non-null — nothing to jump once the grid fallback below gets a chance to run). Any
+ * ticket missing from it — nobody has ever dragged it — falls back to `gridPosition`'s
+ * deterministic slot, keyed on its rank among the OTHER missing tickets rather than its
+ * rank in the full list, so a mix of saved and un-saved nodes doesn't leave gaps. A drag
+ * (`handleNodeDragStop`) updates `positions` locally and schedules `ticketGraph:saveLayout`
+ * after `SAVE_DEBOUNCE_MS` of no further drag — the same trailing-debounce shape
+ * `ModelField`'s own model-resolve probe uses, so a fast drag-drag-drag only ever writes
+ * once. The call sends the WHOLE current layout, not just the moved node: there is no
+ * per-node granularity on that channel, and re-sending everything is cheap (one row per
+ * ticket, upserted).
  *
  * **Edges — `blocks` dependencies and execution-chain links.** Loaded and kept live the exact
  * way `TimelinePane` loads its own: seed via `ticketLink:list` / `chain:links`, then
@@ -40,7 +51,7 @@
  * removes optimistically and re-fetches the list on refusal; `chain:unlink` returns the fresh
  * list itself, `TimelinePane.removeChainLink`'s own shape.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Caption1,
   MessageBar,
@@ -69,8 +80,9 @@ import {
   type Edge,
   type Node,
   type NodeProps,
+  type OnNodeDrag,
 } from '@xyflow/react';
-import type { Task, TicketLink } from '@tm/shared/model';
+import type { Task, TicketGraphPosition, TicketLink } from '@tm/shared/model';
 import type { TaskLink } from '@tm/shared/taskChain';
 import { typeIconKeyFor, type TypeIconKey } from '@tm/shared/tickets';
 import { PaneLoading } from '../PaneLoading';
@@ -156,22 +168,40 @@ function TicketNode({ data }: NodeProps<Node<{ ticket: Task }>>): JSX.Element {
 
 const NODE_TYPES = { ticket: TicketNode };
 
-/** Grid geometry for the placeholder layout — a later step replaces this with a per-project
- *  saved position, so these numbers only need to keep nodes from overlapping. */
+/** Grid geometry for the fallback layout — the numbers only need to keep un-saved nodes
+ *  from overlapping each other. */
 const GRID_COLUMNS = 4;
 const GRID_COLUMN_WIDTH = 280;
 const GRID_ROW_HEIGHT = 140;
 
-/** Deterministic grid placement, keyed on the ticket's own id so a re-render (or a
- *  `project:tasksChanged` replace) never reshuffles a node that was already on screen. */
-function gridLayout(tickets: Task[]): Node<{ ticket: Task }>[] {
-  return tickets.map((ticket, i) => ({
+/** How long a drag's `ticketGraph:saveLayout` waits for another drag before it fires —
+ *  `ModelField`'s own `RESOLVE_DEBOUNCE_MS` shape, longer since this follows a drag END
+ *  (already a deliberate act) rather than every keystroke. */
+const SAVE_DEBOUNCE_MS = 600;
+
+function gridPosition(i: number): { x: number; y: number } {
+  return {
+    x: (i % GRID_COLUMNS) * GRID_COLUMN_WIDTH,
+    y: Math.floor(i / GRID_COLUMNS) * GRID_ROW_HEIGHT,
+  };
+}
+
+/**
+ * One node per ticket: `saved`'s own position where there is one, else the next grid slot.
+ * The grid counter only advances for tickets actually missing from `saved`, so a project
+ * that is half dragged, half not doesn't leave holes where the dragged ones used to sit.
+ * Keyed on the ticket's own id either way, so a re-render (or a `project:tasksChanged`
+ * replace) never reshuffles a node already on screen.
+ */
+function layoutNodes(
+  tickets: Task[],
+  saved: Record<string, { x: number; y: number }>,
+): Node<{ ticket: Task }>[] {
+  let gridIndex = 0;
+  return tickets.map((ticket) => ({
     id: ticket.id,
     type: 'ticket',
-    position: {
-      x: (i % GRID_COLUMNS) * GRID_COLUMN_WIDTH,
-      y: Math.floor(i / GRID_COLUMNS) * GRID_ROW_HEIGHT,
-    },
+    position: saved[ticket.id] ?? gridPosition(gridIndex++),
     data: { ticket },
   }));
 }
@@ -217,6 +247,7 @@ export function GraphPane({ projectId }: GraphPaneProps): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
   const [tickets, setTickets] = useState<Task[] | null>(null);
+  const [positions, setPositions] = useState<Record<string, { x: number; y: number }>>({});
   const [links, setLinks] = useState<TicketLink[]>([]);
   const [chainLinks, setChainLinks] = useState<TaskLink[]>([]);
   // The pending connect gesture — `GraphLinkPicker`'s own controlled-open prop, `null` while
@@ -225,10 +256,17 @@ export function GraphPane({ projectId }: GraphPaneProps): JSX.Element {
   const [pendingConnection, setPendingConnection] = useState<{ from: Task; to: Task } | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
-  const seed = useCallback(
-    async () => setTickets(await transport.invoke('board:tasks', projectId)),
-    [transport, projectId],
-  );
+  // Both in one seed so `positions` is already populated the first time `tickets` goes
+  // non-null — otherwise a node would render at its grid slot for one frame and then jump
+  // to its saved one.
+  const seed = useCallback(async () => {
+    const [taskList, layout] = await Promise.all([
+      transport.invoke('board:tasks', projectId),
+      transport.invoke('ticketGraph:getLayout', projectId),
+    ]);
+    setPositions(Object.fromEntries(layout.map((p) => [p.taskId, { x: p.x, y: p.y }])));
+    setTickets(taskList);
+  }, [transport, projectId]);
   const initial = useInitialLoad(seed);
 
   useEffect(() => {
@@ -274,11 +312,46 @@ export function GraphPane({ projectId }: GraphPaneProps): JSX.Element {
     };
   }, [transport]);
 
-  const nodes = useMemo(() => gridLayout(tickets ?? []), [tickets]);
+  const nodes = useMemo(() => layoutNodes(tickets ?? [], positions), [tickets, positions]);
   const nodeIds = useMemo(() => new Set(nodes.map((n) => n.id)), [nodes]);
   const edges = useMemo(
     () => [...dependencyEdges(links, nodeIds), ...chainEdges(chainLinks, nodeIds)],
     [links, chainLinks, nodeIds],
+  );
+
+  // The debounce timer, `ModelField`'s own ref-based shape: cleared and restarted on every
+  // drag stop, so a rapid string of drags writes once, and cleared on unmount so no save
+  // fires against a pane the user has already left.
+  const saveTimer = useRef<ReturnType<typeof setTimeout>>();
+  useEffect(
+    () => () => {
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+    },
+    [],
+  );
+
+  /** React Flow's own drag-stop event — fires once per node (or once per node in a
+   *  multi-select drag, each with its own final `position`) when the gesture ends. Merges
+   *  every dragged node's new position into `positions` and (re)schedules the debounced
+   *  save of the WHOLE current layout — `ticketGraph:saveLayout` has no per-node shape. */
+  const handleNodeDragStop = useCallback<OnNodeDrag>(
+    (_event, _node, draggedNodes) => {
+      setPositions((prev) => {
+        const next = { ...prev };
+        for (const n of draggedNodes) next[n.id] = { x: n.position.x, y: n.position.y };
+        if (saveTimer.current) clearTimeout(saveTimer.current);
+        saveTimer.current = setTimeout(() => {
+          const toSave: TicketGraphPosition[] = Object.entries(next).map(([taskId, p]) => ({
+            taskId,
+            x: p.x,
+            y: p.y,
+          }));
+          void transport.invoke('ticketGraph:saveLayout', projectId, toSave);
+        }, SAVE_DEBOUNCE_MS);
+        return next;
+      });
+    },
+    [transport, projectId],
   );
 
   /**
@@ -363,6 +436,7 @@ export function GraphPane({ projectId }: GraphPaneProps): JSX.Element {
             edges={edges}
             nodeTypes={NODE_TYPES}
             onConnect={handleConnect}
+            onNodeDragStop={handleNodeDragStop}
             onEdgesDelete={handleEdgesDelete}
             deleteKeyCode={['Backspace', 'Delete']}
             fitView

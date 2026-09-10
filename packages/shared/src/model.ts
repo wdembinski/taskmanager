@@ -1224,6 +1224,17 @@ export interface TicketLink {
 }
 
 /**
+ * One ticket's saved position on its project's Graph view canvas (chaining-tickets plan step
+ * 14) — `GraphPane`'s own `x`/`y`, persisted so a drag survives a reload instead of resetting
+ * to the deterministic grid it falls back to for any ticket nobody has moved yet.
+ */
+export interface TicketGraphPosition {
+  taskId: string;
+  x: number;
+  y: number;
+}
+
+/**
  * What creating a native ticket sends. Everything but the title is optional, because a
  * ticket typed into a backlog in five seconds is the common case and every other field is
  * something a human fills in later.
