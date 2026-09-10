@@ -45,6 +45,18 @@
  * A collapsed epic's row draws the UNION of its children's bars (see `ganttRows`), which is
  * not `row.ticket`'s own `startAt`/`dueAt` — there is nothing coherent to reschedule TO, so
  * that one row's bar stays inert; expand it and its children drag individually.
+ *
+ * **The connect knob.** A small circle hanging off the bar's right edge, past the resize
+ * strip so the two gestures never share a pixel — the strip changes THIS ticket's dates, the
+ * knob starts a link to some OTHER ticket, and a drag that grabbed the wrong one because they
+ * overlapped would be the worst kind of bug. Hidden until the row is hovered, the same way
+ * `TaskCard`'s own link handle is, and for the same reason: a chart full of ticket rows is
+ * not a chart full of dots. Dragging from it tracks the pointer as a `deltaPx`-style offset
+ * from where the knob itself sits (`ConnectDragState.origin`), not a DOM measurement — the
+ * one thing this pane already knows about every other drag it runs — and draws the band with
+ * `rubberBandPath`, the exact function `ChainOverlay` draws its own with, so the two panes'
+ * gestures read as one gesture with two skins. This step only draws it: letting go creates no
+ * link yet.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -60,6 +72,7 @@ import {
 import type { Milestone, Person, Project, Task, TicketLabel, TicketLink } from '@tm/shared/model';
 import type { AppSettings } from '@tm/shared/settings';
 import type { TaskLink } from '@tm/shared/taskChain';
+import { rubberBandPath, type AnchorRect } from '../board/chainArrows';
 import { FoldToggle } from '../FoldToggle';
 import { PaneLoading } from '../PaneLoading';
 import { FLUO } from '../theme';
@@ -90,6 +103,11 @@ import { TicketDrawer } from './TicketDrawer';
 const DRAG_THRESHOLD_PX = 3;
 /** A resize handle's width, in px — thin strips at each end of a bar, `ew-resize` cursored. */
 const HANDLE_WIDTH_PX = 6;
+/** The connect knob's radius, in px. */
+const CONNECT_HANDLE_RADIUS_PX = 5;
+/** How far past the bar's own right edge the knob sits — clear of the resize strip's hit
+ *  area (which lives INSIDE the bar), so the two never fight over the same pixel. */
+const CONNECT_HANDLE_OFFSET_PX = 9;
 
 /** Marker ids, namespaced against `ChainOverlay`'s own (a ticket drawer can be open over a
  *  board, so both overlays' `<defs>` can end up in the same document at once). */
@@ -129,6 +147,22 @@ interface DragState {
   startClientX: number;
   /** How far the pointer has moved since `startClientX` — px, screen space, not chart space. */
   deltaPx: number;
+}
+
+/**
+ * One in-flight connect gesture — dragging the knob toward some other bar.
+ *
+ * `origin` is the knob's own position, in chart space, fixed for the whole gesture; `at` is
+ * `origin` plus how far the pointer has moved since (`deltaPx`'s own trick, in two axes), so
+ * this needs no DOM measurement to track the pointer — same reasoning as `DragState.deltaPx`.
+ */
+interface ConnectDragState {
+  ticketId: string;
+  pointerId: number;
+  startClientX: number;
+  startClientY: number;
+  origin: { x: number; y: number };
+  at: { x: number; y: number };
 }
 
 /** `bar`, shifted by an in-flight drag's live `deltaPx` — a pure preview, nothing snapped or
@@ -201,7 +235,15 @@ const useStyles = makeStyles({
   labelChild: { paddingLeft: '24px' },
   key: { color: tokens.colorNeutralForeground3, flexShrink: 0 },
   title: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  chart: { position: 'absolute', top: 0, pointerEvents: 'none' },
+  // `overflow: visible` — same reasoning as `ChainOverlay.layer`: the connect knob sits
+  // OUTSIDE the last bar's own right edge, and a clamped default would quietly cut it in
+  // half for any ticket that happens to end on the chart's last drawn day.
+  chart: { position: 'absolute', top: 0, pointerEvents: 'none', overflow: 'visible' },
+  // Carries the hover rule for its row's connect knob — a descendant selector needs a
+  // styled ancestor to hang off, and the `<g>` had none before the knob existed.
+  rowGroup: {
+    '&:hover [data-connect-handle]': { opacity: 1, pointerEvents: 'auto' },
+  },
   bar: {
     fill: tokens.colorBrandBackground2,
     stroke: tokens.colorBrandStroke1,
@@ -215,6 +257,34 @@ const useStyles = makeStyles({
     fill: 'transparent',
     pointerEvents: 'auto',
     cursor: 'ew-resize',
+  },
+  /**
+   * The connect knob — `TaskCard.linkHandle`'s own dot, redrawn for an SVG bar instead of an
+   * HTML card. Hidden until the row is hovered (`rowGroup`); `pointerEvents: none` while
+   * hidden so a stray 10px circle past the bar's edge never eats a click meant for whatever
+   * sits beyond it.
+   */
+  connectHandle: {
+    fill: tokens.colorNeutralBackground3,
+    stroke: tokens.colorNeutralStroke1,
+    strokeWidth: '1px',
+    cursor: 'grab',
+    opacity: 0,
+    pointerEvents: 'none',
+    ':hover': { fill: tokens.colorBrandStroke1, stroke: tokens.colorBrandStroke1 },
+  },
+  /** The knob mid-drag: filled, and — via the inline style next to it — pinned visible even
+   *  once the pointer has left the row it belongs to. */
+  connectHandleActive: { fill: tokens.colorBrandStroke1, stroke: tokens.colorBrandStroke1 },
+  /** The band from the knob to the pointer — `ChainOverlay.band`'s own look, since no verdict
+   *  exists to draw yet (nothing here can accept or refuse a drop until a later step). */
+  connectBand: {
+    fill: 'none',
+    stroke: tokens.colorBrandStroke1,
+    strokeWidth: '2px',
+    strokeDasharray: '5 4',
+    strokeLinecap: 'round',
+    pointerEvents: 'none',
   },
   barText: {
     fill: tokens.colorNeutralForegroundOnBrand,
@@ -279,6 +349,7 @@ export function TimelinePane({
   const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
   const [dragError, setDragError] = useState<string | null>(null);
+  const [connectDrag, setConnectDrag] = useState<ConnectDragState | null>(null);
   // Set the instant a drag's pointer movement clears `DRAG_THRESHOLD_PX`, and read once by
   // the bar's `onClick` right after — a real drag must not also open the drawer the way a
   // plain click does, and `pointerup` cannot itself suppress the `click` that follows it.
@@ -450,6 +521,56 @@ export function TimelinePane({
     [commitReschedule],
   );
 
+  /**
+   * Start a connect gesture from the knob. `origin` is the knob's own position in chart
+   * space — computed by the caller from the row it belongs to, not measured back off the
+   * DOM — and doubles as the band's start point for the whole drag.
+   */
+  const handleConnectPointerDown = useCallback(
+    (
+      e: React.PointerEvent<SVGCircleElement>,
+      ticketId: string,
+      origin: { x: number; y: number },
+    ) => {
+      if (e.button !== 0) return;
+      // The knob's own click would otherwise bubble to the row `<g>` and select the ticket —
+      // see the `onClick` beside it.
+      e.stopPropagation();
+      e.currentTarget.setPointerCapture(e.pointerId);
+      setConnectDrag({
+        ticketId,
+        pointerId: e.pointerId,
+        startClientX: e.clientX,
+        startClientY: e.clientY,
+        origin,
+        at: origin,
+      });
+    },
+    [],
+  );
+
+  const handleConnectPointerMove = useCallback((e: React.PointerEvent<SVGCircleElement>) => {
+    setConnectDrag((prev) => {
+      if (!prev || prev.pointerId !== e.pointerId) return prev;
+      return {
+        ...prev,
+        at: {
+          x: prev.origin.x + (e.clientX - prev.startClientX),
+          y: prev.origin.y + (e.clientY - prev.startClientY),
+        },
+      };
+    });
+  }, []);
+
+  // No link is created yet (that is a later step) — releasing, however it releases, simply
+  // ends the gesture and drops the band.
+  const endConnectDrag = useCallback((e: React.PointerEvent<SVGCircleElement>) => {
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+    setConnectDrag((prev) => (prev && prev.pointerId === e.pointerId ? null : prev));
+  }, []);
+
   const ticks = useMemo(() => ganttTicks(scale), [scale]);
   const markers = useMemo(() => ganttMarkers(milestones, scale), [milestones, scale]);
   const today = todayX(scale, now);
@@ -511,6 +632,23 @@ export function TimelinePane({
     }
     return out;
   }, [chainLinks, rowIndexById, scheduledRows]);
+
+  // The rubber band, from the knob to the pointer — `ChainOverlay.bandFor`'s own shape, an
+  // `AnchorRect` collapsed to a single point since the knob's `origin` already IS the exact
+  // spot the band leaves from (`rubberBandPath` only ever reads `right` and the vertical
+  // mid of `top`/`height`, so a zero-size rect at `origin` is `origin`).
+  const connectBand = useMemo(() => {
+    if (!connectDrag) return null;
+    const anchor: AnchorRect = {
+      left: connectDrag.origin.x,
+      top: connectDrag.origin.y,
+      right: connectDrag.origin.x,
+      bottom: connectDrag.origin.y,
+      width: 0,
+      height: 0,
+    };
+    return rubberBandPath(anchor, connectDrag.at);
+  }, [connectDrag]);
 
   if (tickets === null) {
     return (
@@ -613,12 +751,18 @@ export function TimelinePane({
                     const bar = draggable ? previewBar(row.bar!, drag, row.id) : row.bar!;
                     const y = i * GANTT_ROW_HEIGHT + BAR_INSET;
                     const height = GANTT_ROW_HEIGHT - BAR_INSET * 2;
+                    // The knob's own centre — past the bar's right edge, level with it.
+                    const connectOrigin = {
+                      x: bar.x + bar.width + CONNECT_HANDLE_OFFSET_PX,
+                      y: y + height / 2,
+                    };
                     const label = row.ticket.ticketKey
                       ? `${row.ticket.ticketKey} ${row.ticket.title}`
                       : row.ticket.title;
                     return (
                       <g
                         key={row.id}
+                        className={styles.rowGroup}
                         onClick={() => {
                           if (justDraggedRef.current) {
                             justDraggedRef.current = false;
@@ -691,11 +835,44 @@ export function TimelinePane({
                               onPointerUp={(e) => endDrag(e, true)}
                               onPointerCancel={(e) => endDrag(e, false)}
                             />
+                            <circle
+                              data-connect-handle=""
+                              aria-hidden="true"
+                              cx={connectOrigin.x}
+                              cy={connectOrigin.y}
+                              r={CONNECT_HANDLE_RADIUS_PX}
+                              className={mergeClasses(
+                                styles.connectHandle,
+                                connectDrag?.ticketId === row.id && styles.connectHandleActive,
+                              )}
+                              // The knob's own hold-still requirement — see `ConnectDragState`
+                              // — outranks the row's `:hover` rule either way, the same trick
+                              // `TaskCard.linkHandleActive` uses for its own handle.
+                              style={
+                                connectDrag?.ticketId === row.id
+                                  ? { opacity: 1, pointerEvents: 'auto' }
+                                  : undefined
+                              }
+                              onPointerDown={(e) =>
+                                handleConnectPointerDown(e, row.id, connectOrigin)
+                              }
+                              onPointerMove={handleConnectPointerMove}
+                              onPointerUp={endConnectDrag}
+                              onPointerCancel={endConnectDrag}
+                              // Stops the click this pointer sequence still fires from
+                              // bubbling to the row `<g>` and opening the drawer instead.
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <title>{`Drag to connect ${label} to another ticket`}</title>
+                            </circle>
                           </>
                         )}
                       </g>
                     );
                   })}
+                  {connectBand && (
+                    <path d={connectBand} className={styles.connectBand} aria-hidden="true" />
+                  )}
                 </svg>
               </div>
             )}
