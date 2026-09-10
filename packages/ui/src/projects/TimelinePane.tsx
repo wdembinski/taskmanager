@@ -61,6 +61,7 @@ import type { Milestone, Person, Project, Task, TicketLabel, TicketLink } from '
 import type { AppSettings } from '@tm/shared/settings';
 import { FoldToggle } from '../FoldToggle';
 import { PaneLoading } from '../PaneLoading';
+import { FLUO } from '../theme';
 import { useTransport } from '../transport';
 import { useInitialLoad } from '../useInitialLoad';
 import {
@@ -88,6 +89,36 @@ import { TicketDrawer } from './TicketDrawer';
 const DRAG_THRESHOLD_PX = 3;
 /** A resize handle's width, in px — thin strips at each end of a bar, `ew-resize` cursored. */
 const HANDLE_WIDTH_PX = 6;
+
+/** Marker ids, namespaced against `ChainOverlay`'s own (a ticket drawer can be open over a
+ *  board, so both overlays' `<defs>` can end up in the same document at once). */
+const MARKER = {
+  /** The bare grey `blocks` dependency arrows this pane has always drawn. */
+  dependency: 'gantt-head-dependency',
+  /** Unused until the execution-chain arrows land (next step) — defined here because both
+   *  colours are one shared arrowhead shape, not two features to keep in sync later. */
+  chain: 'gantt-head-chain',
+} as const;
+
+/** The arrowhead, drawn once per colour — `ChainOverlay.tsx`'s own `Head`, SVG markers do
+ *  not inherit their path's stroke. */
+function Head({ id, className }: { id: string; className: string }): JSX.Element {
+  return (
+    <marker
+      id={id}
+      viewBox="0 0 8 8"
+      // The tip sits exactly on the path's last point, which is the target bar's own edge.
+      refX="8"
+      refY="4"
+      markerWidth="8"
+      markerHeight="8"
+      orient="auto"
+      markerUnits="userSpaceOnUse"
+    >
+      <path d="M 0 0 L 8 4 L 0 8 z" className={className} />
+    </marker>
+  );
+}
 
 /** One in-flight drag gesture, tracked from the `pointerdown` that started it. */
 interface DragState {
@@ -192,6 +223,8 @@ const useStyles = makeStyles({
   guide: { stroke: tokens.colorNeutralStroke2, strokeDasharray: '3 3' },
   today: { stroke: tokens.colorBrandStroke1, strokeWidth: '1.5px', strokeDasharray: '4 3' },
   dependency: { fill: 'none', stroke: tokens.colorNeutralStroke1, strokeWidth: '1.5px' },
+  headDependency: { fill: tokens.colorNeutralStroke1 },
+  headChain: { fill: FLUO.cyan },
   tray: {
     borderTop: `1px solid ${tokens.colorNeutralStroke2}`,
     paddingTop: '8px',
@@ -492,6 +525,10 @@ export function TimelinePane({
                   width={chartWidth}
                   height={chartHeight}
                 >
+                  <defs>
+                    <Head id={MARKER.dependency} className={styles.headDependency} />
+                    <Head id={MARKER.chain} className={styles.headChain} />
+                  </defs>
                   {markers.map((m) => (
                     <line
                       key={m.milestoneId}
@@ -514,7 +551,13 @@ export function TimelinePane({
                     />
                   )}
                   {dependencyPaths.map((p) => (
-                    <path key={p.key} className={styles.dependency} d={p.d} aria-hidden="true" />
+                    <path
+                      key={p.key}
+                      className={styles.dependency}
+                      d={p.d}
+                      markerEnd={`url(#${MARKER.dependency})`}
+                      aria-hidden="true"
+                    />
                   ))}
                   {scheduledRows.map((row, i) => {
                     const isEpic = row.ticket.issueType === 'epic';
