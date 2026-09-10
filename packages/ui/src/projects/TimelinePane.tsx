@@ -297,6 +297,19 @@ const useStyles = makeStyles({
     cursor: 'ew-resize',
   },
   /**
+   * The gap between the bar's own right edge and the knob (`CONNECT_HANDLE_OFFSET_PX` minus
+   * its radius) is unpainted, so a pointer crossing it rides over no hit-testable descendant
+   * of `rowGroup` — its `:hover` (and with it the knob's visibility) drops mid-crossing,
+   * which is exactly the vanishing-dot bug. This strip closes that gap: transparent, but
+   * `pointerEvents: 'auto'` (the `handle` resize strips' own trick) keeps it hit-testable so
+   * `:hover` never lets go between the bar and the knob. No `onClick` of its own — a click
+   * here bubbles to the row `<g>` and opens the drawer, same as clicking the bar.
+   */
+  connectBridge: {
+    fill: 'transparent',
+    pointerEvents: 'auto',
+  },
+  /**
    * The connect knob — `TaskCard.linkHandle`'s own dot, redrawn for an SVG bar instead of an
    * HTML card. Hidden until the row is hovered (`rowGroup`); `pointerEvents: none` while
    * hidden so a stray 10px circle past the bar's edge never eats a click meant for whatever
@@ -1070,6 +1083,14 @@ export function TimelinePane({
                               onPointerMove={handleBarPointerMove}
                               onPointerUp={(e) => endDrag(e, true)}
                               onPointerCancel={(e) => endDrag(e, false)}
+                            />
+                            <rect
+                              aria-hidden="true"
+                              x={bar.x + bar.width}
+                              y={y}
+                              width={CONNECT_HANDLE_OFFSET_PX + CONNECT_HANDLE_RADIUS_PX}
+                              height={height}
+                              className={styles.connectBridge}
                             />
                             <circle
                               data-connect-handle=""
