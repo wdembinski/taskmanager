@@ -145,6 +145,8 @@ interface TaskRow {
   agentMode: string | null;
   /** Per-assignment model override; NULL = the agent project's default. */
   agentModel: string | null;
+  /** Per-assignment planning-model override; NULL = same as this task's own steps override. */
+  agentPlanningModel: string | null;
   /** The plan a `plan`-mode delegated run produced, as markdown. NULL until it plans. */
   agentPlan: string | null;
   /** The git branch this card's worktree runs on; NULL = the legacy `orch/<taskId>`. */
@@ -328,6 +330,7 @@ export interface Store {
         | 'agentProjectId'
         | 'agentMode'
         | 'agentModel'
+        | 'agentPlanningModel'
         | 'agentPlan'
         | 'agentBranch'
         | 'landedAt'
@@ -1035,6 +1038,7 @@ export function createStore(dbPath: string): Store {
       agentProjectId         TEXT,
       agentMode              TEXT,
       agentModel             TEXT,
+      agentPlanningModel     TEXT,
       agentPlan              TEXT,
       agentBranch            TEXT,
       planRound              INTEGER,
@@ -1681,6 +1685,10 @@ export function createStore(dbPath: string): Store {
     // means "use the project default", which is what every pre-existing row wants.
     ['agentMode', 'TEXT'],
     ['agentModel', 'TEXT'],
+    // Per-assignment planning-model override, split from `agentModel` (which now covers
+    // steps only). NULL means "same as this task's own steps override", true of every
+    // pre-existing row.
+    ['agentPlanningModel', 'TEXT'],
     // The markdown plan a `plan`-mode run produced, kept so it survives a restart and
     // can be re-read (and re-split into subtasks) after the fact.
     ['agentPlan', 'TEXT'],
@@ -2004,7 +2012,7 @@ export function createStore(dbPath: string): Store {
         externalPriority, externalType, externalLabel, externalParentKey, externalEpicName, externalSprint,
         externalDescription,
         preBlockStatus, preRunStatus, retainedSince, archivedAt, archivedReason, lastReadCommentAt, latestCommentAt,
-        projectTagId, agentProjectId, agentMode, agentModel,
+        projectTagId, agentProjectId, agentMode, agentModel, agentPlanningModel,
         agentPlan, agentBranch, planRound, landedAt, chainLandedAt, workedAt, stoppedAt, autoRelease, autoCreatePr, autoIntegrate,
         ticketKey, ticketNumber, issueType, epicTaskId, milestoneId, labels,
         storyPoints, estimateDays, startAt, dueAt, assigneeId, reporterId)
@@ -2018,7 +2026,7 @@ export function createStore(dbPath: string): Store {
         -- The filing column was added after this INSERT was written and only ever set by
         -- an UPDATE, so a card created already filed (the Add-task dialog's Project
         -- picker) used to lose its project between the form and the row.
-        @projectTagId, @agentProjectId, @agentMode, @agentModel,
+        @projectTagId, @agentProjectId, @agentMode, @agentModel, @agentPlanningModel,
         @agentPlan, @agentBranch, @planRound, @landedAt, @chainLandedAt, @workedAt, @stoppedAt, @autoRelease, @autoCreatePr, @autoIntegrate,
         -- The twelve ticket columns are listed HERE as well as in the column list above,
         -- and that is the whole discipline: a column added to the table, the row type and
@@ -2935,6 +2943,7 @@ export function createStore(dbPath: string): Store {
       agentProjectId: task.agentProjectId ?? null,
       agentMode: task.agentMode ?? null,
       agentModel: task.agentModel ?? null,
+      agentPlanningModel: task.agentPlanningModel ?? null,
       agentPlan: task.agentPlan ?? null,
       agentBranch: task.agentBranch ?? null,
       planRound: task.planRound ?? null,
@@ -3023,6 +3032,7 @@ export function createStore(dbPath: string): Store {
       agentProjectId: r.agentProjectId,
       agentMode: (r.agentMode as Task['agentMode']) ?? null,
       agentModel: (r.agentModel as Task['agentModel']) ?? null,
+      agentPlanningModel: (r.agentPlanningModel as Task['agentPlanningModel']) ?? null,
       agentPlan: r.agentPlan,
       agentBranch: r.agentBranch,
       // Every step that predates re-planning came from the card's one and only approved
@@ -3261,7 +3271,8 @@ export function createStore(dbPath: string): Store {
        archivedAt = @archivedAt, archivedReason = @archivedReason,
        lastReadCommentAt = @lastReadCommentAt, latestCommentAt = @latestCommentAt,
        projectTagId = @projectTagId, agentProjectId = @agentProjectId, agentMode = @agentMode,
-       agentModel = @agentModel, agentPlan = @agentPlan, agentBranch = @agentBranch,
+       agentModel = @agentModel, agentPlanningModel = @agentPlanningModel,
+       agentPlan = @agentPlan, agentBranch = @agentBranch,
        planRound = @planRound, landedAt = @landedAt, chainLandedAt = @chainLandedAt,
        workedAt = @workedAt, stoppedAt = @stoppedAt, autoRelease = @autoRelease,
        autoIntegrate = @autoIntegrate, ticketKey = @ticketKey, ticketNumber = @ticketNumber,
@@ -3542,6 +3553,7 @@ export function createStore(dbPath: string): Store {
         'agentProjectId',
         'agentMode',
         'agentModel',
+        'agentPlanningModel',
         'agentPlan',
         'agentBranch',
         'landedAt',
@@ -3730,6 +3742,8 @@ export function createStore(dbPath: string): Store {
         // every step at it. NULL means "follow the project's execution model", and a step
         // that genuinely needs a different one is overridden one step at a time.
         agentModel: null,
+        // Steps never plan, so a planning-model override has nothing to apply to either.
+        agentPlanningModel: null,
         agentMode: 'bypassPermissions',
         // A caller that knows which planning round it is filling (`approvePlan`) says so;
         // everyone else — the "Add step…" form above all — joins the round already in

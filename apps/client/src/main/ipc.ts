@@ -971,6 +971,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     if (input.model !== undefined && !isUsableModel(input.model)) {
       throw new Error(`Not a usable model: ${input.model}`);
     }
+    if (input.planningModel !== undefined && !isUsableModel(input.planningModel)) {
+      throw new Error(`Not a usable model: ${input.planningModel}`);
+    }
 
     const task = store.updateTask(taskId, {
       agentProjectId: target.id,
@@ -979,6 +982,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       ...(existing.projectTagId ? {} : { projectTagId: target.id }),
       agentMode: input.mode ?? null,
       agentModel: input.model ?? null,
+      agentPlanningModel: input.planningModel ?? null,
       agentBranch: branch,
       // A previous attempt's session is not this assignment's; start a fresh
       // conversation so the agent gets the full single-ticket brief.
@@ -1230,11 +1234,19 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     if (options.model !== undefined && options.model !== null && !isUsableModel(options.model)) {
       throw new Error(`Not a usable model: ${options.model}`);
     }
+    if (
+      options.planningModel !== undefined &&
+      options.planningModel !== null &&
+      !isUsableModel(options.planningModel)
+    ) {
+      throw new Error(`Not a usable model: ${options.planningModel}`);
+    }
     // Deliberately allowed mid-run: the live run captured its own model/mode when it
     // started (see `Run`), so this only decides what the NEXT run uses. Reassigning is
     // still what you want if you mean "start over with these settings".
     const task = store.updateTask(taskId, {
       ...(options.model !== undefined ? { agentModel: options.model } : {}),
+      ...(options.planningModel !== undefined ? { agentPlanningModel: options.planningModel } : {}),
       ...(options.mode !== undefined ? { agentMode: options.mode } : {}),
       // Read at merge time, not at run time, so flipping it while the agent works still
       // decides what happens when that work lands.
