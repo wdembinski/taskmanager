@@ -205,7 +205,8 @@ export interface Project {
    *
    * `null` — the default, and every project that predates the field — means "same as
    * execution", so nothing about an existing project changes until a human sets it. A card's
-   * own `agentModel` still outranks both; see {@link resolveRunModel}.
+   * own `agentPlanningModel` (falling back to its `agentModel`) still outranks both for a
+   * planning run; see {@link resolveRunModel}.
    */
   planningModel: ClaudeModel | null;
   /** Permission mode this project's tasks run with unless overridden. */
@@ -518,14 +519,18 @@ export interface ModelResolution {
 }
 
 /**
- * Which model a run costs: the card's own choice, else the project's model **for that kind
- * of run**, else the project's execution model.
+ * Which model a run costs: the card's own choice **for that kind of run**, else the
+ * project's model for that kind, else the project's execution model.
  *
  * ```
- * task.agentModel                                 // explicit per-card / per-step choice
- *   ?? (planning ? project.planningModel : null)  // null = "same as execution"
- *   ?? project.defaultModel                       // the steps-execution model
+ * // planning:
+ * task.agentPlanningModel ?? task.agentModel ?? project.planningModel ?? project.defaultModel
+ * // steps:
+ * task.agentModel ?? project.defaultModel
  * ```
+ *
+ * `agentPlanningModel` only ever enters the planning ladder — a step run never falls back
+ * to it, since a card that named a planning model said nothing about what its steps cost.
  *
  * `planning` is decided by the caller from what the run IS ("come back with a plan"), not
  * from the permission mode alone — a chat reply or a review that merely inherited `plan`
@@ -533,16 +538,19 @@ export interface ModelResolution {
  *
  * Pure, and here rather than in the scheduler, for the same reason `releaseMode` is: a
  * ladder that decides what a run costs should be testable without a CLI. `??` throughout,
- * never `||` — both new values are nullable and this schema treats `''` as a real value.
+ * never `||` — every value here is nullable and this schema treats `''` as a real value.
  */
 export function resolveRunModel(
-  task: Pick<Task, 'agentModel'>,
+  task: Pick<Task, 'agentModel' | 'agentPlanningModel'>,
   project: Pick<Project, 'defaultModel' | 'planningModel'>,
   planning: boolean,
 ): ClaudeModel {
-  return (
-    task.agentModel ?? (planning ? (project.planningModel ?? null) : null) ?? project.defaultModel
-  );
+  if (planning) {
+    return (
+      task.agentPlanningModel ?? task.agentModel ?? project.planningModel ?? project.defaultModel
+    );
+  }
+  return task.agentModel ?? project.defaultModel;
 }
 
 /**
@@ -958,6 +966,14 @@ export interface Task {
   /** Model chosen for this assignment, overriding the project default. Null = project default. */
   agentModel?: ClaudeModel | null;
   /**
+   * Model chosen for THIS card's planning runs, overriding {@link Project.planningModel}.
+   *
+   * `null` — the default, and every card that predates the field — means "same as this
+   * task's own {@link agentModel} override", which itself falls to the project's planning
+   * model, and from there to the project's execution model. See {@link resolveRunModel}.
+   */
+  agentPlanningModel?: ClaudeModel | null;
+  /**
    * The plan a `plan`-mode delegated run produced, as markdown (Phase 11) — captured
    * from the agent's `ExitPlanMode` call and kept so it survives a restart, can be
    * re-read in the detail pane, and can be split into subtasks on approval. Null until
@@ -1302,6 +1318,8 @@ export interface AssignAgentInput {
   mode?: PermissionMode;
   /** Model for this assignment; omitted = the project's default. */
   model?: ClaudeModel;
+  /** Model for this card's planning runs; omitted = the project's planning model. */
+  planningModel?: ClaudeModel;
   /**
    * Free-text instructions for the agent. Recorded as a comment on the task's
    * timeline (not just passed to the process), so it is visible to the human and
