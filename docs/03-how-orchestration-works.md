@@ -597,13 +597,15 @@ names **two** models, in **Settings → Agents** (and in the Projects tab's dial
   — and nothing about that project changes: both halves use the execution model.
 
 A card or a step may still overrule both, from the assign dialog, the composer
-strip, or the step's own controls. The whole ladder is one pure function
+strip, or the step's own controls — and a card may overrule its own planning runs
+separately from its steps. The whole ladder is one pure function
 (`resolveRunModel`, `src/shared/model.ts`):
 
 ```
-task.agentModel                                 // this card's / this step's own choice
-  ?? (planning ? project.planningModel : null)  // "Same as execution" puts nothing here
-  ?? project.defaultModel                       // the steps execution model
+// planning:
+task.agentPlanningModel ?? task.agentModel ?? project.planningModel ?? project.defaultModel
+// steps:
+task.agentModel ?? project.defaultModel
 ```
 
 **What counts as planning is the turn, not the mode.** A run is billed as planning

@@ -606,6 +606,12 @@ export interface IpcApi {
     taskId: string,
     options: {
       model?: ClaudeModel | null;
+      /**
+       * Model this card's planning runs use, overriding the agent project's planning
+       * model. `null` hands the decision back to `agentModel` and, through it, the
+       * project's planning/execution models — see `resolveRunModel`.
+       */
+      planningModel?: ClaudeModel | null;
       mode?: PermissionMode | null;
       /**
        * Release this card after its branch merges (`@shared/release`). `null` hands the

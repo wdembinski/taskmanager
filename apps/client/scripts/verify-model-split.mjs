@@ -31,6 +31,15 @@
  * catalog at all — proving the override outranks both project models on the strength of
  * `isUsableModel`'s shape check alone, and that a step still never inherits it.
  *
+ * None of sections 1-8 ever sets a card's OWN `agentPlanningModel` — only `agentModel`. So
+ * they cannot answer whether the newest rung of the ladder (`task.agentPlanningModel ??` —
+ * the split added in `resolveRunModel`) is actually plumbed all the way through
+ * `buildClaudeArgs` and the spawn, rather than just through the pure function `model.test.ts`
+ * already covers. Section 9 is that card-level proof: a card whose `agentPlanningModel` and
+ * `agentModel` are both set, to two different models, on a project that itself splits (a
+ * third and fourth model again) — four distinct ids in play, so an argv can't satisfy an
+ * assertion by accident.
+ *
  * The app is NEVER launched (RELEASE.md rule 6 — there is no single-instance lock, and a
  * second instance killed a live session on 2026-08-02). Nothing outside the scratch
  * directory is written: no real profile, no git repository, no network. `hostFor` returns
@@ -54,6 +63,16 @@
  * other three checks in that section stay green (the step still doesn't inherit the pin,
  * and still runs on the execution model), which is itself evidence the mutation is scoped to
  * planning runs exactly as the line it changed is.
+ *
+ * Section 9 gets its own pass at the same discipline, targeting the term unique to IT: drop
+ * `task.agentPlanningModel ??` from the planning branch, so the ladder reads
+ * `task.agentModel ?? project.planningModel ?? project.defaultModel` for a planning run. Run
+ * on 2026-09-11, restored afterward the same way. Only section 9 goes red — its
+ * planning-run check, expecting `--model opus` (the card's own `agentPlanningModel`), gets
+ * `--model fable` instead (the card's `agentModel`, the next rung down now that the removed
+ * term no longer shadows it). Sections 1-8 stay green: none of their cards ever sets
+ * `agentPlanningModel`, so the removed term was already `null` on every one of them and
+ * dropping it changes nothing they were relying on.
  */
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -745,6 +764,84 @@ check(
   'and outranks the EXECUTION model just as clearly — the override never surfaces on this step',
   flag(customStepOne, '--model') !== CUSTOM_MODEL,
 );
+
+// ---------------------------------------------------------------------------
+section("9. A card-level split: its own planning override, its own steps override, both distinct from the project's");
+
+// Four distinct ids in play — the project's own two, plus the card's own two — so no
+// assertion below can pass by an accidental coincidence between them.
+const doubleSplit = store.addProject({
+  path: SCRATCH + '/repo',
+  name: 'a project the card out-ranks in both directions',
+  kind: 'agent',
+  defaultModel: 'sonnet',
+  planningModel: 'haiku',
+  defaultPermissionMode: 'acceptEdits',
+  useWorktrees: false,
+});
+
+const doubleSplitCard = card('A card that names its own planning and steps model', {
+  agentProjectId: doubleSplit.id,
+  agentMode: 'plan',
+  agentModel: 'fable',
+  agentPlanningModel: 'opus',
+});
+check(
+  'the card overrides both kinds of run, and to two different models',
+  doubleSplitCard.agentPlanningModel === 'opus' && doubleSplitCard.agentModel === 'fable',
+  doubleSplitCard.agentPlanningModel + '/' + doubleSplitCard.agentModel,
+);
+
+scheduler.runTask(doubleSplitCard.id);
+const doubleSplitPlanning = await nthInvocation(13, 'the double-split planning run to spawn');
+check(
+  "the CLI was given --model opus — the card's own agentPlanningModel, not haiku (the project's) or fable (the card's own steps model)",
+  flag(doubleSplitPlanning, '--model') === 'opus',
+  doubleSplitPlanning.argv.join(' '),
+);
+check(
+  'as a real argv pair, not a substring of the joined command line',
+  doubleSplitPlanning.argv[doubleSplitPlanning.argv.indexOf('--model') + 1] === 'opus',
+);
+
+await waitFor(
+  'the double-split plan to reach the inbox',
+  () => raised.some((i) => i.kind === 'plan-approval' && i.taskId === doubleSplitCard.id),
+);
+const doubleSplitApproval = raised.find(
+  (i) => i.kind === 'plan-approval' && i.taskId === doubleSplitCard.id,
+);
+scheduler.answerAttention(doubleSplitApproval.id, { decision: 'approve' });
+
+const doubleSplitSteps = await (async () => {
+  await waitFor(
+    'the double-split steps to be created',
+    () => store.getSubtasks(doubleSplitCard.id).length === 3,
+  );
+  return store.getSubtasks(doubleSplitCard.id);
+})();
+check(
+  "no step inherited either of the parent's overrides — NULL is still \"follow the project\"",
+  doubleSplitSteps.every((s) => s.agentModel === null),
+  JSON.stringify(doubleSplitSteps.map((s) => s.agentModel)),
+);
+
+const doubleSplitStepOne = await nthInvocation(14, 'the double-split step 1 to spawn');
+check(
+  "step 1 runs on --model sonnet — the project's execution model, since the step carries none of its own",
+  flag(doubleSplitStepOne, '--model') === 'sonnet',
+  doubleSplitStepOne.argv.join(' '),
+);
+check(
+  "and never the card's planning override — a step is not a planning run",
+  flag(doubleSplitStepOne, '--model') !== 'opus',
+);
+check(
+  "nor the card's own steps override — a step is charged the PROJECT model, exactly as section 6 already showed for a lone agentModel pin",
+  flag(doubleSplitStepOne, '--model') !== 'fable',
+);
+// Left running (never proceed(14)'d), same as invocations 8, 10 and 12 above — nothing past
+// this point needs it to finish, and the final cleanup tears it down regardless.
 
 // ===========================================================================
 // Kill every stub still waiting on a proceed file before the database is closed. The pause
