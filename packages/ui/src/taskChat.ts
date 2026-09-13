@@ -99,6 +99,7 @@ export const REFUSAL_HINT: Record<ChatRefusal, string> = {
     'card resumes by itself once you do.',
   'not-a-card': 'A step cannot be planned — re-plan the card it belongs to instead.',
   'chain-full': `This card already carries ${MAX_PLAN_STEPS} steps — the most one card can hold.`,
+  planning: 'The agent is already planning the next phase — approve or reject that plan first.',
   'unknown-task': 'This card no longer exists.',
   'empty-message': 'Type a message first.',
 };
@@ -125,14 +126,30 @@ export function canReplan(task: Task, subtasks: Task[]): ReplanAvailability {
   const offered = isAgentAssigned(task) && !task.parentTaskId;
   const base = { offered };
   if (task.status === 'blocked-by-limit') return { ...base, can: false, hint: REFUSAL_HINT.limit };
-  // A live turn on the card would be stopped to make room for the planner; better to let it
-  // finish than to cut off an answer the human is still reading.
+  // A live turn on the CARD ITSELF would be stopped to make room for the planner — and that
+  // live turn may already BE the planner, from a re-plan the human asked for a moment ago.
+  // Either way there is nothing new to say until it finishes, so the hint names the planner
+  // rather than promising a turn it cannot start.
   if (task.status === 'running' || task.status === 'waiting-input') {
-    return { ...base, can: false, hint: 'Wait for the current turn to finish, then plan again.' };
+    return {
+      ...base,
+      can: false,
+      hint:
+        'The agent is using this conversation right now — possibly the planner itself — ' +
+        'wait for it to finish, then plan again.',
+    };
   }
-  if (chainInFlight(subtasks)) return { ...base, can: false, hint: REFUSAL_HINT['chain-busy'] };
   if (subtasks.length >= MAX_PLAN_STEPS) {
     return { ...base, can: false, hint: REFUSAL_HINT['chain-full'] };
+  }
+  // A chain still executing its steps no longer blocks a re-plan (Phase 19): the planner
+  // runs beside it, in the card's own conversation, and only the LANDING waits.
+  if (chainInFlight(subtasks)) {
+    return {
+      ...base,
+      can: true,
+      hint: 'Plans the next round now, alongside the step that is still running — you approve it before any run starts.',
+    };
   }
   return {
     ...base,

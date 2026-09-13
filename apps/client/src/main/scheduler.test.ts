@@ -3395,14 +3395,35 @@ describe('Scheduler.replanCard (Phase 18)', () => {
     expect(h.scheduler.replanCard('s1')).toMatchObject({ reason: 'not-a-card' });
   });
 
-  it('refuses while the chain is still running', () => {
+  it('starts the planner beside a running step in plan mode, without stopping the step', () => {
+    // Phase 19: a chain still executing its steps no longer holds up a re-plan — the
+    // planner is its own turn in the card's own conversation, and the step it runs
+    // beside is untouched.
     const h = setupReplan({
       steps: [
         { title: 'a', status: 'done' },
-        { title: 'b', status: 'pending' },
+        { title: 'b', status: 'running' },
       ],
     });
-    expect(h.scheduler.replanCard('c1')).toMatchObject({ reason: 'chain-busy' });
+    (h.scheduler as unknown as { runs: Map<string, unknown> }).runs.set('r-step', {
+      taskId: 's2',
+      projectId: 'agent-1',
+      runId: 'r-step',
+      settled: false,
+    });
+    (h.scheduler as unknown as { inFlight: Set<string> }).inFlight.add('s2');
+    const result = h.scheduler.replanCard('c1');
+    expect(result.status).toBe('resumed');
+    expect(h.stop).not.toHaveBeenCalled();
+    expect(h.start).toHaveBeenCalledTimes(1);
+    expect((h.start.mock.calls[0][0] as { permissionMode: string }).permissionMode).toBe('plan');
+  });
+
+  it('refuses a second re-plan while one is pending', () => {
+    const h = setupReplan({ liveRun: true });
+    // The first ask stops the live run and queues the planner behind its exit.
+    expect(h.scheduler.replanCard('c1', 'first ask').status).toBe('resumed');
+    expect(h.scheduler.replanCard('c1', 'second ask')).toMatchObject({ reason: 'planning' });
   });
 
   it('refuses a card with no agent, and an unknown card', () => {
@@ -3419,6 +3440,64 @@ describe('Scheduler.replanCard (Phase 18)', () => {
       })),
     });
     expect(h.scheduler.replanCard('c1')).toMatchObject({ reason: 'chain-full' });
+  });
+
+  it('a re-plan run that settles done never integrates the branch', () => {
+    // The planner's whole job was a plan for the human to approve — the branch/base/
+    // worktree it carries belong to whatever chain it ran beside, not to this turn, so a
+    // successful settle must not walk it into `chain.workWritten` or the merge machinery.
+    const card = {
+      id: 'c1',
+      projectId: 'personal',
+      status: 'in-progress',
+    } as unknown as Task;
+    const addComment = vi.fn();
+    const store = {
+      getTask: (id: string) => (id === 'c1' ? card : undefined),
+      getSubtasks: () => [],
+      getProject: () => ({ id: 'agent-1', path: 'C:/repo' }) as unknown as Project,
+      updateTask: (id: string, patch: Partial<Task>) => {
+        if (id === 'c1') Object.assign(card, patch);
+        return card;
+      },
+      addComment,
+      getTaskActivity: () => [],
+      getSettings: () => ({ maxAutoRetries: 0, limitJitterMs: 0, concurrency: 1 }),
+      ...INERT_ATTENTION_STORE,
+    } as unknown as Store;
+    const worktrees = {
+      prepare: vi.fn(),
+      integrate: vi.fn(),
+      cleanup: vi.fn(),
+    } as unknown as WorktreeManager;
+    const sessions = { start: vi.fn(), stop: vi.fn(), send: vi.fn() } as unknown as SessionManager;
+    const scheduler = new Scheduler(
+      store,
+      sessions,
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      worktrees,
+    );
+    const run = {
+      taskId: 'c1',
+      projectId: 'agent-1',
+      runId: 'r1',
+      settled: false,
+      replan: true,
+      branch: 'orch/c1',
+      base: 'main',
+      worktree: 'C:/wt/c1',
+    };
+    (scheduler as unknown as { settle: (r: unknown, s: string) => void }).settle(run, 'done');
+    expect(
+      (scheduler as unknown as { readyToIntegrate: Map<string, unknown> }).readyToIntegrate.size,
+    ).toBe(0);
+    expect(addComment).not.toHaveBeenCalled();
+    expect(worktrees.integrate).not.toHaveBeenCalled();
+    expect(card.status).toBe('in-progress');
   });
 });
 
