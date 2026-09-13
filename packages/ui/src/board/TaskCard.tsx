@@ -911,6 +911,19 @@ export interface TaskCardProps {
    */
   onToggleEarlierSteps?: () => void;
   /**
+   * Whether the steps from **phases after the current one** are on screen. Default false, and
+   * that default is the point: a phase nobody has started yet is the part of the card least
+   * worth spending its height on, so it stays behind one row until asked for — same shape as
+   * {@link earlierStepsShown}, mirrored to the other end of the chain.
+   */
+  laterStepsShown?: boolean;
+  /**
+   * Show or hide those later phases. **Absent means the card never hides them** — the whole
+   * chain renders, which is what the web board (no store of its own to remember the answer)
+   * still gets.
+   */
+  onToggleLaterSteps?: () => void;
+  /**
    * The merge requests filed under this card. Rendered as rows beneath the steps, and
    * folded into `chainNeedsAttention` — so the ring and the card ordering agree.
    */
@@ -1045,6 +1058,8 @@ export function TaskCard({
   onToggleSteps,
   earlierStepsShown = false,
   onToggleEarlierSteps,
+  laterStepsShown = false,
+  onToggleLaterSteps,
   mergeRequests = [],
   statusKeywords,
   attentionTaskIds,
@@ -1242,10 +1257,17 @@ export function TaskCard({
    * remember the answer draws the whole chain rather than hiding half of it behind a control
    * that cannot remember being pressed.
    */
-  const { earlier, latest } = splitEarlierSteps(subtasks);
+  const { earlier, latest, later } = splitEarlierSteps(subtasks);
   const earlierFoldable = Boolean(onToggleEarlierSteps) && earlier.length > 0;
   const earlierHidden = earlierFoldable && !earlierStepsShown;
-  const stepRows = earlierHidden ? latest : [...earlier, ...latest];
+  /**
+   * The later phases' own fold — same gating as the earlier one: a board with nowhere to
+   * remember the answer draws the whole chain rather than hiding a phase behind a control
+   * that cannot remember being pressed.
+   */
+  const laterFoldable = Boolean(onToggleLaterSteps) && later.length > 0;
+  const laterHidden = laterFoldable && !laterStepsShown;
+  const stepRows = [...(earlierHidden ? [] : earlier), ...latest, ...(laterHidden ? [] : later)];
   const earlierDone = earlier.filter((s) => s.step.status === 'done').length;
   /**
    * What the folded row has to say on behalf of the rows behind it.
@@ -1260,6 +1282,12 @@ export function TaskCard({
     ({ step }) => runPhase(step, [], liveRunTaskIds, mergingTaskIds).spinner,
   );
   const earlierWants = earlier.some(({ step }) => attentionTaskIds?.has(step.id) ?? false);
+  /**
+   * The later row's own signal — the attention tint only, never a running dot: a phase after
+   * the current one cannot have a step running yet, chains being run in order, so there is
+   * nothing behind this row that could ever blink.
+   */
+  const laterWants = later.some(({ step }) => attentionTaskIds?.has(step.id) ?? false);
 
   return (
     <div
@@ -1658,12 +1686,12 @@ export function TaskCard({
               aria-expanded={!earlierHidden}
               title={
                 !earlierHidden
-                  ? 'Fold the earlier rounds away again'
+                  ? 'Fold the earlier phases away again'
                   : earlierWants
-                    ? `One of the ${earlier.length} steps planned before this round needs you`
+                    ? `One of the ${earlier.length} steps planned before this phase needs you`
                     : earlierRunning
-                      ? `One of the ${earlier.length} steps planned before this round is running`
-                      : `Show the ${earlier.length} steps planned before this round`
+                      ? `One of the ${earlier.length} steps planned before this phase is running`
+                      : `Show the ${earlier.length} steps planned before this phase`
               }
               draggable={false}
               onDragStart={(e) => {
@@ -1744,6 +1772,47 @@ export function TaskCard({
                 </div>
               );
             })}
+          {/* The phases after the current one, mirroring the earlier row above it — same
+              slot, same rhythm, drawn below the rows because that is where those steps
+              actually sit in the chain. No running dot: a phase that has not been reached
+              yet cannot have a step live in it, chains being run in order — but it still
+              wears the attention tint, because a step can be handed a question before its
+              own phase starts (a re-plan brief, say). */}
+          {!stepsHidden && laterFoldable && (
+            <button
+              type="button"
+              className={mergeClasses(
+                styles.step,
+                styles.earlierRow,
+                laterHidden && laterWants && styles.stepLoud,
+              )}
+              aria-expanded={!laterHidden}
+              title={
+                !laterHidden
+                  ? 'Fold the later phases away again'
+                  : laterWants
+                    ? `One of the ${later.length} steps planned after this phase needs you`
+                    : `Show the ${later.length} steps planned after this phase`
+              }
+              draggable={false}
+              onDragStart={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+              }}
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleLaterSteps?.();
+              }}
+            >
+              <span className={styles.stepSlot}>
+                {laterHidden ? <ChevronRightRegular /> : <ChevronDownRegular />}
+              </span>
+              <Caption1 className={styles.stepTitle}>
+                {later.length} upcoming step{later.length === 1 ? '' : 's'}
+              </Caption1>
+              <Caption1 className={styles.progress}>0/{later.length}</Caption1>
+            </button>
+          )}
         </div>
       )}
 

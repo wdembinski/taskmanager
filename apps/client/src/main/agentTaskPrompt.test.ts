@@ -515,3 +515,41 @@ describe('the plan scope rules', () => {
     expect(prompt).not.toContain('\n\n\n');
   });
 });
+
+describe('buildReplanPrompt with `replacing` (re-planning a phase in place)', () => {
+  it('lists the replaced round’s own steps as what the new plan replaces', () => {
+    const prompt = buildReplanPrompt('Checkout service', ['Add the guard'], {
+      slotsLeft: 5,
+      replacing: { round: 2, titles: ['Wire the webhook', 'Add the retry'] },
+    });
+    expect(prompt).toMatch(/Phase 2 is being re-planned/);
+    expect(prompt).toMatch(/Wire the webhook/);
+    expect(prompt).toMatch(/Add the retry/);
+  });
+
+  it('does not carry the replaced round’s titles in the "already on the card" list', () => {
+    // The caller is the one that drops them from `existingStepTitles` — this just checks
+    // the prompt does not ALSO repeat them under the "already on the card" heading, which
+    // would tell the agent twice, once as "keep" and once as "replace".
+    const prompt = buildReplanPrompt('Checkout service', ['Add the guard'], {
+      slotsLeft: 5,
+      replacing: { round: 2, titles: ['Wire the webhook'] },
+    });
+    const alreadyOnCard = prompt.split('Phase 2 is being re-planned')[0];
+    expect(alreadyOnCard).toMatch(/Add the guard/);
+    expect(alreadyOnCard).not.toMatch(/Wire the webhook/);
+  });
+
+  it('asks for the replacement only, not the round that would come after it', () => {
+    const prompt = buildReplanPrompt('Checkout service', [], {
+      slotsLeft: 5,
+      replacing: { round: 1, titles: ['Old step'] },
+    });
+    expect(prompt).toMatch(/propose only what should replace them/);
+  });
+
+  it('says nothing about replacing when no round is given', () => {
+    const prompt = buildReplanPrompt('Checkout service', ['Add the guard'], { slotsLeft: 5 });
+    expect(prompt).not.toMatch(/re-planned in place/);
+  });
+});

@@ -635,9 +635,9 @@ export function MyTasks(): JSX.Element {
   }, []);
 
   /**
-   * The two step folds a card can be in — saved, so they survive leaving the screen (which
+   * The three step folds a card can be in — saved, so they survive leaving the screen (which
    * unmounts this whole board) and closing the app. See `foldedSteps.ts` for what each list
-   * means and why one records what is SHUT and the other what is OPEN.
+   * means and why one records what is SHUT and the other two what is OPEN.
    *
    * Written the same optimistic way the toolbar's switches are: the section folds on the
    * click and the settings blob follows. The board's own task ids go along for the prune —
@@ -649,6 +649,7 @@ export function MyTasks(): JSX.Element {
     () => foldedCardSet(settings?.shownEarlierStepCards),
     [settings],
   );
+  const shownLaterSteps = useMemo(() => foldedCardSet(settings?.shownLaterStepCards), [settings]);
   const toggleSteps = useCallback(
     (taskId: string) => {
       const onBoard = new Set((tasks ?? []).map((t) => t.id));
@@ -672,6 +673,21 @@ export function MyTasks(): JSX.Element {
         const next = {
           ...prev,
           shownEarlierStepCards: toggleFoldedCard(prev.shownEarlierStepCards, taskId, onBoard),
+        };
+        void window.api.invoke('settings:save', next);
+        return next;
+      });
+    },
+    [tasks],
+  );
+  const toggleLaterSteps = useCallback(
+    (taskId: string) => {
+      const onBoard = new Set((tasks ?? []).map((t) => t.id));
+      setSettings((prev) => {
+        if (!prev) return prev;
+        const next = {
+          ...prev,
+          shownLaterStepCards: toggleFoldedCard(prev.shownLaterStepCards, taskId, onBoard),
         };
         void window.api.invoke('settings:save', next);
         return next;
@@ -1254,6 +1270,9 @@ export function MyTasks(): JSX.Element {
               // happens by itself when a card is re-planned.
               shownEarlierStepTaskIds={shownEarlierSteps}
               onToggleEarlierSteps={toggleEarlierSteps}
+              // …and the mirror of that, for the phases after the current one.
+              shownLaterStepTaskIds={shownLaterSteps}
+              onToggleLaterSteps={toggleLaterSteps}
               anchorRef={anchors.anchorRef}
               linkDrag={linkDrag}
               onLinkStart={(taskId) => {

@@ -186,6 +186,7 @@ const LOCAL_SETTINGS_KEYS: ReadonlyArray<keyof AppSettings> = [
   'boardScopeId',
   'foldedStepCards',
   'shownEarlierStepCards',
+  'shownLaterStepCards',
   'gantt',
 ];
 

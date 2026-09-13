@@ -2070,6 +2070,10 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       ...children.map((c) => [c.id, c] as const),
     ]);
     const added: Array<{ title: string; description?: string | null; round?: number }> = [];
+    const replaced: Array<{
+      round: number;
+      steps: Array<{ title: string; description?: string | null }>;
+    }> = [];
     const comments: string[] = [];
     const store = {
       getTask: (id: string) => byId.get(id),
@@ -2084,6 +2088,14 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       ) => {
         added.push(input);
         return undefined;
+      },
+      replaceSubtaskRound: (
+        _p: string,
+        round: number,
+        steps: Array<{ title: string; description?: string | null }>,
+      ) => {
+        replaced.push({ round, steps });
+        return [];
       },
       maxSubtaskRound: (parentId: string) =>
         children
@@ -2204,9 +2216,11 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       integrated,
       finished,
       added,
+      replaced,
       comments,
       seedRun,
       fire,
+      store,
     };
   }
 
@@ -3109,6 +3123,63 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
     });
   });
 
+  /**
+   * Re-planning a FUTURE phase in place (Phase 20): a run started with `replaceRound` set
+   * asks for a plan that REPLACES one round rather than appending after it, and approval
+   * has to re-check the round is still untouched — a human or the chain itself could have
+   * started it in the time the plan sat waiting for a decision.
+   */
+  describe('approving a plan that replaces a round in place', () => {
+    const setReplaceRound = (h: ReturnType<typeof setup>, round: number): void => {
+      (h.scheduler as unknown as { runs: Map<string, { replaceRound?: number }> }).runs.get(
+        'r0',
+      )!.replaceRound = round;
+    };
+
+    async function approveReplacement(h: ReturnType<typeof setup>, plan: string): Promise<void> {
+      h.seedRun('r0', 't1');
+      setReplaceRound(h, 2);
+      void h.scheduler.decidePermission({
+        runId: 'r0',
+        toolName: 'ExitPlanMode',
+        input: { plan },
+      } as never);
+      await Promise.resolve();
+      const item = h.emitAttention.mock.calls.at(-1)?.[0] as { id: string };
+      h.scheduler.answerAttention(item.id, { decision: 'approve' });
+      await Promise.resolve();
+    }
+
+    it('swaps the round via replaceSubtaskRound, not addSubtask, when the round is untouched', async () => {
+      const h = setup([
+        { id: 's1', title: 'Reproduce it', status: 'done', planRound: 1 },
+        { id: 's2', title: 'Old A', status: 'pending', planRound: 2 },
+        { id: 's3', title: 'Old B', status: 'stopped', planRound: 2 },
+      ]);
+      await approveReplacement(h, '## New A\nx\n\n## New B\ny');
+      expect(h.replaced).toHaveLength(1);
+      expect(h.replaced[0].round).toBe(2);
+      expect(h.replaced[0].steps.map((s) => s.title)).toEqual(['New A', 'New B']);
+      expect(h.added).toEqual([]);
+      expect(h.comments.some((c) => c.includes('Approved plan (phase 2, re-planned)'))).toBe(true);
+    });
+
+    it('appends as a new round and comments, when the round already started', async () => {
+      const h = setup([
+        { id: 's1', title: 'Reproduce it', status: 'done', planRound: 1 },
+        { id: 's2', title: 'Old A', status: 'running', planRound: 2 },
+      ]);
+      await approveReplacement(h, '## New A\nx');
+      expect(h.replaced).toEqual([]);
+      expect(h.added.map((s) => ({ title: s.title, round: s.round }))).toEqual([
+        { title: 'New A', round: 3 },
+      ]);
+      expect(
+        h.comments.some((c) => c.includes('Phase 2 had started') && c.includes('phase 3')),
+      ).toBe(true);
+    });
+  });
+
   it('raises the plan for approval even under bypassPermissions', async () => {
     // "Never ask me to approve tools" is not "silently discard the plan": `capturePlan` used
     // to store the markdown and the bypass shortcut then allowed the call with nothing
@@ -3232,6 +3303,217 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       await Promise.resolve();
       expect(run.planPresented).toBe(true);
     });
+  });
+
+  /**
+   * Phase 19 continued: the planner runs beside a live chain now, so its LAST step can
+   * finish while a re-plan for the card is still being drafted. Landing right then would
+   * risk merging (or offering to merge) a branch the human is about to hand more steps to —
+   * so `settle` holds it (`heldLandings`) instead, and `landHeld` replays it, via the shared
+   * `landWork`, once the plan actually resolves one way or another.
+   */
+  describe("holding a chain's landing behind a pending plan (Phase 19 continued)", () => {
+    /** A live re-plan run on the CARD — on its own enough to make `replanPending` true. */
+    const seedReplanRun = (h: ReturnType<typeof setup>, runId = 'r-plan'): void => {
+      (h.scheduler as unknown as { runs: Map<string, unknown> }).runs.set(runId, {
+        taskId: h.parent.id,
+        projectId: 'agent-1',
+        runId,
+        settled: false,
+        replan: true,
+      });
+    };
+
+    /** A plan-approval item sitting in the inbox — the other thing `replanPending` reads. */
+    const raiseApprovalItem = (h: ReturnType<typeof setup>, id = 'inbox-plan'): void => {
+      (h.scheduler as unknown as { attention: Map<string, unknown> }).attention.set(id, {
+        id,
+        kind: 'plan-approval',
+        runId: 'r-plan',
+        taskId: h.parent.id,
+        projectId: 'agent-1',
+      });
+    };
+
+    /** Finish the chain's last step while a re-plan is pending on the card — the hold itself. */
+    async function holdLastStep(h: ReturnType<typeof setup>): Promise<void> {
+      h.children[0].status = 'done';
+      seedReplanRun(h);
+      h.seedRun('r2', 's2');
+      h.fire('r2', okResult);
+      await flush();
+    }
+
+    it('the last step finishing under a pending plan does not integrate and does not clear the card’s session', async () => {
+      const h = setup();
+      h.parent.sessionId = 'planner-session';
+      await holdLastStep(h);
+
+      expect(h.integrated).toEqual([]);
+      expect(h.children[1].status).toBe('done');
+      expect(h.parent.sessionId).toBe('planner-session');
+      expect((h.parent as unknown as { chainLandedAt?: number }).chainLandedAt).toBeFalsy();
+      // No chain hand-back yet — that only happens once the landing actually lands.
+      expect(h.comments).toEqual([]);
+      const noted = (
+        h.store as unknown as { appendTaskEvent: ReturnType<typeof vi.fn> }
+      ).appendTaskEvent.mock.calls.some((c) =>
+        (c[3] as { text?: string } | undefined)?.text?.includes('waiting for the plan in progress'),
+      );
+      expect(noted).toBe(true);
+    });
+
+    it('approving a plan with new steps continues the chain into the new phase with no landing in between', async () => {
+      const h = setup(undefined, { autoIntegrate: false });
+      raiseApprovalItem(h);
+      await holdLastStep(h);
+
+      h.parent.agentPlan = '## Extra step\ndo more';
+      h.scheduler.answerAttention('inbox-plan', { decision: 'approve' });
+      await flush();
+
+      expect(h.added.map((s) => s.title)).toEqual(['Extra step']);
+      // The old held branch never landed — it just keeps growing under the new step instead.
+      expect(h.integrated).toEqual([]);
+      expect(h.comments.join(' ')).not.toContain('Plan complete');
+      expect(
+        (h.scheduler as unknown as { heldLandings: Map<string, unknown> }).heldLandings.size,
+      ).toBe(0);
+    });
+
+    it('approving a plan that adds nothing lands the held chain (summary comment filed, readyToIntegrate set)', async () => {
+      // Titled to match the card's default `agentPlan` (set by `setup`) verbatim, so
+      // approving it proposes the same two steps the card already has — nothing fresh.
+      const h = setup(
+        [
+          { id: 's1', title: 'Reproduce it' },
+          { id: 's2', title: 'Fix it' },
+        ],
+        { autoIntegrate: false },
+      );
+      raiseApprovalItem(h);
+      await holdLastStep(h);
+
+      h.scheduler.answerAttention('inbox-plan', { decision: 'approve' });
+      await flush();
+
+      expect(h.added).toEqual([]);
+      expect(
+        (h.scheduler as unknown as { readyToIntegrate: Map<string, unknown> }).readyToIntegrate.has(
+          's2',
+        ),
+      ).toBe(true);
+      expect(
+        (h.scheduler as unknown as { heldLandings: Map<string, unknown> }).heldLandings.size,
+      ).toBe(0);
+      const filed = h.comments.join(' ');
+      expect(filed).toContain('no steps this card does not already have');
+      expect(filed).toContain('Plan complete');
+    });
+
+    it('a planner that exits without a plan lands the held chain', async () => {
+      const h = setup(); // default autoIntegrate: true
+      await holdLastStep(h); // also seeds the live replan run 'r-plan'
+
+      await (
+        h.scheduler as unknown as { onRunEvent: (r: string, e: unknown) => Promise<void> }
+      ).onRunEvent('r-plan', { kind: 'exited', code: 0 });
+      await flush();
+
+      expect(h.integrated).toEqual([{ branch: 'orch/t1', base: 'main' }]);
+      expect(
+        (h.scheduler as unknown as { heldLandings: Map<string, unknown> }).heldLandings.size,
+      ).toBe(0);
+    });
+
+    it('Stop on the card converts the hold into a Merge offer', async () => {
+      const h = setup();
+      await holdLastStep(h);
+
+      expect(h.scheduler.stopTask('t1')).toBe(true);
+
+      // Stop does not land the branch itself — it only makes Merge possible.
+      expect(h.integrated).toEqual([]);
+      const ready = (
+        h.scheduler as unknown as {
+          readyToIntegrate: Map<string, { branch: string; base: string; worktree: string }>;
+        }
+      ).readyToIntegrate.get('s2');
+      expect(ready).toMatchObject({ branch: 'orch/t1', base: 'main', worktree: 'C:/wt/t1' });
+      expect(
+        (h.scheduler as unknown as { heldLandings: Map<string, unknown> }).heldLandings.size,
+      ).toBe(0);
+    });
+  });
+});
+
+describe('Scheduler.rehydrateAttention — a parked round-replacement survives a restart (Phase 20)', () => {
+  it('restores { round } from the item’s saved context into pendingReplacements', () => {
+    const parent = { id: 't1', projectId: 'personal', status: 'in-progress' } as unknown as Task;
+    const item = {
+      id: 'i1',
+      runId: 'dead-run',
+      taskId: 't1',
+      projectId: 'personal',
+      taskTitle: 'Ship the board',
+      kind: 'plan-approval',
+      prompt: 'p',
+      options: [],
+      toolName: null,
+      reason: null,
+      plan: 'the plan',
+      steps: ['New A'],
+      questions: [],
+      createdAt: Date.now(),
+    };
+    const store = {
+      getTask: (id: string) => (id === 't1' ? parent : undefined),
+      listAttention: () => [{ item, context: { round: 2 } }],
+      saveAttention: () => undefined,
+      deleteAttention: () => undefined,
+      getTaskHistory: () => [],
+    } as unknown as Store;
+    const sessions = { start: vi.fn(), stop: vi.fn(), send: vi.fn() } as unknown as SessionManager;
+    const scheduler = new Scheduler(store, sessions, vi.fn(), vi.fn(), vi.fn(), vi.fn(), vi.fn());
+    scheduler.rehydrateAttention();
+    const pendingReplacements = (
+      scheduler as unknown as { pendingReplacements: Map<string, { round: number }> }
+    ).pendingReplacements;
+    expect(pendingReplacements.get('i1')).toEqual({ round: 2 });
+  });
+
+  it('leaves pendingReplacements empty for an ordinary (appending) plan-approval', () => {
+    const parent = { id: 't1', projectId: 'personal', status: 'in-progress' } as unknown as Task;
+    const item = {
+      id: 'i1',
+      runId: 'dead-run',
+      taskId: 't1',
+      projectId: 'personal',
+      taskTitle: 'Ship the board',
+      kind: 'plan-approval',
+      prompt: 'p',
+      options: [],
+      toolName: null,
+      reason: null,
+      plan: 'the plan',
+      steps: ['New A'],
+      questions: [],
+      createdAt: Date.now(),
+    };
+    const store = {
+      getTask: (id: string) => (id === 't1' ? parent : undefined),
+      listAttention: () => [{ item, context: null }],
+      saveAttention: () => undefined,
+      deleteAttention: () => undefined,
+      getTaskHistory: () => [],
+    } as unknown as Store;
+    const sessions = { start: vi.fn(), stop: vi.fn(), send: vi.fn() } as unknown as SessionManager;
+    const scheduler = new Scheduler(store, sessions, vi.fn(), vi.fn(), vi.fn(), vi.fn(), vi.fn());
+    scheduler.rehydrateAttention();
+    const pendingReplacements = (
+      scheduler as unknown as { pendingReplacements: Map<string, { round: number }> }
+    ).pendingReplacements;
+    expect(pendingReplacements.size).toBe(0);
   });
 });
 
@@ -3395,14 +3677,35 @@ describe('Scheduler.replanCard (Phase 18)', () => {
     expect(h.scheduler.replanCard('s1')).toMatchObject({ reason: 'not-a-card' });
   });
 
-  it('refuses while the chain is still running', () => {
+  it('starts the planner beside a running step in plan mode, without stopping the step', () => {
+    // Phase 19: a chain still executing its steps no longer holds up a re-plan — the
+    // planner is its own turn in the card's own conversation, and the step it runs
+    // beside is untouched.
     const h = setupReplan({
       steps: [
         { title: 'a', status: 'done' },
-        { title: 'b', status: 'pending' },
+        { title: 'b', status: 'running' },
       ],
     });
-    expect(h.scheduler.replanCard('c1')).toMatchObject({ reason: 'chain-busy' });
+    (h.scheduler as unknown as { runs: Map<string, unknown> }).runs.set('r-step', {
+      taskId: 's2',
+      projectId: 'agent-1',
+      runId: 'r-step',
+      settled: false,
+    });
+    (h.scheduler as unknown as { inFlight: Set<string> }).inFlight.add('s2');
+    const result = h.scheduler.replanCard('c1');
+    expect(result.status).toBe('resumed');
+    expect(h.stop).not.toHaveBeenCalled();
+    expect(h.start).toHaveBeenCalledTimes(1);
+    expect((h.start.mock.calls[0][0] as { permissionMode: string }).permissionMode).toBe('plan');
+  });
+
+  it('refuses a second re-plan while one is pending', () => {
+    const h = setupReplan({ liveRun: true });
+    // The first ask stops the live run and queues the planner behind its exit.
+    expect(h.scheduler.replanCard('c1', 'first ask').status).toBe('resumed');
+    expect(h.scheduler.replanCard('c1', 'second ask')).toMatchObject({ reason: 'planning' });
   });
 
   it('refuses a card with no agent, and an unknown card', () => {
@@ -3419,6 +3722,122 @@ describe('Scheduler.replanCard (Phase 18)', () => {
       })),
     });
     expect(h.scheduler.replanCard('c1')).toMatchObject({ reason: 'chain-full' });
+  });
+
+  /**
+   * Re-planning a FUTURE phase in place (Phase 20): `opts.replaceRound` asks the agent to
+   * replace one existing round's steps rather than append a new round after them.
+   */
+  describe('replacing a round in place (opts.replaceRound)', () => {
+    it('refuses phase-started once any step of the round is not pending/stopped', () => {
+      const h = setupReplan({
+        steps: [
+          { title: 'Round1 A', status: 'done', planRound: 1 },
+          { title: 'Round2 A', status: 'done', planRound: 2 },
+          { title: 'Round2 B', status: 'pending', planRound: 2 },
+        ],
+      });
+      expect(h.scheduler.replanCard('c1', undefined, { replaceRound: 2 })).toMatchObject({
+        reason: 'phase-started',
+      });
+    });
+
+    it('refuses phase-started when the named round does not exist', () => {
+      const h = setupReplan({ steps: [{ title: 'Round1 A', status: 'done', planRound: 1 }] });
+      expect(h.scheduler.replanCard('c1', undefined, { replaceRound: 5 })).toMatchObject({
+        reason: 'phase-started',
+      });
+    });
+
+    it('starts the planner when every step of the round is still pending/stopped', () => {
+      const h = setupReplan({
+        steps: [
+          { title: 'Round1 A', status: 'done', planRound: 1 },
+          { title: 'Round2 A', status: 'pending', planRound: 2 },
+          { title: 'Round2 B', status: 'stopped', planRound: 2 },
+        ],
+      });
+      const result = h.scheduler.replanCard('c1', undefined, { replaceRound: 2 });
+      expect(result.status).toBe('resumed');
+      const { prompt } = h.start.mock.calls[0][0] as { prompt: string };
+      // Round 1 is still "already on the card"; round 2 is what is being replaced, listed
+      // separately so the agent proposes its successor rather than a round after it.
+      expect(prompt).toContain('Round1 A');
+      expect(prompt).toContain('Phase 2 is being re-planned');
+      expect(prompt).toContain('Round2 A');
+      expect(prompt).toContain('Round2 B');
+    });
+
+    it('threads replaceRound through a stopped live run into the deferred start', () => {
+      const h = setupReplan({
+        liveRun: true,
+        steps: [{ title: 'Round1 A', status: 'pending', planRound: 1 }],
+      });
+      h.scheduler.replanCard('c1', undefined, { replaceRound: 1 });
+      h.exit('r-live');
+      expect(h.start).toHaveBeenCalledTimes(1);
+      const { prompt } = h.start.mock.calls[0][0] as { prompt: string };
+      expect(prompt).toContain('Phase 1 is being re-planned');
+      expect(prompt).toContain('Round1 A');
+    });
+  });
+
+  it('a re-plan run that settles done never integrates the branch', () => {
+    // The planner's whole job was a plan for the human to approve — the branch/base/
+    // worktree it carries belong to whatever chain it ran beside, not to this turn, so a
+    // successful settle must not walk it into `chain.workWritten` or the merge machinery.
+    const card = {
+      id: 'c1',
+      projectId: 'personal',
+      status: 'in-progress',
+    } as unknown as Task;
+    const addComment = vi.fn();
+    const store = {
+      getTask: (id: string) => (id === 'c1' ? card : undefined),
+      getSubtasks: () => [],
+      getProject: () => ({ id: 'agent-1', path: 'C:/repo' }) as unknown as Project,
+      updateTask: (id: string, patch: Partial<Task>) => {
+        if (id === 'c1') Object.assign(card, patch);
+        return card;
+      },
+      addComment,
+      getTaskActivity: () => [],
+      getSettings: () => ({ maxAutoRetries: 0, limitJitterMs: 0, concurrency: 1 }),
+      ...INERT_ATTENTION_STORE,
+    } as unknown as Store;
+    const worktrees = {
+      prepare: vi.fn(),
+      integrate: vi.fn(),
+      cleanup: vi.fn(),
+    } as unknown as WorktreeManager;
+    const sessions = { start: vi.fn(), stop: vi.fn(), send: vi.fn() } as unknown as SessionManager;
+    const scheduler = new Scheduler(
+      store,
+      sessions,
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      worktrees,
+    );
+    const run = {
+      taskId: 'c1',
+      projectId: 'agent-1',
+      runId: 'r1',
+      settled: false,
+      replan: true,
+      branch: 'orch/c1',
+      base: 'main',
+      worktree: 'C:/wt/c1',
+    };
+    (scheduler as unknown as { settle: (r: unknown, s: string) => void }).settle(run, 'done');
+    expect(
+      (scheduler as unknown as { readyToIntegrate: Map<string, unknown> }).readyToIntegrate.size,
+    ).toBe(0);
+    expect(addComment).not.toHaveBeenCalled();
+    expect(worktrees.integrate).not.toHaveBeenCalled();
+    expect(card.status).toBe('in-progress');
   });
 });
 

@@ -17,6 +17,7 @@ import {
   hiddenDoneSummary,
   sortCards,
   splitEarlierSteps,
+  splitStepPhases,
   statusForColumn,
   stepPosition,
   subtaskProgress,
@@ -580,38 +581,115 @@ describe('groupStepsByRound', () => {
 });
 
 /**
- * The card's automatic partial fold: everything up to the newest planning round is
- * "earlier", and the newest round is the bunch you are meant to be watching.
+ * Cutting a chain into earlier / current / later phases (Phase 21) — the rule both the
+ * board card's fold and the detail pane's phase list are drawn from.
+ */
+describe('splitStepPhases', () => {
+  const step = (id: string, planRound: number | undefined, status: TaskStatus = 'pending'): Task =>
+    card(id, { planRound, status });
+
+  it('puts the LAST phase current once every round has finished', () => {
+    const { earlier, current, later } = splitStepPhases([
+      step('s1', 1, 'done'),
+      step('s2', 2, 'done'),
+      step('s3', 2, 'done'),
+    ]);
+    expect(earlier.map((r) => r.round)).toEqual([1]);
+    expect(current?.round).toBe(2);
+    expect(later).toEqual([]);
+  });
+
+  it('picks the FIRST unfinished phase as current and folds everything after it into later', () => {
+    const { earlier, current, later } = splitStepPhases([
+      step('s1', 1, 'done'),
+      step('s2', 2, 'running'),
+      step('s3', 2, 'pending'),
+      step('s4', 3, 'pending'),
+    ]);
+    expect(earlier.map((r) => r.round)).toEqual([1]);
+    expect(current?.round).toBe(2);
+    expect(current?.steps.map((s) => s.step.id)).toEqual(['s2', 's3']);
+    expect(later.map((r) => r.round)).toEqual([3]);
+  });
+
+  it('has nothing earlier or later for a card with a single phase', () => {
+    const { earlier, current, later } = splitStepPhases([step('s1', 1), step('s2', 1)]);
+    expect(earlier).toEqual([]);
+    expect(later).toEqual([]);
+    expect(current?.steps.map((s) => s.step.id)).toEqual(['s1', 's2']);
+  });
+
+  // The chain numbers its steps once, across the whole thing, so the split must never
+  // renumber them — whichever side of it they land on.
+  it('numbers steps across the WHOLE chain on every side of the split', () => {
+    const { earlier, current, later } = splitStepPhases([
+      step('s1', 1, 'done'),
+      step('s2', 2, 'running'),
+      step('s3', 3, 'pending'),
+    ]);
+    expect(earlier.flatMap((r) => r.steps.map((s) => s.index))).toEqual([0]);
+    expect(current?.steps.map((s) => s.index)).toEqual([1]);
+    expect(later.flatMap((r) => r.steps.map((s) => s.index))).toEqual([2]);
+  });
+
+  it('is all empty for a card with no steps', () => {
+    expect(splitStepPhases([])).toEqual({ earlier: [], current: null, later: [] });
+  });
+});
+
+/**
+ * The card's automatic partial fold: everything before the current phase is "earlier", the
+ * current phase is the bunch you are meant to be watching, and everything after it is
+ * "later" — built on {@link splitStepPhases}.
  */
 describe('splitEarlierSteps', () => {
-  const step = (id: string, planRound?: number): Task => card(id, { planRound });
+  const step = (id: string, planRound: number | undefined, status: TaskStatus = 'pending'): Task =>
+    card(id, { planRound, status });
 
   it('hides nothing on a card that has only been planned once', () => {
-    const { earlier, latest } = splitEarlierSteps([step('s1', 1), step('s2', 1)]);
+    const { earlier, latest, later } = splitEarlierSteps([step('s1', 1), step('s2', 1)]);
     expect(earlier).toEqual([]);
+    expect(later).toEqual([]);
     expect(latest.map((s) => s.step.id)).toEqual(['s1', 's2']);
   });
 
-  it('puts every round but the newest behind the fold', () => {
-    const { earlier, latest } = splitEarlierSteps([
-      step('s1', 1),
-      step('s2', 2),
-      step('s3', 2),
-      step('s4', 3),
+  it('puts every FINISHED round behind the fold and keeps the unfinished one current', () => {
+    const { earlier, latest, later } = splitEarlierSteps([
+      step('s1', 1, 'done'),
+      step('s2', 2, 'done'),
+      step('s3', 2, 'done'),
+      step('s4', 3, 'pending'),
     ]);
     expect(earlier.map((s) => s.step.id)).toEqual(['s1', 's2', 's3']);
     expect(latest.map((s) => s.step.id)).toEqual(['s4']);
+    expect(later).toEqual([]);
+  });
+
+  it('flattens every round after the current one into `later`', () => {
+    const { earlier, latest, later } = splitEarlierSteps([
+      step('s1', 1, 'done'),
+      step('s2', 2, 'running'),
+      step('s3', 3, 'pending'),
+    ]);
+    expect(earlier.map((s) => s.step.id)).toEqual(['s1']);
+    expect(latest.map((s) => s.step.id)).toEqual(['s2']);
+    expect(later.map((s) => s.step.id)).toEqual(['s3']);
   });
 
   // The card numbers its steps across the whole chain, so an unfolded earlier step still
-  // says "1." and the newest bunch still starts where the counter says it does.
-  it('keeps every step in its place in the whole chain, on both sides', () => {
-    const { earlier, latest } = splitEarlierSteps([step('s1', 1), step('s2', 1), step('s3', 2)]);
-    expect(earlier.map((s) => s.index)).toEqual([0, 1]);
-    expect(latest.map((s) => s.index)).toEqual([2]);
+  // says "1." and the current bunch still starts where the counter says it does.
+  it('keeps every step in its place in the whole chain, on every side', () => {
+    const { earlier, latest, later } = splitEarlierSteps([
+      step('s1', 1, 'done'),
+      step('s2', 2, 'running'),
+      step('s3', 3, 'pending'),
+    ]);
+    expect(earlier.map((s) => s.index)).toEqual([0]);
+    expect(latest.map((s) => s.index)).toEqual([1]);
+    expect(later.map((s) => s.index)).toEqual([2]);
   });
 
-  it('has nothing on either side for a card with no steps', () => {
-    expect(splitEarlierSteps([])).toEqual({ earlier: [], latest: [] });
+  it('has nothing on any side for a card with no steps', () => {
+    expect(splitEarlierSteps([])).toEqual({ earlier: [], latest: [], later: [] });
   });
 });
