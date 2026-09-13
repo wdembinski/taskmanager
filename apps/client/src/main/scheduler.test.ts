@@ -2207,6 +2207,7 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       comments,
       seedRun,
       fire,
+      store,
     };
   }
 
@@ -3231,6 +3232,147 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       } as never);
       await Promise.resolve();
       expect(run.planPresented).toBe(true);
+    });
+  });
+
+  /**
+   * Phase 19 continued: the planner runs beside a live chain now, so its LAST step can
+   * finish while a re-plan for the card is still being drafted. Landing right then would
+   * risk merging (or offering to merge) a branch the human is about to hand more steps to —
+   * so `settle` holds it (`heldLandings`) instead, and `landHeld` replays it, via the shared
+   * `landWork`, once the plan actually resolves one way or another.
+   */
+  describe("holding a chain's landing behind a pending plan (Phase 19 continued)", () => {
+    /** A live re-plan run on the CARD — on its own enough to make `replanPending` true. */
+    const seedReplanRun = (h: ReturnType<typeof setup>, runId = 'r-plan'): void => {
+      (h.scheduler as unknown as { runs: Map<string, unknown> }).runs.set(runId, {
+        taskId: h.parent.id,
+        projectId: 'agent-1',
+        runId,
+        settled: false,
+        replan: true,
+      });
+    };
+
+    /** A plan-approval item sitting in the inbox — the other thing `replanPending` reads. */
+    const raiseApprovalItem = (h: ReturnType<typeof setup>, id = 'inbox-plan'): void => {
+      (h.scheduler as unknown as { attention: Map<string, unknown> }).attention.set(id, {
+        id,
+        kind: 'plan-approval',
+        runId: 'r-plan',
+        taskId: h.parent.id,
+        projectId: 'agent-1',
+      });
+    };
+
+    /** Finish the chain's last step while a re-plan is pending on the card — the hold itself. */
+    async function holdLastStep(h: ReturnType<typeof setup>): Promise<void> {
+      h.children[0].status = 'done';
+      seedReplanRun(h);
+      h.seedRun('r2', 's2');
+      h.fire('r2', okResult);
+      await flush();
+    }
+
+    it('the last step finishing under a pending plan does not integrate and does not clear the card’s session', async () => {
+      const h = setup();
+      h.parent.sessionId = 'planner-session';
+      await holdLastStep(h);
+
+      expect(h.integrated).toEqual([]);
+      expect(h.children[1].status).toBe('done');
+      expect(h.parent.sessionId).toBe('planner-session');
+      expect((h.parent as unknown as { chainLandedAt?: number }).chainLandedAt).toBeFalsy();
+      // No chain hand-back yet — that only happens once the landing actually lands.
+      expect(h.comments).toEqual([]);
+      const noted = (
+        h.store as unknown as { appendTaskEvent: ReturnType<typeof vi.fn> }
+      ).appendTaskEvent.mock.calls.some((c) =>
+        (c[3] as { text?: string } | undefined)?.text?.includes('waiting for the plan in progress'),
+      );
+      expect(noted).toBe(true);
+    });
+
+    it('approving a plan with new steps continues the chain into the new phase with no landing in between', async () => {
+      const h = setup(undefined, { autoIntegrate: false });
+      raiseApprovalItem(h);
+      await holdLastStep(h);
+
+      h.parent.agentPlan = '## Extra step\ndo more';
+      h.scheduler.answerAttention('inbox-plan', { decision: 'approve' });
+      await flush();
+
+      expect(h.added.map((s) => s.title)).toEqual(['Extra step']);
+      // The old held branch never landed — it just keeps growing under the new step instead.
+      expect(h.integrated).toEqual([]);
+      expect(h.comments.join(' ')).not.toContain('Plan complete');
+      expect(
+        (h.scheduler as unknown as { heldLandings: Map<string, unknown> }).heldLandings.size,
+      ).toBe(0);
+    });
+
+    it('approving a plan that adds nothing lands the held chain (summary comment filed, readyToIntegrate set)', async () => {
+      // Titled to match the card's default `agentPlan` (set by `setup`) verbatim, so
+      // approving it proposes the same two steps the card already has — nothing fresh.
+      const h = setup(
+        [
+          { id: 's1', title: 'Reproduce it' },
+          { id: 's2', title: 'Fix it' },
+        ],
+        { autoIntegrate: false },
+      );
+      raiseApprovalItem(h);
+      await holdLastStep(h);
+
+      h.scheduler.answerAttention('inbox-plan', { decision: 'approve' });
+      await flush();
+
+      expect(h.added).toEqual([]);
+      expect(
+        (h.scheduler as unknown as { readyToIntegrate: Map<string, unknown> }).readyToIntegrate.has(
+          's2',
+        ),
+      ).toBe(true);
+      expect(
+        (h.scheduler as unknown as { heldLandings: Map<string, unknown> }).heldLandings.size,
+      ).toBe(0);
+      const filed = h.comments.join(' ');
+      expect(filed).toContain('no steps this card does not already have');
+      expect(filed).toContain('Plan complete');
+    });
+
+    it('a planner that exits without a plan lands the held chain', async () => {
+      const h = setup(); // default autoIntegrate: true
+      await holdLastStep(h); // also seeds the live replan run 'r-plan'
+
+      await (
+        h.scheduler as unknown as { onRunEvent: (r: string, e: unknown) => Promise<void> }
+      ).onRunEvent('r-plan', { kind: 'exited', code: 0 });
+      await flush();
+
+      expect(h.integrated).toEqual([{ branch: 'orch/t1', base: 'main' }]);
+      expect(
+        (h.scheduler as unknown as { heldLandings: Map<string, unknown> }).heldLandings.size,
+      ).toBe(0);
+    });
+
+    it('Stop on the card converts the hold into a Merge offer', async () => {
+      const h = setup();
+      await holdLastStep(h);
+
+      expect(h.scheduler.stopTask('t1')).toBe(true);
+
+      // Stop does not land the branch itself — it only makes Merge possible.
+      expect(h.integrated).toEqual([]);
+      const ready = (
+        h.scheduler as unknown as {
+          readyToIntegrate: Map<string, { branch: string; base: string; worktree: string }>;
+        }
+      ).readyToIntegrate.get('s2');
+      expect(ready).toMatchObject({ branch: 'orch/t1', base: 'main', worktree: 'C:/wt/t1' });
+      expect(
+        (h.scheduler as unknown as { heldLandings: Map<string, unknown> }).heldLandings.size,
+      ).toBe(0);
     });
   });
 });
