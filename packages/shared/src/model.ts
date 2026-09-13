@@ -1386,6 +1386,13 @@ export type ChatRefusal =
    * until the human resolves the first one.
    */
   | 'planning'
+  /**
+   * (Re-planning a phase in place, Phase 20) `replaceRound` names a round whose steps are
+   * no longer all `pending`/`stopped` — at least one has started, finished, or failed — so
+   * swapping it out from under the chain would discard live or landed work. Plan more steps
+   * after it instead.
+   */
+  | 'phase-started'
   | 'unknown-task'
   | 'empty-message';
 

@@ -710,8 +710,17 @@ export interface IpcApi {
    * `note` is the human's brief for what the round should cover. Refusals come back as
    * data (`{ status: 'refused', reason }`), same as `task:chat`, so the panel can explain
    * why the button did nothing.
+   *
+   * `opts.replaceRound` (Phase 20) re-plans a FUTURE phase in place instead of appending a
+   * new one: the named round's steps are what the agent is told to replace, and approving
+   * the result swaps them out — unless the phase started in the meantime, in which case it
+   * lands as a new round instead (see `ChatRefusal['phase-started']`).
    */
-  'task:replan': (taskId: string, note?: string) => Promise<ChatSendResult>;
+  'task:replan': (
+    taskId: string,
+    note?: string,
+    opts?: { replaceRound?: number },
+  ) => Promise<ChatSendResult>;
 
   /** Snapshot of everything currently waiting on a human (seed the inbox on load). */
   'attention:list': () => Promise<AttentionItem[]>;

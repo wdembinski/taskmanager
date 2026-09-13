@@ -347,14 +347,26 @@ const SLOTS_WORTH_SAYING = 20;
  * land in the same list as the existing ones, so they have to read the same way and be the
  * same kind of thing. A later round is if anything MORE prone to proposing a release, since
  * by then the work looks finished.
+ *
+ * `options.replacing` (Phase 20) turns this into a re-plan of a FUTURE phase in place: the
+ * caller has already dropped that round's titles from `existingStepTitles` (they are not
+ * "already on the card" — they are the ones about to be thrown away), and this adds the
+ * paragraph naming which phase and listing its current steps as what the new plan replaces,
+ * so the agent proposes a replacement for them rather than the next round after them.
  */
 export function buildReplanPrompt(
   taskTitle: string,
   existingStepTitles: readonly string[],
-  options: { note?: string; slotsLeft: number } = { slotsLeft: 0 },
+  options: {
+    note?: string;
+    slotsLeft: number;
+    replacing?: { round: number; titles: readonly string[] };
+  } = { slotsLeft: 0 },
 ): string {
   const note = clean(options.note);
   const done = existingStepTitles.map(clean).filter(Boolean);
+  const replacing = options.replacing;
+  const replacedTitles = replacing?.titles.map(clean).filter(Boolean) ?? [];
   return [
     `Plan the NEXT round of work on this card: "${taskTitle}".`,
     '',
@@ -363,6 +375,15 @@ export function buildReplanPrompt(
           `These steps are already on the card — do not propose them again, and do not`,
           `re-do their work:`,
           ...done.map((t, i) => `  ${i + 1}. ${t}`),
+          '',
+        ]
+      : []),
+    ...(replacing
+      ? [
+          `Phase ${replacing.round} is being re-planned in place. These are its current steps —`,
+          `they are being REPLACED, not kept, so propose only what should replace them, not`,
+          `the round that would otherwise come after them:`,
+          ...replacedTitles.map((t, i) => `  ${i + 1}. ${t}`),
           '',
         ]
       : []),

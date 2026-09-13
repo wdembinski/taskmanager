@@ -488,6 +488,23 @@ export interface Store {
   ): Task | undefined;
   /** The card's newest planning round, or 0 when it has no steps yet. */
   maxSubtaskRound(parentId: string): number;
+  /**
+   * Swap one planning round's steps for a freshly approved set, in place (Phase 20).
+   *
+   * The scheduler has already checked every step of `round` is still `pending`/`stopped` —
+   * this does not re-check, it just does the swap: the round's existing steps (and their
+   * timelines/transcripts) are destroyed via the same `deleteTaskDeep` an explicit delete
+   * uses, the replacements are inserted at `planRound: round` with the same construction
+   * `addSubtask` uses, and every one of the card's subtasks is renumbered by
+   * `(COALESCE(planRound, 1), "order", rowid)` so the chain's `order` stays contiguous and
+   * in round order regardless of how many steps the round gained or lost. One transaction,
+   * so a caller never observes the round half-deleted. Returns the newly created steps.
+   */
+  replaceSubtaskRound(
+    parentId: string,
+    round: number,
+    steps: Array<{ title: string; description?: string | null }>,
+  ): Task[];
   /** Delete one task (and its transcript history) by id. */
   deleteTask(id: string): void;
   /** Re-parse a plan and reconcile it into the project's tasks; returns the result. */
@@ -2082,6 +2099,14 @@ export function createStore(dbPath: string): Store {
   const maxSubtaskRound = db.prepare(
     `SELECT COALESCE(MAX(COALESCE(planRound, 1)), 0) AS round FROM tasks WHERE parentTaskId = ?`,
   );
+  // Every id of a card's subtasks, in the order `replaceSubtaskRound` renumbers them into:
+  // by round first (so a round's steps never straddle another round's), then their current
+  // `order` within it, then `rowid` to break ties among steps that never had one set apart
+  // (hand-added ones can share an `order` with nothing else to sort them by).
+  const selectSubtaskIdsInRoundOrder = db.prepare(
+    `SELECT id FROM tasks WHERE parentTaskId = ? ORDER BY COALESCE(planRound, 1), "order", rowid`,
+  );
+  const updateSubtaskOrder = db.prepare(`UPDATE tasks SET "order" = ? WHERE id = ?`);
   const upsertState = db.prepare(
     `INSERT INTO app_state (key, value) VALUES (?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
@@ -3125,6 +3150,70 @@ export function createStore(dbPath: string): Store {
   });
 
   /**
+   * Swap one planning round's steps for a freshly approved replacement set, in place
+   * (Phase 20) — see the `Store` interface for the contract.
+   *
+   * `deleteTaskDeep` is itself a `db.transaction`; better-sqlite3 nests one transaction
+   * function called from inside another as a SAVEPOINT, so the round's deletes and its
+   * replacements' inserts stay one atomic swap — nothing ever observes the round half-gone.
+   *
+   * The replacement steps are built exactly as `addSubtask` builds one, except `planRound`
+   * is the round being replaced rather than "whatever round is current" — a replacement
+   * keeps the round NUMBER the human approved it under, it does not start a new one.
+   */
+  const replaceSubtaskRoundTx = db.transaction(
+    (
+      parentId: string,
+      round: number,
+      steps: Array<{ title: string; description?: string | null }>,
+    ): Task[] => {
+      const parent = getTask(parentId);
+      if (!parent || parent.parentTaskId) return [];
+      const existing = (selectSubtasks.all(parentId) as TaskRow[]).map(rowToTask);
+      for (const step of existing) {
+        if ((step.planRound ?? 1) === round) deleteTaskDeep(step.id);
+      }
+      const createdIds: string[] = [];
+      for (const step of steps) {
+        const title = step.title.trim();
+        if (!title) continue;
+        const task: Task = {
+          id: randomUUID(),
+          projectId: parent.projectId,
+          phase: parent.phase,
+          title,
+          status: 'pending',
+          sessionId: null,
+          order: (nextSubtaskOrder.get(parentId) as { next: number }).next,
+          source: 'adhoc',
+          dependsOn: [],
+          isContract: false,
+          isScaffold: false,
+          type: parent.type ?? null,
+          parentTaskId: parentId,
+          description: step.description?.trim() || null,
+          agentProjectId: parent.agentProjectId ?? null,
+          agentModel: null,
+          agentMode: 'bypassPermissions',
+          planRound: round,
+        };
+        insertTask.run(taskToRow(task));
+        createdIds.push(task.id);
+      }
+      // Renumber every subtask's `order` by round, so the replacement sits exactly where the
+      // old round did relative to every other round. A straight append (the new steps always
+      // sorting last for `parentId`) would instead shove a replaced EARLIER round's steps
+      // after a later round's — backwards for both the runner's "next pending" scan and the
+      // panel's earlier/current/later split.
+      const ordered = (selectSubtaskIdsInRoundOrder.all(parentId) as Array<{ id: string }>).map(
+        (r) => r.id,
+      );
+      ordered.forEach((id, index) => updateSubtaskOrder.run(index, id));
+      return createdIds.map((id) => getTask(id)).filter((t): t is Task => t !== undefined);
+    },
+  );
+
+  /**
    * Allocate a key and insert a ticket, atomically.
    *
    * The bump and the insert are one transaction so that a refused create never burns a
@@ -3756,6 +3845,10 @@ export function createStore(dbPath: string): Store {
 
     maxSubtaskRound(parentId) {
       return (maxSubtaskRound.get(parentId) as { round: number }).round;
+    },
+
+    replaceSubtaskRound(parentId, round, steps) {
+      return replaceSubtaskRoundTx(parentId, round, steps);
     },
 
     deleteTask(id) {

@@ -830,6 +830,15 @@ interface Run {
    *    job was a plan for the human to approve, not work to land.
    */
   replan?: boolean;
+  /**
+   * This re-plan targets a FUTURE phase already on the card, to replace in place rather
+   * than append after (Phase 20) — the round number `replanCard` validated before this run
+   * ever started. `raisePlanApproval` reads it to build the "replaces phase R" prompt and
+   * to park `{ round }` in `pendingReplacements`, and `planStepsToAppend` reads it to drop
+   * that round's own titles from the duplicate check (they are being thrown away, not kept).
+   * Absent on every ordinary re-plan, which only ever appends.
+   */
+  replaceRound?: number;
   /** Set once we've decided the task's outcome, so a trailing `exited` doesn't re-settle it. */
   settled: boolean;
   /**
@@ -1127,8 +1136,17 @@ export class Scheduler {
    */
   private readonly pendingReplans = new Map<
     string,
-    { projectId: string; prompt: string; replan: true }
+    { projectId: string; prompt: string; replan: true; replaceRound?: number }
   >();
+  /**
+   * Plan-approval inbox items that would REPLACE a round in place rather than append one
+   * (Phase 20), keyed by the item's id — the round `raisePlanApproval` parked on the item's
+   * persisted context, so `approvePlan` can find it after the item was rehydrated from a
+   * restart, when nothing about the run that raised it survives. Same pattern as
+   * `pendingFailures`/`pendingIntegrations`: filled here and by `rehydrateAttention`, read
+   * (and cleared) by `answerAttention`.
+   */
+  private readonly pendingReplacements = new Map<string, { round: number }>();
   /**
    * Step ids already covered by a chain hand-back summary, per parent card (Phase 18).
    * A re-planned card finishes a chain once per ROUND, and `buildChainSummary` enumerates
@@ -1708,8 +1726,17 @@ export class Scheduler {
    * A chain still executing its steps does NOT hold this up (Phase 19): the planner is its
    * own turn in the card's own conversation, so it runs beside a live step rather than
    * behind it — see {@link replanPending} for what DOES still refuse a second one.
+   *
+   * `opts.replaceRound` (Phase 20) re-plans a FUTURE phase in place instead of appending a
+   * new one after it. The round has to exist and every one of its steps has to still be
+   * `pending`/`stopped` — nothing has started, finished or failed in it — or the ask is
+   * refused with `phase-started` rather than silently falling back to an append: a card
+   * whose round quietly grew a round M+1 nobody asked for is a worse surprise than a
+   * refusal naming the reason. Freed capacity from the round being thrown away is added
+   * back into `slotsLeft`, since replacing N steps with M costs nothing on the cap the
+   * round itself already spent.
    */
-  replanCard(taskId: string, note?: string): ChatSendResult {
+  replanCard(taskId: string, note?: string, opts?: { replaceRound?: number }): ChatSendResult {
     const refused = (reason: ChatRefusal): ChatSendResult => ({
       status: 'refused',
       taskId,
@@ -1728,17 +1755,31 @@ export class Scheduler {
     if (this.replanPending(card.id)) return refused('planning');
 
     const steps = this.store.getSubtasks(card.id);
-    const slotsLeft = MAX_PLAN_STEPS - steps.length;
+    const replaceRound = opts?.replaceRound;
+    const roundSteps =
+      replaceRound != null ? steps.filter((s) => (s.planRound ?? 1) === replaceRound) : [];
+    if (replaceRound != null) {
+      const started = roundSteps.some((s) => s.status !== 'pending' && s.status !== 'stopped');
+      if (roundSteps.length === 0 || started) return refused('phase-started');
+    }
+    const slotsLeft = MAX_PLAN_STEPS - steps.length + roundSteps.length;
     if (slotsLeft <= 0) return refused('chain-full');
 
     const project = this.runProjectFor(card);
     if (!project) return refused('never-ran');
 
-    const prompt = buildReplanPrompt(
-      card.title,
-      steps.map((s) => s.title),
-      { note, slotsLeft },
-    );
+    // The round being replaced is not "already on the card" for the duplicate-check list —
+    // it is what the new plan is replacing — so it comes out of `existingTitles` and goes
+    // into `replacing` instead, which tells the agent to propose ITS successor, not the
+    // round that would otherwise follow it.
+    const existingTitles = steps
+      .filter((s) => (s.planRound ?? 1) !== replaceRound)
+      .map((s) => s.title);
+    const replacing =
+      replaceRound != null
+        ? { round: replaceRound, titles: roundSteps.map((s) => s.title) }
+        : undefined;
+    const prompt = buildReplanPrompt(card.title, existingTitles, { note, slotsLeft, replacing });
     // Filed before anything starts, so the timeline records the ask even if the run dies on
     // spawn — and so the human can see what they asked for while the planner is thinking.
     if (note?.trim()) this.store.addChatMessage(card.projectId, card.id, note.trim());
@@ -1750,7 +1791,12 @@ export class Scheduler {
       live.settled = true; // we are deciding this run's outcome, not its exit code
       this.clearRunAttention(live.runId);
       this.sessions.stop(live.runId);
-      this.pendingReplans.set(card.id, { projectId: project.id, prompt, replan: true });
+      this.pendingReplans.set(card.id, {
+        projectId: project.id,
+        prompt,
+        replan: true,
+        replaceRound,
+      });
       return { status: 'resumed', taskId: card.id, runId: live.runId };
     }
     // Reserved elsewhere (a run spawning right now) — refuse rather than double-run a task.
@@ -1763,6 +1809,7 @@ export class Scheduler {
         chatPrompt: prompt,
         permissionMode: 'plan',
         replan: true,
+        replaceRound,
       }),
     };
   }
@@ -1816,6 +1863,7 @@ export class Scheduler {
       chatPrompt: pending.prompt,
       permissionMode: 'plan',
       replan: true,
+      replaceRound: pending.replaceRound,
     });
   }
 
@@ -2497,7 +2545,10 @@ export class Scheduler {
         this.approvePlan(item, pending?.resolve, note);
       } else {
         // Rejected: the session keeps its plan-mode context and re-plans with the note
-        // as the reason, which is far cheaper than starting the research over.
+        // as the reason, which is far cheaper than starting the research over. Its next
+        // `ExitPlanMode` raises a FRESH item and re-derives `{ round }` from the run's own
+        // `replaceRound` (untouched by a rejection), so this item's own entry is now stale.
+        this.pendingReplacements.delete(itemId);
         const message = note || PLAN_REJECTED_MESSAGE;
         if (pending) pending.resolve({ behavior: 'deny', message });
         else this.sessions.send(item.runId, message);
@@ -2723,6 +2774,7 @@ export class Scheduler {
     this.conflictFixAttempts.clear();
     this.chainStarts.clear();
     this.pendingReplans.clear();
+    this.pendingReplacements.clear();
     this.summarizedSteps.clear();
     this.pendingConflictFix.clear();
     this.activeProjects.clear();
@@ -2792,6 +2844,8 @@ export class Scheduler {
        * {@link Run.replan}.
        */
       replan?: boolean;
+      /** This re-plan replaces a round in place rather than appending — see {@link Run.replaceRound}. */
+      replaceRound?: number;
     } = {},
   ): string {
     const runId = randomUUID();
@@ -2851,6 +2905,7 @@ export class Scheduler {
       model: resolveRunModel(task, project, expectsPlan && permissionMode === 'plan'),
       expectsPlan,
       replan: opts.replan,
+      replaceRound: opts.replaceRound,
     };
     this.runs.set(runId, run);
     this.inFlight.add(task.id);
@@ -4115,6 +4170,14 @@ export class Scheduler {
       steps?: string[];
       /** `agent-question` only: the structured questions, with their options. */
       questions?: AttentionQuestion[];
+      /**
+       * Kind-specific context to persist alongside the item, read back the same way
+       * `raiseTaskFailed`/`raiseMergeConflict` do for their own kinds — a `plan-approval`
+       * that replaces a round in place (Phase 20) parks `{ round }` here so `approvePlan`
+       * can find it after a restart drops the run that raised it. Absent, and so saved as
+       * `null`, for every caller that has nothing worth surviving a restart.
+       */
+      context?: unknown;
     },
   ): AttentionItem {
     const task = this.store.getTask(run.taskId);
@@ -4137,9 +4200,9 @@ export class Scheduler {
     this.attention.set(item.id, item);
     // Persisted alongside the in-memory map, not instead of it: the map is what every hot
     // path reads, the table is what survives a restart. The kind-specific context is
-    // filled in by the specialised raisers (`raiseTaskFailed`, `raiseMergeConflict`),
-    // which know what their answer path will need.
-    this.store.saveAttention(item, null);
+    // filled in by the specialised raisers (`raiseTaskFailed`, `raiseMergeConflict`) and by
+    // `detail.context` above, which know what their answer path will need.
+    this.store.saveAttention(item, detail.context ?? null);
     this.updateTask(run.taskId, { status: 'waiting-input' }, run.runId);
     this.emitAttention(item);
     return item;
@@ -4259,6 +4322,12 @@ export class Scheduler {
       if (item.kind === 'merge-conflict' && context) {
         this.pendingIntegrations.set(item.id, context as PendingIntegration);
       }
+      // A plan-approval that would replace a round in place (Phase 20) parked `{ round }`
+      // on itself when raised — restore it the same way, or a restart between the plan and
+      // its approval would make `approvePlan` treat a replacement as an ordinary append.
+      if (item.kind === 'plan-approval' && context) {
+        this.pendingReplacements.set(item.id, context as { round: number });
+      }
       this.emitAttention(revived);
     }
   }
@@ -4293,6 +4362,7 @@ export class Scheduler {
       }
       this.pendingIntegrations.delete(item.id); // drop any parked conflict for this run
       this.pendingFailures.delete(item.id); // …and any parked failure
+      this.pendingReplacements.delete(item.id); // …and any parked round-replacement
       this.resolveAttention(item.id);
     }
     // Negotiations touching this run (Phase D): if it was the PROPOSER, the round
@@ -5360,29 +5430,48 @@ export class Scheduler {
    * being signed off rather than just prose. Reuses the existing plan capture: the
    * markdown is read from the task (persisted by `capturePlan`), so a plan survives
    * an app restart between the agent producing it and the human reading it.
+   *
+   * `run.replaceRound` (Phase 20) makes this an approval that would replace a round in
+   * place rather than append one: the round's own titles are excluded from the duplicate
+   * check (they are what is being thrown away, not kept), the prompt names the phase and
+   * how many of its steps would be replaced, and the round is parked on the item — via
+   * `raiseAttention`'s `context` — as `{ round }` in `pendingReplacements`, so `approvePlan`
+   * can find it even after a restart drops this run.
    */
   private raisePlanApproval(run: Run): AttentionItem {
     run.planPresented = true; // this run did its job, whatever the human decides next
     const plan = this.store.getTask(run.taskId)?.agentPlan ?? '';
     const existing = this.store.getSubtasks(run.taskId);
-    const steps = this.planStepsToAppend(run.taskId, plan);
-    return this.raiseAttention(run, {
+    const replaceRound = run.replaceRound;
+    const steps = this.planStepsToAppend(run.taskId, plan, replaceRound);
+    const targetSteps =
+      replaceRound != null ? existing.filter((s) => (s.planRound ?? 1) === replaceRound) : [];
+    const item = this.raiseAttention(run, {
       kind: 'plan-approval',
       prompt:
         steps.length === 0
           ? 'The agent finished planning, but the plan proposes nothing this card does not ' +
             'already have. Review it below — approving will not add any steps.'
-          : existing.length > 0
-            ? `The agent proposes ${steps.length} more step(s), on top of the ` +
-              `${existing.length} already on this card. Approving runs them one at a time, ` +
-              `each in its own session, on this card's branch.`
-            : `The agent finished planning and proposes ${steps.length} step(s). Approving runs ` +
-              `them one at a time, each in its own session, on this card's branch.`,
+          : replaceRound != null
+            ? `The agent proposes ${steps.length} step(s) that replace the ` +
+              `${targetSteps.length} step(s) of phase ${replaceRound}. Approving swaps them ` +
+              `in — unless that phase has started in the meantime, in which case its steps ` +
+              `are kept and these run after it instead — each in its own session, on this ` +
+              `card's branch.`
+            : existing.length > 0
+              ? `The agent proposes ${steps.length} more step(s), on top of the ` +
+                `${existing.length} already on this card. Approving runs them one at a time, ` +
+                `each in its own session, on this card's branch.`
+              : `The agent finished planning and proposes ${steps.length} step(s). Approving runs ` +
+                `them one at a time, each in its own session, on this card's branch.`,
       toolName: null,
       reason: null,
       plan,
       steps: steps.map((s) => s.title),
+      context: replaceRound != null ? { round: replaceRound } : undefined,
     });
+    if (replaceRound != null) this.pendingReplacements.set(item.id, { round: replaceRound });
+    return item;
   }
 
   /**
@@ -5392,13 +5481,17 @@ export class Scheduler {
    * Shared by `raisePlanApproval` and `approvePlan` on purpose. They used to answer this
    * question differently (the inbox listed the whole plan, approval created a subset), which
    * meant a re-planning round could promise five steps and deliver two with no explanation.
+   *
+   * `excludeRound` (Phase 20) leaves one round's own titles out of both the duplicate check
+   * and the {@link MAX_PLAN_STEPS} count — the round a replacing plan is about to throw away
+   * is not "already on the card" for either purpose, it is what the new steps replace.
    */
-  private planStepsToAppend(parentId: string, plan: string): PlanStep[] {
+  private planStepsToAppend(parentId: string, plan: string, excludeRound?: number): PlanStep[] {
     const existing = this.store.getSubtasks(parentId);
-    return stepsToAppend(
-      existing.map((s) => s.title),
-      splitPlanIntoSteps(plan),
-    );
+    const existingTitles = existing
+      .filter((s) => (s.planRound ?? 1) !== excludeRound)
+      .map((s) => s.title);
+    return stepsToAppend(existingTitles, splitPlanIntoSteps(plan));
   }
 
   /**
@@ -5415,6 +5508,14 @@ export class Scheduler {
    * resolved the approval, moved the card to `in-progress` and created nothing, so the
    * human saw an agent "plan" work that never appeared anywhere. Duplicate protection
    * moved into `stepsToAppend`, which drops individual repeats rather than the whole round.
+   *
+   * A round the item's plan would REPLACE (Phase 20, `pendingReplacements`) swaps in place
+   * instead of appending — but only if every one of that round's steps is still
+   * `pending`/`stopped` at the moment of approval, not merely when the re-plan was asked
+   * for: a human can press Start on the round, or the chain can simply reach it, in the time
+   * the plan sat waiting for a decision. When that happens the swap is declined the same way
+   * `replanCard` would have declined the ask itself — the round's live or landed steps are
+   * kept, and the fresh ones land as a new round after them, with a comment saying so.
    */
   private approvePlan(
     item: AttentionItem,
@@ -5423,27 +5524,62 @@ export class Scheduler {
   ): void {
     const parent = this.store.getTask(item.taskId);
     if (!parent) return;
+    const replacement = this.pendingReplacements.get(item.id);
+    this.pendingReplacements.delete(item.id);
     const plan = parent.agentPlan ?? item.plan ?? '';
-    const fresh = this.planStepsToAppend(parent.id, plan);
-    const round = this.store.maxSubtaskRound(parent.id) + 1;
-    for (const step of fresh) {
-      this.store.addSubtask(parent.id, {
-        title: step.title,
-        description: step.description,
-        round,
-      });
+    const fresh = this.planStepsToAppend(parent.id, plan, replacement?.round);
+
+    const roundSteps = replacement
+      ? this.store.getSubtasks(parent.id).filter((s) => (s.planRound ?? 1) === replacement.round)
+      : [];
+    const canReplace =
+      replacement != null &&
+      roundSteps.length > 0 &&
+      roundSteps.every((s) => s.status === 'pending' || s.status === 'stopped');
+
+    let round = this.store.maxSubtaskRound(parent.id) + 1;
+    let replaced = false;
+    if (fresh.length > 0) {
+      if (replacement && canReplace) {
+        this.store.replaceSubtaskRound(
+          parent.id,
+          replacement.round,
+          fresh.map((step) => ({ title: step.title, description: step.description })),
+        );
+        round = replacement.round;
+        replaced = true;
+      } else {
+        for (const step of fresh) {
+          this.store.addSubtask(parent.id, {
+            title: step.title,
+            description: step.description,
+            round,
+          });
+        }
+        if (replacement) {
+          this.store.addComment(
+            parent.projectId,
+            parent.id,
+            `Phase ${replacement.round} had started by the time this plan was approved, so ` +
+              `its steps were kept and the new ones were added as phase ${round}.`,
+          );
+        }
+      }
     }
     // An approval note is the human's own guidance — filed on the card, where every
     // step's prompt picks it up.
     if (note) this.store.addComment(parent.projectId, parent.id, note);
     // The plan itself goes on the timeline, because `capturePlan` overwrites `agentPlan`:
     // without this, a second approved plan silently erases the first from the card, and the
-    // "Approved plan" fold would claim round 2's plan produced round 1's steps.
-    if (plan.trim() && round > 1) {
+    // "Approved plan" fold would claim round 2's plan produced round 1's steps. A genuine
+    // replacement logs it unconditionally, whatever its round number — the round already
+    // carries an earlier approval of its own, and this plan is what `agentPlan` is about to
+    // lose to overwrite.
+    if (plan.trim() && (round > 1 || replaced)) {
       this.store.addComment(
         parent.projectId,
         parent.id,
-        `Approved plan (phase ${round}):\n\n${plan}`,
+        `Approved plan (phase ${round}${replaced ? ', re-planned' : ''}):\n\n${plan}`,
       );
     }
 

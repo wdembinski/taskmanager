@@ -1060,7 +1060,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     return task;
   });
   handle('task:chat', async (taskId, message) => scheduler.chatWithAgent(taskId, message));
-  handle('task:replan', async (taskId, note) => scheduler.replanCard(taskId, note));
+  handle('task:replan', async (taskId, note, opts) => scheduler.replanCard(taskId, note, opts));
   handle('task:create', async (projectId, input) => {
     // The same check `task:setProject` makes, for the same reason: a card created with a
     // dangling or unfileable tag would wear a colour stripe nothing on the board could
