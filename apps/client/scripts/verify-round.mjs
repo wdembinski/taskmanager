@@ -605,6 +605,55 @@ check(
   pathlessGraph.reason,
 );
 
+// ---------------------------------------------------------------------------
+section('6. replaceSubtaskRound swaps a future phase in place, against a real database');
+
+// A card already planned three phases deep — round 2 is the one about to be re-planned,
+// exactly the shape a "Re-plan…" click on a later phase's header produces.
+const planned = card('a card with three phases already planned', {});
+const phase1 = store.addSubtask(planned.id, { title: 'phase 1 step', round: 1 });
+const phase2 = store.addSubtask(planned.id, { title: 'phase 2 step (old)', round: 2 });
+const phase3 = store.addSubtask(planned.id, { title: 'phase 3 step', round: 3 });
+check(
+  'all three phases exist, pending, before the swap',
+  [phase1, phase2, phase3].every((s) => s?.status === 'pending'),
+);
+
+const replacement = store.replaceSubtaskRound(planned.id, 2, [
+  { title: 'phase 2 step (new), first' },
+  { title: 'phase 2 step (new), second' },
+]);
+check(
+  'the swap returns the two steps it just created',
+  replacement.length === 2,
+  String(replacement.length),
+);
+
+const afterSwap = store.getSubtasks(planned.id);
+check(
+  'getSubtasks now reads phase 1, the new phase 2 (both of it), then phase 3 — in that order',
+  afterSwap.length === 4 &&
+    afterSwap[0].id === phase1?.id &&
+    afterSwap[1].title === 'phase 2 step (new), first' &&
+    afterSwap[2].title === 'phase 2 step (new), second' &&
+    afterSwap[3].id === phase3?.id,
+  JSON.stringify(afterSwap.map((s) => s.title)),
+);
+check(
+  'the new phase-2 steps carry the SAME round number as the ones they replaced',
+  afterSwap[1].planRound === 2 && afterSwap[2].planRound === 2,
+  afterSwap[1].planRound + '/' + afterSwap[2].planRound,
+);
+check(
+  'the old phase-2 row is gone — deleteTaskDeep ran, not just unlinked',
+  store.getTask(phase2.id) === undefined,
+);
+check(
+  'and phase 1 and phase 3, untouched by the swap, kept their own ids',
+  store.getTask(phase1.id)?.title === 'phase 1 step' &&
+    store.getTask(phase3.id)?.title === 'phase 3 step',
+);
+
 store.close();
 
 console.log('');
