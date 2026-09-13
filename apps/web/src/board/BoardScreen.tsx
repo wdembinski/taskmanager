@@ -408,6 +408,7 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
     () => foldedCardSet(settings.shownEarlierStepCards),
     [settings],
   );
+  const shownLaterSteps = useMemo(() => foldedCardSet(settings.shownLaterStepCards), [settings]);
   const onBoardIds = useMemo(() => new Set(boardTasks.map((t) => t.id)), [boardTasks]);
 
   const toggleSteps = useCallback(
@@ -424,6 +425,15 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
       void saveSettings({
         ...settings,
         shownEarlierStepCards: toggleFoldedCard(settings.shownEarlierStepCards, taskId, onBoardIds),
+      }).catch(reportError);
+    },
+    [settings, saveSettings, onBoardIds, reportError],
+  );
+  const toggleLaterSteps = useCallback(
+    (taskId: string) => {
+      void saveSettings({
+        ...settings,
+        shownLaterStepCards: toggleFoldedCard(settings.shownLaterStepCards, taskId, onBoardIds),
       }).catch(reportError);
     },
     [settings, saveSettings, onBoardIds, reportError],
@@ -556,6 +566,8 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
                 onToggleSteps={toggleSteps}
                 shownEarlierStepTaskIds={shownEarlierSteps}
                 onToggleEarlierSteps={toggleEarlierSteps}
+                shownLaterStepTaskIds={shownLaterSteps}
+                onToggleLaterSteps={toggleLaterSteps}
                 anchorRef={anchors.anchorRef}
                 linkDrag={linkDrag}
                 onLinkStart={(taskId) => {

@@ -123,6 +123,14 @@ export interface KanbanColumnProps {
   /** Show or hide one card's earlier rounds. Absent = the card never hides them. */
   onToggleEarlierSteps?: (taskId: string) => void;
   /**
+   * The cards showing the steps from phases after their current one. The default — absent
+   * from this set — is that a phase nobody has reached yet stays folded; see
+   * `splitStepPhases`.
+   */
+  shownLaterStepTaskIds?: ReadonlySet<string>;
+  /** Show or hide one card's later phases. Absent = the card never hides them. */
+  onToggleLaterSteps?: (taskId: string) => void;
+  /**
    * The chain overlay's measuring tap, handed to each card's root element. The column
    * only passes it through — it knows nothing about links, and the overlay is drawn once
    * over the whole board rather than per column (see `ChainOverlay`).
@@ -221,6 +229,10 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               earlierStepsShown={props.shownEarlierStepTaskIds?.has(task.id)}
               onToggleEarlierSteps={
                 props.onToggleEarlierSteps && (() => props.onToggleEarlierSteps?.(task.id))
+              }
+              laterStepsShown={props.shownLaterStepTaskIds?.has(task.id)}
+              onToggleLaterSteps={
+                props.onToggleLaterSteps && (() => props.onToggleLaterSteps?.(task.id))
               }
               mergeRequests={mergeRequests}
               statusKeywords={props.statusKeywords}

@@ -5443,7 +5443,7 @@ export class Scheduler {
       this.store.addComment(
         parent.projectId,
         parent.id,
-        `Approved plan (round ${round}):\n\n${plan}`,
+        `Approved plan (phase ${round}):\n\n${plan}`,
       );
     }
 

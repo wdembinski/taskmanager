@@ -1,7 +1,7 @@
 /**
  * Which board cards have folded their steps away, and how far.
  *
- * There are two lists, both in `AppSettings` because a fold has to survive the board being
+ * There are three lists, all in `AppSettings` because a fold has to survive the board being
  * unmounted — which happens every time you leave the screen — and a relaunch:
  *
  *  - `foldedStepCards` — the whole **Steps** section is folded; the heading and its counter
@@ -11,9 +11,12 @@
  *    newest fold themselves away so the new bunch is what you are looking at (see
  *    `splitEarlierSteps`). So this list records the exception, not the rule — which is what
  *    makes an empty list, and therefore a fresh install, behave the way it should.
+ *  - `shownLaterStepCards` — the same exception, mirrored to the other end of the chain: the
+ *    human has opened the **phases after the current one** back up. They fold away by
+ *    themselves for the same reason the earlier ones do — nothing has happened in them yet.
  *
- * They are the same shape and take the same operation, so there is one function for both
- * rather than two that could drift apart.
+ * They are the same shape and take the same operation, so there is one function for all
+ * three rather than three that could drift apart.
  */
 
 /**

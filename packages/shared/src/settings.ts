@@ -557,6 +557,13 @@ export interface AppSettings {
    */
   shownEarlierStepCards: string[];
   /**
+   * The cards showing the steps from **phases after the current one**, by task id — the same
+   * shape as {@link shownEarlierStepCards}, mirrored to the other end of the chain: a phase
+   * nobody has reached yet folds away by itself, and this list is where a human has opened
+   * one back up anyway.
+   */
+  shownLaterStepCards: string[];
+  /**
    * Which board the My Tasks screen shows: `'all'` (the default) unions every board's
    * cards, `PERSONAL_PROJECT_ID` is the Personal board alone, and anything else names a
    * project id — see `IpcApi['board:scopes']`. Persisted so the board comes back where
@@ -607,6 +614,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // Empty means every re-planned card shows its newest bunch of steps and folds the rounds
   // before it away — the behaviour, not the exception. See the field.
   shownEarlierStepCards: [],
+  // Same default, same reason, mirrored to the other end of the chain: a phase not yet
+  // reached folds away until a human opens it back up.
+  shownLaterStepCards: [],
   boardScopeId: 'all',
   jira: DEFAULT_JIRA_SETTINGS,
   gitlab: DEFAULT_GITLAB_SETTINGS,
@@ -662,9 +672,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * Everything NOT listed is either MACHINE-local — `defaultExecTarget` (a path only that
  * machine has), `fontSizePx` (that window's type scale), `cloud` (this desktop's own
  * connection to the server), `toastsEnabled` (that app's toasts) — or per-SURFACE view-state:
- * `boardScopeId` / `foldedStepCards` / `shownEarlierStepCards` name where you left one screen,
- * `gantt.collapsedEpicIds` the same for the timeline. A browser and a desktop each keep their
- * own of those, so they never leave the surface they were set on.
+ * `boardScopeId` / `foldedStepCards` / `shownEarlierStepCards` / `shownLaterStepCards` name
+ * where you left one screen, `gantt.collapsedEpicIds` the same for the timeline. A browser
+ * and a desktop each keep their own of those, so they never leave the surface they were set on.
  *
  * A WHITELIST, not a denylist, and that direction is the safety: a field newly added to
  * `AppSettings` is LOCAL until someone deliberately lists it here, so a new machine-specific

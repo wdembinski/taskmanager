@@ -290,27 +290,54 @@ export function groupStepsByRound(subtasks: readonly Task[]): StepRound[] {
 }
 
 /**
+ * A chain cut into three phases: what's already **behind** it, the **current** phase —
+ * the one a live chain would be working, or would resume into — and what's still **later**.
+ *
+ * "Current" is the first round holding a step that isn't `done`, because a chain runs its
+ * rounds in order: nothing in a later round could possibly have started while an earlier one
+ * still has work left in it. A chain that has finished every step in every round has no
+ * unfinished round to point at, so the LAST round stands in — a card that has ever been
+ * planned always has a current phase, and for a finished chain that is the phase worth
+ * reading as where the whole thing landed.
+ *
+ * `current` is null only for a card with no steps at all.
+ */
+export function splitStepPhases(subtasks: readonly Task[]): {
+  earlier: StepRound[];
+  current: StepRound | null;
+  later: StepRound[];
+} {
+  const rounds = groupStepsByRound(subtasks);
+  if (rounds.length === 0) return { earlier: [], current: null, later: [] };
+  let index = rounds.findIndex((round) => round.steps.some(({ step }) => step.status !== 'done'));
+  if (index < 0) index = rounds.length - 1;
+  return {
+    earlier: rounds.slice(0, index),
+    current: rounds[index],
+    later: rounds.slice(index + 1),
+  };
+}
+
+/**
  * A chain cut into **what came before** and **the newest bunch** — the split the card's
- * automatic partial fold is drawn from.
+ * automatic partial fold is drawn from. Built on {@link splitStepPhases}: `earlier` is
+ * every phase before the current one, flattened, `latest` is the current phase's own steps,
+ * and `later` is every phase after it, flattened.
  *
- * The boundary is the last planning round, because that is what "new steps arrived" means
- * in the data: approving a plan files its steps under a round of their own, while a step
- * typed by hand joins the round already in progress (`store.addSubtask`), which is right —
- * a step written among the bunch you are watching belongs with it and must not fold the
- * bunch away.
- *
- * A card that has only ever been planned once has no earlier steps at all, so nothing is
- * hidden from it: the fold only ever appears on a card that has actually been re-planned.
+ * A card that has only ever been planned once, or has finished every round it has, has no
+ * earlier steps at all, so nothing is hidden from it: the fold only ever appears on a card
+ * that has actually been re-planned and still has unfinished work behind its newest round.
  */
 export function splitEarlierSteps(subtasks: readonly Task[]): {
   earlier: StepEntry[];
   latest: StepEntry[];
+  later: StepEntry[];
 } {
-  const rounds = groupStepsByRound(subtasks);
-  if (rounds.length < 2) return { earlier: [], latest: rounds[0]?.steps ?? [] };
+  const { earlier, current, later } = splitStepPhases(subtasks);
   return {
-    earlier: rounds.slice(0, -1).flatMap((r) => r.steps),
-    latest: rounds[rounds.length - 1].steps,
+    earlier: earlier.flatMap((round) => round.steps),
+    latest: current?.steps ?? [],
+    later: later.flatMap((round) => round.steps),
   };
 }
 
