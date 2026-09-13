@@ -1379,6 +1379,13 @@ export type ChatRefusal =
    * round has nowhere to land. The cap is on the card, not on any one plan.
    */
   | 'chain-full'
+  /**
+   * (Re-planning, Phase 19) A plan for this card is already being drafted — a live
+   * `plan`-mode turn asked for by a previous re-plan, or an approved-plan decision
+   * already sitting in the inbox — so a second re-plan has nothing new to ask for
+   * until the human resolves the first one.
+   */
+  | 'planning'
   | 'unknown-task'
   | 'empty-message';
 

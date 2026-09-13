@@ -820,6 +820,16 @@ interface Run {
    * either. Meanwhile the card's work sat finished and unmerged.
    */
   expectsPlan?: boolean;
+  /**
+   * This run IS a re-plan asked for by {@link Scheduler.replanCard} (Phase 19) — as opposed
+   * to a run that merely inherited `plan` mode from the card's own assignment. Two things
+   * key off it that `expectsPlan`/`permissionMode` cannot answer alone:
+   *  - `replanPending` reads it off every live run to refuse a second re-plan while this
+   *    one is still working; and
+   *  - `settle` reads it to keep a successful re-plan OFF the chain/integration path — its
+   *    job was a plan for the human to approve, not work to land.
+   */
+  replan?: boolean;
   /** Set once we've decided the task's outcome, so a trailing `exited` doesn't re-settle it. */
   settled: boolean;
   /**
@@ -1109,7 +1119,10 @@ export class Scheduler {
    * worktree, so it must not start while the run it replaced is still shutting down there.
    * Keyed by task id; the value is everything `startTask` will need by then.
    */
-  private readonly pendingReplans = new Map<string, { projectId: string; prompt: string }>();
+  private readonly pendingReplans = new Map<
+    string,
+    { projectId: string; prompt: string; replan: true }
+  >();
   /**
    * Step ids already covered by a chain hand-back summary, per parent card (Phase 18).
    * A re-planned card finishes a chain once per ROUND, and `buildChainSummary` enumerates
@@ -1670,6 +1683,10 @@ export class Scheduler {
    * and the planner deferred until its process is gone — same reason `chainStarts` exists:
    * both runs share the card's worktree, and `--resume` against a session still shutting
    * down is a race.
+   *
+   * A chain still executing its steps does NOT hold this up (Phase 19): the planner is its
+   * own turn in the card's own conversation, so it runs beside a live step rather than
+   * behind it — see {@link replanPending} for what DOES still refuse a second one.
    */
   replanCard(taskId: string, note?: string): ChatSendResult {
     const refused = (reason: ChatRefusal): ChatSendResult => ({
@@ -1685,11 +1702,11 @@ export class Scheduler {
     if (!card.agentProjectId) return refused('never-ran');
     if (this.authGate.active) return refused('signed-out');
     if (this.limitGate.active || card.status === 'blocked-by-limit') return refused('limit');
+    // Only one plan can be in flight for a card at a time — a second ask has nothing new to
+    // say until the human resolves the first (approve/reject its steps, or wait it out).
+    if (this.replanPending(card.id)) return refused('planning');
 
     const steps = this.store.getSubtasks(card.id);
-    // A chain still working owns the card's worktree and its own sequence; planning more
-    // work on top of it would queue steps behind an outcome nobody has seen yet.
-    if (chainInFlight(steps)) return refused('chain-busy');
     const slotsLeft = MAX_PLAN_STEPS - steps.length;
     if (slotsLeft <= 0) return refused('chain-full');
 
@@ -1712,7 +1729,7 @@ export class Scheduler {
       live.settled = true; // we are deciding this run's outcome, not its exit code
       this.clearRunAttention(live.runId);
       this.sessions.stop(live.runId);
-      this.pendingReplans.set(card.id, { projectId: project.id, prompt });
+      this.pendingReplans.set(card.id, { projectId: project.id, prompt, replan: true });
       return { status: 'resumed', taskId: card.id, runId: live.runId };
     }
     // Reserved elsewhere (a run spawning right now) — refuse rather than double-run a task.
@@ -1721,8 +1738,37 @@ export class Scheduler {
     return {
       status: 'resumed',
       taskId: card.id,
-      runId: this.startTask(project, card, { chatPrompt: prompt, permissionMode: 'plan' }),
+      runId: this.startTask(project, card, {
+        chatPrompt: prompt,
+        permissionMode: 'plan',
+        replan: true,
+      }),
     };
+  }
+
+  /**
+   * Whether a re-plan is already underway for `cardId` (Phase 19) — the guard that replaces
+   * `replanCard`'s old `chainInFlight` refusal now that the planner is allowed to run beside
+   * a live chain.
+   *
+   * Three shapes, because a re-plan passes through three states and any of them can be
+   * "in progress" when a second ask comes in:
+   *  - queued behind the run it interrupted (`pendingReplans`);
+   *  - actually running right now (a live, unsettled `Run` with `replan` set); or
+   *  - already finished and sitting in the inbox as an approve/reject decision
+   *    (`plan-approval`) — checked against `this.attention` rather than the run, because a
+   *    restart drops the run but rehydrates the attention item, and the plan is just as
+   *    pending either way.
+   */
+  private replanPending(cardId: string): boolean {
+    if (this.pendingReplans.has(cardId)) return true;
+    for (const run of this.runs.values()) {
+      if (run.taskId === cardId && !run.settled && run.replan) return true;
+    }
+    for (const item of this.attention.values()) {
+      if (item.taskId === cardId && item.kind === 'plan-approval') return true;
+    }
+    return false;
   }
 
   /** Start a re-plan whose predecessor run has now exited. See {@link replanCard}. */
@@ -1734,7 +1780,11 @@ export class Scheduler {
     const task = this.store.getTask(taskId);
     const project = this.store.getProject(pending.projectId);
     if (!task || !project || this.inFlight.has(taskId)) return;
-    this.startTask(project, task, { chatPrompt: pending.prompt, permissionMode: 'plan' });
+    this.startTask(project, task, {
+      chatPrompt: pending.prompt,
+      permissionMode: 'plan',
+      replan: true,
+    });
   }
 
   private resumeForChat(target: Task, text: string): ChatSendResult {
@@ -2689,6 +2739,13 @@ export class Scheduler {
       releaseSeed?: boolean;
       permissionMode?: PermissionMode;
       resumeNudge?: string;
+      /**
+       * This turn is a re-plan asked for by {@link replanCard} (Phase 19): the run's whole
+       * job is to come back with a plan for the human to approve, not to write code, so
+       * `settle` must not walk a successful one into chain/integration machinery — see
+       * {@link Run.replan}.
+       */
+      replan?: boolean;
     } = {},
   ): string {
     const runId = randomUUID();
@@ -2747,6 +2804,7 @@ export class Scheduler {
       // project's) model decides the NEXT run and can never change this one mid-flight.
       model: resolveRunModel(task, project, expectsPlan && permissionMode === 'plan'),
       expectsPlan,
+      replan: opts.replan,
     };
     this.runs.set(runId, run);
     this.inFlight.add(task.id);
@@ -4339,6 +4397,20 @@ export class Scheduler {
       this.pendingConflictFix.delete(run.taskId);
       this.attempts.delete(run.taskId);
       void this.finishConflict(conflictFix);
+      return;
+    }
+
+    // A re-plan run (Phase 19) that came back `done` did its whole job the moment it put a
+    // plan in front of the human — there is no branch to land, because it never wrote any
+    // work of its own, only steps for the CARD's existing (or as-yet-nonexistent) chain to
+    // run later. Landing it here would be wrong twice over: `chain.workWritten` would fire
+    // for work that isn't there, and the run's own branch/base/worktree — inherited from
+    // whatever chain it ran beside — belong to that chain, not to this turn, so integrating
+    // them would land someone else's unfinished steps. A FAILED re-plan is not special this
+    // way; it is exactly a failed run and falls through to `handleRunFailure` below.
+    if (run.replan && status === 'done') {
+      this.attempts.delete(run.taskId);
+      this.updateTask(run.taskId, { status: 'in-progress' }, null);
       return;
     }
 
