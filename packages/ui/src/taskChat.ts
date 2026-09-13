@@ -100,6 +100,7 @@ export const REFUSAL_HINT: Record<ChatRefusal, string> = {
   'not-a-card': 'A step cannot be planned — re-plan the card it belongs to instead.',
   'chain-full': `This card already carries ${MAX_PLAN_STEPS} steps — the most one card can hold.`,
   planning: 'The agent is already planning the next phase — approve or reject that plan first.',
+  'phase-started': 'That phase has already started — plan more steps after it instead.',
   'unknown-task': 'This card no longer exists.',
   'empty-message': 'Type a message first.',
 };

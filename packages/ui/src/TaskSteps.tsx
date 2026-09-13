@@ -167,6 +167,12 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
   const planNote = planNoteDraft.value;
   const [planStarted, setPlanStarted] = useState(false);
   /**
+   * Which round the planning form is asking about — `null` for the ordinary "plan the next
+   * round" ask, a round number when it was opened from a LATER phase's own "Re-plan…"
+   * button (Phase 20). One form serves both: only its label and what it sends differ.
+   */
+  const [replanTarget, setReplanTarget] = useState<number | null>(null);
+  /**
    * Which non-current phases the human has opened — earlier ones and later ones share this
    * one set, since a round number is never both. The current phase is never in here: it is
    * always open on its own (see the render below).
@@ -184,6 +190,7 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
     setOpen(false);
     setPlanning(false);
     setPlanStarted(false);
+    setReplanTarget(null);
     setOpenRounds(new Set());
   }, [task.id]);
 
@@ -229,12 +236,18 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
     setBusy(true);
     setError(null);
     try {
-      const result = await transport.invoke('task:replan', task.id, planNote.trim() || undefined);
+      const result = await transport.invoke(
+        'task:replan',
+        task.id,
+        planNote.trim() || undefined,
+        replanTarget !== null ? { replaceRound: replanTarget } : undefined,
+      );
       if (result.status === 'refused') {
         setError(REFUSAL_HINT[result.reason]);
         return;
       }
       setPlanning(false);
+      setReplanTarget(null);
       planNoteDraft.reset();
       setPlanStarted(true);
       onChanged();
@@ -278,7 +291,10 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
             size="small"
             disabled={!replan.can || busy || planning}
             title={replan.hint}
-            onClick={() => setPlanning(true)}
+            onClick={() => {
+              setReplanTarget(null);
+              setPlanning(true);
+            }}
           >
             Plan more steps…
           </Button>
@@ -301,8 +317,16 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
       {planning && (
         <div className={styles.form}>
           <Field
-            label="What should the next steps cover?"
-            hint="Optional — the agent is already told which steps this card has finished."
+            label={
+              replanTarget !== null
+                ? `What should replace phase ${replanTarget}?`
+                : 'What should the next steps cover?'
+            }
+            hint={
+              replanTarget !== null
+                ? 'Optional — the agent is told which steps in this phase are being replaced.'
+                : 'Optional — the agent is already told which steps this card has finished.'
+            }
           >
             <Textarea
               value={planNote}
@@ -320,6 +344,7 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
               onClick={() => {
                 planNoteDraft.reset();
                 setPlanning(false);
+                setReplanTarget(null);
               }}
             >
               Cancel
@@ -369,24 +394,46 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
                 (isCurrent ? (
                   <Caption1 className={styles.hint}>Phase {group.round}</Caption1>
                 ) : (
-                  <FoldToggle
-                    open={shown}
-                    onToggle={() =>
-                      setOpenRounds((prev) => {
-                        const next = new Set(prev);
-                        if (next.has(group.round)) next.delete(group.round);
-                        else next.add(group.round);
-                        return next;
-                      })
-                    }
-                    summary={
-                      isLater
-                        ? `0/${group.steps.length} · upcoming`
-                        : `${done}/${group.steps.length}`
-                    }
-                  >
-                    <Caption1 className={styles.hint}>Phase {group.round}</Caption1>
-                  </FoldToggle>
+                  <div className={styles.head}>
+                    <FoldToggle
+                      open={shown}
+                      onToggle={() =>
+                        setOpenRounds((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(group.round)) next.delete(group.round);
+                          else next.add(group.round);
+                          return next;
+                        })
+                      }
+                      summary={
+                        isLater
+                          ? `0/${group.steps.length} · upcoming`
+                          : `${done}/${group.steps.length}`
+                      }
+                    >
+                      <Caption1 className={styles.hint}>Phase {group.round}</Caption1>
+                    </FoldToggle>
+                    <span className={styles.grow} />
+                    {/* Only a LATER phase can be re-planned in place — the current one is
+                        already being worked (or is next to resume), and an earlier one is
+                        already behind the chain. Same `canReplan` rules as "Plan more
+                        steps…" above: this is the identical ask, aimed at one existing
+                        round instead of a new one after it. */}
+                    {isLater && replan.offered && (
+                      <Button
+                        size="small"
+                        appearance="transparent"
+                        disabled={!replan.can || busy || planning}
+                        title={replan.hint}
+                        onClick={() => {
+                          setReplanTarget(group.round);
+                          setPlanning(true);
+                        }}
+                      >
+                        Re-plan…
+                      </Button>
+                    )}
+                  </div>
                 ))}
               {shown && (
                 <div className={styles.list}>
