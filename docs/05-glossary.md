@@ -231,6 +231,16 @@ auto-completed. A step inherits where its parent runs but **not** the model its 
 was planned on — it follows the project's execution model unless set individually. You
 can also write steps by hand instead of planning.
 
+### Phase
+
+One planning round of a card's steps (`Task.planRound`): the first ask (or the steps
+you typed by hand) is phase 1, and asking for more steps later starts phase 2, and so
+on. The **current** phase is the first one still holding an unfinished step, since a
+chain runs its rounds in order; a *later* phase — one that hasn't started — can be
+re-planned **in place**, swapping its steps without changing its round number, while
+an earlier or current phase cannot. See
+[doc 03](03-how-orchestration-works.md#phases).
+
 ### Chat (with an agent)
 
 Opening a turn yourself instead of answering one. Typed in the card's **Chat** tab and

@@ -4680,7 +4680,7 @@ export class Scheduler {
       // The branch stays exactly where it is, offer and all: a pull request is opened
       // ON it, not instead of it, and if the create fails the human still has the Merge
       // button and the Create PR button pointing at an untouched branch.
-      this.readyToIntegrate.set(ctx.taskId, { projectId: project.id, ...ctx });
+      this.readyToIntegrate.set(ctx.taskId, ctx);
       void this.openPullRequestFor(project, ctx, owner?.id ?? ctx.taskId);
       // The same status split as every other path out of here: a STEP must reach `done`
       // or the chain machinery breaks, and a CARD must not — only the human moves a card.
@@ -4703,7 +4703,7 @@ export class Scheduler {
       return true;
     }
     this.attempts.delete(ctx.taskId);
-    this.readyToIntegrate.set(ctx.taskId, { projectId: project.id, ...ctx });
+    this.readyToIntegrate.set(ctx.taskId, ctx);
     // What this unmerged branch is HOLDING, said in the one note a human already reads
     // to learn it was not merged. "Merge when you get to it" and "three cards are
     // parked until you do" are different decisions, and only this sentence tells them
