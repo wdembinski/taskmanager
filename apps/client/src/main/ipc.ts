@@ -192,6 +192,7 @@ import { createWindowStateFlusher, type WindowStateFlusher } from './windowFlush
 import { appPlanPath, appProjectFile } from './projectPaths';
 import { RELEASE_DOC } from '@shared/release';
 import { openPullRequest, type CreatePrDeps } from './forge/createPr';
+import { linkMergeRequest, type LinkPrDeps } from './forge/linkPr';
 import { forgeBaseUrl } from './forge/baseUrl';
 import {
   CARD_RECORDS_PARK,
@@ -1988,6 +1989,30 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     }
     return { knownKeys: [...taskIdByKey.keys()], taskIdByKey, knownTaskIds };
   };
+
+  // -------------------------------------------------------------------------
+  // Linking an MR/PR a human opened themselves (`forge/linkPr.ts`) — the paste-a-URL
+  // counterpart of `task:createPullRequest` above. Built from the same pieces: the token
+  // reader and the note wrapper are shared verbatim, and `boardKeyIndex` just above is what
+  // lets a linked row's `issueKeys` populate exactly as a sync's would.
+  const linkDeps = (): LinkPrDeps => ({
+    getTask: (id) => store.getTask(id),
+    getSettings: () => store.getSettings(),
+    listMergeRequests: () => store.listMergeRequests(),
+    boardKeyIndex,
+    upsertMergeRequest: (mr) => {
+      store.upsertMergeRequest(mr);
+      send('mergeRequests:changed', store.listMergeRequests());
+    },
+    tokenFor: forgeToken,
+    note: (projectId, taskId, body) => {
+      store.addComment(projectId, taskId, body);
+      send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) });
+    },
+    now: () => Date.now(),
+  });
+
+  handle('mr:link', async (taskId, url) => linkMergeRequest(linkDeps(), taskId, url));
 
   // -------------------------------------------------------------------------
   // Sync freshness — what the status bar's countdown rings are drawn from.

@@ -27,7 +27,14 @@ import {
   Badge,
   Button,
   Caption1,
+  Dialog,
+  DialogActions,
+  DialogBody,
+  DialogContent,
+  DialogSurface,
+  DialogTitle,
   Field,
+  Input,
   MessageBar,
   MessageBarBody,
   Spinner,
@@ -272,6 +279,12 @@ export function TaskAgentPanel({
    * it — so the round trip is the whole of the wait rather than the start of it.
    */
   const [creatingPrNow, setCreatingPrNow] = useState(false);
+  /** The "Link existing MR/PR" dialog's own state — open, the pasted URL, and its own busy
+   * flag rather than the shared `busy`, since linking must not disable the rest of the
+   * panel while its one network round trip is in flight. */
+  const [linkPrOpen, setLinkPrOpen] = useState(false);
+  const [linkPrUrl, setLinkPrUrl] = useState('');
+  const [linkPrBusy, setLinkPrBusy] = useState(false);
 
   const taskId = task.id;
   // Which step (if any) the shown item belongs to, and which step has stopped the chain
@@ -630,6 +643,29 @@ export function TaskAgentPanel({
   }
 
   /**
+   * Link an MR/PR a human opened on the forge's own web UI — pasted as a URL — to this card,
+   * rather than one this app pushed the branch and opened itself.
+   *
+   * The dialog stays open on a refusal (a bad URL, a disabled provider, one the forge could
+   * not find) so the message sits right next to the field that caused it and the human can
+   * fix the paste and try again without reopening anything. Nothing here sets the row: the
+   * arriving `mergeRequests:changed` event is what refreshes the list.
+   */
+  async function linkExistingPr(): Promise<void> {
+    setLinkPrBusy(true);
+    setError(null);
+    try {
+      await transport.invoke('mr:link', taskId, linkPrUrl.trim());
+      setLinkPrOpen(false);
+      setLinkPrUrl('');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLinkPrBusy(false);
+    }
+  }
+
+  /**
    * Re-enter a chain that stopped: run the parked step again in the card's worktree.
    *
    * `task:run` throws for every wall a human has to clear, so the catch below is still the
@@ -901,6 +937,26 @@ export function TaskAgentPanel({
             title={`Open ${mrRef(openMr)} on the forge — this card already has one.`}
           >
             {mrRef(openMr)}
+          </Button>
+        )}
+        {/* An MR/PR a human opened on the forge's own web UI, or from a fork, or on a branch
+            this app never pushed — none of which `createPullRequest` above can find, since it
+            only ever asks "does THIS branch already have one". Offered whenever there is
+            something to attach it to, regardless of `live`/`openMr`: linking is a read of the
+            forge plus a local write, not a git operation, so it needs none of the guards the
+            branch actions do. */}
+        {canIntegrate && !isStep && (
+          <Button
+            size="small"
+            appearance="subtle"
+            disabled={busy || mergeBusy}
+            title="Link an MR or pull request already open on the forge to this card, by its URL."
+            onClick={() => {
+              setLinkPrUrl('');
+              setLinkPrOpen(true);
+            }}
+          >
+            Link existing MR/PR
           </Button>
         )}
         {staged && (
@@ -1231,6 +1287,44 @@ export function TaskAgentPanel({
         onClose={() => setAssignOpen(false)}
         onAssigned={onTaskChanged}
       />
+
+      <Dialog
+        open={linkPrOpen}
+        onOpenChange={(_e, d) => !d.open && !linkPrBusy && setLinkPrOpen(false)}
+      >
+        <DialogSurface>
+          <DialogBody>
+            <DialogTitle>Link existing MR/PR</DialogTitle>
+            <DialogContent className={styles.box}>
+              <Field label="Merge request or pull request URL">
+                <Input
+                  value={linkPrUrl}
+                  disabled={linkPrBusy}
+                  placeholder="https://github.com/owner/repo/pull/42"
+                  onChange={(_e, d) => setLinkPrUrl(d.value)}
+                />
+              </Field>
+            </DialogContent>
+            <DialogActions>
+              <Button
+                appearance="secondary"
+                disabled={linkPrBusy}
+                onClick={() => setLinkPrOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                appearance="primary"
+                disabled={linkPrBusy || linkPrUrl.trim().length === 0}
+                icon={linkPrBusy ? <Spinner size="tiny" /> : undefined}
+                onClick={() => void linkExistingPr()}
+              >
+                {linkPrBusy ? 'Linking…' : 'Link'}
+              </Button>
+            </DialogActions>
+          </DialogBody>
+        </DialogSurface>
+      </Dialog>
     </div>
   );
 }

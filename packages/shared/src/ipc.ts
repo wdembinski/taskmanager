@@ -934,6 +934,17 @@ export interface IpcApi {
    * `Map<taskId, MergeRequest[]>`, exactly as it does for `board:tasks`.
    */
   'mr:mergeRequests': () => Promise<MergeRequest[]>;
+  /**
+   * Link an MR/PR a human opened themselves — pasted as a URL — to a card, rather than one
+   * this app pushed the branch and opened itself (`task:createPullRequest`). Parses the URL
+   * into forge coordinates, fetches it in full and reconciles it exactly as the corresponding
+   * sync would, then stamps `taskId`/`openedForTaskId` onto the target card: the human
+   * pointing at a URL beats whatever key-matching a sync would otherwise have guessed.
+   *
+   * Throws a sentence naming the wall: not a recognisable MR/PR URL, that forge not enabled,
+   * no token saved, or the forge itself could not find it.
+   */
+  'mr:link': (taskId: string, url: string) => Promise<MergeRequest>;
 
   // --- Cloud personal access token — the same four-channel shape JIRA/GitLab/GitHub use. ---
   /** Whether a token is stored, and whether the OS secure store can encrypt one. */
