@@ -269,6 +269,19 @@ export class GitLabClient {
     return this.request<GitLabMergeRequest>(`/projects/${projectId}/merge_requests/${iid}`);
   }
 
+  /**
+   * The same MR as {@link getMergeRequest}, addressed by the project's URL-encoded PATH
+   * instead of its numeric id — what a pasted merge-request URL actually gives
+   * (`forge/parsePrUrl.ts`), rather than the id only a prior API call would know. Used once,
+   * to resolve a manually linked URL into the numeric `project_id` that `describeMergeRequest`
+   * and every other call in this client need; see `forge/linkPr.ts`.
+   */
+  getMergeRequestByPath(projectPath: string, iid: number): Promise<GitLabMergeRequest> {
+    return this.request<GitLabMergeRequest>(
+      `/projects/${encodeURIComponent(projectPath)}/merge_requests/${iid}`,
+    );
+  }
+
   /** Approval state. Tier-gated — a 403 here is normal and the caller degrades. */
   getApprovals(projectId: number, iid: number): Promise<GitLabApprovals> {
     return this.request<GitLabApprovals>(`/projects/${projectId}/merge_requests/${iid}/approvals`);
