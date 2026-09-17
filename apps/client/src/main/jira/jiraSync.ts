@@ -436,7 +436,9 @@ export function removalCandidateKeys(
  *      never removed, so there is no question worth asking.
  *   2. **archived** — already off the board, and sync leaves it there whether or not the
  *      query returns its issue again. A removed card stays off the board until an explicit
- *      restore; nothing here brings it back.
+ *      restore; nothing here brings it back. (If that restore is of a ticket the JQL
+ *      genuinely no longer matches, the next sync re-archives it through the ordinary
+ *      `left-query` path below — correct given the query, and not this function's problem.)
  *   3. **the search was truncated** — everything is kept, whatever else is true of it.
  *   4. **never asked about** (`queryChecked` has no such key) — kept.
  *   5. **asked, and JIRA says it still matches** (`queryMatches`) — kept, and counted: this
