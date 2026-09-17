@@ -3305,30 +3305,23 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // Recorded before the reconcile rather than after: the applies below cannot throw a
     // network error, so this is the last point at which "the query we just ran" is true.
     store.saveJiraLastQuery(jql);
-    const { upserts, removals, restoreIds, refused, warning } = reconcileJiraTasks(
-      personalForSync,
-      issues,
-      {
-        baseUrl: jira.baseUrl,
-        overrides: jira.statusCategoryOverrides,
-        learned: jira.learnedStatusColumns,
-        epicFieldId: epicField,
-        epicNames,
-        sprintFieldId: sprintField,
-        identity,
-        rechecked,
-        recheckedKeys,
-        queryChecked: confirmed?.checked ?? null,
-        queryMatches: confirmed?.matching ?? null,
-        truncated,
-        queryChanged,
-        now,
-        retentionMs: Math.max(0, jira.doneRetentionDays) * 24 * 60 * 60 * 1000,
-      },
-    );
-    // Restore first: a ticket that has come back into the query lands on its own card again,
-    // rather than beside the archived one it used to be.
-    for (const id of restoreIds) store.unarchiveTask(id);
+    const { upserts, removals, refused, warning } = reconcileJiraTasks(personalForSync, issues, {
+      baseUrl: jira.baseUrl,
+      overrides: jira.statusCategoryOverrides,
+      learned: jira.learnedStatusColumns,
+      epicFieldId: epicField,
+      epicNames,
+      sprintFieldId: sprintField,
+      identity,
+      rechecked,
+      recheckedKeys,
+      queryChecked: confirmed?.checked ?? null,
+      queryMatches: confirmed?.matching ?? null,
+      truncated,
+      queryChanged,
+      now,
+      retentionMs: Math.max(0, jira.doneRetentionDays) * 24 * 60 * 60 * 1000,
+    });
     for (const t of upserts) store.upsertJiraTask(t);
     // ARCHIVED, not deleted. A card leaving the board is not the human deleting it — the row
     // keeps its timeline, its files and its links, and "Removed cards" can put it back. Each
@@ -3504,23 +3497,18 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // Recorded before the reconcile rather than after: nothing below can throw a network
     // error, so this is the last point at which "the query we just ran" is true.
     store.saveGitHubLastQuery(query);
-    const { upserts, removals, restoreIds, refused, warning } = reconcileGitHubIssues(
-      personalForSync,
-      items,
-      {
-        overrides: github.labelColumnOverrides,
-        learned: github.learnedLabelColumns,
-        identity,
-        comments,
-        rechecked,
-        recheckedKeys,
-        truncated,
-        queryChanged,
-        now,
-        retentionMs: Math.max(0, github.doneRetentionDays) * 24 * 60 * 60 * 1000,
-      },
-    );
-    for (const id of restoreIds) store.unarchiveTask(id);
+    const { upserts, removals, refused, warning } = reconcileGitHubIssues(personalForSync, items, {
+      overrides: github.labelColumnOverrides,
+      learned: github.learnedLabelColumns,
+      identity,
+      comments,
+      rechecked,
+      recheckedKeys,
+      truncated,
+      queryChanged,
+      now,
+      retentionMs: Math.max(0, github.doneRetentionDays) * 24 * 60 * 60 * 1000,
+    });
     for (const t of upserts) store.upsertJiraTask(t);
     // ARCHIVED, not deleted — see the same loop in `syncJira`. The row keeps its timeline,
     // its files and its links, and "Removed cards" can put it back.

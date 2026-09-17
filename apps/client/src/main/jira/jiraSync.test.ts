@@ -766,8 +766,8 @@ describe('reconcileJiraTasks — no card leaves without JIRA answering about it'
   });
 });
 
-describe('reconcileJiraTasks — a card comes back', () => {
-  it('restores an archived card whose issue is in the query again, on the same row', () => {
+describe('reconcileJiraTasks — an archived card stays archived', () => {
+  it('leaves an archived card alone even though its issue is in the query again', () => {
     const archived = jiraTask({
       archivedAt: 1_700,
       projectTagId: 'p-billing',
@@ -775,22 +775,28 @@ describe('reconcileJiraTasks — a card comes back', () => {
       lastReadCommentAt: 555,
     });
     const result = reconcileJiraTasks([archived], [issue('1', 'PROJ-1', 'indeterminate')], opts);
-    expect(result.restoreIds).toEqual(['jira-1']);
-    expect(result.upserts).toHaveLength(1);
-    // The same row, with everything JIRA has never heard of still on it.
-    expect(result.upserts[0]).toMatchObject({
-      id: 'jira-1',
-      projectTagId: 'p-billing',
-      agentProjectId: 'agent-1',
-      lastReadCommentAt: 555,
-      status: 'in-progress',
-    });
+    expect(result.upserts).toEqual([]);
+    expect(result.removals).toEqual([]);
   });
 
   it('says nothing about an archived card the query still does not return', () => {
     const archived = jiraTask({ archivedAt: 1_700 });
     const result = reconcileJiraTasks([archived], [], { ...opts, ...asked('PROJ-1') });
-    expect(result).toMatchObject({ upserts: [], removals: [], restoreIds: [], refused: [] });
+    expect(result).toMatchObject({ upserts: [], removals: [], refused: [] });
+  });
+
+  it('regression: a card archived left-query does not come back when the query finds it again', () => {
+    // The reported bug: sync one) removes a card that left the query, sync two) sees the
+    // ticket in a fresh page of the SAME query and must not resurrect the card for it.
+    const archived = jiraTask({
+      id: 'jira-42',
+      externalKey: 'PROJ-42',
+      archivedAt: 2_000,
+      archivedReason: 'left-query',
+    });
+    const result = reconcileJiraTasks([archived], [issue('42', 'PROJ-42', 'indeterminate')], opts);
+    expect(result.upserts).toEqual([]);
+    expect(result.removals).toEqual([]);
   });
 });
 

@@ -301,7 +301,6 @@ describe('a 300-card board survives a sync', () => {
 
     expect(run.upserts.map((t) => t.id)).toEqual(board.map((t) => t.id));
     expect(run.upserts.every((t) => t.externalUrl?.startsWith('https://jira.company.com/browse/')));
-    expect(run.restoreIds).toEqual([]);
   });
 
   it('costs nothing extra: a whole answer asks no by-key questions at all', async () => {
@@ -536,7 +535,7 @@ describe('a truncated re-read takes nothing off the board', () => {
 
 // ---------------------------------------------------------------------------
 
-describe('a sprint switch narrows the board, and the way back restores it', () => {
+describe('a sprint switch narrows the board, and archived cards stay off it', () => {
   const board = range(1, BOARD_SIZE).map((n) => cardFor(n));
   /** The new sprint carries 60 of the 300 over; the other 240 are last sprint's. */
   const carriedOver = range(1, 60).map((n) => issueFor(n));
@@ -579,7 +578,7 @@ describe('a sprint switch narrows the board, and the way back restores it', () =
     expect(run.warning).toContain('more than 25% of the board in one sync');
   });
 
-  it('the way back: the same rows return, same ids, nothing re-created', async () => {
+  it('the sprint rolling back does not resurrect the 240 that left it', async () => {
     // The board a sync later, with the 240 archived — which is what `getPersonalTasksForSync`
     // hands the reconciler, and the reason it is the ONE read that includes archived cards.
     const afterSwitch = [
@@ -596,15 +595,12 @@ describe('a sprint switch narrows the board, and the way back restores it', () =
       reconcile: { queryChanged: true },
     });
 
-    expect(run.restoreIds).toEqual(range(61, BOARD_SIZE).map((n) => `card-${key(n)}`));
     expect(run.removals).toEqual([]);
     expect(run.refused).toEqual([]);
-    // The whole point of archiving rather than deleting: the ticket lands back on the row it
-    // left on. A `jira-*` id in here would mean a brand-new card beside the archived one, and
-    // everything the old row carried stranded on a card nobody can see.
-    expect(run.upserts).toHaveLength(BOARD_SIZE);
-    expect(run.upserts.map((t) => t.id)).toEqual(afterSwitch.map((t) => t.id));
-    expect(run.upserts.some((t) => t.id.startsWith('jira-'))).toBe(false);
+    // The 240 archived rows stay off the board — no upsert brings any of them back, whatever
+    // their issue does in JIRA. Only the 60 that were never archived are upserted.
+    expect(run.upserts).toHaveLength(60);
+    expect(run.upserts.map((t) => t.id)).toEqual(range(1, 60).map((n) => `card-${key(n)}`));
   });
 
   it('an archived card the query still does not return is left alone, not asked about again', async () => {
@@ -624,7 +620,6 @@ describe('a sprint switch narrows the board, and the way back restores it', () =
     expect(run.retained).toEqual([]);
     expect(searcher.asked).toEqual([]);
     expect(run.removals).toEqual([]);
-    expect(run.restoreIds).toEqual([]);
     expect(run.warning).toBeNull();
   });
 });
