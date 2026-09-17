@@ -121,8 +121,6 @@ export interface GitHubIssueSyncResult {
   upserts: Task[];
   /** Cards to take off the board — every one confirmed by a question GitHub answered. */
   removals: ForgeRemoval[];
-  /** Ids of archived cards whose issue is back in the query — put them back on the board. */
-  restoreIds: string[];
   /** Removals `guardRemovals` would not let through. Nothing was done to these. */
   refused: ForgeRemoval[];
   /** What the human should be told about this sync, or null when there is nothing to say. */
@@ -404,8 +402,11 @@ export function parseIssueKey(key: string): IssueRef | null {
  *
  *   1. **blocked** — untouched. A blocked card is never removed, so no answer could change
  *      the outcome and there is no question worth asking.
- *   2. **archived** — already off the board. Back in the query ⇒ it returns (`restoreIds`);
- *      still absent ⇒ nothing to say.
+ *   2. **archived** — already off the board, and sync leaves it there whether or not the
+ *      query returns its issue again. A removed card stays off the board until an explicit
+ *      restore; nothing here brings it back. (If that restore is of an issue the search
+ *      genuinely no longer matches, the next sync re-archives it through the ordinary
+ *      `left-query` path below — correct given the query, and not this function's problem.)
  *   3. **the search was truncated** — everything is kept, whatever else is true of it.
  *   4. **the re-read did not run, or this issue's own call failed** — kept. A card must not
  *      be archived on a question that errored.
@@ -428,18 +429,19 @@ export function reconcileGitHubIssues(
 ): GitHubIssueSyncResult {
   const existingByKey = githubTasksByKey(existing);
   const seen = new Set<string>();
-  const restoreIds: string[] = [];
 
-  const upserts = issues.map((issue, i) => {
+  const upserts: Task[] = [];
+  for (let i = 0; i < issues.length; i++) {
+    const issue = issues[i];
     const { owner, repo } = repoRefFrom(issue.repository_url);
     const key = issueKeyFor(owner, repo, issue.number);
     seen.add(key);
     const prior = existingByKey.get(key);
-    // Archived, and the query returns it again: the issue matches, so the card comes back to
-    // the board — the same row, with the timeline, files and links it left with.
-    if (prior?.archivedAt != null) restoreIds.push(prior.id);
-    return issueToTask(issue, prior, opts, i);
-  });
+    // Archived cards stay off the board even when the query returns their issue again — the
+    // sync must never resurrect a removed card; only an explicit restore does.
+    if (prior?.archivedAt != null) continue;
+    upserts.push(issueToTask(issue, prior, opts, i));
+  }
 
   const rechecked = opts.rechecked ?? null;
   const recheckedKeys = asSet(opts.recheckedKeys);
@@ -534,7 +536,6 @@ export function reconcileGitHubIssues(
   return {
     upserts,
     removals: guarded.removals,
-    restoreIds,
     refused: guarded.refused,
     warning: notes.length ? notes.join(' ') : null,
   };

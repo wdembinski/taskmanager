@@ -173,8 +173,6 @@ export interface JiraSyncResult {
    * leaving the board is not the human deleting it. See `store.archiveTask`.
    */
   removals: JiraRemoval[];
-  /** Ids of archived cards whose issue is back in the query — put them back on the board. */
-  restoreIds: string[];
   /** Removals `guardRemovals` would not let through. Nothing was done to these. */
   refused: JiraRemoval[];
   /** What the human should be told about this sync, or null when there is nothing to say. */
@@ -436,8 +434,11 @@ export function removalCandidateKeys(
  *      about it any more (since `isBlockedishStatus`, a Blocked ticket is exactly what puts
  *      a card here), but because the answer could not change the outcome: a blocked card is
  *      never removed, so there is no question worth asking.
- *   2. **archived** — already off the board. Back in the query ⇒ it returns (`restoreIds`);
- *      still absent ⇒ nothing to say.
+ *   2. **archived** — already off the board, and sync leaves it there whether or not the
+ *      query returns its issue again. A removed card stays off the board until an explicit
+ *      restore; nothing here brings it back. (If that restore is of a ticket the JQL
+ *      genuinely no longer matches, the next sync re-archives it through the ordinary
+ *      `left-query` path below — correct given the query, and not this function's problem.)
  *   3. **the search was truncated** — everything is kept, whatever else is true of it.
  *   4. **never asked about** (`queryChecked` has no such key) — kept.
  *   5. **asked, and JIRA says it still matches** (`queryMatches`) — kept, and counted: this
@@ -459,16 +460,17 @@ export function reconcileJiraTasks(
 ): JiraSyncResult {
   const existingByKey = jiraTasksByKey(existing);
   const seen = new Set<string>();
-  const restoreIds: string[] = [];
 
-  const upserts = issues.map((issue, i) => {
+  const upserts: Task[] = [];
+  for (let i = 0; i < issues.length; i++) {
+    const issue = issues[i];
     seen.add(issue.key);
     const prior = existingByKey.get(issue.key);
-    // Archived, and the query returns it again: the ticket matches, so the card comes back
-    // to the board — the same row, with the timeline, files and links it left with.
-    if (prior?.archivedAt != null) restoreIds.push(prior.id);
-    return issueToTask(issue, prior, opts, i);
-  });
+    // Archived cards stay off the board even when the query returns their issue again — the
+    // sync must never resurrect a removed card; only an explicit restore does.
+    if (prior?.archivedAt != null) continue;
+    upserts.push(issueToTask(issue, prior, opts, i));
+  }
 
   const rechecked = opts.rechecked ? new Map(opts.rechecked.map((i) => [i.key, i])) : null;
   const recheckedKeys = asSet(opts.recheckedKeys);
@@ -567,7 +569,6 @@ export function reconcileJiraTasks(
   return {
     upserts,
     removals: guarded.removals,
-    restoreIds,
     refused: guarded.refused,
     warning: notes.length ? notes.join(' ') : null,
   };

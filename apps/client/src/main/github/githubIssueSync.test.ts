@@ -194,15 +194,14 @@ describe('reconcileGitHubIssues', () => {
     const jira = { ...card({ id: 'j' }), source: 'jira', externalSource: 'jira' } as Task;
     const adhoc = { ...card({ id: 'a' }), source: 'adhoc', externalSource: null } as Task;
     const result = reconcileGitHubIssues([jira, adhoc], [], opts);
-    expect(result).toMatchObject({ upserts: [], removals: [], restoreIds: [] });
+    expect(result).toMatchObject({ upserts: [], removals: [] });
   });
 
-  it('brings an archived card back when its issue returns to the query', () => {
+  it('leaves an archived card alone even when its issue returns to the query', () => {
     const gone = card({ archivedAt: 5, archivedReason: 'left-query' });
     const result = reconcileGitHubIssues([gone], [issue(1)], opts);
-    expect(result.restoreIds).toEqual(['gh-acme-web-1']);
-    // The same ROW comes back — the id is the card's, not a new one.
-    expect(result.upserts[0].id).toBe('gh-acme-web-1');
+    expect(result.upserts).toEqual([]);
+    expect(result.removals).toEqual([]);
   });
 
   it('archives a card GitHub was asked about and still has, but the query dropped', () => {
