@@ -33,7 +33,7 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import type { ClaudeModel, PermissionMode } from '@tm/shared/session';
-import type { Project, Task, TaskActivityEntry } from '@tm/shared/model';
+import type { ManualStatus, Project, Task, TaskActivityEntry } from '@tm/shared/model';
 import type { MergeRequest } from '@tm/shared/mergeRequest';
 import type { TaskAttachment } from '@tm/shared/attachments';
 import type { TaskLink } from '@tm/shared/taskChain';
@@ -288,6 +288,14 @@ export interface TaskDetailProps {
   onOpenTask?: (taskId: string) => void;
   /** Called after a successful manual status change so the parent list can patch. */
   onStatusChanged?: (task: Task) => void;
+  /**
+   * Called after the State dropdown moves THIS card to a new status — a real transition,
+   * never a repaint (`TaskDetailsCell.onStatusSet`). The board's drag-and-drop equivalent is
+   * `moveTask`; this is that same event from the pane's own control, for callers (auto-fold
+   * on Review/Done) that need to know a move happened and not just that the task object
+   * changed shape.
+   */
+  onStatusSet?: (taskId: string, status: ManualStatus) => void;
   /** Called after a step is added or edited, so the board can reload its cards. */
   onSubtasksChanged?: () => void;
 }
@@ -317,6 +325,7 @@ export function TaskDetail({
   onUnlinkChain,
   onOpenTask,
   onStatusChanged,
+  onStatusSet,
   onSubtasksChanged,
 }: TaskDetailProps): JSX.Element {
   const transport = useTransport();
@@ -1063,6 +1072,7 @@ export function TaskDetail({
               attachments={attachments}
               priorityDisplay={priorityDisplay}
               onTaskChanged={(updated) => onStatusChanged?.(updated)}
+              onStatusSet={(status) => onStatusSet?.(task.id, status)}
               onEdited={() => void loadActivity()}
             />
             <TaskSteps

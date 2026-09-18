@@ -125,6 +125,13 @@ export interface TaskDetailsCellProps {
   onTaskChanged: (task: Task) => void;
   /** Called after a description edit, so the timeline/pane can refresh. */
   onEdited?: () => void;
+  /**
+   * Called after this dropdown moves the card to a new status — never for the other edits
+   * `onTaskChanged` also reports (a note, a priority, a description). `setStatus` already
+   * guards against a no-op (`next === resting`), so every call here is a real transition, the
+   * same guarantee `moveTask` gives its own callers on the board.
+   */
+  onStatusSet?: (status: ManualStatus) => void;
 }
 
 export function TaskDetailsCell({
@@ -134,6 +141,7 @@ export function TaskDetailsCell({
   priorityDisplay = 'color',
   onTaskChanged,
   onEdited,
+  onStatusSet,
 }: TaskDetailsCellProps): JSX.Element {
   const transport = useTransport();
   const styles = useStyles();
@@ -237,6 +245,7 @@ export function TaskDetailsCell({
     setError(null);
     try {
       onTaskChanged(await transport.invoke('task:setStatus', task.id, next));
+      onStatusSet?.(next);
       onEdited?.();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
