@@ -10,6 +10,7 @@ import {
   mergeAppSettings,
   pickGlobalSettings,
   resolveSyncInterval,
+  shouldAutoFoldOnMove,
   type AppSettings,
 } from './settings';
 
@@ -227,6 +228,31 @@ describe('DEFAULT_SETTINGS.features', () => {
   it('keeps the shelf empty and unfolded out of the box', () => {
     expect(DEFAULT_SETTINGS.shelvedCardIds).toEqual([]);
     expect(DEFAULT_SETTINGS.shelfFolded).toBe(false);
+  });
+});
+
+// `shouldAutoFoldOnMove` is the one place both MyTasks.tsx (desktop) and BoardScreen.tsx
+// (web) read `features.autoFoldReviewDone` — an integration point for the toggle rather
+// than a UI-rendering one, since neither app's board screen has a test harness that
+// mounts it.
+describe('shouldAutoFoldOnMove', () => {
+  it('folds a card landing on Review or Done when the feature is on', () => {
+    expect(shouldAutoFoldOnMove(DEFAULT_FEATURE_SETTINGS, 'in-review')).toBe(true);
+    expect(shouldAutoFoldOnMove(DEFAULT_FEATURE_SETTINGS, 'done')).toBe(true);
+  });
+
+  it('leaves every column alone when the feature is off', () => {
+    const off = { ...DEFAULT_FEATURE_SETTINGS, autoFoldReviewDone: false };
+    expect(shouldAutoFoldOnMove(off, 'in-review')).toBe(false);
+    expect(shouldAutoFoldOnMove(off, 'done')).toBe(false);
+  });
+
+  it('never folds for a column that is not Review or Done, feature on or off', () => {
+    expect(shouldAutoFoldOnMove(DEFAULT_FEATURE_SETTINGS, 'todo')).toBe(false);
+    expect(shouldAutoFoldOnMove(DEFAULT_FEATURE_SETTINGS, 'in-progress')).toBe(false);
+    expect(
+      shouldAutoFoldOnMove({ ...DEFAULT_FEATURE_SETTINGS, autoFoldReviewDone: false }, 'done'),
+    ).toBe(false);
   });
 });
 

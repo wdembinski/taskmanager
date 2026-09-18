@@ -42,6 +42,7 @@ import {
 } from '@shared/model';
 import {
   DEFAULT_BOARD_DISPLAY,
+  shouldAutoFoldOnMove,
   type AppSettings,
   type BoardDisplaySettings,
 } from '@shared/settings';
@@ -722,8 +723,7 @@ export function MyTasks(): JSX.Element {
    */
   const foldOnAutoFoldColumn = useCallback(
     (taskId: string, column: BoardColumn | ManualStatus) => {
-      if (!settings?.features.autoFoldReviewDone) return;
-      if (column !== 'in-review' && column !== 'done') return;
+      if (!settings || !shouldAutoFoldOnMove(settings.features, column)) return;
       const onBoard = new Set((tasks ?? []).map((t) => t.id));
       setSettings((prev) => {
         if (!prev) return prev;
