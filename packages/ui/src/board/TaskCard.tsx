@@ -33,6 +33,11 @@ import {
   Badge,
   Button,
   Caption1,
+  Menu,
+  MenuItem,
+  MenuList,
+  MenuPopover,
+  MenuTrigger,
   Text,
   Tooltip,
   makeStyles,
@@ -52,6 +57,7 @@ import {
   DismissCircleFilled,
   LinkRegular,
   MergeFilled,
+  MoreHorizontalRegular,
   PlayCircleRegular,
   NoteRegular,
   PersonFilled,
@@ -1036,6 +1042,19 @@ export interface TaskCardProps {
    * restarting are one gesture apart, so they belong in one place.
    */
   onResume?: () => void;
+  /**
+   * Whether this card is on the shelf rather than in a column — `settings.features.shelf`'s
+   * whole reason to exist. Suppresses whatever this card would otherwise say about its
+   * COLUMN (there is nothing to say: the shelf is where a card goes to have no column), and
+   * flips the shelve menu item's label to "Return to board".
+   */
+  shelved?: boolean;
+  /**
+   * Move this card onto the shelf, or back off it — one menu item either way, since a click
+   * always means "the opposite of {@link shelved}." Absent hides the menu entirely, which is
+   * also what a board with `settings.features.shelf` off gets.
+   */
+  onToggleShelved?: () => void;
   draggable: boolean;
   onSelect: () => void;
   /** Open a step in the detail pane (the row never drags or moves the card). */
@@ -1080,6 +1099,8 @@ export function TaskCard({
   onLinkArm,
   onStop,
   onResume,
+  shelved = false,
+  onToggleShelved,
   draggable,
   onSelect,
   onSelectSubtask,
@@ -1478,6 +1499,37 @@ export function TaskCard({
                 }}
               />
             </Tooltip>
+          )}
+          {/* The shelf's own menu item — one, since {@link shelved} already says which
+              direction the click goes. Absent whenever the feature is off, same as every
+              other optional control on this card. */}
+          {onToggleShelved && (
+            <Menu>
+              <MenuTrigger disableButtonEnhancement>
+                <Button
+                  className={styles.runButton}
+                  size="small"
+                  appearance="subtle"
+                  icon={<MoreHorizontalRegular />}
+                  title="More actions"
+                  draggable={false}
+                  onDragStart={(e) => e.stopPropagation()}
+                  onClick={(e) => e.stopPropagation()}
+                />
+              </MenuTrigger>
+              <MenuPopover>
+                <MenuList>
+                  <MenuItem
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onToggleShelved();
+                    }}
+                  >
+                    {shelved ? 'Return to board' : 'Move to shelf'}
+                  </MenuItem>
+                </MenuList>
+              </MenuPopover>
+            </Menu>
           )}
         </div>
 
