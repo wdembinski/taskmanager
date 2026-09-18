@@ -1491,6 +1491,7 @@ export function MyTasks(): JSX.Element {
             mergeRequests={selectedTask ? (mrsByTask.get(selectedTask.id) ?? []) : []}
             afterMergePipeline={settings?.features.afterMergePipeline}
             mrRebaseButton={settings?.features.mrRebaseButton}
+            quietAgentProgress={settings?.features.quietAgentProgress}
             // The shown task's own files — a step's slice when a step is shown, since a
             // step is a task row and carries its own.
             attachments={selectedTask ? (attachmentsByTask.get(selectedTask.id) ?? []) : []}

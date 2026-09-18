@@ -140,14 +140,28 @@ function systemLine(event: SessionEvent): { text: string; tone: 'meta' | 'err' }
   }
 }
 
+export interface FoldTurnsOptions {
+  /**
+   * `settings.features.quietAgentProgress` — when true, tool/thinking work (the
+   * `isToolWork` branch) is dropped entirely instead of collapsing into a `tools` row.
+   * The footer's own "Running…" line carries the latest one-liner instead (`activityLabel`
+   * in `agentActivity.ts`); the agent's prose (`kind: 'agent'`) is unaffected either way.
+   */
+  quiet?: boolean;
+}
+
 /**
  * Fold a sorted activity list into conversation turns.
  *
  * Consecutive events of a kind are merged: the agent's chunks become one turn (the CLI
  * streams prose in pieces, and a bubble per piece would shred a paragraph), and a run of
- * tool work becomes one collapsed row carrying its count.
+ * tool work becomes one collapsed row carrying its count — unless `options.quiet` drops it.
  */
-export function foldTurns(entries: readonly TaskActivityEntry[]): Turn[] {
+export function foldTurns(
+  entries: readonly TaskActivityEntry[],
+  options?: FoldTurnsOptions,
+): Turn[] {
+  const quiet = options?.quiet ?? false;
   const turns: Turn[] = [];
   const last = (): Turn | undefined => turns[turns.length - 1];
 
@@ -255,6 +269,7 @@ export function foldTurns(entries: readonly TaskActivityEntry[]): Turn[] {
     }
 
     if (isToolWork(event)) {
+      if (quiet) continue; // the footer's one-liner carries this instead — see `activityLabel`
       const prev = last();
       const label =
         event.kind === 'tool-use' && SUBAGENT_TOOLS.has(event.name.toLowerCase())

@@ -47,7 +47,7 @@ import {
   CollectionsEmptyRegular,
   AlertOffRegular,
 } from '@fluentui/react-icons';
-import { runningSubAgents } from './agentActivity';
+import { activityLabel, runningSubAgents } from './agentActivity';
 import { stepPosition } from './board/boardColumns';
 import { typeIcon } from './board/TaskCard';
 import { ChatTurns } from './chat/ChatTurns';
@@ -221,6 +221,13 @@ export interface TaskDetailProps {
   /** `settings.features.mrRebaseButton` — passed straight through to `MergeRequests`. */
   mrRebaseButton?: boolean;
   /**
+   * `settings.features.quietAgentProgress` — when true, the conversation drops the agent's
+   * tool-use/thinking chatter instead of folding it into a "worked with N tools" row, and
+   * the footer's "Running…" line grows a one-liner naming the agent's latest move instead
+   * (`activityLabel` in `./agentActivity`).
+   */
+  quietAgentProgress?: boolean;
+  /**
    * The files hung off the task being shown — its slice of the board's attachment list.
    * The board holds that list whole (see `attachment:changed`), so what arrives here is
    * already narrowed to this task and the pane never has to ask.
@@ -316,6 +323,7 @@ export function TaskDetail({
   mergeRequests = [],
   afterMergePipeline = true,
   mrRebaseButton = true,
+  quietAgentProgress = true,
   attachments = [],
   parentAttachments = [],
   statusKeywords,
@@ -606,7 +614,10 @@ export function TaskDetail({
       ),
     [timeline.activity, timeline.ticketComments, liveEvents],
   );
-  const turns = useMemo(() => foldTurns(timelineEntries), [timelineEntries]);
+  const turns = useMemo(
+    () => foldTurns(timelineEntries, { quiet: quietAgentProgress }),
+    [timelineEntries, quietAgentProgress],
+  );
   // A skeleton only once the load has actually taken a moment, and only while there is
   // nothing already on screen — the four reload-the-same-card paths keep a correct
   // timeline visible while they refresh it, and must not be replaced with grey rows.
@@ -620,6 +631,21 @@ export function TaskDetail({
       .flatMap((e) => (e.kind === 'event' ? [e.event as SessionEvent] : []));
     return runningSubAgents(events);
   }, [timeline.activity, liveEvents]);
+
+  // The agent's latest tool-use/thinking, one-lined — only computed in quiet mode, where
+  // `foldTurns` above just dropped that same evidence from the conversation. Same
+  // unfiltered stream `subAgents` reads, walked from the newest end.
+  const recentActivity = useMemo(() => {
+    if (!quietAgentProgress) return null;
+    const events = [...timeline.activity, ...liveEvents]
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .flatMap((e) => (e.kind === 'event' ? [e.event as SessionEvent] : []));
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const label = activityLabel(events[i]);
+      if (label) return label;
+    }
+    return null;
+  }, [timeline.activity, liveEvents, quietAgentProgress]);
 
   // Who a typed message would reach and whether it can be sent (Phase 12). The target
   // may be a live STEP — a card executing an approved plan holds no session of its own —
@@ -1173,6 +1199,11 @@ export function TaskDetail({
                   fallback here could only ever be a claim the phase had already denied —
                   which is how "Agent running" came to sit under a card that was not. */}
               <Caption1 className={styles.runningLabel}>{run.label}</Caption1>
+              {/* Quiet mode's one-liner: the conversation dropped the tool-use/thinking
+                  turns, so this is the only place the agent's current move is visible. */}
+              {recentActivity && (
+                <Caption1 className={styles.subAgentLabel}>· {recentActivity}</Caption1>
+              )}
             </div>
             {subAgents.map((agent) => (
               <div key={agent.toolId} className={`${styles.running} ${styles.subAgent}`}>
