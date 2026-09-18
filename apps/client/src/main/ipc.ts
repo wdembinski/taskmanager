@@ -2460,6 +2460,25 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     send('mergeRequests:changed', all);
     return all;
   });
+
+  /**
+   * Ask the forge to rebase this MR's source branch onto its target — GitLab's own rebase
+   * endpoint, or GitHub's "update branch". Both forges queue the work rather than doing it
+   * inline, so the re-sync right after this often still reports `need-rebase`; the next poll
+   * is what actually clears it.
+   */
+  handle('mr:rebase', async (mrId) => {
+    const mr = store.listMergeRequests().find((m) => m.id === mrId);
+    if (!mr) throw new Error('That merge request is no longer tracked.');
+    if (mr.provider === 'gitlab') {
+      await buildGitLabClient().rebaseMergeRequest(mr.repoId, mr.number);
+      return syncGitLab();
+    }
+    const [owner, repo] = mr.projectPath.split('/');
+    if (!owner || !repo) throw new Error(`Malformed GitHub repository path: ${mr.projectPath}`);
+    await buildGitHubClient().updateBranch(owner, repo, mr.number);
+    return syncGitHubPullRequests();
+  });
   // -------------------------------------------------------------------------
 
   /**

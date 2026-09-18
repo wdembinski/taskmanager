@@ -1386,6 +1386,7 @@ export function MyTasks(): JSX.Element {
               onResumeTask={(taskId) => void resumeTask(taskId)}
               onToggleShelved={settings?.features.shelf ? toggleShelved : undefined}
               afterMergePipeline={settings?.features.afterMergePipeline}
+              mrRebaseButton={settings?.features.mrRebaseButton}
               onSelectTask={selectTask}
               onDragStartTask={setDraggingId}
               onDragEndTask={() => setDraggingId(null)}
@@ -1471,6 +1472,7 @@ export function MyTasks(): JSX.Element {
             onToggleShelved={toggleShelved}
             onDropOnShelf={dropOnShelf}
             afterMergePipeline={settings?.features.afterMergePipeline}
+            mrRebaseButton={settings?.features.mrRebaseButton}
           />
         )}
       </div>
@@ -1488,6 +1490,7 @@ export function MyTasks(): JSX.Element {
             parentTask={parentOfSelected}
             mergeRequests={selectedTask ? (mrsByTask.get(selectedTask.id) ?? []) : []}
             afterMergePipeline={settings?.features.afterMergePipeline}
+            mrRebaseButton={settings?.features.mrRebaseButton}
             // The shown task's own files — a step's slice when a step is shown, since a
             // step is a task row and carries its own.
             attachments={selectedTask ? (attachmentsByTask.get(selectedTask.id) ?? []) : []}

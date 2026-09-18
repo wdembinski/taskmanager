@@ -411,7 +411,7 @@ export class GitHubClient {
    */
   private async write<T>(
     path: string,
-    method: 'PATCH' | 'POST' | 'DELETE',
+    method: 'PATCH' | 'POST' | 'PUT' | 'DELETE',
     body?: unknown,
   ): Promise<T> {
     const res = await fetch(this.url(path), {
@@ -645,6 +645,18 @@ export class GitHubClient {
    */
   getPullRequest(owner: string, repo: string, number: number): Promise<GitHubPullRequest> {
     return this.request<GitHubPullRequest>(`${repoPath(owner, repo)}/pulls/${number}`);
+  }
+
+  /**
+   * Update the branch — `PUT /repos/{owner}/{repo}/pulls/{number}/update-branch`.
+   *
+   * GitHub's counterpart of GitLab's rebase button, though it merges the base INTO the head
+   * rather than replaying commits on top of it — the distinction GitHub itself draws between
+   * "update branch" and a true rebase. Queued rather than done inline, so the response carries
+   * no new `mergeable_state`: the caller re-syncs afterwards the same way a poll would.
+   */
+  async updateBranch(owner: string, repo: string, number: number): Promise<void> {
+    await this.write<unknown>(`${repoPath(owner, repo)}/pulls/${number}/update-branch`, 'PUT');
   }
 
   /**

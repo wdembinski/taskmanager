@@ -10,6 +10,7 @@ import {
   mrHeading,
   mrIsSettled,
   mrNeedsAttention,
+  mrNeedsRebase,
   mrNoun,
   mrReadyToMerge,
   mrRef,
@@ -393,6 +394,29 @@ describe('mergeBlockers', () => {
     // verdict slot would be the same fact told twice.
     expect(mrVerdict(clear({ pipelineStatus: 'failed' }))).toBe('approved');
     expect(mrVerdict(clear({ draft: true }))).toBe('approved');
+  });
+});
+
+describe('mrNeedsRebase', () => {
+  const clear = (over: Partial<MergeRequest> = {}): MergeRequest =>
+    mr({ approvalsRequired: 1, approvalsGiven: 1, ...over });
+
+  it('is true only for GitLab’s need_rebase / GitHub’s behind', () => {
+    expect(mrNeedsRebase(clear({ detailedMergeStatus: 'need_rebase' }))).toBe(true);
+    expect(mrNeedsRebase(clear({ provider: 'github', detailedMergeStatus: 'behind' }))).toBe(true);
+  });
+
+  it('is false for every other blocker, including a real conflict', () => {
+    expect(mrNeedsRebase(clear({ detailedMergeStatus: 'conflict' }))).toBe(false);
+    expect(mrNeedsRebase(clear({ detailedMergeStatus: 'blocked_status' }))).toBe(false);
+    expect(mrNeedsRebase(clear({ draft: true }))).toBe(false);
+    expect(mrNeedsRebase(clear())).toBe(false);
+  });
+
+  it('is false once the MR is no longer open, even with a stale status left over', () => {
+    expect(mrNeedsRebase(clear({ state: 'merged', detailedMergeStatus: 'need_rebase' }))).toBe(
+      false,
+    );
   });
 });
 

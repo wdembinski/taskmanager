@@ -675,6 +675,7 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
                 onResumeTask={(taskId) => void extras.resumeTask(taskId).catch(reportError)}
                 onToggleShelved={settings.features.shelf ? toggleShelved : undefined}
                 afterMergePipeline={settings.features.afterMergePipeline}
+                mrRebaseButton={settings.features.mrRebaseButton}
                 onSelectTask={selectTask}
                 onDragStartTask={setDraggingId}
                 onDragEndTask={() => setDraggingId(null)}
@@ -746,6 +747,7 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
             onToggleShelved={toggleShelved}
             onDropOnShelf={dropOnShelf}
             afterMergePipeline={settings.features.afterMergePipeline}
+            mrRebaseButton={settings.features.mrRebaseButton}
           />
         )}
       </div>
@@ -762,6 +764,7 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
             parentTask={parentOfSelected}
             mergeRequests={selectedTask ? (mrsByTask.get(selectedTask.id) ?? []) : []}
             afterMergePipeline={settings.features.afterMergePipeline}
+            mrRebaseButton={settings.features.mrRebaseButton}
             attachments={selectedTask ? (attachmentsByTask.get(selectedTask.id) ?? []) : []}
             parentAttachments={
               parentOfSelected ? (attachmentsByTask.get(parentOfSelected.id) ?? []) : []

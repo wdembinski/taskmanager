@@ -312,6 +312,17 @@ export class GitLabClient {
   }
 
   /**
+   * Rebase the source branch onto the target — `PUT /projects/{id}/merge_requests/{iid}/rebase`.
+   *
+   * GitLab queues this rather than doing it inline, so the response carries no new merge
+   * status: the caller re-syncs afterwards the same way a poll would, and the rebase shows up
+   * once GitLab has actually finished it.
+   */
+  async rebaseMergeRequest(projectId: number, iid: number): Promise<void> {
+    await this.write<unknown>(`/projects/${projectId}/merge_requests/${iid}/rebase`, 'PUT');
+  }
+
+  /**
    * Open a merge request — `POST /projects/{path}/merge_requests`.
    *
    * Addressed by the **URL-encoded project path** (`group%2Fsub%2Fproj`) rather than by the
