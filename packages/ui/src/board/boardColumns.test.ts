@@ -15,6 +15,7 @@ import {
   groupStepsByRound,
   groupSubtasks,
   hiddenDoneSummary,
+  partitionShelved,
   sortCards,
   splitEarlierSteps,
   splitStepPhases,
@@ -382,6 +383,36 @@ describe('focusCards — chain focus mode', () => {
     const before = board.map((c) => c.task.id);
     focusCards(board, chainComponent(links, '1'));
     expect(board.map((c) => c.task.id)).toEqual(before);
+  });
+});
+
+describe('partitionShelved', () => {
+  const cards = groupSubtasks([card('a'), card('b'), card('c')]);
+
+  it('puts everything on the board when nothing is shelved', () => {
+    const { onBoard, shelved } = partitionShelved(cards, new Set());
+    expect(onBoard.map((c) => c.task.id)).toEqual(['a', 'b', 'c']);
+    expect(shelved).toEqual([]);
+  });
+
+  it('moves a shelved card out of the board list and into the shelf, in place', () => {
+    const { onBoard, shelved } = partitionShelved(cards, new Set(['b']));
+    expect(onBoard.map((c) => c.task.id)).toEqual(['a', 'c']);
+    expect(shelved.map((c) => c.task.id)).toEqual(['b']);
+  });
+
+  it('ignores a shelved id for a card not on this board', () => {
+    // The scope-filter case: `board:tasks` only ever returns the active scope's cards, so
+    // a shelved id left over from another scope must not conjure a card that isn't there.
+    const { onBoard, shelved } = partitionShelved(cards, new Set(['gone']));
+    expect(onBoard.map((c) => c.task.id)).toEqual(['a', 'b', 'c']);
+    expect(shelved).toEqual([]);
+  });
+
+  it('does not mutate the board it was given', () => {
+    const before = cards.map((c) => c.task.id);
+    partitionShelved(cards, new Set(['a']));
+    expect(cards.map((c) => c.task.id)).toEqual(before);
   });
 });
 

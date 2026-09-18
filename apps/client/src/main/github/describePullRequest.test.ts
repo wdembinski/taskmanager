@@ -546,6 +546,45 @@ describe('describePullRequest — a settled PR read back after it merged', () =>
     expect(stub.listCheckRuns).not.toHaveBeenCalled();
     expect(result.pipelineStatus).toBe('failed');
   });
+
+  /**
+   * The after-merge run: once a PR has landed, `head.sha` is the feature branch's own tip
+   * and never moves again, so checking IT forever shows the pre-merge run. The commit that
+   * actually matters once the PR is done is `merge_commit_sha` — the one GitHub triggers a
+   * fresh workflow run against after the merge lands on the base branch.
+   */
+  it('reads checks off the merge commit, not the PR branch head, once merged', async () => {
+    const stub = client({
+      checkRuns: [run('deploy', 'completed', 'success')],
+    });
+    await describePullRequest(stub, listed(), {
+      stale: false,
+      prior: priorRed({ pipelineStatus: 'running' }),
+      detail: detail({
+        state: 'closed',
+        merged: true,
+        merged_at: '2026-08-11T11:00:00Z',
+        merge_commit_sha: 'merged-sha-123',
+      }),
+    });
+
+    expect(stub.listCheckRuns).toHaveBeenCalledWith('acme', 'web', 'merged-sha-123');
+  });
+
+  // GitHub has not always filled `merge_commit_sha` in by the instant a PR merges — falling
+  // back to `head.sha` keeps a settled PR from being left with no SHA to ask about at all.
+  it('falls back to the head SHA when a merged PR has no merge commit SHA yet', async () => {
+    const stub = client({
+      checkRuns: [run('deploy', 'completed', 'success')],
+    });
+    await describePullRequest(stub, listed(), {
+      stale: false,
+      prior: priorRed({ pipelineStatus: 'running' }),
+      detail: detail({ state: 'closed', merged: true, merged_at: '2026-08-11T11:00:00Z' }),
+    });
+
+    expect(stub.listCheckRuns).toHaveBeenCalledWith('acme', 'web', 'deadbeef');
+  });
 });
 
 describe('describePullRequest — the other CI system', () => {

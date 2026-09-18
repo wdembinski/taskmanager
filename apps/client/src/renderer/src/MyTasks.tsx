@@ -35,12 +35,14 @@ import {
   hasRepo,
   isFilingProject,
   PERSONAL_PROJECT_ID,
+  type ManualStatus,
   type Person,
   type Project,
   type Task,
 } from '@shared/model';
 import {
   DEFAULT_BOARD_DISPLAY,
+  shouldAutoFoldOnMove,
   type AppSettings,
   type BoardDisplaySettings,
 } from '@shared/settings';
@@ -80,7 +82,9 @@ import {
 } from '@ui/board/chainDrag';
 import { chainStates } from '@ui/board/chainStates';
 import { useCardAnchors } from '@ui/board/useCardAnchors';
-import { foldedCardSet, toggleFoldedCard } from '@ui/board/foldedSteps';
+import { ensureFoldedCard, foldedCardSet, toggleFoldedCard } from '@ui/board/foldedSteps';
+import { ensureShelvedCard, shelvedCardSet, toggleShelvedCard } from '@ui/board/shelvedCards';
+import { ShelfStrip } from '@ui/board/ShelfStrip';
 import { useAttentionIndex } from './useAttentionIndex';
 import { useActiveRuns } from './useActiveRuns';
 import { useIntegratingTasks } from './useIntegratingTasks';
@@ -92,6 +96,7 @@ import {
   groupSubtasks,
   hiddenDoneSummary,
   isRunStatus,
+  partitionShelved,
   sortCards,
   statusForColumn,
   visibleColumns,
@@ -502,7 +507,14 @@ export function MyTasks(): JSX.Element {
     [chainFocus, focusAnchor, links],
   );
 
-  const cardsByColumn = useMemo(() => {
+  /**
+   * The board's cards parked onto the shelf — per-surface view-state, like `foldedSteps`.
+   * `tasks` is already this scope's own cards (`board:tasks`), so the flat id list is all
+   * the Personal/All split needs: see `partitionShelved`.
+   */
+  const shelvedIds = useMemo(() => shelvedCardSet(settings?.shelvedCardIds), [settings]);
+
+  const { cardsByColumn, shelvedCards } = useMemo(() => {
     const map: Record<BoardColumn, BoardCard[]> = {
       todo: [],
       'in-progress': [],
@@ -513,16 +525,18 @@ export function MyTasks(): JSX.Element {
     // A card's steps are not cards of their own — they render inside the parent and
     // travel with it, whatever their own status. `focusCards` then narrows the board to
     // the selected card's chain, or passes everything through when focus is off.
-    for (const card of focusCards(groupSubtasks(tasks ?? [], mrsByTask), focusIds)) {
-      map[columnForTask(card.task)].push(card);
-    }
+    const { onBoard, shelved } = partitionShelved(
+      focusCards(groupSubtasks(tasks ?? [], mrsByTask), focusIds),
+      shelvedIds,
+    );
+    for (const card of onBoard) map[columnForTask(card.task)].push(card);
     // Cards that want you first, then by priority — see `sortCards`. The inbox's ids go
     // in too: the ordering and the orange ring are the same predicate on purpose, so
     // passing it to the card and not to the sort would have the two disagree.
     for (const col of Object.keys(map) as BoardColumn[])
       map[col] = sortCards(map[col], attention.taskIds);
-    return map;
-  }, [tasks, mrsByTask, attention.taskIds, focusIds]);
+    return { cardsByColumn: map, shelvedCards: sortCards(shelved, attention.taskIds) };
+  }, [tasks, mrsByTask, attention.taskIds, focusIds, shelvedIds]);
 
   /**
    * What the "Show Done" switch is counting while the column is shut — put into words by
@@ -696,6 +710,81 @@ export function MyTasks(): JSX.Element {
     [tasks],
   );
 
+  /**
+   * Auto-fold a card's Steps section the moment it lands in Review or Done — the behaviour
+   * `settings.features.autoFoldReviewDone` switches off. `ensureFoldedCard` (add-if-absent),
+   * not `toggleFoldedCard`: a card the human had reopened after the move must stay open, so
+   * this may only ever ADD the fold, never take one back off that a click just removed.
+   *
+   * Called once from each place a human can actually move a card — `moveTask` below (drag,
+   * and the arrow-driven release-now paths that share it) and the detail pane's State
+   * dropdown (`onStatusSet`) — so it fires once per explicit move and never on a re-render,
+   * which is what leaves a reopened card open.
+   */
+  const foldOnAutoFoldColumn = useCallback(
+    (taskId: string, column: BoardColumn | ManualStatus) => {
+      if (!settings || !shouldAutoFoldOnMove(settings.features, column)) return;
+      const onBoard = new Set((tasks ?? []).map((t) => t.id));
+      setSettings((prev) => {
+        if (!prev) return prev;
+        const next = {
+          ...prev,
+          foldedStepCards: ensureFoldedCard(prev.foldedStepCards, taskId, onBoard),
+        };
+        void window.api.invoke('settings:save', next);
+        return next;
+      });
+    },
+    [settings, tasks],
+  );
+
+  /**
+   * Move a card onto the shelf, or back off it — one menu item either way (`TaskCard`'s
+   * `onToggleShelved`), and also what a card dropped back into a column clears (see
+   * `onDropInColumn` below). Saved the same optimistic way every other board switch is.
+   */
+  const toggleShelved = useCallback(
+    (taskId: string) => {
+      const onBoard = new Set((tasks ?? []).map((t) => t.id));
+      setSettings((prev) => {
+        if (!prev) return prev;
+        const next = {
+          ...prev,
+          shelvedCardIds: toggleShelvedCard(prev.shelvedCardIds, taskId, onBoard),
+        };
+        void window.api.invoke('settings:save', next);
+        return next;
+      });
+    },
+    [tasks],
+  );
+
+  /** A card dropped onto the shelf strip — always shelves it, never the reverse. */
+  const dropOnShelf = useCallback(
+    (taskId: string) => {
+      const onBoard = new Set((tasks ?? []).map((t) => t.id));
+      setSettings((prev) => {
+        if (!prev) return prev;
+        const next = {
+          ...prev,
+          shelvedCardIds: ensureShelvedCard(prev.shelvedCardIds, taskId, onBoard),
+        };
+        void window.api.invoke('settings:save', next);
+        return next;
+      });
+    },
+    [tasks],
+  );
+
+  const toggleShelfFolded = useCallback(() => {
+    setSettings((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, shelfFolded: !prev.shelfFolded };
+      void window.api.invoke('settings:save', next);
+      return next;
+    });
+  }, []);
+
   /** The commit-graph pane, saved the same optimistic way the detail pane's fold is. */
   const setShowGraph = useCallback((value: boolean) => {
     setSettings((prev) => {
@@ -778,12 +867,13 @@ export function MyTasks(): JSX.Element {
       patchTask(optimisticMove(task, column)); // optimistic
       try {
         patchTask(await window.api.invoke('task:move', taskId, column));
+        foldOnAutoFoldColumn(taskId, column);
       } catch (e) {
         patchTask(prev); // rollback (e.g. JIRA transition unavailable)
         setError(e instanceof Error ? e.message : String(e));
       }
     },
-    [tasks, patchTask],
+    [tasks, patchTask, foldOnAutoFoldColumn],
   );
 
   /**
@@ -1294,6 +1384,9 @@ export function MyTasks(): JSX.Element {
               draggingId={draggingId}
               onStopTask={(taskId) => void stopTask(taskId)}
               onResumeTask={(taskId) => void resumeTask(taskId)}
+              onToggleShelved={settings?.features.shelf ? toggleShelved : undefined}
+              afterMergePipeline={settings?.features.afterMergePipeline}
+              mrRebaseButton={settings?.features.mrRebaseButton}
               onSelectTask={selectTask}
               onDragStartTask={setDraggingId}
               onDragEndTask={() => setDraggingId(null)}
@@ -1302,6 +1395,10 @@ export function MyTasks(): JSX.Element {
                 // dragged card is gone from this column by the time the promise settles.
                 setDraggingId(null);
                 void moveTask(taskId, column);
+                // A card dragged out of the shelf and into a column is off the shelf —
+                // the drag that put it there and the drag that takes it back are the same
+                // gesture, so this is the toggle's OTHER click.
+                if (shelvedIds.has(taskId)) toggleShelved(taskId);
               }}
             />
           ))}
@@ -1335,6 +1432,49 @@ export function MyTasks(): JSX.Element {
             />
           )}
         </div>
+        {settings?.features.shelf && (
+          <ShelfStrip
+            cards={shelvedCards}
+            folded={settings?.shelfFolded ?? false}
+            onToggleFolded={toggleShelfFolded}
+            projectNameOf={(t) => {
+              if (scope === 'all') {
+                const board = boardsById.get(t.projectId);
+                if (board && board.id !== PERSONAL_PROJECT_ID) return board.name;
+              }
+              return t.externalSource ? t.phase || undefined : undefined;
+            }}
+            epicNameOf={(t) => (t.epicTaskId ? tasksById.get(t.epicTaskId)?.title : undefined)}
+            assigneeOf={(t) => (t.assigneeId ? peopleById.get(t.assigneeId) : undefined)}
+            agentNameOf={(t) => agentProjects.find((p) => p.id === t.agentProjectId)?.name}
+            projectColorOf={(t) => {
+              const tagColor = agentProjects.find((p) => p.id === t.projectTagId)?.color;
+              if (tagColor) return tagColor;
+              if (scope !== 'all') return undefined;
+              const board = boardsById.get(t.projectId);
+              return board && board.id !== PERSONAL_PROJECT_ID
+                ? board.color || undefined
+                : undefined;
+            }}
+            showSprint={!currentSprintOnly}
+            statusKeywords={settings?.statusKeywords}
+            attentionTaskIds={attention.taskIds}
+            liveRunTaskIds={liveRuns}
+            mergingTaskIds={merging}
+            display={boardDisplay}
+            selectedTaskId={selectedTaskId}
+            draggingId={draggingId}
+            onStopTask={(taskId) => void stopTask(taskId)}
+            onResumeTask={(taskId) => void resumeTask(taskId)}
+            onSelectTask={selectTask}
+            onDragStartTask={setDraggingId}
+            onDragEndTask={() => setDraggingId(null)}
+            onToggleShelved={toggleShelved}
+            onDropOnShelf={dropOnShelf}
+            afterMergePipeline={settings?.features.afterMergePipeline}
+            mrRebaseButton={settings?.features.mrRebaseButton}
+          />
+        )}
       </div>
 
       {/* Unmounted rather than hidden when folded away: remounting re-runs loadActivity,
@@ -1349,6 +1489,9 @@ export function MyTasks(): JSX.Element {
             subtasks={chain}
             parentTask={parentOfSelected}
             mergeRequests={selectedTask ? (mrsByTask.get(selectedTask.id) ?? []) : []}
+            afterMergePipeline={settings?.features.afterMergePipeline}
+            mrRebaseButton={settings?.features.mrRebaseButton}
+            quietAgentProgress={settings?.features.quietAgentProgress}
             // The shown task's own files — a step's slice when a step is shown, since a
             // step is a task row and carries its own.
             attachments={selectedTask ? (attachmentsByTask.get(selectedTask.id) ?? []) : []}
@@ -1380,6 +1523,7 @@ export function MyTasks(): JSX.Element {
             onUnlinkChain={(linkId) => void removeLink(linkId)}
             onOpenTask={setSelectedTaskId}
             onStatusChanged={patchTask}
+            onStatusSet={foldOnAutoFoldColumn}
             onSubtasksChanged={() => void refresh()}
           />
         </div>

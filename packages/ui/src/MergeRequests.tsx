@@ -20,7 +20,7 @@ import {
   mergeClasses,
   tokens,
 } from '@fluentui/react-components';
-import { RenameRegular } from '@fluentui/react-icons';
+import { ArrowSyncRegular, RenameRegular } from '@fluentui/react-icons';
 import { UNREAD_ORANGE } from '@tm/shared/accent';
 import {
   forgeName,
@@ -31,10 +31,12 @@ import {
   mrHeading,
   mrLabel,
   mrNeedsAttention,
+  mrNeedsRebase,
   mrNoun,
   mrReadyToMerge,
   mrRef,
   mrVerdict,
+  showPipeline,
   verdictSummary,
   type MergeBlocker,
   type MergeRequest,
@@ -138,6 +140,24 @@ export interface MergeRequestsProps {
   onMarkEventsSeen: (mrId: string) => void;
   /** Rename an MR in this app only; null restores the upstream title. */
   onRename: (mrId: string, name: string | null) => void;
+  /**
+   * Ask the forge to rebase this MR's source branch onto its target. Only ever called for a
+   * row `mrNeedsRebase` says yes to — see {@link mrRebaseButton}.
+   */
+  onRebase: (mrId: string) => void;
+  /**
+   * `settings.features.afterMergePipeline` — whether a merged MR with no genuine pipeline
+   * reading hides its badge rather than claiming "no pipeline"/"pipeline unknown". Defaults
+   * to on, matching the feature's own default; off restores the old behaviour of always
+   * drawing the badge.
+   */
+  afterMergePipeline?: boolean;
+  /**
+   * `settings.features.mrRebaseButton` — whether a row the forge can rebase swaps its verdict
+   * badge for a clickable rebase button. Defaults to on, matching the feature's own default;
+   * off restores the old behaviour of a static "needs a rebase" badge nobody can act on here.
+   */
+  mrRebaseButton?: boolean;
 }
 
 export function MergeRequests({
@@ -145,6 +165,9 @@ export function MergeRequests({
   onMarkRead,
   onMarkEventsSeen,
   onRename,
+  onRebase,
+  afterMergePipeline = true,
+  mrRebaseButton = true,
 }: MergeRequestsProps): React.JSX.Element | null {
   const styles = useStyles();
   // Which row is being renamed, and the text so far. One at a time: two open editors would
@@ -174,10 +197,21 @@ export function MergeRequests({
 
       {mergeRequests.map((mr) => {
         const pipeline = PIPELINE_BADGE[mr.pipelineStatus];
+        // Off, a merged MR with nothing genuine to report still claims "no pipeline" or
+        // "pipeline unknown" — the pre-feature behaviour, restored by the setting.
+        const pipelineShown = !afterMergePipeline || showPipeline(mr);
         const reason = mrAttentionReason(mr);
         const verdict = mrVerdict(mr);
         const settled = mrIsSettled(mr);
-        const blockers = mergeBlockers(mr).filter((b) => !SAID_ELSEWHERE.has(b));
+        // Only when the forge can actually act on it — a rebase button on a settled MR
+        // would offer to fix something that is no longer there to fix.
+        const canRebase = mrRebaseButton && !settled && mrNeedsRebase(mr);
+        // The button already says "needs a rebase" as clearly as the chip did, so it is
+        // dropped from the additive list once the button is showing — otherwise the row
+        // would say the same thing twice.
+        const blockers = mergeBlockers(mr).filter(
+          (b) => !SAID_ELSEWHERE.has(b) && !(b === 'need-rebase' && canRebase),
+        );
         return (
           <div
             key={mr.id}
@@ -241,27 +275,52 @@ export function MergeRequests({
             </div>
 
             <div className={styles.meta}>
-              <Badge appearance="tint" color={pipeline.color} size="small">
-                {mr.pipelineUrl ? (
-                  <a className={styles.link} href={mr.pipelineUrl} target="_blank" rel="noreferrer">
-                    {pipeline.label}
-                  </a>
-                ) : (
-                  pipeline.label
-                )}
-              </Badge>
+              {pipelineShown && (
+                <Badge appearance="tint" color={pipeline.color} size="small">
+                  {mr.pipelineUrl ? (
+                    <a
+                      className={styles.link}
+                      href={mr.pipelineUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {pipeline.label}
+                    </a>
+                  ) : (
+                    pipeline.label
+                  )}
+                </Badge>
+              )}
               {/* The verdict: how it ENDED once it has, else where its review stands.
                   Merged wears the same violet as the card row's merge glyph, so the two
                   surfaces read as one fact. "approvals unknown" rather than a confident
-                  0/0 — /approvals is tier-gated and 403s on plenty of instances. */}
-              <Badge
-                appearance="tint"
-                size="small"
-                color={verdict === 'changes-requested' ? 'danger' : 'informative'}
-                style={verdict === 'merged' ? { color: FLUO.violet } : undefined}
-              >
-                {verdictSummary(mr)}
-              </Badge>
+                  0/0 — /approvals is tier-gated and 403s on plenty of instances.
+
+                  Swapped for an actionable button when the forge is refusing the merge
+                  ONLY because the branch has diverged: every other blocker needs a human
+                  to do something the app cannot, but a stale branch is exactly what
+                  `mr:rebase` asks the forge to fix. */}
+              {canRebase ? (
+                <Button
+                  size="small"
+                  appearance="outline"
+                  icon={<ArrowSyncRegular />}
+                  style={{ color: FLUO.red, borderColor: FLUO.red }}
+                  onClick={() => onRebase(mr.id)}
+                  title={`Ask ${forgeName(mr.provider)} to rebase this branch`}
+                >
+                  Rebase
+                </Button>
+              ) : (
+                <Badge
+                  appearance="tint"
+                  size="small"
+                  color={verdict === 'changes-requested' ? 'danger' : 'informative'}
+                  style={verdict === 'merged' ? { color: FLUO.violet } : undefined}
+                >
+                  {verdictSummary(mr)}
+                </Badge>
+              )}
               {/* The one piece of good news worth a badge: nothing is left to do but merge
                   it. Fluo green rather than a Fluent tint so it reads as the row's verdict
                   and not as another field. */}

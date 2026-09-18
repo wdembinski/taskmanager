@@ -10,10 +10,12 @@ import {
   mrHeading,
   mrIsSettled,
   mrNeedsAttention,
+  mrNeedsRebase,
   mrNoun,
   mrReadyToMerge,
   mrRef,
   mrVerdict,
+  showPipeline,
   verdictSummary,
   type MergeRequest,
 } from './mergeRequest';
@@ -395,6 +397,29 @@ describe('mergeBlockers', () => {
   });
 });
 
+describe('mrNeedsRebase', () => {
+  const clear = (over: Partial<MergeRequest> = {}): MergeRequest =>
+    mr({ approvalsRequired: 1, approvalsGiven: 1, ...over });
+
+  it('is true only for GitLab’s need_rebase / GitHub’s behind', () => {
+    expect(mrNeedsRebase(clear({ detailedMergeStatus: 'need_rebase' }))).toBe(true);
+    expect(mrNeedsRebase(clear({ provider: 'github', detailedMergeStatus: 'behind' }))).toBe(true);
+  });
+
+  it('is false for every other blocker, including a real conflict', () => {
+    expect(mrNeedsRebase(clear({ detailedMergeStatus: 'conflict' }))).toBe(false);
+    expect(mrNeedsRebase(clear({ detailedMergeStatus: 'blocked_status' }))).toBe(false);
+    expect(mrNeedsRebase(clear({ draft: true }))).toBe(false);
+    expect(mrNeedsRebase(clear())).toBe(false);
+  });
+
+  it('is false once the MR is no longer open, even with a stale status left over', () => {
+    expect(mrNeedsRebase(clear({ state: 'merged', detailedMergeStatus: 'need_rebase' }))).toBe(
+      false,
+    );
+  });
+});
+
 /**
  * The two places a merge request stops being provider-agnostic — everything above this
  * point asks the same questions of a pull request as of a merge request.
@@ -486,5 +511,24 @@ describe('two forges, one merge request', () => {
 
   it('puts the pull request reference in the attention tooltip', () => {
     expect(mrAttentionReason(pr({ number: 7, latestNoteAt: 200 }))).toContain('#7');
+  });
+});
+
+describe('showPipeline', () => {
+  it('hides a merged MR with no genuine pipeline reading', () => {
+    expect(showPipeline(mr({ state: 'merged', pipelineStatus: 'none' }))).toBe(false);
+    expect(showPipeline(mr({ state: 'merged', pipelineStatus: 'unknown' }))).toBe(false);
+  });
+
+  it('shows a merged MR with an actual pipeline verdict', () => {
+    expect(showPipeline(mr({ state: 'merged', pipelineStatus: 'success' }))).toBe(true);
+    expect(showPipeline(mr({ state: 'merged', pipelineStatus: 'failed' }))).toBe(true);
+  });
+
+  it("always shows an open, closed or locked MR's pipeline, none/unknown included", () => {
+    for (const state of ['opened', 'closed', 'locked'] as const) {
+      expect(showPipeline(mr({ state, pipelineStatus: 'none' }))).toBe(true);
+      expect(showPipeline(mr({ state, pipelineStatus: 'unknown' }))).toBe(true);
+    }
   });
 });

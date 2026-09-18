@@ -76,6 +76,16 @@ describe('GitLabClient', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ message: 'nope' })));
     expect(await client().getReviewers(9, 1)).toEqual([]);
   });
+
+  it('rebases with a PUT to /merge_requests/:iid/rebase', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ rebase_in_progress: true }, 202));
+    vi.stubGlobal('fetch', fetchMock);
+    await client().rebaseMergeRequest(42, 12);
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      'https://gitlab.com/api/v4/projects/42/merge_requests/12/rebase',
+    );
+    expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe('PUT');
+  });
 });
 
 describe('state and pipeline narrowing', () => {

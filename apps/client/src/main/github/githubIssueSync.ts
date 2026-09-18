@@ -37,8 +37,10 @@ import {
   PERSONAL_PROJECT_ID,
   type BoardColumn,
   type JiraStatusCategory,
+  type Project,
   type Task,
 } from '@shared/model';
+import { resolveOwningBoardProject } from '@shared/agentProjects';
 import { columnForTask, isRunStatus, restingStatus, statusForColumn } from '@shared/board';
 import { firstUnmappedLabel, resolveGitHubColumn } from '@shared/statusResolve';
 import { guardRemovals, type ForgeRemoval, type ForgeRemovalReason } from '../forge/removalGuard';
@@ -114,6 +116,19 @@ export interface GitHubIssueSyncOptions {
    * it the moment the query drops it.
    */
   retentionMs?: number;
+  /**
+   * Gate for `settings.features.ticketsToOwnBoard`. Off (the default) leaves every card on
+   * the Personal board, whatever `projects` resolves — the pre-existing behaviour, and what
+   * every caller that doesn't pass it gets.
+   */
+  assignOwnBoard?: boolean;
+  /**
+   * The full project list, for resolving the board a ticket's own project owns (see
+   * `resolveOwningBoardProject`). Only consulted when {@link assignOwnBoard} is true. GitHub
+   * issues carry no epic key, so this only ever matches through an existing
+   * `agentProjectId`/`projectTagId` — an explicit assignment or filing, not an automatic one.
+   */
+  projects?: Project[];
 }
 
 export interface GitHubIssueSyncResult {
@@ -268,9 +283,23 @@ export function issueToTask(
 
   const description = (issue.body ?? '').trim() || null;
 
+  // File the card on its own project's board rather than Personal when the issue resolves to
+  // a project that owns one — see `resolveOwningBoardProject`. GitHub carries no epic key, so
+  // this only ever fires through an existing `agentProjectId`/`projectTagId`.
+  const owningBoardProject = opts.assignOwnBoard
+    ? resolveOwningBoardProject(
+        {
+          agentProjectId: existing?.agentProjectId ?? null,
+          projectTagId: existing?.projectTagId ?? null,
+          externalParentKey: null,
+        },
+        opts.projects ?? [],
+      )
+    : null;
+
   return {
     id: existing?.id ?? issueTaskId(owner, repo, issue.number),
-    projectId: PERSONAL_PROJECT_ID,
+    projectId: owningBoardProject?.id ?? PERSONAL_PROJECT_ID,
     // The repository is what the card's "Project:" line says — the nearest thing GitHub has
     // to JIRA's project name, and the only grouping a cross-repo board can show.
     phase: owner && repo ? `${owner}/${repo}` : repo || owner,

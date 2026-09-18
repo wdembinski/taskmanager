@@ -152,6 +152,14 @@ export interface GitHubPullRequest {
   draft?: boolean;
   merged?: boolean;
   merged_at?: string | null;
+  /**
+   * The commit landed on the base branch, once merged — absent until then. This is the SHA
+   * an after-merge workflow run (a push to the target branch) actually attaches its checks
+   * to; `head.sha` is the PR's own branch tip and never moves again after merging, so it
+   * only ever carries the checks that ran BEFORE the merge. See `describePullRequest`'s
+   * `readCi` call for where the two are told apart.
+   */
+  merge_commit_sha?: string | null;
   html_url: string;
   updated_at?: string;
   /**
@@ -403,7 +411,7 @@ export class GitHubClient {
    */
   private async write<T>(
     path: string,
-    method: 'PATCH' | 'POST' | 'DELETE',
+    method: 'PATCH' | 'POST' | 'PUT' | 'DELETE',
     body?: unknown,
   ): Promise<T> {
     const res = await fetch(this.url(path), {
@@ -637,6 +645,18 @@ export class GitHubClient {
    */
   getPullRequest(owner: string, repo: string, number: number): Promise<GitHubPullRequest> {
     return this.request<GitHubPullRequest>(`${repoPath(owner, repo)}/pulls/${number}`);
+  }
+
+  /**
+   * Update the branch — `PUT /repos/{owner}/{repo}/pulls/{number}/update-branch`.
+   *
+   * GitHub's counterpart of GitLab's rebase button, though it merges the base INTO the head
+   * rather than replaying commits on top of it — the distinction GitHub itself draws between
+   * "update branch" and a true rebase. Queued rather than done inline, so the response carries
+   * no new `mergeable_state`: the caller re-syncs afterwards the same way a poll would.
+   */
+  async updateBranch(owner: string, repo: string, number: number): Promise<void> {
+    await this.write<unknown>(`${repoPath(owner, repo)}/pulls/${number}/update-branch`, 'PUT');
   }
 
   /**

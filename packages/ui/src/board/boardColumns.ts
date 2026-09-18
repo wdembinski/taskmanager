@@ -205,6 +205,26 @@ export function focusCards(
 }
 
 /**
+ * Split a board's cards into what the columns show and what the shelf does — the one spot
+ * both hosts apply `shelvedCardIds` before bucketing by column, the same way `focusCards`
+ * narrows the set a step earlier.
+ *
+ * `board:tasks` already scopes `cards` to the active board, so a flat, unkeyed id list is
+ * enough: the Personal scope's shelf holds only Personal's shelved cards because Personal's
+ * cards are all `cards` ever contains, and the All scope's shelf holds all of them for the
+ * same reason.
+ */
+export function partitionShelved(
+  cards: readonly BoardCard[],
+  shelvedIds: ReadonlySet<string>,
+): { onBoard: BoardCard[]; shelved: BoardCard[] } {
+  const onBoard: BoardCard[] = [];
+  const shelved: BoardCard[] = [];
+  for (const card of cards) (shelvedIds.has(card.task.id) ? shelved : onBoard).push(card);
+  return { onBoard, shelved };
+}
+
+/**
  * The order cards sit in within a column:
  *
  *   1. **cards that want you** — an unread ticket comment, this card's agent parked on

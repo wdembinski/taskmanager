@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { foldedCardSet, toggleFoldedCard } from './foldedSteps';
+import { ensureFoldedCard, foldedCardSet, toggleFoldedCard } from './foldedSteps';
 
 const board = (...ids: string[]): ReadonlySet<string> => new Set(ids);
 
@@ -29,6 +29,28 @@ describe('toggleFoldedCard', () => {
   it('collapses a duplicated id rather than leaving a copy folded', () => {
     expect(toggleFoldedCard(['a', 'a'], 'a', board('a'))).toEqual([]);
     expect(toggleFoldedCard(['a', 'a'], 'b', board('a', 'b'))).toEqual(['a', 'b']);
+  });
+});
+
+describe('ensureFoldedCard', () => {
+  it('adds a card that was not folded', () => {
+    expect(ensureFoldedCard([], 'a', board('a', 'b'))).toEqual(['a']);
+  });
+
+  it('is idempotent for a card that is already folded', () => {
+    expect(ensureFoldedCard(['a'], 'a', board('a', 'b'))).toEqual(['a']);
+  });
+
+  it('keeps the order of the cards it leaves alone', () => {
+    expect(ensureFoldedCard(['a', 'b'], 'c', board('a', 'b', 'c'))).toEqual(['a', 'b', 'c']);
+  });
+
+  it('drops ids that have left the board', () => {
+    expect(ensureFoldedCard(['gone', 'a'], 'b', board('a', 'b'))).toEqual(['a', 'b']);
+  });
+
+  it('collapses a duplicated id rather than leaving a copy folded', () => {
+    expect(ensureFoldedCard(['a', 'a'], 'a', board('a'))).toEqual(['a']);
   });
 });
 
