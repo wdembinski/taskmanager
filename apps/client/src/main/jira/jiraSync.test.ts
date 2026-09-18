@@ -873,3 +873,84 @@ describe('guardRemovals — a bound on how wrong one sync may be', () => {
     expect(allowed.refused).toEqual([]);
   });
 });
+
+describe('the incomplete-answer guard leaves the loud refusal unreachable, not just quieter', () => {
+  // Same shape every time: an N-card board, M of them missing from the search, the query
+  // unchanged, and the confirm pass DENYING every missing key by key — the worst case for
+  // `guardRemovals`, since a genuine per-key denial is the one thing that would otherwise make
+  // a removal candidate stick. `isIncompleteAnswer` is checked on `missingCount` (every card
+  // absent from the search); `guardRemovals` would only ever see `candidates`, which can never
+  // exceed `missingCount`. Because both share the same fraction/floor (the same `opts` object
+  // reaches both calls in `reconcileJiraTasks`), whatever would trip `guardRemovals` already
+  // tripped `isIncompleteAnswer` first — so the loud "Kept X of Y... Check the board's JQL"
+  // sentence this guard exists to quiet can no longer be produced by the reconciler at all when
+  // the query held still. That is a stronger claim than "the two coexist and the quiet one wins
+  // first"; this proves the loud one never fires here, for any shortfall the guard would flag.
+  const boardOf = (n: number): Task[] =>
+    Array.from({ length: n }, (_, i) =>
+      jiraTask({ id: `jira-${i + 1}`, externalId: String(i + 1), externalKey: `PROJ-${i + 1}` }),
+    );
+
+  it.each([
+    [30, 12], // the plan's own worked example
+    [82, 52], // the exact shape from the user's bug report
+    [8, 5], // right at the default floor (5)
+    [400, 101], // just over the default 25% fraction on a big board
+  ])('a %i-card board missing %i cards never reaches the loud refusal', (n, missing) => {
+    const board = boardOf(n);
+    const kept = board.slice(0, n - missing);
+    const droppedKeys = board.slice(n - missing).map((t) => t.externalKey as string);
+    const issues = kept.map((t) => issue(t.externalId as string, t.externalKey as string, 'new'));
+
+    const result = reconcileJiraTasks(board, issues, {
+      ...opts,
+      queryChecked: droppedKeys,
+      queryMatches: [], // JIRA denies every one of them by key — the strongest case there is
+    });
+
+    expect(result.removals).toEqual([]);
+    expect(result.refused).toEqual([]);
+    expect(result.warning).not.toBeNull();
+    expect(result.warning).not.toMatch(/Check the board's JQL/);
+    expect(result.warning).not.toMatch(/^Kept \d/);
+  });
+
+  it('is deterministic — the same shortfall produces byte-identical warning text', () => {
+    // ipc.ts's poller dedupes by `warning !== lastJiraNotice`, a plain string comparison
+    // (see ipc.ts's `syncJira`). That only collapses a repeated, unchanged shortfall into one
+    // notice if the SAME inputs really do produce the SAME string on every call — nothing here
+    // carries a timestamp or any other non-deterministic value into the message.
+    const board = boardOf(30);
+    const droppedKeys = board.slice(18).map((t) => t.externalKey as string);
+    const issues = board
+      .slice(0, 18)
+      .map((t) => issue(t.externalId as string, t.externalKey as string, 'new'));
+    const run = () =>
+      reconcileJiraTasks(board, issues, { ...opts, queryChecked: droppedKeys, queryMatches: [] })
+        .warning;
+    expect(run()).toBe(run());
+  });
+
+  it('the message the user actually saw is still produced by guardRemovals directly — the fix is that the reconciler never hands it that candidate set', () => {
+    // The report this whole round started from, reproduced verbatim: "Kept 52 of 82 JIRA cards
+    // that JIRA says have left the query...". `guardRemovals` itself is unchanged — calling it
+    // BY HAND with the 52 candidates the old code path would have built still refuses exactly
+    // as before. What changed is that `reconcileJiraTasks` no longer builds that candidate list
+    // in the first place when the shortfall is this large and the query has not changed; see
+    // the sweep above.
+    const candidates: JiraRemoval[] = Array.from({ length: 52 }, (_, i) => ({
+      taskId: `jira-${i + 1}`,
+      key: `PROJ-${i + 1}`,
+      title: 'Do a thing',
+      reason: 'left-query',
+    }));
+    const guarded = guardRemovals(candidates, 82, { tracker: 'JIRA', queryName: 'JQL' });
+    expect(guarded.removals).toEqual([]);
+    expect(guarded.refused).toHaveLength(52);
+    expect(guarded.warning).toBe(
+      'Kept 52 of 82 JIRA cards that JIRA says have left the query — more than 25% of the ' +
+        "board in one sync. Nothing was removed. Check the board's JQL and that JIRA is " +
+        'answering it in full.',
+    );
+  });
+});
