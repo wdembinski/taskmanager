@@ -112,6 +112,7 @@ import {
   mrLabel,
   mrRef,
   mrVerdict,
+  showPipeline,
   verdictSummary,
   type MergeRequest,
   type MrVerdict,
@@ -1055,6 +1056,12 @@ export interface TaskCardProps {
    * also what a board with `settings.features.shelf` off gets.
    */
   onToggleShelved?: () => void;
+  /**
+   * `settings.features.afterMergePipeline` — whether a merged MR with no genuine pipeline
+   * reading draws no dot at all rather than the single grey "unknown"/"none" one. Defaults
+   * to on; off restores the old behaviour of always drawing a dot.
+   */
+  afterMergePipeline?: boolean;
   draggable: boolean;
   onSelect: () => void;
   /** Open a step in the detail pane (the row never drags or moves the card). */
@@ -1101,6 +1108,7 @@ export function TaskCard({
   onResume,
   shelved = false,
   onToggleShelved,
+  afterMergePipeline = true,
   draggable,
   onSelect,
   onSelectSubtask,
@@ -1881,6 +1889,9 @@ export function TaskCard({
           {mergeRequests.map((mr) => {
             const reason = mrAttentionReason(mr);
             const verdict = mrVerdict(mr);
+            // Off, a merged MR with nothing genuine to report still draws the single grey
+            // dot — the pre-feature behaviour, restored by the setting.
+            const pipelineShown = !afterMergePipeline || showPipeline(mr);
             return (
               <a
                 key={mr.id}
@@ -1910,8 +1921,15 @@ export function TaskCard({
                     Falls back to the one overall dot when the stages are empty — that means
                     the jobs endpoint was permission-gated, NOT that a pipeline has no
                     stages, so inventing dots from the overall status would be a claim we
-                    cannot make. */}
-                {mr.pipelineStages.length > 0 ? (
+                    cannot make.
+
+                    A merged MR with no genuine reading (`showPipeline`) draws an EMPTY slot
+                    rather than nothing at all — dropping the slot would shift its title out
+                    of alignment with every step row above it, and "no pipeline"/"pipeline
+                    unknown" is not worth a dot on a row that has otherwise finished. */}
+                {!pipelineShown ? (
+                  <span className={styles.stepSlot} />
+                ) : mr.pipelineStages.length > 0 ? (
                   <span
                     className={styles.stageDots}
                     title={mr.pipelineStages.map((s) => `${s.name}: ${s.status}`).join('\n')}

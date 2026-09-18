@@ -152,6 +152,14 @@ export interface GitHubPullRequest {
   draft?: boolean;
   merged?: boolean;
   merged_at?: string | null;
+  /**
+   * The commit landed on the base branch, once merged — absent until then. This is the SHA
+   * an after-merge workflow run (a push to the target branch) actually attaches its checks
+   * to; `head.sha` is the PR's own branch tip and never moves again after merging, so it
+   * only ever carries the checks that ran BEFORE the merge. See `describePullRequest`'s
+   * `readCi` call for where the two are told apart.
+   */
+  merge_commit_sha?: string | null;
   html_url: string;
   updated_at?: string;
   /**

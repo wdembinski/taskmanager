@@ -35,6 +35,7 @@ import {
   mrReadyToMerge,
   mrRef,
   mrVerdict,
+  showPipeline,
   verdictSummary,
   type MergeBlocker,
   type MergeRequest,
@@ -138,6 +139,13 @@ export interface MergeRequestsProps {
   onMarkEventsSeen: (mrId: string) => void;
   /** Rename an MR in this app only; null restores the upstream title. */
   onRename: (mrId: string, name: string | null) => void;
+  /**
+   * `settings.features.afterMergePipeline` — whether a merged MR with no genuine pipeline
+   * reading hides its badge rather than claiming "no pipeline"/"pipeline unknown". Defaults
+   * to on, matching the feature's own default; off restores the old behaviour of always
+   * drawing the badge.
+   */
+  afterMergePipeline?: boolean;
 }
 
 export function MergeRequests({
@@ -145,6 +153,7 @@ export function MergeRequests({
   onMarkRead,
   onMarkEventsSeen,
   onRename,
+  afterMergePipeline = true,
 }: MergeRequestsProps): React.JSX.Element | null {
   const styles = useStyles();
   // Which row is being renamed, and the text so far. One at a time: two open editors would
@@ -174,6 +183,9 @@ export function MergeRequests({
 
       {mergeRequests.map((mr) => {
         const pipeline = PIPELINE_BADGE[mr.pipelineStatus];
+        // Off, a merged MR with nothing genuine to report still claims "no pipeline" or
+        // "pipeline unknown" — the pre-feature behaviour, restored by the setting.
+        const pipelineShown = !afterMergePipeline || showPipeline(mr);
         const reason = mrAttentionReason(mr);
         const verdict = mrVerdict(mr);
         const settled = mrIsSettled(mr);
@@ -241,15 +253,22 @@ export function MergeRequests({
             </div>
 
             <div className={styles.meta}>
-              <Badge appearance="tint" color={pipeline.color} size="small">
-                {mr.pipelineUrl ? (
-                  <a className={styles.link} href={mr.pipelineUrl} target="_blank" rel="noreferrer">
-                    {pipeline.label}
-                  </a>
-                ) : (
-                  pipeline.label
-                )}
-              </Badge>
+              {pipelineShown && (
+                <Badge appearance="tint" color={pipeline.color} size="small">
+                  {mr.pipelineUrl ? (
+                    <a
+                      className={styles.link}
+                      href={mr.pipelineUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {pipeline.label}
+                    </a>
+                  ) : (
+                    pipeline.label
+                  )}
+                </Badge>
+              )}
               {/* The verdict: how it ENDED once it has, else where its review stands.
                   Merged wears the same violet as the card row's merge glyph, so the two
                   surfaces read as one fact. "approvals unknown" rather than a confident

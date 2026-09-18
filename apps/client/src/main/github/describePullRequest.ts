@@ -349,6 +349,8 @@ export async function describePullRequest(
     }
   }
 
+  const state = toPullRequestState(detail ?? listed);
+
   /**
    * CI, read whenever a detail response is in hand — from `stale` above, or handed in by
    * the caller — rather than gated on `stale` itself.
@@ -361,10 +363,19 @@ export async function describePullRequest(
    * same bug GitLab's half of this file never had, since its overall status already reads
    * off `head_pipeline` unconditionally.
    *
-   * Check runs hang off the head SHA, which only the detail carries. No detail, no CI read
+   * Check runs hang off a commit SHA, which only the detail carries. No detail, no CI read
    * — and therefore no change to what we knew about it.
+   *
+   * **Which SHA** depends on whether this PR has landed. `head.sha` is the PR branch's own
+   * tip, and it never moves again once merged — so it only ever carries the checks that ran
+   * BEFORE the merge, on the last commit of the feature branch. The run that matters once a
+   * PR is done is the one GitHub triggers AFTER the merge, on the merge commit that landed
+   * on the base branch — `merge_commit_sha`, present on the detail response once `merged_at`
+   * is set. Falls back to `head.sha` when GitHub has not filled it in yet (right at the
+   * moment of merging) so a settled PR is never left with no SHA to ask about at all.
    */
-  const sha = detail?.head?.sha;
+  const sha =
+    state === 'merged' ? (detail?.merge_commit_sha ?? detail?.head?.sha) : detail?.head?.sha;
   if (sha && owner && repo) {
     const ci = await readCi(
       client,
@@ -402,7 +413,7 @@ export async function describePullRequest(
      */
     sourceBranch: detail?.head?.ref ?? prior?.sourceBranch ?? '',
     targetBranch: detail?.base?.ref ?? prior?.targetBranch ?? '',
-    state: toPullRequestState(detail ?? listed),
+    state,
     draft: detail?.draft ?? listed.draft ?? false,
     pipelineStatus,
     pipelineStages,

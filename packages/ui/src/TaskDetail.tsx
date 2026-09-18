@@ -216,6 +216,8 @@ export interface TaskDetailProps {
   parentTask?: Task | null;
   /** The merge requests filed under this card (empty when GitLab is off). */
   mergeRequests?: MergeRequest[];
+  /** `settings.features.afterMergePipeline` — passed straight through to `MergeRequests`. */
+  afterMergePipeline?: boolean;
   /**
    * The files hung off the task being shown — its slice of the board's attachment list.
    * The board holds that list whole (see `attachment:changed`), so what arrives here is
@@ -310,6 +312,7 @@ export function TaskDetail({
   subtasks = [],
   parentTask = null,
   mergeRequests = [],
+  afterMergePipeline = true,
   attachments = [],
   parentAttachments = [],
   statusKeywords,
@@ -1096,6 +1099,7 @@ export function TaskDetail({
               onMarkRead={(id) => void transport.invoke('mr:markRead', id)}
               onMarkEventsSeen={(id) => void transport.invoke('mr:markEventsSeen', id)}
               onRename={(id, name) => void transport.invoke('mr:setMergeRequestName', id, name)}
+              afterMergePipeline={afterMergePipeline}
             />
           </>
         )}

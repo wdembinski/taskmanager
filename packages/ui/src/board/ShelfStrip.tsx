@@ -53,6 +53,8 @@ export interface ShelfStripProps {
   onToggleShelved: (id: string) => void;
   /** A card dropped onto the strip — always shelves it, whichever column it came from. */
   onDropOnShelf: (id: string) => void;
+  /** `settings.features.afterMergePipeline` — passed straight through to each `TaskCard`. */
+  afterMergePipeline?: boolean;
 }
 
 export function ShelfStrip(props: ShelfStripProps): JSX.Element {
@@ -123,6 +125,7 @@ export function ShelfStrip(props: ShelfStripProps): JSX.Element {
                   selectedTaskId={props.selectedTaskId}
                   shelved
                   onToggleShelved={() => props.onToggleShelved(task.id)}
+                  afterMergePipeline={props.afterMergePipeline}
                   onStop={props.onStopTask && (() => props.onStopTask?.(task.id))}
                   onResume={props.onResumeTask && (() => props.onResumeTask?.(task.id))}
                   draggable
