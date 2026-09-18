@@ -10,7 +10,7 @@
  */
 import { LOCAL_TARGET, type ExecTarget } from './execTarget';
 import type { ClaudeModel, PermissionMode } from './session';
-import type { BoardColumn } from './model';
+import type { BoardColumn, ManualStatus } from './model';
 import type { StatusKeyword } from './statusKeywords';
 import { DEFAULT_SESSION_TOKEN_BUDGET, DEFAULT_WEEKLY_TOKEN_BUDGET } from './usage';
 
@@ -432,6 +432,20 @@ export const DEFAULT_FEATURE_SETTINGS: FeatureSettings = {
   quietAgentProgress: true,
   ticketsToOwnBoard: true,
 };
+
+/**
+ * Whether a card landing on `column` should have its Steps section auto-folded —
+ * `features.autoFoldReviewDone`'s whole effect. Both `MyTasks.tsx` (desktop) and
+ * `BoardScreen.tsx` (web) call this from the same two places (drag-drop, and the detail
+ * pane's State dropdown) so the two apps cannot drift on when the fold fires; they used to
+ * each inline this same two-line check, which is exactly the shape that drifts unnoticed.
+ */
+export function shouldAutoFoldOnMove(
+  features: Pick<FeatureSettings, 'autoFoldReviewDone'>,
+  column: BoardColumn | ManualStatus,
+): boolean {
+  return features.autoFoldReviewDone && (column === 'in-review' || column === 'done');
+}
 
 /**
  * The Projects screen's Gantt timeline, saved for the same reason `foldedStepCards` is: the

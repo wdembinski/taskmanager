@@ -47,6 +47,7 @@ import {
   type BoardCard,
 } from '@tm/ui/board/boardColumns';
 import { columnForTask, statusForColumn } from '@tm/shared/board';
+import { shouldAutoFoldOnMove } from '@tm/shared/settings';
 import { KanbanColumn } from '@tm/ui/board/KanbanColumn';
 import { ShelfStrip } from '@tm/ui/board/ShelfStrip';
 import { ChainOverlay } from '@tm/ui/board/ChainOverlay';
@@ -465,8 +466,7 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
    */
   const foldOnAutoFoldColumn = useCallback(
     (taskId: string, column: BoardColumn | ManualStatus) => {
-      if (!settings.features.autoFoldReviewDone) return;
-      if (column !== 'in-review' && column !== 'done') return;
+      if (!shouldAutoFoldOnMove(settings.features, column)) return;
       void saveSettings({
         ...settings,
         foldedStepCards: ensureFoldedCard(settings.foldedStepCards, taskId, onBoardIds),
