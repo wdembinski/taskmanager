@@ -48,6 +48,25 @@ export function toggleFoldedCard(
 }
 
 /**
+ * Add one card if it is not already folded, and forget every card that has left the board —
+ * the same prune {@link toggleFoldedCard} does, but add-if-absent rather than add-or-remove.
+ *
+ * For a caller that decides FOR the human rather than acting on a click of theirs (auto-fold
+ * on a move into Review/Done): idempotent, so firing it twice for the same card — or for a
+ * card the human had already unfolded back open on purpose — never fights them by re-closing
+ * what they just opened. `toggleFoldedCard` would flip it shut on an odd call and back open on
+ * an even one, which is the wrong shape for "make sure this is folded."
+ */
+export function ensureFoldedCard(
+  folded: readonly string[],
+  taskId: string,
+  onBoard: ReadonlySet<string>,
+): string[] {
+  const kept = folded.filter((id, i) => onBoard.has(id) && folded.indexOf(id) === i);
+  return kept.includes(taskId) ? kept : [...kept, taskId];
+}
+
+/**
  * The set the cards are drawn from. A `Set` because every card on the board asks it whether
  * it is folded, and an array would make that a scan per card per render.
  */

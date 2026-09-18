@@ -52,7 +52,7 @@ import { ChainLinkPopover } from '@tm/ui/board/ChainLinkPopover';
 import { useCardAnchors } from '@tm/ui/board/useCardAnchors';
 import { arrowRoute } from '@tm/ui/board/chainArrows';
 import { linkDropStates, type LinkDragState } from '@tm/ui/board/chainDrag';
-import { foldedCardSet, toggleFoldedCard } from '@tm/ui/board/foldedSteps';
+import { ensureFoldedCard, foldedCardSet, toggleFoldedCard } from '@tm/ui/board/foldedSteps';
 import { chainStates } from '@tm/ui/board/chainStates';
 import { AddTaskDialog } from '@tm/ui/AddTaskDialog';
 import { GitGraphPane } from '@tm/ui/GitGraphPane';
@@ -439,6 +439,27 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
     [settings, saveSettings, onBoardIds, reportError],
   );
 
+  /**
+   * Auto-fold a card's Steps section the moment it lands in Review or Done — the desktop's
+   * own `foldOnAutoFoldColumn` (`MyTasks.tsx`), behind the same `settings.features` switch so
+   * the two apps agree on whether it is on. `ensureFoldedCard` only ever ADDS the fold, so a
+   * card the human reopened after the move stays open rather than being flipped shut again.
+   *
+   * Called from the two places a human can move a card here: the drag drop below and the
+   * pane's State dropdown (`onStatusSet`) — each firing once per explicit move.
+   */
+  const foldOnAutoFoldColumn = useCallback(
+    (taskId: string, column: BoardColumn | ManualStatus) => {
+      if (!settings.features.autoFoldReviewDone) return;
+      if (column !== 'in-review' && column !== 'done') return;
+      void saveSettings({
+        ...settings,
+        foldedStepCards: ensureFoldedCard(settings.foldedStepCards, taskId, onBoardIds),
+      }).catch(reportError);
+    },
+    [settings, saveSettings, onBoardIds, reportError],
+  );
+
   // Stable identity for `TaskDetail`'s `onStatusChanged`: the pane keys `loadActivity`'s own
   // effect on this prop's identity, so an inline arrow rebuilt every render forced a reload —
   // and its own `jira:markRead`/`github:markRead` reply — on every poll.
@@ -615,6 +636,7 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
                   setDraggingId(null);
                   if (pendingTaskIds.has(taskId)) return; // one edit in flight at a time per card
                   onSetStatus(taskId, statusForColumn(dropColumn));
+                  foldOnAutoFoldColumn(taskId, dropColumn);
                 }}
               />
             ))}
@@ -684,6 +706,7 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
             // task it hands back is the transport's stub (`{ id, status }`), never a row
             // worth merging into `state.tasks`; the next poll brings the real one.
             onStatusChanged={handleStatusChanged}
+            onStatusSet={foldOnAutoFoldColumn}
             onSubtasksChanged={extras.refresh}
           />
         </div>

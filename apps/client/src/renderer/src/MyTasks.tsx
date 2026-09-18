@@ -35,6 +35,7 @@ import {
   hasRepo,
   isFilingProject,
   PERSONAL_PROJECT_ID,
+  type ManualStatus,
   type Person,
   type Project,
   type Task,
@@ -80,7 +81,7 @@ import {
 } from '@ui/board/chainDrag';
 import { chainStates } from '@ui/board/chainStates';
 import { useCardAnchors } from '@ui/board/useCardAnchors';
-import { foldedCardSet, toggleFoldedCard } from '@ui/board/foldedSteps';
+import { ensureFoldedCard, foldedCardSet, toggleFoldedCard } from '@ui/board/foldedSteps';
 import { useAttentionIndex } from './useAttentionIndex';
 import { useActiveRuns } from './useActiveRuns';
 import { useIntegratingTasks } from './useIntegratingTasks';
@@ -696,6 +697,35 @@ export function MyTasks(): JSX.Element {
     [tasks],
   );
 
+  /**
+   * Auto-fold a card's Steps section the moment it lands in Review or Done — the behaviour
+   * `settings.features.autoFoldReviewDone` switches off. `ensureFoldedCard` (add-if-absent),
+   * not `toggleFoldedCard`: a card the human had reopened after the move must stay open, so
+   * this may only ever ADD the fold, never take one back off that a click just removed.
+   *
+   * Called once from each place a human can actually move a card — `moveTask` below (drag,
+   * and the arrow-driven release-now paths that share it) and the detail pane's State
+   * dropdown (`onStatusSet`) — so it fires once per explicit move and never on a re-render,
+   * which is what leaves a reopened card open.
+   */
+  const foldOnAutoFoldColumn = useCallback(
+    (taskId: string, column: BoardColumn | ManualStatus) => {
+      if (!settings?.features.autoFoldReviewDone) return;
+      if (column !== 'in-review' && column !== 'done') return;
+      const onBoard = new Set((tasks ?? []).map((t) => t.id));
+      setSettings((prev) => {
+        if (!prev) return prev;
+        const next = {
+          ...prev,
+          foldedStepCards: ensureFoldedCard(prev.foldedStepCards, taskId, onBoard),
+        };
+        void window.api.invoke('settings:save', next);
+        return next;
+      });
+    },
+    [settings, tasks],
+  );
+
   /** The commit-graph pane, saved the same optimistic way the detail pane's fold is. */
   const setShowGraph = useCallback((value: boolean) => {
     setSettings((prev) => {
@@ -778,12 +808,13 @@ export function MyTasks(): JSX.Element {
       patchTask(optimisticMove(task, column)); // optimistic
       try {
         patchTask(await window.api.invoke('task:move', taskId, column));
+        foldOnAutoFoldColumn(taskId, column);
       } catch (e) {
         patchTask(prev); // rollback (e.g. JIRA transition unavailable)
         setError(e instanceof Error ? e.message : String(e));
       }
     },
-    [tasks, patchTask],
+    [tasks, patchTask, foldOnAutoFoldColumn],
   );
 
   /**
@@ -1380,6 +1411,7 @@ export function MyTasks(): JSX.Element {
             onUnlinkChain={(linkId) => void removeLink(linkId)}
             onOpenTask={setSelectedTaskId}
             onStatusChanged={patchTask}
+            onStatusSet={foldOnAutoFoldColumn}
             onSubtasksChanged={() => void refresh()}
           />
         </div>
