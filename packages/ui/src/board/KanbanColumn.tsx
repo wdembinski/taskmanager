@@ -166,6 +166,13 @@ export interface KanbanColumnProps {
    * — the card asks `canResumeWork`.
    */
   onResumeTask?: (id: string) => void;
+  /**
+   * Move a card onto the shelf, from the card's own menu. Passed through like
+   * `onStopTask`: the column decides nothing about the menu item's presence — its absence
+   * is what hides it, whether the board has no shelf UI at all or `settings.features.shelf`
+   * is off.
+   */
+  onToggleShelved?: (id: string) => void;
   onSelectTask: (id: string) => void;
   onDragStartTask: (id: string) => void;
   onDragEndTask: () => void;
@@ -252,6 +259,7 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               onLinkArm={() => props.onLinkArm?.(task.id)}
               onStop={props.onStopTask && (() => props.onStopTask?.(task.id))}
               onResume={props.onResumeTask && (() => props.onResumeTask?.(task.id))}
+              onToggleShelved={props.onToggleShelved && (() => props.onToggleShelved?.(task.id))}
               waitingOn={props.chainStateOf?.(task)?.waitingOn}
               mergeHeld={props.chainStateOf?.(task)?.mergeHeld}
               chainReady={props.chainStateOf?.(task)?.ready}
