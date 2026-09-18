@@ -674,6 +674,7 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
                 // now this app was the only host that did not pass it.
                 onResumeTask={(taskId) => void extras.resumeTask(taskId).catch(reportError)}
                 onToggleShelved={settings.features.shelf ? toggleShelved : undefined}
+                afterMergePipeline={settings.features.afterMergePipeline}
                 onSelectTask={selectTask}
                 onDragStartTask={setDraggingId}
                 onDragEndTask={() => setDraggingId(null)}
@@ -744,6 +745,7 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
             onDragEndTask={() => setDraggingId(null)}
             onToggleShelved={toggleShelved}
             onDropOnShelf={dropOnShelf}
+            afterMergePipeline={settings.features.afterMergePipeline}
           />
         )}
       </div>
@@ -759,6 +761,7 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
             subtasks={chain}
             parentTask={parentOfSelected}
             mergeRequests={selectedTask ? (mrsByTask.get(selectedTask.id) ?? []) : []}
+            afterMergePipeline={settings.features.afterMergePipeline}
             attachments={selectedTask ? (attachmentsByTask.get(selectedTask.id) ?? []) : []}
             parentAttachments={
               parentOfSelected ? (attachmentsByTask.get(parentOfSelected.id) ?? []) : []

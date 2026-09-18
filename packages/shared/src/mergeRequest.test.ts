@@ -14,6 +14,7 @@ import {
   mrReadyToMerge,
   mrRef,
   mrVerdict,
+  showPipeline,
   verdictSummary,
   type MergeRequest,
 } from './mergeRequest';
@@ -486,5 +487,24 @@ describe('two forges, one merge request', () => {
 
   it('puts the pull request reference in the attention tooltip', () => {
     expect(mrAttentionReason(pr({ number: 7, latestNoteAt: 200 }))).toContain('#7');
+  });
+});
+
+describe('showPipeline', () => {
+  it('hides a merged MR with no genuine pipeline reading', () => {
+    expect(showPipeline(mr({ state: 'merged', pipelineStatus: 'none' }))).toBe(false);
+    expect(showPipeline(mr({ state: 'merged', pipelineStatus: 'unknown' }))).toBe(false);
+  });
+
+  it('shows a merged MR with an actual pipeline verdict', () => {
+    expect(showPipeline(mr({ state: 'merged', pipelineStatus: 'success' }))).toBe(true);
+    expect(showPipeline(mr({ state: 'merged', pipelineStatus: 'failed' }))).toBe(true);
+  });
+
+  it("always shows an open, closed or locked MR's pipeline, none/unknown included", () => {
+    for (const state of ['opened', 'closed', 'locked'] as const) {
+      expect(showPipeline(mr({ state, pipelineStatus: 'none' }))).toBe(true);
+      expect(showPipeline(mr({ state, pipelineStatus: 'unknown' }))).toBe(true);
+    }
   });
 });
