@@ -983,6 +983,13 @@ export interface IpcApi {
   /** Acknowledge an MR's pipeline/approval events (the other half, tracked separately). */
   'mr:markEventsSeen': (mrId: string) => Promise<MergeRequest[]>;
   /**
+   * Ask the forge to rebase this MR's source branch onto its target — GitLab's own rebase, or
+   * GitHub's "update branch". Only meaningful while `mergeBlockers` reports `need-rebase`; the
+   * forge queues the work rather than doing it inline, so the returned list reflects whatever
+   * the immediate re-sync could see, not necessarily the finished rebase.
+   */
+  'mr:rebase': (mrId: string) => Promise<MergeRequest[]>;
+  /**
    * The connected instance's priority names, most urgent first — what the detail
    * pane's priority dropdown offers for a JIRA card, since only names this instance
    * has can be written back. Cached per base URL. Empty when JIRA is off or the call

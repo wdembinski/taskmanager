@@ -450,6 +450,21 @@ export function mrReadyToMerge(mr: MergeReadiness): boolean {
   return mr.state === 'opened' && mergeBlockers(mr).length === 0;
 }
 
+/**
+ * Whether the forge is refusing this merge specifically because the branch has diverged —
+ * GitLab's `need_rebase` or GitHub's `behind`. The one `mergeBlockers` reason a button can
+ * actually FIX rather than merely report: conflicts need a human at a keyboard, an unmet
+ * approval needs a reviewer, but a stale branch is exactly what `GitLabClient.rebaseMergeRequest`
+ * / `GitHubClient.updateBranch` ask the forge to do.
+ *
+ * The single predicate both the card row and the detail pane ask before swapping their
+ * verdict glyph/badge for a rebase button, so the two surfaces cannot disagree about when
+ * one is offered.
+ */
+export function mrNeedsRebase(mr: MergeReadiness): boolean {
+  return mergeBlockers(mr).includes('need-rebase');
+}
+
 /** Just the fields the review verdict depends on. See {@link mrApprovalState}. */
 export type ApprovalFacts = Pick<
   MergeRequest,

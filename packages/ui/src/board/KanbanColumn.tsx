@@ -175,6 +175,8 @@ export interface KanbanColumnProps {
   onToggleShelved?: (id: string) => void;
   /** `settings.features.afterMergePipeline` — passed straight through to each `TaskCard`. */
   afterMergePipeline?: boolean;
+  /** `settings.features.mrRebaseButton` — passed straight through to each `TaskCard`. */
+  mrRebaseButton?: boolean;
   onSelectTask: (id: string) => void;
   onDragStartTask: (id: string) => void;
   onDragEndTask: () => void;
@@ -263,6 +265,7 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               onResume={props.onResumeTask && (() => props.onResumeTask?.(task.id))}
               onToggleShelved={props.onToggleShelved && (() => props.onToggleShelved?.(task.id))}
               afterMergePipeline={props.afterMergePipeline}
+              mrRebaseButton={props.mrRebaseButton}
               waitingOn={props.chainStateOf?.(task)?.waitingOn}
               mergeHeld={props.chainStateOf?.(task)?.mergeHeld}
               chainReady={props.chainStateOf?.(task)?.ready}

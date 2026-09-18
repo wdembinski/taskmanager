@@ -218,6 +218,8 @@ export interface TaskDetailProps {
   mergeRequests?: MergeRequest[];
   /** `settings.features.afterMergePipeline` — passed straight through to `MergeRequests`. */
   afterMergePipeline?: boolean;
+  /** `settings.features.mrRebaseButton` — passed straight through to `MergeRequests`. */
+  mrRebaseButton?: boolean;
   /**
    * The files hung off the task being shown — its slice of the board's attachment list.
    * The board holds that list whole (see `attachment:changed`), so what arrives here is
@@ -313,6 +315,7 @@ export function TaskDetail({
   parentTask = null,
   mergeRequests = [],
   afterMergePipeline = true,
+  mrRebaseButton = true,
   attachments = [],
   parentAttachments = [],
   statusKeywords,
@@ -1099,7 +1102,9 @@ export function TaskDetail({
               onMarkRead={(id) => void transport.invoke('mr:markRead', id)}
               onMarkEventsSeen={(id) => void transport.invoke('mr:markEventsSeen', id)}
               onRename={(id, name) => void transport.invoke('mr:setMergeRequestName', id, name)}
+              onRebase={(id) => void transport.invoke('mr:rebase', id)}
               afterMergePipeline={afterMergePipeline}
+              mrRebaseButton={mrRebaseButton}
             />
           </>
         )}

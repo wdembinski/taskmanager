@@ -195,6 +195,20 @@ describe('GitHubClient — pull requests and their checks', () => {
     ]);
   });
 
+  it('updates the branch with a PUT to /pulls/:number/update-branch', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ message: 'Updating pull request branch.' }, 202));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().updateBranch('acme', 'web', 7);
+
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      'https://api.github.com/repos/acme/web/pulls/7/update-branch',
+    );
+    expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe('PUT');
+  });
+
   // A branch name is a path segment with slashes in it — the commonest kind there is.
   it('escapes a branch name on the way into the protection path', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({}));

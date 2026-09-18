@@ -45,6 +45,7 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import {
+  ArrowSyncRegular,
   BeakerRegular,
   BookmarkRegular,
   BranchRequestClosedFilled,
@@ -107,9 +108,12 @@ import { PriorityGlyph } from '../PriorityGlyph';
 import { AssigneeDisplay } from '../projects/AssigneeDisplay';
 import { TrackerMark, shortTicketKey } from '../tracker';
 import {
+  forgeName,
   mrAttentionReason,
   mrHeading,
   mrLabel,
+  mrNeedsRebase,
+  mrNoun,
   mrRef,
   mrVerdict,
   showPipeline,
@@ -117,6 +121,7 @@ import {
   type MergeRequest,
   type MrVerdict,
 } from '@tm/shared/mergeRequest';
+import { useTransport } from '../transport';
 
 /**
  * The delegation glyph, white so a card an agent owns reads at a glance. Sized to sit
@@ -1062,6 +1067,12 @@ export interface TaskCardProps {
    * to on; off restores the old behaviour of always drawing a dot.
    */
   afterMergePipeline?: boolean;
+  /**
+   * `settings.features.mrRebaseButton` — whether an MR row the forge can rebase swaps its
+   * verdict glyph for a clickable rebase button. Defaults to on, matching the feature's own
+   * default; off restores the old behaviour of a static glyph nobody can act on from the card.
+   */
+  mrRebaseButton?: boolean;
   draggable: boolean;
   onSelect: () => void;
   /** Open a step in the detail pane (the row never drags or moves the card). */
@@ -1109,6 +1120,7 @@ export function TaskCard({
   shelved = false,
   onToggleShelved,
   afterMergePipeline = true,
+  mrRebaseButton = true,
   draggable,
   onSelect,
   onSelectSubtask,
@@ -1117,6 +1129,7 @@ export function TaskCard({
   dragging,
 }: TaskCardProps): JSX.Element {
   const styles = useStyles();
+  const transport = useTransport();
   const sprintShown = showSprint;
   /**
    * Whether this card is a MIRROR of something in a tracker — which is what the footer badge
@@ -1892,6 +1905,9 @@ export function TaskCard({
             // Off, a merged MR with nothing genuine to report still draws the single grey
             // dot — the pre-feature behaviour, restored by the setting.
             const pipelineShown = !afterMergePipeline || showPipeline(mr);
+            // Only when the forge can actually act on it — see `MergeRequests.tsx`'s own
+            // `canRebase`, which this mirrors so the two surfaces never disagree.
+            const canRebase = mrRebaseButton && mrNeedsRebase(mr);
             return (
               <a
                 key={mr.id}
@@ -1970,10 +1986,30 @@ export function TaskCard({
                   {`${mrRef(mr)} ${mrLabel(mr)}`}
                 </Caption1>
                 {mr.draft && <Caption1 className={styles.progress}>draft</Caption1>}
-                {/* The row's verdict — see `verdictIcon`. */}
-                <span className={styles.approval} title={verdictSummary(mr)}>
-                  {verdictIcon(verdict)}
-                </span>
+                {/* The row's verdict — see `verdictIcon`. Swapped for a rebase button when
+                    the forge is refusing the merge only because the branch has diverged: the
+                    one blocker this app can actually fix rather than merely report. */}
+                {canRebase ? (
+                  <Button
+                    size="small"
+                    appearance="transparent"
+                    className={styles.approval}
+                    icon={<ArrowSyncRegular style={{ color: FLUO.red }} />}
+                    title={`Ask ${forgeName(mr.provider)} to rebase this branch`}
+                    aria-label={`Rebase this ${mrNoun(mr.provider)}`}
+                    onClick={(e) => {
+                      // The row is a link to the MR itself; this must act instead of
+                      // navigating, and must not also select the card underneath it.
+                      e.preventDefault();
+                      e.stopPropagation();
+                      void transport.invoke('mr:rebase', mr.id);
+                    }}
+                  />
+                ) : (
+                  <span className={styles.approval} title={verdictSummary(mr)}>
+                    {verdictIcon(verdict)}
+                  </span>
+                )}
               </a>
             );
           })}
