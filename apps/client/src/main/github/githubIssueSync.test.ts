@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { PERSONAL_PROJECT_ID, type Task } from '@shared/model';
+import { LOCAL_TARGET } from '@shared/execTarget';
+import { PERSONAL_PROJECT_ID, type Project, type Task } from '@shared/model';
 import {
   issueToTask,
   issuesToRecheck,
@@ -326,5 +327,72 @@ describe('reconcileGitHubIssues', () => {
     );
     expect(result.removals).toHaveLength(12);
     expect(result.refused).toEqual([]);
+  });
+});
+
+describe('issueToTask — assigning tickets to their own board', () => {
+  const project = (over: Partial<Project>): Project => ({
+    id: 'p1',
+    name: 'Repo',
+    path: 'C:/repos/repo',
+    planPath: '',
+    defaultModel: 'sonnet',
+    planningModel: null,
+    defaultPermissionMode: 'acceptEdits',
+    concurrency: 1,
+    useWorktrees: true,
+    baseBranch: '',
+    writeBackPlan: false,
+    autoRelease: false,
+    autoCreatePr: false,
+    autoIntegrate: null,
+    planAligned: true,
+    jiraEpicKeys: [],
+    ticketPrefix: '',
+    target: LOCAL_TARGET,
+    instructions: '',
+    color: '',
+    createdAt: 0,
+    ...over,
+  });
+
+  // A ticket-only project: owns a board (ticket prefix, no plan, no repo).
+  const board = project({ id: 'board', path: '', ticketPrefix: 'BRD' });
+
+  // GitHub carries no epic key, so this only ever resolves through an existing filing.
+  const filedCard = (): Task => card({ projectTagId: 'board' });
+
+  it('files the card on the project board when it is filed under one that owns a board', () => {
+    const task = issueToTask(
+      issue(1),
+      filedCard(),
+      {
+        assignOwnBoard: true,
+        projects: [board],
+      },
+      0,
+    );
+    expect(task.projectId).toBe('board');
+  });
+
+  it('leaves the card on Personal when the feature is off', () => {
+    const task = issueToTask(issue(1), filedCard(), { projects: [board] }, 0);
+    expect(task.projectId).toBe(PERSONAL_PROJECT_ID);
+  });
+
+  it('leaves the card on Personal when the filed project does not own a board', () => {
+    const repoOnly = project({ id: 'repo' });
+    const task = issueToTask(
+      issue(1),
+      card({ projectTagId: 'repo' }),
+      { assignOwnBoard: true, projects: [repoOnly] },
+      0,
+    );
+    expect(task.projectId).toBe(PERSONAL_PROJECT_ID);
+  });
+
+  it('leaves a brand-new card (no filing yet) on Personal', () => {
+    const task = issueToTask(issue(1), undefined, { assignOwnBoard: true, projects: [board] }, 0);
+    expect(task.projectId).toBe(PERSONAL_PROJECT_ID);
   });
 });

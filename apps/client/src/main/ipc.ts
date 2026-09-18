@@ -2617,6 +2617,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       epicFieldId: epicField,
       sprintFieldId: sprintField,
       identity: await jiraIdentity(jira.baseUrl, client),
+      assignOwnBoard: settings.features.ticketsToOwnBoard,
+      projects: store.listProjects(),
     });
     // The stored row, not the computed one: adopting keeps everything JIRA knows nothing
     // about (the filing, the type, an assignment), and only the round trip has those.
@@ -3207,7 +3209,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // One JIRA sync: fetch issues, reconcile into the store, push the fresh board.
   // Shared by the manual `jira:sync` handler and the background poller below.
   const syncJira = async (): Promise<Task[]> => {
-    const { jira } = store.getSettings();
+    const { jira, features } = store.getSettings();
     if (!jira.enabled) return store.getPersonalTasks();
     const client = buildJiraClient();
     // The epic field is requested by its discovered id, so tickets carry the epic key
@@ -3340,6 +3342,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       queryChanged,
       now,
       retentionMs: Math.max(0, jira.doneRetentionDays) * 24 * 60 * 60 * 1000,
+      assignOwnBoard: features.ticketsToOwnBoard,
+      projects: store.listProjects(),
     });
     for (const t of upserts) store.upsertJiraTask(t);
     // ARCHIVED, not deleted. A card leaving the board is not the human deleting it — the row
@@ -3424,7 +3428,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
    * re-reads an issue by number. One pass answers both questions.
    */
   const syncGitHubIssues = async (): Promise<Task[]> => {
-    const { github } = store.getSettings();
+    const { github, features } = store.getSettings();
     if (!github.enabled || !github.syncIssues) return store.getPersonalTasks();
     const client = buildGitHubClient();
     const identity = await githubIdentity(github.baseUrl, client);
@@ -3527,6 +3531,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       queryChanged,
       now,
       retentionMs: Math.max(0, github.doneRetentionDays) * 24 * 60 * 60 * 1000,
+      assignOwnBoard: features.ticketsToOwnBoard,
+      projects: store.listProjects(),
     });
     for (const t of upserts) store.upsertJiraTask(t);
     // ARCHIVED, not deleted — see the same loop in `syncJira`. The row keeps its timeline,

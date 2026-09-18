@@ -8,7 +8,7 @@
  * re-resolves when a run is launched.
  */
 import type { Project, Task } from './model';
-import { hasRepo } from './model';
+import { hasRepo, ownsBoard } from './model';
 
 /** Canonical form of a JIRA epic key: trimmed and upper-cased (keys are case-insensitive). */
 export function normalizeEpicKey(key: string): string {
@@ -20,25 +20,26 @@ export function agentProjectsOf(projects: Project[]): Project[] {
   return projects.filter(hasRepo);
 }
 
+/** The fields either resolver reads off a task — a subset so a sync's freshly-built card
+ *  can be resolved before the rest of it (id, status, …) exists. */
+type ResolvableTask = Pick<Task, 'agentProjectId' | 'projectTagId' | 'externalParentKey'>;
+
 /**
- * Resolve the agent project for a task, in precedence order:
+ * The shared precedence, over whatever `candidates` the caller has already narrowed to:
  *
  * 1. An explicit `task.agentProjectId` — a human already delegated it, and that always
  *    wins (even if the ticket's epic later moves to another project's list).
  * 2. `task.projectTagId` — the card was FILED under a project. That is not a delegation
  *    (see `isAgentAssigned`, which stays on `agentProjectId`), but it is a perfectly
- *    good answer to "which repo would this run in", so a filed card resolves sensibly
- *    the moment you do delegate it.
- * 3. The agent project whose `jiraEpicKeys` contain the ticket's epic/parent key.
- * 4. `null` — nothing owns it, so the assign dialog has to ask.
+ *    good answer to "which project owns this", so a filed card resolves sensibly the
+ *    moment you do delegate it.
+ * 3. The candidate whose `jiraEpicKeys` contain the ticket's epic/parent key.
+ * 4. `null` — nothing owns it.
  *
- * `projects` may be the full project list; projects with no repo are ignored. When two
- * agent projects claim the same epic the first in list order wins (creation order),
+ * When two candidates claim the same epic the first in list order wins (creation order),
  * which is deterministic — the UI still lets the human override.
  */
-export function resolveAgentProject(task: Task, projects: Project[]): Project | null {
-  const candidates = agentProjectsOf(projects);
-
+function resolveOwningProject(task: ResolvableTask, candidates: Project[]): Project | null {
   if (task.agentProjectId) {
     // A stale id (project since deleted) falls through to epic matching rather than
     // resolving to nothing, so an assigned card stays workable.
@@ -57,4 +58,30 @@ export function resolveAgentProject(task: Task, projects: Project[]): Project | 
   return (
     candidates.find((p) => p.jiraEpicKeys.some((k) => normalizeEpicKey(k) === epicKey)) ?? null
   );
+}
+
+/**
+ * Resolve the agent project for a task — see {@link resolveOwningProject} for the
+ * precedence. `projects` may be the full project list; projects with no repo are ignored,
+ * since only a directory can host a delegated run.
+ */
+export function resolveAgentProject(task: Task, projects: Project[]): Project | null {
+  return resolveOwningProject(task, agentProjectsOf(projects));
+}
+
+/**
+ * Resolve the project whose **board** a mirrored tracker ticket belongs on — the same
+ * precedence as {@link resolveAgentProject}, but over every project rather than only ones
+ * with a repo (a ticket-only board owns no directory, and would be filtered out by
+ * `agentProjectsOf` before it ever got a chance to match), and only when the result
+ * actually owns a board (`ownsBoard`). A resolved project with no board of its own (an
+ * ordinary agent project) answers `null` here — its cards stay on Personal, exactly as
+ * `isFilingProject` already treats the two kinds of project differently.
+ */
+export function resolveOwningBoardProject(
+  task: ResolvableTask,
+  projects: Project[],
+): Project | null {
+  const resolved = resolveOwningProject(task, projects);
+  return resolved && ownsBoard(resolved) ? resolved : null;
 }

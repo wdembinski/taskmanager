@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { agentProjectsOf, normalizeEpicKey, resolveAgentProject } from './agentProjects';
+import {
+  agentProjectsOf,
+  normalizeEpicKey,
+  resolveAgentProject,
+  resolveOwningBoardProject,
+} from './agentProjects';
 import { isAgentAssigned } from './board';
 import { LOCAL_TARGET } from './execTarget';
 import { PERSONAL_PROJECT_ID, type Project, type Task } from './model';
@@ -128,5 +133,39 @@ describe('resolveAgentProject — filing vs delegating', () => {
   it('falls through to the epic when the filed project is gone', () => {
     const filed = task({ projectTagId: 'p-deleted', externalParentKey: 'ABC-1' });
     expect(resolveAgentProject(filed, [billing, web])?.id).toBe('p-web');
+  });
+});
+
+describe('resolveOwningBoardProject', () => {
+  // A ticket-only project: owns a board (ticket prefix, no plan) but no repo — exactly the
+  // shape `agentProjectsOf`'s `hasRepo` filter would hide from `resolveAgentProject`.
+  const board = project({ id: 'board', path: '', ticketPrefix: 'BRD', jiraEpicKeys: ['ABC-100'] });
+  // An ordinary agent project: has a repo, owns no board of its own.
+  const repoOnly = project({ id: 'repo', jiraEpicKeys: ['ABC-200'] });
+
+  it('resolves an epic match to the board project when it owns a board', () => {
+    const t = task({ externalParentKey: 'ABC-100' });
+    expect(resolveOwningBoardProject(t, [board, repoOnly])?.id).toBe('board');
+  });
+
+  it('returns null when the epic-matched project does not own a board', () => {
+    const t = task({ externalParentKey: 'ABC-200' });
+    expect(resolveOwningBoardProject(t, [board, repoOnly])).toBeNull();
+  });
+
+  it('matches a repo-less ticket board that resolveAgentProject would filter out', () => {
+    const t = task({ externalParentKey: 'ABC-100' });
+    expect(resolveAgentProject(t, [board])).toBeNull();
+    expect(resolveOwningBoardProject(t, [board])?.id).toBe('board');
+  });
+
+  it('honours an explicit filing over the epic match, same precedence as resolveAgentProject', () => {
+    const filed = task({ projectTagId: 'board', externalParentKey: 'ABC-200' });
+    expect(resolveOwningBoardProject(filed, [board, repoOnly])?.id).toBe('board');
+  });
+
+  it('returns null when nothing owns the epic, or the task has none', () => {
+    expect(resolveOwningBoardProject(task({ externalParentKey: 'NOPE-1' }), [board])).toBeNull();
+    expect(resolveOwningBoardProject(task(), [board])).toBeNull();
   });
 });

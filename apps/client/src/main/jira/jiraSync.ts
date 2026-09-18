@@ -19,7 +19,8 @@
  * {@link reconcileJiraTasks}: **no card leaves the board unless JIRA was asked about it by
  * key and answered.**
  */
-import { PERSONAL_PROJECT_ID, type BoardColumn, type Task } from '@shared/model';
+import { PERSONAL_PROJECT_ID, type BoardColumn, type Project, type Task } from '@shared/model';
+import { resolveOwningBoardProject } from '@shared/agentProjects';
 import {
   categoryFromKey,
   columnForTask,
@@ -138,6 +139,17 @@ export interface JiraSyncOptions {
    * history to keep).
    */
   retentionMs?: number;
+  /**
+   * Gate for `settings.features.ticketsToOwnBoard`. Off (the default) leaves every card on
+   * the Personal board, whatever `projects` resolves — the pre-existing behaviour, and what
+   * every caller that doesn't pass it gets.
+   */
+  assignOwnBoard?: boolean;
+  /**
+   * The full project list, for resolving the board a ticket's own project owns (see
+   * {@link resolveOwningBoardProject}). Only consulted when {@link assignOwnBoard} is true.
+   */
+  projects?: Project[];
 }
 
 /** A set of issue keys, however the caller happens to be holding them. */
@@ -262,9 +274,23 @@ function issueToTask(
   // every card orange; existing tasks keep the user's read marker.
   const lastReadCommentAt = existing ? (existing.lastReadCommentAt ?? null) : latestCommentAt;
 
+  // File the card on its own project's board rather than Personal when the ticket resolves
+  // to a project that owns one — see `resolveOwningBoardProject`. Gated: off leaves every
+  // card on Personal, whatever `opts.projects` would otherwise resolve.
+  const owningBoardProject = opts.assignOwnBoard
+    ? resolveOwningBoardProject(
+        {
+          agentProjectId: existing?.agentProjectId ?? null,
+          projectTagId: existing?.projectTagId ?? null,
+          externalParentKey: parentKey ?? existing?.externalParentKey ?? null,
+        },
+        opts.projects ?? [],
+      )
+    : null;
+
   return {
     id: existing?.id ?? `jira-${issue.id}`,
-    projectId: PERSONAL_PROJECT_ID,
+    projectId: owningBoardProject?.id ?? PERSONAL_PROJECT_ID,
     // The board shows the JIRA project name as the card's "Project:" label.
     phase: issue.fields.project?.name ?? issue.key.split('-')[0],
     title: issue.fields.summary,
