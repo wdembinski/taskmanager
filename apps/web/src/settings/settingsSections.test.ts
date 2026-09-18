@@ -18,9 +18,10 @@ describe('sectionNeedsSettings', () => {
   });
 
   it('still gates the panes that render AppSettings fields', () => {
-    // These three ARE forms over the blob, so they genuinely cannot draw until it loads.
+    // These four ARE forms over the blob, so they genuinely cannot draw until it loads.
     expect(sectionNeedsSettings('general')).toBe(true);
     expect(sectionNeedsSettings('board')).toBe(true);
+    expect(sectionNeedsSettings('features')).toBe(true);
     expect(sectionNeedsSettings('jira')).toBe(true);
   });
 
@@ -31,6 +32,7 @@ describe('sectionNeedsSettings', () => {
     const all: Record<SettingsSection, boolean> = {
       general: true,
       board: true,
+      features: true,
       projects: false,
       jira: true,
       tokens: false,

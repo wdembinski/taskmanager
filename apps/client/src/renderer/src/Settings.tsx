@@ -46,6 +46,7 @@ import { clampSyncInterval, MAX_SYNC_INTERVAL_MINUTES } from '@shared/settings';
 import type {
   AppSettings,
   CloudSettings,
+  FeatureSettings,
   GitHubSettings,
   GitLabSettings,
   JiraSettings,
@@ -168,7 +169,56 @@ const COLUMN_LABEL: Record<BoardColumn, string> = Object.fromEntries(
 ) as Record<BoardColumn, string>;
 
 type SettingsSection =
-  'general' | 'board' | 'jira' | 'gitlab' | 'github' | 'cloud' | 'people' | 'agentProfiles';
+  | 'general'
+  | 'board'
+  | 'features'
+  | 'jira'
+  | 'gitlab'
+  | 'github'
+  | 'cloud'
+  | 'people'
+  | 'agentProfiles';
+
+/**
+ * The six feature switches, in the order the Features tab lists them — keyed by the
+ * `FeatureSettings` field so the switch and its label can never drift apart.
+ */
+const FEATURE_SWITCHES: ReadonlyArray<{
+  key: keyof FeatureSettings;
+  label: string;
+  hint: string;
+}> = [
+  {
+    key: 'autoFoldReviewDone',
+    label: 'Auto-fold steps on review and done',
+    hint: 'A card’s Steps section folds itself away once the card reaches In Review or Done.',
+  },
+  {
+    key: 'shelf',
+    label: 'Parked shelf',
+    hint: 'A foldable shelf on the board holding cards you have parked out of the way.',
+  },
+  {
+    key: 'afterMergePipeline',
+    label: 'After-merge pipeline status',
+    hint: 'A merged MR keeps showing its pipeline’s status after it lands, not just before.',
+  },
+  {
+    key: 'mrRebaseButton',
+    label: 'MR rebase button',
+    hint: 'A button on a card’s MR to ask the provider to rebase it onto its target branch.',
+  },
+  {
+    key: 'quietAgentProgress',
+    label: 'Quiet agent progress',
+    hint: 'Moves an agent’s running progress log out of the chat pane.',
+  },
+  {
+    key: 'ticketsToOwnBoard',
+    label: 'Tickets to their own board',
+    hint: 'Tracker tickets are assigned to their own board rather than sharing one with everything else.',
+  },
+];
 
 export function Settings(): JSX.Element {
   const styles = useStyles();
@@ -524,6 +574,7 @@ export function Settings(): JSX.Element {
       >
         <Tab value="general">General</Tab>
         <Tab value="board">Board</Tab>
+        <Tab value="features">Features</Tab>
         <Tab value="jira">JIRA</Tab>
         <Tab value="gitlab">GitLab</Tab>
         <Tab value="github">GitHub</Tab>
@@ -608,6 +659,34 @@ export function Settings(): JSX.Element {
                 </div>
               </div>
             </Field>
+          </div>
+
+          <div className={styles.actions}>
+            <Button appearance="primary" onClick={save}>
+              Save
+            </Button>
+            {saved && <Caption1 className={styles.saved}>Saved.</Caption1>}
+          </div>
+        </div>
+      ) : section === 'features' ? (
+        <div className={styles.pane}>
+          <Subtitle2>Features</Subtitle2>
+          <Body1 className={styles.hint}>
+            Switches for a handful of independent behaviours. All on out of the box — turn one off
+            if it gets in your way.
+          </Body1>
+
+          <div className={styles.grid}>
+            {FEATURE_SWITCHES.map((f) => (
+              <Field key={f.key} label={f.label} hint={f.hint}>
+                <Switch
+                  checked={settings.features[f.key]}
+                  onChange={(_e, d) =>
+                    patch({ features: { ...settings.features, [f.key]: d.checked } })
+                  }
+                />
+              </Field>
+            ))}
           </div>
 
           <div className={styles.actions}>
