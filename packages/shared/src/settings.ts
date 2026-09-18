@@ -399,6 +399,41 @@ export const DEFAULT_BOARD_DISPLAY: BoardDisplaySettings = {
 };
 
 /**
+ * Master on/off switches for a handful of independently-toggleable behaviours, each owned by
+ * its own later phase. Grouped into one nested object — rather than six top-level booleans —
+ * for the same reason `board` is: they are edited together on one Settings tab, and a phase
+ * that needs to check whether its own feature is live reads `settings.features.x` rather than
+ * a top-level field competing for a name with everything else in `AppSettings`.
+ *
+ * All default to `true`: none of these is a beta anybody opts into, so the shipped behaviour
+ * is "the feature exists" and this group is only ever used to turn one back OFF.
+ */
+export interface FeatureSettings {
+  /** Auto-fold a card's Steps section once it reaches Review or Done. */
+  autoFoldReviewDone: boolean;
+  /** The board's foldable parked shelf. */
+  shelf: boolean;
+  /** Show the after-merge pipeline status on a merged MR. */
+  afterMergePipeline: boolean;
+  /** The provider rebase button on an MR. */
+  mrRebaseButton: boolean;
+  /** Move agent progress logs out of the chat pane. */
+  quietAgentProgress: boolean;
+  /** Assign tracker tickets to their own board. */
+  ticketsToOwnBoard: boolean;
+}
+
+/** Every feature on — see {@link FeatureSettings}. */
+export const DEFAULT_FEATURE_SETTINGS: FeatureSettings = {
+  autoFoldReviewDone: true,
+  shelf: true,
+  afterMergePipeline: true,
+  mrRebaseButton: true,
+  quietAgentProgress: true,
+  ticketsToOwnBoard: true,
+};
+
+/**
  * The Projects screen's Gantt timeline, saved for the same reason `foldedStepCards` is: the
  * screen is unmounted every time you leave it, and a collapse you had to redo on every visit
  * would not be a collapse.
@@ -580,6 +615,15 @@ export interface AppSettings {
   cloud: CloudSettings;
   /** The Projects screen's Gantt timeline — see {@link GanttSettings}. */
   gantt: GanttSettings;
+  /** The feature on/off switches later phases read — see {@link FeatureSettings}. */
+  features: FeatureSettings;
+  /**
+   * Board cards parked onto the shelf, by task id — per-surface view-state, exactly like
+   * `foldedStepCards`: a browser tab and the desktop each keep their own.
+   */
+  shelvedCardIds: string[];
+  /** Whether the shelf itself is collapsed. Per-surface view-state, like `shelvedCardIds`. */
+  shelfFolded: boolean;
 }
 
 /** The out-of-the-box settings, also used to fill any field missing from storage. */
@@ -623,6 +667,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   github: DEFAULT_GITHUB_SETTINGS,
   cloud: DEFAULT_CLOUD_SETTINGS,
   gantt: DEFAULT_GANTT_SETTINGS,
+  features: DEFAULT_FEATURE_SETTINGS,
+  shelvedCardIds: [],
+  shelfFolded: false,
 };
 
 /**
@@ -638,7 +685,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
  * the engine has now. `incoming` is `unknown` because it arrived over HTTP as JSON; anything
  * that is not an object is ignored entirely rather than partially applied.
  *
- * One level, not deep: the nested groups (`jira`, `gitlab`, `cloud`, `board`) are merged
+ * One level, not deep: the nested groups (`jira`, `gitlab`, `cloud`, `board`, `features`) are merged
  * field-by-field, and the arrays (`statusKeywords`, `foldedStepCards`, …) are REPLACED
  * wholesale when present. That is the right rule for both — an array's whole content is the
  * value being edited, and merging two lists element-wise would resurrect entries the human
@@ -673,8 +720,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * machine has), `fontSizePx` (that window's type scale), `cloud` (this desktop's own
  * connection to the server), `toastsEnabled` (that app's toasts) — or per-SURFACE view-state:
  * `boardScopeId` / `foldedStepCards` / `shownEarlierStepCards` / `shownLaterStepCards` name
- * where you left one screen, `gantt.collapsedEpicIds` the same for the timeline. A browser
- * and a desktop each keep their own of those, so they never leave the surface they were set on.
+ * where you left one screen, `gantt.collapsedEpicIds` the same for the timeline, and
+ * `shelvedCardIds` / `shelfFolded` the same for the parked shelf. A browser and a desktop
+ * each keep their own of those, so they never leave the surface they were set on.
  *
  * A WHITELIST, not a denylist, and that direction is the safety: a field newly added to
  * `AppSettings` is LOCAL until someone deliberately lists it here, so a new machine-specific
@@ -702,6 +750,7 @@ export const GLOBAL_SETTINGS_KEYS = [
   'jira',
   'gitlab',
   'github',
+  'features',
 ] as const satisfies ReadonlyArray<keyof AppSettings>;
 
 /** One of the account-scoped keys — a union of literals, not `string`. */

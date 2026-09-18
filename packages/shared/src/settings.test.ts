@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   clampSyncInterval,
   DEFAULT_BOARD_DISPLAY,
+  DEFAULT_FEATURE_SETTINGS,
   DEFAULT_JIRA_SETTINGS,
   DEFAULT_SETTINGS,
   GLOBAL_SETTINGS_KEYS,
@@ -143,6 +144,23 @@ describe('mergeAppSettings', () => {
     const merged = mergeAppSettings(current, { boardScopeId: 'all' });
     expect(merged.boardScopeId).toBe('all');
   });
+
+  it('merges the features group field-by-field rather than replacing it', () => {
+    const current = {
+      ...DEFAULT_SETTINGS,
+      features: { ...DEFAULT_FEATURE_SETTINGS, shelf: false },
+    };
+    const merged = mergeAppSettings(current, { features: { autoFoldReviewDone: false } });
+    expect(merged.features.autoFoldReviewDone).toBe(false);
+    // A field the caller didn't send — including one already flipped off — is untouched.
+    expect(merged.features.shelf).toBe(false);
+  });
+
+  it('replaces shelvedCardIds wholesale, like every other array field', () => {
+    const current = { ...DEFAULT_SETTINGS, shelvedCardIds: ['a', 'b'] };
+    const merged = mergeAppSettings(current, { shelvedCardIds: ['a'] });
+    expect(merged.shelvedCardIds).toEqual(['a']);
+  });
 });
 
 // A blob written before Phase 24 (native tickets) has no `board.showAssignee`/`showPoints`
@@ -188,7 +206,29 @@ const LOCAL_SETTINGS_KEYS: ReadonlyArray<keyof AppSettings> = [
   'shownEarlierStepCards',
   'shownLaterStepCards',
   'gantt',
+  'shelvedCardIds',
+  'shelfFolded',
 ];
+
+// The Features group — every later phase reads its own switch out of here, and a blob
+// written before this existed has no `features` field at all: this is what fills it in as.
+describe('DEFAULT_SETTINGS.features', () => {
+  it('ships every feature on', () => {
+    expect(DEFAULT_FEATURE_SETTINGS).toEqual({
+      autoFoldReviewDone: true,
+      shelf: true,
+      afterMergePipeline: true,
+      mrRebaseButton: true,
+      quietAgentProgress: true,
+      ticketsToOwnBoard: true,
+    });
+  });
+
+  it('keeps the shelf empty and unfolded out of the box', () => {
+    expect(DEFAULT_SETTINGS.shelvedCardIds).toEqual([]);
+    expect(DEFAULT_SETTINGS.shelfFolded).toBe(false);
+  });
+});
 
 describe('pickGlobalSettings', () => {
   it('keeps account-scoped fields', () => {
