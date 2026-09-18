@@ -829,7 +829,13 @@ describe('guardRemovals — a bound on how wrong one sync may be', () => {
     expect(guarded.warning).toBeNull();
   });
 
-  it('is applied inside the reconciler, where the caller cannot forget it', () => {
+  it('a large query-unchanged shortfall never reaches the guard at all — it is caught earlier, as an incomplete answer', () => {
+    // 12 of 30 board cards missing from the search, query unchanged — exactly the shape
+    // `guardRemovals` alone would refuse (see the first test above). But the reconciler's own
+    // `isIncompleteAnswer` funnel now catches this BEFORE any of the 12 becomes a removal
+    // candidate at all, even though the confirm pass here answers cleanly for every one of
+    // them ("asked, and JIRA says no"). A clean per-key answer from an instance that just
+    // failed to return 40% of the board is not grounds for anything.
     const board = Array.from({ length: 30 }, (_, i) =>
       jiraTask({
         id: `jira-${i + 1}`,
@@ -843,14 +849,18 @@ describe('guardRemovals — a bound on how wrong one sync may be', () => {
       .map((t) => issue(t.externalId as string, t.externalKey as string, 'new'));
     const dropped = board.slice(18).map((t) => t.externalKey as string);
 
-    const refused = reconcileJiraTasks(board, issues, {
+    const kept = reconcileJiraTasks(board, issues, {
       ...opts,
       queryChecked: dropped,
       queryMatches: [],
     });
-    expect(refused.removals).toEqual([]);
-    expect(refused.refused).toHaveLength(12);
-    expect(refused.warning).toMatch(/Nothing was removed/);
+    expect(kept.removals).toEqual([]);
+    // Not `refused` either — `guardRemovals` never sees these 12, so there is nothing for it
+    // to refuse. The loud "Kept X of Y... check your JQL" refusal is for a genuine mass
+    // departure; this is a different, quieter diagnosis.
+    expect(kept.refused).toEqual([]);
+    expect(kept.warning).toMatch(/left out 12 of 30 board cards/);
+    expect(kept.warning).not.toMatch(/Check the board's JQL/);
 
     // The same sync, after the human changed the JQL: the turnover is the point.
     const allowed = reconcileJiraTasks(board, issues, {

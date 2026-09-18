@@ -3242,10 +3242,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // The case where that "zero extra requests" stops being true, stated so nobody discovers it
     // as a mystery: a query that is **permanently wrong** — someone saves a JQL that matches
     // nothing, or narrows a filter and leaves it there. Every card on the board is then a
-    // candidate on every poll, the guard refuses the removal (it is far past a quarter of the
-    // board), the warning bar comes back, and the confirm pass is paid for again — one request
-    // per fifty cards, at the sync interval, by default every two minutes. Nothing is lost and
-    // nothing is removed; it is steady noise plus request volume until the query is fixed.
+    // candidate on every poll, and the confirm pass is paid for again — one request per fifty
+    // cards, at the sync interval, by default every two minutes. Whatever it comes back with,
+    // the reconciler's own shortfall check (`isIncompleteAnswer`, `jiraSync.ts`) sees the same
+    // large, query-unchanged share of the board missing and removes nothing anyway — it cannot
+    // tell "permanently wrong query" apart from "instance under-answering", and treats both the
+    // same. Nothing is lost and nothing is removed; it is steady noise plus request volume
+    // until the query is fixed.
     //
     // Deliberately not mitigated here. The obvious mitigation is real and written down rather
     // than built: after a refusal, skip the confirm pass on the next sync unless the query

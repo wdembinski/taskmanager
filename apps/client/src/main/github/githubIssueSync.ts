@@ -41,7 +41,12 @@ import {
 } from '@shared/model';
 import { columnForTask, isRunStatus, restingStatus, statusForColumn } from '@shared/board';
 import { firstUnmappedLabel, resolveGitHubColumn } from '@shared/statusResolve';
-import { guardRemovals, type ForgeRemoval, type ForgeRemovalReason } from '../forge/removalGuard';
+import {
+  guardRemovals,
+  isIncompleteAnswer,
+  type ForgeRemoval,
+  type ForgeRemovalReason,
+} from '../forge/removalGuard';
 import { githubAuthorIsMe, type GitHubIdentityCache } from './identity';
 import type { GitHubIssueComment, GitHubSearchIssueItem } from './githubClient';
 
@@ -408,16 +413,20 @@ export function parseIssueKey(key: string): IssueRef | null {
  *      genuinely no longer matches, the next sync re-archives it through the ordinary
  *      `left-query` path below — correct given the query, and not this function's problem.)
  *   3. **the search was truncated** — everything is kept, whatever else is true of it.
- *   4. **the re-read did not run, or this issue's own call failed** — kept. A card must not
+ *   4. **this sync's own answer looks incomplete** ({@link isIncompleteAnswer}: a large,
+ *      query-unchanged share of the board is missing from `issues`) — everything is kept, for
+ *      the same reason as 3: an instance under-answering this badly cannot be trusted to have
+ *      gotten the handful of by-number re-reads below right either.
+ *   5. **the re-read did not run, or this issue's own call failed** — kept. A card must not
  *      be archived on a question that errored.
- *   5. **asked for by number, and GitHub does not have it** — `gone-from-jira`, which is this
+ *   6. **asked for by number, and GitHub does not have it** — `gone-from-jira`, which is this
  *      vocabulary's name for "gone from the tracker" (see `TaskArchiveReason`).
- *   6. **asked, and GitHub says it is closed** — kept and retained, even if the card was not
+ *   7. **asked, and GitHub says it is closed** — kept and retained, even if the card was not
  *      already finished. The answer is in hand and it says the work landed; taking the card
  *      off the board at the exact moment a human wants to see it land would be perverse.
- *   7. **asked, still open, and nothing is retaining it** — `left-query`.
- *   8. **retained past its window** — `retention-expired`.
- *   9. otherwise — upserted from the re-read issue, with its retention clock preserved.
+ *   8. **asked, still open, and nothing is retaining it** — `left-query`.
+ *   9. **retained past its window** — `retention-expired`.
+ *  10. otherwise — upserted from the re-read issue, with its retention clock preserved.
  *
  * Whatever survives that is put to `guardRemovals`, **here** rather than in the caller: a
  * guard the caller can forget to apply is not a guard.
@@ -448,14 +457,31 @@ export function reconcileGitHubIssues(
   const truncated = opts.truncated === true;
   const now = opts.now ?? Date.now();
 
+  // The denominator is the BOARD — the cards a human can see — not the query's answer, which
+  // is the very thing under suspicion when this guard matters. Computed up front, not after
+  // the loop below, because `incompleteAnswer` has to be known BEFORE `drop` runs for the
+  // first candidate.
+  const onBoardGitHubCards = existing.filter(
+    (t) => t.source === 'github' && t.externalKey != null && t.archivedAt == null,
+  );
+  const boardCount = onBoardGitHubCards.length;
+  // How much of the board this search itself left out, before any per-issue re-read says
+  // *why* — still "missing from `issues`" either way, and that raw share is what a broadly
+  // under-answering instance actually looks like from here.
+  const missingCount = onBoardGitHubCards.filter((t) => !seen.has(t.externalKey as string)).length;
+  const incompleteAnswer = isIncompleteAnswer(missingCount, boardCount, opts);
+
   const candidates: ForgeRemoval[] = [];
 
   /**
    * The one funnel every removal goes through, so `truncated` cannot be forgotten in a
    * branch: a search we know was short removes nothing at all, for any reason.
+   * `incompleteAnswer` joins it here rather than as a second guard downstream: a large,
+   * query-unchanged shortfall is not proof of anything about the specific cards it is about
+   * to be blamed on — see {@link isIncompleteAnswer}.
    */
   const drop = (task: Task, reason: ForgeRemovalReason): void => {
-    if (truncated) return;
+    if (truncated || incompleteAnswer) return;
     candidates.push({
       taskId: task.id,
       key: task.externalKey as string,
@@ -513,11 +539,6 @@ export function reconcileGitHubIssues(
     upserts.push(issueToTask(issue, task, opts, task.order, since));
   }
 
-  // The denominator is the BOARD — the cards a human can see — not the query's answer, which
-  // is the very thing under suspicion when this guard matters.
-  const boardCount = existing.filter(
-    (t) => t.source === 'github' && t.externalKey != null && t.archivedAt == null,
-  ).length;
   const guarded = guardRemovals(candidates, boardCount, {
     ...opts,
     tracker: 'GitHub',
@@ -529,6 +550,11 @@ export function reconcileGitHubIssues(
     notes.push(
       'GitHub did not return the whole issue query, so no card was removed from the board ' +
         'this sync.',
+    );
+  } else if (incompleteAnswer) {
+    notes.push(
+      `GitHub's answer left out ${missingCount} of ${boardCount} board cards without the ` +
+        `query changing, so no card was removed from the board this sync.`,
     );
   }
   if (guarded.warning) notes.push(guarded.warning);

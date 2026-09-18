@@ -291,7 +291,11 @@ describe('reconcileGitHubIssues', () => {
     expect(result.removals).toEqual([]);
   });
 
-  it('applies the removal guard here, where the caller cannot forget it', () => {
+  it('a large query-unchanged shortfall is kept as an incomplete answer, never reaching the guard', () => {
+    // 12 of 30 board cards missing from the search, query unchanged — the same shape
+    // `guardRemovals` alone would refuse. But `isIncompleteAnswer` catches it earlier, before
+    // any of the 12 becomes a removal candidate, even though the by-number re-read answers
+    // cleanly ("still open") for every one of them.
     const board = Array.from({ length: 30 }, (_, i) =>
       card({ id: `gh-acme-web-${i + 1}`, externalKey: `acme/web#${i + 1}` }),
     );
@@ -304,9 +308,10 @@ describe('reconcileGitHubIssues', () => {
       recheckedKeys: missing.map((t) => t.externalKey as string),
     });
     expect(result.removals).toEqual([]);
-    expect(result.refused).toHaveLength(12);
-    expect(result.warning).toMatch(/GitHub cards that GitHub says/);
-    expect(result.warning).toMatch(/issue query/);
+    // Not `refused` either — `guardRemovals` never sees these 12.
+    expect(result.refused).toEqual([]);
+    expect(result.warning).toMatch(/left out 12 of 30 board cards/);
+    expect(result.warning).not.toMatch(/issue query/);
   });
 
   it('stands the guard down when the question itself changed', () => {
