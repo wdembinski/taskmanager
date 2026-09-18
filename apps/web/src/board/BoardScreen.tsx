@@ -765,6 +765,7 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
             mergeRequests={selectedTask ? (mrsByTask.get(selectedTask.id) ?? []) : []}
             afterMergePipeline={settings.features.afterMergePipeline}
             mrRebaseButton={settings.features.mrRebaseButton}
+            quietAgentProgress={settings.features.quietAgentProgress}
             attachments={selectedTask ? (attachmentsByTask.get(selectedTask.id) ?? []) : []}
             parentAttachments={
               parentOfSelected ? (attachmentsByTask.get(parentOfSelected.id) ?? []) : []

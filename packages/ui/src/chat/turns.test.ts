@@ -199,6 +199,34 @@ describe('foldTurns', () => {
   it('keeps a thinking-only stretch from becoming an empty row', () => {
     expect(foldTurns([event({ kind: 'thinking', text: 'hmm' })])).toEqual([]);
   });
+
+  it('drops tool work entirely in quiet mode, keeping the agent’s prose', () => {
+    const entries = [
+      event({ kind: 'assistant', text: 'looking into it' }),
+      event({ kind: 'thinking', text: 'hmm' }),
+      event({ kind: 'tool-use', name: 'Grep', toolId: 't1' }),
+      event({ kind: 'tool-result', toolId: 't1', isError: false }),
+      event({ kind: 'assistant', text: 'found it' }),
+    ];
+    expect(kinds(foldTurns(entries))).toEqual(['agent', 'tools', 'agent']);
+    // With the tool row gone, the two assistant chunks are adjacent — same merge rule
+    // that turns a streamed reply's chunks into one paragraph applies here too.
+    const quiet = foldTurns(entries, { quiet: true });
+    expect(kinds(quiet)).toEqual(['agent']);
+    expect(quiet[0]).toMatchObject({ text: 'looking into it\nfound it' });
+  });
+
+  it('still surfaces a real tool failure in quiet mode', () => {
+    const turns = foldTurns(
+      [
+        event({ kind: 'tool-use', name: 'Bash', toolId: 't1' }),
+        event({ kind: 'tool-result', toolId: 't1', isError: true }),
+      ],
+      { quiet: true },
+    );
+    expect(kinds(turns)).toEqual(['system']);
+    expect(turns[0]).toMatchObject({ kind: 'system', tone: 'err' });
+  });
 });
 
 describe('foldTurns — status updates', () => {
