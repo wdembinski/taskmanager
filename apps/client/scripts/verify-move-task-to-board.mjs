@@ -25,6 +25,23 @@
  * 1-5 already created: before this step those were exactly the two kinds `ownsBoard` used to
  * drop, so their presence here is the regression this section exists to catch.
  *
+ * Section 7 (plan step 7, "verify board moves end-to-end") is the scenario the step names
+ * directly, chained on one card: a prefixed board and a keyless board are both freshly
+ * created, an adhoc card moves onto the prefixed one first (a fresh key, `source: 'ticket'`),
+ * then onto the keyless one (the key freezes at what the FIRST move gave it, not what it was
+ * born with — sections 1 and 3 each cover one half of this on separate cards, never chained).
+ * Both hops go through the `setBoard` mirror so the two `project:tasksChanged` sends are
+ * re-checked here too, and `board:scopes` is re-read afterwards to confirm both new boards
+ * are in it.
+ *
+ * Proven live, not assumed, on 19 Sep 2026 by mutating `moveTaskToBoardTx` in `store.ts` and
+ * reverting each time: inverting the `if (destPrefix)` guard reddens sections 1 and 2 (and
+ * then crashes the run — `formatTicketKey` gets called on a card with no old key — which is
+ * itself a loud, non-zero-exit failure); freezing with `null` instead of `taskRow.ticketKey`/
+ * `ticketNumber` reddens section 3 twice AND section 7's chained-freeze check; dropping the
+ * two `moveTask*Project.run` calls reddens both the `task_events`/`task_activity` follow
+ * checks in sections 1 and 3. All three came back clean after the revert.
+ *
  *   pnpm exec node scripts/verify-move-task-to-board.mjs
  *
  * Exits non-zero on the first failed assertion, naming it.
@@ -562,6 +579,64 @@ check(
   'a ticket-owning board (the pre-existing case) is still included',
   scopes.some((s) => s.id === destC.id),
 );
+
+// ---------------------------------------------------------------------------
+section('7. end-to-end: adhoc -> a prefixed board -> a keyless board, via task:setBoard');
+
+/**
+ * The scenario the plan step names directly: one project WITH a prefix, one WITHOUT, one
+ * adhoc card walked across both through the real IPC entry point (not \`store\` directly, so
+ * this also re-proves the two \`project:tasksChanged\` sends at each hop). The interesting
+ * claim is the SECOND move: a keyless board must freeze the key the card got from the FIRST
+ * move, not just a key it was born with — sections 1 and 3 each prove one half of this on
+ * separate cards, never chained on the same one.
+ */
+const e2ePrefixed = store.addProject({ path: '', kind: 'ticket', ticketPrefix: 'E2E', name: 'e2e prefixed board' });
+const e2eKeyless = store.addProject({ path: '', name: 'e2e keyless board', personal: true });
+check('the second board really has no prefix', e2eKeyless.ticketPrefix === '');
+
+const e2eCard = store.createTask(PERSONAL_PROJECT_ID, { title: 'an adhoc card for the full round trip' });
+check('starts adhoc and keyless', e2eCard.source === 'adhoc' && !e2eCard.ticketKey);
+
+const sentToPrefixed = [];
+const onPrefixed = setBoard(e2eCard.id, e2ePrefixed.id, sentToPrefixed);
+check(
+  'moving onto the prefixed board allocates a fresh E2E-1 key',
+  onPrefixed.ticketKey === 'E2E-1' && onPrefixed.ticketNumber === 1,
+  JSON.stringify(onPrefixed),
+);
+check("and its source becomes 'ticket'", onPrefixed.source === 'ticket');
+check(
+  'that move fired project:tasksChanged for both Personal (source) and E2E (destination)',
+  sentToPrefixed
+    .filter((s) => s[0] === 'project:tasksChanged')
+    .map((s) => s[1].projectId)
+    .sort()
+    .join(',') === [PERSONAL_PROJECT_ID, e2ePrefixed.id].sort().join(','),
+  JSON.stringify(sentToPrefixed.map((s) => [s[0], s[1].projectId])),
+);
+
+const sentToKeyless = [];
+const onKeyless = setBoard(e2eCard.id, e2eKeyless.id, sentToKeyless);
+check(
+  'moving the SAME card onto the keyless board freezes the key it just got from the first move',
+  onKeyless.ticketKey === 'E2E-1' && onKeyless.ticketNumber === 1,
+  JSON.stringify(onKeyless),
+);
+check("its source stays 'ticket' — freezing does not downgrade it back to adhoc", onKeyless.source === 'ticket');
+check(
+  'that move fired project:tasksChanged for both E2E (source) and the keyless board (destination)',
+  sentToKeyless
+    .filter((s) => s[0] === 'project:tasksChanged')
+    .map((s) => s[1].projectId)
+    .sort()
+    .join(',') === [e2ePrefixed.id, e2eKeyless.id].sort().join(','),
+  JSON.stringify(sentToKeyless.map((s) => [s[0], s[1].projectId])),
+);
+
+const scopesAfterE2e = boardScopes();
+check('board:scopes lists the new prefixed board', scopesAfterE2e.some((s) => s.id === e2ePrefixed.id));
+check('board:scopes lists the new keyless board', scopesAfterE2e.some((s) => s.id === e2eKeyless.id));
 
 raw.close();
 store.close();
