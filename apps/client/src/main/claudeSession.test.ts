@@ -56,10 +56,37 @@ describe('mapRawEvent', () => {
     });
     expect(events).toEqual([
       { kind: 'thinking', text: 'let me think' },
-      { kind: 'assistant', text: 'pong' },
+      // This message also calls a tool, so its text is narration, not an answer.
+      { kind: 'assistant', text: 'pong', preamble: true },
       // tool_use now carries its input so the Phase 4 risk policy can inspect it.
       { kind: 'tool-use', name: 'Bash', toolId: 'toolu_1', input: { command: 'ls' } },
     ]);
+  });
+
+  it('flags preamble on EVERY text block when the message also calls a tool', () => {
+    const events = mapRawEvent({
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'text', text: 'first, let me check the file' },
+          { type: 'text', text: 'now let me run it' },
+          { type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'ls' } },
+        ],
+      },
+    });
+    expect(events).toEqual([
+      { kind: 'assistant', text: 'first, let me check the file', preamble: true },
+      { kind: 'assistant', text: 'now let me run it', preamble: true },
+      { kind: 'tool-use', name: 'Bash', toolId: 'toolu_1', input: { command: 'ls' } },
+    ]);
+  });
+
+  it('does NOT flag a text-only message as preamble — it is the turn’s answer', () => {
+    const events = mapRawEvent({
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: 'here is the summary' }] },
+    });
+    expect(events).toEqual([{ kind: 'assistant', text: 'here is the summary', preamble: false }]);
   });
 
   it('maps a tool_result inside a user message', () => {
@@ -198,7 +225,7 @@ describe('mapRawEvent', () => {
         cacheCreationTokens: 0,
         cacheReadTokens: 2048,
       },
-      { kind: 'assistant', text: 'hi' },
+      { kind: 'assistant', text: 'hi', preamble: false },
     ]);
   });
 
@@ -207,7 +234,7 @@ describe('mapRawEvent', () => {
       type: 'assistant',
       message: { content: [{ type: 'text', text: 'hi' }] },
     });
-    expect(events).toEqual([{ kind: 'assistant', text: 'hi' }]);
+    expect(events).toEqual([{ kind: 'assistant', text: 'hi', preamble: false }]);
   });
 
   it('ignores noise (progress events, unknown types, non-objects)', () => {

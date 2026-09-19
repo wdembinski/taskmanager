@@ -216,6 +216,36 @@ describe('foldTurns', () => {
     expect(quiet[0]).toMatchObject({ text: 'looking into it\nfound it' });
   });
 
+  it('folds preamble narration away in quiet mode, keeping only the summary', () => {
+    const entries = [
+      event({ kind: 'assistant', text: 'Let me look at the parser', preamble: true }),
+      event({ kind: 'assistant', text: 'Now checking the tests', preamble: true }),
+      event({ kind: 'assistant', text: 'Fixed the off-by-one bug.' }),
+    ];
+    const quiet = foldTurns(entries, { quiet: true });
+    expect(kinds(quiet)).toEqual(['agent']);
+    expect(quiet[0]).toMatchObject({ text: 'Fixed the off-by-one bug.' });
+  });
+
+  it('keeps preamble narration when not in quiet mode', () => {
+    const entries = [
+      event({ kind: 'assistant', text: 'Let me look at the parser', preamble: true }),
+      event({ kind: 'assistant', text: 'Fixed the off-by-one bug.' }),
+    ];
+    const turns = foldTurns(entries, { quiet: false });
+    expect(kinds(turns)).toEqual(['agent']);
+    expect(turns[0]).toMatchObject({
+      text: 'Let me look at the parser\nFixed the off-by-one bug.',
+    });
+  });
+
+  it('keeps a legacy assistant event with no `preamble` field under quiet, too', () => {
+    const entries = [event({ kind: 'assistant', text: 'a plain reply, tagged by an older CLI' })];
+    const quiet = foldTurns(entries, { quiet: true });
+    expect(kinds(quiet)).toEqual(['agent']);
+    expect(quiet[0]).toMatchObject({ text: 'a plain reply, tagged by an older CLI' });
+  });
+
   it('still surfaces a real tool failure in quiet mode', () => {
     const turns = foldTurns(
       [
