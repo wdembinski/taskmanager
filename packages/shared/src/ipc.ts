@@ -598,6 +598,24 @@ export interface IpcApi {
    */
   'task:setProject': (taskId: string, projectTagId: string | null) => Promise<Task>;
   /**
+   * Move a card onto a DIFFERENT board — the sibling of `task:setProject` above, and its
+   * opposite number: that one tags a card with `projectTagId` and leaves `Task.projectId`
+   * (the board it actually lives on) untouched; this one moves `projectId` itself, which is
+   * what changes WHERE the card lives. Under the hood this is `Store.moveTaskToBoard` — see
+   * its docstring for the re-keying rule (a destination that owns tickets always allocates a
+   * fresh number off its own counter; a keyless one freezes the key as it was) — with
+   * `projectTagId` dragged along so the filing tag never keeps pointing at a board the card
+   * has left.
+   *
+   * `boardId` names any real project, Personal included: every project is a valid board now,
+   * with no narrower `ownsBoard` gate on top. Refused for a card mid-run, for a card resting
+   * on a plan-driven board (that board's cards come from its plan file, not a manual move),
+   * and for a card synced from JIRA or GitHub (its board is recomputed from its Project tag
+   * on every poll, so a move made here would not survive the next sync). A no-op, not a
+   * refusal, if `boardId` already names the card's own board.
+   */
+  'task:setBoard': (taskId: string, boardId: string) => Promise<Task>;
+  /**
    * Change the model / permission mode a delegated card runs with, WITHOUT restarting
    * it (unlike `task:assignAgent`). A live run keeps what it started with — these are
    * captured on the run — so the change applies to the next one.

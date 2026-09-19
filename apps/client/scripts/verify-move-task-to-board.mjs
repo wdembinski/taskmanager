@@ -1,6 +1,6 @@
 /**
  * Headless verification for `store.moveTaskToBoard` (plan step 2 of "moving tasks between
- * boards") — the transaction that moves a card from one board onto another.
+ * boards") and for the `task:setBoard` IPC handler's guards (step 3) built on top of it.
  *
  * `store.ts` has no automated coverage at all under `vitest`: every store method needs a
  * real `better-sqlite3`, whose native addon is built for Electron's ABI, not the Node that
@@ -10,6 +10,14 @@
  * `createStore` directly under `ELECTRON_RUN_AS_NODE`, against a scratch database, and never
  * opens, reads or writes the real profile (RELEASE.md rule 6 — the app itself is never
  * launched).
+ *
+ * Section 5 mirrors `task:setBoard` from `ipc.ts` — its guards, its `store.moveTaskToBoard`
+ * call and its two `send`s — the same shape `verify-jira-move.mjs` uses for `task:move`:
+ * `ipc.ts` has no test file (`registerIpcHandlers` builds its own store from
+ * `app.getPath('userData')`, a real `BrowserWindow`, pollers and git clients — out of reach
+ * for a harness like this one), so the handler is copied here line for line rather than
+ * restated as a second guess of its own rules. Assertions are on what the REAL store did in
+ * response, never on the mirror's own wording.
  *
  *   pnpm exec node scripts/verify-move-task-to-board.mjs
  *
@@ -154,7 +162,7 @@ const SCENARIOS = String.raw`
 import { mkdirSync, rmSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import { createStore } from '__REPO__/src/main/store';
-import { PERSONAL_PROJECT_ID } from '@shared/model';
+import { PERSONAL_PROJECT_ID, hasPlan } from '@shared/model';
 
 let failures = 0;
 function check(label, condition, detail) {
@@ -362,6 +370,153 @@ try {
 }
 check('a missing task ALSO returns undefined rather than throwing', !threwOnMissingTask);
 check('and its return value is literally undefined too', resultMissingTask === undefined);
+
+// ---------------------------------------------------------------------------
+section('5. task:setBoard (ipc.ts), mirrored — its guards, its move, its two sends');
+
+/**
+ * Copied line for line from the real \`handle('task:setBoard', ...)\` in ipc.ts, minus the
+ * parts that need its closure (the real \`send\` becomes a push onto \`sent\` instead of an
+ * IPC broadcast). If ipc.ts changes, this must be re-read against it.
+ */
+function setBoard(taskId, boardId, sent) {
+  const existing = store.getTask(taskId);
+  if (!existing) throw new Error('Task not found.');
+  if (existing.status === 'running' || existing.status === 'waiting-input') {
+    throw new Error('Stop the task before moving it to another board.');
+  }
+  const sourceProject = store.getProject(existing.projectId);
+  if (sourceProject && hasPlan(sourceProject)) {
+    throw new Error(
+      "This card's board comes from its plan file — edit the plan to move it, not by hand.",
+    );
+  }
+  if (existing.externalSource === 'jira' || existing.externalSource === 'github') {
+    throw new Error(
+      'This card is synced from ' +
+        (existing.externalSource === 'jira' ? 'JIRA' : 'GitHub') +
+        ' — set its Project field instead of moving the board directly; the sync follows that.',
+    );
+  }
+  const dest = store.getProject(boardId);
+  if (!dest) throw new Error('Unknown board.');
+  if (boardId === existing.projectId) return existing;
+
+  const task = store.moveTaskToBoard(taskId, boardId);
+  if (!task) throw new Error('Task not found.');
+  sent.push(['task:changed', { task, runId: null }]);
+  sent.push([
+    'project:tasksChanged',
+    { projectId: existing.projectId, tasks: store.getTasks(existing.projectId) },
+  ]);
+  sent.push(['project:tasksChanged', { projectId: boardId, tasks: store.getTasks(boardId) }]);
+  return task;
+}
+
+function throws(fn) {
+  try {
+    fn();
+    return null;
+  } catch (e) {
+    return e;
+  }
+}
+
+const destC = store.addProject({ path: '', kind: 'ticket', ticketPrefix: 'DC', name: 'dest C' });
+
+// -- running-card refusal ----------------------------------------------------
+const runningTask = store.createTask(PERSONAL_PROJECT_ID, { title: 'mid-run card' });
+store.updateTask(runningTask.id, { status: 'running' });
+let runningErr = throws(() => setBoard(runningTask.id, destC.id, []));
+check(
+  'a running card refuses the move',
+  runningErr?.message === 'Stop the task before moving it to another board.',
+  runningErr?.message,
+);
+check(
+  'and a waiting-input card refuses it the same way',
+  (() => {
+    store.updateTask(runningTask.id, { status: 'waiting-input' });
+    const err = throws(() => setBoard(runningTask.id, destC.id, []));
+    return err?.message === 'Stop the task before moving it to another board.';
+  })(),
+);
+check(
+  'the refused card never moved',
+  store.getTask(runningTask.id).projectId === PERSONAL_PROJECT_ID,
+);
+
+// -- plan refusal -------------------------------------------------------------
+const planProject = store.addProject({ path: '', planPath: 'plan.md', name: 'a plan-driven board' });
+check('the plan board really carries a plan file', hasPlan(planProject));
+const planTask = store.createTask(planProject.id, { title: 'a plan-driven card' });
+let planErr = throws(() => setBoard(planTask.id, destC.id, []));
+check(
+  'a card resting on a plan-driven board refuses the move',
+  planErr?.message === "This card's board comes from its plan file — edit the plan to move it, not by hand.",
+  planErr?.message,
+);
+check('and stays on its plan-driven board', store.getTask(planTask.id).projectId === planProject.id);
+
+// -- jira / github refusals ---------------------------------------------------
+const jiraTask = store.createTask(PERSONAL_PROJECT_ID, { title: 'a synced JIRA card' });
+store.updateTask(jiraTask.id, { externalSource: 'jira', externalKey: 'AB-1' });
+let jiraErr = throws(() => setBoard(jiraTask.id, destC.id, []));
+check(
+  'a JIRA-synced card refuses the move',
+  jiraErr?.message ===
+    'This card is synced from JIRA — set its Project field instead of moving the board directly; the sync follows that.',
+  jiraErr?.message,
+);
+
+const githubTask = store.createTask(PERSONAL_PROJECT_ID, { title: 'a synced GitHub card' });
+store.updateTask(githubTask.id, { externalSource: 'github', externalKey: 'octo/repo#1' });
+let githubErr = throws(() => setBoard(githubTask.id, destC.id, []));
+check(
+  'a GitHub-synced card refuses the move',
+  githubErr?.message ===
+    'This card is synced from GitHub — set its Project field instead of moving the board directly; the sync follows that.',
+  githubErr?.message,
+);
+check(
+  'neither synced card moved',
+  store.getTask(jiraTask.id).projectId === PERSONAL_PROJECT_ID &&
+    store.getTask(githubTask.id).projectId === PERSONAL_PROJECT_ID,
+);
+
+// -- unknown destination refusal ----------------------------------------------
+const plainTask = store.createTask(PERSONAL_PROJECT_ID, { title: 'moves cleanly' });
+let unknownDestErr = throws(() => setBoard(plainTask.id, 'does-not-exist', []));
+check(
+  'an unknown destination is refused by the IPC guard, not left to the store\'s undefined',
+  unknownDestErr?.message === 'Unknown board.',
+  unknownDestErr?.message,
+);
+
+// -- both-board events emitted -------------------------------------------------
+const sent = [];
+const moved = setBoard(plainTask.id, destC.id, sent);
+check('the move itself succeeded', moved.projectId === destC.id);
+check('exactly three events were sent', sent.length === 3, JSON.stringify(sent.map((s) => s[0])));
+check("the first is task:changed, carrying the moved task", sent[0][0] === 'task:changed' && sent[0][1].task.id === plainTask.id);
+check(
+  'the second is project:tasksChanged for the SOURCE board (Personal), which no longer lists the card',
+  sent[1][0] === 'project:tasksChanged' &&
+    sent[1][1].projectId === PERSONAL_PROJECT_ID &&
+    !sent[1][1].tasks.some((t) => t.id === plainTask.id),
+);
+check(
+  'the third is project:tasksChanged for the DESTINATION board, which now lists the card',
+  sent[2][0] === 'project:tasksChanged' &&
+    sent[2][1].projectId === destC.id &&
+    sent[2][1].tasks.some((t) => t.id === plainTask.id),
+);
+
+// A move onto the card's own current board is a no-op: no store write, no events.
+const noopSent = [];
+const noopResult = setBoard(moved.id, destC.id, noopSent);
+check('moving onto the board a card is already on is a no-op', noopResult.id === moved.id);
+check('and sends nothing', noopSent.length === 0, JSON.stringify(noopSent));
 
 raw.close();
 store.close();

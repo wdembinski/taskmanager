@@ -1185,6 +1185,51 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     return task;
   });
 
+  handle('task:setBoard', async (taskId, boardId) => {
+    const existing = store.getTask(taskId);
+    if (!existing) throw new Error('Task not found.');
+    // Same guard `task:assignAgent` opens with: a live run owns the card's worktree, and
+    // moving it to another board out from under that run is not a thing a move should do.
+    if (existing.status === 'running' || existing.status === 'waiting-input') {
+      throw new Error('Stop the task before moving it to another board.');
+    }
+    // The board a plan-driven project shows is a reflection of its plan file — `ticket:create`
+    // refuses a manual add there for the same reason. A manual move off it would only be
+    // undone by the next `project:syncPlan`, so it is refused here too.
+    const sourceProject = store.getProject(existing.projectId);
+    if (sourceProject && hasPlan(sourceProject)) {
+      throw new Error(
+        "This card's board comes from its plan file — edit the plan to move it, not by hand.",
+      );
+    }
+    // A JIRA or GitHub card's `projectId` is recomputed from its Project TAG on every sync
+    // (`resolveOwningBoardProject`, in `issueToTask`) — a move made here would simply be
+    // overwritten by the next poll. `task:setProject` is the lever that actually sticks.
+    if (existing.externalSource === 'jira' || existing.externalSource === 'github') {
+      throw new Error(
+        `This card is synced from ${existing.externalSource === 'jira' ? 'JIRA' : 'GitHub'} — set its Project field instead of moving the board directly; the sync follows that.`,
+      );
+    }
+    // No `ownsBoard` gate: every project is a valid board now, Personal included — it is a
+    // project row like any other (see `PERSONAL_PROJECT_ID`'s seed in store.ts).
+    const dest = store.getProject(boardId);
+    if (!dest) throw new Error('Unknown board.');
+    if (boardId === existing.projectId) return existing;
+
+    const task = store.moveTaskToBoard(taskId, boardId);
+    if (!task) throw new Error('Task not found.');
+    send('task:changed', { task, runId: null });
+    // Both boards, so the source drops the card and the destination gains it — the same
+    // reason `task:create`/`task:delete` push `project:tasksChanged` for the one board they
+    // touch, doubled because this move touches two.
+    send('project:tasksChanged', {
+      projectId: existing.projectId,
+      tasks: store.getTasks(existing.projectId),
+    });
+    send('project:tasksChanged', { projectId: boardId, tasks: store.getTasks(boardId) });
+    return task;
+  });
+
   handle('task:setStatusNote', async (taskId, note) => {
     const existing = store.getTask(taskId);
     if (!existing) throw new Error('Task not found.');
