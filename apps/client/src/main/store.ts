@@ -40,7 +40,12 @@ import {
   type TicketLinkType,
 } from '@shared/model';
 import { isIssueType, isTicketLinkType, normalizeLabels, seedInitials } from '@shared/tickets';
-import { normalizeTicketPrefix, suggestTicketPrefix, uniqueTicketPrefix } from '@shared/ticketKey';
+import {
+  formatTicketKey,
+  normalizeTicketPrefix,
+  suggestTicketPrefix,
+  uniqueTicketPrefix,
+} from '@shared/ticketKey';
 import { buildAdhocTask, buildTicketTask } from '@shared/taskBuilders';
 import { buildProject, normalizeEpicKeys } from '@shared/projectBuilders';
 import { formatExecTarget, parseExecTarget } from '@shared/execTarget';
@@ -624,6 +629,32 @@ export interface Store {
    * exactly as `addTaskLink` treats its own refusals.
    */
   createTicket(projectId: string, input: TicketInput): Task | undefined;
+
+  /**
+   * Move a card onto a different board, one atomic transaction.
+   *
+   * Re-keying follows `createTicket`'s own rule: a destination that owns tickets always
+   * issues a FRESH number off ITS counter — never the source's old number, and never
+   * `MAX(ticketNumber)` — so `TM-500` moving onto `BE` becomes whatever `BE` is next, not
+   * `BE-500`, and moving between two ticket boards can never hand out a number either of
+   * them has already issued. A destination with no prefix (Personal, or a keyless board)
+   * has no allocator to ask, so the key freezes exactly as it was — including staying null
+   * for a card that never had one.
+   *
+   * `epicTaskId`/`milestoneId` are always cleared: both name a row scoped to the SOURCE
+   * project (an epic is a ticket of that project; see `Milestone.projectId`), and neither
+   * means anything once the card is filed elsewhere. `projectTagId` instead follows the
+   * card to its new home, so the filing tag — and the colour stripe/Project dropdown it
+   * drives — never keeps pointing at a board the card no longer lives on.
+   *
+   * `"order"` becomes the destination's own `nextOrder` (the card lands at the end of its
+   * new board), and `task_events`/`task_activity` are re-pointed to the new project in the
+   * same transaction, or the card's timeline would silently split across two projects.
+   *
+   * Undefined when the task or the destination project is unknown — this only refuses a
+   * target that cannot possibly be a board; the IPC boundary decides what counts as one.
+   */
+  moveTaskToBoard(taskId: string, toBoardId: string): Task | undefined;
 
   /** Everyone the app knows about, oldest first. App-wide, not per project. */
   listPeople(): Person[];
@@ -2447,6 +2478,24 @@ export function createStore(dbPath: string): Store {
   const bumpTicketSeq = db.prepare(`UPDATE projects SET ticketSeq = ticketSeq + 1 WHERE id = ?`);
   const readTicketSeq = db.prepare(`SELECT ticketSeq FROM projects WHERE id = ?`);
 
+  // A board move (`moveTaskToBoardTx`, below): the row itself, plus the two tables that
+  // reference the project rather than only the task — see `insertEvent`'s own comment on
+  // why `task_events` carries `projectId` at all. Left unmoved, a card's timeline would
+  // silently split across its old board and its new one.
+  const moveTaskBoardStmt = db.prepare(
+    `UPDATE tasks SET
+       projectId = @projectId, "order" = @order, source = @source,
+       ticketKey = @ticketKey, ticketNumber = @ticketNumber,
+       epicTaskId = NULL, milestoneId = NULL, projectTagId = @projectTagId
+     WHERE id = @id`,
+  );
+  const moveTaskEventsProject = db.prepare(
+    `UPDATE task_events SET projectId = @projectId WHERE taskId = @taskId`,
+  );
+  const moveTaskActivityProject = db.prepare(
+    `UPDATE task_activity SET projectId = @projectId WHERE taskId = @taskId`,
+  );
+
   interface PersonRow {
     id: string;
     name: string;
@@ -3253,6 +3302,47 @@ export function createStore(dbPath: string): Store {
       const task = buildTicketTask(projectId, order, prefix, ticketNumber, title, input);
       insertTask.run(taskToRow(task));
       return getTask(task.id);
+    },
+  );
+
+  /**
+   * Move a card onto a different board, atomically — see the `Store.moveTaskToBoard`
+   * docstring for the field rules. Undefined when the task or the destination is unknown.
+   */
+  const moveTaskToBoardTx = db.transaction(
+    (taskId: string, toBoardId: string): Task | undefined => {
+      const taskRow = selectTask.get(taskId) as TaskRow | undefined;
+      if (!taskRow) return undefined;
+      const destRow = selectProject.get(toBoardId) as ProjectRow | undefined;
+      if (!destRow) return undefined;
+      const dest = rowToProject(destRow);
+
+      const params: Record<string, unknown> = {
+        id: taskId,
+        projectId: toBoardId,
+        order: (nextOrder.get(toBoardId) as { next: number }).next,
+        projectTagId: toBoardId,
+      };
+
+      // Only a prefixed destination has an allocator to name a key with — see
+      // `createTicketTx`'s own guard. Everything else freezes exactly as it was.
+      const destPrefix = normalizeTicketPrefix(dest.ticketPrefix);
+      if (destPrefix) {
+        bumpTicketSeq.run(toBoardId);
+        const ticketNumber = (readTicketSeq.get(toBoardId) as { ticketSeq: number }).ticketSeq;
+        params.ticketKey = formatTicketKey(destPrefix, ticketNumber);
+        params.ticketNumber = ticketNumber;
+        params.source = 'ticket';
+      } else {
+        params.ticketKey = taskRow.ticketKey;
+        params.ticketNumber = taskRow.ticketNumber;
+        params.source = taskRow.source;
+      }
+
+      moveTaskBoardStmt.run(params);
+      moveTaskEventsProject.run({ taskId, projectId: toBoardId });
+      moveTaskActivityProject.run({ taskId, projectId: toBoardId });
+      return getTask(taskId);
     },
   );
 
@@ -4169,6 +4259,10 @@ export function createStore(dbPath: string): Store {
 
     createTicket(projectId, input) {
       return createTicketTx(projectId, input);
+    },
+
+    moveTaskToBoard(taskId, toBoardId) {
+      return moveTaskToBoardTx(taskId, toBoardId);
     },
 
     listPeople() {

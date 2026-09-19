@@ -33,6 +33,7 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import type { ClaudeModel, PermissionMode } from '@tm/shared/session';
+import type { BoardScope } from '@tm/shared/ipc';
 import type { ManualStatus, Project, Task, TaskActivityEntry } from '@tm/shared/model';
 import type { MergeRequest } from '@tm/shared/mergeRequest';
 import type { TaskAttachment } from '@tm/shared/attachments';
@@ -200,13 +201,11 @@ export interface TaskDetailProps {
   /** The agent projects a card can be delegated to (owned by the board, fetched once). */
   agentProjects?: Project[];
   /**
-   * The projects a card can be FILED under (`Task.projectTagId`) — the Project dropdown in
-   * `TaskDetailsCell`. Wider than {@link agentProjects}: a Personal-space project with no
-   * repo is a fine thing to tag a card with, it simply cannot be delegated to. Falls back to
-   * `agentProjects` when omitted, which is the whole of what a caller that predates the
-   * split still gets.
+   * The boards this card can be MOVED to (`board:scopes`) — the "Project / Board" picker in
+   * `TaskDetailsCell`. Every project is a board, Personal included; moving it there calls
+   * `task:setBoard` directly, the same move the board's own drag-and-drop makes.
    */
-  projects?: Project[];
+  boards?: BoardScope[];
   /**
    * The chain this task belongs to, in execution order: a card's own steps, or — when
    * a step is shown — its siblings, which is what makes "step 2 of 5" possible.
@@ -317,7 +316,7 @@ const NO_TASKS: ReadonlyMap<string, Task> = new Map();
 export function TaskDetail({
   task,
   agentProjects = [],
-  projects = agentProjects,
+  boards = [],
   subtasks = [],
   parentTask = null,
   mergeRequests = [],
@@ -1100,7 +1099,7 @@ export function TaskDetail({
             )}
             <TaskDetailsCell
               task={task}
-              projects={projects}
+              boards={boards}
               attachments={attachments}
               priorityDisplay={priorityDisplay}
               onTaskChanged={(updated) => onStatusChanged?.(updated)}
