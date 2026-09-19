@@ -432,7 +432,11 @@ export function MyTasks(): JSX.Element {
     const offPeople = window.api.on('person:changed', setPeople);
     // Pushed by a sync that kept cards it could not confirm had left. It arrives from the
     // POLLER as often as from the button, so it cannot be the return value of `sync()`.
-    const offNotice = window.api.on('board:notice', setNotice);
+    //
+    // Empty text is that same channel's only way to say "never mind" — a background sync
+    // that no longer has anything to warn about sends one so a bar the last poll raised
+    // does not outlive the condition that raised it.
+    const offNotice = window.api.on('board:notice', (n) => setNotice(n.text ? n : null));
     return () => {
       offTask();
       offTasks();

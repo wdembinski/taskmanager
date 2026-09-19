@@ -3206,9 +3206,22 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     return names;
   };
 
+  // The removal guard's last verdict for JIRA and the last notice text pushed for it —
+  // both in memory, both reset by nothing but the next sync. Together they are what let a
+  // permanently wrong JQL stop being an every-two-minutes interruption: a refusal skips
+  // next sync's confirm pass (see the gate below), and an unchanged notice is not repeated
+  // — see the send below, which is also what lets a fixed query clear its own bar.
+  let jiraGuardRefused = false;
+  let lastJiraNotice: string | null = null;
+
   // One JIRA sync: fetch issues, reconcile into the store, push the fresh board.
   // Shared by the manual `jira:sync` handler and the background poller below.
-  const syncJira = async (): Promise<Task[]> => {
+  //
+  // `dedupeNotice`: true from the poller, false/absent from the button. A manual sync is
+  // the human explicitly asking "what's true right now" and always gets the honest answer;
+  // the poller only speaks up when that answer CHANGES, so dismissing a still-accurate
+  // warning is not undone by the next tick repeating itself verbatim two minutes later.
+  const syncJira = async (opts: { dedupeNotice?: boolean } = {}): Promise<Task[]> => {
     const { jira, features } = store.getSettings();
     if (!jira.enabled) return store.getPersonalTasks();
     const client = buildJiraClient();
@@ -3300,21 +3313,25 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // The case where that "zero extra requests" stops being true, stated so nobody discovers it
     // as a mystery: a query that is **permanently wrong** — someone saves a JQL that matches
     // nothing, or narrows a filter and leaves it there. Every card on the board is then a
-    // candidate on every poll, the guard refuses the removal (it is far past a quarter of the
-    // board), the warning bar comes back, and the confirm pass is paid for again — one request
-    // per fifty cards, at the sync interval, by default every two minutes. Nothing is lost and
-    // nothing is removed; it is steady noise plus request volume until the query is fixed.
+    // candidate on every poll, and the confirm pass is paid for again — one request per fifty
+    // cards, at the sync interval, by default every two minutes. Whatever it comes back with,
+    // the reconciler's own shortfall check (`isIncompleteAnswer`, `jiraSync.ts`) sees the same
+    // large, query-unchanged share of the board missing and removes nothing anyway — it cannot
+    // tell "permanently wrong query" apart from "instance under-answering", and treats both the
+    // same. Nothing is lost and nothing is removed; it is steady noise plus request volume
+    // until the query is fixed.
     //
-    // Deliberately not mitigated here. The obvious mitigation is real and written down rather
-    // than built: after a refusal, skip the confirm pass on the next sync unless the query
-    // changed. It is cheap, and it is also a way to make the app slower to notice a board that
-    // has genuinely turned over — the refusal is a *guess* that something is wrong, and paying
-    // a request per fifty cards to keep re-checking that guess is the right trade until someone
-    // is actually being hurt by it. If it ever bites, that is the fix; `queryChanged` above is
-    // already the signal it would key on.
+    // The mitigation: after a refusal, skip the confirm pass on the next sync unless the
+    // query changed. It is cheap, and it is also a way to make the app slower to notice a
+    // board that has genuinely turned over — the refusal is a *guess* that something is
+    // wrong, and paying a request per fifty cards to keep re-checking that guess is the
+    // right trade until someone is actually being hurt by it. `queryChanged` is what lets a
+    // fixed or intentionally-edited query resume being confirmed at once rather than
+    // waiting out a refusal that no longer applies.
+    const skipConfirm = jiraGuardRefused && !queryChanged;
     const candidates = removalCandidateKeys(personalForSync, issues);
     const confirmed =
-      candidates.length > 0 && !truncated
+      candidates.length > 0 && !truncated && !skipConfirm
         ? await confirmStillMatching(client, jql, candidates, {
             extraFields,
             ...batchLog('confirm'),
@@ -3360,12 +3377,22 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     for (const r of refused) {
       logMain(`JIRA sync: REFUSED to remove ${r.key} (${r.title}) — ${warning ?? 'guarded'}`);
     }
+    jiraGuardRefused = refused.length > 0;
     // The paging-artifact count, every guard trip and every truncation are all in here.
-    if (warning) {
-      logMain(`JIRA sync: ${warning}`);
-      // Its own bar, not the error bar: nothing failed, and a warning that reads as an
-      // error teaches people to dismiss both.
-      send('board:notice', { text: warning, intent: 'warning' });
+    if (warning) logMain(`JIRA sync: ${warning}`);
+    // Its own bar, not the error bar: nothing failed, and a warning that reads as an error
+    // teaches people to dismiss both.
+    //
+    // A manual sync (`dedupeNotice` unset) always reports what is true right now. The
+    // poller only speaks up when that changes from what it last said — otherwise a
+    // permanently wrong query would repeat the identical warning every two minutes,
+    // undoing a dismiss almost as soon as it happened. Either way, once the warning
+    // actually clears, the empty text tells the bar to stand down — the only way this
+    // channel has of saying "never mind" other than repeating something no longer true.
+    const noticeChanged = warning !== lastJiraNotice;
+    lastJiraNotice = warning;
+    if (opts.dedupeNotice ? noticeChanged : warning) {
+      send('board:notice', { text: warning ?? '', intent: 'warning' });
     }
     const tasks = store.getPersonalTasks();
     send('project:tasksChanged', { projectId: PERSONAL_PROJECT_ID, tasks });
@@ -3566,9 +3593,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
    * with none of the advice, which is precisely the failure a user then reports as "my
    * token is valid and it still says 401".
    */
-  const syncJiraDiagnosed = async (): Promise<Task[]> => {
+  const syncJiraDiagnosed = async (opts?: { dedupeNotice?: boolean }): Promise<Task[]> => {
     try {
-      return await syncJira();
+      return await syncJira(opts);
     } catch (e) {
       logMain('JIRA sync failed', e);
       throw new Error(explainJiraFailure(e, store.getSettings().jira));
@@ -4231,7 +4258,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     {
       id: 'jira',
       isEnabled: (s) => s.getSettings().jira.enabled,
-      run: () => trackSync('jira', syncJiraDiagnosed),
+      run: () => trackSync('jira', () => syncJiraDiagnosed({ dedupeNotice: true })),
     },
     {
       id: 'gitlab',
