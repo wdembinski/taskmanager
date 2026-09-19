@@ -61,8 +61,13 @@ export type SessionEvent =
   | { kind: 'started'; sessionId: string; model: string; cwd: string; permissionMode: string }
   /** Claude's private reasoning (shown subtly, if at all). */
   | { kind: 'thinking'; text: string }
-  /** A chunk of Claude's visible answer. */
-  | { kind: 'assistant'; text: string }
+  /**
+   * A chunk of Claude's visible answer. `preamble` is true when this text
+   * appeared alongside a tool call in the same message — narration rather
+   * than the turn's answer/summary. Absent on events persisted before this
+   * field existed; absent must mean "keep" so old chat history is unaffected.
+   */
+  | { kind: 'assistant'; text: string; preamble?: boolean }
   /**
    * Claude decided to use a tool (edit a file, run a command, …). `input` is the
    * tool's arguments (e.g. `{ command }` for Bash, `{ file_path }` for Edit) —
