@@ -152,8 +152,10 @@ never collide.
 ### My Tasks
 
 The personal Kanban board: your own tasks and your synced JIRA tickets as cards,
-independent of the plan-driven **Board**. Its cards live on the built-in
-*Personal* project.
+independent of the plan-driven **Board**. Every project is a board a card can be
+filed on — the built-in *Personal* project is just the one new cards start on — and
+a card can be moved to a different board by hand (`task:setBoard`); see
+**Project tag vs agent project** for what a board move does and does not touch.
 
 ### Removed card (archived)
 
@@ -383,6 +385,22 @@ Two different things a card can point at, and for a long time one column. The **
 tag** (`projectTagId`) is what a card is *about* — it draws the colour stripe. The
 **agent project** (`agentProjectId`) is the repo a delegated run happens in — it draws
 the agent glyph. Filing a card is not delegating it.
+
+Moving a card between boards (`task:setBoard` / `store.moveTaskToBoard`) writes the
+card's `projectId` — which board it lives on — and keeps `projectTagId` pointed at that
+same board in the same transaction, so the colour stripe never needs its own move logic;
+it just keeps reading `projectTagId` as it always did. `agentProjectId` is untouched by a
+board move: delegation is still set only by Assign Agent, and a card can still live on
+Personal while delegated to a repo elsewhere — the board move governs a card's *home
+board*, not its delegation.
+
+Do not fold `projectId` and `projectTagId` back into one column. The split is
+load-bearing for three things a merge would break at once: delegation (a card must be
+able to sit on one board while its `agentProjectId` points at another), the JIRA/GitHub
+reconcilers' Personal-only fallback (they resolve `projectId` fresh from `projectTagId`
+on every sync, and file a ticket on Personal whenever that resolution is off or fails —
+see `resolveOwningBoardProject` in `jiraSync.ts`/`githubIssueSync.ts`), and every
+board-scope query (`getBoardTasks` and friends filter on `projectId`, not `projectTagId`).
 
 ### Git worktree
 
