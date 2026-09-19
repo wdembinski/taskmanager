@@ -1485,7 +1485,7 @@ export function MyTasks(): JSX.Element {
           <TaskDetail
             task={selectedTask}
             agentProjects={agentProjects}
-            projects={filingProjects}
+            boards={scopes}
             subtasks={chain}
             parentTask={parentOfSelected}
             mergeRequests={selectedTask ? (mrsByTask.get(selectedTask.id) ?? []) : []}
