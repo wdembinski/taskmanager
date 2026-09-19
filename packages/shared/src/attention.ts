@@ -142,7 +142,10 @@ export interface AttentionItem {
  *     reason). Approving never lets the planning session implement the plan itself.
  *   - `agent-question` items expect `answers`, one entry per question. A `deny` there
  *     means "I'm not choosing — use your judgement", which is the ONLY way the agent
- *     ever gets to decide: it must be an explicit act, never a timeout.
+ *     ever gets to decide: it must be an explicit act, never a timeout. A `discuss`
+ *     is neither: it is prose the human wants the agent to react to BEFORE deciding
+ *     anything — mirroring the CLI's own interactive prompt, which lets you talk about
+ *     a question instead of only picking an option or committing a final answer.
  */
 export type AttentionAnswer =
   | { decision: 'approve'; note?: string }
@@ -160,4 +163,11 @@ export type AttentionAnswer =
       selections: string[][];
       freeText?: (string | null)[];
       note?: string;
-    };
+    }
+  /**
+   * An `agent-question` item only. The human wants to talk about the question rather
+   * than answer it — the item still clears (the held tool call must resolve one way or
+   * another), but the message tells the agent this is NOT a decision, so it should
+   * respond and, if it still needs one, ask again.
+   */
+  | { decision: 'discuss'; text: string; note?: string };

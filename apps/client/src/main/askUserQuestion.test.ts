@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   describeQuestions,
   formatAnswerMessage,
+  formatDiscussMessage,
   isAskUserQuestionTool,
   parseAskUserQuestion,
 } from './askUserQuestion';
@@ -173,5 +174,25 @@ describe('formatAnswerMessage', () => {
     const message = formatAnswerMessage([], [['yes']]);
     expect(message).toContain('1. Question 1');
     expect(message).toContain('→ yes');
+  });
+});
+
+describe('formatDiscussMessage', () => {
+  it('says plainly that this is NOT an answer', () => {
+    // The opposite framing of formatAnswerMessage, on the same denied-tool-call channel —
+    // an agent that reads this as a decision would carry on instead of responding.
+    const message = formatDiscussMessage('What happens to existing rows if I pick Postgres?');
+    expect(message).toContain('has NOT answered your question yet');
+    expect(message).toContain('ask again');
+  });
+
+  it('carries the typed text through verbatim', () => {
+    const message = formatDiscussMessage('Can you say more about the migration cost?');
+    expect(message).toContain('Can you say more about the migration cost?');
+  });
+
+  it('carries a free-standing note at the end', () => {
+    const message = formatDiscussMessage('Tell me more first.', 'keep it brief');
+    expect(message).toContain('Additional instruction from the user: keep it brief');
   });
 });
