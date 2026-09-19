@@ -20,6 +20,13 @@
  * "Let the agent decide" is a `deny`, and it is deliberately a BUTTON rather than a
  * timeout: the agent gets to choose only because a human said so. That distinction is the
  * entire reason this attention kind exists.
+ *
+ * "Discuss instead" mirrors the CLI's own interactive prompt, which lets you talk about a
+ * question rather than only pick an option or type a final answer. It sends whatever free
+ * text was typed as a `discuss` decision instead of `answers` — the item still clears (the
+ * held tool call must resolve one way or another), but the agent is told this is NOT a
+ * decision, so it should respond and ask again if it still needs one. Unlike "Send answer"
+ * it needs no option chosen and no every-question coverage — one typed thought is enough.
  */
 import { useMemo, useState } from 'react';
 import {
@@ -122,6 +129,21 @@ export function AgentQuestionForm({
     [questions, selections, freeText],
   );
 
+  /**
+   * What "Discuss instead" sends: every question that has typed text, prefixed with the
+   * question itself when there's more than one so the agent knows which comment goes where.
+   * A bare selection with no typed text contributes nothing here — discussing is about what
+   * was written, not what was clicked.
+   */
+  const discussText = useMemo(() => {
+    const typed = questions
+      .map((q, i) => ({ question: q.question, text: freeText[i]?.trim() ?? '' }))
+      .filter((p) => p.text.length > 0);
+    if (typed.length === 0) return '';
+    if (typed.length === 1 && questions.length === 1) return typed[0].text;
+    return typed.map((p) => `Re "${p.question}": ${p.text}`).join('\n\n');
+  }, [questions, freeText]);
+
   return (
     <div className={styles.root}>
       {questions.map((q, qi) => (
@@ -184,7 +206,11 @@ export function AgentQuestionForm({
             value={freeText[qi] ?? ''}
             resize="vertical"
             disabled={busy}
-            placeholder={q.options.length > 0 ? 'Or answer in your own words…' : 'Your answer…'}
+            placeholder={
+              q.options.length > 0
+                ? 'Answer in your own words, or ask a question with "Discuss instead" below…'
+                : 'Your answer, or ask a question with "Discuss instead" below…'
+            }
             onChange={(_e, d) =>
               setFreeText((prev) => prev.map((t, i) => (i === qi ? d.value : t)))
             }
@@ -206,6 +232,13 @@ export function AgentQuestionForm({
           }
         >
           Send answer
+        </Button>
+        <Button
+          disabled={busy || !discussText}
+          title="Send what you typed without committing to an answer — the agent replies and can ask again."
+          onClick={() => onAnswer({ decision: 'discuss', text: discussText })}
+        >
+          Discuss instead
         </Button>
         <span className={styles.grow} />
         {/* The ONLY path by which the agent chooses — and it takes a deliberate click. */}

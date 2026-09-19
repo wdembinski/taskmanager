@@ -146,3 +146,29 @@ export function formatAnswerMessage(
   }
   return lines.join('\n');
 }
+
+/**
+ * The message the agent receives when the human chose to discuss the question rather than
+ * answer it — the CLI's own interactive prompt lets you do this, and the held-tool answer
+ * channel had no equivalent: every message through it read as a final decision, even a bare
+ * typed comment.
+ *
+ * It still arrives as a DENIED tool call (the held tool must resolve one way or another —
+ * see the module doc), so the framing has to work just as hard as {@link formatAnswerMessage}
+ * to avoid being read as a refusal, while saying the opposite thing: this is NOT an answer,
+ * so ask again if one is still needed.
+ */
+export function formatDiscussMessage(text: string, note?: string): string {
+  const lines: string[] = [
+    'The user has NOT answered your question yet — they want to talk about it first. This is ' +
+      'not a decision: respond to what they said below, and if you still need one to proceed, ' +
+      'ask again (the same question, or a refined one).',
+    '',
+    text.trim(),
+  ];
+  const extra = note?.trim();
+  if (extra) {
+    lines.push('', `Additional instruction from the user: ${extra}`);
+  }
+  return lines.join('\n');
+}
