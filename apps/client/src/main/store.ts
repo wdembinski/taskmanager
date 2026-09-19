@@ -145,6 +145,8 @@ interface TaskRow {
   agentMode: string | null;
   /** Per-assignment model override; NULL = the agent project's default. */
   agentModel: string | null;
+  /** Per-assignment planning-model override; NULL = same as this task's own steps override. */
+  agentPlanningModel: string | null;
   /** The plan a `plan`-mode delegated run produced, as markdown. NULL until it plans. */
   agentPlan: string | null;
   /** The git branch this card's worktree runs on; NULL = the legacy `orch/<taskId>`. */
@@ -328,6 +330,7 @@ export interface Store {
         | 'agentProjectId'
         | 'agentMode'
         | 'agentModel'
+        | 'agentPlanningModel'
         | 'agentPlan'
         | 'agentBranch'
         | 'landedAt'
@@ -485,6 +488,23 @@ export interface Store {
   ): Task | undefined;
   /** The card's newest planning round, or 0 when it has no steps yet. */
   maxSubtaskRound(parentId: string): number;
+  /**
+   * Swap one planning round's steps for a freshly approved set, in place (Phase 20).
+   *
+   * The scheduler has already checked every step of `round` is still `pending`/`stopped` —
+   * this does not re-check, it just does the swap: the round's existing steps (and their
+   * timelines/transcripts) are destroyed via the same `deleteTaskDeep` an explicit delete
+   * uses, the replacements are inserted at `planRound: round` with the same construction
+   * `addSubtask` uses, and every one of the card's subtasks is renumbered by
+   * `(COALESCE(planRound, 1), "order", rowid)` so the chain's `order` stays contiguous and
+   * in round order regardless of how many steps the round gained or lost. One transaction,
+   * so a caller never observes the round half-deleted. Returns the newly created steps.
+   */
+  replaceSubtaskRound(
+    parentId: string,
+    round: number,
+    steps: Array<{ title: string; description?: string | null }>,
+  ): Task[];
   /** Delete one task (and its transcript history) by id. */
   deleteTask(id: string): void;
   /** Re-parse a plan and reconcile it into the project's tasks; returns the result. */
@@ -1035,6 +1055,7 @@ export function createStore(dbPath: string): Store {
       agentProjectId         TEXT,
       agentMode              TEXT,
       agentModel             TEXT,
+      agentPlanningModel     TEXT,
       agentPlan              TEXT,
       agentBranch            TEXT,
       planRound              INTEGER,
@@ -1681,6 +1702,10 @@ export function createStore(dbPath: string): Store {
     // means "use the project default", which is what every pre-existing row wants.
     ['agentMode', 'TEXT'],
     ['agentModel', 'TEXT'],
+    // Per-assignment planning-model override, split from `agentModel` (which now covers
+    // steps only). NULL means "same as this task's own steps override", true of every
+    // pre-existing row.
+    ['agentPlanningModel', 'TEXT'],
     // The markdown plan a `plan`-mode run produced, kept so it survives a restart and
     // can be re-read (and re-split into subtasks) after the fact.
     ['agentPlan', 'TEXT'],
@@ -2004,7 +2029,7 @@ export function createStore(dbPath: string): Store {
         externalPriority, externalType, externalLabel, externalParentKey, externalEpicName, externalSprint,
         externalDescription,
         preBlockStatus, preRunStatus, retainedSince, archivedAt, archivedReason, lastReadCommentAt, latestCommentAt,
-        projectTagId, agentProjectId, agentMode, agentModel,
+        projectTagId, agentProjectId, agentMode, agentModel, agentPlanningModel,
         agentPlan, agentBranch, planRound, landedAt, chainLandedAt, workedAt, stoppedAt, autoRelease, autoCreatePr, autoIntegrate,
         ticketKey, ticketNumber, issueType, epicTaskId, milestoneId, labels,
         storyPoints, estimateDays, startAt, dueAt, assigneeId, reporterId)
@@ -2018,7 +2043,7 @@ export function createStore(dbPath: string): Store {
         -- The filing column was added after this INSERT was written and only ever set by
         -- an UPDATE, so a card created already filed (the Add-task dialog's Project
         -- picker) used to lose its project between the form and the row.
-        @projectTagId, @agentProjectId, @agentMode, @agentModel,
+        @projectTagId, @agentProjectId, @agentMode, @agentModel, @agentPlanningModel,
         @agentPlan, @agentBranch, @planRound, @landedAt, @chainLandedAt, @workedAt, @stoppedAt, @autoRelease, @autoCreatePr, @autoIntegrate,
         -- The twelve ticket columns are listed HERE as well as in the column list above,
         -- and that is the whole discipline: a column added to the table, the row type and
@@ -2074,6 +2099,14 @@ export function createStore(dbPath: string): Store {
   const maxSubtaskRound = db.prepare(
     `SELECT COALESCE(MAX(COALESCE(planRound, 1)), 0) AS round FROM tasks WHERE parentTaskId = ?`,
   );
+  // Every id of a card's subtasks, in the order `replaceSubtaskRound` renumbers them into:
+  // by round first (so a round's steps never straddle another round's), then their current
+  // `order` within it, then `rowid` to break ties among steps that never had one set apart
+  // (hand-added ones can share an `order` with nothing else to sort them by).
+  const selectSubtaskIdsInRoundOrder = db.prepare(
+    `SELECT id FROM tasks WHERE parentTaskId = ? ORDER BY COALESCE(planRound, 1), "order", rowid`,
+  );
+  const updateSubtaskOrder = db.prepare(`UPDATE tasks SET "order" = ? WHERE id = ?`);
   const upsertState = db.prepare(
     `INSERT INTO app_state (key, value) VALUES (?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
@@ -2935,6 +2968,7 @@ export function createStore(dbPath: string): Store {
       agentProjectId: task.agentProjectId ?? null,
       agentMode: task.agentMode ?? null,
       agentModel: task.agentModel ?? null,
+      agentPlanningModel: task.agentPlanningModel ?? null,
       agentPlan: task.agentPlan ?? null,
       agentBranch: task.agentBranch ?? null,
       planRound: task.planRound ?? null,
@@ -3023,6 +3057,7 @@ export function createStore(dbPath: string): Store {
       agentProjectId: r.agentProjectId,
       agentMode: (r.agentMode as Task['agentMode']) ?? null,
       agentModel: (r.agentModel as Task['agentModel']) ?? null,
+      agentPlanningModel: (r.agentPlanningModel as Task['agentPlanningModel']) ?? null,
       agentPlan: r.agentPlan,
       agentBranch: r.agentBranch,
       // Every step that predates re-planning came from the card's one and only approved
@@ -3113,6 +3148,70 @@ export function createStore(dbPath: string): Store {
       deleteTask.run(childId);
     }
   });
+
+  /**
+   * Swap one planning round's steps for a freshly approved replacement set, in place
+   * (Phase 20) — see the `Store` interface for the contract.
+   *
+   * `deleteTaskDeep` is itself a `db.transaction`; better-sqlite3 nests one transaction
+   * function called from inside another as a SAVEPOINT, so the round's deletes and its
+   * replacements' inserts stay one atomic swap — nothing ever observes the round half-gone.
+   *
+   * The replacement steps are built exactly as `addSubtask` builds one, except `planRound`
+   * is the round being replaced rather than "whatever round is current" — a replacement
+   * keeps the round NUMBER the human approved it under, it does not start a new one.
+   */
+  const replaceSubtaskRoundTx = db.transaction(
+    (
+      parentId: string,
+      round: number,
+      steps: Array<{ title: string; description?: string | null }>,
+    ): Task[] => {
+      const parent = getTask(parentId);
+      if (!parent || parent.parentTaskId) return [];
+      const existing = (selectSubtasks.all(parentId) as TaskRow[]).map(rowToTask);
+      for (const step of existing) {
+        if ((step.planRound ?? 1) === round) deleteTaskDeep(step.id);
+      }
+      const createdIds: string[] = [];
+      for (const step of steps) {
+        const title = step.title.trim();
+        if (!title) continue;
+        const task: Task = {
+          id: randomUUID(),
+          projectId: parent.projectId,
+          phase: parent.phase,
+          title,
+          status: 'pending',
+          sessionId: null,
+          order: (nextSubtaskOrder.get(parentId) as { next: number }).next,
+          source: 'adhoc',
+          dependsOn: [],
+          isContract: false,
+          isScaffold: false,
+          type: parent.type ?? null,
+          parentTaskId: parentId,
+          description: step.description?.trim() || null,
+          agentProjectId: parent.agentProjectId ?? null,
+          agentModel: null,
+          agentMode: 'bypassPermissions',
+          planRound: round,
+        };
+        insertTask.run(taskToRow(task));
+        createdIds.push(task.id);
+      }
+      // Renumber every subtask's `order` by round, so the replacement sits exactly where the
+      // old round did relative to every other round. A straight append (the new steps always
+      // sorting last for `parentId`) would instead shove a replaced EARLIER round's steps
+      // after a later round's — backwards for both the runner's "next pending" scan and the
+      // panel's earlier/current/later split.
+      const ordered = (selectSubtaskIdsInRoundOrder.all(parentId) as Array<{ id: string }>).map(
+        (r) => r.id,
+      );
+      ordered.forEach((id, index) => updateSubtaskOrder.run(index, id));
+      return createdIds.map((id) => getTask(id)).filter((t): t is Task => t !== undefined);
+    },
+  );
 
   /**
    * Allocate a key and insert a ticket, atomically.
@@ -3261,7 +3360,8 @@ export function createStore(dbPath: string): Store {
        archivedAt = @archivedAt, archivedReason = @archivedReason,
        lastReadCommentAt = @lastReadCommentAt, latestCommentAt = @latestCommentAt,
        projectTagId = @projectTagId, agentProjectId = @agentProjectId, agentMode = @agentMode,
-       agentModel = @agentModel, agentPlan = @agentPlan, agentBranch = @agentBranch,
+       agentModel = @agentModel, agentPlanningModel = @agentPlanningModel,
+       agentPlan = @agentPlan, agentBranch = @agentBranch,
        planRound = @planRound, landedAt = @landedAt, chainLandedAt = @chainLandedAt,
        workedAt = @workedAt, stoppedAt = @stoppedAt, autoRelease = @autoRelease,
        autoIntegrate = @autoIntegrate, ticketKey = @ticketKey, ticketNumber = @ticketNumber,
@@ -3542,6 +3642,7 @@ export function createStore(dbPath: string): Store {
         'agentProjectId',
         'agentMode',
         'agentModel',
+        'agentPlanningModel',
         'agentPlan',
         'agentBranch',
         'landedAt',
@@ -3730,6 +3831,8 @@ export function createStore(dbPath: string): Store {
         // every step at it. NULL means "follow the project's execution model", and a step
         // that genuinely needs a different one is overridden one step at a time.
         agentModel: null,
+        // Steps never plan, so a planning-model override has nothing to apply to either.
+        agentPlanningModel: null,
         agentMode: 'bypassPermissions',
         // A caller that knows which planning round it is filling (`approvePlan`) says so;
         // everyone else — the "Add step…" form above all — joins the round already in
@@ -3742,6 +3845,10 @@ export function createStore(dbPath: string): Store {
 
     maxSubtaskRound(parentId) {
       return (maxSubtaskRound.get(parentId) as { round: number }).round;
+    },
+
+    replaceSubtaskRound(parentId, round, steps) {
+      return replaceSubtaskRoundTx(parentId, round, steps);
     },
 
     deleteTask(id) {

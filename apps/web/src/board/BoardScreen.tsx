@@ -41,18 +41,22 @@ import {
   focusCards,
   groupSubtasks,
   hiddenDoneSummary,
+  partitionShelved,
   sortCards,
   visibleColumns,
   type BoardCard,
 } from '@tm/ui/board/boardColumns';
 import { columnForTask, statusForColumn } from '@tm/shared/board';
+import { shouldAutoFoldOnMove } from '@tm/shared/settings';
 import { KanbanColumn } from '@tm/ui/board/KanbanColumn';
+import { ShelfStrip } from '@tm/ui/board/ShelfStrip';
 import { ChainOverlay } from '@tm/ui/board/ChainOverlay';
 import { ChainLinkPopover } from '@tm/ui/board/ChainLinkPopover';
 import { useCardAnchors } from '@tm/ui/board/useCardAnchors';
 import { arrowRoute } from '@tm/ui/board/chainArrows';
 import { linkDropStates, type LinkDragState } from '@tm/ui/board/chainDrag';
-import { foldedCardSet, toggleFoldedCard } from '@tm/ui/board/foldedSteps';
+import { ensureFoldedCard, foldedCardSet, toggleFoldedCard } from '@tm/ui/board/foldedSteps';
+import { ensureShelvedCard, shelvedCardSet, toggleShelvedCard } from '@tm/ui/board/shelvedCards';
 import { chainStates } from '@tm/ui/board/chainStates';
 import { AddTaskDialog } from '@tm/ui/AddTaskDialog';
 import { GitGraphPane } from '@tm/ui/GitGraphPane';
@@ -286,7 +290,14 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
     [chainFocus, selectedTaskId, extras.chainLinks],
   );
 
-  const cardsByColumn = useMemo(() => {
+  /**
+   * The board's cards parked onto the shelf, mirroring `MyTasks.tsx`'s own `shelvedIds` —
+   * `boardTasks` is already this scope's own cards, so the flat id list needs no per-scope
+   * keying (see `partitionShelved`).
+   */
+  const shelvedIds = useMemo(() => shelvedCardSet(settings.shelvedCardIds), [settings]);
+
+  const { cardsByColumn, shelvedCards } = useMemo(() => {
     // Overlay any still-pending edit before grouping/columning, so a dragged card jumps to
     // its destination column the instant you let go — the same optimism `MyTasks.tsx`'s own
     // `optimisticMove` gives the desktop board, just computed from `displayStatus`
@@ -297,9 +308,11 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
     }));
     const byColumn = new Map<BoardColumn, BoardCard[]>();
     for (const meta of COLUMN_META) byColumn.set(meta.column, []);
-    for (const card of focusCards(groupSubtasks(displayTasks, mrsByTask), focusIds)) {
-      byColumn.get(columnForTask(card.task))?.push(card);
-    }
+    const { onBoard, shelved } = partitionShelved(
+      focusCards(groupSubtasks(displayTasks, mrsByTask), focusIds),
+      shelvedIds,
+    );
+    for (const card of onBoard) byColumn.get(columnForTask(card.task))?.push(card);
     // The desktop's ordering, so the same board reads the same way in both places: cards
     // that want you first, then priority, then `order`. The inbox's ids go in too, now that
     // this app has them — the ordering and the orange ring are one predicate, and passing it
@@ -310,8 +323,11 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
         sortCards(byColumn.get(meta.column) ?? [], extras.attention.taskIds),
       );
     }
-    return byColumn;
-  }, [boardTasks, state, mrsByTask, focusIds, extras.attention.taskIds]);
+    return {
+      cardsByColumn: byColumn,
+      shelvedCards: sortCards(shelved, extras.attention.taskIds),
+    };
+  }, [boardTasks, state, mrsByTask, focusIds, extras.attention.taskIds, shelvedIds]);
 
   const hiddenDone = useMemo(
     () => hiddenDoneSummary(cardsByColumn.get('done') ?? []),
@@ -408,6 +424,7 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
     () => foldedCardSet(settings.shownEarlierStepCards),
     [settings],
   );
+  const shownLaterSteps = useMemo(() => foldedCardSet(settings.shownLaterStepCards), [settings]);
   const onBoardIds = useMemo(() => new Set(boardTasks.map((t) => t.id)), [boardTasks]);
 
   const toggleSteps = useCallback(
@@ -428,6 +445,64 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
     },
     [settings, saveSettings, onBoardIds, reportError],
   );
+  const toggleLaterSteps = useCallback(
+    (taskId: string) => {
+      void saveSettings({
+        ...settings,
+        shownLaterStepCards: toggleFoldedCard(settings.shownLaterStepCards, taskId, onBoardIds),
+      }).catch(reportError);
+    },
+    [settings, saveSettings, onBoardIds, reportError],
+  );
+
+  /**
+   * Auto-fold a card's Steps section the moment it lands in Review or Done — the desktop's
+   * own `foldOnAutoFoldColumn` (`MyTasks.tsx`), behind the same `settings.features` switch so
+   * the two apps agree on whether it is on. `ensureFoldedCard` only ever ADDS the fold, so a
+   * card the human reopened after the move stays open rather than being flipped shut again.
+   *
+   * Called from the two places a human can move a card here: the drag drop below and the
+   * pane's State dropdown (`onStatusSet`) — each firing once per explicit move.
+   */
+  const foldOnAutoFoldColumn = useCallback(
+    (taskId: string, column: BoardColumn | ManualStatus) => {
+      if (!shouldAutoFoldOnMove(settings.features, column)) return;
+      void saveSettings({
+        ...settings,
+        foldedStepCards: ensureFoldedCard(settings.foldedStepCards, taskId, onBoardIds),
+      }).catch(reportError);
+    },
+    [settings, saveSettings, onBoardIds, reportError],
+  );
+
+  /**
+   * Move a card onto the shelf, or back off it — the desktop's own `toggleShelved`, over
+   * `saveSettings` rather than the direct IPC write.
+   */
+  const toggleShelved = useCallback(
+    (taskId: string) => {
+      void saveSettings({
+        ...settings,
+        shelvedCardIds: toggleShelvedCard(settings.shelvedCardIds, taskId, onBoardIds),
+      }).catch(reportError);
+    },
+    [settings, saveSettings, onBoardIds, reportError],
+  );
+
+  /** A card dropped onto the shelf strip — always shelves it, never the reverse. */
+  const dropOnShelf = useCallback(
+    (taskId: string) => {
+      void saveSettings({
+        ...settings,
+        shelvedCardIds: ensureShelvedCard(settings.shelvedCardIds, taskId, onBoardIds),
+      }).catch(reportError);
+    },
+    [settings, saveSettings, onBoardIds, reportError],
+  );
+
+  const toggleShelfFolded = useCallback(() => {
+    void saveSettings({ ...settings, shelfFolded: !settings.shelfFolded }).catch(reportError);
+  }, [settings, saveSettings, reportError]);
 
   // Stable identity for `TaskDetail`'s `onStatusChanged`: the pane keys `loadActivity`'s own
   // effect on this prop's identity, so an inline arrow rebuilt every render forced a reload —
@@ -556,6 +631,8 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
                 onToggleSteps={toggleSteps}
                 shownEarlierStepTaskIds={shownEarlierSteps}
                 onToggleEarlierSteps={toggleEarlierSteps}
+                shownLaterStepTaskIds={shownLaterSteps}
+                onToggleLaterSteps={toggleLaterSteps}
                 anchorRef={anchors.anchorRef}
                 linkDrag={linkDrag}
                 onLinkStart={(taskId) => {
@@ -596,6 +673,9 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
                 // the card's own steps); the column only needs the prop to exist, and until
                 // now this app was the only host that did not pass it.
                 onResumeTask={(taskId) => void extras.resumeTask(taskId).catch(reportError)}
+                onToggleShelved={settings.features.shelf ? toggleShelved : undefined}
+                afterMergePipeline={settings.features.afterMergePipeline}
+                mrRebaseButton={settings.features.mrRebaseButton}
                 onSelectTask={selectTask}
                 onDragStartTask={setDraggingId}
                 onDragEndTask={() => setDraggingId(null)}
@@ -603,6 +683,10 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
                   setDraggingId(null);
                   if (pendingTaskIds.has(taskId)) return; // one edit in flight at a time per card
                   onSetStatus(taskId, statusForColumn(dropColumn));
+                  foldOnAutoFoldColumn(taskId, dropColumn);
+                  // The drag that returns a shelved card to a column is the toggle's other
+                  // click — see `MyTasks.tsx`'s own `onDropInColumn`.
+                  if (shelvedIds.has(taskId)) toggleShelved(taskId);
                 }}
               />
             ))}
@@ -637,6 +721,35 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
             )}
           </div>
         )}
+        {settings.features.shelf && (
+          <ShelfStrip
+            cards={shelvedCards}
+            folded={settings.shelfFolded}
+            onToggleFolded={toggleShelfFolded}
+            projectNameOf={projectNameOf}
+            epicNameOf={epicNameOf}
+            assigneeOf={assigneeOf}
+            agentNameOf={agentNameOf}
+            projectColorOf={projectColorOf}
+            showSprint={!settings.jira.currentSprintOnly}
+            statusKeywords={settings.statusKeywords}
+            attentionTaskIds={extras.attention.taskIds}
+            liveRunTaskIds={extras.liveRunTaskIds}
+            mergingTaskIds={extras.mergingTaskIds}
+            display={boardDisplay}
+            selectedTaskId={selectedTaskId}
+            draggingId={draggingId}
+            onStopTask={(taskId) => void extras.stopTask(taskId).catch(reportError)}
+            onResumeTask={(taskId) => void extras.resumeTask(taskId).catch(reportError)}
+            onSelectTask={selectTask}
+            onDragStartTask={setDraggingId}
+            onDragEndTask={() => setDraggingId(null)}
+            onToggleShelved={toggleShelved}
+            onDropOnShelf={dropOnShelf}
+            afterMergePipeline={settings.features.afterMergePipeline}
+            mrRebaseButton={settings.features.mrRebaseButton}
+          />
+        )}
       </div>
 
       {/* The desktop's own pane, the same component — and now with the same props, so it
@@ -650,6 +763,9 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
             subtasks={chain}
             parentTask={parentOfSelected}
             mergeRequests={selectedTask ? (mrsByTask.get(selectedTask.id) ?? []) : []}
+            afterMergePipeline={settings.features.afterMergePipeline}
+            mrRebaseButton={settings.features.mrRebaseButton}
+            quietAgentProgress={settings.features.quietAgentProgress}
             attachments={selectedTask ? (attachmentsByTask.get(selectedTask.id) ?? []) : []}
             parentAttachments={
               parentOfSelected ? (attachmentsByTask.get(parentOfSelected.id) ?? []) : []
@@ -672,6 +788,7 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
             // task it hands back is the transport's stub (`{ id, status }`), never a row
             // worth merging into `state.tasks`; the next poll brings the real one.
             onStatusChanged={handleStatusChanged}
+            onStatusSet={foldOnAutoFoldColumn}
             onSubtasksChanged={extras.refresh}
           />
         </div>

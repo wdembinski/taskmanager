@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { PERSONAL_PROJECT_ID, type Task } from '@shared/model';
+import { LOCAL_TARGET } from '@shared/execTarget';
+import { PERSONAL_PROJECT_ID, type Project, type Task } from '@shared/model';
 import {
   guardRemovals,
   issueToBoardTask,
@@ -952,5 +953,77 @@ describe('the incomplete-answer guard leaves the loud refusal unreachable, not j
         "board in one sync. Nothing was removed. Check the board's JQL and that JIRA is " +
         'answering it in full.',
     );
+  });
+});
+
+describe('reconcileJiraTasks — assigning tickets to their own board', () => {
+  const project = (over: Partial<Project>): Project => ({
+    id: 'p1',
+    name: 'Repo',
+    path: 'C:/repos/repo',
+    planPath: '',
+    defaultModel: 'sonnet',
+    planningModel: null,
+    defaultPermissionMode: 'acceptEdits',
+    concurrency: 1,
+    useWorktrees: true,
+    baseBranch: '',
+    writeBackPlan: false,
+    autoRelease: false,
+    autoCreatePr: false,
+    autoIntegrate: null,
+    planAligned: true,
+    jiraEpicKeys: [],
+    ticketPrefix: '',
+    target: LOCAL_TARGET,
+    instructions: '',
+    color: '',
+    createdAt: 0,
+    ...over,
+  });
+
+  // A ticket-only project: owns a board (ticket prefix, no plan, no repo).
+  const board = project({ id: 'board', path: '', ticketPrefix: 'BRD', jiraEpicKeys: ['PROJ-100'] });
+  // An agent project (a repo) that owns no board.
+  const repoOnly = project({ id: 'repo', jiraEpicKeys: ['PROJ-200'] });
+
+  const withParent = (parentKey: string): JiraIssue => {
+    const base = issue('1', 'PROJ-1', 'new');
+    return { ...base, fields: { ...base.fields, parent: { key: parentKey } } };
+  };
+
+  it('files the card on the project board when the epic matches an ownsBoard project', () => {
+    const { upserts } = reconcileJiraTasks([], [withParent('PROJ-100')], {
+      ...opts,
+      assignOwnBoard: true,
+      projects: [board, repoOnly],
+    });
+    expect(upserts[0].projectId).toBe('board');
+  });
+
+  it('leaves the card on Personal when the matched project does not own a board', () => {
+    const { upserts } = reconcileJiraTasks([], [withParent('PROJ-200')], {
+      ...opts,
+      assignOwnBoard: true,
+      projects: [board, repoOnly],
+    });
+    expect(upserts[0].projectId).toBe(PERSONAL_PROJECT_ID);
+  });
+
+  it('leaves the card on Personal when the feature is off, even with a matching board project', () => {
+    const { upserts } = reconcileJiraTasks([], [withParent('PROJ-100')], {
+      ...opts,
+      projects: [board, repoOnly],
+    });
+    expect(upserts[0].projectId).toBe(PERSONAL_PROJECT_ID);
+  });
+
+  it('leaves the card on Personal when nothing owns the epic', () => {
+    const { upserts } = reconcileJiraTasks([], [withParent('NOPE-1')], {
+      ...opts,
+      assignOwnBoard: true,
+      projects: [board, repoOnly],
+    });
+    expect(upserts[0].projectId).toBe(PERSONAL_PROJECT_ID);
   });
 });

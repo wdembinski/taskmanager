@@ -150,16 +150,20 @@ describe('canReplan', () => {
     expect(canReplan(task(), [])).toMatchObject({ offered: true, can: true });
   });
 
-  it('is blocked while the chain is still running', () => {
+  it('is offered while the chain is still running — the planner runs beside it', () => {
     const steps = [step('s1', 'done'), step('s2', 'pending')];
     const r = canReplan(task(), steps);
-    expect(r).toMatchObject({ offered: true, can: false });
-    expect(r.hint).toBe(REFUSAL_HINT['chain-busy']);
+    expect(r).toMatchObject({ offered: true, can: true });
+    expect(r.hint).toMatch(/alongside the step/);
   });
 
   it('is blocked while the card itself is mid-turn', () => {
-    // Pressing it would stop the very answer the human is reading.
-    expect(canReplan(task({ status: 'running' }), []).can).toBe(false);
+    // Pressing it would stop the very answer the human is reading — which may already be
+    // the planner from an earlier re-plan, so the hint names it rather than promising a
+    // fresh turn.
+    const running = canReplan(task({ status: 'running' }), []);
+    expect(running.can).toBe(false);
+    expect(running.hint).toMatch(/planner/);
     expect(canReplan(task({ status: 'waiting-input' }), []).can).toBe(false);
   });
 

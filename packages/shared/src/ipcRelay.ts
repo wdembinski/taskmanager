@@ -274,12 +274,17 @@ export const RELAY_POLICY: {
   'github:searchUsers': 'relay',
   'github:markRead': 'relay',
 
-  // Merge requests are provider-neutral, so these four are `mr:` rather than one set per
+  // Merge requests are provider-neutral, so these five are `mr:` rather than one set per
   // forge — the reason `mergeRequest.ts` gives. They relay for the same reason the syncs do.
   'mr:mergeRequests': 'relay',
+  // The token never leaves the desktop (it is read there and spent on one fetch) and the
+  // engine that owns the board's DB does the reconcile — the same shape `task:createPullRequest`
+  // already relays for.
+  'mr:link': 'relay',
   'mr:setMergeRequestName': 'relay',
   'mr:markRead': 'relay',
   'mr:markEventsSeen': 'relay',
+  'mr:rebase': 'relay',
 
   'cloud:getConfigStatus': 'relay',
   'cloud:setCredentials': 'host-only',

@@ -450,6 +450,21 @@ export function mrReadyToMerge(mr: MergeReadiness): boolean {
   return mr.state === 'opened' && mergeBlockers(mr).length === 0;
 }
 
+/**
+ * Whether the forge is refusing this merge specifically because the branch has diverged —
+ * GitLab's `need_rebase` or GitHub's `behind`. The one `mergeBlockers` reason a button can
+ * actually FIX rather than merely report: conflicts need a human at a keyboard, an unmet
+ * approval needs a reviewer, but a stale branch is exactly what `GitLabClient.rebaseMergeRequest`
+ * / `GitHubClient.updateBranch` ask the forge to do.
+ *
+ * The single predicate both the card row and the detail pane ask before swapping their
+ * verdict glyph/badge for a rebase button, so the two surfaces cannot disagree about when
+ * one is offered.
+ */
+export function mrNeedsRebase(mr: MergeReadiness): boolean {
+  return mergeBlockers(mr).includes('need-rebase');
+}
+
 /** Just the fields the review verdict depends on. See {@link mrApprovalState}. */
 export type ApprovalFacts = Pick<
   MergeRequest,
@@ -596,6 +611,22 @@ export function verdictSummary(mr: MergeRequest): string {
     default:
       return approvalSummary(mr);
   }
+}
+
+/**
+ * Whether a merge request's pipeline status is worth drawing at all.
+ *
+ * Every open, closed or locked MR always shows it — CI is still the live question there,
+ * and `none`/`unknown` are themselves answers worth a badge ("no pipeline", "pipeline
+ * unknown"). A **merged** MR is the exception this exists for: once it has landed,
+ * `none`/`unknown` usually just means nobody ever asked about the after-merge (target
+ * branch) run, or the forge genuinely never ran one — and a "no pipeline" badge sitting on
+ * an otherwise-finished row reads as unfinished business rather than as nothing to report.
+ * So a merged MR draws its pipeline only once there is a genuine verdict to show.
+ */
+export function showPipeline(mr: Pick<MergeRequest, 'state' | 'pipelineStatus'>): boolean {
+  if (mr.state !== 'merged') return true;
+  return mr.pipelineStatus !== 'none' && mr.pipelineStatus !== 'unknown';
 }
 
 /** "2/3", or "approvals unknown" when the instance would not tell us. */

@@ -61,6 +61,58 @@ export const useBoardLayoutStyles = makeStyles({
     // on top of the list they had nothing to breathe into.
     paddingTop: '4px',
   },
+  /**
+   * The parked shelf (Phase 25's `settings.features.shelf`): a full-width band below the
+   * columns rather than a column of its own, because a shelved card has deliberately left
+   * every column — giving it one more would put it right back in the thing it left.
+   * `flex: '0 0 auto'` so it takes only what its own content needs and never competes with
+   * `columns` for the board's one scrollbar.
+   */
+  shelf: {
+    flex: '0 0 auto',
+    display: 'flex',
+    flexDirection: 'column',
+    borderRadius: tokens.borderRadiusMedium,
+    border: '1px solid transparent',
+    backgroundColor: tokens.colorNeutralBackground2,
+  },
+  // The whole strip is one drop target, header included — a shelf collapsed to its header
+  // still has to accept a card, or folding it would also turn off the gesture that fills it.
+  shelfOver: {
+    border: `1px dashed ${tokens.colorBrandStroke1}`,
+  },
+  shelfHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    padding: '6px 10px',
+    background: 'none',
+    border: 'none',
+    cursor: 'pointer',
+    color: tokens.colorNeutralForeground2,
+    textAlign: 'left',
+    width: '100%',
+    ':hover': { color: tokens.colorNeutralForeground1 },
+  },
+  shelfHeaderLabel: { letterSpacing: '0.04em' },
+  shelfCount: { color: tokens.colorNeutralForeground3 },
+  // A drop target the same way a `KanbanColumn` is one, laid out as a horizontal row
+  // rather than a column's vertical list — the shelf's whole reason to exist is to get a
+  // card OUT of the columns' layout, and stacking it back into a column shape here would
+  // undo that.
+  shelfList: {
+    display: 'flex',
+    flexDirection: 'row',
+    gap: '12px',
+    padding: '4px 10px 10px',
+    overflowX: 'auto',
+    minHeight: '48px',
+  },
+  shelfEmpty: { color: tokens.colorNeutralForeground4, padding: '8px 4px' },
+  // Each card keeps a column's usual width instead of shrinking to its content — a strip
+  // of cards squeezed to their title's width would read as chips, not as the same cards
+  // that just sat in a column.
+  shelfCard: { flex: '0 0 280px', minWidth: 0 },
   right: {
     // Exactly 40%, whatever the card holds. `1 1 40%` let the pane grow past its basis:
     // a flex item's automatic minimum is its CONTENT's min-width, so a card with wide

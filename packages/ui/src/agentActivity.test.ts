@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionEvent } from '@tm/shared/session';
-import { isTranscriptNoise, runningSubAgents } from './agentActivity';
+import { activityLabel, isTranscriptNoise, runningSubAgents } from './agentActivity';
 
 const toolUse = (name: string, toolId: string, input?: Record<string, unknown>): SessionEvent => ({
   kind: 'tool-use',
@@ -90,5 +90,64 @@ describe('runningSubAgents', () => {
       },
     ]);
     expect(ended).toEqual([]);
+  });
+});
+
+describe('activityLabel', () => {
+  it('names a file read or write by its last path segment', () => {
+    expect(activityLabel(toolUse('Read', 't1', { file_path: 'src/foo.ts' }))).toBe(
+      'Reading foo.ts',
+    );
+    expect(activityLabel(toolUse('Write', 't1', { file_path: 'C:\\proj\\bar.tsx' }))).toBe(
+      'Writing bar.tsx',
+    );
+    expect(activityLabel(toolUse('Edit', 't1', { file_path: 'baz.ts' }))).toBe('Editing baz.ts');
+  });
+
+  it('falls back to a generic phrase with no path', () => {
+    expect(activityLabel(toolUse('Read', 't1'))).toBe('Reading a file');
+  });
+
+  it('turns a Bash description into a gerund phrase', () => {
+    expect(activityLabel(toolUse('Bash', 't1', { description: 'Run tests' }))).toBe(
+      'Running tests',
+    );
+    expect(activityLabel(toolUse('Bash', 't1', { description: 'Install dependencies' }))).toBe(
+      'Installing dependencies',
+    );
+  });
+
+  it('falls back to the command when a Bash call carries no description', () => {
+    expect(activityLabel(toolUse('Bash', 't1', { command: 'pnpm test' }))).toBe(
+      'Running pnpm test',
+    );
+    expect(activityLabel(toolUse('Bash', 't1', {}))).toBe('Running a command');
+  });
+
+  it('phrases search tools with their query', () => {
+    expect(activityLabel(toolUse('Grep', 't1', { pattern: 'TODO' }))).toBe('Searching for "TODO"');
+    expect(activityLabel(toolUse('Glob', 't1', { pattern: '**/*.ts' }))).toBe(
+      'Finding files matching **/*.ts',
+    );
+    expect(activityLabel(toolUse('WebSearch', 't1', { query: 'fluent ui tokens' }))).toBe(
+      'Searching the web for "fluent ui tokens"',
+    );
+  });
+
+  it('names a sub-agent call the same way the folded chat row does', () => {
+    expect(activityLabel(toolUse('Task', 't1', { description: 'audit the CSS' }))).toBe(
+      'Running: audit the CSS',
+    );
+    expect(activityLabel(toolUse('Task', 't1', {}))).toBe('Running a sub-agent');
+  });
+
+  it('names thinking, and falls back to the raw tool name for anything unmapped', () => {
+    expect(activityLabel({ kind: 'thinking', text: 'hmm' })).toBe('Thinking');
+    expect(activityLabel(toolUse('SomeCustomTool', 't1'))).toBe('Using SomeCustomTool');
+  });
+
+  it('returns null for events that are not tool-use or thinking', () => {
+    expect(activityLabel({ kind: 'assistant', text: 'done' })).toBeNull();
+    expect(activityLabel(toolResult('t1'))).toBeNull();
   });
 });

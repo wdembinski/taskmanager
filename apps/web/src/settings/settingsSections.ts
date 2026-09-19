@@ -19,7 +19,7 @@
  */
 
 export type SettingsSection =
-  'general' | 'board' | 'projects' | 'jira' | 'tokens' | 'people' | 'desktop';
+  'general' | 'board' | 'features' | 'projects' | 'jira' | 'tokens' | 'people' | 'desktop';
 
 /**
  * The sections whose form reads `AppSettings`. Everything NOT here draws without it — see the
@@ -28,6 +28,7 @@ export type SettingsSection =
 const SECTIONS_NEEDING_SETTINGS: ReadonlySet<SettingsSection> = new Set<SettingsSection>([
   'general',
   'board',
+  'features',
   'jira',
 ]);
 

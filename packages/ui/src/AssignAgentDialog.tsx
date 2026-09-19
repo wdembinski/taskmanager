@@ -42,9 +42,11 @@ import {
 } from '@fluentui/react-components';
 import { PERMISSION_MODE_LABELS } from '@tm/shared/session';
 import type { ClaudeModel, PermissionMode } from '@tm/shared/session';
+import { resolveRunModel } from '@tm/shared/model';
 import type { Project, Task } from '@tm/shared/model';
 import { cardModelFromOption, projectDefaultLabel, PROJECT_DEFAULT } from './modelChoice';
 import { ModelField } from './ModelField';
+import { PlanningModelField } from './PlanningModelField';
 import {
   BRANCH_TYPES,
   buildBranchName,
@@ -130,6 +132,9 @@ export function AssignAgentDialog({
   const [projectId, setProjectId] = useState<string>('');
   // Null = "follow the agent project", and the dialog's default. See the seeding below.
   const [model, setModel] = useState<ClaudeModel | null>(null);
+  // Same story as `model`, one level down: this card's OWN planning override, not the
+  // project's. See the seeding below.
+  const [planningModel, setPlanningModel] = useState<ClaudeModel | null>(null);
   const [mode, setMode] = useState<PermissionMode>('acceptEdits');
   const [notes, setNotes] = useState('');
   // The branch, and the Conventional Commits type it is proposed from. `branchTouched`
@@ -161,6 +166,7 @@ export function AssignAgentDialog({
     // The one-shot in `store.ts` let go of the overrides this dialog had already written;
     // this line is what stops it writing them again.
     setModel(card.agentModel ?? null);
+    setPlanningModel(card.agentPlanningModel ?? null);
     setMode(card.agentMode ?? resolved?.defaultPermissionMode ?? 'acceptEdits');
     setBranchTouched(false);
     const type = inferBranchType(card.title, card.externalType);
@@ -225,6 +231,7 @@ export function AssignAgentDialog({
         // Omitted rather than null: `task:assignAgent` maps a missing model to null, which
         // is the same "follow the project" this dialog means by it.
         model: model ?? undefined,
+        planningModel: planningModel ?? undefined,
         notes: notes.trim() || undefined,
         branch: branch.trim() || undefined,
         start,
@@ -239,6 +246,11 @@ export function AssignAgentDialog({
   }
 
   const selected = agentProjects.find((p) => p.id === projectId) ?? null;
+  // What this card's steps actually resolve to right now, so the planning field's
+  // "Same as steps execution (…)" sentinel names it accurately rather than a stale guess.
+  const executionModel: ClaudeModel = selected
+    ? resolveRunModel({ agentModel: model }, selected, false)
+    : (model ?? PROJECT_DEFAULT);
   // Validated on every keystroke with the SAME rules the engine applies before cutting a
   // worktree, so a name that will be rejected is rejected here — where you can still fix
   // it — rather than several seconds later inside git's stderr.
@@ -293,19 +305,29 @@ export function AssignAgentDialog({
                     </Dropdown>
                   </Field>
 
+                  {/* Same pair, and the same reason for no hints inside the row, as the
+                      project form: planning is the run that reads the repo and decides what
+                      the work is, execution the one that carries out a brief. Overriding one
+                      no longer necessarily overrides the other. */}
                   <div className={styles.row}>
-                    {/* Left alone, this card runs on whatever the repo above resolves to —
-                        including its planning model when the run is a planning one. Picking
-                        a name here overrides BOTH, for every run of this card. */}
+                    <PlanningModelField
+                      label="Planning model"
+                      className={styles.grow}
+                      value={planningModel}
+                      executionModel={executionModel}
+                      onChange={setPlanningModel}
+                    />
                     <ModelField
-                      label="Model"
+                      label="Steps execution model"
                       className={styles.grow}
                       dropdownClassName={styles.dropdown}
-                      hint={model ? 'Overrides the project, planning included.' : undefined}
+                      hint={model ? 'Overrides the project.' : undefined}
                       value={model ?? PROJECT_DEFAULT}
                       onChange={(v) => setModel(cardModelFromOption(v))}
                       sentinel={{ value: PROJECT_DEFAULT, label: projectDefaultLabel(selected) }}
                     />
+                  </div>
+                  <div className={styles.row}>
                     <Field label="Permission mode" className={styles.grow}>
                       <Dropdown
                         className={styles.dropdown}

@@ -192,6 +192,7 @@ import { createWindowStateFlusher, type WindowStateFlusher } from './windowFlush
 import { appPlanPath, appProjectFile } from './projectPaths';
 import { RELEASE_DOC } from '@shared/release';
 import { openPullRequest, type CreatePrDeps } from './forge/createPr';
+import { linkMergeRequest, type LinkPrDeps } from './forge/linkPr';
 import { forgeBaseUrl } from './forge/baseUrl';
 import {
   CARD_RECORDS_PARK,
@@ -971,6 +972,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     if (input.model !== undefined && !isUsableModel(input.model)) {
       throw new Error(`Not a usable model: ${input.model}`);
     }
+    if (input.planningModel !== undefined && !isUsableModel(input.planningModel)) {
+      throw new Error(`Not a usable model: ${input.planningModel}`);
+    }
 
     const task = store.updateTask(taskId, {
       agentProjectId: target.id,
@@ -979,6 +983,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       ...(existing.projectTagId ? {} : { projectTagId: target.id }),
       agentMode: input.mode ?? null,
       agentModel: input.model ?? null,
+      agentPlanningModel: input.planningModel ?? null,
       agentBranch: branch,
       // A previous attempt's session is not this assignment's; start a fresh
       // conversation so the agent gets the full single-ticket brief.
@@ -1056,7 +1061,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     return task;
   });
   handle('task:chat', async (taskId, message) => scheduler.chatWithAgent(taskId, message));
-  handle('task:replan', async (taskId, note) => scheduler.replanCard(taskId, note));
+  handle('task:replan', async (taskId, note, opts) => scheduler.replanCard(taskId, note, opts));
   handle('task:create', async (projectId, input) => {
     // The same check `task:setProject` makes, for the same reason: a card created with a
     // dangling or unfileable tag would wear a colour stripe nothing on the board could
@@ -1230,11 +1235,19 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     if (options.model !== undefined && options.model !== null && !isUsableModel(options.model)) {
       throw new Error(`Not a usable model: ${options.model}`);
     }
+    if (
+      options.planningModel !== undefined &&
+      options.planningModel !== null &&
+      !isUsableModel(options.planningModel)
+    ) {
+      throw new Error(`Not a usable model: ${options.planningModel}`);
+    }
     // Deliberately allowed mid-run: the live run captured its own model/mode when it
     // started (see `Run`), so this only decides what the NEXT run uses. Reassigning is
     // still what you want if you mean "start over with these settings".
     const task = store.updateTask(taskId, {
       ...(options.model !== undefined ? { agentModel: options.model } : {}),
+      ...(options.planningModel !== undefined ? { agentPlanningModel: options.planningModel } : {}),
       ...(options.mode !== undefined ? { agentMode: options.mode } : {}),
       // Read at merge time, not at run time, so flipping it while the agent works still
       // decides what happens when that work lands.
@@ -1978,6 +1991,30 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   };
 
   // -------------------------------------------------------------------------
+  // Linking an MR/PR a human opened themselves (`forge/linkPr.ts`) — the paste-a-URL
+  // counterpart of `task:createPullRequest` above. Built from the same pieces: the token
+  // reader and the note wrapper are shared verbatim, and `boardKeyIndex` just above is what
+  // lets a linked row's `issueKeys` populate exactly as a sync's would.
+  const linkDeps = (): LinkPrDeps => ({
+    getTask: (id) => store.getTask(id),
+    getSettings: () => store.getSettings(),
+    listMergeRequests: () => store.listMergeRequests(),
+    boardKeyIndex,
+    upsertMergeRequest: (mr) => {
+      store.upsertMergeRequest(mr);
+      send('mergeRequests:changed', store.listMergeRequests());
+    },
+    tokenFor: forgeToken,
+    note: (projectId, taskId, body) => {
+      store.addComment(projectId, taskId, body);
+      send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) });
+    },
+    now: () => Date.now(),
+  });
+
+  handle('mr:link', async (taskId, url) => linkMergeRequest(linkDeps(), taskId, url));
+
+  // -------------------------------------------------------------------------
   // Sync freshness — what the status bar's countdown rings are drawn from.
   //
   // Held in memory, not the DB, and that is the right call: "when did we last talk to
@@ -2423,6 +2460,25 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     send('mergeRequests:changed', all);
     return all;
   });
+
+  /**
+   * Ask the forge to rebase this MR's source branch onto its target — GitLab's own rebase
+   * endpoint, or GitHub's "update branch". Both forges queue the work rather than doing it
+   * inline, so the re-sync right after this often still reports `need-rebase`; the next poll
+   * is what actually clears it.
+   */
+  handle('mr:rebase', async (mrId) => {
+    const mr = store.listMergeRequests().find((m) => m.id === mrId);
+    if (!mr) throw new Error('That merge request is no longer tracked.');
+    if (mr.provider === 'gitlab') {
+      await buildGitLabClient().rebaseMergeRequest(mr.repoId, mr.number);
+      return syncGitLab();
+    }
+    const [owner, repo] = mr.projectPath.split('/');
+    if (!owner || !repo) throw new Error(`Malformed GitHub repository path: ${mr.projectPath}`);
+    await buildGitHubClient().updateBranch(owner, repo, mr.number);
+    return syncGitHubPullRequests();
+  });
   // -------------------------------------------------------------------------
 
   /**
@@ -2561,6 +2617,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       epicFieldId: epicField,
       sprintFieldId: sprintField,
       identity: await jiraIdentity(jira.baseUrl, client),
+      assignOwnBoard: settings.features.ticketsToOwnBoard,
+      projects: store.listProjects(),
     });
     // The stored row, not the computed one: adopting keeps everything JIRA knows nothing
     // about (the filing, the type, an assignment), and only the round trip has those.
@@ -3164,7 +3222,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // the poller only speaks up when that answer CHANGES, so dismissing a still-accurate
   // warning is not undone by the next tick repeating itself verbatim two minutes later.
   const syncJira = async (opts: { dedupeNotice?: boolean } = {}): Promise<Task[]> => {
-    const { jira } = store.getSettings();
+    const { jira, features } = store.getSettings();
     if (!jira.enabled) return store.getPersonalTasks();
     const client = buildJiraClient();
     // The epic field is requested by its discovered id, so tickets carry the epic key
@@ -3301,6 +3359,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       queryChanged,
       now,
       retentionMs: Math.max(0, jira.doneRetentionDays) * 24 * 60 * 60 * 1000,
+      assignOwnBoard: features.ticketsToOwnBoard,
+      projects: store.listProjects(),
     });
     for (const t of upserts) store.upsertJiraTask(t);
     // ARCHIVED, not deleted. A card leaving the board is not the human deleting it — the row
@@ -3395,7 +3455,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
    * re-reads an issue by number. One pass answers both questions.
    */
   const syncGitHubIssues = async (): Promise<Task[]> => {
-    const { github } = store.getSettings();
+    const { github, features } = store.getSettings();
     if (!github.enabled || !github.syncIssues) return store.getPersonalTasks();
     const client = buildGitHubClient();
     const identity = await githubIdentity(github.baseUrl, client);
@@ -3498,6 +3558,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       queryChanged,
       now,
       retentionMs: Math.max(0, github.doneRetentionDays) * 24 * 60 * 60 * 1000,
+      assignOwnBoard: features.ticketsToOwnBoard,
+      projects: store.listProjects(),
     });
     for (const t of upserts) store.upsertJiraTask(t);
     // ARCHIVED, not deleted — see the same loop in `syncJira`. The row keeps its timeline,

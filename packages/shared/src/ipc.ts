@@ -606,6 +606,12 @@ export interface IpcApi {
     taskId: string,
     options: {
       model?: ClaudeModel | null;
+      /**
+       * Model this card's planning runs use, overriding the agent project's planning
+       * model. `null` hands the decision back to `agentModel` and, through it, the
+       * project's planning/execution models — see `resolveRunModel`.
+       */
+      planningModel?: ClaudeModel | null;
       mode?: PermissionMode | null;
       /**
        * Release this card after its branch merges (`@shared/release`). `null` hands the
@@ -704,8 +710,17 @@ export interface IpcApi {
    * `note` is the human's brief for what the round should cover. Refusals come back as
    * data (`{ status: 'refused', reason }`), same as `task:chat`, so the panel can explain
    * why the button did nothing.
+   *
+   * `opts.replaceRound` (Phase 20) re-plans a FUTURE phase in place instead of appending a
+   * new one: the named round's steps are what the agent is told to replace, and approving
+   * the result swaps them out — unless the phase started in the meantime, in which case it
+   * lands as a new round instead (see `ChatRefusal['phase-started']`).
    */
-  'task:replan': (taskId: string, note?: string) => Promise<ChatSendResult>;
+  'task:replan': (
+    taskId: string,
+    note?: string,
+    opts?: { replaceRound?: number },
+  ) => Promise<ChatSendResult>;
 
   /** Snapshot of everything currently waiting on a human (seed the inbox on load). */
   'attention:list': () => Promise<AttentionItem[]>;
@@ -919,6 +934,17 @@ export interface IpcApi {
    * `Map<taskId, MergeRequest[]>`, exactly as it does for `board:tasks`.
    */
   'mr:mergeRequests': () => Promise<MergeRequest[]>;
+  /**
+   * Link an MR/PR a human opened themselves — pasted as a URL — to a card, rather than one
+   * this app pushed the branch and opened itself (`task:createPullRequest`). Parses the URL
+   * into forge coordinates, fetches it in full and reconciles it exactly as the corresponding
+   * sync would, then stamps `taskId`/`openedForTaskId` onto the target card: the human
+   * pointing at a URL beats whatever key-matching a sync would otherwise have guessed.
+   *
+   * Throws a sentence naming the wall: not a recognisable MR/PR URL, that forge not enabled,
+   * no token saved, or the forge itself could not find it.
+   */
+  'mr:link': (taskId: string, url: string) => Promise<MergeRequest>;
 
   // --- Cloud personal access token — the same four-channel shape JIRA/GitLab/GitHub use. ---
   /** Whether a token is stored, and whether the OS secure store can encrypt one. */
@@ -956,6 +982,13 @@ export interface IpcApi {
   'mr:markRead': (mrId: string) => Promise<MergeRequest[]>;
   /** Acknowledge an MR's pipeline/approval events (the other half, tracked separately). */
   'mr:markEventsSeen': (mrId: string) => Promise<MergeRequest[]>;
+  /**
+   * Ask the forge to rebase this MR's source branch onto its target — GitLab's own rebase, or
+   * GitHub's "update branch". Only meaningful while `mergeBlockers` reports `need-rebase`; the
+   * forge queues the work rather than doing it inline, so the returned list reflects whatever
+   * the immediate re-sync could see, not necessarily the finished rebase.
+   */
+  'mr:rebase': (mrId: string) => Promise<MergeRequest[]>;
   /**
    * The connected instance's priority names, most urgent first — what the detail
    * pane's priority dropdown offers for a JIRA card, since only names this instance

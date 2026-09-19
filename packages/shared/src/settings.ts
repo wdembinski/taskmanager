@@ -10,7 +10,7 @@
  */
 import { LOCAL_TARGET, type ExecTarget } from './execTarget';
 import type { ClaudeModel, PermissionMode } from './session';
-import type { BoardColumn } from './model';
+import type { BoardColumn, ManualStatus } from './model';
 import type { StatusKeyword } from './statusKeywords';
 import { DEFAULT_SESSION_TOKEN_BUDGET, DEFAULT_WEEKLY_TOKEN_BUDGET } from './usage';
 
@@ -399,6 +399,55 @@ export const DEFAULT_BOARD_DISPLAY: BoardDisplaySettings = {
 };
 
 /**
+ * Master on/off switches for a handful of independently-toggleable behaviours, each owned by
+ * its own later phase. Grouped into one nested object — rather than six top-level booleans —
+ * for the same reason `board` is: they are edited together on one Settings tab, and a phase
+ * that needs to check whether its own feature is live reads `settings.features.x` rather than
+ * a top-level field competing for a name with everything else in `AppSettings`.
+ *
+ * All default to `true`: none of these is a beta anybody opts into, so the shipped behaviour
+ * is "the feature exists" and this group is only ever used to turn one back OFF.
+ */
+export interface FeatureSettings {
+  /** Auto-fold a card's Steps section once it reaches Review or Done. */
+  autoFoldReviewDone: boolean;
+  /** The board's foldable parked shelf. */
+  shelf: boolean;
+  /** Show the after-merge pipeline status on a merged MR. */
+  afterMergePipeline: boolean;
+  /** The provider rebase button on an MR. */
+  mrRebaseButton: boolean;
+  /** Move agent progress logs out of the chat pane. */
+  quietAgentProgress: boolean;
+  /** Assign tracker tickets to their own board. */
+  ticketsToOwnBoard: boolean;
+}
+
+/** Every feature on — see {@link FeatureSettings}. */
+export const DEFAULT_FEATURE_SETTINGS: FeatureSettings = {
+  autoFoldReviewDone: true,
+  shelf: true,
+  afterMergePipeline: true,
+  mrRebaseButton: true,
+  quietAgentProgress: true,
+  ticketsToOwnBoard: true,
+};
+
+/**
+ * Whether a card landing on `column` should have its Steps section auto-folded —
+ * `features.autoFoldReviewDone`'s whole effect. Both `MyTasks.tsx` (desktop) and
+ * `BoardScreen.tsx` (web) call this from the same two places (drag-drop, and the detail
+ * pane's State dropdown) so the two apps cannot drift on when the fold fires; they used to
+ * each inline this same two-line check, which is exactly the shape that drifts unnoticed.
+ */
+export function shouldAutoFoldOnMove(
+  features: Pick<FeatureSettings, 'autoFoldReviewDone'>,
+  column: BoardColumn | ManualStatus,
+): boolean {
+  return features.autoFoldReviewDone && (column === 'in-review' || column === 'done');
+}
+
+/**
  * The Projects screen's Gantt timeline, saved for the same reason `foldedStepCards` is: the
  * screen is unmounted every time you leave it, and a collapse you had to redo on every visit
  * would not be a collapse.
@@ -557,6 +606,13 @@ export interface AppSettings {
    */
   shownEarlierStepCards: string[];
   /**
+   * The cards showing the steps from **phases after the current one**, by task id — the same
+   * shape as {@link shownEarlierStepCards}, mirrored to the other end of the chain: a phase
+   * nobody has reached yet folds away by itself, and this list is where a human has opened
+   * one back up anyway.
+   */
+  shownLaterStepCards: string[];
+  /**
    * Which board the My Tasks screen shows: `'all'` (the default) unions every board's
    * cards, `PERSONAL_PROJECT_ID` is the Personal board alone, and anything else names a
    * project id — see `IpcApi['board:scopes']`. Persisted so the board comes back where
@@ -573,6 +629,15 @@ export interface AppSettings {
   cloud: CloudSettings;
   /** The Projects screen's Gantt timeline — see {@link GanttSettings}. */
   gantt: GanttSettings;
+  /** The feature on/off switches later phases read — see {@link FeatureSettings}. */
+  features: FeatureSettings;
+  /**
+   * Board cards parked onto the shelf, by task id — per-surface view-state, exactly like
+   * `foldedStepCards`: a browser tab and the desktop each keep their own.
+   */
+  shelvedCardIds: string[];
+  /** Whether the shelf itself is collapsed. Per-surface view-state, like `shelvedCardIds`. */
+  shelfFolded: boolean;
 }
 
 /** The out-of-the-box settings, also used to fill any field missing from storage. */
@@ -607,12 +672,18 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // Empty means every re-planned card shows its newest bunch of steps and folds the rounds
   // before it away — the behaviour, not the exception. See the field.
   shownEarlierStepCards: [],
+  // Same default, same reason, mirrored to the other end of the chain: a phase not yet
+  // reached folds away until a human opens it back up.
+  shownLaterStepCards: [],
   boardScopeId: 'all',
   jira: DEFAULT_JIRA_SETTINGS,
   gitlab: DEFAULT_GITLAB_SETTINGS,
   github: DEFAULT_GITHUB_SETTINGS,
   cloud: DEFAULT_CLOUD_SETTINGS,
   gantt: DEFAULT_GANTT_SETTINGS,
+  features: DEFAULT_FEATURE_SETTINGS,
+  shelvedCardIds: [],
+  shelfFolded: false,
 };
 
 /**
@@ -628,7 +699,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
  * the engine has now. `incoming` is `unknown` because it arrived over HTTP as JSON; anything
  * that is not an object is ignored entirely rather than partially applied.
  *
- * One level, not deep: the nested groups (`jira`, `gitlab`, `cloud`, `board`) are merged
+ * One level, not deep: the nested groups (`jira`, `gitlab`, `cloud`, `board`, `features`) are merged
  * field-by-field, and the arrays (`statusKeywords`, `foldedStepCards`, …) are REPLACED
  * wholesale when present. That is the right rule for both — an array's whole content is the
  * value being edited, and merging two lists element-wise would resurrect entries the human
@@ -662,9 +733,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * Everything NOT listed is either MACHINE-local — `defaultExecTarget` (a path only that
  * machine has), `fontSizePx` (that window's type scale), `cloud` (this desktop's own
  * connection to the server), `toastsEnabled` (that app's toasts) — or per-SURFACE view-state:
- * `boardScopeId` / `foldedStepCards` / `shownEarlierStepCards` name where you left one screen,
- * `gantt.collapsedEpicIds` the same for the timeline. A browser and a desktop each keep their
- * own of those, so they never leave the surface they were set on.
+ * `boardScopeId` / `foldedStepCards` / `shownEarlierStepCards` / `shownLaterStepCards` name
+ * where you left one screen, `gantt.collapsedEpicIds` the same for the timeline, and
+ * `shelvedCardIds` / `shelfFolded` the same for the parked shelf. A browser and a desktop
+ * each keep their own of those, so they never leave the surface they were set on.
  *
  * A WHITELIST, not a denylist, and that direction is the safety: a field newly added to
  * `AppSettings` is LOCAL until someone deliberately lists it here, so a new machine-specific
@@ -692,6 +764,7 @@ export const GLOBAL_SETTINGS_KEYS = [
   'jira',
   'gitlab',
   'github',
+  'features',
 ] as const satisfies ReadonlyArray<keyof AppSettings>;
 
 /** One of the account-scoped keys — a union of literals, not `string`. */

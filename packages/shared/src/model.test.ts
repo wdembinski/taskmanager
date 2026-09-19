@@ -61,6 +61,42 @@ describe('resolveRunModel', () => {
       'claude-sonnet-5',
     );
   });
+
+  it("lets the card's own planning override outrank the project's planning model", () => {
+    const project = repo('haiku', 'opus');
+    expect(resolveRunModel({ agentModel: null, agentPlanningModel: 'sonnet' }, project, true)).toBe(
+      'sonnet',
+    );
+    // A steps run never falls back to the planning override.
+    expect(
+      resolveRunModel({ agentModel: null, agentPlanningModel: 'sonnet' }, project, false),
+    ).toBe('haiku');
+  });
+
+  it('falls back through agentModel, then the project ladder, when only agentPlanningModel is unset', () => {
+    const project = repo('haiku', 'opus');
+    expect(resolveRunModel({ agentModel: 'sonnet', agentPlanningModel: null }, project, true)).toBe(
+      'sonnet',
+    );
+    expect(
+      resolveRunModel({ agentModel: 'sonnet', agentPlanningModel: null }, project, false),
+    ).toBe('sonnet');
+  });
+
+  it('resolves planning and steps independently when a card sets both to different models', () => {
+    const project = repo('haiku', 'opus');
+    const task = { agentModel: 'sonnet' as ClaudeModel, agentPlanningModel: 'opus' as ClaudeModel };
+    expect(resolveRunModel(task, project, true)).toBe('opus');
+    expect(resolveRunModel(task, project, false)).toBe('sonnet');
+  });
+
+  it('still pins both kinds of run to a lone agentModel, unchanged from before the split', () => {
+    const project = repo('haiku', 'opus');
+    expect(resolveRunModel({ agentModel: 'sonnet' }, project, true)).toBe('sonnet');
+    expect(resolveRunModel({ agentModel: 'sonnet' }, project, false)).toBe('sonnet');
+    // No `agentPlanningModel` key at all, as on every card that predates the field.
+    expect(resolveRunModel({ agentModel: 'sonnet' }, project, true)).toBe('sonnet');
+  });
 });
 
 describe('MODEL_CATALOG', () => {

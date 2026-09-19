@@ -79,12 +79,20 @@ export function projectDefaultLabel(
   return project ? `Project default · ${modelCaption(project, labelOf)}` : 'Project default';
 }
 
-/** How a card's model reads back: its own override, else what its project resolves to. */
+/**
+ * How a card's model reads back: its own override(s), else what its project resolves to —
+ * split the same way {@link modelCaption} splits a project alone, since a card can now split
+ * its own planning from its own steps the same way a project can.
+ */
 export function cardModelCaption(
-  task: Pick<Task, 'agentModel'>,
+  task: Pick<Task, 'agentModel' | 'agentPlanningModel'>,
   project: ProjectModels | null,
   labelOf: (id: string) => string = RAW_ID,
 ): string {
-  if (task.agentModel != null) return labelOf(task.agentModel);
-  return project ? modelCaption(project, labelOf) : 'project default';
+  if (!project) return task.agentModel != null ? labelOf(task.agentModel) : 'project default';
+  const steps = resolveRunModel(task, project, false);
+  const planning = resolveRunModel(task, project, true);
+  const stepsLabel = labelOf(steps);
+  const planningLabel = labelOf(planning);
+  return planning === steps ? stepsLabel : `${planningLabel} planning · ${stepsLabel} steps`;
 }

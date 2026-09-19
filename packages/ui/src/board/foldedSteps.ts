@@ -1,7 +1,7 @@
 /**
  * Which board cards have folded their steps away, and how far.
  *
- * There are two lists, both in `AppSettings` because a fold has to survive the board being
+ * There are three lists, all in `AppSettings` because a fold has to survive the board being
  * unmounted — which happens every time you leave the screen — and a relaunch:
  *
  *  - `foldedStepCards` — the whole **Steps** section is folded; the heading and its counter
@@ -11,9 +11,12 @@
  *    newest fold themselves away so the new bunch is what you are looking at (see
  *    `splitEarlierSteps`). So this list records the exception, not the rule — which is what
  *    makes an empty list, and therefore a fresh install, behave the way it should.
+ *  - `shownLaterStepCards` — the same exception, mirrored to the other end of the chain: the
+ *    human has opened the **phases after the current one** back up. They fold away by
+ *    themselves for the same reason the earlier ones do — nothing has happened in them yet.
  *
- * They are the same shape and take the same operation, so there is one function for both
- * rather than two that could drift apart.
+ * They are the same shape and take the same operation, so there is one function for all
+ * three rather than three that could drift apart.
  */
 
 /**
@@ -42,6 +45,25 @@ export function toggleFoldedCard(
   // twice comes out once and for all rather than leaving a copy behind.
   const next = kept.filter((id) => id !== taskId);
   return folded.includes(taskId) ? next : [...next, taskId];
+}
+
+/**
+ * Add one card if it is not already folded, and forget every card that has left the board —
+ * the same prune {@link toggleFoldedCard} does, but add-if-absent rather than add-or-remove.
+ *
+ * For a caller that decides FOR the human rather than acting on a click of theirs (auto-fold
+ * on a move into Review/Done): idempotent, so firing it twice for the same card — or for a
+ * card the human had already unfolded back open on purpose — never fights them by re-closing
+ * what they just opened. `toggleFoldedCard` would flip it shut on an odd call and back open on
+ * an even one, which is the wrong shape for "make sure this is folded."
+ */
+export function ensureFoldedCard(
+  folded: readonly string[],
+  taskId: string,
+  onBoard: ReadonlySet<string>,
+): string[] {
+  const kept = folded.filter((id, i) => onBoard.has(id) && folded.indexOf(id) === i);
+  return kept.includes(taskId) ? kept : [...kept, taskId];
 }
 
 /**

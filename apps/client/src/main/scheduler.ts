@@ -61,6 +61,7 @@ import {
   DECLINED_ANSWER_MESSAGE,
   describeQuestions,
   formatAnswerMessage,
+  formatDiscussMessage,
   isAskUserQuestionTool,
   parseAskUserQuestion,
 } from './askUserQuestion';
@@ -820,6 +821,25 @@ interface Run {
    * either. Meanwhile the card's work sat finished and unmerged.
    */
   expectsPlan?: boolean;
+  /**
+   * This run IS a re-plan asked for by {@link Scheduler.replanCard} (Phase 19) — as opposed
+   * to a run that merely inherited `plan` mode from the card's own assignment. Two things
+   * key off it that `expectsPlan`/`permissionMode` cannot answer alone:
+   *  - `replanPending` reads it off every live run to refuse a second re-plan while this
+   *    one is still working; and
+   *  - `settle` reads it to keep a successful re-plan OFF the chain/integration path — its
+   *    job was a plan for the human to approve, not work to land.
+   */
+  replan?: boolean;
+  /**
+   * This re-plan targets a FUTURE phase already on the card, to replace in place rather
+   * than append after (Phase 20) — the round number `replanCard` validated before this run
+   * ever started. `raisePlanApproval` reads it to build the "replaces phase R" prompt and
+   * to park `{ round }` in `pendingReplacements`, and `planStepsToAppend` reads it to drop
+   * that round's own titles from the duplicate check (they are being thrown away, not kept).
+   * Absent on every ordinary re-plan, which only ever appends.
+   */
+  replaceRound?: number;
   /** Set once we've decided the task's outcome, so a trailing `exited` doesn't re-settle it. */
   settled: boolean;
   /**
@@ -873,6 +893,12 @@ interface PendingIntegration {
   base: string;
   worktree: string;
 }
+
+/**
+ * Everything `landWork` needs to land a finished chain — the same shape `readyToIntegrate`
+ * stores (see {@link PendingIntegration}, which happens to be identical).
+ */
+type LandingContext = PendingIntegration;
 
 /**
  * A parked failed task awaiting the human's chosen resolution (Phase A). `kind`
@@ -1109,7 +1135,19 @@ export class Scheduler {
    * worktree, so it must not start while the run it replaced is still shutting down there.
    * Keyed by task id; the value is everything `startTask` will need by then.
    */
-  private readonly pendingReplans = new Map<string, { projectId: string; prompt: string }>();
+  private readonly pendingReplans = new Map<
+    string,
+    { projectId: string; prompt: string; replan: true; replaceRound?: number }
+  >();
+  /**
+   * Plan-approval inbox items that would REPLACE a round in place rather than append one
+   * (Phase 20), keyed by the item's id — the round `raisePlanApproval` parked on the item's
+   * persisted context, so `approvePlan` can find it after the item was rehydrated from a
+   * restart, when nothing about the run that raised it survives. Same pattern as
+   * `pendingFailures`/`pendingIntegrations`: filled here and by `rehydrateAttention`, read
+   * (and cleared) by `answerAttention`.
+   */
+  private readonly pendingReplacements = new Map<string, { round: number }>();
   /**
    * Step ids already covered by a chain hand-back summary, per parent card (Phase 18).
    * A re-planned card finishes a chain once per ROUND, and `buildChainSummary` enumerates
@@ -1118,6 +1156,21 @@ export class Scheduler {
    * which is what every version before re-planning did anyway.
    */
   private readonly summarizedSteps = new Map<string, Set<string>>();
+  /**
+   * A chain whose last (currently pending) step just finished while a re-plan for the same
+   * card was still in flight (Phase 19 continued) — keyed by the CARD id, the same key
+   * `chain.workWritten`/`heldByMerge` use. Landing here would risk integrating a branch the
+   * human is about to hand more steps to, so the step is marked `done` and its landing
+   * context is parked here instead, to be replayed by {@link landHeld} once the plan
+   * resolves (approved with nothing new, approved with fresh steps that continue the chain
+   * on their own, or the planner giving up without one).
+   *
+   * In memory only, like `readyToIntegrate` and `chainStarts`: a restart forgets the hold,
+   * but forgets nothing that matters — the branch and worktree are still on disk, and
+   * `hasBranchToIntegrate` already answers the Merge button optimistically for a card that
+   * has worked, so the button keeps working even though this map came back empty.
+   */
+  private readonly heldLandings = new Map<string, LandingContext>();
   /** The permission gate handed to every task run (null until the broker is up). */
   private gate: PermissionGate | null = null;
   /**
@@ -1670,8 +1723,21 @@ export class Scheduler {
    * and the planner deferred until its process is gone — same reason `chainStarts` exists:
    * both runs share the card's worktree, and `--resume` against a session still shutting
    * down is a race.
+   *
+   * A chain still executing its steps does NOT hold this up (Phase 19): the planner is its
+   * own turn in the card's own conversation, so it runs beside a live step rather than
+   * behind it — see {@link replanPending} for what DOES still refuse a second one.
+   *
+   * `opts.replaceRound` (Phase 20) re-plans a FUTURE phase in place instead of appending a
+   * new one after it. The round has to exist and every one of its steps has to still be
+   * `pending`/`stopped` — nothing has started, finished or failed in it — or the ask is
+   * refused with `phase-started` rather than silently falling back to an append: a card
+   * whose round quietly grew a round M+1 nobody asked for is a worse surprise than a
+   * refusal naming the reason. Freed capacity from the round being thrown away is added
+   * back into `slotsLeft`, since replacing N steps with M costs nothing on the cap the
+   * round itself already spent.
    */
-  replanCard(taskId: string, note?: string): ChatSendResult {
+  replanCard(taskId: string, note?: string, opts?: { replaceRound?: number }): ChatSendResult {
     const refused = (reason: ChatRefusal): ChatSendResult => ({
       status: 'refused',
       taskId,
@@ -1685,22 +1751,36 @@ export class Scheduler {
     if (!card.agentProjectId) return refused('never-ran');
     if (this.authGate.active) return refused('signed-out');
     if (this.limitGate.active || card.status === 'blocked-by-limit') return refused('limit');
+    // Only one plan can be in flight for a card at a time — a second ask has nothing new to
+    // say until the human resolves the first (approve/reject its steps, or wait it out).
+    if (this.replanPending(card.id)) return refused('planning');
 
     const steps = this.store.getSubtasks(card.id);
-    // A chain still working owns the card's worktree and its own sequence; planning more
-    // work on top of it would queue steps behind an outcome nobody has seen yet.
-    if (chainInFlight(steps)) return refused('chain-busy');
-    const slotsLeft = MAX_PLAN_STEPS - steps.length;
+    const replaceRound = opts?.replaceRound;
+    const roundSteps =
+      replaceRound != null ? steps.filter((s) => (s.planRound ?? 1) === replaceRound) : [];
+    if (replaceRound != null) {
+      const started = roundSteps.some((s) => s.status !== 'pending' && s.status !== 'stopped');
+      if (roundSteps.length === 0 || started) return refused('phase-started');
+    }
+    const slotsLeft = MAX_PLAN_STEPS - steps.length + roundSteps.length;
     if (slotsLeft <= 0) return refused('chain-full');
 
     const project = this.runProjectFor(card);
     if (!project) return refused('never-ran');
 
-    const prompt = buildReplanPrompt(
-      card.title,
-      steps.map((s) => s.title),
-      { note, slotsLeft },
-    );
+    // The round being replaced is not "already on the card" for the duplicate-check list —
+    // it is what the new plan is replacing — so it comes out of `existingTitles` and goes
+    // into `replacing` instead, which tells the agent to propose ITS successor, not the
+    // round that would otherwise follow it.
+    const existingTitles = steps
+      .filter((s) => (s.planRound ?? 1) !== replaceRound)
+      .map((s) => s.title);
+    const replacing =
+      replaceRound != null
+        ? { round: replaceRound, titles: roundSteps.map((s) => s.title) }
+        : undefined;
+    const prompt = buildReplanPrompt(card.title, existingTitles, { note, slotsLeft, replacing });
     // Filed before anything starts, so the timeline records the ask even if the run dies on
     // spawn — and so the human can see what they asked for while the planner is thinking.
     if (note?.trim()) this.store.addChatMessage(card.projectId, card.id, note.trim());
@@ -1712,7 +1792,12 @@ export class Scheduler {
       live.settled = true; // we are deciding this run's outcome, not its exit code
       this.clearRunAttention(live.runId);
       this.sessions.stop(live.runId);
-      this.pendingReplans.set(card.id, { projectId: project.id, prompt });
+      this.pendingReplans.set(card.id, {
+        projectId: project.id,
+        prompt,
+        replan: true,
+        replaceRound,
+      });
       return { status: 'resumed', taskId: card.id, runId: live.runId };
     }
     // Reserved elsewhere (a run spawning right now) — refuse rather than double-run a task.
@@ -1721,20 +1806,66 @@ export class Scheduler {
     return {
       status: 'resumed',
       taskId: card.id,
-      runId: this.startTask(project, card, { chatPrompt: prompt, permissionMode: 'plan' }),
+      runId: this.startTask(project, card, {
+        chatPrompt: prompt,
+        permissionMode: 'plan',
+        replan: true,
+        replaceRound,
+      }),
     };
   }
 
-  /** Start a re-plan whose predecessor run has now exited. See {@link replanCard}. */
+  /**
+   * Whether a re-plan is already underway for `cardId` (Phase 19) — the guard that replaces
+   * `replanCard`'s old `chainInFlight` refusal now that the planner is allowed to run beside
+   * a live chain.
+   *
+   * Three shapes, because a re-plan passes through three states and any of them can be
+   * "in progress" when a second ask comes in:
+   *  - queued behind the run it interrupted (`pendingReplans`);
+   *  - actually running right now (a live, unsettled `Run` with `replan` set); or
+   *  - already finished and sitting in the inbox as an approve/reject decision
+   *    (`plan-approval`) — checked against `this.attention` rather than the run, because a
+   *    restart drops the run but rehydrates the attention item, and the plan is just as
+   *    pending either way.
+   */
+  private replanPending(cardId: string): boolean {
+    if (this.pendingReplans.has(cardId)) return true;
+    for (const run of this.runs.values()) {
+      if (run.taskId === cardId && !run.settled && run.replan) return true;
+    }
+    for (const item of this.attention.values()) {
+      if (item.taskId === cardId && item.kind === 'plan-approval') return true;
+    }
+    return false;
+  }
+
+  /**
+   * Start a re-plan whose predecessor run has now exited. See {@link replanCard}.
+   *
+   * Every early return past the `pendingReplans` deletion means the re-plan is NOT
+   * happening after all — so it calls {@link Scheduler.landHeld} on its way out: a chain
+   * that held its landing for this very plan (`replanPending` reads `pendingReplans`,
+   * among other things) must not be left holding it for a plan that just quietly declined
+   * to start.
+   */
   private startPendingReplan(taskId: string): void {
     const pending = this.pendingReplans.get(taskId);
     if (!pending) return;
     this.pendingReplans.delete(taskId);
-    if (this.disposed || this.limitGate.active) return;
+    if (this.disposed) return;
     const task = this.store.getTask(taskId);
     const project = this.store.getProject(pending.projectId);
-    if (!task || !project || this.inFlight.has(taskId)) return;
-    this.startTask(project, task, { chatPrompt: pending.prompt, permissionMode: 'plan' });
+    if (this.limitGate.active || !task || !project || this.inFlight.has(taskId)) {
+      this.landHeld(taskId);
+      return;
+    }
+    this.startTask(project, task, {
+      chatPrompt: pending.prompt,
+      permissionMode: 'plan',
+      replan: true,
+      replaceRound: pending.replaceRound,
+    });
   }
 
   private resumeForChat(target: Task, text: string): ChatSendResult {
@@ -1826,12 +1957,26 @@ export class Scheduler {
     ) {
       stopped = true;
     }
+    // A chain finished but held its landing for a plan that was still being drafted
+    // (`landHeld`'s whole reason to exist) — Stop is how the human tells it the plan is not
+    // coming. There is nothing left to run, only a decision to convert: hand the branch to
+    // the Merge button rather than leave it stuck behind a plan nobody is finishing.
+    if (this.heldLandings.has(taskId)) stopped = true;
     if (!stopped) return false;
     this.attempts.delete(taskId);
     this.retryQueue.delete(taskId);
     this.fixNotes.delete(taskId);
     this.pendingConflictFix.delete(taskId);
     this.conflictFixAttempts.delete(taskId);
+    // Keyed by the step id the held context carries, same as `landWork`'s own manual-merge
+    // offer — `startIntegration` falls back to reading the branch straight off disk when the
+    // CARD's id (what the Merge button actually presses) misses this map, so the key here
+    // only matters for `hasBranchToIntegrate`'s in-memory fast path, not for Merge itself.
+    const held = this.heldLandings.get(taskId);
+    if (held) {
+      this.readyToIntegrate.set(held.taskId, held);
+      this.heldLandings.delete(taskId);
+    }
     // Stopping a card cancels an approved plan's pending chain too: its queued first
     // step must not spring to life when the planning run finally exits, and its
     // remaining steps are stopped so nothing is left looking runnable (Phase 11).
@@ -2401,7 +2546,10 @@ export class Scheduler {
         this.approvePlan(item, pending?.resolve, note);
       } else {
         // Rejected: the session keeps its plan-mode context and re-plans with the note
-        // as the reason, which is far cheaper than starting the research over.
+        // as the reason, which is far cheaper than starting the research over. Its next
+        // `ExitPlanMode` raises a FRESH item and re-derives `{ round }` from the run's own
+        // `replaceRound` (untouched by a rejection), so this item's own entry is now stale.
+        this.pendingReplacements.delete(itemId);
         const message = note || PLAN_REJECTED_MESSAGE;
         if (pending) pending.resolve({ behavior: 'deny', message });
         else this.sessions.send(item.runId, message);
@@ -2428,6 +2576,8 @@ export class Scheduler {
         message = formatAnswerMessage(questions, answer.selections, answer.freeText, note);
       } else if (answer.decision === 'reply') {
         message = formatAnswerMessage(questions, [[answer.text]], undefined, note);
+      } else if (answer.decision === 'discuss') {
+        message = formatDiscussMessage(answer.text, note);
       } else {
         // An explicit "you decide". The agent only ever gets to choose because a human
         // said so — never because nobody looked in time.
@@ -2627,6 +2777,7 @@ export class Scheduler {
     this.conflictFixAttempts.clear();
     this.chainStarts.clear();
     this.pendingReplans.clear();
+    this.pendingReplacements.clear();
     this.summarizedSteps.clear();
     this.pendingConflictFix.clear();
     this.activeProjects.clear();
@@ -2689,6 +2840,15 @@ export class Scheduler {
       releaseSeed?: boolean;
       permissionMode?: PermissionMode;
       resumeNudge?: string;
+      /**
+       * This turn is a re-plan asked for by {@link replanCard} (Phase 19): the run's whole
+       * job is to come back with a plan for the human to approve, not to write code, so
+       * `settle` must not walk a successful one into chain/integration machinery — see
+       * {@link Run.replan}.
+       */
+      replan?: boolean;
+      /** This re-plan replaces a round in place rather than appending — see {@link Run.replaceRound}. */
+      replaceRound?: number;
     } = {},
   ): string {
     const runId = randomUUID();
@@ -2747,6 +2907,8 @@ export class Scheduler {
       // project's) model decides the NEXT run and can never change this one mid-flight.
       model: resolveRunModel(task, project, expectsPlan && permissionMode === 'plan'),
       expectsPlan,
+      replan: opts.replan,
+      replaceRound: opts.replaceRound,
     };
     this.runs.set(runId, run);
     this.inFlight.add(task.id);
@@ -3537,6 +3699,13 @@ export class Scheduler {
         if (this.chainStarts.delete(run.taskId)) this.advanceSubtasks(run.taskId);
         // A re-plan queued behind this run (Phase 18) — the worktree is free now.
         this.startPendingReplan(run.taskId);
+        // A CARD's own run just ended — its chat turn, or the planner itself settling out
+        // through the `result` path above. Either way `replanPending` may now read false
+        // for the first time since a chain held its landing on this card, so give it the
+        // chance to replay. (A step's own run never holds anything under its own id —
+        // `heldLandings` is keyed by the PARENT — so this is a no-op for one.)
+        const exitedTask = this.store.getTask(run.taskId);
+        if (exitedTask && !exitedTask.parentTaskId) this.landHeld(run.taskId);
         this.pump(run.projectId); // a slot freed up — advance the queue
         // An auto-retry of a task whose project queue is idle (e.g. an ad-hoc run):
         // `pump` won't touch an inactive project, so relaunch it directly.
@@ -4004,6 +4173,14 @@ export class Scheduler {
       steps?: string[];
       /** `agent-question` only: the structured questions, with their options. */
       questions?: AttentionQuestion[];
+      /**
+       * Kind-specific context to persist alongside the item, read back the same way
+       * `raiseTaskFailed`/`raiseMergeConflict` do for their own kinds — a `plan-approval`
+       * that replaces a round in place (Phase 20) parks `{ round }` here so `approvePlan`
+       * can find it after a restart drops the run that raised it. Absent, and so saved as
+       * `null`, for every caller that has nothing worth surviving a restart.
+       */
+      context?: unknown;
     },
   ): AttentionItem {
     const task = this.store.getTask(run.taskId);
@@ -4026,9 +4203,9 @@ export class Scheduler {
     this.attention.set(item.id, item);
     // Persisted alongside the in-memory map, not instead of it: the map is what every hot
     // path reads, the table is what survives a restart. The kind-specific context is
-    // filled in by the specialised raisers (`raiseTaskFailed`, `raiseMergeConflict`),
-    // which know what their answer path will need.
-    this.store.saveAttention(item, null);
+    // filled in by the specialised raisers (`raiseTaskFailed`, `raiseMergeConflict`) and by
+    // `detail.context` above, which know what their answer path will need.
+    this.store.saveAttention(item, detail.context ?? null);
     this.updateTask(run.taskId, { status: 'waiting-input' }, run.runId);
     this.emitAttention(item);
     return item;
@@ -4148,6 +4325,12 @@ export class Scheduler {
       if (item.kind === 'merge-conflict' && context) {
         this.pendingIntegrations.set(item.id, context as PendingIntegration);
       }
+      // A plan-approval that would replace a round in place (Phase 20) parked `{ round }`
+      // on itself when raised — restore it the same way, or a restart between the plan and
+      // its approval would make `approvePlan` treat a replacement as an ordinary append.
+      if (item.kind === 'plan-approval' && context) {
+        this.pendingReplacements.set(item.id, context as { round: number });
+      }
       this.emitAttention(revived);
     }
   }
@@ -4182,6 +4365,7 @@ export class Scheduler {
       }
       this.pendingIntegrations.delete(item.id); // drop any parked conflict for this run
       this.pendingFailures.delete(item.id); // …and any parked failure
+      this.pendingReplacements.delete(item.id); // …and any parked round-replacement
       this.resolveAttention(item.id);
     }
     // Negotiations touching this run (Phase D): if it was the PROPOSER, the round
@@ -4342,6 +4526,20 @@ export class Scheduler {
       return;
     }
 
+    // A re-plan run (Phase 19) that came back `done` did its whole job the moment it put a
+    // plan in front of the human — there is no branch to land, because it never wrote any
+    // work of its own, only steps for the CARD's existing (or as-yet-nonexistent) chain to
+    // run later. Landing it here would be wrong twice over: `chain.workWritten` would fire
+    // for work that isn't there, and the run's own branch/base/worktree — inherited from
+    // whatever chain it ran beside — belong to that chain, not to this turn, so integrating
+    // them would land someone else's unfinished steps. A FAILED re-plan is not special this
+    // way; it is exactly a failed run and falls through to `handleRunFailure` below.
+    if (run.replan && status === 'done') {
+      this.attempts.delete(run.taskId);
+      this.updateTask(run.taskId, { status: 'in-progress' }, null);
+      return;
+    }
+
     // A step of an approved plan that still has siblings to run: the chain's branch is
     // not finished, so there is nothing to integrate yet — mark the step done and start
     // the next one. Only the FINAL step falls through to the integration below, which
@@ -4355,119 +4553,68 @@ export class Scheduler {
         this.advanceSubtasks(finished.parentTaskId);
         return;
       }
+      // No pending sibling — but a re-plan for the parent is still being drafted (Phase 19
+      // continued). Approving it with fresh steps would continue the chain right past this
+      // branch, so landing now (merge / PR / the `stacked` release below) would race
+      // whatever the human is about to approve. Mark the step done and park its landing
+      // context under the CARD instead; `landHeld` replays it, via `landWork`, once the
+      // plan resolves one way or the other.
+      if (
+        finished?.parentTaskId &&
+        run.branch &&
+        run.base &&
+        run.worktree &&
+        this.worktrees &&
+        this.replanPending(finished.parentTaskId)
+      ) {
+        this.attempts.delete(run.taskId);
+        this.updateTask(run.taskId, { status: 'done' }, null);
+        this.heldLandings.set(finished.parentTaskId, {
+          projectId: run.projectId,
+          taskId: run.taskId,
+          runId: run.runId,
+          branch: run.branch,
+          base: run.base,
+          worktree: run.worktree,
+        });
+        this.noteRun(
+          run.projectId,
+          run.taskId,
+          run.runId,
+          'Finished. The chain is waiting for the plan in progress before it lands.',
+        );
+        return;
+      }
       // Past that return, this card's work is WRITTEN: either it has no steps, or the last
       // of them just finished, and in both cases there is a branch to build on. That is the
       // `stacked` gate's whole moment, and it is deliberately here — BEFORE integration,
       // before review, before anyone has said the work is good. A `stacked` successor buys
       // exactly that head start and accepts exactly that risk; `after-merge` (the default)
       // waits for the merge below instead.
-      this.chain.workWritten(finished?.parentTaskId ?? run.taskId);
+      //
+      // Only fired here when there is NO branch to land (non-worktree mode, or worktrees
+      // disabled outright): `landWork` below fires it itself when there is one, at the
+      // moment it actually lands rather than the moment `settle` merely observed the work
+      // was done — see `landWork`'s own doc comment for why that timing matters for a held
+      // landing.
+      if (!(run.branch && run.base && run.worktree && this.worktrees)) {
+        this.chain.workWritten(finished?.parentTaskId ?? run.taskId);
+      }
     }
     if (status === 'done' && run.branch && run.base && run.worktree && this.worktrees) {
       // Capture the integration inputs now — the imminent `exited` event deletes this
       // run from `runs`, and integration is async.
-      const project = this.store.getProject(run.projectId);
-      if (project) {
-        const ctx = {
-          taskId: run.taskId,
-          runId: run.runId,
-          branch: run.branch,
-          base: run.base,
-          worktree: run.worktree,
-        };
-        // (A Rung 2 conflict fix never reaches here — it is redeemed at the top of `settle`,
-        // where a failed one is caught too.)
-        //
-        // Phase 17: merging is the human's call unless they asked for it to be automatic.
-        // Auto-merge happens at the moment the work has been reviewed least, and when it
-        // failed it parked an ask whose only real option retried the same failure.
-        //
-        // Asked of the CARD, not of the app: a repo you own outright wants its branches
-        // merged the moment they are green, and the one your team ships from does not, so
-        // the card answers first, then its project, then the app-wide default
-        // (`@shared/integrate`). A step is never asked — the branch belongs to the parent
-        // card and the whole plan merges once, so the parent's answer governs the merge of
-        // work its steps only contributed to.
-        const settling = this.store.getTask(run.taskId);
-        const owner = settling?.parentTaskId ? this.store.getTask(settling.parentTaskId) : settling;
-        // Open a pull request INSTEAD of merging, when the card asks for it.
-        //
-        // Asked before auto-merge and asked of the OWNER, both deliberately. Before, because
-        // the two are alternatives: merging first and then opening a PR would open one for
-        // work base already has. Of the owner, for the same reason `autoIntegrateOn` is —
-        // a plan's steps share one branch, so one pull request opens for the whole plan when
-        // its LAST step lands, rather than each step opening its own.
-        //
-        // The work has already reached this point past `hasPendingSibling`, so "the card's
-        // work is written" and "all the steps are done" are the same moment here.
-        if (autoCreatePrOn(owner, project)) {
-          this.attempts.delete(run.taskId);
-          // The branch stays exactly where it is, offer and all: a pull request is opened
-          // ON it, not instead of it, and if the create fails the human still has the Merge
-          // button and the Create PR button pointing at an untouched branch.
-          this.readyToIntegrate.set(run.taskId, { projectId: project.id, ...ctx });
-          void this.openPullRequestFor(project, ctx, owner?.id ?? run.taskId);
-          // The same status split as every other path out of here: a STEP must reach `done`
-          // or the chain machinery breaks, and a CARD must not — only the human moves a card.
-          const settledForPr = this.store.getTask(run.taskId);
-          this.updateTask(
-            run.taskId,
-            { status: settledForPr?.parentTaskId ? 'done' : 'in-progress' },
-            null,
-          );
-          this.maybeWriteBackPlan(run.taskId);
-          void this.finishParentChain(run.taskId, {
-            branch: ctx.branch,
-            base: ctx.base,
-            merged: false,
-          });
-          return;
-        }
-        if (autoIntegrateOn(owner, project, this.store.getSettings())) {
-          void this.integrateWorktree(project, ctx);
-          return;
-        }
-        this.attempts.delete(run.taskId);
-        this.readyToIntegrate.set(run.taskId, { projectId: project.id, ...ctx });
-        // What this unmerged branch is HOLDING, said in the one note a human already reads
-        // to learn it was not merged. "Merge when you get to it" and "three cards are
-        // parked until you do" are different decisions, and only this sentence tells them
-        // apart. Asked of `owner`, the card that owns the branch, because that is the id
-        // the chain is drawn between — a step is never linked, so a plan's steps all point
-        // at their parent, exactly as `chain.workWritten` was handed it above. No de-dup is
-        // needed: `settle` runs once per run, so this lands once per thing there is to press.
-        const held = owner ? this.chain.heldByMerge(owner.id) : [];
-        const holding =
-          held.length > 0
-            ? ` ${held.length} ${held.length === 1 ? 'card is' : 'cards are'} chained to ` +
-              `start when this merges — ${held.join(', ')} — so nothing downstream moves ` +
-              `until you press it.`
-            : '';
-        this.noteRun(
-          project.id,
-          run.taskId,
-          run.runId,
-          `Finished on branch "${ctx.branch}". It has NOT been merged into ${ctx.base} — ` +
-            `review it, then choose Merge on the card. The worktree is kept at ` +
-            `${ctx.worktree}.${holding}`,
-        );
-        // Same split as the merged path: a STEP must reach `done` or the chain machinery
-        // breaks (`hasPendingSibling`, `advanceSubtasks` and `chainInFlight` all read it
-        // as "this step is over"), while a CARD must not — only the human moves a card.
-        const settled = this.store.getTask(run.taskId);
-        this.updateTask(
-          run.taskId,
-          { status: settled?.parentTaskId ? 'done' : 'in-progress' },
-          null,
-        );
-        this.maybeWriteBackPlan(run.taskId);
-        void this.finishParentChain(run.taskId, {
-          branch: ctx.branch,
-          base: ctx.base,
-          merged: false,
-        });
-        return;
-      }
+      const landed = this.landWork({
+        projectId: run.projectId,
+        taskId: run.taskId,
+        runId: run.runId,
+        branch: run.branch,
+        base: run.base,
+        worktree: run.worktree,
+      });
+      if (landed) return;
+      // The project has since been removed — fall through to the ordinary "done" ending
+      // below, exactly as before `landWork` existed.
     }
     if (status === 'failed') {
       this.handleRunFailure(run, reason ?? 'the task failed');
@@ -4483,6 +4630,135 @@ export class Scheduler {
     // and the outcome lands in the thread.
     this.updateTask(run.taskId, { status: 'in-progress' }, null);
     this.maybeWriteBackPlan(run.taskId);
+  }
+
+  /**
+   * Land a finished chain's branch: open a pull request, auto-merge, or offer the Merge
+   * button — whichever the card, then its project, then the app settings ask for — then
+   * hand the chain back to its parent and write back the plan file.
+   *
+   * Shared by `settle`'s own immediate path and {@link Scheduler.landHeld}, which calls it
+   * later, once a re-plan that had this landing on hold finally resolves. `chain.workWritten`
+   * is deliberately fired IN HERE rather than back in `settle`: doing it the moment the work
+   * is merely observed done would release a `stacked` successor against a branch the human
+   * might still be about to extend with more steps, before the plan holding it has a chance
+   * to say so.
+   *
+   * Returns whether it actually landed: `false` (having still fired `chain.workWritten`,
+   * same as before this was split out) if the project has since been removed, in which case
+   * the caller falls through to its own "done" ending — exactly the fallback `settle` gave
+   * this same block before it had a name.
+   */
+  private landWork(ctx: LandingContext): boolean {
+    this.chain.workWritten(this.store.getTask(ctx.taskId)?.parentTaskId ?? ctx.taskId);
+    const project = this.store.getProject(ctx.projectId);
+    if (!project) return false;
+    // (A Rung 2 conflict fix never reaches here — it is redeemed at the top of `settle`,
+    // where a failed one is caught too.)
+    //
+    // Phase 17: merging is the human's call unless they asked for it to be automatic.
+    // Auto-merge happens at the moment the work has been reviewed least, and when it
+    // failed it parked an ask whose only real option retried the same failure.
+    //
+    // Asked of the CARD, not of the app: a repo you own outright wants its branches
+    // merged the moment they are green, and the one your team ships from does not, so
+    // the card answers first, then its project, then the app-wide default
+    // (`@shared/integrate`). A step is never asked — the branch belongs to the parent
+    // card and the whole plan merges once, so the parent's answer governs the merge of
+    // work its steps only contributed to.
+    const settling = this.store.getTask(ctx.taskId);
+    const owner = settling?.parentTaskId ? this.store.getTask(settling.parentTaskId) : settling;
+    // Open a pull request INSTEAD of merging, when the card asks for it.
+    //
+    // Asked before auto-merge and asked of the OWNER, both deliberately. Before, because
+    // the two are alternatives: merging first and then opening a PR would open one for
+    // work base already has. Of the owner, for the same reason `autoIntegrateOn` is —
+    // a plan's steps share one branch, so one pull request opens for the whole plan when
+    // its LAST step lands, rather than each step opening its own.
+    //
+    // The work has already reached this point past `hasPendingSibling`, so "the card's
+    // work is written" and "all the steps are done" are the same moment here.
+    if (autoCreatePrOn(owner, project)) {
+      this.attempts.delete(ctx.taskId);
+      // The branch stays exactly where it is, offer and all: a pull request is opened
+      // ON it, not instead of it, and if the create fails the human still has the Merge
+      // button and the Create PR button pointing at an untouched branch.
+      this.readyToIntegrate.set(ctx.taskId, ctx);
+      void this.openPullRequestFor(project, ctx, owner?.id ?? ctx.taskId);
+      // The same status split as every other path out of here: a STEP must reach `done`
+      // or the chain machinery breaks, and a CARD must not — only the human moves a card.
+      const settledForPr = this.store.getTask(ctx.taskId);
+      this.updateTask(
+        ctx.taskId,
+        { status: settledForPr?.parentTaskId ? 'done' : 'in-progress' },
+        null,
+      );
+      this.maybeWriteBackPlan(ctx.taskId);
+      void this.finishParentChain(ctx.taskId, {
+        branch: ctx.branch,
+        base: ctx.base,
+        merged: false,
+      });
+      return true;
+    }
+    if (autoIntegrateOn(owner, project, this.store.getSettings())) {
+      void this.integrateWorktree(project, ctx);
+      return true;
+    }
+    this.attempts.delete(ctx.taskId);
+    this.readyToIntegrate.set(ctx.taskId, ctx);
+    // What this unmerged branch is HOLDING, said in the one note a human already reads
+    // to learn it was not merged. "Merge when you get to it" and "three cards are
+    // parked until you do" are different decisions, and only this sentence tells them
+    // apart. Asked of `owner`, the card that owns the branch, because that is the id
+    // the chain is drawn between — a step is never linked, so a plan's steps all point
+    // at their parent, exactly as `chain.workWritten` was handed it above. No de-dup is
+    // needed: `settle` runs once per run, so this lands once per thing there is to press.
+    const held = owner ? this.chain.heldByMerge(owner.id) : [];
+    const holding =
+      held.length > 0
+        ? ` ${held.length} ${held.length === 1 ? 'card is' : 'cards are'} chained to ` +
+          `start when this merges — ${held.join(', ')} — so nothing downstream moves ` +
+          `until you press it.`
+        : '';
+    this.noteRun(
+      project.id,
+      ctx.taskId,
+      ctx.runId,
+      `Finished on branch "${ctx.branch}". It has NOT been merged into ${ctx.base} — ` +
+        `review it, then choose Merge on the card. The worktree is kept at ` +
+        `${ctx.worktree}.${holding}`,
+    );
+    // Same split as the merged path: a STEP must reach `done` or the chain machinery
+    // breaks (`hasPendingSibling`, `advanceSubtasks` and `chainInFlight` all read it
+    // as "this step is over"), while a CARD must not — only the human moves a card.
+    const settled = this.store.getTask(ctx.taskId);
+    this.updateTask(ctx.taskId, { status: settled?.parentTaskId ? 'done' : 'in-progress' }, null);
+    this.maybeWriteBackPlan(ctx.taskId);
+    void this.finishParentChain(ctx.taskId, {
+      branch: ctx.branch,
+      base: ctx.base,
+      merged: false,
+    });
+    return true;
+  }
+
+  /**
+   * Replay a landing that `settle` parked in {@link Scheduler.heldLandings} because a
+   * re-plan for the card was still in flight when its chain ran out of pending steps.
+   *
+   * Guarded on {@link Scheduler.replanPending} rather than firing unconditionally: this is
+   * called speculatively from several places that only sometimes mean the plan is actually
+   * resolved (a run exiting, a decline to start a queued re-plan), and a card can in
+   * principle pick up a SECOND re-plan the moment the first one's approval item appears —
+   * `replanPending` is the one true answer either way.
+   */
+  private landHeld(cardId: string): void {
+    if (this.replanPending(cardId)) return;
+    const ctx = this.heldLandings.get(cardId);
+    if (!ctx) return;
+    this.heldLandings.delete(cardId);
+    this.landWork(ctx);
   }
 
   /**
@@ -5157,29 +5433,48 @@ export class Scheduler {
    * being signed off rather than just prose. Reuses the existing plan capture: the
    * markdown is read from the task (persisted by `capturePlan`), so a plan survives
    * an app restart between the agent producing it and the human reading it.
+   *
+   * `run.replaceRound` (Phase 20) makes this an approval that would replace a round in
+   * place rather than append one: the round's own titles are excluded from the duplicate
+   * check (they are what is being thrown away, not kept), the prompt names the phase and
+   * how many of its steps would be replaced, and the round is parked on the item — via
+   * `raiseAttention`'s `context` — as `{ round }` in `pendingReplacements`, so `approvePlan`
+   * can find it even after a restart drops this run.
    */
   private raisePlanApproval(run: Run): AttentionItem {
     run.planPresented = true; // this run did its job, whatever the human decides next
     const plan = this.store.getTask(run.taskId)?.agentPlan ?? '';
     const existing = this.store.getSubtasks(run.taskId);
-    const steps = this.planStepsToAppend(run.taskId, plan);
-    return this.raiseAttention(run, {
+    const replaceRound = run.replaceRound;
+    const steps = this.planStepsToAppend(run.taskId, plan, replaceRound);
+    const targetSteps =
+      replaceRound != null ? existing.filter((s) => (s.planRound ?? 1) === replaceRound) : [];
+    const item = this.raiseAttention(run, {
       kind: 'plan-approval',
       prompt:
         steps.length === 0
           ? 'The agent finished planning, but the plan proposes nothing this card does not ' +
             'already have. Review it below — approving will not add any steps.'
-          : existing.length > 0
-            ? `The agent proposes ${steps.length} more step(s), on top of the ` +
-              `${existing.length} already on this card. Approving runs them one at a time, ` +
-              `each in its own session, on this card's branch.`
-            : `The agent finished planning and proposes ${steps.length} step(s). Approving runs ` +
-              `them one at a time, each in its own session, on this card's branch.`,
+          : replaceRound != null
+            ? `The agent proposes ${steps.length} step(s) that replace the ` +
+              `${targetSteps.length} step(s) of phase ${replaceRound}. Approving swaps them ` +
+              `in — unless that phase has started in the meantime, in which case its steps ` +
+              `are kept and these run after it instead — each in its own session, on this ` +
+              `card's branch.`
+            : existing.length > 0
+              ? `The agent proposes ${steps.length} more step(s), on top of the ` +
+                `${existing.length} already on this card. Approving runs them one at a time, ` +
+                `each in its own session, on this card's branch.`
+              : `The agent finished planning and proposes ${steps.length} step(s). Approving runs ` +
+                `them one at a time, each in its own session, on this card's branch.`,
       toolName: null,
       reason: null,
       plan,
       steps: steps.map((s) => s.title),
+      context: replaceRound != null ? { round: replaceRound } : undefined,
     });
+    if (replaceRound != null) this.pendingReplacements.set(item.id, { round: replaceRound });
+    return item;
   }
 
   /**
@@ -5189,13 +5484,17 @@ export class Scheduler {
    * Shared by `raisePlanApproval` and `approvePlan` on purpose. They used to answer this
    * question differently (the inbox listed the whole plan, approval created a subset), which
    * meant a re-planning round could promise five steps and deliver two with no explanation.
+   *
+   * `excludeRound` (Phase 20) leaves one round's own titles out of both the duplicate check
+   * and the {@link MAX_PLAN_STEPS} count — the round a replacing plan is about to throw away
+   * is not "already on the card" for either purpose, it is what the new steps replace.
    */
-  private planStepsToAppend(parentId: string, plan: string): PlanStep[] {
+  private planStepsToAppend(parentId: string, plan: string, excludeRound?: number): PlanStep[] {
     const existing = this.store.getSubtasks(parentId);
-    return stepsToAppend(
-      existing.map((s) => s.title),
-      splitPlanIntoSteps(plan),
-    );
+    const existingTitles = existing
+      .filter((s) => (s.planRound ?? 1) !== excludeRound)
+      .map((s) => s.title);
+    return stepsToAppend(existingTitles, splitPlanIntoSteps(plan));
   }
 
   /**
@@ -5212,6 +5511,14 @@ export class Scheduler {
    * resolved the approval, moved the card to `in-progress` and created nothing, so the
    * human saw an agent "plan" work that never appeared anywhere. Duplicate protection
    * moved into `stepsToAppend`, which drops individual repeats rather than the whole round.
+   *
+   * A round the item's plan would REPLACE (Phase 20, `pendingReplacements`) swaps in place
+   * instead of appending — but only if every one of that round's steps is still
+   * `pending`/`stopped` at the moment of approval, not merely when the re-plan was asked
+   * for: a human can press Start on the round, or the chain can simply reach it, in the time
+   * the plan sat waiting for a decision. When that happens the swap is declined the same way
+   * `replanCard` would have declined the ask itself — the round's live or landed steps are
+   * kept, and the fresh ones land as a new round after them, with a comment saying so.
    */
   private approvePlan(
     item: AttentionItem,
@@ -5220,27 +5527,62 @@ export class Scheduler {
   ): void {
     const parent = this.store.getTask(item.taskId);
     if (!parent) return;
+    const replacement = this.pendingReplacements.get(item.id);
+    this.pendingReplacements.delete(item.id);
     const plan = parent.agentPlan ?? item.plan ?? '';
-    const fresh = this.planStepsToAppend(parent.id, plan);
-    const round = this.store.maxSubtaskRound(parent.id) + 1;
-    for (const step of fresh) {
-      this.store.addSubtask(parent.id, {
-        title: step.title,
-        description: step.description,
-        round,
-      });
+    const fresh = this.planStepsToAppend(parent.id, plan, replacement?.round);
+
+    const roundSteps = replacement
+      ? this.store.getSubtasks(parent.id).filter((s) => (s.planRound ?? 1) === replacement.round)
+      : [];
+    const canReplace =
+      replacement != null &&
+      roundSteps.length > 0 &&
+      roundSteps.every((s) => s.status === 'pending' || s.status === 'stopped');
+
+    let round = this.store.maxSubtaskRound(parent.id) + 1;
+    let replaced = false;
+    if (fresh.length > 0) {
+      if (replacement && canReplace) {
+        this.store.replaceSubtaskRound(
+          parent.id,
+          replacement.round,
+          fresh.map((step) => ({ title: step.title, description: step.description })),
+        );
+        round = replacement.round;
+        replaced = true;
+      } else {
+        for (const step of fresh) {
+          this.store.addSubtask(parent.id, {
+            title: step.title,
+            description: step.description,
+            round,
+          });
+        }
+        if (replacement) {
+          this.store.addComment(
+            parent.projectId,
+            parent.id,
+            `Phase ${replacement.round} had started by the time this plan was approved, so ` +
+              `its steps were kept and the new ones were added as phase ${round}.`,
+          );
+        }
+      }
     }
     // An approval note is the human's own guidance — filed on the card, where every
     // step's prompt picks it up.
     if (note) this.store.addComment(parent.projectId, parent.id, note);
     // The plan itself goes on the timeline, because `capturePlan` overwrites `agentPlan`:
     // without this, a second approved plan silently erases the first from the card, and the
-    // "Approved plan" fold would claim round 2's plan produced round 1's steps.
-    if (plan.trim() && round > 1) {
+    // "Approved plan" fold would claim round 2's plan produced round 1's steps. A genuine
+    // replacement logs it unconditionally, whatever its round number — the round already
+    // carries an earlier approval of its own, and this plan is what `agentPlan` is about to
+    // lose to overwrite.
+    if (plan.trim() && (round > 1 || replaced)) {
       this.store.addComment(
         parent.projectId,
         parent.id,
-        `Approved plan (round ${round}):\n\n${plan}`,
+        `Approved plan (phase ${round}${replaced ? ', re-planned' : ''}):\n\n${plan}`,
       );
     }
 
@@ -5271,9 +5613,16 @@ export class Scheduler {
       );
       this.updateTask(parent.id, { status: 'in-progress' }, null);
       this.tasksChanged?.(parent.projectId);
+      // Nothing was added, so any landing this card's chain was holding for this very plan
+      // (`heldLandings`) can proceed now — the plan resolved and grew the chain by nothing.
+      this.landHeld(parent.id);
       return;
     }
 
+    // The plan grew the chain instead — whatever landing was on hold for THIS card no longer
+    // applies; the branch it names keeps growing under the new steps rather than landing as
+    // it stood. `chainStarts`/`advanceSubtasks` below continue the chain into them directly.
+    this.heldLandings.delete(parent.id);
     this.updateTask(parent.id, { status: 'in-progress' }, null);
     this.tasksChanged?.(parent.projectId);
     // Step 1 shares the planner's worktree, so it waits for that process to be gone
@@ -5425,6 +5774,12 @@ export class Scheduler {
    * landing spends nothing more than the comment until someone actually talks to the card.
    *
    * The card stays **In Progress**. Only the human moves a card to Done.
+   *
+   * A landing `landHeld` replayed long after the step itself finished reaches here exactly
+   * the same way, with no special-casing needed: `summarizedSteps` already scopes the
+   * report to whatever this parent has not been told about yet, so a hand-back delayed by a
+   * pending plan still reports only the steps that finished since the last one, not the
+   * whole chain's history a second time.
    */
   private async finishParentChain(
     subtaskId: string,

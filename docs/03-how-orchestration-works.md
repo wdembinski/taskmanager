@@ -597,13 +597,15 @@ names **two** models, in **Settings → Agents** (and in the Projects tab's dial
   — and nothing about that project changes: both halves use the execution model.
 
 A card or a step may still overrule both, from the assign dialog, the composer
-strip, or the step's own controls. The whole ladder is one pure function
+strip, or the step's own controls — and a card may overrule its own planning runs
+separately from its steps. The whole ladder is one pure function
 (`resolveRunModel`, `src/shared/model.ts`):
 
 ```
-task.agentModel                                 // this card's / this step's own choice
-  ?? (planning ? project.planningModel : null)  // "Same as execution" puts nothing here
-  ?? project.defaultModel                       // the steps execution model
+// planning:
+task.agentPlanningModel ?? task.agentModel ?? project.planningModel ?? project.defaultModel
+// steps:
+task.agentModel ?? project.defaultModel
 ```
 
 **What counts as planning is the turn, not the mode.** A run is billed as planning
@@ -641,18 +643,55 @@ making. Nothing ever unfolds a card for you: a running step, a step that has par
 the chain, and a card that wants you all still ring, count and say what they are
 doing on the card's own body.
 
-**Re-planning folds the previous bunch by itself.** Ask a card for more steps and the
-new ones arrive as a planning round of their own; the card then shows that round and
-puts everything before it behind one row — `▸ 4 earlier steps · 4/4` — which opens
-them again when you click it, and stays open per card once you have. So a card
-re-planned three times is the size of its newest bunch rather than the sum of every
-bunch it has ever had. A step you type by hand joins the round in progress, so
-writing one never folds away the bunch you wrote it into.
+### Phases
 
-That summary row carries the signals of the rows behind it, because the chain runs in
-order and an unfinished earlier step runs *before* the newest bunch: it takes the
-blinking dot while one of them is running, and the orange tint while one of them
-wants you.
+A card's steps are cut into **phases** — one planning round apiece (`Task.planRound`).
+The first ask, or the steps you typed by hand, are phase 1; asking a card for more
+steps starts phase 2, and so on. The **current** phase is the first one still holding
+an unfinished step — or the last phase, once every step in every round is done —
+because a chain runs its rounds strictly in order, and nothing in a later round could
+possibly have started while an earlier one still has work left (`splitStepPhases`,
+`packages/ui/src/board/boardColumns.ts`). The detail sidebar's Steps panel groups
+rows under a `Phase N` header per round; on the board a card instead shows one flat
+`N earlier steps` row and one flat `N upcoming steps` row around the current phase's
+own rows (`splitEarlierSteps`).
+
+**Three independent folds keep a re-planned card readable.** The whole Steps section
+can be folded to its heading and `2/9` counter; the phases *before* the current one
+fold themselves away the moment you re-plan, behind their own `earlier steps` row,
+which reopens (and stays open) once you click it; and the phases *after* it fold the
+same way, behind `upcoming steps`. All three are saved per card
+(`foldedStepCards`, `shownEarlierStepCards`, `shownLaterStepCards` in `AppSettings`),
+pruned of any card that leaves the board so the settings blob never only grows. A
+step you type by hand joins the round already in progress, so writing one never folds
+away the bunch you wrote it into — and nothing ever unfolds a card for you: a running
+step, a step that has parked the chain, and a card that wants you all still ring,
+count and tint through a fold regardless.
+
+**You can plan ahead while a chain is still running.** Asking a card for another round
+of steps no longer waits for its live step to finish first — the planner is its own
+turn in the card's own conversation, so it runs *beside* the chain rather than behind
+it. Only a second ask while one is already in flight — queued behind a run, running
+right now, or sitting approved-and-unread in the inbox — is refused.
+
+**Re-planning a phase that has not started yet swaps it in place**, rather than
+appending a new one after it. Click **Re-plan…** on a *later* phase's own header (the
+current phase and anything already behind it cannot be targeted this way), and the
+approved replacement keeps that phase's own round number instead of becoming a new
+round after it. The ask is refused by name, `phase-started`, the moment any one of
+that phase's steps has started, finished or failed — a card whose round quietly grew
+an extra one nobody asked for would be a worse surprise than a plain refusal.
+
+**A chain never lands while a plan for the same card is still being drafted.** If the
+last step of a round finishes while a re-plan is in flight, the step is marked done
+but the landing that would normally follow it — merge, pull request, or the Merge
+button offer — is held rather than raced against whatever the human is about to
+approve; the card's timeline says so ("the chain is waiting for the plan in progress
+before it lands"). The hold is replayed once the plan resolves: approving it either
+carries on into the new steps or, if the plan added nothing after all, lands the held
+work right away; declining it lands the held work too; and Stopping the card converts
+a still-held landing into the ordinary Merge-button offer instead of leaving it
+stuck behind a plan nobody is finishing.
 
 ---
 

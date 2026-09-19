@@ -33,6 +33,11 @@ import {
   Badge,
   Button,
   Caption1,
+  Menu,
+  MenuItem,
+  MenuList,
+  MenuPopover,
+  MenuTrigger,
   Text,
   Tooltip,
   makeStyles,
@@ -40,6 +45,7 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import {
+  ArrowSyncRegular,
   BeakerRegular,
   BookmarkRegular,
   BranchRequestClosedFilled,
@@ -52,6 +58,7 @@ import {
   DismissCircleFilled,
   LinkRegular,
   MergeFilled,
+  MoreHorizontalRegular,
   PlayCircleRegular,
   NoteRegular,
   PersonFilled,
@@ -101,15 +108,20 @@ import { PriorityGlyph } from '../PriorityGlyph';
 import { AssigneeDisplay } from '../projects/AssigneeDisplay';
 import { TrackerMark, shortTicketKey } from '../tracker';
 import {
+  forgeName,
   mrAttentionReason,
   mrHeading,
   mrLabel,
+  mrNeedsRebase,
+  mrNoun,
   mrRef,
   mrVerdict,
+  showPipeline,
   verdictSummary,
   type MergeRequest,
   type MrVerdict,
 } from '@tm/shared/mergeRequest';
+import { useTransport } from '../transport';
 
 /**
  * The delegation glyph, white so a card an agent owns reads at a glance. Sized to sit
@@ -911,6 +923,19 @@ export interface TaskCardProps {
    */
   onToggleEarlierSteps?: () => void;
   /**
+   * Whether the steps from **phases after the current one** are on screen. Default false, and
+   * that default is the point: a phase nobody has started yet is the part of the card least
+   * worth spending its height on, so it stays behind one row until asked for — same shape as
+   * {@link earlierStepsShown}, mirrored to the other end of the chain.
+   */
+  laterStepsShown?: boolean;
+  /**
+   * Show or hide those later phases. **Absent means the card never hides them** — the whole
+   * chain renders, which is what the web board (no store of its own to remember the answer)
+   * still gets.
+   */
+  onToggleLaterSteps?: () => void;
+  /**
    * The merge requests filed under this card. Rendered as rows beneath the steps, and
    * folded into `chainNeedsAttention` — so the ring and the card ordering agree.
    */
@@ -1023,6 +1048,31 @@ export interface TaskCardProps {
    * restarting are one gesture apart, so they belong in one place.
    */
   onResume?: () => void;
+  /**
+   * Whether this card is on the shelf rather than in a column — `settings.features.shelf`'s
+   * whole reason to exist. Suppresses whatever this card would otherwise say about its
+   * COLUMN (there is nothing to say: the shelf is where a card goes to have no column), and
+   * flips the shelve menu item's label to "Return to board".
+   */
+  shelved?: boolean;
+  /**
+   * Move this card onto the shelf, or back off it — one menu item either way, since a click
+   * always means "the opposite of {@link shelved}." Absent hides the menu entirely, which is
+   * also what a board with `settings.features.shelf` off gets.
+   */
+  onToggleShelved?: () => void;
+  /**
+   * `settings.features.afterMergePipeline` — whether a merged MR with no genuine pipeline
+   * reading draws no dot at all rather than the single grey "unknown"/"none" one. Defaults
+   * to on; off restores the old behaviour of always drawing a dot.
+   */
+  afterMergePipeline?: boolean;
+  /**
+   * `settings.features.mrRebaseButton` — whether an MR row the forge can rebase swaps its
+   * verdict glyph for a clickable rebase button. Defaults to on, matching the feature's own
+   * default; off restores the old behaviour of a static glyph nobody can act on from the card.
+   */
+  mrRebaseButton?: boolean;
   draggable: boolean;
   onSelect: () => void;
   /** Open a step in the detail pane (the row never drags or moves the card). */
@@ -1045,6 +1095,8 @@ export function TaskCard({
   onToggleSteps,
   earlierStepsShown = false,
   onToggleEarlierSteps,
+  laterStepsShown = false,
+  onToggleLaterSteps,
   mergeRequests = [],
   statusKeywords,
   attentionTaskIds,
@@ -1065,6 +1117,10 @@ export function TaskCard({
   onLinkArm,
   onStop,
   onResume,
+  shelved = false,
+  onToggleShelved,
+  afterMergePipeline = true,
+  mrRebaseButton = true,
   draggable,
   onSelect,
   onSelectSubtask,
@@ -1073,6 +1129,7 @@ export function TaskCard({
   dragging,
 }: TaskCardProps): JSX.Element {
   const styles = useStyles();
+  const transport = useTransport();
   const sprintShown = showSprint;
   /**
    * Whether this card is a MIRROR of something in a tracker — which is what the footer badge
@@ -1242,10 +1299,17 @@ export function TaskCard({
    * remember the answer draws the whole chain rather than hiding half of it behind a control
    * that cannot remember being pressed.
    */
-  const { earlier, latest } = splitEarlierSteps(subtasks);
+  const { earlier, latest, later } = splitEarlierSteps(subtasks);
   const earlierFoldable = Boolean(onToggleEarlierSteps) && earlier.length > 0;
   const earlierHidden = earlierFoldable && !earlierStepsShown;
-  const stepRows = earlierHidden ? latest : [...earlier, ...latest];
+  /**
+   * The later phases' own fold — same gating as the earlier one: a board with nowhere to
+   * remember the answer draws the whole chain rather than hiding a phase behind a control
+   * that cannot remember being pressed.
+   */
+  const laterFoldable = Boolean(onToggleLaterSteps) && later.length > 0;
+  const laterHidden = laterFoldable && !laterStepsShown;
+  const stepRows = [...(earlierHidden ? [] : earlier), ...latest, ...(laterHidden ? [] : later)];
   const earlierDone = earlier.filter((s) => s.step.status === 'done').length;
   /**
    * What the folded row has to say on behalf of the rows behind it.
@@ -1260,6 +1324,12 @@ export function TaskCard({
     ({ step }) => runPhase(step, [], liveRunTaskIds, mergingTaskIds).spinner,
   );
   const earlierWants = earlier.some(({ step }) => attentionTaskIds?.has(step.id) ?? false);
+  /**
+   * The later row's own signal — the attention tint only, never a running dot: a phase after
+   * the current one cannot have a step running yet, chains being run in order, so there is
+   * nothing behind this row that could ever blink.
+   */
+  const laterWants = later.some(({ step }) => attentionTaskIds?.has(step.id) ?? false);
 
   return (
     <div
@@ -1450,6 +1520,37 @@ export function TaskCard({
                 }}
               />
             </Tooltip>
+          )}
+          {/* The shelf's own menu item — one, since {@link shelved} already says which
+              direction the click goes. Absent whenever the feature is off, same as every
+              other optional control on this card. */}
+          {onToggleShelved && (
+            <Menu>
+              <MenuTrigger disableButtonEnhancement>
+                <Button
+                  className={styles.runButton}
+                  size="small"
+                  appearance="subtle"
+                  icon={<MoreHorizontalRegular />}
+                  title="More actions"
+                  draggable={false}
+                  onDragStart={(e) => e.stopPropagation()}
+                  onClick={(e) => e.stopPropagation()}
+                />
+              </MenuTrigger>
+              <MenuPopover>
+                <MenuList>
+                  <MenuItem
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onToggleShelved();
+                    }}
+                  >
+                    {shelved ? 'Return to board' : 'Move to shelf'}
+                  </MenuItem>
+                </MenuList>
+              </MenuPopover>
+            </Menu>
           )}
         </div>
 
@@ -1658,12 +1759,12 @@ export function TaskCard({
               aria-expanded={!earlierHidden}
               title={
                 !earlierHidden
-                  ? 'Fold the earlier rounds away again'
+                  ? 'Fold the earlier phases away again'
                   : earlierWants
-                    ? `One of the ${earlier.length} steps planned before this round needs you`
+                    ? `One of the ${earlier.length} steps planned before this phase needs you`
                     : earlierRunning
-                      ? `One of the ${earlier.length} steps planned before this round is running`
-                      : `Show the ${earlier.length} steps planned before this round`
+                      ? `One of the ${earlier.length} steps planned before this phase is running`
+                      : `Show the ${earlier.length} steps planned before this phase`
               }
               draggable={false}
               onDragStart={(e) => {
@@ -1744,6 +1845,47 @@ export function TaskCard({
                 </div>
               );
             })}
+          {/* The phases after the current one, mirroring the earlier row above it — same
+              slot, same rhythm, drawn below the rows because that is where those steps
+              actually sit in the chain. No running dot: a phase that has not been reached
+              yet cannot have a step live in it, chains being run in order — but it still
+              wears the attention tint, because a step can be handed a question before its
+              own phase starts (a re-plan brief, say). */}
+          {!stepsHidden && laterFoldable && (
+            <button
+              type="button"
+              className={mergeClasses(
+                styles.step,
+                styles.earlierRow,
+                laterHidden && laterWants && styles.stepLoud,
+              )}
+              aria-expanded={!laterHidden}
+              title={
+                !laterHidden
+                  ? 'Fold the later phases away again'
+                  : laterWants
+                    ? `One of the ${later.length} steps planned after this phase needs you`
+                    : `Show the ${later.length} steps planned after this phase`
+              }
+              draggable={false}
+              onDragStart={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+              }}
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleLaterSteps?.();
+              }}
+            >
+              <span className={styles.stepSlot}>
+                {laterHidden ? <ChevronRightRegular /> : <ChevronDownRegular />}
+              </span>
+              <Caption1 className={styles.stepTitle}>
+                {later.length} upcoming step{later.length === 1 ? '' : 's'}
+              </Caption1>
+              <Caption1 className={styles.progress}>0/{later.length}</Caption1>
+            </button>
+          )}
         </div>
       )}
 
@@ -1760,6 +1902,12 @@ export function TaskCard({
           {mergeRequests.map((mr) => {
             const reason = mrAttentionReason(mr);
             const verdict = mrVerdict(mr);
+            // Off, a merged MR with nothing genuine to report still draws the single grey
+            // dot — the pre-feature behaviour, restored by the setting.
+            const pipelineShown = !afterMergePipeline || showPipeline(mr);
+            // Only when the forge can actually act on it — see `MergeRequests.tsx`'s own
+            // `canRebase`, which this mirrors so the two surfaces never disagree.
+            const canRebase = mrRebaseButton && mrNeedsRebase(mr);
             return (
               <a
                 key={mr.id}
@@ -1789,8 +1937,15 @@ export function TaskCard({
                     Falls back to the one overall dot when the stages are empty — that means
                     the jobs endpoint was permission-gated, NOT that a pipeline has no
                     stages, so inventing dots from the overall status would be a claim we
-                    cannot make. */}
-                {mr.pipelineStages.length > 0 ? (
+                    cannot make.
+
+                    A merged MR with no genuine reading (`showPipeline`) draws an EMPTY slot
+                    rather than nothing at all — dropping the slot would shift its title out
+                    of alignment with every step row above it, and "no pipeline"/"pipeline
+                    unknown" is not worth a dot on a row that has otherwise finished. */}
+                {!pipelineShown ? (
+                  <span className={styles.stepSlot} />
+                ) : mr.pipelineStages.length > 0 ? (
                   <span
                     className={styles.stageDots}
                     title={mr.pipelineStages.map((s) => `${s.name}: ${s.status}`).join('\n')}
@@ -1831,10 +1986,30 @@ export function TaskCard({
                   {`${mrRef(mr)} ${mrLabel(mr)}`}
                 </Caption1>
                 {mr.draft && <Caption1 className={styles.progress}>draft</Caption1>}
-                {/* The row's verdict — see `verdictIcon`. */}
-                <span className={styles.approval} title={verdictSummary(mr)}>
-                  {verdictIcon(verdict)}
-                </span>
+                {/* The row's verdict — see `verdictIcon`. Swapped for a rebase button when
+                    the forge is refusing the merge only because the branch has diverged: the
+                    one blocker this app can actually fix rather than merely report. */}
+                {canRebase ? (
+                  <Button
+                    size="small"
+                    appearance="transparent"
+                    className={styles.approval}
+                    icon={<ArrowSyncRegular style={{ color: FLUO.red }} />}
+                    title={`Ask ${forgeName(mr.provider)} to rebase this branch`}
+                    aria-label={`Rebase this ${mrNoun(mr.provider)}`}
+                    onClick={(e) => {
+                      // The row is a link to the MR itself; this must act instead of
+                      // navigating, and must not also select the card underneath it.
+                      e.preventDefault();
+                      e.stopPropagation();
+                      void transport.invoke('mr:rebase', mr.id);
+                    }}
+                  />
+                ) : (
+                  <span className={styles.approval} title={verdictSummary(mr)}>
+                    {verdictIcon(verdict)}
+                  </span>
+                )}
               </a>
             );
           })}

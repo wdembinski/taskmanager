@@ -33,7 +33,7 @@ import {
   type TaskAttachment,
 } from '@tm/shared/attachments';
 import { AttachmentStrip } from './AttachmentStrip';
-import { groupStepsByRound, subtaskProgress } from './board/boardColumns';
+import { splitStepPhases, subtaskProgress } from './board/boardColumns';
 import { draftKey, useDraft } from './drafts';
 import { canReplan, REFUSAL_HINT } from './taskChat';
 import { STATUS_LABEL } from './taskStatus';
@@ -166,7 +166,17 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
   const planNoteDraft = useDraft(draftKey(task.id, 'planNote'), '');
   const planNote = planNoteDraft.value;
   const [planStarted, setPlanStarted] = useState(false);
-  /** Which earlier rounds the human has opened. The current one is never in here. */
+  /**
+   * Which round the planning form is asking about — `null` for the ordinary "plan the next
+   * round" ask, a round number when it was opened from a LATER phase's own "Re-plan…"
+   * button (Phase 20). One form serves both: only its label and what it sends differ.
+   */
+  const [replanTarget, setReplanTarget] = useState<number | null>(null);
+  /**
+   * Which non-current phases the human has opened — earlier ones and later ones share this
+   * one set, since a round number is never both. The current phase is never in here: it is
+   * always open on its own (see the render below).
+   */
   const [openRounds, setOpenRounds] = useState<ReadonlySet<number>>(new Set());
 
   // Switching cards closes whatever was open on the previous one. What was TYPED into those
@@ -180,6 +190,7 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
     setOpen(false);
     setPlanning(false);
     setPlanStarted(false);
+    setReplanTarget(null);
     setOpenRounds(new Set());
   }, [task.id]);
 
@@ -191,7 +202,9 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
 
   const progress = subtaskProgress(subtasks);
   const replan = canReplan(task, subtasks);
-  const rounds = groupStepsByRound(subtasks);
+  const { earlier, current, later } = splitStepPhases(subtasks);
+  const phases = [...earlier, ...(current ? [current] : []), ...later];
+  const grouped = phases.length > 1;
 
   async function add(): Promise<void> {
     if (!title.trim()) return;
@@ -223,12 +236,18 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
     setBusy(true);
     setError(null);
     try {
-      const result = await transport.invoke('task:replan', task.id, planNote.trim() || undefined);
+      const result = await transport.invoke(
+        'task:replan',
+        task.id,
+        planNote.trim() || undefined,
+        replanTarget !== null ? { replaceRound: replanTarget } : undefined,
+      );
       if (result.status === 'refused') {
         setError(REFUSAL_HINT[result.reason]);
         return;
       }
       setPlanning(false);
+      setReplanTarget(null);
       planNoteDraft.reset();
       setPlanStarted(true);
       onChanged();
@@ -272,7 +291,10 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
             size="small"
             disabled={!replan.can || busy || planning}
             title={replan.hint}
-            onClick={() => setPlanning(true)}
+            onClick={() => {
+              setReplanTarget(null);
+              setPlanning(true);
+            }}
           >
             Plan more steps…
           </Button>
@@ -295,8 +317,16 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
       {planning && (
         <div className={styles.form}>
           <Field
-            label="What should the next steps cover?"
-            hint="Optional — the agent is already told which steps this card has finished."
+            label={
+              replanTarget !== null
+                ? `What should replace phase ${replanTarget}?`
+                : 'What should the next steps cover?'
+            }
+            hint={
+              replanTarget !== null
+                ? 'Optional — the agent is told which steps in this phase are being replaced.'
+                : 'Optional — the agent is already told which steps this card has finished.'
+            }
           >
             <Textarea
               value={planNote}
@@ -314,6 +344,7 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
               onClick={() => {
                 planNoteDraft.reset();
                 setPlanning(false);
+                setReplanTarget(null);
               }}
             >
               Cancel
@@ -346,32 +377,64 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
       )}
 
       {open &&
-        rounds.map((group, gi) => {
-          // The newest round is the one being worked, so it is always open. Earlier rounds
-          // fold away — a card re-planned three times would otherwise push the conversation
-          // off-screen with work that is already finished.
-          const current = gi === rounds.length - 1;
-          const grouped = rounds.length > 1;
-          const shown = current || openRounds.has(group.round);
+        phases.map((group) => {
+          // The current phase is the one being worked (or the one to resume into), so it is
+          // always open — and its header is plain text, not a toggle: with `shown` forced to
+          // `true` below, a chevron here would be dead, clickable but unable to do anything.
+          // Earlier and later phases fold away — a card re-planned three times, or one whose
+          // plan already covers phases it hasn't reached, would otherwise push the
+          // conversation off-screen with work that is finished or hasn't started.
+          const isCurrent = group.round === current?.round;
+          const isLater = !isCurrent && later.some((l) => l.round === group.round);
+          const shown = isCurrent || openRounds.has(group.round);
           const done = group.steps.filter((s) => s.step.status === 'done').length;
           return (
             <div key={group.round} className={styles.box}>
-              {grouped && (
-                <FoldToggle
-                  open={shown}
-                  onToggle={() =>
-                    setOpenRounds((prev) => {
-                      const next = new Set(prev);
-                      if (next.has(group.round)) next.delete(group.round);
-                      else next.add(group.round);
-                      return next;
-                    })
-                  }
-                  summary={`${done}/${group.steps.length}`}
-                >
-                  <Caption1 className={styles.hint}>Round {group.round}</Caption1>
-                </FoldToggle>
-              )}
+              {grouped &&
+                (isCurrent ? (
+                  <Caption1 className={styles.hint}>Phase {group.round}</Caption1>
+                ) : (
+                  <div className={styles.head}>
+                    <FoldToggle
+                      open={shown}
+                      onToggle={() =>
+                        setOpenRounds((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(group.round)) next.delete(group.round);
+                          else next.add(group.round);
+                          return next;
+                        })
+                      }
+                      summary={
+                        isLater
+                          ? `0/${group.steps.length} · upcoming`
+                          : `${done}/${group.steps.length}`
+                      }
+                    >
+                      <Caption1 className={styles.hint}>Phase {group.round}</Caption1>
+                    </FoldToggle>
+                    <span className={styles.grow} />
+                    {/* Only a LATER phase can be re-planned in place — the current one is
+                        already being worked (or is next to resume), and an earlier one is
+                        already behind the chain. Same `canReplan` rules as "Plan more
+                        steps…" above: this is the identical ask, aimed at one existing
+                        round instead of a new one after it. */}
+                    {isLater && replan.offered && (
+                      <Button
+                        size="small"
+                        appearance="transparent"
+                        disabled={!replan.can || busy || planning}
+                        title={replan.hint}
+                        onClick={() => {
+                          setReplanTarget(group.round);
+                          setPlanning(true);
+                        }}
+                      >
+                        Re-plan…
+                      </Button>
+                    )}
+                  </div>
+                ))}
               {shown && (
                 <div className={styles.list}>
                   {group.steps.map(({ step, index }) => (
