@@ -68,7 +68,11 @@ export type Turn =
       rich?: AdfBlock[];
       attachments?: CommentAttachment[];
     }
-  /** The agent's prose, markdown as written. */
+  /**
+   * The agent's prose, markdown as written. In quiet mode, preamble chunks (narration
+   * alongside a tool call) never reach a turn — only the summary and any pure-text
+   * reply survive.
+   */
   | { key: string; kind: 'agent'; text: string; createdAt: number }
   /** A run of tool work, collapsed to one line ("Worked with 12 tools"). */
   | { key: string; kind: 'tools'; count: number; labels: string[]; createdAt: number }
@@ -145,7 +149,9 @@ export interface FoldTurnsOptions {
    * `settings.features.quietAgentProgress` — when true, tool/thinking work (the
    * `isToolWork` branch) is dropped entirely instead of collapsing into a `tools` row.
    * The footer's own "Running…" line carries the latest one-liner instead (`activityLabel`
-   * in `agentActivity.ts`); the agent's prose (`kind: 'agent'`) is unaffected either way.
+   * in `agentActivity.ts`). Quiet also drops preamble prose (an `assistant` event tagged
+   * `preamble: true` — narration said alongside a tool call), so only the turn's summary
+   * and any pure-text reply reach the pane. Non-quiet mode keeps everything as today.
    */
   quiet?: boolean;
 }
@@ -259,6 +265,7 @@ export function foldTurns(
 
     const event = entry.event;
     if (event.kind === 'assistant') {
+      if (quiet && event.preamble) continue; // narration, folded away like tool work
       const text = event.text.trim();
       if (!text) continue;
       const prev = last();
