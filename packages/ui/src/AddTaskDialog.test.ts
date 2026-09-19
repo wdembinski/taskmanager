@@ -2,13 +2,15 @@
  * What Add actually writes, worked out from the form alone (`addTaskPlan`), and what it
  * holds on to until there is somewhere to write it (`stageAttachments`).
  *
- * The rule under test is that the dialog's three questions compose: filing a card under a
- * project, giving it a description and raising a JIRA ticket for it are separate answers,
- * and asking for one must never quietly drop the others. The ticket in particular is an
- * ADDITION to the card — it used to replace it, which is how a card created "in JIRA"
- * ended up with no project and no description of its own.
+ * The rule under test is that the merged "Project / Board" picker answers two questions at
+ * once — where the card lives and what it's filed under — by routing on one capability,
+ * `boardOwnsTickets`: a project that owns tickets gets a native one (`ticket:create`);
+ * Personal or a keyless project gets an ordinary card (`task:create`), tagged with the
+ * project picked. Asking for a description or a JIRA ticket on top must never quietly drop
+ * that routing. The JIRA ticket in particular is an ADDITION to the card — it used to
+ * replace it, which is how a card created "in JIRA" ended up with no description of its own.
  *
- * Files are the fourth answer and the one that cannot be written when it is given, so what
+ * Files are the last answer and the one that cannot be written when it is given, so what
  * is pinned there is the invariant that lets a brief cite a file that does not exist yet:
  * the provisional name equals what `attachmentName` will produce in main, against the empty
  * taken-list a brand-new task has on both sides.
@@ -25,12 +27,12 @@ const form = (over: Partial<AddTaskForm> = {}): AddTaskForm => ({
   issueType: 'task',
   epicTaskId: '',
   phase: '',
-  projectTagId: '',
   parentId: '',
   asJira: false,
   jiraProjectKey: '',
   jiraTypeId: '',
   boardId: PERSONAL_PROJECT_ID,
+  boardOwnsTickets: false,
   ...over,
 });
 
@@ -39,12 +41,11 @@ describe('addTaskPlan', () => {
     expect(addTaskPlan(form({ title: '   ' }))).toEqual({ kind: 'incomplete', error: null });
   });
 
-  it('carries the project, the description and the type onto the card', () => {
+  it('writes an ordinary card on Personal, with the type and description carried onto it', () => {
     const plan = addTaskPlan(
       form({
         title: '  Ship the thing  ',
         description: '  Two paragraphs of context.  ',
-        projectTagId: 'p-billing',
         type: 'bug',
         phase: ' Phase 1 ',
       }),
@@ -57,51 +58,64 @@ describe('addTaskPlan', () => {
         phase: 'Phase 1',
         type: 'bug',
         description: 'Two paragraphs of context.',
-        projectTagId: 'p-billing',
+        projectTagId: null,
       },
       ticket: null,
     });
   });
 
-  it('carries the chosen board onto the card, for a project board rather than Personal', () => {
-    const plan = addTaskPlan(form({ boardId: 'p-billing' }));
-    expect(plan.kind === 'card' && plan.board).toBe('p-billing');
+  it('writes a card, tagged with the board itself, for a keyless project', () => {
+    const plan = addTaskPlan(form({ boardId: 'p-repo', boardOwnsTickets: false }));
+    expect(plan).toMatchObject({
+      kind: 'card',
+      board: 'p-repo',
+      card: { projectTagId: 'p-repo' },
+    });
   });
 
-  it('carries issueType and epicTaskId onto the card for a ticket board', () => {
+  it('routes a ticket-owning board to a native ticket instead of a card', () => {
     const plan = addTaskPlan(
-      form({ boardId: 'p-billing', issueType: 'story', epicTaskId: 'epic-1' }),
+      form({
+        boardId: 'p-billing',
+        boardOwnsTickets: true,
+        description: 'What it is about.',
+        phase: ' Phase 1 ',
+        issueType: 'story',
+        epicTaskId: 'epic-1',
+      }),
     );
-    expect(plan.kind).toBe('card');
-    if (plan.kind !== 'card') return;
-    expect(plan.card.issueType).toBe('story');
-    expect(plan.card.epicTaskId).toBe('epic-1');
+    expect(plan).toEqual({
+      kind: 'ticket',
+      board: 'p-billing',
+      ticket: {
+        title: 'Ship the thing',
+        phase: 'Phase 1',
+        description: 'What it is about.',
+        issueType: 'story',
+        epicTaskId: 'epic-1',
+      },
+    });
   });
 
-  it('gives a ticket-board card a null epicTaskId, not an empty one', () => {
-    const plan = addTaskPlan(form({ boardId: 'p-billing', issueType: 'story' }));
-    expect(plan.kind === 'card' && plan.card.epicTaskId).toBe(null);
+  it('gives a ticket-board plan a null epicTaskId, not an empty one', () => {
+    const plan = addTaskPlan(form({ boardId: 'p-billing', boardOwnsTickets: true }));
+    expect(plan.kind === 'ticket' && plan.ticket.epicTaskId).toBe(null);
   });
 
-  it('carries neither issueType nor epicTaskId for a Personal-board plan', () => {
-    const plan = addTaskPlan(form({ issueType: 'epic', epicTaskId: 'epic-1' }));
-    expect(plan.kind).toBe('card');
-    if (plan.kind !== 'card') return;
-    expect(plan.card.issueType).toBeUndefined();
-    expect(plan.card.epicTaskId).toBeUndefined();
+  it('never carries type onto a ticket-board plan — issueType is its replacement', () => {
+    const plan = addTaskPlan(
+      form({ boardId: 'p-billing', boardOwnsTickets: true, type: 'bug', issueType: 'epic' }),
+    );
+    expect(plan.kind).toBe('ticket');
+    if (plan.kind !== 'ticket') return;
+    expect(plan.ticket.issueType).toBe('epic');
+    expect((plan.ticket as Record<string, unknown>).type).toBeUndefined();
   });
 
-  it('files nothing when no project was picked', () => {
-    const plan = addTaskPlan(form());
-    expect(plan.kind === 'card' && plan.card.projectTagId).toBe(null);
-    expect(plan.kind === 'card' && plan.card.description).toBeUndefined();
-  });
-
-  it('adds a ticket to the card rather than replacing it', () => {
+  it('adds a JIRA ticket to a Personal card rather than replacing it', () => {
     const plan = addTaskPlan(
       form({
         description: 'What it is about.',
-        projectTagId: 'p-billing',
         asJira: true,
         jiraProjectKey: 'ABC',
         jiraTypeId: '10001',
@@ -110,8 +124,8 @@ describe('addTaskPlan', () => {
     expect(plan.kind).toBe('card');
     if (plan.kind !== 'card') return;
     // The card keeps everything it would have had without the switch…
-    expect(plan.card.projectTagId).toBe('p-billing');
     expect(plan.card.description).toBe('What it is about.');
+    expect(plan.card.projectTagId).toBe(null);
     // …and the ticket says the same thing in JIRA's words.
     expect(plan.ticket).toEqual({
       projectKey: 'ABC',
@@ -121,7 +135,7 @@ describe('addTaskPlan', () => {
     });
   });
 
-  it('refuses a ticket the instance cannot place, before the card is written', () => {
+  it('refuses a JIRA ticket the instance cannot place, before the card is written', () => {
     expect(addTaskPlan(form({ asJira: true, jiraProjectKey: 'ABC' }))).toEqual({
       kind: 'incomplete',
       error: 'Pick a JIRA project and issue type first.',
@@ -138,7 +152,8 @@ describe('addTaskPlan', () => {
         parentId: 'c1',
         description: 'Deliver the migration.',
         // Everything a step does not get, set anyway.
-        projectTagId: 'p-billing',
+        boardId: 'p-billing',
+        boardOwnsTickets: true,
         asJira: true,
         jiraProjectKey: 'ABC',
         jiraTypeId: '10001',

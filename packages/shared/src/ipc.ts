@@ -259,6 +259,12 @@ export interface BoardScope {
   id: string;
   name: string;
   color: string;
+  /**
+   * Whether this board owns tickets (`Project.ticketPrefix` set) — the one fact the
+   * Add-task dialog's merged "Project / Board" picker routes on: `ticket:create` when
+   * true, `task:create` when not. Personal always carries `false` — it owns no tickets.
+   */
+  ownsTickets: boolean;
 }
 
 /**

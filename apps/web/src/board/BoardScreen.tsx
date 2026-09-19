@@ -67,6 +67,7 @@ import { ArchivedCardsDialog, archivedCards } from '@tm/ui/board/ArchivedCardsDi
 import { chainComponent } from '@tm/shared/taskChain';
 import {
   isManualStatus,
+  ownsTickets,
   PERSONAL_PROJECT_ID,
   type BoardColumn,
   type ManualStatus,
@@ -75,12 +76,7 @@ import {
 } from '@tm/shared/model';
 import type { BoardScope } from '@tm/shared/ipc';
 import { BoardToolbar } from './BoardToolbar';
-import {
-  selectAgentProjects,
-  selectArchivedTasks,
-  selectBoardTasks,
-  selectFilingProjects,
-} from './boardSelectors';
+import { selectAgentProjects, selectArchivedTasks, selectBoardTasks } from './boardSelectors';
 import { displayStatus, isTaskPending, type CloudBoardState } from './cloudBoardStore';
 import { mergeRequestsByTask, useBoardExtras, byTask } from './useBoardExtras';
 
@@ -175,16 +171,6 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
   );
 
   /**
-   * The wider FILING list — the pane's Project dropdown and the add-task dialog's Project
-   * field — computed the same way, over the wider relayed/mirrored source. See
-   * `selectFilingProjects` for what it adds over `agentProjects`.
-   */
-  const filingProjects = useMemo(
-    () => selectFilingProjects(state.projects, extras.filingProjects, extras.agentProjectsLoaded),
-    [state.projects, extras.filingProjects, extras.agentProjectsLoaded],
-  );
-
-  /**
    * The boards the toolbar's scope Dropdown offers — Personal plus every other project, the
    * desktop's own `board:scopes` rule. Computed straight from the mirrored `Project` rows
    * rather than a relayed round trip: the mirror already carries every project, and this is
@@ -194,11 +180,16 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
   const scopes = useMemo<BoardScope[]>(() => {
     const personal = state.projects[PERSONAL_PROJECT_ID];
     const list: BoardScope[] = personal
-      ? [{ id: personal.id, name: personal.name, color: personal.color }]
+      ? [{ id: personal.id, name: personal.name, color: personal.color, ownsTickets: false }]
       : [];
     for (const project of projects) {
       if (project.id === PERSONAL_PROJECT_ID) continue;
-      list.push({ id: project.id, name: project.name, color: project.color });
+      list.push({
+        id: project.id,
+        name: project.name,
+        color: project.color,
+        ownsTickets: ownsTickets(project),
+      });
     }
     return list;
   }, [state.projects, projects]);
@@ -825,12 +816,6 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
         parents={parentCandidates}
         // The same cards, asked a different question — see `parentCandidates`.
         chainCandidates={parentCandidates}
-        // The filing projects, resolved (`selectFilingProjects`): the relay's answer while a
-        // desktop is awake, and the mirrored rows filtered the same way while it is not —
-        // which is what keeps this field offering something instead of nothing against a
-        // desktop that is merely asleep. The detail pane's Project dropdown offers the same
-        // list, because both are handed the one computed above.
-        projects={filingProjects}
         jiraEnabled={settings.jira.enabled}
         // A browser has no OS file picker and no path for a dropped `File`, so the whole
         // files section is one thing this host cannot do rather than a control to grey out.

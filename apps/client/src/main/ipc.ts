@@ -1062,6 +1062,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('task:chat', async (taskId, message) => scheduler.chatWithAgent(taskId, message));
   handle('task:replan', async (taskId, note, opts) => scheduler.replanCard(taskId, note, opts));
   handle('task:create', async (projectId, input) => {
+    // `projectId` is any board — Personal or a keyless project — not only Personal: the
+    // Add-task dialog's merged picker sends the project itself once it has decided (by
+    // `ownsTickets`) that this is the `task:create` branch rather than `ticket:create`'s.
     // The same check `task:setProject` makes, for the same reason: a card created with a
     // dangling or unfileable tag would wear a colour stripe nothing on the board could
     // explain.
@@ -2711,11 +2714,16 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('board:scopes', async () => {
     const personal = store.getProject(PERSONAL_PROJECT_ID);
     const scopes: BoardScope[] = personal
-      ? [{ id: personal.id, name: personal.name, color: personal.color }]
+      ? [{ id: personal.id, name: personal.name, color: personal.color, ownsTickets: false }]
       : [];
     for (const project of store.listProjects()) {
       if (isPersonalBoard(project.id)) continue;
-      scopes.push({ id: project.id, name: project.name, color: project.color });
+      scopes.push({
+        id: project.id,
+        name: project.name,
+        color: project.color,
+        ownsTickets: ownsTickets(project),
+      });
     }
     return scopes;
   });
