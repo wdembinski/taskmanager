@@ -19,6 +19,12 @@
  * restated as a second guess of its own rules. Assertions are on what the REAL store did in
  * response, never on the mirror's own wording.
  *
+ * Section 6 mirrors `board:scopes` (plan step 4, "list every project as a board") the same
+ * way — Personal first, then every OTHER project, `ownsBoard` no longer filtering any of
+ * them out. It runs last so it can assert on the plan-driven and keyless projects sections
+ * 1-5 already created: before this step those were exactly the two kinds `ownsBoard` used to
+ * drop, so their presence here is the regression this section exists to catch.
+ *
  *   pnpm exec node scripts/verify-move-task-to-board.mjs
  *
  * Exits non-zero on the first failed assertion, naming it.
@@ -517,6 +523,45 @@ const noopSent = [];
 const noopResult = setBoard(moved.id, destC.id, noopSent);
 check('moving onto the board a card is already on is a no-op', noopResult.id === moved.id);
 check('and sends nothing', noopSent.length === 0, JSON.stringify(noopSent));
+
+// ---------------------------------------------------------------------------
+section('6. board:scopes (ipc.ts), mirrored — Personal first, then every other project');
+
+/** Copied line for line from the real \`handle('board:scopes', ...)\` in ipc.ts. */
+function boardScopes() {
+  const personal = store.getProject(PERSONAL_PROJECT_ID);
+  const scopes = personal ? [{ id: personal.id, name: personal.name, color: personal.color }] : [];
+  for (const project of store.listProjects()) {
+    if (project.id === PERSONAL_PROJECT_ID) continue;
+    scopes.push({ id: project.id, name: project.name, color: project.color });
+  }
+  return scopes;
+}
+
+const scopes = boardScopes();
+const allProjects = store.listProjects();
+check('Personal is first', scopes[0]?.id === PERSONAL_PROJECT_ID);
+check(
+  'Personal appears exactly once, never duplicated from listProjects()',
+  scopes.filter((s) => s.id === PERSONAL_PROJECT_ID).length === 1,
+);
+check(
+  'every project is a board now — one scope per project, nothing filtered out',
+  scopes.length === allProjects.length,
+  scopes.length + ' scopes vs ' + allProjects.length + ' projects',
+);
+check(
+  'a plan-driven board (no ticket prefix) is included — ownsBoard used to drop it',
+  scopes.some((s) => s.id === planProject.id),
+);
+check(
+  'a keyless, non-plan board is included too — ownsBoard used to drop this one as well',
+  scopes.some((s) => s.id === keylessBoard.id),
+);
+check(
+  'a ticket-owning board (the pre-existing case) is still included',
+  scopes.some((s) => s.id === destC.id),
+);
 
 raw.close();
 store.close();

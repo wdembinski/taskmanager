@@ -146,7 +146,7 @@ export function MyTasks(): JSX.Element {
    */
   const [filingProjects, setFilingProjects] = useState<Project[]>([]);
   /** The boards the toolbar's scope Dropdown offers — Personal plus every other
-   *  project that owns a ticket key prefix. Fed by `board:scopes`. */
+   *  project. Fed by `board:scopes`. */
   const [scopes, setScopes] = useState<BoardScope[]>([]);
   /**
    * Which board is open: `'all'` unions every board's cards, or one board's own

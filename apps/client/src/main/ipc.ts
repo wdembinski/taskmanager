@@ -47,7 +47,6 @@ import {
   isManualStatus,
   isPersonalBoard,
   isUsableModel,
-  ownsBoard,
   ownsTickets,
   PERSONAL_PROJECT_ID,
   type BoardColumn,
@@ -2706,17 +2705,16 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     !scope || scope === 'all' ? store.getAllArchivedBoardTasks() : store.getArchivedTasksFor(scope),
   );
 
-  // The boards the scope picker offers: Personal first, then every project that owns a
-  // ticket key prefix — the ones `ownsBoard` says can actually receive a native ticket.
-  // A bare repo or a repo-less personal-space project is a card list too, but has no
-  // board of its own to switch to; its cards stay on Personal.
+  // The boards the scope picker offers: Personal first, then every other project — a
+  // board is now just "a project's cards", so a bare repo or a keyless project is as
+  // much a board as a ticket project; its cards simply carry no ticket key.
   handle('board:scopes', async () => {
     const personal = store.getProject(PERSONAL_PROJECT_ID);
     const scopes: BoardScope[] = personal
       ? [{ id: personal.id, name: personal.name, color: personal.color }]
       : [];
     for (const project of store.listProjects()) {
-      if (isPersonalBoard(project.id) || !ownsBoard(project)) continue;
+      if (isPersonalBoard(project.id)) continue;
       scopes.push({ id: project.id, name: project.name, color: project.color });
     }
     return scopes;

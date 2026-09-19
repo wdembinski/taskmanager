@@ -67,7 +67,6 @@ import { ArchivedCardsDialog, archivedCards } from '@tm/ui/board/ArchivedCardsDi
 import { chainComponent } from '@tm/shared/taskChain';
 import {
   isManualStatus,
-  ownsBoard,
   PERSONAL_PROJECT_ID,
   type BoardColumn,
   type ManualStatus,
@@ -186,11 +185,11 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
   );
 
   /**
-   * The boards the toolbar's scope Dropdown offers — Personal plus every other project that
-   * owns a ticket key prefix, the desktop's own `board:scopes` rule (`ownsBoard`). Computed
-   * straight from the mirrored `Project` rows rather than a relayed round trip: the mirror
-   * already carries every project, and this is the same join `store.ts`'s `board:scopes`
-   * handler runs, just read from `state.projects` instead of SQLite.
+   * The boards the toolbar's scope Dropdown offers — Personal plus every other project, the
+   * desktop's own `board:scopes` rule. Computed straight from the mirrored `Project` rows
+   * rather than a relayed round trip: the mirror already carries every project, and this is
+   * the same join `store.ts`'s `board:scopes` handler runs, just read from `state.projects`
+   * instead of SQLite.
    */
   const scopes = useMemo<BoardScope[]>(() => {
     const personal = state.projects[PERSONAL_PROJECT_ID];
@@ -198,7 +197,7 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
       ? [{ id: personal.id, name: personal.name, color: personal.color }]
       : [];
     for (const project of projects) {
-      if (project.id === PERSONAL_PROJECT_ID || !ownsBoard(project)) continue;
+      if (project.id === PERSONAL_PROJECT_ID) continue;
       list.push({ id: project.id, name: project.name, color: project.color });
     }
     return list;
