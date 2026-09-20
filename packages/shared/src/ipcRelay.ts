@@ -205,6 +205,7 @@ export const RELAY_POLICY: {
   'task:setPriority': 'relay',
   'task:setStatusNote': 'relay',
   'task:setProject': 'relay',
+  'task:setBoard': 'relay',
   'task:setAgentOptions': 'relay',
   'task:activity': 'relay',
   'task:addComment': 'relay',

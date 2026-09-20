@@ -35,7 +35,8 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import { DeleteRegular, DismissRegular } from '@fluentui/react-icons';
-import type { ManualStatus, Project, Task } from '@tm/shared/model';
+import type { BoardScope } from '@tm/shared/ipc';
+import type { ManualStatus, Task } from '@tm/shared/model';
 import { restingStatus } from '@tm/shared/board';
 import { insertAttachmentRef, type TaskAttachment } from '@tm/shared/attachments';
 import { DEFAULT_PRIORITIES } from '@tm/shared/priority';
@@ -50,8 +51,6 @@ import { usePasteAttachments } from './usePasteAttachments';
 
 /** The dropdown entry for "no priority" — a real option, since clearing must be possible. */
 const NO_PRIORITY = 'None';
-/** Ditto for "no project". A sentinel value, since a Dropdown option cannot carry null. */
-const NO_PROJECT = '__none__';
 
 const useStyles = makeStyles({
   /** A section of the pane's details cell — the cell owns the shade and the border. */
@@ -105,11 +104,12 @@ const useStyles = makeStyles({
 export interface TaskDetailsCellProps {
   task: Task;
   /**
-   * The projects a card can be FILED under (`Task.projectTagId`) — wider than the agent
-   * projects delegation offers, since filing a card under a Personal-space project (no repo)
-   * is fine; it simply cannot receive a delegated run. See `isFilingProject`.
+   * The boards this card can be MOVED to (`board:scopes`) — every project, Personal
+   * included, drawn by `task.projectId`. Replaces the old separate "Project" filing
+   * dropdown: on an ordinary card, filing and board membership were the same fact
+   * wearing two controls, so there is one now and it moves the card (`task:setBoard`).
    */
-  projects?: Project[];
+  boards?: BoardScope[];
   /**
    * This card's files, sliced out of the board's list. Passed in rather than fetched here
    * for the reason the list exists at all: a JIRA sync rewrites whole `Task` literals on
@@ -136,7 +136,7 @@ export interface TaskDetailsCellProps {
 
 export function TaskDetailsCell({
   task,
-  projects = [],
+  boards = [],
   attachments = [],
   priorityDisplay = 'color',
   onTaskChanged,
@@ -159,6 +159,8 @@ export function TaskDetailsCell({
   const [error, setError] = useState<string | null>(null);
   const [jiraPriorities, setJiraPriorities] = useState<string[]>([]);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  /** Set for a moment after a board move that gave the card a new ticket key. */
+  const [rekeyNotice, setRekeyNotice] = useState<string | null>(null);
   /** The description field, so an attachment can be cited where the caret actually is. */
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -176,6 +178,7 @@ export function TaskDetailsCell({
     setEditing(false);
     setError(null);
     setConfirmDelete(false);
+    setRekeyNotice(null);
   }, [task.id]);
 
   /**
@@ -236,9 +239,23 @@ export function TaskDetailsCell({
     isJira && jiraPriorities.length ? jiraPriorities : DEFAULT_PRIORITIES
   ).slice();
   const priority = task.externalPriority ?? null;
-  // The FILING, not the delegation — this dropdown says what the card is about.
-  const project = projects.find((p) => p.id === task.projectTagId) ?? null;
+  // Which board the card is actually ON, not the delegation target.
+  const board = boards.find((b) => b.id === task.projectId) ?? null;
   const resting = restingStatus(task);
+
+  /**
+   * Why the board picker below is disabled, or null when a move is allowed — the same
+   * three refusals `task:setBoard` makes in `ipc.ts`, read off the task so the control
+   * never offers a move the handler would only reject.
+   */
+  const boardMoveRefusal =
+    task.source === 'plan'
+      ? "This card's board comes from its plan file — edit the plan to move it, not by hand."
+      : task.source === 'jira' || task.source === 'github'
+        ? `This card is synced from ${task.source === 'jira' ? 'JIRA' : 'GitHub'} — the sync decides its board.`
+        : task.status === 'running' || task.status === 'waiting-input'
+          ? 'Stop the task before moving it to another board.'
+          : null;
 
   async function setStatus(next: ManualStatus): Promise<void> {
     if (next === resting) return;
@@ -280,13 +297,23 @@ export function TaskDetailsCell({
     }
   }
 
-  /** File the card under a project. Tagging only — this never starts an agent. */
-  async function setProject(next: string | null): Promise<void> {
-    if (next === (task.projectTagId ?? null)) return;
+  /**
+   * Move the card to a different board — the same move dragging it makes, from the one
+   * place a card is inspected. A destination whose ticket prefix allocates its own keys
+   * hands the card a new one; `rekeyNotice` is how that surprise gets said out loud.
+   */
+  async function setBoard(next: string): Promise<void> {
+    if (next === task.projectId) return;
     setError(null);
     setBusy(true);
+    setRekeyNotice(null);
+    const previousKey = task.ticketKey ?? null;
     try {
-      onTaskChanged(await transport.invoke('task:setProject', task.id, next));
+      const updated = await transport.invoke('task:setBoard', task.id, next);
+      onTaskChanged(updated);
+      if (updated.ticketKey && updated.ticketKey !== previousKey) {
+        setRekeyNotice(`Re-keyed to ${updated.ticketKey}`);
+      }
       onEdited?.();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -448,40 +475,40 @@ export function TaskDetailsCell({
           </Dropdown>
         </div>
 
-        {/* Which project this card is about. Setting it files the card — starting an
-            agent on it is the separate act in the panel above. */}
-        {projects.length > 0 && (
+        {/* Which board this card lives on. Moving it here calls `task:setBoard` directly
+            — the same move dragging the card makes — so filing and board membership are
+            one fact with one control, not two that can disagree. Starting an agent on
+            the card is the separate act in the panel above. */}
+        {boards.length > 0 && (
           <div className={styles.trioCell}>
             <div className={styles.trioLabel}>
-              <Caption1 className={styles.hint}>Project</Caption1>
-              {project?.color && (
-                <span className={styles.projectSwatch} style={{ backgroundColor: project.color }} />
+              <Caption1 className={styles.hint}>Project / Board</Caption1>
+              {board?.color && (
+                <span className={styles.projectSwatch} style={{ backgroundColor: board.color }} />
               )}
             </div>
             <Dropdown
               className={styles.trioPicker}
               size="small"
-              value={project?.name ?? 'None'}
-              selectedOptions={[task.projectTagId ?? NO_PROJECT]}
-              disabled={busy}
-              title="The project this card is about — filing it here does not start an agent"
+              value={board?.name ?? ''}
+              selectedOptions={[task.projectId]}
+              disabled={busy || boardMoveRefusal !== null}
+              title={boardMoveRefusal ?? 'Move this card to a different board'}
               onOptionSelect={(_e, d) => {
-                if (d.optionValue)
-                  void setProject(d.optionValue === NO_PROJECT ? null : d.optionValue);
+                if (d.optionValue) void setBoard(d.optionValue);
               }}
             >
-              {projects.map((p) => (
-                <Option key={p.id} value={p.id} text={p.name}>
-                  {p.name}
+              {boards.map((b) => (
+                <Option key={b.id} value={b.id} text={b.name}>
+                  {b.name}
                 </Option>
               ))}
-              <Option value={NO_PROJECT} text="None">
-                None
-              </Option>
             </Dropdown>
           </div>
         )}
       </div>
+
+      {rekeyNotice && <Caption1 className={styles.hint}>{rekeyNotice}</Caption1>}
 
       {task.dependsOn?.length > 0 && (
         <Caption1 className={styles.hint}>Depends on: {task.dependsOn.join(', ')}</Caption1>
