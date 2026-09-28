@@ -15,11 +15,11 @@ import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
 import {
   type AddProjectInput,
+  type DiscoveredModel,
   hasPlan,
   type Milestone,
   type MilestoneInput,
   type MilestonePatch,
-  type ModelResolution,
   PERSONAL_PROJECT_ID,
   type Person,
   type PersonInput,
@@ -737,12 +737,14 @@ export interface Store {
   markMergeRequestRead(id: string, at: number): MergeRequest | undefined;
   markMergeRequestEventsSeen(id: string, at: number): MergeRequest | undefined;
   /**
-   * The last `probeModelCatalog` sweep, so a model picker opens with a real reading
+   * The last `discoverModelCatalog` sweep, so a model picker opens with a real reading
    * instead of an empty list on every app start. `null` before the first sweep ever
-   * completes (or if the stored value is corrupt).
+   * completes, if the stored value is corrupt, or if it predates `family`/`kind`
+   * (an upgrade from before this shape) — any of which re-probes rather than serving a
+   * truncated row.
    */
-  saveModelCatalog(rows: ModelResolution[]): void;
-  loadModelCatalog(): ModelResolution[] | null;
+  saveModelCatalog(rows: DiscoveredModel[]): void;
+  loadModelCatalog(): DiscoveredModel[] | null;
   /** The GitLab token ciphertext, beside the JIRA trio. */
   saveGitLabToken(value: string): void;
   loadGitLabToken(): string | null;
@@ -2201,7 +2203,7 @@ export function createStore(dbPath: string): Store {
   const BLOCK_OWNER_KEY = 'migration.blockOwner';
 
   /**
-   * The last `probeModelCatalog` sweep (`claudeModels.ts`), so a model picker opens with a
+   * The last `discoverModelCatalog` sweep (`claudeModels.ts`), so a model picker opens with a
    * real reading instead of a blank list on every app start — a fresh sweep is a few seconds
    * of subprocesses, one per catalog entry, which no dropdown should pay for on every render.
    */
@@ -4488,15 +4490,23 @@ export function createStore(dbPath: string): Store {
       try {
         const parsed: unknown = JSON.parse(row.value);
         if (!Array.isArray(parsed)) return null;
-        const rows = parsed as ModelResolution[];
+        const rows = parsed as DiscoveredModel[];
         const valid = rows.every(
           (entry) =>
             typeof entry === 'object' &&
             entry !== null &&
             typeof entry.id === 'string' &&
             typeof entry.label === 'string' &&
-            typeof entry.known === 'boolean',
+            typeof entry.known === 'boolean' &&
+            (entry.family === 'haiku' ||
+              entry.family === 'sonnet' ||
+              entry.family === 'opus' ||
+              entry.family === 'fable') &&
+            (entry.kind === 'alias' || entry.kind === 'version'),
         );
+        // A cached row from before `family`/`kind` existed fails the shape check above and
+        // reads as stale, so the first boot after upgrade re-probes rather than serving a
+        // truncated catalog forever.
         return valid ? rows : null;
       } catch {
         return null; // corrupt value — re-probe

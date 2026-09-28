@@ -51,9 +51,9 @@ import {
   ownsTickets,
   PERSONAL_PROJECT_ID,
   type BoardColumn,
+  type DiscoveredModel,
   type JiraStatusCategory,
   type Milestone,
-  type ModelResolution,
   type Person,
   type Project,
   type ProjectPatch,
@@ -211,7 +211,7 @@ import { openInteractiveSignIn, watchForSignIn } from './signIn';
 import { PlanWatcher } from './planWatcher';
 import { SyncPoller } from './syncPoller';
 import { ClaudeUsagePoller, readClaudeUsage } from './claudeUsage';
-import { probeModelCatalog, resolveModel } from './claudeModels';
+import { discoverModelCatalog, resolveModel } from './claudeModels';
 import { validateBranchName } from '@shared/branchName';
 import { LIMIT_PROBE_TIMEOUT_MS, Scheduler } from './scheduler';
 import { SessionManager } from './sessionManager';
@@ -692,10 +692,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // every boot after the first rather than paying for a subprocess per catalog entry
   // on every render. `null` only until the very first sweep (this app run's or a past
   // one's) completes.
-  let modelCatalogCache: ModelResolution[] | null = store.loadModelCatalog();
+  let modelCatalogCache: DiscoveredModel[] | null = store.loadModelCatalog();
 
-  const refreshModelCatalog = async (): Promise<ModelResolution[]> => {
-    const rows = await probeModelCatalog();
+  const refreshModelCatalog = async (): Promise<DiscoveredModel[]> => {
+    const rows = await discoverModelCatalog();
     modelCatalogCache = rows;
     store.saveModelCatalog(rows);
     return rows;
