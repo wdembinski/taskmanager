@@ -34,6 +34,7 @@ import type {
   AssignAgentInput,
   BoardColumn,
   ChatSendResult,
+  DiscoveredModel,
   GitPreflight,
   JiraStatusCategory,
   ManualStatus,
@@ -294,13 +295,14 @@ export interface IpcApi {
    */
   'claude:listSessions': (cwd: string, target?: ExecTarget) => Promise<ClaudeSessionSummary[]>;
   /**
-   * The desktop's cached read of which `MODEL_CATALOG` entries the installed CLI
-   * actually recognizes right now — one {@link ModelResolution} per entry, in catalog
-   * order. Answered from an in-memory cache seeded from disk at boot, so opening a
-   * model picker never waits on a subprocess; pass `{ refresh: true }` to force a fresh
-   * sweep (a few seconds, zero tokens — `/model` is a local meta-command like `/usage`).
+   * The desktop's cached read of what the installed CLI actually offers right now —
+   * one {@link DiscoveredModel} per catalog entry plus any live alias the CLI names
+   * that the static catalog doesn't already carry, in catalog order. Answered from an
+   * in-memory cache seeded from disk at boot, so opening a model picker never waits on
+   * a subprocess; pass `{ refresh: true }` to force a fresh sweep (a few seconds, zero
+   * tokens — `/model` is a local meta-command like `/usage`).
    */
-  'model:catalog': (opts?: { refresh: boolean }) => Promise<ModelResolution[]>;
+  'model:catalog': (opts?: { refresh: boolean }) => Promise<DiscoveredModel[]>;
   /**
    * Resolve ONE model id the same way, for the model picker's "Custom…" box — a value
    * that was never in `MODEL_CATALOG` and so was never part of the cached sweep above.

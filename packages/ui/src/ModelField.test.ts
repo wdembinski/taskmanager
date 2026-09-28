@@ -9,12 +9,13 @@
  * control fails to recognize as "already pinned, just not in the static catalog".
  */
 import { describe, expect, it } from 'vitest';
-import type { ModelCatalogEntry, ModelResolution } from '@tm/shared/model';
+import type { DiscoveredModel, ModelCatalogEntry, ModelResolution } from '@tm/shared/model';
 import {
   CUSTOM_MODEL,
   customCaption,
   groupCatalog,
   isCustomValue,
+  mergeCatalog,
   optionCaption,
 } from './ModelField';
 
@@ -48,6 +49,29 @@ describe('groupCatalog', () => {
     for (const group of versionGroups) {
       expect(group.entries.every((e) => e.kind === 'version')).toBe(true);
     }
+  });
+});
+
+describe('mergeCatalog', () => {
+  it('returns the seed untouched when discovery is null or empty — the transport-tier fallback', () => {
+    expect(mergeCatalog(null, CATALOG)).toEqual(CATALOG);
+    expect(mergeCatalog([], CATALOG)).toEqual(CATALOG);
+  });
+
+  it('appends a live alias the static catalog has never heard of', () => {
+    const discovered: DiscoveredModel[] = [
+      { id: 'sonnet[1m]', label: 'sonnet[1m]', known: true, family: 'sonnet', kind: 'alias' },
+    ];
+    const merged = mergeCatalog(discovered, CATALOG);
+    expect(merged.map((e) => e.id)).toEqual([...CATALOG.map((e) => e.id), 'sonnet[1m]']);
+  });
+
+  it('overwrites a static entry in place rather than moving it', () => {
+    const discovered: DiscoveredModel[] = [
+      { id: 'opus', label: 'Opus 5', known: true, family: 'opus', kind: 'alias' },
+    ];
+    const merged = mergeCatalog(discovered, CATALOG);
+    expect(merged.map((e) => e.id)).toEqual(CATALOG.map((e) => e.id));
   });
 });
 
