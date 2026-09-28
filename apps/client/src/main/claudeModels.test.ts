@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { MODEL_CATALOG } from '@shared/model';
 import { LOCAL_TARGET, type ExecHost, type ExecResult } from './exec';
 import {
+  discoverModelCatalog,
   parseAvailableAliases,
   parseModelLabel,
   probeModelCatalog,
@@ -136,5 +137,65 @@ describe('probeModelCatalog', () => {
     const rows = await probeModelCatalog(host);
     expect(rows.map((r) => r.id)).toEqual(MODEL_CATALOG.map((e) => e.id));
     expect(rows.every((r) => r.known)).toBe(true);
+  });
+});
+
+describe('discoverModelCatalog', () => {
+  it('tags every probed static-catalog entry with its family and kind', async () => {
+    const host = stubHost((id) => okResult(`label-for-${id}`));
+    const rows = await discoverModelCatalog(host);
+    for (const entry of MODEL_CATALOG) {
+      const row = rows.find((r) => r.id === entry.id);
+      expect(row).toMatchObject({
+        id: entry.id,
+        family: entry.family,
+        kind: entry.kind,
+        label: `label-for-${entry.id}`,
+      });
+    }
+  });
+
+  it('does not duplicate a bare alias that is both in the static catalog and on the Available: line', async () => {
+    // The real CLI's `Available:` line names `sonnet, opus, haiku, fable` alongside modes —
+    // all four are already `MODEL_CATALOG` alias entries, so they must appear exactly once.
+    const host = stubHost((id) => okResult(`label-for-${id}`));
+    const rows = await discoverModelCatalog(host);
+    const ids = rows.map((r) => r.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids.sort()).toEqual([...MODEL_CATALOG.map((e) => e.id)].sort());
+  });
+
+  it('never turns a non-model mode or a [1m] context variant into a row of its own', async () => {
+    const host = stubHost((id) => okResult(`label-for-${id}`));
+    const rows = await discoverModelCatalog(host);
+    for (const token of ['best', 'opusplan', 'default', 'sonnet[1m]', 'opus[1m]', 'fable[1m]']) {
+      expect(rows.some((r) => r.id === token)).toBe(false);
+    }
+  });
+
+  it('spawns exactly one process per catalog entry plus one alias-discovery probe — no re-resolving', async () => {
+    let calls = 0;
+    const host = stubHost((id) => {
+      calls++;
+      return okResult(`label-for-${id}`);
+    });
+    await discoverModelCatalog(host);
+    // The alias-discovery probe reuses a catalog id (`sonnet`) rather than spawning a
+    // process of its own kind, so the total is the static sweep plus exactly one extra.
+    expect(calls).toBe(MODEL_CATALOG.length + 1);
+  });
+
+  it('still returns the full static sweep, with no aliases, when the alias-discovery probe fails', async () => {
+    const host = stubHost((id) =>
+      id === 'sonnet' ? { code: 1, stdout: '', stderr: 'boom' } : okResult(`label-for-${id}`),
+    );
+    const rows = await discoverModelCatalog(host);
+    expect(rows.map((r) => r.id).sort()).toEqual([...MODEL_CATALOG.map((e) => e.id)].sort());
+    // `sonnet` itself falls back to the neutral unresolved shape, same as `resolveModel`.
+    expect(rows.find((r) => r.id === 'sonnet')).toMatchObject({
+      id: 'sonnet',
+      label: 'sonnet',
+      known: false,
+    });
   });
 });
