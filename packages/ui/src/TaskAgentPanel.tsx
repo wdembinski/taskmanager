@@ -147,6 +147,8 @@ export interface TaskAgentPanelProps {
   subtasks?: Task[];
   /** Every agent project (from `project:list`), owned by the board so it's fetched once. */
   agentProjects: Project[];
+  /** Every project a card can be FILED under — passed straight through to `AssignAgentDialog`. */
+  filingProjects?: Project[];
   /**
    * Everything the inbox is holding for this card and its steps, newest last, from the
    * board's single `useAttentionIndex`.
@@ -217,6 +219,7 @@ export function TaskAgentPanel({
   task,
   subtasks = [],
   agentProjects,
+  filingProjects = [],
   items = [],
   onOpenTask,
   onTaskChanged,
@@ -1284,6 +1287,7 @@ export function TaskAgentPanel({
         open={assignOpen}
         task={task}
         agentProjects={agentProjects}
+        filingProjects={filingProjects}
         onClose={() => setAssignOpen(false)}
         onAssigned={onTaskChanged}
       />

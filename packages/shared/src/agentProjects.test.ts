@@ -4,6 +4,7 @@ import {
   normalizeEpicKey,
   resolveAgentProject,
   resolveOwningBoardProject,
+  seedAssignProject,
 } from './agentProjects';
 import { isAgentAssigned } from './board';
 import { LOCAL_TARGET } from './execTarget';
@@ -167,5 +168,64 @@ describe('resolveOwningBoardProject', () => {
   it('returns null when nothing owns the epic, or the task has none', () => {
     expect(resolveOwningBoardProject(task({ externalParentKey: 'NOPE-1' }), [board])).toBeNull();
     expect(resolveOwningBoardProject(task(), [board])).toBeNull();
+  });
+});
+
+describe('seedAssignProject', () => {
+  const billing = project({ id: 'p-billing', name: 'Billing' });
+  const web = project({ id: 'p-web', name: 'Web', jiraEpicKeys: ['ABC-1'] });
+  // Filed under, but the project has no directory — nothing an agent could run in.
+  const tagOnly = project({ id: 'p-tagonly', name: 'Tag only', path: '' });
+  // A native ticket's own board, which also happens to be a repo.
+  const repoBoard = project({ id: 'p-board', name: 'Board', ticketPrefix: 'BRD' });
+  // Same shape, but no repo — the board is ticket-only.
+  const ticketOnlyBoard = project({
+    id: 'p-board-norepo',
+    name: 'Ticket board',
+    path: '',
+    ticketPrefix: 'BRD',
+  });
+
+  it('seeds the filed project', () => {
+    const t = task({ projectTagId: 'p-billing' });
+    expect(seedAssignProject(t, [billing, web])?.id).toBe('p-billing');
+  });
+
+  it('lets an explicit delegation beat the filing', () => {
+    const t = task({ projectTagId: 'p-web', agentProjectId: 'p-billing' });
+    expect(seedAssignProject(t, [billing, web])?.id).toBe('p-billing');
+  });
+
+  it('returns null rather than guessing when the filed project has no repo', () => {
+    const t = task({ projectTagId: 'p-tagonly' });
+    expect(seedAssignProject(t, [billing, tagOnly])).toBeNull();
+  });
+
+  it('returns null when the delegated project was deleted and nothing else owns it', () => {
+    const t = task({ agentProjectId: 'p-deleted' });
+    expect(seedAssignProject(t, [billing, web])).toBeNull();
+  });
+
+  it('seeds a native ticket from the repo board it lives on', () => {
+    const t = task({ projectId: 'p-board' });
+    expect(seedAssignProject(t, [repoBoard, billing])?.id).toBe('p-board');
+  });
+
+  it('does not seed from a repo-less ticket board', () => {
+    const t = task({ projectId: 'p-board-norepo' });
+    expect(seedAssignProject(t, [ticketOnlyBoard, billing])).toBeNull();
+  });
+
+  it('seeds nothing for an unfiled card even when there is exactly one agent project', () => {
+    // The deliberate behaviour change: this used to fall back to `projects[0]`.
+    expect(seedAssignProject(task(), [billing])).toBeNull();
+  });
+
+  it('answers identically to resolveAgentProject for a card filed under a repo', () => {
+    // The guess lived in the dialog, not the resolver — resolveAgentProject is untouched.
+    const t = task({ projectTagId: 'p-billing' });
+    expect(seedAssignProject(t, [billing, web])?.id).toBe(
+      resolveAgentProject(t, [billing, web])?.id,
+    );
   });
 });

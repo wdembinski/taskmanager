@@ -4,8 +4,10 @@
  * The card never leaves the Personal board; what this picks is the **agent project**
  * (a repo directory, managed in the desktop app's Projects screen) the run happens in,
  * plus the model and permission mode that run uses. The project is pre-filled from the
- * ticket's epic (`resolveAgentProject`), so for a linked epic the whole dialog is usually
- * one click.
+ * card's filing or its ticket's epic (`seedAssignProject`), so for a filed or linked card
+ * the whole dialog is usually one click — but a card that cannot say where it should run
+ * (filed under a project with no repo, or not filed at all) seeds an empty picker rather
+ * than guessing: the Assign buttons stay disabled until the human names a project.
  *
  * Confirming calls `task:assignAgent`, which records the instructions on the task's timeline
  * and starts the agent immediately (Assign without starting stages it instead). The one
@@ -54,7 +56,7 @@ import {
   validateBranchName,
   type BranchType,
 } from '@tm/shared/branchName';
-import { resolveAgentProject } from '@tm/shared/agentProjects';
+import { seedAssignProject } from '@tm/shared/agentProjects';
 import { useTransport } from './transport';
 
 const useStyles = makeStyles({
@@ -115,6 +117,12 @@ export interface AssignAgentDialogProps {
   task: Task | null;
   /** Every agent project (from `project:list`), for the picker. */
   agentProjects: Project[];
+  /**
+   * Every project a card can be FILED under (`TaskDetail`'s wider `projects` list) — used
+   * only to NAME the project in the empty-picker hint below, never to seed it: a filing
+   * project may have no repo at all, which is exactly the case that hint explains.
+   */
+  filingProjects?: Project[];
   onClose: () => void;
   /** The updated task, so the board can patch the card without a refresh. */
   onAssigned: (task: Task) => void;
@@ -124,6 +132,7 @@ export function AssignAgentDialog({
   open,
   task,
   agentProjects,
+  filingProjects = [],
   onClose,
   onAssigned,
 }: AssignAgentDialogProps): JSX.Element {
@@ -148,15 +157,15 @@ export function AssignAgentDialog({
 
   // Seed once per opening — keyed on the card, not the task object, so a background
   // JIRA sync replacing it can't wipe what the user is halfway through typing.
-  const latest = useRef({ task, agentProjects });
-  latest.current = { task, agentProjects };
+  const latest = useRef({ task, agentProjects, filingProjects });
+  latest.current = { task, agentProjects, filingProjects };
   useEffect(() => {
     if (!open) return;
     const { task: card, agentProjects: projects } = latest.current;
     if (!card) return;
     setError(null);
     setNotes('');
-    const resolved = resolveAgentProject(card, projects) ?? projects[0] ?? null;
+    const resolved = seedAssignProject(card, projects);
     setProjectId(resolved?.id ?? '');
     // The card's own model ONLY: reading the project's in as a seed made a fresh assignment
     // save an override nobody asked for, pinning the card to the repo's execution model and
@@ -169,7 +178,12 @@ export function AssignAgentDialog({
     setPlanningModel(card.agentPlanningModel ?? null);
     setMode(card.agentMode ?? resolved?.defaultPermissionMode ?? 'acceptEdits');
     setBranchTouched(false);
-    const type = inferBranchType({ title: card.title, externalType: card.externalType });
+    const type = inferBranchType({
+      title: card.title,
+      taskType: card.type,
+      issueType: card.issueType,
+      externalType: card.externalType,
+    });
     setBranchType(type);
     // The card's saved branch wins: re-opening the dialog on an assigned card must show
     // the branch its worktree is actually on, not a fresh proposal that disagrees with it.
@@ -261,6 +275,14 @@ export function AssignAgentDialog({
       ? `That won't work: ${branchCheck.reason}.`
       : null;
   const ticket = task?.externalKey ? `${task.externalKey} — ${task.title}` : (task?.title ?? '');
+  // Names the project in the empty-picker hint below, when that's WHY it's empty: the card
+  // is filed somewhere, that project just isn't an agent project (no repo). `filingProjects`
+  // rather than `agentProjects` because the project we need to name is exactly the one
+  // `agentProjects` excludes.
+  const filedProjectId = task ? (task.projectTagId ?? task.agentProjectId ?? null) : null;
+  const filedProject = filedProjectId
+    ? (filingProjects.find((p) => p.id === filedProjectId) ?? null)
+    : null;
 
   return (
     <Dialog open={open} onOpenChange={(_e, d) => !d.open && onClose()}>
@@ -286,6 +308,16 @@ export function AssignAgentDialog({
                 </MessageBar>
               ) : (
                 <>
+                  {!projectId && filedProject && (
+                    <MessageBar intent="info">
+                      <MessageBarBody>
+                        This card is filed under {filedProject.name}, which has no repository for an
+                        agent to work in. Pick where this run should happen — the filing is not
+                        changed.
+                      </MessageBarBody>
+                    </MessageBar>
+                  )}
+
                   <Field
                     label="Agent project"
                     required

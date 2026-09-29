@@ -85,3 +85,28 @@ export function resolveOwningBoardProject(
   const resolved = resolveOwningProject(task, projects);
   return resolved && ownsBoard(resolved) ? resolved : null;
 }
+
+type SeedableTask = Pick<
+  Task,
+  'projectId' | 'agentProjectId' | 'projectTagId' | 'externalParentKey'
+>;
+
+/**
+ * What the assign dialog pre-fills its project picker with.
+ *
+ * Deliberately NOT `resolveAgentProject(task) ?? projects[0]`, which is what it used to be:
+ * a card filed under a repo-less project resolved to nothing and was then silently re-filed
+ * onto whatever repo happened to be first — and `task:assignAgent` writes that guess into
+ * `projectTagId` for an unfiled card, so the guess became the answer. Nothing is guessed
+ * here: a card that cannot say where it should run answers `null`, the picker stays empty,
+ * and the Assign buttons stay disabled until the human says.
+ */
+export function seedAssignProject(task: SeedableTask, projects: Project[]): Project | null {
+  const candidates = agentProjectsOf(projects);
+  const resolved = resolveOwningProject(task, candidates);
+  if (resolved) return resolved;
+  // A native ticket on a project's own board: the board IS the repo, and the card already
+  // lives there — a fact, not a guess. Only here, never in `resolveOwningProject`, which
+  // the trackers' sync paths depend on.
+  return candidates.find((p) => p.id === task.projectId) ?? null;
+}
