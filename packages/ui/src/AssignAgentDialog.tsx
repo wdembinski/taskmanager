@@ -169,7 +169,7 @@ export function AssignAgentDialog({
     setPlanningModel(card.agentPlanningModel ?? null);
     setMode(card.agentMode ?? resolved?.defaultPermissionMode ?? 'acceptEdits');
     setBranchTouched(false);
-    const type = inferBranchType(card.title, card.externalType);
+    const type = inferBranchType({ title: card.title, externalType: card.externalType });
     setBranchType(type);
     // The card's saved branch wins: re-opening the dialog on an assigned card must show
     // the branch its worktree is actually on, not a fresh proposal that disagrees with it.
