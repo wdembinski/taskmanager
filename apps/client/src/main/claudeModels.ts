@@ -22,7 +22,13 @@
  * an error). That is the entire signal this module reads: `label !== id` is "the CLI
  * knows this one."
  */
-import { MODEL_CATALOG, type ModelResolution } from '@shared/model';
+import {
+  familyOfAlias,
+  MODEL_CATALOG,
+  type DiscoveredModel,
+  type ModelFamily,
+  type ModelResolution,
+} from '@shared/model';
 import type { ClaudeModel } from '@shared/session';
 import { localHost, type ExecHost } from './exec';
 
@@ -53,6 +59,35 @@ export function parseAvailableAliases(text: string): string[] {
 }
 
 /**
+ * Run the `/model` probe for one id and hand back its raw reply text, or `null` for
+ * every way that can fail to mean anything (non-zero exit, unparseable JSON, a shape
+ * that isn't `{ result: string }`) — the one spawn `resolveModel` and
+ * `discoverModelCatalog` both build on, since the latter needs the `Available:` line
+ * the former throws away after reading `Current model:`.
+ */
+async function readModelProbe(
+  host: ExecHost,
+  id: ClaudeModel,
+  timeoutMs: number,
+): Promise<string | null> {
+  const { code, stdout } = await host.exec(
+    process.cwd(),
+    'claude',
+    ['--model', id, '-p', '/model', '--output-format', 'json'],
+    { resolveViaShell: true, timeoutMs },
+  );
+  if (code !== 0) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  const result = (parsed as { result?: unknown } | null)?.result;
+  return typeof result === 'string' ? result : null;
+}
+
+/**
  * Ask the CLI what it makes of one model id. Never throws — a CLI that is missing,
  * logged out, offline, or mid-upgrade just means "no reading yet", the same shape
  * `readClaudeUsage` uses for the same reasons, and folds into the same neutral answer
@@ -66,22 +101,9 @@ export async function resolveModel(
   timeoutMs = 10_000,
 ): Promise<ModelResolution> {
   const unresolved: ModelResolution = { id, label: id, known: false };
-  const { code, stdout } = await host.exec(
-    process.cwd(),
-    'claude',
-    ['--model', id, '-p', '/model', '--output-format', 'json'],
-    { resolveViaShell: true, timeoutMs },
-  );
-  if (code !== 0) return unresolved;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(stdout);
-  } catch {
-    return unresolved;
-  }
-  const result = (parsed as { result?: unknown } | null)?.result;
-  if (typeof result !== 'string') return unresolved;
-  const label = parseModelLabel(result);
+  const text = await readModelProbe(host, id, timeoutMs);
+  if (text === null) return unresolved;
+  const label = parseModelLabel(text);
   if (label === null) return unresolved;
   return { id, label, known: label !== id };
 }
@@ -107,4 +129,55 @@ export async function probeModelCatalog(host: ExecHost = localHost()): Promise<M
   }
   await Promise.all(Array.from({ length: Math.min(CATALOG_CONCURRENCY, entries.length) }, worker));
   return rows;
+}
+
+/** The id the one extra `/model` probe in {@link discoverModelCatalog} runs on, purely
+ *  to read its `Available:` line — any catalog alias would do. */
+const ALIAS_DISCOVERY_PROBE_ID: ClaudeModel = 'sonnet';
+
+/**
+ * Resolve `MODEL_CATALOG` against the installed CLI (same sweep as `probeModelCatalog`)
+ * and merge in whatever **live** aliases the CLI's `Available:` line names that the
+ * static catalog doesn't already carry — so a new family the CLI ships shows up before
+ * anyone edits `MODEL_CATALOG` by hand, without losing a retired id the `Available:`
+ * line has already dropped (it still comes through via the static sweep, labelled by
+ * whatever the CLI has remapped it to).
+ *
+ * One extra `/model` probe supplies the whole alias list: its `Available:` line is
+ * always the same regardless of which id was probed, so a single call
+ * (`ALIAS_DISCOVERY_PROBE_ID`) is enough. Non-model tokens on that line (`default`,
+ * `best`, `opusplan`, the `[1m]` context variants) are dropped by {@link familyOfAlias}
+ * — they stay reachable through "Custom…" rather than a family-grouped row.
+ */
+export async function discoverModelCatalog(
+  host: ExecHost = localHost(),
+): Promise<DiscoveredModel[]> {
+  const [staticRows, probeText] = await Promise.all([
+    probeModelCatalog(host),
+    readModelProbe(host, ALIAS_DISCOVERY_PROBE_ID, 10_000),
+  ]);
+
+  const merged = new Map<string, DiscoveredModel>();
+  staticRows.forEach((row, i) => {
+    const entry = MODEL_CATALOG[i];
+    merged.set(row.id, { ...row, family: entry.family, kind: entry.kind });
+  });
+
+  const aliasTokens = probeText === null ? [] : parseAvailableAliases(probeText);
+  const newAliases = aliasTokens
+    .map((id) => ({ id: id as ClaudeModel, family: familyOfAlias(id) }))
+    .filter(
+      (alias): alias is { id: ClaudeModel; family: ModelFamily } =>
+        alias.family !== null && !merged.has(alias.id),
+    );
+  const aliasRows = await Promise.all(
+    newAliases.map(async ({ id, family }): Promise<DiscoveredModel> => ({
+      ...(await resolveModel(host, id)),
+      family,
+      kind: 'alias',
+    })),
+  );
+  for (const row of aliasRows) merged.set(row.id, row);
+
+  return Array.from(merged.values());
 }

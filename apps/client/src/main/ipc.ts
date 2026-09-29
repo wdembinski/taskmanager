@@ -47,13 +47,12 @@ import {
   isManualStatus,
   isPersonalBoard,
   isUsableModel,
-  ownsBoard,
   ownsTickets,
   PERSONAL_PROJECT_ID,
   type BoardColumn,
+  type DiscoveredModel,
   type JiraStatusCategory,
   type Milestone,
-  type ModelResolution,
   type Person,
   type Project,
   type ProjectPatch,
@@ -194,6 +193,7 @@ import { RELEASE_DOC } from '@shared/release';
 import { openPullRequest, type CreatePrDeps } from './forge/createPr';
 import { linkMergeRequest, type LinkPrDeps } from './forge/linkPr';
 import { forgeBaseUrl } from './forge/baseUrl';
+import { buildBoardIndex } from './forge/boardIndex';
 import {
   CARD_RECORDS_PARK,
   isParkedRefusal,
@@ -211,7 +211,7 @@ import { openInteractiveSignIn, watchForSignIn } from './signIn';
 import { PlanWatcher } from './planWatcher';
 import { SyncPoller } from './syncPoller';
 import { ClaudeUsagePoller, readClaudeUsage } from './claudeUsage';
-import { probeModelCatalog, resolveModel } from './claudeModels';
+import { discoverModelCatalog, resolveModel } from './claudeModels';
 import { validateBranchName } from '@shared/branchName';
 import { LIMIT_PROBE_TIMEOUT_MS, Scheduler } from './scheduler';
 import { SessionManager } from './sessionManager';
@@ -692,10 +692,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // every boot after the first rather than paying for a subprocess per catalog entry
   // on every render. `null` only until the very first sweep (this app run's or a past
   // one's) completes.
-  let modelCatalogCache: ModelResolution[] | null = store.loadModelCatalog();
+  let modelCatalogCache: DiscoveredModel[] | null = store.loadModelCatalog();
 
-  const refreshModelCatalog = async (): Promise<ModelResolution[]> => {
-    const rows = await probeModelCatalog();
+  const refreshModelCatalog = async (): Promise<DiscoveredModel[]> => {
+    const rows = await discoverModelCatalog();
     modelCatalogCache = rows;
     store.saveModelCatalog(rows);
     return rows;
@@ -1063,6 +1063,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('task:chat', async (taskId, message) => scheduler.chatWithAgent(taskId, message));
   handle('task:replan', async (taskId, note, opts) => scheduler.replanCard(taskId, note, opts));
   handle('task:create', async (projectId, input) => {
+    // `projectId` is any board — Personal or a keyless project — not only Personal: the
+    // Add-task dialog's merged picker sends the project itself once it has decided (by
+    // `ownsTickets`) that this is the `task:create` branch rather than `ticket:create`'s.
     // The same check `task:setProject` makes, for the same reason: a card created with a
     // dangling or unfileable tag would wear a colour stripe nothing on the board could
     // explain.
@@ -1182,6 +1185,51 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     const task = store.updateTask(taskId, { projectTagId });
     if (!task) throw new Error('Task not found.');
     send('task:changed', { task, runId: null });
+    return task;
+  });
+
+  handle('task:setBoard', async (taskId, boardId) => {
+    const existing = store.getTask(taskId);
+    if (!existing) throw new Error('Task not found.');
+    // Same guard `task:assignAgent` opens with: a live run owns the card's worktree, and
+    // moving it to another board out from under that run is not a thing a move should do.
+    if (existing.status === 'running' || existing.status === 'waiting-input') {
+      throw new Error('Stop the task before moving it to another board.');
+    }
+    // The board a plan-driven project shows is a reflection of its plan file — `ticket:create`
+    // refuses a manual add there for the same reason. A manual move off it would only be
+    // undone by the next `project:syncPlan`, so it is refused here too.
+    const sourceProject = store.getProject(existing.projectId);
+    if (sourceProject && hasPlan(sourceProject)) {
+      throw new Error(
+        "This card's board comes from its plan file — edit the plan to move it, not by hand.",
+      );
+    }
+    // A JIRA or GitHub card's `projectId` is recomputed from its Project TAG on every sync
+    // (`resolveOwningBoardProject`, in `issueToTask`) — a move made here would simply be
+    // overwritten by the next poll. `task:setProject` is the lever that actually sticks.
+    if (existing.externalSource === 'jira' || existing.externalSource === 'github') {
+      throw new Error(
+        `This card is synced from ${existing.externalSource === 'jira' ? 'JIRA' : 'GitHub'} — set its Project field instead of moving the board directly; the sync follows that.`,
+      );
+    }
+    // No `ownsBoard` gate: every project is a valid board now, Personal included — it is a
+    // project row like any other (see `PERSONAL_PROJECT_ID`'s seed in store.ts).
+    const dest = store.getProject(boardId);
+    if (!dest) throw new Error('Unknown board.');
+    if (boardId === existing.projectId) return existing;
+
+    const task = store.moveTaskToBoard(taskId, boardId);
+    if (!task) throw new Error('Task not found.');
+    send('task:changed', { task, runId: null });
+    // Both boards, so the source drops the card and the destination gains it — the same
+    // reason `task:create`/`task:delete` push `project:tasksChanged` for the one board they
+    // touch, doubled because this move touches two.
+    send('project:tasksChanged', {
+      projectId: existing.projectId,
+      tasks: store.getTasks(existing.projectId),
+    });
+    send('project:tasksChanged', { projectId: boardId, tasks: store.getTasks(boardId) });
     return task;
   });
 
@@ -1949,8 +1997,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   };
 
   /**
-   * The board's keys and the cards behind them, for matching MRs to tasks — plus the set of
-   * card ids, which is what a merge request's *remembered* card is checked against.
+   * Every board's keys and the cards behind them, for matching MRs to tasks — plus the set of
+   * card ids, which is what a merge request's *remembered* card is checked against. "Every
+   * board" means Personal plus each ticket/board project — a self-opened PR/MR is no less
+   * this app's own for having been filed against a project board instead of Personal.
    *
    * The archived-excluding read, deliberately: an MR is matched to a card so the card can show
    * it, and a card that is off the board has nowhere to show anything. Including archived rows
@@ -1962,33 +2012,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     knownKeys: string[];
     taskIdByKey: Map<string, string>;
     knownTaskIds: Set<string>;
-  } => {
-    const taskIdByKey = new Map<string, string>();
-    const knownTaskIds = new Set<string>();
-    for (const task of store.getPersonalTasks()) {
-      knownTaskIds.add(task.id);
-      // Any tracker's key, not JIRA's alone: a GitHub pull request names its issue as
-      // `owner/repo#123`, which is the same kind of fact about the same kind of card. The
-      // upper-casing is what makes the lookup case-insensitive on both spellings.
-      if (task.externalSource && task.externalKey) {
-        taskIdByKey.set(task.externalKey.toUpperCase(), task.id);
-      }
-      // A NATIVE ticket's key (`TM-12`) counts too, and leaving it out was a hole rather
-      // than a decision: it is the key this app puts in front of the title of every pull
-      // request it opens (`prTitle`), the key a human types into a branch name, and the one
-      // the card itself prints — but nothing here indexed it, so no merge request naming it
-      // could ever be matched to it. A card with a native ticket behind it looked, to every
-      // reconciler, exactly like a card with no key at all.
-      const ticketKey = task.ticketKey?.trim();
-      // Never over a tracker's own: `externalKey` is the mirrored issue's real name, and if
-      // some board somehow spells both the same, the mirrored card is the one whose key the
-      // forge's text is quoting.
-      if (ticketKey && !taskIdByKey.has(ticketKey.toUpperCase())) {
-        taskIdByKey.set(ticketKey.toUpperCase(), task.id);
-      }
-    }
-    return { knownKeys: [...taskIdByKey.keys()], taskIdByKey, knownTaskIds };
-  };
+  } => buildBoardIndex(store.getAllBoardTasks());
 
   // -------------------------------------------------------------------------
   // Linking an MR/PR a human opened themselves (`forge/linkPr.ts`) — the paste-a-URL
@@ -2661,18 +2685,22 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     !scope || scope === 'all' ? store.getAllArchivedBoardTasks() : store.getArchivedTasksFor(scope),
   );
 
-  // The boards the scope picker offers: Personal first, then every project that owns a
-  // ticket key prefix — the ones `ownsBoard` says can actually receive a native ticket.
-  // A bare repo or a repo-less personal-space project is a card list too, but has no
-  // board of its own to switch to; its cards stay on Personal.
+  // The boards the scope picker offers: Personal first, then every other project — a
+  // board is now just "a project's cards", so a bare repo or a keyless project is as
+  // much a board as a ticket project; its cards simply carry no ticket key.
   handle('board:scopes', async () => {
     const personal = store.getProject(PERSONAL_PROJECT_ID);
     const scopes: BoardScope[] = personal
-      ? [{ id: personal.id, name: personal.name, color: personal.color }]
+      ? [{ id: personal.id, name: personal.name, color: personal.color, ownsTickets: false }]
       : [];
     for (const project of store.listProjects()) {
-      if (isPersonalBoard(project.id) || !ownsBoard(project)) continue;
-      scopes.push({ id: project.id, name: project.name, color: project.color });
+      if (isPersonalBoard(project.id)) continue;
+      scopes.push({
+        id: project.id,
+        name: project.name,
+        color: project.color,
+        ownsTickets: ownsTickets(project),
+      });
     }
     return scopes;
   });
@@ -3213,9 +3241,22 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     return names;
   };
 
+  // The removal guard's last verdict for JIRA and the last notice text pushed for it —
+  // both in memory, both reset by nothing but the next sync. Together they are what let a
+  // permanently wrong JQL stop being an every-two-minutes interruption: a refusal skips
+  // next sync's confirm pass (see the gate below), and an unchanged notice is not repeated
+  // — see the send below, which is also what lets a fixed query clear its own bar.
+  let jiraGuardRefused = false;
+  let lastJiraNotice: string | null = null;
+
   // One JIRA sync: fetch issues, reconcile into the store, push the fresh board.
   // Shared by the manual `jira:sync` handler and the background poller below.
-  const syncJira = async (): Promise<Task[]> => {
+  //
+  // `dedupeNotice`: true from the poller, false/absent from the button. A manual sync is
+  // the human explicitly asking "what's true right now" and always gets the honest answer;
+  // the poller only speaks up when that answer CHANGES, so dismissing a still-accurate
+  // warning is not undone by the next tick repeating itself verbatim two minutes later.
+  const syncJira = async (opts: { dedupeNotice?: boolean } = {}): Promise<Task[]> => {
     const { jira, features } = store.getSettings();
     if (!jira.enabled) return store.getPersonalTasks();
     const client = buildJiraClient();
@@ -3307,21 +3348,25 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // The case where that "zero extra requests" stops being true, stated so nobody discovers it
     // as a mystery: a query that is **permanently wrong** — someone saves a JQL that matches
     // nothing, or narrows a filter and leaves it there. Every card on the board is then a
-    // candidate on every poll, the guard refuses the removal (it is far past a quarter of the
-    // board), the warning bar comes back, and the confirm pass is paid for again — one request
-    // per fifty cards, at the sync interval, by default every two minutes. Nothing is lost and
-    // nothing is removed; it is steady noise plus request volume until the query is fixed.
+    // candidate on every poll, and the confirm pass is paid for again — one request per fifty
+    // cards, at the sync interval, by default every two minutes. Whatever it comes back with,
+    // the reconciler's own shortfall check (`isIncompleteAnswer`, `jiraSync.ts`) sees the same
+    // large, query-unchanged share of the board missing and removes nothing anyway — it cannot
+    // tell "permanently wrong query" apart from "instance under-answering", and treats both the
+    // same. Nothing is lost and nothing is removed; it is steady noise plus request volume
+    // until the query is fixed.
     //
-    // Deliberately not mitigated here. The obvious mitigation is real and written down rather
-    // than built: after a refusal, skip the confirm pass on the next sync unless the query
-    // changed. It is cheap, and it is also a way to make the app slower to notice a board that
-    // has genuinely turned over — the refusal is a *guess* that something is wrong, and paying
-    // a request per fifty cards to keep re-checking that guess is the right trade until someone
-    // is actually being hurt by it. If it ever bites, that is the fix; `queryChanged` above is
-    // already the signal it would key on.
+    // The mitigation: after a refusal, skip the confirm pass on the next sync unless the
+    // query changed. It is cheap, and it is also a way to make the app slower to notice a
+    // board that has genuinely turned over — the refusal is a *guess* that something is
+    // wrong, and paying a request per fifty cards to keep re-checking that guess is the
+    // right trade until someone is actually being hurt by it. `queryChanged` is what lets a
+    // fixed or intentionally-edited query resume being confirmed at once rather than
+    // waiting out a refusal that no longer applies.
+    const skipConfirm = jiraGuardRefused && !queryChanged;
     const candidates = removalCandidateKeys(personalForSync, issues);
     const confirmed =
-      candidates.length > 0 && !truncated
+      candidates.length > 0 && !truncated && !skipConfirm
         ? await confirmStillMatching(client, jql, candidates, {
             extraFields,
             ...batchLog('confirm'),
@@ -3367,12 +3412,22 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     for (const r of refused) {
       logMain(`JIRA sync: REFUSED to remove ${r.key} (${r.title}) — ${warning ?? 'guarded'}`);
     }
+    jiraGuardRefused = refused.length > 0;
     // The paging-artifact count, every guard trip and every truncation are all in here.
-    if (warning) {
-      logMain(`JIRA sync: ${warning}`);
-      // Its own bar, not the error bar: nothing failed, and a warning that reads as an
-      // error teaches people to dismiss both.
-      send('board:notice', { text: warning, intent: 'warning' });
+    if (warning) logMain(`JIRA sync: ${warning}`);
+    // Its own bar, not the error bar: nothing failed, and a warning that reads as an error
+    // teaches people to dismiss both.
+    //
+    // A manual sync (`dedupeNotice` unset) always reports what is true right now. The
+    // poller only speaks up when that changes from what it last said — otherwise a
+    // permanently wrong query would repeat the identical warning every two minutes,
+    // undoing a dismiss almost as soon as it happened. Either way, once the warning
+    // actually clears, the empty text tells the bar to stand down — the only way this
+    // channel has of saying "never mind" other than repeating something no longer true.
+    const noticeChanged = warning !== lastJiraNotice;
+    lastJiraNotice = warning;
+    if (opts.dedupeNotice ? noticeChanged : warning) {
+      send('board:notice', { text: warning ?? '', intent: 'warning' });
     }
     const tasks = store.getPersonalTasks();
     send('project:tasksChanged', { projectId: PERSONAL_PROJECT_ID, tasks });
@@ -3573,9 +3628,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
    * with none of the advice, which is precisely the failure a user then reports as "my
    * token is valid and it still says 401".
    */
-  const syncJiraDiagnosed = async (): Promise<Task[]> => {
+  const syncJiraDiagnosed = async (opts?: { dedupeNotice?: boolean }): Promise<Task[]> => {
     try {
-      return await syncJira();
+      return await syncJira(opts);
     } catch (e) {
       logMain('JIRA sync failed', e);
       throw new Error(explainJiraFailure(e, store.getSettings().jira));
@@ -4238,7 +4293,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     {
       id: 'jira',
       isEnabled: (s) => s.getSettings().jira.enabled,
-      run: () => trackSync('jira', syncJiraDiagnosed),
+      run: () => trackSync('jira', () => syncJiraDiagnosed({ dedupeNotice: true })),
     },
     {
       id: 'gitlab',

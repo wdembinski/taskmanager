@@ -33,6 +33,7 @@ import { resolveStatusColumn } from '@shared/statusResolve';
 // re-exported below so nothing that already imports it from here has to move.
 import {
   guardRemovals,
+  isIncompleteAnswer,
   type ForgeRemoval,
   type ForgeRemovalReason,
   type RemovalGuardResult,
@@ -466,15 +467,19 @@ export function removalCandidateKeys(
  *      genuinely no longer matches, the next sync re-archives it through the ordinary
  *      `left-query` path below — correct given the query, and not this function's problem.)
  *   3. **the search was truncated** — everything is kept, whatever else is true of it.
- *   4. **never asked about** (`queryChecked` has no such key) — kept.
- *   5. **asked, and JIRA says it still matches** (`queryMatches`) — kept, and counted: this
+ *   4. **this sync's own answer looks incomplete** ({@link isIncompleteAnswer}: a large,
+ *      query-unchanged share of the board is missing from `issues`) — everything is kept,
+ *      for the same reason as 3: an instance under-answering this badly cannot be trusted to
+ *      have gotten the handful of per-key follow-ups below right either.
+ *   5. **never asked about** (`queryChecked` has no such key) — kept.
+ *   6. **asked, and JIRA says it still matches** (`queryMatches`) — kept, and counted: this
  *      is a *paging artifact*, the case that was eating the board, and the count is the most
  *      diagnostic number this function produces.
- *   6. **asked, and JIRA says it no longer matches** — `left-query`.
- *   7. **retained past its window** — `retention-expired`.
- *   8. **retained, its batch failed** (`recheckedKeys` has no such key) — kept.
- *   9. **retained, asked for by key, and JIRA does not have it** — `gone-from-jira`.
- *  10. otherwise — upserted from the re-read issue, with its retention clock preserved.
+ *   7. **asked, and JIRA says it no longer matches** — `left-query`.
+ *   8. **retained past its window** — `retention-expired`.
+ *   9. **retained, its batch failed** (`recheckedKeys` has no such key) — kept.
+ *  10. **retained, asked for by key, and JIRA does not have it** — `gone-from-jira`.
+ *  11. otherwise — upserted from the re-read issue, with its retention clock preserved.
  *
  * Whatever survives all that is then put to {@link guardRemovals}, **here** rather than in
  * the caller: a guard the caller can forget to apply is not a guard.
@@ -504,16 +509,34 @@ export function reconcileJiraTasks(
   const queryMatches = asSet(opts.queryMatches);
   const truncated = opts.truncated === true;
 
+  // The denominator is the BOARD — the cards a human can see — not the query's answer, which
+  // is the very thing under suspicion when this guard matters. Computed up front, not after
+  // the loop below, because `incompleteAnswer` has to be known BEFORE `drop` runs for the
+  // first candidate.
+  const onBoardJiraCards = existing.filter(
+    (t) => t.source === 'jira' && t.externalKey != null && t.archivedAt == null,
+  );
+  const boardCount = onBoardJiraCards.length;
+  // How much of the board this search itself left out, before any per-key confirmation of
+  // *why* — a paging artifact, a genuine departure, a re-check that could not run are all
+  // still "missing from `issues`" at this point, and that raw share is what a broadly
+  // under-answering instance actually looks like from here.
+  const missingCount = onBoardJiraCards.filter((t) => !seen.has(t.externalKey as string)).length;
+  const incompleteAnswer = isIncompleteAnswer(missingCount, boardCount, opts);
+
   const candidates: JiraRemoval[] = [];
   /** Cards the query left out that JIRA says still match it — a short page, not a removal. */
   let pagingArtifacts = 0;
 
   /**
    * The one funnel every removal goes through, so `truncated` cannot be forgotten in a
-   * branch: a search we know was short removes nothing, for any reason.
+   * branch: a search we know was short removes nothing, for any reason. `incompleteAnswer`
+   * joins it here rather than as a second guard downstream, for the same reason: a large,
+   * query-unchanged shortfall is not proof of anything about the specific cards it is about
+   * to be blamed on — see {@link isIncompleteAnswer}.
    */
   const drop = (task: Task, reason: JiraRemovalReason): void => {
-    if (truncated) return;
+    if (truncated || incompleteAnswer) return;
     candidates.push({
       taskId: task.id,
       key: task.externalKey as string,
@@ -567,11 +590,6 @@ export function reconcileJiraTasks(
     upserts.push(issueToTask(issue, task, opts, task.order, since));
   }
 
-  // The denominator is the BOARD — the cards a human can see — not the query's answer,
-  // which is the very thing under suspicion when this guard matters.
-  const boardCount = existing.filter(
-    (t) => t.source === 'jira' && t.externalKey != null && t.archivedAt == null,
-  ).length;
   const guarded = guardRemovals(candidates, boardCount, {
     ...opts,
     tracker: 'JIRA',
@@ -582,6 +600,11 @@ export function reconcileJiraTasks(
   if (truncated) {
     notes.push(
       'JIRA did not return the whole query, so no card was removed from the board this sync.',
+    );
+  } else if (incompleteAnswer) {
+    notes.push(
+      `JIRA's answer left out ${missingCount} of ${boardCount} board cards without the query ` +
+        `changing, so no card was removed from the board this sync.`,
     );
   }
   if (pagingArtifacts > 0) {

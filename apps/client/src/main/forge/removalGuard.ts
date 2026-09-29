@@ -115,3 +115,38 @@ export function guardRemovals(
       `Check the board's ${queryName} and that ${tracker} is answering it in full.`,
   };
 }
+
+/**
+ * Whether this sync's own answer is too incomplete to draw any removal from, full stop.
+ *
+ * `guardRemovals` above judges the removal *candidates* a reconciler already decided on —
+ * cards it asked about, by key, and was told are gone. That per-key answer can be perfectly
+ * consistent and still rest on a bad foundation: a paged search that came back missing a
+ * third of the board, for a query that did not change, is itself evidence the tracker is not
+ * answering this sync in full (reindexing, an overloaded instance, a flaky proxy) — and a
+ * handful of small, reliable-looking `key in (…)` lookups run against that same unhealthy
+ * instance cannot be trusted to overrule it. So this is checked on the raw shortfall, BEFORE
+ * any of those missing cards are individually re-confirmed absent — deliberately not on
+ * `total`/`isLast`, the tracker's own say-so about how complete its answer was, which is
+ * exactly what is unreliable here.
+ *
+ * Same two dials, and the same stand-down on `queryChanged`, as {@link guardRemovals} — this
+ * is the same suspicion, caught one step earlier. Returns a bare boolean rather than a
+ * message: the caller folds it into whatever no-removal path it already has for a short or
+ * truncated fetch (see `truncated` in `jiraSync.ts` / `githubIssueSync.ts`), quietly, rather
+ * than raising a second alarm alongside `guardRemovals`'s.
+ */
+export function isIncompleteAnswer(
+  missingCount: number,
+  boardCount: number,
+  opts: Pick<
+    RemovalGuardOptions,
+    'queryChanged' | 'maxRemovalFraction' | 'minGuardedRemovals'
+  > = {},
+): boolean {
+  if (opts.queryChanged) return false;
+  const fraction = opts.maxRemovalFraction ?? DEFAULT_MAX_REMOVAL_FRACTION;
+  const floor = opts.minGuardedRemovals ?? DEFAULT_MIN_GUARDED_REMOVALS;
+  if (missingCount < floor) return false;
+  return missingCount > boardCount * fraction;
+}

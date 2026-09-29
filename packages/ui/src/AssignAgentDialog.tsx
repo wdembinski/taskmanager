@@ -44,6 +44,7 @@ import {
 } from '@fluentui/react-components';
 import { PERMISSION_MODE_LABELS } from '@tm/shared/session';
 import type { ClaudeModel, PermissionMode } from '@tm/shared/session';
+import type { BoardScope } from '@tm/shared/ipc';
 import { resolveRunModel } from '@tm/shared/model';
 import type { Project, Task } from '@tm/shared/model';
 import { cardModelFromOption, projectDefaultLabel, PROJECT_DEFAULT } from './modelChoice';
@@ -122,7 +123,7 @@ export interface AssignAgentDialogProps {
    * only to NAME the project in the empty-picker hint below, never to seed it: a filing
    * project may have no repo at all, which is exactly the case that hint explains.
    */
-  filingProjects?: Project[];
+  filingProjects?: BoardScope[];
   onClose: () => void;
   /** The updated task, so the board can patch the card without a refresh. */
   onAssigned: (task: Task) => void;

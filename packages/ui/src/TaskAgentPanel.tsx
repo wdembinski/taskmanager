@@ -55,6 +55,7 @@ import { AgentGlyph } from './AgentGlyph';
 import { autoCreatePrTooltip, autoMergeTooltip, autoReleaseTooltip } from './agentAutoToggles';
 import type { AttentionAnswer, AttentionItem } from '@tm/shared/attention';
 import { canResumeWork, canStopWork, hasAgentWorked, parkedStep } from '@tm/shared/board';
+import type { BoardScope } from '@tm/shared/ipc';
 import type { Project, Task } from '@tm/shared/model';
 import { autoIntegrateOn, projectAutoIntegrate } from '@tm/shared/integrate';
 import { autoReleaseOn } from '@tm/shared/release';
@@ -148,7 +149,7 @@ export interface TaskAgentPanelProps {
   /** Every agent project (from `project:list`), owned by the board so it's fetched once. */
   agentProjects: Project[];
   /** Every project a card can be FILED under — passed straight through to `AssignAgentDialog`. */
-  filingProjects?: Project[];
+  filingProjects?: BoardScope[];
   /**
    * Everything the inbox is holding for this card and its steps, newest last, from the
    * board's single `useAttentionIndex`.

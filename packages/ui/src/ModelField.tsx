@@ -11,11 +11,13 @@
  * inventing one — `PlanningModelField`'s `SAME_AS_EXECUTION` and `modelChoice.ts`'s
  * `PROJECT_DEFAULT` keep meaning exactly what they already mean, they just render here now.
  *
- * **Transport-tier fallback.** The grouped list always starts from the static
- * `MODEL_CATALOG` and renders it immediately, unlabelled; a `model:catalog` fetch then fills
- * in each option's live caption (`opus — Opus 5`) when it resolves. If it never resolves — no
- * desktop reachable from the web, a stale cache, whatever — the picker still works, just
- * without the labels. It must never gate its own render on that relayed call: that is the
+ * **Transport-tier fallback.** The grouped list always starts from the static `MODEL_CATALOG`
+ * and renders it immediately, unlabelled; a `model:catalog` fetch then unions in whatever the
+ * CLI actually discovered ({@link mergeCatalog}) — a live alias the seed has never heard of
+ * joins its family's group automatically — and fills in each option's live caption
+ * (`opus — Opus 5`) as it resolves. If the fetch never resolves — no desktop reachable from the
+ * web, a stale cache, whatever — the picker still works off the seed alone, just without the
+ * labels or the new rows. It must never gate its own render on that relayed call: that is the
  * bootstrap deadlock the web Settings PAT page already had to be rescued from (a whole page
  * blocked on one relayed read, including the read that would have fixed the relay).
  *
@@ -43,6 +45,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   MODEL_CATALOG,
   isUsableModel,
+  type DiscoveredModel,
   type ModelCatalogEntry,
   type ModelFamily,
   type ModelResolution,
@@ -93,6 +96,27 @@ export function groupCatalog(catalog: readonly ModelCatalogEntry[] = MODEL_CATAL
     aliases,
     versionGroups: familyOrder.map((family) => ({ family, entries: byFamily.get(family) ?? [] })),
   };
+}
+
+/**
+ * The static seed unioned with whatever the CLI has actually discovered, by id — the catalog
+ * {@link ModelField} groups instead of the bare `MODEL_CATALOG`. A discovered row overwrites
+ * its static twin's `family`/`kind` (the CLI's own answer wins) without moving its position;
+ * a discovered id the static catalog has never heard of is appended, in the order the CLI
+ * reported it, which is how a brand-new alias or family shows up with no code change. `null`
+ * or empty discovery — the transport-tier fallback, see the file header — returns the seed
+ * untouched, so the picker never gates its render on the relayed `model:catalog` call.
+ */
+export function mergeCatalog(
+  discovered: readonly DiscoveredModel[] | null,
+  catalog: readonly ModelCatalogEntry[] = MODEL_CATALOG,
+): ModelCatalogEntry[] {
+  if (!discovered || discovered.length === 0) return [...catalog];
+  const merged = new Map<string, ModelCatalogEntry>(catalog.map((entry) => [entry.id, entry]));
+  for (const row of discovered) {
+    merged.set(row.id, { id: row.id, family: row.family, kind: row.kind });
+  }
+  return [...merged.values()];
 }
 
 /**
@@ -183,11 +207,12 @@ const useStyles = makeStyles({
 /**
  * The live `model:catalog` probe, shared by {@link ModelField} and {@link useModelLabels} — a
  * `null` map (the transport-tier fallback, see the file header) until the fetch resolves, then
- * every id the CLI has answered for so far.
+ * every id the CLI has answered for so far, each still carrying the `family`/`kind` that
+ * {@link mergeCatalog} needs to fold a brand-new row into the grouped list.
  */
-function useModelResolutions(): Map<string, ModelResolution> | null {
+function useModelResolutions(): Map<string, DiscoveredModel> | null {
   const transport = useTransport();
-  const [resolutions, setResolutions] = useState<Map<string, ModelResolution> | null>(null);
+  const [resolutions, setResolutions] = useState<Map<string, DiscoveredModel> | null>(null);
   useEffect(() => {
     let cancelled = false;
     transport
@@ -236,18 +261,20 @@ export function ModelField({
   const styles = useStyles();
   const transport = useTransport();
   const resolutions = useModelResolutions();
-  const { aliases, versionGroups } = groupCatalog();
+  const catalog = mergeCatalog(resolutions ? [...resolutions.values()] : null);
+  const { aliases, versionGroups } = groupCatalog(catalog);
 
-  const startsCustom = allowCustom && isCustomValue(value, sentinel?.value);
+  const startsCustom = allowCustom && isCustomValue(value, sentinel?.value, catalog);
   const [customOpen, setCustomOpen] = useState(startsCustom);
   const [customText, setCustomText] = useState(startsCustom ? value : '');
   const [customResolution, setCustomResolution] = useState<ModelResolution | null>(null);
 
   // The caller reset `value` out from under us (Cancel, a fresh card, …) — follow it.
   useEffect(() => {
-    const custom = allowCustom && isCustomValue(value, sentinel?.value);
+    const custom = allowCustom && isCustomValue(value, sentinel?.value, catalog);
     setCustomOpen(custom);
     setCustomText(custom ? value : '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value, sentinel?.value, allowCustom]);
 
   const probeGeneration = useRef(0);
@@ -301,7 +328,7 @@ export function ModelField({
 
   // A value already pinned outside the catalog has to stay visible and selectable even with
   // custom typing turned off — see the file header.
-  const pinnedCustom = !allowCustom && isCustomValue(value, sentinel?.value);
+  const pinnedCustom = !allowCustom && isCustomValue(value, sentinel?.value, catalog);
 
   // No `Field` to carry `className` when there is no `label` — the Dropdown wears it instead.
   const dropdownClass =

@@ -145,9 +145,14 @@ export function mapRawEvent(raw: unknown): SessionEvent[] {
       if (usage) {
         out.push({ kind: 'usage', ...usage });
       }
+      // A message that also calls a tool is narrating, not answering — its text
+      // blocks are preamble, not the turn's answer/summary.
+      const hasToolUse = (content as Array<Record<string, unknown>>).some(
+        (b) => b['type'] === 'tool_use',
+      );
       for (const block of content as Array<Record<string, unknown>>) {
         if (block['type'] === 'text' && typeof block['text'] === 'string') {
-          out.push({ kind: 'assistant', text: block['text'] });
+          out.push({ kind: 'assistant', text: block['text'], preamble: hasToolUse });
         } else if (block['type'] === 'thinking' && typeof block['thinking'] === 'string') {
           out.push({ kind: 'thinking', text: block['thinking'] });
         } else if (block['type'] === 'tool_use') {

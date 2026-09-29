@@ -519,6 +519,40 @@ export interface ModelResolution {
 }
 
 /**
+ * The families a live model id can belong to — the same four {@link ModelFamily}
+ * values, in the order {@link familyOfAlias} checks them.
+ */
+const MODEL_FAMILIES: readonly ModelFamily[] = ['haiku', 'sonnet', 'opus', 'fable'];
+
+/**
+ * Which family a bare CLI alias names, or `null` if it names none — a whole-string
+ * match against `haiku|sonnet|opus|fable`, not a loose `startsWith`: the CLI's
+ * `Available:` line also lists non-model modes that happen to share a family's
+ * letters as a literal prefix (`opusplan`) and context-length variants (`opus[1m]`),
+ * neither of which is a model this app can offer in a picker. Matching the whole
+ * token is what tells those apart from the real alias.
+ */
+export function familyOfAlias(id: string): ModelFamily | null {
+  return MODEL_FAMILIES.find((family) => id === family) ?? null;
+}
+
+/**
+ * One row of what the CLI actually offers **right now** (`claudeModels.ts`'s
+ * `discoverModelCatalog`) — a superset of {@link ModelResolution} that also carries
+ * enough to group and label the row without consulting {@link MODEL_CATALOG}:
+ * `family` for grouping, `kind` for "is this a friendly alias or a pinned version".
+ *
+ * `kind: 'alias'` for a live alias the CLI's `Available:` line names (whether or not
+ * {@link MODEL_CATALOG} already lists it); `kind: 'version'` for a probed static-catalog
+ * entry — the CLI's `Available:` line never enumerates dated version ids, only aliases,
+ * so every version row necessarily comes from the static sweep.
+ */
+export interface DiscoveredModel extends ModelResolution {
+  family: ModelFamily;
+  kind: 'alias' | 'version';
+}
+
+/**
  * Which model a run costs: the card's own choice **for that kind of run**, else the
  * project's model for that kind, else the project's execution model.
  *

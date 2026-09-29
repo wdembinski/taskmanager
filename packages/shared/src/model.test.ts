@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  familyOfAlias,
   isFilingProject,
   isUsableModel,
   MODEL_CATALOG,
@@ -151,6 +152,36 @@ describe('ownsBoard', () => {
     // A migrated plan project can carry a `ticketPrefix` set before this rule existed —
     // `ticket:create` refuses it ahead of `ownsTickets` for the same reason.
     expect(ownsBoard(proj({ planPath: '/repo/plan.md', ticketPrefix: 'TM' }))).toBe(false);
+  });
+});
+
+describe('familyOfAlias', () => {
+  it('names the family for each bare alias', () => {
+    expect(familyOfAlias('haiku')).toBe('haiku');
+    expect(familyOfAlias('sonnet')).toBe('sonnet');
+    expect(familyOfAlias('opus')).toBe('opus');
+    expect(familyOfAlias('fable')).toBe('fable');
+  });
+
+  it('is null for a non-model mode, even one sharing a family name as a literal prefix', () => {
+    expect(familyOfAlias('opusplan')).toBeNull();
+    expect(familyOfAlias('default')).toBeNull();
+    expect(familyOfAlias('best')).toBeNull();
+  });
+
+  it('is null for a context-length variant', () => {
+    expect(familyOfAlias('sonnet[1m]')).toBeNull();
+    expect(familyOfAlias('opus[1m]')).toBeNull();
+    expect(familyOfAlias('fable[1m]')).toBeNull();
+  });
+
+  it('is null for a dated version id — those are named by MODEL_CATALOG, not inferred', () => {
+    expect(familyOfAlias('claude-sonnet-4-5')).toBeNull();
+  });
+
+  it('is null for an empty or unrelated string', () => {
+    expect(familyOfAlias('')).toBeNull();
+    expect(familyOfAlias('gpt-4')).toBeNull();
   });
 });
 

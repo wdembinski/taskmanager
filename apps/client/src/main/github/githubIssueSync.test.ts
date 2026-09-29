@@ -292,7 +292,11 @@ describe('reconcileGitHubIssues', () => {
     expect(result.removals).toEqual([]);
   });
 
-  it('applies the removal guard here, where the caller cannot forget it', () => {
+  it('a large query-unchanged shortfall is kept as an incomplete answer, never reaching the guard', () => {
+    // 12 of 30 board cards missing from the search, query unchanged — the same shape
+    // `guardRemovals` alone would refuse. But `isIncompleteAnswer` catches it earlier, before
+    // any of the 12 becomes a removal candidate, even though the by-number re-read answers
+    // cleanly ("still open") for every one of them.
     const board = Array.from({ length: 30 }, (_, i) =>
       card({ id: `gh-acme-web-${i + 1}`, externalKey: `acme/web#${i + 1}` }),
     );
@@ -305,9 +309,10 @@ describe('reconcileGitHubIssues', () => {
       recheckedKeys: missing.map((t) => t.externalKey as string),
     });
     expect(result.removals).toEqual([]);
-    expect(result.refused).toHaveLength(12);
-    expect(result.warning).toMatch(/GitHub cards that GitHub says/);
-    expect(result.warning).toMatch(/issue query/);
+    // Not `refused` either — `guardRemovals` never sees these 12.
+    expect(result.refused).toEqual([]);
+    expect(result.warning).toMatch(/left out 12 of 30 board cards/);
+    expect(result.warning).not.toMatch(/issue query/);
   });
 
   it('stands the guard down when the question itself changed', () => {
@@ -328,6 +333,42 @@ describe('reconcileGitHubIssues', () => {
     expect(result.removals).toHaveLength(12);
     expect(result.refused).toEqual([]);
   });
+
+  it.each([
+    [30, 12], // the shape the plan calls out
+    [8, 5], // right at the default floor (5)
+  ])(
+    'a %i-card board missing %i cards never reaches the loud refusal — same as jiraSync',
+    (n, missing) => {
+      // Same proof as `jiraSync.test.ts`'s "the incomplete-answer guard leaves the loud
+      // refusal unreachable" suite, for the reconciler that shares `removalGuard.ts` with it:
+      // `isIncompleteAnswer` is checked on every card missing from `issues` (a superset of
+      // whatever `guardRemovals` would see as candidates), with the same fraction/floor — so
+      // whatever would trip `guardRemovals` here already tripped `isIncompleteAnswer` first,
+      // and the reconciler can no longer produce the loud "Check the board's issue query"
+      // sentence for a query-unchanged shortfall, however large.
+      const board = Array.from({ length: n }, (_, i) =>
+        card({ id: `gh-acme-web-${i + 1}`, externalKey: `acme/web#${i + 1}` }),
+      );
+      const kept = board.slice(0, n - missing);
+      const dropped = board.slice(n - missing);
+      const returned = kept.map((_t, i) => issue(i + 1));
+      // GitHub says it still has every one of them — the strongest case there is for a removal.
+      const rechecked = new Map(dropped.map((t, i) => [t.externalKey as string, issue(n + i + 1)]));
+
+      const result = reconcileGitHubIssues(board, returned, {
+        ...opts,
+        rechecked,
+        recheckedKeys: dropped.map((t) => t.externalKey as string),
+      });
+
+      expect(result.removals).toEqual([]);
+      expect(result.refused).toEqual([]);
+      expect(result.warning).not.toBeNull();
+      expect(result.warning).not.toMatch(/issue query/);
+      expect(result.warning).not.toMatch(/^Kept \d/);
+    },
+  );
 });
 
 describe('issueToTask — assigning tickets to their own board', () => {

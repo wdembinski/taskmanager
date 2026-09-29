@@ -443,6 +443,25 @@ describe('Scheduler.decidePermission — full auto (bypassPermissions)', () => {
       expect(result.message).toContain('chose not to pick an option');
     });
 
+    it('lets the human discuss the question instead of answering it', async () => {
+      // Mirrors the CLI's own interactive prompt: prose that reacts to the question rather
+      // than commits to one of its options. Still a `deny` (the held tool must resolve one
+      // way or another) but phrased as NOT a decision, unlike `answers`/`reply`.
+      const { scheduler, emitAttention } = makeScheduler('acceptEdits');
+      const decision = scheduler.decidePermission(ask);
+      const item = emitAttention.mock.calls[0][0] as { id: string };
+
+      scheduler.answerAttention(item.id, {
+        decision: 'discuss',
+        text: 'What happens to existing rows if I pick Postgres?',
+      });
+
+      const result = (await decision) as { behavior: string; message: string };
+      expect(result.behavior).toBe('deny');
+      expect(result.message).toContain('has NOT answered your question yet');
+      expect(result.message).toContain('What happens to existing rows if I pick Postgres?');
+    });
+
     /**
      * Both orders the same ask can arrive in.
      *

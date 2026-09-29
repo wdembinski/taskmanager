@@ -61,6 +61,7 @@ import {
   DECLINED_ANSWER_MESSAGE,
   describeQuestions,
   formatAnswerMessage,
+  formatDiscussMessage,
   isAskUserQuestionTool,
   parseAskUserQuestion,
 } from './askUserQuestion';
@@ -2575,6 +2576,8 @@ export class Scheduler {
         message = formatAnswerMessage(questions, answer.selections, answer.freeText, note);
       } else if (answer.decision === 'reply') {
         message = formatAnswerMessage(questions, [[answer.text]], undefined, note);
+      } else if (answer.decision === 'discuss') {
+        message = formatDiscussMessage(answer.text, note);
       } else {
         // An explicit "you decide". The agent only ever gets to choose because a human
         // said so — never because nobody looked in time.
