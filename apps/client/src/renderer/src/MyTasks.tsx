@@ -33,6 +33,7 @@ import {
 import {
   hasPlan,
   hasRepo,
+  isFilingProject,
   PERSONAL_PROJECT_ID,
   type ManualStatus,
   type Person,
@@ -47,6 +48,7 @@ import {
 } from '@shared/settings';
 import type { BoardScope, IpcEvents } from '@shared/ipc';
 import type { MergeRequest } from '@shared/mergeRequest';
+import { cardProjectColor } from '@shared/projectColor';
 import type { TaskAttachment } from '@shared/attachments';
 import {
   LINK_REFUSAL_MESSAGE,
@@ -138,6 +140,9 @@ export function MyTasks(): JSX.Element {
   // The repos a card can be delegated to — fetched once and shared by the cards
   // (glyph tooltip) and the detail pane (assign dialog).
   const [agentProjects, setAgentProjects] = useState<Project[]>([]);
+  /** The projects a card can be FILED under — `cardProjectColor`'s own lookup, so the
+   *  stripe resolves the same list the web board does. See `isFilingProject`. */
+  const [filingProjects, setFilingProjects] = useState<Project[]>([]);
   /** The boards the toolbar's scope Dropdown offers — Personal plus every other
    *  project. Fed by `board:scopes`. */
   const [scopes, setScopes] = useState<BoardScope[]>([]);
@@ -165,6 +170,15 @@ export function MyTasks(): JSX.Element {
   scopeIdsRef.current = scopeIds;
   /** Board metadata by project id — the name/colour a mixed board draws per card. */
   const boardsById = useMemo(() => new Map(scopes.map((s) => [s.id, s])), [scopes]);
+  /**
+   * The card's colour stripe — shared with the web board (`cardProjectColor`), and hoisted
+   * once here rather than defined inline at each of the Kanban and shelf card lists below,
+   * so the two can never disagree on a card's colour.
+   */
+  const projectColorOf = useCallback(
+    (t: Task) => cardProjectColor(t, filingProjects, { scope, boardsById }),
+    [filingProjects, scope, boardsById],
+  );
   /** The person roster, for the assignee avatar (Phase 24) — app-wide, like `agentProjects`. */
   const [people, setPeople] = useState<Person[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
@@ -308,6 +322,7 @@ export function MyTasks(): JSX.Element {
     // A repo directory with no plan file — the delegation targets, same as `agentProject:list`
     // used to answer before the two channel sets merged into `project:*`.
     setAgentProjects(projectList.filter((p) => hasRepo(p) && !hasPlan(p)));
+    setFilingProjects(projectList.filter(isFilingProject));
     setMergeRequests(mrs);
     setLinks(chain);
     setAttachments(files);
@@ -1326,19 +1341,11 @@ export function MyTasks(): JSX.Element {
               epicNameOf={(t) => (t.epicTaskId ? tasksById.get(t.epicTaskId)?.title : undefined)}
               assigneeOf={(t) => (t.assigneeId ? peopleById.get(t.assigneeId) : undefined)}
               agentNameOf={(t) => agentProjects.find((p) => p.id === t.agentProjectId)?.name}
-              // The stripe is the PROJECT the card is filed under first — `projectTagId`,
-              // written only by delegation — and, on the All scope, the card's own BOARD
-              // project as a fallback: a card added straight onto a project's board
-              // carries no tag at all, and its board is the only project it names.
-              projectColorOf={(t) => {
-                const tagColor = agentProjects.find((p) => p.id === t.projectTagId)?.color;
-                if (tagColor) return tagColor;
-                if (scope !== 'all') return undefined;
-                const board = boardsById.get(t.projectId);
-                return board && board.id !== PERSONAL_PROJECT_ID
-                  ? board.color || undefined
-                  : undefined;
-              }}
+              // The stripe is the PROJECT the card is filed under first — `projectTagId` —
+              // and, on the All scope, the card's own BOARD project as a fallback: a card
+              // added straight onto a project's board carries no tag at all, and its board
+              // is the only project it names. See `cardProjectColor`.
+              projectColorOf={projectColorOf}
               // With the sprint filter on every card carries the same chip, so the name
               // moves to the status bar and is said once. Off, the chip earns its place.
               showSprint={!currentSprintOnly}
@@ -1442,15 +1449,7 @@ export function MyTasks(): JSX.Element {
             epicNameOf={(t) => (t.epicTaskId ? tasksById.get(t.epicTaskId)?.title : undefined)}
             assigneeOf={(t) => (t.assigneeId ? peopleById.get(t.assigneeId) : undefined)}
             agentNameOf={(t) => agentProjects.find((p) => p.id === t.agentProjectId)?.name}
-            projectColorOf={(t) => {
-              const tagColor = agentProjects.find((p) => p.id === t.projectTagId)?.color;
-              if (tagColor) return tagColor;
-              if (scope !== 'all') return undefined;
-              const board = boardsById.get(t.projectId);
-              return board && board.id !== PERSONAL_PROJECT_ID
-                ? board.color || undefined
-                : undefined;
-            }}
+            projectColorOf={projectColorOf}
             showSprint={!currentSprintOnly}
             statusKeywords={settings?.statusKeywords}
             attentionTaskIds={attention.taskIds}
