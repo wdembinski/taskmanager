@@ -75,6 +75,7 @@ import {
   type Task,
 } from '@tm/shared/model';
 import type { BoardScope } from '@tm/shared/ipc';
+import { cardProjectColor } from '@tm/shared/projectColor';
 import { BoardToolbar } from './BoardToolbar';
 import { selectAgentProjects, selectArchivedTasks, selectBoardTasks } from './boardSelectors';
 import { displayStatus, isTaskPending, type CloudBoardState } from './cloudBoardStore';
@@ -218,9 +219,10 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
    * GitHub's `owner/repo`) — every card on that board is in the same project, so the local
    * one would say the same word on all of them. On the All scope a mixed board needs to say
    * which BOARD a card is on before it needs to say which tracker phase it's in, so that wins
-   * where the two would both have something to say. The stripe is the repo the card is
-   * tagged with (`projectTagId`), with the card's own board project as a fallback on the All
-   * scope — a card added straight onto a project's board carries no tag at all.
+   * where the two would both have something to say. The stripe is the PROJECT the card is
+   * filed under (`projectTagId`), with the card's own board project as a fallback on the All
+   * scope — a card added straight onto a project's board carries no tag at all. See
+   * `cardProjectColor`, shared with the desktop's `MyTasks` so the two can never disagree.
    */
   const projectNameOf = (task: Task): string | undefined => {
     if (scope === 'all') {
@@ -231,13 +233,8 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
   };
   const agentNameOf = (task: Task): string | undefined =>
     agentProjects.find((p) => p.id === task.agentProjectId)?.name;
-  const projectColorOf = (task: Task): string | undefined => {
-    const tagColor = agentProjects.find((p) => p.id === task.projectTagId)?.color;
-    if (tagColor) return tagColor;
-    if (scope !== 'all') return undefined;
-    const board = boardsById.get(task.projectId);
-    return board && board.id !== PERSONAL_PROJECT_ID ? board.color || undefined : undefined;
-  };
+  const projectColorOf = (task: Task): string | undefined =>
+    cardProjectColor(task, filingProjects, { scope, boardsById });
 
   /** The desktop's own card set for this scope, un-archived. See `boardSelectors.ts`. */
   const boardTasks = useMemo(() => selectBoardTasks(state, scope), [state, scope]);
