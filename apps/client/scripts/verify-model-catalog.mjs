@@ -22,6 +22,21 @@
  *    why `known := label !== id`), but the point of the catalog is version PINNING, so the
  *    id-shaped failure mode is worth naming for itself rather than folding into "known".
  *
+ * A second section drives `discoverModelCatalog` itself — the merge, not just the static
+ * sweep `probeModelCatalog` covers above. `claudeModels.test.ts` proves the merge/filter
+ * logic against a STUBBED `Available:` line (`ModelField.test.ts`'s `mergeCatalog` tests do
+ * the same one layer up, for the picker); neither can prove the real CLI's real line still
+ * has the shape that logic assumes. So this section reads the real `Available:` line through
+ * the same real `ExecHost` (`localHost()` — real, not the injectable stub the unit tests
+ * pass instead) that `discoverModelCatalog` itself calls through, independently of it, then
+ * checks:
+ *
+ *  - every bare alias the line names (`sonnet`, `opus`, …) comes through `discoverModelCatalog`
+ *    known and labelled — the merge did not drop or mis-tag a live alias;
+ *  - every non-model token the line also names (`best`, `opusplan`, a `[1m]` variant) is
+ *    ABSENT from the result — `familyOfAlias`'s filter held against real CLI prose, not just
+ *    the fixed reply string the unit tests hand-wrote.
+ *
  *   pnpm exec node scripts/verify-model-catalog.mjs
  *
  * Requires a `claude` on PATH that is signed in — the same requirement every other run in
@@ -37,6 +52,14 @@
  * red, the real CLI echoing the id back as its own "label" exactly as an unresolved probe
  * does. Every other entry stayed green. Reverted afterward with `git status` showing
  * `model.ts` byte-identical again.
+ *
+ * The discovery section was proved the same way, on 2026-09-28: dropping
+ * `alias.family !== null &&` from `discoverModelCatalog`'s `newAliases` filter (so every
+ * non-model token on the `Available:` line is treated as a live alias too) turned every
+ * "is filtered out" check red — `best`, `opusplan`, `default`, `sonnet[1m]`, `opus[1m]` and
+ * `fable[1m]` all showed up as rows — while every other check, including the live-alias
+ * ones, stayed green. Reverted afterward with `git status` showing `claudeModels.ts`
+ * byte-identical again.
  */
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -80,8 +103,13 @@ async function bundle(entry, outDir) {
  * with a SyntaxError pointing at a word in prose.
  */
 const SCENARIO = String.raw`
-import { MODEL_CATALOG } from '@shared/model';
-import { probeModelCatalog } from '__REPO__/src/main/claudeModels';
+import { MODEL_CATALOG, familyOfAlias } from '@shared/model';
+import { localHost } from '__REPO__/src/main/exec';
+import {
+  discoverModelCatalog,
+  parseAvailableAliases,
+  probeModelCatalog,
+} from '__REPO__/src/main/claudeModels';
 
 let failures = 0;
 function check(label, condition, detail) {
@@ -114,6 +142,82 @@ for (let i = 0; i < MODEL_CATALOG.length; i += 1) {
 
 console.log('');
 console.log(MODEL_CATALOG.length + ' catalog entries probed.');
+
+// ---------------------------------------------------------------------------
+// discoverModelCatalog against the real CLI: does the merge/filter logic
+// claudeModels.test.ts proved against a stub still hold against the real Available: line?
+console.log('\nDiscovering the live catalog...');
+const discovered = await discoverModelCatalog();
+
+// An INDEPENDENT read of the same Available: line discoverModelCatalog itself reads —
+// through the real ExecHost it uses by default (localHost(); a test passes a stub
+// instead), so this is ground truth rather than the function grading its own homework.
+const groundTruth = await localHost().exec(
+  process.cwd(),
+  'claude',
+  ['--model', 'sonnet', '-p', '/model', '--output-format', 'json'],
+  { resolveViaShell: true, timeoutMs: 10000 },
+);
+check(
+  'the independent Available: probe succeeded',
+  groundTruth.code === 0,
+  groundTruth.stderr || 'exit ' + groundTruth.code,
+);
+let availableText = null;
+try {
+  const parsed = JSON.parse(groundTruth.stdout);
+  if (typeof parsed.result === 'string') availableText = parsed.result;
+} catch {
+  // left null — checked below
+}
+check(
+  'its reply parses as JSON carrying a result string',
+  availableText !== null,
+  groundTruth.stdout,
+);
+
+const aliasTokens = availableText === null ? [] : parseAvailableAliases(availableText);
+check(
+  'the Available: line names at least one token',
+  aliasTokens.length > 0,
+  availableText ?? '(none)',
+);
+
+const liveAliases = aliasTokens.filter((t) => familyOfAlias(t) !== null);
+const bogusTokens = aliasTokens.filter((t) => familyOfAlias(t) === null);
+check(
+  'the Available: line also names at least one non-model token (a mode, or a [1m] variant) — ' +
+    'otherwise there is nothing here for the filter to prove',
+  bogusTokens.length > 0,
+  JSON.stringify(aliasTokens),
+);
+
+for (const id of liveAliases) {
+  const row = discovered.find((r) => r.id === id);
+  check(
+    'live alias ' + id + ' comes through the merge, known and labelled by the CLI',
+    row !== undefined && row.known === true && row.label !== '' && row.label !== id,
+    JSON.stringify(row),
+  );
+}
+
+for (const token of bogusTokens) {
+  check(
+    'non-model token ' + token + ' from the Available: line is filtered out, never a row of its own',
+    !discovered.some((r) => r.id === token),
+    JSON.stringify(discovered.map((r) => r.id)),
+  );
+}
+
+console.log('');
+console.log(
+  discovered.length +
+    ' discovered row(s); ' +
+    liveAliases.length +
+    ' live alias(es) and ' +
+    bogusTokens.length +
+    ' bogus token(s) checked.',
+);
 if (failures > 0) {
   console.error(failures + ' check(s) failed.');
   process.exit(1);

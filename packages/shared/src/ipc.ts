@@ -34,6 +34,7 @@ import type {
   AssignAgentInput,
   BoardColumn,
   ChatSendResult,
+  DiscoveredModel,
   GitPreflight,
   JiraStatusCategory,
   ManualStatus,
@@ -259,6 +260,12 @@ export interface BoardScope {
   id: string;
   name: string;
   color: string;
+  /**
+   * Whether this board owns tickets (`Project.ticketPrefix` set) — the one fact the
+   * Add-task dialog's merged "Project / Board" picker routes on: `ticket:create` when
+   * true, `task:create` when not. Personal always carries `false` — it owns no tickets.
+   */
+  ownsTickets: boolean;
 }
 
 /**
@@ -288,13 +295,14 @@ export interface IpcApi {
    */
   'claude:listSessions': (cwd: string, target?: ExecTarget) => Promise<ClaudeSessionSummary[]>;
   /**
-   * The desktop's cached read of which `MODEL_CATALOG` entries the installed CLI
-   * actually recognizes right now — one {@link ModelResolution} per entry, in catalog
-   * order. Answered from an in-memory cache seeded from disk at boot, so opening a
-   * model picker never waits on a subprocess; pass `{ refresh: true }` to force a fresh
-   * sweep (a few seconds, zero tokens — `/model` is a local meta-command like `/usage`).
+   * The desktop's cached read of what the installed CLI actually offers right now —
+   * one {@link DiscoveredModel} per catalog entry plus any live alias the CLI names
+   * that the static catalog doesn't already carry, in catalog order. Answered from an
+   * in-memory cache seeded from disk at boot, so opening a model picker never waits on
+   * a subprocess; pass `{ refresh: true }` to force a fresh sweep (a few seconds, zero
+   * tokens — `/model` is a local meta-command like `/usage`).
    */
-  'model:catalog': (opts?: { refresh: boolean }) => Promise<ModelResolution[]>;
+  'model:catalog': (opts?: { refresh: boolean }) => Promise<DiscoveredModel[]>;
   /**
    * Resolve ONE model id the same way, for the model picker's "Custom…" box — a value
    * that was never in `MODEL_CATALOG` and so was never part of the cached sweep above.
@@ -597,6 +605,24 @@ export interface IpcApi {
    * are not the same click. The card's board (`projectId`) never changes.
    */
   'task:setProject': (taskId: string, projectTagId: string | null) => Promise<Task>;
+  /**
+   * Move a card onto a DIFFERENT board — the sibling of `task:setProject` above, and its
+   * opposite number: that one tags a card with `projectTagId` and leaves `Task.projectId`
+   * (the board it actually lives on) untouched; this one moves `projectId` itself, which is
+   * what changes WHERE the card lives. Under the hood this is `Store.moveTaskToBoard` — see
+   * its docstring for the re-keying rule (a destination that owns tickets always allocates a
+   * fresh number off its own counter; a keyless one freezes the key as it was) — with
+   * `projectTagId` dragged along so the filing tag never keeps pointing at a board the card
+   * has left.
+   *
+   * `boardId` names any real project, Personal included: every project is a valid board now,
+   * with no narrower `ownsBoard` gate on top. Refused for a card mid-run, for a card resting
+   * on a plan-driven board (that board's cards come from its plan file, not a manual move),
+   * and for a card synced from JIRA or GitHub (its board is recomputed from its Project tag
+   * on every poll, so a move made here would not survive the next sync). A no-op, not a
+   * refusal, if `boardId` already names the card's own board.
+   */
+  'task:setBoard': (taskId: string, boardId: string) => Promise<Task>;
   /**
    * Change the model / permission mode a delegated card runs with, WITHOUT restarting
    * it (unlike `task:assignAgent`). A live run keeps what it started with — these are

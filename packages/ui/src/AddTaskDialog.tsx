@@ -16,19 +16,21 @@
  * finding it on the board and dragging an arrow to it is three steps for one intent.
  *
  * The three things a card is made of are all asked for here, and none of them exclude the
- * others: **which project** it is filed under, **what it is** (its description), and —
- * optionally — **a JIRA ticket** for it. The ticket used to be an either/or that replaced
- * the card, which is why filing and a description had to be added afterwards, in a pane,
- * on a card that already existed. The card is written locally first and the ticket is
- * linked onto it, so JIRA being unreachable costs you the ticket and not the card.
+ * others: **which project or board**, **what it is** (its description), and — optionally —
+ * **a JIRA ticket** for it. The ticket used to be an either/or that replaced the card, which
+ * is why a description had to be added afterwards, in a pane, on a card that already existed.
+ * The card is written locally first and the ticket is linked onto it, so JIRA being
+ * unreachable costs you the ticket and not the card.
  *
- * A fourth choice sits above all of them: **which board** the card is written to — Personal,
- * the default, or any other project with no plan file. Personal writes an ordinary
- * card (`task:create`); a project board writes a native ticket instead (`ticket:create`),
- * keyed by that project's own prefix. Not the same question as *which project it is filed
- * under* — that tags what the card is about and never moves it; this decides where it lives.
+ * *Which project or board* used to be two separate pickers — filing (a tag that never moved
+ * the card) and where it was actually written — until answering both meant choosing the same
+ * project twice for the one intent. One "Project / Board" picker answers both now: Personal,
+ * the default, or any other project. A project that owns tickets writes a native one there
+ * (`ticket:create`, keyed by that project's own prefix); Personal or a keyless project writes
+ * an ordinary card instead (`task:create`), tagged with the project picked — or with nothing,
+ * for Personal.
  *
- * Files are the fifth, and the one thing here that cannot be written when it is asked for:
+ * Files are the fourth, and the one thing here that cannot be written when it is asked for:
  * an attachment hangs off a task id, and there is no task yet. So they are **staged** — held
  * as paths while the form is filled in, and copied once the row exists. See
  * {@link stageAttachments} for why the `@name` you cite before that is the name you get.
@@ -65,7 +67,7 @@ import {
 } from '@fluentui/react-components';
 import { Switch } from '@fluentui/react-components';
 import { AttachRegular } from '@fluentui/react-icons';
-import type { IssueType, Project, Task, TaskType } from '@tm/shared/model';
+import type { IssueType, Task, TaskType } from '@tm/shared/model';
 import { PERSONAL_PROJECT_ID } from '@tm/shared/model';
 import type { BoardScope, JiraIssueTypeOption, JiraProjectOption } from '@tm/shared/ipc';
 import { attachmentName, insertAttachmentRef } from '@tm/shared/attachments';
@@ -134,8 +136,6 @@ const useStyles = makeStyles({
 const NO_PARENT = '';
 /** The same, for "chained after nothing" — the ordinary case, and the default. */
 const NO_LINK = '';
-/** The same again, for a card filed under no project at all. */
-const NO_PROJECT = '';
 /** The same again, for a ticket with no epic. */
 const NO_EPIC = '';
 
@@ -151,8 +151,6 @@ export interface AddTaskForm {
   /** `''` for none. Same rule as {@link issueType}: ticket-board-only. */
   epicTaskId: string;
   phase: string;
-  /** The project the card is filed under; `''` for none. */
-  projectTagId: string;
   /** The card this is a step OF; `''` for a card of its own. */
   parentId: string;
   /** Whether a JIRA ticket should be created for this card as well. */
@@ -160,11 +158,16 @@ export interface AddTaskForm {
   jiraProjectKey: string;
   jiraTypeId: string;
   /**
-   * The board this card is created ON — `PERSONAL_PROJECT_ID` or a project with no plan
-   * file. Not the same question as {@link projectTagId}: this is *where the card lives*,
-   * that is *what the card is about*.
+   * The project or board this card is created ON — `PERSONAL_PROJECT_ID` or any other
+   * project. The one thing the merged picker asks: it both files the card (the stripe a
+   * separate "Project" picker used to set) and decides where the card lives.
    */
   boardId: string;
+  /**
+   * Whether {@link boardId} owns tickets (`BoardScope.ownsTickets`) — the capability
+   * {@link addTaskPlan} routes on: `ticket:create` when true, `task:create` when not.
+   */
+  boardOwnsTickets: boolean;
 }
 
 /**
@@ -183,10 +186,11 @@ export type AddTaskPlan =
   /** One step appended to `parentId`'s chain. */
   | { kind: 'step'; parentId: string; step: { title: string; description: string | null } }
   /**
-   * A card, and — when `ticket` is set — a JIRA issue linked onto it afterwards. `board`
-   * says which board it is written to (`PERSONAL_PROJECT_ID` calls `task:create`, anything
-   * else calls `ticket:create`) — the one choice a step never makes, since it joins its
-   * parent's board by inheriting it.
+   * A card written straight onto `board` (`task:create`) — Personal, or a keyless project.
+   * `card.projectTagId` is `board` itself (or `null` for Personal): the merged picker asks
+   * one question, and this is what answers both "where does it live" and "what is it
+   * filed under" from it. When `ticket` is set, a JIRA issue is linked onto the card
+   * afterwards — an ADDITION, never a replacement, and Personal-only (see `canJira`).
    */
   | {
       kind: 'card';
@@ -197,10 +201,6 @@ export type AddTaskPlan =
         type: TaskType;
         description?: string;
         projectTagId: string | null;
-        /** Set only when {@link board} is a ticket board — absent for Personal, which has
-         *  no `issueType`/`epicTaskId` of its own and would only ignore them anyway. */
-        issueType?: IssueType;
-        epicTaskId?: string | null;
       };
       ticket: {
         projectKey: string;
@@ -208,6 +208,23 @@ export type AddTaskPlan =
         summary: string;
         description?: string;
       } | null;
+    }
+  /**
+   * A native ticket on `board`'s own list (`ticket:create`) — chosen because `board` owns
+   * tickets, not because of anything the human clicked beyond the one picker. The step a
+   * step never takes either, for the same reason a card's `board` never varies: a step
+   * joins its parent's board by inheriting it.
+   */
+  | {
+      kind: 'ticket';
+      board: string;
+      ticket: {
+        title: string;
+        phase?: string;
+        description?: string;
+        issueType: IssueType;
+        epicTaskId: string | null;
+      };
     };
 
 /** Work out what Add should do. See {@link AddTaskPlan}. */
@@ -230,7 +247,22 @@ export function addTaskPlan(form: AddTaskForm): AddTaskPlan {
     return { kind: 'incomplete', error: 'Pick a JIRA project and issue type first.' };
   }
 
-  const isTicketBoard = form.boardId !== PERSONAL_PROJECT_ID;
+  // The one routing decision: what the destination OWNS, not what it is named. A keyless
+  // non-Personal board is as much a `task:create` destination as Personal is — see
+  // `BoardScope.ownsTickets`.
+  if (form.boardOwnsTickets) {
+    return {
+      kind: 'ticket',
+      board: form.boardId,
+      ticket: {
+        title,
+        phase: form.phase.trim() || undefined,
+        description: description || undefined,
+        issueType: form.issueType,
+        epicTaskId: form.epicTaskId || null,
+      },
+    };
+  }
 
   return {
     kind: 'card',
@@ -240,11 +272,7 @@ export function addTaskPlan(form: AddTaskForm): AddTaskPlan {
       phase: form.phase.trim() || undefined,
       type: form.type,
       description: description || undefined,
-      projectTagId: form.projectTagId || null,
-      // Absent rather than defaulted for Personal: that board has no `issueType` of its
-      // own, and sending one would only invite `task:create` to ignore a field the form
-      // never actually asked about.
-      ...(isTicketBoard ? { issueType: form.issueType, epicTaskId: form.epicTaskId || null } : {}),
+      projectTagId: form.boardId === PERSONAL_PROJECT_ID ? null : form.boardId,
     },
     // The same text on both: the description you typed is what the ticket is about.
     ticket: form.asJira
@@ -322,14 +350,6 @@ export interface AddTaskDialogProps {
    */
   chainCandidates?: Task[];
   /**
-   * The projects the new card may be FILED under (`Task.projectTagId`) — the agent
-   * projects, the same list the detail pane's Project dropdown offers. Omit (or pass an
-   * empty list) to hide the picker; a board with no repos has nothing to file under.
-   *
-   * Filing, never delegation: it says what the card is about, and starts nothing.
-   */
-  projects?: Project[];
-  /**
    * Whether this board can also create a real JIRA issue for the task. Set only by My
    * Tasks with JIRA on — the dialog is also used from Projects, where a ticket makes
    * no sense.
@@ -367,7 +387,6 @@ export function AddTaskDialog({
   parents = [],
   defaultParentId = null,
   chainCandidates = [],
-  projects = [],
   jiraEnabled = false,
   filesEnabled = true,
   onClose,
@@ -387,9 +406,8 @@ export function AddTaskDialog({
    *  Personal, which has no epics to offer. */
   const [boardTickets, setBoardTickets] = useState<Task[]>([]);
   const [description, setDescription] = useState('');
-  /** The project the card is filed under — tagging, not delegation. */
-  const [projectTagId, setProjectTagId] = useState<string>(NO_PROJECT);
-  /** The board this card is created ON — Personal, or a project with no plan file. */
+  /** The project or board this card is created ON — Personal, or any other project. Also
+   *  what it is filed under: the merged picker asks one question, not two. */
   const [boardId, setBoardId] = useState<string>(projectId ?? PERSONAL_PROJECT_ID);
   /** What {@link boardId} may be set to — `board:scopes`' own list, fetched fresh each open
    *  since a project can gain or lose its plan file between one Add and the next. */
@@ -422,7 +440,6 @@ export function AddTaskDialog({
       setIssueType('task');
       setEpicTaskId(NO_EPIC);
       setDescription('');
-      setProjectTagId(NO_PROJECT);
       setBoardId(projectId ?? PERSONAL_PROJECT_ID);
       setParentId(defaultParentId ?? NO_PARENT);
       setRunsAfterId(NO_LINK);
@@ -459,10 +476,11 @@ export function AddTaskDialog({
   }, [boardId]);
 
   // The Epic picker's candidates — this board's own tickets, filtered to epics. Fetched
-  // only for a ticket board; Personal writes an ordinary `Task` with no `issueType` of its
-  // own, so there is nothing here worth a network call for.
+  // only for a ticket board; Personal and a keyless project write an ordinary `Task` with
+  // no `issueType` of its own, so there is nothing here worth a network call for.
+  const boardOwnsTickets = boards.find((b) => b.id === boardId)?.ownsTickets ?? false;
   useEffect(() => {
-    if (!open || boardId === PERSONAL_PROJECT_ID) {
+    if (!open || !boardOwnsTickets) {
       setBoardTickets([]);
       return;
     }
@@ -473,7 +491,7 @@ export function AddTaskDialog({
     return () => {
       live = false;
     };
-  }, [open, boardId, transport]);
+  }, [open, boardId, boardOwnsTickets, transport]);
 
   // The projects list is only worth fetching once the switch is on — it is a network
   // call, and most cards are still local. Seeded from what was created last time.
@@ -531,10 +549,6 @@ export function AddTaskDialog({
   const selectedBoard = useMemo(
     () => boards.find((b) => b.id === boardId) ?? null,
     [boards, boardId],
-  );
-  const filedProject = useMemo(
-    () => projects.find((p) => p.id === projectTagId) ?? null,
-    [projects, projectTagId],
   );
   const runsAfter = useMemo(
     () => chainCandidates.find((c) => c.id === runsAfterId) ?? null,
@@ -686,7 +700,6 @@ export function AddTaskDialog({
       issueType,
       epicTaskId,
       phase,
-      projectTagId,
       // A step is created through its parent whatever else the form says, so this is the
       // one field that decides which shape the plan takes.
       parentId: parent?.id ?? NO_PARENT,
@@ -694,6 +707,7 @@ export function AddTaskDialog({
       jiraProjectKey,
       jiraTypeId,
       boardId,
+      boardOwnsTickets,
     });
     if (plan.kind === 'incomplete') {
       setError(plan.error);
@@ -709,27 +723,19 @@ export function AddTaskDialog({
       // step it made. A separate local rather than reusing `created`, which must stay null
       // for a step so the chain link below is never drawn for one.
       let createdId: string;
-      // A step is created through its parent (it inherits the delegation and joins
-      // the chain); everything else is an ordinary ad-hoc card.
+      // A step is created through its parent (it inherits the delegation and joins the
+      // chain); a `ticket` plan writes a native ticket on the board that owns it; anything
+      // else is an ordinary ad-hoc card, `type` and all — `addTaskPlan` already decided
+      // which of the two this is, from `boardOwnsTickets` alone.
       if (plan.kind === 'step') {
         createdId = (await transport.invoke('task:addSubtask', plan.parentId, plan.step)).id;
-      } else if (plan.board === PERSONAL_PROJECT_ID) {
+      } else if (plan.kind === 'ticket') {
+        created = await transport.invoke('ticket:create', plan.board, plan.ticket);
+        createdId = created.id;
+      } else {
         created = await transport.invoke('task:create', plan.board, plan.card);
         createdId = created.id;
         if (plan.ticket) await ticketFor(created.id, plan.ticket);
-      } else {
-        // A project board: the card IS a native ticket, allocated its key by the project's
-        // own counter. `type` has no ticket equivalent — `issueType`/`epicTaskId` are its
-        // replacement — and JIRA linking is Personal-only (`canJira`), so `type` never
-        // travels here.
-        created = await transport.invoke('ticket:create', plan.board, {
-          title: plan.card.title,
-          phase: plan.card.phase,
-          description: plan.card.description,
-          issueType: plan.card.issueType,
-          epicTaskId: plan.card.epicTaskId,
-        });
-        createdId = created.id;
       }
       // Only now is there a `taskId` to hang a file off — the whole reason they were staged.
       if (staged.length) {
@@ -767,16 +773,21 @@ export function AddTaskDialog({
                   placeholder="What should Claude do?"
                 />
               </Field>
-              {/* Where the card is WRITTEN — Personal, or a project with no plan file of its
-                  own. Never offered for a step, which joins its parent's board by
-                  inheriting it rather than choosing one of its own. */}
+              {/* Which project or board the card belongs to — Personal, or any other
+                  project. Files it (the stripe a separate Project picker used to set) AND
+                  decides where it is written: a project that owns tickets gets a native one
+                  on its own board, keyed by its prefix; Personal or a keyless project gets
+                  an ordinary card instead. Never offered for a step, which joins its
+                  parent's board by inheriting it rather than choosing one of its own. */}
               {boards.length > 1 && !isStep && (
                 <Field
-                  label="Board"
+                  label="Project / Board"
                   hint={
-                    boardId === PERSONAL_PROJECT_ID
-                      ? 'A card on My Tasks.'
-                      : 'A native ticket on this project’s own board, keyed by its prefix.'
+                    boardOwnsTickets
+                      ? 'A native ticket on this project’s own board, keyed by its prefix.'
+                      : boardId === PERSONAL_PROJECT_ID
+                        ? 'A card on My Tasks.'
+                        : `Filed under ${selectedBoard?.name ?? 'this project'}, and written on its own board.`
                   }
                 >
                   <Dropdown
@@ -838,31 +849,6 @@ export function AddTaskDialog({
                     {chainCandidates.map((c) => (
                       <Option key={c.id} value={c.id} text={c.title}>
                         {c.externalKey ? `${c.externalKey} · ${c.title}` : c.title}
-                      </Option>
-                    ))}
-                  </Dropdown>
-                </Field>
-              )}
-              {/* Which project the card is ABOUT. Filing, not delegation — it gives the
-                  card its colour stripe and pre-answers "which repo" if you later assign
-                  an agent, but nothing runs because of it. A step inherits its parent's,
-                  so it is never asked. */}
-              {projects.length > 0 && !isStep && (
-                <Field
-                  label="Project (optional)"
-                  hint="What this card is about. It files the card — nothing is started."
-                >
-                  <Dropdown
-                    value={filedProject?.name ?? 'None'}
-                    selectedOptions={[projectTagId]}
-                    onOptionSelect={(_e, d) => setProjectTagId(d.optionValue ?? NO_PROJECT)}
-                  >
-                    <Option value={NO_PROJECT} text="None">
-                      None
-                    </Option>
-                    {projects.map((p) => (
-                      <Option key={p.id} value={p.id} text={p.name}>
-                        {p.name}
                       </Option>
                     ))}
                   </Dropdown>
@@ -1058,9 +1044,9 @@ export function AddTaskDialog({
               {!isStep && !asJira && (
                 <>
                   {/* `type` (bug/feature) has no ticket equivalent — a native ticket has
-                      `issueType`/`epicTaskId` instead, so the board decides which pair of
-                      pickers apply, never both. */}
-                  {boardId === PERSONAL_PROJECT_ID ? (
+                      `issueType`/`epicTaskId` instead, so whether the board owns tickets
+                      decides which pair of pickers apply, never both. */}
+                  {!boardOwnsTickets ? (
                     <Field label="Type">
                       <Dropdown
                         value={TASK_TYPES.find((t) => t.value === type)?.label ?? ''}

@@ -566,16 +566,21 @@ describe('a sprint switch narrows the board, and archived cards stay off it', ()
     });
   });
 
-  it('while the SAME shrinkage with the question unchanged is refused outright', async () => {
+  it('while the SAME shrinkage with the question unchanged is kept as an incomplete answer, not refused', async () => {
     // The mutation for the clause above. If `queryChanged` stopped being read, this would
     // start removing 240 cards and the test would say so.
+    //
+    // 240 of 300 missing from an unchanged query is exactly what an under-answering instance
+    // looks like from here, so `isIncompleteAnswer` catches it before any of the 240 becomes a
+    // removal candidate — even though `deniesAll` confirms every one of them cleanly by key.
+    // Nothing reaches `guardRemovals`, so there is nothing for it to refuse.
     pagedInstance(carriedOver);
     const run = await sync({ existing: board, searcher: fakeSearcher(deniesAll) });
 
     expect(run.removals).toEqual([]);
-    expect(run.refused).toHaveLength(240);
-    expect(run.warning).toContain('Kept 240 of 300 JIRA cards');
-    expect(run.warning).toContain('more than 25% of the board in one sync');
+    expect(run.refused).toEqual([]);
+    expect(run.warning).toContain("JIRA's answer left out 240 of 300 board cards");
+    expect(run.warning).not.toContain('Check the board');
   });
 
   it('the sprint rolling back does not resurrect the 240 that left it', async () => {

@@ -51,7 +51,13 @@
  *  8. The **next sync leaves the row on the card**. The card here carries no tracker key, so
  *     matching by key has nothing to work with — and matching by key is all the reconciler
  *     used to do, which is why the row appeared on the button and was gone by the next poll.
- *  9. A database written **before** `openedForTaskId` existed upgrades into it and is writable
+ *  9. The same holds for a card that is not on the Personal board at all. A second project is
+ *     added with no plan file and a ticket prefix of its own — a board-owning ticket project,
+ *     the shape `ticket:create` files a card on — and its card's pull request survives a sync
+ *     built with `buildBoardIndex(store.getAllBoardTasks())`, the exact expression `ipc.ts`
+ *     now calls. Before that fix the index only ever covered the Personal board, so a card
+ *     anywhere else read, to the reconciler, as one that had been deleted.
+ *  10. A database written **before** `openedForTaskId` existed upgrades into it and is writable
  *     afterwards. Every installed copy is that database, and this is the only harness in the
  *     repo that can open one at all (see `the-store-has-no-tests`).
  *
@@ -72,8 +78,14 @@
  * written, still on the card, and still under the right id, and the sync one line later takes
  * it off the card. That is the whole bug, and only check 8 sees it.
  *
- * For check 9, delete the guarded `ALTER TABLE merge_requests ADD COLUMN openedForTaskId` from
- * `store.ts`: the fresh database above is unaffected — every check up to 8 still passes — and
+ * For check 9, point that scenario's index at `store.getPersonalTasks()` instead of
+ * `store.getAllBoardTasks()` — the exact regression this closes, reintroduced by hand. The
+ * board card is not on the Personal board, so it vanishes from `knownTaskIds`, `matchTaskId`
+ * in `githubPrSync.ts` no longer recognises `openedForTaskId` as one of ours, and the row's
+ * `taskId` goes back to `null` — orphaned, open, and belonging to nobody, exactly as reported.
+ *
+ * For check 10, delete the guarded `ALTER TABLE merge_requests ADD COLUMN openedForTaskId` from
+ * `store.ts`: the fresh database above is unaffected — every check up to 9 still passes — and
  * re-opening the older one dies on `no such column`, which is what an installed copy would do
  * on the first press of the button.
  */
@@ -129,8 +141,12 @@ if (!process.versions.electron) {
   // lets both be pulled out of the app and run on their own like this.
   bundle(join(root, 'apps/client/src/main/forge/createPr.ts'), join(scratch, 'createPr.cjs'));
   bundle(join(root, 'apps/client/src/main/store.ts'), join(scratch, 'store.cjs'), 'better-sqlite3');
-  // The reconciler check 8 runs — pure, and the third module here that reaches no Electron.
+  // The reconciler checks 8 and 9 run — pure, and the third module here that reaches no
+  // Electron.
   bundle(join(root, 'apps/client/src/main/github/githubPrSync.ts'), join(scratch, 'prSync.cjs'));
+  // The board index check 9 builds through, the exact expression `ipc.ts` calls it with —
+  // also pure, also no Electron.
+  bundle(join(root, 'apps/client/src/main/forge/boardIndex.ts'), join(scratch, 'boardIndex.cjs'));
 
   const electron = join(
     clientModules,
@@ -159,6 +175,7 @@ const work = process.argv[2];
 const { openPullRequest } = require(join(work, 'createPr.cjs'));
 const { createStore } = require(join(work, 'store.cjs'));
 const { reconcilePullRequests } = require(join(work, 'prSync.cjs'));
+const { buildBoardIndex } = require(join(work, 'boardIndex.cjs'));
 
 let failures = 0;
 const check = (label, ok, detail) => {
@@ -229,17 +246,28 @@ store.saveSettings({
 
 // ── The forge, stubbed: a recorder standing in for GitHub ────────────────────────────
 const calls = [];
+// One `number` per branch, allocated on first sight and remembered — `BRANCH` gets `#12`
+// exactly as every check below assumes, and check 9's board branch gets a number of its
+// own rather than colliding with it.
+let nextPrNumber = 12;
+const prsByBranch = new Map();
 globalThis.fetch = async (url, init) => {
   calls.push({ url: String(url), init: init ?? {} });
   const sent = JSON.parse(String(init?.body ?? '{}'));
+  const branch = sent.head ?? BRANCH;
+  let pr = prsByBranch.get(branch);
+  if (!pr) {
+    pr = { number: nextPrNumber++, htmlUrl: `https://github.com/acme/checkout/pull/${nextPrNumber - 1}` };
+    prsByBranch.set(branch, pr);
+  }
   const body = {
     id: 900,
-    number: 12,
+    number: pr.number,
     title: sent.title,
     state: 'open',
     draft: false,
-    html_url: 'https://github.com/acme/checkout/pull/12',
-    head: { ref: BRANCH, repo: { id: 555 } },
+    html_url: pr.htmlUrl,
+    head: { ref: branch, repo: { id: 555 } },
     base: { ref: base },
   };
   return {
@@ -494,9 +522,104 @@ check(
   JSON.stringify(afterSync),
 );
 
+// ── 9: a card on a board OTHER than Personal keeps its pull request through a sync ───
+// The reported regression, one board over from check 8's: the reconciler's board index used
+// to come from `getPersonalTasks()` alone, so a card filed on any other board carried an
+// `openedForTaskId` that `knownTaskIds` had never heard of — indistinguishable, to
+// `matchTaskId` in `githubPrSync.ts`, from a card that had been deleted. This board is a
+// board-owning TICKET project (`planPath: ''`, a `ticketPrefix` of its own) — the shape
+// `ticket:create` files a card on — and the index below is built the same way `ipc.ts` now
+// builds it: `buildBoardIndex(store.getAllBoardTasks())`, not a hand-assembled stand-in.
+const boardProject = store.addProject({
+  name: 'Marketing site',
+  path: '',
+  planPath: '',
+  ticketPrefix: 'MKT',
+});
+const boardBranch = 'feat/pricing-page';
+git(repo, 'checkout', '-b', boardBranch);
+writeFileSync(join(repo, 'pricing.ts'), 'export const pricing = true;\n');
+git(repo, 'add', '-A');
+git(repo, 'commit', '--no-verify', '-m', 'add the pricing page');
+const boardHead = git(repo, 'rev-parse', 'HEAD').stdout.trim();
+
+const boardCard = store.createTicket(boardProject.id, {
+  title: 'Ship the pricing page',
+  description: 'New self-serve pricing page.',
+});
+store.updateTask(boardCard.id, { agentProjectId: project.id, agentBranch: boardBranch });
+
+const boardOpened = await openPullRequest(
+  { ...deps, inspect: async () => ({ cwd: repo, branch: boardBranch, base }) },
+  boardCard.id,
+);
+check(
+  'a card on a non-Personal board can open a pull request too',
+  boardOpened.existed === false,
+  JSON.stringify(boardOpened),
+);
+const boardThere = git(bare, 'rev-parse', `refs/heads/${boardBranch}`);
+check(
+  'and its branch landed in the bare origin',
+  boardThere.code === 0 && boardThere.stdout.trim() === boardHead,
+  boardThere.stderr.trim() || boardThere.stdout.trim(),
+);
+
+// The same expression `ipc.ts` calls `buildBoardIndex` with — every board, unioned, not the
+// Personal one alone.
+const boardIndex = buildBoardIndex(store.getAllBoardTasks());
+check(
+  'the board index knows a card that lives off the Personal board',
+  boardIndex.knownTaskIds.has(boardCard.id),
+  `${boardIndex.knownTaskIds.size} known id(s), card is ${boardCard.id}`,
+);
+
+const boardNumber = Number(boardOpened.ref.replace('#', ''));
+const boardStored = store.listMergeRequests().filter((r) => r.provider === 'github');
+// What the sync actually does: the same search row GitHub would return for this open PR.
+const boardListed = {
+  repoId: 555,
+  number: boardNumber,
+  projectPath: 'acme/checkout',
+  title: 'Ship the pricing page',
+  description: 'New self-serve pricing page.',
+  webUrl: `https://github.com/acme/checkout/pull/${boardNumber}`,
+  sourceBranch: boardBranch,
+  targetBranch: base,
+  state: 'opened',
+  draft: false,
+  pipelineStatus: 'unknown',
+  pipelineStages: [],
+  pipelineUrl: null,
+  approvalsRequired: null,
+  approvalsGiven: 0,
+  changesRequested: false,
+  detailedMergeStatus: null,
+  hasConflicts: false,
+  updatedAt: 1_760_000_050_000,
+};
+// `listed` (check 8's own open PR) rides along too: a real sync's fetch returns every open
+// pull request the forge has, not just the one this scenario is interested in, and leaving
+// it out would make the ORIGINAL card's row look, to the reconciler, like one GitHub had
+// stopped reporting — deleted out from under check 8 by a scenario that never touched it.
+const boardSync = reconcilePullRequests(boardStored, [listed, boardListed], {
+  ...boardIndex,
+  identity: null,
+  now: 1_760_000_100_000,
+});
+for (const mr of boardSync.upserts) store.upsertMergeRequest(mr);
+store.deleteMergeRequests(boardSync.deleteIds);
+
+const afterBoardSync = store.listMergeRequests().find((r) => r.id === `gh-555-${boardNumber}`);
+check(
+  'the sync leaves the board card linked instead of orphaning it',
+  afterBoardSync?.taskId === boardCard.id,
+  `taskId is ${String(afterBoardSync?.taskId)}, card is ${boardCard.id}`,
+);
+
 store.close();
 
-// ── 9: a database written BEFORE the column upgrades into it ─────────────────────────
+// ── 10: a database written BEFORE the column upgrades into it ────────────────────────
 // Everything above ran against a table the DDL created complete, which is the one shape no
 // existing user has: every installed copy has a `merge_requests` table from before this. The
 // guarded ALTER is what carries them over, and a broken one does not degrade — the very next

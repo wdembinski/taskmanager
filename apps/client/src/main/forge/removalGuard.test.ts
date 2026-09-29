@@ -8,7 +8,7 @@
  * — it sends them to a screen with no JQL on it.
  */
 import { describe, expect, it } from 'vitest';
-import { guardRemovals, type ForgeRemoval } from './removalGuard';
+import { guardRemovals, isIncompleteAnswer, type ForgeRemoval } from './removalGuard';
 
 const many = (n: number): ForgeRemoval[] =>
   Array.from({ length: n }, (_, i) => ({
@@ -40,5 +40,33 @@ describe('guardRemovals', () => {
     const guarded = guardRemovals(many(12), 30, { tracker: 'GitHub' });
     expect(guarded.removals.length + guarded.refused.length).toBe(12);
     expect(guarded.removals).toEqual([]);
+  });
+});
+
+describe('isIncompleteAnswer — the same suspicion, caught before any candidate exists', () => {
+  it('flags a large, query-unchanged shortfall', () => {
+    expect(isIncompleteAnswer(12, 30)).toBe(true);
+  });
+
+  it('does not flag a shortfall under the share floor', () => {
+    expect(isIncompleteAnswer(6, 30)).toBe(false);
+  });
+
+  it('does not flag a shortfall under the count floor, however big a share it is', () => {
+    // 3 of 4 is 75% of a tiny board — exactly the case `guardRemovals` also stands down for.
+    expect(isIncompleteAnswer(3, 4)).toBe(false);
+  });
+
+  it('stands down when the question itself changed', () => {
+    expect(isIncompleteAnswer(24, 30, { queryChanged: true })).toBe(false);
+  });
+
+  it('honours the same dials guardRemovals takes', () => {
+    // Below the default floor of 5, so unguarded by default; a lower floor catches it.
+    expect(isIncompleteAnswer(4, 10)).toBe(false);
+    expect(isIncompleteAnswer(4, 10, { minGuardedRemovals: 3 })).toBe(true);
+    // Flagged at the default 25% share; a wider allowance stands it down.
+    expect(isIncompleteAnswer(9, 30)).toBe(true);
+    expect(isIncompleteAnswer(9, 30, { maxRemovalFraction: 0.5 })).toBe(false);
   });
 });

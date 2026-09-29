@@ -153,7 +153,7 @@ const FEATURE_SWITCHES: ReadonlyArray<{
   {
     key: 'quietAgentProgress',
     label: 'Quiet agent progress',
-    hint: 'Moves an agent’s running progress log out of the chat pane.',
+    hint: 'Moves an agent’s running progress log out of the chat pane, and folds away its step-by-step narration too, leaving just its summary.',
   },
   {
     key: 'ticketsToOwnBoard',

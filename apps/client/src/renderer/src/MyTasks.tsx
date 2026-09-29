@@ -33,7 +33,6 @@ import {
 import {
   hasPlan,
   hasRepo,
-  isFilingProject,
   PERSONAL_PROJECT_ID,
   type ManualStatus,
   type Person,
@@ -139,14 +138,8 @@ export function MyTasks(): JSX.Element {
   // The repos a card can be delegated to — fetched once and shared by the cards
   // (glyph tooltip) and the detail pane (assign dialog).
   const [agentProjects, setAgentProjects] = useState<Project[]>([]);
-  /**
-   * The wider FILING list — the detail pane's Project dropdown and the add-task dialog's
-   * Project field. Everything `agentProjects` carries, plus a personal-space project with
-   * no repo of its own — see `isFilingProject`.
-   */
-  const [filingProjects, setFilingProjects] = useState<Project[]>([]);
   /** The boards the toolbar's scope Dropdown offers — Personal plus every other
-   *  project that owns a ticket key prefix. Fed by `board:scopes`. */
+   *  project. Fed by `board:scopes`. */
   const [scopes, setScopes] = useState<BoardScope[]>([]);
   /**
    * Which board is open: `'all'` unions every board's cards, or one board's own
@@ -315,8 +308,6 @@ export function MyTasks(): JSX.Element {
     // A repo directory with no plan file — the delegation targets, same as `agentProject:list`
     // used to answer before the two channel sets merged into `project:*`.
     setAgentProjects(projectList.filter((p) => hasRepo(p) && !hasPlan(p)));
-    // The wider filing-eligible set — see `isFilingProject`.
-    setFilingProjects(projectList.filter(isFilingProject));
     setMergeRequests(mrs);
     setLinks(chain);
     setAttachments(files);
@@ -432,7 +423,11 @@ export function MyTasks(): JSX.Element {
     const offPeople = window.api.on('person:changed', setPeople);
     // Pushed by a sync that kept cards it could not confirm had left. It arrives from the
     // POLLER as often as from the button, so it cannot be the return value of `sync()`.
-    const offNotice = window.api.on('board:notice', setNotice);
+    //
+    // Empty text is that same channel's only way to say "never mind" — a background sync
+    // that no longer has anything to warn about sends one so a bar the last poll raised
+    // does not outlive the condition that raised it.
+    const offNotice = window.api.on('board:notice', (n) => setNotice(n.text ? n : null));
     return () => {
       offTask();
       offTasks();
@@ -1485,7 +1480,7 @@ export function MyTasks(): JSX.Element {
           <TaskDetail
             task={selectedTask}
             agentProjects={agentProjects}
-            projects={filingProjects}
+            boards={scopes}
             subtasks={chain}
             parentTask={parentOfSelected}
             mergeRequests={selectedTask ? (mrsByTask.get(selectedTask.id) ?? []) : []}
@@ -1554,9 +1549,6 @@ export function MyTasks(): JSX.Element {
         // own that runs after it. Chaining at creation saves finding the new card on the
         // board and dragging an arrow to it — three moves for one intent.
         chainCandidates={parentCandidates}
-        // The same projects the detail pane files a card under, offered while the card is
-        // being written instead of only afterwards.
-        projects={filingProjects}
         jiraEnabled={jiraEnabled}
         onClose={() => setAddOpen(false)}
         onCreated={() => void refresh()}
