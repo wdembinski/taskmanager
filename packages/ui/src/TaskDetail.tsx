@@ -1051,6 +1051,7 @@ export function TaskDetail({
           task={task}
           subtasks={subtasks}
           agentProjects={agentProjects}
+          filingProjects={boards}
           items={panelItems}
           running={run.spinner}
           liveRunTaskIds={liveRunTaskIds}

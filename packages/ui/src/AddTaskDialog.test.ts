@@ -93,6 +93,7 @@ describe('addTaskPlan', () => {
         description: 'What it is about.',
         issueType: 'story',
         epicTaskId: 'epic-1',
+        projectTagId: 'p-billing',
       },
     });
   });
@@ -100,6 +101,11 @@ describe('addTaskPlan', () => {
   it('gives a ticket-board plan a null epicTaskId, not an empty one', () => {
     const plan = addTaskPlan(form({ boardId: 'p-billing', boardOwnsTickets: true }));
     expect(plan.kind === 'ticket' && plan.ticket.epicTaskId).toBe(null);
+  });
+
+  it('files a native ticket under its own board — the same project it already lives on', () => {
+    const plan = addTaskPlan(form({ boardId: 'p-billing', boardOwnsTickets: true }));
+    expect(plan.kind === 'ticket' && plan.ticket.projectTagId).toBe('p-billing');
   });
 
   it('never carries type onto a ticket-board plan — issueType is its replacement', () => {
