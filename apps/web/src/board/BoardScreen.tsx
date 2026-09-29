@@ -77,7 +77,12 @@ import {
 import type { BoardScope } from '@tm/shared/ipc';
 import { cardProjectColor } from '@tm/shared/projectColor';
 import { BoardToolbar } from './BoardToolbar';
-import { selectAgentProjects, selectArchivedTasks, selectBoardTasks } from './boardSelectors';
+import {
+  selectAgentProjects,
+  selectArchivedTasks,
+  selectBoardTasks,
+  selectFilingProjects,
+} from './boardSelectors';
 import { displayStatus, isTaskPending, type CloudBoardState } from './cloudBoardStore';
 import { mergeRequestsByTask, useBoardExtras, byTask } from './useBoardExtras';
 
@@ -169,6 +174,14 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
   const agentProjects = useMemo(
     () => selectAgentProjects(state.projects, extras.agentProjects, extras.agentProjectsLoaded),
     [state.projects, extras.agentProjects, extras.agentProjectsLoaded],
+  );
+  /**
+   * The projects a card can be FILED under — `cardProjectColor`'s own lookup, so the stripe
+   * resolves the same list the desktop's `MyTasks` does. See `selectFilingProjects`.
+   */
+  const filingProjects = useMemo(
+    () => selectFilingProjects(state.projects, extras.filingProjects, extras.agentProjectsLoaded),
+    [state.projects, extras.filingProjects, extras.agentProjectsLoaded],
   );
 
   /**

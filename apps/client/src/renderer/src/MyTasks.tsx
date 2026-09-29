@@ -33,6 +33,7 @@ import {
 import {
   hasPlan,
   hasRepo,
+  isFilingProject,
   PERSONAL_PROJECT_ID,
   type ManualStatus,
   type Person,
@@ -139,6 +140,9 @@ export function MyTasks(): JSX.Element {
   // The repos a card can be delegated to — fetched once and shared by the cards
   // (glyph tooltip) and the detail pane (assign dialog).
   const [agentProjects, setAgentProjects] = useState<Project[]>([]);
+  /** The projects a card can be FILED under — `cardProjectColor`'s own lookup, so the
+   *  stripe resolves the same list the web board does. See `isFilingProject`. */
+  const [filingProjects, setFilingProjects] = useState<Project[]>([]);
   /** The boards the toolbar's scope Dropdown offers — Personal plus every other
    *  project. Fed by `board:scopes`. */
   const [scopes, setScopes] = useState<BoardScope[]>([]);
@@ -318,6 +322,7 @@ export function MyTasks(): JSX.Element {
     // A repo directory with no plan file — the delegation targets, same as `agentProject:list`
     // used to answer before the two channel sets merged into `project:*`.
     setAgentProjects(projectList.filter((p) => hasRepo(p) && !hasPlan(p)));
+    setFilingProjects(projectList.filter(isFilingProject));
     setMergeRequests(mrs);
     setLinks(chain);
     setAttachments(files);
