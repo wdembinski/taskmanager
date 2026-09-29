@@ -12,12 +12,14 @@
  *
  *   - a card left in TO DO stays in TO DO while its agent works, and after it finishes;
  *   - a run that finishes, fails, is stopped or is retried changes no column;
- *   - only a drag, or the detail pane's dropdown, ever moves a card.
+ *   - a drag, the detail pane's dropdown, or starting an agent on a TO DO card ({@link
+ *     assignmentMovesCard}) are the only things that ever move a card.
  *
  * The rule has a second half, {@link humanStatusPatch}: because the run only BORROWED the
  * field, the human can still move the card while the run holds it — the move is written to
- * the parked value instead. The two functions are deliberately scoped by the same
- * `isBoardCard` predicate, so whatever the guard protects is exactly what the move parks.
+ * the parked value instead. Every function here is deliberately scoped by the same
+ * `isBoardCard` predicate, so whatever the guard protects is exactly what a human move (a
+ * drag, a dropdown pick, or delegating a TO DO card to an agent) parks.
  *
  * Every status write the scheduler makes goes through here (see `Scheduler.updateTask`),
  * which is the point: there are some thirty of them and a rule enforced at each would
@@ -95,30 +97,52 @@ export function humanStatusPatch(task: Task, status: TaskStatus): SchedulerPatch
 }
 
 /**
- * The status write **wiring an agent onto a task** is allowed to make — for a card, almost
- * always none.
+ * Whether **wiring an agent onto a task and starting it** is allowed to move the card to
+ * IN PROGRESS.
+ *
+ * Only a board card, only when the assignment is starting the agent (not just staging it —
+ * see the `start: false` branch of `task:assignAgent`), and only when the card rests in
+ * TO DO. "Rests in TO DO" is `restingStatus(task) === 'pending'`, plus the one case a card can
+ * rest nowhere at all: a run status with nothing remembered behind it (`preRunStatus` unset),
+ * which is the field-borrowed-before-this-guard-existed state the rest of this module treats
+ * as honestly `pending` (see {@link restingStatus}).
+ *
+ * A card resting anywhere else — IN REVIEW, BLOCKED, DONE, whatever a human filed it under —
+ * is left there: starting an agent on it says who does the work, not that the work has moved
+ * to a different column.
+ */
+export function assignmentMovesCard(task: Task, starting: boolean): boolean {
+  if (!starting || !isBoardCard(task)) return false;
+  const resting = restingStatus(task);
+  return resting === 'pending' || isRunStatus(resting);
+}
+
+/**
+ * The status write **wiring an agent onto a task** is allowed to make.
  *
  * Assigning an agent (`task:assignAgent`) or attaching a session (`task:attachSession`) says
- * who will do the work. It says nothing about which column the work belongs in, and the
- * column is the human's: a ticket resting in IN REVIEW that you hand to an agent is still in
- * review, and one you had filed under BLOCKED does not become un-blocked by being delegated.
- * Both handlers used to write `status: 'pending'` unconditionally, which yanked the card back
- * to TO DO — the same thing {@link guardCardStatus} exists to stop a run doing, just through
- * a door the guard does not watch, because these are the human's writes and not the
+ * who will do the work. On its own that says nothing about which column the work belongs in,
+ * and the column is the human's: a ticket resting in IN REVIEW that you hand to an agent is
+ * still in review, and one you had filed under BLOCKED does not become un-blocked by being
+ * delegated. Both handlers used to write `status: 'pending'` unconditionally, which yanked the
+ * card back to TO DO — the same thing {@link guardCardStatus} exists to stop a run doing, just
+ * through a door the guard does not watch, because these are the human's writes and not the
  * scheduler's.
  *
- * So a board card that rests somewhere is left exactly there, and only a card with no resting
- * place to protect gets one. That is the case `restingStatus` reports a RUN status for: the
- * field is borrowed and nothing is remembered behind it, so there is no column a human ever
- * chose, and `pending` — queued work nobody has begun — is the honest answer. It still goes
- * through {@link humanStatusPatch}, so if a run really is live it is parked for the settle
- * rather than evicting it.
+ * The one case that IS a move: assigning an agent that starts immediately, on a card that
+ * rests in TO DO. "Assign an agent and start it" on a TO DO card is the human saying the work
+ * has begun, the same as dragging it to IN PROGRESS by hand — see {@link assignmentMovesCard}.
+ * That write, like every other human write, goes through {@link humanStatusPatch}, so a run
+ * already live on the card (mid re-assignment) gets the move parked in `preRunStatus` rather
+ * than overwritten.
  *
- * Off the board the write survives unchanged, and deliberately: a plan project's task and a
- * step of a chain are a queue whose `pending` means "runnable", which is exactly what
- * re-wiring one is asking for.
+ * Outside that one case, a board card resting somewhere is left exactly there. Off the board
+ * the write survives unchanged, and deliberately: a plan project's task and a step of a chain
+ * are a queue whose `pending` means "runnable", which is exactly what re-wiring one is asking
+ * for, `starting` or not.
  */
-export function assignmentStatusPatch(task: Task): SchedulerPatch {
+export function assignmentStatusPatch(task: Task, starting = false): SchedulerPatch {
+  if (assignmentMovesCard(task, starting)) return humanStatusPatch(task, 'in-progress');
   if (isBoardCard(task) && !isRunStatus(restingStatus(task))) return {};
   return humanStatusPatch(task, 'pending');
 }
