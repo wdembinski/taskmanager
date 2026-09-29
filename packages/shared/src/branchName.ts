@@ -11,9 +11,10 @@
  * leading slash** (`/feat/…` is not a valid git ref), and a card with no ticket omits that
  * segment entirely rather than leaving `//` or inventing a placeholder.
  *
- * `<type>` is a Conventional Commits type, inferred from the ticket and the title but
- * always overridable — the human picks it in the assign dialog, and this module's job is
- * to propose something sensible, not to be right.
+ * `<type>` is a Conventional Commits type, inferred first from the card's own
+ * classification (its `TaskType`, or a native ticket's `IssueType`), then the ticket's
+ * external type and the title, but always overridable — the human picks it in the assign
+ * dialog, and this module's job is to propose something sensible, not to be right.
  *
  * Pure and total: the whole naming policy is unit-tested without git, a store, or a
  * session, which is why validation reimplements git-check-ref-format rather than shelling
@@ -23,6 +24,8 @@
  * name and validates what you type into it, and the engine validates it again before a
  * worktree is cut. One policy, both sides — a second copy in the renderer would drift.
  */
+
+import type { IssueType, TaskType } from './model';
 
 /** The Conventional Commits types offered, in the order the dialog lists them. */
 export const BRANCH_TYPES = [
@@ -40,15 +43,23 @@ export const BRANCH_TYPES = [
 
 export type BranchType = (typeof BRANCH_TYPES)[number];
 
-export interface BranchNameInput {
+/** Everything {@link inferBranchType} reads. A card, not a branch. */
+export interface BranchTypeInput {
   title: string;
+  /** The human's own pick in the Add-task dialog (`Task.type`). */
+  taskType?: TaskType | null;
+  /** A native ticket's kind (`Task.issueType`). Decisive only for bug/story/epic. */
+  issueType?: IssueType | null;
   /** The JIRA issue type ("Bug", "Story", "Task"), when the card has one. */
   externalType?: string | null;
+}
+
+export interface BranchNameInput extends BranchTypeInput {
   /** The JIRA key ("ABC-123"); lower-cased into the branch. */
   externalKey?: string | null;
   /** `AppSettings.branchPrefix`. Empty means no prefix segment and no leading slash. */
   prefix?: string;
-  /** Overrides inference when the human has picked a type. */
+  /** Overrides inference when the human has picked a branch type. */
   type?: BranchType;
 }
 
@@ -61,6 +72,16 @@ const TYPE_FROM_ISSUE: ReadonlyArray<[test: RegExp, type: BranchType]> = [
   [/^(bug|defect|incident|hotfix|problem)$/i, 'fix'],
   [/^(story|new feature|feature|epic|initiative)$/i, 'feat'],
 ];
+
+const TYPE_FROM_TASK_TYPE: Record<TaskType, BranchType> = { bug: 'fix', feature: 'feat' };
+
+/** Same rule as `TYPE_FROM_ISSUE` one field over: `task` and `subtask` are absent because
+ *  they say nothing about the KIND of work, so they fall through to the title. */
+const TYPE_FROM_ISSUE_TYPE: Partial<Record<IssueType, BranchType>> = {
+  bug: 'fix',
+  story: 'feat',
+  epic: 'feat',
+};
 
 /**
  * Leading verbs that name the kind of work. First match wins, so order matters.
@@ -87,16 +108,23 @@ const TYPE_FROM_TITLE: ReadonlyArray<[test: RegExp, type: BranchType]> = [
 /**
  * Pick the Conventional Commits type.
  *
- * The JIRA issue type wins when it is decisive, because it is a human's own
- * classification of the work. Otherwise the title's leading verb decides. `feat` is the
- * fallback — the honest default for "some work whose kind nobody stated".
+ * Precedence: the human's own `taskType` pick wins outright, because nothing is a more
+ * direct classification of the work. Next the native `issueType`, when it is decisive
+ * (bug/story/epic — `task`/`subtask` say nothing about the KIND of work). Then the JIRA
+ * issue type, then the title's leading verb. `feat` is the fallback — the honest default
+ * for "some work whose kind nobody stated".
  */
-export function inferBranchType(title: string, externalType?: string | null): BranchType {
-  const issue = (externalType ?? '').trim();
+export function inferBranchType(input: BranchTypeInput): BranchType {
+  if (input.taskType) return TYPE_FROM_TASK_TYPE[input.taskType];
+  if (input.issueType) {
+    const fromIssueType = TYPE_FROM_ISSUE_TYPE[input.issueType];
+    if (fromIssueType) return fromIssueType;
+  }
+  const issue = (input.externalType ?? '').trim();
   for (const [test, type] of TYPE_FROM_ISSUE) {
     if (test.test(issue)) return type;
   }
-  const text = title.trim();
+  const text = input.title.trim();
   for (const [test, type] of TYPE_FROM_TITLE) {
     if (test.test(text)) return type;
   }
@@ -133,7 +161,7 @@ const FALLBACK_SLUG = 'work';
  * Compose the branch name. Never emits `//`, a leading or trailing `/`, or a trailing `-`.
  */
 export function buildBranchName(input: BranchNameInput): string {
-  const type = input.type ?? inferBranchType(input.title, input.externalType);
+  const type = input.type ?? inferBranchType(input);
   const segments: string[] = [];
 
   // A prefix may itself be a path (`team/wd`), so it is slugified per segment rather than

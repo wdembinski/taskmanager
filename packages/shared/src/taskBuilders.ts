@@ -90,6 +90,7 @@ export function buildTicketTask(
     ticketNumber,
     issueType: input.issueType ?? 'task',
     epicTaskId: input.epicTaskId ?? null,
+    projectTagId: input.projectTagId ?? null,
     milestoneId: input.milestoneId ?? null,
     labels: normalizeLabels(input.labels),
     storyPoints: input.storyPoints ?? null,

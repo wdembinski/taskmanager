@@ -214,6 +214,11 @@ export type AddTaskPlan =
    * tickets, not because of anything the human clicked beyond the one picker. The step a
    * step never takes either, for the same reason a card's `board` never varies: a step
    * joins its parent's board by inheriting it.
+   *
+   * `ticket.projectTagId` is `board` itself, the same "one picker answers both questions"
+   * rule the `card` variant applies above — the ticket already lives on that project's own
+   * list, and filing it under that same project is the one answer the merged picker leaves
+   * no room to say otherwise.
    */
   | {
       kind: 'ticket';
@@ -224,6 +229,7 @@ export type AddTaskPlan =
         description?: string;
         issueType: IssueType;
         epicTaskId: string | null;
+        projectTagId: string | null;
       };
     };
 
@@ -260,6 +266,7 @@ export function addTaskPlan(form: AddTaskForm): AddTaskPlan {
         description: description || undefined,
         issueType: form.issueType,
         epicTaskId: form.epicTaskId || null,
+        projectTagId: form.boardId,
       },
     };
   }

@@ -2787,6 +2787,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       );
     }
     if (!input.title.trim()) throw new Error('A ticket needs a title.');
+    // The same check `task:create` makes, for the same reason: a ticket filed under a
+    // dangling or unfileable tag would wear a colour stripe nothing on the board could
+    // explain.
+    if (input.projectTagId) {
+      const target = store.getProject(input.projectTagId);
+      if (!target || !isFilingProject(target)) throw new Error('Unknown project.');
+    }
     assertTicketRefs(projectId, null, input.issueType ?? 'task', input);
     const task = store.createTicket(projectId, input);
     if (!task) throw new Error('Could not create that ticket.');

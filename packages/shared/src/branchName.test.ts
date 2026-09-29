@@ -16,15 +16,15 @@ describe('inferBranchType', () => {
     ['Story', 'feat'],
     ['New Feature', 'feat'],
     ['Epic', 'feat'],
-  ] as const)('lets the JIRA issue type %s decide (%s)', (issueType, expected) => {
+  ] as const)('lets the JIRA issue type %s decide (%s)', (externalType, expected) => {
     // A human already classified the work in the tracker; that beats guessing from prose.
-    expect(inferBranchType('some vague title', issueType)).toBe(expected);
+    expect(inferBranchType({ title: 'some vague title', externalType })).toBe(expected);
   });
 
   it.each(['Task', 'Sub-task', 'Improvement', 'Change', ''])(
     'falls through to the title when the issue type (%s) says nothing about the KIND of work',
-    (issueType) => {
-      expect(inferBranchType('Refactor the store', issueType)).toBe('ref');
+    (externalType) => {
+      expect(inferBranchType({ title: 'Refactor the store', externalType })).toBe('ref');
     },
   );
 
@@ -41,17 +41,51 @@ describe('inferBranchType', () => {
     ['Optimise the board render', 'perf'],
     ['Format the settings pane', 'style'],
   ] as const)('reads the leading verb of "%s" as %s', (title, expected) => {
-    expect(inferBranchType(title, null)).toBe(expected);
+    expect(inferBranchType({ title, externalType: null })).toBe(expected);
   });
 
   it('falls back to feat — the honest default for work of unstated kind', () => {
-    expect(inferBranchType('Something about the board', null)).toBe('feat');
-    expect(inferBranchType('', null)).toBe('feat');
+    expect(inferBranchType({ title: 'Something about the board', externalType: null })).toBe(
+      'feat',
+    );
+    expect(inferBranchType({ title: '', externalType: null })).toBe('feat');
   });
 
   it('matches whole words, so a verb-lookalike does not win', () => {
-    expect(inferBranchType('Fixture loading is slow', null)).toBe('feat');
-    expect(inferBranchType('Testing-library upgrade', null)).toBe('feat');
+    expect(inferBranchType({ title: 'Fixture loading is slow', externalType: null })).toBe('feat');
+    expect(inferBranchType({ title: 'Testing-library upgrade', externalType: null })).toBe('feat');
+  });
+
+  it("lets the human's own type pick at creation win over everything else", () => {
+    expect(
+      inferBranchType({ title: 'Refactor the store', taskType: 'bug', externalType: 'Story' }),
+    ).toBe('fix');
+    expect(inferBranchType({ title: 'Fix the login redirect', taskType: 'feature' })).toBe('feat');
+  });
+
+  it.each([
+    ['bug', 'fix'],
+    ['story', 'feat'],
+    ['epic', 'feat'],
+  ] as const)('lets the native issueType %s decide (%s)', (issueType, expected) => {
+    expect(inferBranchType({ title: 'Something about the board', issueType })).toBe(expected);
+  });
+
+  it.each(['task', 'subtask'] as const)(
+    'falls through to the title when the issueType (%s) says nothing about the KIND of work',
+    (issueType) => {
+      expect(inferBranchType({ title: 'Refactor the store', issueType })).toBe('ref');
+    },
+  );
+
+  it("prefers the app's own issueType to the tracker's externalType", () => {
+    expect(
+      inferBranchType({ title: 'some vague title', issueType: 'story', externalType: 'Bug' }),
+    ).toBe('feat');
+  });
+
+  it('ignores a null taskType rather than treating it as an answer', () => {
+    expect(inferBranchType({ title: 'Refactor the store', taskType: null })).toBe('ref');
   });
 });
 
@@ -130,8 +164,17 @@ describe('buildBranchName', () => {
 
   it('lets an explicit type override the inference', () => {
     expect(
-      buildBranchName({ type: 'tests', externalType: 'Bug', title: 'Login fails on Safari' }),
+      buildBranchName({
+        type: 'tests',
+        taskType: 'bug',
+        externalType: 'Bug',
+        title: 'Login fails on Safari',
+      }),
     ).toBe('tests/login-fails-on-safari');
+  });
+
+  it("uses the card's own taskType when there is no explicit override", () => {
+    expect(buildBranchName({ title: 'Add SSO', taskType: 'bug' })).toBe('fix/add-sso');
   });
 
   it('falls back to a placeholder slug rather than a trailing slash', () => {

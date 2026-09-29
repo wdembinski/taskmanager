@@ -1318,6 +1318,12 @@ export interface TicketInput {
   priority?: string | null;
   /** The heading it files under, as on any other task. Defaults to `''`. */
   phase?: string;
+  /**
+   * File the ticket under a project — `Task.projectTagId`, same tagging `task:create` and
+   * `task:setProject` do. What the ticket is ABOUT, never the board it is ON: that is
+   * `projectId`, the board whose own `ticketPrefix` allocator keyed this ticket's number.
+   */
+  projectTagId?: string | null;
 }
 
 /**
