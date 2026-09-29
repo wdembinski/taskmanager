@@ -83,6 +83,16 @@ describe('addTaskPlan', () => {
     expect(plan.kind === 'card' && plan.card.epicTaskId).toBe(null);
   });
 
+  it('carries the filed project onto a ticket-board card', () => {
+    const plan = addTaskPlan(form({ boardId: 'p-billing', projectTagId: 'p-frontend' }));
+    expect(plan.kind === 'card' && plan.card.projectTagId).toBe('p-frontend');
+  });
+
+  it('files nothing onto a ticket-board card when no project was picked', () => {
+    const plan = addTaskPlan(form({ boardId: 'p-billing' }));
+    expect(plan.kind === 'card' && plan.card.projectTagId).toBe(null);
+  });
+
   it('carries neither issueType nor epicTaskId for a Personal-board plan', () => {
     const plan = addTaskPlan(form({ issueType: 'epic', epicTaskId: 'epic-1' }));
     expect(plan.kind).toBe('card');

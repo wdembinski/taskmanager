@@ -721,13 +721,15 @@ export function AddTaskDialog({
         // A project board: the card IS a native ticket, allocated its key by the project's
         // own counter. `type` has no ticket equivalent — `issueType`/`epicTaskId` are its
         // replacement — and JIRA linking is Personal-only (`canJira`), so `type` never
-        // travels here.
+        // travels here. It still carries `projectTagId`: filing is a separate question from
+        // which board the ticket lives on, same as for a Personal-board card.
         created = await transport.invoke('ticket:create', plan.board, {
           title: plan.card.title,
           phase: plan.card.phase,
           description: plan.card.description,
           issueType: plan.card.issueType,
           epicTaskId: plan.card.epicTaskId,
+          projectTagId: plan.card.projectTagId,
         });
         createdId = created.id;
       }

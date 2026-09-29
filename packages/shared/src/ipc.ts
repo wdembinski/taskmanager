@@ -526,7 +526,8 @@ export interface IpcApi {
    * Rejects an unknown project and a plan-driven one (that board's cards come from its plan
    * file, not a manual add) with a clear reason; a blank title or a project with no ticket
    * prefix to allocate from come back as the one generic refusal `store.createTicket` already
-   * gives `undefined` for.
+   * gives `undefined` for. Rejects a dangling or unfileable `projectTagId`, exactly as
+   * `task:create` does.
    */
   'ticket:create': (projectId: string, input: TicketInput) => Promise<Task>;
   /** Delete a task (and its history, and any steps under it). Rejects if it is running. */

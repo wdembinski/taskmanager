@@ -61,6 +61,7 @@ describe('buildTicketTask', () => {
     expect(task.dueAt).toBeNull();
     expect(task.assigneeId).toBeNull();
     expect(task.reporterId).toBeNull();
+    expect(task.projectTagId).toBeNull();
   });
 
   it('carries through issueType, labels (normalized) and the rest of the ticket fields', () => {
@@ -79,6 +80,7 @@ describe('buildTicketTask', () => {
       assigneeId: 'person-1',
       reporterId: 'person-2',
       phase: '  Backlog  ',
+      projectTagId: 'tag-1',
     });
     expect(task.issueType).toBe('epic');
     expect(task.labels).toEqual(['Backend', 'Frontend']);
@@ -93,5 +95,6 @@ describe('buildTicketTask', () => {
     expect(task.assigneeId).toBe('person-1');
     expect(task.reporterId).toBe('person-2');
     expect(task.phase).toBe('Backlog');
+    expect(task.projectTagId).toBe('tag-1');
   });
 });
