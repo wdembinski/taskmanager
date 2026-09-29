@@ -134,36 +134,53 @@ describe('humanStatusPatch — the human can still move a card the run is holdin
   });
 });
 
-describe('assignmentStatusPatch — wiring an agent on does not move the card', () => {
-  it('leaves a card resting in IN REVIEW in IN REVIEW', () => {
-    const before = card({ status: 'in-review' });
-    const patch = assignmentStatusPatch(before);
-    expect(patch.status).toBeUndefined();
-    expect(columnForTask({ ...before, ...patch })).toBe('in-review');
+describe('assignmentStatusPatch — starting an agent on a TO DO card moves it to IN PROGRESS', () => {
+  it('moves a TO DO card to IN PROGRESS when the assignment starts it', () => {
+    const before = card({ status: 'pending' });
+    expect(assignmentStatusPatch(before, true)).toEqual({ status: 'in-progress' });
   });
 
-  it.each(MANUAL_STATUSES)('writes no status over a card resting in %s', (resting) => {
-    expect(assignmentStatusPatch(card({ status: resting }))).toEqual({});
+  it('leaves a TO DO card in TO DO when the assignment does not start it', () => {
+    const before = card({ status: 'pending' });
+    expect(assignmentStatusPatch(before, false)).toEqual({});
+    expect(assignmentStatusPatch(before)).toEqual({}); // default: not starting
+  });
+
+  it.each(MANUAL_STATUSES.filter((s) => s !== 'pending'))(
+    'writes no status over a card resting in %s, even when starting',
+    (resting) => {
+      expect(assignmentStatusPatch(card({ status: resting }), true)).toEqual({});
+    },
+  );
+
+  it('parks IN PROGRESS instead of evicting a run already live on the card', () => {
+    // The card rests in TO DO (`preRunStatus`), but `status` is currently borrowed by a
+    // live run — the move must land in `preRunStatus`, not stomp the run's own field.
+    const before = card({ status: 'running', preRunStatus: 'pending' });
+    expect(assignmentStatusPatch(before, true)).toEqual({ preRunStatus: 'in-progress' });
   });
 
   it('gives a card with no resting place at all the queue’s status', () => {
     // The field is borrowed and nothing is remembered behind it, so no human ever chose a
-    // column here. `pending` is parked for the settle rather than evicting the live run.
+    // column here — this, too, counts as "rests in TO DO".
     const wedged = card({ status: 'blocked-by-limit', preRunStatus: null });
-    expect(assignmentStatusPatch(wedged)).toEqual({ preRunStatus: 'pending' });
+    expect(assignmentStatusPatch(wedged, true)).toEqual({ preRunStatus: 'in-progress' });
+    // Not starting: the old, unconditional-`pending` behaviour, still parked rather than
+    // evicting the live run.
+    expect(assignmentStatusPatch(wedged, false)).toEqual({ preRunStatus: 'pending' });
   });
 
   it('leaves a card whose run remembers where it came from where it came from', () => {
     expect(
-      assignmentStatusPatch(card({ status: 'blocked-by-limit', preRunStatus: 'blocked' })),
+      assignmentStatusPatch(card({ status: 'blocked-by-limit', preRunStatus: 'blocked' }), true),
     ).toEqual({});
   });
 
   it('still re-queues a plan task or a step — there `pending` means runnable', () => {
-    expect(assignmentStatusPatch(card({ projectId: 'p1', status: 'done' }))).toEqual({
+    expect(assignmentStatusPatch(card({ projectId: 'p1', status: 'done' }), true)).toEqual({
       status: 'pending',
     });
-    expect(assignmentStatusPatch(card({ parentTaskId: 't1', status: 'done' }))).toEqual({
+    expect(assignmentStatusPatch(card({ parentTaskId: 't1', status: 'done' }), true)).toEqual({
       status: 'pending',
     });
   });

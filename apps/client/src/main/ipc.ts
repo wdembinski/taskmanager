@@ -988,13 +988,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       // A previous attempt's session is not this assignment's; start a fresh
       // conversation so the agent gets the full single-ticket brief.
       sessionId: null,
-      // ...and no column change. Delegating a card says who does the work, not where the
-      // work belongs: a ticket resting in IN REVIEW that you hand to an agent is still in
+      // ...and no column change, except the one the human is asking for: delegating a
+      // TO DO card and starting it moves it to IN PROGRESS, same as dragging it there by
+      // hand. Otherwise a ticket resting in IN REVIEW that you hand to an agent is still in
       // review. This used to write `pending` unconditionally, on the reasoning that
       // assigned-but-not-started IS what TO DO means — true of a card already in TO DO,
-      // and a card-moving bug everywhere else. Only a card resting nowhere gets a status
-      // now; see `assignmentStatusPatch`.
-      ...assignmentStatusPatch(existing),
+      // and a card-moving bug everywhere else. See `assignmentStatusPatch`.
+      ...assignmentStatusPatch(existing, input.start !== false),
     });
     if (!task) throw new Error('Task not found.');
 
