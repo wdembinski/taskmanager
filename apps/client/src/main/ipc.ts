@@ -73,7 +73,7 @@ import {
   JIRA_BOARD_LIMIT,
   restingStatus,
 } from '@shared/board';
-import { assignmentStatusPatch, humanStatusPatch } from './cardStatusGuard';
+import { assignmentMovesCard, assignmentStatusPatch, humanStatusPatch } from './cardStatusGuard';
 import { isBlockedishStatus, resolveGitHubColumn } from '@shared/statusResolve';
 import { clampSyncInterval, pickGlobalSettings, type AppSettings } from '@shared/settings';
 import { sameExecTarget, type ExecTarget } from '@shared/execTarget';
@@ -976,6 +976,35 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       throw new Error(`Not a usable model: ${input.planningModel}`);
     }
 
+    const starting = input.start !== false;
+
+    // The same local move that lands the card in IN PROGRESS (`assignmentStatusPatch`
+    // below) also owes the linked ticket that transition — same as dragging the card
+    // there by hand would. `writeMoveToForge` and `preBlockMarker` are `const`s declared
+    // further down in this `registerIpc` scope, but this handler body only runs at IPC
+    // time, well after the whole scope has finished initializing, so there is no TDZ
+    // hazard reaching forward for them.
+    //
+    // The `try` is the one deliberate difference from a drag: `transitionIssue` /
+    // `moveGitHubIssue` throw so a drag rolls back, whereas here the delegation is the
+    // primary act and must survive a workflow that cannot say In Progress.
+    const move = assignmentMovesCard(existing, starting)
+      ? resolveMove(existing, 'in-progress')
+      : null;
+    let moveOutcome: TransitionOutcome | null = null;
+    if (move) {
+      try {
+        moveOutcome = await writeMoveToForge(existing, move, 'in-progress');
+      } catch (e) {
+        send('board:notice', {
+          intent: 'warning',
+          text:
+            `${existing.externalKey}: could not move the linked ticket to In Progress ` +
+            `(${e instanceof Error ? e.message : String(e)}). The task was assigned anyway.`,
+        });
+      }
+    }
+
     const task = store.updateTask(taskId, {
       agentProjectId: target.id,
       // Delegating a card to the Billing repo does also say the card is about Billing —
@@ -994,9 +1023,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       // review. This used to write `pending` unconditionally, on the reasoning that
       // assigned-but-not-started IS what TO DO means — true of a card already in TO DO,
       // and a card-moving bug everywhere else. See `assignmentStatusPatch`.
-      ...assignmentStatusPatch(existing, input.start !== false),
+      ...assignmentStatusPatch(existing, starting),
+      ...(move ? { preBlockStatus: preBlockMarker(move, moveOutcome) } : {}),
+      ...(moveOutcome?.patch ?? {}),
     });
     if (!task) throw new Error('Task not found.');
+    if (move) store.recordStatusChange(task.projectId, taskId, 'pending', 'in-progress');
 
     // Assign WITHOUT starting (Phase 17): the human wants to talk to the agent about the
     // card before it begins changing files. Sending it a message starts it (see
@@ -1030,8 +1062,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       if (isReportablePark(outcome.refused)) return parked;
       throw new Error(RUN_REFUSAL_MESSAGE[outcome.refused]);
     }
-    send('task:changed', { task, runId: outcome.runId });
-    return task;
+    // Re-read for the same reason the refusal branch above does: `startTaskNow` writes
+    // `status: 'running'` AFTER the row above was fetched, so `task` predates it and
+    // announcing it would put a card on the board that looks assigned-and-idle.
+    const started = store.getTask(taskId) ?? task;
+    send('task:changed', { task: started, runId: outcome.runId });
+    return started;
   });
 
   handle('task:stopAgent', async (taskId) => {
