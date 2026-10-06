@@ -89,6 +89,20 @@ export function isManualStatus(status: TaskStatus): status is ManualStatus {
 export type BoardColumn = 'todo' | 'in-progress' | 'in-review' | 'blocked' | 'done';
 
 /**
+ * Every {@link BoardColumn}, left-to-right in board order — the one list the column-visibility
+ * settings (`hiddenBoardColumns`/`withColumnHidden` in `@shared/settings`) and the status
+ * groupers (`@shared/columnStatuses`) validate and sort against, so neither can drift from the
+ * order the board itself draws.
+ */
+export const BOARD_COLUMNS: readonly BoardColumn[] = [
+  'todo',
+  'in-progress',
+  'in-review',
+  'blocked',
+  'done',
+];
+
+/**
  * JIRA groups every workflow status into one of three fixed *categories*. We map
  * the category (not the raw status name, which varies per project) onto a board
  * column, so any workflow lands sensibly without per-status configuration.

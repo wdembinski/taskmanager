@@ -38,10 +38,10 @@ export interface StatusMapViewRow {
 
 /**
  * Group order: the board's own left-to-right column order, so the table reads like the
- * board rather than like the alphabet. `visibleColumns(true)` includes Done, which is a
- * column a status can absolutely resolve to even when the board hides it.
+ * board rather than like the alphabet. `visibleColumns([])` hides nothing, so Done is
+ * included — it is a column a status can absolutely resolve to even when the board hides it.
  */
-const COLUMN_ORDER: readonly BoardColumn[] = visibleColumns(true);
+const COLUMN_ORDER: readonly BoardColumn[] = visibleColumns([]);
 
 function columnRank(column: BoardColumn): number {
   const at = COLUMN_ORDER.indexOf(column);

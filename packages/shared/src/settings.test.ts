@@ -1,16 +1,20 @@
 import { describe, expect, it } from 'vitest';
+import type { BoardColumn } from './model';
 import {
   clampSyncInterval,
   DEFAULT_BOARD_DISPLAY,
   DEFAULT_FEATURE_SETTINGS,
+  DEFAULT_GITHUB_SETTINGS,
   DEFAULT_JIRA_SETTINGS,
   DEFAULT_SETTINGS,
   GLOBAL_SETTINGS_KEYS,
+  hiddenBoardColumns,
   MAX_SYNC_INTERVAL_MINUTES,
   mergeAppSettings,
   pickGlobalSettings,
   resolveSyncInterval,
   shouldAutoFoldOnMove,
+  withColumnHidden,
   type AppSettings,
 } from './settings';
 
@@ -253,6 +257,94 @@ describe('shouldAutoFoldOnMove', () => {
     expect(
       shouldAutoFoldOnMove({ ...DEFAULT_FEATURE_SETTINGS, autoFoldReviewDone: false }, 'done'),
     ).toBe(false);
+  });
+});
+
+describe('hiddenBoardColumns', () => {
+  const settings = (jiraShowDone: boolean, githubShowDone: boolean, hiddenColumns?: string[]) => ({
+    board: { ...DEFAULT_BOARD_DISPLAY, hiddenColumns: hiddenColumns as BoardColumn[] | undefined },
+    jira: { ...DEFAULT_JIRA_SETTINGS, showDoneColumn: jiraShowDone },
+    github: { ...DEFAULT_GITHUB_SETTINGS, showDoneColumn: githubShowDone },
+  });
+
+  describe('legacy derivation — no explicit list has ever been saved', () => {
+    it('hides Done when neither tracker shows it', () => {
+      expect(hiddenBoardColumns(settings(false, false))).toEqual(['done']);
+    });
+    it('shows Done when JIRA alone shows it', () => {
+      expect(hiddenBoardColumns(settings(true, false))).toEqual([]);
+    });
+    it('shows Done when GitHub alone shows it', () => {
+      expect(hiddenBoardColumns(settings(false, true))).toEqual([]);
+    });
+    it('shows Done when both show it', () => {
+      expect(hiddenBoardColumns(settings(true, true))).toEqual([]);
+    });
+  });
+
+  it('lets an explicit list win over the legacy flags, in either direction', () => {
+    // Legacy would show Done (JIRA says so), but the explicit list hides it instead.
+    expect(hiddenBoardColumns(settings(true, false, ['done']))).toEqual(['done']);
+    // Legacy would hide Done, but the explicit (empty) list shows everything.
+    expect(hiddenBoardColumns(settings(false, false, []))).toEqual([]);
+  });
+
+  it('hides whichever columns the explicit list names, not only Done', () => {
+    expect(hiddenBoardColumns(settings(false, false, ['todo', 'blocked']))).toEqual([
+      'todo',
+      'blocked',
+    ]);
+  });
+
+  it('never lets an explicit list hide every column — falls back to showing all', () => {
+    expect(
+      hiddenBoardColumns(
+        settings(false, false, ['todo', 'in-progress', 'in-review', 'blocked', 'done']),
+      ),
+    ).toEqual([]);
+  });
+
+  it('drops junk values from a hand-edited or stale explicit list', () => {
+    expect(hiddenBoardColumns(settings(false, false, ['done', 'not-a-column', 'done']))).toEqual([
+      'done',
+    ]);
+  });
+});
+
+describe('withColumnHidden', () => {
+  it('adds a column to the hidden list', () => {
+    expect(withColumnHidden([], 'done', true)).toEqual(['done']);
+  });
+
+  it('removes a column from the hidden list', () => {
+    expect(withColumnHidden(['todo', 'done'], 'done', false)).toEqual(['todo']);
+  });
+
+  it('is a no-op showing an already-shown column', () => {
+    expect(withColumnHidden(['done'], 'todo', false)).toEqual(['done']);
+  });
+
+  it('returns columns in board order, regardless of input order', () => {
+    expect(withColumnHidden(['done', 'todo'], 'blocked', true)).toEqual([
+      'todo',
+      'blocked',
+      'done',
+    ]);
+  });
+
+  it('refuses to hide the last visible column', () => {
+    const allButDone = ['todo', 'in-progress', 'in-review', 'blocked'] as const;
+    expect(withColumnHidden(allButDone, 'done', true)).toEqual(allButDone);
+  });
+
+  it('allows re-hiding a column that is already hidden (no-op, not a refusal)', () => {
+    const allButDone = ['todo', 'in-progress', 'in-review', 'blocked'] as const;
+    expect(withColumnHidden(['done', ...allButDone.slice(1)], 'in-progress', true)).toEqual([
+      'in-progress',
+      'in-review',
+      'blocked',
+      'done',
+    ]);
   });
 });
 
