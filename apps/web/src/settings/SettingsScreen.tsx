@@ -58,6 +58,7 @@ import {
   Body1,
   Button,
   Caption1,
+  Checkbox,
   Dropdown,
   Field,
   Input,
@@ -79,11 +80,21 @@ import { PlanningModelField } from '@tm/ui/PlanningModelField';
 import { PaneLoading } from '@tm/ui/PaneLoading';
 import { useInitialLoad } from '@tm/ui/useInitialLoad';
 import { useTransport } from '@tm/ui/transport';
+import { COLUMN_META, statusForColumn } from '@tm/ui/board/boardColumns';
+import { STATUS_LABEL } from '@tm/ui/taskStatus';
 import { hasPlan, hasRepo } from '@tm/shared/model';
-import type { Project } from '@tm/shared/model';
+import type { BoardColumn, Project } from '@tm/shared/model';
+import type { JiraStatusOption } from '@tm/shared/ipc';
 import type { PermissionMode } from '@tm/shared/session';
-import { clampSyncInterval, MAX_SYNC_INTERVAL_MINUTES } from '@tm/shared/settings';
+import {
+  clampSyncInterval,
+  DEFAULT_SETTINGS,
+  hiddenBoardColumns,
+  MAX_SYNC_INTERVAL_MINUTES,
+  withColumnHidden,
+} from '@tm/shared/settings';
 import type { AppSettings, FeatureSettings } from '@tm/shared/settings';
+import { statusesByColumn } from '@tm/shared/columnStatuses';
 import { selectAgentProjects } from '../board/boardSelectors';
 import { ProjectsEmpty, ProjectsSection } from './ProjectsSection';
 import { sectionNeedsSettings, type SettingsSection } from './settingsSections';
@@ -109,6 +120,14 @@ const useStyles = makeStyles({
     paddingBottom: '8px',
   },
   grid: { display: 'flex', flexDirection: 'column', gap: '16px' },
+  // The column picker: one checkbox per column, with what it holds underneath it.
+  columnList: { display: 'flex', flexDirection: 'column', gap: '12px' },
+  columnCaptions: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '2px',
+    marginLeft: '28px',
+  },
   mapList: { display: 'flex', flexDirection: 'column', gap: '6px' },
   mapRow: { display: 'flex', alignItems: 'center', gap: '6px' },
   mapName: { flex: 1, minWidth: 0 },
@@ -119,6 +138,15 @@ const useStyles = makeStyles({
 });
 
 const MODES: PermissionMode[] = ['acceptEdits', 'plan', 'manual', 'bypassPermissions'];
+
+/**
+ * Column labels for the picker — `COLUMN_META`'s own `label` is the board's ALL-CAPS header
+ * text, and `STATUS_LABEL` already spells each one the way a checkbox should read. Mirrors the
+ * desktop's own `COLUMN_LABEL` in `apps/client/src/renderer/src/Settings.tsx`.
+ */
+const COLUMN_LABEL: Record<BoardColumn, string> = Object.fromEntries(
+  COLUMN_META.map((c) => [c.column, STATUS_LABEL[statusForColumn(c.column)]]),
+) as Record<BoardColumn, string>;
 
 /**
  * The six feature switches, in the order the Features tab lists them — keyed by the
@@ -229,6 +257,51 @@ export function SettingsScreen({
   }, [transport]);
 
   const agentProjects = selectAgentProjects(projects, relayedProjects, projectsLoaded);
+
+  /**
+   * The column picker's captions: which JIRA statuses actually land in each column, read
+   * through the relayed `jira:statuses`. `jiraStatusesUnavailable` is set only when the
+   * relay itself fails — a desktop that is not answering — never when it answers with no
+   * statuses (JIRA off, or no token yet), which the picker already reads as "nothing mapped
+   * here" per column.
+   */
+  const [jiraStatuses, setJiraStatuses] = useState<JiraStatusOption[]>([]);
+  const [jiraStatusesUnavailable, setJiraStatusesUnavailable] = useState(false);
+
+  // Fetched on arrival and again each time the Board tab is opened — the same retry moment
+  // the desktop's own picker uses, since a connection that failed earlier may have since
+  // recovered.
+  useEffect(() => {
+    if (section !== 'board') return;
+    let live = true;
+    void transport
+      .invoke('jira:statuses')
+      .then((list) => {
+        if (!live) return;
+        setJiraStatuses(list.statuses);
+        setJiraStatusesUnavailable(false);
+      })
+      .catch(() => {
+        if (!live) return;
+        setJiraStatuses([]);
+        setJiraStatusesUnavailable(true);
+      });
+    return () => {
+      live = false;
+    };
+  }, [section, transport]);
+
+  // Safe to compute even before `settings:get` answers — `DEFAULT_SETTINGS` stands in, and
+  // the board pane below never renders until `settings` is real. Read through
+  // `hiddenBoardColumns`, never `settings.board.hiddenColumns` directly: the relayed mirror
+  // this screen's `settings` can come from never fills in that field's legacy default.
+  const boardSettings = settings ?? DEFAULT_SETTINGS;
+  const hiddenColumns = hiddenBoardColumns(boardSettings);
+  const jiraStatusesByColumn = statusesByColumn(
+    jiraStatuses,
+    boardSettings.jira.statusCategoryOverrides,
+    boardSettings.jira.learnedStatusColumns,
+  );
 
   // The engine can change settings under an open screen — it learns a JIRA status→column
   // mapping from a successful drag, for one — and this tab may sit here for an hour.
@@ -402,6 +475,51 @@ export function SettingsScreen({
           </Body1>
 
           <div className={styles.grid}>
+            <Field
+              label="Columns"
+              hint="Which columns the board draws. Each one lists the JIRA statuses that actually land there — a column with nothing mapped to it is safe to hide; one you rely on cannot be hidden if it is the last column standing."
+            >
+              <div className={styles.columnList}>
+                {COLUMN_META.map((c) => {
+                  const checked = !hiddenColumns.includes(c.column);
+                  const isLastVisible = checked && hiddenColumns.length === COLUMN_META.length - 1;
+                  const jiraNames = jiraStatusesByColumn[c.column];
+                  return (
+                    <div key={c.column}>
+                      <Checkbox
+                        checked={checked}
+                        disabled={isLastVisible}
+                        label={COLUMN_LABEL[c.column]}
+                        onChange={(_e, d) =>
+                          patch({
+                            board: {
+                              ...settings.board,
+                              hiddenColumns: withColumnHidden(hiddenColumns, c.column, !d.checked),
+                            },
+                          })
+                        }
+                      />
+                      {!jiraStatusesUnavailable && (
+                        <div className={styles.columnCaptions}>
+                          <Caption1 className={styles.hint}>
+                            {jiraNames.length > 0
+                              ? `JIRA: ${jiraNames.join(', ')}`
+                              : 'No JIRA statuses mapped here'}
+                          </Caption1>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              {jiraStatusesUnavailable && (
+                <Caption1 className={styles.hint}>
+                  Couldn’t reach a desktop app to list each column’s JIRA statuses — the checkboxes
+                  still work, just without the captions.
+                </Caption1>
+              )}
+            </Field>
+
             <Field
               label="Status keywords"
               hint="A status update containing one of these takes its colour. The first match in this list wins, so put the one that matters most at the top."
@@ -589,13 +707,6 @@ export function SettingsScreen({
                 checked={settings.jira.currentSprintOnly}
                 onChange={(_e, d) =>
                   patch({ jira: { ...settings.jira, currentSprintOnly: d.checked } })
-                }
-              />
-              <Switch
-                label="Show the Done column"
-                checked={settings.jira.showDoneColumn}
-                onChange={(_e, d) =>
-                  patch({ jira: { ...settings.jira, showDoneColumn: d.checked } })
                 }
               />
             </div>
