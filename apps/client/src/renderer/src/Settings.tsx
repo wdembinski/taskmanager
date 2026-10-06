@@ -20,6 +20,7 @@ import {
   Body1,
   Button,
   Caption1,
+  Checkbox,
   Combobox,
   Dropdown,
   Field,
@@ -42,7 +43,12 @@ import {
 import { AddRegular, DismissRegular } from '@fluentui/react-icons';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
 import type { PermissionMode } from '@shared/session';
-import { clampSyncInterval, MAX_SYNC_INTERVAL_MINUTES } from '@shared/settings';
+import {
+  clampSyncInterval,
+  hiddenBoardColumns,
+  MAX_SYNC_INTERVAL_MINUTES,
+  withColumnHidden,
+} from '@shared/settings';
 import type {
   AppSettings,
   CloudSettings,
@@ -52,6 +58,7 @@ import type {
   JiraSettings,
   PriorityDisplay,
 } from '@shared/settings';
+import { nativeStatusesByColumn, statusesByColumn } from '@shared/columnStatuses';
 
 /**
  * The three priority indicators, in the order they are offered. Keyed by the stored value,
@@ -134,6 +141,14 @@ const useStyles = makeStyles({
   mapRow: { display: 'flex', alignItems: 'center', gap: '6px' },
   mapName: { flex: 1, minWidth: 0 },
   mapColumn: { minWidth: '132px' },
+  // The column picker: one checkbox per column, with what it holds underneath it.
+  columnList: { display: 'flex', flexDirection: 'column', gap: '12px' },
+  columnCaptions: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '2px',
+    marginLeft: '28px',
+  },
   actions: { display: 'flex', alignItems: 'center', gap: '12px', marginTop: '4px' },
   /** Several related switches on one line, rather than three stacked Fields. */
   switchRow: { display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' },
@@ -283,6 +298,14 @@ export function Settings(): JSX.Element {
     void window.api.invoke('update:get').then(setUpdate);
     return window.api.on('update:changed', setUpdate);
   }, []);
+
+  // The Board pane's column captions need the instance's statuses to list anything, and
+  // `seed` only loads them once at mount — opening the tab later (after a connection that
+  // failed then) is the other moment worth retrying.
+  useEffect(() => {
+    if (section === 'board') void loadJiraStatuses();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `loadJiraStatuses` is stable
+  }, [section]);
 
   const seed = useCallback(async () => {
     const [appSettings, status] = await Promise.all([
@@ -564,6 +587,21 @@ export function Settings(): JSX.Element {
   // is indistinguishable from a self-hosted one, so the user stays in charge.
   const cloudMismatch = jira.deployment === 'server' && isCloudHost(jira.baseUrl);
 
+  // The column picker's captions: what each column actually holds, so hiding one is an
+  // informed choice rather than a guess. Computed once here rather than per-checkbox — all
+  // three read from state the whole pane already has loaded.
+  const hiddenColumns = hiddenBoardColumns(settings);
+  const jiraStatusesByColumn = statusesByColumn(
+    jiraStatuses,
+    jira.statusCategoryOverrides,
+    jira.learnedStatusColumns,
+  );
+  const githubLabelRows = buildGitHubLabelRows(
+    github.labelColumnOverrides,
+    github.learnedLabelColumns,
+  );
+  const ticketStatusesByColumn = nativeStatusesByColumn();
+
   return (
     <div className={styles.row}>
       <TabList
@@ -599,6 +637,61 @@ export function Settings(): JSX.Element {
           </Body1>
 
           <div className={styles.grid}>
+            <Field
+              label="Columns"
+              hint="Which columns the board draws. Each one lists what actually lands there — a column with nothing mapped to it is safe to hide; one you rely on cannot be hidden if it is the last column standing."
+            >
+              <div className={styles.columnList}>
+                {COLUMN_META.map((c) => {
+                  const checked = !hiddenColumns.includes(c.column);
+                  const isLastVisible = checked && hiddenColumns.length === COLUMN_META.length - 1;
+                  const jiraNames = jiraStatusesByColumn[c.column];
+                  const githubNames = githubLabelRows
+                    .filter((r) => r.column === c.column)
+                    .map((r) => r.name);
+                  const ticketNames = ticketStatusesByColumn[c.column].map((s) => STATUS_LABEL[s]);
+                  return (
+                    <div key={c.column}>
+                      <Checkbox
+                        checked={checked}
+                        disabled={isLastVisible}
+                        label={COLUMN_LABEL[c.column]}
+                        onChange={(_e, d) =>
+                          patch({
+                            board: {
+                              ...settings.board,
+                              hiddenColumns: withColumnHidden(hiddenColumns, c.column, !d.checked),
+                            },
+                          })
+                        }
+                      />
+                      <div className={styles.columnCaptions}>
+                        <Caption1 className={styles.hint}>
+                          {jiraNames.length > 0
+                            ? `JIRA: ${jiraNames.join(', ')}`
+                            : 'No JIRA statuses mapped here'}
+                        </Caption1>
+                        {githubNames.length > 0 && (
+                          <Caption1 className={styles.hint}>
+                            GitHub: {githubNames.join(', ')}
+                          </Caption1>
+                        )}
+                        {ticketNames.length > 0 && (
+                          <Caption1 className={styles.hint}>
+                            Tickets: {ticketNames.join(', ')}
+                          </Caption1>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <Caption1 className={styles.hint}>
+                Change which JIRA status lands in which column from the{' '}
+                <Link onClick={() => setSection('jira')}>JIRA tab’s status map</Link>.
+              </Caption1>
+            </Field>
+
             <Field
               label="Status keywords"
               hint="A status update containing one of these takes its colour. The first match in this list wins, so put the one that matters most at the top. An update matching nothing reads in the card's ordinary colour."
@@ -1290,14 +1383,6 @@ export function Settings(): JSX.Element {
               />
             </Field>
 
-            <Field label="Done column">
-              <Switch
-                checked={github.showDoneColumn}
-                label="Show the Done column on the board"
-                onChange={(_e, d) => patchGitHub({ showDoneColumn: d.checked })}
-              />
-            </Field>
-
             <Field
               label="Keep finished cards for (days)"
               hint="The commonest issue query there is says `is:open`, which stops matching an issue the instant you close it — so the card you had just dragged into Done would vanish out of it. A finished card is kept this long past the query instead, and re-read by number each sync, so reopening the issue on github.com still moves the card. 0 = take it off the board as soon as the query drops it."
@@ -1752,14 +1837,6 @@ export function Settings(): JSX.Element {
                   />
                 </Field>
               </div>
-            </Field>
-
-            <Field label="Done column">
-              <Switch
-                checked={jira.showDoneColumn}
-                label="Show the Done column on the board"
-                onChange={(_e, d) => patchJira({ showDoneColumn: d.checked })}
-              />
             </Field>
 
             <Field
