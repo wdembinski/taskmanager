@@ -42,7 +42,9 @@ import {
 } from '@shared/model';
 import {
   DEFAULT_BOARD_DISPLAY,
+  hiddenBoardColumns,
   shouldAutoFoldOnMove,
+  withColumnHidden,
   type AppSettings,
   type BoardDisplaySettings,
 } from '@shared/settings';
@@ -94,7 +96,7 @@ import {
   focusAnchorId,
   focusCards,
   groupSubtasks,
-  hiddenDoneSummary,
+  hiddenColumnsSummary,
   isRunStatus,
   partitionShelved,
   sortCards,
@@ -252,13 +254,13 @@ export function MyTasks(): JSX.Element {
   const merging = useIntegratingTasks();
 
   /**
-   * The Done column is a property of the BOARD, and there are two settings for it — one per
-   * tracker, since each integration owns its own retention. Either one asking for it is
-   * enough: a GitHub user who has never touched the JIRA pane must still be able to see
-   * where their closed issues went.
+   * The columns the board does NOT draw — see `hiddenBoardColumns`, which also covers the
+   * two legacy per-tracker `showDoneColumn` flags for a settings blob that predates the
+   * column picker. Defaults to hiding Done, matching the old pre-settings default, while
+   * `settings` itself is still loading.
    */
-  const showDone =
-    (settings?.jira.showDoneColumn ?? false) || (settings?.github.showDoneColumn ?? false);
+  const hiddenColumns = settings ? hiddenBoardColumns(settings) : (['done'] as BoardColumn[]);
+  const showDone = !hiddenColumns.includes('done');
   const jiraEnabled = settings?.jira.enabled ?? false;
   const currentSprintOnly = settings?.jira.currentSprintOnly ?? false;
   const gitlabEnabled = settings?.gitlab.enabled ?? false;
@@ -546,7 +548,10 @@ export function MyTasks(): JSX.Element {
    * cards that exist: with chain focus on, a count that included the rest would be pointing
    * at cards opening the column still wouldn't reveal.
    */
-  const hiddenDone = useMemo(() => hiddenDoneSummary(cardsByColumn.done), [cardsByColumn]);
+  const hiddenDone = useMemo(
+    () => hiddenColumnsSummary(cardsByColumn.done, ['done']),
+    [cardsByColumn],
+  );
 
   /**
    * Where every card is, for the chain overlay's arrows — plus which card the pointer is
@@ -610,15 +615,18 @@ export function MyTasks(): JSX.Element {
     [tasks],
   );
 
-  // Writes BOTH, because the toolbar toggle is about the column and `showDone` above reads
-  // either. Writing one of them would give the switch a state it could not turn off.
+  // Writes the explicit `board.hiddenColumns` list now, not the two legacy per-tracker
+  // flags — `hiddenBoardColumns` still reads those for a settings blob saved before this,
+  // but every save from here on goes through the one field both boards agree on.
   const setShowDone = useCallback((value: boolean) => {
     setSettings((prev) => {
       if (!prev) return prev;
       const next = {
         ...prev,
-        jira: { ...prev.jira, showDoneColumn: value },
-        github: { ...prev.github, showDoneColumn: value },
+        board: {
+          ...prev.board,
+          hiddenColumns: withColumnHidden(hiddenBoardColumns(prev), 'done', !value),
+        },
       };
       void window.api.invoke('settings:save', next);
       return next;
@@ -1307,7 +1315,7 @@ export function MyTasks(): JSX.Element {
           // away the obvious way to close the gate popover.
           onClick={() => setSelectedLinkId(null)}
         >
-          {visibleColumns(showDone).map((col) => (
+          {visibleColumns(hiddenColumns).map((col) => (
             <KanbanColumn
               key={col}
               column={col}
