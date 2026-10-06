@@ -1,9 +1,9 @@
 # Feature roadmap — autonomy, review, authoring
 
 > **Status:** proposed · **Written:** 2026-10-06
-> This folder plans the next ten features of the Task Manager: runs that start while you
-> are away, reviewing an agent's work inside the app and from a phone, and reusable skills
-> and workflows. Each one fits our layout — Electron client, `apps/web`, `apps/server`,
+> This folder plans the next eleven features of the Task Manager: runs that start while you
+> are away, reviewing an agent's work inside the app and from a phone, reusable skills
+> and workflows, and native sprints to work it all one slice at a time. Each one fits our layout — Electron client, `apps/web`, `apps/server`,
 > `packages/*` — and our engine (chains, gates, parks, tracker sync).
 
 ## How to use these files
@@ -43,6 +43,7 @@ Every phase ends green: `pnpm typecheck`, `pnpm test`, `pnpm build`.
 | F4 | Linear integration: a fourth tracker | client · server | — | [F4](F4-linear-integration.md) |
 | F5 | Task composer + issue browser with one-click hand-to-agent | client · web | F7 (soft) | [F5](F5-composer-and-hand-to-agent.md) |
 | F10 | Variants: run a card N times, compare, keep one | client | F6 | [F10](F10-variants.md) |
+| F11 | Sprints: native sprints, sprint planning in the Backlog, "Current sprint" for native tickets | client · server · web | — | [F11](F11-sprints.md) |
 
 "Soft" means the feature works without the other one and gains a piece once it exists.
 
@@ -57,6 +58,9 @@ F7 Skills   ──► F8 Workflows        (a workflow step can be a skill)
 F9, F4      — independent
 ```
 
+0. **F11** before the rest, if the roadmap is to be worked one sprint at a time: it is what
+   lets the board show only the current sprint's cards instead of all of them. It sits outside
+   the four milestones because it serves all of them.
 1. **F1** first: it makes the app work while you are away, and reuses the most of what
    exists (tracker polling, the chain engine, the limit and sign-in parks).
 2. **F6**: the most visible gap, and self-contained.
