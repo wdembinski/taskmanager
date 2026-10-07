@@ -2,7 +2,10 @@
 
 **Audience: anyone committing to this repository — a human, or an agent running
 unattended.** This file is the contract for two things a commit must get right:
-**how its message is written**, and **which version it ships**.
+**how its message is written**, and **which version it ships**. The same shape —
+Conventional Commits subject, wrapped body, `Ticket ID:`/`Tested:` trailers — also
+governs a pull request's or merge request's title and description whenever you
+write one by hand, in §1 and §2 below.
 
 The wider "how do I make a change" material — recipes, where code lives, the
 security boundary — lives in [`docs/04-contributing-guide.md`](docs/04-contributing-guide.md).
@@ -36,6 +39,11 @@ See §4.
 <type>(<scope>): <summary>
 ```
 
+A pull request's or merge request's **title** is the same subject line — this
+section applies to it verbatim whenever you type one yourself. (The **Create PR**
+button fills the title from the card instead, which is a deliberate, separate
+convention — see `prTitle` in `apps/client/src/main/forge/createPr.ts`.)
+
 - **50 characters maximum, for the whole line** — `type`, parentheses, scope,
   colon and summary all counted. This is tighter than it sounds; it is a real
   constraint on the summary, not a suggestion.
@@ -63,6 +71,11 @@ we are pre-1.0.
 ---
 
 ## 2. The body
+
+A pull request's or merge request's **description** follows this section
+verbatim too, when you write one by hand: same wrapping, same trailers, same
+alignment. (Again, the **Create PR** button is the exception — it fills the
+description from the card's own, via `prBody` in the same file.)
 
 The full shape of a commit message:
 
