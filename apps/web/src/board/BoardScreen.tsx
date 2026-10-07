@@ -40,14 +40,14 @@ import {
   COLUMN_META,
   focusCards,
   groupSubtasks,
-  hiddenDoneSummary,
+  hiddenColumnsSummary,
   partitionShelved,
   sortCards,
   visibleColumns,
   type BoardCard,
 } from '@tm/ui/board/boardColumns';
 import { columnForTask, statusForColumn } from '@tm/shared/board';
-import { shouldAutoFoldOnMove } from '@tm/shared/settings';
+import { hiddenBoardColumns, shouldAutoFoldOnMove, withColumnHidden } from '@tm/shared/settings';
 import { KanbanColumn } from '@tm/ui/board/KanbanColumn';
 import { ShelfStrip } from '@tm/ui/board/ShelfStrip';
 import { ChainOverlay } from '@tm/ui/board/ChainOverlay';
@@ -138,7 +138,11 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
   const [archivedOpenedAt, setArchivedOpenedAt] = useState<number | null>(null);
 
   const { settings, saveSettings } = extras;
-  const showDone = settings.jira.showDoneColumn;
+  // `hiddenBoardColumns` reads BOTH legacy per-tracker flags, where `settings.jira
+  // .showDoneColumn` alone used to leave this board stuck honouring only JIRA's — a
+  // GitHub-only user's "show done" toggle on the desktop never reached this screen.
+  const hiddenColumns = hiddenBoardColumns(settings);
+  const showDone = !hiddenColumns.includes('done');
   const showDetail = settings.showTaskDetail;
   /**
    * The commit-graph pane, read from the DESKTOP's own setting rather than a web-only one —
@@ -320,7 +324,7 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
   }, [boardTasks, state, mrsByTask, focusIds, extras.attention.taskIds, shelvedIds]);
 
   const hiddenDone = useMemo(
-    () => hiddenDoneSummary(cardsByColumn.get('done') ?? []),
+    () => hiddenColumnsSummary(cardsByColumn.get('done') ?? [], ['done']),
     [cardsByColumn],
   );
 
@@ -537,7 +541,10 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
           onShowDoneChange={(next) =>
             void saveSettings({
               ...settings,
-              jira: { ...settings.jira, showDoneColumn: next },
+              board: {
+                ...settings.board,
+                hiddenColumns: withColumnHidden(hiddenColumns, 'done', !next),
+              },
             }).catch(reportError)
           }
           display={display}
@@ -598,7 +605,7 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
           </Caption1>
         ) : (
           <div className={layout.columns} onClick={() => setSelectedLinkId(null)}>
-            {visibleColumns(showDone).map((column) => (
+            {visibleColumns(hiddenColumns).map((column) => (
               <KanbanColumn
                 key={column}
                 column={column}

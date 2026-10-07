@@ -34,9 +34,16 @@ export const COLUMN_META: ReadonlyArray<{ column: BoardColumn; label: string; or
   { column: 'done', label: 'DONE', order: 4 },
 ];
 
-/** The columns to render, honoring the "Show Done" toggle. */
-export function visibleColumns(showDone: boolean): BoardColumn[] {
-  return COLUMN_META.filter((c) => showDone || c.column !== 'done').map((c) => c.column);
+/**
+ * The columns to render — every one `COLUMN_META` lists except the ones named in `hidden`.
+ *
+ * Takes the hidden set directly rather than a "show Done" boolean, now that any column (not
+ * only Done) can be hidden — see `@shared/settings`'s `hiddenBoardColumns`, which is what a
+ * caller derives `hidden` from.
+ */
+export function visibleColumns(hidden: readonly BoardColumn[]): BoardColumn[] {
+  const hiddenSet = new Set(hidden);
+  return COLUMN_META.filter((c) => !hiddenSet.has(c.column)).map((c) => c.column);
 }
 
 /**
@@ -111,37 +118,46 @@ export function groupSubtasks(
 }
 
 /**
- * What the DONE column is holding while it is closed: how many cards are in it, and how
- * many of those the human never actually marked done (`failed`, `stopped`, `cancelled`).
+ * What the HIDDEN columns are holding while they are closed: how many cards sit in any of
+ * them, and how many of those — among the ones in DONE specifically — the human never
+ * actually marked done (`failed`, `stopped`, `cancelled`).
  *
- * This exists because "Show Done" is off by default, so the one column a card can arrive in
- * without anybody dragging it there is also the column nobody is looking at — a card that
- * fails, or whose JIRA status maps into DONE, simply stops existing as far as the board
- * says. The count is the whole fix. The toggle still hides the column: a board that opens
- * its own columns cannot be reasoned about, and the complaint was never "the column was
- * closed", it was "nothing anywhere told me the cards were there". A numeral answers that
- * completely, and costs no colour — colour is for things that move, and a closed card is
- * the least-moving thing on the board.
+ * This exists because Done used to be off by default, so the one column a card could arrive
+ * in without anybody dragging it there was also the column nobody was looking at — a card
+ * that fails, or whose JIRA status maps into DONE, simply stopped existing as far as the
+ * board said. The count is the whole fix, generalised from Done alone (`hiddenDoneSummary`,
+ * which this replaces) to however many columns the picker has closed: a column stays closed
+ * until a human opens it — a board that opens its own columns cannot be reasoned about — and
+ * the complaint was never "the column was closed", it was "nothing anywhere told me the
+ * cards were there". A numeral answers that completely, and costs no colour — colour is for
+ * things that move, and a closed card is the least-moving thing on the board.
  *
- * `notMarkedDone` is counted apart because those are the ones worth a second look:
- * "finished" and "gave up" land in the same column, and a card that failed is far more
- * likely to be the one you are hunting for.
+ * `notMarkedDone` stays scoped to DONE and is counted apart from `total` because those are
+ * the ones worth a second look: "finished" and "gave up" land in the same column, and a card
+ * that failed is far more likely to be the one you are hunting for. Hiding TO DO or BLOCKED
+ * has no such distinction to draw — every card sitting in one of those is there for the same
+ * reason, whatever reason that is.
  *
  * Reads {@link restingStatus}, like everything else that asks where a card sits — a card
  * whose agent is running this second, parked over the `cancelled` its human left it in,
  * is in the DONE column and is just as hidden as the rest.
  */
-export function hiddenDoneSummary(cards: readonly BoardCard[]): {
+export function hiddenColumnsSummary(
+  cards: readonly BoardCard[],
+  hidden: readonly BoardColumn[],
+): {
   total: number;
   notMarkedDone: number;
 } {
+  const hiddenSet = new Set(hidden);
   let total = 0;
   let notMarkedDone = 0;
   for (const card of cards) {
     const status = restingStatus(card.task);
-    if (columnForStatus(status) !== 'done') continue;
+    const column = columnForStatus(status);
+    if (!hiddenSet.has(column)) continue;
     total += 1;
-    if (status !== 'done') notMarkedDone += 1;
+    if (column === 'done' && status !== 'done') notMarkedDone += 1;
   }
   return { total, notMarkedDone };
 }

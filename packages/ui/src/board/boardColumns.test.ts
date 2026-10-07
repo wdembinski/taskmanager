@@ -14,7 +14,7 @@ import {
   focusCards,
   groupStepsByRound,
   groupSubtasks,
-  hiddenDoneSummary,
+  hiddenColumnsSummary,
   partitionShelved,
   sortCards,
   splitEarlierSteps,
@@ -146,11 +146,14 @@ describe('cardBadgeStatus', () => {
 });
 
 describe('visibleColumns', () => {
-  it('hides Done when the toggle is off', () => {
-    expect(visibleColumns(false)).toEqual(['todo', 'in-progress', 'in-review', 'blocked']);
+  it('hides Done when it is in the hidden list', () => {
+    expect(visibleColumns(['done'])).toEqual(['todo', 'in-progress', 'in-review', 'blocked']);
   });
-  it('shows all five when on', () => {
-    expect(visibleColumns(true)).toEqual(['todo', 'in-progress', 'in-review', 'blocked', 'done']);
+  it('shows all five when nothing is hidden', () => {
+    expect(visibleColumns([])).toEqual(['todo', 'in-progress', 'in-review', 'blocked', 'done']);
+  });
+  it('hides every column named, whichever they are', () => {
+    expect(visibleColumns(['todo', 'blocked'])).toEqual(['in-progress', 'in-review', 'done']);
   });
   it('column order matches COLUMN_META', () => {
     expect(COLUMN_META.map((c) => c.column)).toEqual([
@@ -163,7 +166,7 @@ describe('visibleColumns', () => {
   });
 });
 
-describe('hiddenDoneSummary', () => {
+describe('hiddenColumnsSummary', () => {
   it('counts every card the DONE column holds, and the ones nobody marked done apart', () => {
     // All four statuses land in DONE. Only the first is the human saying "finished"; the
     // other three are the ones worth a second look, which is why they are counted apart.
@@ -173,7 +176,7 @@ describe('hiddenDoneSummary', () => {
       card('halted', { status: 'stopped' }),
       card('broke', { status: 'failed' }),
     ]);
-    expect(hiddenDoneSummary(cards)).toEqual({ total: 4, notMarkedDone: 3 });
+    expect(hiddenColumnsSummary(cards, ['done'])).toEqual({ total: 4, notMarkedDone: 3 });
   });
 
   it('ignores the cards that are still on the open columns', () => {
@@ -184,7 +187,7 @@ describe('hiddenDoneSummary', () => {
       card('stuck', { status: 'blocked' }),
       card('finished', { status: 'done' }),
     ]);
-    expect(hiddenDoneSummary(cards)).toEqual({ total: 1, notMarkedDone: 0 });
+    expect(hiddenColumnsSummary(cards, ['done'])).toEqual({ total: 1, notMarkedDone: 0 });
   });
 
   it('counts a running card by where it RESTS, not by the status its run borrowed', () => {
@@ -194,12 +197,12 @@ describe('hiddenDoneSummary', () => {
       card('running-over-cancelled', { status: 'running', preRunStatus: 'cancelled' }),
       card('running-over-todo', { status: 'running', preRunStatus: 'pending' }),
     ]);
-    expect(hiddenDoneSummary(cards)).toEqual({ total: 1, notMarkedDone: 1 });
+    expect(hiddenColumnsSummary(cards, ['done'])).toEqual({ total: 1, notMarkedDone: 1 });
   });
 
-  it('is silent about a board with nothing behind the toggle', () => {
-    expect(hiddenDoneSummary([])).toEqual({ total: 0, notMarkedDone: 0 });
-    expect(hiddenDoneSummary(groupSubtasks([card('todo')]))).toEqual({
+  it('is silent about a board with nothing behind the hidden columns', () => {
+    expect(hiddenColumnsSummary([], ['done'])).toEqual({ total: 0, notMarkedDone: 0 });
+    expect(hiddenColumnsSummary(groupSubtasks([card('todo')]), ['done'])).toEqual({
       total: 0,
       notMarkedDone: 0,
     });
@@ -213,7 +216,27 @@ describe('hiddenDoneSummary', () => {
       card('s1', { parentTaskId: 'parent', order: 0, status: 'done' }),
       card('s2', { parentTaskId: 'parent', order: 1, status: 'failed' }),
     ]);
-    expect(hiddenDoneSummary(cards)).toEqual({ total: 0, notMarkedDone: 0 });
+    expect(hiddenColumnsSummary(cards, ['done'])).toEqual({ total: 0, notMarkedDone: 0 });
+  });
+
+  it('counts across every hidden column, not only Done', () => {
+    const cards = groupSubtasks([
+      card('todo', { status: 'pending' }),
+      card('stuck', { status: 'blocked' }),
+      card('doing', { status: 'in-progress' }),
+    ]);
+    expect(hiddenColumnsSummary(cards, ['todo', 'blocked'])).toEqual({
+      total: 2,
+      notMarkedDone: 0,
+    });
+  });
+
+  it('scopes notMarkedDone to DONE even when other columns are also hidden', () => {
+    const cards = groupSubtasks([
+      card('todo', { status: 'pending' }),
+      card('broke', { status: 'failed' }),
+    ]);
+    expect(hiddenColumnsSummary(cards, ['todo', 'done'])).toEqual({ total: 2, notMarkedDone: 1 });
   });
 });
 

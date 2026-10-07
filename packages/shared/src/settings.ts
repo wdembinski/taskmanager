@@ -10,6 +10,7 @@
  */
 import { LOCAL_TARGET, type ExecTarget } from './execTarget';
 import type { ClaudeModel, PermissionMode } from './session';
+import { BOARD_COLUMNS } from './model';
 import type { BoardColumn, ManualStatus } from './model';
 import type { StatusKeyword } from './statusKeywords';
 import { DEFAULT_SESSION_TOKEN_BUDGET, DEFAULT_WEEKLY_TOKEN_BUDGET } from './usage';
@@ -59,7 +60,14 @@ export interface JiraSettings {
    * restores the user's own query untouched.
    */
   currentSprintOnly: boolean;
-  /** Whether the board shows the Done column. */
+  /**
+   * Whether the board shows the Done column.
+   *
+   * @deprecated Superseded by {@link BoardDisplaySettings.hiddenColumns}, which can hide any
+   * column rather than only this one. Still read — alongside `GitHubSettings.showDoneColumn`
+   * — by {@link hiddenBoardColumns} as the LEGACY derivation for a settings blob that has
+   * never gone through the column picker; nothing should write it any more.
+   */
   showDoneColumn: boolean;
   /**
    * How long (in days) a finished card is kept on the board after its issue stops matching
@@ -281,7 +289,13 @@ export interface GitHubSettings {
    * undoes the move on the next sync.
    */
   learnedLabelColumns?: Record<string, BoardColumn>;
-  /** Whether the board shows the Done column for GitHub's cards. */
+  /**
+   * Whether the board shows the Done column for GitHub's cards.
+   *
+   * @deprecated See {@link JiraSettings.showDoneColumn} — the same supersession, by the same
+   * {@link BoardDisplaySettings.hiddenColumns} field, read the same way by
+   * {@link hiddenBoardColumns}.
+   */
   showDoneColumn: boolean;
   /**
    * How long (in days) a closed card is kept on the board after its issue stops matching
@@ -386,6 +400,23 @@ export interface BoardDisplaySettings {
   showAssignee: boolean;
   /** Story points, as a chip. Off by default — see {@link showAssignee}. */
   showPoints: boolean;
+  /**
+   * The board columns NOT shown — an explicit list, replacing the per-tracker
+   * `showDoneColumn` booleans ({@link JiraSettings.showDoneColumn},
+   * {@link GitHubSettings.showDoneColumn}) with one answer that works for every column, not
+   * only Done.
+   *
+   * **Absent means LEGACY, and that is load-bearing — it is not the same as an empty array.**
+   * No settings blob has this field until a human opens the new column picker, and until then
+   * the shown set must still come from whichever `showDoneColumn` is on, exactly as it always
+   * has. An empty array is a real, explicit choice — "every column shown" — and conflating it
+   * with "never set" would make it impossible to turn the legacy booleans off for good: saving
+   * `[]` once would stick forever, since every subsequent legacy-flag flip would have nothing
+   * left to override. Always go through {@link hiddenBoardColumns} to read this field, and
+   * {@link withColumnHidden} to write it — never compare it to the default or an empty literal
+   * directly.
+   */
+  hiddenColumns?: BoardColumn[];
 }
 
 /** Labels and project name on, epic/assignee/points off — see {@link BoardDisplaySettings}. */
@@ -397,6 +428,72 @@ export const DEFAULT_BOARD_DISPLAY: BoardDisplaySettings = {
   showAssignee: false,
   showPoints: false,
 };
+
+/**
+ * Every column `hiddenColumns` may name, filtered to {@link BoardColumn}'s actual members and
+ * de-duplicated — a settings blob is `unknown` the moment it crosses a JSON boundary (disk, the
+ * cloud mirror), so a stray string a future column rename left behind, or a value from a
+ * build that's ahead of this one, must not reach the board as if it meant something.
+ *
+ * Also enforces the one invariant {@link withColumnHidden} enforces on the write side: hiding
+ * literally every column is refused, by discarding the whole list rather than leaving a board
+ * with nothing to show AND no column left to reopen it from. A list that already names every
+ * column (corrupt, or hand-edited) is exactly as unusable as one that would — there is no
+ * partial fix that is better than falling back to "show everything".
+ */
+function sanitizeHiddenColumns(candidate: readonly unknown[]): BoardColumn[] {
+  // Filtering BOARD_COLUMNS by membership in `candidate` — rather than the other way round —
+  // gets de-duplication and junk-rejection in one pass: only a real column can survive, and
+  // each survives at most once, whatever `candidate` repeats or invents.
+  const valid = BOARD_COLUMNS.filter((column) => candidate.includes(column));
+  return valid.length >= BOARD_COLUMNS.length ? [] : valid;
+}
+
+/**
+ * The columns the board should NOT draw, from a settings blob — the one place both boards
+ * read column visibility from, so the picker (a later step) and whatever legacy derivation it
+ * replaces can never disagree.
+ *
+ * Reads the EXPLICIT list first: once `board.hiddenColumns` exists at all, it is authoritative,
+ * even if it is `[]` — see the field's own doc for why that case can't be told apart from
+ * "never set" any other way. Only its absence falls back to the legacy rule: Done was shown
+ * whenever either tracker's `showDoneColumn` was on, so it is hidden only when both are off.
+ */
+export function hiddenBoardColumns(settings: {
+  board: Pick<BoardDisplaySettings, 'hiddenColumns'>;
+  jira: Pick<JiraSettings, 'showDoneColumn'>;
+  github: Pick<GitHubSettings, 'showDoneColumn'>;
+}): BoardColumn[] {
+  const explicit = settings.board.hiddenColumns;
+  if (explicit) return sanitizeHiddenColumns(explicit);
+  const legacyShowDone = settings.jira.showDoneColumn || settings.github.showDoneColumn;
+  return legacyShowDone ? [] : ['done'];
+}
+
+/**
+ * Toggle one column's hidden-ness, for the column picker (a later step) to write back as
+ * `board.hiddenColumns`. Always returns the columns in board order, so the stored list reads
+ * the same way the board does and two saves of the same set never produce different JSON.
+ *
+ * **Refuses to hide the last visible column.** A board with nothing shown has no column left
+ * to reopen one from — the picker that caused it would need its own picker to undo it — so
+ * hiding stops being honoured one column short of that; showing a column back always
+ * succeeds, however the list got that way.
+ */
+export function withColumnHidden(
+  hidden: readonly BoardColumn[],
+  column: BoardColumn,
+  isHidden: boolean,
+): BoardColumn[] {
+  const next = new Set(hidden);
+  if (isHidden) {
+    const wouldHideEverything = !next.has(column) && next.size >= BOARD_COLUMNS.length - 1;
+    if (!wouldHideEverything) next.add(column);
+  } else {
+    next.delete(column);
+  }
+  return BOARD_COLUMNS.filter((c) => next.has(c));
+}
 
 /**
  * Master on/off switches for a handful of independently-toggleable behaviours, each owned by

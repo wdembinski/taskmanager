@@ -18,9 +18,14 @@
  * Shared, because the web board hides the same column and needs the same numeral (nothing
  * over there can drag a card out of DONE either, and a mirrored card that failed lands in
  * it with nobody having touched it).
+ *
+ * Scoped to Done specifically, even though {@link hiddenColumnsSummary} (which produces its
+ * input) now counts across every hidden column: this switch only ever hides Done, so its
+ * caller passes it that summary computed with `hidden: ['done']`. A column picker covering
+ * the rest of the columns is a later step's own control, with its own words.
  */
 
-/** What {@link hiddenDoneSummary} answers with — the closed column, counted. */
+/** The shape {@link hiddenColumnsSummary} answers with for Done alone — the closed column, counted. */
 export interface HiddenDoneSummary {
   /** Cards sitting in the DONE column. */
   total: number;
