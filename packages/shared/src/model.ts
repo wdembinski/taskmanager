@@ -701,6 +701,13 @@ export interface Task {
    */
   workedAt?: number | null;
   /**
+   * The automation (`Automation.id`, `@shared/automation`) whose firing created or started
+   * this card — a schedule firing creates the card itself; a tracker firing stamps a ticket's
+   * own, already-existing card. Null for every card a human started. Set once, on the firing
+   * that started the card, and never cleared afterwards.
+   */
+  originAutomationId?: string | null;
+  /**
    * Epoch ms the human STOPPED this card's work — the Stop button, or the same call made
    * on one of its steps. Null once anything starts again, and null on a card nobody has
    * stopped.
