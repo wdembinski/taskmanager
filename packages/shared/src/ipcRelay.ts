@@ -174,6 +174,15 @@ export const RELAY_POLICY: {
   'ticketGraph:getLayout': 'relay',
   'ticketGraph:saveLayout': 'relay',
 
+  // F1 design: a web edit relays to the owning desktop, which is the only machine that
+  // evaluates/fires an automation (`Automation.ownerClientId`).
+  'automation:list': 'relay',
+  'automation:save': 'relay',
+  'automation:delete': 'relay',
+  'automation:setEnabled': 'relay',
+  'automation:runNow': 'relay',
+  'automation:runs': 'relay',
+
   'agentProfile:list': 'relay',
   'agentProfile:add': 'relay',
   'agentProfile:update': 'relay',
