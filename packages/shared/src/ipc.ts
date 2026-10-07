@@ -73,6 +73,7 @@ import type { TicketLinkResult } from './ticketLinks';
 import type { AppSettings } from './settings';
 import type { SyncState } from './sync';
 import type { UpdateState } from './update';
+import type { Automation, AutomationRun } from './automation';
 import type {
   SessionStat,
   UsageQuotas,
@@ -1145,6 +1146,37 @@ export interface IpcApi {
    * time — there is no per-node granularity on this channel.
    */
   'ticketGraph:saveLayout': (projectId: string, positions: TicketGraphPosition[]) => Promise<void>;
+
+  // --- Automations (F1): a run that starts because a clock said so, or a tracker did,
+  // instead of a human pressing something. See `@shared/automation` for the model. ---------
+  /** Every automation, in one call — small enough to hand over whole, like `chain:links`. */
+  'automation:list': () => Promise<Automation[]>;
+  /**
+   * Create or edit an automation, one channel for both — matching `label:save` /
+   * `milestone:save`: an `id` present edits that automation, absent creates one. Rejects with
+   * `validateAutomation`'s messages joined, since the editor calls that same validator on
+   * every keystroke and this is its one authoritative recheck.
+   */
+  'automation:save': (automation: Automation) => Promise<Automation>;
+  /** Delete an automation. Its past runs are kept (for `automation:runs`), not cascaded away. */
+  'automation:delete': (id: string) => Promise<void>;
+  /**
+   * Flip an automation on or off without opening its editor — the board's own toggle.
+   * Disabling never touches a firing already in flight; it only stops the next one.
+   */
+  'automation:setEnabled': (id: string, enabled: boolean) => Promise<Automation>;
+  /**
+   * Fire an automation right now, independent of its trigger — the editor's "Run now". Goes
+   * through the same firing path a schedule tick or a tracker diff would, so its result is a
+   * real `AutomationRun`, not a preview.
+   */
+  'automation:runNow': (id: string) => Promise<AutomationRun>;
+  /**
+   * One automation's run history, newest first, or every automation's when `automationId` is
+   * null — the log behind the editor's "recent runs" list. `limit` caps how many come back.
+   */
+  'automation:runs': (automationId: string | null, limit: number) => Promise<AutomationRun[]>;
+
   /**
    * Put a removed card back on the board, with the same id and everything hanging off it.
    * Returns the fresh board, so the caller does not have to ask for it again.
@@ -1484,6 +1516,12 @@ export interface IpcEvents {
   'label:changed': TicketLabel[];
   /** A project's milestones changed. Same shape as `label:changed`, one table over. */
   'milestone:changed': Milestone[];
+
+  /**
+   * The automation list changed — one was saved, deleted, enabled/disabled, or fired. The
+   * whole list, like `chain:changed`, so the board replaces rather than patches.
+   */
+  'automations:changed': Automation[];
 }
 
 /** Convenience: the set of valid invoke channel names. */
