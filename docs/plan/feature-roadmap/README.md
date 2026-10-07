@@ -1,9 +1,9 @@
 # Feature roadmap — autonomy, review, authoring
 
 > **Status:** proposed · **Written:** 2026-10-06
-> This folder plans the next eleven features of the Task Manager: runs that start while you
+> This folder plans the next twelve features of the Task Manager: runs that start while you
 > are away, reviewing an agent's work inside the app and from a phone, reusable skills
-> and workflows, and native sprints to work it all one slice at a time. Each one fits our layout — Electron client, `apps/web`, `apps/server`,
+> and workflows, native sprints to work it all one slice at a time, and one task panel to manage a ticket from any screen. Each one fits our layout — Electron client, `apps/web`, `apps/server`,
 > `packages/*` — and our engine (chains, gates, parks, tracker sync).
 
 ## How to use these files
@@ -44,6 +44,7 @@ Every phase ends green: `pnpm typecheck`, `pnpm test`, `pnpm build`.
 | F5 | Task composer + issue browser with one-click hand-to-agent | client · web | F7 (soft) | [F5](F5-composer-and-hand-to-agent.md) |
 | F10 | Variants: run a card N times, compare, keep one | client | F6 | [F10](F10-variants.md) |
 | F11 | Sprints: native sprints, sprint planning in the Backlog, "Current sprint" for native tickets, milestone and sprint date ranges with a "Current milestone" view | client · server · web | — | [F11](F11-sprints.md) |
+| F12 | One task panel: the board's detail pane gains the ticket fields and links, and opens from the Backlog, Timeline and Graph | client · web | — | [F12](F12-one-task-panel.md) |
 
 "Soft" means the feature works without the other one and gains a piece once it exists.
 
@@ -61,6 +62,8 @@ F9, F4      — independent
 0. **F11** before the rest, if the roadmap is to be worked one sprint at a time: it is what
    lets the board show only the current sprint's cards instead of all of them. It sits outside
    the four milestones because it serves all of them.
+0. **F12** alongside F11, and for the same reason: every later feature is worked from the
+   board, and F12 is what lets a card's milestone, sprint and links be managed there.
 1. **F1** first: it makes the app work while you are away, and reuses the most of what
    exists (tracker polling, the chain engine, the limit and sign-in parks).
 2. **F6**: the most visible gap, and self-contained.
