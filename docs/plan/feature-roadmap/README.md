@@ -43,7 +43,7 @@ Every phase ends green: `pnpm typecheck`, `pnpm test`, `pnpm build`.
 | F4 | Linear integration: a fourth tracker | client · server | — | [F4](F4-linear-integration.md) |
 | F5 | Task composer + issue browser with one-click hand-to-agent | client · web | F7 (soft) | [F5](F5-composer-and-hand-to-agent.md) |
 | F10 | Variants: run a card N times, compare, keep one | client | F6 | [F10](F10-variants.md) |
-| F11 | Sprints: native sprints, sprint planning in the Backlog, "Current sprint" for native tickets | client · server · web | — | [F11](F11-sprints.md) |
+| F11 | Sprints: native sprints, sprint planning in the Backlog, "Current sprint" for native tickets, milestone and sprint date ranges with a "Current milestone" view | client · server · web | — | [F11](F11-sprints.md) |
 
 "Soft" means the feature works without the other one and gains a piece once it exists.
 

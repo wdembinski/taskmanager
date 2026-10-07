@@ -1,6 +1,6 @@
 # F11 — Sprints
 
-> **Status:** proposed · **Where:** client + server + web · **Depends on:** — · **Unlocks:** working the roadmap one sprint at a time
+> **Status:** proposed · **Where:** client + server + web · **Depends on:** — · **Unlocks:** working the roadmap one sprint, or one milestone, at a time
 > Only the `- [ ]` checkboxes under **Tasks** become cards when this file is imported as a plan; everything else is context.
 >
 > **Layout rule for this file:** every task's description bullets sit after a **blank line**. The plan
@@ -20,7 +20,10 @@ F11 gives ticket projects their own time-boxed sprints. You plan a sprint in the
 it, and work the board with **Current sprint** on, exactly as on a JIRA board. When it ends, you
 complete it and its unfinished tickets roll into the next sprint or back to the backlog.
 Milestones keep their own job: they are the long-term goals (M1–M4), and sprints are the slices
-pulled from them.
+pulled from them. Both get a **date range**. A sprint already carries a start and an end. A
+milestone gains a start date next to its due date, so the app can tell which milestone covers
+today. The board can then show only the **current milestone**, and the timeline draws milestones
+and sprints as spans instead of single lines.
 
 ## What we have today
 
@@ -53,6 +56,15 @@ pulled from them.
 - **Milestones do not travel as rows on the cloud mirror.** `MirrorDelta`
   (`packages/protocol/src/wire.ts:26-31`) carries only `tasks` and `projects`. The web reads
   milestones through the relayed `milestone:list`, and `milestoneId` reaches it on each `Task`.
+- **A milestone is an instant, not a span.** It has only `dueAt` (`model.ts:1215-1243`,
+  `milestones` table at `store.ts:1331`). The Timeline draws it as one vertical guide-line in the
+  header lane (`ganttMarkers`, `ganttLayout.ts:342`, used at `TimelinePane.tsx:781` and drawn by
+  `GanttHeader.tsx`), and `ganttRange` (`:130`) widens the window to include each `dueAt`. The
+  date is edited inline in `MilestoneList.tsx:119-121`. Nothing in the app knows which milestone
+  is "now".
+- **The milestones table has no guarded column migration yet.** `projects` has one
+  (`PRAGMA table_info(projects)` and its `ALTER`s, `store.ts:1461-1509`); a new milestone column
+  needs the same shape.
 - **The Backlog** is `packages/ui/src/projects/BacklogTable.tsx`. Its rows come from
   `backlogRows` (`backlogView.ts`), grouped by epic. Ticket edits go through `TicketDrawer`, using
   `ticketFields.ts`'s `ticketPatchFrom`. `TicketPatch` (`model.ts:1297-1311`) lists the editable
@@ -96,6 +108,44 @@ pulled from them.
 - **`currentSprintName`** is extended to take the sprint list. On a native board it returns the
   active sprint's name, and the existing disagreement rule (JIRA and native naming different
   sprints) still returns `null`.
+
+### Date ranges
+
+- **One rule for both records,** in a new `packages/shared/src/dateRange.ts`:
+  - `rangeRefusal(startAt, endAt)` refuses a start after the end. Either end may be empty.
+  - `coversDay(range, now)` compares whole local days, so a range that ends today still covers
+    today.
+  - Sprints and milestones both call it on save, so the two can never disagree about what a
+    valid range is.
+- **`Milestone.startAt: number | null`**, added to `Milestone`, `MilestoneInput` and
+  `MilestonePatch`. A milestone with no start keeps today's behaviour: a single line on the
+  timeline, and it is never "current".
+- **The current milestone** is `currentMilestones(milestones, now)`: every **open** milestone of
+  the project with both dates whose range covers today. Overlapping milestones are all current,
+  and none is picked over the others. The status bar names one, or "2 milestones" when there are
+  several.
+- **The dates never act on their own.** A sprint still starts and completes only on a click, and
+  a milestone is never closed when its due date passes. Dates decide what is *shown*, never what
+  *happens* (the same rule as the rest of F11).
+- **Store.** `startAt INTEGER` joins `milestones` through a guarded
+  `PRAGMA table_info(milestones)` + `ALTER`, in the shape of the `projects` loop
+  (`store.ts:1461`). `addMilestone` / `updateMilestone` carry it, with `null` tested against
+  `undefined` as `dueAt` already is (`store.ts:4360`). `milestone:save` (`ipc.ts:2955`) refuses
+  an inverted range with `rangeRefusal`, and so does `sprint:save`.
+- **Board toggle.** `board.currentMilestoneOnly` (global, like `board.currentSprintOnly`) is a
+  second switch next to **Current sprint**. With both on, a card must pass both. It reuses every
+  rule of the sprint filter: a project with no current milestone keeps all its cards and says
+  "No milestone covers today in TM — showing all cards"; epics match by their own
+  `milestoneId`; steps follow their parent card; cards with no milestone concept pass through;
+  and hidden cards that need you are counted in the same "N hidden · 1 needs you" control.
+- **Timeline.** A milestone with both dates is drawn as a shaded band in the header's milestones
+  lane, with its due-date line kept at the band's right edge. Sprints get a lane of their own
+  under it, one band per sprint, the active one emphasised and closed ones muted. Both bands are
+  monochrome (memory *board-colour-budget*); the milestone's own `color` stays on its marker
+  only. `ganttRange` widens to include every start date.
+- **Planning from the milestone.** When you plan a sprint, the Backlog's unsprinted section
+  lists the current milestone's tickets first, under a quiet "From M1 — Work while away"
+  sub-header, so the next sprint is pulled from the current goal.
 
 ### Engine / store
 
@@ -208,7 +258,10 @@ Copy the real components; do not redraw them (memory *mock-the-real-components*)
 - Multi-select and drag-and-drop between sprints; moving is via the row menu and the drawer.
 - Sprints spanning several projects, and sprints on the Personal board.
 - Writing native sprints to JIRA, or importing JIRA sprints as native ones.
-- Automatic sprint start or completion on dates (it could be an F1 automation later).
+- Automatic sprint start or completion on dates, and automatically closing a milestone when its
+  due date passes (either could be an F1 automation later).
+- Requiring sprints to sit inside a milestone's range, or warning when they do not.
+- Dates on epics as a third kind of range; an epic's span stays derived from its tickets.
 
 ## Open questions
 
@@ -223,6 +276,12 @@ Copy the real components; do not redraw them (memory *mock-the-real-components*)
    Sprints scope the *view*, never the engine (the same rule as links and milestones).
 5. **How long is `jira.currentSprintOnly` written as well?** *Recommended default:* one release.
    Then drop the write; keep the read fold permanently.
+6. **Is a milestone with only a due date ever current?** *Recommended default:* no. Inferring its
+   start from the previous milestone's due date guesses at intent, and a filter built on a guess
+   hides cards for reasons nobody chose. Setting a start date is one field.
+7. **One switch or two?** *Recommended default:* two independent switches, Current sprint and
+   Current milestone, combined with AND. A three-way "All / Sprint / Milestone" picker cannot
+   express "this sprint, but only the M1 part of it".
 
 ## Tasks
 
@@ -356,3 +415,72 @@ Copy the real components; do not redraw them (memory *mock-the-real-components*)
     `docs/12-the-ticket-model.md` and glossary entries in `docs/05-glossary.md`.
   - Acceptance: the script fails when any one of start-refusal, completion-moves-status or the
     filter is mutated, and passes as written; docs mention every new channel and the setting fold.
+
+### F11 · Phase 6 — Date ranges
+
+- [ ] F11.14 Add the shared date-range rules and the milestone start date contract
+
+  - New `packages/shared/src/dateRange.ts`: `rangeRefusal`, `coversDay` and
+    `currentMilestones`. `startAt: number | null` on `Milestone`, `MilestoneInput` and
+    `MilestonePatch` (`model.ts:1215-1243`).
+  - Acceptance: `dateRange.test.ts` covers an inverted range, open ends, a range that ends
+    today, a closed milestone, a milestone with only a due date (never current), and two
+    overlapping milestones (both current). `pnpm typecheck` green across the workspace.
+
+- [ ] F11.15 Add the milestone startAt column, its migration and range validation @needs: F11.14 Add the shared date-range rules and the milestone start date contract
+
+  - A guarded `PRAGMA table_info(milestones)` + `ALTER TABLE milestones ADD COLUMN startAt
+    INTEGER` in `store.ts`, in the shape of the `projects` loop (`:1461`); `startAt` through
+    `insertMilestone`, `rowToMilestone` and `updateMilestone` (`:4360`). `milestone:save`
+    (`ipc.ts:2955`) and `sprint:save` refuse an inverted range with `rangeRefusal`.
+  - Acceptance: the electron-as-node recipe (memory *the-store-has-no-tests*): snapshot a real
+    DB, open it twice, drop the column, reopen to exercise the ALTER, and compare milestone
+    counts and every existing `dueAt`. A handler test that an inverted range comes back as a
+    readable error.
+
+- [ ] F11.16 Edit a milestone's start date in the milestone list @needs: F11.15 Add the milestone startAt column, its migration and range validation
+
+  - A **Starts** date input before the due date in `MilestoneList.tsx` (`:119`), saved on blur
+    like `dueAt`; an inverted range shows the refusal inline and keeps the old value.
+  - Acceptance: `pnpm build` green; the shared component renders unchanged on the web; a
+    headless smoke check (memory *verify-electron-app*) sets and clears a start date on a
+    seeded milestone.
+
+- [ ] F11.17 Draw milestone and sprint date ranges as bands on the timeline @needs: F11.14 Add the shared date-range rules and the milestone start date contract, F11.7 Add the sprint IPC channels, relay classification and the sprint:changed event
+
+  - `ganttMilestoneBands` and `ganttSprintBands` in `ganttLayout.ts` next to `ganttMarkers`
+    (`:342`); `ganttRange` (`:130`) widens to every start date. `GanttHeader.tsx` draws the
+    milestone band behind its marker and a sprint lane under it; `TimelinePane.tsx` loads
+    `sprint:list` and refreshes on `sprint:changed`.
+  - Acceptance: `ganttLayout.test.ts` cases for a ranged milestone, a due-only milestone (still
+    a marker, no band), a sprint with no end (no band), an active versus a closed sprint, and the
+    widened window. Monochrome bands only (memory *board-colour-budget*).
+
+- [ ] F11.18 Add the Current milestone toggle to both boards @needs: F11.14 Add the shared date-range rules and the milestone start date contract, F11.15 Add the milestone startAt column, its migration and range validation, F11.11 Apply the Current sprint toggle to native tickets on the board, F11.12 Bring sprint planning and the toggle to the web board
+
+  - `board.currentMilestoneOnly` in `packages/shared/src/settings.ts` beside
+    `currentSprintOnly`; `currentMilestoneCards` in `packages/ui/src/board/currentSprint.ts`,
+    composed with the sprint filter; the switch in `MyTasks.tsx` and the web
+    `BoardToolbar.tsx`, drawn when the scope holds a project with a dated milestone; the "no
+    milestone covers today" line; the status bar naming the current milestone.
+  - Acceptance: selector tests that the two filters combine with AND; that a project with no
+    current milestone keeps every card; that an epic matches by its own `milestoneId`, steps
+    follow their parent and JIRA or ad-hoc cards pass through; and that hidden cards needing you
+    are counted once even when both filters hide them. The settings mirror test stays green
+    (`board` is already a global key).
+
+- [ ] F11.19 List the current milestone's tickets first when planning a sprint @needs: F11.9 Add sprint sections with Start and Complete to the Backlog, F11.14 Add the shared date-range rules and the milestone start date contract
+
+  - In `sprintSections.ts`, the unsprinted section orders the current milestones' tickets first
+    under a "From <milestone>" sub-header; `BacklogTable.tsx` renders it.
+  - Acceptance: `sprintSections.test.ts` cases for no current milestone (order unchanged), one,
+    and two overlapping ones; done tickets never appear in the suggestion.
+
+- [ ] F11.20 Verify date ranges end to end and document them @needs: F11.16 Edit a milestone's start date in the milestone list, F11.17 Draw milestone and sprint date ranges as bands on the timeline, F11.18 Add the Current milestone toggle to both boards, F11.19 List the current milestone's tickets first when planning a sprint
+
+  - Extend `scripts/verify-sprints.mjs`: date a milestone across today, turn on Current
+    milestone, and check which cards survive; move the dates so nothing covers today and check
+    every card is back. Add the date-range rules to the "Sprints" section of
+    `docs/12-the-ticket-model.md` and `docs/05-glossary.md`.
+  - Acceptance: the script fails when the range check, the no-current-milestone fallback or the
+    AND composition is mutated, and passes as written.
