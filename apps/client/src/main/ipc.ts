@@ -3009,6 +3009,26 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     store.saveTicketGraphLayout(projectId, positions);
   });
 
+  // --- Automations (F1) — model + contract only so far; the real handlers land in F1.11. ---
+  handle('automation:list', async () => {
+    throw new Error('automation:list is not implemented yet (F1.11)');
+  });
+  handle('automation:save', async () => {
+    throw new Error('automation:save is not implemented yet (F1.11)');
+  });
+  handle('automation:delete', async () => {
+    throw new Error('automation:delete is not implemented yet (F1.11)');
+  });
+  handle('automation:setEnabled', async () => {
+    throw new Error('automation:setEnabled is not implemented yet (F1.11)');
+  });
+  handle('automation:runNow', async () => {
+    throw new Error('automation:runNow is not implemented yet (F1.11)');
+  });
+  handle('automation:runs', async () => {
+    throw new Error('automation:runs is not implemented yet (F1.11)');
+  });
+
   // --- The chain of execution ------------------------------------------------
   /** Push the whole link list at the board. Returns it, so handlers can also reply with it. */
   function pushChainLinks(): TaskLink[] {
