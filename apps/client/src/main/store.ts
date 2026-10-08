@@ -197,6 +197,9 @@ interface TaskRow {
   assigneeId: string | null;
   /** The reporter's `people` id. Same treatment as `assigneeId`. */
   reporterId: string | null;
+  /** The automation that created or started this card; NULL = a human started it. See
+   *  `Task.originAutomationId`. */
+  originAutomationId: string | null;
 }
 
 /** A project row as stored; `writeBackPlan` is a 0/1 INTEGER (SQLite has no boolean). */
@@ -358,6 +361,7 @@ export interface Store {
         | 'dueAt'
         | 'assigneeId'
         | 'reporterId'
+        | 'originAutomationId'
       >
     >,
   ): Task | undefined;
@@ -1117,6 +1121,10 @@ export function createStore(dbPath: string): Store {
       dueAt                  INTEGER,
       assigneeId             TEXT,
       reporterId             TEXT,
+      -- The automation (F1) whose firing created or started this card. NULL = a human
+      -- started it. Plain TEXT with no foreign key, exactly as parentTaskId/epicTaskId
+      -- already are, and never cleared once set — see Task.originAutomationId.
+      originAutomationId     TEXT,
       -- Same trigger-touched column as projects.updatedAt above, for the same reason.
       updatedAt              INTEGER
     );
@@ -1438,6 +1446,48 @@ export function createStore(dbPath: string): Store {
       result       TEXT,
       resultSentAt INTEGER
     );
+    -- A user-authored automation (F1): a rule that starts a run without a human pressing
+    -- anything. A NEW table, so nothing to migrate. (No backticks in this block: it is
+    -- inside a template literal.)
+    --
+    -- Stored as one JSON blob (data, the Automation shape from @shared/automation) rather
+    -- than flattened columns, unlike every table above it — that model is still growing by
+    -- task on the same plan, and a blob means a later field needs no migration here at
+    -- all. enabled and nextRunAt are promoted to real columns anyway because they are the
+    -- two things the clock (a later task) must query without parsing every row's JSON
+    -- first.
+    CREATE TABLE IF NOT EXISTS automations (
+      id        TEXT PRIMARY KEY,
+      data      TEXT NOT NULL,
+      enabled   INTEGER NOT NULL,
+      nextRunAt INTEGER,
+      updatedAt INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_automations_due ON automations(enabled, nextRunAt);
+    -- One receipt per firing (AutomationRun, @shared/automation). A NEW table, so nothing
+    -- to migrate.
+    --
+    -- UNIQUE(automationId, occurrenceKey) is what makes a firing idempotent: a re-armed
+    -- timer catching up on an occurrence it already fired, or a re-synced tracker seeing the
+    -- same event twice, inserts the same key twice and the second write is refused rather
+    -- than double-firing — reserveAutomationRun (a later task) is built on that refusal,
+    -- not on a SELECT-then-INSERT race.
+    CREATE TABLE IF NOT EXISTS automation_runs (
+      id            TEXT PRIMARY KEY,
+      automationId  TEXT NOT NULL,
+      revision      INTEGER NOT NULL,
+      occurrenceKey TEXT NOT NULL,
+      status        TEXT NOT NULL,
+      kind          TEXT NOT NULL,
+      taskId        TEXT,
+      runId         TEXT,
+      refusal       TEXT,
+      skippedCount  INTEGER NOT NULL DEFAULT 0,
+      note          TEXT,
+      at            INTEGER NOT NULL,
+      UNIQUE (automationId, occurrenceKey)
+    );
+    CREATE INDEX IF NOT EXISTS idx_automation_runs_automation ON automation_runs(automationId, at);
   `);
 
   // Migrate ledgers written before the relay stored results. Every existing row is one of
@@ -1821,6 +1871,12 @@ export function createStore(dbPath: string): Store {
     ['dueAt', 'INTEGER'],
     ['assigneeId', 'TEXT'],
     ['reporterId', 'TEXT'],
+    // The automation (F1) that created or started this card. NULL on every pre-existing
+    // row = "a human started it", which is true of everything already there — and it is
+    // deliberately NOT backfilled, the same call `stoppedAt` makes above: no automation
+    // ran before this column existed, so a guess would credit one for a card it never
+    // touched.
+    ['originAutomationId', 'TEXT'],
   ] as Array<[string, string]>) {
     if (!taskColumns.some((c) => c.name === name)) {
       db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
@@ -2065,7 +2121,7 @@ export function createStore(dbPath: string): Store {
         projectTagId, agentProjectId, agentMode, agentModel, agentPlanningModel,
         agentPlan, agentBranch, planRound, landedAt, chainLandedAt, workedAt, stoppedAt, autoRelease, autoCreatePr, autoIntegrate,
         ticketKey, ticketNumber, issueType, epicTaskId, milestoneId, labels,
-        storyPoints, estimateDays, startAt, dueAt, assigneeId, reporterId)
+        storyPoints, estimateDays, startAt, dueAt, assigneeId, reporterId, originAutomationId)
      VALUES
        (@id, @projectId, @phase, @title, @status, @sessionId, @order, @source, @dependsOn, @isContract, @isScaffold, @type,
         @parentTaskId, @description, @statusNote, @statusNoteAt,
@@ -2085,7 +2141,7 @@ export function createStore(dbPath: string): Store {
         -- that lost its epic or its due date between the form and the row would be the
         -- same bug wearing a different name.
         @ticketKey, @ticketNumber, @issueType, @epicTaskId, @milestoneId, @labels,
-        @storyPoints, @estimateDays, @startAt, @dueAt, @assigneeId, @reporterId)`,
+        @storyPoints, @estimateDays, @startAt, @dueAt, @assigneeId, @reporterId, @originAutomationId)`,
   );
   const deleteTask = db.prepare(`DELETE FROM tasks WHERE id = ?`);
   // Native tickets. No foreign key backs epicTaskId (see the tasks table above), so deleting
@@ -3063,6 +3119,7 @@ export function createStore(dbPath: string): Store {
       dueAt: task.dueAt ?? null,
       assigneeId: task.assigneeId ?? null,
       reporterId: task.reporterId ?? null,
+      originAutomationId: task.originAutomationId ?? null,
     };
   }
 
@@ -3145,6 +3202,7 @@ export function createStore(dbPath: string): Store {
       dueAt: r.dueAt ?? null,
       assigneeId: r.assigneeId ?? null,
       reporterId: r.reporterId ?? null,
+      originAutomationId: r.originAutomationId ?? null,
     };
   }
 
@@ -3459,7 +3517,8 @@ export function createStore(dbPath: string): Store {
        autoIntegrate = @autoIntegrate, ticketKey = @ticketKey, ticketNumber = @ticketNumber,
        issueType = @issueType, epicTaskId = @epicTaskId, milestoneId = @milestoneId,
        labels = @labels, storyPoints = @storyPoints, estimateDays = @estimateDays,
-       startAt = @startAt, dueAt = @dueAt, assigneeId = @assigneeId, reporterId = @reporterId
+       startAt = @startAt, dueAt = @dueAt, assigneeId = @assigneeId, reporterId = @reporterId,
+       originAutomationId = @originAutomationId
      WHERE id = @id`,
   );
   // See `upsertCloudTask`: keeps a project's ticket allocator ahead of any number a pulled
@@ -3754,6 +3813,10 @@ export function createStore(dbPath: string): Store {
         'dueAt',
         'assigneeId',
         'reporterId',
+        // Set once, by the automation runner (a later task) when its firing creates or
+        // claims the card. Patchable rather than insert-only because a tracker firing's
+        // card already exists — stamping it happens through this method, not a re-insert.
+        'originAutomationId',
       ] as const;
       for (const col of columns) {
         const value = (patch as Record<string, unknown>)[col];
