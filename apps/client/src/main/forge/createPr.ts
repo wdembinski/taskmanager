@@ -35,6 +35,7 @@ import { forgeName, mrIsSettled, mrNoun, mrRef } from '@shared/mergeRequest';
 import type { Project, Task } from '@shared/model';
 import type { AppSettings } from '@shared/settings';
 import { sanitizeToken } from '@shared/secretToken';
+import { prSubject, wrapHanging, wrapPlainText } from '@shared/commitMessage';
 import { commitsAhead, hasCommits, pushBranch, remoteUrl } from '../git';
 import { hostFor } from '../exec';
 import { GitHubClient } from '../github/githubClient';
@@ -229,7 +230,7 @@ export async function openPullRequest(
   }
 
   const title = prTitle(owner);
-  const body = prBody(owner, provider);
+  const body = prBody(owner, provider, ahead);
   const created =
     provider === 'github'
       ? await createOnGitHub(settings, clean, remote.path, live.branch, live.base, title, body)
@@ -274,24 +275,31 @@ function tokenizedUrl(host: string, path: string, provider: ForgeProvider, token
 }
 
 /**
- * The title: the card's own, with its tracker key in front when it has one.
- *
- * The key is what makes the pull request findable from the ticket and — on GitLab — what
- * `discoverIssueKeys` matches back to this card on the next sync, so it is worth the
- * characters. Not repeated when the title already opens with it, which is what a card
- * created from a ticket usually looks like.
+ * The title: a Conventional Commits subject derived from the card, CONTRIBUTING.md §1's
+ * shape — `type: summary`, 50 characters or fewer — rather than the card's own free-form
+ * title. `@shared/commitMessage`'s `prSubject` does the actual work (and the type inference
+ * it shares with the branch name), so this is just the `Task` fields it needs.
  */
-export function prTitle(task: Pick<Task, 'title' | 'externalKey' | 'ticketKey'>): string {
-  const title = task.title.trim();
-  const key = (task.ticketKey ?? task.externalKey ?? '').trim();
-  // A GitHub issue's key is `owner/repo#12`, which is a reference and not a prefix anyone
-  // wants in a title — it is put in the BODY instead, as a closing reference.
-  if (!key || key.includes('#') || title.toUpperCase().startsWith(key.toUpperCase())) return title;
-  return `${key}: ${title}`;
+export function prTitle(task: Pick<Task, 'title' | 'type' | 'issueType' | 'externalType'>): string {
+  return prSubject({
+    title: task.title,
+    taskType: task.type,
+    issueType: task.issueType,
+    externalType: task.externalType,
+  });
 }
 
 /**
- * The body: the card's description, plus a closing reference when the card IS a GitHub issue.
+ * The body: the card's description reflowed into CONTRIBUTING.md §2's plain-text, 72-column
+ * shape, ending in a `Ticket ID:` trailer (when the card has a key) and a `Tested:` one —
+ * plus a closing reference when the card IS a GitHub issue.
+ *
+ * `Tested:` cannot say what a human would — there is no "what I ran" to ask an automated PR
+ * for — so it names where the real answer already lives: every commit CONTRIBUTING.md and
+ * `CLAUDE.md` require to carry its own, honestly, line by line. `aheadCount` is the same
+ * `commitsAhead` figure {@link openPullRequest} already computed to decide there was
+ * something to push, passed in rather than re-read so this stays a pure function of its
+ * arguments.
  *
  * `Closes owner/repo#12` earns its place twice over — GitHub closes the issue when the PR
  * lands, and `prMatch.closingReferences` reads it straight back on the next sync, so the PR
@@ -300,8 +308,12 @@ export function prTitle(task: Pick<Task, 'title' | 'externalKey' | 'ticketKey'>)
  * GitLab is not a shape worth inventing a reference for.
  */
 export function prBody(
-  task: Pick<Task, 'externalDescription' | 'description' | 'externalSource' | 'externalKey'>,
+  task: Pick<
+    Task,
+    'externalDescription' | 'description' | 'externalSource' | 'externalKey' | 'ticketKey'
+  >,
   provider: ForgeProvider,
+  aheadCount: number,
 ): string {
   // `externalDescription` FIRST, and it is not the obviously-named field: that is the one a
   // card's brief actually lives in — what the detail pane edits, what the agent's prompt
@@ -309,11 +321,24 @@ export function prBody(
   // never opens its own pull request, so it is only a fallback for the shape where a card
   // somehow carries one.
   const description = (task.externalDescription ?? task.description ?? '').trim();
-  const closes =
-    provider === 'github' && task.externalSource === 'github' && task.externalKey?.includes('#')
-      ? `Closes ${task.externalKey.trim()}`
-      : '';
-  return [description, closes].filter(Boolean).join('\n\n');
+  const wrapped = description ? wrapPlainText(description) : '';
+
+  const key = (task.ticketKey ?? task.externalKey ?? '').trim();
+  // A GitHub issue's key is `owner/repo#12`, which is a closing reference, not a ticket id.
+  const isGitHubIssueRef =
+    provider === 'github' && task.externalSource === 'github' && key.includes('#');
+  const ticketId = key && !isGitHubIssueRef ? `Ticket ID: ${key}` : '';
+  const closes = isGitHubIssueRef ? `Closes ${key}` : '';
+  const commits = aheadCount === 1 ? 'commit' : 'commits';
+  const tested = wrapHanging(
+    `Tested: see this branch's ${aheadCount} ${commits}, each already carrying its own ` +
+      `test trailer per CONTRIBUTING.md.`,
+    72,
+    8,
+  );
+
+  const trailers = [ticketId, closes, tested].filter(Boolean).join('\n');
+  return [wrapped, trailers].filter(Boolean).join('\n\n');
 }
 
 /**
