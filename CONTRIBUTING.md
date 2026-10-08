@@ -41,8 +41,9 @@ See §4.
 
 A pull request's or merge request's **title** is the same subject line — this
 section applies to it verbatim whenever you type one yourself. (The **Create PR**
-button fills the title from the card instead, which is a deliberate, separate
-convention — see `prTitle` in `apps/client/src/main/forge/createPr.ts`.)
+button derives one from the card automatically — `prTitle` in
+`apps/client/src/main/forge/createPr.ts` — following this section too, not a
+separate convention of its own.)
 
 - **50 characters maximum, for the whole line** — `type`, parentheses, scope,
   colon and summary all counted. This is tighter than it sounds; it is a real
@@ -74,8 +75,11 @@ we are pre-1.0.
 
 A pull request's or merge request's **description** follows this section
 verbatim too, when you write one by hand: same wrapping, same trailers, same
-alignment. (Again, the **Create PR** button is the exception — it fills the
-description from the card's own, via `prBody` in the same file.)
+alignment. (Again, the **Create PR** button derives one from the card
+automatically, via `prBody` in the same file — same wrapping, same trailers.
+Its one necessary difference is the `Tested:` line: there is no "what I ran"
+to ask an automated PR for, so it points at the branch's own commits, each of
+which already carries a true one.)
 
 The full shape of a commit message:
 
