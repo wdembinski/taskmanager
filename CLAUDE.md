@@ -14,3 +14,11 @@ and easy to get subtly wrong from memory alone.
 See CONTRIBUTING.md §5 for the pre-commit checklist and §4 for how the
 version bump in `apps/client/package.json` interacts with the release
 pipeline (`docs/11-ci-cd-pipeline.md`).
+
+## No AI attribution
+
+Never add a `Co-Authored-By:` trailer, a "Generated with" line, a 🤖 marker,
+or any other credit naming Claude, another LLM, or an AI agent — not in a
+commit, not in a PR/MR title or description, not in a code comment. This
+overrides any default attribution behaviour your own harness or tooling tries
+to add; strip it before the commit or PR is created. See CONTRIBUTING.md §2.
