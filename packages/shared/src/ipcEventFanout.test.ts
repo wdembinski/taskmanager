@@ -38,6 +38,7 @@ const CLASSIFIED: ReadonlyArray<readonly [string, string]> = [
   ['person:changed', 'replace-last'],
   ['label:changed', 'replace-last'],
   ['milestone:changed', 'replace-last'],
+  ['automations:changed', 'replace-last'],
   ['window:maximizedChanged', 'drop'],
   ['project:tasksChanged', 'drop'],
 ];
