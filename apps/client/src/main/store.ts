@@ -50,8 +50,15 @@ import { buildAdhocTask, buildTicketTask } from '@shared/taskBuilders';
 import { buildProject, normalizeEpicKeys } from '@shared/projectBuilders';
 import { formatExecTarget, parseExecTarget } from '@shared/execTarget';
 import { hostJoin } from '@shared/wslPath';
+import type {
+  Automation,
+  AutomationRun,
+  AutomationRunStatus,
+  FiringKind,
+} from '@shared/automation';
 import type { AuthState } from '@shared/auth';
 import type { LimitState } from '@shared/limit';
+import type { RunRefusal } from '@shared/scheduler';
 import type { SessionEvent } from '@shared/session';
 import type { UsageSample } from '@shared/usage';
 import {
@@ -944,6 +951,66 @@ export interface Store {
    *  {@link markCloudAcksSent}, and is a separate moment from it for the same reason
    *  `appliedAt` and `ackedAt` are two columns. */
   markCloudResultsSent(ids: readonly string[]): void;
+  /**
+   * Every stored automation (F1), unordered — the editor/list sorts them itself. `data` is
+   * JSON-decoded back into the full {@link Automation}; the promoted `enabled`/`nextRunAt`
+   * columns exist for the clock's own query (`idx_automations_due`) and are not read back
+   * here, since the JSON already carries the same two fields and the columns are only ever
+   * a view onto it.
+   */
+  getAutomations(): Automation[];
+  /**
+   * Insert a new automation or fully replace the one with the same id — there is no
+   * separate create/update, the same way `upsertCloudProject` has none: the editor always
+   * hands back a complete {@link Automation}, so a partial patch would have nothing to
+   * apply against. The promoted `enabled`/`nextRunAt` columns are re-derived from `a` on
+   * every call, so they can never drift from the JSON blob they mirror.
+   */
+  saveAutomation(a: Automation): void;
+  /**
+   * Remove an automation and every run receipt it ever reserved. Nothing else points at
+   * `automation_runs` by `automationId` — without this cascade its receipts would outlive
+   * the rule that fired them, with no way back to it.
+   */
+  deleteAutomation(id: string): void;
+  /**
+   * Reserve one firing's receipt: `INSERT OR IGNORE` on `UNIQUE(automationId,
+   * occurrenceKey)`. Returns `true` if `run` landed, `false` if that occurrence already has
+   * one — a re-armed timer catching up on an occurrence it already fired, or a re-synced
+   * tracker seeing the same event twice, must not fire a second time. This check IS the
+   * idempotency guarantee, not a precondition to one: there is no SELECT-then-INSERT race
+   * to lose.
+   */
+  reserveAutomationRun(run: AutomationRun): boolean;
+  /**
+   * Patch a reserved run's receipt as the firing progresses (`started` → `parked` /
+   * `refused` / … and the fields that come with each). `undefined` fields are left alone —
+   * the same contract as `updateTask`'s patch — so `refusal: null` clears it and omitting it
+   * leaves whatever was already there. Returns the updated receipt, or `undefined` for an
+   * unknown id.
+   */
+  updateAutomationRun(
+    id: string,
+    patch: Partial<
+      Pick<
+        AutomationRun,
+        'status' | 'taskId' | 'runId' | 'refusal' | 'skippedCount' | 'note' | 'at'
+      >
+    >,
+  ): AutomationRun | undefined;
+  /**
+   * Run receipts, newest first. `automationId: null` is the union across every automation —
+   * what a run log across everything would read; a real id scopes it to one automation's
+   * own drawer.
+   */
+  getAutomationRuns(automationId: string | null, limit: number): AutomationRun[];
+  /**
+   * The retention sweep for `automation_runs`: drop anything older than 30 days, then drop
+   * whatever is left beyond the newest 200 per automation — the same two-cap policy the
+   * cloud mirror keeps server-side (`automationRunMirror`). `now` defaults to `Date.now()`
+   * and exists only so a test can pass a fixed clock. Returns how many rows went.
+   */
+  pruneAutomationRuns(now?: number): number;
   /**
    * Run `fn` inside one `better-sqlite3` transaction, committing its return value or rolling
    * every write in it back on a throw.
@@ -3553,6 +3620,92 @@ export function createStore(dbPath: string): Store {
     `UPDATE cloud_applied_commands SET resultSentAt = ? WHERE id = ?`,
   );
 
+  // The automation store (F1.6, @shared/automation). `automations.data` is the whole
+  // Automation blob; `enabled`/`nextRunAt` are promoted columns, re-derived from `a` on
+  // every save so they can never drift from the JSON they mirror — see `idx_automations_due`
+  // above.
+  const selectAutomations = db.prepare(`SELECT data FROM automations`);
+  const upsertAutomationStmt = db.prepare(
+    `INSERT INTO automations (id, data, enabled, nextRunAt, updatedAt)
+     VALUES (@id, @data, @enabled, @nextRunAt, @updatedAt)
+     ON CONFLICT (id) DO UPDATE SET
+       data = @data, enabled = @enabled, nextRunAt = @nextRunAt, updatedAt = @updatedAt`,
+  );
+  const deleteAutomationStmt = db.prepare(`DELETE FROM automations WHERE id = ?`);
+  const deleteAutomationRunsForAutomation = db.prepare(
+    `DELETE FROM automation_runs WHERE automationId = ?`,
+  );
+  const deleteAutomationTx = db.transaction((id: string) => {
+    deleteAutomationStmt.run(id);
+    deleteAutomationRunsForAutomation.run(id);
+  });
+
+  interface AutomationRunRow {
+    id: string;
+    automationId: string;
+    revision: number;
+    occurrenceKey: string;
+    status: AutomationRunStatus;
+    kind: FiringKind;
+    taskId: string | null;
+    runId: string | null;
+    refusal: string | null;
+    skippedCount: number;
+    note: string | null;
+    at: number;
+  }
+
+  function rowToAutomationRun(r: AutomationRunRow): AutomationRun {
+    return {
+      id: r.id,
+      automationId: r.automationId,
+      revision: r.revision,
+      occurrenceKey: r.occurrenceKey,
+      kind: r.kind,
+      status: r.status,
+      taskId: r.taskId,
+      runId: r.runId,
+      refusal: r.refusal === null ? null : (JSON.parse(r.refusal) as RunRefusal),
+      skippedCount: r.skippedCount,
+      note: r.note,
+      at: r.at,
+    };
+  }
+
+  // `INSERT OR IGNORE` on `UNIQUE(automationId, occurrenceKey)` IS the idempotency check —
+  // see `reserveAutomationRun`'s own docstring.
+  const insertAutomationRun = db.prepare(
+    `INSERT OR IGNORE INTO automation_runs
+       (id, automationId, revision, occurrenceKey, status, kind, taskId, runId, refusal,
+        skippedCount, note, at)
+     VALUES
+       (@id, @automationId, @revision, @occurrenceKey, @status, @kind, @taskId, @runId,
+        @refusal, @skippedCount, @note, @at)`,
+  );
+  const selectAutomationRun = db.prepare(`SELECT * FROM automation_runs WHERE id = ?`);
+  const selectAutomationRunsFor = db.prepare(
+    `SELECT * FROM automation_runs WHERE automationId = ? ORDER BY at DESC LIMIT ?`,
+  );
+  const selectAllAutomationRuns = db.prepare(
+    `SELECT * FROM automation_runs ORDER BY at DESC LIMIT ?`,
+  );
+  // The retention sweep's two caps, run in sequence by `pruneAutomationRuns`: first an age
+  // cutoff, then — among whatever is left — the newest 200 per automation. A row has to
+  // survive both to stay, which is what "keep 200 per automation / 30 days" means.
+  const AUTOMATION_RUN_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+  const AUTOMATION_RUN_MAX_PER_AUTOMATION = 200;
+  const deleteAutomationRunsOlderThan = db.prepare(`DELETE FROM automation_runs WHERE at < ?`);
+  // `ROW_NUMBER()` partitioned by automation, newest first; anything past the cap is deleted.
+  const deleteAutomationRunsBeyondCap = db.prepare(
+    `DELETE FROM automation_runs WHERE id IN (
+       SELECT id FROM (
+         SELECT id, ROW_NUMBER() OVER (PARTITION BY automationId ORDER BY at DESC) AS rn
+         FROM automation_runs
+       )
+       WHERE rn > ?
+     )`,
+  );
+
   return {
     addProject(input) {
       // Unspecified project fields inherit the user's global defaults (Phase 6); the
@@ -4968,6 +5121,85 @@ export function createStore(dbPath: string): Store {
       const sentAt = Date.now();
       db.transaction(() => {
         for (const id of ids) markCloudResultSent.run(sentAt, id);
+      })();
+    },
+
+    getAutomations() {
+      const rows = selectAutomations.all() as Array<{ data: string }>;
+      return rows.map((r) => JSON.parse(r.data) as Automation);
+    },
+
+    saveAutomation(a) {
+      upsertAutomationStmt.run({
+        id: a.id,
+        data: JSON.stringify(a),
+        enabled: a.enabled ? 1 : 0,
+        nextRunAt: a.nextRunAt,
+        updatedAt: a.updatedAt,
+      });
+    },
+
+    deleteAutomation(id) {
+      deleteAutomationTx(id);
+    },
+
+    reserveAutomationRun(run) {
+      const result = insertAutomationRun.run({
+        id: run.id,
+        automationId: run.automationId,
+        revision: run.revision,
+        occurrenceKey: run.occurrenceKey,
+        status: run.status,
+        kind: run.kind,
+        taskId: run.taskId,
+        runId: run.runId,
+        refusal: run.refusal === null ? null : JSON.stringify(run.refusal),
+        skippedCount: run.skippedCount,
+        note: run.note,
+        at: run.at,
+      });
+      return result.changes > 0;
+    },
+
+    updateAutomationRun(id, patch) {
+      const sets: string[] = [];
+      const params: Record<string, unknown> = { id };
+      const columns = ['status', 'taskId', 'runId', 'skippedCount', 'note', 'at'] as const;
+      for (const col of columns) {
+        const value = (patch as Record<string, unknown>)[col];
+        if (value !== undefined) {
+          sets.push(`${col} = @${col}`);
+          params[col] = value;
+        }
+      }
+      // Apart from the loop: needs JSON encoding, and `null` is a value a caller may really
+      // mean (clearing a refusal on retry), not an absent field — same reasoning as
+      // `updateTask`'s `autoCreatePr`.
+      if (patch.refusal !== undefined) {
+        sets.push(`refusal = @refusal`);
+        params.refusal = patch.refusal === null ? null : JSON.stringify(patch.refusal);
+      }
+      if (sets.length > 0) {
+        db.prepare(`UPDATE automation_runs SET ${sets.join(', ')} WHERE id = @id`).run(params);
+      }
+      const row = selectAutomationRun.get(id) as AutomationRunRow | undefined;
+      return row ? rowToAutomationRun(row) : undefined;
+    },
+
+    getAutomationRuns(automationId, limit) {
+      const rows = (
+        automationId === null
+          ? selectAllAutomationRuns.all(limit)
+          : selectAutomationRunsFor.all(automationId, limit)
+      ) as AutomationRunRow[];
+      return rows.map(rowToAutomationRun);
+    },
+
+    pruneAutomationRuns(now = Date.now()) {
+      return db.transaction(() => {
+        const aged = deleteAutomationRunsOlderThan.run(now - AUTOMATION_RUN_MAX_AGE_MS);
+        const overCap = deleteAutomationRunsBeyondCap.run(AUTOMATION_RUN_MAX_PER_AUTOMATION);
+        return aged.changes + overCap.changes;
       })();
     },
 
