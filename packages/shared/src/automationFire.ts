@@ -52,13 +52,20 @@
  *   edge case alone.
  */
 import type { ScheduleShape } from './automation';
-import { nextOccurrence } from './automationSchedule';
+import { nextOccurrence, occurrencesBetween } from './automationSchedule';
 
 /** On-time tolerance: late by this much or less is `'scheduled'`, not a catch-up. */
 export const DEFAULT_GRACE_MS = 10 * 60_000;
 
 /** How late a non-`hours` schedule may be and still get one `'catch-up'` fire. */
 export const DEFAULT_CATCH_UP_MS = 24 * 60 * 60_000;
+
+/**
+ * The window `occurrenceAt` is searched over, counted back from `now` — see the module
+ * header's "10,000-occurrence cap" section. 8 days comfortably exceeds every shape's own
+ * cadence (the longest is `weekly`), so the window always contains the true latest occurrence.
+ */
+const OCCURRENCE_AT_WINDOW_MS = 8 * 24 * 60 * 60_000;
 
 /**
  * What `decideFire` resolved a missed (or on-time) occurrence to. `'hours'` shapes never
@@ -93,8 +100,40 @@ export function decideFire(input: {
   graceMs?: number;
   catchUpMs?: number;
 }): FireDecision | null {
-  throw new Error(
-    `decideFire is not implemented yet (F1.3): due=${input.due}, now=${input.now}, ` +
-      `shape=${JSON.stringify(input.shape)}, tz=${input.tz}`,
-  );
+  const { due, now, shape, tz } = input;
+  const graceMs = input.graceMs ?? DEFAULT_GRACE_MS;
+  const catchUpMs = input.catchUpMs ?? DEFAULT_CATCH_UP_MS;
+
+  if (due > now) {
+    return null;
+  }
+
+  // Bounded window, not the (potentially capped) full range — see the module header.
+  const windowFrom = Math.max(due, now - OCCURRENCE_AT_WINDOW_MS);
+  const windowOccurrences = occurrencesBetween(shape, windowFrom, now + 1, tz);
+  const occurrenceAt =
+    windowOccurrences.length > 0 ? windowOccurrences[windowOccurrences.length - 1] : due;
+
+  // The full `(due, now]` range, inheriting the 10,000 cap as a documented lower bound.
+  const missedAfterDue = occurrencesBetween(shape, due + 1, now + 1, tz);
+  const missedCount = 1 + missedAfterDue.length;
+
+  const lateness = now - occurrenceAt;
+
+  let kind: FireDecisionKind;
+  let skippedCount: number;
+  if (lateness <= graceMs) {
+    kind = 'scheduled';
+    skippedCount = missedCount - 1;
+  } else if (shape.type !== 'hours' && lateness <= catchUpMs) {
+    kind = 'catch-up';
+    skippedCount = missedCount - 1;
+  } else {
+    kind = 'skip';
+    skippedCount = missedCount;
+  }
+
+  const nextRunAt = nextOccurrence(shape, Math.max(occurrenceAt, now), tz);
+
+  return { kind, occurrenceAt, skippedCount, nextRunAt };
 }
