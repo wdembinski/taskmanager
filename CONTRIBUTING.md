@@ -117,8 +117,13 @@ Rules, all of them load-bearing:
   commands you ran and what you clicked. "Tested: yes" is not an answer; neither
   is a description of testing you did not do. If a change genuinely could not be
   tested (a docs edit, say), say that in one clause and say why.
-- **`Co-Authored-By:`** — goes last, in the same trailer block, when you paired
-  with an agent.
+- **No AI attribution, ever.** Do not add a `Co-Authored-By:` trailer, a
+  "Generated with" line, a 🤖 marker, or any other credit naming Claude, another
+  LLM, or an AI agent — in a commit, in a PR/MR title or description, or in a
+  code comment. This repository's commits and PRs are authored by the people on
+  this project, full stop, regardless of what wrote the diff or drove the
+  terminal. If a tool you are running appends one of these automatically,
+  strip it before the commit or PR is created.
 
 ---
 
@@ -141,7 +146,6 @@ Ticket ID: TM-412
 Tested: pnpm typecheck, pnpm test (168 green), then pnpm dev and
         toggled the switch at all three levels, confirming the
         card falls back to the project when set to inherit.
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 ```
 
 A fix, no ticket, with a list in the description:
