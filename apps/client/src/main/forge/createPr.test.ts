@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { rowFor } from './createPr';
+import { prBody, prTitle, rowFor } from './createPr';
 
 /** What both forges' creates boil down to — the shape `rowFor` reads from. */
 const created = (over: Record<string, unknown> = {}) => ({
@@ -42,5 +42,92 @@ describe('rowFor', () => {
     expect(row.pipelineStatus).toBe('unknown');
     expect(row.approvalsRequired).toBeNull();
     expect(row.pipelineStages).toEqual([]);
+  });
+});
+
+// CONTRIBUTING.md §1/§2 govern a hand-written pull request's title and description, and —
+// since the carve-out CONTRIBUTING.md used to document for this button was removed — an
+// automated one too. `prTitle`/`prBody` just feed a card's own fields to
+// `@shared/commitMessage`, so these tests are about the wiring (which `Task` fields reach
+// it, the Ticket ID/Closes/Tested trailers), not the wrapping itself — that is
+// `commitMessage.test.ts`'s job.
+describe('prTitle', () => {
+  it('is a Conventional Commits subject, not the card title verbatim', () => {
+    expect(prTitle({ title: 'Add the merge switch on cards', type: 'feature' })).toBe(
+      'feat: add the merge switch on cards',
+    );
+  });
+
+  it('infers from issueType when there is no internal TaskType', () => {
+    expect(
+      prTitle({ title: 'Flaky checkout step', type: null, issueType: 'bug', externalType: null }),
+    ).toBe('fix: flaky checkout step');
+  });
+});
+
+describe('prBody', () => {
+  it('ends in a Ticket ID trailer for a native ticket, and a Tested trailer naming the commit count', () => {
+    const body = prBody(
+      {
+        description: 'Fixes the thing.',
+        externalDescription: null,
+        externalSource: null,
+        externalKey: null,
+        ticketKey: 'TM-15',
+      },
+      'github',
+      3,
+    );
+    expect(body).toContain('Ticket ID: TM-15');
+    expect(body).toContain("Tested: see this branch's 3 commits");
+    expect(body).not.toContain('Closes');
+  });
+
+  it('says "commit" in the singular for a one-commit branch', () => {
+    const body = prBody(
+      {
+        description: 'Fixes the thing.',
+        externalDescription: null,
+        externalSource: null,
+        externalKey: null,
+        ticketKey: null,
+      },
+      'github',
+      1,
+    );
+    expect(body).toContain("Tested: see this branch's 1 commit,");
+    expect(body).not.toContain('1 commits');
+  });
+
+  it('closes a GitHub issue instead of naming it as a Ticket ID', () => {
+    const body = prBody(
+      {
+        description: 'Fixes the thing.',
+        externalDescription: null,
+        externalSource: 'github',
+        externalKey: 'acme/web#12',
+        ticketKey: null,
+      },
+      'github',
+      1,
+    );
+    expect(body).toContain('Closes acme/web#12');
+    expect(body).not.toContain('Ticket ID:');
+  });
+
+  it('prefers externalDescription over description, same as the card detail pane', () => {
+    const body = prBody(
+      {
+        description: 'A step brief, never the PR body.',
+        externalDescription: "The card's own brief.",
+        externalSource: null,
+        externalKey: null,
+        ticketKey: null,
+      },
+      'github',
+      1,
+    );
+    expect(body).toContain("The card's own brief.");
+    expect(body).not.toContain('step brief');
   });
 });
