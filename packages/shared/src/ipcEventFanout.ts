@@ -121,6 +121,9 @@ export const EVENT_FANOUT = {
   'person:changed': { kind: 'replace-last' },
   'label:changed': { kind: 'replace-last' },
   'milestone:changed': { kind: 'replace-last' },
+  // Automations (F1) — the whole list, like `label:changed`, reproducible from
+  // `automation:list`.
+  'automations:changed': { kind: 'replace-last' },
 
   'window:maximizedChanged': {
     kind: 'drop',

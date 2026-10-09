@@ -69,9 +69,13 @@ offline" honestly means *while you are away from the app*, not *while the app is
 
 1. **App running (window closed or not):** fires on time. F1 adds an opt-in *keep running in the
    background* mode (tray) so closing the window no longer kills the clock.
-2. **Machine asleep / app closed:** nothing can fire. On wake or next boot the **age rule** decides:
-   within the grace window → `scheduled`; late by ≤ 24 h → the **latest** missed occurrence fires once
-   as `catch-up` and the log records how many were skipped; older → nothing fires, the log says so.
+2. **Machine asleep / app closed:** nothing can fire. On wake or next boot the **age rule** decides,
+   measuring lateness from the **latest** missed occurrence (never the oldest): within the grace
+   window → `scheduled`; late by ≤ 24 h → that latest missed occurrence fires once as `catch-up` and
+   the log records how many were skipped; older → nothing fires, the log says so. **Exception:**
+   `hours` schedules never produce `catch-up` — past the grace window they go straight to `skip`,
+   because their own cadence is at most every 12 h, so the next regular occurrence is already close
+   behind.
 3. **Tracker triggers while closed:** the first sync after boot diffs the stored cards against the
    tracker, so a transition that happened while the app was closed is still observed — once, as a
    single before→after change (intermediate hops are not replayed). It fires then, subject to the
@@ -326,8 +330,9 @@ until ‹desktop› is running."* Shell parity per `test/shell-parity.test.ts`.
 
   - New `packages/shared/src/automationFire.ts`: `decideFire` with `graceMs` and `catchUpMs`.
   - Acceptance: tests — on time → `scheduled`; 3 h late → `catch-up`, `skippedCount 0`; daily that
-    slept 3 days → one `catch-up`, `skippedCount 2`; hourly that slept 30 h → `skip` with the count;
-    `nextRunAt` is always strictly after `now` (no burst).
+    slept 3 days → one `catch-up`, `skippedCount 2`; hourly that slept 30 h → `skip` with the count
+    (the `hours` exception above — a schedule this frequent never catches up, no matter how fresh
+    its latest missed occurrence is); `nextRunAt` is always strictly after `now` (no burst).
 
 - [ ] F1.4 Detect tracker events from a sync's before/after cards @needs: F1.1 Define the automation model and IPC contract in @tm/shared
 
