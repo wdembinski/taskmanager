@@ -49,6 +49,7 @@ const priorRow = (over: Partial<MergeRequest> = {}): MergeRequest =>
     state: 'opened',
     draft: false,
     headSha: null,
+    lastActedSha: null,
     pipelineStatus: 'unknown',
     pipelineUrl: null,
     pipelineStages: [],

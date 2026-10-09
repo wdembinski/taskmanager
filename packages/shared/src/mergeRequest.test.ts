@@ -39,6 +39,7 @@ const mr = (over: Partial<MergeRequest> = {}): MergeRequest => ({
   state: 'opened',
   draft: false,
   headSha: null,
+  lastActedSha: null,
   pipelineStatus: 'success',
   pipelineStages: [],
   pipelineUrl: null,

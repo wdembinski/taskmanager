@@ -212,6 +212,9 @@ export function reconcileMergeRequests(
       state: mr.state,
       draft: mr.draft,
       headSha: mr.headSha,
+      // The watcher's own memory — GitLab has never heard of it, so it is carried forward
+      // exactly like `displayName` and the read markers below.
+      lastActedSha: prior?.lastActedSha ?? null,
       pipelineStatus: mr.pipelineStatus,
       pipelineStages: mr.pipelineStages,
       pipelineUrl: mr.pipelineUrl,

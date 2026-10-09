@@ -119,6 +119,17 @@ export interface MergeRequest {
    */
   headSha: string | null;
   /**
+   * The head commit {@link prWatchAction} last acted on for this MR, or null if it never
+   * has — the stored counterpart of {@link PrWatchContext.lastActedSha}, carried across
+   * every sync the same way the read markers are (neither forge has heard of this field).
+   *
+   * Written by `forge/prWatcher.ts` right after it acts, never by a sync: a reconciler that
+   * rebuilt this from fetched data would have nothing to rebuild it FROM, and blanking it on
+   * every poll is exactly the "no memory" bug {@link PrWatchContext.lastActedSha} exists to
+   * prevent.
+   */
+  lastActedSha: string | null;
+  /**
    * The head pipeline's stages, in pipeline order. Empty when the jobs could not be read
    * (the endpoint is permission-gated on some instances) — never a claim that a pipeline
    * has no stages, so the UI falls back to the single overall status.
