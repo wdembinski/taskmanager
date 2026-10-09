@@ -213,6 +213,7 @@ const LOCAL_SETTINGS_KEYS: ReadonlyArray<keyof AppSettings> = [
   'gantt',
   'shelvedCardIds',
   'shelfFolded',
+  'runInBackground',
 ];
 
 // The Features group — every later phase reads its own switch out of here, and a blob
@@ -368,6 +369,14 @@ describe('pickGlobalSettings', () => {
     for (const key of LOCAL_SETTINGS_KEYS) {
       expect(picked, `local key ${String(key)} must be absent`).not.toHaveProperty(String(key));
     }
+  });
+
+  // F1.10: a fact about THIS machine's process lifetime, not an account-scoped preference —
+  // syncing it would make a desktop's "keep running in the tray" choice leak onto a laptop
+  // that never asked for it.
+  it('drops runInBackground — it is this machine’s own process-lifetime choice', () => {
+    const picked = pickGlobalSettings({ ...DEFAULT_SETTINGS, runInBackground: true });
+    expect(picked).not.toHaveProperty('runInBackground');
   });
 
   it('copies only keys that are present — a partial patch stays partial', () => {
