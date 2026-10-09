@@ -6,7 +6,7 @@
     "composite": true,
     "module": "ESNext",
     "lib": ["ES2022"],
-    "types": ["node"]
+    "types": ["node", "electron-vite/node"]
   },
   "include": [
     "src/main",
