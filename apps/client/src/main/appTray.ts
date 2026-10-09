@@ -4,10 +4,10 @@
  * Electron itself; the decision logic it renders is in `backgroundMode.ts`, and IS
  * tested there.
  *
- * Lifecycle is the caller's (`index.ts`, next step): create on the FIRST background
- * close, `destroy()` again if `runInBackground` is turned back off before the next
- * Open, and `destroy()` once more from `before-quit` so the icon never outlives the
- * app. This class just makes each of those a single call.
+ * Lifecycle is the caller's (`index.ts`): create on the FIRST background close,
+ * `destroy()` again if `runInBackground` is turned back off before the next Open, and
+ * `destroy()` once more from `before-quit` so the icon never outlives the app. This
+ * class just makes each of those a single call.
  */
 import {
   app,
@@ -18,6 +18,7 @@ import {
   type MenuItemConstructorOptions,
 } from 'electron';
 import { PRODUCT_NAME } from '@shared/product';
+import trayIconPath from '../../build/icon.png?asset';
 import { trayMenuModel, type TrayMenuItem } from './backgroundMode';
 
 /** Hook into whatever "pause automations" ends up meaning — the menu only shows it when given one. */
@@ -60,14 +61,11 @@ export class AppTray {
   ensure(): void {
     if (this.tray) return;
 
-    // `new Tray()` needs an image synchronously; the real one (the app's own, so we
-    // don't have to ship a second icon asset just for the tray) only resolves async.
-    // An empty image is a blank square for that one tick rather than a crash.
-    const tray = new Tray(nativeImage.createEmpty());
+    // Tray icons render at 16x16 (Windows/Linux) — the packaged app icon is much larger,
+    // so it's resized down rather than shipping a second dedicated asset.
+    const icon = nativeImage.createFromPath(trayIconPath).resize({ width: 16, height: 16 });
+    const tray = new Tray(icon);
     tray.setToolTip(PRODUCT_NAME);
-    void app.getFileIcon(process.execPath).then((image) => {
-      if (this.tray === tray) tray.setImage(image);
-    });
 
     tray.on('double-click', () => this.open());
     tray.setContextMenu(this.buildMenu());

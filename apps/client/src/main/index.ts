@@ -13,6 +13,9 @@ import { join } from 'node:path';
 import { app, BrowserWindow, dialog, protocol, safeStorage, shell } from 'electron';
 import { ATTACHMENT_SCHEME } from '@shared/attachments';
 import { PRODUCT_NAME } from '@shared/product';
+import { DEFAULT_SETTINGS } from '@shared/settings';
+import { AppTray } from './appTray';
+import { closeAction, shouldQuitOnClose, trayLikelyAvailable } from './backgroundMode';
 import { registerContextMenu } from './contextMenu';
 import { registerIpcHandlers, type Engine } from './ipc';
 import { formatError, getLogPath, logMain } from './log';
@@ -38,6 +41,7 @@ if (!app.requestSingleInstanceLock()) {
     const [window] = BrowserWindow.getAllWindows();
     if (!window) return;
     if (window.isMinimized()) window.restore();
+    if (!window.isVisible()) window.show(); // F1.10: bring back a window hidden to the tray
     window.focus();
   });
 }
@@ -123,6 +127,39 @@ function createWindow(): BrowserWindow {
 
   window.on('ready-to-show', () => window.show());
 
+  // F1.10: what closing the window should do — quit (today's behaviour), or keep the app
+  // running behind a tray icon/minimized. Registered FIRST among this window's `close`
+  // listeners (ipc.ts's follow once `registerIpcHandlers` runs below) so its
+  // `preventDefault()` is visible to them via `event.defaultPrevented`.
+  //
+  // Guarded on `engine` because this can fire before `registerIpcHandlers` has returned —
+  // there would be no settings to read yet, and nothing to leave running for — and on
+  // `shuttingDown` so a Windows logoff/shutdown (see `session-end` below) is never blocked
+  // by a hidden window.
+  window.on('close', (event) => {
+    if (shuttingDown || !engine) return;
+    const settings = engine.store.getSettings();
+    const trayOk =
+      settings.runInBackground && trayLikelyAvailable(process.platform, process.env)
+        ? ensureTray(window)
+        : false;
+    const action = closeAction(process.platform, settings, trayOk);
+    if (action === 'hide-to-tray') {
+      event.preventDefault();
+      window.hide();
+    } else if (action === 'minimize') {
+      event.preventDefault();
+      window.minimize();
+    }
+    // 'quit' and 'keep-open' let the close proceed; `window-all-closed` decides from there.
+  });
+
+  // Windows/Linux logoff, shutdown or restart: the OS is tearing the session down and must
+  // never be held up by a window we deliberately hid instead of closing.
+  window.on('session-end', () => {
+    shuttingDown = true;
+  });
+
   // Open target=_blank / external links in the user's real browser, not inside
   // the app window (which should only ever host our own UI).
   window.webContents.setWindowOpenHandler(({ url }) => {
@@ -152,6 +189,34 @@ let engine: Engine | undefined;
 
 /** Guard so a cascade of rejections can't stack a dozen modal dialogs. */
 let reportedFatal = false;
+
+// F1.10: the tray icon shown while the app keeps running with the window hidden. Created
+// lazily — on the first background close — rather than up front, so a user who never
+// turns `runInBackground` on never gets a tray icon at all.
+let appTray: AppTray | undefined;
+
+/** Set once `new Tray()` has thrown, so repeated closes don't retry (and re-log) a lost cause. */
+let trayCreationFailed = false;
+
+/**
+ * Create the tray icon if it doesn't exist yet, logging (once) and falling back to
+ * `false` if the platform can't actually give us one — seen in practice inside WSLg,
+ * which `trayLikelyAvailable` already filters out, but `new Tray()` is the only real
+ * proof for everything `trayLikelyAvailable` didn't.
+ */
+function ensureTray(window: BrowserWindow): boolean {
+  if (appTray?.isActive) return true;
+  if (trayCreationFailed) return false;
+  try {
+    appTray ??= new AppTray(() => window);
+    appTray.ensure();
+    return true;
+  } catch (err) {
+    trayCreationFailed = true;
+    logMain('tray creation failed, falling back to minimize', err);
+    return false;
+  }
+}
 
 /**
  * Set as the first thing `before-quit` does. Past that point the app is going away, so
@@ -230,35 +295,46 @@ app.on('before-quit', () => {
   // Bound once so each step closes over a definitely-present engine: quitting before
   // `registerIpcHandlers` returned leaves nothing to dispose, which is not a failure.
   const live = engine;
-  const steps: ShutdownStep[] = live
-    ? [
-        { name: 'windowTracker', run: () => live.windowTracker.dispose() },
-        { name: 'updater', run: () => live.updater.dispose() },
-        { name: 'syncPoller', run: () => live.syncPoller.dispose() },
-        { name: 'cloudPoller', run: () => live.cloudPoller.dispose() },
-        { name: 'cloudBoardPuller', run: () => live.cloudBoardPuller.dispose() },
-        { name: 'assignmentPoller', run: () => live.assignmentPoller.dispose() },
-        // Before `sessions`, deliberately: killing the sessions pushes a last burst of events
-        // through `send`, and there is nobody left to deliver them to.
-        { name: 'cloudEvents', run: () => live.cloudEvents.dispose() },
-        // Before `store`, like every other cloud timer: a pass that woke up between files
-        // would otherwise read a closed database.
-        { name: 'cloudAttachments', run: () => live.cloudAttachments.dispose() },
-        { name: 'focusTracker', run: () => live.focusTracker.dispose() },
-        { name: 'claudeUsagePoller', run: () => live.claudeUsagePoller.dispose() },
-        { name: 'watcher', run: () => live.watcher.dispose() },
-        { name: 'scheduler', run: () => live.scheduler.dispose() },
-        { name: 'sessions', run: () => live.sessions.stopAll() },
-        { name: 'broker', run: () => live.broker.close() },
-        { name: 'store', run: () => live.store.close() },
-      ]
-    : [];
+  const steps: ShutdownStep[] = [
+    // Unconditional: the tray can exist even if nothing else came up cleanly, and an icon
+    // left behind after the process exits is a bug a human has to notice and reboot to clear.
+    { name: 'tray', run: () => appTray?.destroy() },
+    ...(live
+      ? [
+          { name: 'windowTracker', run: () => live.windowTracker.dispose() },
+          { name: 'updater', run: () => live.updater.dispose() },
+          { name: 'syncPoller', run: () => live.syncPoller.dispose() },
+          { name: 'cloudPoller', run: () => live.cloudPoller.dispose() },
+          { name: 'cloudBoardPuller', run: () => live.cloudBoardPuller.dispose() },
+          { name: 'assignmentPoller', run: () => live.assignmentPoller.dispose() },
+          // Before `sessions`, deliberately: killing the sessions pushes a last burst of
+          // events through `send`, and there is nobody left to deliver them to.
+          { name: 'cloudEvents', run: () => live.cloudEvents.dispose() },
+          // Before `store`, like every other cloud timer: a pass that woke up between files
+          // would otherwise read a closed database.
+          { name: 'cloudAttachments', run: () => live.cloudAttachments.dispose() },
+          { name: 'focusTracker', run: () => live.focusTracker.dispose() },
+          { name: 'claudeUsagePoller', run: () => live.claudeUsagePoller.dispose() },
+          { name: 'watcher', run: () => live.watcher.dispose() },
+          { name: 'scheduler', run: () => live.scheduler.dispose() },
+          { name: 'sessions', run: () => live.sessions.stopAll() },
+          { name: 'broker', run: () => live.broker.close() },
+          { name: 'store', run: () => live.store.close() },
+        ]
+      : []),
+  ];
 
   runShutdownSteps(steps, (name, err) => logMain(`shutdown step "${name}" failed`, err));
 });
 
-// Quit when all windows are closed, except on macOS where apps typically stay
-// alive until the user explicitly quits (Cmd+Q).
+// Quit when all windows are closed, except on macOS where apps typically stay alive until
+// the user explicitly quits (Cmd+Q) — and, since F1.10, except when `runInBackground` has
+// already kept the (now-closed) window alive via the tray/minimize paths in `createWindow`;
+// `shouldQuitOnClose` is the same decision table that drove that `close` handler, so the two
+// can never disagree about whether this moment should actually end the process. An engine
+// that never came up has no store to ask, so a missing one reads as the shipped defaults
+// rather than skipping the question.
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
+  const settings = engine?.store.getSettings() ?? DEFAULT_SETTINGS;
+  if (shouldQuitOnClose(process.platform, settings, false)) app.quit();
 });

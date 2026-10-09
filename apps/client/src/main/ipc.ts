@@ -513,7 +513,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   mainWindow.on('move', windowTracker.schedule);
   mainWindow.on('maximize', windowTracker.schedule);
   mainWindow.on('unmaximize', windowTracker.schedule);
-  mainWindow.on('close', () => windowTracker.dispose());
+  mainWindow.on('close', (event) => {
+    // A hide-to-tray/minimize close (see index.ts's background-mode interceptor, registered
+    // first) leaves the window alive — nothing to flush yet.
+    if (event.defaultPrevented) return;
+    windowTracker.dispose();
+  });
   // ---------------------------------------------------------------------------
 
   // Team orchestrator: each task can run in its own git worktree (under userData),
@@ -589,7 +594,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   const stopSignInWatch = watchForSignIn(() => {
     if (scheduler.currentAuth()) scheduler.signedIn();
   });
-  mainWindow.on('close', () => stopSignInWatch());
+  mainWindow.on('close', (event) => {
+    // See the other `close` listener above — a background close leaves the window alive.
+    if (event.defaultPrevented) return;
+    stopSignInWatch();
+  });
 
   // The permission broker gives the scheduler a TRUE pre-execution veto: the CLI
   // asks it (via an MCP relay) before running each tool, and the scheduler either
