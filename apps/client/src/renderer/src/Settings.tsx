@@ -851,6 +851,17 @@ export function Settings(): JSX.Element {
             </Field>
 
             <Field
+              label="Keep running in the background"
+              hint="Closing the window hides it to the tray (or minimizes it, where there's no tray) instead of quitting, so automations keep firing. Quit is in the tray menu."
+            >
+              <Switch
+                checked={settings.runInBackground}
+                label={settings.runInBackground ? 'Keep running' : 'Quit on close'}
+                onChange={(_e, d) => patch({ runInBackground: d.checked })}
+              />
+            </Field>
+
+            <Field
               label="On each card"
               hint="The same switches live in the board's Display menu, where you notice the noise."
             >

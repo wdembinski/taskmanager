@@ -735,6 +735,14 @@ export interface AppSettings {
   shelvedCardIds: string[];
   /** Whether the shelf itself is collapsed. Per-surface view-state, like `shelvedCardIds`. */
   shelfFolded: boolean;
+  /**
+   * Whether closing the last window quits the app (off) or leaves it running — behind a
+   * tray icon where one is available, minimized otherwise (F1.10). **Local**: it is a
+   * fact about THIS machine's process lifetime, not an account-scoped preference — the
+   * same account open on a desktop and a laptop may want the desktop to keep its
+   * automations running in the background and the laptop to quit on close.
+   */
+  runInBackground: boolean;
 }
 
 /** The out-of-the-box settings, also used to fill any field missing from storage. */
@@ -781,6 +789,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   features: DEFAULT_FEATURE_SETTINGS,
   shelvedCardIds: [],
   shelfFolded: false,
+  runInBackground: false,
 };
 
 /**
@@ -829,7 +838,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  *
  * Everything NOT listed is either MACHINE-local — `defaultExecTarget` (a path only that
  * machine has), `fontSizePx` (that window's type scale), `cloud` (this desktop's own
- * connection to the server), `toastsEnabled` (that app's toasts) — or per-SURFACE view-state:
+ * connection to the server), `toastsEnabled` (that app's toasts), `runInBackground` (this
+ * machine's own process-lifetime choice) — or per-SURFACE view-state:
  * `boardScopeId` / `foldedStepCards` / `shownEarlierStepCards` / `shownLaterStepCards` name
  * where you left one screen, `gantt.collapsedEpicIds` the same for the timeline, and
  * `shelvedCardIds` / `shelfFolded` the same for the parked shelf. A browser and a desktop
