@@ -235,6 +235,7 @@ app.on('before-quit', () => {
         { name: 'windowTracker', run: () => live.windowTracker.dispose() },
         { name: 'updater', run: () => live.updater.dispose() },
         { name: 'syncPoller', run: () => live.syncPoller.dispose() },
+        { name: 'automationClock', run: () => live.automationClock.dispose() },
         { name: 'cloudPoller', run: () => live.cloudPoller.dispose() },
         { name: 'cloudBoardPuller', run: () => live.cloudBoardPuller.dispose() },
         { name: 'assignmentPoller', run: () => live.assignmentPoller.dispose() },

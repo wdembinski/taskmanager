@@ -25,6 +25,7 @@ import {
   app,
   dialog,
   ipcMain,
+  powerMonitor,
   safeStorage,
   screen,
   shell,
@@ -214,6 +215,7 @@ import { writePermissionServer } from './permissionServerSource';
 import { openInteractiveSignIn, watchForSignIn } from './signIn';
 import { PlanWatcher } from './planWatcher';
 import { SyncPoller } from './syncPoller';
+import { AutomationClock } from './automationClock';
 import { ClaudeUsagePoller, readClaudeUsage } from './claudeUsage';
 import { discoverModelCatalog, resolveModel } from './claudeModels';
 import { validateBranchName } from '@shared/branchName';
@@ -322,6 +324,8 @@ export interface Engine {
   watcher: PlanWatcher;
   /** The one background timer that refreshes every integration. */
   syncPoller: SyncPoller;
+  /** F1.8 — the one timer that fires `schedule` automations, boot catch-up included. */
+  automationClock: AutomationClock;
   /** The cloud mirror's own timer — seconds-scale, server-directed, and separate from
    * `syncPoller` on purpose; see `cloudPoller.ts`'s own header. */
   cloudPoller: CloudPoller;
@@ -631,7 +635,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // ungated only in the brief window before it binds (or if binding fails).
   const mcpDir = join(app.getPath('userData'), 'mcp');
   const broker = new PermissionBroker((request) => scheduler.decidePermission(request));
-  void broker
+  // Captured, rather than a bare `void`, so the automation clock (built further down, once
+  // the runner exists) can start itself ONLY after the gates below are restored — a
+  // catch-up fired at boot must park behind a gate a previous run left standing, not race it.
+  const gatesRestored = broker
     .start()
     .then((address) => {
       const serverScriptPath = writePermissionServer(mcpDir);
@@ -4461,6 +4468,24 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   ]);
   syncPoller.reschedule();
 
+  // F1.8 — the schedule clock, firing through the same `automationRunner` F1.9's tracker
+  // sweep already fires through (built right after the scheduler, above). Started further
+  // below, once `gatesRestored` resolves (see that const's own comment).
+  const automationClock = new AutomationClock({
+    store,
+    fire: (automation, firing) => automationRunner.fire(automation, firing),
+    isOwnedHere: (automation) =>
+      automation.ownerClientId === null || automation.ownerClientId === store.loadCloudClientId(),
+    onResume: (cb) => {
+      powerMonitor.on('resume', cb);
+      return () => powerMonitor.off('resume', cb);
+    },
+  });
+  // A catch-up decided at boot must park behind a gate a previous run left standing
+  // rather than race it — see `gatesRestored`'s own comment, back where the broker chain
+  // is built.
+  void gatesRestored.then(() => automationClock.start());
+
   // Relayed commands drain here, serially, in the order the server delivered them.
   //
   // The event fan-out this used to do per outcome is gone, and its absence is the point:
@@ -4622,6 +4647,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     broker,
     watcher,
     syncPoller,
+    automationClock,
     cloudPoller,
     cloudBoardPuller,
     assignmentPoller,
