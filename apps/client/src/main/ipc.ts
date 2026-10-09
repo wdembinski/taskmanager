@@ -25,6 +25,7 @@ import {
   app,
   dialog,
   ipcMain,
+  powerMonitor,
   safeStorage,
   screen,
   shell,
@@ -49,6 +50,7 @@ import {
   isUsableModel,
   ownsTickets,
   PERSONAL_PROJECT_ID,
+  type AssignAgentInput,
   type BoardColumn,
   type DiscoveredModel,
   type JiraStatusCategory,
@@ -67,6 +69,7 @@ import { isEpic, isNativeTicket } from '@shared/tickets';
 import { canLinkTickets, type TicketLinkResult } from '@shared/ticketLinks';
 import {
   ARCHIVE_RETENTION_DAYS,
+  canStopWork,
   categoryFromKey,
   columnForStatus,
   JIRA_BOARD_LIMIT,
@@ -210,6 +213,8 @@ import { writePermissionServer } from './permissionServerSource';
 import { openInteractiveSignIn, watchForSignIn } from './signIn';
 import { PlanWatcher } from './planWatcher';
 import { SyncPoller } from './syncPoller';
+import { AutomationClock } from './automationClock';
+import { AutomationRunner } from './automationRunner';
 import { ClaudeUsagePoller, readClaudeUsage } from './claudeUsage';
 import { discoverModelCatalog, resolveModel } from './claudeModels';
 import { validateBranchName } from '@shared/branchName';
@@ -318,6 +323,8 @@ export interface Engine {
   watcher: PlanWatcher;
   /** The one background timer that refreshes every integration. */
   syncPoller: SyncPoller;
+  /** F1.8 — the one timer that fires `schedule` automations, boot catch-up included. */
+  automationClock: AutomationClock;
   /** The cloud mirror's own timer — seconds-scale, server-directed, and separate from
    * `syncPoller` on purpose; see `cloudPoller.ts`'s own header. */
   cloudPoller: CloudPoller;
@@ -598,7 +605,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // ungated only in the brief window before it binds (or if binding fails).
   const mcpDir = join(app.getPath('userData'), 'mcp');
   const broker = new PermissionBroker((request) => scheduler.decidePermission(request));
-  void broker
+  // Captured, rather than a bare `void`, so the automation clock (built further down, once
+  // `delegateWithoutStarting` and the runner exist) can start itself ONLY after the gates
+  // below are restored — a catch-up fired at boot must park behind a gate a previous run
+  // left standing, not race it.
+  const gatesRestored = broker
     .start()
     .then((address) => {
       const serverScriptPath = writePermissionServer(mcpDir);
@@ -942,7 +953,25 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
   // --- Agent delegation (a My Tasks card → an agent project) ------------------
 
-  handle('task:assignAgent', async (taskId, input) => {
+  /**
+   * Everything `task:assignAgent` has to check and write before an agent could possibly
+   * start — existence, that nothing is already working the card, a usable target project,
+   * the timeline comment, and the branch/model validation — ending in the `updateTask` an
+   * assignment that is NOT starting makes. Pulled out so `AutomationRunner` (F1.7) can
+   * delegate a card the exact same way a human staging one does, without a scheduler or an
+   * Electron main process in its tests.
+   *
+   * The throw on a missing/repo-less target carries `cause: 'no-project'` — the one piece
+   * of this function's contract `automationRunner.ts` relies on (see its own
+   * `AutomationRunnerDeps.delegate` doc) to tell "no agent project" apart from any other
+   * failure.
+   *
+   * `assignmentMovesCard(_, false)` is always false (`cardStatusGuard.ts:114`), so this
+   * path never has a forge move to make — that is the whole reason it can be this short.
+   * The starting path in the handler below shares the same checks, inline, because IT does
+   * have a move to make in between the checks and the `updateTask`.
+   */
+  function delegateWithoutStarting(taskId: string, input: AssignAgentInput): Task {
     const existing = store.getTask(taskId);
     if (!existing) throw new Error('Task not found.');
     if (existing.status === 'running' || existing.status === 'waiting-input') {
@@ -950,7 +979,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     }
     const target = store.getProject(input.agentProjectId);
     if (!target || !hasRepo(target)) {
-      throw new Error('Pick an agent project to delegate this task to.');
+      throw new Error('Pick an agent project to delegate this task to.', { cause: 'no-project' });
     }
     // The instructions become a timeline comment BEFORE the run starts, so they are
     // visible to the human and are picked up when the prompt is built — including on
@@ -976,7 +1005,66 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       throw new Error(`Not a usable model: ${input.planningModel}`);
     }
 
-    const starting = input.start !== false;
+    const task = store.updateTask(taskId, {
+      agentProjectId: target.id,
+      // Delegating a card to the Billing repo does also say the card is about Billing —
+      // but only when nothing else has said otherwise, so an explicit filing wins.
+      ...(existing.projectTagId ? {} : { projectTagId: target.id }),
+      agentMode: input.mode ?? null,
+      agentModel: input.model ?? null,
+      agentPlanningModel: input.planningModel ?? null,
+      agentBranch: branch,
+      // A previous attempt's session is not this assignment's; start a fresh
+      // conversation so the agent gets the full single-ticket brief.
+      sessionId: null,
+      ...assignmentStatusPatch(existing, false),
+    });
+    if (!task) throw new Error('Task not found.');
+    return task;
+  }
+
+  handle('task:assignAgent', async (taskId, input) => {
+    // Assign WITHOUT starting (Phase 17): the human wants to talk to the agent about the
+    // card before it begins changing files. Sending it a message starts it (see
+    // `resumeForChat`), as does the Start button.
+    //
+    // Deliberately NOT a moment the chain is re-asked at (Phase 21). Every other route
+    // that can make a card releasable gained a re-ask; this one is left out because
+    // assigning a card either starts it already — the branch below calls `runTask` — or is
+    // `start: false`, which is the human staging the card on purpose. Re-asking here would
+    // start the run they had just declined to start.
+    if (input.start === false) {
+      const task = delegateWithoutStarting(taskId, input);
+      send('task:changed', { task, runId: null });
+      return task;
+    }
+
+    const existing = store.getTask(taskId);
+    if (!existing) throw new Error('Task not found.');
+    if (existing.status === 'running' || existing.status === 'waiting-input') {
+      throw new Error('This task already has an agent working on it.');
+    }
+    const target = store.getProject(input.agentProjectId);
+    if (!target || !hasRepo(target)) {
+      throw new Error('Pick an agent project to delegate this task to.', { cause: 'no-project' });
+    }
+    const notes = input.notes?.trim();
+    if (notes) store.addComment(existing.projectId, taskId, notes);
+
+    const branch = input.branch?.trim() || null;
+    if (branch) {
+      const check = validateBranchName(branch);
+      if (!check.ok) throw new Error(`That branch name won't work: ${check.reason}.`);
+    }
+
+    if (input.model !== undefined && !isUsableModel(input.model)) {
+      throw new Error(`Not a usable model: ${input.model}`);
+    }
+    if (input.planningModel !== undefined && !isUsableModel(input.planningModel)) {
+      throw new Error(`Not a usable model: ${input.planningModel}`);
+    }
+
+    const starting = true; // `input.start === false` was handled above.
 
     // The same local move that lands the card in IN PROGRESS (`assignmentStatusPatch`
     // below) also owes the linked ticket that transition — same as dragging the card
@@ -1029,20 +1117,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     });
     if (!task) throw new Error('Task not found.');
     if (move) store.recordStatusChange(task.projectId, taskId, 'pending', 'in-progress');
-
-    // Assign WITHOUT starting (Phase 17): the human wants to talk to the agent about the
-    // card before it begins changing files. Sending it a message starts it (see
-    // `resumeForChat`), as does the Start button.
-    //
-    // Deliberately NOT a moment the chain is re-asked at (Phase 21). Every other route
-    // that can make a card releasable gained a re-ask; this one is left out because
-    // assigning a card either starts it already — the branch below calls `runTask` — or is
-    // `start: false`, which is the human staging the card on purpose. Re-asking here would
-    // start the run they had just declined to start.
-    if (input.start === false) {
-      send('task:changed', { task, runId: null });
-      return task;
-    }
 
     const outcome = scheduler.startTaskNow(taskId);
     if ('refused' in outcome) {
@@ -4367,6 +4441,45 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   ]);
   syncPoller.reschedule();
 
+  // F1.7/F1.8 — the schedule clock and the runner it fires through. Built next to
+  // `syncPoller` for the same "after every handle() call" reason, and started further
+  // below, once `gatesRestored` resolves (see that const's own comment).
+  const automationRunner = new AutomationRunner({
+    store,
+    delegate: delegateWithoutStarting,
+    startTaskNow: (id) => scheduler.startTaskNow(id),
+    // `canStopWork`'s own rule, fed the live-run snapshot and the card's own steps — the
+    // same inputs the renderer's copy of this question takes.
+    isTaskWorking: (taskId) => {
+      const task = store.getTask(taskId);
+      if (!task) return false;
+      const liveRunTaskIds = new Set(scheduler.activeRuns().map((r) => r.taskId));
+      return canStopWork(task, store.getSubtasks(taskId), liveRunTaskIds);
+    },
+    attention: {
+      automationDisabled: (automation, message) =>
+        send('board:notice', {
+          intent: 'warning',
+          text: `Automation ‹${automation.name}› was disabled: ${message}`,
+        }),
+    },
+    onTaskChanged: (task) => send('task:changed', { task, runId: null }),
+  });
+  const automationClock = new AutomationClock({
+    store,
+    fire: (automation, firing) => automationRunner.fire(automation, firing),
+    isOwnedHere: (automation) =>
+      automation.ownerClientId === null || automation.ownerClientId === store.loadCloudClientId(),
+    onResume: (cb) => {
+      powerMonitor.on('resume', cb);
+      return () => powerMonitor.off('resume', cb);
+    },
+  });
+  // A catch-up decided at boot must park behind a gate a previous run left standing
+  // rather than race it — see `gatesRestored`'s own comment, back where the broker chain
+  // is built.
+  void gatesRestored.then(() => automationClock.start());
+
   // Relayed commands drain here, serially, in the order the server delivered them.
   //
   // The event fan-out this used to do per outcome is gone, and its absence is the point:
@@ -4528,6 +4641,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     broker,
     watcher,
     syncPoller,
+    automationClock,
     cloudPoller,
     cloudBoardPuller,
     assignmentPoller,
