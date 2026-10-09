@@ -42,6 +42,8 @@ export interface FetchedMergeRequest {
   targetBranch: string;
   state: MergeRequestState;
   draft: boolean;
+  /** The source branch's head commit, or null when this sync could not read one. */
+  headSha: string | null;
   pipelineStatus: PipelineStatus;
   pipelineStages: PipelineStage[];
   pipelineUrl: string | null;
@@ -209,6 +211,7 @@ export function reconcileMergeRequests(
       targetBranch: mr.targetBranch,
       state: mr.state,
       draft: mr.draft,
+      headSha: mr.headSha,
       pipelineStatus: mr.pipelineStatus,
       pipelineStages: mr.pipelineStages,
       pipelineUrl: mr.pipelineUrl,

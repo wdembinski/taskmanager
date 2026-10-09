@@ -15,6 +15,7 @@ import {
   mrReadyToMerge,
   mrRef,
   mrVerdict,
+  prWatchAction,
   showPipeline,
   verdictSummary,
   type MergeRequest,
@@ -37,6 +38,7 @@ const mr = (over: Partial<MergeRequest> = {}): MergeRequest => ({
   targetBranch: 'main',
   state: 'opened',
   draft: false,
+  headSha: null,
   pipelineStatus: 'success',
   pipelineStages: [],
   pipelineUrl: null,
@@ -530,5 +532,75 @@ describe('showPipeline', () => {
       expect(showPipeline(mr({ state, pipelineStatus: 'none' }))).toBe(true);
       expect(showPipeline(mr({ state, pipelineStatus: 'unknown' }))).toBe(true);
     }
+  });
+});
+
+describe('prWatchAction', () => {
+  // Green, approved, a known commit, and a pipeline that has not resolved either way yet —
+  // the state where there is nothing to do.
+  const watchable = (over: Partial<MergeRequest> = {}): MergeRequest =>
+    mr({
+      approvalsRequired: 1,
+      approvalsGiven: 1,
+      detailedMergeStatus: 'mergeable',
+      headSha: 'abc123',
+      pipelineStatus: 'unknown',
+      ...over,
+    });
+
+  it('does nothing for an MR with nothing to report', () => {
+    expect(prWatchAction(watchable(), {})).toBe('none');
+  });
+
+  it('asks for a rebase when the branch has diverged', () => {
+    expect(prWatchAction(watchable({ detailedMergeStatus: 'need_rebase' }), {})).toBe(
+      'forge-rebase',
+    );
+  });
+
+  it('asks to resolve conflicts, over a rebase', () => {
+    // Both can be true at once (a stale branch that also conflicts) — conflict wins, since
+    // nothing else can happen until it is resolved.
+    expect(
+      prWatchAction(watchable({ detailedMergeStatus: 'conflict', hasConflicts: true }), {}),
+    ).toBe('resolve-conflicts');
+  });
+
+  it('notes a failed pipeline, and a passed one', () => {
+    expect(prWatchAction(watchable({ pipelineStatus: 'failed' }), {})).toBe('note-pipeline-failed');
+    expect(prWatchAction(watchable({ pipelineStatus: 'success' }), {})).toBe(
+      'note-pipeline-passed',
+    );
+  });
+
+  // Absence is not consent: a pipeline that has not resolved yet, or a merge verdict this
+  // sync never read, must not be read as a reason to speak up.
+  it('stays quiet about a pipeline that has not resolved either way', () => {
+    for (const pipelineStatus of ['unknown', 'running', 'pending', 'manual', 'skipped'] as const) {
+      expect(prWatchAction(watchable({ pipelineStatus }), {})).toBe('none');
+    }
+  });
+
+  it('never acts on a draft, or an MR that is no longer open', () => {
+    expect(prWatchAction(watchable({ draft: true, detailedMergeStatus: 'conflict' }), {})).toBe(
+      'none',
+    );
+    for (const state of ['merged', 'closed', 'locked'] as const) {
+      expect(prWatchAction(watchable({ state, detailedMergeStatus: 'conflict' }), {})).toBe('none');
+    }
+  });
+
+  it('never acts without a head SHA to key the memory on', () => {
+    expect(prWatchAction(watchable({ headSha: null, detailedMergeStatus: 'conflict' }), {})).toBe(
+      'none',
+    );
+  });
+
+  it('acts once per head SHA, and again once the branch moves', () => {
+    const ctx = { lastActedSha: 'abc123' };
+    expect(prWatchAction(watchable({ detailedMergeStatus: 'conflict' }), ctx)).toBe('none');
+    expect(
+      prWatchAction(watchable({ detailedMergeStatus: 'conflict', headSha: 'def456' }), ctx),
+    ).toBe('resolve-conflicts');
   });
 });

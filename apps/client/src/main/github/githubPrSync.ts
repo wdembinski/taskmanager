@@ -228,6 +228,7 @@ export function reconcilePullRequests(
       targetBranch: pr.targetBranch,
       state: pr.state,
       draft: pr.draft,
+      headSha: pr.headSha,
       pipelineStatus: pr.pipelineStatus,
       pipelineStages: pr.pipelineStages,
       pipelineUrl: pr.pipelineUrl,

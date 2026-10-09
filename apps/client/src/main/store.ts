@@ -58,6 +58,8 @@ import {
   type AppSettings,
   DEFAULT_BOARD_DISPLAY,
   DEFAULT_CLOUD_SETTINGS,
+  DEFAULT_FEATURE_SETTINGS,
+  DEFAULT_GANTT_SETTINGS,
   DEFAULT_GITHUB_SETTINGS,
   DEFAULT_GITLAB_SETTINGS,
   DEFAULT_JIRA_SETTINGS,
@@ -1192,6 +1194,7 @@ export function createStore(dbPath: string): Store {
       targetBranch      TEXT NOT NULL,
       state             TEXT NOT NULL,
       draft             INTEGER NOT NULL,
+      headSha           TEXT,               -- the head commit's SHA; NULL = never read
       pipelineStatus    TEXT NOT NULL,
       pipelineStages    TEXT,               -- JSON array of {name,status}; NULL = not read
       pipelineUrl       TEXT,
@@ -1648,6 +1651,13 @@ export function createStore(dbPath: string): Store {
   }
   if (!mrColumns.some((c) => c.name === 'hasConflicts')) {
     db.exec(`ALTER TABLE merge_requests ADD COLUMN hasConflicts INTEGER NOT NULL DEFAULT 0`);
+  }
+
+  // Migrate databases from before the PR/MR watcher needed a commit to key its memory on.
+  // NULL on every existing row is honest — none of them has been read since this column
+  // existed — and the next sync of each fills it in from the forge.
+  if (!mrColumns.some((c) => c.name === 'headSha')) {
+    db.exec(`ALTER TABLE merge_requests ADD COLUMN headSha TEXT`);
   }
 
   // Migrate databases from before this app could OPEN a merge request itself. NULL on every
@@ -2299,6 +2309,8 @@ export function createStore(dbPath: string): Store {
     targetBranch: string;
     state: string;
     draft: number;
+    /** The head commit's SHA; NULL on rows written before the watcher needed one. */
+    headSha: string | null;
     pipelineStatus: string;
     /** JSON array of {name,status}; NULL on rows written before stages existed. */
     pipelineStages: string | null;
@@ -2361,6 +2373,7 @@ export function createStore(dbPath: string): Store {
       targetBranch: r.targetBranch,
       state: r.state as MergeRequestState,
       draft: r.draft === 1,
+      headSha: r.headSha ?? null,
       pipelineStatus: r.pipelineStatus as PipelineStatus,
       pipelineStages,
       pipelineUrl: r.pipelineUrl,
@@ -2385,7 +2398,7 @@ export function createStore(dbPath: string): Store {
     `INSERT INTO merge_requests
        (id, taskId, openedForTaskId, provider, repoId, projectPath, "number", title,
         displayName, webUrl,
-        sourceBranch, targetBranch, state, draft, pipelineStatus, pipelineStages,
+        sourceBranch, targetBranch, state, draft, headSha, pipelineStatus, pipelineStages,
         pipelineUrl,
         approvalsRequired, approvalsGiven, changesRequested,
         detailedMergeStatus, hasConflicts, issueKeys,
@@ -2393,7 +2406,7 @@ export function createStore(dbPath: string): Store {
      VALUES
        (@id, @taskId, @openedForTaskId, @provider, @repoId, @projectPath, @number, @title,
         @displayName, @webUrl,
-        @sourceBranch, @targetBranch, @state, @draft, @pipelineStatus, @pipelineStages,
+        @sourceBranch, @targetBranch, @state, @draft, @headSha, @pipelineStatus, @pipelineStages,
         @pipelineUrl,
         @approvalsRequired, @approvalsGiven, @changesRequested,
         @detailedMergeStatus, @hasConflicts, @issueKeys,
@@ -2409,7 +2422,7 @@ export function createStore(dbPath: string): Store {
        title = excluded.title, displayName = excluded.displayName,
        webUrl = excluded.webUrl,
        sourceBranch = excluded.sourceBranch, targetBranch = excluded.targetBranch,
-       state = excluded.state, draft = excluded.draft,
+       state = excluded.state, draft = excluded.draft, headSha = excluded.headSha,
        pipelineStatus = excluded.pipelineStatus,
        pipelineStages = excluded.pipelineStages, pipelineUrl = excluded.pipelineUrl,
        approvalsRequired = excluded.approvalsRequired,
@@ -2847,7 +2860,10 @@ export function createStore(dbPath: string): Store {
       // Deep-merge EVERY nested block so a stored blob missing newer fields (or lacking
       // the block entirely) still fills them from the defaults. `gitlab` matters as much
       // as `jira` here: without it every existing user would load `gitlab: undefined`
-      // and the poller would throw on `.enabled` at startup.
+      // and the poller would throw on `.enabled` at startup. `features` and `gantt` are the
+      // same trap one level later: a blob saved before a flag was added to `FeatureSettings`
+      // (or before `gantt` existed at all) read the new field back as `undefined` rather
+      // than its default, because a flat `...parsed` only replaces a block wholesale.
       return {
         ...DEFAULT_SETTINGS,
         ...parsed,
@@ -2856,6 +2872,8 @@ export function createStore(dbPath: string): Store {
         github: { ...DEFAULT_GITHUB_SETTINGS, ...(parsed.github ?? {}) },
         cloud: { ...DEFAULT_CLOUD_SETTINGS, ...(parsed.cloud ?? {}) },
         board: { ...DEFAULT_BOARD_DISPLAY, ...(parsed.board ?? {}) },
+        features: { ...DEFAULT_FEATURE_SETTINGS, ...(parsed.features ?? {}) },
+        gantt: { ...DEFAULT_GANTT_SETTINGS, ...(parsed.gantt ?? {}) },
       };
     } catch {
       return { ...DEFAULT_SETTINGS };

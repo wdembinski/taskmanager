@@ -218,7 +218,7 @@ const LOCAL_SETTINGS_KEYS: ReadonlyArray<keyof AppSettings> = [
 // The Features group — every later phase reads its own switch out of here, and a blob
 // written before this existed has no `features` field at all: this is what fills it in as.
 describe('DEFAULT_SETTINGS.features', () => {
-  it('ships every feature on', () => {
+  it('ships every feature on, except prAutoResolve', () => {
     expect(DEFAULT_FEATURE_SETTINGS).toEqual({
       autoFoldReviewDone: true,
       shelf: true,
@@ -226,6 +226,7 @@ describe('DEFAULT_SETTINGS.features', () => {
       mrRebaseButton: true,
       quietAgentProgress: true,
       ticketsToOwnBoard: true,
+      prAutoResolve: false,
     });
   });
 

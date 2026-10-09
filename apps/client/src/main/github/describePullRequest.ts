@@ -415,6 +415,9 @@ export async function describePullRequest(
     targetBranch: detail?.base?.ref ?? prior?.targetBranch ?? '',
     state,
     draft: detail?.draft ?? listed.draft ?? false,
+    // The PR branch's own tip — never the merge commit `sha` above substitutes once merged,
+    // since that commit is on the BASE branch and is not what a push to this PR advances.
+    headSha: detail?.head?.sha ?? prior?.headSha ?? null,
     pipelineStatus,
     pipelineStages,
     pipelineUrl,

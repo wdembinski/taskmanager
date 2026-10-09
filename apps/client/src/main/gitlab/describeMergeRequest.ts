@@ -185,6 +185,10 @@ export async function describeMergeRequest(
     targetBranch: detail.target_branch ?? listed.target_branch ?? '',
     state: toMergeRequestState(detail.state ?? listed.state),
     draft: detail.draft ?? detail.work_in_progress ?? false,
+    // Whichever response carried it most recently; a sync that only saw the list entry (or
+    // neither) keeps what we already knew rather than blanking the one thing the watcher
+    // keys its memory on.
+    headSha: detail.sha ?? listed.sha ?? prior?.headSha ?? null,
     pipelineStatus,
     pipelineStages,
     // Cleared with the rest of it: a link to the pipeline of a commit that no longer has
