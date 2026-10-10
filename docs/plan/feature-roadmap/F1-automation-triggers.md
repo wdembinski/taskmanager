@@ -69,9 +69,13 @@ offline" honestly means *while you are away from the app*, not *while the app is
 
 1. **App running (window closed or not):** fires on time. F1 adds an opt-in *keep running in the
    background* mode (tray) so closing the window no longer kills the clock.
-2. **Machine asleep / app closed:** nothing can fire. On wake or next boot the **age rule** decides:
-   within the grace window → `scheduled`; late by ≤ 24 h → the **latest** missed occurrence fires once
-   as `catch-up` and the log records how many were skipped; older → nothing fires, the log says so.
+2. **Machine asleep / app closed:** nothing can fire. On wake or next boot the **age rule** decides,
+   measuring lateness from the **latest** missed occurrence (never the oldest): within the grace
+   window → `scheduled`; late by ≤ 24 h → that latest missed occurrence fires once as `catch-up` and
+   the log records how many were skipped; older → nothing fires, the log says so. **Exception:**
+   `hours` schedules never produce `catch-up` — past the grace window they go straight to `skip`,
+   because their own cadence is at most every 12 h, so the next regular occurrence is already close
+   behind.
 3. **Tracker triggers while closed:** the first sync after boot diffs the stored cards against the
    tracker, so a transition that happened while the app was closed is still observed — once, as a
    single before→after change (intermediate hops are not replayed). It fires then, subject to the
@@ -180,12 +184,34 @@ Three pure modules in `packages/shared` and three thin wiring modules in `apps/c
      raised. A `started` resets the counter.
   Card state stays the human's (memory: *card-state-is-the-humans*): the runner never writes
   `status`; the run borrows it like any other run.
-- **`automationClock.ts`** — one `setTimeout` to the earliest `nextRunAt` of enabled schedule
-  automations, **capped at 60 s** (guards the 32-bit `setTimeout` overflow `syncPoller.ts` documents,
-  and clock jumps); on fire → `decideFire` → runner. Re-evaluates on `powerMonitor` `resume`, on
-  `automations:changed`, and once at boot **after** `restoreLimitGate`/`restoreAuthGate` so a
-  catch-up launched at boot parks correctly. Saving a changed schedule clears `nextRunAt`. Registered
-  in the shutdown list next to `syncPoller` (`index.ts:237`).
+- **`automationClock.ts`** — timing only. Every other dependency is injected, the way
+  `AutomationRunner` and `SyncPoller` get theirs: `{ store: Pick<Store, 'getAutomations' |
+  'saveAutomation' | 'reserveAutomationRun'>, fire(automation, firing), isOwnedHere(a) => boolean,
+  onResume(cb) => () => void, now?, newId?, log? }`. Injecting `onResume` is what keeps Electron's
+  `powerMonitor` out of the unit test; `isOwnedHere = a => a.ownerClientId === null ||
+  a.ownerClientId === store.loadCloudClientId()`.
+  - **`evaluate()`** is public — boot, resume, the timer, and F1.11's save handler all call it. It
+    clears the pending timer, then for each `enabled` automation with `trigger.kind === 'schedule'`
+    that `isOwnedHere` accepts, wrapped in its own `try/catch` → `logMain` (a bad time zone, or a
+    throw from one automation, is logged and never stops the others):
+    - `nextRunAt === null` → compute `nextOccurrence(shape, now, tz)` and save it. This is how
+      "editing a schedule re-arms": F1.11 clears `nextRunAt` on a schedule-changing save.
+    - `nextRunAt <= now` → `decideFire({ due: nextRunAt, now, shape, tz })`. Re-read the automation
+      and save `decision.nextRunAt` **before** firing, so a throwing `fire` cannot burst-fire the same
+      occurrence again on the next `evaluate()`. `scheduled`/`catch-up` call `fire(automation, {
+      kind, occurrenceKey: 'schedule:' + new Date(occurrenceAt).toISOString(), occurrenceAt,
+      skippedCount })` — the receipt's `UNIQUE(automationId, occurrenceKey)` turns a boot/resume race
+      into a `duplicate`, not a second fire. `skip` instead calls `reserveAutomationRun` directly with
+      a `status: 'skipped'` receipt at the same key, the `skippedCount`, and a note ("Missed N
+      occurrences — too late to catch up") — this is the design's "the log says so".
+  - **Arming:** one `setTimeout(evaluate, clamp(earliestNextRunAt - now, 0, MAX_WAIT_MS))`,
+    `MAX_WAIT_MS = 60_000` (guards the 32-bit `setTimeout` overflow `syncPoller.ts` documents, and
+    clock jumps). With no due automations it still re-checks every 60 s — cheap, and it is what
+    notices a wall-clock jump.
+  - **`start()`** subscribes `onResume` then calls `evaluate()` once; **`dispose()`** clears the
+    timer, unsubscribes `onResume`, and makes any later `evaluate()` call a no-op. Registered in the
+    shutdown list next to `syncPoller` (`index.ts:237`); boot calls `start()` **after**
+    `restoreLimitGate`/`restoreAuthGate` so a catch-up launched at boot parks correctly.
 - **Tracker hook** — after each `reconcileJiraTasks` / `reconcileGitHubIssues`, the glue calls
   `detectTrackerEvents(personalForSync, upserts)` and fires matching enabled automations. Errors in
   the runner are caught and logged; they never fail the sync, and a sync failure fires nothing.
@@ -304,8 +330,9 @@ until ‹desktop› is running."* Shell parity per `test/shell-parity.test.ts`.
 
   - New `packages/shared/src/automationFire.ts`: `decideFire` with `graceMs` and `catchUpMs`.
   - Acceptance: tests — on time → `scheduled`; 3 h late → `catch-up`, `skippedCount 0`; daily that
-    slept 3 days → one `catch-up`, `skippedCount 2`; hourly that slept 30 h → `skip` with the count;
-    `nextRunAt` is always strictly after `now` (no burst).
+    slept 3 days → one `catch-up`, `skippedCount 2`; hourly that slept 30 h → `skip` with the count
+    (the `hours` exception above — a schedule this frequent never catches up, no matter how fresh
+    its latest missed occurrence is); `nextRunAt` is always strictly after `now` (no burst).
 
 - [ ] F1.4 Detect tracker events from a sync's before/after cards @needs: F1.1 Define the automation model and IPC contract in @tm/shared
 

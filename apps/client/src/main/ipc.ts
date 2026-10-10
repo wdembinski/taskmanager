@@ -25,6 +25,7 @@ import {
   app,
   dialog,
   ipcMain,
+  powerMonitor,
   safeStorage,
   screen,
   shell,
@@ -49,6 +50,7 @@ import {
   isUsableModel,
   ownsTickets,
   PERSONAL_PROJECT_ID,
+  type AssignAgentInput,
   type BoardColumn,
   type DiscoveredModel,
   type JiraStatusCategory,
@@ -67,12 +69,15 @@ import { isEpic, isNativeTicket } from '@shared/tickets';
 import { canLinkTickets, type TicketLinkResult } from '@shared/ticketLinks';
 import {
   ARCHIVE_RETENTION_DAYS,
+  canStopWork,
   categoryFromKey,
   columnForStatus,
   JIRA_BOARD_LIMIT,
   restingStatus,
 } from '@shared/board';
 import { assignmentMovesCard, assignmentStatusPatch, humanStatusPatch } from './cardStatusGuard';
+import { AutomationRunner } from './automationRunner';
+import { fireTrackerSweep, type FireTrackerSweepDeps } from './automationTrackerFirings';
 import { isBlockedishStatus, resolveGitHubColumn } from '@shared/statusResolve';
 import { clampSyncInterval, pickGlobalSettings, type AppSettings } from '@shared/settings';
 import { sameExecTarget, type ExecTarget } from '@shared/execTarget';
@@ -211,6 +216,7 @@ import { writePermissionServer } from './permissionServerSource';
 import { openInteractiveSignIn, watchForSignIn } from './signIn';
 import { PlanWatcher } from './planWatcher';
 import { SyncPoller } from './syncPoller';
+import { AutomationClock } from './automationClock';
 import { ClaudeUsagePoller, readClaudeUsage } from './claudeUsage';
 import { discoverModelCatalog, resolveModel } from './claudeModels';
 import { validateBranchName } from '@shared/branchName';
@@ -319,6 +325,8 @@ export interface Engine {
   watcher: PlanWatcher;
   /** The one background timer that refreshes every integration. */
   syncPoller: SyncPoller;
+  /** F1.8 — the one timer that fires `schedule` automations, boot catch-up included. */
+  automationClock: AutomationClock;
   /** The cloud mirror's own timer — seconds-scale, server-directed, and separate from
    * `syncPoller` on purpose; see `cloudPoller.ts`'s own header. */
   cloudPoller: CloudPoller;
@@ -535,6 +543,35 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     (sample) => send('usage:sample', sample),
   );
 
+  // F1.9: fires a tracker/schedule occurrence into an actual card and run. Named
+  // `automationRunner` (not `runner`) so F1.8's clock can reuse this same instance rather
+  // than standing up a second one against the same store.
+  const automationRunner = new AutomationRunner({
+    store,
+    // `start: false` — `fire` starts the card itself once the delegation and the
+    // timeline note have landed, and with no forge move to make either way (see
+    // `assignmentMovesCard`), this never needs the async forge step `assignAgentToTask`'s
+    // other caller, `task:assignAgent`, carries out first.
+    delegate: (id, input) => assignAgentToTask(id, { ...input, start: false }, null),
+    startTaskNow: (id) => scheduler.startTaskNow(id),
+    isTaskWorking: (id) => {
+      const task = store.getTask(id);
+      if (!task) return false;
+      const liveIds = new Set(scheduler.activeRuns().map((r) => r.taskId));
+      return canStopWork(task, store.getSubtasks(id), liveIds);
+    },
+    attention: {
+      automationDisabled: (automation, message) => {
+        logMain(`Automation ‹${automation.name}› disabled after 3 failed runs: ${message}`);
+        send('board:notice', {
+          intent: 'warning',
+          text: `Automation ‹${automation.name}› was turned off after 3 failed runs: ${message}`,
+        });
+      },
+    },
+    onTaskChanged: (task) => send('task:changed', { task, runId: null }),
+  });
+
   // Approving an agent's plan creates that card's subtasks (Phase 11) — a change to the
   // task LIST, which `task:changed` can't express, so the scheduler gets a way to say so.
   scheduler.setTasksChangedNotifier((projectId) =>
@@ -599,7 +636,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // ungated only in the brief window before it binds (or if binding fails).
   const mcpDir = join(app.getPath('userData'), 'mcp');
   const broker = new PermissionBroker((request) => scheduler.decidePermission(request));
-  void broker
+  // Captured, rather than a bare `void`, so the automation clock (built further down, once
+  // the runner exists) can start itself ONLY after the gates below are restored — a
+  // catch-up fired at boot must park behind a gate a previous run left standing, not race it.
+  const gatesRestored = broker
     .start()
     .then((address) => {
       const serverScriptPath = writePermissionServer(mcpDir);
@@ -943,7 +983,24 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
   // --- Agent delegation (a My Tasks card → an agent project) ------------------
 
-  handle('task:assignAgent', async (taskId, input) => {
+  /**
+   * The validation and the assignment write `task:assignAgent` itself used to carry out
+   * inline — pulled out so F1.9's `AutomationRunner` can delegate a card exactly the way a
+   * human assigning one does, with no IPC handler or forge write in the way. `forge` is
+   * null for that caller: `start: false` makes `assignmentMovesCard` false below, so there
+   * is nothing for a forge move to do. `task:assignAgent` computes its own `move`/
+   * `moveOutcome` first (the forge write has to happen BEFORE this writes the card) and
+   * passes them through.
+   *
+   * Throws `cause: 'no-project'` for a missing or repo-less project — the one throw
+   * `AutomationRunnerDeps.delegate`'s contract names, so a tracker/schedule firing can tell
+   * "nowhere to delegate this" apart from any other failure.
+   */
+  function assignAgentToTask(
+    taskId: string,
+    input: AssignAgentInput,
+    forge: { move: MoveResolution; moveOutcome: TransitionOutcome | null } | null,
+  ): Task {
     const existing = store.getTask(taskId);
     if (!existing) throw new Error('Task not found.');
     if (existing.status === 'running' || existing.status === 'waiting-input') {
@@ -951,7 +1008,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     }
     const target = store.getProject(input.agentProjectId);
     if (!target || !hasRepo(target)) {
-      throw new Error('Pick an agent project to delegate this task to.');
+      throw new Error('Pick an agent project to delegate this task to.', { cause: 'no-project' });
     }
     // The instructions become a timeline comment BEFORE the run starts, so they are
     // visible to the human and are picked up when the prompt is built — including on
@@ -979,12 +1036,48 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
     const starting = input.start !== false;
 
-    // The same local move that lands the card in IN PROGRESS (`assignmentStatusPatch`
-    // below) also owes the linked ticket that transition — same as dragging the card
-    // there by hand would. `writeMoveToForge` and `preBlockMarker` are `const`s declared
-    // further down in this `registerIpc` scope, but this handler body only runs at IPC
-    // time, well after the whole scope has finished initializing, so there is no TDZ
-    // hazard reaching forward for them.
+    const task = store.updateTask(taskId, {
+      agentProjectId: target.id,
+      // Delegating a card to the Billing repo does also say the card is about Billing —
+      // but only when nothing else has said otherwise, so an explicit filing wins.
+      ...(existing.projectTagId ? {} : { projectTagId: target.id }),
+      agentMode: input.mode ?? null,
+      agentModel: input.model ?? null,
+      agentPlanningModel: input.planningModel ?? null,
+      agentBranch: branch,
+      // A previous attempt's session is not this assignment's; start a fresh
+      // conversation so the agent gets the full single-ticket brief.
+      sessionId: null,
+      // ...and no column change, except the one the human is asking for: delegating a
+      // TO DO card and starting it moves it to IN PROGRESS, same as dragging it there by
+      // hand. Otherwise a ticket resting in IN REVIEW that you hand to an agent is still in
+      // review. This used to write `pending` unconditionally, on the reasoning that
+      // assigned-but-not-started IS what TO DO means — true of a card already in TO DO,
+      // and a card-moving bug everywhere else. See `assignmentStatusPatch`.
+      ...assignmentStatusPatch(existing, starting),
+      ...(forge ? { preBlockStatus: preBlockMarker(forge.move, forge.moveOutcome) } : {}),
+      ...(forge?.moveOutcome?.patch ?? {}),
+    });
+    if (!task) throw new Error('Task not found.');
+    if (forge) store.recordStatusChange(task.projectId, taskId, 'pending', 'in-progress');
+
+    return task;
+  }
+
+  handle('task:assignAgent', async (taskId, input) => {
+    const existing = store.getTask(taskId);
+    if (!existing) throw new Error('Task not found.');
+    if (existing.status === 'running' || existing.status === 'waiting-input') {
+      throw new Error('This task already has an agent working on it.');
+    }
+    const starting = input.start !== false;
+
+    // The same local move that lands the card in IN PROGRESS (`assignmentStatusPatch`,
+    // inside `assignAgentToTask`) also owes the linked ticket that transition — same as
+    // dragging the card there by hand would. `writeMoveToForge` and `preBlockMarker` are
+    // `const`s declared further down in this `registerIpc` scope, but this handler body
+    // only runs at IPC time, well after the whole scope has finished initializing, so
+    // there is no TDZ hazard reaching forward for them.
     //
     // The `try` is the one deliberate difference from a drag: `transitionIssue` /
     // `moveGitHubIssue` throw so a drag rolls back, whereas here the delegation is the
@@ -1006,30 +1099,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       }
     }
 
-    const task = store.updateTask(taskId, {
-      agentProjectId: target.id,
-      // Delegating a card to the Billing repo does also say the card is about Billing —
-      // but only when nothing else has said otherwise, so an explicit filing wins.
-      ...(existing.projectTagId ? {} : { projectTagId: target.id }),
-      agentMode: input.mode ?? null,
-      agentModel: input.model ?? null,
-      agentPlanningModel: input.planningModel ?? null,
-      agentBranch: branch,
-      // A previous attempt's session is not this assignment's; start a fresh
-      // conversation so the agent gets the full single-ticket brief.
-      sessionId: null,
-      // ...and no column change, except the one the human is asking for: delegating a
-      // TO DO card and starting it moves it to IN PROGRESS, same as dragging it there by
-      // hand. Otherwise a ticket resting in IN REVIEW that you hand to an agent is still in
-      // review. This used to write `pending` unconditionally, on the reasoning that
-      // assigned-but-not-started IS what TO DO means — true of a card already in TO DO,
-      // and a card-moving bug everywhere else. See `assignmentStatusPatch`.
-      ...assignmentStatusPatch(existing, starting),
-      ...(move ? { preBlockStatus: preBlockMarker(move, moveOutcome) } : {}),
-      ...(moveOutcome?.patch ?? {}),
-    });
-    if (!task) throw new Error('Task not found.');
-    if (move) store.recordStatusChange(task.projectId, taskId, 'pending', 'in-progress');
+    const task = assignAgentToTask(taskId, input, move ? { move, moveOutcome } : null);
 
     // Assign WITHOUT starting (Phase 17): the human wants to talk to the agent about the
     // card before it begins changing files. Sending it a message starts it (see
@@ -3033,6 +3103,26 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     store.saveTicketGraphLayout(projectId, positions);
   });
 
+  // --- Automations (F1) — model + contract only so far; the real handlers land in F1.11. ---
+  handle('automation:list', async () => {
+    throw new Error('automation:list is not implemented yet (F1.11)');
+  });
+  handle('automation:save', async () => {
+    throw new Error('automation:save is not implemented yet (F1.11)');
+  });
+  handle('automation:delete', async () => {
+    throw new Error('automation:delete is not implemented yet (F1.11)');
+  });
+  handle('automation:setEnabled', async () => {
+    throw new Error('automation:setEnabled is not implemented yet (F1.11)');
+  });
+  handle('automation:runNow', async () => {
+    throw new Error('automation:runNow is not implemented yet (F1.11)');
+  });
+  handle('automation:runs', async () => {
+    throw new Error('automation:runs is not implemented yet (F1.11)');
+  });
+
   // --- The chain of execution ------------------------------------------------
   /** Push the whole link list at the board. Returns it, so handlers can also reply with it. */
   function pushChainLinks(): TaskLink[] {
@@ -3309,6 +3399,19 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   let jiraGuardRefused = false;
   let lastJiraNotice: string | null = null;
 
+  // F1.9: shared by both the JIRA and GitHub sweeps below. `localClientId` is a getter
+  // rather than a plain field read once here — the cloud client id can be generated (or
+  // change, on a fresh pairing) after boot, and capturing it now would freeze every
+  // tracker sweep for the rest of the app's run against whatever it was at that moment.
+  const trackerDeps: FireTrackerSweepDeps = {
+    runner: automationRunner,
+    getAutomations: () => store.getAutomations(),
+    get localClientId() {
+      return store.loadCloudClientId();
+    },
+    log: logMain,
+  };
+
   // One JIRA sync: fetch issues, reconcile into the store, push the fresh board.
   // Shared by the manual `jira:sync` handler and the background poller below.
   //
@@ -3489,6 +3592,15 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     if (opts.dedupeNotice ? noticeChanged : warning) {
       send('board:notice', { text: warning ?? '', intent: 'warning' });
     }
+    // Before the board is pushed, so a card a tracker firing just delegated (and started)
+    // is already in the `tasks` snapshot below rather than arriving a tick later.
+    fireTrackerSweep(trackerDeps, {
+      source: 'JIRA',
+      before: personalForSync,
+      upserts,
+      truncated,
+      now,
+    });
     const tasks = store.getPersonalTasks();
     send('project:tasksChanged', { projectId: PERSONAL_PROJECT_ID, tasks });
     // The board just changed shape, so an MR whose ticket has appeared should attach
@@ -3672,6 +3784,15 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       // teaches people to dismiss both.
       send('board:notice', { text: warning, intent: 'warning' });
     }
+    // Before the board is pushed, so a card a tracker firing just delegated (and started)
+    // is already in the `tasks` snapshot below rather than arriving a tick later.
+    fireTrackerSweep(trackerDeps, {
+      source: 'GitHub',
+      before: personalForSync,
+      upserts,
+      truncated,
+      now,
+    });
     const tasks = store.getPersonalTasks();
     send('project:tasksChanged', { projectId: PERSONAL_PROJECT_ID, tasks });
     return tasks;
@@ -4371,6 +4492,24 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   ]);
   syncPoller.reschedule();
 
+  // F1.8 — the schedule clock, firing through the same `automationRunner` F1.9's tracker
+  // sweep already fires through (built right after the scheduler, above). Started further
+  // below, once `gatesRestored` resolves (see that const's own comment).
+  const automationClock = new AutomationClock({
+    store,
+    fire: (automation, firing) => automationRunner.fire(automation, firing),
+    isOwnedHere: (automation) =>
+      automation.ownerClientId === null || automation.ownerClientId === store.loadCloudClientId(),
+    onResume: (cb) => {
+      powerMonitor.on('resume', cb);
+      return () => powerMonitor.off('resume', cb);
+    },
+  });
+  // A catch-up decided at boot must park behind a gate a previous run left standing
+  // rather than race it — see `gatesRestored`'s own comment, back where the broker chain
+  // is built.
+  void gatesRestored.then(() => automationClock.start());
+
   // Relayed commands drain here, serially, in the order the server delivered them.
   //
   // The event fan-out this used to do per outcome is gone, and its absence is the point:
@@ -4532,6 +4671,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     broker,
     watcher,
     syncPoller,
+    automationClock,
     cloudPoller,
     cloudBoardPuller,
     assignmentPoller,

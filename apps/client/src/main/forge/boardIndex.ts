@@ -25,11 +25,11 @@ export function buildBoardIndex(tasks: readonly Task[]): {
       taskIdByKey.set(task.externalKey.toUpperCase(), task.id);
     }
     // A NATIVE ticket's key (`TM-12`) counts too, and leaving it out was a hole rather
-    // than a decision: it is the key this app puts in front of the title of every pull
-    // request it opens (`prTitle`), the key a human types into a branch name, and the one
-    // the card itself prints — but nothing here indexed it, so no merge request naming it
-    // could ever be matched to it. A card with a native ticket behind it looked, to every
-    // reconciler, exactly like a card with no key at all.
+    // than a decision: it is the key this app writes into the `Ticket ID:` trailer of every
+    // pull request it opens (`prBody`) and into the branch name, the key a human types into
+    // a branch name, and the one the card itself prints — but nothing here indexed it, so
+    // no merge request naming it could ever be matched to it. A card with a native ticket
+    // behind it looked, to every reconciler, exactly like a card with no key at all.
     const ticketKey = task.ticketKey?.trim();
     // Never over a tracker's own: `externalKey` is the mirrored issue's real name, and if
     // some board somehow spells both the same, the mirrored card is the one whose key the
