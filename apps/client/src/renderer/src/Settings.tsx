@@ -195,7 +195,7 @@ type SettingsSection =
   | 'agentProfiles';
 
 /**
- * The six feature switches, in the order the Features tab lists them — keyed by the
+ * The seven feature switches, in the order the Features tab lists them — keyed by the
  * `FeatureSettings` field so the switch and its label can never drift apart.
  */
 const FEATURE_SWITCHES: ReadonlyArray<{
@@ -232,6 +232,12 @@ const FEATURE_SWITCHES: ReadonlyArray<{
     key: 'ticketsToOwnBoard',
     label: 'Tickets to their own board',
     hint: 'Tracker tickets are assigned to their own board rather than sharing one with everything else.',
+  },
+  {
+    key: 'prAutoResolve',
+    label:
+      'Watch the PRs/MRs I open and fix conflicts with the agent automatically — when off, click the red blocked icon to do it',
+    hint: 'Also asks the provider to rebase a stale branch, and notes when a pipeline fails or turns green.',
   },
 ];
 

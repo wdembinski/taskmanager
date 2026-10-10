@@ -197,6 +197,7 @@ import { appPlanPath, appProjectFile } from './projectPaths';
 import { RELEASE_DOC } from '@shared/release';
 import { openPullRequest, type CreatePrDeps } from './forge/createPr';
 import { linkMergeRequest, type LinkPrDeps } from './forge/linkPr';
+import { watchMergeRequests, type PrWatcherDeps } from './forge/prWatcher';
 import { forgeBaseUrl } from './forge/baseUrl';
 import { buildBoardIndex } from './forge/boardIndex';
 import {
@@ -1968,6 +1969,23 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // in. Set here because only this closure can read a secret out of `safeStorage`.
   scheduler.setPullRequestOpener((taskId) => openPullRequest(createPrDeps(), taskId));
 
+  /**
+   * Deps for the PR/MR watcher (`forge/prWatcher.ts`) — same shape, same reasons, as
+   * `createPrDeps` above: `forgeToken` is the only secret reader, so every closure that
+   * spends one is built here.
+   */
+  const prWatcherDeps = (): PrWatcherDeps => ({
+    getSettings: () => store.getSettings(),
+    getTask: (id) => store.getTask(id),
+    tokenFor: forgeToken,
+    chatWithAgent: (taskId, message) => scheduler.chatWithAgent(taskId, message),
+    note: (projectId, taskId, body) => {
+      store.addComment(projectId, taskId, body);
+      send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) });
+    },
+    markActed: (mrId, headSha) => store.markMergeRequestActed(mrId, headSha),
+  });
+
   // -------------------------------------------------------------------------
   // Cloud personal access token — the same four-channel shape JIRA/GitLab/GitHub use above,
   // which is the whole point of this ticket: the cloud stopped being a special case. The
@@ -2319,6 +2337,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // — nobody here ran the merge. It is what a chain's `after-merge` gate waits for, so it
     // is handed to the engine before the board is told anything (see `Task.landedAt`).
     for (const taskId of landedTaskIds(upserts)) scheduler.noteWorkLanded(taskId);
+    // After the board knows about them, never before: `forge-rebase`/`resolve-conflicts` can
+    // write a note or start a run, and both want the card state this sync just settled.
+    await watchMergeRequests(upserts, prWatcherDeps());
     const all = store.listMergeRequests();
     send('mergeRequests:changed', all);
     return all;
@@ -2487,6 +2508,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // a GitHub repository at all: nobody here ran the merge, so a merged PR is this app's
     // only way of learning that a reviewed branch landed (see `Task.landedAt`).
     for (const taskId of landedTaskIds(upserts)) scheduler.noteWorkLanded(taskId);
+    // After the board knows about them, never before: `forge-rebase`/`resolve-conflicts` can
+    // write a note or start a run, and both want the card state this sync just settled.
+    await watchMergeRequests(upserts, prWatcherDeps());
     const all = store.listMergeRequests();
     send('mergeRequests:changed', all);
     return all;

@@ -550,6 +550,8 @@ describe('sortCards', () => {
       targetBranch: 'main',
       state: 'opened',
       draft: false,
+      headSha: null,
+      lastActedSha: null,
       pipelineStatus: 'failed',
       pipelineStages: [],
       pipelineUrl: null,

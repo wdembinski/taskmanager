@@ -46,6 +46,8 @@ export interface GitLabMergeRequest {
   source_branch: string;
   target_branch: string;
   updated_at: string;
+  /** The source branch's head commit, as of this response — on both the list and the detail. */
+  sha?: string | null;
   /**
    * GitLab's own verdict on whether this can merge (15.6+). Carried by the DETAIL endpoint
    * only — the list omits it, which is why `describeMergeRequest` must not read it off a
