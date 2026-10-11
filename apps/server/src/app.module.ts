@@ -6,6 +6,8 @@ import { AgentProfile } from './entities/agentProfile.entity';
 import { Assignment } from './entities/assignment.entity';
 import { AttachmentBlob } from './entities/attachmentBlob.entity';
 import { AttachmentUpload } from './entities/attachmentUpload.entity';
+import { AutomationMirror } from './entities/automationMirror.entity';
+import { AutomationRunMirror } from './entities/automationRunMirror.entity';
 import { Client } from './entities/client.entity';
 import { Command } from './entities/command.entity';
 import { CommandResultRow } from './entities/commandResult.entity';
@@ -47,6 +49,8 @@ import { TokensModule } from './tokens/tokens.module';
           Assignment,
           AttachmentBlob,
           AttachmentUpload,
+          AutomationMirror,
+          AutomationRunMirror,
           Client,
           Command,
           CommandResultRow,

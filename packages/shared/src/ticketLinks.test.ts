@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import type { TicketLink } from './model';
-import { canLinkTickets, linksFor, TICKET_LINK_VOCABULARY } from './ticketLinks';
+import { PERSONAL_PROJECT_ID, type Task, type TicketLink } from './model';
+import {
+  blockersOf,
+  canLinkTickets,
+  linksFor,
+  startReadiness,
+  TICKET_LINK_VOCABULARY,
+} from './ticketLinks';
 
 const link = (over: Partial<TicketLink>): TicketLink => ({
   id: 'l1',
@@ -8,6 +14,22 @@ const link = (over: Partial<TicketLink>): TicketLink => ({
   toTaskId: 'b',
   type: 'blocks',
   createdAt: 0,
+  ...over,
+});
+
+const task = (over: Partial<Task>): Task => ({
+  id: 't',
+  projectId: PERSONAL_PROJECT_ID,
+  phase: '',
+  title: 'x',
+  status: 'pending',
+  sessionId: null,
+  order: 0,
+  dependsOn: [],
+  source: 'jira',
+  isContract: false,
+  isScaffold: false,
+  externalSource: 'jira',
   ...over,
 });
 
@@ -65,5 +87,87 @@ describe('canLinkTickets', () => {
 
   it('allows a fresh link with no conflict', () => {
     expect(canLinkTickets([], { id: 'a' }, { id: 'b' }, 'blocks')).toBeNull();
+  });
+});
+
+describe('blockersOf', () => {
+  it('returns the from end of blocks links naming taskId as the to end', () => {
+    const l = link({ fromTaskId: 'a', toTaskId: 'b', type: 'blocks' });
+    expect(blockersOf([l], 'b')).toEqual(['a']);
+  });
+
+  it('ignores non-blocks links', () => {
+    const l = link({ fromTaskId: 'a', toTaskId: 'b', type: 'relates' });
+    expect(blockersOf([l], 'b')).toEqual([]);
+  });
+
+  it('does not treat the blocker as blocked by its own target', () => {
+    const l = link({ fromTaskId: 'a', toTaskId: 'b', type: 'blocks' });
+    expect(blockersOf([l], 'a')).toEqual([]);
+  });
+});
+
+describe('startReadiness', () => {
+  it('is ready when there are no links', () => {
+    const t = task({ id: 'b', status: 'pending' });
+    expect(startReadiness(t, [], new Map())).toEqual({ kind: 'ready' });
+  });
+
+  it('is ready when every blocker is done', () => {
+    const t = task({ id: 'b', status: 'pending' });
+    const blocker = task({ id: 'a', status: 'done' });
+    const links = [link({ fromTaskId: 'a', toTaskId: 'b', type: 'blocks' })];
+    const byId = new Map([['a', blocker]]);
+    expect(startReadiness(t, links, byId)).toEqual({ kind: 'ready' });
+  });
+
+  it('is waiting on the one blocker still open', () => {
+    const t = task({ id: 'b', status: 'pending' });
+    const blocker = task({ id: 'a', status: 'pending' });
+    const links = [link({ fromTaskId: 'a', toTaskId: 'b', type: 'blocks' })];
+    const byId = new Map([['a', blocker]]);
+    expect(startReadiness(t, links, byId)).toEqual({
+      kind: 'waiting',
+      open: [{ id: 'a', task: blocker }],
+    });
+  });
+
+  it('reads a blocker by its resting status, not a borrowed running one', () => {
+    const t = task({ id: 'b', status: 'pending' });
+    const blocker = task({ id: 'a', status: 'running', preRunStatus: 'done' });
+    const links = [link({ fromTaskId: 'a', toTaskId: 'b', type: 'blocks' })];
+    const byId = new Map([['a', blocker]]);
+    expect(startReadiness(t, links, byId)).toEqual({ kind: 'ready' });
+  });
+
+  it('treats an unknown blocker id as still open', () => {
+    const t = task({ id: 'b', status: 'pending' });
+    const links = [link({ fromTaskId: 'ghost', toTaskId: 'b', type: 'blocks' })];
+    expect(startReadiness(t, links, new Map())).toEqual({
+      kind: 'waiting',
+      open: [{ id: 'ghost', task: undefined }],
+    });
+  });
+
+  it('ignores non-blocks links when deciding readiness', () => {
+    const t = task({ id: 'b', status: 'pending' });
+    const other = task({ id: 'a', status: 'pending' });
+    const links = [link({ fromTaskId: 'a', toTaskId: 'b', type: 'relates' })];
+    const byId = new Map([['a', other]]);
+    expect(startReadiness(t, links, byId)).toEqual({ kind: 'ready' });
+  });
+
+  it('does not read the blocker as blocked by its own target', () => {
+    const blockerAsTask = task({ id: 'a', status: 'pending' });
+    const links = [link({ fromTaskId: 'a', toTaskId: 'b', type: 'blocks' })];
+    expect(startReadiness(blockerAsTask, links, new Map())).toEqual({ kind: 'ready' });
+  });
+
+  it('is done for a ticket already in the done column, before its blockers are read', () => {
+    const t = task({ id: 'b', status: 'done' });
+    const blocker = task({ id: 'a', status: 'pending' });
+    const links = [link({ fromTaskId: 'a', toTaskId: 'b', type: 'blocks' })];
+    const byId = new Map([['a', blocker]]);
+    expect(startReadiness(t, links, byId)).toEqual({ kind: 'done' });
   });
 });

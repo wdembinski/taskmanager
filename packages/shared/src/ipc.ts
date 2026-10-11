@@ -1152,13 +1152,15 @@ export interface IpcApi {
   /** Every automation, in one call — small enough to hand over whole, like `chain:links`. */
   'automation:list': () => Promise<Automation[]>;
   /**
-   * Create or edit an automation, one channel for both — matching `label:save` /
-   * `milestone:save`: an `id` present edits that automation, absent creates one. Rejects with
-   * `validateAutomation`'s messages joined, since the editor calls that same validator on
-   * every keystroke and this is its one authoritative recheck.
+   * Create or edit an automation, one channel for both — but unlike `label:save` /
+   * `milestone:save`, `id` is always present (the editor's draft needs one before the
+   * first save). The handler decides create vs. edit by looking `id` up in the store:
+   * found edits it, not found creates one (keeping `id` if non-empty, otherwise minting
+   * one). Rejects with `validateAutomation`'s messages joined, since the editor calls
+   * that same validator on every keystroke and this is its one authoritative recheck.
    */
   'automation:save': (automation: Automation) => Promise<Automation>;
-  /** Delete an automation. Its past runs are kept (for `automation:runs`), not cascaded away. */
+  /** Delete an automation. Its past runs are deleted with it — `automation:runs` has nothing left to show. */
   'automation:delete': (id: string) => Promise<void>;
   /**
    * Flip an automation on or off without opening its editor — the board's own toggle.
