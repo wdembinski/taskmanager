@@ -28,9 +28,11 @@ import {
   RadioGroup,
   Switch,
   Textarea,
+  Tooltip,
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
+import { SparkleRegular } from '@fluentui/react-icons';
 import {
   HOUR_INTERVALS,
   TRACKER_EVENT_KINDS,
@@ -61,6 +63,7 @@ import {
   type AutomationDraft,
   type ScheduleType,
 } from './automationEditorModel';
+import { AUTOMATION_TEMPLATES, applyTemplate } from './templates';
 
 const useStyles = makeStyles({
   surface: { maxWidth: 'min(760px, calc(100vw - 48px))', width: '100%' },
@@ -68,6 +71,7 @@ const useStyles = makeStyles({
   form: { display: 'flex', flexDirection: 'column', gap: '16px', minWidth: 0 },
   section: { display: 'flex', flexDirection: 'column', gap: '12px' },
   row: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'start' },
+  templates: { display: 'flex', gap: '8px', flexWrap: 'wrap' },
   grow: { flex: 1, minWidth: '180px' },
   narrow: { width: '140px', flexShrink: 0 },
   dropdown: { minWidth: 0, width: '100%' },
@@ -203,6 +207,24 @@ export function AutomationEditor({
                 <MessageBar intent="error">
                   <MessageBarBody>{submitError}</MessageBarBody>
                 </MessageBar>
+              )}
+
+              {automation === null && !initialDraft && (
+                <Field label="Start from a template">
+                  <div className={styles.templates}>
+                    {AUTOMATION_TEMPLATES.map((t) => (
+                      <Tooltip key={t.id} content={t.description} relationship="description">
+                        <Button
+                          appearance="subtle"
+                          icon={<SparkleRegular />}
+                          onClick={() => setDraft((d) => applyTemplate(t, d))}
+                        >
+                          {t.name}
+                        </Button>
+                      </Tooltip>
+                    ))}
+                  </div>
+                </Field>
               )}
 
               <Field label="Name" required>
