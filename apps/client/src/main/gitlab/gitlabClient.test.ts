@@ -86,6 +86,18 @@ describe('GitLabClient', () => {
     );
     expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe('PUT');
   });
+
+  it('updates only the description — the refresh-on-push never touches the title', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ iid: 12, description: 'new' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().updateMergeRequest('g/s/p', 12, { description: 'new' });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe('https://gitlab.com/api/v4/projects/g%2Fs%2Fp/merge_requests/12');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(String(init.body))).toEqual({ description: 'new' });
+  });
 });
 
 describe('state and pipeline narrowing', () => {

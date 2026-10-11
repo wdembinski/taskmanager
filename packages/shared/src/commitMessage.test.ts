@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { commitType, prSubject, wrapHanging, wrapPlainText } from './commitMessage';
+import {
+  aggregateTested,
+  branchChangesBody,
+  commitType,
+  parseCommitMessage,
+  prSubject,
+  wrapHanging,
+  wrapPlainText,
+} from './commitMessage';
 
 describe('commitType', () => {
   it('reads the human-picked TaskType first', () => {
@@ -118,5 +126,118 @@ describe('wrapPlainText', () => {
       expect(line.length).toBeLessThanOrEqual(40);
       expect(line.startsWith(' ')).toBe(false);
     }
+  });
+});
+
+describe('parseCommitMessage', () => {
+  it('splits a worked-example commit into subject, body and trailers', () => {
+    const raw =
+      'feat(merge): put the auto-merge switch on cards\n\n' +
+      'Three switches, in the three places the question actually gets\n' +
+      'asked.\n\n' +
+      'Ticket ID: TM-412\n' +
+      'Tested: pnpm typecheck, pnpm test (168 green), then pnpm dev and\n' +
+      '        toggled the switch at all three levels.';
+    const parsed = parseCommitMessage(raw);
+    expect(parsed.subject).toBe('feat(merge): put the auto-merge switch on cards');
+    expect(parsed.body).toBe(
+      'Three switches, in the three places the question actually gets\nasked.',
+    );
+    expect(parsed.trailers).toEqual({
+      'Ticket ID': 'TM-412',
+      Tested:
+        'pnpm typecheck, pnpm test (168 green), then pnpm dev and toggled the switch at all three levels.',
+    });
+  });
+
+  it('is total: a bare subject with no body or trailers still parses', () => {
+    expect(parseCommitMessage('chore: bump a dependency')).toEqual({
+      subject: 'chore: bump a dependency',
+      body: '',
+      trailers: {},
+    });
+    expect(parseCommitMessage('')).toEqual({ subject: '', body: '', trailers: {} });
+  });
+
+  it('leaves a trailing paragraph as body when not every line fits the trailer shape', () => {
+    const raw =
+      'fix: a bug\n\nNote: here is one line.\nAnd a second plain line with no colon at all.';
+    const parsed = parseCommitMessage(raw);
+    expect(parsed.body).toBe(
+      'Note: here is one line.\nAnd a second plain line with no colon at all.',
+    );
+    expect(parsed.trailers).toEqual({});
+  });
+
+  it('has no trailers when the body ends in prose with no colon at all', () => {
+    const raw = 'fix: a bug\n\nJust an ordinary paragraph of explanation.';
+    expect(parseCommitMessage(raw).trailers).toEqual({});
+  });
+});
+
+describe('branchChangesBody', () => {
+  it("uses the single commit's own body verbatim (reflowed) when there is only one", () => {
+    const raw =
+      'fix(limit): resume steps when the limit resets\n\nThe gate forgot the chain.\n\nTested: pnpm test';
+    expect(branchChangesBody([raw])).toBe('The gate forgot the chain.');
+  });
+
+  it('falls back to the subject when a single commit has no body', () => {
+    expect(branchChangesBody(['chore: bump a dependency'])).toBe('chore: bump a dependency');
+  });
+
+  it('lists every commit by subject, bulleted, when there is more than one', () => {
+    const commits = [
+      'fix(a): first fix\n\nTested: pnpm test',
+      'fix(b): second fix\n\nTested: pnpm test',
+    ];
+    expect(branchChangesBody(commits)).toBe('- fix(a): first fix\n- fix(b): second fix');
+  });
+
+  it('is empty on an empty branch, so the caller can fall back to the card description', () => {
+    expect(branchChangesBody([])).toBe('');
+  });
+
+  it("strips a Generated-with / robot-marker line out of a single commit's body", () => {
+    const raw =
+      'feat: add the thing\n\n' +
+      'The real explanation.\n' +
+      '🤖 Generated with Some Tool\n\n' +
+      'Tested: pnpm test';
+    expect(branchChangesBody([raw])).toBe('The real explanation.');
+  });
+
+  it('caps the bullet list and names how many more commits there were', () => {
+    const commits = Array.from({ length: 25 }, (_, i) => `fix: change number ${i + 1}`);
+    const body = branchChangesBody(commits);
+    const lines = body.split('\n');
+    expect(lines).toHaveLength(21);
+    expect(lines[20]).toBe('- …and 5 more commits.');
+  });
+});
+
+describe('aggregateTested', () => {
+  it('is empty when no commit on the branch carries a Tested trailer', () => {
+    expect(aggregateTested(['feat: add the thing', 'fix: a bug'])).toBe('');
+  });
+
+  it('collapses identical Tested values from several commits into one', () => {
+    const commits = ['fix(a): first\n\nTested: pnpm test', 'fix(b): second\n\nTested: pnpm test'];
+    expect(aggregateTested(commits)).toBe('pnpm test');
+  });
+
+  it('joins distinct Tested values from several commits', () => {
+    const commits = ['fix(a): first\n\nTested: pnpm test', 'fix(b): second\n\nTested: pnpm build'];
+    expect(aggregateTested(commits)).toBe('pnpm test; pnpm build');
+  });
+
+  it('caps the number of distinct Tested values and names how many more there were', () => {
+    const commits = Array.from(
+      { length: 10 },
+      (_, i) => `fix: change ${i}\n\nTested: ran scenario ${i}`,
+    );
+    const result = aggregateTested(commits);
+    expect(result).toContain('and 2 more commits tested');
+    expect(result.split('; ')).toHaveLength(9); // 8 shown + the "and N more" tail
   });
 });

@@ -66,7 +66,7 @@ describe('prTitle', () => {
 });
 
 describe('prBody', () => {
-  it('ends in a Ticket ID trailer for a native ticket, and a Tested trailer naming the commit count', () => {
+  it('ends in a Ticket ID trailer for a native ticket, and a Tested trailer aggregated from the commits', () => {
     const body = prBody(
       {
         description: 'Fixes the thing.',
@@ -76,14 +76,18 @@ describe('prBody', () => {
         ticketKey: 'TM-15',
       },
       'github',
-      3,
+      [
+        'fix: first part\n\nTested: pnpm test',
+        'fix: second part\n\nTested: pnpm test',
+        'fix: third part\n\nTested: pnpm build',
+      ],
     );
     expect(body).toContain('Ticket ID: TM-15');
-    expect(body).toContain("Tested: see this branch's 3 commits");
+    expect(body).toContain('Tested: pnpm test; pnpm build');
     expect(body).not.toContain('Closes');
   });
 
-  it('says "commit" in the singular for a one-commit branch', () => {
+  it('falls back to naming the commit count, singular, when none of them carry a Tested trailer', () => {
     const body = prBody(
       {
         description: 'Fixes the thing.',
@@ -93,10 +97,25 @@ describe('prBody', () => {
         ticketKey: null,
       },
       'github',
-      1,
+      ['fix: the one change'],
     );
     expect(body).toContain("Tested: see this branch's 1 commit,");
     expect(body).not.toContain('1 commits');
+  });
+
+  it('falls back to naming the branch generically when there are no commits to read at all', () => {
+    const body = prBody(
+      {
+        description: 'Fixes the thing.',
+        externalDescription: null,
+        externalSource: null,
+        externalKey: null,
+        ticketKey: null,
+      },
+      'github',
+      [],
+    );
+    expect(body).toContain("Tested: see this branch's own commits,");
   });
 
   it('closes a GitHub issue instead of naming it as a Ticket ID', () => {
@@ -109,13 +128,13 @@ describe('prBody', () => {
         ticketKey: null,
       },
       'github',
-      1,
+      ['fix: the one change'],
     );
     expect(body).toContain('Closes acme/web#12');
     expect(body).not.toContain('Ticket ID:');
   });
 
-  it('prefers externalDescription over description, same as the card detail pane', () => {
+  it("summarises the branch's commits rather than the card's description, when there are commits to read", () => {
     const body = prBody(
       {
         description: 'A step brief, never the PR body.',
@@ -125,7 +144,24 @@ describe('prBody', () => {
         ticketKey: null,
       },
       'github',
-      1,
+      ['feat: first change\n\nThe real explanation.', 'feat: second change'],
+    );
+    expect(body).toContain('- feat: first change');
+    expect(body).toContain('- feat: second change');
+    expect(body).not.toContain("The card's own brief.");
+  });
+
+  it('prefers externalDescription over description as the fallback, when there are no commits to read', () => {
+    const body = prBody(
+      {
+        description: 'A step brief, never the PR body.',
+        externalDescription: "The card's own brief.",
+        externalSource: null,
+        externalKey: null,
+        ticketKey: null,
+      },
+      'github',
+      [],
     );
     expect(body).toContain("The card's own brief.");
     expect(body).not.toContain('step brief');

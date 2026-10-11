@@ -526,6 +526,39 @@ export async function commitsAhead(
 }
 
 /**
+ * Every commit `branch` has that `base` does not, as raw commit-message text, oldest first —
+ * the material `@shared/commitMessage`'s `branchChangesBody`/`aggregateTested` turn into an
+ * automated pull request's body and `Tested:` trailer.
+ *
+ * `[]` on any failure (an unreadable ref, git unavailable) — mirroring {@link commitsAhead}'s
+ * "don't know" contract rather than its "-1", because this answer's only consumer
+ * (`forge/createPr.ts`'s `prBody`) has a perfectly good fallback: the card's own description,
+ * used exactly as it was before this function existed. An empty array reads as "nothing to
+ * summarize" and triggers that fallback; it must never be read as "the branch is empty" when
+ * what actually happened is that git could not be asked.
+ *
+ * `-z` NUL-delimits each commit's full `%B` (subject, body and trailers together) so a
+ * message containing its own blank lines can never be confused with the separator between
+ * commits. `--no-merges` drops merge commits, which carry no authored work of their own to
+ * summarize. `--reverse` puts them in the order they were written — the order a human
+ * reading "what happened on this branch" would expect, and the order `branchChangesBody`'s
+ * bullet list follows.
+ */
+export async function branchCommitMessages(
+  dir: string,
+  base: string,
+  branch: string,
+  host?: ExecHost,
+): Promise<string[]> {
+  const res = await git(
+    dir,
+    ['log', '-z', '--reverse', '--no-merges', '--format=%B', `${base}..${branch}`],
+    host,
+  );
+  return res.code === 0 ? splitZ(res.stdout) : [];
+}
+
+/**
  * A remote's URL — `git remote get-url <remote>` — or **`''` when git won't say**.
  *
  * The empty answer is the same contract {@link currentBranch} documents: a repo with no

@@ -364,6 +364,26 @@ export class GitLabClient {
     }
   }
 
+  /**
+   * Update a merge request's own fields — `PUT /projects/{path}/merge_requests/{iid}`.
+   *
+   * Addressed by the URL-encoded project path, same as {@link createMergeRequest}. Only
+   * `description` is ever sent — `createPr.ts`'s refresh-on-push rewrites the description
+   * to stay in step with the branch's own commits on every push, but leaves the title alone,
+   * for the same reason `githubClient`'s `updatePullRequest` leaves it alone: a human may
+   * have retitled it.
+   */
+  async updateMergeRequest(
+    projectPath: string,
+    iid: number,
+    input: { description: string },
+  ): Promise<GitLabMergeRequest> {
+    const project = encodeURIComponent(projectPath);
+    return this.write<GitLabMergeRequest>(`/projects/${project}/merge_requests/${iid}`, 'PUT', {
+      description: input.description,
+    });
+  }
+
   /** The open MR whose source branch is `branch`, or null when there is none. */
   async findOpenMergeRequest(
     projectPath: string,
