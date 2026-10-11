@@ -16,10 +16,12 @@ import {
   currentBranch,
   deleteBranch,
   fastForwardRef,
+  fetchRef,
   git,
   gitPreflight,
   hasCommits,
   hasConflicts,
+  isAncestor,
   isClean,
   isRepo,
   listBranches,
@@ -405,6 +407,96 @@ describe('git helpers — reading a remote and pushing to it', () => {
     });
 
     expect(res.code).not.toBe(0);
+  });
+});
+
+describe('git helpers — fetching a ref and pushing with a lease', () => {
+  let bare = '';
+
+  beforeEach(async () => {
+    bare = mkdtempSync(join(tmpdir(), 'orch-bare-'));
+    await git(bare, ['init', '--bare']);
+    await git(repo, ['remote', 'add', 'origin', bare]);
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(bare, { recursive: true, force: true });
+    } catch {
+      // best effort
+    }
+  });
+
+  it('fetches the branch into the given local ref, without touching the work tree', async () => {
+    const branch = 'feat/fetch-me';
+    await git(repo, ['checkout', '-b', branch]);
+    await commitFile(repo, 'e.txt', 'work\n', 'work');
+    await pushBranch(repo, 'origin', branch);
+    const remoteSha = (await git(bare, ['rev-parse', `refs/heads/${branch}`])).stdout.trim();
+
+    const res = await fetchRef(repo, 'origin', branch, 'refs/orch/pr-base');
+
+    expect(res.code).toBe(0);
+    const landed = await git(repo, ['rev-parse', 'refs/orch/pr-base']);
+    expect(landed.stdout.trim()).toBe(remoteSha);
+    expect(await isClean(repo)).toBe(true);
+    expect(await isAncestor(repo, landed.stdout.trim(), remoteSha)).toBe(true);
+  });
+
+  it('a lease push succeeds when pushing a rewritten branch over its known remote tip', async () => {
+    const branch = 'feat/lease-ok';
+    await git(repo, ['checkout', '-b', branch]);
+    await commitFile(repo, 'f.txt', 'v1\n', 'v1');
+    await pushBranch(repo, 'origin', branch);
+    const original = (await git(repo, ['rev-parse', 'HEAD'])).stdout.trim();
+
+    // Rewrite history the way a rebase onto a new base would.
+    writeFileSync(join(repo, 'f.txt'), 'v2\n');
+    await git(repo, ['add', '-A']);
+    await git(repo, ['commit', '--amend', '--no-verify', '-m', 'v2']);
+
+    const res = await pushBranch(repo, 'origin', branch, {
+      forceWithLease: { expected: original },
+    });
+
+    expect(res.code).toBe(0);
+    const there = await git(bare, ['rev-parse', `refs/heads/${branch}`]);
+    expect(there.stdout.trim()).toBe((await git(repo, ['rev-parse', 'HEAD'])).stdout.trim());
+  });
+
+  it('a stale lease is rejected once the remote has moved on', async () => {
+    const branch = 'feat/lease-stale';
+    await git(repo, ['checkout', '-b', branch]);
+    await commitFile(repo, 'g.txt', 'v1\n', 'v1');
+    await pushBranch(repo, 'origin', branch);
+    const stale = (await git(repo, ['rev-parse', 'HEAD'])).stdout.trim();
+
+    // Someone else moves the remote branch forward in the meantime.
+    await commitFile(repo, 'g.txt', 'v2\n', 'v2 from elsewhere');
+    await pushBranch(repo, 'origin', branch);
+
+    // We still try to push, holding only the now-stale lease.
+    await commitFile(repo, 'g.txt', 'v3\n', 'v3');
+    const res = await pushBranch(repo, 'origin', branch, {
+      forceWithLease: { expected: stale },
+    });
+
+    expect(res.code).not.toBe(0);
+    // And the remote must still be exactly where the lease last saw it.
+    const there = await git(bare, ['rev-parse', `refs/heads/${branch}`]);
+    expect(there.stdout.trim()).not.toBe((await git(repo, ['rev-parse', 'HEAD'])).stdout.trim());
+  });
+
+  it('redacts a token embedded in the fetch URL from the error output', async () => {
+    const token = 'ghp_fetchLeakedToken';
+    const res = await fetchRef(repo, 'origin', 'nope', 'refs/orch/missing', {
+      url: join(bare, `does-not-exist-${token}`),
+      secrets: [token],
+    });
+
+    expect(res.code).not.toBe(0);
+    expect(res.stdout).not.toContain(token);
+    expect(res.stderr).not.toContain(token);
   });
 });
 
