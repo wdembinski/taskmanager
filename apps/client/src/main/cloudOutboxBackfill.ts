@@ -74,6 +74,45 @@ export const BACKFILL_TASKS_SQL = `
    ORDER BY (t.parentTaskId IS NOT NULL), t."order", t.rowid
 `;
 
+/**
+ * Guard for the one-shot mirror of automations/runs that predate `trg_automations_*` /
+ * `trg_automation_runs_*` (F1.12) — a separate key from {@link CLOUD_OUTBOX_BACKFILL_KEY}
+ * because it is a separate build that gained those triggers, on a database that may already
+ * have run the task/project backfill long ago.
+ */
+export const CLOUD_OUTBOX_AUTOMATION_BACKFILL_KEY = 'migration.cloudOutboxAutomationBackfill';
+
+/** Every automation the outbox has never spoken for. */
+export const BACKFILL_AUTOMATIONS_SQL = `
+  INSERT INTO cloud_outbox (entity, entityId, op, at)
+  SELECT 'automation', a.id, 'insert', ?
+    FROM automations a
+   WHERE NOT EXISTS (
+     SELECT 1 FROM cloud_outbox o WHERE o.entity = 'automation' AND o.entityId = a.id
+   )
+   ORDER BY a.rowid
+`;
+
+/**
+ * Every run receipt the outbox has never spoken for, within the same 30-day window
+ * `pruneAutomationRuns`/the server's `runsToPrune` already keep — a run older than that is
+ * retention's to drop, not this backfill's to queue for a server about to drop it too.
+ * Ordered by `at` so a capped batch drains oldest-firing-first, the run log's own order.
+ */
+export const BACKFILL_AUTOMATION_RUNS_SQL = `
+  INSERT INTO cloud_outbox (entity, entityId, op, at)
+  SELECT 'automationRun', r.id, 'insert', ?
+    FROM automation_runs r
+   WHERE r.at >= ?
+     AND NOT EXISTS (
+       SELECT 1 FROM cloud_outbox o WHERE o.entity = 'automationRun' AND o.entityId = r.id
+     )
+   ORDER BY r.at
+`;
+
+/** Matches `pruneAutomationRuns`'s `AUTOMATION_RUN_MAX_AGE_MS` — see that constant's docstring. */
+export const BACKFILL_AUTOMATION_RUN_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
 /** How many outbox rows a statement wrote. `better-sqlite3`'s `RunResult`, narrowed. */
 export interface BackfillRunResult {
   changes: number;
@@ -105,4 +144,26 @@ export function backfillCloudOutbox(db: BackfillDb, nowMs: number): CloudOutboxB
   const projects = db.prepare(BACKFILL_PROJECTS_SQL).run(nowMs).changes;
   const tasks = db.prepare(BACKFILL_TASKS_SQL).run(nowMs).changes;
   return { projects, tasks };
+}
+
+/** What the automation back-fill queued, for its own guard row to record. */
+export interface CloudOutboxAutomationBackfillCounts {
+  automations: number;
+  automationRuns: number;
+}
+
+/**
+ * Queue an outbox row for every automation, and every run within the retention window, that
+ * has none — the automation sibling of {@link backfillCloudOutbox}, guarded by its own
+ * `app_state` key for the same two reasons that function's own docstring gives.
+ */
+export function backfillAutomationCloudOutbox(
+  db: BackfillDb,
+  nowMs: number,
+): CloudOutboxAutomationBackfillCounts {
+  const automations = db.prepare(BACKFILL_AUTOMATIONS_SQL).run(nowMs).changes;
+  const automationRuns = db
+    .prepare(BACKFILL_AUTOMATION_RUNS_SQL)
+    .run(nowMs, nowMs - BACKFILL_AUTOMATION_RUN_MAX_AGE_MS).changes;
+  return { automations, automationRuns };
 }
