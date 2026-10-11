@@ -69,6 +69,7 @@ import { Switch } from '@fluentui/react-components';
 import { AttachRegular } from '@fluentui/react-icons';
 import type { IssueType, Task, TaskType } from '@tm/shared/model';
 import { PERSONAL_PROJECT_ID } from '@tm/shared/model';
+import type { ClaudeModel, PermissionMode } from '@tm/shared/session';
 import type { BoardScope, JiraIssueTypeOption, JiraProjectOption } from '@tm/shared/ipc';
 import { attachmentName, insertAttachmentRef } from '@tm/shared/attachments';
 import { isEpic } from '@tm/shared/tickets';
@@ -139,6 +140,18 @@ const NO_LINK = '';
 /** The same again, for a ticket with no epic. */
 const NO_EPIC = '';
 
+/**
+ * The agent an `AddTaskForm` may already be filled in with, same shape `task:assignAgent`
+ * keys an assignment by (`agentProjectId`, `model`, `mode`) — a card made with an agent
+ * already picked is that same assignment, made at the moment the card is, rather than a
+ * second shape the plan would have to reconcile with it.
+ */
+export type AddTaskAssign = {
+  agentProjectId: string;
+  model: ClaudeModel | null;
+  mode: PermissionMode | null;
+};
+
 /** Everything the form holds, as the plan below reads it. */
 export interface AddTaskForm {
   title: string;
@@ -168,6 +181,11 @@ export interface AddTaskForm {
    * {@link addTaskPlan} routes on: `ticket:create` when true, `task:create` when not.
    */
   boardOwnsTickets: boolean;
+  /** The agent to assign as the card is created, or `null` to leave it unassigned — see
+   *  {@link AddTaskAssign}. Never meaningful for a step (see {@link AddTaskPlan}). */
+  assign: AddTaskAssign | null;
+  /** Start that agent immediately once assigned. Ignored with {@link assign} `null`. */
+  startNow: boolean;
 }
 
 /**
@@ -183,7 +201,11 @@ export type AddTaskPlan =
   /** Nothing can be created yet. `error` is null when the only thing missing is the
    *  title, which the disabled Add button already says. */
   | { kind: 'incomplete'; error: string | null }
-  /** One step appended to `parentId`'s chain. */
+  /**
+   * One step appended to `parentId`'s chain. Never carries {@link AddTaskAssign} — a step
+   * runs in its parent's own worktree, under whatever agent is already on that card, so
+   * there is no separate assignment for a step to make of its own.
+   */
   | { kind: 'step'; parentId: string; step: { title: string; description: string | null } }
   /**
    * A card written straight onto `board` (`task:create`) — Personal, or a keyless project.
@@ -191,6 +213,10 @@ export type AddTaskPlan =
    * one question, and this is what answers both "where does it live" and "what is it
    * filed under" from it. When `ticket` is set, a JIRA issue is linked onto the card
    * afterwards — an ADDITION, never a replacement, and Personal-only (see `canJira`).
+   *
+   * `assign` and `startNow` carry the agent the form was filled in with, if any — see
+   * {@link AddTaskAssign}. The write order stays the same either way: the card lands first,
+   * and the assignment (then the start) are things done to the card that now exists.
    */
   | {
       kind: 'card';
@@ -208,6 +234,8 @@ export type AddTaskPlan =
         summary: string;
         description?: string;
       } | null;
+      assign: AddTaskAssign | null;
+      startNow: boolean;
     }
   /**
    * A native ticket on `board`'s own list (`ticket:create`) — chosen because `board` owns
@@ -219,6 +247,11 @@ export type AddTaskPlan =
    * rule the `card` variant applies above — the ticket already lives on that project's own
    * list, and filing it under that same project is the one answer the merged picker leaves
    * no room to say otherwise.
+   *
+   * `assign` and `startNow` carry the same two fields the `card` variant does, and for the
+   * same reason: a native ticket is still a card on a board, and a board that owns tickets
+   * can be assigned an agent exactly like one that doesn't. Dropping them here would silently
+   * lose "start now" on any ticket-owning board.
    */
   | {
       kind: 'ticket';
@@ -231,6 +264,8 @@ export type AddTaskPlan =
         epicTaskId: string | null;
         projectTagId: string | null;
       };
+      assign: AddTaskAssign | null;
+      startNow: boolean;
     };
 
 /** Work out what Add should do. See {@link AddTaskPlan}. */
