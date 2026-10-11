@@ -74,6 +74,11 @@ describe('archiveReasonText', () => {
     expect(removedLine(card({ archivedReason: 'left-query' }), NOW)).toMatch(/JIRA says/);
   });
 
+  it('gives a Linear card a Linear sentence, off the card itself', () => {
+    const line = removedLine(card({ externalSource: 'linear', archivedReason: 'left-query' }), NOW);
+    expect(line).toMatch(/Linear says/);
+  });
+
   it('says an old row recorded no reason rather than inventing one', () => {
     // The case that matters: a card archived by the version that added `archivedAt` and
     // nothing else. Its `retainedSince` would happily support a confident guess.
