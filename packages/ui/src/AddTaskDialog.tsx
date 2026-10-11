@@ -779,6 +779,9 @@ export function AddTaskDialog({
       jiraTypeId,
       boardId,
       boardOwnsTickets,
+      // The pickers land in F5.2; until then every card is created unassigned.
+      assign: null,
+      startNow: false,
     });
     if (plan.kind === 'incomplete') {
       setError(plan.error);
