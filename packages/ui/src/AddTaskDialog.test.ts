@@ -33,6 +33,8 @@ const form = (over: Partial<AddTaskForm> = {}): AddTaskForm => ({
   jiraTypeId: '',
   boardId: PERSONAL_PROJECT_ID,
   boardOwnsTickets: false,
+  assign: null,
+  startNow: false,
   ...over,
 });
 
@@ -61,6 +63,8 @@ describe('addTaskPlan', () => {
         projectTagId: null,
       },
       ticket: null,
+      assign: null,
+      startNow: false,
     });
   });
 
@@ -95,6 +99,8 @@ describe('addTaskPlan', () => {
         epicTaskId: 'epic-1',
         projectTagId: 'p-billing',
       },
+      assign: null,
+      startNow: false,
     });
   });
 
@@ -163,6 +169,8 @@ describe('addTaskPlan', () => {
         asJira: true,
         jiraProjectKey: 'ABC',
         jiraTypeId: '10001',
+        assign: { agentProjectId: 'p-billing', model: 'opus', mode: 'plan' },
+        startNow: true,
       }),
     );
     expect(plan).toEqual({
@@ -175,6 +183,70 @@ describe('addTaskPlan', () => {
   it('gives a brief-less step a null brief, not an empty one', () => {
     const plan = addTaskPlan(form({ parentId: 'c1', description: '  ' }));
     expect(plan.kind === 'step' && plan.step.description).toBe(null);
+  });
+
+  it('carries an assignment onto a card, with startNow', () => {
+    const plan = addTaskPlan(
+      form({
+        assign: { agentProjectId: 'p-billing', model: 'opus', mode: 'plan' },
+        startNow: true,
+      }),
+    );
+    expect(plan.kind).toBe('card');
+    if (plan.kind !== 'card') return;
+    expect(plan.assign).toEqual({ agentProjectId: 'p-billing', model: 'opus', mode: 'plan' });
+    expect(plan.startNow).toBe(true);
+  });
+
+  it('carries an assignment onto a ticket-board plan, with startNow', () => {
+    const plan = addTaskPlan(
+      form({
+        boardId: 'p-billing',
+        boardOwnsTickets: true,
+        assign: { agentProjectId: 'p-billing', model: 'opus', mode: 'plan' },
+        startNow: true,
+      }),
+    );
+    expect(plan.kind).toBe('ticket');
+    if (plan.kind !== 'ticket') return;
+    expect(plan.assign).toEqual({ agentProjectId: 'p-billing', model: 'opus', mode: 'plan' });
+    expect(plan.startNow).toBe(true);
+  });
+
+  it('carries an assignment without startNow, as startNow: false', () => {
+    const plan = addTaskPlan(
+      form({ assign: { agentProjectId: 'p-billing', model: null, mode: null } }),
+    );
+    expect(plan.kind).toBe('card');
+    if (plan.kind !== 'card') return;
+    expect(plan.assign).toEqual({ agentProjectId: 'p-billing', model: null, mode: null });
+    expect(plan.startNow).toBe(false);
+  });
+
+  it('normalizes a default model — both null and empty string — to null', () => {
+    const withNull = addTaskPlan(
+      form({ assign: { agentProjectId: 'p-billing', model: null, mode: null } }),
+    );
+    const withEmpty = addTaskPlan(
+      form({ assign: { agentProjectId: 'p-billing', model: '', mode: null } }),
+    );
+    expect(withNull.kind === 'card' && withNull.assign?.model).toBe(null);
+    expect(withEmpty.kind === 'card' && withEmpty.assign?.model).toBe(null);
+  });
+
+  it('refuses startNow without an agent project, before the card is written', () => {
+    expect(addTaskPlan(form({ startNow: true, assign: null }))).toEqual({
+      kind: 'incomplete',
+      error: 'Pick an agent project to start it in first.',
+    });
+    expect(
+      addTaskPlan(
+        form({ startNow: true, assign: { agentProjectId: '', model: null, mode: null } }),
+      ),
+    ).toEqual({
+      kind: 'incomplete',
+      error: 'Pick an agent project to start it in first.',
+    });
   });
 });
 
