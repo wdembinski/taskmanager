@@ -2360,6 +2360,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // After the board knows about them, never before: `forge-rebase`/`resolve-conflicts` can
     // write a note or start a run, and both want the card state this sync just settled.
     await watchMergeRequests(upserts, prWatcherDeps());
+    for (const mr of upserts) if (!mr.hasConflicts) scheduler.noteForgeConflictCleared(mr.id);
     const all = store.listMergeRequests();
     send('mergeRequests:changed', all);
     return all;
@@ -2536,6 +2537,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // After the board knows about them, never before: `forge-rebase`/`resolve-conflicts` can
     // write a note or start a run, and both want the card state this sync just settled.
     await watchMergeRequests(upserts, prWatcherDeps());
+    for (const mr of upserts) if (!mr.hasConflicts) scheduler.noteForgeConflictCleared(mr.id);
     const all = store.listMergeRequests();
     send('mergeRequests:changed', all);
     return all;

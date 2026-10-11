@@ -343,6 +343,7 @@ describe('reconcileMergeRequests', () => {
     expect(upserts.map((m) => m.taskId)).toEqual(['task-1', 'task-1']);
     expect(new Set(upserts.map((m) => m.id)).size).toBe(2);
   });
+
 });
 
 describe('rematchMergeRequests', () => {

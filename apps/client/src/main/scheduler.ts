@@ -36,6 +36,7 @@ import type {
 } from '@shared/model';
 import { hasRepo, resolveRunModel } from '@shared/model';
 import { chainInFlight, chatTarget, hasAgentWorked, parkedStep } from '@shared/board';
+import type { MergeRequest } from '@shared/mergeRequest';
 import { attachmentsInScope, type PromptAttachment } from '@shared/attachments';
 import type {
   SchedulerState,
@@ -1079,6 +1080,14 @@ export class Scheduler {
       worktree: string;
     }
   >();
+  /**
+   * PR/MRs a sync found conflicted and `autoResolvePrConflicts` is on for, keyed by MR id —
+   * queued here by {@link Scheduler.resolveForgeConflict} for the conflict ladder to drive
+   * (fetch, rebase onto the target, force-with-lease push). Cleared by
+   * {@link Scheduler.noteForgeConflictCleared} the moment the forge stops reporting
+   * conflicts, so a fixed or superseded episode is never acted on twice.
+   */
+  private readonly forgeConflicts = new Map<string, { taskId: string; mr: MergeRequest }>();
   /**
    * Branches that are finished and waiting for a human to merge them (Phase 17), keyed by
    * task id. Populated when a worktree run settles and auto-merge is off FOR THAT CARD
@@ -2321,6 +2330,32 @@ export class Scheduler {
   noteWorkLanded(taskId: string): void {
     if (this.disposed) return;
     this.chain.landed(taskId);
+  }
+
+  /**
+   * A sync found this card's PR/MR open, non-draft and conflicted, with
+   * `autoResolvePrConflicts` on — queue it for the conflict ladder (`@shared/mergeRequest`'s
+   * `conflictedForTaskIds` is what decided it qualifies).
+   *
+   * Recording only, here: the actual ladder — fetch the remote branch, rebase it onto the
+   * target, force-with-lease push the result back — is driven elsewhere, against the full
+   * contract `AppSettings.autoResolvePrConflicts` documents (scope, the once-per-episode
+   * trigger, the never-clobber rule). Idempotent, like `noteWorkLanded`: a poller repeats
+   * the same verdict on every sync for as long as the MR stays conflicted.
+   */
+  resolveForgeConflict(taskId: string, mr: MergeRequest): void {
+    if (this.disposed) return;
+    this.forgeConflicts.set(mr.id, { taskId, mr });
+  }
+
+  /**
+   * The forge no longer reports conflicts on this PR/MR — drop whatever
+   * {@link Scheduler.resolveForgeConflict} had queued for it, so a resolved or superseded
+   * episode is not acted on again.
+   */
+  noteForgeConflictCleared(mrId: string): void {
+    if (this.disposed) return;
+    this.forgeConflicts.delete(mrId);
   }
 
   /**

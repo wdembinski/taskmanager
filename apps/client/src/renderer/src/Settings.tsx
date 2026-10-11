@@ -236,8 +236,8 @@ const FEATURE_SWITCHES: ReadonlyArray<{
   {
     key: 'prAutoResolve',
     label:
-      'Watch the PRs/MRs I open and fix conflicts with the agent automatically — when off, click the red blocked icon to do it',
-    hint: 'Also asks the provider to rebase a stale branch, and notes when a pipeline fails or turns green.',
+      'Watch the PRs/MRs I open and rebase past conflicts automatically — when off, click the red blocked icon to do it',
+    hint: 'Fetches the target, rebases the branch onto it and force-pushes the result back — only for an MR/PR with a live worktree behind it; one opened by hand with no worktree gets a card note instead. Falls back to the agent only when a conflict cannot be resolved mechanically. Also asks the provider to rebase a stale branch, and notes when a pipeline fails or turns green.',
   },
 ];
 
