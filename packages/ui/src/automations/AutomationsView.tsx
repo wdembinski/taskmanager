@@ -106,7 +106,13 @@ function nextRunOf(a: Automation, now: number): number | null {
   }
 }
 
-export function AutomationsView(): JSX.Element {
+export interface AutomationsViewProps {
+  /** Same host-decides callback `RunLogDrawer` forwards a run's `taskId` into — this screen
+   *  only passes it through. */
+  onOpenTask?: (taskId: string) => void;
+}
+
+export function AutomationsView({ onOpenTask }: AutomationsViewProps = {}): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
 
@@ -365,6 +371,7 @@ export function AutomationsView(): JSX.Element {
         automation={viewingRuns}
         runs={viewingRuns ? runs.filter((r) => r.automationId === viewingRuns.id) : []}
         onClose={() => setViewingRuns(null)}
+        onOpenTask={onOpenTask}
       />
     </div>
   );
