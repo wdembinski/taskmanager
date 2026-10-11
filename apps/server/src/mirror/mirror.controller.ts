@@ -16,6 +16,8 @@ import {
 import {
   BOARD_CLIENT_HEADER,
   BOARD_FOCUS_HEADER,
+  type AutomationRunsResponse,
+  type AutomationsResponse,
   type BoardResponse,
   type CommandRequest,
   type CreateProjectRequest,
@@ -126,6 +128,30 @@ export class MirrorController {
     @Body() body: unknown,
   ): Promise<SettingsResponse> {
     return { settings: await this.mirror.putSettings(accountId, body) };
+  }
+
+  /** Every automation mirrored for this account — see `MirrorService.automations`. */
+  @Get('automations')
+  automations(@AccountId() accountId: string): Promise<AutomationsResponse> {
+    return this.mirror.automations(accountId);
+  }
+
+  /**
+   * One automation's run log, newest first — see `MirrorService.automationRuns` for the
+   * 404 and the cap `?limit=` cannot raise past.
+   */
+  @Get('automations/:id/runs')
+  automationRuns(
+    @AccountId() accountId: string,
+    @Param('id') id: string,
+    @Query('limit') limit: string | undefined,
+  ): Promise<AutomationRunsResponse> {
+    const parsed = Number(limit);
+    return this.mirror.automationRuns(
+      accountId,
+      id,
+      Number.isFinite(parsed) && parsed > 0 ? parsed : 50,
+    );
   }
 
   @Post('commands')
