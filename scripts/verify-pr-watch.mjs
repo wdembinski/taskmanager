@@ -9,17 +9,17 @@
  * `mergeRequest.test.ts` proves `prWatchAction` is pure and correct, and
  * `forge/prWatcher.test.ts` proves `watchMergeRequests` dispatches to the right dependency
  * for each action. Neither can answer what a human actually cares about: when a real sync
- * hands the watcher a conflicted merge request, does it actually reach into the card's own
- * conversation and make the agent do something, in the card's own git worktree? That answer
+ * hands the watcher a conflicted merge request, does the conflict ladder actually rebase the
+ * card's own branch past a real conflict and push the result back to the forge? That answer
  * is the REAL `Scheduler`, the REAL `SessionManager`, a REAL git worktree against a REAL
  * (local, bare) remote, and — for the rebase action — a REAL `GitLabClient`/`GitHubClient`
  * making a REAL `fetch` call. A fake `PrWatcherDeps` stops every one of those links short of
  * the thing being asserted.
  *
  * So this bundles the app's own modules (`store.ts`, `sessionManager.ts`,
- * `worktreeManager.ts`, `scheduler.ts`, `forge/prWatcher.ts`) with esbuild and runs them
- * under Electron-as-Node — no window, no second instance of the app (see `RELEASE.md` rule
- * 6 / the `verify-electron-app` memory) — against:
+ * `worktreeManager.ts`, `scheduler.ts`, `forge/prWatcher.ts`, `git.ts`) with esbuild and runs
+ * them under Electron-as-Node — no window, no second instance of the app (see `RELEASE.md`
+ * rule 6 / the `verify-electron-app` memory) — against:
  *
  *  - a real SQLite store (`better-sqlite3`, which only loads under Electron's ABI — the
  *    reason this lives here rather than in the vitest suite),
@@ -32,12 +32,18 @@
  * ## What it proves
  *
  *  1. **resolve-conflicts, end to end.** A card runs once (a real worktree, a real commit, a
- *     real push into the bare origin). A sync then hands the watcher a merge request on that
- *     card's own branch with a conflict. The watcher's `chatWithAgent` call resumes that
- *     card's EXACT session (`--resume`), with a prompt naming the MR, its URL and both
- *     branches. The "agent" commits again and pushes, and the bare origin's ref actually
- *     advances to that second commit — proving the whole loop (watcher → scheduler →
- *     worktree → git → remote) rather than just the call into `chatWithAgent`.
+ *     real push into the bare origin). A second clone then pushes a CONFLICTING commit to the
+ *     target directly on that same bare origin — somebody else's work landing while this
+ *     card's PR was open. A sync hands the watcher the now-conflicted merge request, and the
+ *     watcher's `resolveForgeConflict` call drives the real conflict ladder: a real
+ *     `fetchRef` of the target and the card's own source branch, a real `rebaseForPullRequest`
+ *     that lands on a genuine content conflict, a real Rung 2 — the SAME card requeued with
+ *     the paused rebase handed over, not aborted — and, once the conflict markers are
+ *     resolved and staged, a real `finishPullRequestRebase` and a real `--force-with-lease`
+ *     push. The bare origin's ref actually advances to the rebased, resolved commit, and a
+ *     `merge-base --is-ancestor` check against it proves that commit really sits ON TOP of the
+ *     one the second clone pushed — proving the whole loop (watcher → scheduler → worktree →
+ *     git → remote) rather than just the call into `resolveForgeConflict`.
  *  2. **Idempotency, through the real store.** Re-running the watcher over the SAME row
  *     (re-read from SQLite, carrying the `lastActedSha` the first run persisted) starts no
  *     third session and files no second note — the guard survives a real round trip through
@@ -61,10 +67,13 @@
  * ## Prove it can fail
  *
  * Comment out the `deps.markActed(...)` call in `prWatcher.ts`'s `watchOne` and re-run: check
- * 2 goes red (a third session starts, re-nagging the agent about a conflict it was already
- * asked to fix). Put the early `if (!deps.getSettings().features.prAutoResolve) return;`
+ * 2 goes red (a second drive starts, re-queuing a ladder run against a conflict it was
+ * already asked to fix). Put the early `if (!deps.getSettings().features.prAutoResolve) return;`
  * behind a `&& false` and check 6 goes red. Change `forgeRebase` to swallow its own error
- * instead of throwing and check 4's "lastActedSha NOT advanced" half goes red.
+ * instead of throwing and check 4's "lastActedSha NOT advanced" half goes red. Comment out
+ * `pushForgeRebase`'s call to `this.forgeGit.push` in `scheduler.ts` and check 1's final
+ * push-landed assertion goes red while everything up to the rebase still passes — proof that
+ * assertion is not a tautology.
  *
  * Exits non-zero naming every failed check.
  */
@@ -87,6 +96,7 @@ import { fileURLToPath } from 'node:url';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const clientModules = join(root, 'apps', 'client', 'node_modules');
 const sharedSrc = join(root, 'packages', 'shared', 'src');
+const protocolSrc = join(root, 'packages', 'protocol', 'src');
 
 function log(message) {
   process.stdout.write(`${message}\n`);
@@ -236,6 +246,7 @@ async function main() {
           '--platform=node',
           '--format=cjs',
           `--alias:@shared=${sharedSrc}`,
+          `--alias:@protocol=${protocolSrc}`,
           '--external:better-sqlite3',
           `--outfile=${outfile}`,
           '--log-level=error',
@@ -255,6 +266,7 @@ async function main() {
     bundle(join(root, 'apps/client/src/main/worktreeManager.ts'), join(scratch, 'worktreeManager.cjs'));
     bundle(join(root, 'apps/client/src/main/scheduler.ts'), join(scratch, 'scheduler.cjs'));
     bundle(join(root, 'apps/client/src/main/forge/prWatcher.ts'), join(scratch, 'prWatcher.cjs'));
+    bundle(join(root, 'apps/client/src/main/git.ts'), join(scratch, 'git.cjs'));
 
     const electron = join(
       clientModules,
@@ -327,6 +339,7 @@ const { SessionManager } = require(join(work, 'sessionManager.cjs'));
 const { WorktreeManager, taskBranch } = require(join(work, 'worktreeManager.cjs'));
 const { Scheduler } = require(join(work, 'scheduler.cjs'));
 const { watchMergeRequests } = require(join(work, 'prWatcher.cjs'));
+const { fetchRef, pushBranch } = require(join(work, 'git.cjs'));
 
 let failures = 0;
 function check(label, condition, detail) {
@@ -406,11 +419,25 @@ function originHead(branch) {
   }
 }
 
-/** Everything the card's timeline says, as one string. */
+/** True when `ancestorSha` is reachable by walking `descendantSha`'s history, in `cwd`. */
+function isAncestorOf(cwd, ancestorSha, descendantSha) {
+  const res = spawnSync('git', ['merge-base', '--is-ancestor', ancestorSha, descendantSha], {
+    cwd,
+  });
+  return res.status === 0;
+}
+
+/**
+ * Everything the card's timeline says, as one string — both a card-scoped comment
+ * (`kind: 'comment'`, `deps.note`/`noteCard`) and a run-scoped assistant event
+ * (`kind: 'event'`, `Scheduler.noteRun`, e.g. the ladder's "attempting AI resolution" and
+ * "pushed it back to the forge" notes), which `getTaskActivity` returns in two different
+ * shapes — the event's text lives at `e.event.text`, not `e.body`.
+ */
 const timelineOf = (taskId) =>
   store
     .getTaskActivity(taskId)
-    .map((e) => e.body ?? '')
+    .map((e) => e.body ?? (e.kind === 'event' ? e.event?.text : undefined) ?? '')
     .join('\n');
 
 process.env.PATH = binDir + require('node:path').delimiter + process.env.PATH;
@@ -431,6 +458,22 @@ const scheduler = new Scheduler(
   () => {},
   worktrees,
 );
+
+// The ladder's fetch/push, against the REAL bare origin this repo already has as `origin` —
+// no token or tokenized URL needed, exactly like a plain `git fetch origin`/`git push origin`
+// would need none for a local remote.
+scheduler.setForgeGit({
+  fetch: async (project, cwd, branch, localRef) => {
+    const res = await fetchRef(cwd, 'origin', branch, localRef);
+    if (res.code !== 0) return { ok: false, message: res.stderr.trim() || 'git fetch failed' };
+    return { ok: true, sha: git(cwd, 'rev-parse', localRef) };
+  },
+  push: async (project, cwd, branch, expected) => {
+    const res = await pushBranch(cwd, 'origin', branch, { forceWithLease: { expected } });
+    if (res.code !== 0) return { ok: false, message: res.stderr.trim() || 'git push failed' };
+    return { ok: true };
+  },
+});
 
 /**
  * How many times a run on this task has fully exited so far — the empty patch
@@ -523,7 +566,12 @@ scheduler.runTask(chatCard.id);
 const firstRun = await nthInvocation(1, 'the first run to spawn');
 check('the run happened in its own worktree, not the project directory', firstRun.cwd.replace(/\\/g, '/') !== repoDir.replace(/\\/g, '/'));
 
-const firstSha = commitAndPush(firstRun.cwd, 'work-1.txt', 'initial work\n', branch);
+// Modifies `seed.txt`, which already exists on `base` from `initRepoWithBareOrigin` —
+// rather than adding a brand-new file — so the conflict manufactured below is an ordinary
+// modify/modify clash with real `<<<<<<<` markers, the exact shape `worktreeManager.test.ts`
+// already proves the ladder resolves, rather than an add/add clash whose marker shape this
+// script would otherwise be guessing at.
+const firstSha = commitAndPush(firstRun.cwd, 'seed.txt', 'seed\nbranch work\n', branch);
 check(
   'the agent\'s first commit really landed in the bare origin',
   originHead(branch) === firstSha,
@@ -546,6 +594,21 @@ const exitsAfterFirst = exitCountFor(chatCard.id);
 const sessionId = store.getTask(chatCard.id).sessionId;
 check('a real session id was established', typeof sessionId === 'string' && sessionId.length > 0, sessionId);
 
+// Somebody else's work landing on the target while this card's PR was open — a SECOND
+// clone of the bare origin, modifying the same file the card's own first commit modified,
+// so rebasing the card's branch onto it is a genuine content conflict.
+const baseShaBeforeConflict = git(repoDir, 'rev-parse', base);
+const otherClone = join(work, 'other-clone');
+git(work, 'clone', bareDir, otherClone);
+git(otherClone, 'config', 'user.email', 'verify@example.com');
+git(otherClone, 'config', 'user.name', 'Verify');
+git(otherClone, 'config', 'commit.gpgsign', 'false');
+writeFileSync(join(otherClone, 'seed.txt'), 'seed\nconflicting change on the target\n', 'utf8');
+git(otherClone, 'add', '-A');
+git(otherClone, 'commit', '--no-verify', '-m', 'conflicting change on the target');
+git(otherClone, 'push', 'origin', `HEAD:refs/heads/${base}`);
+const targetConflictSha = git(otherClone, 'rev-parse', 'HEAD');
+
 const timelineBeforeConflict = timelineOf(chatCard.id);
 const conflictMr = mrRow({
   id: 'gl-501-7',
@@ -565,43 +628,78 @@ const deps = {
   getSettings: () => store.getSettings(),
   getTask: (id) => store.getTask(id),
   tokenFor: () => 'stub-token',
-  chatWithAgent: (taskId, message) => scheduler.chatWithAgent(taskId, message),
+  resolveForgeConflict: (taskId, mr) => scheduler.resolveForgeConflict(taskId, mr),
   note: (projectId, taskId, body) => store.addComment(projectId, taskId, body),
   markActed: (mrId, headSha) => store.markMergeRequestActed(mrId, headSha),
 };
 
 await watchMergeRequests([conflictMr], deps);
 
-const secondRun = await nthInvocation(2, 'the resolve-conflicts run to spawn');
+// The ladder's own fetch+rebase run in the background (`Scheduler.driveForgeConflict`), and
+// lands on a real conflict: a Rung 2 fix is dispatched as a fresh, requeued run of the SAME
+// card, in the SAME worktree, with the paused rebase handed over rather than aborted.
+const secondRun = await nthInvocation(2, 'the conflict-fix run to spawn');
 check(
   'it resumed the card\'s EXACT session, not a fresh one',
   flag(secondRun, '--resume') === sessionId,
   `${flag(secondRun, '--resume')} != ${sessionId}`,
 );
 check('and in the SAME worktree the first run used', secondRun.cwd === firstRun.cwd, `${secondRun.cwd} != ${firstRun.cwd}`);
-
-const conflictPrompt = await promptFor(2, 'the resolve-conflicts prompt');
-check('the prompt names the merge request', conflictPrompt.includes('!7'), conflictPrompt);
-check('and its URL', conflictPrompt.includes(conflictMr.webUrl), conflictPrompt);
-check('and both branches', conflictPrompt.includes(branch) && conflictPrompt.includes(base), conflictPrompt);
-
-const secondSha = commitAndPush(secondRun.cwd, 'work-2.txt', 'resolved the conflict\n', branch);
 check(
-  'the "fix" commit really advanced the bare origin',
-  originHead(branch) === secondSha && secondSha !== firstSha,
-  `${originHead(branch)} (was ${firstSha}, now ${secondSha})`,
+  'the worktree really is mid-rebase, with conflict markers in seed.txt',
+  readFileSync(join(secondRun.cwd, 'seed.txt'), 'utf8').includes('<<<<<<<'),
 );
+
+const rebaseNote = notesSince(chatCard.id, timelineBeforeConflict);
+check(
+  'the card\'s timeline says the ladder is rebasing, naming the MR',
+  rebaseNote.includes('!7') && rebaseNote.includes('conflicts with') && rebaseNote.includes(base),
+  rebaseNote,
+);
+
+// Resolve it the way a Rung 2 turn is told to: edit the file, `git add` it — never commit,
+// push or `rebase --continue`, which is the orchestrator's job once this turn's `result`
+// lands (see `dispatchConflictFix`'s own note to the agent).
+writeFileSync(join(secondRun.cwd, 'seed.txt'), 'seed\nresolved together\n', 'utf8');
+git(secondRun.cwd, 'add', 'seed.txt');
 proceed(2);
 await waitFor(
-  'the resolve-conflicts run to settle',
+  'the conflict-fix run to settle',
   () => exitCountFor(chatCard.id) >= exitsAfterFirst + 2,
 );
+// `applyIntegrationResult`'s 'rebased' case fires the lease push fire-and-forget
+// (`void this.pushForgeRebase(...)`), and `finishConflict` itself is reached the same way
+// from the run's own exit handling — so settling the RUN does not mean the push, or the
+// note it files right after, have landed yet. Wait for the note rather than the origin ref
+// directly: it is written strictly after a successful push, so waiting on it subsumes both.
+await waitFor(
+  'the lease push to land, and the "pushed it back" note to follow it',
+  () => notesSince(chatCard.id, timelineBeforeConflict).includes('pushed it back to the forge'),
+);
 
-const conflictNote = notesSince(chatCard.id, timelineBeforeConflict);
+const pushedSha = originHead(branch);
 check(
-  'the card\'s timeline says the agent was asked to resolve it',
-  conflictNote.includes('has a merge conflict') && conflictNote.includes('asked the agent to resolve it'),
-  conflictNote,
+  'the rebased, resolved commit really landed on the bare origin',
+  pushedSha !== null && pushedSha !== firstSha,
+  `${pushedSha} (was ${firstSha})`,
+);
+check(
+  // `bareDir` itself, not `otherClone`: it alone has BOTH commits as objects — the
+  // conflicting push and the final rebased one — since every push in this scenario lands
+  // on it, while `otherClone`'s object store was cloned before the second one existed.
+  'and it is built ON TOP of the conflicting commit the second clone pushed',
+  pushedSha !== null && isAncestorOf(bareDir, targetConflictSha, pushedSha),
+);
+check(
+  'the local base ref never moved — a PR/MR rebase touches no base ref',
+  git(repoDir, 'rev-parse', base) === baseShaBeforeConflict,
+);
+
+const pushNote = notesSince(chatCard.id, timelineBeforeConflict);
+check(
+  'the card\'s timeline says it was pushed back to the forge',
+  pushNote.includes('pushed it back to the forge'),
+  pushNote,
 );
 
 const actedRow = store.listMergeRequests().find((r) => r.id === conflictMr.id);
@@ -619,8 +717,8 @@ const invocationsBeforeReplay = invocations().length;
 const timelineBeforeReplay = timelineOf(chatCard.id);
 await watchMergeRequests([reRead], deps);
 await sleep(400); // a spawn that was going to happen would have happened by now
-check('no third session was started', invocations().length === invocationsBeforeReplay, invocations().length);
-check('and no second note was filed', timelineOf(chatCard.id) === timelineBeforeReplay);
+check('no third run was dispatched', invocations().length === invocationsBeforeReplay, invocations().length);
+check('and no further note was filed', timelineOf(chatCard.id) === timelineBeforeReplay);
 
 // ===========================================================================
 section('3. forge-rebase: the real GitLabClient/GitHubClient against a fake forge');

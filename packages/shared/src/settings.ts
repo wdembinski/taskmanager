@@ -626,12 +626,43 @@ export interface FeatureSettings {
   ticketsToOwnBoard: boolean;
   /**
    * Watch the PRs/MRs this app opened and act on `prWatchAction`'s behalf: ask the forge to
-   * rebase a stale branch, hand a conflict to the card's agent, and note a pipeline that
-   * just failed or just went green.
+   * rebase a stale branch, climb the conflict ladder on a conflicted one, and note a
+   * pipeline that just failed or just went green.
    *
-   * **Off by default**, unlike every other switch here — this one hands the agent a merge to
-   * resolve without being asked, and that is not a thing to opt a user into silently. With it
-   * off, the same action is one click away on the card's red blocked icon.
+   * A conflict is rebased onto the target and force-pushed back with `--force-with-lease` —
+   * the same mechanical/scripted rungs an ordinary base-branch merge already climbs (union-
+   * merging additive files, rebuilding a lockfile, taking the target's side of a
+   * version-only clash). Only a conflict neither rung can resolve escalates to the card's
+   * agent, exactly as an ordinary merge conflict would.
+   *
+   * In scope only for an open, non-draft PR/MR that resolves to a card (by `taskId`,
+   * preferring `openedForTaskId`) whose owner card has an `agentProjectId` and a live
+   * worktree — one a human opened by hand, with no worktree behind it, gets a card note
+   * instead and is left alone. Guarded off whenever the task is `inFlight`, `integrating`,
+   * already has a `pendingConflictFix`, or has an open `merge-conflict` attention item —
+   * every one of those already owns the branch or the worktree.
+   *
+   * Fires once per **conflict episode**: a poller-side map keyed on the fetched remote
+   * source-branch SHA records that an episode has been handled, so repeated polls of the
+   * same SHA do not re-trigger. A new push to the PR's source branch, or a fresh conflict
+   * after a resolution attempt, is a new SHA and re-arms it; the entry is cleared once the
+   * forge reports `hasConflicts: false`.
+   *
+   * **Never clobbers a push it hasn't seen.** The remote source branch is fetched before
+   * anything else, and the fix only proceeds if that fetched tip is an ancestor of the
+   * local branch — i.e. nobody has pushed to the PR since this app last saw it. The
+   * `--force-with-lease` push leases against exactly that fetched SHA, so a push landing
+   * in the gap is refused by git rather than overwritten. If the tip is already not an
+   * ancestor, the attempt stops before touching anything and notes the card instead.
+   *
+   * Deliberately narrower than the forge's own "update branch" — a PR merely behind its
+   * target (`need-rebase`/`behind`, no conflict) is not touched here; pressing that stays
+   * a manual, human-initiated action.
+   *
+   * **Off by default**, unlike every other switch here — this one force-pushes a branch and
+   * (on an unresolvable conflict) hands the agent a merge to resolve without being asked,
+   * and that is not a thing to opt a user into silently. With it off, the same action is one
+   * click away on the card's red blocked icon.
    */
   prAutoResolve: boolean;
 }

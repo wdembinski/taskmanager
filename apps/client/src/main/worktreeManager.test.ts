@@ -488,6 +488,90 @@ describe('WorktreeManager.integrate — conflict ladder Rung 1.5 (scripted)', ()
   }, 120_000);
 });
 
+/**
+ * `rebaseForPullRequest` / `finishPullRequestRebase` — the PR twin of `integrate` /
+ * `finishAfterConflict`. The contract that matters: a PR branch is rebased onto its
+ * target, never merged into it, so the target ref and the worktree must come out of this
+ * exactly as they went in.
+ */
+describe('WorktreeManager.rebaseForPullRequest', () => {
+  async function commitOnBase(file: string, content: string, msg: string) {
+    writeFileSync(join(repo, file), content);
+    await git(repo, ['add', '-A']);
+    await git(repo, ['commit', '--no-verify', '-m', msg]);
+  }
+
+  it('rebases cleanly onto the target and leaves the worktree and target ref untouched', async () => {
+    const wtm = new WorktreeManager(root);
+    const wt = await branchAdding('orch/pr1', 'feature.txt', 'feature\n');
+    await commitOnBase('other.txt', 'base moved on\n', 'base advances');
+    const targetTip = (await git(repo, ['rev-parse', base])).stdout.trim();
+
+    const res = await wtm.rebaseForPullRequest(project(), 'orch/pr1', base, wt, 'pr rebase');
+
+    expect(res.status).toBe('rebased');
+    expect(res.status === 'rebased' && res.worktree).toBe(wt);
+    expect(res.status === 'rebased' && res.base).toBe(base);
+    // The worktree is still a live, usable repo — never removed.
+    expect(existsSync(wt)).toBe(true);
+    expect(await currentBranch(wt)).toBe('orch/pr1');
+    // The rebase replayed the branch on top of base's new commit.
+    expect(existsSync(join(wt, 'other.txt'))).toBe(true);
+    expect(existsSync(join(wt, 'feature.txt'))).toBe(true);
+    // Nothing moved on the project's side: no fast-forward, no merge, no branch deletion.
+    expect((await git(repo, ['rev-parse', base])).stdout.trim()).toBe(targetTip);
+    expect((await git(repo, ['rev-parse', '--verify', '--quiet', 'orch/pr1'])).code).toBe(0);
+  });
+
+  it('returns "conflict" with the rebase left paused, touching nothing else', async () => {
+    const wtm = new WorktreeManager(root);
+    await commitOnBase('src.txt', 'original\n', 'seed src');
+    const wt = join(root, 'wt-pr2');
+    await git(repo, ['worktree', 'add', '-b', 'orch/pr2', wt, base]);
+    writeFileSync(join(wt, 'src.txt'), 'BRANCH-EDIT\n');
+    await git(wt, ['commit', '--no-verify', '-am', 'branch edits src']);
+    await commitOnBase('src.txt', 'BASE-EDIT\n', 'base edits src');
+    const targetTip = (await git(repo, ['rev-parse', base])).stdout.trim();
+
+    const res = await wtm.rebaseForPullRequest(project(), 'orch/pr2', base, wt, 'pr rebase');
+
+    expect(res.status).toBe('conflict');
+    expect(res.status === 'conflict' && res.worktree).toBe(wt);
+    expect(await hasConflicts(wt)).toBe(true);
+    expect(readFileSync(join(wt, 'src.txt'), 'utf8')).toContain('<<<<<<<');
+    // The target ref never moved, and the worktree is still there, paused.
+    expect((await git(repo, ['rev-parse', base])).stdout.trim()).toBe(targetTip);
+    expect(existsSync(wt)).toBe(true);
+  });
+
+  it('after staging a resolution, finishPullRequestRebase returns "rebased" with base unchanged', async () => {
+    const wtm = new WorktreeManager(root);
+    await commitOnBase('src.txt', 'original\n', 'seed src');
+    const wt = join(root, 'wt-pr3');
+    await git(repo, ['worktree', 'add', '-b', 'orch/pr3', wt, base]);
+    writeFileSync(join(wt, 'src.txt'), 'BRANCH-EDIT\n');
+    await git(wt, ['commit', '--no-verify', '-am', 'branch edits src']);
+    await commitOnBase('src.txt', 'BASE-EDIT\n', 'base edits src');
+    const targetTip = (await git(repo, ['rev-parse', base])).stdout.trim();
+
+    const first = await wtm.rebaseForPullRequest(project(), 'orch/pr3', base, wt, 'pr rebase');
+    expect(first.status).toBe('conflict'); // rebase now paused mid-flight
+
+    writeFileSync(join(wt, 'src.txt'), 'RESOLVED-BY-HAND\n');
+    await git(wt, ['add', 'src.txt']);
+
+    const res = await wtm.finishPullRequestRebase(project(), 'orch/pr3', base, wt);
+
+    expect(res.status).toBe('rebased');
+    expect(res.status === 'rebased' && res.worktree).toBe(wt);
+    expect(await currentBranch(wt)).toBe('orch/pr3');
+    expect(readFileSync(join(wt, 'src.txt'), 'utf8')).toBe('RESOLVED-BY-HAND\n');
+    // Still just a rebase: base never moved, and the branch is still there to be pushed.
+    expect((await git(repo, ['rev-parse', base])).stdout.trim()).toBe(targetTip);
+    expect((await git(repo, ['rev-parse', '--verify', '--quiet', 'orch/pr3'])).code).toBe(0);
+  });
+});
+
 describe('resolveVersionOnlyConflict', () => {
   const conflicted = (ours: string, theirs: string, extra = ''): string =>
     `{\n  "name": "x",\n<<<<<<< HEAD\n  "version": "${ours}",\n=======\n  "version": ` +

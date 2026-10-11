@@ -572,7 +572,7 @@ export async function remoteUrl(cwd: string, remote = 'origin', host?: ExecHost)
   return res.code === 0 ? res.stdout.trim() : '';
 }
 
-/** Where and how {@link pushBranch} should push. */
+/** Where and how {@link pushBranch} (and {@link fetchRef}) should push or fetch. */
 export interface PushOptions {
   /**
    * Push to this URL instead of to `remote`'s configured one — an EPHEMERAL, tokenized
@@ -582,6 +582,13 @@ export interface PushOptions {
   /** Strings to strip out of the captured output before anybody reads it. */
   secrets?: readonly string[];
   host?: ExecHost;
+  /**
+   * Push only if the remote's current tip of `branch` is still `expected` —
+   * `--force-with-lease`. Lets a rewritten branch (e.g. after a rebase onto a PR's base)
+   * overwrite the remote without blindly clobbering a commit someone else pushed there
+   * since we last fetched it.
+   */
+  forceWithLease?: { expected: string };
 }
 
 /**
@@ -642,6 +649,9 @@ export async function pushBranch(
       'credential.interactive=never',
       'push',
       ...(tokenized ? [] : ['--set-upstream']),
+      ...(opts.forceWithLease
+        ? [`--force-with-lease=refs/heads/${branch}:${opts.forceWithLease.expected}`]
+        : []),
       target,
       `HEAD:refs/heads/${branch}`,
     ],
@@ -653,6 +663,50 @@ export async function pushBranch(
     stdout: redactSecrets(res.stdout, opts.secrets),
     stderr: redactSecrets(res.stderr, opts.secrets),
   };
+}
+
+/**
+ * Fetch `branch` from `remoteOrUrl` into the local ref `localRef`, without touching the
+ * work tree or the index — the read-side counterpart of {@link pushBranch}, sharing its
+ * "never prompt, redact secrets" contract for the same tokenized-URL path. The `+` on the
+ * refspec force-updates `localRef` regardless of whether it would fast-forward: it is
+ * scratch space the caller owns (e.g. the base ref for computing a lease's expected SHA),
+ * not a branch with history of its own to protect.
+ */
+export async function fetchRef(
+  cwd: string,
+  remoteOrUrl: string,
+  branch: string,
+  localRef: string,
+  opts: PushOptions = {},
+): Promise<GitResult> {
+  const target = opts.url || remoteOrUrl;
+  const res = await git(
+    cwd,
+    ['-c', 'credential.interactive=never', 'fetch', target, `+refs/heads/${branch}:${localRef}`],
+    opts.host,
+    NO_PROMPT_ENV,
+  );
+  return {
+    code: res.code,
+    stdout: redactSecrets(res.stdout, opts.secrets),
+    stderr: redactSecrets(res.stderr, opts.secrets),
+  };
+}
+
+/**
+ * True when `a` is an ancestor of `b` — i.e. `a` is reachable by walking `b`'s history.
+ * `git merge-base --is-ancestor` exits 0 for yes, 1 for no, and anything else (a ref that
+ * doesn't exist) is reported as `false` rather than thrown.
+ */
+export async function isAncestor(
+  dir: string,
+  a: string,
+  b: string,
+  host?: ExecHost,
+): Promise<boolean> {
+  const res = await git(dir, ['merge-base', '--is-ancestor', a, b], host);
+  return res.code === 0;
 }
 
 /**

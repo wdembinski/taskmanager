@@ -8,12 +8,12 @@
  * action it returned, never whether to.
  *
  * Gated entirely on `features.prAutoResolve` (default OFF, see its own doc): nobody is
- * opted into an agent resolving their merge conflicts, or a forge rebasing their branch,
+ * opted into the app force-pushing their branches, or a forge rebasing their branch,
  * without asking first.
  */
 import type { ForgeProvider, MergeRequest, PrWatchAction } from '@shared/mergeRequest';
 import { forgeName, mrRef, prWatchAction } from '@shared/mergeRequest';
-import type { ChatRefusal, ChatSendResult, Task } from '@shared/model';
+import type { Task } from '@shared/model';
 import type { AppSettings } from '@shared/settings';
 import { GitHubClient } from '../github/githubClient';
 import { GitLabClient } from '../gitlab/gitlabClient';
@@ -28,8 +28,13 @@ export interface PrWatcherDeps {
    * contract as `CreatePrDeps.tokenFor` — read at the moment it is spent, never held.
    */
   tokenFor(provider: ForgeProvider): string | null;
-  /** Hand a problem to the card's agent — `Scheduler.chatWithAgent`. */
-  chatWithAgent(taskId: string, message: string): ChatSendResult;
+  /**
+   * Queue the conflict ladder for this MR — `Scheduler.resolveForgeConflict`. Fire-and-forget,
+   * same as this call always was: it fetches, rebases and force-with-lease pushes in the
+   * background and notes the card itself as it goes, so there is nothing here to await or to
+   * note on its behalf.
+   */
+  resolveForgeConflict(taskId: string, mr: MergeRequest): void;
   /** File a note on the card's timeline. */
   note(projectId: string, taskId: string, body: string): void;
   /** Remember that this MR's head commit has already been acted on. */
@@ -57,7 +62,7 @@ async function watchOne(mr: MergeRequest, deps: PrWatcherDeps): Promise<void> {
   const taskId = mr.openedForTaskId ?? mr.taskId;
   if (!taskId) return;
   const task = deps.getTask(taskId);
-  if (!task) return; // the card is gone — nothing to note, nobody to chat with
+  if (!task) return; // the card is gone — nothing to note, no worktree to rebase
 
   const action = prWatchAction(mr, { lastActedSha: mr.lastActedSha });
   if (action === 'none') return;
@@ -93,16 +98,12 @@ async function act(
         `${mrRef(mr)} had fallen behind "${mr.targetBranch}" — asked ${forgeName(mr.provider)} to rebase it.`,
       );
       return;
-    case 'resolve-conflicts': {
-      const result = deps.chatWithAgent(
-        task.id,
-        `${mrRef(mr)} (${mr.webUrl}) has a merge conflict against "${mr.targetBranch}". Please ` +
-          `fetch the latest "${mr.targetBranch}", rebase "${mr.sourceBranch}" onto it, resolve ` +
-          `the conflicts, and push.`,
-      );
-      deps.note(task.projectId, task.id, conflictNote(mr, result));
+    case 'resolve-conflicts':
+      // Fire-and-forget: the ladder fetches, rebases and force-with-lease pushes in the
+      // background and notes the card itself as it goes (see `Scheduler.resolveForgeConflict`),
+      // so there is nothing further to await or to note here.
+      deps.resolveForgeConflict(task.id, mr);
       return;
-    }
     case 'note-pipeline-failed':
       deps.note(
         task.projectId,
@@ -131,34 +132,4 @@ async function forgeRebase(mr: MergeRequest, deps: PrWatcherDeps): Promise<void>
   if (!owner || !repo) throw new Error(`Malformed GitHub repository path: ${mr.projectPath}`);
   const client = new GitHubClient({ baseUrl: forgeBaseUrl('github', settings), token });
   await client.updateBranch(owner, repo, mr.number);
-}
-
-/** What to write on the card's timeline once the agent has (or hasn't) been asked. */
-function conflictNote(mr: MergeRequest, result: ChatSendResult): string {
-  if (result.status !== 'refused') {
-    return `${mrRef(mr)} has a merge conflict — asked the agent to resolve it.`;
-  }
-  return (
-    `${mrRef(mr)} has a merge conflict, but it could not be handed to the agent ` +
-    `(${explainRefusal(result.reason)}). Resolve it by hand, or ask again from the card.`
-  );
-}
-
-function explainRefusal(reason: ChatRefusal): string {
-  switch (reason) {
-    case 'never-ran':
-      return 'this card has never run, so there is no conversation to continue';
-    case 'limit':
-      return 'a usage limit is holding all work right now';
-    case 'signed-out':
-      return 'claude is signed out';
-    case 'awaiting-decision':
-      return 'the card is already waiting on a decision';
-    case 'chain-busy':
-      return 'the card is mid-chain';
-    case 'not-running':
-      return 'the app is shutting down';
-    default:
-      return reason;
-  }
 }
