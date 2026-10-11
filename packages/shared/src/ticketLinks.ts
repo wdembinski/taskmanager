@@ -123,16 +123,12 @@ export function canLinkTickets(
  * here, only what stands in `taskId`'s own way.
  */
 export function blockersOf(links: readonly TicketLink[], taskId: string): string[] {
-  return links
-    .filter((l) => l.type === 'blocks' && l.toTaskId === taskId)
-    .map((l) => l.fromTaskId);
+  return links.filter((l) => l.type === 'blocks' && l.toTaskId === taskId).map((l) => l.fromTaskId);
 }
 
 /** Whether a ticket may be started, given what blocks it. See {@link startReadiness}. */
 export type StartReadiness =
-  | { kind: 'done' }
-  | { kind: 'ready' }
-  | { kind: 'waiting'; open: { id: string; task?: Task }[] };
+  { kind: 'done' } | { kind: 'ready' } | { kind: 'waiting'; open: { id: string; task?: Task }[] };
 
 /**
  * Whether `task` is free to start, blocked on other tickets, or already done.
