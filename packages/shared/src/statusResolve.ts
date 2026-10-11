@@ -16,9 +16,12 @@
  * {@link resolveGitHubColumn} is the same contract for GitHub issues, which have no workflow
  * at all: the sync and the drag both call it, for the same reason and against the same
  * failure. It is a separate function rather than a flag because what there is to resolve is
- * genuinely different — see its own docstring.
+ * genuinely different — see its own docstring. {@link resolveLinearColumn} reuses the JIRA
+ * resolver whole via {@link linearCategory}, unlike GitHub, because a Linear state IS one
+ * value with a fixed type, just like a JIRA status + category.
  */
 import type { BoardColumn, JiraStatusCategory } from './model';
+import type { LinearStateType } from './settings';
 import { categoryToColumn, lookupStatusColumn } from './board';
 
 /**
@@ -132,6 +135,43 @@ export function resolveStatusColumn(
   if (isBlockedishStatus(rawStatus, category)) return { column: 'blocked', reason: 'heuristic' };
 
   return { column: categoryToColumn(category), reason: 'category' };
+}
+
+/**
+ * Linear's six {@link LinearStateType}s folded onto JIRA's three categories, so a Linear
+ * state can be handed to {@link resolveStatusColumn} unchanged.
+ *
+ * `canceled → Done` is deliberate (F4 open question 5: as JIRA's Cancelled does); the move
+ * side (F4.3) is what guarantees a drag into DONE picks a `completed` state, not this mapping.
+ */
+export function linearCategory(type: LinearStateType): JiraStatusCategory {
+  switch (type) {
+    case 'triage':
+    case 'backlog':
+    case 'unstarted':
+      return 'To Do';
+    case 'started':
+      return 'In Progress';
+    case 'completed':
+    case 'canceled':
+      return 'Done';
+  }
+}
+
+/**
+ * Resolve a Linear workflow state (name plus its fixed {@link LinearStateType}) to a board
+ * column, and say which tier decided — the same contract as {@link resolveStatusColumn}, which
+ * this delegates to whole via {@link linearCategory}. Callers pass
+ * `settings.linear.stateColumnOverrides` / `learnedStateColumns` directly, the same shape as
+ * the JIRA maps.
+ */
+export function resolveLinearColumn(
+  stateName: string,
+  stateType: LinearStateType,
+  map?: Record<string, BoardColumn>,
+  learned?: Record<string, BoardColumn>,
+): StatusResolution {
+  return resolveStatusColumn(stateName, linearCategory(stateType), map, learned);
 }
 
 /**
