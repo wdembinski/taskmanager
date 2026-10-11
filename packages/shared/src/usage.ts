@@ -119,6 +119,8 @@ export interface UsageSeriesPoint {
   tokens: number;
 }
 
+/** One day, in ms. */
+export const DAY_MS = 24 * 60 * 60 * 1000;
 /** The trailing rolling usage window: 5 hours, in ms. */
 export const USAGE_WINDOW_MS = 5 * 60 * 60 * 1000;
 /** The weekly cap's window: 7 days, in ms — the other limit Claude enforces. */
@@ -230,3 +232,69 @@ export interface SessionStat {
  * between one task finishing and the next one starting routinely does.
  */
 export const SESSION_IDLE_GAP_MS = 10 * 60 * 1000;
+
+/** One `token_usage` row as the daily trend chart reads it. */
+export interface DailyUsageInput {
+  /** Epoch ms when the row was recorded. */
+  createdAt: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  /** Cost in USD for this row, or null if this row carried no cost. */
+  costUsd: number | null;
+}
+
+/** One local day of the trend chart. */
+export interface DailyUsagePoint {
+  /** Epoch ms of the viewer's local midnight for this day. */
+  dayStart: number;
+  /** `'YYYY-MM-DD'` in the viewer's zone — the axis label. */
+  date: string;
+  /**
+   * Cost in USD, or null if spend happened this day but no sample priced it. An
+   * **empty** day (no samples at all) is `0` — nothing was spent, a known zero —
+   * which is exactly what distinguishes it from an unpriced day.
+   */
+  costUsd: number | null;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+}
+
+/** Inputs to {@link bucketUsageDaily}. */
+export interface DailyBucketOptions {
+  /** Series length, oldest first, ending with today. `<= 0` or non-integer (floored) yields `[]`. */
+  days: number;
+  /**
+   * Minutes EAST of UTC (= `-Date#getTimezoneOffset()`). Note the sign convention
+   * is the OPPOSITE of `Date#getTimezoneOffset()`, which reports minutes WEST of UTC.
+   */
+  tzOffsetMinutes: number;
+  /** Epoch ms "now", injected for testability. */
+  now: number;
+}
+
+/**
+ * Buckets usage samples into exactly `opts.days` local-day points, oldest first,
+ * ending with the local day containing `opts.now`. Every day in the window is
+ * present — zero-filled — whether or not any sample fell in it.
+ *
+ * Local day index = `floor((t + tzOffsetMinutes·60000) / DAY_MS)`;
+ * `dayStart = index·DAY_MS − tzOffsetMinutes·60000`. `date` is formatted from the
+ * shifted ms using `getUTC*` accessors — never `Intl`, never a host-zone read — so
+ * the result depends only on `tzOffsetMinutes`, not on the machine running this code.
+ *
+ * A sample whose local day falls before the window's first day, or after `now`'s
+ * local day, is ignored.
+ *
+ * `costUsd` for a day is `null` while no sample in that day has carried a cost; once
+ * one does, it is the sum of the known costs in that day (samples with
+ * `costUsd: null` contribute nothing to the sum). A day with no samples at all is
+ * `0`, not `null` — see {@link DailyUsagePoint.costUsd}.
+ *
+ * `opts.days <= 0`, or not an integer (floored first), returns `[]`.
+ */
+export declare function bucketUsageDaily(
+  samples: readonly DailyUsageInput[],
+  opts: DailyBucketOptions,
+): DailyUsagePoint[];
