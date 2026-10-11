@@ -200,6 +200,47 @@ describe('layoutWeek — placing occurrences', () => {
     expect(result.trackerStrip.map((a) => a.id)).toEqual(['auto-2', 'auto-3']);
   });
 
+  it('a fall-back week still gets exactly one entry on the ambiguous day', () => {
+    // 2026-10-25 is Warsaw's fall-back Sunday (03:00 CEST → 02:00 CET), so wall time 02:30
+    // happens twice in real time. occurrencesBetween de-duplicates across that repeat
+    // (automationSchedule.ts); this only proves the week layout doesn't reintroduce a
+    // second cell for the day on top of it.
+    const automation = scheduleAutomation({
+      trigger: { kind: 'schedule', schedule: { type: 'daily', hour: 2, minute: 30 } },
+    });
+    const weekStartMs = wallToUtc(2026, 10, 19, 0, 0, WARSAW);
+    const result = layoutWeek({
+      automations: [automation],
+      runs: [],
+      weekStartMs,
+      nowMs: weekStartMs,
+      viewTz: WARSAW,
+    });
+
+    expect(result.cells).toHaveLength(7);
+    const fallBackDayCells = result.cells.filter((c) => c.day === 6); // Sunday 2026-10-25
+    expect(fallBackDayCells).toHaveLength(1);
+  });
+
+  it('an hours/6 schedule gets the same count per day through a DST week', () => {
+    const automation = scheduleAutomation({
+      trigger: { kind: 'schedule', schedule: { type: 'hours', every: 6 } },
+    });
+    const weekStartMs = wallToUtc(2026, 3, 23, 0, 0, WARSAW); // contains the spring-forward gap
+    const result = layoutWeek({
+      automations: [automation],
+      runs: [],
+      weekStartMs,
+      nowMs: weekStartMs,
+      viewTz: WARSAW,
+    });
+
+    expect(result.cells).toHaveLength(28); // 4 a day (00/06/12/18) × 7 days
+    for (let day = 0; day < 7; day++) {
+      expect(result.cells.filter((c) => c.day === day)).toHaveLength(4);
+    }
+  });
+
   it('skips an automation whose time zone is unresolvable instead of throwing', () => {
     const weekStartMs = wallToUtc(2026, 1, 5, 0, 0, WARSAW);
     const result = layoutWeek({

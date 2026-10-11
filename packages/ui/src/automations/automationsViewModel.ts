@@ -1,15 +1,9 @@
 /**
  * Pure state behind `AutomationsView`'s list and `NextRunsRail` — no React, no transport.
- *
- * `triggerLabel`'s tracker-kind branch deliberately re-derives what F1.14's
- * `automationEditorModel.triggerSummary` already renders for a draft, rather than importing
- * it: that module lives on the (separate, not-yet-merged) F1.14 branch, and this one has to
- * typecheck and test on its own before that lands. Once F1.11/F1.14 are in this branch the
- * two can be reconciled; until then the tracker-label wording below is kept identical to
- * `triggerSummary`'s on purpose, so there is nothing to reconcile *to* a different string.
  */
 import type { Automation, AutomationRun } from '@tm/shared/automation';
-import { nextOccurrence, scheduleLabel } from '@tm/shared/automationSchedule';
+import { nextOccurrence } from '@tm/shared/automationSchedule';
+import { draftFromAutomation, triggerSummary } from './automationEditorModel';
 
 export interface NextRun {
   automationId: string;
@@ -70,22 +64,10 @@ export function lastRunByAutomation(runs: readonly AutomationRun[]): Map<string,
 
 /**
  * One line describing what fires an automation: `"daily at 04:00 · Europe/Warsaw"` for a
- * schedule, or a tracker summary — see the file header for why the tracker branch is a local
- * copy of F1.14's `triggerSummary` rather than an import of it.
+ * schedule, or a tracker summary — the same line F1.14's editor renders for a draft
+ * (`automationEditorModel.triggerSummary`), via the same `draftFromAutomation` the editor
+ * uses to open an existing automation.
  */
 export function triggerLabel(automation: Automation): string {
-  if (automation.trigger.kind === 'schedule') {
-    return `${scheduleLabel(automation.trigger.schedule)} · ${automation.timeZone}`;
-  }
-
-  const { tracker } = automation.trigger;
-  const source = tracker.source === 'jira' ? 'Jira' : 'GitHub';
-  switch (tracker.event) {
-    case 'appeared':
-      return `${source} · new ticket appears`;
-    case 'entered-status':
-      return `${source} · entered "${tracker.status}"`;
-    case 'labeled':
-      return `${source} · label ${tracker.label}`;
-  }
+  return triggerSummary(draftFromAutomation(automation));
 }
