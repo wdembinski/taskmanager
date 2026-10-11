@@ -789,6 +789,39 @@ export interface AppSettings {
    * lost either way: the branch and its worktree survive both paths.
    */
   autoIntegrate: boolean;
+  /**
+   * Whether a conflicted PR/MR is force-pushed back to green automatically, by rebasing
+   * the task's branch onto the target and pushing the result with `--force-with-lease`.
+   *
+   * **On by default** — unlike {@link autoIntegrate}, this is the behaviour the ticket
+   * expects, not a reversal of it. The off switch exists for anyone who does not want the
+   * app force-pushing their branches on its own.
+   *
+   * In scope only for an open, non-draft PR/MR that resolves to a card (by `taskId`,
+   * preferring `openedForTaskId`) whose owner card has an `agentProjectId` and a live
+   * worktree — one a human opened by hand, with no worktree behind it, gets a card note
+   * instead and is left alone. Guarded off whenever the task is `inFlight`, `integrating`,
+   * already has a `pendingConflictFix`, or has an open `merge-conflict` attention item —
+   * every one of those already owns the branch or the worktree.
+   *
+   * Fires once per **conflict episode**: a poller-side map keyed on the fetched remote
+   * source-branch SHA records that an episode has been handled, so repeated polls of the
+   * same SHA do not re-trigger. A new push to the PR's source branch, or a fresh conflict
+   * after a resolution attempt, is a new SHA and re-arms it; the entry is cleared once the
+   * forge reports `hasConflicts: false`.
+   *
+   * **Never clobbers a push it hasn't seen.** The remote source branch is fetched before
+   * anything else, and the fix only proceeds if that fetched tip is an ancestor of the
+   * local branch — i.e. nobody has pushed to the PR since this app last saw it. The
+   * `--force-with-lease` push leases against exactly that fetched SHA, so a push landing
+   * in the gap is refused by git rather than overwritten. If the tip is already not an
+   * ancestor, the attempt stops before touching anything and notes the card instead.
+   *
+   * Deliberately narrower than the forge's own "update branch" — a PR merely behind its
+   * target (`need-rebase`/`behind`, no conflict) is not touched here; pressing that stays
+   * a manual, human-initiated action.
+   */
+  autoResolvePrConflicts: boolean;
   /** Which optional context lines the board's cards draw. */
   board: BoardDisplaySettings;
   /**
@@ -889,6 +922,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   fontSizePx: 14,
   toastsEnabled: true,
   autoIntegrate: false,
+  autoResolvePrConflicts: true,
   board: DEFAULT_BOARD_DISPLAY,
   // Nothing folded out of the box: a card that hid its own steps before you had asked it to
   // would read as steps that had gone missing.
@@ -986,6 +1020,7 @@ export const GLOBAL_SETTINGS_KEYS = [
   'statusKeywords',
   'branchPrefix',
   'autoIntegrate',
+  'autoResolvePrConflicts',
   'showTaskDetail',
   'showGitGraph',
   'board',
