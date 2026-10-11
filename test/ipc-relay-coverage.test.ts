@@ -143,7 +143,13 @@ describe('the event fanout policy', () => {
   // `automation:*` handlers that throw — nothing in `ipc.ts` saves, deletes, enables, or
   // fires an automation yet, so nothing emits it. F1.11, which registers the real handlers,
   // must remove this entry once one of them actually calls `send('automations:changed', …)`.
-  const CLASSIFIED_BUT_NEVER_PUSHED = ['session:gap', 'automations:changed'];
+  //
+  // `activity:appended` is the same shape again: F2.9 only adds the CONTRACT and the two
+  // read handlers (`activity:list`, `activity:overview`) — no recorder exists yet to append
+  // a row and push it. F2.6, which wires the recorder's emit through `ipc.ts`'s `send` (the
+  // same choke point `usage:sample` already uses, at `ipc.ts:556`), must remove this entry
+  // once it does.
+  const CLASSIFIED_BUT_NEVER_PUSHED = ['session:gap', 'automations:changed', 'activity:appended'];
 
   it('found the pushes to check', () => {
     // Same guard as the handler side, for the same reason: `send` is a local helper and a

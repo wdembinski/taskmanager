@@ -129,6 +129,8 @@ export const UNREPRODUCIBLE_EVENTS: Readonly<Record<string, string>> = {
   'project:tasksChanged': 'the board is mirrored directly; this app reads it from the mirror',
   'scheduler:changed': 'no project queues are shown in the browser',
   'usage:sample': 'a per-second sample cannot survive a 2.5s poll — the chart redraws instead',
+  'activity:appended':
+    'a log row is history the Activity screen re-reads from activity:list on the board cadence',
 };
 
 type Listener = (payload: never) => void;

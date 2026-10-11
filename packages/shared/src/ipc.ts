@@ -75,12 +75,21 @@ import type { SyncState } from './sync';
 import type { UpdateState } from './update';
 import type { Automation, AutomationRun } from './automation';
 import type {
+  DailyUsagePoint,
   SessionStat,
+  UsageDailyOptions,
   UsageQuotas,
   UsageSample,
   UsageSeriesPoint,
   UsageSummary,
 } from './usage';
+import type {
+  ActivityOverview,
+  ActivityPage,
+  ActivityPeriod,
+  ActivityQuery,
+  ActivityRow,
+} from './activity';
 
 /** Result of checking whether the local `claude` CLI is installed and logged in. */
 export interface ClaudeStatus {
@@ -852,6 +861,26 @@ export interface IpcApi {
    * exhaust a session" charts. Live changes arrive via the same `usage:sample` event.
    */
   'usage:sessionStats': () => Promise<SessionStat[]>;
+  /**
+   * The zero-filled, one-point-per-local-day series behind the Performance screen's trend
+   * chart: `opts.days` local days ending today, bucketed in the caller's own timezone
+   * (`opts.tzOffsetMinutes`) — a server process has no timezone of its own to assume.
+   */
+  'usage:daily': (opts: UsageDailyOptions) => Promise<DailyUsagePoint[]>;
+
+  /**
+   * A keyset page of the cross-board activity log (F2 dashboard): everything that
+   * happened, newest first. `query.cursor` resumes after an earlier page's last row; a
+   * cursor that has gone stale (the log moved past it, or it was never one this file
+   * produced) throws a user-facing error rather than silently restarting at page 1.
+   */
+  'activity:list': (query: ActivityQuery) => Promise<ActivityPage>;
+  /**
+   * The activity dashboard's headline tile for one of the three fixed trailing windows
+   * (24h/7d/30d): how many runs are live right now, how many need a human, and the
+   * outcome counts over the window.
+   */
+  'activity:overview': (period: ActivityPeriod) => Promise<ActivityOverview>;
 
   /** The current global app settings (Phase 6). */
   'settings:get': () => Promise<AppSettings>;
@@ -1524,6 +1553,14 @@ export interface IpcEvents {
    * whole list, like `chain:changed`, so the board replaces rather than patches.
    */
   'automations:changed': Automation[];
+
+  /**
+   * One row was appended to the activity log (F2). Not relied on to keep a feed in sync —
+   * `ipcEventFanout.ts` drops it; the Activity screen re-reads the whole page via
+   * `activity:list` on the board's own poll cadence instead. The channel exists for F2.6's
+   * recorder to push on, for whatever DOES want to react live (a toast, a badge count).
+   */
+  'activity:appended': ActivityRow;
 }
 
 /** Convenience: the set of valid invoke channel names. */

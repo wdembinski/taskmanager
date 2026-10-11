@@ -88,6 +88,9 @@ describe('the channels that DO relay', () => {
     'settings:get',
     'settings:save',
     'git:graph',
+    'activity:list',
+    'activity:overview',
+    'usage:daily',
   ];
 
   for (const channel of MUST_RELAY) {

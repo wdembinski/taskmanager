@@ -41,6 +41,7 @@ const CLASSIFIED: ReadonlyArray<readonly [string, string]> = [
   ['automations:changed', 'replace-last'],
   ['window:maximizedChanged', 'drop'],
   ['project:tasksChanged', 'drop'],
+  ['activity:appended', 'drop'],
 ];
 
 const byteLength = (value: unknown): number =>
@@ -57,7 +58,7 @@ describe('the fanout classification', () => {
     expect(Object.keys(EVENT_FANOUT).sort()).toEqual(CLASSIFIED.map(([c]) => c).sort());
   });
 
-  it('forwards everything except the two that are deliberately dropped', () => {
+  it('forwards everything except the three that are deliberately dropped', () => {
     for (const [channel, kind] of CLASSIFIED) {
       expect(isForwarded(channel)).toBe(kind !== 'drop');
     }
@@ -66,6 +67,7 @@ describe('the fanout classification', () => {
   it('says WHY a dropped channel is dropped, and says nothing for one that is not', () => {
     expect(dropReason('window:maximizedChanged')).toContain('no app window');
     expect(dropReason('project:tasksChanged')).toContain('mirror');
+    expect(dropReason('activity:appended')).toContain('activity:list');
     expect(dropReason('task:changed')).toBeNull();
   });
 

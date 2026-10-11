@@ -778,6 +778,74 @@ check(
   Boolean(raw.prepare('SELECT 1 FROM activity_log WHERE id = ?').get(freshKept.id)),
 );
 
+// ---------------------------------------------------------------------------
+section('8. getDailyUsageInputs (F2.9): the token-free cost row is not dropped');
+
+// A plain token row — no cost attached yet (costUsd lands later, on the end-of-run
+// reconciliation row, per appendTokenUsage's own docstring).
+store.appendTokenUsage({
+  source: 'task',
+  projectId: 'proj-usage',
+  taskId: 'task-usage',
+  runId: 'run-usage',
+  inputTokens: 100,
+  outputTokens: 50,
+  cacheCreationTokens: 0,
+  cacheReadTokens: 10,
+  totalTokens: 160,
+  costUsd: null,
+  createdAt: 8_000_000,
+});
+// A token-free cost row: all four token fields are zero, which is exactly the shape
+// getUsageSamples's 'totalTokens > 0' filter would drop — getDailyUsageInputs must not.
+store.appendTokenUsage({
+  source: 'task',
+  projectId: 'proj-usage',
+  taskId: 'task-usage',
+  runId: 'run-usage',
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheCreationTokens: 0,
+  cacheReadTokens: 0,
+  totalTokens: 0,
+  costUsd: 0.42,
+  createdAt: 8_000_001,
+});
+
+const dailyInputs = store.getDailyUsageInputs(8_000_000);
+check(
+  'both rows come back, including the zero-token cost row',
+  dailyInputs.length === 2,
+  JSON.stringify(dailyInputs),
+);
+const tokenRow = dailyInputs.find((r) => r.createdAt === 8_000_000);
+const costRow = dailyInputs.find((r) => r.createdAt === 8_000_001);
+check(
+  'the token row carries its token counts and a null cost (unknown, not free)',
+  Boolean(tokenRow) &&
+    tokenRow.inputTokens === 100 &&
+    tokenRow.outputTokens === 50 &&
+    tokenRow.cacheReadTokens === 10 &&
+    tokenRow.costUsd === null,
+  JSON.stringify(tokenRow),
+);
+check(
+  'the token-free row carries zero tokens and its priced costUsd',
+  Boolean(costRow) &&
+    costRow.inputTokens === 0 &&
+    costRow.outputTokens === 0 &&
+    costRow.cacheReadTokens === 0 &&
+    costRow.costUsd === 0.42,
+  JSON.stringify(costRow),
+);
+
+const pastTokenRow = store.getDailyUsageInputs(8_000_001);
+check(
+  'sinceMs is a floor here too — raising it past the token row drops only that one',
+  pastTokenRow.length === 1 && pastTokenRow[0].createdAt === 8_000_001,
+  JSON.stringify(pastTokenRow),
+);
+
 raw.close();
 store.close();
 

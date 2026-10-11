@@ -14,6 +14,8 @@
  * - `summarizeOutcomes` returns a plain object (no `Map`/`Set`), so the result survives a
  *   JSON round trip over the relay unchanged.
  */
+import type { AttentionItem } from './attention';
+import type { ActiveRun } from './scheduler';
 
 /**
  * Every kind of row the log records. `trigger-fired` is reserved for F1 (a tracker-fired
@@ -122,6 +124,95 @@ export interface ActivityQuery {
   origins?: ActivityOrigin[];
   cursor?: string;
   limit: number;
+}
+
+/**
+ * The upper bound on `ActivityQuery.limit` (F2.9) — one `activity:list` page can never be
+ * asked to carry more rows than this, relayed args included.
+ */
+export const ACTIVITY_PAGE_MAX = 200;
+
+/**
+ * The one sentence a cursor `decodeCursor` rejects answers with, wherever the rejection
+ * happens — a stale link, a page bookmarked across a retention sweep, or a payload someone
+ * hand-edited. The feed has moved on; there is nothing to resume from.
+ */
+const STALE_CURSOR_MESSAGE = 'This activity page is out of date — reload the feed';
+
+/**
+ * Validates and clamps an `activity:list` request before it reaches the store: `limit` is
+ * clamped to `[1, ACTIVITY_PAGE_MAX]`, defaulting to `ACTIVITY_PAGE_SIZE` when it is missing
+ * or not a finite number (relayed args are untrusted); a `cursor` that `decodeCursor` would
+ * reject throws {@link STALE_CURSOR_MESSAGE} here, rather than the store's own generic
+ * "invalid activity cursor" — this is the IPC-layer translation this file's own docstring
+ * promises.
+ */
+export function normalizeActivityQuery(query: ActivityQuery): ActivityQuery {
+  if (query.cursor !== undefined && decodeCursor(query.cursor) === null) {
+    throw new Error(STALE_CURSOR_MESSAGE);
+  }
+  const limit = Number.isFinite(query.limit)
+    ? Math.min(ACTIVITY_PAGE_MAX, Math.max(1, Math.floor(query.limit)))
+    : ACTIVITY_PAGE_SIZE;
+  return { ...query, limit };
+}
+
+/** One of the activity dashboard's three fixed trailing windows. */
+export const ACTIVITY_PERIODS = ['24h', '7d', '30d'] as const;
+
+export type ActivityPeriod = (typeof ACTIVITY_PERIODS)[number];
+
+/** Whether a string is one of {@link ACTIVITY_PERIODS} — the IPC layer's own untrusted input. */
+export function isActivityPeriod(value: string): value is ActivityPeriod {
+  return (ACTIVITY_PERIODS as readonly string[]).includes(value);
+}
+
+const HOUR_MS = 60 * 60 * 1000;
+
+/** How far back each {@link ActivityPeriod} reaches, in ms. */
+export const ACTIVITY_PERIOD_MS: Record<ActivityPeriod, number> = {
+  '24h': 24 * HOUR_MS,
+  '7d': 7 * 24 * HOUR_MS,
+  '30d': 30 * 24 * HOUR_MS,
+};
+
+/**
+ * The activity dashboard's headline tile for one trailing window: how many runs are live
+ * right now, how many need a human, and the outcome counts over the window — plain data,
+ * JSON-safe over the relay.
+ */
+export interface ActivityOverview {
+  period: ActivityPeriod;
+  sinceMs: number;
+  running: number;
+  needsYou: number;
+  outcomes: OutcomeCounts;
+  byProject: Record<string, OutcomeCounts>;
+}
+
+/**
+ * Builds {@link ActivityOverview} from the engine's live state: `running` is the count of
+ * DISTINCT task ids in `activeRuns` (a task never has two live runs at once, but nothing here
+ * assumes that), `needsYou` is simply how many items are in the attention inbox, and the
+ * outcome counts are handed in whole, already computed by `store.countOutcomes` (F2.4) over
+ * the window — this function only assembles the tile, so the handler that calls it stays a
+ * one-liner.
+ */
+export function buildActivityOverview(input: {
+  period: ActivityPeriod;
+  now: number;
+  activeRuns: readonly ActiveRun[];
+  attention: readonly AttentionItem[];
+  outcomes: { total: OutcomeCounts; byProject: Record<string, OutcomeCounts> };
+}): ActivityOverview {
+  return {
+    period: input.period,
+    sinceMs: input.now - ACTIVITY_PERIOD_MS[input.period],
+    running: new Set(input.activeRuns.map((run) => run.taskId)).size,
+    needsYou: input.attention.length,
+    outcomes: input.outcomes.total,
+    byProject: input.outcomes.byProject,
+  };
 }
 
 /** One page of the log, plus the cursor for the next (older) page, or null at the end. */

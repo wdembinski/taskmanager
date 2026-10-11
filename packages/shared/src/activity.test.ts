@@ -1,11 +1,20 @@
 import { describe, expect, it } from 'vitest';
+import type { ActiveRun } from './scheduler';
+import type { AttentionItem } from './attention';
 import {
+  ACTIVITY_PAGE_MAX,
+  ACTIVITY_PAGE_SIZE,
+  ACTIVITY_PERIOD_MS,
+  ACTIVITY_PERIODS,
   type ActivityRow,
+  buildActivityOverview,
   decodeCursor,
   encodeCursor,
   isActivityKind,
   isActivityOrigin,
   isActivityOutcome,
+  isActivityPeriod,
+  normalizeActivityQuery,
   summarizeOutcomes,
 } from './activity';
 
@@ -180,5 +189,103 @@ describe('isActivityOrigin', () => {
 
   it('rejects an unknown string', () => {
     expect(isActivityOrigin('robot')).toBe(false);
+  });
+});
+
+describe('isActivityPeriod', () => {
+  it('accepts every listed period', () => {
+    for (const period of ACTIVITY_PERIODS) {
+      expect(isActivityPeriod(period)).toBe(true);
+    }
+  });
+
+  it('rejects an unknown string', () => {
+    expect(isActivityPeriod('1h')).toBe(false);
+  });
+});
+
+describe('normalizeActivityQuery', () => {
+  it('clamps a limit above the max down to ACTIVITY_PAGE_MAX', () => {
+    expect(normalizeActivityQuery({ sinceMs: 0, limit: 10_000 }).limit).toBe(ACTIVITY_PAGE_MAX);
+  });
+
+  it('clamps a limit below 1 up to 1', () => {
+    expect(normalizeActivityQuery({ sinceMs: 0, limit: 0 }).limit).toBe(1);
+    expect(normalizeActivityQuery({ sinceMs: 0, limit: -5 }).limit).toBe(1);
+  });
+
+  it('defaults to ACTIVITY_PAGE_SIZE when limit is not a finite number', () => {
+    expect(normalizeActivityQuery({ sinceMs: 0, limit: Number.NaN }).limit).toBe(
+      ACTIVITY_PAGE_SIZE,
+    );
+    expect(
+      normalizeActivityQuery({ sinceMs: 0, limit: undefined as unknown as number }).limit,
+    ).toBe(ACTIVITY_PAGE_SIZE);
+  });
+
+  it('rejects a cursor decodeCursor would reject, with a user-facing message', () => {
+    expect(() =>
+      normalizeActivityQuery({ sinceMs: 0, limit: 10, cursor: 'not-a-real-cursor' }),
+    ).toThrow('This activity page is out of date — reload the feed');
+  });
+
+  it('passes a good cursor through unchanged', () => {
+    const cursor = encodeCursor({ at: 1000, id: 1 });
+    expect(normalizeActivityQuery({ sinceMs: 0, limit: 10, cursor }).cursor).toBe(cursor);
+  });
+});
+
+describe('ACTIVITY_PERIOD_MS', () => {
+  it('orders the three windows from shortest to longest', () => {
+    expect(ACTIVITY_PERIOD_MS['24h']).toBeLessThan(ACTIVITY_PERIOD_MS['7d']);
+    expect(ACTIVITY_PERIOD_MS['7d']).toBeLessThan(ACTIVITY_PERIOD_MS['30d']);
+  });
+});
+
+describe('buildActivityOverview', () => {
+  const emptyOutcomes = { done: 0, failed: 0, stopped: 0, needsInput: 0 };
+
+  it('counts running as distinct task ids, not run count', () => {
+    const activeRuns: ActiveRun[] = [
+      { taskId: 't1', runId: 'r1' },
+      { taskId: 't1', runId: 'r2' },
+      { taskId: 't2', runId: 'r3' },
+    ];
+    const overview = buildActivityOverview({
+      period: '24h',
+      now: 1_000_000,
+      activeRuns,
+      attention: [],
+      outcomes: { total: emptyOutcomes, byProject: {} },
+    });
+    expect(overview.running).toBe(2);
+  });
+
+  it('counts needsYou as the attention list length', () => {
+    const attention = [{ id: 'a1' }, { id: 'a2' }] as unknown as AttentionItem[];
+    const overview = buildActivityOverview({
+      period: '24h',
+      now: 1_000_000,
+      activeRuns: [],
+      attention,
+      outcomes: { total: emptyOutcomes, byProject: {} },
+    });
+    expect(overview.needsYou).toBe(2);
+  });
+
+  it('passes outcomes and byProject through untouched, and derives sinceMs from the period', () => {
+    const outcomes = { done: 3, failed: 1, stopped: 0, needsInput: 0 };
+    const byProject = { 'proj-1': outcomes };
+    const overview = buildActivityOverview({
+      period: '7d',
+      now: 1_000_000,
+      activeRuns: [],
+      attention: [],
+      outcomes: { total: outcomes, byProject },
+    });
+    expect(overview.outcomes).toBe(outcomes);
+    expect(overview.byProject).toBe(byProject);
+    expect(overview.sinceMs).toBe(1_000_000 - ACTIVITY_PERIOD_MS['7d']);
+    expect(overview.period).toBe('7d');
   });
 });
