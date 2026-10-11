@@ -110,6 +110,26 @@ export interface MergeRequest {
   pipelineStatus: PipelineStatus;
   pipelineUrl: string | null;
   /**
+   * The head commit's SHA — GitLab's `sha`, GitHub's `head.sha` — or null when a sync has
+   * never read one (every row written before this field existed).
+   *
+   * What {@link prWatchAction} keys its memory on: a watcher that acted once on this commit
+   * must not act again on the SAME commit just because the next poll re-fetched the same MR.
+   * Only a new push, which gives the MR a new head SHA, opens the door to acting again.
+   */
+  headSha: string | null;
+  /**
+   * The head commit {@link prWatchAction} last acted on for this MR, or null if it never
+   * has — the stored counterpart of {@link PrWatchContext.lastActedSha}, carried across
+   * every sync the same way the read markers are (neither forge has heard of this field).
+   *
+   * Written by `forge/prWatcher.ts` right after it acts, never by a sync: a reconciler that
+   * rebuilt this from fetched data would have nothing to rebuild it FROM, and blanking it on
+   * every poll is exactly the "no memory" bug {@link PrWatchContext.lastActedSha} exists to
+   * prevent.
+   */
+  lastActedSha: string | null;
+  /**
    * The head pipeline's stages, in pipeline order. Empty when the jobs could not be read
    * (the endpoint is permission-gated on some instances) — never a claim that a pipeline
    * has no stages, so the UI falls back to the single overall status.
@@ -463,6 +483,60 @@ export function mrReadyToMerge(mr: MergeReadiness): boolean {
  */
 export function mrNeedsRebase(mr: MergeReadiness): boolean {
   return mergeBlockers(mr).includes('need-rebase');
+}
+
+/** What {@link prWatchAction} decided to do about one merge request on this sync. */
+export type PrWatchAction =
+  'none' | 'forge-rebase' | 'resolve-conflicts' | 'note-pipeline-failed' | 'note-pipeline-passed';
+
+/** Just the fields {@link prWatchAction} reads. */
+export type PrWatchable = MergeReadiness & Pick<MergeRequest, 'headSha'>;
+
+/** What {@link prWatchAction} needs to know about already having acted. */
+export interface PrWatchContext {
+  /**
+   * The head SHA this MR was already acted on for, or null/undefined if it never was.
+   *
+   * Once an action has fired for a commit, nothing fires again for that SAME commit —
+   * a forge that can't rebase or a conflict a fix run hasn't resolved yet must not re-raise
+   * itself on every poll. A new push gives the MR a new head SHA, which reopens the door.
+   */
+  lastActedSha?: string | null;
+}
+
+/**
+ * What the PR/MR watcher (Phase: observe PR/MR state and resolve conflicts) should do about
+ * this merge request on this sync, or `'none'` to leave it alone.
+ *
+ * Built entirely on {@link mergeBlockers} and {@link mrNeedsRebase} — the same two questions
+ * the card row and the rebase button already ask — so the watcher can never decide something
+ * the UI itself would disagree with.
+ *
+ * Three guards come before any of that, in order:
+ *
+ *  1. **Only an open, non-draft MR.** A draft is still being written; a merged or closed one
+ *     is history. Neither is this app's business to touch.
+ *  2. **No head SHA means no action.** An MR the sync has never fully read has an unknown
+ *     commit, and absence of information is not consent to act on it — see `headSha`.
+ *  3. **The same commit as last time means no action**, however many polls have passed since.
+ *     See {@link PrWatchContext.lastActedSha}.
+ *
+ * Priority among the live possibilities: a conflict comes first (nothing else can be done
+ * until it is resolved), then a stale branch (the forge can fix that one on its own), then
+ * the pipeline's own verdict — and only a RESOLVED verdict (`failed`/`success`): `unknown`,
+ * `running` and the rest are "not an answer yet", not a reason to stay quiet forever, but not
+ * a reason to speak up either.
+ */
+export function prWatchAction(mr: PrWatchable, ctx: PrWatchContext): PrWatchAction {
+  if (mr.state !== 'opened' || mr.draft) return 'none';
+  if (!mr.headSha || mr.headSha === ctx.lastActedSha) return 'none';
+
+  const blockers = mergeBlockers(mr);
+  if (blockers.includes('conflict')) return 'resolve-conflicts';
+  if (mrNeedsRebase(mr)) return 'forge-rebase';
+  if (mr.pipelineStatus === 'failed') return 'note-pipeline-failed';
+  if (mr.pipelineStatus === 'success') return 'note-pipeline-passed';
+  return 'none';
 }
 
 /** Just the fields the review verdict depends on. See {@link mrApprovalState}. */
