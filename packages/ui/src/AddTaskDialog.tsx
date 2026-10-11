@@ -268,6 +268,23 @@ export type AddTaskPlan =
       startNow: boolean;
     };
 
+/**
+ * `form.assign` as the plan actually wants it: a blank `agentProjectId` is no assignment
+ * at all (the picker never cleared itself back to `null`, it was just left on its empty
+ * option), and a blank `model` is the picker's "Default" rather than a literal model name
+ * — `ClaudeModel` allows any string, so `''` would otherwise sail through as one.
+ */
+function normalizeAssign(assign: AddTaskAssign | null): AddTaskAssign | null {
+  if (!assign) return null;
+  const agentProjectId = assign.agentProjectId.trim();
+  if (!agentProjectId) return null;
+  return {
+    agentProjectId,
+    model: assign.model?.trim() || null,
+    mode: assign.mode ?? null,
+  };
+}
+
 /** Work out what Add should do. See {@link AddTaskPlan}. */
 export function addTaskPlan(form: AddTaskForm): AddTaskPlan {
   const title = form.title.trim();
@@ -288,6 +305,14 @@ export function addTaskPlan(form: AddTaskForm): AddTaskPlan {
     return { kind: 'incomplete', error: 'Pick a JIRA project and issue type first.' };
   }
 
+  const assign = normalizeAssign(form.assign);
+  // Starting nothing is not "start now" — refuse before the card is written, the same
+  // way the JIRA check above does, rather than silently dropping `startNow`.
+  if (form.startNow && !assign) {
+    return { kind: 'incomplete', error: 'Pick an agent project to start it in first.' };
+  }
+  const startNow = form.startNow;
+
   // The one routing decision: what the destination OWNS, not what it is named. A keyless
   // non-Personal board is as much a `task:create` destination as Personal is — see
   // `BoardScope.ownsTickets`.
@@ -303,6 +328,8 @@ export function addTaskPlan(form: AddTaskForm): AddTaskPlan {
         epicTaskId: form.epicTaskId || null,
         projectTagId: form.boardId,
       },
+      assign,
+      startNow,
     };
   }
 
@@ -325,6 +352,8 @@ export function addTaskPlan(form: AddTaskForm): AddTaskPlan {
           description: description || undefined,
         }
       : null,
+    assign,
+    startNow,
   };
 }
 
