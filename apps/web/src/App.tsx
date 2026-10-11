@@ -20,6 +20,7 @@ import {
   AppsListDetailRegular,
   BotRegular,
   DataTrendingRegular,
+  FlashRegular,
   FolderRegular,
   PlayRegular,
   SettingsRegular,
@@ -36,6 +37,7 @@ import { SyncCurtain } from '@tm/ui/SyncCurtain';
 import { TransportProvider } from '@tm/ui/transport';
 import { useDelayedFlag } from '@tm/ui/useDelayedFlag';
 import { Fleet } from './agents/Fleet';
+import { AutomationsScreen } from './automations/AutomationsScreen';
 import { CloudAuth } from './auth/cloudAuth';
 import { SignInScreen } from './auth/SignInScreen';
 import { useCloudAuth } from './auth/useCloudAuth';
@@ -76,7 +78,7 @@ const DESKTOP_ONLY = 'desktop only';
  * plus Fleet, which the desktop does not have yet (this same plan's own step 6, ahead of the
  * desktop side of it).
  *
- * Six of the eight are live now. Attention and Performance moved into `@tm/ui` whole (they
+ * Seven of the eight are live now. Attention and Performance moved into `@tm/ui` whole (they
  * had no host in them at all, only `window.api` calls that are `useTransport()` now), and
  * Settings is a fork: nine of its twenty-one channels are host-bound, so the shell is this
  * app's and the host-free sections are shared. Projects renders `ProjectAdmin` — a project's
@@ -85,16 +87,20 @@ const DESKTOP_ONLY = 'desktop only';
  * execution target, models, permission mode) stays desktop-only, because that is a fact about
  * a machine only the desktop client sees (`shell-parity.test.ts`, "the web configures a
  * project's identity, never its repo"). Tickets renders the same ticket-project workspace the
- * desktop does — a picker plus its backlog/Gantt, no folder or native picker either. Fleet is
- * a cross-project read of agent profiles and the assignment queue, over plain REST
- * (`agentsApi.ts`) rather than `useTransport()` — see its own docstring for why. Scratch run
- * stays off — it drives a live `session:start`, which is host-only by policy
+ * desktop does — a picker plus its backlog/Gantt, no folder or native picker either.
+ * Automations renders the same `AutomationsView` the desktop does, fronted by a web-only
+ * owner-desktop banner (`AutomationsScreen`) — an automation fires on the one desktop that
+ * created it, never on the cloud service, and this tab is the only host that needs telling
+ * so. Fleet is a cross-project read of agent profiles and the assignment queue, over plain
+ * REST (`agentsApi.ts`) rather than `useTransport()` — see its own docstring for why. Scratch
+ * run stays off — it drives a live `session:start`, which is host-only by policy
  * (`@tm/shared/ipcRelay`).
  */
 const NAV: readonly NavRailItem[] = [
   { id: 'mytasks', label: 'My Tasks', icon: <TaskListSquareLtrRegular /> },
   { id: 'projects', label: 'Projects', icon: <FolderRegular /> },
   { id: 'tickets', label: 'Tickets', icon: <AppsListDetailRegular /> },
+  { id: 'automations', label: 'Automations', icon: <FlashRegular /> },
   { id: 'fleet', label: 'Fleet', icon: <BotRegular /> },
   { id: 'performance', label: 'Performance', icon: <DataTrendingRegular /> },
   { id: 'attention', label: 'Attention', icon: <AlertRegular /> },
@@ -104,7 +110,14 @@ const NAV: readonly NavRailItem[] = [
 
 /** The rail's destinations that this app actually renders. */
 type Screen =
-  'mytasks' | 'projects' | 'tickets' | 'fleet' | 'performance' | 'attention' | 'settings';
+  | 'mytasks'
+  | 'projects'
+  | 'tickets'
+  | 'automations'
+  | 'fleet'
+  | 'performance'
+  | 'attention'
+  | 'settings';
 
 /** How often the status bar's "synced Ns ago" recomputes between polls. */
 const AGE_TICK_MS = 5_000;
@@ -359,6 +372,7 @@ function SignedInBoard({
           ))}
         {screen === 'projects' && <ProjectAdmin />}
         {screen === 'tickets' && <Projects />}
+        {screen === 'automations' && <AutomationsScreen clients={board.state.clients} now={now} />}
         {screen === 'fleet' && <Fleet state={board.state} apiDeps={apiDeps} />}
         {screen === 'performance' && <Performance />}
         {screen === 'attention' && <Attention />}

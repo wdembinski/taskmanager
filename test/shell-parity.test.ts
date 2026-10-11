@@ -388,6 +388,41 @@ describe('the controls that moved into the shared package', () => {
   });
 });
 
+describe('the automations tab both hosts render from the shared view (F1.17)', () => {
+  /**
+   * `apps/web/src/automations/AutomationsScreen.tsx` is where the browser imports
+   * `AutomationsView`, not `App.tsx` itself — it wraps the shared view with a web-only
+   * owner-desktop banner (`OwnerDesktopBanner`), the same shape as `WEB_BOARD` being where
+   * `AddTaskDialog`/`GitGraphPane` are imported above rather than `WEB_APP`. The desktop has
+   * no such wrapper and imports the view straight from its own `App.tsx`.
+   */
+  const WEB_AUTOMATIONS = 'apps/web/src/automations/AutomationsScreen.tsx';
+
+  for (const [label, path] of [
+    ['the browser client', WEB_AUTOMATIONS],
+    ['the desktop renderer', DESKTOP_APP],
+  ] as const) {
+    it(`renders ${label}'s automations tab from @tm/ui`, () => {
+      expect(
+        importedFrom(read(path), 'automations/AutomationsView'),
+        `${path} must import AutomationsView from @tm/ui/automations/AutomationsView (or its ` +
+          '@ui alias). F1.15 built one Automations screen for both hosts; an import from ' +
+          'anywhere else is a second implementation.',
+      ).toContain('AutomationsView');
+    });
+  }
+
+  it("both hosts' nav rails carry an automations tab", () => {
+    for (const path of [WEB_APP, DESKTOP_APP]) {
+      expect(
+        read(path),
+        `${path} must list { id: 'automations', … } in its NAV — a view nothing links to is ` +
+          'a file, not a tab.',
+      ).toMatch(/id:\s*'automations'/);
+    }
+  });
+});
+
 describe('the theme both hosts mount', () => {
   for (const [label, path] of [
     ['The browser entry point', WEB_MAIN],
