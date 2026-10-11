@@ -127,4 +127,17 @@ describe('versionSkew', () => {
   it('names this tab as the old one when the desktop is ahead', () => {
     expect(versionSkew(client(3), 2)).toBe('desktop-newer');
   });
+
+  it('names a v2 desktop as older against a v3 tab', () => {
+    expect(versionSkew(client(2), 3)).toBe('desktop-older');
+  });
+
+  it('names a v3 desktop as newer against a v2 tab', () => {
+    expect(versionSkew(client(3), 2)).toBe('desktop-newer');
+  });
+
+  it('defaults ours to the current PROTOCOL_VERSION, 3', () => {
+    expect(versionSkew(client(2))).toBe('desktop-older');
+    expect(versionSkew(client(3))).toBeNull();
+  });
 });
