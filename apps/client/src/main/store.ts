@@ -56,6 +56,19 @@ import type {
   AutomationRunStatus,
   FiringKind,
 } from '@shared/automation';
+import {
+  type ActivityDetail,
+  type ActivityPage,
+  type ActivityQuery,
+  type ActivityRow,
+  type OutcomeCounts,
+  decodeCursor,
+  encodeCursor,
+  isActivityKind,
+  isActivityOrigin,
+  isActivityOutcome,
+  summarizeOutcomes,
+} from '@shared/activity';
 import type { AuthState } from '@shared/auth';
 import type { LimitState } from '@shared/limit';
 import type { RunRefusal } from '@shared/scheduler';
@@ -1032,6 +1045,41 @@ export interface Store {
    */
   pruneAutomationRuns(now?: number): number;
   /**
+   * Append one row to the activity log (F2, `@shared/activity`) — `INSERT OR IGNORE` against
+   * the partial unique index on `(runId, kind)` for `run-started`/`run-finished`, so a
+   * resurrected CLI event (memory `settled-run-resurrection-trap`) or a `result` that arrives
+   * twice can never double-record a run's start or finish. `detail` is JSON-encoded on the
+   * way in, `null` stays `null`; `costUsd` is stored exactly as given — `null` (unknown) is
+   * never coerced to `0`. Returns the stored row, with the id SQLite assigned from
+   * `lastInsertRowid`, or `null` when the unique index refused a duplicate.
+   */
+  appendActivity(row: Omit<ActivityRow, 'id'>): ActivityRow | null;
+  /**
+   * A keyset page of the log, newest first (`at DESC, id DESC`) — never a page number, so
+   * rows landing at the top never shift a later page. `query.cursor` resumes after the last
+   * row of an earlier page (the one `encodeCursor`d into that page's `nextCursor`); a cursor
+   * that fails to decode throws — the IPC layer (F2.9) is the one caller that turns that into
+   * a user-facing error, not this method. `sinceMs` is inclusive, `untilMs` exclusive.
+   * `limit` is clamped to at least 1. A row whose `kind` this build does not recognize (a
+   * newer writer's own) is silently skipped, for forward compatibility.
+   */
+  listActivity(query: ActivityQuery): ActivityPage;
+  /**
+   * `run-finished` rows at or after `sinceMs`, folded through `summarizeOutcomes`
+   * (`@shared/activity`) so a run's final outcome and `empty` counting as `failed` stay
+   * defined in exactly one place.
+   */
+  countOutcomes(sinceMs: number): {
+    total: OutcomeCounts;
+    byProject: Record<string, OutcomeCounts>;
+  };
+  /**
+   * The retention sweep: drop rows older than `beforeMs`. The 90-day policy and the
+   * once-at-startup cadence are the caller's, not this method's — it only knows how to
+   * delete by age. Returns how many rows went.
+   */
+  pruneActivity(beforeMs: number): number;
+  /**
    * Run `fn` inside one `better-sqlite3` transaction, committing its return value or rolling
    * every write in it back on a throw.
    *
@@ -1577,6 +1625,40 @@ export function createStore(dbPath: string): Store {
       UNIQUE (automationId, occurrenceKey)
     );
     CREATE INDEX IF NOT EXISTS idx_automation_runs_automation ON automation_runs(automationId, at);
+    -- The cross-board activity log (F2.4, @shared/activity): one row per milestone the
+    -- engine already knows the truth of — run start/finish, parks/resumes, merges, releases,
+    -- column moves — read back by the Activity dashboard. A NEW table, so nothing to
+    -- migrate.
+    --
+    -- Deliberately has NO foreign keys, for the reason token_usage already states above:
+    -- this is a record of what happened, and must survive a plan re-sync and a project
+    -- delete. title is a SNAPSHOT of the card's title at write time, not a live lookup, so a
+    -- renamed or deleted card still reads sensibly. costUsd is NULL for unknown, never 0 — a
+    -- run the engine never priced is not the same as one that genuinely cost nothing.
+    --
+    -- UNIQUE(runId, kind) WHERE kind IN ('run-started', 'run-finished') is what makes a
+    -- run's start/finish idempotent against a resurrected CLI event (memory
+    -- settled-run-resurrection-trap) or a result that arrives twice: appendActivity's INSERT
+    -- OR IGNORE relies on this index refusing the duplicate, not on a SELECT-then-INSERT
+    -- check. (No backticks in this block: it is inside a template literal.)
+    CREATE TABLE IF NOT EXISTS activity_log (
+      id        INTEGER PRIMARY KEY AUTOINCREMENT,
+      at        INTEGER NOT NULL,
+      projectId TEXT,
+      taskId    TEXT,
+      runId     TEXT,
+      kind      TEXT NOT NULL,
+      outcome   TEXT,
+      origin    TEXT,
+      title     TEXT NOT NULL,
+      costUsd   REAL,
+      detail    TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_activity_log_time    ON activity_log(at, id);
+    CREATE INDEX IF NOT EXISTS idx_activity_log_project ON activity_log(projectId, at);
+    CREATE INDEX IF NOT EXISTS idx_activity_log_kind    ON activity_log(kind, at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_activity_log_run_once
+      ON activity_log(runId, kind) WHERE kind IN ('run-started', 'run-finished');
   `);
 
   // Migrate ledgers written before the relay stored results. Every existing row is one of
@@ -3815,6 +3897,72 @@ export function createStore(dbPath: string): Store {
      )`,
   );
 
+  // The activity log (F2.4, @shared/activity). See the schema comment above activity_log
+  // for why it has no foreign keys and no 0-for-unknown costUsd.
+  interface ActivityLogRow {
+    id: number;
+    at: number;
+    projectId: string | null;
+    taskId: string | null;
+    runId: string | null;
+    kind: string;
+    outcome: string | null;
+    origin: string | null;
+    title: string;
+    costUsd: number | null;
+    detail: string | null;
+  }
+
+  // Returns null for a row whose kind this build does not recognize — listActivity filters
+  // those out, countOutcomes's own query never selects one (it only ever asks for
+  // 'run-finished').
+  function rowToActivity(r: ActivityLogRow): ActivityRow | null {
+    if (!isActivityKind(r.kind)) return null;
+    return {
+      id: r.id,
+      at: r.at,
+      projectId: r.projectId,
+      taskId: r.taskId,
+      runId: r.runId,
+      kind: r.kind,
+      outcome: r.outcome !== null && isActivityOutcome(r.outcome) ? r.outcome : null,
+      origin: r.origin !== null && isActivityOrigin(r.origin) ? r.origin : null,
+      title: r.title,
+      costUsd: r.costUsd,
+      detail: r.detail === null ? null : (JSON.parse(r.detail) as ActivityDetail),
+    };
+  }
+
+  // `INSERT OR IGNORE` against `idx_activity_log_run_once` IS the idempotency check for
+  // run-started/run-finished — see appendActivity's own docstring.
+  const insertActivityLogRow = db.prepare(
+    `INSERT OR IGNORE INTO activity_log
+       (at, projectId, taskId, runId, kind, outcome, origin, title, costUsd, detail)
+     VALUES
+       (@at, @projectId, @taskId, @runId, @kind, @outcome, @origin, @title, @costUsd, @detail)`,
+  );
+  // One statement for every combination of filters: each is either `IS NULL` (skipped) or a
+  // membership test against a JSON array bound as text — better-sqlite3 has no native array
+  // binding, and json_each is the standard SQLite idiom for "IN (one of these)" without
+  // building the SQL string per call. The keyset predicate is skipped the same way when
+  // @cAt is NULL (no cursor — the first page).
+  const selectActivityPage = db.prepare(
+    `SELECT * FROM activity_log
+      WHERE at >= @sinceMs
+        AND (@untilMs IS NULL OR at < @untilMs)
+        AND (@cAt IS NULL OR (at < @cAt OR (at = @cAt AND id < @cId)))
+        AND (@projectIds IS NULL OR projectId IN (SELECT value FROM json_each(@projectIds)))
+        AND (@kinds IS NULL OR kind IN (SELECT value FROM json_each(@kinds)))
+        AND (@outcomes IS NULL OR outcome IN (SELECT value FROM json_each(@outcomes)))
+        AND (@origins IS NULL OR origin IN (SELECT value FROM json_each(@origins)))
+      ORDER BY at DESC, id DESC
+      LIMIT @fetchLimit`,
+  );
+  const selectFinishedActivitySince = db.prepare(
+    `SELECT * FROM activity_log WHERE kind = 'run-finished' AND at >= @sinceMs`,
+  );
+  const deleteActivityOlderThan = db.prepare(`DELETE FROM activity_log WHERE at < ?`);
+
   return {
     addProject(input) {
       // Unspecified project fields inherit the user's global defaults (Phase 6); the
@@ -5326,6 +5474,70 @@ export function createStore(dbPath: string): Store {
         const overCap = deleteAutomationRunsBeyondCap.run(AUTOMATION_RUN_MAX_PER_AUTOMATION);
         return aged.changes + overCap.changes;
       })();
+    },
+
+    appendActivity(row) {
+      const result = insertActivityLogRow.run({
+        at: row.at,
+        projectId: row.projectId,
+        taskId: row.taskId,
+        runId: row.runId,
+        kind: row.kind,
+        outcome: row.outcome,
+        origin: row.origin,
+        title: row.title,
+        costUsd: row.costUsd,
+        detail: row.detail === null ? null : JSON.stringify(row.detail),
+      });
+      if (result.changes === 0) return null;
+      return { id: Number(result.lastInsertRowid), ...row };
+    },
+
+    listActivity(query) {
+      let cursor: { at: number; id: number } | null = null;
+      if (query.cursor !== undefined) {
+        cursor = decodeCursor(query.cursor);
+        if (cursor === null) {
+          throw new Error(`invalid activity cursor: ${query.cursor}`);
+        }
+      }
+      const limit = Math.max(1, query.limit);
+
+      const fetched = selectActivityPage.all({
+        sinceMs: query.sinceMs,
+        untilMs: query.untilMs ?? null,
+        cAt: cursor?.at ?? null,
+        cId: cursor?.id ?? null,
+        projectIds: query.projectIds ? JSON.stringify(query.projectIds) : null,
+        kinds: query.kinds ? JSON.stringify(query.kinds) : null,
+        outcomes: query.outcomes ? JSON.stringify(query.outcomes) : null,
+        origins: query.origins ? JSON.stringify(query.origins) : null,
+        fetchLimit: limit + 1,
+      }) as ActivityLogRow[];
+
+      const hasNextPage = fetched.length > limit;
+      const page = fetched.slice(0, limit);
+      // The cursor is derived from the raw (undecoded) last row, not the filtered-down
+      // `rows` below — an unrecognized kind still occupies a keyset position, and the next
+      // page must resume after it, not re-fetch it.
+      const last = page.at(-1);
+      const nextCursor = hasNextPage && last ? encodeCursor({ at: last.at, id: last.id }) : null;
+
+      return {
+        rows: page.map(rowToActivity).filter((r): r is ActivityRow => r !== null),
+        nextCursor,
+      };
+    },
+
+    countOutcomes(sinceMs) {
+      const rows = (selectFinishedActivitySince.all({ sinceMs }) as ActivityLogRow[])
+        .map(rowToActivity)
+        .filter((r): r is ActivityRow => r !== null);
+      return summarizeOutcomes(rows);
+    },
+
+    pruneActivity(beforeMs) {
+      return deleteActivityOlderThan.run(beforeMs).changes;
     },
 
     // Annotated rather than inferred: a generic method gets no usable contextual type from
