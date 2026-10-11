@@ -9,6 +9,8 @@
  * A `UsageSample` is one recorded model call's consumption, attributed to its source.
  * `UsageSummary` is the rolled-up view for the current rolling 5-hour window, and
  * `UsageSeriesPoint[]` is the time-bucketed series behind the live area chart.
+ * `DailyUsagePoint[]` (`bucketUsageDaily`) is the zero-filled, one-point-per-local-day
+ * series behind the trend chart.
  */
 
 /** Which part of the app spent the tokens. */
@@ -119,6 +121,8 @@ export interface UsageSeriesPoint {
   tokens: number;
 }
 
+/** One day, in ms. */
+export const DAY_MS = 24 * 60 * 60 * 1000;
 /** The trailing rolling usage window: 5 hours, in ms. */
 export const USAGE_WINDOW_MS = 5 * 60 * 60 * 1000;
 /** The weekly cap's window: 7 days, in ms — the other limit Claude enforces. */
@@ -230,3 +234,133 @@ export interface SessionStat {
  * between one task finishing and the next one starting routinely does.
  */
 export const SESSION_IDLE_GAP_MS = 10 * 60 * 1000;
+
+/** One `token_usage` row as the daily trend chart reads it. */
+export interface DailyUsageInput {
+  /** Epoch ms when the row was recorded. */
+  createdAt: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  /** Cost in USD for this row, or null if this row carried no cost. */
+  costUsd: number | null;
+}
+
+/** One local day of the trend chart. */
+export interface DailyUsagePoint {
+  /** Epoch ms of the viewer's local midnight for this day. */
+  dayStart: number;
+  /** `'YYYY-MM-DD'` in the viewer's zone — the axis label. */
+  date: string;
+  /**
+   * Cost in USD, or null if spend happened this day but no sample priced it. An
+   * **empty** day (no samples at all) is `0` — nothing was spent, a known zero —
+   * which is exactly what distinguishes it from an unpriced day.
+   */
+  costUsd: number | null;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+}
+
+/** Inputs to {@link bucketUsageDaily}. */
+export interface DailyBucketOptions {
+  /** Series length, oldest first, ending with today. `<= 0` or non-integer (floored) yields `[]`. */
+  days: number;
+  /**
+   * Minutes EAST of UTC (= `-Date#getTimezoneOffset()`). Note the sign convention
+   * is the OPPOSITE of `Date#getTimezoneOffset()`, which reports minutes WEST of UTC.
+   */
+  tzOffsetMinutes: number;
+  /** Epoch ms "now", injected for testability. */
+  now: number;
+}
+
+/**
+ * Buckets usage samples into exactly `opts.days` local-day points, oldest first,
+ * ending with the local day containing `opts.now`. Every day in the window is
+ * present — zero-filled — whether or not any sample fell in it.
+ *
+ * Local day index = `floor((t + tzOffsetMinutes·60000) / DAY_MS)`;
+ * `dayStart = index·DAY_MS − tzOffsetMinutes·60000`. `date` is formatted from the
+ * shifted ms using `getUTC*` accessors — never `Intl`, never a host-zone read — so
+ * the result depends only on `tzOffsetMinutes`, not on the machine running this code.
+ *
+ * A sample whose local day falls before the window's first day, or after `now`'s
+ * local day, is ignored.
+ *
+ * `costUsd` for a day is `null` while no sample in that day has carried a cost; once
+ * one does, it is the sum of the known costs in that day (samples with
+ * `costUsd: null` contribute nothing to the sum). A day with no samples at all is
+ * `0`, not `null` — see {@link DailyUsagePoint.costUsd}.
+ *
+ * `opts.days <= 0`, or not an integer (floored first), returns `[]`.
+ */
+export function bucketUsageDaily(
+  samples: readonly DailyUsageInput[],
+  opts: DailyBucketOptions,
+): DailyUsagePoint[] {
+  const days = Math.floor(opts.days);
+  if (days <= 0) return [];
+
+  const shiftMs = opts.tzOffsetMinutes * 60_000;
+  const localDayIndex = (t: number): number => Math.floor((t + shiftMs) / DAY_MS);
+
+  const lastDayIndex = localDayIndex(opts.now);
+  const firstDayIndex = lastDayIndex - (days - 1);
+
+  interface Bucket {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    costSum: number;
+    costSeen: boolean;
+    sampleCount: number;
+  }
+  const buckets = new Map<number, Bucket>();
+  for (let index = firstDayIndex; index <= lastDayIndex; index++) {
+    buckets.set(index, {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      costSum: 0,
+      costSeen: false,
+      sampleCount: 0,
+    });
+  }
+
+  for (const sample of samples) {
+    const index = localDayIndex(sample.createdAt);
+    const bucket = buckets.get(index);
+    if (!bucket) continue;
+
+    bucket.sampleCount++;
+    bucket.inputTokens += sample.inputTokens;
+    bucket.outputTokens += sample.outputTokens;
+    bucket.cacheReadTokens += sample.cacheReadTokens;
+    if (sample.costUsd !== null) {
+      bucket.costSeen = true;
+      bucket.costSum += sample.costUsd;
+    }
+  }
+
+  const pad2 = (n: number): string => String(n).padStart(2, '0');
+
+  const points: DailyUsagePoint[] = [];
+  for (let index = firstDayIndex; index <= lastDayIndex; index++) {
+    const bucket = buckets.get(index)!;
+    const shifted = new Date(index * DAY_MS);
+    const date = `${shifted.getUTCFullYear()}-${pad2(shifted.getUTCMonth() + 1)}-${pad2(
+      shifted.getUTCDate(),
+    )}`;
+    points.push({
+      dayStart: index * DAY_MS - shiftMs,
+      date,
+      costUsd: bucket.sampleCount === 0 ? 0 : bucket.costSeen ? bucket.costSum : null,
+      inputTokens: bucket.inputTokens,
+      outputTokens: bucket.outputTokens,
+      cacheReadTokens: bucket.cacheReadTokens,
+    });
+  }
+  return points;
+}
