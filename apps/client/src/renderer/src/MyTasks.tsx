@@ -131,7 +131,15 @@ function replaceProjectSlice(prev: Task[] | null, projectId: string, next: Task[
   return [...(prev ?? []).filter((t) => t.projectId !== projectId), ...next];
 }
 
-export function MyTasks(): JSX.Element {
+export interface MyTasksProps {
+  /** A card another tab wants opened — Automations' "Open card" is the first caller. Consumed
+   *  once the board selects it, via `onOpenTaskIdHandled`, so switching back to this tab on
+   *  your own doesn't re-select it. */
+  openTaskId?: string | null;
+  onOpenTaskIdHandled?: () => void;
+}
+
+export function MyTasks({ openTaskId, onOpenTaskIdHandled }: MyTasksProps = {}): JSX.Element {
   // The board's frame — including the commit graph's own pane — shared with the browser
   // client. See `boardLayout.ts`; this screen has no styles left of its own.
   const layout = useBoardLayoutStyles();
@@ -446,6 +454,15 @@ export function MyTasks(): JSX.Element {
     () => tasks?.find((t) => t.id === selectedTaskId) ?? null,
     [tasks, selectedTaskId],
   );
+
+  // Waits for `tasks` to load (the caller may have switched tabs before the board's own
+  // first fetch lands) before selecting, then tells the caller it's done so a later visit
+  // to this tab on its own doesn't re-select a stale id.
+  useEffect(() => {
+    if (!openTaskId || !tasks) return;
+    if (tasks.some((t) => t.id === openTaskId)) setSelectedTaskId(openTaskId);
+    onOpenTaskIdHandled?.();
+  }, [openTaskId, tasks, onOpenTaskIdHandled]);
 
   /**
    * taskId → its files, so each pane gets its own slice and nothing downstream filters a

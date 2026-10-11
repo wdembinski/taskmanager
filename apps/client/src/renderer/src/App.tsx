@@ -37,6 +37,7 @@ import {
   AlertRegular,
   AppsListDetailRegular,
   DataTrendingRegular,
+  FlashRegular,
   FolderRegular,
   PlayRegular,
   SettingsRegular,
@@ -46,6 +47,7 @@ import type { AuthState } from '@shared/auth';
 import type { AppInfo, ClaudeStatus } from '@shared/ipc';
 import { describeUpdate, type UpdateState } from '@shared/update';
 import { Attention } from '@ui/Attention';
+import { AutomationsView } from '@ui/automations/AutomationsView';
 import { AuthBanner } from './AuthBanner';
 import { LimitBanner } from './LimitBanner';
 import { MyTasks } from './MyTasks';
@@ -105,13 +107,21 @@ const useStyles = makeStyles({
  * purely a workspace over whichever one you pick.
  */
 type TabId =
-  'mytasks' | 'projects' | 'tickets' | 'performance' | 'attention' | 'settings' | 'scratch';
+  | 'mytasks'
+  | 'projects'
+  | 'tickets'
+  | 'automations'
+  | 'performance'
+  | 'attention'
+  | 'settings'
+  | 'scratch';
 
 /** The rail, in order. The label is the tooltip and the accessible name. */
 const NAV: ReadonlyArray<NavRailItem & { id: TabId }> = [
   { id: 'mytasks', label: 'My Tasks', icon: <TaskListSquareLtrRegular /> },
   { id: 'projects', label: 'Projects', icon: <FolderRegular /> },
   { id: 'tickets', label: 'Tickets', icon: <AppsListDetailRegular /> },
+  { id: 'automations', label: 'Automations', icon: <FlashRegular /> },
   { id: 'performance', label: 'Performance', icon: <DataTrendingRegular /> },
   { id: 'attention', label: 'Attention', icon: <AlertRegular /> },
   { id: 'settings', label: 'Settings', icon: <SettingsRegular /> },
@@ -143,6 +153,14 @@ export function App(): JSX.Element {
    */
   const [auth, setAuth] = useState<AuthState | null>(null);
   const [tab, setTab] = useState<TabId>('mytasks');
+  // A card opened from a tab other than My Tasks — Automations' run log is the first
+  // caller — queued for My Tasks to select once it's the active tab. See `MyTasks`'
+  // `openTaskId`/`onOpenTaskIdHandled`.
+  const [pendingOpenTaskId, setPendingOpenTaskId] = useState<string | null>(null);
+  const openTaskOnBoard = useCallback((taskId: string) => {
+    setPendingOpenTaskId(taskId);
+    setTab('mytasks');
+  }, []);
   // How many tasks are waiting on a human, shown as a badge on the Attention tab.
   const [attentionCount, setAttentionCount] = useState(0);
   const { dispatchToast } = useToastController(TOASTER_ID);
@@ -400,11 +418,16 @@ export function App(): JSX.Element {
       }
     >
       {tab === 'mytasks' ? (
-        <MyTasks />
+        <MyTasks
+          openTaskId={pendingOpenTaskId}
+          onOpenTaskIdHandled={() => setPendingOpenTaskId(null)}
+        />
       ) : tab === 'projects' ? (
         <Projects />
       ) : tab === 'tickets' ? (
         <TicketWorkspace />
+      ) : tab === 'automations' ? (
+        <AutomationsView onOpenTask={openTaskOnBoard} />
       ) : tab === 'performance' ? (
         <Performance />
       ) : tab === 'attention' ? (
