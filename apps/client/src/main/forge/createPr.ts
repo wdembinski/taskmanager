@@ -45,7 +45,7 @@ import {
   wrapPlainText,
 } from '@shared/commitMessage';
 import { branchCommitMessages, commitsAhead, hasCommits, pushBranch, remoteUrl } from '../git';
-import { hostFor } from '../exec';
+import { hostFor, type ExecHost } from '../exec';
 import { GitHubClient } from '../github/githubClient';
 import { pullRequestId } from '../github/githubPrSync';
 import { GitLabClient } from '../gitlab/gitlabClient';
@@ -180,53 +180,22 @@ export async function openPullRequest(
   // "fall back to the card's own description" rather than "say nothing".
   const commits = await branchCommitMessages(live.cwd, live.base, live.branch, host);
 
-  const origin = await remoteUrl(live.cwd, 'origin', host);
-  if (!origin) {
-    throw new Error(
-      `${project.name} has no "origin" remote, so there is nowhere to push "${live.branch}". ` +
-        `Add one (\`git remote add origin …\`) and press this again.`,
-    );
-  }
-  const remote = parseRemoteUrl(origin);
-  if (!remote) {
-    throw new Error(
-      `The "origin" remote of ${project.name} (${origin}) is not a GitHub or GitLab URL, so ` +
-        `there is no forge to open a pull request on.`,
-    );
-  }
-
   const settings = deps.getSettings();
-  const provider = pickForge(remote.host, settings);
-  if (!provider) {
-    throw new Error(
-      `${remote.host} is not a forge this app is set up for. Enable GitHub or GitLab in ` +
-        `Settings and point its URL at ${remote.host}.`,
-    );
-  }
-
-  const token = deps.tokenFor(provider);
-  if (!token) {
-    throw new Error(
-      `No ${forgeName(provider)} token is saved, so the branch cannot be pushed or a ` +
-        `${mrNoun(provider)} opened. Add one in Settings.`,
-    );
-  }
-  const clean = sanitizeToken(token);
+  const target = await resolveForgeGitTarget(project, live.cwd, host, settings, deps.tokenFor);
 
   // The push. A tokenized URL only when the remote is https — an ssh remote authenticates
   // with a key and there is nothing to inject — and it is passed as ARGV, never written into
   // `.git/config`, which is why `pushBranch` drops `--set-upstream` for it.
-  const httpsRemote = /^https?:\/\//i.test(origin);
   const pushed = await pushBranch(live.cwd, 'origin', live.branch, {
-    url: httpsRemote ? tokenizedUrl(remote.host, remote.path, provider, clean) : undefined,
-    secrets: [clean],
+    url: target.url,
+    secrets: [target.token],
     host,
   });
   if (pushed.code !== 0) {
     // Redacted by `pushBranch` before it got here: git quotes the URL it was given back in
     // its own error, token and all, and this string goes on a timeline that keeps it.
     const why = (pushed.stderr.trim() || pushed.stdout.trim() || 'git push failed').slice(0, 400);
-    throw new Error(`Could not push "${live.branch}" to ${remote.host}: ${why}`);
+    throw new Error(`Could not push "${live.branch}" to ${target.host}: ${why}`);
   }
 
   // Already open — so the push above is the entire job, and there is nothing to POST. Both
@@ -241,27 +210,43 @@ export async function openPullRequest(
       project.id,
       owner.id,
       settings,
-      clean,
-      provider,
-      remote.path,
+      target.token,
+      target.provider,
+      target.path,
       alreadyOpen.number,
-      prBody(owner, provider, commits),
+      prBody(owner, target.provider, commits),
     );
     deps.note(
       project.id,
       owner.id,
-      `Pushed "${live.branch}" to ${remote.host} — ${mrRef(alreadyOpen)} was already open for ` +
+      `Pushed "${live.branch}" to ${target.host} — ${mrRef(alreadyOpen)} was already open for ` +
         `it and now carries this work: ${alreadyOpen.webUrl}`,
     );
     return { url: alreadyOpen.webUrl, ref: mrRef(alreadyOpen), existed: true };
   }
 
   const title = prTitle(owner);
-  const body = prBody(owner, provider, commits);
+  const body = prBody(owner, target.provider, commits);
   const created =
-    provider === 'github'
-      ? await createOnGitHub(settings, clean, remote.path, live.branch, live.base, title, body)
-      : await createOnGitLab(settings, clean, remote.path, live.branch, live.base, title, body);
+    target.provider === 'github'
+      ? await createOnGitHub(
+          settings,
+          target.token,
+          target.path,
+          live.branch,
+          live.base,
+          title,
+          body,
+        )
+      : await createOnGitLab(
+          settings,
+          target.token,
+          target.path,
+          live.branch,
+          live.base,
+          title,
+          body,
+        );
 
   // The create call above found one GitHub/GitLab already considers open (see
   // `createOnGitHub`/`createOnGitLab`'s `existed: true`) — the same "refresh it anyway" case
@@ -272,9 +257,9 @@ export async function openPullRequest(
       project.id,
       owner.id,
       settings,
-      clean,
-      provider,
-      remote.path,
+      target.token,
+      target.provider,
+      target.path,
       created.number,
       body,
     );
@@ -290,7 +275,7 @@ export async function openPullRequest(
     created.existed
       ? `A ${mrNoun(created.provider)} for "${live.branch}" was already open — ` +
           `${ref}: ${created.webUrl}`
-      : `Pushed "${live.branch}" to ${remote.host} and opened ${ref} against ` +
+      : `Pushed "${live.branch}" to ${target.host} and opened ${ref} against ` +
           `\`${live.base}\` — ${created.webUrl}`,
   );
 
@@ -358,6 +343,71 @@ export function openMergeRequestFor(
 function tokenizedUrl(host: string, path: string, provider: ForgeProvider, token: string): string {
   const user = provider === 'github' ? 'x-access-token' : 'oauth2';
   return `https://${user}:${encodeURIComponent(token)}@${host}/${path}.git`;
+}
+
+/**
+ * What a push or fetch against a card's forge needs: which provider it is, where its
+ * remote lives, a usable token, and (for an https remote) the ephemeral tokenized URL to
+ * authenticate the git call with — undefined for ssh, which authenticates with a key and
+ * has nothing to inject.
+ */
+export interface ForgeGitTarget {
+  provider: ForgeProvider;
+  host: string;
+  path: string;
+  /** Already sanitized — pass straight to a git call's `secrets`. */
+  token: string;
+  url: string | undefined;
+}
+
+/**
+ * Read `origin`, work out which forge it belongs to, and get a token for it — the
+ * preamble every push or fetch against a PR/MR's forge needs. Shared by {@link
+ * openPullRequest} and the scheduler's PR-conflict ladder (`Scheduler.setForgeGit`), so
+ * the three walls either one can refuse on — no remote, not a forge this app knows, no
+ * token — are named in exactly one place rather than two that can drift apart.
+ */
+export async function resolveForgeGitTarget(
+  project: Project,
+  cwd: string,
+  host: ExecHost | undefined,
+  settings: AppSettings,
+  tokenFor: (provider: ForgeProvider) => string | null,
+): Promise<ForgeGitTarget> {
+  const origin = await remoteUrl(cwd, 'origin', host);
+  if (!origin) {
+    throw new Error(
+      `${project.name} has no "origin" remote, so there is nowhere to push or fetch its ` +
+        `branches. Add one (\`git remote add origin …\`) and try again.`,
+    );
+  }
+  const remote = parseRemoteUrl(origin);
+  if (!remote) {
+    throw new Error(
+      `The "origin" remote of ${project.name} (${origin}) is not a GitHub or GitLab URL, so ` +
+        `there is no forge to act against.`,
+    );
+  }
+  const provider = pickForge(remote.host, settings);
+  if (!provider) {
+    throw new Error(
+      `${remote.host} is not a forge this app is set up for. Enable GitHub or GitLab in ` +
+        `Settings and point its URL at ${remote.host}.`,
+    );
+  }
+  const token = tokenFor(provider);
+  if (!token) {
+    throw new Error(`No ${forgeName(provider)} token is saved. Add one in Settings.`);
+  }
+  const clean = sanitizeToken(token);
+  const httpsRemote = /^https?:\/\//i.test(origin);
+  return {
+    provider,
+    host: remote.host,
+    path: remote.path,
+    token: clean,
+    url: httpsRemote ? tokenizedUrl(remote.host, remote.path, provider, clean) : undefined,
+  };
 }
 
 /**

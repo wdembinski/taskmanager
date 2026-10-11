@@ -10,7 +10,7 @@
  * complements rather than duplicates.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ChatRefusal, ChatSendResult, Task } from '@shared/model';
+import type { Task } from '@shared/model';
 import type { MergeRequest } from '@shared/mergeRequest';
 import { DEFAULT_SETTINGS, type AppSettings } from '@shared/settings';
 import { watchMergeRequests, type PrWatcherDeps } from './prWatcher';
@@ -85,26 +85,25 @@ interface Rig {
   deps: PrWatcherDeps;
   notes: Array<{ projectId: string; taskId: string; body: string }>;
   marked: Array<{ mrId: string; headSha: string }>;
-  chatCalls: Array<{ taskId: string; message: string }>;
+  resolveForgeConflictCalls: Array<{ taskId: string; mr: MergeRequest }>;
 }
 
 function rig(partial: Partial<PrWatcherDeps> = {}): Rig {
   const notes: Rig['notes'] = [];
   const marked: Rig['marked'] = [];
-  const chatCalls: Rig['chatCalls'] = [];
+  const resolveForgeConflictCalls: Rig['resolveForgeConflictCalls'] = [];
   const deps: PrWatcherDeps = {
     getSettings: () => settings(),
     getTask: (id) => task(id),
     tokenFor: () => 'a-token',
-    chatWithAgent: (taskId, message): ChatSendResult => {
-      chatCalls.push({ taskId, message });
-      return { status: 'resumed', taskId, runId: 'run-1' };
+    resolveForgeConflict: (taskId, mr) => {
+      resolveForgeConflictCalls.push({ taskId, mr });
     },
     note: (projectId, taskId, body) => notes.push({ projectId, taskId, body }),
     markActed: (mrId, headSha) => marked.push({ mrId, headSha }),
     ...partial,
   };
-  return { deps, notes, marked, chatCalls };
+  return { deps, notes, marked, resolveForgeConflictCalls };
 }
 
 afterEach(() => {
@@ -152,11 +151,11 @@ describe('watchMergeRequests: which task a row resolves to', () => {
 
 describe('watchMergeRequests: a row with nothing to report', () => {
   it('calls neither note nor markActed', async () => {
-    const { deps, notes, marked, chatCalls } = rig();
+    const { deps, notes, marked, resolveForgeConflictCalls } = rig();
     await watchMergeRequests([mr()], deps); // pipelineStatus: 'running' — no verdict yet
     expect(notes).toEqual([]);
     expect(marked).toEqual([]);
-    expect(chatCalls).toEqual([]);
+    expect(resolveForgeConflictCalls).toEqual([]);
   });
 });
 
@@ -246,8 +245,8 @@ describe('watchMergeRequests: forge-rebase', () => {
 });
 
 describe('watchMergeRequests: resolve-conflicts', () => {
-  it('asks the agent to resolve it, naming the MR, its URL and both branches', async () => {
-    const { deps, notes, chatCalls, marked } = rig();
+  it('queues the conflict ladder, with no note of its own — the ladder notes itself', async () => {
+    const { deps, notes, resolveForgeConflictCalls, marked } = rig();
     const row = mr({
       detailedMergeStatus: 'conflict',
       hasConflicts: true,
@@ -258,26 +257,15 @@ describe('watchMergeRequests: resolve-conflicts', () => {
 
     await watchMergeRequests([row], deps);
 
-    expect(chatCalls).toHaveLength(1);
-    expect(chatCalls[0]?.taskId).toBe('task-1');
-    expect(chatCalls[0]?.message).toContain('!1');
-    expect(chatCalls[0]?.message).toContain(row.webUrl);
-    expect(chatCalls[0]?.message).toContain('feature/thing');
-    expect(chatCalls[0]?.message).toContain('develop');
-    expect(notes).toEqual([
-      {
-        projectId: 'project-1',
-        taskId: 'task-1',
-        body: '!1 has a merge conflict — asked the agent to resolve it.',
-      },
-    ]);
+    expect(resolveForgeConflictCalls).toEqual([{ taskId: 'task-1', mr: row }]);
+    expect(notes).toEqual([]);
     expect(marked).toEqual([{ mrId: row.id, headSha: 'sha-conflict' }]);
   });
 
   it('wins over a stale branch — nothing can be fixed until the conflict is', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
-    const { deps, chatCalls } = rig();
+    const { deps, resolveForgeConflictCalls } = rig();
     // Both conditions at once: the row's own conflict flag AND a forge status that would,
     // on its own, call for a rebase.
     const row = mr({
@@ -286,43 +274,9 @@ describe('watchMergeRequests: resolve-conflicts', () => {
       headSha: 'sha-both',
     });
     await watchMergeRequests([row], deps);
-    expect(chatCalls).toHaveLength(1); // asked the agent, not the forge
+    expect(resolveForgeConflictCalls).toHaveLength(1); // queued the ladder, not the forge rebase
     expect(fetchMock).not.toHaveBeenCalled();
   });
-
-  const refusals: ReadonlyArray<readonly [ChatRefusal, string]> = [
-    ['never-ran', 'this card has never run, so there is no conversation to continue'],
-    ['limit', 'a usage limit is holding all work right now'],
-    ['signed-out', 'claude is signed out'],
-    ['awaiting-decision', 'the card is already waiting on a decision'],
-    ['chain-busy', 'the card is mid-chain'],
-    ['not-running', 'the app is shutting down'],
-    ['unknown-task', 'unknown-task'], // the default branch: the raw reason, verbatim
-  ];
-
-  it.each(refusals)(
-    'explains a %s refusal in words a human can act on',
-    async (reason, explanation) => {
-      const { deps, notes, marked } = rig({
-        chatWithAgent: (taskId): ChatSendResult => ({ status: 'refused', taskId, reason }),
-      });
-      const row = mr({
-        detailedMergeStatus: 'conflict',
-        hasConflicts: true,
-        headSha: 'sha-refused',
-      });
-
-      await watchMergeRequests([row], deps);
-
-      expect(notes[0]?.body).toBe(
-        `!1 has a merge conflict, but it could not be handed to the agent (${explanation}). ` +
-          'Resolve it by hand, or ask again from the card.',
-      );
-      // A refusal is not a thrown error — the attempt succeeded in asking, it just could not
-      // be delivered, so the commit is still considered "looked at" for this head SHA.
-      expect(marked).toEqual([{ mrId: row.id, headSha: 'sha-refused' }]);
-    },
-  );
 });
 
 describe('watchMergeRequests: pipeline notes', () => {

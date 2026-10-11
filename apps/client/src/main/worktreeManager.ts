@@ -43,6 +43,7 @@ import {
   hasCommits,
   hasConflicts,
   hasStagedChanges,
+  isAncestor,
   isClean,
   isRepo,
   listBranches,
@@ -1237,6 +1238,24 @@ export class WorktreeManager {
   async listConflicts(project: Project, worktree: string): Promise<string[]> {
     const { host } = await this.workspaceFor(project);
     return conflictedFiles(worktree, host);
+  }
+
+  /**
+   * Whether `sha` — a PR/MR's source branch tip as just fetched from the forge — is
+   * already reachable from `branch` in `worktree`. True means nobody has pushed to the
+   * PR since this app last looked, so rebasing onto the target and force-with-lease
+   * pushing back is safe; false means the branch has diverged and nothing should be
+   * touched (see `FeatureSettings.prAutoResolve`'s "never clobbers a push it hasn't
+   * seen" rule).
+   */
+  async isAncestor(
+    project: Project,
+    worktree: string,
+    sha: string,
+    branch: string,
+  ): Promise<boolean> {
+    const { host } = await this.workspaceFor(project);
+    return isAncestor(worktree, sha, branch, host);
   }
 
   /**

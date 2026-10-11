@@ -18,6 +18,7 @@ import {
   isRetryableFailure,
   describeEmptyOutcome,
   releaseMode,
+  type ForgeGit,
   type Schedulable,
 } from './scheduler';
 import { AGREE_SENTINEL, OBJECT_SENTINEL, PROPOSE_SENTINEL } from './attention';
@@ -25,6 +26,7 @@ import { MAX_PLAN_STEPS } from '@shared/board';
 import type { PermissionMode } from '@shared/session';
 import type { Project, Task } from '@shared/model';
 import type { LimitState } from '@shared/limit';
+import type { MergeRequest } from '@shared/mergeRequest';
 import { RUN_REFUSAL_MESSAGE } from '@shared/scheduler';
 import type { SessionManager } from './sessionManager';
 import type { Store } from './store';
@@ -6231,5 +6233,324 @@ describe('Scheduler.settle — opening a pull request instead of merging', () =>
 
     expect(notes.some((n) => n.includes('cannot reach a forge'))).toBe(true);
     expect(worktrees.integrate).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * `Scheduler.resolveForgeConflict` — the PR/MR twin of the ordinary merge conflict ladder.
+ * A sync hands it a conflicted, in-scope MR on every poll; these cases drive the ladder
+ * through a fake `worktrees` (the same shape the Rung 2 suite above uses, extended with
+ * `inspect`/`rebaseForPullRequest`/`finishPullRequestRebase`/`isAncestor`) and a fake
+ * `forgeGit` (`setForgeGit`'s `{ fetch, push }` pair).
+ */
+describe('Scheduler — the PR/MR conflict ladder (resolveForgeConflict)', () => {
+  const okResult = {
+    kind: 'result',
+    success: true,
+    resultText: '',
+    costUsd: null,
+    durationMs: null,
+    stopReason: null,
+    terminalReason: null,
+  };
+
+  const mergeRequest = (over: Partial<MergeRequest> = {}): MergeRequest => ({
+    id: 'gl-1-12',
+    taskId: 't1',
+    openedForTaskId: null,
+    provider: 'gitlab',
+    repoId: 1,
+    projectPath: 'group/repo',
+    number: 12,
+    title: 'Fix the export dialog',
+    displayName: null,
+    webUrl: 'https://gitlab.example.com/group/repo/-/merge_requests/12',
+    sourceBranch: 'orch/t1',
+    targetBranch: 'main',
+    state: 'opened',
+    draft: false,
+    pipelineStatus: 'unknown',
+    pipelineUrl: null,
+    pipelineStages: [],
+    approvalsRequired: null,
+    approvalsGiven: 0,
+    changesRequested: false,
+    detailedMergeStatus: null,
+    hasConflicts: true,
+    issueKeys: [],
+    latestNoteAt: null,
+    lastReadAt: null,
+    lastEventAt: null,
+    lastEventSeenAt: null,
+    headSha: null,
+    lastActedSha: null,
+    updatedAt: 0,
+    syncedAt: 0,
+    ...over,
+  });
+
+  function setup(opts?: {
+    prAutoResolve?: boolean;
+    rebaseResult?: Record<string, unknown>;
+    finishResult?: Record<string, unknown>;
+    isAncestorResult?: boolean;
+    fetchResult?: (branch: string) => { ok: true; sha: string } | { ok: false; message: string };
+    pushResult?: { ok: true } | { ok: false; message: string };
+  }) {
+    const project = {
+      id: 'agent-1',
+      name: 'Checkout service',
+      path: 'C:/repo',
+      planPath: '',
+      kind: 'agent',
+      concurrency: 1,
+      useWorktrees: true,
+      defaultModel: 'sonnet',
+      defaultPermissionMode: 'acceptEdits',
+    } as unknown as Project;
+    const card = {
+      id: 't1',
+      projectId: 'personal',
+      phase: '',
+      title: 'Fix the export dialog',
+      status: 'in-progress',
+      sessionId: 'sess-1',
+      order: 0,
+      source: 'adhoc',
+      dependsOn: [],
+      isContract: false,
+      isScaffold: false,
+      agentProjectId: 'agent-1',
+      agentBranch: 'orch/t1',
+      agentMode: 'acceptEdits',
+      parentTaskId: null,
+    } as unknown as Task;
+    const notes: string[] = [];
+    const store = {
+      getTask: (id: string) => (id === 't1' ? card : undefined),
+      getProject: (id: string) => (id === 'agent-1' ? project : undefined),
+      listProjects: () => [project],
+      getTasks: () => [card],
+      getSubtasks: () => [],
+      getTaskActivity: () => [],
+      addComment: (_p: string, _t: string, body: string) => notes.push(body),
+      listTaskLinks: () => [],
+      listMergeRequests: () => [],
+      updateTask: (id: string, patch: Partial<Task>) => {
+        if (id === 't1') Object.assign(card, patch);
+        return card;
+      },
+      appendTaskEvent: vi.fn((_p: string, _t: string, _r: string, e: { text?: string }) => {
+        if (e?.text) notes.push(e.text);
+      }),
+      appendTokenUsage: vi.fn(),
+      getSettings: () => ({
+        maxAutoRetries: 0,
+        limitJitterMs: 0,
+        concurrency: 1,
+        features: { prAutoResolve: opts?.prAutoResolve ?? true },
+      }),
+      saveLimitGate: () => undefined,
+      loadLimitGate: () => null,
+      ...INERT_ATTENTION_STORE,
+    } as unknown as Store;
+
+    const rebaseCalls: Array<{ branch: string; target: string }> = [];
+    const finishCalls: Array<{ branch: string; target: string }> = [];
+    const worktrees = {
+      prepare: vi.fn(async () => ({
+        mode: 'worktree',
+        cwd: 'C:/wt/t1',
+        branch: 'orch/t1',
+        base: 'main',
+      })),
+      inspect: vi.fn(async () => ({ cwd: 'C:/wt/t1', branch: 'orch/t1', base: 'main' })),
+      listConflicts: vi.fn(async () => ['src/app.ts']),
+      isAncestor: vi.fn(async () => opts?.isAncestorResult ?? true),
+      rebaseForPullRequest: vi.fn(async (_p: Project, branch: string, target: string) => {
+        rebaseCalls.push({ branch, target });
+        return (
+          opts?.rebaseResult ?? { status: 'rebased', branch, base: target, worktree: 'C:/wt/t1' }
+        );
+      }),
+      finishPullRequestRebase: vi.fn(async (_p: Project, branch: string, target: string) => {
+        finishCalls.push({ branch, target });
+        return (
+          opts?.finishResult ?? { status: 'rebased', branch, base: target, worktree: 'C:/wt/t1' }
+        );
+      }),
+      cleanup: vi.fn(),
+    } as unknown as WorktreeManager;
+
+    const fetchCalls: Array<{ branch: string; localRef: string }> = [];
+    const pushCalls: Array<{ branch: string; expected: string }> = [];
+    const forgeGit: ForgeGit = {
+      fetch: vi.fn(
+        async (
+          _p: Project,
+          _cwd: string,
+          branch: string,
+          localRef: string,
+        ): Promise<{ ok: true; sha: string } | { ok: false; message: string }> => {
+          fetchCalls.push({ branch, localRef });
+          return opts?.fetchResult?.(branch) ?? { ok: true, sha: 'sha-remote-1' };
+        },
+      ),
+      push: vi.fn(
+        async (
+          _p: Project,
+          _cwd: string,
+          branch: string,
+          expected: string,
+        ): Promise<{ ok: true } | { ok: false; message: string }> => {
+          pushCalls.push({ branch, expected });
+          return opts?.pushResult ?? { ok: true };
+        },
+      ),
+    };
+
+    const start = vi.fn((_req: unknown, o: { runId?: string }) => ({ runId: o?.runId ?? 'r-new' }));
+    const stop = vi.fn();
+    const send = vi.fn();
+    const sessions = { start, stop, send } as unknown as SessionManager;
+    const emitAttention = vi.fn();
+    const scheduler = new Scheduler(
+      store,
+      sessions,
+      vi.fn(),
+      vi.fn(),
+      emitAttention,
+      vi.fn(),
+      vi.fn(),
+      worktrees,
+    );
+    scheduler.setForgeGit(forgeGit);
+
+    const fire = (runId: string, event: unknown): Promise<void> =>
+      (scheduler as unknown as { onRunEvent: (r: string, e: unknown) => Promise<void> }).onRunEvent(
+        runId,
+        event,
+      );
+
+    return {
+      scheduler,
+      card,
+      store,
+      worktrees,
+      forgeGit,
+      start,
+      emitAttention,
+      notes,
+      rebaseCalls,
+      finishCalls,
+      fetchCalls,
+      pushCalls,
+      fire,
+    };
+  }
+
+  const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it('a clean rebase pushes with the lease', async () => {
+    const { scheduler, rebaseCalls, pushCalls, notes } = setup();
+    scheduler.resolveForgeConflict('t1', mergeRequest());
+    await flush();
+
+    expect(rebaseCalls).toEqual([{ branch: 'orch/t1', target: 'refs/remotes/origin/main' }]);
+    expect(pushCalls).toEqual([{ branch: 'orch/t1', expected: 'sha-remote-1' }]);
+    expect(notes.some((n) => n.includes('pushed it back'))).toBe(true);
+  });
+
+  it('a conflict dispatches the agent fix, and a successful settle pushes', async () => {
+    const { scheduler, start, fire, finishCalls, pushCalls } = setup({
+      rebaseResult: {
+        status: 'conflict',
+        worktree: 'C:/wt/t1',
+        branch: 'orch/t1',
+        base: 'refs/remotes/origin/main',
+      },
+    });
+    scheduler.resolveForgeConflict('t1', mergeRequest());
+    await flush();
+
+    expect(start).toHaveBeenCalledTimes(1);
+    const fixRunId = (start.mock.calls[0][1] as { runId: string }).runId;
+    fire(fixRunId, okResult);
+    await flush();
+
+    expect(finishCalls).toEqual([{ branch: 'orch/t1', target: 'refs/remotes/origin/main' }]);
+    expect(pushCalls).toEqual([{ branch: 'orch/t1', expected: 'sha-remote-1' }]);
+  });
+
+  it('two failed fixes raise merge-conflict', async () => {
+    const { scheduler, start, fire, emitAttention } = setup({
+      rebaseResult: {
+        status: 'conflict',
+        worktree: 'C:/wt/t1',
+        branch: 'orch/t1',
+        base: 'refs/remotes/origin/main',
+      },
+      finishResult: {
+        status: 'conflict',
+        worktree: 'C:/wt/t1',
+        branch: 'orch/t1',
+        base: 'refs/remotes/origin/main',
+      },
+    });
+    scheduler.resolveForgeConflict('t1', mergeRequest());
+    await flush();
+    let fixRunId = (start.mock.calls[0][1] as { runId: string }).runId;
+    fire(fixRunId, okResult);
+    await flush();
+
+    expect(start).toHaveBeenCalledTimes(2);
+    fixRunId = (start.mock.calls[1][1] as { runId: string }).runId;
+    fire(fixRunId, okResult);
+    await flush();
+
+    expect(emitAttention).toHaveBeenCalledTimes(1);
+    expect(emitAttention.mock.calls[0][0]).toMatchObject({ kind: 'merge-conflict' });
+  });
+
+  it('a second call with the same SHA is a no-op', async () => {
+    const { scheduler, rebaseCalls } = setup();
+    const mr = mergeRequest();
+    scheduler.resolveForgeConflict('t1', mr);
+    await flush();
+    scheduler.resolveForgeConflict('t1', mr);
+    await flush();
+
+    // The clean rebase/push settles fully inside the first `flush`, so by the second call
+    // nothing is in flight — yet the repeated SHA alone must still stop it from pushing twice.
+    expect(rebaseCalls.length).toBe(1);
+  });
+
+  it('an in-flight task is skipped', async () => {
+    const { scheduler, fetchCalls, rebaseCalls } = setup();
+    (scheduler as unknown as { inFlight: Set<string> }).inFlight.add('t1');
+    scheduler.resolveForgeConflict('t1', mergeRequest());
+    await flush();
+
+    expect(fetchCalls).toEqual([]);
+    expect(rebaseCalls).toEqual([]);
+  });
+
+  it('a diverged remote is noted and not pushed', async () => {
+    const { scheduler, notes, rebaseCalls, pushCalls } = setup({ isAncestorResult: false });
+    scheduler.resolveForgeConflict('t1', mergeRequest());
+    await flush();
+
+    expect(rebaseCalls).toEqual([]);
+    expect(pushCalls).toEqual([]);
+    expect(notes.some((n) => n.includes("has commits this card's branch does not"))).toBe(true);
+  });
+
+  it('the setting off means no call', async () => {
+    const { scheduler, fetchCalls, rebaseCalls } = setup({ prAutoResolve: false });
+    scheduler.resolveForgeConflict('t1', mergeRequest());
+    await flush();
+
+    expect(fetchCalls).toEqual([]);
+    expect(rebaseCalls).toEqual([]);
   });
 });

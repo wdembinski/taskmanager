@@ -36,7 +36,7 @@ import type {
 } from '@shared/model';
 import { hasRepo, resolveRunModel } from '@shared/model';
 import { chainInFlight, chatTarget, hasAgentWorked, parkedStep } from '@shared/board';
-import type { MergeRequest } from '@shared/mergeRequest';
+import { forgeName, mrAbbrev, mrRef, type MergeRequest } from '@shared/mergeRequest';
 import { attachmentsInScope, type PromptAttachment } from '@shared/attachments';
 import type {
   SchedulerState,
@@ -885,14 +885,62 @@ function parkedRunFor(run: Run): ParkedRun | null {
   };
 }
 
-/** A parked merge conflict awaiting a human, so `answerAttention` can finish integrating. */
-interface PendingIntegration {
-  projectId: string;
+/**
+ * The forge identifiers a PR/MR rebase (as opposed to a merge into base) needs to carry
+ * through the conflict ladder and out the other side — see {@link Scheduler.
+ * resolveForgeConflict}. `leaseSha` is the remote source branch's tip as fetched before the
+ * rebase started, held as the `--force-with-lease` expectation so a push that landed on the
+ * PR in the meantime is refused by git rather than overwritten.
+ */
+interface ForgeConflictCtx {
+  mrId: string;
+  targetBranch: string;
+  sourceBranch: string;
+  leaseSha: string;
+}
+
+/**
+ * The shape every step of the conflict ladder passes around: what branch, in what worktree,
+ * is being rebased onto what. `forge` is present exactly when this is a PR/MR rebase rather
+ * than a merge into the project's own base — its presence is the one thing that tells
+ * `applyIntegrationResult`, `escalateConflict` and friends which of the two they are driving.
+ */
+interface IntegrationCtx {
   taskId: string;
   runId: string;
   branch: string;
   base: string;
   worktree: string;
+  forge?: ForgeConflictCtx;
+}
+
+/** A parked merge conflict awaiting a human, so `answerAttention` can finish integrating. */
+interface PendingIntegration extends IntegrationCtx {
+  projectId: string;
+}
+
+/**
+ * What the PR/MR conflict ladder needs to fetch and push against a card's forge, without
+ * knowing how to read a token or work out which forge `origin` points at — that preamble
+ * lives in `forge/createPr.ts`'s `resolveForgeGitTarget`, and only `ipc.ts` can reach a
+ * decrypted token (`safeStorage`), so the finished calls are injected rather than imported.
+ * See {@link Scheduler.setForgeGit}.
+ */
+export interface ForgeGit {
+  /** Fetch `branch` from the card's forge into the scratch ref `localRef`, inside `cwd`. */
+  fetch(
+    project: Project,
+    cwd: string,
+    branch: string,
+    localRef: string,
+  ): Promise<{ ok: true; sha: string } | { ok: false; message: string }>;
+  /** Force-with-lease push `cwd`'s checked-out HEAD to `branch`, leasing `expected`. */
+  push(
+    project: Project,
+    cwd: string,
+    branch: string,
+    expected: string,
+  ): Promise<{ ok: true } | { ok: false; message: string }>;
 }
 
 /**
@@ -1069,25 +1117,23 @@ export class Scheduler {
    * rebase markers in its worktree, and on completion the scheduler finishes the merge via
    * `finishAfterConflict` instead of a fresh integrate. Keyed by task id → integration ctx.
    */
-  private readonly pendingConflictFix = new Map<
-    string,
-    {
-      projectId: string;
-      taskId: string;
-      runId: string;
-      branch: string;
-      base: string;
-      worktree: string;
-    }
-  >();
+  private readonly pendingConflictFix = new Map<string, PendingIntegration>();
   /**
-   * PR/MRs a sync found conflicted and `autoResolvePrConflicts` is on for, keyed by MR id —
-   * queued here by {@link Scheduler.resolveForgeConflict} for the conflict ladder to drive
-   * (fetch, rebase onto the target, force-with-lease push). Cleared by
+   * PR/MRs the watcher found conflicted and `features.prAutoResolve` is on for, keyed by MR
+   * id — queued here by {@link Scheduler.resolveForgeConflict} for the conflict ladder to
+   * drive (fetch, rebase onto the target, force-with-lease push). Cleared by
    * {@link Scheduler.noteForgeConflictCleared} the moment the forge stops reporting
    * conflicts, so a fixed or superseded episode is never acted on twice.
    */
   private readonly forgeConflicts = new Map<string, { taskId: string; mr: MergeRequest }>();
+  /**
+   * The remote source-branch SHA each conflicted PR/MR was last driven at, keyed by MR id —
+   * the once-per-episode trigger `FeatureSettings.prAutoResolve` documents. A poll that
+   * fetches the same SHA again is a no-op: something is already resolving that exact state
+   * (an agent fix in flight, or a human-facing `merge-conflict` item parked for it). Cleared
+   * alongside {@link Scheduler.forgeConflicts} by {@link Scheduler.noteForgeConflictCleared}.
+   */
+  private readonly forgeConflictHandled = new Map<string, string>();
   /**
    * Branches that are finished and waiting for a human to merge them (Phase 17), keyed by
    * task id. Populated when a worktree run settles and auto-merge is off FOR THAT CARD
@@ -1211,6 +1257,12 @@ export class Scheduler {
    */
   private openPullRequest:
     ((taskId: string) => Promise<{ url: string; ref: string; existed?: boolean }>) | null = null;
+  /**
+   * Fetch and force-with-lease push against a card's forge — see {@link setForgeGit}. Null
+   * until `ipc.ts` wires it, which is also how the unit tests run without one: a build with
+   * nothing wired simply cannot drive the PR-conflict ladder past the first note.
+   */
+  private forgeGit: ForgeGit | null = null;
   /**
    * The account-wide usage-limit gate (Phase 5). When active, ALL scheduling is
    * held; when its timer fires, every parked task resumes by its saved session id.
@@ -1401,6 +1453,17 @@ export class Scheduler {
     open: (taskId: string) => Promise<{ url: string; ref: string; existed?: boolean }>,
   ): void {
     this.openPullRequest = open;
+  }
+
+  /**
+   * Wire the fetch/force-with-lease-push pair the PR/MR conflict ladder drives
+   * ({@link Scheduler.resolveForgeConflict}) — see {@link ForgeGit}. Injected for the same
+   * reason {@link setPullRequestOpener} is: both need a decrypted forge token, which only
+   * `ipc.ts` can read. Optional, and the absence is not silent: a conflicted PR/MR with
+   * nothing wired gets a card note instead of an attempt that can never fetch anything.
+   */
+  setForgeGit(forgeGit: ForgeGit): void {
+    this.forgeGit = forgeGit;
   }
 
   /**
@@ -2333,19 +2396,24 @@ export class Scheduler {
   }
 
   /**
-   * A sync found this card's PR/MR open, non-draft and conflicted, with
-   * `autoResolvePrConflicts` on — queue it for the conflict ladder (`@shared/mergeRequest`'s
-   * `conflictedForTaskIds` is what decided it qualifies).
+   * The PR/MR watcher (`forge/prWatcher.ts`) found this card's PR/MR open, non-draft and
+   * conflicted and `features.prAutoResolve` is on — drive the conflict ladder for it.
    *
-   * Recording only, here: the actual ladder — fetch the remote branch, rebase it onto the
-   * target, force-with-lease push the result back — is driven elsewhere, against the full
-   * contract `AppSettings.autoResolvePrConflicts` documents (scope, the once-per-episode
-   * trigger, the never-clobber rule). Idempotent, like `noteWorkLanded`: a poller repeats
-   * the same verdict on every sync for as long as the MR stays conflicted.
+   * `features.prAutoResolve` is checked again here, not only by the watcher's own
+   * `prWatchAction` gate: this method is public and idempotent, like `noteWorkLanded`, and a
+   * second caller (or a repeat poll) must see the same answer the watcher already gave rather
+   * than trust that whoever called it checked first. Every OTHER guard the setting's own doc
+   * names is applied here before anything is fetched — a task already `inFlight`,
+   * `integrating`, mid conflict-fix, or sitting behind an open `merge-conflict` item already
+   * owns the branch or the worktree, and a repeat call must be a no-op rather than a second
+   * attempt racing the first.
    */
   resolveForgeConflict(taskId: string, mr: MergeRequest): void {
     if (this.disposed) return;
     this.forgeConflicts.set(mr.id, { taskId, mr });
+    if (!this.store.getSettings().features.prAutoResolve) return;
+    if (this.forgeConflictBusy(taskId)) return;
+    void this.driveForgeConflict(taskId, mr);
   }
 
   /**
@@ -2356,6 +2424,182 @@ export class Scheduler {
   noteForgeConflictCleared(mrId: string): void {
     if (this.disposed) return;
     this.forgeConflicts.delete(mrId);
+    this.forgeConflictHandled.delete(mrId);
+  }
+
+  /**
+   * Whether something already owns this card's branch or worktree, per
+   * `FeatureSettings.prAutoResolve`'s own list of disqualifiers: in flight, mid an
+   * ordinary integration, already running (or about to run) a Rung 2 fix, or parked behind
+   * an open `merge-conflict` item — any of which means a second drive would race the first
+   * rather than help it.
+   */
+  private forgeConflictBusy(taskId: string): boolean {
+    if (this.inFlight.has(taskId)) return true;
+    if (this.integrating.has(taskId)) return true;
+    if (this.pendingConflictFix.has(taskId)) return true;
+    for (const item of this.attention.values()) {
+      if (item.kind === 'merge-conflict' && item.taskId === taskId) return true;
+    }
+    return false;
+  }
+
+  /** The human notation ("!12" / "#12") for a forge ctx's MR, or its raw id if the row is gone. */
+  private forgeMrRef(mrId: string): string {
+    const mr = this.store.listMergeRequests().find((m) => m.id === mrId);
+    return mr ? mrRef(mr) : mrId;
+  }
+
+  /**
+   * Drive the PR/MR conflict ladder for a conflicted, in-scope MR (`resolveForgeConflict`'s
+   * guards have already passed): fetch the target and the source, refuse to touch anything
+   * if the source has diverged, then rebase onto the target and climb the same AI/human
+   * rungs an ordinary merge conflict does — just landing on a force-with-lease push instead
+   * of a fast-forwarded base, and never touching the card's status, `readyToIntegrate`, or
+   * `chain.landed`: a PR/MR stays open on the forge until a human merges it there, so
+   * nothing about this card's work is "done" yet, however cleanly it rebased.
+   */
+  private async driveForgeConflict(taskId: string, mr: MergeRequest): Promise<void> {
+    if (!this.worktrees || !this.forgeGit) return;
+    const task = this.store.getTask(taskId);
+    if (!task) return;
+    const project = this.store.getProject(task.agentProjectId ?? '');
+    if (!project) return;
+    const owner = task.parentTaskId ?? task.id;
+    const live = await this.worktrees.inspect(project, owner, task.agentBranch ?? undefined);
+    if (!live) {
+      this.noteCard(
+        project.id,
+        taskId,
+        `${forgeName(mr.provider)} reports ${mrRef(mr)} as conflicted, but this card has no ` +
+          `live worktree to rebase it in — left alone. Resolve it on ${forgeName(mr.provider)} ` +
+          `or by hand in a clone.`,
+      );
+      return;
+    }
+
+    const targetRef = `refs/remotes/origin/${mr.targetBranch}`;
+    const fetchedTarget = await this.forgeGit.fetch(project, live.cwd, mr.targetBranch, targetRef);
+    if (!fetchedTarget.ok) {
+      this.noteCard(
+        project.id,
+        taskId,
+        `Could not fetch \`${mr.targetBranch}\` to auto-resolve ${mrRef(mr)}: ${fetchedTarget.message}`,
+      );
+      return;
+    }
+    const sourceRef = `refs/orch/pr-source/${taskId}`;
+    const fetchedSource = await this.forgeGit.fetch(project, live.cwd, mr.sourceBranch, sourceRef);
+    if (!fetchedSource.ok) {
+      this.noteCard(
+        project.id,
+        taskId,
+        `Could not fetch \`${mr.sourceBranch}\` to auto-resolve ${mrRef(mr)}: ${fetchedSource.message}`,
+      );
+      return;
+    }
+    const leaseSha = fetchedSource.sha;
+
+    // Once per episode (the setting's own doc): the forge hasn't moved since the last
+    // attempt at this exact SHA, and something is presumably already resolving it.
+    if (this.forgeConflictHandled.get(mr.id) === leaseSha) return;
+
+    if (!(await this.worktrees.isAncestor(project, live.cwd, leaseSha, live.branch))) {
+      this.noteCard(
+        project.id,
+        taskId,
+        `${mrRef(mr)}'s source branch "${mr.sourceBranch}" has commits this card's branch ` +
+          `does not — somebody pushed to it since this app last looked. Left alone rather ` +
+          `than risk overwriting that push; pull it into the worktree and resolve by hand.`,
+      );
+      return;
+    }
+
+    this.forgeConflictHandled.set(mr.id, leaseSha);
+    this.noteCard(
+      project.id,
+      taskId,
+      `${mrAbbrev(mr.provider)} ${mrRef(mr)} conflicts with \`${mr.targetBranch}\` — rebasing.`,
+    );
+    const ctx: IntegrationCtx = {
+      taskId,
+      runId: task.sessionId ?? taskId,
+      branch: live.branch,
+      base: mr.targetBranch,
+      worktree: live.cwd,
+      forge: {
+        mrId: mr.id,
+        targetBranch: mr.targetBranch,
+        sourceBranch: mr.sourceBranch,
+        leaseSha,
+      },
+    };
+    this.beginIntegration(taskId);
+    try {
+      const result = await this.worktrees.rebaseForPullRequest(
+        project,
+        ctx.branch,
+        targetRef,
+        ctx.worktree,
+        `orchestrator: rebase for ${mrRef(mr)}`,
+      );
+      if (this.disposed) return;
+      this.applyIntegrationResult(project, ctx, result);
+    } catch (err) {
+      if (this.disposed) return;
+      this.applyIntegrationResult(project, ctx, {
+        status: 'error',
+        message: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      this.endIntegration(taskId);
+    }
+  }
+
+  /**
+   * The second half of a PR/MR rebase landing clean (`applyIntegrationResult`'s `rebased`
+   * case): force-with-lease push it back to the forge, leasing the SHA fetched before the
+   * rebase started so a push that landed in the gap is refused by git rather than
+   * overwritten. Re-syncing the PR/MR row (to pick up the now-clear `hasConflicts`) is left
+   * to the next poll, same as a plain merge leaves the next sync to notice a landed branch.
+   */
+  private async pushForgeRebase(
+    project: Project,
+    ctx: IntegrationCtx,
+    result: Extract<IntegrationResult, { status: 'rebased' }>,
+  ): Promise<void> {
+    const forge = ctx.forge;
+    if (!forge || !this.forgeGit) return;
+    const resolved = result.autoResolved?.length
+      ? ` ${result.autoResolved.length} conflict(s) were resolved automatically, with no ` +
+        `agent (${summarizeFiles(result.autoResolved)}).`
+      : '';
+    const pushed = await this.forgeGit.push(
+      project,
+      ctx.worktree,
+      forge.sourceBranch,
+      forge.leaseSha,
+    );
+    if (this.disposed) return;
+    if (!pushed.ok) {
+      this.raiseTaskFailed({
+        kind: 'integration',
+        projectId: project.id,
+        taskId: ctx.taskId,
+        runId: ctx.runId,
+        reason: `Rebased "${ctx.branch}" onto \`${ctx.base}\` but could not push it back: ${pushed.message}`,
+        branch: ctx.branch,
+        base: ctx.base,
+        worktree: ctx.worktree,
+      });
+      return;
+    }
+    this.noteRun(
+      project.id,
+      ctx.taskId,
+      ctx.runId,
+      `Rebased "${ctx.branch}" onto \`${ctx.base}\` and pushed it back to the forge.${resolved}`,
+    );
   }
 
   /**
@@ -4895,7 +5139,7 @@ export class Scheduler {
   /** Apply the outcome of an integrate/finish-after-conflict attempt (shared path). */
   private applyIntegrationResult(
     project: Project,
-    ctx: { taskId: string; runId: string; branch: string; base: string; worktree: string },
+    ctx: IntegrationCtx,
     result: IntegrationResult,
   ): void {
     switch (result.status) {
@@ -4965,6 +5209,16 @@ export class Scheduler {
         // This was the final step of an approved plan (only the last one ever gets
         // here): hand the card back to the human for review.
         void this.finishParentChain(ctx.taskId, { branch: ctx.branch, base: ctx.base });
+        break;
+      }
+      case 'rebased': {
+        // A PR/MR's branch, not the project's own base: push it back with the lease and
+        // leave everything else alone. No status write, no `readyToIntegrate`, no
+        // `chain.landed` — the card's work is not "done" because a rebase succeeded, only
+        // because a human merges the PR on the forge, which this app never does for them.
+        this.attempts.delete(ctx.taskId);
+        this.conflictFixAttempts.delete(ctx.taskId);
+        void this.pushForgeRebase(project, ctx, result);
         break;
       }
       case 'nothing-to-merge': {
@@ -5163,11 +5417,7 @@ export class Scheduler {
     return Boolean(project?.useWorktrees) && hasAgentWorked(task, this.store.getSubtasks(task.id));
   }
 
-  private parkIntegrationFailure(
-    project: Project,
-    ctx: { taskId: string; runId: string; branch: string; base: string; worktree: string },
-    reason: string,
-  ): void {
+  private parkIntegrationFailure(project: Project, ctx: IntegrationCtx, reason: string): void {
     this.raiseTaskFailed({
       kind: 'integration',
       projectId: project.id,
@@ -5212,10 +5462,7 @@ export class Scheduler {
    * (Rung 1) couldn't resolve. Let the agent try to resolve them in its worktree up to
    * {@link MAX_CONFLICT_FIX_ATTEMPTS} times; only then hand it to a human.
    */
-  private escalateConflict(
-    project: Project,
-    ctx: { taskId: string; runId: string; branch: string; base: string; worktree: string },
-  ): void {
+  private escalateConflict(project: Project, ctx: IntegrationCtx): void {
     const spent = this.conflictFixAttempts.get(ctx.taskId) ?? 0;
     if (this.worktrees && spent < MAX_CONFLICT_FIX_ATTEMPTS) {
       this.conflictFixAttempts.set(ctx.taskId, spent + 1);
@@ -5233,13 +5480,16 @@ export class Scheduler {
    */
   private async dispatchConflictFix(
     project: Project,
-    ctx: { taskId: string; runId: string; branch: string; base: string; worktree: string },
+    ctx: IntegrationCtx,
     attempt: number,
   ): Promise<void> {
     const files = await this.worktrees!.listConflicts(project, ctx.worktree);
     if (this.disposed) return;
+    const rebaseTarget = ctx.forge
+      ? `origin/${ctx.forge.targetBranch} for ${this.forgeMrRef(ctx.forge.mrId)}`
+      : `"${ctx.base}"`;
     const note =
-      `Rebasing your branch onto "${ctx.base}" left merge conflicts in this worktree` +
+      `Rebasing your branch onto ${rebaseTarget} left merge conflicts in this worktree` +
       (files.length ? ` (${summarizeFiles(files)})` : '') +
       `. Resolve the conflict markers, then \`git add\` each resolved file. Do NOT run ` +
       `\`git rebase --continue\`, commit, push, or switch branches — the orchestrator finishes ` +
@@ -5260,11 +5510,16 @@ export class Scheduler {
   }
 
   /** Park a task whose branch hit a merge conflict, so a human can resolve it. */
-  private raiseMergeConflict(
-    project: Project,
-    ctx: { taskId: string; runId: string; branch: string; base: string; worktree: string },
-  ): void {
+  private raiseMergeConflict(project: Project, ctx: IntegrationCtx): void {
     const task = this.store.getTask(ctx.taskId);
+    const prompt = ctx.forge
+      ? `Rebasing branch "${ctx.branch}" onto origin/${ctx.forge.targetBranch} for ` +
+        `${this.forgeMrRef(ctx.forge.mrId)} hit a merge conflict. Resolve the conflicts in ` +
+        `the worktree below (edit the files, then \`git add\` them), then choose Resolved to ` +
+        `finish the rebase and push it back — or Abandon to leave the branch for later.`
+      : `Integrating branch "${ctx.branch}" into ${ctx.base} hit a merge conflict. Resolve the ` +
+        `conflicts in the worktree below (edit the files, then \`git add\` them), then choose ` +
+        `Resolved to finish the merge — or Abandon to leave the branch for later.`;
     const item: AttentionItem = {
       id: randomUUID(),
       runId: ctx.runId,
@@ -5272,10 +5527,7 @@ export class Scheduler {
       projectId: project.id,
       taskTitle: task?.title ?? '(unknown task)',
       kind: 'merge-conflict',
-      prompt:
-        `Integrating branch "${ctx.branch}" into ${ctx.base} hit a merge conflict. Resolve the ` +
-        `conflicts in the worktree below (edit the files, then \`git add\` them), then choose ` +
-        `Resolved to finish the merge — or Abandon to leave the branch for later.`,
+      prompt,
       options: [],
       toolName: null,
       reason: null,
@@ -5290,6 +5542,7 @@ export class Scheduler {
       branch: ctx.branch,
       base: ctx.base,
       worktree: ctx.worktree,
+      forge: ctx.forge,
     };
     this.attention.set(item.id, item);
     this.pendingIntegrations.set(item.id, pending);
@@ -6346,31 +6599,41 @@ export class Scheduler {
   }
 
   /**
-   * Finish integrating after a human resolved a rebase conflict in the worktree:
-   * continue the rebase + fast-forward. Still conflicted → re-park; otherwise apply
-   * the same outcomes as the initial attempt.
+   * Finish integrating after a human (or Rung 2's agent) resolved a rebase conflict in the
+   * worktree: continue the rebase, then land it. Still conflicted → re-park; otherwise apply
+   * the same outcomes as the initial attempt. `pending.forge` decides which landing a clean
+   * rebase gets: a fast-forwarded base for an ordinary merge, or a force-with-lease push for
+   * a PR/MR — see {@link WorktreeManager.finishPullRequestRebase}.
    */
   private async finishConflict(pending: PendingIntegration): Promise<void> {
     const project = this.store.getProject(pending.projectId);
     if (!project) return;
-    const ctx = {
+    const ctx: IntegrationCtx = {
       taskId: pending.taskId,
       runId: pending.runId,
       branch: pending.branch,
       base: pending.base,
       worktree: pending.worktree,
+      forge: pending.forge,
     };
     // The same merge, resumed — so it says the same thing while it runs. Answering
     // "Resolved — finish merge" otherwise dismissed the inbox item and left the card
     // looking idle for however long the continued rebase took.
     this.beginIntegration(ctx.taskId);
     try {
-      const result = await this.worktrees!.finishAfterConflict(
-        project,
-        pending.branch,
-        pending.base,
-        pending.worktree,
-      );
+      const result = pending.forge
+        ? await this.worktrees!.finishPullRequestRebase(
+            project,
+            pending.branch,
+            `refs/remotes/origin/${pending.forge.targetBranch}`,
+            pending.worktree,
+          )
+        : await this.worktrees!.finishAfterConflict(
+            project,
+            pending.branch,
+            pending.base,
+            pending.worktree,
+          );
       if (this.disposed) return;
       this.applyIntegrationResult(project, ctx, result);
     } catch (err) {

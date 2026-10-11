@@ -195,7 +195,7 @@ import { stagePastedFiles, sweepPasteTemp } from './pastedAttachments';
 import { collectUploads } from './uploadedAttachments';
 import type { ServiceSyncState, SyncServiceId, SyncState } from '@shared/sync';
 import { hostFor, listWslDistros, readinessFor, statusForTargets } from './exec';
-import { gitPreflight } from './git';
+import { fetchRef, git, gitPreflight, pushBranch } from './git';
 import { emptyGitGraph } from '@shared/gitGraph';
 import { cardBranchesFor, readGitGraph } from './gitGraph';
 import { listClaudeSessions } from './claudeSessions';
@@ -203,7 +203,7 @@ import { sanitizeWindowState } from './windowState';
 import { createWindowStateFlusher, type WindowStateFlusher } from './windowFlush';
 import { appPlanPath, appProjectFile } from './projectPaths';
 import { RELEASE_DOC } from '@shared/release';
-import { openPullRequest, type CreatePrDeps } from './forge/createPr';
+import { openPullRequest, resolveForgeGitTarget, type CreatePrDeps } from './forge/createPr';
 import { linkMergeRequest, type LinkPrDeps } from './forge/linkPr';
 import { watchMergeRequests, type PrWatcherDeps } from './forge/prWatcher';
 import { forgeBaseUrl } from './forge/baseUrl';
@@ -1995,12 +1995,71 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     getSettings: () => store.getSettings(),
     getTask: (id) => store.getTask(id),
     tokenFor: forgeToken,
-    chatWithAgent: (taskId, message) => scheduler.chatWithAgent(taskId, message),
+    resolveForgeConflict: (taskId, mr) => scheduler.resolveForgeConflict(taskId, mr),
     note: (projectId, taskId, body) => {
       store.addComment(projectId, taskId, body);
       send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) });
     },
     markActed: (mrId, headSha) => store.markMergeRequestActed(mrId, headSha),
+  });
+
+  // The PR/MR conflict ladder's fetch and force-with-lease push (`Scheduler.
+  // resolveForgeConflict`), through the same origin/token preamble `openPullRequest` uses
+  // (`resolveForgeGitTarget`) — set here for the same reason the opener above is.
+  scheduler.setForgeGit({
+    fetch: async (project, cwd, branch, localRef) => {
+      const host = hostFor(project.target);
+      try {
+        const target = await resolveForgeGitTarget(
+          project,
+          cwd,
+          host,
+          store.getSettings(),
+          forgeToken,
+        );
+        const res = await fetchRef(cwd, 'origin', branch, localRef, {
+          url: target.url,
+          secrets: [target.token],
+          host,
+        });
+        if (res.code !== 0) {
+          const why = (res.stderr.trim() || res.stdout.trim() || 'git fetch failed').slice(0, 400);
+          return { ok: false, message: why };
+        }
+        const rev = await git(cwd, ['rev-parse', localRef], host);
+        if (rev.code !== 0) {
+          return { ok: false, message: rev.stderr.trim() || 'git rev-parse failed' };
+        }
+        return { ok: true, sha: rev.stdout.trim() };
+      } catch (e) {
+        return { ok: false, message: e instanceof Error ? e.message : String(e) };
+      }
+    },
+    push: async (project, cwd, branch, expected) => {
+      const host = hostFor(project.target);
+      try {
+        const target = await resolveForgeGitTarget(
+          project,
+          cwd,
+          host,
+          store.getSettings(),
+          forgeToken,
+        );
+        const res = await pushBranch(cwd, 'origin', branch, {
+          url: target.url,
+          secrets: [target.token],
+          host,
+          forceWithLease: { expected },
+        });
+        if (res.code !== 0) {
+          const why = (res.stderr.trim() || res.stdout.trim() || 'git push failed').slice(0, 400);
+          return { ok: false, message: why };
+        }
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, message: e instanceof Error ? e.message : String(e) };
+      }
+    },
   });
 
   // -------------------------------------------------------------------------
