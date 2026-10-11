@@ -19,17 +19,16 @@ file sits between them: it governs the commit itself.
 
 Every commit that ships work:
 
-1. Has a **Conventional Commits** subject, 50 characters or fewer.
+1. Has a **Conventional Commits** subject, 50 characters or fewer, with the
+   **type** right — it is the only version signal left once you stop bumping.
 2. Has a **plain-text body** wrapped at 72 characters, ending in a `Ticket ID:`
    (when there is one) and a `Tested:` line.
-3. **Bumps `version` in `apps/client/package.json`**, in that same commit —
-   when you know what the change is worth.
 
-The tag used to be step 4. It is not yours any more: pushing to `development`
-runs [`.github/workflows/release.yml`](.github/workflows/release.yml), which tags,
-packages and publishes. Bump if you can — the pipeline honours the version it
-finds — and if you don't, it patch-bumps for you. Either way the release happens.
-See §4.
+**Do not bump `version` in `apps/client/package.json`, and do not tag.** Pushing
+to `development` runs
+[`.github/workflows/release.yml`](.github/workflows/release.yml), which reads the
+commits since the last release, derives MINOR-or-PATCH from the `feat`/`fix`
+types it finds, then bumps, tags, packages and publishes on its own. See §4.
 
 ---
 
@@ -198,43 +197,43 @@ try to keep them in step.
 
 ### The rule
 
-**A commit that changes the product bumps the version, and the bump rides inside
-that same commit.** Not a follow-up commit, not a batch at release time. The
-commit that introduces the change and the commit that names its version are one
-commit, so `git log` can never show you a change without telling you which
-version it landed in.
+**Contributors do not bump `version`. The pipeline derives it from the commit
+type.** `scripts/next-version.mjs` reads every commit since the last released
+tag, classifies each one by its Conventional Commits type — a `feat`, or any
+breaking change, is MINOR; everything else is PATCH — and takes the highest
+bump found in the range. It then writes the result itself as a lone
+`chore(release): vX.Y.Z` commit. That used to be the fallback for a branch that
+forgot to bump; now it is simply what every ordinary range does, because no
+branch carries a bump of its own to honour instead.
 
-That is still how it should read. What has changed is the consequence of
-forgetting. The bump is no longer the last thing standing between a merge and a
-release: **the pipeline reads the version, and supplies one if the range has
-none.** `scripts/next-version.mjs` takes a manifest version newer than every
-existing tag as the answer, and otherwise patch-bumps the highest **released**
-version and commits that as `chore(release): vX.Y.Z`. So:
+This used to read "a commit that changes the product bumps the version, and the
+bump rides inside that same commit" — the bump itself was the load-bearing part.
+It no longer is; the **type** is. `git log` still tells you which version a
+change landed in, just by a commit's type rather than by a line in its diff.
 
-- **You bumped.** The pipeline uses your number exactly, including a MINOR bump
-  it would never have chosen for itself. This is why bumping still matters —
-  only you know a `feat` when you write one.
-- **You didn't.** The release is a PATCH and nothing is lost. It used to be a
-  release that silently never happened, which is why this section once said a
-  commit that leaves the version alone "is not finished".
-
-The one thing that is still yours alone is choosing MINOR. A feature that ships
-as a patch is a wrong version number, not a missing release, and no script can
-tell the difference after the fact.
+The one thing that is still yours alone is the type. A `feat` filed as a `fix`
+releases as a PATCH silently, and no script can tell the difference after the
+fact — classification only ever sees the type you wrote.
 
 ### Choosing the bump
 
-We are pre-1.0 (`0.x`), where the usual semver contract shifts down one place:
+This is now what the pipeline computes from the range since the last release,
+not a decision you make — but it tells you what a type you write is about to
+cost. We are pre-1.0 (`0.x`), where the usual semver contract shifts down one
+place:
 
-- **MINOR** (`0.53.0` → `0.54.0`) — a `feat`, or any breaking change. While the
-  major is `0`, a break bumps MINOR; it does not bump MAJOR.
-- **PATCH** (`0.53.0` → `0.53.1`) — everything else: `fix`, `refactor`, `test`,
-  `docs`, `chore`, `perf`.
-- **MAJOR** — reserved for `1.0.0`, which is a decision, not a consequence.
-  Do not bump it on your own; ask.
+- **MINOR** (`0.53.0` → `0.54.0`) — the range contains a `feat`, or any breaking
+  change (`!` after the scope, or a `BREAKING CHANGE:` footer). While the major
+  is `0`, a break bumps MINOR; it does not bump MAJOR.
+- **PATCH** (`0.53.0` → `0.53.1`) — a range of nothing but `fix`, `refactor`,
+  `test`, `docs`, `chore`, `perf`.
+- **MAJOR** — reserved for `1.0.0`, which is a decision, not a consequence. The
+  pipeline never computes it; it only ever applies when `version` already names
+  it ahead of every tag. Do not bump it on your own; ask.
 
-If one commit contains both a `feat` and a `fix`, the highest bump wins. If you
-are splitting work across several commits, each one bumps — that is the point.
+The highest bump across the whole range wins — one `feat` among ten `fix`
+commits since the last release still ships MINOR. A `chore(release):` commit
+the pipeline wrote itself is never counted toward either.
 
 ### Tagging
 
@@ -263,13 +262,16 @@ git tag -a v0.53.1 -m "v0.53.1 - <one line saying what changed>"
 
 ### How this meets the release procedure
 
-Your commit's job is now the **version**, and only the version.
-[`.github/workflows/release.yml`](.github/workflows/release.yml) does the rest on
-every push to `development`, following [`RELEASE.md`](RELEASE.md) section by
-section — see [`docs/11-ci-cd-pipeline.md`](docs/11-ci-cd-pipeline.md). A bump that
-rides inside the work commit is honoured as the release's version; a range with no
-bump gets the lone `chore(release): vX.Y.Z` commit RELEASE.md §2 always allowed,
-except that the pipeline writes it rather than a person.
+Your commit's job is now the **type**, and only the type — never the version
+line itself. [`.github/workflows/release.yml`](.github/workflows/release.yml)
+does the rest on every push to `development`, following
+[`RELEASE.md`](RELEASE.md) section by section — see
+[`docs/11-ci-cd-pipeline.md`](docs/11-ci-cd-pipeline.md). It reads the commit
+range since the last release, classifies it, and writes the result as the lone
+`chore(release): vX.Y.Z` commit RELEASE.md §2 describes — every ordinary range
+takes that path now, since no branch carries a bump of its own. The one
+exception is a manifest deliberately bumped ahead of every tag (the MAJOR case
+above), which the pipeline honours instead of computing anything.
 
 RELEASE.md is still the procedure of record. It is what you follow when the
 pipeline cannot run, and it is the specification the pipeline is checked against.
@@ -292,7 +294,7 @@ the change seen working. Then:
       continuations aligned.
 - [ ] `Ticket ID:` present if a ticket exists, omitted if not.
 - [ ] `Tested:` says what you actually ran.
-- [ ] `apps/client/package.json` `version` bumped in this commit — and bumped
-      MINOR if this is a `feat` or a break, which is the one call the pipeline
-      cannot make for you.
+- [ ] `apps/client/package.json` `version` is **not** touched — the pipeline
+      derives the bump from the commit type, so the `feat`/`fix` type must be
+      right.
 - [ ] No tag. The pipeline cuts it when this lands on `development` (§4).

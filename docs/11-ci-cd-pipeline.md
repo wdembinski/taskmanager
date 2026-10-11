@@ -90,7 +90,7 @@ list — what it deliberately did not rewrite.
 | File                                                                      | What it owns                                                                                                                                                                                                                                                             |
 | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | [`.github/workflows/release.yml`](../.github/workflows/release.yml)       | Every section of `RELEASE.md`, as five jobs. The only file in this repository that pushes a tag or publishes a release.                                                                                                                                                  |
-| [`scripts/next-version.mjs`](../scripts/next-version.mjs)                 | The one decision the workflow would otherwise have had to make in YAML — which version the next release carries, and whether the manifest has to be committed first. No dependencies, so the `version` job runs it without a `pnpm install`.                             |
+| [`scripts/next-version.mjs`](../scripts/next-version.mjs)                 | The one decision the workflow would otherwise have had to make in YAML — which version the next release carries, classified from the commit types in the range since the last release, and whether that has to be committed first. No dependencies, so the `version` job runs it without a `pnpm install`.                             |
 | [`scripts/next-version.test.mjs`](../scripts/next-version.test.mjs)       | 25 cases over that rule: the bump, the reuse, the first release, the manifest left behind by a merge, and `'0.8.0' > '0.82.6'` — which is what a string compare gets wrong and both of whose tags exist here.                                                            |
 | [`test/workflow-invariants.test.ts`](../test/workflow-invariants.test.ts) | Assertions over all three workflows: the toolchain every job installs, the promote ordering, that the gates cannot drift from `RELEASE.md` §1, that a released version reaches the deployed web client, and that this section's own map still names files that exist. The only thing in the repo that reads a workflow at all. |
 | [`docs/11-ci-cd-pipeline.md`](11-ci-cd-pipeline.md)                       | This file — what runs when, the secrets, the settings that live outside every diff, and how to re-run a release that failed halfway.                                                                                                                                     |
@@ -102,8 +102,8 @@ list — what it deliberately did not rewrite.
 | [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)         | Gained the `changes` path filter and the Windows `package` job. `gates` and `docker` are untouched: they were already right, and the new job answers a question that only exists now that a merge tags.     |
 | [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml) | Gained the wait for the new revision to actually run, the `/health` poll and the 401 check on `/v1/board`. It later gained one path: a version bump now redeploys the **web**, because the bundle carries that number (see the deploy table above).                            |
 | [`RELEASE.md`](../RELEASE.md)                                     | Still the procedure, and still what an agent follows when a release is cut by hand. Each section now also names the job that performs it. §1's fenced block is the specification the gate-drift test reads. |
-| [`CONTRIBUTING.md`](../CONTRIBUTING.md)                           | §4 now says what the pipeline does with the version — and what happens to a branch that forgets to bump one, which is `scripts/next-version.mjs`'s fallback rather than a lost release.                     |
-| [`apps/client/package.json`](../apps/client/package.json)         | The version, bumped as any change bumps it (§4). Its `scripts` are untouched — see below.                                                                                                                   |
+| [`CONTRIBUTING.md`](../CONTRIBUTING.md)                           | §4 now says contributors never bump `version` at all — `scripts/next-version.mjs` derives it from the commit types in the range, so a branch's only lever on the number is getting the type right.         |
+| [`apps/client/package.json`](../apps/client/package.json)         | The version, bumped by the pipeline alone now (§4). Its `scripts` are untouched — see below.                                                                                                                |
 | [`package.json`](../package.json)                                 | `yaml` as a root devDependency. `test/workflow-invariants.test.ts` parses the workflows rather than approximating a parse with regexes, which would be the same class of bug it is guarding against.        |
 
 **Reused unchanged** — and this is the part worth reading, because each one is a place the
@@ -224,12 +224,14 @@ push triggers nothing, which is precisely the problem that row alone cannot solv
 ```
 
 `workflow_dispatch` is the documented exception to guard 1 — an event raised with
-`GITHUB_TOKEN` **does** create a run for it — and `needsCommit` narrows this to the only case
-no push can reach: §2's fallback, where the version arrives in a `chore(release):` commit CI
-made itself. When the bump rode inside the work commit instead, that push already ran
-`deploy.yml`. The step tolerates its own failure and warns: it runs after the release is
-published, and a red run there describes a release that in fact succeeded. `release.yml`
-therefore also carries `actions: write`, which is what `gh workflow run` needs.
+`GITHUB_TOKEN` **does** create a run for it — and `needsCommit` is true on every ordinary
+release now: no branch carries its own bump any more, so the version always arrives in the
+`chore(release):` commit CI writes itself (§2), and that push triggers nothing on its own.
+The one case `needsCommit` is false is a manifest deliberately bumped ahead of every tag —
+the MAJOR exception — whose push already ran `deploy.yml` on its own commit. The step
+tolerates its own failure and warns: it runs after the release is published, and a red run
+there describes a release that in fact succeeded. `release.yml` therefore also carries
+`actions: write`, which is what `gh workflow run` needs.
 
 Neither path is a loop. `deploy.yml` pushes no commits, so nothing it does can come back
 around; the two guards above are about `release.yml` alone.

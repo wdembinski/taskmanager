@@ -80,11 +80,13 @@ git log --oneline "$(git describe --tags --abbrev=0)"..HEAD
 ```
 
 - A dirty tree is a stop: something is uncommitted and it is not yours to commit or stash.
-- A tag on `HEAD` is **expected**, not a stop — [`CONTRIBUTING.md`](CONTRIBUTING.md) has every
-  commit bump and tag its own version. What tells you there is nothing to release is a
+- A tag on `HEAD` is **expected**, not a stop — it names the pipeline's own
+  `chore(release):` commit, or a manifest deliberately bumped ahead of every tag
+  ([`CONTRIBUTING.md`](CONTRIBUTING.md) §4). What tells you there is nothing to release is a
   `gh release view vX.Y.Z` that finds an already-**published** release for the version in
   `apps/client/package.json`. Say so and stop — that is a normal outcome, not a failure.
-- The commit list is the release notes' raw material. Read it; it also tells you the bump.
+- The commit list is the release notes' raw material. Read it; it also tells you the bump
+  [`scripts/next-version.mjs`](scripts/next-version.mjs) will derive from each commit's type.
 
 > **CI does this** — `release.yml`'s `version` job, in its _Is there anything to release?_
 > step. Same question, same verdict: a published release for the tag ends the run green with
@@ -111,25 +113,30 @@ All three, in that order, all green. See rule 1.
 
 `apps/client/package.json`'s `version` **is** the release — the root `package.json` is
 just the workspace manifest and stays at `0.0.0`. The house rule
-([`CONTRIBUTING.md`](CONTRIBUTING.md)) is that the bump rides inside the commit that ships the
-change, so most of the time it is already correct and this step is a check, not an edit.
+([`CONTRIBUTING.md`](CONTRIBUTING.md)) is that contributors never touch this file: the
+pipeline derives the bump itself from the commits since the last release, so this step is a
+computation, not a check.
 
-- Pre-1.0 (`0.x`): a `feat:` in the range bumps **MINOR**, a `fix:`-only range bumps
-  **PATCH**. A breaking change also bumps MINOR while pre-1.0.
-- If `version` is unchanged since the last tag, bump it yourself and commit _just that_:
-  `chore(release): vX.Y.Z`. (This is the one commit allowed to carry only a version — the
-  no-standalone-bump rule is about work commits, and here there is no work commit to ride.)
+- Pre-1.0 (`0.x`): a `feat` anywhere in the range (or any breaking change) bumps **MINOR**;
+  a range of nothing but `fix`/`refactor`/`test`/`docs`/`chore`/`perf` bumps **PATCH**. The
+  highest bump found wins, and a `chore(release):` commit the pipeline wrote itself is never
+  counted.
+- Commit the result as `chore(release): vX.Y.Z`, carrying only the version line. (This is
+  the one commit allowed to carry only a version — the no-standalone-bump rule was always
+  about work commits, and a work commit no longer carries one at all.)
 - If `version` names a version that is **already tagged on a commit other than `HEAD`**,
-  stop and ask. Somebody has released it and you are about to overwrite history. A tag on
-  `HEAD` naming that same version is the normal case — the work commit put it there.
+  stop and ask. Somebody has released it and you are about to overwrite history. The normal
+  exception is a manifest deliberately bumped ahead of every tag — the MAJOR case
+  CONTRIBUTING.md §4 describes — which the pipeline honours instead of computing anything.
 
 > **CI does this** — [`scripts/next-version.mjs`](scripts/next-version.mjs), called by the
 > `version` job. It is a script with a unit test rather than a `${{ }}` expression because
 > version arithmetic nobody can run before pushing is only ever debugged by tagging the wrong
-> thing. It honours a manifest version newer than every tag, and otherwise applies the
-> fallback above by patch-bumping the highest **released** version — not the manifest's,
-> which may be behind. `node scripts/next-version.mjs` locally tells you what a release would
-> do right now without doing any of it.
+> thing. It honours a manifest version newer than every tag, and otherwise classifies every
+> commit since the highest **released** version by its Conventional Commits type and applies
+> the highest bump found — not the manifest's own line, which no branch carries any more.
+> `node scripts/next-version.mjs` locally tells you what a release would do right now without
+> doing any of it.
 
 ## 3. Tag and push
 

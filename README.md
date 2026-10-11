@@ -74,8 +74,8 @@ Start at the top:
    spends on the model, and the rule about what should never be an agent.
 
 Then, before your first commit, read [`CONTRIBUTING.md`](CONTRIBUTING.md) — how
-commit messages are written here, and the rule that every change bumps and tags
-the version in the same commit.
+commit messages are written here, and why the commit's **type** is what decides
+the version now: the pipeline bumps and tags it, not you.
 
 ---
 

@@ -459,13 +459,16 @@ describe("docs/11's map of the pipeline's files stays true", () => {
  *
  * Two links carry it, one per way a bump can arrive on `development`:
  *
- *  1. **Inside the work commit** (CONTRIBUTING.md §4's rule). The push triggers `deploy.yml`,
- *     which deploys the web only if a filtered path changed — so `apps/client/package.json`
- *     has to be one of the web filter's paths. It is the one apps/client path that is a web
- *     input, and it looks like a mistake to anyone tidying up.
- *  2. **In CI's own `chore(release):` commit** (RELEASE.md §2's fallback, which this repo
- *     reaches often). That push is made with `GITHUB_TOKEN` and triggers nothing at all, so
- *     `promote` dispatches the deploy itself once the release is published.
+ *  1. **Inside the work commit** — now only the deliberate MAJOR case, where someone bumps
+ *     `version` ahead of every tag by hand and the pipeline honours that number instead of
+ *     computing one (CONTRIBUTING.md §4). The push triggers `deploy.yml`, which deploys the
+ *     web only if a filtered path changed — so `apps/client/package.json` has to be one of
+ *     the web filter's paths. It is the one apps/client path that is a web input, and it
+ *     looks like a mistake to anyone tidying up.
+ *  2. **In CI's own `chore(release):` commit** (RELEASE.md §2, now the ordinary path since no
+ *     branch carries its own bump any more). That push is made with `GITHUB_TOKEN` and
+ *     triggers nothing at all, so `promote` dispatches the deploy itself once the release is
+ *     published.
  *
  * Neither is visible from the other file, and deleting either leaves a pipeline that passes
  * every other assertion here while quietly freezing the number the web shows.
