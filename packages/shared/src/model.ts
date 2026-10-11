@@ -756,8 +756,13 @@ export interface Task {
    * on `source === 'jira'`, so it can never adopt, rewrite or archive a GitHub card;
    * `reconcileGitHubIssues` filters on `source === 'github'` and cannot touch a JIRA one.
    * Neither of them has to know the other exists.
+   *
+   * `linear` extends the same guarantee to a third, independent reconciler: whatever syncs
+   * Linear issues filters on `source === 'linear'` and is invisible to the JIRA and GitHub
+   * reconcilers in turn, so any number of trackers can share one board without ever having
+   * to coordinate over which of them owns a given card.
    */
-  source: 'plan' | 'adhoc' | 'jira' | 'github' | 'ticket';
+  source: 'plan' | 'adhoc' | 'jira' | 'github' | 'linear' | 'ticket';
   /**
    * True when this task authors the milestone's shared `CONTRACT.md` (team
    * orchestration, Phase C) — declared with a trailing `@contract` marker in the
@@ -1601,5 +1606,20 @@ export type TaskActivityEntry =
       body: string;
       createdAt: number;
       /** Whether *you* wrote it — decided in main against the cached `GET /user`. */
+      mine: boolean;
+    }
+  /**
+   * A comment fetched live from the linked Linear issue — the third tracker's version of
+   * `jira-comment`/`github-comment`, not persisted, same shape. `id` is Linear's comment
+   * UUID. No `rich`/`attachments` for the same reason `github-comment` has neither: a
+   * Linear comment's body is Markdown, so `body` IS the comment.
+   */
+  | {
+      kind: 'linear-comment';
+      id: string;
+      author: string;
+      body: string;
+      createdAt: number;
+      /** Whether *you* wrote it — decided in main against the cached Linear viewer identity. */
       mine: boolean;
     };

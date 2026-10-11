@@ -68,6 +68,7 @@ import {
   DEFAULT_GITHUB_SETTINGS,
   DEFAULT_GITLAB_SETTINGS,
   DEFAULT_JIRA_SETTINGS,
+  DEFAULT_LINEAR_SETTINGS,
   DEFAULT_SETTINGS,
   resolveSyncInterval,
 } from '@shared/settings';
@@ -2977,6 +2978,7 @@ export function createStore(dbPath: string): Store {
         jira: { ...DEFAULT_JIRA_SETTINGS, ...(parsed.jira ?? {}) },
         gitlab: { ...DEFAULT_GITLAB_SETTINGS, ...(parsed.gitlab ?? {}) },
         github: { ...DEFAULT_GITHUB_SETTINGS, ...(parsed.github ?? {}) },
+        linear: { ...DEFAULT_LINEAR_SETTINGS, ...(parsed.linear ?? {}) },
         cloud: { ...DEFAULT_CLOUD_SETTINGS, ...(parsed.cloud ?? {}) },
         board: { ...DEFAULT_BOARD_DISPLAY, ...(parsed.board ?? {}) },
       };

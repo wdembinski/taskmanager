@@ -322,6 +322,110 @@ export const DEFAULT_GITHUB_SETTINGS: GitHubSettings = {
 };
 
 /**
+ * Linear's own state-type vocabulary — the six hard-coded "types" every workflow state
+ * belongs to, finer-grained than JIRA's three categories ({@link JiraStatusCategory}) but,
+ * like them, fixed by the tracker rather than configured per team. `triage` only appears for
+ * a team with Triage turned on; `completed` and `canceled` both mean "finished" but are kept
+ * distinct here because a user may want to mirror one and not the other — an abandoned issue
+ * reads differently than a shipped one.
+ */
+export type LinearStateType =
+  'triage' | 'backlog' | 'unstarted' | 'started' | 'completed' | 'canceled';
+
+/**
+ * Linear integration config.
+ *
+ * Shaped like {@link GitHubSettings} more than {@link JiraSettings}: Linear is asked to do one
+ * job, being a *source* of cards, so there is no pair of independent switches to keep apart.
+ * Narrower than JIRA's free-form JQL on purpose — Linear's GraphQL filter is its own dialect
+ * most users will never need to hand-write, so `teamKeys`/`assignee`/`includeStateTypes` cover
+ * the common case declaratively and {@link LinearSettings.advancedFilter} is the escape hatch
+ * for whatever they can't express.
+ */
+export interface LinearSettings {
+  /** Master switch — when off, nothing is fetched and no Linear card appears on the board. */
+  enabled: boolean;
+  /**
+   * Which Linear teams to mirror issues from, by team key (e.g. `['ENG', 'DES']`). Unlike
+   * JIRA's single JQL query, Linear has no cross-team search a personal token can run cheaply,
+   * so the teams to watch are named explicitly rather than folded into a filter. Empty mirrors
+   * nothing, even with `enabled: true`.
+   */
+  teamKeys: string[];
+  /**
+   * Narrow mirrored issues to the ones assigned to you (`me`) or every issue on the named
+   * teams regardless of assignee (`anyone`) — the one scope decision
+   * {@link LinearSettings.advancedFilter} doesn't need to restate.
+   */
+  assignee: 'me' | 'anyone';
+  /**
+   * Which {@link LinearStateType}s to mirror — the analogue of JIRA's
+   * `resolution = Unresolved`, expressed in Linear's own vocabulary instead of a JQL clause.
+   * Mirroring `completed`/`canceled` by default would flood the board with a team's entire
+   * history, so the shipped default stops short of them; see {@link DEFAULT_LINEAR_SETTINGS}.
+   */
+  includeStateTypes: LinearStateType[];
+  /**
+   * An optional raw Linear filter (its GraphQL issue-filter syntax), ANDed onto
+   * `teamKeys`/`assignee`/`includeStateTypes` rather than replacing them — the equivalent of
+   * {@link JiraSettings.jql} for when the declarative fields can't say what's needed.
+   */
+  advancedFilter?: string;
+  /**
+   * The user's map from a Linear workflow state NAME to a board column, matched
+   * case-insensitively — the same idea as {@link JiraSettings.statusCategoryOverrides}, and
+   * needed for the same reason: Linear's own `type` is coarser than its state names, and a
+   * workflow's "In Review" state shares `started` with "In Progress" the way JIRA's does.
+   */
+  stateColumnOverrides: Record<string, BoardColumn>;
+  /**
+   * The map the app taught ITSELF, state name → column, written when a drag successfully
+   * transitions an issue — see {@link JiraSettings.learnedStatusColumns}, which exists for
+   * exactly the same reason and always loses to {@link LinearSettings.stateColumnOverrides}
+   * the same way.
+   */
+  learnedStateColumns?: Record<string, BoardColumn>;
+  /**
+   * Which workflow state a drag into each column should transition an issue to, **keyed by
+   * team key**. Unlike JIRA, where one workflow (mostly) serves every project, every Linear
+   * team owns its own set of states with its own names — "In Review" on one team may not
+   * exist on another — so there is no single transition name good for every mirrored team,
+   * and this map is addressed by team the way {@link LinearSettings.stateColumnOverrides} is
+   * addressed by state name. `Partial` because a team need not have a state for every column.
+   */
+  columnTargetStates: Record<string, Partial<Record<BoardColumn, string>>>;
+  /**
+   * Whether the board shows the Done column for Linear's cards.
+   *
+   * @deprecated See {@link JiraSettings.showDoneColumn} — the same supersession, by the same
+   * {@link BoardDisplaySettings.hiddenColumns} field.
+   */
+  showDoneColumn: boolean;
+  /**
+   * How long (in days) a finished card is kept on the board after its issue stops matching
+   * the mirrored scope. Same trap as JIRA's and GitHub's: a `completed`/`canceled` issue falls
+   * out of `includeStateTypes`'s default the instant it finishes, so without retention the
+   * card you had just dragged into Done would vanish out of it.
+   */
+  doneRetentionDays: number;
+}
+
+/**
+ * The out-of-the-box Linear config: off, no teams chosen yet, scoped to your own open issues
+ * once one is.
+ */
+export const DEFAULT_LINEAR_SETTINGS: LinearSettings = {
+  enabled: false,
+  teamKeys: [],
+  assignee: 'me',
+  includeStateTypes: ['triage', 'backlog', 'unstarted', 'started'],
+  stateColumnOverrides: {},
+  columnTargetStates: {},
+  showDoneColumn: false,
+  doneRetentionDays: 14,
+};
+
+/**
  * The desktop client's own cloud-mirror config (Phase 25). Deliberately separate from
  * `syncIntervalMinutes`: JIRA and GitLab share one minutes-scale timer (`syncPoller.ts`),
  * but the cloud mirror polls on a seconds-scale, server-directed cadence of its own
@@ -722,6 +826,8 @@ export interface AppSettings {
   gitlab: GitLabSettings;
   /** GitHub integration config — issues as cards, pull requests on them. */
   github: GitHubSettings;
+  /** Linear integration config — issues as cards, from the teams you name. */
+  linear: LinearSettings;
   /** The cloud mirror's own config — see {@link CloudSettings}. */
   cloud: CloudSettings;
   /** The Projects screen's Gantt timeline — see {@link GanttSettings}. */
@@ -784,6 +890,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   jira: DEFAULT_JIRA_SETTINGS,
   gitlab: DEFAULT_GITLAB_SETTINGS,
   github: DEFAULT_GITHUB_SETTINGS,
+  linear: DEFAULT_LINEAR_SETTINGS,
   cloud: DEFAULT_CLOUD_SETTINGS,
   gantt: DEFAULT_GANTT_SETTINGS,
   features: DEFAULT_FEATURE_SETTINGS,
@@ -805,8 +912,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
  * the engine has now. `incoming` is `unknown` because it arrived over HTTP as JSON; anything
  * that is not an object is ignored entirely rather than partially applied.
  *
- * One level, not deep: the nested groups (`jira`, `gitlab`, `cloud`, `board`, `features`) are merged
- * field-by-field, and the arrays (`statusKeywords`, `foldedStepCards`, …) are REPLACED
+ * One level, not deep: the nested groups (`jira`, `gitlab`, `linear`, `cloud`, `board`,
+ * `features`) are merged field-by-field, and the arrays (`statusKeywords`, `foldedStepCards`,
+ * …) are REPLACED
  * wholesale when present. That is the right rule for both — an array's whole content is the
  * value being edited, and merging two lists element-wise would resurrect entries the human
  * had just removed.
@@ -871,6 +979,7 @@ export const GLOBAL_SETTINGS_KEYS = [
   'jira',
   'gitlab',
   'github',
+  'linear',
   'features',
 ] as const satisfies ReadonlyArray<keyof AppSettings>;
 

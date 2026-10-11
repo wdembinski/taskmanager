@@ -2171,6 +2171,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     jira: { lastSyncAt: null, syncing: false, error: null },
     gitlab: { lastSyncAt: null, syncing: false, error: null },
     github: { lastSyncAt: null, syncing: false, error: null },
+    // No `services` row for it yet — F4.7 registers the service; this entry exists only so
+    // `syncClock` (a `Record<SyncServiceId, …>`) stays total over the id union.
+    linear: { lastSyncAt: null, syncing: false, error: null },
     cloud: { lastSyncAt: null, syncing: false, error: null },
   };
 
