@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 import type { DataSource, Repository } from 'typeorm';
 import { DEFAULT_SETTINGS } from '@tm/shared/settings';
 import { buildProject } from '@tm/shared/projectBuilders';
+import type { Automation, AutomationRun } from '@tm/shared/automation';
 import { EventBus } from '../events/eventBus';
 import { PresenceRegistry } from '../presence/presence.registry';
 import { PresenceService } from '../presence/presence.service';
+import { AutomationMirror } from '../entities/automationMirror.entity';
+import { AutomationRunMirror } from '../entities/automationRunMirror.entity';
 import { ProjectMirror } from '../entities/projectMirror.entity';
 import { SettingsMirror } from '../entities/settingsMirror.entity';
 import { TaskMirror } from '../entities/taskMirror.entity';
@@ -13,6 +16,48 @@ import { Client } from '../entities/client.entity';
 import { Command } from '../entities/command.entity';
 import { CommandResultRow } from '../entities/commandResult.entity';
 import { MirrorService } from './mirror.service';
+
+function buildAutomation(overrides: Partial<Automation> = {}): Automation {
+  return {
+    id: 'automation-1',
+    revision: 1,
+    name: 'Nightly triage',
+    enabled: true,
+    ownerClientId: 'desktop-1',
+    timeZone: 'UTC',
+    trigger: { kind: 'schedule', schedule: { type: 'daily', hour: 9, minute: 0 } },
+    action: {
+      agentProjectId: 'project-1',
+      titleTemplate: 'Nightly triage — {{date}}',
+      briefTemplate: 'Triage the backlog.',
+      mode: 'acceptEdits',
+    },
+    enabledAt: 1_700_000_000_000,
+    nextRunAt: null,
+    consecutiveFailures: 0,
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_000_000,
+    ...overrides,
+  };
+}
+
+function buildRun(overrides: Partial<AutomationRun> = {}): AutomationRun {
+  return {
+    id: 'run-1',
+    automationId: 'automation-1',
+    revision: 1,
+    occurrenceKey: 'manual:run-1',
+    kind: 'manual',
+    status: 'started',
+    taskId: null,
+    runId: null,
+    refusal: null,
+    skippedCount: 0,
+    note: null,
+    at: Date.now(),
+    ...overrides,
+  };
+}
 
 /**
  * A hand-rolled stand-in for the slice of TypeORM `MirrorService` actually calls: `upsert`
@@ -26,6 +71,8 @@ class FakeStore {
   readonly projectRows: ProjectMirror[] = [];
   readonly taskRows: TaskMirror[] = [];
   readonly settingsRows: SettingsMirror[] = [];
+  readonly automationRows: AutomationMirror[] = [];
+  readonly automationRunRows: AutomationRunMirror[] = [];
   readonly tombstoneRows: Tombstone[] = [];
   readonly clientRows: Client[] = [];
   readonly commandRows: Command[] = [];
@@ -43,6 +90,8 @@ class FakeStore {
     if (entity === ProjectMirror) return this.projectRows as unknown as T[];
     if (entity === TaskMirror) return this.taskRows as unknown as T[];
     if (entity === SettingsMirror) return this.settingsRows as unknown as T[];
+    if (entity === AutomationMirror) return this.automationRows as unknown as T[];
+    if (entity === AutomationRunMirror) return this.automationRunRows as unknown as T[];
     if (entity === Tombstone) return this.tombstoneRows as unknown as T[];
     if (entity === Client) return this.clientRows as unknown as T[];
     if (entity === Command) return this.commandRows as unknown as T[];
@@ -56,9 +105,12 @@ interface AccountRow {
 }
 
 class FakeQueryBuilder<T extends AccountRow> {
-  private accountId?: string;
+  /** Every equality param an `andWhere` has been given, keyed by its SQL parameter name —
+   *  `accountId` is just the first one that ever existed here, not special-cased any more. */
+  private equality: Record<string, unknown> = {};
   private since?: Buffer;
   private max?: number;
+  private orderColumn = 'rowVersion';
   private descending = false;
 
   constructor(private readonly rows: T[]) {}
@@ -68,13 +120,19 @@ class FakeQueryBuilder<T extends AccountRow> {
   }
 
   andWhere(_sql: string, params: Record<string, unknown> = {}): this {
-    if ('accountId' in params) this.accountId = params.accountId as string;
-    if ('since' in params) this.since = params.since as Buffer;
+    for (const [key, value] of Object.entries(params)) {
+      // `since` compares against `rowVersion` (a monotonic cursor), not a column named
+      // `since` — every other param is a plain equality filter on its own column.
+      if (key === 'since') this.since = value as Buffer;
+      else this.equality[key] = value;
+    }
     return this;
   }
 
-  orderBy(_column?: string, direction?: 'ASC' | 'DESC'): this {
+  /** `mirror.at` → `at`: only the column name after the alias matters to this fake. */
+  orderBy(column?: string, direction?: 'ASC' | 'DESC'): this {
     this.descending = direction === 'DESC';
+    if (column) this.orderColumn = column.split('.').pop()!;
     return this;
   }
 
@@ -91,9 +149,21 @@ class FakeQueryBuilder<T extends AccountRow> {
 
   async getMany(): Promise<T[]> {
     const matching = this.rows
-      .filter((row) => this.accountId === undefined || row.accountId === this.accountId)
+      .filter((row) =>
+        Object.entries(this.equality).every(
+          ([key, value]) => (row as Record<string, unknown>)[key] === value,
+        ),
+      )
       .filter((row) => this.since === undefined || Buffer.compare(row.rowVersion, this.since) > 0)
-      .sort((a, b) => (this.descending ? -1 : 1) * Buffer.compare(a.rowVersion, b.rowVersion));
+      .sort((a, b) => {
+        const left = (a as Record<string, unknown>)[this.orderColumn];
+        const right = (b as Record<string, unknown>)[this.orderColumn];
+        const cmp =
+          Buffer.isBuffer(left) && Buffer.isBuffer(right)
+            ? Buffer.compare(left, right)
+            : Number(left) - Number(right);
+        return (this.descending ? -1 : 1) * cmp;
+      });
     return this.max === undefined ? matching : matching.slice(0, this.max);
   }
 
@@ -155,10 +225,17 @@ function fakeDataSource(store: FakeStore): DataSource {
         else arr.push(stored);
       }
     },
-    delete: async (entity: unknown, criteria: { id: unknown }) => {
-      const ids = idsFrom(criteria.id);
-      const arr = store.arrayFor<{ id: string }>(entity);
-      const kept = arr.filter((row) => !ids.includes(row.id));
+    // Generic over the criteria's keys, not just `id`: `applyAutomationDelta` deletes
+    // `AutomationRunMirror` rows by `automationId`, not by its own `id`, the one case the
+    // original `{ id }`-only shape here never had to cover.
+    delete: async (entity: unknown, criteria: Record<string, unknown>) => {
+      const arr = store.arrayFor<Record<string, unknown>>(entity);
+      const kept = arr.filter(
+        (row) =>
+          !Object.entries(criteria).every(([key, value]) =>
+            idsFrom(value).includes(row[key] as string),
+          ),
+      );
       arr.length = 0;
       arr.push(...kept);
     },
@@ -214,6 +291,8 @@ describe('MirrorService.createTask', () => {
       fakeRepository(store.taskRows),
       fakeRepository(store.projectRows),
       fakeRepository(store.settingsRows),
+      fakeRepository(store.automationRows),
+      fakeRepository(store.automationRunRows),
       fakeRepository(store.tombstoneRows),
       fakeRepository<CommandResultRow>([] as unknown as CommandResultRow[]),
       new PresenceService(new PresenceRegistry()),
@@ -257,6 +336,8 @@ describe('MirrorService.updateTask / deleteTask', () => {
       fakeRepository(store.taskRows),
       fakeRepository(store.projectRows),
       fakeRepository(store.settingsRows),
+      fakeRepository(store.automationRows),
+      fakeRepository(store.automationRunRows),
       fakeRepository(store.tombstoneRows),
       fakeRepository<CommandResultRow>([] as unknown as CommandResultRow[]),
       new PresenceService(new PresenceRegistry()),
@@ -409,6 +490,8 @@ describe('MirrorService.createProject / updateProject / deleteProject', () => {
       fakeRepository(store.taskRows),
       fakeRepository(store.projectRows),
       fakeRepository(store.settingsRows),
+      fakeRepository(store.automationRows),
+      fakeRepository(store.automationRunRows),
       fakeRepository(store.tombstoneRows),
       fakeRepository<CommandResultRow>([] as unknown as CommandResultRow[]),
       new PresenceService(new PresenceRegistry()),
@@ -491,6 +574,8 @@ describe('MirrorService replay to a desktop Client', () => {
       fakeRepository(store.taskRows),
       fakeRepository(store.projectRows),
       fakeRepository(store.settingsRows),
+      fakeRepository(store.automationRows),
+      fakeRepository(store.automationRunRows),
       fakeRepository(store.tombstoneRows),
       fakeRepository<CommandResultRow>([] as unknown as CommandResultRow[]),
       new PresenceService(new PresenceRegistry()),
@@ -621,6 +706,8 @@ describe('MirrorService settings mirror', () => {
       fakeRepository(store.taskRows),
       fakeRepository(store.projectRows),
       fakeRepository(store.settingsRows),
+      fakeRepository(store.automationRows),
+      fakeRepository(store.automationRunRows),
       fakeRepository(store.tombstoneRows),
       fakeRepository<CommandResultRow>([] as unknown as CommandResultRow[]),
       new PresenceService(new PresenceRegistry()),
@@ -714,5 +801,176 @@ describe('MirrorService settings mirror', () => {
     });
 
     expect((await service.getSettings('account-1')).branchPrefix).toBe('wd');
+  });
+});
+
+describe('MirrorService.sync automation mirror', () => {
+  function buildService(): { service: MirrorService; store: FakeStore } {
+    const store = new FakeStore();
+    const service = new MirrorService(
+      fakeDataSource(store),
+      fakeRepository(store.clientRows),
+      fakeRepository(store.taskRows),
+      fakeRepository(store.projectRows),
+      fakeRepository(store.settingsRows),
+      fakeRepository(store.automationRows),
+      fakeRepository(store.automationRunRows),
+      fakeRepository(store.tombstoneRows),
+      fakeRepository<CommandResultRow>([] as unknown as CommandResultRow[]),
+      new PresenceService(new PresenceRegistry()),
+      new EventBus(),
+    );
+    return { service, store };
+  }
+
+  it('a v2-shaped SyncRequest, carrying no automation fields, syncs cleanly', async () => {
+    const { service } = buildService();
+
+    await expect(
+      service.sync('account-1', {
+        clientId: 'desktop-1',
+        cursor: null,
+        focused: false,
+        deltas: { tasks: [], projects: [], deletedTaskIds: [], deletedProjectIds: [] },
+        ackedCommandIds: [],
+      }),
+    ).resolves.toBeDefined();
+  });
+
+  it('a sync carrying an automation and a run mirrors both, readable through the account routes', async () => {
+    const { service } = buildService();
+    const automation = buildAutomation();
+    const run = buildRun({ automationId: automation.id });
+
+    await service.sync('account-1', {
+      clientId: 'desktop-1',
+      cursor: null,
+      focused: false,
+      deltas: {
+        tasks: [],
+        projects: [],
+        deletedTaskIds: [],
+        deletedProjectIds: [],
+        automations: [automation],
+        automationRuns: [run],
+      },
+      ackedCommandIds: [],
+    });
+
+    const automations = await service.automations('account-1');
+    expect(automations.automations).toHaveLength(1);
+    expect(automations.automations[0]?.id).toBe(automation.id);
+
+    const runs = await service.automationRuns('account-1', automation.id, 50);
+    expect(runs.runs).toHaveLength(1);
+    expect(runs.runs[0]?.id).toBe(run.id);
+  });
+
+  it('deletes an automation and its runs off a later sync carrying deletedAutomationIds', async () => {
+    const { service } = buildService();
+    const automation = buildAutomation();
+    const run = buildRun({ automationId: automation.id });
+
+    await service.sync('account-1', {
+      clientId: 'desktop-1',
+      cursor: null,
+      focused: false,
+      deltas: {
+        tasks: [],
+        projects: [],
+        deletedTaskIds: [],
+        deletedProjectIds: [],
+        automations: [automation],
+        automationRuns: [run],
+      },
+      ackedCommandIds: [],
+    });
+
+    await service.sync('account-1', {
+      clientId: 'desktop-1',
+      cursor: null,
+      focused: false,
+      deltas: {
+        tasks: [],
+        projects: [],
+        deletedTaskIds: [],
+        deletedProjectIds: [],
+        deletedAutomationIds: [automation.id],
+      },
+      ackedCommandIds: [],
+    });
+
+    expect((await service.automations('account-1')).automations).toHaveLength(0);
+    await expect(service.automationRuns('account-1', automation.id, 50)).rejects.toThrow(
+      'Automation not found.',
+    );
+  });
+});
+
+describe('MirrorService.automations / automationRuns', () => {
+  function buildService(): { service: MirrorService; store: FakeStore } {
+    const store = new FakeStore();
+    const service = new MirrorService(
+      fakeDataSource(store),
+      fakeRepository(store.clientRows),
+      fakeRepository(store.taskRows),
+      fakeRepository(store.projectRows),
+      fakeRepository(store.settingsRows),
+      fakeRepository(store.automationRows),
+      fakeRepository(store.automationRunRows),
+      fakeRepository(store.tombstoneRows),
+      fakeRepository<CommandResultRow>([] as unknown as CommandResultRow[]),
+      new PresenceService(new PresenceRegistry()),
+      new EventBus(),
+    );
+    return { service, store };
+  }
+
+  it('automationRuns 404s for an automation belonging to another account', async () => {
+    const { service, store } = buildService();
+    const automation = buildAutomation();
+    store.automationRows.push({
+      id: automation.id,
+      accountId: 'account-1',
+      clientId: 'desktop-1',
+      data: automation,
+      updatedAt: String(automation.updatedAt),
+    });
+
+    await expect(service.automationRuns('account-2', automation.id, 50)).rejects.toThrow(
+      'Automation not found.',
+    );
+  });
+
+  it('caps automationRuns at MAX_AUTOMATION_RUNS_PAGE regardless of the requested limit, newest first', async () => {
+    const { service, store } = buildService();
+    const automation = buildAutomation();
+    store.automationRows.push({
+      id: automation.id,
+      accountId: 'account-1',
+      clientId: 'desktop-1',
+      data: automation,
+      updatedAt: String(automation.updatedAt),
+    });
+
+    for (let i = 0; i < 150; i++) {
+      const run = buildRun({
+        id: `run-${i}`,
+        automationId: automation.id,
+        at: 1_700_000_000_000 + i,
+      });
+      store.automationRunRows.push({
+        id: run.id,
+        accountId: 'account-1',
+        automationId: automation.id,
+        data: run,
+        at: String(run.at),
+      });
+    }
+
+    const result = await service.automationRuns('account-1', automation.id, 1000);
+    expect(result.runs).toHaveLength(100);
+    expect(result.runs[0]?.id).toBe('run-149'); // newest first
+    expect(result.runs[99]?.id).toBe('run-50');
   });
 });

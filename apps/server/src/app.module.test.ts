@@ -69,10 +69,11 @@ describe('AppModule', () => {
     const options = findOptionsFactory()();
 
     expect(options.synchronize).toBe(false);
-    // Account, AgentProfile, Assignment, AttachmentBlob, AttachmentUpload, Client, Command,
-    // CommandResultRow, PersonalAccessToken, ProjectMirror, SettingsMirror, TaskMirror,
-    // Tombstone. A count rather than the names: this is a "did somebody drop one" guard, and
-    // every entity's own shape is asserted where it is used.
-    expect((options.entities as unknown[]).length).toBe(13);
+    // Account, AgentProfile, Assignment, AttachmentBlob, AttachmentUpload, AutomationMirror,
+    // AutomationRunMirror, Client, Command, CommandResultRow, PersonalAccessToken,
+    // ProjectMirror, SettingsMirror, TaskMirror, Tombstone. A count rather than the names:
+    // this is a "did somebody drop one" guard, and every entity's own shape is asserted where
+    // it is used.
+    expect((options.entities as unknown[]).length).toBe(15);
   });
 });

@@ -3,6 +3,8 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, IsNull, LessThan, Repository } from 'typeorm';
 import type {
+  AutomationRunsResponse,
+  AutomationsResponse,
   BoardResponse,
   ClientPresence,
   CommandRequest,
@@ -25,6 +27,8 @@ import type { AppSettings } from '@tm/shared/settings';
 import { DEFAULT_SETTINGS, mergeAppSettings, pickGlobalSettings } from '@tm/shared/settings';
 import { buildAdhocTask } from '@tm/shared/taskBuilders';
 import { normalizeTicketPrefix } from '@tm/shared/ticketKey';
+import { AutomationMirror } from '../entities/automationMirror.entity';
+import { AutomationRunMirror } from '../entities/automationRunMirror.entity';
 import { Client } from '../entities/client.entity';
 import { Command } from '../entities/command.entity';
 import { CommandResultRow } from '../entities/commandResult.entity';
@@ -34,6 +38,7 @@ import { TaskMirror } from '../entities/taskMirror.entity';
 import { Tombstone } from '../entities/tombstone.entity';
 import { EventBus } from '../events/eventBus';
 import { PresenceService } from '../presence/presence.service';
+import { applyAutomationDelta } from './applyAutomationDelta';
 import { applyMirrorDelta } from './applyMirrorDelta';
 import { boardCursor } from './boardCursor';
 import { clientInfoColumns, describeClients } from './clientInfo';
@@ -74,6 +79,13 @@ export const BOARD_PAGE_LIMIT = 500;
 export const BOARD_BYTES_LIMIT = 1_000_000;
 
 /**
+ * The most `GET /v1/automations/:id/runs` ever returns, whatever `?limit=` asked for — the
+ * read-side sibling of `AUTOMATION_RUNS_PER_SYNC` (`@tm/protocol/wire`), which bounds the
+ * same table on the push side.
+ */
+export const MAX_AUTOMATION_RUNS_PAGE = 100;
+
+/**
  * `CommandEnvelope.issuedBy` for a replay command this service enqueues on its own behalf
  * (see `replayToDesktops` below) — as opposed to a browser tab holding a pending promise for
  * a relayed `ipc-invoke`. Nothing ever reads `GET /v1/results` for this issuer: the caller of
@@ -91,6 +103,10 @@ export class MirrorService {
     @InjectRepository(TaskMirror) private readonly taskMirrors: Repository<TaskMirror>,
     @InjectRepository(ProjectMirror) private readonly projectMirrors: Repository<ProjectMirror>,
     @InjectRepository(SettingsMirror) private readonly settingsMirrors: Repository<SettingsMirror>,
+    @InjectRepository(AutomationMirror)
+    private readonly automationMirrors: Repository<AutomationMirror>,
+    @InjectRepository(AutomationRunMirror)
+    private readonly automationRunMirrors: Repository<AutomationRunMirror>,
     @InjectRepository(Tombstone) private readonly tombstones: Repository<Tombstone>,
     @InjectRepository(CommandResultRow) private readonly results: Repository<CommandResultRow>,
     private readonly presence: PresenceService,
@@ -128,6 +144,7 @@ export class MirrorService {
       );
 
       await applyMirrorDelta(manager, accountId, request.deltas);
+      await applyAutomationDelta(manager, accountId, request.clientId, request.deltas);
 
       // The desktop's global settings, when this tick carried them (it only sends them when
       // they changed — see `cloudPoller.ts`). Seeds and updates the settings mirror so cloud
@@ -653,6 +670,48 @@ export class MirrorService {
     const row = await manager.findOne(SettingsMirror, { where: { accountId } });
     const next = mergeAppSettings(row?.data ?? DEFAULT_SETTINGS, global);
     await manager.upsert(SettingsMirror, { accountId, data: next }, ['accountId']);
+  }
+
+  /**
+   * `GET /v1/automations` — every automation mirrored for this account, for the pages that
+   * want the whole set directly rather than waiting on a sync to have carried one across.
+   * No paging: an account's automations are a handful a human authored by hand, nothing like
+   * the task/project volume `board` has to bound.
+   */
+  async automations(accountId: string): Promise<AutomationsResponse> {
+    const rows = await this.automationMirrors.find({ where: { accountId } });
+    return { automations: rows.map((row) => row.data) };
+  }
+
+  /**
+   * `GET /v1/automations/:id/runs` — one automation's run log, newest first, capped at
+   * {@link MAX_AUTOMATION_RUNS_PAGE} regardless of what `limit` asked for.
+   *
+   * 404s for an id that names nothing OR another account's automation — same reasoning as
+   * `ownedTask`/`ownedProject`: confirming the id exists for an account with no claim to it
+   * would be a leak this route has no reason to risk.
+   */
+  async automationRuns(
+    accountId: string,
+    automationId: string,
+    limit: number,
+  ): Promise<AutomationRunsResponse> {
+    const owned = await this.automationMirrors.findOne({
+      where: { id: automationId, accountId },
+      select: { id: true },
+    });
+    if (!owned) throw new NotFoundException('Automation not found.');
+
+    const take = Math.min(Math.max(1, limit), MAX_AUTOMATION_RUNS_PAGE);
+    const rows = await this.automationRunMirrors
+      .createQueryBuilder('mirror')
+      .where('mirror.accountId = :accountId', { accountId })
+      .andWhere('mirror.automationId = :automationId', { automationId })
+      .orderBy('mirror.at', 'DESC')
+      .take(take)
+      .getMany();
+
+    return { runs: rows.map((row) => row.data) };
   }
 
   /**

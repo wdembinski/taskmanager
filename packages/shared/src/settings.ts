@@ -502,8 +502,10 @@ export function withColumnHidden(
  * that needs to check whether its own feature is live reads `settings.features.x` rather than
  * a top-level field competing for a name with everything else in `AppSettings`.
  *
- * All default to `true`: none of these is a beta anybody opts into, so the shipped behaviour
- * is "the feature exists" and this group is only ever used to turn one back OFF.
+ * All default to `true` — none of these is a beta anybody opts into, so the shipped
+ * behaviour is "the feature exists" and this group is only ever used to turn one back OFF —
+ * **except `prAutoResolve`**, which reaches into the agent on its own and so is the one
+ * switch this group is used to turn ON.
  */
 export interface FeatureSettings {
   /** Auto-fold a card's Steps section once it reaches Review or Done. */
@@ -518,9 +520,19 @@ export interface FeatureSettings {
   quietAgentProgress: boolean;
   /** Assign tracker tickets to their own board. */
   ticketsToOwnBoard: boolean;
+  /**
+   * Watch the PRs/MRs this app opened and act on `prWatchAction`'s behalf: ask the forge to
+   * rebase a stale branch, hand a conflict to the card's agent, and note a pipeline that
+   * just failed or just went green.
+   *
+   * **Off by default**, unlike every other switch here — this one hands the agent a merge to
+   * resolve without being asked, and that is not a thing to opt a user into silently. With it
+   * off, the same action is one click away on the card's red blocked icon.
+   */
+  prAutoResolve: boolean;
 }
 
-/** Every feature on — see {@link FeatureSettings}. */
+/** Every feature on, except `prAutoResolve` — see {@link FeatureSettings}. */
 export const DEFAULT_FEATURE_SETTINGS: FeatureSettings = {
   autoFoldReviewDone: true,
   shelf: true,
@@ -528,6 +540,7 @@ export const DEFAULT_FEATURE_SETTINGS: FeatureSettings = {
   mrRebaseButton: true,
   quietAgentProgress: true,
   ticketsToOwnBoard: true,
+  prAutoResolve: false,
 };
 
 /**

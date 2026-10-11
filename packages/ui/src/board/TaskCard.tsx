@@ -19,6 +19,10 @@
  * never a card of its own — it travels with its parent between columns — so the rows are
  * not draggable; clicking one selects that step in the detail pane.
  *
+ * A card an automation started (`task.originAutomationId`, F1.18) carries one more glyph in
+ * the title row — a monochrome flash, never coloured, since it names a standing fact rather
+ * than something moving (see the colour-budget note on `originIcon` below).
+ *
  * Phase 17 changed three things about what the card can say:
  *
  *   - The ring is driven by the INBOX (`attentionTaskIds`), not inferred from status and
@@ -56,6 +60,7 @@ import {
   ChevronRightRegular,
   CircleRegular,
   DismissCircleFilled,
+  FlashRegular,
   LinkRegular,
   MergeFilled,
   MoreHorizontalRegular,
@@ -88,6 +93,7 @@ import { statusNoteColor, type StatusKeyword } from '@tm/shared/statusKeywords';
 import { DEFAULT_BOARD_DISPLAY, type BoardDisplaySettings } from '@tm/shared/settings';
 import { AgentGlyph } from '../AgentGlyph';
 import { STATUS_COLOR, STATUS_LABEL } from '../taskStatus';
+import { automationOriginTitle, type AutomationOrigin } from './automationOrigin';
 import { cardBadgeStatus, splitEarlierSteps, subtaskProgress } from './boardColumns';
 import {
   CHAIN_LINK_MIME,
@@ -540,6 +546,18 @@ const useStyles = makeStyles({
   /** A step, or a loop. Dimmed, and the drop bounces — see `dropEffectFor`. */
   linkRefused: { opacity: 0.35 },
   agentIcon: { fontSize: AGENT_ICON_SIZE, flexShrink: 0, display: 'flex', color: '#ffffff' },
+  /**
+   * The automation-origin glyph: a neutral token, no new colour. Colour budget (memory
+   * *board-colour-budget*) — colour is for things that MOVE, and "an automation started
+   * this" is a standing fact about the card, not an event in progress, so it stays
+   * monochrome like the type icon beside it.
+   */
+  originIcon: {
+    fontSize: AGENT_ICON_SIZE,
+    flexShrink: 0,
+    display: 'flex',
+    color: tokens.colorNeutralForeground3,
+  },
   dragging: { opacity: 0.5 },
   /**
    * `flex-start`, not `center`: a two-line title would otherwise push the type glyph and the
@@ -881,6 +899,12 @@ export interface TaskCardProps {
   assignee?: Pick<Person, 'name' | 'initials' | 'color'>;
   /** Name of the agent project this card is delegated to, for the glyph's tooltip. */
   agentName?: string;
+  /**
+   * What started this card, when `task.originAutomationId` names an automation. Nothing
+   * fills this until the automation list reaches the renderer (F1.11/F1.15); without it the
+   * glyph's tooltip falls back to the generic "Started by an automation".
+   */
+  originAutomation?: AutomationOrigin;
   /** The card's project colour (`''`/undefined = no stripe). */
   projectColor?: string;
   /**
@@ -1088,6 +1112,7 @@ export function TaskCard({
   epicName,
   assignee,
   agentName,
+  originAutomation,
   projectColor,
   showSprint = true,
   subtasks = [],
@@ -1428,6 +1453,13 @@ export function TaskCard({
               {progress.done}/{progress.total}
               {stopped && ' · stopped'}
             </Caption1>
+          )}
+          {task.originAutomationId && (
+            <Tooltip relationship="label" content={automationOriginTitle(originAutomation)}>
+              <span className={styles.originIcon}>
+                <FlashRegular />
+              </span>
+            </Tooltip>
           )}
           {/* The glyph pulses while the agent works — it replaced a spinner that sat right
               here saying the same thing the words and the counter beside it already said.

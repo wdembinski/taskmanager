@@ -3,10 +3,13 @@
  * collapse/cap/order rules `getCloudDelta` relies on.
  */
 import { describe, expect, it } from 'vitest';
+import { AUTOMATION_RUNS_PER_SYNC } from '@protocol/wire';
+import type { Automation, AutomationRun } from '@shared/automation';
 import type { Project, Task } from '@shared/model';
 import {
   buildMirrorDelta,
   buildMirrorDeltaWithin,
+  type CloudDeltaLookups,
   type CloudOutboxRow,
   shapeCloudDelta,
 } from './cloudDelta';
@@ -20,6 +23,30 @@ function row(partial: Partial<CloudOutboxRow> & Pick<CloudOutboxRow, 'seq'>): Cl
     ...partial,
   };
 }
+
+/** Every lookup misses by default — a test overrides only the ones it cares about. */
+function lookups(overrides: Partial<CloudDeltaLookups> = {}): CloudDeltaLookups {
+  return {
+    getTask: () => undefined,
+    getProject: () => undefined,
+    getAutomation: () => undefined,
+    getAutomationRun: () => undefined,
+    ...overrides,
+  };
+}
+
+// A generous budget — the run-count cap test's point is the run count, not bytes.
+const SYNC_BYTES_LIMIT_FOR_TEST = 10_000_000;
+
+const emptyFields = {
+  tasks: [],
+  projects: [],
+  deletedTaskIds: [],
+  deletedProjectIds: [],
+  automations: [],
+  automationRuns: [],
+  deletedAutomationIds: [],
+};
 
 describe('shapeCloudDelta', () => {
   it('collapses repeated rows for one entity to its last write', () => {
@@ -81,49 +108,36 @@ describe('shapeCloudDelta', () => {
 describe('buildMirrorDelta', () => {
   const t1 = { id: 't1', title: 'Fix export' } as Task;
   const p1 = { id: 'p1', name: 'Widgets' } as Project;
+  const a1 = { id: 'a1', name: 'Nightly triage' } as Automation;
+  const r1 = { id: 'r1', automationId: 'a1' } as AutomationRun;
   const getTask = (id: string): Task | undefined => (id === 't1' ? t1 : undefined);
   const getProject = (id: string): Project | undefined => (id === 'p1' ? p1 : undefined);
+  const getAutomation = (id: string): Automation | undefined => (id === 'a1' ? a1 : undefined);
+  const getAutomationRun = (id: string): AutomationRun | undefined =>
+    id === 'r1' ? r1 : undefined;
 
   it('resolves an insert/update row to the entity the lookup returns', () => {
     const result = buildMirrorDelta(
       [row({ seq: 1, entity: 'task', entityId: 't1', op: 'update' })],
-      getTask,
-      getProject,
+      lookups({ getTask }),
     );
-    expect(result).toEqual({
-      tasks: [t1],
-      projects: [],
-      deletedTaskIds: [],
-      deletedProjectIds: [],
-    });
+    expect(result).toEqual({ ...emptyFields, tasks: [t1] });
   });
 
   it('sends a delete row as an id, with no lookup', () => {
     const result = buildMirrorDelta(
       [row({ seq: 1, entity: 'project', entityId: 'gone', op: 'delete' })],
-      getTask,
-      getProject,
+      lookups({ getTask, getProject }),
     );
-    expect(result).toEqual({
-      tasks: [],
-      projects: [],
-      deletedTaskIds: [],
-      deletedProjectIds: ['gone'],
-    });
+    expect(result).toEqual({ ...emptyFields, deletedProjectIds: ['gone'] });
   });
 
   it('folds an insert/update lookup MISS into a delete — the entity is gone either way', () => {
     const result = buildMirrorDelta(
       [row({ seq: 1, entity: 'task', entityId: 'vanished', op: 'insert' })],
-      getTask,
-      getProject,
+      lookups({ getTask, getProject }),
     );
-    expect(result).toEqual({
-      tasks: [],
-      projects: [],
-      deletedTaskIds: ['vanished'],
-      deletedProjectIds: [],
-    });
+    expect(result).toEqual({ ...emptyFields, deletedTaskIds: ['vanished'] });
   });
 
   it('sorts tasks and projects into their own arrays from one mixed batch', () => {
@@ -132,15 +146,43 @@ describe('buildMirrorDelta', () => {
         row({ seq: 1, entity: 'task', entityId: 't1', op: 'insert' }),
         row({ seq: 2, entity: 'project', entityId: 'p1', op: 'insert' }),
       ],
-      getTask,
-      getProject,
+      lookups({ getTask, getProject }),
+    );
+    expect(result).toEqual({ ...emptyFields, tasks: [t1], projects: [p1] });
+  });
+
+  it('resolves an automation upsert and folds a miss into deletedAutomationIds', () => {
+    const result = buildMirrorDelta(
+      [
+        row({ seq: 1, entity: 'automation', entityId: 'a1', op: 'update' }),
+        row({ seq: 2, entity: 'automation', entityId: 'vanished', op: 'insert' }),
+      ],
+      lookups({ getAutomation }),
     );
     expect(result).toEqual({
-      tasks: [t1],
-      projects: [p1],
-      deletedTaskIds: [],
-      deletedProjectIds: [],
+      ...emptyFields,
+      automations: [a1],
+      deletedAutomationIds: ['vanished'],
     });
+  });
+
+  it('sends an automation delete row as a bare id', () => {
+    const result = buildMirrorDelta(
+      [row({ seq: 1, entity: 'automation', entityId: 'gone', op: 'delete' })],
+      lookups(),
+    );
+    expect(result).toEqual({ ...emptyFields, deletedAutomationIds: ['gone'] });
+  });
+
+  it('resolves a run upsert, and drops a run lookup miss with no array to fold into', () => {
+    const result = buildMirrorDelta(
+      [
+        row({ seq: 1, entity: 'automationRun', entityId: 'r1', op: 'insert' }),
+        row({ seq: 2, entity: 'automationRun', entityId: 'vanished', op: 'insert' }),
+      ],
+      lookups({ getAutomationRun }),
+    );
+    expect(result).toEqual({ ...emptyFields, automationRuns: [r1] });
   });
 });
 
@@ -153,7 +195,6 @@ describe('buildMirrorDeltaWithin', () => {
   function byId(tasks: Task[]): (id: string) => Task | undefined {
     return (id) => tasks.find((task) => task.id === id);
   }
-  const noProject = (): Project | undefined => undefined;
 
   function taskRows(ids: string[]): CloudOutboxRow[] {
     return ids.map((id, index) => row({ seq: index + 1, entityId: id, op: 'update' }));
@@ -163,8 +204,7 @@ describe('buildMirrorDeltaWithin', () => {
     const tasks = ['a', 'b', 'c', 'd'].map((id) => bigTask(id));
     const { delta, sent } = buildMirrorDeltaWithin(
       taskRows(['a', 'b', 'c', 'd']),
-      byId(tasks),
-      noProject,
+      lookups({ getTask: byId(tasks) }),
       2500, // two ~1030-byte tasks fit; the third does not
     );
 
@@ -178,8 +218,7 @@ describe('buildMirrorDeltaWithin', () => {
     const huge = bigTask('huge', 5000);
     const { delta, sent } = buildMirrorDeltaWithin(
       taskRows(['huge', 'next']),
-      byId([huge, bigTask('next')]),
-      noProject,
+      lookups({ getTask: byId([huge, bigTask('next')]) }),
       100,
     );
 
@@ -189,19 +228,17 @@ describe('buildMirrorDeltaWithin', () => {
 
   it('takes everything when the batch fits', () => {
     const tasks = ['a', 'b'].map((id) => bigTask(id, 10));
-    const { sent } = buildMirrorDeltaWithin(taskRows(['a', 'b']), byId(tasks), noProject);
+    const { sent } = buildMirrorDeltaWithin(
+      taskRows(['a', 'b']),
+      lookups({ getTask: byId(tasks) }),
+    );
     expect(sent).toHaveLength(2);
   });
 
   it('returns an empty batch for an empty outbox', () => {
-    const result = buildMirrorDeltaWithin([], byId([]), noProject);
+    const result = buildMirrorDeltaWithin([], lookups());
     expect(result.sent).toEqual([]);
-    expect(result.delta).toEqual({
-      tasks: [],
-      projects: [],
-      deletedTaskIds: [],
-      deletedProjectIds: [],
-    });
+    expect(result.delta).toEqual(emptyFields);
   });
 
   it('cuts in seq order, not in the deletes-last order shapeCloudDelta hands over', () => {
@@ -220,8 +257,7 @@ describe('buildMirrorDeltaWithin', () => {
 
     const { sent } = buildMirrorDeltaWithin(
       shaped,
-      byId([bigTask('b'), bigTask('c')]),
-      noProject,
+      lookups({ getTask: byId([bigTask('b'), bigTask('c')]) }),
       1500, // room for the tiny delete plus one task
     );
 
@@ -234,8 +270,7 @@ describe('buildMirrorDeltaWithin', () => {
         row({ seq: 1, entityId: 'del', op: 'delete' }),
         row({ seq: 2, entityId: 'keep', op: 'update' }),
       ],
-      byId([bigTask('keep', 10)]),
-      noProject,
+      lookups({ getTask: byId([bigTask('keep', 10)]) }),
     );
 
     expect(sent.map((r) => r.entityId)).toEqual(['keep', 'del']);
@@ -256,8 +291,7 @@ describe('buildMirrorDeltaWithin', () => {
     );
     const { sent } = buildMirrorDeltaWithin(
       rows,
-      byId(['a', 'c', 'd'].map((id) => bigTask(id))),
-      noProject,
+      lookups({ getTask: byId(['a', 'c', 'd'].map((id) => bigTask(id))) }),
       1500,
     );
 
@@ -271,8 +305,7 @@ describe('buildMirrorDeltaWithin', () => {
   it('folds a lookup miss into a delete, and counts it as the id it becomes', () => {
     const { delta, sent } = buildMirrorDeltaWithin(
       taskRows(['vanished', 'b']),
-      byId([bigTask('b')]),
-      noProject,
+      lookups({ getTask: byId([bigTask('b')]) }),
       1200,
     );
 
@@ -280,5 +313,46 @@ describe('buildMirrorDeltaWithin', () => {
     expect(sent.map((r) => r.entityId)).toEqual(['vanished', 'b']);
     expect(delta.deletedTaskIds).toEqual(['vanished']);
     expect(delta.tasks.map((t) => t.id)).toEqual(['b']);
+  });
+
+  it('stops at AUTOMATION_RUNS_PER_SYNC runs even with budget and rows left, so a later task is not lost', () => {
+    const runRows = Array.from({ length: 250 }, (_, i) =>
+      row({ seq: i + 1, entity: 'automationRun', entityId: `run-${i}`, op: 'insert' }),
+    );
+    const taskRow = row({ seq: 251, entity: 'task', entityId: 'late-task', op: 'insert' });
+    const runs = Array.from(
+      { length: 250 },
+      (_, i) => ({ id: `run-${i}`, automationId: 'a1' }) as AutomationRun,
+    );
+
+    const first = buildMirrorDeltaWithin(
+      [...runRows, taskRow],
+      lookups({
+        getAutomationRun: (id) => runs.find((r) => r.id === id),
+        getTask: () => ({ id: 'late-task' }) as Task,
+      }),
+      SYNC_BYTES_LIMIT_FOR_TEST,
+    );
+
+    expect(first.delta.automationRuns).toHaveLength(AUTOMATION_RUNS_PER_SYNC);
+    expect(first.sent).toHaveLength(AUTOMATION_RUNS_PER_SYNC);
+    expect(Math.max(...first.sent.map((r) => r.seq))).toBe(AUTOMATION_RUNS_PER_SYNC);
+    // The task after the cut is excluded from this batch, not dropped — its seq is higher
+    // than everything sent, so `pruneCloudOutbox(max(sent.seq))` never touches it.
+    expect(first.sent.some((r) => r.entityId === 'late-task')).toBe(false);
+
+    const remainingRows = [...runRows, taskRow].filter(
+      (r) => !first.sent.some((s) => s.seq === r.seq),
+    );
+    const second = buildMirrorDeltaWithin(
+      remainingRows,
+      lookups({
+        getAutomationRun: (id) => runs.find((r) => r.id === id),
+        getTask: () => ({ id: 'late-task' }) as Task,
+      }),
+      SYNC_BYTES_LIMIT_FOR_TEST,
+    );
+    expect(second.delta.automationRuns).toHaveLength(50);
+    expect(second.delta.tasks.map((t) => t.id)).toEqual(['late-task']);
   });
 });

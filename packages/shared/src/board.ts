@@ -100,7 +100,7 @@ export function isBoardCard(task: Task): boolean {
  * must read: a card left in TO DO stays in TO DO while its agent works, and the spinner,
  * the glyph and the run strip are what say the agent is working.
  */
-export function restingStatus(task: Task): TaskStatus {
+export function restingStatus(task: Pick<Task, 'status' | 'preRunStatus'>): TaskStatus {
   if (isRunStatus(task.status) && task.preRunStatus) return task.preRunStatus;
   return task.status;
 }
@@ -197,7 +197,7 @@ export function lookupStatusColumn(
  * Reads {@link restingStatus} rather than `status`, so a running card sits where its
  * human left it instead of being dragged into IN PROGRESS by its own agent.
  */
-export function columnForTask(task: Task): BoardColumn {
+export function columnForTask(task: Pick<Task, 'status' | 'preRunStatus'>): BoardColumn {
   return columnForStatus(restingStatus(task));
 }
 
