@@ -47,6 +47,23 @@ describe('toMoveActivity', () => {
   it('is null when nothing moved', () => {
     expect(toMoveActivity(card(), 'in-review', 'in-review')).toBeNull();
   });
+
+  it('passes a null projectId through unchanged', () => {
+    const row = toMoveActivity(
+      card({ projectId: null as unknown as string }),
+      'pending',
+      'in-review',
+      1000,
+    );
+    expect(row?.projectId).toBeNull();
+  });
+
+  it('keeps `done` and `cancelled` distinct in detail.to', () => {
+    const done = toMoveActivity(card(), 'in-review', 'done', 1000);
+    const cancelled = toMoveActivity(card(), 'in-review', 'cancelled', 1000);
+    expect(done?.detail).toEqual({ from: 'in-review', to: 'done' });
+    expect(cancelled?.detail).toEqual({ from: 'in-review', to: 'cancelled' });
+  });
 });
 
 describe('transitionThenRecord', () => {
