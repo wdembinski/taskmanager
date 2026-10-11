@@ -3285,6 +3285,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('automation:runNow', automationHandlers['automation:runNow']);
   handle('automation:runs', automationHandlers['automation:runs']);
 
+  // --- Issues (F5) — contract only so far; the providers land in F5.5. -------
+  handle('issues:list', async () => {
+    throw new Error('issues:list is not implemented yet (F5.5)');
+  });
+  handle('issues:import', async () => {
+    throw new Error('issues:import is not implemented yet (F5.5)');
+  });
+
   // --- The chain of execution ------------------------------------------------
   /** Push the whole link list at the board. Returns it, so handlers can also reply with it. */
   function pushChainLinks(): TaskLink[] {

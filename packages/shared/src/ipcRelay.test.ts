@@ -91,6 +91,8 @@ describe('the channels that DO relay', () => {
     'activity:list',
     'activity:overview',
     'usage:daily',
+    'issues:list',
+    'issues:import',
   ];
 
   for (const channel of MUST_RELAY) {
