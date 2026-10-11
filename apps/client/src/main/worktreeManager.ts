@@ -146,6 +146,18 @@ function withUnionAttributes(): { file: string; cleanup: () => void } {
   };
 }
 
+/**
+ * Attach Rung 1.5's auto-resolved paths to a result that has room for them (`merged` or
+ * `rebased`), or hand the result back untouched. A shared tail for every finisher the
+ * conflict ladder can land on, so `autoResolved` is never forgotten on one path and not
+ * the other.
+ */
+function withAutoResolved(result: IntegrationResult, autoResolved: string[]): IntegrationResult {
+  if (autoResolved.length === 0) return result;
+  if (result.status !== 'merged' && result.status !== 'rebased') return result;
+  return { ...result, autoResolved: [...new Set(autoResolved)] };
+}
+
 // Conflict markers, matched at the start of a line. `|||||||` only appears under the `diff3`
 // conflict styles; it is recognised (and its section discarded) so the parser below doesn't
 // depend on the human's `merge.conflictStyle`.
@@ -309,6 +321,16 @@ export type IntegrationResult =
        */
       autoResolved?: string[];
     }
+  /**
+   * The branch was rebased onto `base` — a PR/MR's target, fetched as a local ref — and is
+   * ready to be force-pushed back to green. Unlike `merged`, nothing here is integrated into
+   * the project's own base branch: a PR/MR branch keeps living on the forge until a human
+   * merges it there, so this result touches no base ref and does not remove the worktree.
+   *
+   * `autoResolved` mirrors `merged.autoResolved`: files Rung 1.5 resolved without an agent,
+   * reported because it is a write into the human's branch nobody asked for.
+   */
+  | { status: 'rebased'; branch: string; base: string; worktree: string; autoResolved?: string[] }
   /**
    * There was nothing to land, so no merge was attempted: the branch is already contained
    * in base (it merged before), or it no longer exists, or the worktree is not a repo.
@@ -661,7 +683,9 @@ export class WorktreeManager {
       // the abort above, which threw the marker commit away with everything else — so fixing
       // the abort without fixing this would have merged `<<<<<<<` into the base branch.
       if (await rebaseInProgress(worktree, host)) {
-        return this.continuePausedRebase(project, branch, base, worktree, host);
+        return this.continuePausedRebase(branch, base, worktree, host, () =>
+          this.fastForward(project, branch, base, worktree),
+        );
       }
 
       // AFTER `commitAll`, and that order matters: a run that left work uncommitted has
@@ -679,67 +703,147 @@ export class WorktreeManager {
         };
       }
 
-      // Rung 1 (mechanical): rebase with union merge for additive config files, so
-      // `.gitignore`/workspace-list churn auto-resolves instead of conflicting.
-      const attrs = withUnionAttributes();
-      // The attributes file is written on the app's filesystem, so git must be told
-      // the name its OWN machine knows it by.
-      const attrsPath = host.toNative(attrs.file);
-      try {
-        let rebased = await rebaseOnto(worktree, base, attrsPath, host);
-
-        // Rung 1.5 (mechanical, scripted): a conflict git's merge drivers can't touch but
-        // that still has ONE right answer nobody needs to read code to find — a lockfile, a
-        // version line a release bumped. Resolving it here is worth a rung of its own because
-        // the alternative is Rung 2, and Rung 2 costs a whole agent session to run a command
-        // this can run itself. Lockfile collisions are far and away the commonest thing
-        // parallel worktrees conflict on.
-        //
-        // Looped, because a rebase stops once per conflicting COMMIT: resolving the first one
-        // and handing the second to an agent would spend the session this rung exists to save.
-        // Each round consumes one commit, so the bound can only be hit by a pathological branch.
-        const autoResolved: string[] = [];
-        for (let round = 0; rebased.code !== 0 && round < MAX_MECHANICAL_ROUNDS; round++) {
-          if (!(await hasConflicts(worktree, host))) {
-            // A rebase can stop with NOTHING left unmerged, and that is not an error either.
-            // `rerere` replays a resolution this repo has recorded before, stages it, and git
-            // still stops — so the tree is clean, the index is full, and all that is owed is
-            // `--continue`. Reading a clean tree as "no conflict to fix" is what turned the
-            // second and third presses of Retry into the same parked failure as the first: the
-            // more times a branch had been rebased, the more reliably rerere made it
-            // unmergeable. If no rebase is running at all, this really is some other failure.
-            if (!(await rebaseInProgress(worktree, host))) break;
-            rebased = await this.advancePausedRebase(worktree, attrsPath, host);
-            continue;
-          }
-          const fixed = await this.resolveMechanically(worktree, host);
-          // `null` = something here needs judgement. The work tree is exactly as git left it
-          // (see `resolveMechanically`), so the AI/human rung below gets the real conflict —
-          // never a tree this rung had already half-resolved and made to look clean.
-          if (!fixed) break;
-          autoResolved.push(...fixed);
-          rebased = await this.advancePausedRebase(worktree, attrsPath, host);
+      // Rung 1 (mechanical) and Rung 1.5 (scripted): rebase onto base with a union merge for
+      // additive config files, then loop resolving anything Rung 1.5 can fix (a lockfile, a
+      // version line a release bumped) until the rebase finishes or a real conflict is left
+      // for the AI/human rungs above.
+      const { rebased, autoResolved } = await this.runRebaseLadder(worktree, base, host);
+      if (rebased.code !== 0) {
+        if (await hasConflicts(worktree, host)) {
+          return { status: 'conflict', worktree, branch, base };
         }
-
-        // Anything still conflicted is a real conflict → `conflict`, for the AI/human rungs.
-        if (rebased.code !== 0) {
-          if (await hasConflicts(worktree, host)) {
-            return { status: 'conflict', worktree, branch, base };
-          }
-          // Safe to abort: this rebase is one THIS call started, a few lines above — a rebase
-          // that was already paused when we arrived never reaches here (it is handled before
-          // the safety commit). Undoing our own is free; undoing somebody else's is how a
-          // resolution gets thrown away.
-          await abortRebase(worktree, host);
-          return { status: 'error', message: rebased.stderr || 'rebase failed' };
-        }
-        const done = await this.fastForward(project, branch, base, worktree);
-        if (done.status !== 'merged' || autoResolved.length === 0) return done;
-        return { ...done, autoResolved: [...new Set(autoResolved)] };
-      } finally {
-        attrs.cleanup();
+        // Safe to abort: this rebase is one THIS call started, a few lines above — a rebase
+        // that was already paused when we arrived never reaches here (it is handled before
+        // the safety commit). Undoing our own is free; undoing somebody else's is how a
+        // resolution gets thrown away.
+        await abortRebase(worktree, host);
+        return { status: 'error', message: rebased.stderr || 'rebase failed' };
       }
+      return withAutoResolved(
+        await this.fastForward(project, branch, base, worktree),
+        autoResolved,
+      );
     });
+  }
+
+  /**
+   * Rebase a PR/MR's branch onto `targetRef` — the PR's target branch, fetched as a local
+   * ref — so a conflicted PR/MR can be pushed back to green. Mirrors {@link integrate}'s
+   * preamble (`isRepo`, `branchExists`, the paused-rebase check, the safety commit) and its
+   * Rung 1 / Rung 1.5 conflict ladder, but never touches a base ref or the worktree: the
+   * branch is rebased, not merged, and it keeps living on the forge until a human merges the
+   * PR there. Serialized per project, same as `integrate`.
+   *
+   * There is deliberately no `commitsAhead` refusal here: a PR branch that has nothing ahead
+   * of its OWN target is `integrate`'s question, not this one's — this call exists only to
+   * get a branch that already has a PR open past a conflict with that PR's target.
+   */
+  rebaseForPullRequest(
+    project: Project,
+    branch: string,
+    targetRef: string,
+    worktree: string,
+    commitMessage: string,
+  ): Promise<IntegrationResult> {
+    return this.enqueue(project.id, async () => {
+      const { host } = await this.workspaceFor(project);
+
+      if (!(await isRepo(worktree, host))) {
+        return {
+          status: 'nothing-to-merge',
+          branch,
+          base: targetRef,
+          reason:
+            `the worktree at ${worktree} is no longer a git repository, which is what a ` +
+            `worktree looks like after its branch has been merged and cleaned up`,
+        };
+      }
+      if (!(await branchExists(project.path, branch, host))) {
+        return {
+          status: 'nothing-to-merge',
+          branch,
+          base: targetRef,
+          reason:
+            `branch "${branch}" no longer exists in ${project.path} — it is deleted as the ` +
+            `last step of a successful merge, so its work is already in ${targetRef}`,
+        };
+      }
+
+      const finish = (): Promise<IntegrationResult> =>
+        Promise.resolve({ status: 'rebased', branch, base: targetRef, worktree });
+
+      if (await rebaseInProgress(worktree, host)) {
+        return this.continuePausedRebase(branch, targetRef, worktree, host, finish);
+      }
+
+      await commitAll(worktree, commitMessage, host);
+
+      const { rebased, autoResolved } = await this.runRebaseLadder(worktree, targetRef, host);
+      if (rebased.code !== 0) {
+        if (await hasConflicts(worktree, host)) {
+          return { status: 'conflict', worktree, branch, base: targetRef };
+        }
+        await abortRebase(worktree, host);
+        return { status: 'error', message: rebased.stderr || 'rebase failed' };
+      }
+      return withAutoResolved(await finish(), autoResolved);
+    });
+  }
+
+  /**
+   * Rung 1 (mechanical) + Rung 1.5 (scripted) of the conflict ladder: rebase `worktree`'s
+   * checked-out branch onto `baseRef` with a union merge for additive config files, then
+   * loop resolving anything Rung 1.5 can fix (a lockfile, a version line a release bumped)
+   * until the rebase finishes or a real conflict is left for the rungs above.
+   *
+   * Shared by {@link integrate} and {@link rebaseForPullRequest} — both start a fresh rebase
+   * this way and differ only in what happens once it is clean (fast-forward base vs. nothing).
+   * Returns the rebase's own final `GitResult` (0 = clean) rather than an `IntegrationResult`:
+   * what a non-zero code MEANS — `conflict` vs. `error` — depends on state only the caller
+   * can still see after this returns (whether `abortRebase` is safe to run), so that decision
+   * is left to it.
+   */
+  private async runRebaseLadder(
+    worktree: string,
+    baseRef: string,
+    host: ExecHost,
+  ): Promise<{ rebased: GitResult; autoResolved: string[] }> {
+    const attrs = withUnionAttributes();
+    // The attributes file is written on the app's filesystem, so git must be told the name
+    // its OWN machine knows it by.
+    const attrsPath = host.toNative(attrs.file);
+    try {
+      let rebased = await rebaseOnto(worktree, baseRef, attrsPath, host);
+
+      // Looped, because a rebase stops once per conflicting COMMIT: resolving the first one
+      // and handing the second to an agent would spend the session this rung exists to save.
+      // Each round consumes one commit, so the bound can only be hit by a pathological branch.
+      const autoResolved: string[] = [];
+      for (let round = 0; rebased.code !== 0 && round < MAX_MECHANICAL_ROUNDS; round++) {
+        if (!(await hasConflicts(worktree, host))) {
+          // A rebase can stop with NOTHING left unmerged, and that is not an error either.
+          // `rerere` replays a resolution this repo has recorded before, stages it, and git
+          // still stops — so the tree is clean, the index is full, and all that is owed is
+          // `--continue`. Reading a clean tree as "no conflict to fix" is what turned the
+          // second and third presses of Retry into the same parked failure as the first: the
+          // more times a branch had been rebased, the more reliably rerere made it
+          // unmergeable. If no rebase is running at all, this really is some other failure.
+          if (!(await rebaseInProgress(worktree, host))) break;
+          rebased = await this.advancePausedRebase(worktree, attrsPath, host);
+          continue;
+        }
+        const fixed = await this.resolveMechanically(worktree, host);
+        // `null` = something here needs judgement. The work tree is exactly as git left it
+        // (see `resolveMechanically`), so the AI/human rung below gets the real conflict —
+        // never a tree this rung had already half-resolved and made to look clean.
+        if (!fixed) break;
+        autoResolved.push(...fixed);
+        rebased = await this.advancePausedRebase(worktree, attrsPath, host);
+      }
+      return { rebased, autoResolved };
+    } finally {
+      attrs.cleanup();
+    }
   }
 
   /**
@@ -773,30 +877,53 @@ export class WorktreeManager {
   ): Promise<IntegrationResult> {
     return this.enqueue(project.id, async () => {
       const { host } = await this.workspaceFor(project);
-      return this.continuePausedRebase(project, branch, base, worktree, host);
+      return this.continuePausedRebase(branch, base, worktree, host, () =>
+        this.fastForward(project, branch, base, worktree),
+      );
     });
   }
 
   /**
-   * Drive a rebase that is already paused in `worktree` to its end, then fast-forward.
+   * The PR twin of {@link finishAfterConflict}: drive a rebase already paused in `worktree`
+   * (Rung 2/3 having just resolved its conflict) to its end, landing on `rebased` rather than
+   * a fast-forwarded base — see {@link rebaseForPullRequest} for why.
+   */
+  finishPullRequestRebase(
+    project: Project,
+    branch: string,
+    targetRef: string,
+    worktree: string,
+  ): Promise<IntegrationResult> {
+    return this.enqueue(project.id, async () => {
+      const { host } = await this.workspaceFor(project);
+      return this.continuePausedRebase(branch, targetRef, worktree, host, () =>
+        Promise.resolve({ status: 'rebased', branch, base: targetRef, worktree }),
+      );
+    });
+  }
+
+  /**
+   * Drive a rebase that is already paused in `worktree` to its end, then hand off to `finish`
+   * to land it — a fast-forwarded base for {@link integrate}/{@link finishAfterConflict}, or
+   * nothing touched at all for {@link rebaseForPullRequest}/{@link finishPullRequestRebase}.
    *
    * The one path for every arrival at a paused rebase — the human answering *Resolved*, Rung
-   * 2's agent run ending, and a plain re-`integrate` that found one waiting. Deliberately NOT
-   * enqueued: `integrate` and `finishAfterConflict` are the enqueued entry points, and taking
-   * the per-project lock twice would deadlock.
+   * 2's agent run ending, and a plain re-`integrate` (or re-`rebaseForPullRequest`) that found
+   * one waiting. Deliberately NOT enqueued: the four methods above are the enqueued entry
+   * points, and taking the per-project lock twice would deadlock.
    *
    * Looped, because a rebase stops once per conflicting COMMIT and a branch with thirteen of
-   * them stops thirteen times. Continuing exactly once and then fast-forwarding assumed the
-   * caller would be back for each of the others; that held for the human answering *Resolved*,
-   * and not for a stop this can settle by itself — a lockfile on the ninth commit, or one
+   * them stops thirteen times. Continuing exactly once and then finishing assumed the caller
+   * would be back for each of the others; that held for the human answering *Resolved*, and
+   * not for a stop this can settle by itself — a lockfile on the ninth commit, or one
    * `rerere` has already staged — which is now driven through here instead of costing a rung.
    */
   private async continuePausedRebase(
-    project: Project,
     branch: string,
     base: string,
     worktree: string,
     host: ExecHost,
+    finish: () => Promise<IntegrationResult>,
   ): Promise<IntegrationResult> {
     // Union attrs so later patches' additive files still auto-merge.
     const attrs = withUnionAttributes();
@@ -813,9 +940,7 @@ export class WorktreeManager {
           autoResolved.push(...fixed);
         } else if (!(await rebaseInProgress(worktree, host))) {
           // No rebase left to drive: it finished — just now, or before we were called.
-          const done = await this.fastForward(project, branch, base, worktree);
-          if (done.status !== 'merged' || autoResolved.length === 0) return done;
-          return { ...done, autoResolved: [...new Set(autoResolved)] };
+          return withAutoResolved(await finish(), autoResolved);
         }
         const advanced = await this.advancePausedRebase(worktree, attrsPath, host);
         // A `--continue` that neither finished the rebase nor left conflicts is a failure this
