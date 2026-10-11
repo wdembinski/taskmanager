@@ -26,6 +26,7 @@ import {
   TableRow,
   ToggleButton,
   Body1,
+  Tooltip,
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
@@ -40,8 +41,9 @@ import {
   SparkleRegular,
   TaskListSquareLtrRegular,
 } from '@fluentui/react-icons';
-import type { Milestone, Person, Project, Task, TicketLabel } from '@tm/shared/model';
+import type { Milestone, Person, Project, Task, TicketLabel, TicketLink } from '@tm/shared/model';
 import { delegatedAgentName, typeIconKeyFor, type TypeIconKey } from '@tm/shared/tickets';
+import { startReadiness, type StartReadiness } from '@tm/shared/ticketLinks';
 import { PriorityGlyph } from '../PriorityGlyph';
 import { PaneLoading } from '../PaneLoading';
 import { useTransport } from '../transport';
@@ -104,6 +106,37 @@ function milestoneName(milestones: Milestone[], id: string | null | undefined): 
   return milestones.find((m) => m.id === id)?.name ?? null;
 }
 
+function ticketLabel(t: Pick<Task, 'title' | 'ticketKey'>): string {
+  return t.ticketKey ? `${t.ticketKey} ${t.title}` : t.title;
+}
+
+/**
+ * The "Can start" column's cell — a ticket's {@link StartReadiness} read as a badge. `done`
+ * shows nothing: there is no longer anything to be ready FOR. `waiting`'s tooltip names the
+ * open blockers so the badge alone never leaves a reader guessing what it is waiting on.
+ */
+function CanStartCell({ readiness }: { readiness: StartReadiness }): JSX.Element {
+  const styles = useStyles();
+  if (readiness.kind === 'done') {
+    return <Caption1 className={styles.muted}>—</Caption1>;
+  }
+  if (readiness.kind === 'ready') {
+    return (
+      <Badge appearance="tint" color="success">
+        Ready
+      </Badge>
+    );
+  }
+  const names = readiness.open.map((o) => (o.task ? ticketLabel(o.task) : o.id));
+  return (
+    <Tooltip relationship="label" content={`Waiting on ${names.join(', ')}`}>
+      <Badge appearance="tint" color="warning">
+        Waiting
+      </Badge>
+    </Tooltip>
+  );
+}
+
 /** The agent delegated to a ticket, by name — `undefined` for anything not native or
  *  not delegated, the same `delegatedAgentName` gate `TaskCard` applies before showing one. */
 function agentNameOf(agentProjects: Project[], ticket: Task): string | undefined {
@@ -123,6 +156,7 @@ export function BacklogTable({
   const styles = useStyles();
   const transport = useTransport();
   const [tickets, setTickets] = useState<Task[] | null>(null);
+  const [links, setLinks] = useState<TicketLink[]>([]);
   const [query, setQuery] = useState('');
   const [sortKey, setSortKey] = useState<BacklogSortKey>('key');
   const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
@@ -156,10 +190,23 @@ export function BacklogTable({
     };
   }, [transport, projectId]);
 
+  useEffect(() => {
+    let live = true;
+    void transport.invoke('ticketLink:list').then((all) => {
+      if (live) setLinks(all);
+    });
+    const off = transport.on('ticketLink:changed', setLinks);
+    return () => {
+      live = false;
+      off();
+    };
+  }, [transport]);
+
   const rows = useMemo(
     () => (tickets ? backlogRows(tickets, query, sortKey) : []),
     [tickets, query, sortKey],
   );
+  const byId = useMemo(() => new Map((tickets ?? []).map((t) => [t.id, t])), [tickets]);
 
   if (tickets === null) {
     return (
@@ -227,6 +274,7 @@ export function BacklogTable({
                 <TableHeaderCell>Priority</TableHeaderCell>
                 <TableHeaderCell>Due</TableHeaderCell>
                 <TableHeaderCell>Milestone</TableHeaderCell>
+                <TableHeaderCell>Can start</TableHeaderCell>
                 <TableHeaderCell>Labels</TableHeaderCell>
               </TableRow>
             </TableHeader>
@@ -234,7 +282,7 @@ export function BacklogTable({
               {rows.map((group) => (
                 <Fragment key={`group:${group.epicId ?? 'none'}`}>
                   <TableRow className={styles.groupRow}>
-                    <TableCell colSpan={8} className={styles.groupCell}>
+                    <TableCell colSpan={9} className={styles.groupCell}>
                       <div className={styles.groupHeader}>
                         <span>
                           {group.epicTitle} · {group.tickets.length}
@@ -293,6 +341,9 @@ export function BacklogTable({
                         {milestoneName(milestones, ticket.milestoneId) ?? (
                           <Caption1 className={styles.muted}>—</Caption1>
                         )}
+                      </TableCell>
+                      <TableCell>
+                        <CanStartCell readiness={startReadiness(ticket, links, byId)} />
                       </TableCell>
                       <TableCell>
                         <div className={styles.labelsCell}>
