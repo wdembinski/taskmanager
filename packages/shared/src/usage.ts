@@ -9,6 +9,8 @@
  * A `UsageSample` is one recorded model call's consumption, attributed to its source.
  * `UsageSummary` is the rolled-up view for the current rolling 5-hour window, and
  * `UsageSeriesPoint[]` is the time-bucketed series behind the live area chart.
+ * `DailyUsagePoint[]` (`bucketUsageDaily`) is the zero-filled, one-point-per-local-day
+ * series behind the trend chart.
  */
 
 /** Which part of the app spent the tokens. */
@@ -294,7 +296,71 @@ export interface DailyBucketOptions {
  *
  * `opts.days <= 0`, or not an integer (floored first), returns `[]`.
  */
-export declare function bucketUsageDaily(
+export function bucketUsageDaily(
   samples: readonly DailyUsageInput[],
   opts: DailyBucketOptions,
-): DailyUsagePoint[];
+): DailyUsagePoint[] {
+  const days = Math.floor(opts.days);
+  if (days <= 0) return [];
+
+  const shiftMs = opts.tzOffsetMinutes * 60_000;
+  const localDayIndex = (t: number): number => Math.floor((t + shiftMs) / DAY_MS);
+
+  const lastDayIndex = localDayIndex(opts.now);
+  const firstDayIndex = lastDayIndex - (days - 1);
+
+  interface Bucket {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    costSum: number;
+    costSeen: boolean;
+    sampleCount: number;
+  }
+  const buckets = new Map<number, Bucket>();
+  for (let index = firstDayIndex; index <= lastDayIndex; index++) {
+    buckets.set(index, {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      costSum: 0,
+      costSeen: false,
+      sampleCount: 0,
+    });
+  }
+
+  for (const sample of samples) {
+    const index = localDayIndex(sample.createdAt);
+    const bucket = buckets.get(index);
+    if (!bucket) continue;
+
+    bucket.sampleCount++;
+    bucket.inputTokens += sample.inputTokens;
+    bucket.outputTokens += sample.outputTokens;
+    bucket.cacheReadTokens += sample.cacheReadTokens;
+    if (sample.costUsd !== null) {
+      bucket.costSeen = true;
+      bucket.costSum += sample.costUsd;
+    }
+  }
+
+  const pad2 = (n: number): string => String(n).padStart(2, '0');
+
+  const points: DailyUsagePoint[] = [];
+  for (let index = firstDayIndex; index <= lastDayIndex; index++) {
+    const bucket = buckets.get(index)!;
+    const shifted = new Date(index * DAY_MS);
+    const date = `${shifted.getUTCFullYear()}-${pad2(shifted.getUTCMonth() + 1)}-${pad2(
+      shifted.getUTCDate(),
+    )}`;
+    points.push({
+      dayStart: index * DAY_MS - shiftMs,
+      date,
+      costUsd: bucket.sampleCount === 0 ? 0 : bucket.costSeen ? bucket.costSum : null,
+      inputTokens: bucket.inputTokens,
+      outputTokens: bucket.outputTokens,
+      cacheReadTokens: bucket.cacheReadTokens,
+    });
+  }
+  return points;
+}
