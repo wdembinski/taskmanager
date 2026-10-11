@@ -14,6 +14,7 @@ import type { Person, Task } from '@tm/shared/model';
 import type { StatusKeyword } from '@tm/shared/statusKeywords';
 import type { BoardDisplaySettings } from '@tm/shared/settings';
 import { TaskCard } from './TaskCard';
+import type { AutomationOrigin } from './automationOrigin';
 import type { BoardCard, BoardColumn } from './boardColumns';
 import { isChainLinkDrag, type LinkDragState } from './chainDrag';
 import type { ChainState } from './chainStates';
@@ -92,6 +93,12 @@ export interface KanbanColumnProps {
   /** A native ticket's assignee (Phase 24), for the avatar in its footer. Same shape as
    *  `agentNameOf`: asked per card rather than passed as a lookup map. */
   assigneeOf?: (task: Task) => Pick<Person, 'name' | 'initials' | 'color'> | undefined;
+  /**
+   * What started a card whose `originAutomationId` names an automation (F1.18), same shape
+   * as `assigneeOf`. Absent on every caller before the automation list reaches the renderer
+   * (F1.11/F1.15), which is also what leaves the glyph's tooltip on its generic fallback.
+   */
+  originAutomationOf?: (task: Task) => AutomationOrigin | undefined;
   /** Whether cards show their sprint chip (false while the sprint filter is on). */
   showSprint?: boolean;
   /** The user's status-note vocabulary, which colours each card's progress line. */
@@ -232,6 +239,7 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               epicName={props.epicNameOf?.(task)}
               assignee={props.assigneeOf?.(task)}
               agentName={props.agentNameOf(task)}
+              originAutomation={props.originAutomationOf?.(task)}
               projectColor={props.projectColorOf(task)}
               showSprint={props.showSprint}
               subtasks={subtasks}
