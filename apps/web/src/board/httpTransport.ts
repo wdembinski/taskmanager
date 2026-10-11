@@ -18,18 +18,24 @@
  *
  * Three tiers now:
  *  1. **Direct** — `task:create`, `task:setStatus`, `task:move`, `task:setDescription`,
- *     `project:add`, `project:update`, `project:remove`, `settings:get` and `settings:save`
- *     post straight to the write/read endpoints (`POST`/`PATCH`/`DELETE /v1/tasks` and
- *     `/v1/projects`, `GET`/`PUT /v1/settings`) instead of relaying at all. These are the
- *     edits a browser with no desktop Client ever synced still has to be able to make —
- *     creating and working a card, filing it under a project of its own, and reading and
- *     changing the account's global settings is the whole reason cloud web has to stand on its
- *     own — and the server applies each write to the mirror itself and replays it to every
- *     desktop Client on record (`mirror.service.ts`), so a Client that is offline right now
- *     still catches up later instead of the edit never having happened at all.
+ *     `project:add`, `project:update`, `project:remove`, `settings:get`, `settings:save`,
+ *     `automation:list` and `automation:runs` post straight to the write/read endpoints
+ *     (`POST`/`PATCH`/`DELETE /v1/tasks` and `/v1/projects`, `GET`/`PUT /v1/settings`, `GET
+ *     /v1/automations` and `/v1/automations/:id/runs`) instead of relaying at all. These are
+ *     the edits and reads a browser with no desktop Client ever synced still has to be able to
+ *     make — creating and working a card, filing it under a project of its own, reading and
+ *     changing the account's global settings, and seeing what the account's automations are and
+ *     have done is the whole reason cloud web has to stand on its own — and the server applies
+ *     each write to the mirror itself and replays it to every desktop Client on record
+ *     (`mirror.service.ts`), so a Client that is offline right now still catches up later
+ *     instead of the edit never having happened at all.
  *  2. **Relayed** — anything else `@tm/shared/ipcRelay` marks `'relay'`, still an `ipc-invoke`
  *     command held open and polled for through `GET /v1/results`, answered by the desktop's
- *     own handler.
+ *     own handler. `automation:save`, `automation:delete`, `automation:setEnabled` and
+ *     `automation:runNow` relay too, but to the automation's own recorded owner
+ *     (`automationOwner`) rather than this account's default target — only the desktop that
+ *     created an automation ever evaluates or fires it, so an edit relayed to a different
+ *     Client would be answered by one that has no idea the automation exists.
  *  3. **Host-only** — refused locally, with the reason from that same shared policy, so the
  *     sentence a human reads is written once and not once per side. The engine refuses these
  *     again if a command reaches it anyway; this refusal is the courtesy that makes the click
@@ -53,6 +59,8 @@ import {
   BLOB_TYPE_QUERY,
   MEDIA_TOKEN_QUERY,
   PROTOCOL_VERSION,
+  type AutomationRunsResponse,
+  type AutomationsResponse,
   type CommandEnvelope,
   type CommandRequest,
   type CreateProjectRequest,
@@ -65,6 +73,7 @@ import {
 } from '@tm/protocol/wire';
 import { CLOUD_BLOB_MAX_BYTES } from '@tm/shared/attachments';
 import type { TaskAttachment, UploadedAttachment } from '@tm/shared/attachments';
+import type { Automation, AutomationRun } from '@tm/shared/automation';
 import { hostOnlyMessage, isRelayable } from '@tm/shared/ipcRelay';
 import type { IpcApi, IpcEvents } from '@tm/shared/ipc';
 import type { Project, Task } from '@tm/shared/model';
@@ -251,6 +260,34 @@ export class HttpTransport implements Transport {
       const [settings] = args as Parameters<IpcApi['settings:save']>;
       return this.writeSettings(settings) as ReturnType<IpcApi[K]>;
     }
+    // Automation reads — also direct: an account's automations and their run history are
+    // mirrored server-side, the same as settings, so these see the real thing with no desktop
+    // Client ever having synced.
+    if (channel === 'automation:list') {
+      return this.readJson<AutomationsResponse>('/v1/automations').then(
+        (body) => body.automations,
+      ) as ReturnType<IpcApi[K]>;
+    }
+    if (channel === 'automation:runs') {
+      const [automationId, limit] = args as Parameters<IpcApi['automation:runs']>;
+      return this.automationRuns(automationId, limit) as ReturnType<IpcApi[K]>;
+    }
+    // Automation edits still relay — the desktop that owns an automation is the only one that
+    // evaluates or fires it — but to THAT owner, not this account's default target.
+    if (channel === 'automation:save') {
+      const [automation] = args as Parameters<IpcApi['automation:save']>;
+      return this.relayToAutomationOwner(channel, args, automation.id, true) as ReturnType<
+        IpcApi[K]
+      >;
+    }
+    if (
+      channel === 'automation:delete' ||
+      channel === 'automation:setEnabled' ||
+      channel === 'automation:runNow'
+    ) {
+      const [id] = args as [string, ...unknown[]];
+      return this.relayToAutomationOwner(channel, args, id, false) as ReturnType<IpcApi[K]>;
+    }
     if (!isRelayable(channel)) {
       return Promise.reject(new Error(hostOnlyMessage(channel))) as ReturnType<IpcApi[K]>;
     }
@@ -388,19 +425,94 @@ export class HttpTransport implements Transport {
     this.pendingListeners.clear();
   }
 
-  private relay(channel: string, args: readonly unknown[]): Promise<unknown> {
+  private relay(
+    channel: string,
+    args: readonly unknown[],
+    targetClientId?: string,
+  ): Promise<unknown> {
     const id = this.mintId();
     return new Promise<unknown>((resolve, reject) => {
       this.pending.set(id, { resolve, reject, channel, startedAt: this.clock() });
       this.notePending();
-      void this.sendCommand('ipc-invoke', { channel, args }, id).catch((e: unknown) => {
-        // The command never made it onto the queue, so no result will ever come back for it.
-        this.pending.delete(id);
-        this.notePending();
-        reject(e instanceof Error ? e : new Error(String(e)));
-      });
+      void this.sendCommand('ipc-invoke', { channel, args }, id, targetClientId).catch(
+        (e: unknown) => {
+          // The command never made it onto the queue, so no result will ever come back for it.
+          this.pending.delete(id);
+          this.notePending();
+          reject(e instanceof Error ? e : new Error(String(e)));
+        },
+      );
       this.startPolling();
     });
+  }
+
+  /**
+   * Resolve an automation edit's owner, then relay to it — the shared tail of `automation:save`
+   * / `delete` / `setEnabled` / `runNow`. `allowMissing` is `save`'s own escape hatch: an id
+   * the mirror has never heard of is a create in flight, not a stale reference, so it falls
+   * back to the default target same as any other relayed call rather than rejecting.
+   */
+  private relayToAutomationOwner(
+    channel: string,
+    args: readonly unknown[],
+    automationId: string,
+    allowMissing: boolean,
+  ): Promise<unknown> {
+    return this.automationOwner(automationId, allowMissing).then((targetClientId) =>
+      this.relay(channel, args, targetClientId),
+    );
+  }
+
+  /**
+   * Who actually evaluates and fires automation `id` — read fresh off the mirror rather than
+   * trusting a draft's own `ownerClientId`, since the mirror is what every desktop agrees on.
+   *
+   * Returns `undefined` to mean "fall back to `getTargetClientId()`'s default", which covers
+   * both a `null` `ownerClientId` ("this one", recorded relative to whichever desktop created
+   * it) and — only when `allowMissing` is set — an id the mirror has never heard of, because
+   * that is what a brand-new automation's first save looks like before it has a mirror row at
+   * all. Any other caller seeing a missing id is pointed at something that is actually gone, so
+   * it rejects instead.
+   */
+  private async automationOwner(id: string, allowMissing: boolean): Promise<string | undefined> {
+    const { automations } = await this.readJson<AutomationsResponse>('/v1/automations');
+    const found = automations.find((a) => a.id === id);
+    if (!found) {
+      if (allowMissing) return undefined;
+      throw new Error('That automation no longer exists.');
+    }
+    return found.ownerClientId ?? undefined;
+  }
+
+  /**
+   * One automation's run history, or every automation's merged newest-first when `automationId`
+   * is null — the shape `automation:runs` promises. The `null` case fans out to `GET
+   * /v1/automations` and then one `/runs` call per automation in parallel: an account has only
+   * a handful of these, so the N+1 is cheap, and it is what keeps this read working with no
+   * desktop Client ever having synced (there is no mirrored "all runs" route to ask instead).
+   */
+  private async automationRuns(
+    automationId: string | null,
+    limit: number,
+  ): Promise<AutomationRun[]> {
+    if (automationId !== null) {
+      const body = await this.readJson<AutomationRunsResponse>(
+        `/v1/automations/${encodeURIComponent(automationId)}/runs?limit=${limit}`,
+      );
+      return body.runs;
+    }
+    const { automations } = await this.readJson<AutomationsResponse>('/v1/automations');
+    const perAutomation = await Promise.all(
+      automations.map((automation: Automation) =>
+        this.readJson<AutomationRunsResponse>(
+          `/v1/automations/${encodeURIComponent(automation.id)}/runs?limit=${limit}`,
+        ).then((body) => body.runs),
+      ),
+    );
+    return perAutomation
+      .flat()
+      .sort((a, b) => b.at - a.at)
+      .slice(0, limit);
   }
 
   /**
@@ -556,6 +668,19 @@ export class HttpTransport implements Transport {
     return body.settings;
   }
 
+  /** A bearer-authenticated `GET`, for the direct-tier reads that are a plain JSON body back. */
+  private async readJson<T>(path: string): Promise<T> {
+    const token = await this.deps.getAccessToken();
+    if (!token) throw new Error('Not signed in to vipper.iam.');
+
+    const fetchImpl = this.deps.fetchImpl ?? fetch;
+    const res = await fetchImpl(`${this.deps.apiBase}${path}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) throw new Error(`request failed (${res.status} ${res.statusText})`);
+    return (await res.json()) as T;
+  }
+
   /**
    * `PUT /v1/settings` — cloud web writing global settings directly. Sends the whole blob the
    * Settings screen loaded and saves back (it has no partial-save path); the SERVER narrows it
@@ -595,9 +720,10 @@ export class HttpTransport implements Transport {
     kind: CommandEnvelope['kind'],
     payload: unknown,
     id = this.mintId(),
+    targetClientId?: string,
   ): Promise<void> {
-    const targetClientId = this.deps.getTargetClientId();
-    if (!targetClientId) {
+    const resolvedTargetClientId = targetClientId ?? this.deps.getTargetClientId();
+    if (!resolvedTargetClientId) {
       throw new Error(
         'No desktop Client has ever synced this account — sign in from the desktop app first.',
       );
@@ -612,7 +738,7 @@ export class HttpTransport implements Transport {
       kind,
       payload,
     } as CommandEnvelope;
-    const request: CommandRequest = { targetClientId, command };
+    const request: CommandRequest = { targetClientId: resolvedTargetClientId, command };
 
     const fetchImpl = this.deps.fetchImpl ?? fetch;
     const res = await fetchImpl(`${this.deps.apiBase}/v1/commands`, {

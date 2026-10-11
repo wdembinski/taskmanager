@@ -302,6 +302,77 @@ until ‹desktop› is running."* Shell parity per `test/shell-parity.test.ts`.
 6. **Match items already in the status when an automation is enabled?** → *Default: no* (baseline
    at `enabledAt`); a one-off *"also run on the N cards already there"* button is a follow-up.
 
+## F1.11 — decisions taken (step 1 of 5)
+
+Five build steps are approved for F1.11. Step 1 is not code — it is the decisions the
+handlers need, settled here so step 2's extraction and step 3's wiring build on a record
+instead of each re-deriving it in a headless session with no one to ask.
+
+### Server-owned fields never come from the input
+
+`automation:save`'s wire signature takes a whole `Automation` (`ipc.ts:1160`), not a
+narrower input type the way `label:save`/`milestone:save` do (`ipc.ts:2991`, `:3034`) —
+convenient for the editor, which always round-trips a complete draft, but it means the
+handler must never trust `revision`, `ownerClientId`, `createdAt`, `enabledAt`, `nextRunAt`
+or `consecutiveFailures` off that object. Every one of them is a fact the main process
+itself derives (the clock's own `nextRunAt`, the runner's own `consecutiveFailures`, the
+save handler's own `revision` bump and `ownerClientId` stamp) — an editor echoing back a
+stale copy of any of them (a save racing a firing, a background tab) would overwrite
+ground truth it never computed. The save handler re-reads the stored automation, if any,
+and takes these six fields from *that* copy, never from `input`.
+
+### Create vs. edit is decided by a stored match on `input.id`, not by its absence
+
+`label:save`/`milestone:save` use "`id` present or absent" as the create/edit signal
+because their payload omits it on create. `automation:save` cannot: its draft needs an
+`id` before the first save, for the editor's optimistic UI and its "next 5 runs" preview
+to key off, so `input.id` is always present. The handler looks it up in the store instead:
+found → edit (bump `revision`, keep the stored `createdAt`); not found → create — keep
+`input.id` if it is a non-empty string (so a future caller may pre-assign one), otherwise
+mint one with `randomUUID()` — with `revision: 1` and `createdAt: now`.
+
+### Re-enabling resets `consecutiveFailures` to 0
+
+`AutomationRunner`'s `applyStrike` (`automationRunner.ts:139`) already resets the counter
+on a `started` outcome, but a save that flips `enabled` from `false` to `true` is the
+*other* place it must reset. The auto-disable at `MAX_CONSECUTIVE_FAILURES`
+(`automationRunner.ts:28`) leaves `consecutiveFailures` at 3 on the stored row; saving
+`enabled: true` without clearing it starts the automation one failure away from disabling
+itself again, with no outward sign the counter was never cleared. Any save transitioning
+`enabled: false → true` resets `consecutiveFailures: 0` and stamps `enabledAt: now` (the
+baseline tracker events are measured against, `automation.ts:89`).
+
+### `runNow` refuses a tracker automation; ignores `enabled` otherwise
+
+`fire` (`automationRunner.ts:114`) branches on `firing.kind`, not on
+`automation.trigger.kind`: a `'tracker'` firing uses `firing.taskId` (the ticket's own
+card); everything else — including `'manual'` — falls into the schedule branch, which
+needs `automation.action.boardProjectId` (`automation.ts:58`, schedule-only) to create a
+card. A tracker automation has none, so a manual firing on one would not fail cleanly — it
+would land in the schedule branch's own `no-project` refusal and count as a strike, for a
+ticket nothing was wrong with. `automation:runNow` checks `automation.trigger.kind ===
+'tracker'` first and throws a clear message before ever calling `fire`. `enabled` is not
+part of that check: it gates the clock and the tracker sweep, not a human deliberately
+pressing *Run now*, so `runNow` fires a disabled automation too.
+
+### A `duplicate` from `fire` is a throw, not a return, on `runNow`
+
+`fire` returns `AutomationRun | AutomationRunDuplicate` (`automationRunner.ts:102`)
+because a scheduled or tracker firing's `occurrenceKey` can legitimately collide with an
+earlier reservation (a re-armed timer, a re-synced tracker), and the clock/sweep callers
+handle that by doing nothing. `automation:runNow`'s wire contract is
+`Promise<AutomationRun>` (`ipc.ts:1173`), with no duplicate case — and its
+`occurrenceKey` is `'manual:' + randomUUID()` (format documented at `automation.ts:109`),
+which cannot collide with anything already reserved. A `duplicate` here is therefore not a
+real outcome to surface; it is a contract violation (the reserve de-duped a key nothing
+else could have written) that `fire`'s shared return type still has to allow for its other
+callers. The handler throws on it rather than coercing it into a fake `AutomationRun`, so
+an impossibility fails loudly instead of being silently misreported as a run that happened.
+
+Nothing here touches code; `automationEditRules.ts` does not exist yet. Step 2 is the
+first step that writes it, extracting these as pure functions over `Automation` and the
+stored copy so step 3's handlers call them instead of re-deriving any of this.
+
 ## Tasks
 
 ### F1 · Phase 1 — Contracts and pure evaluation

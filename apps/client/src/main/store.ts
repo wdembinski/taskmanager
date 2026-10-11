@@ -56,6 +56,19 @@ import type {
   AutomationRunStatus,
   FiringKind,
 } from '@shared/automation';
+import {
+  type ActivityDetail,
+  type ActivityPage,
+  type ActivityQuery,
+  type ActivityRow,
+  type OutcomeCounts,
+  decodeCursor,
+  encodeCursor,
+  isActivityKind,
+  isActivityOrigin,
+  isActivityOutcome,
+  summarizeOutcomes,
+} from '@shared/activity';
 import type { AuthState } from '@shared/auth';
 import type { LimitState } from '@shared/limit';
 import type { RunRefusal } from '@shared/scheduler';
@@ -65,15 +78,23 @@ import {
   type AppSettings,
   DEFAULT_BOARD_DISPLAY,
   DEFAULT_CLOUD_SETTINGS,
+  DEFAULT_FEATURE_SETTINGS,
+  DEFAULT_GANTT_SETTINGS,
   DEFAULT_GITHUB_SETTINGS,
   DEFAULT_GITLAB_SETTINGS,
   DEFAULT_JIRA_SETTINGS,
+  DEFAULT_LINEAR_SETTINGS,
   DEFAULT_SETTINGS,
   resolveSyncInterval,
 } from '@shared/settings';
 import { mergeActivity } from './activityMerge';
 import { type CloudOutboxRow, shapeCloudDelta } from './cloudDelta';
-import { CLOUD_OUTBOX_BACKFILL_KEY, backfillCloudOutbox } from './cloudOutboxBackfill';
+import {
+  CLOUD_OUTBOX_AUTOMATION_BACKFILL_KEY,
+  CLOUD_OUTBOX_BACKFILL_KEY,
+  backfillAutomationCloudOutbox,
+  backfillCloudOutbox,
+} from './cloudOutboxBackfill';
 import type { JiraEpicFieldCache } from './jira/epicField';
 import type { JiraSprintFieldCache } from './jira/jiraSprint';
 import type { JiraIdentityCache } from './jira/identity';
@@ -778,6 +799,8 @@ export interface Store {
   setMergeRequestName(id: string, name: string | null): MergeRequest | undefined;
   markMergeRequestRead(id: string, at: number): MergeRequest | undefined;
   markMergeRequestEventsSeen(id: string, at: number): MergeRequest | undefined;
+  /** Remember that the PR/MR watcher has acted on this commit — see `MergeRequest.lastActedSha`. */
+  markMergeRequestActed(id: string, headSha: string): MergeRequest | undefined;
   /**
    * The last `discoverModelCatalog` sweep, so a model picker opens with a real reading
    * instead of an empty list on every app start. `null` before the first sweep ever
@@ -960,6 +983,11 @@ export interface Store {
    */
   getAutomations(): Automation[];
   /**
+   * One automation by id, or `undefined` — the cloud outbox's own lookup when an outbox row
+   * names an automation that may since have been deleted (`cloudDelta.ts`'s miss handling).
+   */
+  getAutomation(id: string): Automation | undefined;
+  /**
    * Insert a new automation or fully replace the one with the same id — there is no
    * separate create/update, the same way `upsertCloudProject` has none: the editor always
    * hands back a complete {@link Automation}, so a partial patch would have nothing to
@@ -1005,12 +1033,52 @@ export interface Store {
    */
   getAutomationRuns(automationId: string | null, limit: number): AutomationRun[];
   /**
+   * One run receipt by id, or `undefined` — the cloud outbox's own lookup, the run sibling
+   * of {@link getAutomation}.
+   */
+  getAutomationRun(id: string): AutomationRun | undefined;
+  /**
    * The retention sweep for `automation_runs`: drop anything older than 30 days, then drop
    * whatever is left beyond the newest 200 per automation — the same two-cap policy the
    * cloud mirror keeps server-side (`automationRunMirror`). `now` defaults to `Date.now()`
    * and exists only so a test can pass a fixed clock. Returns how many rows went.
    */
   pruneAutomationRuns(now?: number): number;
+  /**
+   * Append one row to the activity log (F2, `@shared/activity`) — `INSERT OR IGNORE` against
+   * the partial unique index on `(runId, kind)` for `run-started`/`run-finished`, so a
+   * resurrected CLI event (memory `settled-run-resurrection-trap`) or a `result` that arrives
+   * twice can never double-record a run's start or finish. `detail` is JSON-encoded on the
+   * way in, `null` stays `null`; `costUsd` is stored exactly as given — `null` (unknown) is
+   * never coerced to `0`. Returns the stored row, with the id SQLite assigned from
+   * `lastInsertRowid`, or `null` when the unique index refused a duplicate.
+   */
+  appendActivity(row: Omit<ActivityRow, 'id'>): ActivityRow | null;
+  /**
+   * A keyset page of the log, newest first (`at DESC, id DESC`) — never a page number, so
+   * rows landing at the top never shift a later page. `query.cursor` resumes after the last
+   * row of an earlier page (the one `encodeCursor`d into that page's `nextCursor`); a cursor
+   * that fails to decode throws — the IPC layer (F2.9) is the one caller that turns that into
+   * a user-facing error, not this method. `sinceMs` is inclusive, `untilMs` exclusive.
+   * `limit` is clamped to at least 1. A row whose `kind` this build does not recognize (a
+   * newer writer's own) is silently skipped, for forward compatibility.
+   */
+  listActivity(query: ActivityQuery): ActivityPage;
+  /**
+   * `run-finished` rows at or after `sinceMs`, folded through `summarizeOutcomes`
+   * (`@shared/activity`) so a run's final outcome and `empty` counting as `failed` stay
+   * defined in exactly one place.
+   */
+  countOutcomes(sinceMs: number): {
+    total: OutcomeCounts;
+    byProject: Record<string, OutcomeCounts>;
+  };
+  /**
+   * The retention sweep: drop rows older than `beforeMs`. The 90-day policy and the
+   * once-at-startup cadence are the caller's, not this method's — it only knows how to
+   * delete by age. Returns how many rows went.
+   */
+  pruneActivity(beforeMs: number): number;
   /**
    * Run `fn` inside one `better-sqlite3` transaction, committing its return value or rolling
    * every write in it back on a throw.
@@ -1267,6 +1335,8 @@ export function createStore(dbPath: string): Store {
       targetBranch      TEXT NOT NULL,
       state             TEXT NOT NULL,
       draft             INTEGER NOT NULL,
+      headSha           TEXT,               -- the head commit's SHA; NULL = never read
+      lastActedSha      TEXT,               -- the commit the PR watcher last acted on; NULL = never
       pipelineStatus    TEXT NOT NULL,
       pipelineStages    TEXT,               -- JSON array of {name,status}; NULL = not read
       pipelineUrl       TEXT,
@@ -1482,7 +1552,7 @@ export function createStore(dbPath: string): Store {
     -- happened for the mirror to hear about it.
     CREATE TABLE IF NOT EXISTS cloud_outbox (
       seq      INTEGER PRIMARY KEY AUTOINCREMENT,
-      entity   TEXT    NOT NULL,   -- 'task' | 'project'
+      entity   TEXT    NOT NULL,   -- 'task' | 'project' | 'automation' | 'automationRun'
       entityId TEXT    NOT NULL,
       op       TEXT    NOT NULL,   -- 'insert' | 'update' | 'delete'
       at       INTEGER NOT NULL
@@ -1555,6 +1625,40 @@ export function createStore(dbPath: string): Store {
       UNIQUE (automationId, occurrenceKey)
     );
     CREATE INDEX IF NOT EXISTS idx_automation_runs_automation ON automation_runs(automationId, at);
+    -- The cross-board activity log (F2.4, @shared/activity): one row per milestone the
+    -- engine already knows the truth of — run start/finish, parks/resumes, merges, releases,
+    -- column moves — read back by the Activity dashboard. A NEW table, so nothing to
+    -- migrate.
+    --
+    -- Deliberately has NO foreign keys, for the reason token_usage already states above:
+    -- this is a record of what happened, and must survive a plan re-sync and a project
+    -- delete. title is a SNAPSHOT of the card's title at write time, not a live lookup, so a
+    -- renamed or deleted card still reads sensibly. costUsd is NULL for unknown, never 0 — a
+    -- run the engine never priced is not the same as one that genuinely cost nothing.
+    --
+    -- UNIQUE(runId, kind) WHERE kind IN ('run-started', 'run-finished') is what makes a
+    -- run's start/finish idempotent against a resurrected CLI event (memory
+    -- settled-run-resurrection-trap) or a result that arrives twice: appendActivity's INSERT
+    -- OR IGNORE relies on this index refusing the duplicate, not on a SELECT-then-INSERT
+    -- check. (No backticks in this block: it is inside a template literal.)
+    CREATE TABLE IF NOT EXISTS activity_log (
+      id        INTEGER PRIMARY KEY AUTOINCREMENT,
+      at        INTEGER NOT NULL,
+      projectId TEXT,
+      taskId    TEXT,
+      runId     TEXT,
+      kind      TEXT NOT NULL,
+      outcome   TEXT,
+      origin    TEXT,
+      title     TEXT NOT NULL,
+      costUsd   REAL,
+      detail    TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_activity_log_time    ON activity_log(at, id);
+    CREATE INDEX IF NOT EXISTS idx_activity_log_project ON activity_log(projectId, at);
+    CREATE INDEX IF NOT EXISTS idx_activity_log_kind    ON activity_log(kind, at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_activity_log_run_once
+      ON activity_log(runId, kind) WHERE kind IN ('run-started', 'run-finished');
   `);
 
   // Migrate ledgers written before the relay stored results. Every existing row is one of
@@ -1765,6 +1869,20 @@ export function createStore(dbPath: string): Store {
   }
   if (!mrColumns.some((c) => c.name === 'hasConflicts')) {
     db.exec(`ALTER TABLE merge_requests ADD COLUMN hasConflicts INTEGER NOT NULL DEFAULT 0`);
+  }
+
+  // Migrate databases from before the PR/MR watcher needed a commit to key its memory on.
+  // NULL on every existing row is honest — none of them has been read since this column
+  // existed — and the next sync of each fills it in from the forge.
+  if (!mrColumns.some((c) => c.name === 'headSha')) {
+    db.exec(`ALTER TABLE merge_requests ADD COLUMN headSha TEXT`);
+  }
+
+  // Migrate databases from before the PR/MR watcher itself existed. NULL on every existing
+  // row is honest — nothing has acted on any of them yet — and the next sync carries it
+  // forward exactly like every other row the watcher has already touched.
+  if (!mrColumns.some((c) => c.name === 'lastActedSha')) {
+    db.exec(`ALTER TABLE merge_requests ADD COLUMN lastActedSha TEXT`);
   }
 
   // Migrate databases from before this app could OPEN a merge request itself. NULL on every
@@ -2044,6 +2162,50 @@ export function createStore(dbPath: string): Store {
       END;
     `);
   }
+
+  // `automations`/`automation_runs` get the same outbox append, minus the `updatedAt` touch
+  // above: both tables already carry their own `updatedAt`/`at` (`saveAutomation`,
+  // `reserveAutomationRun`/`updateAutomationRun` set them directly), so there is no caller
+  // left for a trigger to catch the way a bare `UPDATE tasks SET status = ...` needed one.
+  // A plain `INSERT INTO cloud_outbox` is the whole trigger body, and with no nested write
+  // to cross-fire there is no second, self-triggered outbox row to reason about either.
+  //
+  // `automation_runs` gets no delete trigger: nothing ever deletes one row at a time — a run
+  // only ever goes away with its automation (`deleteAutomationTx`, which already drops the
+  // automation's own mirror server-side via `deletedAutomationIds`) or through retention
+  // (`pruneAutomationRuns`), which is a local-only cap the cloud mirror keeps independently.
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS trg_automations_after_insert
+    AFTER INSERT ON automations
+    BEGIN
+      INSERT INTO cloud_outbox (entity, entityId, op, at)
+      VALUES ('automation', NEW.id, 'insert', ${nowMs});
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_automations_after_update
+    AFTER UPDATE ON automations
+    BEGIN
+      INSERT INTO cloud_outbox (entity, entityId, op, at)
+      VALUES ('automation', NEW.id, 'update', ${nowMs});
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_automations_after_delete
+    AFTER DELETE ON automations
+    BEGIN
+      INSERT INTO cloud_outbox (entity, entityId, op, at)
+      VALUES ('automation', OLD.id, 'delete', ${nowMs});
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_automation_runs_after_insert
+    AFTER INSERT ON automation_runs
+    BEGIN
+      INSERT INTO cloud_outbox (entity, entityId, op, at)
+      VALUES ('automationRun', NEW.id, 'insert', ${nowMs});
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_automation_runs_after_update
+    AFTER UPDATE ON automation_runs
+    BEGIN
+      INSERT INTO cloud_outbox (entity, entityId, op, at)
+      VALUES ('automationRun', NEW.id, 'update', ${nowMs});
+    END;
+  `);
 
   // Seed the built-in Personal board project (idempotent). It hosts the standalone
   // My Tasks board (JIRA tickets + internal ad-hoc tasks); it has no repo/plan, so
@@ -2422,6 +2584,10 @@ export function createStore(dbPath: string): Store {
     targetBranch: string;
     state: string;
     draft: number;
+    /** The head commit's SHA; NULL on rows written before the watcher needed one. */
+    headSha: string | null;
+    /** The commit the PR watcher last acted on; NULL on rows it has never acted on. */
+    lastActedSha: string | null;
     pipelineStatus: string;
     /** JSON array of {name,status}; NULL on rows written before stages existed. */
     pipelineStages: string | null;
@@ -2484,6 +2650,8 @@ export function createStore(dbPath: string): Store {
       targetBranch: r.targetBranch,
       state: r.state as MergeRequestState,
       draft: r.draft === 1,
+      headSha: r.headSha ?? null,
+      lastActedSha: r.lastActedSha ?? null,
       pipelineStatus: r.pipelineStatus as PipelineStatus,
       pipelineStages,
       pipelineUrl: r.pipelineUrl,
@@ -2508,7 +2676,8 @@ export function createStore(dbPath: string): Store {
     `INSERT INTO merge_requests
        (id, taskId, openedForTaskId, provider, repoId, projectPath, "number", title,
         displayName, webUrl,
-        sourceBranch, targetBranch, state, draft, pipelineStatus, pipelineStages,
+        sourceBranch, targetBranch, state, draft, headSha, lastActedSha, pipelineStatus,
+        pipelineStages,
         pipelineUrl,
         approvalsRequired, approvalsGiven, changesRequested,
         detailedMergeStatus, hasConflicts, issueKeys,
@@ -2516,7 +2685,8 @@ export function createStore(dbPath: string): Store {
      VALUES
        (@id, @taskId, @openedForTaskId, @provider, @repoId, @projectPath, @number, @title,
         @displayName, @webUrl,
-        @sourceBranch, @targetBranch, @state, @draft, @pipelineStatus, @pipelineStages,
+        @sourceBranch, @targetBranch, @state, @draft, @headSha, @lastActedSha, @pipelineStatus,
+        @pipelineStages,
         @pipelineUrl,
         @approvalsRequired, @approvalsGiven, @changesRequested,
         @detailedMergeStatus, @hasConflicts, @issueKeys,
@@ -2532,7 +2702,11 @@ export function createStore(dbPath: string): Store {
        title = excluded.title, displayName = excluded.displayName,
        webUrl = excluded.webUrl,
        sourceBranch = excluded.sourceBranch, targetBranch = excluded.targetBranch,
-       state = excluded.state, draft = excluded.draft,
+       state = excluded.state, draft = excluded.draft, headSha = excluded.headSha,
+       -- Same COALESCE as openedForTaskId above, for the same reason: neither forge can
+       -- supply this, so a NULL coming in from a reconciler that forgot to carry it forward
+       -- must not be allowed to erase the watcher's own memory.
+       lastActedSha = COALESCE(excluded.lastActedSha, merge_requests.lastActedSha),
        pipelineStatus = excluded.pipelineStatus,
        pipelineStages = excluded.pipelineStages, pipelineUrl = excluded.pipelineUrl,
        approvalsRequired = excluded.approvalsRequired,
@@ -2832,6 +3006,7 @@ export function createStore(dbPath: string): Store {
   const setMrName = db.prepare(`UPDATE merge_requests SET displayName = ? WHERE id = ?`);
   const markMrRead = db.prepare(`UPDATE merge_requests SET lastReadAt = ? WHERE id = ?`);
   const markMrEventsSeen = db.prepare(`UPDATE merge_requests SET lastEventSeenAt = ? WHERE id = ?`);
+  const markMrActed = db.prepare(`UPDATE merge_requests SET lastActedSha = ? WHERE id = ?`);
 
   // ---------------------------------------------------------------------------
   // One-shot: split "what this card is about" out of "where it runs".
@@ -2959,6 +3134,15 @@ export function createStore(dbPath: string): Store {
       upsertState.run(CLOUD_OUTBOX_BACKFILL_KEY, JSON.stringify(queued));
     })();
   }
+  // Same shape, one build later (F1.12): automations/runs gained their own outbox triggers
+  // after this build shipped, so anything saved before then needs the identical one-shot
+  // catch-up, under its own guard key since a database may already have cleared the one above.
+  if (!selectState.get(CLOUD_OUTBOX_AUTOMATION_BACKFILL_KEY)) {
+    db.transaction(() => {
+      const queued = backfillAutomationCloudOutbox(db, Date.now());
+      upsertState.run(CLOUD_OUTBOX_AUTOMATION_BACKFILL_KEY, JSON.stringify(queued));
+    })();
+  }
   // ---------------------------------------------------------------------------
 
   /** Read app settings, merging any stored fields over the built-in defaults. */
@@ -2970,15 +3154,21 @@ export function createStore(dbPath: string): Store {
       // Deep-merge EVERY nested block so a stored blob missing newer fields (or lacking
       // the block entirely) still fills them from the defaults. `gitlab` matters as much
       // as `jira` here: without it every existing user would load `gitlab: undefined`
-      // and the poller would throw on `.enabled` at startup.
+      // and the poller would throw on `.enabled` at startup. `features` and `gantt` are the
+      // same trap one level later: a blob saved before a flag was added to `FeatureSettings`
+      // (or before `gantt` existed at all) read the new field back as `undefined` rather
+      // than its default, because a flat `...parsed` only replaces a block wholesale.
       return {
         ...DEFAULT_SETTINGS,
         ...parsed,
         jira: { ...DEFAULT_JIRA_SETTINGS, ...(parsed.jira ?? {}) },
         gitlab: { ...DEFAULT_GITLAB_SETTINGS, ...(parsed.gitlab ?? {}) },
         github: { ...DEFAULT_GITHUB_SETTINGS, ...(parsed.github ?? {}) },
+        linear: { ...DEFAULT_LINEAR_SETTINGS, ...(parsed.linear ?? {}) },
         cloud: { ...DEFAULT_CLOUD_SETTINGS, ...(parsed.cloud ?? {}) },
         board: { ...DEFAULT_BOARD_DISPLAY, ...(parsed.board ?? {}) },
+        features: { ...DEFAULT_FEATURE_SETTINGS, ...(parsed.features ?? {}) },
+        gantt: { ...DEFAULT_GANTT_SETTINGS, ...(parsed.gantt ?? {}) },
       };
     } catch {
       return { ...DEFAULT_SETTINGS };
@@ -3625,6 +3815,7 @@ export function createStore(dbPath: string): Store {
   // every save so they can never drift from the JSON they mirror — see `idx_automations_due`
   // above.
   const selectAutomations = db.prepare(`SELECT data FROM automations`);
+  const selectAutomation = db.prepare(`SELECT data FROM automations WHERE id = ?`);
   const upsertAutomationStmt = db.prepare(
     `INSERT INTO automations (id, data, enabled, nextRunAt, updatedAt)
      VALUES (@id, @data, @enabled, @nextRunAt, @updatedAt)
@@ -3705,6 +3896,72 @@ export function createStore(dbPath: string): Store {
        WHERE rn > ?
      )`,
   );
+
+  // The activity log (F2.4, @shared/activity). See the schema comment above activity_log
+  // for why it has no foreign keys and no 0-for-unknown costUsd.
+  interface ActivityLogRow {
+    id: number;
+    at: number;
+    projectId: string | null;
+    taskId: string | null;
+    runId: string | null;
+    kind: string;
+    outcome: string | null;
+    origin: string | null;
+    title: string;
+    costUsd: number | null;
+    detail: string | null;
+  }
+
+  // Returns null for a row whose kind this build does not recognize — listActivity filters
+  // those out, countOutcomes's own query never selects one (it only ever asks for
+  // 'run-finished').
+  function rowToActivity(r: ActivityLogRow): ActivityRow | null {
+    if (!isActivityKind(r.kind)) return null;
+    return {
+      id: r.id,
+      at: r.at,
+      projectId: r.projectId,
+      taskId: r.taskId,
+      runId: r.runId,
+      kind: r.kind,
+      outcome: r.outcome !== null && isActivityOutcome(r.outcome) ? r.outcome : null,
+      origin: r.origin !== null && isActivityOrigin(r.origin) ? r.origin : null,
+      title: r.title,
+      costUsd: r.costUsd,
+      detail: r.detail === null ? null : (JSON.parse(r.detail) as ActivityDetail),
+    };
+  }
+
+  // `INSERT OR IGNORE` against `idx_activity_log_run_once` IS the idempotency check for
+  // run-started/run-finished — see appendActivity's own docstring.
+  const insertActivityLogRow = db.prepare(
+    `INSERT OR IGNORE INTO activity_log
+       (at, projectId, taskId, runId, kind, outcome, origin, title, costUsd, detail)
+     VALUES
+       (@at, @projectId, @taskId, @runId, @kind, @outcome, @origin, @title, @costUsd, @detail)`,
+  );
+  // One statement for every combination of filters: each is either `IS NULL` (skipped) or a
+  // membership test against a JSON array bound as text — better-sqlite3 has no native array
+  // binding, and json_each is the standard SQLite idiom for "IN (one of these)" without
+  // building the SQL string per call. The keyset predicate is skipped the same way when
+  // @cAt is NULL (no cursor — the first page).
+  const selectActivityPage = db.prepare(
+    `SELECT * FROM activity_log
+      WHERE at >= @sinceMs
+        AND (@untilMs IS NULL OR at < @untilMs)
+        AND (@cAt IS NULL OR (at < @cAt OR (at = @cAt AND id < @cId)))
+        AND (@projectIds IS NULL OR projectId IN (SELECT value FROM json_each(@projectIds)))
+        AND (@kinds IS NULL OR kind IN (SELECT value FROM json_each(@kinds)))
+        AND (@outcomes IS NULL OR outcome IN (SELECT value FROM json_each(@outcomes)))
+        AND (@origins IS NULL OR origin IN (SELECT value FROM json_each(@origins)))
+      ORDER BY at DESC, id DESC
+      LIMIT @fetchLimit`,
+  );
+  const selectFinishedActivitySince = db.prepare(
+    `SELECT * FROM activity_log WHERE kind = 'run-finished' AND at >= @sinceMs`,
+  );
+  const deleteActivityOlderThan = db.prepare(`DELETE FROM activity_log WHERE at < ?`);
 
   return {
     addProject(input) {
@@ -4790,6 +5047,12 @@ export function createStore(dbPath: string): Store {
       return row ? rowToMergeRequest(row) : undefined;
     },
 
+    markMergeRequestActed(id, headSha) {
+      markMrActed.run(headSha, id);
+      const row = selectMergeRequest.get(id) as MergeRequestRow | undefined;
+      return row ? rowToMergeRequest(row) : undefined;
+    },
+
     saveModelCatalog(rows) {
       upsertState.run(MODEL_CATALOG_KEY, JSON.stringify(rows));
     },
@@ -5129,6 +5392,11 @@ export function createStore(dbPath: string): Store {
       return rows.map((r) => JSON.parse(r.data) as Automation);
     },
 
+    getAutomation(id) {
+      const row = selectAutomation.get(id) as { data: string } | undefined;
+      return row ? (JSON.parse(row.data) as Automation) : undefined;
+    },
+
     saveAutomation(a) {
       upsertAutomationStmt.run({
         id: a.id,
@@ -5195,12 +5463,81 @@ export function createStore(dbPath: string): Store {
       return rows.map(rowToAutomationRun);
     },
 
+    getAutomationRun(id) {
+      const row = selectAutomationRun.get(id) as AutomationRunRow | undefined;
+      return row ? rowToAutomationRun(row) : undefined;
+    },
+
     pruneAutomationRuns(now = Date.now()) {
       return db.transaction(() => {
         const aged = deleteAutomationRunsOlderThan.run(now - AUTOMATION_RUN_MAX_AGE_MS);
         const overCap = deleteAutomationRunsBeyondCap.run(AUTOMATION_RUN_MAX_PER_AUTOMATION);
         return aged.changes + overCap.changes;
       })();
+    },
+
+    appendActivity(row) {
+      const result = insertActivityLogRow.run({
+        at: row.at,
+        projectId: row.projectId,
+        taskId: row.taskId,
+        runId: row.runId,
+        kind: row.kind,
+        outcome: row.outcome,
+        origin: row.origin,
+        title: row.title,
+        costUsd: row.costUsd,
+        detail: row.detail === null ? null : JSON.stringify(row.detail),
+      });
+      if (result.changes === 0) return null;
+      return { id: Number(result.lastInsertRowid), ...row };
+    },
+
+    listActivity(query) {
+      let cursor: { at: number; id: number } | null = null;
+      if (query.cursor !== undefined) {
+        cursor = decodeCursor(query.cursor);
+        if (cursor === null) {
+          throw new Error(`invalid activity cursor: ${query.cursor}`);
+        }
+      }
+      const limit = Math.max(1, query.limit);
+
+      const fetched = selectActivityPage.all({
+        sinceMs: query.sinceMs,
+        untilMs: query.untilMs ?? null,
+        cAt: cursor?.at ?? null,
+        cId: cursor?.id ?? null,
+        projectIds: query.projectIds ? JSON.stringify(query.projectIds) : null,
+        kinds: query.kinds ? JSON.stringify(query.kinds) : null,
+        outcomes: query.outcomes ? JSON.stringify(query.outcomes) : null,
+        origins: query.origins ? JSON.stringify(query.origins) : null,
+        fetchLimit: limit + 1,
+      }) as ActivityLogRow[];
+
+      const hasNextPage = fetched.length > limit;
+      const page = fetched.slice(0, limit);
+      // The cursor is derived from the raw (undecoded) last row, not the filtered-down
+      // `rows` below — an unrecognized kind still occupies a keyset position, and the next
+      // page must resume after it, not re-fetch it.
+      const last = page.at(-1);
+      const nextCursor = hasNextPage && last ? encodeCursor({ at: last.at, id: last.id }) : null;
+
+      return {
+        rows: page.map(rowToActivity).filter((r): r is ActivityRow => r !== null),
+        nextCursor,
+      };
+    },
+
+    countOutcomes(sinceMs) {
+      const rows = (selectFinishedActivitySince.all({ sinceMs }) as ActivityLogRow[])
+        .map(rowToActivity)
+        .filter((r): r is ActivityRow => r !== null);
+      return summarizeOutcomes(rows);
+    },
+
+    pruneActivity(beforeMs) {
+      return deleteActivityOlderThan.run(beforeMs).changes;
     },
 
     // Annotated rather than inferred: a generic method gets no usable contextual type from

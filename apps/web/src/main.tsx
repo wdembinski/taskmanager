@@ -16,6 +16,12 @@
  *  - the single `<Toaster>` on `TOASTER_ID`, so any shared component that dispatches a
  *    toast has a surface to land in rather than failing silently.
  *
+ * One thing is deliberately NOT shared with the desktop renderer: the provider's own
+ * sizing. `100dvh` (not `100vh`) so a mobile browser's address bar showing or hiding
+ * doesn't resize the app under itself, plus `env(safe-area-inset-*)` padding so a
+ * notch or home indicator never sits on top of content — neither applies to a window
+ * the OS already sizes for you.
+ *
  * There is no `index.css` beside this file any more, and that is the point: the dark
  * colour-scheme, the page background, the non-scrolling shell and the scrollbars are all in
  * `useGlobalStyles` now, so the tab cannot quietly disagree with the desktop window about
@@ -38,7 +44,13 @@ function ThemedApp(): JSX.Element {
       theme={scaleTheme(appDarkTheme, BASE_FONT_PX)}
       style={
         {
-          height: '100vh',
+          // `dvh` (not `vh`) so a mobile browser's address bar showing/hiding doesn't
+          // resize the provider under the app; the safe-area padding keeps content out
+          // from under a notch or home indicator in both orientations.
+          height: '100dvh',
+          boxSizing: 'border-box',
+          padding:
+            'env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)',
           // The desktop's is `fontSizePx / BASE_FONT_PX`; with no setting to read, 1.
           '--app-font-scale': 1,
         } as React.CSSProperties

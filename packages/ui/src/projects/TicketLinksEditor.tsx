@@ -10,6 +10,7 @@
  */
 import { useEffect, useState } from 'react';
 import {
+  Badge,
   Body1,
   Button,
   Caption1,
@@ -21,6 +22,7 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import { DeleteRegular } from '@fluentui/react-icons';
+import { columnForTask } from '@tm/shared/board';
 import type { Task, TicketLink, TicketLinkType } from '@tm/shared/model';
 import { TICKET_LINK_TYPES } from '@tm/shared/tickets';
 import {
@@ -28,18 +30,21 @@ import {
   TICKET_LINK_REFUSAL_MESSAGE,
   TICKET_LINK_VOCABULARY,
 } from '@tm/shared/ticketLinks';
+import { columnBadge } from '../taskStatus';
 import { useTransport } from '../transport';
 
 const useStyles = makeStyles({
   root: { display: 'flex', flexDirection: 'column', gap: '6px' },
   row: { display: 'flex', alignItems: 'center', gap: '6px', justifyContent: 'space-between' },
+  rowLabel: { display: 'flex', alignItems: 'center', gap: '6px' },
   addRow: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' },
   hint: { color: tokens.colorNeutralForeground3 },
   picker: { minWidth: '130px' },
 });
 
-/** A candidate ticket has to name at least what the picker and `labelFor` read. */
-type LinkCandidate = Pick<Task, 'id' | 'title' | 'ticketKey'>;
+/** A candidate ticket has to name at least what the picker, `labelFor` and the row's own
+ *  status badge (`columnForTask`) read. */
+type LinkCandidate = Pick<Task, 'id' | 'title' | 'ticketKey' | 'status' | 'preRunStatus'>;
 
 export interface TicketLinksEditorProps {
   ticket: Pick<Task, 'id'>;
@@ -113,11 +118,19 @@ export function TicketLinksEditor({ ticket, candidates }: TicketLinksEditorProps
       ) : (
         views.map((view) => {
           const other = candidates.find((c) => c.id === view.otherTaskId);
+          const badge = other ? columnBadge(columnForTask(other)) : null;
           return (
             <div key={view.link.id} className={styles.row}>
-              <Body1>
-                {view.phrase} {other ? labelFor(other) : view.otherTaskId}
-              </Body1>
+              <div className={styles.rowLabel}>
+                <Body1>
+                  {view.phrase} {other ? labelFor(other) : view.otherTaskId}
+                </Body1>
+                {badge && (
+                  <Badge appearance="tint" size="small" color={badge.color}>
+                    {badge.label}
+                  </Badge>
+                )}
+              </div>
               <Button
                 size="small"
                 appearance="subtle"

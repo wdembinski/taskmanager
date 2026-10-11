@@ -272,8 +272,12 @@ export class CloudPoller {
     }
     const { delta, sent } = buildMirrorDeltaWithin(
       rows,
-      this.deps.store.getTask,
-      this.deps.store.getProject,
+      {
+        getTask: this.deps.store.getTask,
+        getProject: this.deps.store.getProject,
+        getAutomation: this.deps.store.getAutomation,
+        getAutomationRun: this.deps.store.getAutomationRun,
+      },
       SYNC_BYTES_LIMIT,
     );
     // The global settings to push THIS tick, and its serialization — computed before the

@@ -6,6 +6,7 @@ import {
   DEFAULT_FEATURE_SETTINGS,
   DEFAULT_GITHUB_SETTINGS,
   DEFAULT_JIRA_SETTINGS,
+  DEFAULT_LINEAR_SETTINGS,
   DEFAULT_SETTINGS,
   GLOBAL_SETTINGS_KEYS,
   hiddenBoardColumns,
@@ -182,6 +183,24 @@ describe('DEFAULT_SETTINGS / DEFAULT_BOARD_DISPLAY (Phase 24 fields)', () => {
   });
 });
 
+// Linear's own settings group (F4.1) — a blob written before it has no `linear` field at
+// all, and this is what a missing field fills in as.
+describe('DEFAULT_SETTINGS.linear', () => {
+  it('ships off, with the four open state types and 14 days of Done retention', () => {
+    expect(DEFAULT_SETTINGS.linear).toEqual(DEFAULT_LINEAR_SETTINGS);
+    expect(DEFAULT_LINEAR_SETTINGS).toEqual({
+      enabled: false,
+      teamKeys: [],
+      assignee: 'me',
+      includeStateTypes: ['triage', 'backlog', 'unstarted', 'started'],
+      stateColumnOverrides: {},
+      columnTargetStates: {},
+      showDoneColumn: false,
+      doneRetentionDays: 14,
+    });
+  });
+});
+
 // The Gantt timeline's own settings group (Phase 24 step 6) — a blob written before it has
 // no `gantt` field at all, and this is what a missing field fills in as.
 describe('DEFAULT_SETTINGS.gantt', () => {
@@ -219,7 +238,7 @@ const LOCAL_SETTINGS_KEYS: ReadonlyArray<keyof AppSettings> = [
 // The Features group — every later phase reads its own switch out of here, and a blob
 // written before this existed has no `features` field at all: this is what fills it in as.
 describe('DEFAULT_SETTINGS.features', () => {
-  it('ships every feature on', () => {
+  it('ships every feature on, except prAutoResolve', () => {
     expect(DEFAULT_FEATURE_SETTINGS).toEqual({
       autoFoldReviewDone: true,
       shelf: true,
@@ -227,6 +246,7 @@ describe('DEFAULT_SETTINGS.features', () => {
       mrRebaseButton: true,
       quietAgentProgress: true,
       ticketsToOwnBoard: true,
+      prAutoResolve: false,
     });
   });
 
@@ -354,6 +374,7 @@ describe('pickGlobalSettings', () => {
     const picked = pickGlobalSettings(DEFAULT_SETTINGS);
     expect(picked.defaultModel).toBe(DEFAULT_SETTINGS.defaultModel);
     expect(picked.jira).toEqual(DEFAULT_SETTINGS.jira);
+    expect(picked.linear).toEqual(DEFAULT_SETTINGS.linear);
     expect(picked.board).toEqual(DEFAULT_SETTINGS.board);
     expect(picked.statusKeywords).toEqual(DEFAULT_SETTINGS.statusKeywords);
   });

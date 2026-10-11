@@ -3,7 +3,13 @@
  * used by the Projects list, the Board, and the My Tasks screen so a status looks
  * and reads the same everywhere.
  */
-import { MANUAL_STATUSES, type ManualStatus, type TaskStatus } from '@tm/shared/model';
+import { statusForColumn } from '@tm/shared/board';
+import {
+  MANUAL_STATUSES,
+  type BoardColumn,
+  type ManualStatus,
+  type TaskStatus,
+} from '@tm/shared/model';
 
 export type BadgeColor =
   'brand' | 'danger' | 'important' | 'informative' | 'severe' | 'subtle' | 'success' | 'warning';
@@ -40,3 +46,10 @@ export const STATUS_LABEL: Record<TaskStatus, string> = {
 /** The manual statuses paired with their labels, for status dropdowns/menus. */
 export const MANUAL_STATUS_OPTIONS: ReadonlyArray<{ value: ManualStatus; label: string }> =
   MANUAL_STATUSES.map((value) => ({ value, label: STATUS_LABEL[value] }));
+
+/** A column's own badge — the color and label of the status it represents (`statusForColumn`),
+ *  so a linked ticket's column reads the same badge a card in that column would wear. */
+export function columnBadge(column: BoardColumn): { color: BadgeColor; label: string } {
+  const status = statusForColumn(column);
+  return { color: STATUS_COLOR[status], label: STATUS_LABEL[status] };
+}

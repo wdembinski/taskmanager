@@ -228,6 +228,10 @@ export function reconcilePullRequests(
       targetBranch: pr.targetBranch,
       state: pr.state,
       draft: pr.draft,
+      headSha: pr.headSha,
+      // The watcher's own memory — GitHub has never heard of it, so it is carried forward
+      // exactly like `displayName` and the read markers below.
+      lastActedSha: prior?.lastActedSha ?? null,
       pipelineStatus: pr.pipelineStatus,
       pipelineStages: pr.pipelineStages,
       pipelineUrl: pr.pipelineUrl,
