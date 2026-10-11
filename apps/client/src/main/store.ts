@@ -65,6 +65,8 @@ import {
   type AppSettings,
   DEFAULT_BOARD_DISPLAY,
   DEFAULT_CLOUD_SETTINGS,
+  DEFAULT_FEATURE_SETTINGS,
+  DEFAULT_GANTT_SETTINGS,
   DEFAULT_GITHUB_SETTINGS,
   DEFAULT_GITLAB_SETTINGS,
   DEFAULT_JIRA_SETTINGS,
@@ -778,6 +780,8 @@ export interface Store {
   setMergeRequestName(id: string, name: string | null): MergeRequest | undefined;
   markMergeRequestRead(id: string, at: number): MergeRequest | undefined;
   markMergeRequestEventsSeen(id: string, at: number): MergeRequest | undefined;
+  /** Remember that the PR/MR watcher has acted on this commit — see `MergeRequest.lastActedSha`. */
+  markMergeRequestActed(id: string, headSha: string): MergeRequest | undefined;
   /**
    * The last `discoverModelCatalog` sweep, so a model picker opens with a real reading
    * instead of an empty list on every app start. `null` before the first sweep ever
@@ -1267,6 +1271,8 @@ export function createStore(dbPath: string): Store {
       targetBranch      TEXT NOT NULL,
       state             TEXT NOT NULL,
       draft             INTEGER NOT NULL,
+      headSha           TEXT,               -- the head commit's SHA; NULL = never read
+      lastActedSha      TEXT,               -- the commit the PR watcher last acted on; NULL = never
       pipelineStatus    TEXT NOT NULL,
       pipelineStages    TEXT,               -- JSON array of {name,status}; NULL = not read
       pipelineUrl       TEXT,
@@ -1765,6 +1771,20 @@ export function createStore(dbPath: string): Store {
   }
   if (!mrColumns.some((c) => c.name === 'hasConflicts')) {
     db.exec(`ALTER TABLE merge_requests ADD COLUMN hasConflicts INTEGER NOT NULL DEFAULT 0`);
+  }
+
+  // Migrate databases from before the PR/MR watcher needed a commit to key its memory on.
+  // NULL on every existing row is honest — none of them has been read since this column
+  // existed — and the next sync of each fills it in from the forge.
+  if (!mrColumns.some((c) => c.name === 'headSha')) {
+    db.exec(`ALTER TABLE merge_requests ADD COLUMN headSha TEXT`);
+  }
+
+  // Migrate databases from before the PR/MR watcher itself existed. NULL on every existing
+  // row is honest — nothing has acted on any of them yet — and the next sync carries it
+  // forward exactly like every other row the watcher has already touched.
+  if (!mrColumns.some((c) => c.name === 'lastActedSha')) {
+    db.exec(`ALTER TABLE merge_requests ADD COLUMN lastActedSha TEXT`);
   }
 
   // Migrate databases from before this app could OPEN a merge request itself. NULL on every
@@ -2422,6 +2442,10 @@ export function createStore(dbPath: string): Store {
     targetBranch: string;
     state: string;
     draft: number;
+    /** The head commit's SHA; NULL on rows written before the watcher needed one. */
+    headSha: string | null;
+    /** The commit the PR watcher last acted on; NULL on rows it has never acted on. */
+    lastActedSha: string | null;
     pipelineStatus: string;
     /** JSON array of {name,status}; NULL on rows written before stages existed. */
     pipelineStages: string | null;
@@ -2484,6 +2508,8 @@ export function createStore(dbPath: string): Store {
       targetBranch: r.targetBranch,
       state: r.state as MergeRequestState,
       draft: r.draft === 1,
+      headSha: r.headSha ?? null,
+      lastActedSha: r.lastActedSha ?? null,
       pipelineStatus: r.pipelineStatus as PipelineStatus,
       pipelineStages,
       pipelineUrl: r.pipelineUrl,
@@ -2508,7 +2534,8 @@ export function createStore(dbPath: string): Store {
     `INSERT INTO merge_requests
        (id, taskId, openedForTaskId, provider, repoId, projectPath, "number", title,
         displayName, webUrl,
-        sourceBranch, targetBranch, state, draft, pipelineStatus, pipelineStages,
+        sourceBranch, targetBranch, state, draft, headSha, lastActedSha, pipelineStatus,
+        pipelineStages,
         pipelineUrl,
         approvalsRequired, approvalsGiven, changesRequested,
         detailedMergeStatus, hasConflicts, issueKeys,
@@ -2516,7 +2543,8 @@ export function createStore(dbPath: string): Store {
      VALUES
        (@id, @taskId, @openedForTaskId, @provider, @repoId, @projectPath, @number, @title,
         @displayName, @webUrl,
-        @sourceBranch, @targetBranch, @state, @draft, @pipelineStatus, @pipelineStages,
+        @sourceBranch, @targetBranch, @state, @draft, @headSha, @lastActedSha, @pipelineStatus,
+        @pipelineStages,
         @pipelineUrl,
         @approvalsRequired, @approvalsGiven, @changesRequested,
         @detailedMergeStatus, @hasConflicts, @issueKeys,
@@ -2532,7 +2560,11 @@ export function createStore(dbPath: string): Store {
        title = excluded.title, displayName = excluded.displayName,
        webUrl = excluded.webUrl,
        sourceBranch = excluded.sourceBranch, targetBranch = excluded.targetBranch,
-       state = excluded.state, draft = excluded.draft,
+       state = excluded.state, draft = excluded.draft, headSha = excluded.headSha,
+       -- Same COALESCE as openedForTaskId above, for the same reason: neither forge can
+       -- supply this, so a NULL coming in from a reconciler that forgot to carry it forward
+       -- must not be allowed to erase the watcher's own memory.
+       lastActedSha = COALESCE(excluded.lastActedSha, merge_requests.lastActedSha),
        pipelineStatus = excluded.pipelineStatus,
        pipelineStages = excluded.pipelineStages, pipelineUrl = excluded.pipelineUrl,
        approvalsRequired = excluded.approvalsRequired,
@@ -2832,6 +2864,7 @@ export function createStore(dbPath: string): Store {
   const setMrName = db.prepare(`UPDATE merge_requests SET displayName = ? WHERE id = ?`);
   const markMrRead = db.prepare(`UPDATE merge_requests SET lastReadAt = ? WHERE id = ?`);
   const markMrEventsSeen = db.prepare(`UPDATE merge_requests SET lastEventSeenAt = ? WHERE id = ?`);
+  const markMrActed = db.prepare(`UPDATE merge_requests SET lastActedSha = ? WHERE id = ?`);
 
   // ---------------------------------------------------------------------------
   // One-shot: split "what this card is about" out of "where it runs".
@@ -2970,7 +3003,10 @@ export function createStore(dbPath: string): Store {
       // Deep-merge EVERY nested block so a stored blob missing newer fields (or lacking
       // the block entirely) still fills them from the defaults. `gitlab` matters as much
       // as `jira` here: without it every existing user would load `gitlab: undefined`
-      // and the poller would throw on `.enabled` at startup.
+      // and the poller would throw on `.enabled` at startup. `features` and `gantt` are the
+      // same trap one level later: a blob saved before a flag was added to `FeatureSettings`
+      // (or before `gantt` existed at all) read the new field back as `undefined` rather
+      // than its default, because a flat `...parsed` only replaces a block wholesale.
       return {
         ...DEFAULT_SETTINGS,
         ...parsed,
@@ -2979,6 +3015,8 @@ export function createStore(dbPath: string): Store {
         github: { ...DEFAULT_GITHUB_SETTINGS, ...(parsed.github ?? {}) },
         cloud: { ...DEFAULT_CLOUD_SETTINGS, ...(parsed.cloud ?? {}) },
         board: { ...DEFAULT_BOARD_DISPLAY, ...(parsed.board ?? {}) },
+        features: { ...DEFAULT_FEATURE_SETTINGS, ...(parsed.features ?? {}) },
+        gantt: { ...DEFAULT_GANTT_SETTINGS, ...(parsed.gantt ?? {}) },
       };
     } catch {
       return { ...DEFAULT_SETTINGS };
@@ -4786,6 +4824,12 @@ export function createStore(dbPath: string): Store {
 
     markMergeRequestEventsSeen(id, at) {
       markMrEventsSeen.run(at, id);
+      const row = selectMergeRequest.get(id) as MergeRequestRow | undefined;
+      return row ? rowToMergeRequest(row) : undefined;
+    },
+
+    markMergeRequestActed(id, headSha) {
+      markMrActed.run(headSha, id);
       const row = selectMergeRequest.get(id) as MergeRequestRow | undefined;
       return row ? rowToMergeRequest(row) : undefined;
     },

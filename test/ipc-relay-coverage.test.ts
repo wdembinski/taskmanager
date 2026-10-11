@@ -137,7 +137,13 @@ describe('the event fanout policy', () => {
    * `ipc.ts` says about it. Adding a second name to this list should mean writing a sentence
    * like this one, not deleting a red line.
    */
-  const CLASSIFIED_BUT_NEVER_PUSHED = ['session:gap'];
+  //
+  // `automations:changed` is the other name here, for the opposite reason: F1.1 only adds
+  // the CONTRACT (the channel, its relay policy, its fanout classification) and six stub
+  // `automation:*` handlers that throw — nothing in `ipc.ts` saves, deletes, enables, or
+  // fires an automation yet, so nothing emits it. F1.11, which registers the real handlers,
+  // must remove this entry once one of them actually calls `send('automations:changed', …)`.
+  const CLASSIFIED_BUT_NEVER_PUSHED = ['session:gap', 'automations:changed'];
 
   it('found the pushes to check', () => {
     // Same guard as the handler side, for the same reason: `send` is a local helper and a
