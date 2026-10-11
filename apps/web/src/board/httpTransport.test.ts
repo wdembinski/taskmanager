@@ -1,9 +1,87 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { IpcApi } from '@tm/shared/ipc';
 import { CLOUD_BLOB_MAX_BYTES, type TaskAttachment } from '@tm/shared/attachments';
+import type { Automation, AutomationRun } from '@tm/shared/automation';
 import { DEFAULT_SETTINGS } from '@tm/shared/settings';
 import type { CommandResult } from '@tm/protocol/wire';
 import { HttpTransport, RPC_TIMEOUT_MS, type HttpTransportDeps } from './httpTransport';
+
+/** One automation, for the direct-read and owner-targeted-relay tests below. */
+const automation = (over: Partial<Automation> = {}): Automation => ({
+  id: 'auto-1',
+  revision: 1,
+  name: 'Nightly triage',
+  enabled: true,
+  ownerClientId: null,
+  timeZone: 'Europe/Warsaw',
+  trigger: { kind: 'schedule', schedule: { type: 'daily', hour: 4, minute: 0 } },
+  action: {
+    agentProjectId: 'proj-1',
+    titleTemplate: 'Nightly triage — {{date}}',
+    briefTemplate: '',
+    mode: 'acceptEdits',
+  },
+  enabledAt: 0,
+  nextRunAt: null,
+  consecutiveFailures: 0,
+  createdAt: 0,
+  updatedAt: 0,
+  ...over,
+});
+
+/** One run row, for the `automation:runs` merge tests. */
+const automationRun = (over: Partial<AutomationRun> = {}): AutomationRun => ({
+  id: 'run-1',
+  automationId: 'auto-1',
+  revision: 1,
+  occurrenceKey: 'manual:x',
+  kind: 'manual',
+  status: 'started',
+  taskId: null,
+  runId: null,
+  refusal: null,
+  skippedCount: 0,
+  note: null,
+  at: 1,
+  ...over,
+});
+
+/**
+ * A fake server for the owner-targeted relay tests: `GET /v1/automations` answers with
+ * whatever the mirror is told to hold, and `POST /v1/commands` records the WHOLE request body
+ * — unlike {@link makeServer} below, which only keeps the `command` half — because these tests
+ * are about `targetClientId`, the other half of `CommandRequest`.
+ */
+function makeOwnerServer(automations: Automation[]) {
+  const queued: Array<{
+    targetClientId: string;
+    command: { id: string; kind: string; payload: unknown };
+  }> = [];
+  const results: CommandResult[] = [];
+
+  const fetchImpl = vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
+    if (url === 'https://api.example.com/v1/automations') {
+      return { ok: true, status: 200, json: async () => ({ automations }) };
+    }
+    if (url.startsWith('https://api.example.com/v1/commands')) {
+      const body = JSON.parse(init!.body!) as (typeof queued)[number];
+      queued.push(body);
+      return { ok: true, status: 202, json: async () => ({ ok: true }) };
+    }
+    if (url.startsWith('https://api.example.com/v1/results')) {
+      const drained = results.splice(0, results.length);
+      return { ok: true, status: 200, json: async () => ({ results: drained, cursor: 'r1' }) };
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  });
+
+  return {
+    fetchImpl,
+    queued,
+    answer: (commandId: string, result: Omit<CommandResult, 'commandId'>) =>
+      results.push({ commandId, ...result }),
+  };
+}
 
 /** One attachment row, for the two questions this file asks about previewing one. */
 const attachment = (over: Partial<TaskAttachment> = {}): TaskAttachment => ({
@@ -740,5 +818,217 @@ describe('HttpTransport: preconditions', () => {
     const { transport, fetchImpl } = makeTransport();
     await expect(transport.attachFiles('t1', [])).resolves.toEqual([]);
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe('HttpTransport: automation reads (direct tier)', () => {
+  it('reads automation:list from GET /v1/automations, never posting a command', async () => {
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url === 'https://api.example.com/v1/automations') {
+        return { ok: true, status: 200, json: async () => ({ automations: [automation()] }) };
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    // No desktop has ever synced this account — the direct tier must still answer.
+    const { transport } = makeTransport({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      getTargetClientId: () => null,
+    });
+
+    await expect(transport.invoke('automation:list')).resolves.toEqual([automation()]);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(String(fetchImpl.mock.calls[0][0])).not.toContain('/v1/commands');
+  });
+
+  it('reads automation:runs(id) from GET /v1/automations/:id/runs?limit=', async () => {
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url === 'https://api.example.com/v1/automations/auto-1/runs?limit=10') {
+        return { ok: true, status: 200, json: async () => ({ runs: [automationRun()] }) };
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    const { transport } = makeTransport({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      getTargetClientId: () => null,
+    });
+
+    await expect(transport.invoke('automation:runs', 'auto-1', 10)).resolves.toEqual([
+      automationRun(),
+    ]);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(String(fetchImpl.mock.calls[0][0])).not.toContain('/v1/commands');
+  });
+
+  it('merges runs(null, limit) newest-first across every automation and honours the cap', async () => {
+    const a1 = automation({ id: 'auto-1' });
+    const a2 = automation({ id: 'auto-2' });
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url === 'https://api.example.com/v1/automations') {
+        return { ok: true, status: 200, json: async () => ({ automations: [a1, a2] }) };
+      }
+      if (url === 'https://api.example.com/v1/automations/auto-1/runs?limit=2') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            runs: [
+              automationRun({ id: 'r1', automationId: 'auto-1', at: 10 }),
+              automationRun({ id: 'r2', automationId: 'auto-1', at: 1 }),
+            ],
+          }),
+        };
+      }
+      if (url === 'https://api.example.com/v1/automations/auto-2/runs?limit=2') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            runs: [automationRun({ id: 'r3', automationId: 'auto-2', at: 20 })],
+          }),
+        };
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    const { transport } = makeTransport({ fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    const result = await transport.invoke('automation:runs', null, 2);
+    expect(result.map((r) => r.id)).toEqual(['r3', 'r1']);
+  });
+});
+
+describe('HttpTransport: automation edits relay to the owner', () => {
+  it('relays automation:delete to the automation’s owner, not the default target', async () => {
+    const server = makeOwnerServer([automation({ id: 'auto-1', ownerClientId: 'desktop-owner' })]);
+    const { transport } = makeTransport({
+      fetchImpl: server.fetchImpl as unknown as typeof fetch,
+      getTargetClientId: () => 'desktop-1',
+      newCommandId: () => 'cmd-1',
+    });
+
+    const call = transport.invoke('automation:delete', 'auto-1');
+    server.answer('cmd-1', { ok: true, value: null });
+    await call;
+
+    expect(server.queued).toHaveLength(1);
+    expect(server.queued[0].targetClientId).toBe('desktop-owner');
+    expect(server.queued[0].targetClientId).not.toBe('desktop-1');
+    expect(server.queued[0].command).toMatchObject({
+      kind: 'ipc-invoke',
+      payload: { channel: 'automation:delete', args: ['auto-1'] },
+    });
+  });
+
+  it('relays automation:setEnabled to the automation’s owner', async () => {
+    const server = makeOwnerServer([automation({ id: 'auto-1', ownerClientId: 'desktop-owner' })]);
+    const { transport } = makeTransport({
+      fetchImpl: server.fetchImpl as unknown as typeof fetch,
+      getTargetClientId: () => 'desktop-1',
+      newCommandId: () => 'cmd-1',
+    });
+
+    const call = transport.invoke('automation:setEnabled', 'auto-1', false);
+    server.answer('cmd-1', { ok: true, value: automation({ id: 'auto-1', enabled: false }) });
+    await call;
+
+    expect(server.queued[0].targetClientId).toBe('desktop-owner');
+    expect(server.queued[0].command).toMatchObject({
+      payload: { channel: 'automation:setEnabled', args: ['auto-1', false] },
+    });
+  });
+
+  it('relays automation:runNow to the automation’s owner', async () => {
+    const server = makeOwnerServer([automation({ id: 'auto-1', ownerClientId: 'desktop-owner' })]);
+    const { transport } = makeTransport({
+      fetchImpl: server.fetchImpl as unknown as typeof fetch,
+      getTargetClientId: () => 'desktop-1',
+      newCommandId: () => 'cmd-1',
+    });
+
+    const call = transport.invoke('automation:runNow', 'auto-1');
+    server.answer('cmd-1', { ok: true, value: automationRun() });
+    await call;
+
+    expect(server.queued[0].targetClientId).toBe('desktop-owner');
+  });
+
+  it('relays automation:save to the owner recorded in the mirror, not the draft’s own field', async () => {
+    const mirrorCopy = automation({ id: 'auto-1', ownerClientId: 'desktop-owner' });
+    const draft = automation({ id: 'auto-1', ownerClientId: 'desktop-1', name: 'Edited name' });
+    const server = makeOwnerServer([mirrorCopy]);
+    const { transport } = makeTransport({
+      fetchImpl: server.fetchImpl as unknown as typeof fetch,
+      getTargetClientId: () => 'desktop-1',
+      newCommandId: () => 'cmd-1',
+    });
+
+    const call = transport.invoke('automation:save', draft);
+    server.answer('cmd-1', { ok: true, value: draft });
+    await call;
+
+    expect(server.queued[0].targetClientId).toBe('desktop-owner');
+    expect(server.queued[0].command).toMatchObject({
+      payload: { channel: 'automation:save', args: [draft] },
+    });
+  });
+
+  it('falls back to the default target when the owner is null', async () => {
+    const server = makeOwnerServer([automation({ id: 'auto-1', ownerClientId: null })]);
+    const { transport } = makeTransport({
+      fetchImpl: server.fetchImpl as unknown as typeof fetch,
+      getTargetClientId: () => 'desktop-1',
+      newCommandId: () => 'cmd-1',
+    });
+
+    const call = transport.invoke('automation:setEnabled', 'auto-1', false);
+    server.answer('cmd-1', { ok: true, value: automation({ id: 'auto-1', enabled: false }) });
+    await call;
+
+    expect(server.queued[0].targetClientId).toBe('desktop-1');
+  });
+
+  it('falls back to the default target when save creates a new automation', async () => {
+    const server = makeOwnerServer([]); // the mirror has never heard of this id — it's a create.
+    const { transport } = makeTransport({
+      fetchImpl: server.fetchImpl as unknown as typeof fetch,
+      getTargetClientId: () => 'desktop-1',
+      newCommandId: () => 'cmd-1',
+    });
+
+    const draft = automation({ id: '' });
+    const call = transport.invoke('automation:save', draft);
+    server.answer('cmd-1', { ok: true, value: automation({ id: 'auto-new' }) });
+    await call;
+
+    expect(server.queued[0].targetClientId).toBe('desktop-1');
+  });
+
+  it('rejects automation:delete for an id the mirror has never heard of, without posting a command', async () => {
+    const server = makeOwnerServer([]);
+    const { transport } = makeTransport({ fetchImpl: server.fetchImpl as unknown as typeof fetch });
+
+    await expect(transport.invoke('automation:delete', 'auto-missing')).rejects.toThrow(
+      /no longer exists/,
+    );
+    expect(server.queued).toHaveLength(0);
+  });
+
+  it('rejects automation:setEnabled for an id the mirror has never heard of, without posting a command', async () => {
+    const server = makeOwnerServer([]);
+    const { transport } = makeTransport({ fetchImpl: server.fetchImpl as unknown as typeof fetch });
+
+    await expect(transport.invoke('automation:setEnabled', 'auto-missing', true)).rejects.toThrow(
+      /no longer exists/,
+    );
+    expect(server.queued).toHaveLength(0);
+  });
+
+  it('rejects automation:runNow for an id the mirror has never heard of, without posting a command', async () => {
+    const server = makeOwnerServer([]);
+    const { transport } = makeTransport({ fetchImpl: server.fetchImpl as unknown as typeof fetch });
+
+    await expect(transport.invoke('automation:runNow', 'auto-missing')).rejects.toThrow(
+      /no longer exists/,
+    );
+    expect(server.queued).toHaveLength(0);
   });
 });
