@@ -1158,7 +1158,7 @@ export interface IpcApi {
    * every keystroke and this is its one authoritative recheck.
    */
   'automation:save': (automation: Automation) => Promise<Automation>;
-  /** Delete an automation. Its past runs are kept (for `automation:runs`), not cascaded away. */
+  /** Delete an automation. Its past runs are deleted with it — `automation:runs` has nothing left to show. */
   'automation:delete': (id: string) => Promise<void>;
   /**
    * Flip an automation on or off without opening its editor — the board's own toggle.
