@@ -5,6 +5,7 @@
  * mirrored task IS a Task, not a wire-shaped lookalike that would need to be kept in sync
  * with it by hand.
  */
+import type { Automation, AutomationRun } from '@tm/shared/automation';
 import type {
   AddProjectInput,
   BoardColumn,
@@ -22,13 +23,43 @@ import type { CadenceDirective } from './cadence';
  * stays one request per tick. Deletions are ids rather than tombstone rows: the mirror is
  * disposable state, so "this id is gone" is everything a receiving Client needs to drop it
  * from its own copy.
+ *
+ * The three automation fields (F1.12) are optional and travel with the same older-peer rule
+ * `ClientInfo` already documents: a v2 desktop never sends them, a v2 server ignores them if
+ * it somehow receives them, and `MirrorService.sync()` and `buildMirrorDeltaWithin` both treat
+ * a missing array the same as an empty one. That is also why they are not a
+ * {@link PROTOCOL_VERSION} bump on their own — see the v3 bump's own rationale below for what
+ * actually forced one.
  */
 export interface MirrorDelta {
   tasks: Task[];
   projects: Project[];
   deletedTaskIds: string[];
   deletedProjectIds: string[];
+  /** Automations created or edited since the caller's last sync. */
+  automations?: Automation[];
+  /**
+   * Runs recorded since the caller's last sync, newest-affecting-automation first and capped
+   * at {@link AUTOMATION_RUNS_PER_SYNC} per call — a firing automation can write far more rows
+   * per tick than a human edits tasks, so this needs its own cap distinct from the task/project
+   * arrays' shared byte budget (`SYNC_BYTES_LIMIT`, `cloudDelta.ts`). A sender that has more
+   * than the cap sends the rest on its next call; nothing here promises one sync carries every
+   * run since the last.
+   */
+  automationRuns?: AutomationRun[];
+  deletedAutomationIds?: string[];
 }
+
+/**
+ * The most `MirrorDelta.automationRuns` a single sync carries. A run row is small, but an
+ * automation that fires every few minutes (an `{ type: 'hours' }` schedule, say) can accumulate
+ * far more of them between two ticks than a human generates task edits in the same window, so
+ * this is a count cap of its own rather than a share of `SYNC_BYTES_LIMIT` — the same reasoning
+ * `OUTBOX_LIMIT` (`cloudPoller.ts`) applies to outbox rows. `buildMirrorDeltaWithin` stops
+ * taking rows once it has this many and leaves the rest for the next call; nothing is lost,
+ * only deferred.
+ */
+export const AUTOMATION_RUNS_PER_SYNC = 200;
 
 /**
  * The version of THIS contract, sent on every `SyncRequest` and returned on every
@@ -43,8 +74,17 @@ export interface MirrorDelta {
  *
  * Bump it when the wire gains a field an older peer would be WRONG to ignore. Adding an
  * optional field it can safely skip is not that.
+ *
+ * v3 (F1.12): `GET /v1/automations` and `GET /v1/automations/:id/runs` are server routes a
+ * browser calls directly — nothing about them is relayed through a desktop Client the way
+ * `ipc-invoke` is, so the skew that matters here is the tab's own version against
+ * `BoardResponse.protocolVersion` (the SERVER's), not `ClientInfo`'s. A server that predates
+ * these routes 404s them, and that 404 reads exactly like "this account has zero
+ * automations" — indistinguishable without a number to tell the two apart by, which is the
+ * one case this file's own rule calls WRONG to leave silent. The `MirrorDelta` fields these
+ * routes' data rides in on are themselves optional and would not have forced this bump alone.
  */
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 /**
  * Who a desktop Client IS, so a browser can name the machine it is driving rather than count
@@ -400,6 +440,24 @@ export interface BoardResponse {
    * response. See `mirror.service.ts`'s `rowsSince`.
    */
   hasMore?: boolean;
+}
+
+/**
+ * Response to `GET /v1/automations` — every automation mirrored for this account, for the
+ * pages (the automations list, an editor opened from a link) that want the whole set rather
+ * than waiting on `BoardResponse.deltas.automations` to have carried it across already.
+ */
+export interface AutomationsResponse {
+  automations: Automation[];
+}
+
+/**
+ * Response to `GET /v1/automations/:id/runs` — one automation's run log, newest first (the
+ * order a run history reads in), capped server-side regardless of what `?limit=` asked for —
+ * see `MirrorService.automationRuns`.
+ */
+export interface AutomationRunsResponse {
+  runs: AutomationRun[];
 }
 
 /**

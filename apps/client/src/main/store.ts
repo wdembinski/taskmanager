@@ -75,7 +75,12 @@ import {
 } from '@shared/settings';
 import { mergeActivity } from './activityMerge';
 import { type CloudOutboxRow, shapeCloudDelta } from './cloudDelta';
-import { CLOUD_OUTBOX_BACKFILL_KEY, backfillCloudOutbox } from './cloudOutboxBackfill';
+import {
+  CLOUD_OUTBOX_AUTOMATION_BACKFILL_KEY,
+  CLOUD_OUTBOX_BACKFILL_KEY,
+  backfillAutomationCloudOutbox,
+  backfillCloudOutbox,
+} from './cloudOutboxBackfill';
 import type { JiraEpicFieldCache } from './jira/epicField';
 import type { JiraSprintFieldCache } from './jira/jiraSprint';
 import type { JiraIdentityCache } from './jira/identity';
@@ -964,6 +969,11 @@ export interface Store {
    */
   getAutomations(): Automation[];
   /**
+   * One automation by id, or `undefined` — the cloud outbox's own lookup when an outbox row
+   * names an automation that may since have been deleted (`cloudDelta.ts`'s miss handling).
+   */
+  getAutomation(id: string): Automation | undefined;
+  /**
    * Insert a new automation or fully replace the one with the same id — there is no
    * separate create/update, the same way `upsertCloudProject` has none: the editor always
    * hands back a complete {@link Automation}, so a partial patch would have nothing to
@@ -1008,6 +1018,11 @@ export interface Store {
    * own drawer.
    */
   getAutomationRuns(automationId: string | null, limit: number): AutomationRun[];
+  /**
+   * One run receipt by id, or `undefined` — the cloud outbox's own lookup, the run sibling
+   * of {@link getAutomation}.
+   */
+  getAutomationRun(id: string): AutomationRun | undefined;
   /**
    * The retention sweep for `automation_runs`: drop anything older than 30 days, then drop
    * whatever is left beyond the newest 200 per automation — the same two-cap policy the
@@ -1488,7 +1503,7 @@ export function createStore(dbPath: string): Store {
     -- happened for the mirror to hear about it.
     CREATE TABLE IF NOT EXISTS cloud_outbox (
       seq      INTEGER PRIMARY KEY AUTOINCREMENT,
-      entity   TEXT    NOT NULL,   -- 'task' | 'project'
+      entity   TEXT    NOT NULL,   -- 'task' | 'project' | 'automation' | 'automationRun'
       entityId TEXT    NOT NULL,
       op       TEXT    NOT NULL,   -- 'insert' | 'update' | 'delete'
       at       INTEGER NOT NULL
@@ -2064,6 +2079,50 @@ export function createStore(dbPath: string): Store {
       END;
     `);
   }
+
+  // `automations`/`automation_runs` get the same outbox append, minus the `updatedAt` touch
+  // above: both tables already carry their own `updatedAt`/`at` (`saveAutomation`,
+  // `reserveAutomationRun`/`updateAutomationRun` set them directly), so there is no caller
+  // left for a trigger to catch the way a bare `UPDATE tasks SET status = ...` needed one.
+  // A plain `INSERT INTO cloud_outbox` is the whole trigger body, and with no nested write
+  // to cross-fire there is no second, self-triggered outbox row to reason about either.
+  //
+  // `automation_runs` gets no delete trigger: nothing ever deletes one row at a time — a run
+  // only ever goes away with its automation (`deleteAutomationTx`, which already drops the
+  // automation's own mirror server-side via `deletedAutomationIds`) or through retention
+  // (`pruneAutomationRuns`), which is a local-only cap the cloud mirror keeps independently.
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS trg_automations_after_insert
+    AFTER INSERT ON automations
+    BEGIN
+      INSERT INTO cloud_outbox (entity, entityId, op, at)
+      VALUES ('automation', NEW.id, 'insert', ${nowMs});
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_automations_after_update
+    AFTER UPDATE ON automations
+    BEGIN
+      INSERT INTO cloud_outbox (entity, entityId, op, at)
+      VALUES ('automation', NEW.id, 'update', ${nowMs});
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_automations_after_delete
+    AFTER DELETE ON automations
+    BEGIN
+      INSERT INTO cloud_outbox (entity, entityId, op, at)
+      VALUES ('automation', OLD.id, 'delete', ${nowMs});
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_automation_runs_after_insert
+    AFTER INSERT ON automation_runs
+    BEGIN
+      INSERT INTO cloud_outbox (entity, entityId, op, at)
+      VALUES ('automationRun', NEW.id, 'insert', ${nowMs});
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_automation_runs_after_update
+    AFTER UPDATE ON automation_runs
+    BEGIN
+      INSERT INTO cloud_outbox (entity, entityId, op, at)
+      VALUES ('automationRun', NEW.id, 'update', ${nowMs});
+    END;
+  `);
 
   // Seed the built-in Personal board project (idempotent). It hosts the standalone
   // My Tasks board (JIRA tickets + internal ad-hoc tasks); it has no repo/plan, so
@@ -2992,6 +3051,15 @@ export function createStore(dbPath: string): Store {
       upsertState.run(CLOUD_OUTBOX_BACKFILL_KEY, JSON.stringify(queued));
     })();
   }
+  // Same shape, one build later (F1.12): automations/runs gained their own outbox triggers
+  // after this build shipped, so anything saved before then needs the identical one-shot
+  // catch-up, under its own guard key since a database may already have cleared the one above.
+  if (!selectState.get(CLOUD_OUTBOX_AUTOMATION_BACKFILL_KEY)) {
+    db.transaction(() => {
+      const queued = backfillAutomationCloudOutbox(db, Date.now());
+      upsertState.run(CLOUD_OUTBOX_AUTOMATION_BACKFILL_KEY, JSON.stringify(queued));
+    })();
+  }
   // ---------------------------------------------------------------------------
 
   /** Read app settings, merging any stored fields over the built-in defaults. */
@@ -3663,6 +3731,7 @@ export function createStore(dbPath: string): Store {
   // every save so they can never drift from the JSON they mirror — see `idx_automations_due`
   // above.
   const selectAutomations = db.prepare(`SELECT data FROM automations`);
+  const selectAutomation = db.prepare(`SELECT data FROM automations WHERE id = ?`);
   const upsertAutomationStmt = db.prepare(
     `INSERT INTO automations (id, data, enabled, nextRunAt, updatedAt)
      VALUES (@id, @data, @enabled, @nextRunAt, @updatedAt)
@@ -5173,6 +5242,11 @@ export function createStore(dbPath: string): Store {
       return rows.map((r) => JSON.parse(r.data) as Automation);
     },
 
+    getAutomation(id) {
+      const row = selectAutomation.get(id) as { data: string } | undefined;
+      return row ? (JSON.parse(row.data) as Automation) : undefined;
+    },
+
     saveAutomation(a) {
       upsertAutomationStmt.run({
         id: a.id,
@@ -5237,6 +5311,11 @@ export function createStore(dbPath: string): Store {
           : selectAutomationRunsFor.all(automationId, limit)
       ) as AutomationRunRow[];
       return rows.map(rowToAutomationRun);
+    },
+
+    getAutomationRun(id) {
+      const row = selectAutomationRun.get(id) as AutomationRunRow | undefined;
+      return row ? rowToAutomationRun(row) : undefined;
     },
 
     pruneAutomationRuns(now = Date.now()) {

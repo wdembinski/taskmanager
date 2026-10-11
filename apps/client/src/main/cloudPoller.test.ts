@@ -39,6 +39,8 @@ function fakeStore(outbox: CloudOutboxRow[] = []): Store {
     },
     getTask: () => undefined,
     getProject: () => undefined,
+    getAutomation: () => undefined,
+    getAutomationRun: () => undefined,
     getPendingCloudAcks: () => [],
     markCloudAcksSent: () => {},
     getPendingCloudResults: () => [],
