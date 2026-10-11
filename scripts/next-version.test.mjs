@@ -12,7 +12,9 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  bumpMinor,
   bumpPatch,
+  classifyBump,
   compareVersions,
   highestVersion,
   parseVersion,
@@ -113,6 +115,61 @@ describe('bumpPatch', () => {
   });
 });
 
+describe('bumpMinor', () => {
+  it('adds one to the minor and resets the patch to 0', () => {
+    expect(bumpMinor('0.82.6')).toBe('0.83.0');
+    expect(bumpMinor('0.116.0')).toBe('0.117.0');
+    expect(bumpMinor('1.2.9')).toBe('1.3.0');
+  });
+
+  it('refuses an unparseable version', () => {
+    expect(() => bumpMinor('v0.82.6')).toThrow(/bare X\.Y\.Z/);
+  });
+});
+
+describe('classifyBump', () => {
+  it('is minor for a feat commit', () => {
+    expect(classifyBump(['feat: add the thing'], [''])).toBe('minor');
+  });
+
+  it('is minor for a scoped feat commit', () => {
+    expect(classifyBump(['feat(db): add activity_log'], [''])).toBe('minor');
+  });
+
+  it('is minor for a squash-merge subject still carrying its PR number', () => {
+    expect(classifyBump(['feat: f2.4 add the activity log table (#86)'], [''])).toBe('minor');
+  });
+
+  it('is patch for fix, chore, and docs-only commits', () => {
+    expect(classifyBump(['fix: correct the off-by-one'], [''])).toBe('patch');
+    expect(classifyBump(['chore: tidy up imports'], [''])).toBe('patch');
+    expect(classifyBump(['docs: fix a typo'], [''])).toBe('patch');
+  });
+
+  it('is minor, never major, for a subject marked breaking with !', () => {
+    expect(classifyBump(['feat!: drop the old API'], [''])).toBe('minor');
+    expect(classifyBump(['fix(store)!: change the column type'], [''])).toBe('minor');
+  });
+
+  it('is minor, never major, for a BREAKING CHANGE footer', () => {
+    expect(
+      classifyBump(['fix: change the column type'], ['BREAKING CHANGE: the column type changed']),
+    ).toBe('minor');
+  });
+
+  it('ignores chore(release) commits entirely', () => {
+    expect(classifyBump(['chore(release): v0.116.0'], [''])).toBe('patch');
+    // A chore(release) commit never outweighs a real feat elsewhere in the range.
+    expect(classifyBump(['feat: add the thing', 'chore(release): v0.116.0'], ['', ''])).toBe(
+      'minor',
+    );
+  });
+
+  it('is patch for an empty commit range', () => {
+    expect(classifyBump([], [])).toBe('patch');
+  });
+});
+
 describe('resolveNextVersion', () => {
   it('reuses the branch bump when the manifest is ahead of every tag', () => {
     const result = resolveNextVersion('0.83.0', TAGS);
@@ -182,5 +239,52 @@ describe('resolveNextVersion', () => {
     // stops before it tags something like `vv1.2.3`.
     expect(() => resolveNextVersion('v0.82.6', TAGS)).toThrow(/CONTRIBUTING\.md/);
     expect(() => resolveNextVersion('0.82.6-rc1', TAGS)).toThrow(/bare X\.Y\.Z/);
+  });
+
+  it('bumps MINOR when a feat commit shipped since the last release', () => {
+    // The commit range CI actually produces: 0.116.0 released, a feat landed since.
+    const result = resolveNextVersion(
+      '0.116.0',
+      ['v0.116.0'],
+      [{ subject: 'feat: f2.4 add the activity log table (#86)', body: '' }],
+    );
+    expect(result).toMatchObject({ version: '0.117.0', tag: 'v0.117.0', needsCommit: true });
+    expect(result.reason).toContain('feat: f2.4 add the activity log table (#86)');
+  });
+
+  it('bumps PATCH when nothing since the last release is a feat', () => {
+    const result = resolveNextVersion(
+      '0.116.0',
+      ['v0.116.0'],
+      [{ subject: 'fix: correct the off-by-one', body: '' }],
+    );
+    expect(result).toMatchObject({ version: '0.116.1', needsCommit: true });
+  });
+
+  it('bumps MINOR for a breaking change, never MAJOR', () => {
+    const result = resolveNextVersion(
+      '0.116.0',
+      ['v0.116.0'],
+      [{ subject: 'fix(store): change the column type', body: 'BREAKING CHANGE: see migration' }],
+    );
+    expect(result).toMatchObject({ version: '0.117.0', needsCommit: true });
+  });
+
+  it('ignores a chore(release) commit in the range', () => {
+    const result = resolveNextVersion(
+      '0.116.0',
+      ['v0.116.0'],
+      [{ subject: 'chore(release): v0.116.0', body: '' }],
+    );
+    expect(result).toMatchObject({ version: '0.116.1', needsCommit: true });
+  });
+
+  it('still honours a manifest already ahead of every tag, regardless of commits', () => {
+    const result = resolveNextVersion('0.83.0', TAGS, [{ subject: 'feat: something', body: '' }]);
+    expect(result).toMatchObject({ version: '0.83.0', needsCommit: false });
+  });
+
+  it('defaults to a patch bump when no commits are given', () => {
+    expect(resolveNextVersion('0.82.6', TAGS)).toMatchObject({ version: '0.82.7' });
   });
 });
