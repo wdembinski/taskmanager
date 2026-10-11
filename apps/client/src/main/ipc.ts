@@ -79,13 +79,7 @@ import {
 import { assignmentMovesCard, assignmentStatusPatch, humanStatusPatch } from './cardStatusGuard';
 import { AutomationRunner } from './automationRunner';
 import { fireTrackerSweep, type FireTrackerSweepDeps } from './automationTrackerFirings';
-import {
-  assertCanRunNow,
-  assertOwnedHere,
-  manualFiring,
-  prepareAutomationSave,
-  prepareSetEnabled,
-} from './automationEdits';
+import { createAutomationHandlers } from './automationHandlers';
 import type { Automation } from '@shared/automation';
 import { isBlockedishStatus, resolveGitHubColumn } from '@shared/statusResolve';
 import { clampSyncInterval, pickGlobalSettings, type AppSettings } from '@shared/settings';
@@ -3123,66 +3117,39 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
   // --- Automations (F1.11) — list/save/delete/enable/runNow. The edit rules themselves
   // (ownership, `nextRunAt` re-arming, the manual-firing guard) live in `automationEdits.ts`;
-  // this is just the store + clock + runner plumbing around them.
+  // the six handler bodies live in `automationHandlers.ts`, so they can be driven through a
+  // real `RelayRegistry` in a test without standing up Electron. This is just the plumbing
+  // that file needs and cannot have itself: the board push (`send`) and the clock/runner
+  // instances constructed below.
   function pushAutomations(): Automation[] {
     const automations = store.getAutomations();
     send('automations:changed', automations);
     return automations;
   }
 
-  /** `PrepareSaveContext` read fresh on every call — a cloud client id can be generated or
-   * change after boot, the same reason `trackerDeps.localClientId` below is a getter. */
-  function automationSaveContext(): { now: number; localClientId: string; newId: () => string } {
-    return { now: Date.now(), localClientId: store.loadCloudClientId(), newId: randomUUID };
-  }
-
-  /** `store.saveAutomation` + the clock re-arm + the board push, shared by save and setEnabled. */
-  function commitAutomation(prepared: Automation): Automation {
-    store.saveAutomation(prepared);
-    automationClock.evaluate();
-    pushAutomations();
-    const saved = store.getAutomations().find((a) => a.id === prepared.id);
-    if (!saved) throw new Error('Could not save that automation.');
-    return saved;
-  }
-
-  handle('automation:list', async () => store.getAutomations());
-
-  handle('automation:save', async (input) => {
-    const existing = store.getAutomations().find((a) => a.id === input.id);
-    return commitAutomation(prepareAutomationSave(input, existing, automationSaveContext()));
+  const automationHandlers = createAutomationHandlers({
+    store,
+    evaluate: () => automationClock.evaluate(),
+    pushAutomations,
+    fire: (automation, firing) => automationRunner.fire(automation, firing),
+    // Read fresh on every call — a cloud client id can be generated or change after boot,
+    // the same reason `trackerDeps.localClientId` below is a getter.
+    saveContext: () => ({
+      now: Date.now(),
+      localClientId: store.loadCloudClientId(),
+      newId: randomUUID,
+    }),
+    newId: randomUUID,
   });
-
-  handle('automation:delete', async (id) => {
-    const existing = store.getAutomations().find((a) => a.id === id);
-    if (!existing) return;
-    assertOwnedHere(existing, store.loadCloudClientId());
-    store.deleteAutomation(id);
-    automationClock.evaluate();
-    pushAutomations();
-  });
-
-  handle('automation:setEnabled', async (id, enabled) => {
-    const existing = store.getAutomations().find((a) => a.id === id);
-    if (!existing) throw new Error('That automation no longer exists.');
-    return commitAutomation(prepareSetEnabled(existing, enabled, automationSaveContext()));
-  });
-
-  handle('automation:runNow', async (id) => {
-    const automation = store.getAutomations().find((a) => a.id === id);
-    if (!automation) throw new Error('That automation no longer exists.');
-    assertCanRunNow(automation, store.loadCloudClientId());
-    const run = automationRunner.fire(automation, manualFiring(Date.now(), randomUUID));
-    if (run.status === 'duplicate') {
-      throw new Error(`‹${automation.name}› already has a run reserved for this occurrence.`);
-    }
-    pushAutomations();
-    return run;
-  });
-
-  handle('automation:runs', async (automationId, limit) =>
-    store.getAutomationRuns(automationId, limit),
-  );
+  // Six literal calls, not a loop over `Object.keys` — `test/ipc-relay-coverage.test.ts` finds
+  // registrations with a regex over quoted text right after the `handle(` helper's name, so a
+  // variable in that position would make every automation channel invisible to it.
+  handle('automation:list', automationHandlers['automation:list']);
+  handle('automation:save', automationHandlers['automation:save']);
+  handle('automation:delete', automationHandlers['automation:delete']);
+  handle('automation:setEnabled', automationHandlers['automation:setEnabled']);
+  handle('automation:runNow', automationHandlers['automation:runNow']);
+  handle('automation:runs', automationHandlers['automation:runs']);
 
   // --- The chain of execution ------------------------------------------------
   /** Push the whole link list at the board. Returns it, so handlers can also reply with it. */
