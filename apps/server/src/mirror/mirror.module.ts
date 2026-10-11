@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { AutomationMirror } from '../entities/automationMirror.entity';
+import { AutomationRunMirror } from '../entities/automationRunMirror.entity';
 import { Client } from '../entities/client.entity';
 import { Command } from '../entities/command.entity';
 import { CommandResultRow } from '../entities/commandResult.entity';
@@ -16,6 +18,8 @@ import { MirrorService } from './mirror.service';
 @Module({
   imports: [
     TypeOrmModule.forFeature([
+      AutomationMirror,
+      AutomationRunMirror,
       Client,
       Command,
       CommandResultRow,

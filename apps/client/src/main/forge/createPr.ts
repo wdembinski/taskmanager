@@ -359,6 +359,8 @@ interface CreatedRef {
   sourceBranch: string;
   targetBranch: string;
   draft: boolean;
+  /** The head commit the forge reported at create (or already-open) time, when it said. */
+  headSha?: string | null;
   existed: boolean;
   /**
    * The forge's own `updated_at` for the created (or already-open) row, or 0 when it did not
@@ -414,6 +416,7 @@ async function createOnGitHub(
     sourceBranch: pullRequest.head?.ref ?? branch,
     targetBranch: pullRequest.base?.ref ?? base,
     draft: pullRequest.draft === true,
+    headSha: pullRequest.head?.sha ?? null,
     existed,
     updatedAt: Date.parse(pullRequest.updated_at ?? '') || 0,
   };
@@ -446,6 +449,7 @@ async function createOnGitLab(
     sourceBranch: mergeRequest.source_branch ?? branch,
     targetBranch: mergeRequest.target_branch ?? base,
     draft: mergeRequest.draft === true || mergeRequest.work_in_progress === true,
+    headSha: mergeRequest.sha ?? null,
     existed,
     updatedAt: Date.parse(mergeRequest.updated_at) || 0,
   };
@@ -494,6 +498,9 @@ export function rowFor(created: CreatedRef, taskId: string, now: number): MergeR
     targetBranch: created.targetBranch,
     state: 'opened',
     draft: created.draft,
+    headSha: created.headSha ?? null,
+    // Never acted on — the watcher has not even seen this row yet.
+    lastActedSha: null,
     pipelineStatus: 'unknown',
     pipelineUrl: null,
     pipelineStages: [],

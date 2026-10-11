@@ -17,6 +17,7 @@
  * it. What is meant to be left in a handler is a call, a `send` and a patch; a handler
  * growing a rule it alone knows is the signal to extract, not to build the harness.
  */
+import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { hostname } from 'node:os';
@@ -78,6 +79,14 @@ import {
 import { assignmentMovesCard, assignmentStatusPatch, humanStatusPatch } from './cardStatusGuard';
 import { AutomationRunner } from './automationRunner';
 import { fireTrackerSweep, type FireTrackerSweepDeps } from './automationTrackerFirings';
+import {
+  assertCanRunNow,
+  assertOwnedHere,
+  manualFiring,
+  prepareAutomationSave,
+  prepareSetEnabled,
+} from './automationEdits';
+import type { Automation } from '@shared/automation';
 import { isBlockedishStatus, resolveGitHubColumn } from '@shared/statusResolve';
 import { clampSyncInterval, pickGlobalSettings, type AppSettings } from '@shared/settings';
 import { sameExecTarget, type ExecTarget } from '@shared/execTarget';
@@ -197,6 +206,7 @@ import { appPlanPath, appProjectFile } from './projectPaths';
 import { RELEASE_DOC } from '@shared/release';
 import { openPullRequest, type CreatePrDeps } from './forge/createPr';
 import { linkMergeRequest, type LinkPrDeps } from './forge/linkPr';
+import { watchMergeRequests, type PrWatcherDeps } from './forge/prWatcher';
 import { forgeBaseUrl } from './forge/baseUrl';
 import { buildBoardIndex } from './forge/boardIndex';
 import {
@@ -1977,6 +1987,23 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // in. Set here because only this closure can read a secret out of `safeStorage`.
   scheduler.setPullRequestOpener((taskId) => openPullRequest(createPrDeps(), taskId));
 
+  /**
+   * Deps for the PR/MR watcher (`forge/prWatcher.ts`) — same shape, same reasons, as
+   * `createPrDeps` above: `forgeToken` is the only secret reader, so every closure that
+   * spends one is built here.
+   */
+  const prWatcherDeps = (): PrWatcherDeps => ({
+    getSettings: () => store.getSettings(),
+    getTask: (id) => store.getTask(id),
+    tokenFor: forgeToken,
+    chatWithAgent: (taskId, message) => scheduler.chatWithAgent(taskId, message),
+    note: (projectId, taskId, body) => {
+      store.addComment(projectId, taskId, body);
+      send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) });
+    },
+    markActed: (mrId, headSha) => store.markMergeRequestActed(mrId, headSha),
+  });
+
   // -------------------------------------------------------------------------
   // Cloud personal access token — the same four-channel shape JIRA/GitLab/GitHub use above,
   // which is the whole point of this ticket: the cloud stopped being a special case. The
@@ -2331,6 +2358,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // — nobody here ran the merge. It is what a chain's `after-merge` gate waits for, so it
     // is handed to the engine before the board is told anything (see `Task.landedAt`).
     for (const taskId of landedTaskIds(upserts)) scheduler.noteWorkLanded(taskId);
+    // After the board knows about them, never before: `forge-rebase`/`resolve-conflicts` can
+    // write a note or start a run, and both want the card state this sync just settled.
+    await watchMergeRequests(upserts, prWatcherDeps());
     const all = store.listMergeRequests();
     send('mergeRequests:changed', all);
     return all;
@@ -2499,6 +2529,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // a GitHub repository at all: nobody here ran the merge, so a merged PR is this app's
     // only way of learning that a reviewed branch landed (see `Task.landedAt`).
     for (const taskId of landedTaskIds(upserts)) scheduler.noteWorkLanded(taskId);
+    // After the board knows about them, never before: `forge-rebase`/`resolve-conflicts` can
+    // write a note or start a run, and both want the card state this sync just settled.
+    await watchMergeRequests(upserts, prWatcherDeps());
     const all = store.listMergeRequests();
     send('mergeRequests:changed', all);
     return all;
@@ -3091,25 +3124,68 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     store.saveTicketGraphLayout(projectId, positions);
   });
 
-  // --- Automations (F1) — model + contract only so far; the real handlers land in F1.11. ---
-  handle('automation:list', async () => {
-    throw new Error('automation:list is not implemented yet (F1.11)');
+  // --- Automations (F1.11) — list/save/delete/enable/runNow. The edit rules themselves
+  // (ownership, `nextRunAt` re-arming, the manual-firing guard) live in `automationEdits.ts`;
+  // this is just the store + clock + runner plumbing around them.
+  function pushAutomations(): Automation[] {
+    const automations = store.getAutomations();
+    send('automations:changed', automations);
+    return automations;
+  }
+
+  /** `PrepareSaveContext` read fresh on every call — a cloud client id can be generated or
+   * change after boot, the same reason `trackerDeps.localClientId` below is a getter. */
+  function automationSaveContext(): { now: number; localClientId: string; newId: () => string } {
+    return { now: Date.now(), localClientId: store.loadCloudClientId(), newId: randomUUID };
+  }
+
+  /** `store.saveAutomation` + the clock re-arm + the board push, shared by save and setEnabled. */
+  function commitAutomation(prepared: Automation): Automation {
+    store.saveAutomation(prepared);
+    automationClock.evaluate();
+    pushAutomations();
+    const saved = store.getAutomations().find((a) => a.id === prepared.id);
+    if (!saved) throw new Error('Could not save that automation.');
+    return saved;
+  }
+
+  handle('automation:list', async () => store.getAutomations());
+
+  handle('automation:save', async (input) => {
+    const existing = store.getAutomations().find((a) => a.id === input.id);
+    return commitAutomation(prepareAutomationSave(input, existing, automationSaveContext()));
   });
-  handle('automation:save', async () => {
-    throw new Error('automation:save is not implemented yet (F1.11)');
+
+  handle('automation:delete', async (id) => {
+    const existing = store.getAutomations().find((a) => a.id === id);
+    if (!existing) return;
+    assertOwnedHere(existing, store.loadCloudClientId());
+    store.deleteAutomation(id);
+    automationClock.evaluate();
+    pushAutomations();
   });
-  handle('automation:delete', async () => {
-    throw new Error('automation:delete is not implemented yet (F1.11)');
+
+  handle('automation:setEnabled', async (id, enabled) => {
+    const existing = store.getAutomations().find((a) => a.id === id);
+    if (!existing) throw new Error('That automation no longer exists.');
+    return commitAutomation(prepareSetEnabled(existing, enabled, automationSaveContext()));
   });
-  handle('automation:setEnabled', async () => {
-    throw new Error('automation:setEnabled is not implemented yet (F1.11)');
+
+  handle('automation:runNow', async (id) => {
+    const automation = store.getAutomations().find((a) => a.id === id);
+    if (!automation) throw new Error('That automation no longer exists.');
+    assertCanRunNow(automation, store.loadCloudClientId());
+    const run = automationRunner.fire(automation, manualFiring(Date.now(), randomUUID));
+    if (run.status === 'duplicate') {
+      throw new Error(`‹${automation.name}› already has a run reserved for this occurrence.`);
+    }
+    pushAutomations();
+    return run;
   });
-  handle('automation:runNow', async () => {
-    throw new Error('automation:runNow is not implemented yet (F1.11)');
-  });
-  handle('automation:runs', async () => {
-    throw new Error('automation:runs is not implemented yet (F1.11)');
-  });
+
+  handle('automation:runs', async (automationId, limit) =>
+    store.getAutomationRuns(automationId, limit),
+  );
 
   // --- The chain of execution ------------------------------------------------
   /** Push the whole link list at the board. Returns it, so handlers can also reply with it. */

@@ -7,10 +7,15 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  BACKFILL_AUTOMATION_RUNS_SQL,
+  BACKFILL_AUTOMATION_RUN_MAX_AGE_MS,
+  BACKFILL_AUTOMATIONS_SQL,
   BACKFILL_PROJECTS_SQL,
   BACKFILL_TASKS_SQL,
   type BackfillDb,
+  CLOUD_OUTBOX_AUTOMATION_BACKFILL_KEY,
   CLOUD_OUTBOX_BACKFILL_KEY,
+  backfillAutomationCloudOutbox,
   backfillCloudOutbox,
 } from './cloudOutboxBackfill';
 
@@ -85,5 +90,64 @@ describe('the back-fill statements', () => {
 
   it('has a guard key of its own, not shared with another migration', () => {
     expect(CLOUD_OUTBOX_BACKFILL_KEY).toBe('migration.cloudOutboxBackfill');
+  });
+});
+
+describe('backfillAutomationCloudOutbox', () => {
+  it('runs both statements, automations before runs', () => {
+    const { db, calls } = recorder([1, 3]);
+    backfillAutomationCloudOutbox(db, 1000);
+    expect(calls.map((c) => c.sql)).toEqual([
+      BACKFILL_AUTOMATIONS_SQL,
+      BACKFILL_AUTOMATION_RUNS_SQL,
+    ]);
+  });
+
+  it('threads `at` into the automations statement, and `at` plus the retention cutoff into the runs one', () => {
+    const { db, calls } = recorder([0, 0]);
+    backfillAutomationCloudOutbox(db, 1_691_000_000_000);
+    expect(calls[0]?.params).toEqual([1_691_000_000_000]);
+    expect(calls[1]?.params).toEqual([
+      1_691_000_000_000,
+      1_691_000_000_000 - BACKFILL_AUTOMATION_RUN_MAX_AGE_MS,
+    ]);
+  });
+
+  it('returns the counts the statements reported', () => {
+    const { db } = recorder([2, 9]);
+    expect(backfillAutomationCloudOutbox(db, 1000)).toEqual({ automations: 2, automationRuns: 9 });
+  });
+
+  it('reports nothing queued on a board the outbox already speaks for', () => {
+    const { db } = recorder([0, 0]);
+    expect(backfillAutomationCloudOutbox(db, 1000)).toEqual({
+      automations: 0,
+      automationRuns: 0,
+    });
+  });
+
+  it('has a guard key of its own, shared with neither the task/project nor another migration', () => {
+    expect(CLOUD_OUTBOX_AUTOMATION_BACKFILL_KEY).toBe('migration.cloudOutboxAutomationBackfill');
+    expect(CLOUD_OUTBOX_AUTOMATION_BACKFILL_KEY).not.toBe(CLOUD_OUTBOX_BACKFILL_KEY);
+  });
+});
+
+describe('the automation back-fill statements', () => {
+  it('only queue what the outbox has never spoken for', () => {
+    for (const sql of [BACKFILL_AUTOMATIONS_SQL, BACKFILL_AUTOMATION_RUNS_SQL]) {
+      expect(sql).toContain('NOT EXISTS');
+      expect(sql).toContain('FROM cloud_outbox o');
+    }
+  });
+
+  it("says 'insert' — the server has never seen these", () => {
+    expect(BACKFILL_AUTOMATIONS_SQL).toContain("'automation', a.id, 'insert'");
+    expect(BACKFILL_AUTOMATION_RUNS_SQL).toContain("'automationRun', r.id, 'insert'");
+  });
+
+  it('keeps the runs statement inside the same retention window pruning uses', () => {
+    // A run older than 30 days is retention's to drop, not this backfill's to queue for a
+    // server about to drop it right back.
+    expect(BACKFILL_AUTOMATION_RUNS_SQL).toContain('r.at >= ?');
   });
 });
