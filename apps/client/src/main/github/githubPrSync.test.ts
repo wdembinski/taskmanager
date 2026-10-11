@@ -24,6 +24,7 @@ const fetched = (over: Partial<FetchedMergeRequest> = {}): FetchedMergeRequest =
   targetBranch: 'main',
   state: 'opened',
   draft: false,
+  headSha: 'sha-1',
   pipelineStatus: 'success',
   pipelineStages: [],
   pipelineUrl: null,

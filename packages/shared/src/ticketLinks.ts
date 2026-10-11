@@ -11,6 +11,7 @@
  * reason `taskChain.ts` is: the IPC handler and the renderer must answer from the same
  * function, or the phrasing on screen can disagree with what a drag was refused for.
  */
+import { columnForTask } from './board';
 import type { Task, TicketLink, TicketLinkType } from './model';
 
 /** How one link type reads from each end, and whether the two ends read the same. */
@@ -114,4 +115,42 @@ export function canLinkTickets(
         (symmetric && l.fromTaskId === to.id && l.toTaskId === from.id)),
   );
   return duplicate ? 'duplicate' : null;
+}
+
+/**
+ * The tickets that **block** `taskId` — the `from` end of every `blocks` link that names it
+ * as the `to` end. Direction matters: `taskId` blocking some other ticket does not appear
+ * here, only what stands in `taskId`'s own way.
+ */
+export function blockersOf(links: readonly TicketLink[], taskId: string): string[] {
+  return links.filter((l) => l.type === 'blocks' && l.toTaskId === taskId).map((l) => l.fromTaskId);
+}
+
+/** Whether a ticket may be started, given what blocks it. See {@link startReadiness}. */
+export type StartReadiness =
+  { kind: 'done' } | { kind: 'ready' } | { kind: 'waiting'; open: { id: string; task?: Task }[] };
+
+/**
+ * Whether `task` is free to start, blocked on other tickets, or already done.
+ *
+ * A finished ticket is reported `done` before its blockers are even read — there is nothing
+ * left to be ready FOR. Otherwise every ticket named by a `blocks` link against `task` (see
+ * {@link blockersOf}) must itself be in the DONE column, read via {@link columnForTask} so a
+ * blocker's resting status — not a run's borrowed `running` — is what counts. A blocker id
+ * {@link byId} cannot resolve is treated as still open rather than ignored: a dangling link
+ * is a reason to wait, not a reason to proceed as if it said nothing.
+ */
+export function startReadiness(
+  task: Task,
+  links: readonly TicketLink[],
+  byId: Map<string, Task>,
+): StartReadiness {
+  if (columnForTask(task) === 'done') return { kind: 'done' };
+  const open = blockersOf(links, task.id)
+    .filter((id) => {
+      const blocker = byId.get(id);
+      return !blocker || columnForTask(blocker) !== 'done';
+    })
+    .map((id) => ({ id, task: byId.get(id) }));
+  return open.length === 0 ? { kind: 'ready' } : { kind: 'waiting', open };
 }
