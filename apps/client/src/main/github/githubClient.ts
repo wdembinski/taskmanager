@@ -648,6 +648,25 @@ export class GitHubClient {
   }
 
   /**
+   * Update a pull request's own fields — `PATCH /repos/{owner}/{repo}/pulls/{number}`.
+   *
+   * Only `body` is ever sent, and it is the only field `createPr.ts`'s refresh-on-push ever
+   * asks for: the description needs to stay in step with the branch's own commits every time
+   * it is pushed, but the title is left alone, because a human may have retitled the pull
+   * request and nothing here should undo that.
+   */
+  updatePullRequest(
+    owner: string,
+    repo: string,
+    number: number,
+    input: { body: string },
+  ): Promise<GitHubPullRequest> {
+    return this.write<GitHubPullRequest>(`${repoPath(owner, repo)}/pulls/${number}`, 'PATCH', {
+      body: input.body,
+    });
+  }
+
+  /**
    * Update the branch — `PUT /repos/{owner}/{repo}/pulls/{number}/update-branch`.
    *
    * GitHub's counterpart of GitLab's rebase button, though it merges the base INTO the head

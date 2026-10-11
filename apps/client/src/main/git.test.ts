@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import {
   abortRebase,
   addWorktree,
+  branchCommitMessages,
   changedInBranch,
   commitAll,
   createRootCommit,
@@ -165,6 +166,28 @@ describe('git helpers', () => {
     );
     // A ref that doesn't exist fails soft to an empty list rather than throwing.
     expect(await changedInBranch(repo, base, 'no-such-branch')).toEqual([]);
+
+    await removeWorktree(repo, wt);
+  });
+
+  it('reads every commit a branch has over base, oldest first, full message included', async () => {
+    const wt = join(repo, '..', `wte-${Date.now()}`);
+    await addWorktree(repo, wt, 'orch/t5', base);
+    writeFileSync(join(wt, 'b.txt'), 'one\n');
+    await git(wt, ['add', '-A']);
+    await git(wt, ['commit', '--no-verify', '-m', 'fix: first change', '-m', 'Tested: pnpm test']);
+    writeFileSync(join(wt, 'b.txt'), 'two\n');
+    await git(wt, ['add', '-A']);
+    await git(wt, ['commit', '--no-verify', '-m', 'fix: second change']);
+
+    const messages = await branchCommitMessages(repo, base, 'orch/t5');
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toContain('fix: first change');
+    expect(messages[0]).toContain('Tested: pnpm test');
+    expect(messages[1]).toContain('fix: second change');
+
+    // A ref that doesn't exist fails soft to an empty list rather than throwing.
+    expect(await branchCommitMessages(repo, base, 'no-such-branch')).toEqual([]);
 
     await removeWorktree(repo, wt);
   });

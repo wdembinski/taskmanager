@@ -17,7 +17,9 @@
  *      restart.
  *   2. Read `origin`, and work out which forge it belongs to (`remoteUrl.ts`).
  *   3. Push the branch, failing fast rather than prompting (`git.pushBranch`).
- *   4. POST the create, treating "one already exists" as success.
+ *   4. POST the create, treating "one already exists" as success — and when it was, or
+ *      already was before the POST, PATCH/PUT its description to match the branch's current
+ *      commits ({@link refreshDescription}), since the push just pushed.
  *   5. Upsert a `merge_requests` row against the card, so it shows up now rather than after
  *      the next poll — and under the id the next sync will use, so it is recognised as the
  *      SAME row rather than duplicated.
@@ -35,8 +37,14 @@ import { forgeName, mrIsSettled, mrNoun, mrRef } from '@shared/mergeRequest';
 import type { Project, Task } from '@shared/model';
 import type { AppSettings } from '@shared/settings';
 import { sanitizeToken } from '@shared/secretToken';
-import { prSubject, wrapHanging, wrapPlainText } from '@shared/commitMessage';
-import { commitsAhead, hasCommits, pushBranch, remoteUrl } from '../git';
+import {
+  aggregateTested,
+  branchChangesBody,
+  prSubject,
+  wrapHanging,
+  wrapPlainText,
+} from '@shared/commitMessage';
+import { branchCommitMessages, commitsAhead, hasCommits, pushBranch, remoteUrl } from '../git';
 import { hostFor } from '../exec';
 import { GitHubClient } from '../github/githubClient';
 import { pullRequestId } from '../github/githubPrSync';
@@ -167,6 +175,11 @@ export async function openPullRequest(
     );
   }
 
+  // The material `prBody` summarises. `[]` on a read failure, not on a genuinely empty
+  // branch — `ahead` has already ruled that out above — so `prBody` reads an empty array as
+  // "fall back to the card's own description" rather than "say nothing".
+  const commits = await branchCommitMessages(live.cwd, live.base, live.branch, host);
+
   const origin = await remoteUrl(live.cwd, 'origin', host);
   if (!origin) {
     throw new Error(
@@ -218,8 +231,22 @@ export async function openPullRequest(
 
   // Already open — so the push above is the entire job, and there is nothing to POST. Both
   // forges would refuse a second create as a duplicate anyway; this simply does not ask, and
-  // the note says what actually happened rather than claiming to have opened one.
+  // the note says what actually happened rather than claiming to have opened one. The
+  // description is refreshed anyway: the push just carried new commits, and the pull
+  // request's body is supposed to summarise the branch's CURRENT state, not the one it had
+  // when it was first opened.
   if (alreadyOpen) {
+    await refreshDescription(
+      deps,
+      project.id,
+      owner.id,
+      settings,
+      clean,
+      provider,
+      remote.path,
+      alreadyOpen.number,
+      prBody(owner, provider, commits),
+    );
     deps.note(
       project.id,
       owner.id,
@@ -230,11 +257,28 @@ export async function openPullRequest(
   }
 
   const title = prTitle(owner);
-  const body = prBody(owner, provider, ahead);
+  const body = prBody(owner, provider, commits);
   const created =
     provider === 'github'
       ? await createOnGitHub(settings, clean, remote.path, live.branch, live.base, title, body)
       : await createOnGitLab(settings, clean, remote.path, live.branch, live.base, title, body);
+
+  // The create call above found one GitHub/GitLab already considers open (see
+  // `createOnGitHub`/`createOnGitLab`'s `existed: true`) — the same "refresh it anyway" case
+  // as `alreadyOpen` above, just discovered a step later, after the POST rather than before it.
+  if (created.existed) {
+    await refreshDescription(
+      deps,
+      project.id,
+      owner.id,
+      settings,
+      clean,
+      provider,
+      remote.path,
+      created.number,
+      body,
+    );
+  }
 
   // `#12` / `!12`, from the same function the card row, the tooltip and the attention reason
   // spell it with — `created` carries the provider and the number, which is all `mrRef` reads.
@@ -251,6 +295,48 @@ export async function openPullRequest(
   );
 
   return { url: created.webUrl, ref, existed: created.existed };
+}
+
+/**
+ * Rewrite an already-open pull request's or merge request's description to match the
+ * branch's current commits, after a push that found one already there — either because
+ * {@link openMergeRequestFor} already knew about it, or because the create call just above
+ * discovered the same thing a step later (`existed: true`).
+ *
+ * **Non-fatal.** The push already succeeded, which is the part of the job that matters; a
+ * refusal here (a revoked token, a human-deleted PR, a forge outage) is noted on the card's
+ * timeline rather than thrown, because throwing would turn a successful push into a reported
+ * failure. The title is never touched — only `body`/`description` is sent — because a human
+ * may have retitled the pull request, and nothing here should undo that.
+ */
+async function refreshDescription(
+  deps: CreatePrDeps,
+  projectId: string,
+  taskId: string,
+  settings: AppSettings,
+  token: string,
+  provider: ForgeProvider,
+  projectPath: string,
+  number: number,
+  body: string,
+): Promise<void> {
+  try {
+    if (provider === 'github') {
+      const [ownerName, repoName] = projectPath.split('/');
+      const client = new GitHubClient({ baseUrl: forgeBaseUrl('github', settings), token });
+      await client.updatePullRequest(ownerName, repoName, number, { body });
+    } else {
+      const client = new GitLabClient({ baseUrl: forgeBaseUrl('gitlab', settings), token });
+      await client.updateMergeRequest(projectPath, number, { description: body });
+    }
+  } catch (err) {
+    deps.note(
+      projectId,
+      taskId,
+      `Pushed the branch, but could not refresh the ${mrNoun(provider)}'s description: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 /** The card's open merge request, if it has one. A settled one is history, not a blocker. */
@@ -290,16 +376,24 @@ export function prTitle(task: Pick<Task, 'title' | 'type' | 'issueType' | 'exter
 }
 
 /**
- * The body: the card's description reflowed into CONTRIBUTING.md §2's plain-text, 72-column
- * shape, ending in a `Ticket ID:` trailer (when the card has a key) and a `Tested:` one —
- * plus a closing reference when the card IS a GitHub issue.
+ * The body: the branch's own commits summarised into CONTRIBUTING.md §2's plain-text,
+ * 72-column shape — `@shared/commitMessage`'s `branchChangesBody` does the actual
+ * summarising — ending in a `Ticket ID:` trailer (when the card has a key) and a `Tested:`
+ * one, plus a closing reference when the card IS a GitHub issue.
+ *
+ * `commits` is the branch's own commit messages, oldest first
+ * (`apps/client/src/main/git.ts`'s `branchCommitMessages`), passed in rather than re-read so
+ * this stays a pure function of its arguments. When it is empty — `branchCommitMessages`
+ * failed to read the branch, rather than the branch genuinely having none, since
+ * {@link openPullRequest} already refused before this is ever called on an empty branch —
+ * the body falls back to the card's own description, exactly as it did before commits were
+ * summarised at all.
  *
  * `Tested:` cannot say what a human would — there is no "what I ran" to ask an automated PR
- * for — so it names where the real answer already lives: every commit CONTRIBUTING.md and
- * `CLAUDE.md` require to carry its own, honestly, line by line. `aheadCount` is the same
- * `commitsAhead` figure {@link openPullRequest} already computed to decide there was
- * something to push, passed in rather than re-read so this stays a pure function of its
- * arguments.
+ * for — so `aggregateTested` pulls the real answer out of the commits themselves: every one
+ * CONTRIBUTING.md and `CLAUDE.md` require to carry its own `Tested:` line, honestly. Only
+ * when none of them do (an old branch, commits made before this convention) does it fall
+ * back to naming where the answer lives instead of inventing one.
  *
  * `Closes owner/repo#12` earns its place twice over — GitHub closes the issue when the PR
  * lands, and `prMatch.closingReferences` reads it straight back on the next sync, so the PR
@@ -313,15 +407,17 @@ export function prBody(
     'externalDescription' | 'description' | 'externalSource' | 'externalKey' | 'ticketKey'
   >,
   provider: ForgeProvider,
-  aheadCount: number,
+  commits: readonly string[],
 ): string {
+  const changes = branchChangesBody(commits);
   // `externalDescription` FIRST, and it is not the obviously-named field: that is the one a
   // card's brief actually lives in — what the detail pane edits, what the agent's prompt
   // reads, and what `createTask` writes. `Task.description` is a STEP's brief, and a step
   // never opens its own pull request, so it is only a fallback for the shape where a card
-  // somehow carries one.
+  // somehow carries one. Read only when `changes` is empty — the branch's own commits beat
+  // the card's description whenever there is something to summarise.
   const description = (task.externalDescription ?? task.description ?? '').trim();
-  const wrapped = description ? wrapPlainText(description) : '';
+  const wrapped = changes || (description ? wrapPlainText(description) : '');
 
   const key = (task.ticketKey ?? task.externalKey ?? '').trim();
   // A GitHub issue's key is `owner/repo#12`, which is a closing reference, not a ticket id.
@@ -329,13 +425,15 @@ export function prBody(
     provider === 'github' && task.externalSource === 'github' && key.includes('#');
   const ticketId = key && !isGitHubIssueRef ? `Ticket ID: ${key}` : '';
   const closes = isGitHubIssueRef ? `Closes ${key}` : '';
-  const commits = aheadCount === 1 ? 'commit' : 'commits';
-  const tested = wrapHanging(
-    `Tested: see this branch's ${aheadCount} ${commits}, each already carrying its own ` +
-      `test trailer per CONTRIBUTING.md.`,
-    72,
-    8,
-  );
+  const testedValue = aggregateTested(commits);
+  const commitWord = commits.length === 1 ? 'commit' : 'commits';
+  const testedFallback =
+    commits.length > 0
+      ? `see this branch's ${commits.length} ${commitWord}, each already carrying its own ` +
+        `test trailer per CONTRIBUTING.md.`
+      : `see this branch's own commits, each already carrying its own test trailer per ` +
+        `CONTRIBUTING.md.`;
+  const tested = wrapHanging(`Tested: ${testedValue || testedFallback}`, 72, 8);
 
   const trailers = [ticketId, closes, tested].filter(Boolean).join('\n');
   return [wrapped, trailers].filter(Boolean).join('\n\n');

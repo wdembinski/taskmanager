@@ -195,6 +195,18 @@ describe('GitHubClient — pull requests and their checks', () => {
     ]);
   });
 
+  it('PATCHes only the body — the refresh-on-push never touches the title', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ number: 7, body: 'new body' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().updatePullRequest('acme', 'web', 7, { body: 'new body' });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe('https://api.github.com/repos/acme/web/pulls/7');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(String(init.body))).toEqual({ body: 'new body' });
+  });
+
   it('updates the branch with a PUT to /pulls/:number/update-branch', async () => {
     const fetchMock = vi
       .fn()

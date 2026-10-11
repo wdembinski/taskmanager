@@ -76,9 +76,15 @@ A pull request's or merge request's **description** follows this section
 verbatim too, when you write one by hand: same wrapping, same trailers, same
 alignment. (Again, the **Create PR** button derives one from the card
 automatically, via `prBody` in the same file — same wrapping, same trailers.
-Its one necessary difference is the `Tested:` line: there is no "what I ran"
-to ask an automated PR for, so it points at the branch's own commits, each of
-which already carries a true one.)
+Its body summarises every commit on the branch rather than the card's own
+description, and its `Tested:` line is aggregated from the commits' own
+values, deduplicated — there is no "what I ran" to ask an automated PR for,
+so it reads the true answer every commit already carries instead of
+inventing one. The description is refreshed the same way on every later
+push, so a squash merge's commit carries every step's work, not just the
+first. Only when the branch's commits cannot be read at all does it fall
+back to the card's own description and a generic `Tested:` line, exactly as
+it did before.)
 
 The full shape of a commit message:
 
