@@ -41,11 +41,13 @@ import {
   SparkleRegular,
   TaskListSquareLtrRegular,
 } from '@fluentui/react-icons';
+import { columnForTask } from '@tm/shared/board';
 import type { Milestone, Person, Project, Task, TicketLabel, TicketLink } from '@tm/shared/model';
 import { delegatedAgentName, typeIconKeyFor, type TypeIconKey } from '@tm/shared/tickets';
 import { startReadiness, type StartReadiness } from '@tm/shared/ticketLinks';
 import { PriorityGlyph } from '../PriorityGlyph';
 import { PaneLoading } from '../PaneLoading';
+import { columnBadge } from '../taskStatus';
 import { useTransport } from '../transport';
 import { useInitialLoad } from '../useInitialLoad';
 import { AssigneeDisplay } from './AssigneeDisplay';
@@ -127,7 +129,9 @@ function CanStartCell({ readiness }: { readiness: StartReadiness }): JSX.Element
       </Badge>
     );
   }
-  const names = readiness.open.map((o) => (o.task ? ticketLabel(o.task) : o.id));
+  const names = readiness.open.map((o) =>
+    o.task ? `${ticketLabel(o.task)} (${columnBadge(columnForTask(o.task)).label})` : o.id,
+  );
   return (
     <Tooltip relationship="label" content={`Waiting on ${names.join(', ')}`}>
       <Badge appearance="tint" color="warning">
