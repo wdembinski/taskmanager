@@ -241,3 +241,92 @@ describe('aggregateTested', () => {
     expect(result.split('; ')).toHaveLength(9); // 8 shown + the "and N more" tail
   });
 });
+
+// F1.10's own two real commits (c5a8c40, 21e6896) — chosen as the worked example because it
+// is exactly the shape this file was built for: more than one commit, each with its own
+// Ticket ID, a distinct Tested trailer, and (since both predate CLAUDE.md's "no AI
+// attribution" rule being enforced retroactively) a Co-Authored-By trailer that must never
+// reach a rendered pull request body.
+describe('the F1.10 two-commit worked example', () => {
+  const first =
+    'feat(tray): add background-mode decision logic\n\n' +
+    'Pure decision tables for F1.10: what closing the window should\n' +
+    'do, and the tray menu it can now show while kept open.\n\n' +
+    'backgroundMode.ts stays self-contained rather than importing\n' +
+    'AppSettings, since the runInBackground field does not exist\n' +
+    'there yet - that lands in the next step, which also wires both\n' +
+    "modules into the window's close handling.\n\n" +
+    'appTray.ts is the thin, untested Electron glue (Tray + Menu)\n' +
+    "that renders backgroundMode's tray menu model.\n\n" +
+    'Ticket ID: F1.10\n' +
+    'Tested: pnpm format, pnpm typecheck, pnpm test (1847 passed, 11\n' +
+    '        skipped) all green; backgroundMode.test.ts covers\n' +
+    '        closeAction, shouldQuitOnClose, trayLikelyAvailable and\n' +
+    '        trayMenuModel directly. appTray.ts is untested Electron\n' +
+    '        glue by design, so only typechecked.\n' +
+    'Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>';
+
+  const second =
+    'feat(app): keep running in the tray on close\n\n' +
+    "Adds the runInBackground setting (local - a machine's own\n" +
+    'process-lifetime choice, never synced to the cloud mirror) and\n' +
+    'wires it into window close handling.\n\n' +
+    "Closing the last window now consults backgroundMode's decision\n" +
+    "table: off keeps today's behaviour (darwin stays open, elsewhere\n" +
+    'quits); on hides to a lazily-created tray icon, or minimizes where\n' +
+    'no tray is available (WSLg, or a real Tray() failure). The tray\n' +
+    'menu offers Open, Pause automations and Quit.\n\n' +
+    "index.ts registers the close interceptor first so ipc.ts's own\n" +
+    'close listeners (window-state flush, sign-in watch) can skip via\n' +
+    'event.defaultPrevented. A Windows/Linux session-end sets a\n' +
+    'shuttingDown flag so the OS is never blocked by a hidden window.\n' +
+    'window-all-closed and second-instance both go through the same\n' +
+    'decision table / tray-aware restore.\n\n' +
+    'Desktop Settings gets a "Keep running in the background" switch\n' +
+    "next to Toasts; the web app doesn't, since it's a local key.\n\n" +
+    'Ticket ID: F1.10\n' +
+    'Tested: pnpm format:check, pnpm typecheck, pnpm test (3814 passed,\n' +
+    '        11 skipped), pnpm build --force all green. Verified\n' +
+    '        backgroundMode.test.ts and the global/local classification\n' +
+    '        test in settings.test.ts each go red under a deliberate\n' +
+    '        one-line regression, then restored. Confirmed\n' +
+    '        out/main/chunks/icon-*.png is bundled and index.js\n' +
+    '        references it via join(__dirname, "./chunks/icon-...png").\n' +
+    'Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>';
+
+  it('parses each real commit into its own subject, body and trailers', () => {
+    const a = parseCommitMessage(first);
+    expect(a.subject).toBe('feat(tray): add background-mode decision logic');
+    expect(a.body).toContain('Pure decision tables for F1.10');
+    expect(a.trailers['Ticket ID']).toBe('F1.10');
+    expect(a.trailers['Co-Authored-By']).toBe('Claude Sonnet 5 <noreply@anthropic.com>');
+
+    const b = parseCommitMessage(second);
+    expect(b.subject).toBe('feat(app): keep running in the tray on close');
+    expect(b.body).toContain('Adds the runInBackground setting');
+    expect(b.trailers['Ticket ID']).toBe('F1.10');
+    expect(b.trailers['Co-Authored-By']).toBe('Claude Sonnet 5 <noreply@anthropic.com>');
+  });
+
+  it('lists both subjects bulleted, strips Co-Authored-By, and keeps every line within 72 columns', () => {
+    const body = branchChangesBody([first, second]);
+    expect(body).toBe(
+      '- feat(tray): add background-mode decision logic\n' +
+        '- feat(app): keep running in the tray on close',
+    );
+    expect(body).not.toContain('Co-Authored-By');
+    for (const line of body.split('\n')) {
+      expect(line.length).toBeLessThanOrEqual(72);
+    }
+  });
+
+  it("aggregates both commits' distinct Tested values rather than falling back to a commit count", () => {
+    const tested = aggregateTested([first, second]);
+    expect(tested).toContain('pnpm format, pnpm typecheck, pnpm test (1847 passed, 11 skipped)');
+    expect(tested).toContain(
+      'pnpm format:check, pnpm typecheck, pnpm test (3814 passed, 11 skipped)',
+    );
+    expect(tested).not.toContain("see this branch's");
+    expect(tested).not.toContain('more commit');
+  });
+});

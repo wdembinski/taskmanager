@@ -96,8 +96,12 @@ export function wrapHanging(text: string, width: number, indent: number): string
   const lines: string[] = [];
   let line = '';
   for (const word of words) {
+    // The first line is rendered as-is, but every line after it gets `indent` spaces
+    // prepended once wrapping is done — so ITS budget has to leave room for that prefix, or
+    // the rendered line (padding included) runs past `width` even though this check passed.
+    const budget = lines.length === 0 ? width : width - indent;
     const candidate = line ? `${line} ${word}` : word;
-    if (candidate.length > width && line) {
+    if (candidate.length > budget && line) {
       lines.push(line);
       line = word;
     } else {
