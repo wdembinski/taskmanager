@@ -3,7 +3,9 @@ import { CloudRegular } from '@fluentui/react-icons';
 
 const useStyles = makeStyles({
   root: {
-    height: '100vh',
+    // Fills the FluentProvider (already `100dvh` and safe-area-padded in main.tsx)
+    // rather than sizing itself against the viewport, or it would overflow it.
+    height: '100%',
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',
