@@ -216,6 +216,43 @@ the feed.
 
   - New `apps/client/src/main/activityRecorder.ts`; hooks at spawn and settle in `scheduler.ts`;
     optional `origin` on run-start options (human / chain / resume / auto-release).
+  - `projectId` on a row is `run.projectId` — the project the run EXECUTES in, matching
+    `token_usage`'s own attribution, not the card's board project. `title` is the card's title at
+    spawn/settle time, a snapshot (per `ActivityRow.title`'s own docstring), not a live lookup.
+  - **`run-started`** is recorded at the spawn, inside `launch()` right before
+    `this.sessions.start(...)` — never in `startTask`, so a reservation released before a session
+    ever spawns (stopped or parked during worktree prep, or a prep failure) records nothing.
+  - **`run-finished`** is recorded where the outcome is actually decided, not inside `settle()`
+    (which only ever receives `'done' | 'failed'` and cannot tell `empty` from `failed`):
+    - `case 'result'`, just before `this.settle(...)`: outcome is `empty` when
+      `describeEmptyOutcome` returned a verdict, else `done`/`failed` from `event.success`.
+      `costUsd` comes from the event's own `costUsd` — null stays null, it is never coerced to 0.
+    - `case 'exited'` (no `result` ever arrived): `done`/`failed` from the exit code, `costUsd:
+      null`.
+    - `settleDeferred`: `deferResult` additionally stores `outcome` and `costUsd` on
+      `run.deferredResult` so the deferred settle records the true outcome instead of guessing one
+      from the `'done' | 'failed'` it is handed.
+    - A human stop: `stop(projectId)` and `stopTask(taskId)` each record `stopped` for every live
+      run they settle.
+    - Gate parks (`engageLimit`, `engageAuthFailure`) and the replan/`approvePlan` early settles
+      (the live run stopped mid-replan, and the planner's own hand-over) record nothing here —
+      those are F2.7's `parked` rows, not an outcome.
+    - The table's `idx_activity_log_run_once` unique index makes a second `result` (or a stray
+      `exited` after one) a no-op even if a guard is ever missed; the `run.settled` guard already
+      stops the second `settle` call from happening at all.
+  - **Origin plumbing**: `Run` gains `origin: ActivityOrigin`; `startTask`'s opts gain
+    `origin?: ActivityOrigin` (default `'human'`). Callers:
+    - `runTask(taskId, opts?: { origin?: ActivityOrigin })` → `startTaskNow(taskId, {
+      resumeNudge?, origin? })` → `startTask`.
+    - `ChainRunner`'s `runTask` dependency becomes `(id) => this.runTask(id, { origin: 'chain' })
+      !== null`.
+    - `advanceSubtasks` → `'chain'`.
+    - `resumeParked` / `resumeAfterSignIn` (`startTask(project, task, rebuild)`) → `'resume'`.
+    - Auto-release's `startTask(..., { releaseSeed: true, ... })` → `'auto-release'`.
+    - The `exited` handler's auto-retry relaunch (`retrying && ...`) → the `origin` of the run
+      that just failed, read off `run` before it is dropped.
+    - `pump`, `requeue`, and every chat/replan/resume/Start entry point that calls `startTask`
+      directly → the default, `'human'`.
   - Acceptance: `scheduler.test.ts` cases — one `run-finished` even when `result` arrives twice; an
     empty run recorded as `empty`; a chain step recorded with origin `chain`; a recorder that
     throws does not fail the run.
