@@ -398,6 +398,15 @@ describe('mergeBlockers', () => {
     expect(mrVerdict(clear({ pipelineStatus: 'failed' }))).toBe('approved');
     expect(mrVerdict(clear({ draft: true }))).toBe('approved');
   });
+
+  // The end of the chain the user sees: GitHub's `dirty` (the base branch moved underneath
+  // an otherwise-green PR) must stay structurally blocked even with CI green and a human
+  // having already approved it — the exact shape a mergeability refresh now re-reads for.
+  it('keeps a dirty, green, approved PR blocked rather than ready', () => {
+    const dirty = clear({ detailedMergeStatus: 'dirty', pipelineStatus: 'success' });
+    expect(mrVerdict(dirty)).toBe('blocked');
+    expect(mrReadyToMerge(dirty)).toBe(false);
+  });
 });
 
 describe('mrNeedsRebase', () => {

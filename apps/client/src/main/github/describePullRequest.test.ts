@@ -643,4 +643,53 @@ describe('describePullRequest — mergeability', () => {
     expect(result.hasConflicts).toBe(false);
     expect(result.detailedMergeStatus).toBe('unknown');
   });
+
+  /**
+   * The mergeability-only refresh's whole point: the base branch moved, so a PR that was
+   * `clean` the last time anybody looked now reads `dirty` — with nothing about this PR's
+   * own `updated_at` having changed at all.
+   */
+  it('updates a previously clean PR to dirty when the base branch has since moved', async () => {
+    const result = await describePullRequest(
+      client({ pull: detail({ mergeable: false, mergeable_state: 'dirty' }), reviews: [] }),
+      listed(),
+      {
+        stale: false,
+        prior: priorRed({ detailedMergeStatus: 'clean', hasConflicts: false }),
+        detail: detail({ mergeable: false, mergeable_state: 'dirty' }),
+      },
+    );
+
+    expect(result.hasConflicts).toBe(true);
+    expect(result.detailedMergeStatus).toBe('dirty');
+  });
+});
+
+describe('describePullRequest — readCi: false', () => {
+  /**
+   * The mergeability-only refresh asks for a fresh detail (to get `mergeable_state`) but the
+   * PR head cannot have moved — a push would have bumped `updated_at` and made the whole PR
+   * `stale` on its own — so re-reading CI off that same detail would just repeat the last
+   * answer at the cost of two more requests. `readCi: false` skips it.
+   */
+  it('does not call the check-runs or commit-status clients, and keeps the prior pipeline', async () => {
+    const stub = client({
+      pull: detail({ mergeable: false, mergeable_state: 'dirty' }),
+    });
+    const result = await describePullRequest(stub, listed(), {
+      stale: false,
+      prior: priorRed(),
+      detail: detail({ mergeable: false, mergeable_state: 'dirty' }),
+      readCi: false,
+    });
+
+    expect(stub.listCheckRuns).not.toHaveBeenCalled();
+    expect(stub.getCombinedStatus).not.toHaveBeenCalled();
+    expect(result.pipelineStatus).toBe(priorRed().pipelineStatus);
+    expect(result.pipelineStages).toEqual(priorRed().pipelineStages);
+    expect(result.pipelineUrl).toBe(priorRed().pipelineUrl);
+    // Mergeability is still read off the detail that was handed in.
+    expect(result.hasConflicts).toBe(true);
+    expect(result.detailedMergeStatus).toBe('dirty');
+  });
 });

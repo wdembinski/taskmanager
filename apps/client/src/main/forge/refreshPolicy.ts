@@ -69,3 +69,23 @@ export function needsCiRefresh(prior: MergeRequest | undefined, now: number): bo
   if (prior.pipelineStatus === 'none') return now - prior.updatedAt < CI_SETTLE_GRACE_MS;
   return false;
 }
+
+/**
+ * Whether this PR's mergeability is worth asking about again, independent of CI and of
+ * `updated_at` entirely.
+ *
+ * Moving the BASE branch changes what `mergeable_state` answers without touching the PR
+ * itself — a PR that read `clean` against `main` can read `dirty` the moment something else
+ * merges into `main`, and neither forge bumps the PR's `updated_at` for a change that
+ * happened on a different branch. GitHub's `unknown` answer — the mergeability job still
+ * computing — has the identical shape: nothing moves `updated_at` when that job finishes,
+ * so a PR caught mid-check would otherwise be believed `unknown` forever.
+ *
+ * `locked` counts as open here, same as `mrIsSettled` treats it: a locked PR is still open,
+ * just frozen, and its mergeability can still move. The list this predicate feeds is open
+ * PRs only — a sync never asks about a settled one — so this costs at most one extra call
+ * per open PR per sync.
+ */
+export function needsMergeabilityRefresh(prior: MergeRequest | undefined): boolean {
+  return !!prior && !mrIsSettled(prior);
+}

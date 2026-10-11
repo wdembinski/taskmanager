@@ -169,7 +169,12 @@ import {
   rematchMergeRequests,
   type FetchedMergeRequest,
 } from './gitlab/gitlabSync';
-import { needsCiRefresh, reconcilePullRequests, rematchPullRequests } from './github/githubPrSync';
+import {
+  needsCiRefresh,
+  needsMergeabilityRefresh,
+  reconcilePullRequests,
+  rematchPullRequests,
+} from './github/githubPrSync';
 import {
   forgeName,
   mrIsSettled,
@@ -2444,13 +2449,17 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
         const onCiRefusal = (endpoint: 'check-runs' | 'commit-status', error: unknown): void =>
           reportCiRefusal(prior?.projectPath ?? listedRef(item), endpoint, error);
         /**
-         * Not otherwise stale, but the last CI answer was `unknown` or a freshly-seen `none`
-         * — GitHub never bumps `updated_at` for a check starting or finishing, so
-         * `needsDetailRefresh` alone would leave those PRs unread forever. One detail call,
-         * not the full ~seven-call stale pass: `describePullRequest` reads CI off a detail
-         * whenever it has one in hand, `stale` or not.
+         * Not otherwise stale, but either the last CI answer was `unknown` or a freshly-seen
+         * `none` (GitHub never bumps `updated_at` for a check starting or finishing, so
+         * `needsDetailRefresh` alone would leave those PRs unread forever), or this PR is
+         * still open and its mergeability is worth asking about again (moving the base
+         * branch changes `mergeable_state` without touching this PR's `updated_at` either).
+         * One detail call either way, not the full ~seven-call stale pass: `describePullRequest`
+         * reads mergeability off a detail whenever it has one in hand, `stale` or not, and
+         * `readCi` only widens that to also re-read CI when CI is the reason we are here.
          */
-        if (!stale && needsCiRefresh(prior, Date.now())) {
+        const ciDue = needsCiRefresh(prior, Date.now());
+        if (!stale && (ciDue || needsMergeabilityRefresh(prior))) {
           const { owner, repo } = repoRefFromApiUrl(item.repository_url);
           const detail =
             owner && repo
@@ -2461,6 +2470,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
               stale: false,
               prior,
               detail: detail ?? undefined,
+              readCi: ciDue,
               onCiRefusal,
             }),
           );

@@ -4,6 +4,7 @@ import {
   CI_SETTLE_GRACE_MS,
   needsCiRefresh,
   needsDetailRefresh,
+  needsMergeabilityRefresh,
   PIPELINE_IN_FLIGHT,
 } from './refreshPolicy';
 
@@ -115,5 +116,27 @@ describe('needsCiRefresh', () => {
     'manual',
   ] as const)('is false for every other pipeline status (%s)', (pipelineStatus: PipelineStatus) => {
     expect(needsCiRefresh(prior({ pipelineStatus, updatedAt: 0 }), 1_000)).toBe(false);
+  });
+});
+
+describe('needsMergeabilityRefresh', () => {
+  it('never asks about a PR it has never seen', () => {
+    expect(needsMergeabilityRefresh(undefined)).toBe(false);
+  });
+
+  // The bug: moving the BASE branch changes `mergeable_state` without touching this PR's own
+  // `updated_at`, so an untouched `updatedAt` and a settled-looking pipeline (the #87 shape)
+  // must not be read as "nothing to re-check".
+  it.each(['opened', 'locked'] as const)(
+    'is true for a %s PR even when updatedAt has not moved and the pipeline is success',
+    (state) => {
+      expect(
+        needsMergeabilityRefresh(prior({ state, pipelineStatus: 'success', updatedAt: 900 })),
+      ).toBe(true);
+    },
+  );
+
+  it.each(['merged', 'closed'] as const)('is false for a %s PR', (state) => {
+    expect(needsMergeabilityRefresh(prior({ state }))).toBe(false);
   });
 });

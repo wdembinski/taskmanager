@@ -105,6 +105,15 @@ export interface DescribePullRequestOptions {
    */
   detail?: GitHubPullRequest;
   /**
+   * Whether to read CI off `detail` at all. Defaults to `true`; the caller passes `false`
+   * for the mergeability-only refresh (`needsMergeabilityRefresh` in `ipc.ts`), where the PR
+   * head cannot have moved — a push would have bumped `updated_at` and made the PR `stale`
+   * in its own right — so re-reading check runs and commit statuses would just repeat the
+   * last answer at the cost of two more requests. `false` leaves `pipelineStatus`,
+   * `pipelineStages` and `pipelineUrl` exactly as `prior` had them.
+   */
+  readCi?: boolean;
+  /**
    * Told about a check-runs or commit-status call that came back refused, so the caller can
    * log and, once per repository, surface it — a token missing the right scope reads as
    * "this repo has no CI" otherwise, which is the wrong lesson to draw from a 403. This
@@ -288,7 +297,13 @@ async function readApprovalBar(
 export async function describePullRequest(
   client: GitHubClient,
   listed: GitHubSearchIssueItem,
-  { stale, prior, detail: knownDetail, onCiRefusal }: DescribePullRequestOptions,
+  {
+    stale,
+    prior,
+    detail: knownDetail,
+    readCi: readCiOption = true,
+    onCiRefusal,
+  }: DescribePullRequestOptions,
 ): Promise<FetchedMergeRequest> {
   const { owner, repo } = repoRefFromApiUrl(listed.repository_url);
   const number = listed.number;
@@ -364,7 +379,9 @@ export async function describePullRequest(
    * off `head_pipeline` unconditionally.
    *
    * Check runs hang off a commit SHA, which only the detail carries. No detail, no CI read
-   * — and therefore no change to what we knew about it.
+   * — and therefore no change to what we knew about it. Same when the caller passed
+   * `readCi: false`: the mergeability-only refresh has a detail in hand but already knows
+   * the head has not moved, so asking again would just repeat the last answer.
    *
    * **Which SHA** depends on whether this PR has landed. `head.sha` is the PR branch's own
    * tip, and it never moves again once merged — so it only ever carries the checks that ran
@@ -376,7 +393,7 @@ export async function describePullRequest(
    */
   const sha =
     state === 'merged' ? (detail?.merge_commit_sha ?? detail?.head?.sha) : detail?.head?.sha;
-  if (sha && owner && repo) {
+  if (readCiOption && sha && owner && repo) {
     const ci = await readCi(
       client,
       owner,
