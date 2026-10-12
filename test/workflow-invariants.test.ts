@@ -18,8 +18,9 @@
  *  3. **Promoting before packaging.** electron-builder cannot upload into a *published*
  *     release — it says `skipped` and exits 0 — so a promote that runs early is a green run
  *     with an empty release (RELEASE.md rule 4). The inverse also has a body count: four
- *     finished drafts once sat unpublished waiting on a Linux build that was never coming —
- *     which is why there is no Linux job left to wait on at all (§6).
+ *     finished drafts once sat unpublished waiting on a Linux build that was never coming,
+ *     back when nobody but a contributor's own machine could build it — which is why
+ *     `promote` must wait on BOTH package jobs now that a runner builds Linux too (§6).
  *  4. **The gates drifting from RELEASE.md §1.** `ci.yml` and `release.yml` deliberately
  *     duplicate §1's list rather than share a reusable workflow — one guards a merge, one
  *     guards a tag, and coupling them means a change made for one silently changes the
@@ -55,8 +56,9 @@
  *
  * Written red-first: every assertion here was confirmed to fail against a workflow mutated
  * to break it (a `version:` added, a `node-version: 20`, `promote` un-`needs`-ed from
- * `windows`, `--draft=false` moved into the `windows` job, a gate step deleted) before any of
- * it was relied on.
+ * `linux`, `--draft=false` moved into the `windows` job, a gate step deleted, `latest-linux.yml`
+ * dropped from the feed check, a prune step moved ahead of `--draft=false`, the `||` stripped
+ * from a prune step) before any of it was relied on.
  */
 import { describe, expect, it } from 'vitest';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
@@ -226,30 +228,34 @@ describe('release.yml promotes the draft last, and does promote it (RELEASE.md r
     ).toContain('--draft');
   });
 
-  it('runs promote after the windows package job, and nothing after promote', () => {
+  it('runs promote after both package jobs, and nothing after promote', () => {
     const promote = job('release.yml', 'promote');
 
     expect(
       needsOf(promote),
-      "release.yml's `promote` job must `needs:` `windows`. Without it, promote can publish " +
-        'before the installer and latest.yml are uploaded, and electron-builder cannot write ' +
-        'into a published release (RELEASE.md rule 4).',
-    ).toEqual(expect.arrayContaining(['windows']));
+      "release.yml's `promote` job must `needs:` both package jobs. Without `linux` it can " +
+        'publish before the AppImage/deb and latest-linux.yml are uploaded, and electron-builder ' +
+        'cannot write into a published release (RELEASE.md rule 4).',
+    ).toEqual(expect.arrayContaining(['windows', 'linux']));
 
-    // Transitively: windows waits for the tag and the draft to exist.
-    expect(
-      needsOf(job('release.yml', 'windows')),
-      "release.yml's `windows` job must wait for `version`, which is what creates the tag it " +
-        'checks out and the draft it uploads into.',
-    ).toContain('version');
-
-    // There is deliberately no `linux` job any more — see RELEASE.md §6.
+    // A `linux` job must exist at all — `job()` above already asserts that by throwing if it
+    // does not, but doing it here too names the invariant on its own: Linux releases are back
+    // (RELEASE.md §6), and the loop below silently checking nothing is exactly how da73e9a's
+    // "no linux job" assertion once went stale in the other direction.
     expect(
       workflow('release.yml').jobs?.linux,
-      "release.yml has a `linux` job again. Linux releases were discontinued (RELEASE.md §6) " +
-        'after four drafts sat unpublished waiting on a Linux build that was never coming; if ' +
-        "it's back, this file's other assertions about `promote` need to widen with it.",
-    ).toBeUndefined();
+      'release.yml has no `linux` job. Linux releases are back (RELEASE.md §6); without this ' +
+        "job there is nothing for `promote`'s `needs:` above to be checking.",
+    ).toBeDefined();
+
+    // Transitively: both package jobs wait for the tag and the draft to exist.
+    for (const id of ['windows', 'linux']) {
+      expect(
+        needsOf(job('release.yml', id)),
+        `release.yml's \`${id}\` job must wait for \`version\`, which is what creates the tag it ` +
+          'checks out and the draft it uploads into.',
+      ).toContain('version');
+    }
 
     const jobs = workflow('release.yml').jobs ?? {};
     const after = Object.entries(jobs)
@@ -274,40 +280,88 @@ describe('release.yml promotes the draft last, and does promote it (RELEASE.md r
     expect(promotions[0].job).toBe('promote');
 
     // …and within that job, after the check that the update feed is actually on the release.
-    // Publishing without latest.yml beside the installer is a release no installed app can
-    // ever see, and it cannot be fixed by uploading the feed afterwards.
+    // Publishing without latest.yml (or latest-linux.yml, now that Linux is back) beside the
+    // installer is a release no installed app can ever see, and it cannot be fixed by
+    // uploading the feed afterwards.
     const steps = job('release.yml', 'promote').steps ?? [];
-    const feed = steps.findIndex((step) => (step.run ?? '').includes('latest.yml'));
+    // The exact `grep` invocation, not just the string: a nearby comment explaining the
+    // check also mentions both filenames, and matching on the bare name would pass even
+    // with the check itself deleted.
+    const feed = steps.findIndex((step) => (step.run ?? '').includes("grep -qxF 'latest.yml'"));
+    const feedLinux = steps.findIndex((step) =>
+      (step.run ?? '').includes("grep -qxF 'latest-linux.yml'"),
+    );
     expect(
       feed,
       'The promote job no longer checks that latest.yml is on the release before publishing it.',
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      feedLinux,
+      'The promote job no longer checks that latest-linux.yml is on the release before ' +
+        'publishing it — Linux releases are back (RELEASE.md §6), and an AppImage cannot ' +
+        'self-update without this feed.',
     ).toBeGreaterThanOrEqual(0);
     expect(
       promotions[0].index,
       'The feed check has to run BEFORE the publish, not after it — a published release with ' +
         'no latest.yml beside it is invisible to every installed app.',
     ).toBeGreaterThan(feed);
+    expect(
+      promotions[0].index,
+      'The feed check has to run BEFORE the publish, not after it — a published release with ' +
+        'no latest-linux.yml beside it is invisible to every installed Linux app.',
+    ).toBeGreaterThan(feedLinux);
   });
 
-  it('promotes once release is due, gated only on windows via the default needs check', () => {
+  it('promotes once release is due, gated on both package jobs via the default needs check', () => {
     const condition = job('release.yml', 'promote').if ?? '';
 
     expect(
       condition,
       "The promote job's `if:` must still gate on `release == 'true'` — otherwise it runs " +
-        "even when `version` decided there is nothing to release (RELEASE.md §0).",
+        'even when `version` decided there is nothing to release (RELEASE.md §0).',
     ).toContain("needs.version.outputs.release == 'true'");
 
-    // No `always()` and no explicit `needs.windows.result` check: with `linux` gone, `promote`
-    // has exactly one package job left in its `needs:`, so GitHub's default `if: success()`
-    // already skips it when windows fails — the always()-plus-manual-check dance RELEASE.md
-    // §6 used to require existed only to let a failed LINUX job through.
+    // No `always()`: `promote` `needs:` both `windows` AND `linux` now, and Linux is required
+    // again (RELEASE.md §6) — a runner builds it, not a contributor's own machine, so there is
+    // no failed Linux job left that this workflow should be tolerating. GitHub's default
+    // `if: success()` already does the right thing: hold the release until BOTH package jobs
+    // have succeeded. Adding `always()` back would undo exactly that.
     expect(
       condition,
-      "`always()` is no longer needed in promote's `if:` — that existed only to let promote " +
-        'run despite a failed `linux` job, which no longer exists (RELEASE.md §6). Restoring ' +
-        'it now would let promote run even when `windows` failed.',
+      '`always()` would let promote run even when `windows` or `linux` failed. Linux is ' +
+        'required again (RELEASE.md §6), so promote must not tolerate either one failing.',
     ).not.toContain('always()');
+  });
+
+  it('prunes earlier release assets only after publishing, and never fails the run', () => {
+    const steps = job('release.yml', 'promote').steps ?? [];
+    const publish = steps.findIndex((step) => (step.run ?? '').includes('--draft=false'));
+    const pruneSteps = steps.filter((step) => (step.name ?? '').startsWith('Prune'));
+
+    expect(
+      pruneSteps.length,
+      'release.yml\'s `promote` job no longer has any step named "Prune …" — the pruning ' +
+        "added to stop old releases' assets piling up (about 130 releases' worth, before it " +
+        'existed) has gone missing.',
+    ).toBeGreaterThan(0);
+
+    for (const step of pruneSteps) {
+      expect(
+        steps.indexOf(step),
+        `release.yml's "${step.name}" must run AFTER \`--draft=false\`. It deletes assets from ` +
+          'OTHER releases, and running it before the one being promoted is actually published ' +
+          'risks touching the wrong release while this one is still a draft.',
+      ).toBeGreaterThan(publish);
+
+      expect(
+        step.run ?? '',
+        `release.yml's "${step.name}" must tolerate its own failure. The release is already ` +
+          'published by the time this runs, and a red step here would report a release that ' +
+          'in fact succeeded — sending whoever reads it looking for a broken release instead ' +
+          'of a pile of unpruned assets.',
+      ).toMatch(/\|\|/);
+    }
   });
 });
 
@@ -514,9 +568,11 @@ describe('a released version reaches the deployed web client', () => {
     ).not.toContain('apps/client/package.json');
   });
 
-  it("redeploys the web after a release CI had to bump itself", () => {
+  it('redeploys the web after a release CI had to bump itself', () => {
     const steps = job('release.yml', 'promote').steps ?? [];
-    const dispatch = steps.filter((step) => (step.run ?? '').includes('gh workflow run deploy.yml'));
+    const dispatch = steps.filter((step) =>
+      (step.run ?? '').includes('gh workflow run deploy.yml'),
+    );
 
     expect(
       dispatch,
@@ -551,7 +607,7 @@ describe('a released version reaches the deployed web client', () => {
 
     expect(
       workflow('release.yml').permissions?.actions,
-      "release.yml needs `actions: write` at the top level for `gh workflow run`. Without it " +
+      'release.yml needs `actions: write` at the top level for `gh workflow run`. Without it ' +
         'the dispatch fails with a 403 on every release — and, being tolerated, fails quietly.',
     ).toBe('write');
   });
