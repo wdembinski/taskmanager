@@ -35,7 +35,11 @@ import type {
   TaskStatus,
 } from '@shared/model';
 import type { ActivityOrigin, ActivityOutcome } from '@shared/activity';
-import { type ActivityRecorder, NULL_ACTIVITY_RECORDER } from './activityRecorder';
+import {
+  type ActivityRecorder,
+  NULL_ACTIVITY_RECORDER,
+  releasedVersionFrom,
+} from './activityRecorder';
 import { logMain } from './log';
 import { hasRepo, resolveRunModel } from '@shared/model';
 import { chainInFlight, chatTarget, hasAgentWorked, parkedStep } from '@shared/board';
@@ -843,6 +847,14 @@ interface Run {
    * card's work or park it as a failed task. It files what happened and stops.
    */
   releaseSeed?: boolean;
+  /**
+   * What a release run's own reply said it released (F2.7) — read out of `event.resultText`
+   * by {@link releasedVersionFrom} at `case 'result'`, since the engine has no version of
+   * its own to report: `RELEASE.md` decides what gets tagged, and only the agent's reply
+   * says what that turned out to be. Stashed here so `settle`'s `releaseSeed` branch, which
+   * runs after the event has gone, can still read it.
+   */
+  releasedVersion?: string;
   /**
    * This run is a Rung 2 conflict fix (`startTask`'s `fixingConflict`), queued by
    * {@link Scheduler.resolveForgeConflict} for a rebase paused in a worktree. `settle` reads
@@ -3543,6 +3555,109 @@ export class Scheduler {
     }
   }
 
+  /**
+   * Record a landed merge in the activity log (F2.7) — `applyIntegrationResult`'s `'merged'`
+   * case, the single funnel for every integrate path (`integrateWorktree`,
+   * `resolveForgeConflict`, `finishConflict`). `origin` is `null`: the merge is the engine's
+   * own act, not something a run did. See the same double try/catch note on
+   * {@link Scheduler.recordRunStarted}.
+   */
+  private recordMergeLanded(project: Project, ctx: IntegrationCtx): void {
+    try {
+      this.activity.record({
+        at: Date.now(),
+        projectId: project.id,
+        taskId: ctx.taskId,
+        runId: ctx.runId,
+        kind: 'merge-landed',
+        outcome: null,
+        origin: null,
+        title: this.store.getTask(ctx.taskId)?.title ?? '',
+        costUsd: null,
+        detail: { branch: ctx.branch },
+      });
+    } catch (err) {
+      logMain('activity: could not record merge-landed', err);
+    }
+  }
+
+  /**
+   * Record a failed integration in the activity log (F2.7) — `applyIntegrationResult`'s
+   * `'dirty-base'`, `'blocked-untracked'` and `'error'` cases (`'rebased'`/`'nothing-to-merge'`
+   * land nothing, so they record nothing). `reason` is the status itself for the first two,
+   * and `result.message` for `'error'` — the only one of the three with a message of its own.
+   */
+  private recordMergeFailed(project: Project, ctx: IntegrationCtx, reason: string): void {
+    try {
+      this.activity.record({
+        at: Date.now(),
+        projectId: project.id,
+        taskId: ctx.taskId,
+        runId: ctx.runId,
+        kind: 'merge-failed',
+        outcome: null,
+        origin: null,
+        title: this.store.getTask(ctx.taskId)?.title ?? '',
+        costUsd: null,
+        detail: { branch: ctx.branch, reason },
+      });
+    } catch (err) {
+      logMain('activity: could not record merge-failed', err);
+    }
+  }
+
+  /**
+   * Record a merge conflict in the activity log (F2.7) — `escalateConflict`, called once per
+   * CONFLICTED MERGE rather than once per AI fix attempt: the caller gates this on
+   * `spent === 0`, before either climbing the Rung 2 ladder or raising the item for a human.
+   */
+  private recordMergeConflict(project: Project, ctx: IntegrationCtx): void {
+    try {
+      this.activity.record({
+        at: Date.now(),
+        projectId: project.id,
+        taskId: ctx.taskId,
+        runId: ctx.runId,
+        kind: 'merge-conflict',
+        outcome: null,
+        origin: null,
+        title: this.store.getTask(ctx.taskId)?.title ?? '',
+        costUsd: null,
+        detail: { branch: ctx.branch },
+      });
+    } catch (err) {
+      logMain('activity: could not record merge-conflict', err);
+    }
+  }
+
+  /**
+   * Record a published release in the activity log (F2.7) — `settle`'s `releaseSeed`
+   * branch, on `status === 'done'` only; a failed release run is noted on the timeline
+   * already (see the branch above) and records nothing here. `origin` is always
+   * `'auto-release'`, never the run's own: a release run is always started that way (see
+   * `startReleaseRun`). `detail.version` comes from {@link Run.releasedVersion} — `null`
+   * when the agent's reply named none, which is a true reading of "released, version
+   * unknown" rather than a reason to guess one.
+   */
+  private recordReleasePublished(run: Run): void {
+    try {
+      this.activity.record({
+        at: Date.now(),
+        projectId: run.projectId,
+        taskId: run.taskId,
+        runId: run.runId,
+        kind: 'release-published',
+        outcome: null,
+        origin: 'auto-release',
+        title: this.store.getTask(run.taskId)?.title ?? '',
+        costUsd: null,
+        detail: run.releasedVersion ? { version: run.releasedVersion } : null,
+      });
+    } catch (err) {
+      logMain('activity: could not record release-published', err);
+    }
+  }
+
   /** Spawn the session for a reserved run in the prepared working directory. */
   private launch(
     project: Project,
@@ -4199,6 +4314,13 @@ export class Scheduler {
           const reason =
             empty ??
             (event.terminalReason || event.stopReason || 'the session ended without success');
+          // The engine has no version of its own for a release — `RELEASE.md` decides what
+          // gets tagged, and only the agent's own closing reply says what that turned out to
+          // be. Stashed on the run (F2.7) so `settle`'s `releaseSeed` branch, which runs
+          // right below and only ever sees `'done' | 'failed'`, can still read it.
+          if (run.releaseSeed) {
+            run.releasedVersion = releasedVersionFrom(event.resultText) ?? undefined;
+          }
           this.settle(run, empty || !event.success ? 'failed' : 'done', reason);
           this.recordRunFinished(
             run,
@@ -4813,9 +4935,52 @@ export class Scheduler {
     // filled in by the specialised raisers (`raiseTaskFailed`, `raiseMergeConflict`) and by
     // `detail.context` above, which know what their answer path will need.
     this.store.saveAttention(item, detail.context ?? null);
+    this.recordAttentionRaised(run, item);
     this.updateTask(run.taskId, { status: 'waiting-input' }, run.runId);
     this.emitAttention(item);
     return item;
+  }
+
+  /**
+   * Record that this item was raised (F2.7) — but only the two kinds whose raising IS the
+   * event worth a timeline row. A `plan-approval` is the plan handed up for approval; an
+   * `agent-question` is the CLI's own `AskUserQuestion`, held before it runs. Every other
+   * kind (`question`, `permission`, `task-failed`, `merge-conflict`, `proposal`) is surfaced
+   * some other way already (a comment, a merge-conflict row of its own) and records nothing
+   * here.
+   *
+   * `runId`/`origin` come from the RUN, not the item: an item outlives its run for the two
+   * kinds in {@link OUTLIVES_ITS_RUN}, but what is being recorded is the moment the run
+   * raised it, not whatever the item later becomes.
+   *
+   * The documented adopt-or-raise race in `decidePermission` can call this twice for one
+   * question (the gated path and the event-stream fallback both raising before either sees
+   * the other's item) — accepted: each row is a real raise, not a duplicate of the other.
+   */
+  private recordAttentionRaised(run: Run, item: AttentionItem): void {
+    const kind =
+      item.kind === 'plan-approval'
+        ? 'plan-presented'
+        : item.kind === 'agent-question'
+          ? 'question-raised'
+          : null;
+    if (!kind) return;
+    try {
+      this.activity.record({
+        at: Date.now(),
+        projectId: run.projectId,
+        taskId: run.taskId,
+        runId: run.runId,
+        kind,
+        outcome: null,
+        origin: run.origin,
+        title: item.taskTitle,
+        costUsd: null,
+        detail: null,
+      });
+    } catch (err) {
+      logMain('activity: could not record attention raised', err);
+    }
   }
 
   /**
@@ -5126,6 +5291,8 @@ export class Scheduler {
           `The release did not finish (${reason ?? 'the run failed'}). The work is merged — ` +
             `read the transcript above, then release by hand or send the agent another message.`,
         );
+      } else {
+        this.recordReleasePublished(run);
       }
       this.updateTask(run.taskId, { status: 'in-progress' }, null);
       return;
@@ -5487,6 +5654,7 @@ export class Scheduler {
       case 'merged': {
         this.attempts.delete(ctx.taskId);
         this.conflictFixAttempts.delete(ctx.taskId);
+        this.recordMergeLanded(project, ctx);
         const note =
           result.preserved && result.preserved.files.length > 0
             ? `Merged branch "${ctx.branch}" into ${ctx.base}. Note: ${result.preserved.files.length} ` +
@@ -5618,6 +5786,7 @@ export class Scheduler {
         this.escalateConflict(project, ctx);
         break;
       case 'dirty-base':
+        this.recordMergeFailed(project, ctx, result.status);
         // Integration failures are NOT auto-retried (the fix is human-side): park with
         // a "Retry integration" option they can use after committing/stashing base.
         this.parkIntegrationFailure(
@@ -5632,6 +5801,7 @@ export class Scheduler {
         );
         break;
       case 'blocked-untracked':
+        this.recordMergeFailed(project, ctx, result.status);
         // Untracked base-tree files collide with this branch and couldn't be preserved
         // automatically, so we refused to overwrite them. Park for a human.
         this.parkIntegrationFailure(
@@ -5644,6 +5814,7 @@ export class Scheduler {
         );
         break;
       case 'error':
+        this.recordMergeFailed(project, ctx, result.message);
         this.parkIntegrationFailure(
           project,
           ctx,
@@ -5806,6 +5977,12 @@ export class Scheduler {
    */
   private escalateConflict(project: Project, ctx: IntegrationCtx): void {
     const spent = this.conflictFixAttempts.get(ctx.taskId) ?? 0;
+    // One row per CONFLICTED MERGE, not one per AI fix attempt: `spent === 0` is this
+    // conflict's first appearance, whether it goes on to climb the Rung 2 ladder below or
+    // straight to a human. A later attempt's own conflict re-enters here with `spent` > 0
+    // and records nothing — the eventual `finishAfterConflict` landing writes the
+    // `merge-landed` row instead.
+    if (spent === 0) this.recordMergeConflict(project, ctx);
     if (this.worktrees && spent < MAX_CONFLICT_FIX_ATTEMPTS) {
       this.conflictFixAttempts.set(ctx.taskId, spent + 1);
       void this.dispatchConflictFix(project, ctx, spent + 1);

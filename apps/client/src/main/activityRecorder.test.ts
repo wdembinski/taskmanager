@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ActivityRow } from '@shared/activity';
-import { createActivityRecorder } from './activityRecorder';
+import { createActivityRecorder, releasedVersionFrom } from './activityRecorder';
 
 const BASE_REF = { projectId: 'p1', taskId: 't1', runId: 'r1', title: 'Card title' };
 
@@ -53,5 +53,21 @@ describe('createActivityRecorder', () => {
     recorder.runStarted({ ...BASE_REF, origin: 'human' });
 
     expect(onAppended).toHaveBeenCalledWith(row);
+  });
+});
+
+describe('releasedVersionFrom', () => {
+  it("reads the version out of the agent's closing reply", () => {
+    expect(releasedVersionFrom('Released v1.4.0, tagged and published on GitHub.')).toBe('v1.4.0');
+  });
+
+  it('returns null when the reply names no version', () => {
+    expect(releasedVersionFrom('Published the release, but forgot to say which one.')).toBeNull();
+  });
+
+  it('keeps a prerelease suffix', () => {
+    expect(releasedVersionFrom('Released v2.0.0-beta.1 to the canary channel.')).toBe(
+      'v2.0.0-beta.1',
+    );
   });
 });

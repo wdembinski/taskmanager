@@ -6379,6 +6379,318 @@ describe('Scheduler — activity log (F2.7)', () => {
     expect(() => h.scheduler.resumeLimitNow()).not.toThrow();
     expect(resumedRun(h.scheduler)).toBeDefined();
   });
+
+  describe('attention (raiseAttention)', () => {
+    it('records "plan-presented", with the run\'s own id and origin, when a plan is raised for approval', () => {
+      const h = setup();
+      const runId = startRun(h.scheduler, h.project, h.card, {});
+      void h.scheduler.decidePermission({
+        runId,
+        toolName: 'ExitPlanMode',
+        input: { plan: '## Reproduce it\nfirst\n\n## Fix it\nsecond' },
+      } as never);
+
+      const rows = h.rows.filter((r) => r.kind === 'plan-presented');
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ taskId: 't1', runId, origin: 'human' });
+    });
+
+    it('records "question-raised" when the CLI\'s own AskUserQuestion is held', () => {
+      const h = setup();
+      const runId = startRun(h.scheduler, h.project, h.card, {});
+      void h.scheduler.decidePermission({
+        runId,
+        toolName: 'AskUserQuestion',
+        input: {
+          questions: [
+            {
+              header: 'Database',
+              question: 'Which database should this use?',
+              multiSelect: false,
+              options: [{ label: 'SQLite', description: 'Embedded, zero-config.' }],
+            },
+          ],
+        },
+      } as never);
+
+      const rows = h.rows.filter((r) => r.kind === 'question-raised');
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ taskId: 't1', runId, origin: 'human' });
+    });
+
+    it('records nothing for an ordinary risky-tool permission prompt', () => {
+      const h = setup();
+      const runId = startRun(h.scheduler, h.project, h.card, {});
+      void h.scheduler.decidePermission({
+        runId,
+        toolName: 'Bash',
+        input: { command: 'git push' },
+      } as never);
+
+      expect(
+        h.rows.filter((r) => r.kind === 'plan-presented' || r.kind === 'question-raised'),
+      ).toEqual([]);
+    });
+  });
+
+  /**
+   * Merges, driven directly through `applyIntegrationResult` / `escalateConflict` the way
+   * the auto-release `merge()` helper does — the store is the same minimal shape, proven by
+   * that describe block not to trip any of the downstream chain/release machinery a
+   * `'merged'` result also runs.
+   */
+  describe('merges (applyIntegrationResult / escalateConflict)', () => {
+    function setup() {
+      const project = {
+        id: 'agent-1',
+        name: 'Checkout service',
+        path: 'C:/repo',
+        planPath: '',
+        kind: 'agent',
+        concurrency: 1,
+        useWorktrees: true,
+        defaultModel: 'sonnet',
+        defaultPermissionMode: 'acceptEdits',
+        instructions: '',
+      } as unknown as Project;
+      const card = {
+        id: 't1',
+        projectId: 'personal',
+        phase: '',
+        title: 'Ship the export dialog',
+        status: 'in-progress',
+        sessionId: 'sess-1',
+        order: 0,
+        source: 'jira',
+        dependsOn: [],
+        isContract: false,
+        isScaffold: false,
+        agentProjectId: 'agent-1',
+        parentTaskId: null,
+      } as unknown as Task;
+      const comments: string[] = [];
+      const store = {
+        getTask: (id: string) => (id === 't1' ? card : undefined),
+        getProject: (id: string) => (id === 'agent-1' ? project : undefined),
+        listProjects: () => [project],
+        getTasks: () => [card],
+        getSubtasks: () => [],
+        getTaskActivity: () => [],
+        addComment: (_p: string, _t: string, body: string) => comments.push(body),
+        listTaskLinks: () => [],
+        updateTask: (id: string, patch: Partial<Task>) => {
+          if (id === 't1') Object.assign(card, patch);
+          return card;
+        },
+        appendTaskEvent: vi.fn(),
+        appendTokenUsage: vi.fn(),
+        getSettings: () => ({ maxAutoRetries: 0, limitJitterMs: 0, concurrency: 1 }),
+        ...INERT_ATTENTION_STORE,
+      } as unknown as Store;
+      const start = vi.fn((_req: unknown, o: { runId?: string }) => ({
+        runId: o?.runId ?? 'r-new',
+      }));
+      const sessions = { start, stop: vi.fn(), send: vi.fn() } as unknown as SessionManager;
+      const scheduler = new Scheduler(store, sessions, vi.fn(), vi.fn(), vi.fn(), vi.fn(), vi.fn());
+      const { rows, append } = createFakeAppendActivity();
+      scheduler.setActivityRecorder(createActivityRecorder({ append }));
+      const ctx = {
+        taskId: 't1',
+        runId: 'r1',
+        branch: 'feat/export',
+        base: 'development',
+        worktree: 'C:/wt/t1',
+      };
+      const engine = scheduler as unknown as {
+        applyIntegrationResult: (p: Project, c: unknown, r: unknown) => void;
+        escalateConflict: (p: Project, c: unknown) => void;
+        conflictFixAttempts: Map<string, number>;
+      };
+      /** The merge/conflict/failure outcome, exactly as `integrateWorktree` reports it. */
+      const apply = (result: Record<string, unknown>): void =>
+        engine.applyIntegrationResult(project, ctx, result);
+      return { scheduler, card, rows, engine, ctx, project, apply };
+    }
+
+    it('records "merge-landed" with the branch when a merge lands', () => {
+      const h = setup();
+      h.apply({ status: 'merged' });
+
+      const rows = h.rows.filter((r) => r.kind === 'merge-landed');
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        taskId: 't1',
+        runId: 'r1',
+        origin: null,
+        detail: { branch: 'feat/export' },
+      });
+    });
+
+    it('records "merge-failed" with the status as the reason for a dirty base', () => {
+      const h = setup();
+      h.apply({ status: 'dirty-base', base: 'development' });
+
+      const rows = h.rows.filter((r) => r.kind === 'merge-failed');
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        taskId: 't1',
+        detail: { branch: 'feat/export', reason: 'dirty-base' },
+      });
+    });
+
+    it('records "merge-failed" with the message as the reason for an error', () => {
+      const h = setup();
+      h.apply({ status: 'error', message: 'git blew up' });
+
+      const rows = h.rows.filter((r) => r.kind === 'merge-failed');
+      expect(rows).toHaveLength(1);
+      expect(rows[0].detail).toEqual({ branch: 'feat/export', reason: 'git blew up' });
+    });
+
+    it('records nothing for a rebase or a no-op merge', () => {
+      const h = setup();
+      h.apply({
+        status: 'rebased',
+        branch: 'feat/export',
+        base: 'development',
+        worktree: 'C:/wt/t1',
+      });
+      h.apply({
+        status: 'nothing-to-merge',
+        branch: 'feat/export',
+        base: 'development',
+        reason: 'already merged',
+      });
+
+      expect(h.rows).toEqual([]);
+    });
+
+    it('records exactly one "merge-conflict" row, even after the AI fix hits a conflict again', () => {
+      const h = setup();
+      h.apply({
+        status: 'conflict',
+        worktree: h.ctx.worktree,
+        branch: h.ctx.branch,
+        base: h.ctx.base,
+      });
+      // The AI fix's own attempt came back conflicted too — `spent` is no longer 0 for this
+      // task, whether or not a real Rung 2 dispatch ran, and that alone must suppress a
+      // second row.
+      h.engine.conflictFixAttempts.set(h.ctx.taskId, 1);
+      h.engine.escalateConflict(h.project, h.ctx);
+
+      const rows = h.rows.filter((r) => r.kind === 'merge-conflict');
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        taskId: 't1',
+        runId: 'r1',
+        detail: { branch: 'feat/export' },
+      });
+    });
+  });
+
+  /**
+   * Release runs settle through `settle`'s own `releaseSeed` branch, driven through the real
+   * event path (`onRunEvent`'s `case 'result'`) so `releasedVersionFrom` is exercised on the
+   * actual field it reads, `resultText`.
+   */
+  describe('release runs (settle)', () => {
+    function setup() {
+      const project = {
+        id: 'agent-1',
+        name: 'Checkout service',
+        path: 'C:/repo',
+        planPath: '',
+        kind: 'agent',
+        concurrency: 1,
+        useWorktrees: true,
+        defaultModel: 'sonnet',
+        defaultPermissionMode: 'acceptEdits',
+        instructions: '',
+      } as unknown as Project;
+      const card = {
+        id: 't1',
+        projectId: 'personal',
+        phase: '',
+        title: 'Fix the export dialog',
+        status: 'in-progress',
+        sessionId: 'sess-1',
+        order: 0,
+        source: 'jira',
+        dependsOn: [],
+        isContract: false,
+        isScaffold: false,
+        agentProjectId: 'agent-1',
+        parentTaskId: null,
+      } as unknown as Task;
+      const store = {
+        getTask: (id: string) => (id === 't1' ? card : undefined),
+        getProject: (id: string) => (id === 'agent-1' ? project : undefined),
+        listProjects: () => [project],
+        getTasks: () => [card],
+        getSubtasks: () => [],
+        getTaskActivity: () => [],
+        addComment: vi.fn(),
+        listTaskLinks: () => [],
+        updateTask: (id: string, patch: Partial<Task>) => {
+          if (id === 't1') Object.assign(card, patch);
+          return card;
+        },
+        appendTaskEvent: vi.fn(),
+        appendTokenUsage: vi.fn(),
+        getSettings: () => ({ maxAutoRetries: 0, limitJitterMs: 0, concurrency: 1 }),
+        ...INERT_ATTENTION_STORE,
+      } as unknown as Store;
+      const start = vi.fn((_req: unknown, o: { runId?: string }) => ({
+        runId: o?.runId ?? 'r-release',
+      }));
+      const sessions = { start, stop: vi.fn(), send: vi.fn() } as unknown as SessionManager;
+      const scheduler = new Scheduler(store, sessions, vi.fn(), vi.fn(), vi.fn(), vi.fn(), vi.fn());
+      const { rows, append } = createFakeAppendActivity();
+      scheduler.setActivityRecorder(createActivityRecorder({ append }));
+      const runId = (
+        scheduler as unknown as {
+          startTask: (p: Project, t: Task, o: Record<string, unknown>) => string;
+        }
+      ).startTask(project, card, { releaseSeed: true, origin: 'auto-release' });
+      const fire = (event: unknown): Promise<void> =>
+        (
+          scheduler as unknown as { onRunEvent: (r: string, e: unknown) => Promise<void> }
+        ).onRunEvent(runId, event);
+      return { scheduler, card, rows, runId, fire };
+    }
+
+    const resultEvent = (resultText: string, success = true) => ({
+      kind: 'result',
+      success,
+      resultText,
+      costUsd: null,
+      durationMs: null,
+      stopReason: null,
+      terminalReason: null,
+    });
+
+    it('records "release-published", origin "auto-release", with the version named in the reply', async () => {
+      const h = setup();
+      await h.fire(resultEvent('Released v1.4.0, tagged and published on GitHub.'));
+
+      const rows = h.rows.filter((r) => r.kind === 'release-published');
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        taskId: 't1',
+        runId: h.runId,
+        origin: 'auto-release',
+        detail: { version: 'v1.4.0' },
+      });
+    });
+
+    it('records nothing for a failed release run', async () => {
+      const h = setup();
+      await h.fire(resultEvent('npm publish exited 1', false));
+
+      expect(h.rows.filter((r) => r.kind === 'release-published')).toEqual([]);
+    });
+  });
 });
 
 /**
