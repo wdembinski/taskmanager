@@ -60,7 +60,29 @@
  *     conflicted row produces NOTHING — no session, no note, no `lastActedSha` — proven
  *     through the real `watchMergeRequests`, which is the one place that gate is checked
  *     (`prWatchAction` itself has never heard of it).
- *  7. **An older database migrates.** A copy with `headSha`/`lastActedSha` dropped (every
+ *  7. **`chainLandedAt` survives a conflict fix.** A card whose chain just landed carries that
+ *     one-shot review marker when its PR turns out to be conflicted. The Rung 2 fix still runs
+ *     in the card's OWN worktree (not the shared project directory a review turn would use),
+ *     the ladder finishes and pushes exactly as in check 1, and the marker is still sitting on
+ *     the card afterwards — proving `startTask` excluded this run from `reviewSeed` rather than
+ *     the marker having simply not been consumed yet for some other reason.
+ *  8. **A legacy row, stranded mid-rebase, is rescued by one watcher pass after a restart.** A
+ *     worktree is driven to a real, paused, resolved-and-staged rebase directly (standing in
+ *     for whatever got it there before an app quit mid-fix), and its row is written in the
+ *     exact shape the old bug left behind: `lastActedSha === headSha` (stamped at dispatch, the
+ *     bug `markMrActed`'s new call sites fix) and `lastActedAction: null` (a row from before
+ *     that column existed). A BRAND NEW `Scheduler` over the same store and worktree root —
+ *     what a restart actually rebuilds — drives `watchMergeRequests` over that one row ONCE,
+ *     with no agent run: `rebaseForPullRequest` finds the rebase already in progress, continues
+ *     it, and the push lands and stamps the row for real.
+ *  9. **A pipeline-passed note, then a conflict on the SAME head, still triggers resolution.**
+ *     A clean MR is noted as `note-pipeline-passed` and stamped. The target then moves under it
+ *     and the forge reports the identical head as conflicted — the row is re-read (so the
+ *     carried-forward memory comes through `upsertMergeRequest`'s own COALESCE, the same path a
+ *     real sync reconciler uses) and handed back to the SAME watcher. `resolve-conflicts` fires
+ *     despite the unchanged head, because the last action recorded was a note, not a
+ *     remediation — and the ladder runs an agent fix and pushes exactly as in check 1.
+ *  10. **An older database migrates.** A copy with `headSha`/`lastActedSha` dropped (every
  *     database written before this feature existed) opens without throwing and is writable
  *     afterwards.
  *
@@ -74,6 +96,14 @@
  * `pushForgeRebase`'s call to `this.forgeGit.push` in `scheduler.ts` and check 1's final
  * push-landed assertion goes red while everything up to the rebase still passes — proof that
  * assertion is not a tautology.
+ *
+ * Drop the `!fixingConflict &&` guard off `startTask`'s `reviewSeed` line (reverting 36c1212)
+ * and check 7 goes red: the fix run's `cwd` is the shared project directory instead of the
+ * worktree, and `chainLandedAt` is cleared out from under the card before the review it was
+ * waiting for ever runs. Revert `prWatchAction` to its pre-ecbde6b shape — suppress on any
+ * unchanged head, full stop, with no look at `lastActedAction` — and both checks 8 and 9 go
+ * red: the stranded worktree in 8 is never re-driven (nothing ever logs "pushed it back"), and
+ * the conflict in 9 is silently left unactioned because its head looks already "handled".
  *
  * Exits non-zero naming every failed check.
  */
@@ -474,6 +504,14 @@ scheduler.setForgeGit({
     return { ok: true };
   },
 });
+// `resolve-conflicts` is stamped by the SCHEDULER itself once the ladder reaches one of its
+// own terminals (cf8b4f7) — `prWatcher.ts` no longer stamps it at dispatch — so this wiring
+// (mirroring `ipc.ts`'s own `scheduler.setMarkMrActed(...)` call) is what makes `lastActedSha`
+// ever advance for that action in this script at all. Missing, every `resolve-conflicts`
+// episode below would settle and push for real while leaving its row looking untouched —
+// exactly the gap this step's three new scenarios, and the two checks below it that already
+// existed, are here to catch.
+scheduler.setMarkMrActed((mrId, sha, action) => store.markMergeRequestActed(mrId, sha, action));
 
 /**
  * How many times a run on this task has fully exited so far — the empty patch
@@ -526,6 +564,7 @@ function mrRow(over) {
     draft: false,
     headSha: 'headsha1',
     lastActedSha: null,
+    lastActedAction: null,
     pipelineStatus: 'unknown',
     pipelineStages: [],
     pipelineUrl: null,
@@ -630,7 +669,7 @@ const deps = {
   tokenFor: () => 'stub-token',
   resolveForgeConflict: (taskId, mr) => scheduler.resolveForgeConflict(taskId, mr),
   note: (projectId, taskId, body) => store.addComment(projectId, taskId, body),
-  markActed: (mrId, headSha) => store.markMergeRequestActed(mrId, headSha),
+  markActed: (mrId, headSha, action) => store.markMergeRequestActed(mrId, headSha, action),
 };
 
 await watchMergeRequests([conflictMr], deps);
@@ -882,11 +921,360 @@ check(
   store.listMergeRequests().find((r) => r.id === gatedMr.id)?.lastActedSha === null,
 );
 
-// Restore for cleanliness before the migration check reopens the same database.
+// Restore for cleanliness before the sections below reopen the same database.
 store.saveSettings({
   ...store.getSettings(),
   features: { ...store.getSettings().features, prAutoResolve: true },
 });
+
+// ===========================================================================
+section('7. chainLandedAt is not consumed by a conflict fix (36c1212)');
+
+const chainCard = card('Chain just landed, then hit a conflict');
+const chainBranch = taskBranch(chainCard.id);
+const chainExitsBefore = exitCountFor(chainCard.id);
+const chainFirstRunN = invocations().length + 1;
+scheduler.runTask(chainCard.id);
+const chainFirstRun = await nthInvocation(chainFirstRunN, "the chain-landed card's first run");
+const chainFirstSha = commitAndPush(chainFirstRun.cwd, 'seed.txt', 'seed\nchain-landed branch work\n', chainBranch);
+proceed(chainFirstRunN);
+await waitFor(
+  "the chain-landed card's first run to fully exit",
+  () => exitCountFor(chainCard.id) >= chainExitsBefore + 2,
+);
+
+// `finishParentChain`'s own one-shot marker — set here by hand rather than by driving a
+// whole parent chain to completion, since only its PRESENCE on the card matters to `startTask`.
+store.updateTask(chainCard.id, { chainLandedAt: 1_700_000_000_000 });
+
+const chainOtherClone = join(work, 'chain-other-clone');
+git(work, 'clone', bareDir, chainOtherClone);
+git(chainOtherClone, 'config', 'user.email', 'verify@example.com');
+git(chainOtherClone, 'config', 'user.name', 'Verify');
+git(chainOtherClone, 'config', 'commit.gpgsign', 'false');
+writeFileSync(join(chainOtherClone, 'seed.txt'), 'seed\nconflicting change for the chain-landed card\n', 'utf8');
+git(chainOtherClone, 'add', '-A');
+git(chainOtherClone, 'commit', '--no-verify', '-m', 'conflicting change for the chain-landed card');
+git(chainOtherClone, 'push', 'origin', `HEAD:refs/heads/${base}`);
+const chainTargetConflictSha = git(chainOtherClone, 'rev-parse', 'HEAD');
+
+const chainTimelineBefore = timelineOf(chainCard.id);
+const chainMr = mrRow({
+  id: 'gl-700-30',
+  openedForTaskId: chainCard.id,
+  repoId: 700,
+  number: 30,
+  webUrl: 'https://gitlab.example.com/acme/web/-/merge_requests/30',
+  sourceBranch: chainBranch,
+  targetBranch: base,
+  headSha: chainFirstSha,
+  detailedMergeStatus: 'conflict',
+  hasConflicts: true,
+});
+store.upsertMergeRequest(chainMr);
+
+const chainFixRunN = invocations().length + 1;
+await watchMergeRequests([chainMr], deps);
+const chainFixRun = await nthInvocation(chainFixRunN, "the chain-landed card's conflict-fix run");
+check(
+  "the fix run landed in the card's OWN worktree, not a shared project directory — " +
+    'chainLandedAt must not have routed it through reviewSeed',
+  chainFixRun.cwd === chainFirstRun.cwd,
+  `${chainFixRun.cwd} != ${chainFirstRun.cwd}`,
+);
+check(
+  'chainLandedAt is still set while the fix is in flight — a conflict fix must not consume it',
+  store.getTask(chainCard.id).chainLandedAt === 1_700_000_000_000,
+);
+
+writeFileSync(join(chainFixRun.cwd, 'seed.txt'), 'seed\nresolved for the chain-landed card\n', 'utf8');
+git(chainFixRun.cwd, 'add', 'seed.txt');
+proceed(chainFixRunN);
+await waitFor(
+  "the chain-landed card's fix to settle and push",
+  () => notesSince(chainCard.id, chainTimelineBefore).includes('pushed it back to the forge'),
+);
+
+const chainPushedSha = originHead(chainBranch);
+check(
+  'the rebased commit landed on origin for the chain-landed card too',
+  chainPushedSha !== null && chainPushedSha !== chainFirstSha,
+  `${chainPushedSha} (was ${chainFirstSha})`,
+);
+check(
+  'built on top of the conflicting target commit',
+  chainPushedSha !== null && isAncestorOf(bareDir, chainTargetConflictSha, chainPushedSha),
+);
+const chainNotes = notesSince(chainCard.id, chainTimelineBefore);
+check(
+  'the card\'s timeline says "Rebased … and pushed"',
+  chainNotes.includes('Rebased') && chainNotes.includes('and pushed it back to the forge'),
+  chainNotes,
+);
+const chainRow = store.listMergeRequests().find((r) => r.id === chainMr.id);
+check(
+  'and the row is stamped once the ladder actually settled',
+  chainRow?.lastActedSha === chainFirstSha && chainRow?.lastActedAction === 'resolve-conflicts',
+  JSON.stringify(chainRow),
+);
+check(
+  'chainLandedAt is STILL set afterwards — left for whichever run actually reviews the card',
+  store.getTask(chainCard.id).chainLandedAt === 1_700_000_000_000,
+);
+
+// ===========================================================================
+section('8. a legacy row, stranded mid-rebase, is rescued by one watcher pass after a restart (cf8b4f7)');
+
+const strandedCard = card('Stranded mid-rebase after a restart');
+const strandedBranch = taskBranch(strandedCard.id);
+const strandedExitsBefore = exitCountFor(strandedCard.id);
+const strandedRunN = invocations().length + 1;
+scheduler.runTask(strandedCard.id);
+const strandedRun = await nthInvocation(strandedRunN, "the stranded card's only run");
+const strandedSha = commitAndPush(strandedRun.cwd, 'seed.txt', 'seed\nstranded branch work\n', strandedBranch);
+proceed(strandedRunN);
+await waitFor(
+  "the stranded card's run to fully exit",
+  () => exitCountFor(strandedCard.id) >= strandedExitsBefore + 2,
+);
+
+const strandedOtherClone = join(work, 'stranded-other-clone');
+git(work, 'clone', bareDir, strandedOtherClone);
+git(strandedOtherClone, 'config', 'user.email', 'verify@example.com');
+git(strandedOtherClone, 'config', 'user.name', 'Verify');
+git(strandedOtherClone, 'config', 'commit.gpgsign', 'false');
+writeFileSync(join(strandedOtherClone, 'seed.txt'), 'seed\nconflicting change for the stranded card\n', 'utf8');
+git(strandedOtherClone, 'add', '-A');
+git(strandedOtherClone, 'commit', '--no-verify', '-m', 'conflicting change for the stranded card');
+git(strandedOtherClone, 'push', 'origin', `HEAD:refs/heads/${base}`);
+const strandedTargetConflictSha = git(strandedOtherClone, 'rev-parse', 'HEAD');
+
+// Manufacture the exact state a stranded worktree was left in before cf8b4f7: fetch the
+// target, rebase directly against it (bypassing the watcher entirely — this scenario is about
+// the watcher RESCUING a worktree, not about how it got stuck), resolve and stage the
+// conflict, but never call `finishPullRequestRebase` — the rebase is left paused, exactly as
+// an app that quit mid-fix would leave it.
+const strandedTargetRef = `refs/remotes/origin/${base}`;
+const strandedFetch = await fetchRef(strandedRun.cwd, 'origin', base, strandedTargetRef);
+check('fetched the target ref to manufacture the stranded state', strandedFetch.code === 0, strandedFetch.stderr);
+const strandedRebase = await worktrees.rebaseForPullRequest(
+  project,
+  strandedBranch,
+  strandedTargetRef,
+  strandedRun.cwd,
+  'orchestrator: rebase for the stranded MR',
+);
+check(
+  'rebaseForPullRequest lands on "conflict", manufacturing the stranded state',
+  strandedRebase.status === 'conflict',
+  JSON.stringify(strandedRebase),
+);
+writeFileSync(
+  join(strandedRun.cwd, 'seed.txt'),
+  'seed\nstranded resolution, staged but never continued\n',
+  'utf8',
+);
+git(strandedRun.cwd, 'add', 'seed.txt');
+
+// The legacy row: `lastActedSha` already equals `headSha` — the old code stamped this at
+// DISPATCH, before the ladder it queued had run a single git command — and `lastActedAction`
+// is null, either because the column predates this row or because that dispatch-time stamp
+// predates the action ever being recorded. Exactly what six real worktrees on this host
+// looked like.
+const strandedMr = mrRow({
+  id: 'gl-900-21',
+  openedForTaskId: strandedCard.id,
+  repoId: 900,
+  number: 21,
+  webUrl: 'https://gitlab.example.com/acme/web/-/merge_requests/21',
+  sourceBranch: strandedBranch,
+  targetBranch: base,
+  headSha: strandedSha,
+  lastActedSha: strandedSha,
+  lastActedAction: null,
+  detailedMergeStatus: 'conflict',
+  hasConflicts: true,
+});
+store.upsertMergeRequest(strandedMr);
+
+// A brand-new Scheduler, exactly as a restart would build one: no in-memory
+// `forgeConflictHandled`/`pendingConflictFix` state survives a restart, over the SAME store,
+// session manager and worktree root.
+const restarted = new Scheduler(
+  store,
+  sessions,
+  (change) => taskChanges.push(change),
+  () => {},
+  () => {},
+  () => {},
+  () => {},
+  worktrees,
+);
+restarted.setForgeGit({
+  fetch: async (restartedProject, cwd, branch, localRef) => {
+    const res = await fetchRef(cwd, 'origin', branch, localRef);
+    if (res.code !== 0) return { ok: false, message: res.stderr.trim() || 'git fetch failed' };
+    return { ok: true, sha: git(cwd, 'rev-parse', localRef) };
+  },
+  push: async (restartedProject, cwd, branch, expected) => {
+    const res = await pushBranch(cwd, 'origin', branch, { forceWithLease: { expected } });
+    if (res.code !== 0) return { ok: false, message: res.stderr.trim() || 'git push failed' };
+    return { ok: true };
+  },
+});
+// The same wiring as the main scheduler's own `setMarkMrActed` above — a restart rebuilds
+// this too, and without it the stranded row would get rescued but never stamped.
+restarted.setMarkMrActed((mrId, sha, action) => store.markMergeRequestActed(mrId, sha, action));
+const restartedDeps = {
+  ...deps,
+  resolveForgeConflict: (taskId, mr) => restarted.resolveForgeConflict(taskId, mr),
+};
+
+const strandedTimelineBefore = timelineOf(strandedCard.id);
+const invocationsBeforeRestart = invocations().length;
+await watchMergeRequests([strandedMr], restartedDeps);
+await waitFor(
+  'the restarted scheduler to finish and push the stranded rebase',
+  () => notesSince(strandedCard.id, strandedTimelineBefore).includes('pushed it back to the forge'),
+);
+
+check(
+  'no new agent run was needed — the resolution was already staged in the worktree',
+  invocations().length === invocationsBeforeRestart,
+  invocations().length - invocationsBeforeRestart,
+);
+const strandedPushedSha = originHead(strandedBranch);
+check(
+  'the stranded rebase really landed on origin',
+  strandedPushedSha !== null && strandedPushedSha !== strandedSha,
+  `${strandedPushedSha} (was ${strandedSha})`,
+);
+check(
+  'built on top of the conflicting commit the other clone pushed',
+  strandedPushedSha !== null && isAncestorOf(bareDir, strandedTargetConflictSha, strandedPushedSha),
+);
+const strandedRow = store.listMergeRequests().find((r) => r.id === strandedMr.id);
+check(
+  'and the row is finally stamped correctly, now that the ladder actually settled',
+  strandedRow?.lastActedSha === strandedSha && strandedRow?.lastActedAction === 'resolve-conflicts',
+  JSON.stringify(strandedRow),
+);
+
+restarted.dispose();
+
+// ===========================================================================
+section('9. a pipeline-passed note, then a conflict on the SAME head, still triggers resolution (ecbde6b)');
+
+const pcCard = card('Pipeline passed, then the target moved and left a conflict');
+const pcBranch = taskBranch(pcCard.id);
+const pcExitsBefore = exitCountFor(pcCard.id);
+const pcFirstRunN = invocations().length + 1;
+scheduler.runTask(pcCard.id);
+const pcFirstRun = await nthInvocation(pcFirstRunN, "the pipeline/conflict card's first run");
+const pcSha = commitAndPush(pcFirstRun.cwd, 'seed.txt', 'seed\npipeline/conflict branch work\n', pcBranch);
+proceed(pcFirstRunN);
+await waitFor(
+  "the pipeline/conflict card's first run to fully exit",
+  () => exitCountFor(pcCard.id) >= pcExitsBefore + 2,
+);
+
+const pcTimelineBeforeNote = timelineOf(pcCard.id);
+const pcMrPassed = mrRow({
+  id: 'gl-800-40',
+  openedForTaskId: pcCard.id,
+  repoId: 800,
+  number: 40,
+  webUrl: 'https://gitlab.example.com/acme/web/-/merge_requests/40',
+  sourceBranch: pcBranch,
+  targetBranch: base,
+  headSha: pcSha,
+  pipelineStatus: 'success',
+});
+store.upsertMergeRequest(pcMrPassed);
+await watchMergeRequests([pcMrPassed], deps);
+check(
+  'the pipeline passing is noted',
+  notesSince(pcCard.id, pcTimelineBeforeNote).includes('pipeline passed'),
+  timelineOf(pcCard.id),
+);
+const pcRowAfterNote = store.listMergeRequests().find((r) => r.id === pcMrPassed.id);
+check(
+  'and the row remembers which action fired, on this exact head',
+  pcRowAfterNote?.lastActedSha === pcSha && pcRowAfterNote?.lastActedAction === 'note-pipeline-passed',
+  JSON.stringify(pcRowAfterNote),
+);
+
+// The target moves underneath it — same head, a conflict the forge did not report a moment
+// ago. `lastActedSha`/`lastActedAction` are left off this update, same as every other row this
+// script builds by hand — `upsertMergeRequest`'s own COALESCE is what carries the real ones
+// forward, exactly as a sync reconciler's own update does.
+const pcOtherClone = join(work, 'pipeline-conflict-other-clone');
+git(work, 'clone', bareDir, pcOtherClone);
+git(pcOtherClone, 'config', 'user.email', 'verify@example.com');
+git(pcOtherClone, 'config', 'user.name', 'Verify');
+git(pcOtherClone, 'config', 'commit.gpgsign', 'false');
+writeFileSync(join(pcOtherClone, 'seed.txt'), 'seed\nconflicting change after the pipeline passed\n', 'utf8');
+git(pcOtherClone, 'add', '-A');
+git(pcOtherClone, 'commit', '--no-verify', '-m', 'conflicting change after the pipeline passed');
+git(pcOtherClone, 'push', 'origin', `HEAD:refs/heads/${base}`);
+const pcTargetConflictSha = git(pcOtherClone, 'rev-parse', 'HEAD');
+
+store.upsertMergeRequest(
+  mrRow({
+    id: pcMrPassed.id,
+    openedForTaskId: pcCard.id,
+    repoId: 800,
+    number: 40,
+    webUrl: pcMrPassed.webUrl,
+    sourceBranch: pcBranch,
+    targetBranch: base,
+    headSha: pcSha, // unchanged — no new push to the PR branch itself
+    pipelineStatus: 'success',
+    detailedMergeStatus: 'conflict',
+    hasConflicts: true,
+  }),
+);
+const pcReRead = store.listMergeRequests().find((r) => r.id === pcMrPassed.id);
+check(
+  'the re-read row still carries the note forward, same head, before the watcher looks again',
+  pcReRead?.lastActedSha === pcSha && pcReRead?.lastActedAction === 'note-pipeline-passed',
+  JSON.stringify(pcReRead),
+);
+
+const pcTimelineBeforeFix = timelineOf(pcCard.id);
+const pcFixRunN = invocations().length + 1;
+await watchMergeRequests([pcReRead], deps);
+const pcFixRun = await nthInvocation(
+  pcFixRunN,
+  'the conflict-fix run on an unchanged head whose last action was a note',
+);
+check(
+  "resolve-conflicts fired in the card's own worktree despite the unchanged head, because " +
+    'the last action was a NOTE, not a remediation',
+  pcFixRun.cwd === pcFirstRun.cwd,
+  `${pcFixRun.cwd} != ${pcFirstRun.cwd}`,
+);
+
+writeFileSync(join(pcFixRun.cwd, 'seed.txt'), 'seed\nresolved after the pipeline-passed note\n', 'utf8');
+git(pcFixRun.cwd, 'add', 'seed.txt');
+proceed(pcFixRunN);
+await waitFor(
+  'the fix to settle and push',
+  () => notesSince(pcCard.id, pcTimelineBeforeFix).includes('pushed it back to the forge'),
+);
+
+const pcPushedSha = originHead(pcBranch);
+check('the rebased commit landed on origin', pcPushedSha !== null && pcPushedSha !== pcSha, `${pcPushedSha} (was ${pcSha})`);
+check(
+  'built on top of the conflicting target commit',
+  pcPushedSha !== null && isAncestorOf(bareDir, pcTargetConflictSha, pcPushedSha),
+);
+const pcFinalRow = store.listMergeRequests().find((r) => r.id === pcMrPassed.id);
+check(
+  'and the row now remembers the remediation, not the stale note',
+  pcFinalRow?.lastActedSha === pcSha && pcFinalRow?.lastActedAction === 'resolve-conflicts',
+  JSON.stringify(pcFinalRow),
+);
 
 // ===========================================================================
 // Kill every stub still waiting on a proceed file before the database is closed. The pause
@@ -900,16 +1288,19 @@ const dbPath = join(work, 'orchestrator.db');
 store.close();
 
 // ===========================================================================
-section('7. an older database — written before headSha/lastActedSha existed — migrates');
+section('10. an older database — written before headSha/lastActedSha/lastActedAction existed — migrates');
 
 const raw = new (require('better-sqlite3'))(dbPath);
 raw.exec(`ALTER TABLE merge_requests DROP COLUMN headSha`);
 raw.exec(`ALTER TABLE merge_requests DROP COLUMN lastActedSha`);
+raw.exec(`ALTER TABLE merge_requests DROP COLUMN lastActedAction`);
 const columnsNow = raw.prepare(`PRAGMA table_info(merge_requests)`).all().map((c) => c.name);
 raw.close();
 check(
-  'both columns can be taken away, so the migration has something to do',
-  !columnsNow.includes('headSha') && !columnsNow.includes('lastActedSha'),
+  'all three columns can be taken away, so the migration has something to do',
+  !columnsNow.includes('headSha') &&
+    !columnsNow.includes('lastActedSha') &&
+    !columnsNow.includes('lastActedAction'),
   JSON.stringify(columnsNow),
 );
 
@@ -924,17 +1315,21 @@ check('opening the older database does not throw', upgraded !== null, openError 
 if (upgraded) {
   const row = upgraded.listMergeRequests().find((r) => r.id === conflictMr.id);
   check(
-    'the migration adds both columns back, empty',
-    row !== undefined && row.headSha === null && row.lastActedSha === null,
+    'the migration adds all three columns back, empty',
+    row !== undefined &&
+      row.headSha === null &&
+      row.lastActedSha === null &&
+      row.lastActedAction === null,
     JSON.stringify(row ?? null),
   );
   // Writable afterwards — an ALTER that ran but left the UPSERT naming a column that is not
   // there would only be found here.
-  upgraded.markMergeRequestActed(conflictMr.id, 'after-migration-sha');
+  upgraded.markMergeRequestActed(conflictMr.id, 'after-migration-sha', 'resolve-conflicts');
   const rewritten = upgraded.listMergeRequests().find((r) => r.id === conflictMr.id);
   check(
     'and the new columns can be written and read back through it',
-    rewritten?.lastActedSha === 'after-migration-sha',
+    rewritten?.lastActedSha === 'after-migration-sha' &&
+      rewritten?.lastActedAction === 'resolve-conflicts',
     JSON.stringify(rewritten),
   );
   upgraded.close();

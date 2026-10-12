@@ -2005,7 +2005,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       store.addComment(projectId, taskId, body);
       send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) });
     },
-    markActed: (mrId, headSha) => store.markMergeRequestActed(mrId, headSha),
+    markActed: (mrId, headSha, action) => store.markMergeRequestActed(mrId, headSha, action),
   });
 
   // The PR/MR conflict ladder's fetch and force-with-lease push (`Scheduler.
@@ -2066,6 +2066,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       }
     },
   });
+
+  // The conflict ladder's own terminals stamp the episode as acted on once they settle,
+  // rather than `prWatcher.ts` stamping it at dispatch — see `Scheduler.setMarkMrActed`.
+  scheduler.setMarkMrActed((mrId, sha, action) => store.markMergeRequestActed(mrId, sha, action));
 
   // -------------------------------------------------------------------------
   // Cloud personal access token — the same four-channel shape JIRA/GitLab/GitHub use above,

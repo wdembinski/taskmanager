@@ -6353,6 +6353,7 @@ describe('Scheduler — the PR/MR conflict ladder (resolveForgeConflict)', () =>
     lastEventSeenAt: null,
     headSha: null,
     lastActedSha: null,
+    lastActedAction: null,
     updatedAt: 0,
     syncedAt: 0,
     ...over,
@@ -6365,6 +6366,7 @@ describe('Scheduler — the PR/MR conflict ladder (resolveForgeConflict)', () =>
     isAncestorResult?: boolean;
     fetchResult?: (branch: string) => { ok: true; sha: string } | { ok: false; message: string };
     pushResult?: { ok: true } | { ok: false; message: string };
+    inspectResult?: { cwd: string; branch: string; base: string } | null;
   }) {
     const project = {
       id: 'agent-1',
@@ -6433,7 +6435,11 @@ describe('Scheduler — the PR/MR conflict ladder (resolveForgeConflict)', () =>
         branch: 'orch/t1',
         base: 'main',
       })),
-      inspect: vi.fn(async () => ({ cwd: 'C:/wt/t1', branch: 'orch/t1', base: 'main' })),
+      inspect: vi.fn(async () =>
+        opts && 'inspectResult' in opts
+          ? opts.inspectResult
+          : { cwd: 'C:/wt/t1', branch: 'orch/t1', base: 'main' },
+      ),
       listConflicts: vi.fn(async () => ['src/app.ts']),
       isAncestor: vi.fn(async () => opts?.isAncestorResult ?? true),
       rebaseForPullRequest: vi.fn(async (_p: Project, branch: string, target: string) => {
@@ -6494,6 +6500,8 @@ describe('Scheduler — the PR/MR conflict ladder (resolveForgeConflict)', () =>
       worktrees,
     );
     scheduler.setForgeGit(forgeGit);
+    const marked: Array<{ mrId: string; sha: string; action: string }> = [];
+    scheduler.setMarkMrActed((mrId, sha, action) => marked.push({ mrId, sha, action }));
 
     const fire = (runId: string, event: unknown): Promise<void> =>
       (scheduler as unknown as { onRunEvent: (r: string, e: unknown) => Promise<void> }).onRunEvent(
@@ -6514,21 +6522,92 @@ describe('Scheduler — the PR/MR conflict ladder (resolveForgeConflict)', () =>
       finishCalls,
       fetchCalls,
       pushCalls,
+      marked,
       fire,
     };
   }
 
   const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
-  it('a clean rebase pushes with the lease', async () => {
-    const { scheduler, rebaseCalls, pushCalls, notes } = setup();
-    scheduler.resolveForgeConflict('t1', mergeRequest());
+  it('a clean rebase pushes with the lease and stamps the episode once it settles', async () => {
+    const { scheduler, rebaseCalls, pushCalls, notes, marked } = setup();
+    scheduler.resolveForgeConflict('t1', mergeRequest({ headSha: 'sha-head-1' }));
+    // Dispatch alone — the ladder is still a pending promise at this point — leaves the row
+    // unstamped. Only the terminal it eventually reaches (the push below) stamps it.
+    expect(marked).toEqual([]);
     await flush();
 
     expect(rebaseCalls).toEqual([{ branch: 'orch/t1', target: 'refs/remotes/origin/main' }]);
     expect(pushCalls).toEqual([{ branch: 'orch/t1', expected: 'sha-remote-1' }]);
     expect(notes.some((n) => n.includes('pushed it back'))).toBe(true);
+    expect(marked).toEqual([{ mrId: 'gl-1-12', sha: 'sha-remote-1', action: 'resolve-conflicts' }]);
   });
+
+  it('a push that is refused still stamps the episode, alongside the parked failure', async () => {
+    const { scheduler, pushCalls, emitAttention, marked } = setup({
+      pushResult: { ok: false, message: 'stale info' },
+    });
+    scheduler.resolveForgeConflict('t1', mergeRequest({ headSha: 'sha-head-1' }));
+    await flush();
+
+    expect(pushCalls).toEqual([{ branch: 'orch/t1', expected: 'sha-remote-1' }]);
+    expect(emitAttention).toHaveBeenCalledTimes(1);
+    expect(emitAttention.mock.calls[0][0]).toMatchObject({ kind: 'task-failed' });
+    expect(marked).toEqual([{ mrId: 'gl-1-12', sha: 'sha-remote-1', action: 'resolve-conflicts' }]);
+  });
+
+  it('a card with no live worktree to rebase stamps the episode on its refusal note', async () => {
+    const { scheduler, notes, rebaseCalls, marked } = setup({ inspectResult: null });
+    scheduler.resolveForgeConflict('t1', mergeRequest({ headSha: 'sha-head-1' }));
+    await flush();
+
+    expect(rebaseCalls).toEqual([]);
+    expect(notes.some((n) => n.includes('no live worktree to rebase it in'))).toBe(true);
+    expect(marked).toEqual([{ mrId: 'gl-1-12', sha: 'sha-head-1', action: 'resolve-conflicts' }]);
+  });
+
+  it('an error rebasing stamps the episode, alongside the parked failure', async () => {
+    const { scheduler, emitAttention, marked } = setup({
+      rebaseResult: { status: 'error', message: 'git blew up' },
+    });
+    scheduler.resolveForgeConflict('t1', mergeRequest({ headSha: 'sha-head-1' }));
+    await flush();
+
+    expect(emitAttention).toHaveBeenCalledTimes(1);
+    expect(emitAttention.mock.calls[0][0]).toMatchObject({ kind: 'task-failed' });
+    expect(marked).toEqual([{ mrId: 'gl-1-12', sha: 'sha-remote-1', action: 'resolve-conflicts' }]);
+  });
+
+  it(
+    'a restart that re-drives a worktree already paused mid-rebase, with resolutions ' +
+      'already staged, still stamps the episode once the push lands — the exact state of ' +
+      'a stranded worktree this app left behind before it could stamp its own row',
+    async () => {
+      // A brand-new Scheduler, exactly as a restart would build one: no in-memory
+      // `forgeConflictHandled`/`forgeConflicts` state survives, and the MR row synced back
+      // in is still unstamped (`lastActedSha`/`lastActedAction` both null, the default
+      // `mergeRequest()` below). `rebaseForPullRequest` stands in for git continuing the
+      // rebase this app had already paused in the worktree, with the agent's resolutions
+      // already `git add`ed — from this call's point of view that is indistinguishable
+      // from a fresh rebase landing clean, which is exactly why the real worktree needs
+      // nothing special done to it on restart.
+      const { scheduler, rebaseCalls, pushCalls, marked } = setup();
+      const mr = mergeRequest({
+        headSha: 'sha-stranded',
+        lastActedSha: null,
+        lastActedAction: null,
+      });
+
+      scheduler.resolveForgeConflict('t1', mr);
+      await flush();
+
+      expect(rebaseCalls).toEqual([{ branch: 'orch/t1', target: 'refs/remotes/origin/main' }]);
+      expect(pushCalls).toEqual([{ branch: 'orch/t1', expected: 'sha-remote-1' }]);
+      expect(marked).toEqual([
+        { mrId: 'gl-1-12', sha: 'sha-remote-1', action: 'resolve-conflicts' },
+      ]);
+    },
+  );
 
   it('a conflict dispatches the agent fix, and a successful settle pushes', async () => {
     const { scheduler, start, fire, finishCalls, pushCalls } = setup({
@@ -6551,8 +6630,45 @@ describe('Scheduler — the PR/MR conflict ladder (resolveForgeConflict)', () =>
     expect(pushCalls).toEqual([{ branch: 'orch/t1', expected: 'sha-remote-1' }]);
   });
 
-  it('two failed fixes raise merge-conflict', async () => {
-    const { scheduler, start, fire, emitAttention } = setup({
+  // `chainLandedAt` hijacked the Rung 2 run: a card whose chain had just landed carried the
+  // one-shot review marker, the conflict fix inherited it as `reviewSeed`, and that sent the
+  // fix through the shared project directory (where there is no paused rebase to resolve)
+  // instead of the worktree, and let `settle`'s review-seed branch consume the run and the
+  // marker before the redemption below it ever ran — stranding the rebase and burning the
+  // review that was supposed to follow it.
+  it('a conflict fix on a chain-landed card still runs in the worktree, redeems on settle, and leaves the review for later', async () => {
+    const { scheduler, card, start, fire, finishCalls, pushCalls } = setup({
+      rebaseResult: {
+        status: 'conflict',
+        worktree: 'C:/wt/t1',
+        branch: 'orch/t1',
+        base: 'refs/remotes/origin/main',
+      },
+    });
+    (card as unknown as { chainLandedAt: number | null }).chainLandedAt = 1700000000000;
+
+    scheduler.resolveForgeConflict('t1', mergeRequest());
+    await flush();
+
+    expect(start).toHaveBeenCalledTimes(1);
+    // Not `project.path` ("C:/repo") — the fix must land in the worktree holding the
+    // paused rebase, not the shared directory a review seed would have used.
+    expect((start.mock.calls[0][0] as { cwd: string }).cwd).toBe('C:/wt/t1');
+    // The marker must not be consumed by a run that is not the review.
+    expect(card.chainLandedAt).toBe(1700000000000);
+
+    const fixRunId = (start.mock.calls[0][1] as { runId: string }).runId;
+    fire(fixRunId, okResult);
+    await flush();
+
+    expect(finishCalls).toEqual([{ branch: 'orch/t1', target: 'refs/remotes/origin/main' }]);
+    expect(pushCalls).toEqual([{ branch: 'orch/t1', expected: 'sha-remote-1' }]);
+    // Still there for whichever run actually reviews the card next.
+    expect(card.chainLandedAt).toBe(1700000000000);
+  });
+
+  it('two failed fixes raise merge-conflict, which stamps the episode out of AI attempts', async () => {
+    const { scheduler, start, fire, emitAttention, marked } = setup({
       rebaseResult: {
         status: 'conflict',
         worktree: 'C:/wt/t1',
@@ -6566,19 +6682,21 @@ describe('Scheduler — the PR/MR conflict ladder (resolveForgeConflict)', () =>
         base: 'refs/remotes/origin/main',
       },
     });
-    scheduler.resolveForgeConflict('t1', mergeRequest());
+    scheduler.resolveForgeConflict('t1', mergeRequest({ headSha: 'sha-head-1' }));
     await flush();
     let fixRunId = (start.mock.calls[0][1] as { runId: string }).runId;
     fire(fixRunId, okResult);
     await flush();
 
     expect(start).toHaveBeenCalledTimes(2);
+    expect(marked).toEqual([]); // still mid-ladder — the agent fix attempts stamp nothing
     fixRunId = (start.mock.calls[1][1] as { runId: string }).runId;
     fire(fixRunId, okResult);
     await flush();
 
     expect(emitAttention).toHaveBeenCalledTimes(1);
     expect(emitAttention.mock.calls[0][0]).toMatchObject({ kind: 'merge-conflict' });
+    expect(marked).toEqual([{ mrId: 'gl-1-12', sha: 'sha-remote-1', action: 'resolve-conflicts' }]);
   });
 
   it('a second call with the same SHA is a no-op', async () => {
@@ -6604,14 +6722,17 @@ describe('Scheduler — the PR/MR conflict ladder (resolveForgeConflict)', () =>
     expect(rebaseCalls).toEqual([]);
   });
 
-  it('a diverged remote is noted and not pushed', async () => {
-    const { scheduler, notes, rebaseCalls, pushCalls } = setup({ isAncestorResult: false });
-    scheduler.resolveForgeConflict('t1', mergeRequest());
+  it('a diverged remote is noted, not pushed, and stamped so the next sync does not retry it', async () => {
+    const { scheduler, notes, rebaseCalls, pushCalls, marked } = setup({
+      isAncestorResult: false,
+    });
+    scheduler.resolveForgeConflict('t1', mergeRequest({ headSha: 'sha-head-1' }));
     await flush();
 
     expect(rebaseCalls).toEqual([]);
     expect(pushCalls).toEqual([]);
     expect(notes.some((n) => n.includes("has commits this card's branch does not"))).toBe(true);
+    expect(marked).toEqual([{ mrId: 'gl-1-12', sha: 'sha-head-1', action: 'resolve-conflicts' }]);
   });
 
   it('the setting off means no call', async () => {

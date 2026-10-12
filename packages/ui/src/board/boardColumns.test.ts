@@ -552,6 +552,7 @@ describe('sortCards', () => {
       draft: false,
       headSha: null,
       lastActedSha: null,
+      lastActedAction: null,
       pipelineStatus: 'failed',
       pipelineStages: [],
       pipelineUrl: null,

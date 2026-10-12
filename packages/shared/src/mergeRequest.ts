@@ -114,8 +114,10 @@ export interface MergeRequest {
    * never read one (every row written before this field existed).
    *
    * What {@link prWatchAction} keys its memory on: a watcher that acted once on this commit
-   * must not act again on the SAME commit just because the next poll re-fetched the same MR.
-   * Only a new push, which gives the MR a new head SHA, opens the door to acting again.
+   * must not act again THE SAME WAY on the SAME commit just because the next poll re-fetched
+   * the same MR. Only a new push, which gives the MR a new head SHA, unconditionally opens
+   * the door to acting again — on the same head, whether it does depends on which action it
+   * last took and which it would take now; see {@link lastActedAction}.
    */
   headSha: string | null;
   /**
@@ -129,6 +131,19 @@ export interface MergeRequest {
    * prevent.
    */
   lastActedSha: string | null;
+  /**
+   * Which {@link PrWatchAction} was taken on {@link lastActedSha}, or null for a row written
+   * before this field existed (a "legacy" row — see {@link prWatchAction}'s own doc).
+   *
+   * `lastActedSha` alone used to be the whole memory, and that conflated two different
+   * questions: "has anything already happened on this commit" and "would happen AGAIN be
+   * the same thing". A pipeline that passed, then a target branch that moved underneath it
+   * and left it conflicted — same commit, two different facts — used to read as "already
+   * handled" and stay silent. Remembering WHICH action fired lets a genuinely new action
+   * fire on an unchanged head while a repeat of the same one, or a remediation still in
+   * flight, keeps staying quiet.
+   */
+  lastActedAction: PrWatchAction | null;
   /**
    * The head pipeline's stages, in pipeline order. Empty when the jobs could not be read
    * (the endpoint is permission-gated on some instances) — never a claim that a pipeline
@@ -497,12 +512,26 @@ export interface PrWatchContext {
   /**
    * The head SHA this MR was already acted on for, or null/undefined if it never was.
    *
-   * Once an action has fired for a commit, nothing fires again for that SAME commit —
-   * a forge that can't rebase or a conflict a fix run hasn't resolved yet must not re-raise
-   * itself on every poll. A new push gives the MR a new head SHA, which reopens the door.
+   * Once an action has fired for a commit, the SAME action does not fire again for that
+   * SAME commit — a forge that can't rebase or a conflict a fix run hasn't resolved yet
+   * must not re-raise itself on every poll. A new push gives the MR a new head SHA, which
+   * unconditionally reopens the door; see {@link lastActedAction} for what happens on an
+   * unchanged head.
    */
   lastActedSha?: string | null;
+  /**
+   * Which action was last taken on {@link lastActedSha} — the stored counterpart of
+   * {@link MergeRequest.lastActedAction}. Undefined/null for a legacy row that predates
+   * this field, which {@link prWatchAction} treats as "a note, never a remediation".
+   */
+  lastActedAction?: PrWatchAction | null;
 }
+
+/** Actions that attempt to FIX the branch rather than merely report on it. */
+const REMEDIATIONS: ReadonlySet<PrWatchAction> = new Set(['forge-rebase', 'resolve-conflicts']);
+
+/** Actions that only tell the human something, and change nothing upstream. */
+const NOTES: ReadonlySet<PrWatchAction> = new Set(['note-pipeline-failed', 'note-pipeline-passed']);
 
 /**
  * What the PR/MR watcher (Phase: observe PR/MR state and resolve conflicts) should do about
@@ -512,31 +541,55 @@ export interface PrWatchContext {
  * the card row and the rebase button already ask — so the watcher can never decide something
  * the UI itself would disagree with.
  *
- * Three guards come before any of that, in order:
+ * Two guards come before any of that:
  *
  *  1. **Only an open, non-draft MR.** A draft is still being written; a merged or closed one
  *     is history. Neither is this app's business to touch.
  *  2. **No head SHA means no action.** An MR the sync has never fully read has an unknown
  *     commit, and absence of information is not consent to act on it — see `headSha`.
- *  3. **The same commit as last time means no action**, however many polls have passed since.
- *     See {@link PrWatchContext.lastActedSha}.
  *
  * Priority among the live possibilities: a conflict comes first (nothing else can be done
  * until it is resolved), then a stale branch (the forge can fix that one on its own), then
  * the pipeline's own verdict — and only a RESOLVED verdict (`failed`/`success`): `unknown`,
  * `running` and the rest are "not an answer yet", not a reason to stay quiet forever, but not
  * a reason to speak up either.
+ *
+ * The candidate found this way is then checked against memory — but, unlike before, memory
+ * is keyed on the ACTION that fired last, not just the commit it fired on. A commit this
+ * watcher has already touched does not mean nothing can happen on it again: a pipeline that
+ * passed and then a target branch that moved underneath it, leaving the same commit
+ * conflicted, is the same head reporting two different facts, and the second one must still
+ * reach the human. So the candidate is suppressed on an unchanged head only when:
+ *
+ *  - it is the exact same action as last time (no point re-noting a still-green pipeline);
+ *  - the last action was a **remediation** (`forge-rebase`/`resolve-conflicts`) — one of
+ *    those is either still running or waiting on a push, and nothing else may fire on its
+ *    commit until a new push settles it, whatever the new candidate turns out to be; or
+ *  - the last action is unknown (a legacy row, written before this field existed) AND the
+ *    candidate is a **note** — preserving the old behaviour for rows with no history to
+ *    consult, but only for the half of it that was ever about silencing a repeat notice. A
+ *    legacy row says nothing about remediations, so those are free to fire.
+ *
+ * See {@link PrWatchContext.lastActedSha} and {@link PrWatchContext.lastActedAction}.
  */
 export function prWatchAction(mr: PrWatchable, ctx: PrWatchContext): PrWatchAction {
   if (mr.state !== 'opened' || mr.draft) return 'none';
-  if (!mr.headSha || mr.headSha === ctx.lastActedSha) return 'none';
+  if (!mr.headSha) return 'none';
 
   const blockers = mergeBlockers(mr);
-  if (blockers.includes('conflict')) return 'resolve-conflicts';
-  if (mrNeedsRebase(mr)) return 'forge-rebase';
-  if (mr.pipelineStatus === 'failed') return 'note-pipeline-failed';
-  if (mr.pipelineStatus === 'success') return 'note-pipeline-passed';
-  return 'none';
+  let candidate: PrWatchAction = 'none';
+  if (blockers.includes('conflict')) candidate = 'resolve-conflicts';
+  else if (mrNeedsRebase(mr)) candidate = 'forge-rebase';
+  else if (mr.pipelineStatus === 'failed') candidate = 'note-pipeline-failed';
+  else if (mr.pipelineStatus === 'success') candidate = 'note-pipeline-passed';
+
+  if (mr.headSha !== ctx.lastActedSha) return candidate;
+
+  const lastAction = ctx.lastActedAction ?? null;
+  if (lastAction === candidate) return 'none';
+  if (lastAction !== null && REMEDIATIONS.has(lastAction)) return 'none';
+  if (lastAction === null && NOTES.has(candidate)) return 'none';
+  return candidate;
 }
 
 /** Just the fields the review verdict depends on. See {@link mrApprovalState}. */

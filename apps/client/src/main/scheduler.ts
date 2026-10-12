@@ -39,7 +39,13 @@ import { type ActivityRecorder, NULL_ACTIVITY_RECORDER } from './activityRecorde
 import { logMain } from './log';
 import { hasRepo, resolveRunModel } from '@shared/model';
 import { chainInFlight, chatTarget, hasAgentWorked, parkedStep } from '@shared/board';
-import { forgeName, mrAbbrev, mrRef, type MergeRequest } from '@shared/mergeRequest';
+import {
+  forgeName,
+  mrAbbrev,
+  mrRef,
+  type MergeRequest,
+  type PrWatchAction,
+} from '@shared/mergeRequest';
 import { attachmentsInScope, type PromptAttachment } from '@shared/attachments';
 import type {
   SchedulerState,
@@ -804,6 +810,15 @@ interface Run {
    */
   releaseSeed?: boolean;
   /**
+   * This run is a Rung 2 conflict fix (`startTask`'s `fixingConflict`), queued by
+   * {@link Scheduler.resolveForgeConflict} for a rebase paused in a worktree. `settle` reads
+   * it, not `reviewSeed`, to find the redemption that must run: `chainLandedAt` hijacked the
+   * Rung 2 run once — a card whose chain had just landed carried `chainLandedAt`, the
+   * conflict fix inherited it as a (wrong) `reviewSeed`, and `settle`'s review-seed branch
+   * returned before ever reaching the conflict redemption below it, stranding the rebase.
+   */
+  conflictFix?: boolean;
+  /**
    * Whether this run ever put a plan in front of the human (Phase 18).
    *
    * The check that needs it: a `plan`-mode run exists to produce a plan, so one that ends
@@ -1286,6 +1301,13 @@ export class Scheduler {
    */
   private forgeGit: ForgeGit | null = null;
   /**
+   * Stamp a PR/MR's conflict episode as acted on — see {@link setMarkMrActed}. Null until
+   * `ipc.ts` wires it, which is also how the unit tests run without one: a build with nothing
+   * wired simply never records that the ladder settled, so the next sync's `prWatchAction`
+   * would try the same episode again.
+   */
+  private markMrActed: ((mrId: string, sha: string, action: PrWatchAction) => void) | null = null;
+  /**
    * The account-wide usage-limit gate (Phase 5). When active, ALL scheduling is
    * held; when its timer fires, every parked task resumes by its saved session id.
    */
@@ -1495,6 +1517,19 @@ export class Scheduler {
    */
   setForgeGit(forgeGit: ForgeGit): void {
     this.forgeGit = forgeGit;
+  }
+
+  /**
+   * Wire the "remember this MR's head commit was acted on" call (`store.markMergeRequestActed`)
+   * for the conflict ladder's own terminals. `watchMergeRequests` stamps `forge-rebase` and the
+   * pipeline notes itself, at dispatch — but `resolve-conflicts` is fire-and-forget, so nothing
+   * about the episode is true to stamp until the ladder actually reaches one of its own ends
+   * (a push, a park, a refusal, an error). Optional, and the absence is not silent: unwired, the
+   * ladder still drives the rebase, it just never records that it did, so the next sync would
+   * try the same episode again.
+   */
+  setMarkMrActed(markMrActed: (mrId: string, sha: string, action: PrWatchAction) => void): void {
+    this.markMrActed = markMrActed;
   }
 
   /**
@@ -2516,6 +2551,7 @@ export class Scheduler {
           `live worktree to rebase it in — left alone. Resolve it on ${forgeName(mr.provider)} ` +
           `or by hand in a clone.`,
       );
+      if (mr.headSha) this.markMrActed?.(mr.id, mr.headSha, 'resolve-conflicts');
       return;
     }
 
@@ -2553,6 +2589,7 @@ export class Scheduler {
           `does not — somebody pushed to it since this app last looked. Left alone rather ` +
           `than risk overwriting that push; pull it into the worktree and resolve by hand.`,
       );
+      if (mr.headSha) this.markMrActed?.(mr.id, mr.headSha, 'resolve-conflicts');
       return;
     }
 
@@ -2633,6 +2670,7 @@ export class Scheduler {
         base: ctx.base,
         worktree: ctx.worktree,
       });
+      this.markMrActed?.(forge.mrId, forge.leaseSha, 'resolve-conflicts');
       return;
     }
     this.noteRun(
@@ -2641,6 +2679,7 @@ export class Scheduler {
       ctx.runId,
       `Rebased "${ctx.branch}" onto \`${ctx.base}\` and pushed it back to the forge.${resolved}`,
     );
+    this.markMrActed?.(forge.mrId, forge.leaseSha, 'resolve-conflicts');
   }
 
   /**
@@ -3194,8 +3233,14 @@ export class Scheduler {
     // must be flagged exactly as a caller-requested `reviewSeed` would be. Consumed here,
     // not left for the caller, so it fires exactly once regardless of which path resumes
     // the card first.
-    const reviewSeed = opts.reviewSeed ?? Boolean(task.chainLandedAt);
-    if (task.chainLandedAt) this.updateTask(task.id, { chainLandedAt: null }, null);
+    //
+    // A Rung 2 conflict fix is excluded even when `chainLandedAt` is sitting on the card:
+    // `chainLandedAt` hijacked the Rung 2 run once — the fix inherited `reviewSeed`, which
+    // sent it through the shared project directory instead of its worktree and made
+    // `settle` treat it as a review conversation instead of a rebase to finish. The marker
+    // must wait for the run that is actually the review.
+    const reviewSeed = !fixingConflict && (opts.reviewSeed ?? Boolean(task.chainLandedAt));
+    if (reviewSeed && task.chainLandedAt) this.updateTask(task.id, { chainLandedAt: null }, null);
     // "Stopped" is a fact about RIGHT NOW (`Task.stoppedAt`), so it is cleared by work
     // starting — whichever route started it. Resume clears it before it even gets here, but a
     // plain Start, a chat reply and the limit gate's own resume all un-stop the card just as
@@ -3221,6 +3266,7 @@ export class Scheduler {
       resumeNudge: opts.resumeNudge,
       reviewSeed,
       releaseSeed: opts.releaseSeed,
+      conflictFix: fixingConflict,
       permissionMode,
       // Planning costs what the project says planning costs. The two flags together are
       // what "this run is planning" means — a turn that was ASKED for a plan and is held
@@ -4847,6 +4893,37 @@ export class Scheduler {
    * failed worktree run keeps its worktree and branch for inspection/retry.
    */
   private settle(run: Run, status: 'done' | 'failed', reason?: string): void {
+    // A Rung 2 conflict fix, redeemed the moment its run ends — BEFORE the review-seed and
+    // release-seed branches below, deliberately, and whether it succeeded or failed.
+    //
+    // Checked first because `chainLandedAt` hijacked the Rung 2 run once: a card whose chain
+    // had just landed carried `chainLandedAt`, the conflict fix inherited it as `reviewSeed`
+    // (fixed in `startTask` now, but gated here too, on `run.conflictFix`, in case anything
+    // else ever sets `reviewSeed` on a conflict-fix run), and the `reviewSeed` branch used to
+    // sit above this one — it returned before ever reaching the redemption, leaving the
+    // rebase paused in the worktree with nobody left to finish it.
+    //
+    // What it owns is not the run's state, it is the repository's: a rebase paused in a
+    // worktree, with this orchestrator named as the only thing that will continue it. Gated
+    // on `done` (and on the run still carrying branch/base/worktree) it was redeemed only by
+    // the happy path, so a fix that hit a usage limit, a dead sign-in, or an inbox item left
+    // the rebase paused with nobody left to finish it — a detached `HEAD` that then refuses
+    // every button on the card, which is the failure that costs an evening to understand
+    // because nothing about it is on the card.
+    //
+    // Failing over to `finishAfterConflict` is safe because it re-READS the tree rather than
+    // believing the run: markers still in place come back as `conflict` and climb the ladder
+    // to the next attempt (or to a human), which is exactly where an unresolved fix belongs.
+    // The stored context is used, not the run's, because it names the integration being
+    // resumed — a run's own branch/base can be missing on precisely the paths that stranded it.
+    const conflictFix = run.conflictFix ? this.pendingConflictFix.get(run.taskId) : undefined;
+    if (conflictFix) {
+      this.pendingConflictFix.delete(run.taskId);
+      this.attempts.delete(run.taskId);
+      void this.finishConflict(conflictFix);
+      return;
+    }
+
     // A review seed (Phase 17) is a one-turn briefing on a card whose work is already
     // merged. It owns no branch, so there is nothing to integrate; and its outcome must
     // not move the card, which is exactly where the human left it. Checked first, before
@@ -4883,30 +4960,6 @@ export class Scheduler {
         );
       }
       this.updateTask(run.taskId, { status: 'in-progress' }, null);
-      return;
-    }
-
-    // A Rung 2 conflict fix, redeemed the moment its run ends — BEFORE the chain and step
-    // bookkeeping below, and deliberately whether it succeeded or failed.
-    //
-    // What it owns is not the run's state, it is the repository's: a rebase paused in a
-    // worktree, with this orchestrator named as the only thing that will continue it. Gated
-    // on `done` (and on the run still carrying branch/base/worktree) it was redeemed only by
-    // the happy path, so a fix that hit a usage limit, a dead sign-in, or an inbox item left
-    // the rebase paused with nobody left to finish it — a detached `HEAD` that then refuses
-    // every button on the card, which is the failure that costs an evening to understand
-    // because nothing about it is on the card.
-    //
-    // Failing over to `finishAfterConflict` is safe because it re-READS the tree rather than
-    // believing the run: markers still in place come back as `conflict` and climb the ladder
-    // to the next attempt (or to a human), which is exactly where an unresolved fix belongs.
-    // The stored context is used, not the run's, because it names the integration being
-    // resumed — a run's own branch/base can be missing on precisely the paths that stranded it.
-    const conflictFix = this.pendingConflictFix.get(run.taskId);
-    if (conflictFix) {
-      this.pendingConflictFix.delete(run.taskId);
-      this.attempts.delete(run.taskId);
-      void this.finishConflict(conflictFix);
       return;
     }
 
@@ -5414,6 +5467,7 @@ export class Scheduler {
           `Could not integrate branch "${ctx.branch}": ${result.message} (the worktree at ` +
             `${ctx.worktree} was kept for inspection).`,
         );
+        if (ctx.forge) this.markMrActed?.(ctx.forge.mrId, ctx.forge.leaseSha, 'resolve-conflicts');
         break;
     }
   }
@@ -5657,6 +5711,7 @@ export class Scheduler {
     this.store.saveAttention(item, pending);
     this.updateTask(ctx.taskId, { status: 'waiting-input' }, ctx.runId);
     this.emitAttention(item);
+    if (ctx.forge) this.markMrActed?.(ctx.forge.mrId, ctx.forge.leaseSha, 'resolve-conflicts');
   }
 
   /**

@@ -37,8 +37,8 @@ export interface PrWatcherDeps {
   resolveForgeConflict(taskId: string, mr: MergeRequest): void;
   /** File a note on the card's timeline. */
   note(projectId: string, taskId: string, body: string): void;
-  /** Remember that this MR's head commit has already been acted on. */
-  markActed(mrId: string, headSha: string): void;
+  /** Remember that this MR's head commit has already been acted on, and which action it was. */
+  markActed(mrId: string, headSha: string, action: PrWatchAction): void;
 }
 
 /**
@@ -64,7 +64,10 @@ async function watchOne(mr: MergeRequest, deps: PrWatcherDeps): Promise<void> {
   const task = deps.getTask(taskId);
   if (!task) return; // the card is gone — nothing to note, no worktree to rebase
 
-  const action = prWatchAction(mr, { lastActedSha: mr.lastActedSha });
+  const action = prWatchAction(mr, {
+    lastActedSha: mr.lastActedSha,
+    lastActedAction: mr.lastActedAction,
+  });
   if (action === 'none') return;
 
   try {
@@ -78,7 +81,11 @@ async function watchOne(mr: MergeRequest, deps: PrWatcherDeps): Promise<void> {
     // push gives it a new commit to key on.
     return;
   }
-  if (mr.headSha) deps.markActed(mr.id, mr.headSha);
+  // `resolve-conflicts` is fire-and-forget (see `act`'s own case below): the ladder it queues
+  // is still running when this call returns, so nothing about the episode is true to stamp
+  // yet. `Scheduler.driveForgeConflict`/`pushForgeRebase`/`raiseMergeConflict` stamp it
+  // themselves once the ladder actually reaches one of its own ends.
+  if (mr.headSha && action !== 'resolve-conflicts') deps.markActed(mr.id, mr.headSha, action);
 }
 
 async function act(
@@ -100,8 +107,9 @@ async function act(
       return;
     case 'resolve-conflicts':
       // Fire-and-forget: the ladder fetches, rebases and force-with-lease pushes in the
-      // background and notes the card itself as it goes (see `Scheduler.resolveForgeConflict`),
-      // so there is nothing further to await or to note here.
+      // background, notes the card itself as it goes, and stamps `markActed` itself once it
+      // settles (see `Scheduler.resolveForgeConflict`), so there is nothing further to await,
+      // to note, or to stamp here.
       deps.resolveForgeConflict(task.id, mr);
       return;
     case 'note-pipeline-failed':
