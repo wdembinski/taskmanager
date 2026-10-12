@@ -6264,6 +6264,121 @@ scoped to docs and a test file.
 
 ---
 
+## Fix — a task does not start with pulling
+
+**Goal.** `WorktreeManager.prepare` (`worktreeManager.ts:458`) cuts a fresh worktree from
+whatever commit the project's base branch happens to be sitting on *locally*, and a live
+worktree is only ever rebased onto that same local base inside `integrate`
+(`worktreeManager.ts:617`). Nothing in either path looks at the remote first, so a task starts
+on a base that can be hours or days stale the moment a human (or another machine) has pushed to
+it since the last manual pull. This fix adds one pre-run sync step — fetch the base's upstream,
+fast-forward the local base onto it, and rebase a live worktree's branch if it is behind — fired
+from inside `prepare` itself, so every caller that already asks `prepare` where a task should
+run gets the freshest base for free, with no new IPC surface and no setting to turn it off.
+
+### Decisions taken
+
+**Only the remote the base branch already tracks, via `@{upstream}`.** `git rev-parse
+--abbrev-ref <base>@{upstream}` is the question asked — never a hardcoded `origin`, which is
+what `pushBranch` assumes for its own, narrower reason (`git.ts:630`, comment at `:628`: "the
+recorded value is the word `origin`" because `-u` is skipped for a tokenized URL). A pre-run
+sync has no such reason to prefer one remote over another, and a base branch with no upstream
+configured at all is a normal, supported state (a purely local repo, or a branch nobody has
+pushed) — not a failure. No upstream → the fetch is skipped silently; the rest of this step
+still runs against whatever the local base already is, exactly as it does today.
+
+**The fetch can never hang on credentials.** `git fetch <remote> <ref>` runs with the same
+`NO_PROMPT_ENV` `pushBranch` already uses (`git.ts:604-610, :649`) — `GIT_TERMINAL_PROMPT=0`,
+empty `GIT_ASKPASS`/`SSH_ASKPASS`, `SSH_ASKPASS_REQUIRE=never`, a batch-mode SSH command with a
+10 s connect timeout. A task that is about to run unattended must never sit waiting on a
+credential prompt nobody is there to answer; a fetch that fails for any reason (offline, auth,
+timeout) writes a timeline note and the rest of the step continues against the local base,
+exactly as if the remote had never been asked.
+
+**Advancing the local base reuses `fastForward`'s own rules, not a new set of them.** The three
+cases `fastForward` already draws (`worktreeManager.ts:1210-1273`) are reused verbatim rather
+than re-derived: base not checked out anywhere → a pure ref move via `fastForwardRef(project.path,
+'<remote>/<base>', base, host)`, no work tree touched; checked out and `isClean` → `mergeFfOnly`
+after the same untracked-collision handling `fastForward` already does; checked out and dirty →
+left alone, noted, exactly like `dirty-base` today. The new case this step adds on top —
+diverged, i.e. the local base is not a strict ancestor of the upstream (it carries its own
+unpushed merge commits) — is also left alone and noted: a fast-forward is by definition
+impossible there, and silently rewriting a human's local history to match the remote is not
+this step's job. This whole advance only runs when the local base **is** a strict ancestor of
+the fetched upstream (`git merge-base --is-ancestor <base> <remote>/<base>`); equal or ahead is
+a no-op.
+
+**Serialized through the same queue `integrate` already uses.** The advance happens inside
+`this.enqueue(project.id, …)` (`worktreeManager.ts:1276-1284`) — the single per-project chain
+that already keeps one card's `integrate` from running concurrently with another's. Moving the
+base ref and fast-forwarding a checked-out branch are exactly the operations `integrate` itself
+performs under the same lock; running the new step outside it would let a task's pre-run sync
+race another task's merge in the same project, with the loser's fast-forward landing on a base
+that moved under it mid-operation.
+
+**The branch rebase only fires for a live worktree, and only when it is genuinely stale.**
+A fresh worktree is already cut from the base this step just advanced (`addWorktree(…, from,
+host)` at `worktreeManager.ts:587`, where `from` resolves to the now-current `base`), so
+rebasing it again immediately after would be a no-op dressed up as work. For a **live** worktree
+the rebase is skipped in four cases, each for its own reason: `opts.resumingRebase` is true (a
+conflict fix is already in progress for this exact run — see `prepare`'s own doc comment at
+`worktreeManager.ts:453-456` — and this step must not insert a second rebase ahead of the one
+the orchestrator is already resolving); `startPoint` was given (the branch is `stacked` on a
+predecessor's branch per `worktreeManager.ts:570-585`, not on base, so "behind base" is not the
+question that matters for it); the work tree is dirty (noted, never committed or autostashed —
+the agent's own half-done work from a prior run is not this step's to touch, the same boundary
+`fastForward`'s dirty-base case already draws); or the branch is zero commits behind base
+already (nothing to rebase onto).
+
+**Where it does fire, it runs the identical ladder `integrate` runs.** Rung 1 is `rebaseOnto`
+with `withUnionAttributes()` (`worktreeManager.ts:684-689`, `:133`); Rung 1.5 loops
+`resolveMechanically` against `advancePausedRebase` exactly as `integrate` does
+(`worktreeManager.ts:701-722`) for the mechanical, no-judgement conflicts (lockfiles, additive
+config churn) that cost nothing to resolve automatically. Reusing the same two private methods
+rather than a parallel copy is deliberate: both call sites are "rebase this worktree's branch
+onto a base, fixing what can be fixed without judgement," and a second implementation of that
+ladder is a second place for Rung 1.5's bound (`MAX_MECHANICAL_ROUNDS`) and its reasoning about
+`rerere` leaving a clean-but-unfinished rebase (`worktreeManager.ts:703-711`) to drift out of
+step with the original.
+
+**A conflict Rung 1.5 cannot clear is left paused, not failed.** Exactly as `integrate` does at
+`worktreeManager.ts:725-728`, a real conflict is **not** aborted — the rebase stays paused in the
+worktree, and `prepare` returns an agent-facing instruction (not a `failed` `WorktreePrep`)
+naming `conflictedFiles`, telling the agent: resolve, `git add`, `git rebase --continue`, repeat
+until done, before it starts the task it was actually asked to do. This is safe by
+construction on both sides of what happens next: if the agent never gets to it, or quits having
+made it worse, the next `prepare` call for this same worktree treats the paused rebase as debris
+and clears it via `rescueDetached` (`worktreeManager.ts:456, :889`) — `abortRebase` first, so
+nothing is lost because nothing was ever committed over it; and if instead a human presses Start
+or the scheduler resumes this card first, `integrate` already knows how to drive a paused rebase
+through to a merge via `continuePausedRebase` (`worktreeManager.ts:663-664, :794`). Only a
+non-conflict rebase failure (not `hasConflicts`) is aborted outright via `abortRebase`
+(mirroring `worktreeManager.ts:733`) with a timeline note; the run continues regardless — this
+sync step fails soft in every branch, never the task itself.
+
+**Only work runs ask for this; nothing else calls `prepare` expecting it.** `startTask`
+(`scheduler.ts:2834-2930`) is the one place `prepare` is reached for ordinary work, via
+`prepareAndLaunch` (`:2937-2958`) — and that path is already skipped for a chat reply
+(`run.chatPrompt !== undefined`) and a conflict-fix resumption
+(`this.isResolvingConflict(task)`, `scheduler.ts:5161`, read into `opts.resumingRebase` at
+`:2957`), both of which route to `launch(..., { mode: 'shared', cwd: project.path })` instead
+(`:2915-2927`) or hand `prepare` the resuming flag that already tells it to leave the paused
+rebase alone. A review or release run never prepares a worktree at all — both run from
+`project.path` directly (`scheduler.ts:2915-2921`, the `reviewSeed || releaseSeed` branch) — so
+there is no second call site this step needs to touch or guard against.
+
+**No new setting.** The sync is always on and fail-soft: a fetch that cannot reach the remote,
+a base that cannot fast-forward, and a branch that cannot rebase cleanly all degrade to "do
+nothing, note it, continue" rather than blocking the run or needing an opt-out. The design this
+step implements treats "start a task on a stale base" as a bug with no good reason to keep,
+not a behaviour change anyone would want to turn off.
+
+Nothing here touches code. `WorktreeManager` gains no new method yet — the next step adds the
+fetch/advance/rebase logic described above and wires it into `prepare`, and the step after that
+walks every file it touched against this record.
+
+---
+
 ## Conventions for every phase
 
 - **Contract first.** New data crossing the UI↔engine boundary gets its types in
