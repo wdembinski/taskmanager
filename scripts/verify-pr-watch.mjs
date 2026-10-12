@@ -54,8 +54,10 @@
  *  4. **A failed attempt is retried, not written off.** No token saved → the rebase action
  *     throws before any `fetch`, the card is told why, and `lastActedSha` is NOT advanced —
  *     so the very next sync gets another chance once a token exists.
- *  5. **Pipeline notes** land on the card's own timeline, named for which way the pipeline
- *     went.
+ *  5. **A failed pipeline reaches the agent.** The watcher resumes the card's EXACT session
+ *     a third time — the session section 1's conflict fix also continued — now asked to fix
+ *     a failing pipeline, and a passed pipeline, by contrast, is only ever noted: no session
+ *     starts.
  *  6. **The feature gate, live.** `features.prAutoResolve: false` and the exact same
  *     conflicted row produces NOTHING — no session, no note, no `lastActedSha` — proven
  *     through the real `watchMergeRequests`, which is the one place that gate is checked
@@ -278,6 +280,7 @@ async function main() {
           `--alias:@shared=${sharedSrc}`,
           `--alias:@protocol=${protocolSrc}`,
           '--external:better-sqlite3',
+          '--external:electron',
           `--outfile=${outfile}`,
           '--log-level=error',
         ],
@@ -286,11 +289,14 @@ async function main() {
       if (result.status !== 0) throw new Error(`esbuild failed on ${entry}`);
     };
 
-    // None of these import Electron (checked by hand: scheduler.ts's whole dependency tree —
-    // sessionManager, claudeSession, exec/*, worktreeManager, store, prWatcher, the forge
-    // clients — never reaches attachments.ts/contextMenu.ts/focusTracker.ts/index.ts/ipc.ts/
-    // log.ts/updater.ts, the only seven files under src/main that do). That is what lets all
-    // five be pulled out of the app and run on their own like this, no Electron stub needed.
+    // `scheduler.ts` reaches `log.ts` (for `logMain`), which imports `electron` for
+    // `app.getPath('logs')` — the one real Electron API anywhere in this dependency tree.
+    // Left un-externalized, esbuild INLINES electron's own loader module, whose
+    // `getElectronPath` resolves paths off `__dirname` — now the scratch directory the
+    // bundle lives in, not electron's own package — and throws "Electron failed to install
+    // correctly". Externalizing it instead leaves a plain `require('electron')` in the
+    // bundle, which resolves fine under Electron-as-Node (returning the executable path,
+    // not the API), and `logMain`'s own try/catch swallows `app.getPath` failing on that.
     bundle(join(root, 'apps/client/src/main/store.ts'), join(scratch, 'store.cjs'));
     bundle(join(root, 'apps/client/src/main/sessionManager.ts'), join(scratch, 'sessionManager.cjs'));
     bundle(join(root, 'apps/client/src/main/worktreeManager.ts'), join(scratch, 'worktreeManager.cjs'));
@@ -668,6 +674,7 @@ const deps = {
   getTask: (id) => store.getTask(id),
   tokenFor: () => 'stub-token',
   resolveForgeConflict: (taskId, mr) => scheduler.resolveForgeConflict(taskId, mr),
+  chatWithAgent: (taskId, message) => scheduler.chatWithAgent(taskId, message),
   note: (projectId, taskId, body) => store.addComment(projectId, taskId, body),
   markActed: (mrId, headSha, action) => store.markMergeRequestActed(mrId, headSha, action),
 };
@@ -855,12 +862,16 @@ check(
 globalThis.fetch = realFetch;
 
 // ===========================================================================
-section('5. pipeline notes');
+section('5. fix-pipeline: a failed pipeline reaches the agent, in its own session');
 
-const pipelineCard = card('Watching a pipeline');
+// Reuses `chatCard` from section 1 — it already has a real session established, and this
+// proves the SAME thing section 1 proved for a conflict: the watcher resumes that exact
+// session, in that exact worktree, rather than merely filing a note.
+const exitsBeforeFix = exitCountFor(chatCard.id);
+const timelineBeforeFix = timelineOf(chatCard.id);
 const failedMr = mrRow({
   id: 'gl-501-11',
-  openedForTaskId: pipelineCard.id,
+  openedForTaskId: chatCard.id,
   repoId: 501,
   number: 11,
   pipelineStatus: 'failed',
@@ -868,14 +879,49 @@ const failedMr = mrRow({
   headSha: 'pipeline-failed-sha',
 });
 store.upsertMergeRequest(failedMr);
+
 await watchMergeRequests([failedMr], deps);
+
+const thirdRun = await nthInvocation(3, 'the fix-pipeline run to spawn');
 check(
-  'a failed pipeline is noted, with its URL',
-  timelineOf(pipelineCard.id).includes("pipeline failed") &&
-    timelineOf(pipelineCard.id).includes('pipelines/999'),
-  timelineOf(pipelineCard.id),
+  'it resumed the card\'s EXACT session, the same one the conflict fix used',
+  flag(thirdRun, '--resume') === sessionId,
+  `${flag(thirdRun, '--resume')} != ${sessionId}`,
+);
+check('and in the SAME worktree again', thirdRun.cwd === firstRun.cwd, `${thirdRun.cwd} != ${firstRun.cwd}`);
+
+const pipelinePrompt = await promptFor(3, 'the fix-pipeline prompt');
+check('the prompt names the merge request', pipelinePrompt.includes('!11'), pipelinePrompt);
+check('and the pipeline URL', pipelinePrompt.includes(failedMr.pipelineUrl), pipelinePrompt);
+
+const thirdSha = commitAndPush(thirdRun.cwd, 'work-3.txt', 'fixed the pipeline\n', branch);
+check(
+  'the "fix" commit really advanced the bare origin',
+  originHead(branch) === thirdSha && thirdSha !== pushedSha,
+  `${originHead(branch)} (was ${pushedSha}, now ${thirdSha})`,
+);
+proceed(3);
+await waitFor(
+  'the fix-pipeline run to settle',
+  () => exitCountFor(chatCard.id) >= exitsBeforeFix + 2,
 );
 
+const fixNote = notesSince(chatCard.id, timelineBeforeFix);
+check(
+  'the card\'s timeline says the agent was asked to fix it',
+  fixNote.includes('pipeline failed') && fixNote.includes('asked the agent to fix it'),
+  fixNote,
+);
+
+const fixedRow = store.listMergeRequests().find((r) => r.id === failedMr.id);
+check(
+  'lastActedSha was persisted for the pipeline fix too',
+  fixedRow?.lastActedSha === 'pipeline-failed-sha',
+  JSON.stringify(fixedRow),
+);
+
+// A passed pipeline, by contrast, is just a note — nothing to fix, so no session starts.
+const pipelineCard = card('Watching a pipeline');
 const passedMr = mrRow({
   id: 'gl-501-12',
   openedForTaskId: pipelineCard.id,
@@ -885,13 +931,14 @@ const passedMr = mrRow({
   headSha: 'pipeline-passed-sha',
 });
 store.upsertMergeRequest(passedMr);
-const beforePassed = timelineOf(pipelineCard.id);
+const invocationsBeforePassed = invocations().length;
 await watchMergeRequests([passedMr], deps);
 check(
-  'and a passed one too, distinctly',
-  notesSince(pipelineCard.id, beforePassed).includes('pipeline passed'),
-  notesSince(pipelineCard.id, beforePassed),
+  'a passed pipeline is noted, distinctly',
+  timelineOf(pipelineCard.id).includes('pipeline passed'),
+  timelineOf(pipelineCard.id),
 );
+check('and starts no session', invocations().length === invocationsBeforePassed);
 
 // ===========================================================================
 section('6. the feature gate, live — through the real watchMergeRequests, not the pure fn');

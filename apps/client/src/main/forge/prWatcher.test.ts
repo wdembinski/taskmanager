@@ -10,7 +10,7 @@
  * complements rather than duplicates.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { Task } from '@shared/model';
+import type { ChatRefusal, ChatSendResult, Task } from '@shared/model';
 import type { MergeRequest } from '@shared/mergeRequest';
 import { DEFAULT_SETTINGS, type AppSettings } from '@shared/settings';
 import { watchMergeRequests, type PrWatcherDeps } from './prWatcher';
@@ -87,12 +87,14 @@ interface Rig {
   notes: Array<{ projectId: string; taskId: string; body: string }>;
   marked: Array<{ mrId: string; headSha: string; action: string }>;
   resolveForgeConflictCalls: Array<{ taskId: string; mr: MergeRequest }>;
+  chatCalls: Array<{ taskId: string; message: string }>;
 }
 
 function rig(partial: Partial<PrWatcherDeps> = {}): Rig {
   const notes: Rig['notes'] = [];
   const marked: Rig['marked'] = [];
   const resolveForgeConflictCalls: Rig['resolveForgeConflictCalls'] = [];
+  const chatCalls: Rig['chatCalls'] = [];
   const deps: PrWatcherDeps = {
     getSettings: () => settings(),
     getTask: (id) => task(id),
@@ -100,16 +102,32 @@ function rig(partial: Partial<PrWatcherDeps> = {}): Rig {
     resolveForgeConflict: (taskId, mr) => {
       resolveForgeConflictCalls.push({ taskId, mr });
     },
+    chatWithAgent: (taskId, message): ChatSendResult => {
+      chatCalls.push({ taskId, message });
+      return { status: 'sent', taskId, runId: 'run-1' };
+    },
     note: (projectId, taskId, body) => notes.push({ projectId, taskId, body }),
     markActed: (mrId, headSha, action) => marked.push({ mrId, headSha, action }),
     ...partial,
   };
-  return { deps, notes, marked, resolveForgeConflictCalls };
+  return { deps, notes, marked, resolveForgeConflictCalls, chatCalls };
 }
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
+
+/** Every way `Scheduler.chatWithAgent` can refuse, and the words `fix-pipeline` should
+ * explain each one with. */
+const refusals: ReadonlyArray<readonly [ChatRefusal, string]> = [
+  ['never-ran', 'this card has never run, so there is no conversation to continue'],
+  ['limit', 'a usage limit is holding all work right now'],
+  ['signed-out', 'claude is signed out'],
+  ['awaiting-decision', 'the card is already waiting on a decision'],
+  ['chain-busy', 'the card is mid-chain'],
+  ['not-running', 'the app is shutting down'],
+  ['unknown-task', 'unknown-task'], // the default branch: the raw reason, verbatim
+];
 
 describe('watchMergeRequests: the feature gate', () => {
   it('does nothing while the switch is off — never even looks up the card', async () => {
@@ -282,33 +300,85 @@ describe('watchMergeRequests: resolve-conflicts', () => {
   });
 });
 
-describe('watchMergeRequests: pipeline notes', () => {
-  it('notes a failed pipeline, with its URL', async () => {
-    const { deps, notes, marked } = rig();
+describe('watchMergeRequests: fix-pipeline', () => {
+  it('asks the agent to fix it, naming the MR and the pipeline URL', async () => {
+    const { deps, notes, chatCalls, marked } = rig();
     const row = mr({
       pipelineStatus: 'failed',
       pipelineUrl: 'https://gitlab.example.com/acme/web/-/pipelines/999',
       headSha: 'sha-pipeline-failed',
     });
+
     await watchMergeRequests([row], deps);
+
+    expect(chatCalls).toHaveLength(1);
+    expect(chatCalls[0]?.taskId).toBe('task-1');
+    expect(chatCalls[0]?.message).toContain('!1');
+    expect(chatCalls[0]?.message).toContain(row.pipelineUrl);
     expect(notes).toEqual([
       {
         projectId: 'project-1',
         taskId: 'task-1',
-        body: "!1's pipeline failed: https://gitlab.example.com/acme/web/-/pipelines/999",
+        body: "!1's pipeline failed — asked the agent to fix it.",
       },
     ]);
     expect(marked).toEqual([
-      { mrId: row.id, headSha: 'sha-pipeline-failed', action: 'note-pipeline-failed' },
+      { mrId: row.id, headSha: 'sha-pipeline-failed', action: 'fix-pipeline' },
     ]);
   });
 
-  it('notes a passed pipeline, distinctly', async () => {
-    const { deps, notes } = rig();
-    const row = mr({ pipelineStatus: 'success', headSha: 'sha-pipeline-passed' });
+  it('loses to a stale branch — the forge fixes that one on its own first', async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { deps, chatCalls } = rig();
+    const row = mr({
+      detailedMergeStatus: 'need_rebase',
+      pipelineStatus: 'failed',
+      headSha: 'sha-pipeline-vs-rebase',
+    });
+
     await watchMergeRequests([row], deps);
+
+    expect(fetchMock).toHaveBeenCalled(); // asked the forge to rebase, not the agent to fix CI
+    expect(chatCalls).toEqual([]);
+  });
+
+  it.each(refusals)(
+    'explains a %s refusal in words a human can act on',
+    async (reason, explanation) => {
+      const { deps, notes, marked } = rig({
+        chatWithAgent: (taskId): ChatSendResult => ({ status: 'refused', taskId, reason }),
+      });
+      const row = mr({ pipelineStatus: 'failed', headSha: 'sha-pipeline-refused' });
+
+      await watchMergeRequests([row], deps);
+
+      expect(notes[0]?.body).toBe(
+        `!1's pipeline failed, but it could not be handed to the agent (${explanation}). ` +
+          'Fix it by hand, or ask again from the card.',
+      );
+      // A refusal is not a thrown error — the attempt succeeded in asking, it just could not
+      // be delivered, so the commit is still considered "looked at" for this head SHA.
+      expect(marked).toEqual([
+        { mrId: row.id, headSha: 'sha-pipeline-refused', action: 'fix-pipeline' },
+      ]);
+    },
+  );
+});
+
+describe('watchMergeRequests: a passed pipeline', () => {
+  it('is just noted, distinctly — nothing to fix', async () => {
+    const { deps, notes, chatCalls, marked } = rig();
+    const row = mr({ pipelineStatus: 'success', headSha: 'sha-pipeline-passed' });
+
+    await watchMergeRequests([row], deps);
+
     expect(notes).toEqual([
       { projectId: 'project-1', taskId: 'task-1', body: "!1's pipeline passed." },
+    ]);
+    expect(chatCalls).toEqual([]);
+    expect(marked).toEqual([
+      { mrId: row.id, headSha: 'sha-pipeline-passed', action: 'note-pipeline-passed' },
     ]);
   });
 });
