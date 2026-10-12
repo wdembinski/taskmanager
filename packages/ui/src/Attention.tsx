@@ -70,7 +70,7 @@ const useStyles = makeStyles({
   dismissError: { marginTop: '-4px' },
 });
 
-function KindBadge({ kind }: { kind: AttentionItem['kind'] }): JSX.Element {
+export function KindBadge({ kind }: { kind: AttentionItem['kind'] }): JSX.Element {
   if (kind === 'permission') {
     return (
       <Badge appearance="tint" color="severe">
@@ -121,7 +121,7 @@ function KindBadge({ kind }: { kind: AttentionItem['kind'] }): JSX.Element {
 }
 
 /** One inbox card: shows the ask and collects the answer. */
-function InboxItem({
+export function InboxItem({
   item,
   onAnswer,
   onDismiss,
