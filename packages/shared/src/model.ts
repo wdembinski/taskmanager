@@ -832,18 +832,18 @@ export interface Task {
   /** Epoch ms the current `statusNote` was posted; null when there is none. */
   statusNoteAt?: number | null;
 
-  // --- External tracker linkage (JIRA and GitHub). All null for internal tasks. ---
+  // --- External tracker linkage (JIRA, GitHub and Linear). All null for internal tasks. ---
   /**
    * The external tracker this task mirrors, or null for an internal task.
    *
-   * Two values, and the difference between them is a *decision* at every site that reads
+   * Three values, and the difference between them is a *decision* at every site that reads
    * this field rather than a synonym for "external". Most questions — does this card carry
    * a tracker key, may it be deleted here, does its type icon come from `externalType` —
    * are about any tracker. A few are about JIRA in particular, and they are all the ones
    * that WRITE BACK: `task:setPriority` PUTs a JIRA priority, `transitionIssue` POSTs a
-   * JIRA transition, and neither means anything on a GitHub issue (see `github/`).
+   * JIRA transition, and neither means anything on a GitHub or Linear issue (see `github/`).
    */
-  externalSource?: 'jira' | 'github' | null;
+  externalSource?: 'jira' | 'github' | 'linear' | null;
   /**
    * The issue key shown to the user — `PROJ-123` on JIRA, `owner/repo#123` on GitHub.
    *

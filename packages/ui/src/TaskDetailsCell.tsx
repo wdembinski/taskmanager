@@ -46,6 +46,7 @@ import { draftKey, useDraft } from './drafts';
 import { PriorityGlyph } from './PriorityGlyph';
 import { MANUAL_STATUS_OPTIONS, STATUS_LABEL } from './taskStatus';
 import { FoldToggle } from './FoldToggle';
+import { trackerName } from './tracker';
 import { useTransport } from './transport';
 import { usePasteAttachments } from './usePasteAttachments';
 
@@ -558,8 +559,8 @@ export function TaskDetailsCell({
               {isExternal && (
                 <Caption1 className={styles.hint}>
                   Edits the app&apos;s copy — the agent reads this, but nothing is written back to{' '}
-                  {isJira ? 'JIRA' : 'GitHub'} and the next sync replaces it with the issue&apos;s
-                  own text.
+                  {trackerName(task) ?? 'the tracker'} and the next sync replaces it with the
+                  issue&apos;s own text.
                 </Caption1>
               )}
               <div className={styles.editRow}>

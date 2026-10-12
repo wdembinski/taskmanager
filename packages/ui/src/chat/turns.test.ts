@@ -110,18 +110,36 @@ describe('foldTurns', () => {
       commentId: null,
     });
     expect(ghTheirs).toMatchObject({ kind: 'them', tracker: 'github', author: 'octocat' });
+
+    const [linMine, linTheirs] = foldTurns([
+      { kind: 'linear-comment', id: '21', author: 'me', body: 'a', createdAt: 1, mine: true },
+      { kind: 'linear-comment', id: '22', author: 'Ada', body: 'b', createdAt: 2, mine: false },
+    ]);
+    expect(linMine).toMatchObject({
+      kind: 'you',
+      variant: 'ticket',
+      tracker: 'linear',
+      commentId: null,
+    });
+    expect(linTheirs).toMatchObject({ kind: 'them', tracker: 'linear' });
   });
 
-  // Two trackers, two id spaces: JIRA's comment 12 and GitHub's comment 12 are different
-  // comments, and a shared key would make React render one of them twice.
-  it('keys a GitHub comment apart from a JIRA one with the same id', () => {
+  // Three trackers, three id spaces: JIRA's comment 12, GitHub's comment 12 and Linear's
+  // comment 12 are different comments, and a shared key would make React render two of
+  // them as one.
+  it('keys a GitHub comment apart from a JIRA one with the same id, and a Linear one from both', () => {
     const [jira] = foldTurns([
       { kind: 'jira-comment', id: '12', author: 'Ada', body: 'a', createdAt: 1, mine: false },
     ]);
     const [github] = foldTurns([
       { kind: 'github-comment', id: '12', author: 'ada', body: 'a', createdAt: 1, mine: false },
     ]);
+    const [linear] = foldTurns([
+      { kind: 'linear-comment', id: '12', author: 'ada', body: 'a', createdAt: 1, mine: false },
+    ]);
     expect(jira.key).not.toBe(github.key);
+    expect(linear.key).not.toBe(jira.key);
+    expect(linear.key).not.toBe(github.key);
   });
 
   it('leaves rich undefined for a comment that carried no structure', () => {

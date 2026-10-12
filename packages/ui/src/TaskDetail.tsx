@@ -1036,7 +1036,7 @@ export function TaskDetail({
           </div>
           {editingTitle && tracker && (
             <Caption1 className={styles.titleHint}>
-              Edits the app&apos;s copy — the next {isJira ? 'JIRA' : 'GitHub'} sync replaces it
+              Edits the app&apos;s copy — the next {trackerName(task) ?? 'tracker'} sync replaces it
               with the issue&apos;s own {isJira ? 'summary' : 'title'}.
             </Caption1>
           )}
